@@ -187,6 +187,7 @@ const SANITISERS: Record<ToolName, Sanitiser> = {
   release_claim: (a) =>
     compact({ claim_token: tokenPresent(a.claim_token) || tokenPresent(a.claimToken) }),
   list_scopes: () => ({}),
+  get_squad: () => ({}),
 };
 
 /**

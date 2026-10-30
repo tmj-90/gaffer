@@ -19,6 +19,11 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
+# Private operator state: factory.config.sh would otherwise read the checkout's
+# .gaffer (the live factory's settings.json is APPLIED) — see lib/isolate.sh.
+# shellcheck source=lib/isolate.sh
+. "$HERE/lib/isolate.sh"
+gaffer_test_isolate; trap 'rm -rf "$GAFFER_TEST_ISO"' EXIT
 
 PASS=0
 FAILURES=()
@@ -60,7 +65,7 @@ AGENT_ENV="$(
     '
 )"
 
-has() { printf '%s\n' "$AGENT_ENV" | grep -qx "$1"; }
+has() { grep -qx "$1" <<<"$AGENT_ENV"; }
 
 echo "== dangerous ambient credentials are DROPPED (C1/M2) =="
 for danger in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
@@ -110,9 +115,9 @@ OAUTH_ENV="$(
       for kv in "${GAFFER_AGENT_ENV[@]}"; do printf "%s\n" "${kv%%=*}"; done
     '
 )"
-if printf '%s\n' "$OAUTH_ENV" | grep -qx CLAUDE_CODE_OAUTH_TOKEN; then ok "CLAUDE_CODE_OAUTH_TOKEN kept (claude setup-token auth)"; else fail "CLAUDE_CODE_OAUTH_TOKEN wrongly stripped — headless-Max cannot authenticate"; fi
-if printf '%s\n' "$OAUTH_ENV" | grep -qx CLAUDE_CODE_SOME_OTHER_TOKEN; then fail "a look-alike CLAUDE_CODE_*_TOKEN leaked (only the OAuth token is exempt)"; else ok "a look-alike CLAUDE_CODE_*_TOKEN is still stripped (only the OAuth token is exempt)"; fi
-if printf '%s\n' "$OAUTH_ENV" | grep -qx GITHUB_TOKEN; then fail "GITHUB_TOKEN leaked alongside the OAuth exemption"; else ok "GITHUB_TOKEN still stripped alongside the OAuth exemption"; fi
+if grep -qx CLAUDE_CODE_OAUTH_TOKEN <<<"$OAUTH_ENV"; then ok "CLAUDE_CODE_OAUTH_TOKEN kept (claude setup-token auth)"; else fail "CLAUDE_CODE_OAUTH_TOKEN wrongly stripped — headless-Max cannot authenticate"; fi
+if grep -qx CLAUDE_CODE_SOME_OTHER_TOKEN <<<"$OAUTH_ENV"; then fail "a look-alike CLAUDE_CODE_*_TOKEN leaked (only the OAuth token is exempt)"; else ok "a look-alike CLAUDE_CODE_*_TOKEN is still stripped (only the OAuth token is exempt)"; fi
+if grep -qx GITHUB_TOKEN <<<"$OAUTH_ENV"; then fail "GITHUB_TOKEN leaked alongside the OAuth exemption"; else ok "GITHUB_TOKEN still stripped alongside the OAuth exemption"; fi
 
 echo "== values are preserved verbatim (no truncation/quoting damage) =="
 VAL="$(

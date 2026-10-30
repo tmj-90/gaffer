@@ -61,9 +61,9 @@ RRF="$WORK/rroots"; : > "$RRF"
 # (the default on Linux) a config-carrying spawn with no socket is REFUSED (section f).
 ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- \
   claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" 2>"$WORK/stderr")"
-has_arg() { printf '%s\n' "$ARGV" | grep -qxF -- "$1"; }
+has_arg() { grep -qxF -- "$1" <<<"$ARGV"; }
 # A mount line is `-v` followed by `src:dst:mode` on the NEXT line (one arg per line).
-has_mount() { printf '%s\n' "$ARGV" | grep -qxF -- "$1"; }
+has_mount() { grep -qxF -- "$1" <<<"$ARGV"; }
 
 echo "== (c) the worktree is rw; its repo's .git is ro with only the commit path rw =="
 COMMON="$(git -C "$WT" rev-parse --git-common-dir)"; case "$COMMON" in /*) ;; *) COMMON="$WT/$COMMON";; esac
@@ -77,13 +77,13 @@ has_mount "$COMMON/objects:$COMMON/objects:rw" && ok ".git/objects rw (new commi
 has_mount "$COMMON/refs:$COMMON/refs:rw"    && ok ".git/refs rw (branch tip)"                    || fail ".git/refs should be rw"
 has_mount "$COMMON/logs:$COMMON/logs:rw"    && ok ".git/logs rw (reflog)"                        || fail ".git/logs should be rw"
 has_mount "$GITDIR:$GITDIR:rw"              && ok ".git/worktrees/<this> rw (index, HEAD)"       || fail "worktree private git dir should be rw"
-printf '%s\n' "$ARGV" | grep -qxF -- "$COMMON/config:$COMMON/config:rw" && fail ".git/config must not be rw" || ok ".git/config is not writable"
+grep -qxF -- "$COMMON/config:$COMMON/config:rw" <<<"$ARGV" && fail ".git/config must not be rw" || ok ".git/config is not writable"
 has_arg "GIT_CONFIG_KEY_0=safe.directory" && ok "git safe.directory set for the uid-mismatched mounts" || fail "safe.directory env missing"
 
 echo "== (c) \$GAFFER_DATA: the DB dir is mounted, every secret sibling is MASKED =="
 has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && ok "GAFFER_DATA (the SQLite directory) mounted rw" || fail "GAFFER_DATA mount missing"
 masked_file() { has_mount "/dev/null:$GAFFER_DATA/$1:ro"; }
-masked_dir()  { printf '%s\n' "$ARGV" | grep -qF -- "$GAFFER_DATA/$1:rw,noexec,nosuid"; }
+masked_dir()  { grep -qF -- "$GAFFER_DATA/$1:rw,noexec,nosuid" <<<"$ARGV"; }
 masked_file settings.json          && ok "settings.json masked"                        || fail "settings.json NOT masked"
 masked_file dashboard-token        && ok "dashboard-token masked"                      || fail "dashboard-token NOT masked"
 masked_file usage-ledger.jsonl     && ok "usage-ledger.jsonl masked"                   || fail "usage ledger NOT masked"
@@ -104,8 +104,8 @@ echo "== (c) a full-repo write root (.git is a directory) needs no extra git mou
 FULL="$WORK/fullrepo"; mkdir -p "$FULL"; git -C "$FULL" init -q -b main
 printf '%s\n' "$FULL" > "$WRF"
 ARGV2="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c true 2>/dev/null)"
-printf '%s\n' "$ARGV2" | grep -qxF -- "$FULL:$FULL:rw" && ok "full repo mounted rw" || fail "full repo rw mount missing"
-printf '%s\n' "$ARGV2" | grep -qF -- "$FULL/.git/objects" && fail "a full repo got redundant .git sub-mounts" || ok "no redundant .git sub-mounts for a full repo"
+grep -qxF -- "$FULL:$FULL:rw" <<<"$ARGV2" && ok "full repo mounted rw" || fail "full repo rw mount missing"
+grep -qF -- "$FULL/.git/objects" <<<"$ARGV2" && fail "a full repo got redundant .git sub-mounts" || ok "no redundant .git sub-mounts for a full repo"
 
 echo "== (a) sandbox_wrap_cmd writes PER-CALL root files, never a fixed shared path =="
 # A fake `docker` on PATH so the provider branch believes a daemon is up (the wrapper
@@ -134,7 +134,7 @@ BRIDGED="$GAFFER_DATA/mcp-runtime.1111.bridge.json"; printf '{"mcpServers":{}}\n
 ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE_SOCKET="$SOCK" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- \
   claude -p hi --mcp-config "$BRIDGED" 2>"$WORK/stderr.bridge")"
 has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && fail "bridge mode still mounts GAFFER_DATA rw" || ok "GAFFER_DATA is NOT mounted"
-printf '%s\n' "$ARGV" | grep -q 'dispatch.sqlite\|memory.sqlite' && fail "a database path appears in the docker argv" || ok "no database path anywhere in the argv (DBs unreachable)"
+grep -q 'dispatch.sqlite\|memory.sqlite' <<<"$ARGV" && fail "a database path appears in the docker argv" || ok "no database path anywhere in the argv (DBs unreachable)"
 has_mount "$SOCK:$SOCK:rw"        && ok "the bridge socket is mounted rw (the only data-plane path)" || fail "bridge socket mount missing"
 has_mount "$BRIDGED:$BRIDGED:ro"  && ok "this call's BRIDGED --mcp-config is mounted ro" || fail "bridged mcp-config mount missing"
 has_mount "$WT:$WT:rw"            && ok "delivery worktree still mounted rw" || fail "worktree rw mount missing in bridge mode"
@@ -142,7 +142,7 @@ has_mount "$GAFFER_DATA/safety-blocks.jsonl:$GAFFER_DATA/safety-blocks.jsonl:rw"
 has_mount "$GAFFER_DATA/events.jsonl:$GAFFER_DATA/events.jsonl:rw" && ok "crew events log mounted rw" || fail "crew events mount missing"
 has_mount "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" && ok "skills mount target mounted ro" || fail "skills target mount missing"
 for f in settings.json dashboard-token usage-ledger.jsonl mcp-runtime.2222.json mcp-runtime.1111.json; do
-  printf '%s\n' "$ARGV" | grep -qF -- "$GAFFER_DATA/$f" && fail "$f is referenced in bridge mode (should be absent, not masked)" || ok "$f absent from the container (not mounted, not masked)"
+  grep -qF -- "$GAFFER_DATA/$f" <<<"$ARGV" && fail "$f is referenced in bridge mode (should be absent, not masked)" || ok "$f absent from the container (not mounted, not masked)"
 done
 has_arg DISPATCH_DB && fail "DISPATCH_DB forwarded into the container in bridge mode" || ok "DISPATCH_DB not forwarded"
 has_arg MEMORY_DB   && fail "MEMORY_DB forwarded in bridge mode" || ok "MEMORY_DB not forwarded"
@@ -160,10 +160,10 @@ ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BR
   bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'pnpm test' 2>"$WORK/stderr.val")"
 # The worktree itself lives under $GAFFER_DATA/worktrees — that rw mount is the point;
 # NOTHING ELSE under $GAFFER_DATA may be referenced.
-printf '%s\n' "$ARGV" | grep -F -- "$GAFFER_DATA" | grep -vF -- "$WT" | grep -q . && fail "validation profile references GAFFER_DATA beyond the worktree: $(printf '%s\n' "$ARGV" | grep -F -- "$GAFFER_DATA" | grep -vF -- "$WT" | head -3 | tr '\n' ' ')" || ok "validation: NOTHING under GAFFER_DATA but the worktree is mounted (no DBs, no ledgers, no socket)"
+[ -n "$(grep -F -- "$GAFFER_DATA" <<<"$ARGV" | grep -vF -- "$WT")" ] && fail "validation profile references GAFFER_DATA beyond the worktree: $(printf '%s\n' "$ARGV" | grep -F -- "$GAFFER_DATA" | grep -vF -- "$WT" | head -3 | tr '\n' ' ')" || ok "validation: NOTHING under GAFFER_DATA but the worktree is mounted (no DBs, no ledgers, no socket)"
 has_mount "$WT:$WT:rw" && ok "validation: the worktree (the tests) is mounted rw" || fail "validation: worktree mount missing"
 has_arg ANTHROPIC_API_KEY && fail "validation profile forwards the model credential" || ok "validation: ANTHROPIC_API_KEY NOT forwarded (a test suite needs no model)"
-printf '%s\n' "$ARGV" | grep -q 'credentials.json' && fail "validation profile mounts the credentials file" || ok "validation: no credentials file mounted"
+grep -q 'credentials.json' <<<"$ARGV" && fail "validation profile mounts the credentials file" || ok "validation: no credentials file mounted"
 has_arg DISPATCH_DB && fail "validation forwards DISPATCH_DB" || ok "validation: no DB env"
 grep -q 'no model credential' "$WORK/stderr.val" && fail "validation profile nagged about a missing credential" || ok "validation: no credential warning (none is wanted)"
 
@@ -175,7 +175,7 @@ grep -q 'refusing to run with the databases mounted' "$WORK/stderr.refuse" && ok
 echo "== (g) NO MCP config (or an empty data plane) ⇒ 'none': no databases, credentials kept =="
 ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>"$WORK/stderr.none")"
 has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && fail "'none' mode mounted GAFFER_DATA rw" || ok "none: GAFFER_DATA not mounted"
-printf '%s\n' "$ARGV" | grep -q 'dispatch.sqlite\|memory.sqlite' && fail "none: a database path appears" || ok "none: no database path in the argv"
+grep -q 'dispatch.sqlite\|memory.sqlite' <<<"$ARGV" && fail "none: a database path appears" || ok "none: no database path in the argv"
 has_mount "$GAFFER_DATA/safety-blocks.jsonl:$GAFFER_DATA/safety-blocks.jsonl:rw" && ok "none: the hook's telemetry ledger is mounted" || fail "none: ledger mount missing"
 has_arg ANTHROPIC_API_KEY && ok "none: the model credential IS forwarded (an agent without MCP still needs it)" || fail "none: credential missing"
 ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 GAFFER_SANDBOX_DATA_PLANE=none bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" 2>/dev/null)"

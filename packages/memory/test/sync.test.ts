@@ -16,7 +16,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { addLore, getLore, suggestLore } from "../src/core/lore.js";
+import { addLore, getLore, listLoreVersions, suggestLore, updateLore } from "../src/core/lore.js";
 import { addBoundary, findDependents, listBoundaries } from "../src/core/boundaries.js";
 import { runMigrations } from "../src/db/migrations.js";
 import {
@@ -656,5 +656,226 @@ describe("cli/sync — boundary round-trip", () => {
     const res = exportToDir(db, out);
     expect(res.boundariesWritten).toBe(0);
     expect(readdirSync(out)).not.toContain(BOUNDARIES_FILE);
+  });
+});
+
+/**
+ * Regression (audit: sync-escape-corruption): yamlScalar writes JSON.stringify
+ * for any value with a quote / colon / newline, but the reader only sliced the
+ * outer quotes, so `\"`, `\\` and `\n` came back literal and the damage doubled
+ * on every export/import cycle. The writer and reader must be exact inverses.
+ */
+describe("cli/sync — escaping round-trip property", () => {
+  const NASTY = [
+    'Use "UTC" for: timestamps',
+    "Line one\nLine two with C:\\path",
+    "back\\slash only",
+    "trailing colon:",
+    "it's 'single' quoted",
+    "'wrapped in single quotes'",
+    '"wrapped in double quotes"',
+    "unicode — café ✓ \u2028 sep",
+    "true",
+    "false",
+    "  leading and trailing spaces  ",
+    "tab\there",
+    "# not a comment",
+  ];
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function cycle(src: Database): { files: Map<string, string>; db: Database } {
+    const d = mkdtempSync(join(tmpdir(), "lore-sync-esc-"));
+    dirs.push(d);
+    exportToDir(src, d, { includeDrafts: true });
+    const files = new Map<string, string>();
+    for (const f of readdirSync(d)
+      .filter((x) => x.endsWith(".md"))
+      .sort()) {
+      files.set(f, readFileSync(join(d, f), "utf8"));
+    }
+    const next = newInMemoryDb();
+    const r = importFromDir(next, d);
+    expect(r.skipped).toEqual([]);
+    return { files, db: next };
+  }
+
+  it("export → import → export is byte-identical and field-for-field equal", () => {
+    const db = newInMemoryDb();
+    const ids: string[] = [];
+    for (const s of NASTY) {
+      ids.push(
+        addLore(db, {
+          title: s,
+          summary: s,
+          body: "body",
+          author: s,
+          team: s,
+          tags: [`"${s.trim().slice(0, 6)}"`, "true", "plain"],
+          repos: ['"quoted-repo"', "true", "svc"],
+          specId: s,
+          clauseId: s,
+        }).id,
+      );
+    }
+    const first = cycle(db);
+    const second = cycle(first.db);
+    const third = cycle(second.db);
+    // Byte-identical across cycles: no growing escape damage.
+    expect([...second.files.entries()]).toEqual([...first.files.entries()]);
+    expect([...third.files.entries()]).toEqual([...first.files.entries()]);
+    for (const id of ids) {
+      const a = getLore(db, id)!;
+      const b = getLore(third.db, id)!;
+      expect(b.title).toBe(a.title);
+      expect(b.summary).toBe(a.summary);
+      expect(b.author).toBe(a.author);
+      expect(b.team).toBe(a.team);
+      expect(b.tags).toEqual(a.tags);
+      expect(b.repos).toEqual(a.repos);
+      expect(b.specId).toBe(a.specId);
+      expect(b.clauseId).toBe(a.clauseId);
+    }
+  });
+
+  it("a quoted scalar is always a string; only a bare true/false is a boolean", () => {
+    const r = parseFrontmatter(
+      '---\ntitle: "true"\nsummary: \'false\'\nrestricted: true\ncolon: "a\\"b"\n---\nb\n',
+    )!;
+    expect(r.frontmatter["title"]).toBe("true");
+    expect(r.frontmatter["summary"]).toBe("false");
+    expect(r.frontmatter["restricted"]).toBe(true);
+    expect(r.frontmatter["colon"]).toBe('a"b');
+  });
+
+  it("a hand-written double-quoted value that is not valid JSON falls back to the raw slice", () => {
+    const r = parseFrontmatter('---\ntitle: "C:\\path"\n---\nb\n')!;
+    expect(r.frontmatter["title"]).toBe("C:\\path");
+  });
+
+  it("ordinary values keep their historical unquoted form (no export churn)", () => {
+    const db = newInMemoryDb();
+    const a = addLore(db, {
+      title: "Plain title",
+      summary: "Plain summary",
+      body: "b",
+      source: "https://example.com/adr/1",
+      tags: ["security"],
+      repos: ["auth-svc"],
+    });
+    const md = renderLoreMarkdown(getLore(db, a.id)!);
+    expect(md).toContain("\ntitle: Plain title\n");
+    expect(md).toContain("\nsource: https://example.com/adr/1\n");
+    expect(md).toContain("\n  - security\n");
+    expect(md).toContain("\n  - auth-svc\n");
+    expect(md).not.toContain("specId:");
+  });
+});
+
+/**
+ * Regression (audit: sync-import-no-history-no-spec): the import update branch
+ * overwrote text without a lore_version snapshot, and specId/clauseId were never
+ * exported or imported, so spec-seeded lore lost its clause join key on every
+ * new machine.
+ */
+describe("cli/sync — import keeps version history and spec linkage", () => {
+  let db: Database;
+  let dir: string;
+  beforeEach(() => {
+    db = newInMemoryDb();
+    dir = mkdtempSync(join(tmpdir(), "lore-sync-hist-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a --force import over a local edit snapshots the local text first", () => {
+    const a = addLore(db, { title: "t", summary: "s", body: "body" });
+    exportToDir(db, dir);
+    updateLore(db, a.id, { body: "local edit v2" });
+    expect(listLoreVersions(db, a.id)).toHaveLength(1);
+    importFromDir(db, dir, { force: true });
+    expect(getLore(db, a.id)!.body).toBe("body");
+    const versions = listLoreVersions(db, a.id);
+    expect(versions).toHaveLength(2);
+    expect(versions[0]!.body).toBe("local edit v2");
+  });
+
+  it("a teammate's newer file (no --force) also snapshots the overwritten local text", () => {
+    const a = addLore(db, { title: "t", summary: "s", body: "body" });
+    updateLore(db, a.id, { body: "local edit v3" });
+    const local = getLore(db, a.id)!;
+    const newer = new Date(Date.parse(local.updatedAt) + 60_000).toISOString();
+    writeFileSync(
+      join(dir, `${a.id}.md`),
+      `---\nid: ${a.id}\ntitle: t\nsummary: s\nstatus: active\nkind: other\n` +
+        `confidence: medium\nrestricted: false\ncreatedAt: ${local.createdAt}\n` +
+        `updatedAt: ${newer}\n---\n\nteammate body\n`,
+    );
+    const before = listLoreVersions(db, a.id).length;
+    importFromDir(db, dir);
+    expect(getLore(db, a.id)!.body).toBe("teammate body");
+    const versions = listLoreVersions(db, a.id);
+    expect(versions).toHaveLength(before + 1);
+    expect(versions[0]!.body).toBe("local edit v3");
+  });
+
+  it("an identical re-import adds no version row", () => {
+    const a = addLore(db, { title: "t", summary: "s", body: "body" });
+    exportToDir(db, dir);
+    importFromDir(db, dir);
+    importFromDir(db, dir);
+    expect(listLoreVersions(db, a.id)).toHaveLength(0);
+  });
+
+  it("specId and clauseId survive export → import onto a fresh DB", () => {
+    const a = addLore(db, {
+      title: "t",
+      summary: "s",
+      body: "b",
+      specId: "spec-1",
+      clauseId: "c-2",
+    });
+    exportToDir(db, dir);
+    expect(readFileSync(join(dir, `${a.id}.md`), "utf8")).toContain("\nspecId: spec-1\n");
+    const fresh = newInMemoryDb();
+    importFromDir(fresh, dir);
+    const b = getLore(fresh, a.id)!;
+    expect(b.specId).toBe("spec-1");
+    expect(b.clauseId).toBe("c-2");
+  });
+
+  it("an old-format file without specId/clauseId does not clear existing linkage", () => {
+    const a = addLore(db, {
+      title: "t",
+      summary: "s",
+      body: "b",
+      specId: "spec-1",
+      clauseId: "c-2",
+    });
+    const full = getLore(db, a.id)!;
+    writeFileSync(
+      join(dir, `${a.id}.md`),
+      `---\nid: ${a.id}\ntitle: t2\nsummary: s\nstatus: active\nrestricted: false\n` +
+        `createdAt: ${full.createdAt}\nupdatedAt: ${full.updatedAt}\n---\n\nb\n`,
+    );
+    importFromDir(db, dir);
+    const after = getLore(db, a.id)!;
+    expect(after.title).toBe("t2");
+    expect(after.specId).toBe("spec-1");
+    expect(after.clauseId).toBe("c-2");
+  });
+
+  it("an empty specId is skipped with a reason", () => {
+    writeFileSync(
+      join(dir, "abcd2345.md"),
+      '---\nid: abcd2345\ntitle: t\nsummary: s\nstatus: active\nspecId: ""\n---\n\nb\n',
+    );
+    const r = importFromDir(db, dir);
+    expect(r.skipped.map((s) => s.reason)).toEqual([
+      'invalid specId "" (expected a non-empty string)',
+    ]);
   });
 });

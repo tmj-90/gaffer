@@ -16,7 +16,7 @@ import { makeHandlers, toolSchemas, type ToolResult } from "./tools.js";
  * backlog's integrity depends on agents following these, so the prose is
  * deliberately imperative and concrete.
  */
-const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
+export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
   create_ticket:
     "**Create a unit of work as a DRAFT.** Use this to capture a discrete, " +
     "independently-shippable task — not a vague epic and not a sub-step of a " +
@@ -203,7 +203,9 @@ const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "internal-util change that can shift a surface's underlying behaviour (so it is " +
     "NOT 'is this an API ticket'). When on AND the GAFFER_TESTING toggle is enabled, " +
     "review approval routes the ticket through an INDEPENDENT tester before merge. " +
-    "Marking it testable only ADDS scrutiny — it never bypasses a gate.",
+    "Marking it testable only ADDS scrutiny. In the factory an agent may only turn it " +
+    "ON: clearing it (`can_be_tested: false`) is a human/runner decision and is refused " +
+    "with FACTORY_RUNNER_OWNED.",
   set_test_contract:
     "**Record the testing HANDOVER the independent tester reads to stand the system " +
     "up and probe the changed surfaces — never the implementation diff.** Pass " +
@@ -242,6 +244,11 @@ const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "`spec_id`. Only a `draft` spec can be frozen (draft→frozen); a frozen spec is " +
     "IMMUTABLE — freezing or editing a spec that is already frozen or superseded is " +
     "rejected. Freeze when the clauses are settled and ready to drive delivery.",
+  get_squad:
+    "**Read the squad: the club name and each registered agent's display name, " +
+    "shirt number and role.** Read-only and presentation only — every other tool " +
+    "takes the agent ID, never a display name. Names are set by the operator; there " +
+    "is no tool to rename yourself or anyone else.",
   list_scopes:
     "**Read the Factory Map: the product/system scope nodes and which repos sit " +
     "in each, with the default access (write/read/test/none) that scope grants.** " +

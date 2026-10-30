@@ -466,6 +466,25 @@ describe("searchFileCards", () => {
     expect(searchFileCards(db, TEST_REPO_KEY, "xyznosuchthing")).toEqual([]);
   });
 
+  it("an off-topic sentence matches no card (stopwords are not search terms)", () => {
+    // Regression (audit: stopword-or-query): "and" in the auth tldr used to match.
+    expect(searchFileCards(db, TEST_REPO_KEY, "what is the best cake and the oven")).toEqual([]);
+    // …while a sentence about a real card still finds it.
+    const hits = searchFileCards(db, TEST_REPO_KEY, "where is the JWT token generation");
+    expect(hits.map((h) => h.path)).toContain("src/core/auth.ts");
+  });
+
+  it("a ticket-title query with a ' - ' / ' / ' separator still finds its card", () => {
+    // Regression (review: stopword-or-query): the separator counted toward the
+    // half-match rule (3 of 5 instead of 2 of 4) and file cards have no dense fallback.
+    for (const q of ["Auth - fix JWT expiry", "Auth / fix JWT expiry"]) {
+      expect(
+        searchFileCards(db, TEST_REPO_KEY, q).map((h) => h.path),
+        q,
+      ).toContain("src/core/auth.ts");
+    }
+  });
+
   it("returns empty array for empty query", () => {
     expect(searchFileCards(db, TEST_REPO_KEY, "")).toEqual([]);
     expect(searchFileCards(db, TEST_REPO_KEY, "   ")).toEqual([]);

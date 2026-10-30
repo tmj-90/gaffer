@@ -88,7 +88,7 @@ run_pool() {  # run_pool <MAX_TICKS> <N> [extra env]
 out="$(run_pool 10 3)"
 calls="$(wc -l < "$WORK/calls" | tr -d ' ')"
 [ "$calls" = "10" ] && ok "MAX_TICKS=10 across 3 workers ran exactly 10 ticks (was 12)" || fail "expected 10 ticks, ran $calls; out: $(printf '%s' "$out" | tail -3)"
-printf '%s' "$out" | grep -q 'ticks=10 ' && ok "loop.sh aggregated ticks=10" || fail "aggregate line should say ticks=10: $(printf '%s' "$out" | grep aggregated)"
+grep -q 'ticks=10 ' <<<"$out" && ok "loop.sh aggregated ticks=10" || fail "aggregate line should say ticks=10: $(printf '%s' "$out" | grep aggregated)"
 [ "$(awk '{print $2}' "$DAILY_COUNTER_FILE")" = "10" ] && ok "day counter = 10 (every productive tick counted once)" || fail "day counter should be 10, got '$(cat "$DAILY_COUNTER_FILE" 2>/dev/null)'"
 out="$(run_pool 1 4)"
 calls="$(wc -l < "$WORK/calls" | tr -d ' ')"
@@ -97,7 +97,7 @@ out="$(POOL_DAY_CAP=3 run_pool 10 4)"
 calls="$(wc -l < "$WORK/calls" | tr -d ' ')"
 [ "$calls" = "3" ] && ok "MAX_TICKS_PER_DAY=3 across 4 workers admitted exactly 3 ticks" || fail "expected 3 ticks under the day cap, ran $calls"
 [ "$(awk '{print $2}' "$DAILY_COUNTER_FILE")" = "3" ] && ok "day counter = 3 (never over the cap)" || fail "day counter should be 3, got '$(cat "$DAILY_COUNTER_FILE")'"
-printf '%s' "$out" | grep -q 'per-day cap reached' && ok "workers stopped on the day cap with the logged reason" || fail "expected a 'per-day cap reached' stop"
+grep -q 'per-day cap reached' <<<"$out" && ok "workers stopped on the day cap with the logged reason" || fail "expected a 'per-day cap reached' stop"
 
 echo "== 4: a no_work tick under the pool refunds its day slot =="
 cat > "$FAKE/tick.sh" <<'STUB'

@@ -3,19 +3,21 @@ import { CrewError } from "../../util/errors.js";
 import { QUARANTINE_NOTICE, quarantine } from "./quarantine.js";
 
 // =====================================================================
-// Delivery + bootstrap prompt render — TS port of the tick.sh prompt
-// heredocs (P1b context assembly, docs/tick-sh-runtime-migration.md).
+// Delivery + bootstrap prompt render — the LIVE prompt text every delivery,
+// resume and greenfield bootstrap agent receives (P1b context assembly,
+// docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
-// Sources (transcribed byte-for-byte, validated against a golden capture of
-// the real bash render):
-//   - fresh delivery prompt   tick.sh:1489–1530
-//   - resume delivery prompt  tick.sh:1458–1487
-//   - lore-reflection nudge   tick.sh:1443–1450
-//   - review-feedback block   tick.sh:1375–1383
-//   - WRITE_LIST / READ_LIST  tick.sh:1345–1350
-//   - bootstrap prompt        tick.sh:919–941
+// runner/tick.sh gathers only the RAW inputs (TITLE, the review-feedback
+// reasons in _RF, WT_ROWS, READ_ROOTS, the context blocks) and renders through
+// gaffer_render_delivery_prompt (runner/factory.config.sh) → renderPromptCli.js
+// → this module. The wording below — the fresh / resume / bootstrap prompts,
+// the lore-reflection nudge, the review-feedback block, the write / read repo
+// lists and the quarantine envelopes — is therefore what production sends: edit
+// it HERE (and rebuild crew), never in tick.sh. It was ported byte-for-byte from
+// the former tick.sh heredocs; runner/test/prompt-render-golden.test.sh and the
+// tick-context golden (test/fixtures/tick-context) pin the output.
 //
-// PARITY NOTES:
+// PARITY NOTES (kept from the heredoc era; the goldens still encode them):
 //  - `read -r -d '' PROMPT <<EOF` strips the heredoc's trailing newline(s):
 //    the rendered prompt has NO trailing newline.
 //  - The three context blocks each sit ALONE on a heredoc line; when a block
@@ -24,7 +26,7 @@ import { QUARANTINE_NOTICE, quarantine } from "./quarantine.js";
 //  - Heredoc `\`get_ticket\`` escapes produce literal backticks.
 // =====================================================================
 
-/** The lore-reflection nudge appended to every delivery brief (tick.sh:1443–1450). */
+/** The lore-reflection nudge appended to every delivery brief. */
 export const LORE_REFLECTION_NUDGE = `BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
 durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
 needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory \`suggest_lore\`
@@ -36,7 +38,7 @@ DRAFT a human approves; nothing is auto-applied.`;
 export interface PromptWriteRepo {
   /** The throwaway worktree path (the agent-visible write root). */
   worktreePath: string;
-  /** Repo display name; "" renders as "repo" (awk fallback, tick.sh:1348). */
+  /** Repo display name; "" renders as "repo" (the old WRITE_LIST awk fallback). */
   name: string;
 }
 
@@ -53,7 +55,8 @@ export interface DeliveryPromptInputs {
   /** Always-apply quality lenses line content (comma-joined). */
   lenses: string;
   /** Prior review-rejection reasons, newest-last, already filtered/deduped
-   *  (tick.sh:1357–1372). [] → empty block (an empty prompt line). */
+   *  (tick.sh's `_RF`, via json-tool.mjs review-feedback). [] → empty block
+   *  (an empty prompt line). */
   reviewFeedbackReasons: string[];
   /** Rendered file-cards block ("" when none) — see contextPrimer.ts. */
   fileCardsBlock: string;
@@ -68,7 +71,7 @@ export interface DeliveryPromptInputs {
   primaryRepo: string;
 }
 
-/** Inputs for the greenfield bootstrap prompt render (tick.sh:919–941). */
+/** Inputs for the greenfield bootstrap prompt render. */
 export interface BootstrapPromptInputs {
   ticketNumber: string;
   title: string;
@@ -86,7 +89,7 @@ function requireNonEmpty(value: string, field: string): void {
 }
 
 /**
- * The PRIOR REVIEW FEEDBACK block (tick.sh:1375–1383): reasons as `  - <r>`
+ * The PRIOR REVIEW FEEDBACK block: reasons as `  - <r>`
  * lines inside a quarantined <untrusted-review-feedback> envelope. [] → "".
  */
 export function renderReviewFeedbackBlock(reasons: string[]): string {
@@ -104,7 +107,7 @@ ${quarantined}
 `;
 }
 
-/** WRITE_LIST rows (tick.sh:1348): worktree path + display name + branch.
+/** WRITE_LIST rows: worktree path + display name + branch.
  *  NOTE: the branch is UNQUOTED here — the single quotes around $WORK_BRANCH
  *  in the awk program are shell quoting (a quote-splice), not output text. */
 function renderWriteList(writeRepos: PromptWriteRepo[], workBranch: string): string {
@@ -116,7 +119,7 @@ function renderWriteList(writeRepos: PromptWriteRepo[], workBranch: string): str
     .join("\n");
 }
 
-/** READ_LIST rows (tick.sh:1349–1350); [] → "  (none)". */
+/** READ_LIST rows; [] → "  (none)". */
 function renderReadList(readRoots: string[]): string {
   if (readRoots.length === 0) return "  (none)";
   return readRoots.map((p) => `  - ${p} [READ-ONLY context — do NOT write or branch]`).join("\n");
@@ -239,7 +242,7 @@ Your current working directory is the primary write repo: ${i.primaryRepo}`;
 }
 
 /**
- * Render the greenfield bootstrap prompt (tick.sh:919–941). Fail-closed on
+ * Render the greenfield bootstrap prompt. Fail-closed on
  * empty ticket number, title, or bootstrap dir (the ONLY writable root — an
  * empty one would render a boundary-less prompt).
  */

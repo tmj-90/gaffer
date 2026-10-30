@@ -18,8 +18,17 @@ import type { Db } from "../db/connection.js";
  *
  * The hash covers exactly the columns the writer controls (id, entity, actor,
  * event type, payload, correlation id, created_at). It is a per-database chain,
- * not a signature: it proves the log was not altered after being written, not
- * WHO wrote it (actor authentication is a separate concern).
+ * not a signature, and it has NO KEY: it catches accidental and naive edits (a
+ * hand-run UPDATE, a buggy writer, a damaged restore), but anyone with write access
+ * to the sqlite file can recompute every hash after an edit with this module's own
+ * {@link eventHash}. It says nothing about WHO wrote a row either (actor
+ * authentication is a separate concern). To make a rewrite detectable, record the
+ * chain head (`dispatch events verify` and `dispatch doctor` print it) somewhere the
+ * DB's writers cannot reach — a commit, a ticket, a log — and compare it later.
+ *
+ * Unhashed rows are backfilled only when migrating up from before the chain existed
+ * (v23) and when importing a pre-v23 bundle. On a chained log a NULL hash surfaces as
+ * `unhashed`; `dispatch events rechain --confirm` is the explicit, audited repair.
  */
 
 /** `prev_hash` of the first event in an empty log. */
@@ -76,6 +85,11 @@ export interface ChainVerification {
   brokenEventId: string | null;
   /** Why it fails: `unhashed`, `link` (prev_hash ≠ predecessor's hash) or `content` (row altered). */
   reason: "unhashed" | "link" | "content" | null;
+  /**
+   * The newest row's hash when the whole chain verifies (genesis for an empty log),
+   * else null. Recorded outside the DB, it anchors the log against a full rewrite.
+   */
+  headHash: string | null;
 }
 
 type ChainRow = ChainedEventFields & { seq: number; prev_hash: string | null; hash: string | null };
@@ -96,13 +110,21 @@ export function verifyEventChain(db: Db): ChainVerification {
       brokenAtSeq: row.seq,
       brokenEventId: row.id,
       reason,
+      headHash: null,
     });
     if (row.hash === null || row.prev_hash === null) return broken("unhashed");
     if (row.prev_hash !== expectedPrev) return broken("link");
     if (eventHash(row.prev_hash, row) !== row.hash) return broken("content");
     expectedPrev = row.hash;
   }
-  return { ok: true, checked, brokenAtSeq: null, brokenEventId: null, reason: null };
+  return {
+    ok: true,
+    checked,
+    brokenAtSeq: null,
+    brokenEventId: null,
+    reason: null,
+    headHash: expectedPrev,
+  };
 }
 
 /**

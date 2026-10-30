@@ -17,6 +17,7 @@ import {
 } from "../repositories/eventRepository.js";
 import { RepoRepository } from "../repositories/repoRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
+import type { AgentDisplay } from "./squadService.js";
 import { DispatchError } from "../util/errors.js";
 import type { Clock } from "../util/clock.js";
 import type { Ticket } from "../domain/types.js";
@@ -57,6 +58,8 @@ export const TERMINAL_STATUSES: ReadonlySet<TicketStatus> = new Set([
 export interface BoardCardClaim {
   agentId: string;
   agentDisplayName: string | null;
+  /** SQUAD: the claiming agent's presentation (display name, shirt number, role). */
+  agent_display: AgentDisplay | null;
   expiresAt: string;
   /** True when the claim's lease has passed its expiry (stale/recoverable). */
   stale: boolean;
@@ -301,6 +304,8 @@ export interface BoardServiceDeps {
   readonly claimsRepo: ClaimRepository;
   readonly events: EventRepository;
   readonly repos: RepoRepository;
+  /** SQUAD: every agent's presentation keyed by id (one query per board build). */
+  readonly agentDisplays?: () => Map<string, AgentDisplay>;
 }
 
 export class BoardService {
@@ -312,6 +317,7 @@ export class BoardService {
   private readonly claimsRepo: ClaimRepository;
   private readonly events: EventRepository;
   private readonly repos: RepoRepository;
+  private readonly agentDisplays: () => Map<string, AgentDisplay>;
 
   constructor(deps: BoardServiceDeps) {
     this.db = deps.db;
@@ -322,6 +328,7 @@ export class BoardService {
     this.claimsRepo = deps.claimsRepo;
     this.events = deps.events;
     this.repos = deps.repos;
+    this.agentDisplays = deps.agentDisplays ?? (() => new Map());
   }
 
   /**
@@ -347,6 +354,7 @@ export class BoardService {
 
     // One batched query for every card's write-boundary repos (avoids N+1).
     const reposByTicket = this.repos.writeRefsForTickets(tickets.map((t) => t.id));
+    const displays = this.agentDisplays();
 
     const empty = (): BoardColumnView[] =>
       BOARD_COLUMNS.map((column) => ({ column, cards: [] as BoardCard[] }));
@@ -361,6 +369,7 @@ export class BoardService {
         claimsByTicket.get(ticket.id),
         now,
         reposByTicket.get(ticket.id) ?? [],
+        displays,
       );
       // `cancelled` is the terminal won't-do bucket (reopenable); `failed` stays in
       // the closed area; everything else maps to a live column.
@@ -388,6 +397,7 @@ export class BoardService {
     claim: ActiveClaimView | undefined,
     nowIso: string,
     repos: { id: string; name: string }[] = [],
+    displays: ReadonlyMap<string, AgentDisplay> = new Map(),
   ): BoardCard {
     const acs = this.acs.listForTicket(ticket.id);
     const acSatisfied = acs.filter((a) => a.status === "satisfied").length;
@@ -399,6 +409,7 @@ export class BoardService {
       ? {
           agentId: claim.agent_id,
           agentDisplayName: claim.agent_display_name,
+          agent_display: displays.get(claim.agent_id) ?? null,
           expiresAt: claim.expires_at,
           stale: claim.expires_at < nowIso,
         }

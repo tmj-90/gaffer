@@ -50,7 +50,7 @@ FAKE_RUNNER="$WORK/runner"; mkdir -p "$FAKE_RUNNER/claude"
 # Wired like the real template: the shared writer (lib/agent-env.sh) VERIFIES the
 # PreToolUse safety-hook wiring and fails closed without it.
 printf '{"hooks":{"PreToolUse":[{"command":"node ${RUNNER_DIR}/safety-hook.mjs"}]}}\n' > "$FAKE_RUNNER/settings.tmpl.json"
-printf '{"mcp":"${DISPATCH_DB}"}\n'      > "$FAKE_RUNNER/mcp.tmpl.json"
+printf '{"mcpServers":{"dispatch":{"env":{"DISPATCH_DB":"${DISPATCH_DB}"}}}}\n' > "$FAKE_RUNNER/mcp.tmpl.json"
 printf '# brief\n'                        > "$FAKE_RUNNER/claude/CLAUDE.md"
 
 # Globals the clarify body reads (normally provided by tick.sh at call time).
@@ -83,10 +83,11 @@ _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/agent-env.sh"
 # clarify.sh renders the runtime .mcp.json through the factory.config.sh seam.
 # This hermetic harness stubs every collaborator, so provide a faithful bash-branch
-# stand-in: it substitutes the same seven placeholders (incl. ${GAFFER_TICKET_REPOS},
-# which clarify sets to "") so the flow proceeds to the interruptible worker.
+# stand-in: it substitutes the same eight placeholders (incl. ${GAFFER_TICKET_REPOS},
+# which clarify sets to "", and ${GAFFER_SCOPE_TICKET}, the draft clarify is bound to)
+# so the flow proceeds to the interruptible worker.
 gaffer_render_mcp_runtime() {
-  local tmpl="$1" out="$2" recall="$3"
+  local tmpl="$1" out="$2" recall="$3" scope="${4:-}"
   sed -e "s#\${DISPATCH_DB}#$(_gaffer_sed_repl "$DISPATCH_DB")#g" \
       -e "s#\${MEMORY_DB}#$(_gaffer_sed_repl "$MEMORY_DB")#g" \
       -e "s#\${DISPATCH_MCP_BIN}#$(_gaffer_sed_repl "$DISPATCH_MCP_BIN")#g" \
@@ -94,6 +95,7 @@ gaffer_render_mcp_runtime() {
       -e "s#\${GAFFER_CLAIM_TOKEN}#$(_gaffer_sed_repl "$CLAIM_TOKEN")#g" \
       -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "${GAFFER_TICKET_REPOS:-}")#g" \
       -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$recall")#g" \
+      -e "s#\${GAFFER_SCOPE_TICKET}#$(_gaffer_sed_repl "$scope")#g" \
       "$tmpl" > "$out" || return 1
 }
 gaffer_trust_workspace() { :; }
@@ -111,8 +113,8 @@ gaffer_skills_mount_cleanup() { :; }
 # nothing removes the clarify residue and the repo leaks.
 gaffer_crash_cleanup() { :; }
 # The GLOBAL signal/exit handlers, exactly as tick.sh installs them at top level.
-gaffer_on_exit()   { local rc=$?; trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$rc"; }
-gaffer_on_signal() { trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$1"; }
+gaffer_on_exit()   { local rc=$?; trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "$rc"; }
+gaffer_on_signal() { trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "$1"; }
 
 # The interrupted agent: raise SIGINT at the subshell running the clarify pass,
 # exactly as a contributor's Ctrl-C would mid-run.

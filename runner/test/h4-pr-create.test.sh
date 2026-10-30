@@ -183,7 +183,7 @@ _RC=$?
   && ok "T7 injectable gh returning URL → rc=0" \
   || fail "T7 expected rc=0 from gh stub, got $_RC"
 
-printf '%s' "$_OUT" | grep -qF "https://github.com/org/repo/pull/42" \
+grep -qF "https://github.com/org/repo/pull/42" <<<"$_OUT" \
   && ok "T7 pr_url printed to stdout" \
   || fail "T7 expected pr_url on stdout, got: $_OUT"
 

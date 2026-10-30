@@ -91,6 +91,13 @@ export class DecisionService {
     return this.decisions.listPending();
   }
 
+  /** One decision by id (any status). Throws NOT_FOUND. */
+  getDecision(decisionId: string): Decision {
+    const decision = this.decisions.findById(decisionId);
+    if (!decision) throw notFound("decision", decisionId);
+    return decision;
+  }
+
   /**
    * Resolve a decision (human surface): set its terminal status + resolved_*,
    * record the answer/rationale and append an event. Refuses to re-resolve an

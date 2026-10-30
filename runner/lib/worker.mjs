@@ -154,6 +154,20 @@ export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
   return { ok: true, wrap: (res.stdout || "").trim().split(/\s+/).filter(Boolean), diag };
 }
 
+/**
+ * PER-LANE TURN CAP: the `--max-turns` argv for a lane's effective cap (the tester's,
+ * resolver's and PO's role cap, already clamped by roleTurnCap). A positive integer →
+ * ["--max-turns", "N"]; anything else (unset, empty, 0, junk) → [] — the lane keeps its
+ * wall-clock bound only. The ONE helper every mjs lane's argv builder uses, so the lanes
+ * cannot drift apart (the bash lanes pass gaffer_role_turns to worker_deliver).
+ */
+export function maxTurnsArgv(raw) {
+  const s = String(raw ?? "").trim();
+  if (!/^[0-9]+$/.test(s)) return [];
+  const n = parseInt(s, 10);
+  return n > 0 ? ["--max-turns", String(n)] : [];
+}
+
 // The bash seam's refusal status for a required-but-unavailable sandbox.
 const SANDBOX_REFUSED_STATUS = 75;
 // The bash seam's refusal status when the MCP bridge cannot be rendered / started.

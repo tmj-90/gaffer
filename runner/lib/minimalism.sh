@@ -18,7 +18,8 @@
 # Pure functions: they compute over a git diff and a note string; they record
 # nothing themselves (the caller persists the outcome via Dispatch). Returns:
 #   gaffer_diff_stats        → echoes "<files> <lines>"
-#   gaffer_check_minimalism  → echoes one verdict token, sets the global
+#   gaffer_check_minimalism  → echoes one verdict token, sets the globals
+#                             GAFFER_MINIMALISM_VERDICT (the same token) and
 #                             GAFFER_MINIMALISM_REASON, returns 0/1/2.
 
 # Echo "<files-changed> <lines-changed>" for a branch diff. Lines = added+deleted
@@ -52,7 +53,10 @@ gaffer_check_minimalism() {
   local files="$1" lines="$2" note="$3" changed="${4:-}"
   # Size caps + enforce flag (OVERSIZED_MAX_LINES / OVERSIZED_MAX_FILES / MINIMALISM_ENFORCE)
   # are read from the env by minimalismCli.js itself.
+  # GAFFER_MINIMALISM_VERDICT mirrors the echoed token so tick.sh can read the verdict
+  # in its own shell without a scratch file (a shared file raced across workers).
   GAFFER_MINIMALISM_REASON=""
+  GAFFER_MINIMALISM_VERDICT="check_failed"
 
   # Typed (packages/crew minimalismCli.js → checkMinimalism); pinned by minimalism-golden.
   # The CLI emits the three observable outputs on three lines — token / return code /
@@ -69,6 +73,7 @@ gaffer_check_minimalism() {
     _mm_code="$(printf '%s\n' "$_mm_out" | sed -n 2p)"
     _mm_reason="$(printf '%s\n' "$_mm_out" | sed -n '3,$p')"
     GAFFER_MINIMALISM_REASON="$_mm_reason"
+    GAFFER_MINIMALISM_VERDICT="$_mm_tok"
     printf '%s\n' "$_mm_tok"
     return "$_mm_code"
   fi

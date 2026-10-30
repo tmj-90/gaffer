@@ -25,6 +25,11 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
+# Private operator state: factory.config.sh would otherwise read the checkout's
+# .gaffer (the live factory's settings.json is APPLIED) — see lib/isolate.sh.
+# shellcheck source=lib/isolate.sh
+. "$HERE/lib/isolate.sh"
+gaffer_test_isolate; trap 'rm -rf "$GAFFER_TEST_ISO"' EXIT
 
 PASS=0
 FAILURES=()
@@ -61,7 +66,7 @@ AGENT_KEYS="$(
     '
 )"
 
-has() { printf '%s\n' "$AGENT_KEYS" | grep -qx "$1"; }
+has() { grep -qx "$1" <<<"$AGENT_KEYS"; }
 
 echo "== URL/webhook/notify/credential vars must be ABSENT from the agent env =="
 # *_URL pattern (deny: outbound endpoint exfiltration channel)

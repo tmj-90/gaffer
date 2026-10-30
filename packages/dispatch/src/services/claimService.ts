@@ -7,6 +7,7 @@ import {
   type Agent,
   type EvidenceType,
   type ReviewFeedback,
+  type Ticket,
   type TicketClaim,
   type TicketDependencyView,
 } from "../domain/types.js";
@@ -16,6 +17,7 @@ import { AgentRepository } from "../repositories/agentRepository.js";
 import { ClaimRepository } from "../repositories/claimRepository.js";
 import { DecisionRepository } from "../repositories/decisionRepository.js";
 import { EvidenceRepository } from "../repositories/evidenceRepository.js";
+import { PausedDeliveryRepository } from "../repositories/pausedDeliveryRepository.js";
 import { ReworkAttemptRepository } from "../repositories/reworkAttemptRepository.js";
 import { TicketDependencyRepository } from "../repositories/ticketDependencyRepository.js";
 import { TicketRepository } from "../repositories/ticketRepository.js";
@@ -145,6 +147,7 @@ export class ClaimService {
   private readonly decisions: DecisionRepository;
   private readonly dependencies: TicketDependencyRepository;
   private readonly reworkAttempts: ReworkAttemptRepository;
+  private readonly pausedDeliveries: PausedDeliveryRepository;
 
   constructor(
     private readonly db: Db,
@@ -159,6 +162,7 @@ export class ClaimService {
     this.decisions = new DecisionRepository(db);
     this.dependencies = new TicketDependencyRepository(db);
     this.reworkAttempts = new ReworkAttemptRepository(db);
+    this.pausedDeliveries = new PausedDeliveryRepository(db);
   }
 
   // --- Agents --------------------------------------------------------------
@@ -180,6 +184,8 @@ export class ClaimService {
         last_seen_at: null,
         created_at: now,
         updated_at: now,
+        squad_name: null,
+        shirt_number: null,
       };
       this.agents.insert(agent);
       for (const capability of input.capabilities) {
@@ -313,6 +319,11 @@ export class ClaimService {
     if (candidate.expired_claim_id) {
       this.claims.setStatus(candidate.expired_claim_id, "expired", now);
       const stuck = this.tickets.findById(candidate.id);
+      if (stuck && this.returnLapsedResumeToPaused(stuck, candidate.expired_claim_id, actor)) {
+        // A crashed RESUMED delivery goes back to the human's Continue gate with its
+        // preserved worktree, not to a fresh agent.
+        return "skip";
+      }
       if (stuck && (stuck.status === "claimed" || stuck.status === "in_progress")) {
         this.transitions.transition({
           ticketId: candidate.id,
@@ -488,7 +499,7 @@ export class ClaimService {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const claim = this.activeClaimForToken(claimToken, now);
-      const expiresAt = isoPlusSeconds(this.ttlForClaim(claim, now), now);
+      const expiresAt = isoPlusSeconds(this.ttlForClaim(claim), now);
       const ok = this.claims.extend(claim.id, expiresAt, now);
       if (!ok) {
         throw new DispatchError("CLAIM_INVALID", "Claim is no longer active.");
@@ -510,12 +521,7 @@ export class ClaimService {
       // resolveTicket accepts everywhere else. Seen live: the independent tester passed
       // the number, every note was refused as "ticket not found", and its per-criterion
       // evidence never reached the record. The claim / review checks below are unchanged.
-      let ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) {
-        const n = Number(input.ticket_id.trim().replace(/^#/, "").replace(/^T-/, ""));
-        if (Number.isInteger(n) && n > 0) ticket = this.tickets.findByNumber(n);
-      }
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
 
       // REVIEWER PATH: the reviewer agent holds no claim (the delivery claim was
       // completed at submit) yet must record one note per AC. It may do so for the
@@ -587,12 +593,14 @@ export class ClaimService {
     });
   }
 
-  submitForReview(input: SubmitForReviewInput, actor: Actor): { status: string; eventId: string } {
+  submitForReview(
+    input: SubmitForReviewInput,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const claim = this.activeClaimForToken(input.claimToken, now);
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       if (claim.ticket_id !== ticket.id) {
         throw new DispatchError(
           "CLAIM_INVALID",
@@ -608,6 +616,7 @@ export class ClaimService {
           toStatus: "in_progress",
           reason: "submit_for_review",
           expectedFromStatus: "claimed",
+          agentSubmit: true, // the claim token was validated above
         });
       }
       const result = this.transitions.transition({
@@ -616,6 +625,7 @@ export class ClaimService {
         toStatus: "in_review",
         reason: input.reason ?? "submit_for_review",
         expectedFromStatus: "in_progress",
+        agentSubmit: true,
       });
 
       this.claims.setStatus(claim.id, "completed", now);
@@ -626,15 +636,14 @@ export class ClaimService {
         event_type: "claim.completed",
         payload: { claim_id: claim.id },
       });
-      return { status: result.ticket.status, eventId };
+      return { ticketId: ticket.id, status: result.ticket.status, eventId };
     });
   }
 
-  markBlocked(input: MarkBlockedInput, actor: Actor): { eventId: string } {
+  markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
 
       // P0-3: an agent may only mutate a ticket it holds a valid, matching claim
       // for. A missing or mismatched token from an agent is rejected — agents can
@@ -668,7 +677,7 @@ export class ClaimService {
         event_type: "ticket.blocked",
         payload: { reason: input.reason },
       });
-      return { eventId };
+      return { ticketId: ticket.id, eventId };
     });
   }
 
@@ -704,9 +713,10 @@ export class ClaimService {
    * PARK it routes to `refining` (legacy triage) or, when the rework loop exhausts
    * its attempt/cost budget, to the VISIBLE `blocked` column with a structured
    * `rework_exhausted` reason so a human never wonders where the ticket went. A
-   * resumed delivery is `in_progress` and carries no runner-held token, so
-   * `claimToken` is OPTIONAL — when present the matching active claim is released so
-   * the ticket carries no dangling claim; when absent (resume) the ticket is simply
+   * resumed delivery is leased like a fresh one ({@link leaseResumedDelivery}), but
+   * `claimToken` stays OPTIONAL for a tokenless resume (an older runner or a lease
+   * that could not be taken) — when present the matching active claim is released so
+   * the ticket carries no dangling claim; when absent the ticket is simply
    * transitioned. The guarded `runnerRelease` transitions make the otherwise
    * board-unreachable `claimed->{refining,blocked}` / `in_progress->{ready,refining,
    * blocked}` routes legal for exactly this path.
@@ -730,8 +740,7 @@ export class ClaimService {
   ): { status: string; eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       if (input.claimToken) {
         const claim = this.activeClaimForToken(input.claimToken, now);
         if (claim.ticket_id !== ticket.id) {
@@ -814,8 +823,7 @@ export class ClaimService {
   ): { eventId: string } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       const feedback: ReviewFeedback = {
         reason: input.reason,
         reviewer: actor.id ?? null,
@@ -874,6 +882,10 @@ export class ClaimService {
           expired += 1;
           continue;
         }
+        if (this.returnLapsedResumeToPaused(ticket, claim.id, actor)) {
+          expired += 1;
+          continue;
+        }
         const blocked = this.decisions.blockingForTicket(ticket.id).length > 0;
         this.transitions.transition({
           ticketId: ticket.id,
@@ -914,6 +926,100 @@ export class ClaimService {
     return claim;
   }
 
+  /**
+   * PAUSE-ON-CAP: lease a RESUMED delivery to the runner agent re-entering it, inside
+   * the caller's transaction (see {@link Dispatch.beginResume}). Any leftover active
+   * claim (a lease kept across a pause by an older build) is released first; the new
+   * row is the same shape attemptClaim writes, so the partial unique index still
+   * arbitrates and heartbeat, the token-gated submit/release and the expiry sweep all
+   * cover the resumed delivery exactly like a fresh one.
+   */
+  leaseResumedDelivery(
+    ticketId: string,
+    agentId: string,
+    ttlSeconds: number,
+    actor: Actor,
+  ): { claimToken: string; expiresAt: string } {
+    const now = this.clock.now();
+    return inTransaction(this.db, () => {
+      const agent = this.agents.findById(agentId);
+      if (!agent) throw notFound("agent", agentId);
+      if (agent.status !== "active") {
+        throw new DispatchError("AGENT_NOT_ELIGIBLE", `Agent is '${agent.status}', not active.`, {
+          agent_id: agent.id,
+          status: agent.status,
+        });
+      }
+      this.agents.touchLastSeen(agent.id, now);
+      this.claims.releaseActiveForTicket(ticketId, now);
+      const claimToken = newClaimToken();
+      const claim: TicketClaim = {
+        id: newId(),
+        ticket_id: ticketId,
+        agent_id: agent.id,
+        claim_token_hash: hashClaimToken(claimToken),
+        status: "active",
+        expires_at: isoPlusSeconds(ttlSeconds, now),
+        heartbeat_at: now,
+        created_at: now,
+        released_at: null,
+      };
+      this.claims.insert(claim);
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticketId,
+        actor,
+        event_type: "claim.created",
+        payload: {
+          claim_id: claim.id,
+          agent_id: agent.id,
+          expires_at: claim.expires_at,
+          resumed: true,
+        },
+      });
+      return { claimToken, expiresAt: claim.expires_at };
+    });
+  }
+
+  /**
+   * A lapsed lease on an `in_progress` ticket that still has its pause context is a
+   * RESUMED delivery whose runner died: send it back to `paused` (worktree preserved,
+   * Continue to retry) instead of re-queueing it to a fresh agent from scratch.
+   * Returns true when it did so. Caller has already marked the claim expired.
+   */
+  private returnLapsedResumeToPaused(ticket: Ticket, claimId: string, actor: Actor): boolean {
+    if (ticket.status !== "in_progress" || ticket.human_owner !== null) return false;
+    if (this.pausedDeliveries.find(ticket.id) === undefined) return false;
+    this.transitions.transition({
+      ticketId: ticket.id,
+      actor,
+      toStatus: "paused",
+      reason: "claim_expired_mid_resume",
+      expectedFromStatus: "in_progress",
+      systemOverride: true,
+      pauseDelivery: true,
+    });
+    this.pausedDeliveries.setResumeRequested(ticket.id, false, this.clock.now());
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "claim.expired",
+      payload: { claim_id: claimId, returned_to: "paused" },
+    });
+    return true;
+  }
+
+  /**
+   * The ticket an active claim token is held against, or undefined for an unknown,
+   * released or completed token. Lease expiry is deliberately NOT checked: this only
+   * answers "which ticket is this mount bound to" for the MCP factory scope check —
+   * every claim-gated write still validates the live lease itself.
+   */
+  ticketIdForToken(claimToken: string): string | undefined {
+    return this.claims.findByTokenHash(hashClaimToken(claimToken))?.ticket_id;
+  }
+
   // --- Helpers -------------------------------------------------------------
 
   /** Resolve an active, unexpired claim for a token or throw CLAIM_INVALID. */
@@ -925,12 +1031,15 @@ export class ClaimService {
     return claim;
   }
 
-  /** Preserve the original lease length when extending on heartbeat. */
-  private ttlForClaim(claim: TicketClaim, nowIso: string): number {
-    const originalTtlMs =
-      new Date(claim.expires_at).getTime() - new Date(claim.created_at).getTime();
-    const seconds = Math.max(1, Math.round(originalTtlMs / 1000));
-    void nowIso;
-    return seconds;
+  /**
+   * The claim's lease length, preserved across heartbeats. Invariant: every write of
+   * `expires_at` (the claim insert and {@link ClaimRepository.extend}) stamps
+   * `heartbeat_at` with the same instant, so `expires_at - heartbeat_at` is the lease
+   * length. (Measuring from `created_at` instead grew the lease by the time elapsed
+   * since the claim on every beat, so a crashed delivery held its ticket for hours.)
+   */
+  private ttlForClaim(claim: TicketClaim): number {
+    const leaseMs = new Date(claim.expires_at).getTime() - new Date(claim.heartbeat_at).getTime();
+    return Math.max(1, Math.round(leaseMs / 1000));
   }
 }

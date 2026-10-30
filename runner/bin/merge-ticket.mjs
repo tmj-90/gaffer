@@ -51,6 +51,8 @@
 //
 // FLAGS:
 //   --ticket <number>    (required) the approved ticket whose branch is being merged.
+//                        Refused (exit 4, nothing touched) unless it is ready_for_merge
+//                        (--apply-digest-only also accepts done) — see canLand.
 //   --timeout-ms N       (GAFFER_MERGE_TIMEOUT_MS, default 600000) resolver kill-timer.
 //   --apply-digest-only  the merge already landed (review.sh AFK path): skip git + claude
 //                        and run only the post-merge memory step (digest + feature).
@@ -74,6 +76,13 @@
 //              — the merge conflicted; the resolver committed a resolution ON THE
 //                BRANCH and the ticket was signalled for re-approval. The branch is
 //                NOT landed to the default branch.
+//   conflict_resolved_reapproval_failed:
+//              { "phase":"conflict_resolved_reapproval_failed", ticket, repo, branch,
+//                defaultBranch, reapproval:{...}, sideRef, restored, error }   (exit 1)
+//              — the resolver resolved, but the ticket could NOT be reopened for review
+//                (after retries). The unreviewed resolution is moved to `sideRef` and
+//                the branch is put back to its pre-resolution head (compare-and-swap),
+//                so no later landing can ship it; the ticket waits for a human.
 //   conflict_resolver_failed:
 //              { "phase":"conflict_resolver_failed", ticket, repo, branch, defaultBranch,
 //                resolver_exit, resolver_stderr, error }   (exit 1)
@@ -85,13 +94,17 @@
 //                branch's committed head (aborted, left in progress, unmerged paths);
 //                re-approval is not signalled and the branch is left for a human.
 //   dry-run:   { "phase":"dry-run", ticket, repo, branch, defaultBranch, timeoutMs,
-//                claudeBin, mergeTarget, resolverArgv }
+//                claudeBin, mergeTarget, resolverArgv, status, refused? }
+//              — `refused` carries the approval-gate refusal a live run would exit 4 on.
 //   error:     { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on merged / conflict_resolved_pending_reapproval / dry-run; 1 on any hard
-//   failure (missing repo/branch/safety hook, spawn error, timeout, a REFUSED merge: the
+//   failure (missing repo/branch/safety hook, spawn error, timeout, a re-approval that
+//   could not be signalled, a REFUSED merge: the
 //   live checkout has uncommitted changes, or the default branch could not be checked
-//   out — neither is a conflict, so the resolver is never spawned for them).
+//   out — neither is a conflict, so the resolver is never spawned for them); 4 when a
+//   gate holds the merge: the ticket is not approved (not ready_for_merge), or the
+//   landing check (tester binding) refuses — nothing is merged either way.
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
@@ -107,7 +120,7 @@ import {
   featureIdFromView,
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
-import { Worker, roleTurnCap } from "../lib/worker.mjs";
+import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -116,7 +129,7 @@ import {
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
-import { landingDecision } from "../lib/tester-binding.mjs";
+import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -234,19 +247,31 @@ export function resolveTicket(dbPath, number) {
     db = new DatabaseSync(dbPath, { readOnly: true });
     // pr_url is the PR the delivery opened (GAFFER_CREATE_PR, recorded by
     // `wg delivery-artifact --pr`); a schema/fixture without the column resolves
-    // without it, so a PR-less merge behaves exactly as before.
+    // without it, so a PR-less merge behaves exactly as before. status feeds the
+    // approval gate (canLand); a schema without it resolves with status null, which
+    // that gate refuses (fail closed) — it never reads as "approved".
+    const ticketSql = (withPr, withStatus) =>
+      "SELECT id, number, branch_name AS branchName" +
+      (withPr ? ", pr_url AS prUrl" : "") +
+      (withStatus ? ", status" : "") +
+      " FROM tickets WHERE number = ?";
     let ticket;
-    try {
-      ticket = db
-        .prepare(
-          "SELECT id, number, branch_name AS branchName, pr_url AS prUrl FROM tickets WHERE number = ?",
-        )
-        .get(num);
-    } catch {
-      ticket = db
-        .prepare("SELECT id, number, branch_name AS branchName FROM tickets WHERE number = ?")
-        .get(num);
+    let ticketErr;
+    for (const [withPr, withStatus] of [
+      [true, true],
+      [false, true],
+      [true, false],
+      [false, false],
+    ]) {
+      try {
+        ticket = db.prepare(ticketSql(withPr, withStatus)).get(num);
+        ticketErr = undefined;
+        break;
+      } catch (e) {
+        ticketErr = e;
+      }
     }
+    if (ticketErr) throw ticketErr;
     if (!ticket || !ticket.id) return null;
 
     // The write-access execution repo this ticket delivers into. Prefer access='write'
@@ -299,6 +324,7 @@ export function resolveTicket(dbPath, number) {
       },
       branch,
       prUrl,
+      status: ticket.status == null ? null : String(ticket.status),
     };
   } catch {
     return null;
@@ -309,6 +335,20 @@ export function resolveTicket(dbPath, number) {
       /* already closed */
     }
   }
+}
+
+/**
+ * The approval gate: may a ticket in `status` be landed? Only `ready_for_merge` (a
+ * human, or the AFK reviewer, approved the diff) — the SAME rule the dashboard's merge
+ * route enforces (packages/dispatch/src/api/routes/tickets.ts). The route runs in a
+ * different process, and `gaffer merge` execs this runner directly, so the runner
+ * checks it itself. --apply-digest-only runs AFTER a landed merge, so it also accepts
+ * `done` (mark-merged already ran). Anything else — including a missing/unreadable
+ * status — is refused (fail closed). Pure; exported for tests.
+ */
+export function canLand(status, { applyDigestOnly = false } = {}) {
+  if (status === "ready_for_merge") return true;
+  return applyDigestOnly && status === "done";
 }
 
 /**
@@ -358,6 +398,16 @@ export function attemptMerge(repoPath, branch, defaultBranch, pin = null) {
   // Conflict (or other merge failure): abort so the default branch is restored and the
   // delivery branch is left intact for the resolver.
   git("merge", "--abort");
+  // An untracked file the merge would overwrite is a REFUSAL, not a conflict: git never
+  // started the merge, and the resolver would be spawned (and its one pass spent) on a
+  // branch with nothing to resolve.
+  if (/untracked working tree files would be overwritten/i.test(merge.stderr || "")) {
+    return {
+      clean: false,
+      checkoutFailed: true,
+      reason: `an untracked file in the ${defaultBranch} checkout would be overwritten by the merge — move it aside and merge again`,
+    };
+  }
   return { clean: false, reason: "merge conflict" };
 }
 
@@ -521,13 +571,19 @@ export function buildResolverPrompt({ ticketNumber, repoName, worktree, branch, 
 export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = mergeMaxTurns() }) {
   const args = ["-p", prompt];
   if (mcpConfig) args.push("--mcp-config", mcpConfig);
-  const turns = maxTurns > 0 ? ["--max-turns", String(maxTurns)] : [];
-  return args.concat(flags, turns);
+  return args.concat(flags, maxTurnsArgv(maxTurns));
 }
 
-/** The resolver's turn cap: GAFFER_MERGE_MAX_TURNS (default 60) clamped to GAFFER_MAX_TURNS. */
+/**
+ * The resolver's turn cap: GAFFER_RESOLVER_MAX_TURNS (the lane-knob spelling), else
+ * GAFFER_MERGE_MAX_TURNS, else 60 — clamped to the GAFFER_MAX_TURNS ceiling.
+ */
 export function mergeMaxTurns(env = process.env) {
-  return roleTurnCap(parseInt(env.GAFFER_MERGE_MAX_TURNS ?? "", 10) || 60, env);
+  const pick = (v) => parseInt(v ?? "", 10) || 0;
+  return roleTurnCap(
+    pick(env.GAFFER_RESOLVER_MAX_TURNS) || pick(env.GAFFER_MERGE_MAX_TURNS) || 60,
+    env,
+  );
 }
 
 /**
@@ -548,6 +604,14 @@ export function buildChildEnv(baseEnv, { dispatchDb, memoryDb, writeRoot }) {
   env.MEMORY_DB = memoryDb;
   env.GAFFER_WRITE_ROOTS = writeRoot;
   return env;
+}
+
+/** The resolver's rendered MCP runtime config for ticket `n` (under GAFFER_DATA). */
+export function mergeTicketMcpRuntimePath(n) {
+  return resolve(
+    GAFFER_DATA,
+    `mcp-merge-ticket-${String(n).replace(/[^0-9A-Za-z_-]/g, "")}-runtime.json`,
+  );
 }
 
 /**
@@ -574,7 +638,9 @@ export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) 
   writeFileSync(resolve(claudeDir, "settings.json"), settings);
 
   mkdirSync(GAFFER_DATA, { recursive: true });
-  const mcpRuntime = resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json");
+  // One runtime file PER TICKET: two concurrent resolvers used to share (and rewrite)
+  // a single mcp-merge-ticket-runtime.json, re-scoping each other's evidence writes.
+  const mcpRuntime = mergeTicketMcpRuntimePath(ticketNumber);
   // Render the SAME way the tester and the product-owner run do (renderPoMcpRuntime:
   // every placeholder substituted, fail closed on a leftover). This used to replace only
   // ${DISPATCH_DB}/${MEMORY_DB}/${GAFFER_RECALL_TICKET}, so the server command was the
@@ -881,18 +947,9 @@ function removeWorktree(repoPath, worktree) {
  * This is the SINGLE, clearly-isolated Dispatch call: a human re-reviews the resolved
  * diff and re-approves, after which a later merge lands cleanly.
  *
- * Dispatch does NOT yet expose a `done → in_review` reopen transition (only
- * in_review → done|ready|refining). The exact interface this runner expects is
- * documented at the bottom of this file:
- *
- *     wg ticket reopen-for-review <number> \
- *        --reason "<short why>" \
- *        --resolution "<resolver summary>" \
- *        --as system
- *
- * Until that command exists, this stays a best-effort call: a non-zero exit is logged,
- * NOT fatal (the branch already carries the resolution; the worst case is a human picks
- * it up manually). Returns { ok, command, args } describing what was invoked. Exported
+ * The call is `wg ticket reopen-for-review <number> --reason … --resolution … --as
+ * system` (ready_for_merge|done → in_review). Returns { ok, command, args, attempts }
+ * describing what was invoked; buildReapprovalCommand is exported
  * so tests can assert the argv shape without a real `wg`.
  */
 export function buildReapprovalCommand({ ticketNumber, reason, resolution }) {
@@ -915,15 +972,26 @@ export function buildReapprovalCommand({ ticketNumber, reason, resolution }) {
 function signalReapproval(ticketNumber, resolution) {
   const reason = "auto-merge conflict resolved by the resolver agent — re-review the resolved diff";
   const { command, args } = buildReapprovalCommand({ ticketNumber, reason, resolution });
-  const res = runDispatch(args); // call the CLI directly — `wg` is not on PATH in this Node runner
-  const ok = !res.error && res.status === 0;
+  // A failed reopen is usually transient (a locked DB): retry with a short backoff before
+  // the caller undoes the resolution. GAFFER_REAPPROVAL_ATTEMPTS / _BACKOFF_MS tune it.
+  const attempts = Math.max(1, parseInt(process.env.GAFFER_REAPPROVAL_ATTEMPTS ?? "", 10) || 3);
+  const backoff = Math.max(0, parseInt(process.env.GAFFER_REAPPROVAL_BACKOFF_MS ?? "", 10) || 500);
+  let ok = false;
+  let res = null;
+  let n = 0;
+  while (!ok && n < attempts) {
+    if (n > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoff * n);
+    n += 1;
+    res = runDispatch(args); // call the CLI directly — `wg` is not on PATH in this Node runner
+    ok = !res.error && res.status === 0;
+  }
   if (!ok) {
     log(
-      `re-approval signal did not land (\`${command} ${args.join(" ")}\` exit ` +
-        `${res.status ?? "spawn-error"}) — resolution is on the branch; a human can re-review manually`,
+      `re-approval signal did not land after ${n} attempt(s) (\`${command} ${args.join(" ")}\` exit ` +
+        `${res?.status ?? "spawn-error"})`,
     );
   }
-  return { ok, command, args };
+  return { ok, command, args, attempts: n };
 }
 
 function main() {
@@ -943,6 +1011,19 @@ function main() {
     return;
   }
   const { repo, branch } = resolved;
+
+  // APPROVAL GATE, before anything touches git, memory or claude: only an approved
+  // (ready_for_merge) ticket lands. `gaffer merge <n>` on an in_review ticket used to
+  // merge the unreviewed branch, delete it, and leave the board reading in_review.
+  // --dry-run still reports the plan (inspection), with the refusal flagged.
+  const landable = canLand(resolved.status, { applyDigestOnly: opts.applyDigestOnly });
+  const notApproved =
+    `refusing to merge #${resolved.number}: ticket is ${resolved.status || "of unknown status"}, ` +
+    `not ready_for_merge — approve it first (gaffer approve ${resolved.number}); nothing merged`;
+  if (!landable && (!opts.dryRun || opts.applyDigestOnly)) {
+    fail(notApproved, 4);
+    return;
+  }
 
   if (opts.applyDigestOnly) {
     // review.sh's AFK path merged + mark-merged already; this is the SAME post-merge
@@ -983,8 +1064,9 @@ function main() {
     // touching git or spawning claude.
     const resolverArgv = buildClaudeArgv({
       prompt: resolverPrompt,
-      mcpConfig: resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json"),
+      mcpConfig: mergeTicketMcpRuntimePath(resolved.number),
       flags: CONFIG.claudeFlags,
+      maxTurns: mergeMaxTurns(),
     });
     emit(
       {
@@ -999,6 +1081,8 @@ function main() {
         mergeTarget: { repo: repo.localPath, branch, defaultBranch: repo.defaultBranch },
         worktree: plannedWorktree,
         resolverArgv,
+        status: resolved.status,
+        ...(landable ? {} : { refused: notApproved }),
       },
       0,
     );
@@ -1043,7 +1127,9 @@ function main() {
       `refusing to merge #${resolved.number}: landing check ${decision.kind}: ${decision.reason}` +
         (decision.kind === "moved"
           ? ` (tested ${String(decision.tested).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — re-test the branch or record a human verdict`
-          : "") +
+          : decision.kind === "moved-since-review"
+            ? ` (reviewed ${String(decision.reviewed).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — move it back to in_review for a re-review`
+            : "") +
         `; ticket left ready_for_merge, nothing merged`,
       4,
     );
@@ -1233,6 +1319,9 @@ function main() {
     `#${resolved.number} (${branch} → ${repo.defaultBranch}) conflicted — spawning the resolver agent`,
   );
 
+  // The branch head BEFORE the resolver touches it: if the ticket cannot be sent back for
+  // review afterwards, the resolution is undone to exactly this commit.
+  const preResolution = branchHead(repo.localPath, branch);
   let worktree;
   try {
     worktree = addWorktree(repo.localPath, branch, resolved.number);
@@ -1245,6 +1334,7 @@ function main() {
   try {
     mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name);
   } catch (e) {
+    rmSync(mergeTicketMcpRuntimePath(resolved.number), { force: true });
     removeWorktree(repo.localPath, worktree);
     fail(`failed to install project-local wiring: ${e?.message ?? e}`);
     return;
@@ -1257,6 +1347,7 @@ function main() {
     prompt: resolverPrompt,
     mcpConfig: mcpRuntime,
     flags: CONFIG.claudeFlags,
+    maxTurns: mergeMaxTurns(),
   }).concat(["--output-format", "json"]);
   // Route through the ONE worker spawn seam (lib/worker.mjs): it applies the same
   // containment decision as the bash seam (OS-sandbox wrap under STRICT_MODE /
@@ -1276,6 +1367,9 @@ function main() {
       writeRoot: worktree,
     }),
   });
+  // The rendered runtime served this one spawn: drop it whatever the outcome, so
+  // GAFFER_DATA does not collect one mcp-merge-ticket-<n>-runtime.json per ticket.
+  rmSync(mcpRuntime, { force: true });
 
   if (res.error) {
     removeWorktree(repo.localPath, worktree);
@@ -1384,6 +1478,58 @@ function main() {
     resolved.number,
     summary || "merge conflict resolved on the branch",
   );
+  if (!reapproval.ok) {
+    // The ticket is still ready_for_merge, so the NEXT landing (a clean merge now: the
+    // default branch is already merged in) would ship the resolver's unreviewed commit —
+    // while the log said it had gone back for review. Move the resolution aside and put
+    // the branch back (compare-and-swap: only if it still points at the resolution). It
+    // conflicts again, and the .merge-conflict-resolved marker holds it for a human.
+    const resolvedHead = branchHead(repo.localPath, branch);
+    const sideRef = `refs/gaffer/conflict-resolved/${resolved.number}`;
+    let restored = false;
+    if (resolvedHead && preResolution && resolvedHead !== preResolution) {
+      const side = spawnSync("git", ["-C", repo.localPath, "update-ref", sideRef, resolvedHead], {
+        encoding: "utf8",
+      });
+      if (side.status === 0) {
+        const reset = spawnSync(
+          "git",
+          [
+            "-C",
+            repo.localPath,
+            "update-ref",
+            "-m",
+            "gaffer: undo unreviewed conflict resolution (re-approval failed)",
+            `refs/heads/${branch}`,
+            preResolution,
+            resolvedHead,
+          ],
+          { encoding: "utf8" },
+        );
+        restored = reset.status === 0;
+      }
+    }
+    emit(
+      {
+        phase: "conflict_resolved_reapproval_failed",
+        ticket: resolved.number,
+        repo: repo.name,
+        branch,
+        defaultBranch: repo.defaultBranch,
+        reapproval,
+        sideRef: restored ? sideRef : null,
+        restored,
+        error:
+          `the ticket could not be reopened for re-review after the resolver's merge — ` +
+          (restored
+            ? `the resolution was moved to ${sideRef} and ${branch} restored to ${preResolution.slice(0, 12)}`
+            : `the resolution could NOT be moved off ${branch}; do not merge it before a re-review`) +
+          `; held for a human`,
+      },
+      1,
+    );
+    return;
+  }
 
   emit(
     {

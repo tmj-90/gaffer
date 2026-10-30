@@ -12,8 +12,11 @@
 #   C. tick.sh sets GAFFER_RECALL_TICKET on the DELIVERY prime, and calls the
 #      feedback helper at BOTH outcome sites: clean/reworked at submit, blocked
 #      at the rework-exhausted park.
-#   D. LIVE end-to-end (when memory is built): cards-for-scope --ticket logs a
-#      served lore item; recall-feedback blocked flags it; `flagged` surfaces it.
+#   D. LIVE end-to-end (when memory is built): lore that cards-for-scope merely
+#      packs (the primer renders only cards) gets NO outcome credit; lore the
+#      agent FETCHED through the memory MCP server's get_lore under
+#      GAFFER_RECALL_TICKET does — recall-feedback blocked flags exactly that
+#      record and `flagged` surfaces it.
 #
 # Requires nothing but bash + grep for A–C; D is skipped if memory isn't built.
 # Run:  perl -e 'alarm 120; exec @ARGV' /bin/bash runner/test/recall-feedback.test.sh
@@ -56,7 +59,7 @@ else
   fail "helper does not call lg recall-feedback"
 fi
 # Fail-soft: the helper must swallow errors (never fatal to delivery).
-if grep -A14 'gaffer_recall_feedback()' "$TICK" | grep -q 'non-fatal'; then
+if grep -q 'non-fatal' <<<"$(grep -A14 'gaffer_recall_feedback()' "$TICK")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
@@ -81,27 +84,62 @@ else
   fail "blocked-park does not call blocked feedback"
 fi
 # The blocked feedback call must sit next to the rework_exhausted park.
-if grep -A3 'gaffer_release_delivery blocked' "$TICK" | grep -q 'gaffer_recall_feedback blocked'; then
+if grep -q 'gaffer_recall_feedback blocked' <<<"$(grep -A3 'gaffer_release_delivery blocked' "$TICK")"; then
   ok "blocked feedback is wired at the rework_exhausted park"
 else
   fail "blocked feedback is not adjacent to the rework_exhausted park"
 fi
 
-echo "== D. LIVE — served item is logged, blocked flags it, flagged surfaces it =="
-if [ ! -f "$MEMORY_CLI" ]; then
+echo "== D. LIVE — only lore the agent fetched is credited; blocked flags it =="
+MEMORY_MCP="$GAFFER_HOME/packages/memory/dist/bin/memory-mcp.js"
+if [ ! -f "$MEMORY_CLI" ] || [ ! -f "$MEMORY_MCP" ]; then
   echo "  SKIP: memory not built ($MEMORY_CLI missing — run: pnpm -C packages/memory build)"
 else
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
-  export MEMORY_DB="$TMP/memory.sqlite"
+  export MEMORY_DB="$TMP/memory.sqlite" MEMORY_AUDIT_LOG="$TMP/audit.jsonl"
   node "$MEMORY_CLI" add --title "Frobnicate rule" --summary "frobnicate policy" \
     --body "always frobnicate" --repo app --confidence low >/dev/null 2>&1
+  LORE_ID="$(node "$MEMORY_CLI" search frobnicate --json 2>/dev/null \
+    | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s)[0].id)}catch{}})')"
+  # Packed into the scope packet, never rendered → no credit, no flag.
+  node "$MEMORY_CLI" cards-for-scope --canonical /repos/app --repo app \
+    --query frobnicate --ticket 554 --json >/dev/null 2>&1
+  FB0="$(node "$MEMORY_CLI" recall-feedback --repo app --ticket 554 --outcome blocked 2>&1)"
+  case "$FB0" in
+    *"adjusted: 0"*) ok "packet lore the primer never renders is not adjusted" ;;
+    *) fail "recall-feedback adjusted lore the agent never saw (got: ${FB0:0:120})" ;;
+  esac
   node "$MEMORY_CLI" cards-for-scope --canonical /repos/app --repo app \
     --query frobnicate --ticket 555 --json >/dev/null 2>&1
+  # The delivery agent pulls the record through its memory MCP server (stdio,
+  # newline-delimited JSON-RPC), with the env tick.sh renders into .mcp.json.
+  GAFFER_FACTORY=1 GAFFER_TICKET_REPOS=app GAFFER_RECALL_TICKET=555 LORE_ID="$LORE_ID" \
+    MEMORY_MCP="$MEMORY_MCP" node -e '
+      const { spawn } = require("node:child_process");
+      const p = spawn(process.execPath, [process.env.MEMORY_MCP], { stdio: ["pipe", "pipe", "ignore"] });
+      const send = (m) => p.stdin.write(JSON.stringify(m) + "\n");
+      let buf = "";
+      p.stdout.on("data", (d) => {
+        buf += d;
+        for (const line of buf.split("\n").slice(0, -1)) {
+          const m = JSON.parse(line);
+          if (m.id === 1) {
+            send({ jsonrpc: "2.0", method: "notifications/initialized" });
+            send({ jsonrpc: "2.0", id: 2, method: "tools/call",
+                   params: { name: "get_lore", arguments: { id: process.env.LORE_ID } } });
+          } else if (m.id === 2) { p.stdin.end(); p.kill(); }
+        }
+        buf = buf.slice(buf.lastIndexOf("\n") + 1);
+      });
+      send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {
+        protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } } });
+      setTimeout(() => { p.kill(); process.exit(1); }, 20000);
+    ' >/dev/null 2>&1
   FB="$(node "$MEMORY_CLI" recall-feedback --repo app --ticket 555 --outcome blocked 2>&1)"
   case "$FB" in
-    *"adjusted: 1"*) ok "recall-feedback adjusted the served lore (blocked)" ;;
-    *) fail "recall-feedback did not adjust the served lore (got: ${FB:0:120})" ;;
+    *"adjusted: 1"*) ok "recall-feedback adjusted the lore the agent fetched (blocked)" ;;
+    *) fail "recall-feedback did not adjust the fetched lore (got: ${FB:0:120})" ;;
   esac
   FL="$(node "$MEMORY_CLI" flagged --repo app 2>&1)"
   case "$FL" in

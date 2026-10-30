@@ -13,7 +13,6 @@ import { defaultBuiltinHooks } from "../hooks/builtins.js";
 import { HookRegistry } from "../hooks/hookRegistry.js";
 import { NullMemoryClient } from "../memory/client.js";
 import { resolveAsyncMemory, resolveUnderstandingSink } from "../memory/factory.js";
-import { resolveDecomposer } from "../adapters/decomposerFactory.js";
 import {
   prefetchLore,
   seededSyncClient,
@@ -23,12 +22,9 @@ import {
 } from "../memory/prefetch.js";
 import { ingestGithubIssues } from "../ingest/githubIssues.js";
 import { ingestJiraIssues } from "../ingest/jiraIssues.js";
-import {
-  runIdleLoops,
-  runIdleLoreGap,
-  runIdleFeatureBacklog,
-  runMaintenanceLane,
-} from "../loops/idleRegistry.js";
+import { runMaintenanceLane } from "../loops/idleRegistry.js";
+import { runIdleTick } from "../loops/idleTick.js";
+import { buildOracleSet } from "../loops/oracles/build.js";
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
@@ -39,6 +35,7 @@ import { loadFactory, openDispatch } from "../runtime/wiring.js";
 import { checkBranchPolicy } from "../safety/branchPolicy.js";
 import { classifyCommand } from "../safety/commandGuard.js";
 import { checkFileWrite } from "../safety/fsGuard.js";
+import { checkWithLiveHook, compareVerdicts } from "../safety/liveHook.js";
 import { scanRepo } from "../scan/repoScan.js";
 import { RepoContextStore } from "../onboarding/contextStore.js";
 import {
@@ -133,7 +130,7 @@ repo
   .option("--list-scopes", "list attachable scope nodes and exit", false)
   .action(async (path, opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
 
     if (opts.listScopes) {
       printJson({ ok: true, scopeNodes: availableScopeNodes(dispatch) });
@@ -218,7 +215,7 @@ repo
   .option("--tag <tag...>", "lore tags to record (replaces existing tags)")
   .action(async (id, opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     const store = new RepoContextStore({
       factoryId: factoryIdFromName(ctx.loaded.config.factory.name),
     });
@@ -365,7 +362,7 @@ program
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     const deps = {
       config: loaded.config,
       repoRegistry,
@@ -388,65 +385,26 @@ program
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
-    const dispatch = await openDispatch(ctx);
-    // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
-    // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
-    const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
-    const baseDeps = {
+    const dispatch = await openDispatch(ctx, { mustExist: true });
+    // The shared idle tick (loops/idleTick.ts): Dispatch repos merged into
+    // crew.yaml's, GitHub/Jira ingest, every enabled idle loop, then the async
+    // lore-gap + feature-backlog loops. crew-mcp's run_idle_loop runs the same body.
+    const tick = await runIdleTick({
       config: loaded.config,
-      repoRegistry,
+      repoRegistry: ctx.repoRegistry,
       dispatch,
       runner: systemCommandRunner,
       events,
       clock: systemClock,
-    };
-
-    // Pull real labelled GitHub/Jira issues BEFORE the scan loops, so an idle
-    // tick first ingests teammate-filed work, then scans. Guarded by config.
-    const ingestDeps = {
-      config: loaded.config,
-      repoRegistry,
-      dispatch,
-      runner: systemCommandRunner,
-      events,
-    };
-    const ingest = loaded.config.ingest.github.enabled ? ingestGithubIssues(ingestDeps) : null;
-    const jira = loaded.config.ingest.jira.enabled ? ingestJiraIssues(ingestDeps) : null;
-
-    const report = runIdleLoops(baseDeps);
-
-    // Async lore-gap loop (behind loops.idle_lore_gap.enabled + real Memory).
-    const loreGap: { id: "lore_gap"; outcome: unknown } | null = await (async () => {
-      const asyncLore = await resolveAsyncMemory(loaded.config, events);
-      if (!asyncLore) return null;
-      try {
-        return await runIdleLoreGap({ ...baseDeps, memory: asyncLore });
-      } finally {
-        await asyncLore.close();
-      }
-    })();
-
-    // Async feature-backlog loop (behind loops.idle_feature_backlog.enabled +
-    // real Memory + a configured brownfield decomposer).
-    const featureBacklog: { id: "feature_backlog"; outcome: unknown } | null = await (async () => {
-      const decomposer = resolveDecomposer(loaded.config);
-      if (!decomposer) return null;
-      const asyncLore = await resolveAsyncMemory(loaded.config, events);
-      if (!asyncLore) return null;
-      try {
-        return await runIdleFeatureBacklog({ ...baseDeps, memory: asyncLore, decomposer });
-      } finally {
-        await asyncLore.close();
-      }
-    })();
+    });
 
     printJson({
       ok: true,
-      ...(ingest ? { ingest } : {}),
-      ...(jira ? { jira } : {}),
-      report,
-      ...(loreGap ? { loreGap } : {}),
-      ...(featureBacklog ? { featureBacklog } : {}),
+      ...(tick.ingest ? { ingest: tick.ingest } : {}),
+      ...(tick.jira ? { jira: tick.jira } : {}),
+      report: tick.report,
+      ...(tick.loreGap ? { loreGap: tick.loreGap } : {}),
+      ...(tick.featureBacklog ? { featureBacklog: tick.featureBacklog } : {}),
       events: events.types(),
     });
   });
@@ -468,10 +426,12 @@ program
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
     // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
     const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
+    // Tool-backed oracles only when `loops.oracles.enabled` (default off).
+    const oracles = buildOracleSet(systemCommandRunner, loaded.config);
     const baseDeps = {
       config: loaded.config,
       repoRegistry,
@@ -479,6 +439,7 @@ program
       runner: systemCommandRunner,
       events,
       clock: systemClock,
+      ...(oracles ? { oracles } : {}),
     };
 
     // Cursor path precedence: explicit config override → $GAFFER_DATA →
@@ -526,7 +487,11 @@ program
   .option("--json", "emit the structured report instead of the rendered checks", false)
   .action(async (opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const report = await runDoctor({ ctx, openDispatch });
+    // mustExist: a bare open would CREATE a missing DB and report it "reachable".
+    const report = await runDoctor({
+      ctx,
+      openDispatch: (c) => openDispatch(c, { mustExist: true }),
+    });
     if (opts.json) printJson({ ok: report.ok, checks: report.checks });
     else process.stdout.write(`${renderDoctor(report)}\n`);
     if (!report.ok) process.exitCode = 1;
@@ -543,27 +508,64 @@ program
     else process.stdout.write(`${renderStats(stats)}\n`);
   });
 
-const safety = program.command("safety").description("Safety policy tools");
+/** Shown on every `crew safety check`: which verdict is the boundary. */
+const ADVISORY_NOTE =
+  "safety_policy.yaml is ADVISORY (crew's classifier and the mock `crew run` loop). " +
+  "The live factory's boundary is runner/safety-hook.mjs, which does not read it: " +
+  "see the *Enforced fields for what an agent would actually be allowed to do.";
+
+const safety = program
+  .command("safety")
+  .description(
+    "Safety policy tools (safety_policy.yaml is ADVISORY; runner/safety-hook.mjs enforces)",
+  );
 safety
   .command("check")
-  .description("Explain a command or path safety decision")
+  .description(
+    "Explain a command / path / branch decision: the ADVISORY safety_policy.yaml verdict, plus " +
+      "the ENFORCED verdict of the live PreToolUse hook (runner/safety-hook.mjs) for commands " +
+      "and paths — the hook does not read safety_policy.yaml",
+  )
   .option("--command <cmd>", "classify a shell command")
   .option("--path <path>", "classify a filesystem write")
   .option("--branch <branch>", "classify a branch name")
   .option("--repo <ref>", "repo context for a path/branch check")
   .action((opts, cmd) => {
     const { policy, repoRegistry } = loadEverything(cmd.optsWithGlobals());
-    const out: Record<string, unknown> = { ok: true };
+    const out: Record<string, unknown> = {
+      ok: true,
+      note: ADVISORY_NOTE,
+    };
     if (opts.command) {
-      out.command = classifyCommand(opts.command, { commands: policy.commands, git: policy.git });
+      // `command` keeps the advisory decision (unchanged shape); `commandEnforced`
+      // is what the live hook would actually do with it.
+      const advisory = classifyCommand(opts.command, {
+        commands: policy.commands,
+        git: policy.git,
+      });
+      const enforced = checkWithLiveHook({ tool: "Bash", command: opts.command });
+      out.command = advisory;
+      out.commandEnforced = enforced;
+      const mismatch = compareVerdicts(advisory, enforced);
+      if (mismatch) out.commandMismatch = mismatch;
     }
     if (opts.branch) {
+      // No live hook check for branch names: the runner names every branch
+      // gaffer/ticket-<N>-<slug> itself.
       out.branch = checkBranchPolicy(opts.branch, policy.git);
     }
     if (opts.path) {
       const repo = opts.repo ? repoRegistry.get(opts.repo) : repoRegistry.list()[0];
       const repoRoot = repo ? repoRegistry.absolutePath(repo) : process.cwd();
-      out.path = checkFileWrite(opts.path, { repoRoot, policy: policy.filesystem });
+      const advisory = checkFileWrite(opts.path, { repoRoot, policy: policy.filesystem });
+      out.path = advisory;
+      const enforced = checkWithLiveHook(
+        { tool: "Write", filePath: opts.path, writeRoots: [repoRoot] },
+        { cwd: repoRoot },
+      );
+      out.pathEnforced = enforced;
+      const mismatch = compareVerdicts(advisory, enforced);
+      if (mismatch) out.pathMismatch = mismatch;
     }
     if (!opts.command && !opts.path && !opts.branch) {
       throw new CrewError("BAD_USAGE", "Provide --command, --path or --branch.");

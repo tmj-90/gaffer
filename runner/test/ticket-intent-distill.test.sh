@@ -41,13 +41,13 @@ else
   fail "helper does not draft a requirement (lg suggest --kind requirement)"
 fi
 # Fail-soft: never fatal to a delivery that already submitted.
-if grep -A80 'gaffer_distill_ticket_intent()' "$TICK" | grep -q 'non-fatal'; then
+if grep -q 'non-fatal' <<<"$(grep -A80 'gaffer_distill_ticket_intent()' "$TICK")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
 fi
 # Called at close, right after the clean/reworked recall-feedback fork.
-if grep -A6 'gaffer_recall_feedback clean' "$TICK" | grep -q 'gaffer_distill_ticket_intent'; then
+if grep -q 'gaffer_distill_ticket_intent' <<<"$(grep -A6 'gaffer_recall_feedback clean' "$TICK")"; then
   ok "distiller is called in the submit-success path (after recall-feedback)"
 else
   fail "distiller is not wired into the submit-success path"
@@ -61,7 +61,9 @@ else
   trap 'rm -rf "$TMP"' EXIT
   export MEMORY_DB="$TMP/memory.sqlite"
 
-  # Minimal live deps the helper closes over (mirrors factory.config.sh).
+  # Minimal live deps the helper closes over (mirrors factory.config.sh). The
+  # requirement text is rendered by crew's distillIntentCli.js under CREW_DIR.
+  CREW_DIR="$GAFFER_HOME/packages/crew"
   lg()   { MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI" "$@"; }
   gaffer_json() { node "$RUNNER_DIR/lib/json-tool.mjs" "$@"; }
   jget() { gaffer_json expr "$1"; }
@@ -103,6 +105,20 @@ else
     gaffer_distill_ticket_intent
     DN2="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget 'd.length' 2>/dev/null || echo 0)"
     if [ "$DN2" = "1" ]; then ok "re-submitting #42 (rework) does not draft a duplicate requirement (still 1)"; else fail "duplicate drafts per rework cycle (got $DN2)"; fi
+    # The dedupe lookup is bookkeeping, not an agent retrieval: it must not add
+    # 'read' events (they drive memory stats top-cited / retirement candidates).
+    read_events() {
+      MEMORY_DB="$MEMORY_DB" node -e '
+        const D = require(process.argv[1]);
+        const db = new D(process.env.MEMORY_DB, { readonly: true });
+        console.log(db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = '"'"'read'"'"'").get().n);
+      ' "$GAFFER_HOME/packages/memory/node_modules/better-sqlite3" 2>/dev/null || echo "?"
+    }
+    R0="$(read_events)"
+    unset MEMORY_AUDIT_OFF MEMORY_NO_TELEMETRY
+    gaffer_distill_ticket_intent
+    R1="$(read_events)"
+    if [ "$R0" != "?" ] && [ "$R0" = "$R1" ]; then ok "the ticket-<n> dedupe lookup records no read events"; else fail "dedupe lookup recorded reads ($R0 -> $R1)"; fi
     AT="$(printf '%s' "$DRAFTS" | jget 'd[0]?.title ?? ""' 2>/dev/null || echo '')"
     case "$AT" in
       "Requirement from #42:"*) ok "record title carries the ticket provenance ($AT)" ;;

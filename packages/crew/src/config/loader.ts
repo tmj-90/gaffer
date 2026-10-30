@@ -91,20 +91,26 @@ export function parseConfig(yamlText: string, source = "<string>"): CrewConfig {
  *
  * Priority (highest first):
  *   1. `GAFFER_CREW_EVENTS` env var — lets the runner redirect the log outside
- *      any repo worktree so delivery hygiene checks stay clean.
+ *      any repo worktree so delivery hygiene checks stay clean. A relative
+ *      value resolves against the cwd (its natural meaning for an env var).
  *   2. `config.logging.event_log_path` from the YAML (default `./.crew/events.jsonl`).
+ *      A relative value resolves against the config file's directory (the
+ *      factory root), like `sqlite_path` and `policy_file` — NEVER the cwd, or
+ *      `crew repo onboard .` run inside a repo leaks `.crew/` into that checkout.
  *
- * The resolved path is what every EventLog consumer should write to. The
- * override is also applied inside `loadConfig` so that
- * `loaded.config.logging.event_log_path` always returns the effective path —
+ * The result is always absolute, and is what every EventLog consumer should
+ * write to. The same resolution happens inside `loadConfig`, so
+ * `loaded.config.logging.event_log_path` already holds the effective path —
  * callers do not need to call this function separately.
  */
 export function resolveEventLogPath(loaded: LoadedConfig): string {
+  return effectiveEventLogPath(loaded.config.logging.event_log_path, loaded.rootDir);
+}
+
+function effectiveEventLogPath(yamlPath: string, rootDir: string): string {
   const envOverride = process.env.GAFFER_CREW_EVENTS;
-  if (envOverride && envOverride.length > 0) {
-    return envOverride;
-  }
-  return loaded.config.logging.event_log_path;
+  if (envOverride && envOverride.length > 0) return resolve(process.cwd(), envOverride);
+  return isAbsolute(yamlPath) ? yamlPath : resolve(rootDir, yamlPath);
 }
 
 /**
@@ -193,29 +199,43 @@ export function loadConfig(configPath: string): LoadedConfig {
   // B29: the dashboard's idle-loop settings reach the loops through the env.
   const config = applyIdleLoopEnvOverrides(parsed);
 
-  // Apply the GAFFER_CREW_EVENTS env override so every consumer that reads
-  // config.logging.event_log_path automatically gets the redirected path
-  // without needing to call resolveEventLogPath() explicitly.
-  const envOverride = process.env.GAFFER_CREW_EVENTS;
-  if (envOverride && envOverride.length > 0) {
-    const overridden: typeof config = {
-      ...config,
-      logging: { ...config.logging, event_log_path: envOverride },
-    };
-    return { config: overridden, rootDir: dirname(absolute), configPath: absolute };
-  }
-
-  return { config, rootDir: dirname(absolute), configPath: absolute };
+  // Resolve the events-log path (GAFFER_CREW_EVENTS, else the YAML value against
+  // the factory root) to an absolute path here, so every consumer that reads
+  // config.logging.event_log_path gets the effective path without calling
+  // resolveEventLogPath() — and never writes relative to whatever the cwd is.
+  const rootDir = dirname(absolute);
+  const resolved: typeof config = {
+    ...config,
+    logging: {
+      ...config.logging,
+      event_log_path: effectiveEventLogPath(config.logging.event_log_path, rootDir),
+    },
+  };
+  return { config: resolved, rootDir, configPath: absolute };
 }
 
 /**
- * Resolve the Dispatch sqlite path for a loaded config. An absolute value is
- * used as-is; a relative value resolves against the config file's directory
- * (the factory root) — NEVER against process.cwd(). This mirrors how the policy
- * path is resolved in {@link loadSafetyPolicy} and guarantees every consumer
- * opens the same db the orchestrator + dashboard use, regardless of cwd.
+ * Resolve the Dispatch sqlite path for a loaded config.
+ *
+ * `CREW_DISPATCH_DB` wins when set: the runner's `fg` exports it as the factory's
+ * $DISPATCH_DB, so a crew.yaml whose sqlite_path has drifted (a moved or restored
+ * $GAFFER_DATA, an overridden DISPATCH_DB) can no longer send idle drafts and
+ * onboard registrations to a DB nobody reads. Otherwise crew.yaml's value: an
+ * absolute value is used as-is; a relative value resolves against the config
+ * file's directory (the factory root) — NEVER against process.cwd(). This mirrors
+ * how the policy path is resolved in {@link loadSafetyPolicy}.
  */
-export function resolveSqlitePath(loaded: LoadedConfig): string {
+export function resolveSqlitePath(
+  loaded: LoadedConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const override = env.CREW_DISPATCH_DB?.trim();
+  if (override) return resolve(process.cwd(), override);
+  return configuredSqlitePath(loaded);
+}
+
+/** crew.yaml's own sqlite_path, resolved against the factory root (no env override). */
+export function configuredSqlitePath(loaded: LoadedConfig): string {
   const p = loaded.config.dispatch.local.sqlite_path;
   return isAbsolute(p) ? p : resolve(loaded.rootDir, p);
 }

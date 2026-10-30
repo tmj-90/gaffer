@@ -47,6 +47,10 @@ export function openDb(path: string = defaultDbPath()): Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
+  // Overwrite freed pages on delete, so a deleted / rejected record's text (and
+  // its version history) does not linger in the file's free pages — deleting is
+  // how a leaked secret gets scrubbed. Costs a page write per freed page.
+  db.pragma("secure_delete = ON");
   runMigrations(db);
   return db;
 }

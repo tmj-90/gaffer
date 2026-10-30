@@ -129,8 +129,10 @@ gaffer_dod_install_deps() {
 
   local _out _rc
   _out="$(mktemp "${TMPDIR:-/tmp}/gaffer-dod-install.XXXXXX")" || _out="/dev/null"
+  # stdin from /dev/null: the caller loops over its worktree rows on stdin, and an
+  # install that reads stdin would swallow the rows for the repos after this one.
   ( cd "$dir" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" bash -c "$_script" ) >"$_out" 2>&1
+    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" bash -c "$_script" ) </dev/null >"$_out" 2>&1
   _rc=$?
 
   # Fail-soft verdict. Success = node_modules materialised → echo the pm for the
@@ -191,9 +193,13 @@ gaffer_dod_run_one() {
     _env=( env "HOME=${GAFFER_SANDBOX_HOME:-/root}"
                "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
   fi
+  # STDIN FROM /dev/null: both callers (gaffer_run_dod_gates, gaffer_run_ac_checks)
+  # read their gate rows from stdin. A gate that reads stdin (a Django test-DB prompt,
+  # `docker run -i`, ssh, a script using `read`) used to inherit it and swallow the
+  # remaining rows, so later repos' gates and later ACs never ran and the gate PASSED.
   # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$wt" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} bash -c "$cmd" ) >"$outfile" 2>&1
+    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} bash -c "$cmd" ) </dev/null >"$outfile" 2>&1
   return $?
 }
 
@@ -267,7 +273,7 @@ gaffer_run_dod_gates() {
         # Capture the DISTILLED real failure (bounded) for the evidence row AND the
         # next attempt's feedback — the failing test name(s) + the assertion/error/
         # stack, NOT a blind tail of the whole log. Falls back to a plain tail when
-        # the distiller finds no framework signal, so a failure is never lost.
+        # the distiller cannot run, errors or prints nothing, so a failure is never lost.
         printf -- '---DOD-OUTPUT %s@%s---\n' "$gate" "$label" >> "$results"
         gaffer_dod_distill_output "$tmpout" "$GAFFER_DOD_OUTPUT_TAIL" >> "$results" 2>/dev/null \
           || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
@@ -346,17 +352,21 @@ gaffer_dod_evidence_summary() {
 # go test; when NO framework signal matches it falls back to the last non-blank
 # lines so a failure is never lost. Prints at most <maxlines> lines (default
 # GAFFER_DOD_FEEDBACK_LINES). Pure text-in/text-out — trivially testable.
+# Returns 1 (printing NOTHING) when the distiller cannot run, errors or prints
+# nothing, so the callers' `|| tail …` fallback runs and a failure is never lost.
 gaffer_dod_distill_output() {
   local infile="$1" max="${2:-$GAFFER_DOD_FEEDBACK_LINES}"
-  [ -f "$infile" ] || return 0
+  [ -f "$infile" ] || return 1
   # Typed (packages/crew dodDistillCli.js distillOutput): the failing test name(s) +
-  # assertion/error/stack, not a blind tail. Pinned by dod-distill-golden. FEEDBACK,
-  # never a gate: without the crew dist (or on a node error) it prints nothing and
-  # returns 0 — the caller's `|| tail …` backstops it exactly as before.
-  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || return 0
-  node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" distill \
-    --in "$infile" --max "${max:-40}" 2>/dev/null || return 0
-  return 0
+  # assertion/error/stack, not a blind tail. Pinned by dod-distill-golden. Captured
+  # BEFORE printing so a crash halfway through never leaves half-distilled text
+  # followed by the caller's tail.
+  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || return 1
+  local _o
+  _o="$(node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" distill \
+    --in "$infile" --max "${max:-40}" 2>/dev/null)" || return 1
+  [ -n "$_o" ] || return 1
+  printf '%s\n' "$_o"
 }
 
 # gaffer_dod_extract_failure <results-file>
@@ -368,9 +378,19 @@ gaffer_dod_extract_failure() {
   local results="$1"
   [ -f "$results" ] || return 0
   # Typed (packages/crew dodDistillCli.js extractFailure); pinned by dod-distill-golden.
-  # Feedback only: without the crew dist it prints nothing and returns 0.
-  [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] || return 0
-  node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" extract \
-    --in "$results" 2>/dev/null || return 0
+  # Feedback only, but feedback the next attempt depends on: when the crew dist is
+  # missing or the CLI errors, the awk below emits the same shape ("failing gate:
+  # g@r" + two-space-indented body lines) so the rework prompt never goes out empty.
+  local _o
+  if [ -f "${CREW_DIR:-}/dist/runtime/dod/dodDistillCli.js" ] \
+     && _o="$(node "${CREW_DIR}/dist/runtime/dod/dodDistillCli.js" extract --in "$results" 2>/dev/null)"; then
+    [ -n "$_o" ] && printf '%s\n' "$_o"
+    return 0
+  fi
+  awk '
+    /^---DOD-OUTPUT / { h = $0; sub(/^---DOD-OUTPUT /, "", h); sub(/---[ \t]*$/, "", h); print "failing gate: " h; keep = 1; next }
+    /^---END-DOD-OUTPUT---/ { keep = 0; next }
+    keep && !/^[ \t]*$/ { print "  " $0 }
+  ' "$results" 2>/dev/null
   return 0
 }

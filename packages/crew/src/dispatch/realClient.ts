@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+
 import { CrewError } from "../util/errors.js";
 import type {
   DispatchRepository,
@@ -286,7 +288,21 @@ export class RealDispatchClient implements DispatchClient {
    * Kept async + dynamic so a mid-change Dispatch never breaks Crew's
    * module graph or typecheck.
    */
-  static async open(dbPath: string): Promise<RealDispatchClient> {
+  static async open(
+    dbPath: string,
+    opts: { mustExist?: boolean } = {},
+  ): Promise<RealDispatchClient> {
+    // Dispatch.open CREATES a missing sqlite (+ schema). For the commands that
+    // write into the factory's existing DB (idle, maintain, onboard, doctor) that
+    // silently forked the factory onto a fresh, empty DB nobody reads.
+    if (opts.mustExist && dbPath !== ":memory:" && !existsSync(dbPath)) {
+      throw new CrewError(
+        "DISPATCH_UNAVAILABLE",
+        `Dispatch database not found at ${dbPath} — refusing to create a new, empty one. ` +
+          "Point crew.yaml's dispatch.local.sqlite_path (or CREW_DISPATCH_DB) at the factory's DB, or run `gaffer setup`.",
+        { path: dbPath },
+      );
+    }
     let mod: { Dispatch?: { open(path: string): DispatchFacade } };
     try {
       // Dynamic import so a missing/half-built `dispatch` dist fails here,

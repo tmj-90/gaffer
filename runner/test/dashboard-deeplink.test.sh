@@ -68,7 +68,7 @@ run_gaffer() {
 
 echo "== AC1: --lan exports GAFFER_DASHBOARD_URL=http://<LAN>:<port> =="
 url_lan="$(run_gaffer "$WORK/data-lan" --lan)"
-if printf '%s' "$url_lan" | grep -Eq '^http://.+:8787$'; then
+if grep -Eq '^http://.+:8787$' <<<"$url_lan"; then
   ok "--lan server env carried GAFFER_DASHBOARD_URL ($url_lan)"
 else
   fail "--lan did not export a http://<host>:8787 deep-link base (got '$url_lan')"

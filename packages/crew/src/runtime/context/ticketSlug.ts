@@ -6,7 +6,7 @@
 // The slug derivation is SHARED by the normal delivery path AND the
 // greenfield bootstrap so both mint the identical `gaffer/ticket-N-<slug>`
 // branch shape the reviewer's fallback grep (`gaffer/ticket-$NUM-[a-z0-9-]*`)
-// expects. Port of the bash pipeline at tick.sh:495–507:
+// expects. Port of the bash pipeline in gaffer_ticket_slug (runner/tick.sh):
 //   lowercase → non-[a-z0-9] runs → '-' → collapse → trim → ≤6 dash-separated
 //   words → ≤50 chars → trim trailing '-' → empty → "ticket".
 //
@@ -17,7 +17,7 @@
 // String.slice.
 // =====================================================================
 
-/** Derive the delivery-branch slug from a ticket title (tick.sh:495–507). */
+/** Derive the delivery-branch slug from a ticket title (gaffer_ticket_slug). */
 export function ticketSlug(title: string): string {
   const s = title
     // tr '[:upper:]' '[:lower:]' in the C locale lowers ASCII ONLY — a JS
@@ -33,7 +33,7 @@ export function ticketSlug(title: string): string {
   return s === "" ? "ticket" : s;
 }
 
-/** The delivery branch for a ticket: `gaffer/ticket-<N>-<slug>` (tick.sh:1276). */
+/** The delivery branch for a ticket: `gaffer/ticket-<N>-<slug>` (tick.sh's WORK_BRANCH). */
 export function workBranchName(ticketNumber: number | string, title: string): string {
   return `gaffer/ticket-${ticketNumber}-${ticketSlug(title)}`;
 }

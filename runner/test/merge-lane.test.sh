@@ -53,7 +53,7 @@ set -uo pipefail
 CALLS="__CALLS__"
 n="$(ls -1 "$CALLS" 2>/dev/null | wc -l | tr -d ' ')"; n=$((n + 1)); D="$CALLS/$(printf '%03d' "$n")"; mkdir -p "$D"
 prompt=""; prev=""; for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done; printf '%s' "$prompt" > "$D/prompt"
-if printf '%s' "$prompt" | grep -q 'resolve-merge-conflict skill'; then
+if grep -q 'resolve-merge-conflict skill' <<<"$prompt"; then
   # Conflict RESOLVER turn (case E): merge main INTO the branch in this worktree, keep
   # both sides' helpers, commit the merge on the branch, report a summary.
   echo resolver > "$D/kind"
@@ -111,7 +111,7 @@ grep -q "MERGE: #$A merged ($BA → main, via local) and marked done" "$LOGF" &&
 # never a rejected push (seen live: every merge of a greenfield run logged a failed push).
 grep -q "MERGE: main merged locally — no origin remote, nothing to push" "$LOGF" && ok "A: no-origin repo logs 'nothing to push' (not a failed push)" || fail "A: no-origin push line missing or wrong: $(grep -i 'push' "$LOGF" | tail -2 | tr '\n' '|' | cut -c1-300)"
 [ "$(st "$DEP")" = "in_review" ] && ok "A: dependent #$DEP was unblocked AND delivered in the SAME tick (lane runs before the scan)" || fail "A: dependent status=$(st "$DEP") — expected in_review"
-echo "$OUT" | grep -q '^TICK_RESULT=worked$' && ok "A: the tick still reports its delivery (lane never exits the tick)" || fail "A: tick result $OUT"
+grep -q '^TICK_RESULT=worked$' <<<"$OUT" && ok "A: the tick still reports its delivery (lane never exits the tick)" || fail "A: tick result $OUT"
 
 echo "== B. supervised: the merge gate holds; logged once per run; loop.sh resets the skip file =="
 B="$(new_ticket "Held helper" "deliver a helper")"; wg ticket ready "$B" >/dev/null 2>&1

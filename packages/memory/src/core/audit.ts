@@ -28,7 +28,15 @@ export interface AuditRecord {
   readonly blocked?: string;
 }
 
-function defaultAuditPath(): string {
+/**
+ * Where the audit log lives: `MEMORY_AUDIT_LOG`, else `~/.memory/audit.jsonl`.
+ * The single resolver the MCP server, doctor, `memory audit` and
+ * `stats --evidence` share, so the copies cannot drift. The default is kept
+ * per-user and local on purpose (it records search queries): a DB on a shared
+ * or synced volume must not drag the trail along. The factory pins it into
+ * its data dir via MEMORY_AUDIT_LOG (runner/factory.config.sh).
+ */
+export function defaultAuditPath(): string {
   if (process.env["MEMORY_AUDIT_LOG"]) return process.env["MEMORY_AUDIT_LOG"];
   return join(homedir(), ".memory", "audit.jsonl");
 }

@@ -29,7 +29,7 @@ grep -q "ARGV:.*--port 8787" "$CAP" && ok "passes the port" || fail "port missin
 [ -s "$WORK/d1/dashboard-token" ] && ok "token file created (always token-protected)" || fail "no token file"
 TOK="$(cat "$WORK/d1/dashboard-token")"
 grep -q "^DISPATCH_API_TOKEN=$TOK$" "$CAP" && ok "the server received the token" || fail "server token missing"
-printf '%s' "$OUT" | grep -q "?token=$TOK" && ok "login URL with the token printed BEFORE exec (for container logs)" || fail "login URL not printed: $OUT"
+grep -q "?token=$TOK" <<<"$OUT" && ok "login URL with the token printed BEFORE exec (for container logs)" || fail "login URL not printed: $OUT"
 for v in DISPATCH_TICK_CMD DISPATCH_MERGE_CMD DISPATCH_ONBOARD_CMD DISPATCH_PRODUCT_OWNER_CMD DISPATCH_TESTER_CMD DISPATCH_DB GAFFER_DASHBOARD_URL; do
   grep -q "^$v=." "$CAP" && ok "action-command env wired: $v" || fail "$v missing from the server env"
 done

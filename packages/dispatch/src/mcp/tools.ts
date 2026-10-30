@@ -276,6 +276,10 @@ export const toolSchemas = {
     claimToken: z.string().min(1).optional(),
   },
   list_scopes: {},
+  // SQUAD: READ-ONLY. Agents may see who is who on the team; there is deliberately
+  // NO tool that sets a club name, display name or shirt number — names are the
+  // operator's to give (REST full capability / CLI), never an agent's to take.
+  get_squad: {},
 } as const;
 
 // --- Handlers -------------------------------------------------------------
@@ -365,11 +369,85 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             "tickets but never ready them. Do NOT call this tool.";
     throw new DispatchError("FACTORY_RUNNER_OWNED", detail);
   };
+
+  // FACTORY TICKET SCOPE: the movement guard above leaves every OTHER ticket-scoped
+  // write open, so a prompt-injected agent could plant a runner-executed AC
+  // check_command, a dependency, a test contract or a blocking decision on ANY
+  // ticket (its id is one get_ticket away). In factory context an agent's ticket
+  // writes are bound to the ticket(s) the RUNNER mounted it for, read from the server
+  // env the agent cannot set:
+  //   • GAFFER_CLAIM_TOKEN   → the ticket of the runner-held delivery claim;
+  //   • GAFFER_SCOPE_TICKET  → the ticket number the runner bound (delivery, resume,
+  //                            bootstrap, clarify);
+  //   • GAFFER_REVIEW_TICKET → the ticket a reviewer / tester / resolver judges.
+  // Plus DRAFTS this very server process created (create_ticket / create_epic): the
+  // product-owner and planning mounts bind no ticket, and their AC/dependency writes
+  // land on their own new drafts. Not `created_by` — every mount shares the actor id
+  // "mcp-agent", so it isolates nothing. Fail closed: nothing bound ⇒ own drafts only.
+  // Outside the factory (and for non-agent actors) nothing changes.
+  const draftsCreatedHere = new Set<string>();
+  const envTicketId = (ref: string | undefined): string | undefined => {
+    if (!ref || ref.trim() === "") return undefined;
+    try {
+      return wg.resolveTicket(ref.trim()).id;
+    } catch {
+      return undefined;
+    }
+  };
+  const bindings = (): Record<"claimed" | "scope" | "review", string | undefined> => {
+    const token = process.env.GAFFER_CLAIM_TOKEN;
+    return {
+      claimed: token && token.length > 0 ? wg.claimTicketIdForToken(token) : undefined,
+      scope: envTicketId(process.env.GAFFER_SCOPE_TICKET),
+      review: envTicketId(process.env.GAFFER_REVIEW_TICKET),
+    };
+  };
+  /**
+   * Refuse an agent write to a ticket outside this mount's scope (factory only).
+   * Resolves `ref` first, so an unknown ticket still reads NOT_FOUND.
+   */
+  const assertTicketInScope = (ref: string, tool: ToolName): void => {
+    if (actor.type !== "agent" || !inFactoryContext()) return;
+    const ticket = wg.resolveTicket(ref);
+    const b = bindings();
+    if ([b.claimed, b.scope, b.review].includes(ticket.id)) return;
+    if (draftsCreatedHere.has(ticket.id) && ticket.status === "draft") return;
+    throw new DispatchError(
+      "FACTORY_RUNNER_OWNED",
+      `${tool}: in factory context an agent may only write the ticket this mount is bound ` +
+        `to (or a draft it created itself) — ticket #${ticket.number} is out of scope. ` +
+        "Raise a request_decision without ticket_id if another ticket needs a change.",
+      { ticket_id: ticket.id, tool },
+    );
+  };
+  /**
+   * A reviewer / tester / resolver mount (GAFFER_REVIEW_TICKET) is advisory: it must
+   * not plant a runner-EXECUTED check_command on the ticket it judges. Its scope comes
+   * only from the review binding, so a mount that also holds the claim (delivery) or
+   * an explicit scope ticket (clarify) is unaffected.
+   */
+  const refuseReviewCheckCommand = (ref: string): void => {
+    if (actor.type !== "agent" || !inFactoryContext()) return;
+    const b = bindings();
+    const id = wg.resolveTicket(ref).id;
+    if (b.review !== id || b.claimed === id || b.scope === id) return;
+    throw new DispatchError(
+      "FACTORY_RUNNER_OWNED",
+      "add_acceptance_criterion: a reviewer/tester mount may not add a check_command (the " +
+        "runner executes it). Add the criterion as prose, or raise it in your verdict.",
+    );
+  };
   const raw = {
     create_ticket: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.create_ticket).parse(args);
-        const ticket = wg.createTicket(
+        // Link the repo the caller named, else the one this MCP server was mounted FOR
+        // (GAFFER_DEFAULT_TICKET_REPO — the product-owner run sets it): an unlinked
+        // draft cannot be delivered and was invisible to the run's own draft count.
+        // Created in one transaction with the link, so an unknown repo leaves no orphan
+        // draft behind for the agent's retry to duplicate.
+        const repo = (a.repo ?? process.env.GAFFER_DEFAULT_TICKET_REPO)?.trim();
+        const ticket = wg.createTicketWithLinks(
           {
             title: a.title,
             description: a.description ?? "",
@@ -377,19 +455,18 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
             risk_level: a.risk_level,
             policy_pack: a.policy_pack,
           },
+          { repo: repo && repo !== "" ? repo : undefined },
           actor,
         );
-        // Link the repo the caller named, else the one this MCP server was mounted FOR
-        // (GAFFER_DEFAULT_TICKET_REPO — the product-owner run sets it): an unlinked
-        // draft cannot be delivered and was invisible to the run's own draft count.
-        const repo = a.repo ?? process.env.GAFFER_DEFAULT_TICKET_REPO;
-        if (repo && repo.trim() !== "") wg.linkRepository(ticket.id, repo.trim(), "primary", actor);
+        draftsCreatedHere.add(ticket.id);
         return { ticket_id: ticket.id, number: ticket.number, status: ticket.status };
       }),
 
     add_acceptance_criterion: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.add_acceptance_criterion).parse(args);
+        assertTicketInScope(a.ticket_id, "add_acceptance_criterion");
+        if (a.check_command !== undefined) refuseReviewCheckCommand(a.ticket_id);
         const { ac, eventId } = wg.addAcceptanceCriterion(a, actor);
         return { ac_id: ac.id, event_id: eventId };
       }),
@@ -474,6 +551,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     record_repo_delivery: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.record_repo_delivery).parse(args);
+        assertTicketInScope(a.ticket_id, "record_repo_delivery");
         const res = wg.recordRepoDelivery(
           {
             ticket_id: a.ticket_id,
@@ -621,7 +699,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           { claimToken: claimTokenFor(a.claim_token), ticket_id: a.ticket_id, reason: a.reason },
           actor,
         );
-        return { ticket_id: a.ticket_id, status: "blocked", event_id: res.eventId };
+        return { ticket_id: res.ticketId, status: "blocked", event_id: res.eventId };
       }),
 
     submit_ticket_for_review: (args: Args): ToolResult =>
@@ -653,12 +731,14 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           { claimToken: token, ticket_id: a.ticket_id, reason: a.reason },
           actor,
         );
-        return { ticket_id: a.ticket_id, status: res.status, event_id: res.eventId };
+        return { ticket_id: res.ticketId, status: res.status, event_id: res.eventId };
       }),
 
     add_dependency: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.add_dependency).parse(args);
+        // Only the DEPENDENT side is scope-checked: that is the ticket the edge blocks.
+        assertTicketInScope(a.ticket, "add_dependency");
         const res = wg.addDependency({ ticket: a.ticket, depends_on: a.depends_on }, actor);
         return {
           ticket_id: res.ticketId,
@@ -671,6 +751,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
       guard(() => {
         const a = z.object(toolSchemas.create_epic).parse(args);
         const res = wg.createEpic(a, actor);
+        for (const n of res.ticketNumbers) draftsCreatedHere.add(wg.resolveTicket(String(n)).id);
         return { epic_node_id: res.epicNodeId, ticket_numbers: res.ticketNumbers };
       }),
 
@@ -696,6 +777,18 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     set_ticket_testable: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.set_ticket_testable).parse(args);
+        assertTicketInScope(a.ticket_id, "set_ticket_testable");
+        // One-way ratchet in factory context: marking a ticket testable only ADDS the
+        // independent tester; clearing it would let a delivery agent route its own work
+        // around that lane (approve → merge with no black-box check). Clearing stays a
+        // runner / human decision (CLI or REST).
+        if (!a.can_be_tested && actor.type === "agent" && inFactoryContext()) {
+          throw new DispatchError(
+            "FACTORY_RUNNER_OWNED",
+            "set_ticket_testable: in factory context an agent may only mark a ticket testable " +
+              "(can_be_tested: true); clearing it is a human/runner decision.",
+          );
+        }
         const res = wg.setTestable(a.ticket_id, a.can_be_tested, actor);
         return {
           ticket_id: res.ticketId,
@@ -707,6 +800,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     set_test_contract: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.set_test_contract).parse(args);
+        assertTicketInScope(a.ticket_id, "set_test_contract");
         const contract = wg.setTestContract(
           a.ticket_id,
           {
@@ -718,7 +812,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           },
           actor,
         );
-        return { ticket_id: a.ticket_id, test_contract: contract };
+        return { ticket_id: wg.resolveTicket(a.ticket_id).id, test_contract: contract };
       }),
 
     list_pending_decisions: (_args: Args): ToolResult =>
@@ -727,6 +821,9 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     request_decision: (args: Args): ToolResult =>
       guard(() => {
         const a = z.object(toolSchemas.request_decision).parse(args);
+        // A decision filed against a ticket blocks it, so the ticket must be in scope;
+        // an unattached decision (no ticket_id) blocks nothing and stays open to all.
+        if (a.ticket_id !== undefined) assertTicketInScope(a.ticket_id, "request_decision");
         const decision = wg.createDecision(
           {
             title: a.title,
@@ -768,6 +865,23 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           })),
         }));
         return { scopes, unmapped_repos: wg.listUnmappedRepos().map((r) => r.name) };
+      }),
+
+    get_squad: (_args: Args): ToolResult =>
+      guard(() => {
+        // Read-only presentation: the club's name and each agent's display name,
+        // shirt number and role. Ids are what every other tool takes; names are
+        // labels only.
+        const club = wg.getClub();
+        return {
+          club: { name: club.name_effective, short_name: club.short_name_effective },
+          agents: wg.listSquad().map((a) => ({
+            agent_id: a.agent_id,
+            display_name: a.display_name_effective,
+            shirt_number: a.shirt_number,
+            role: a.role,
+          })),
+        };
       }),
   };
 

@@ -5,13 +5,15 @@ import { buildContextPacket } from "../context/packet.js";
 import { EventLog } from "../events/eventLog.js";
 import { NullMemoryClient } from "../memory/client.js";
 import { resolveAsyncMemory } from "../memory/factory.js";
-import { resolveDecomposer } from "../adapters/decomposerFactory.js";
 import { prefetchLore, seededSyncClient } from "../memory/prefetch.js";
-import { runIdleLoops, runIdleLoreGap, runIdleFeatureBacklog } from "../loops/idleRegistry.js";
+import { runIdleTick } from "../loops/idleTick.js";
+import { withDispatchRepos } from "../registry/dispatchRepos.js";
+import type { RepoRegistry } from "../registry/repoRegistry.js";
 import { systemCommandRunner } from "../adapters/commandRunner.js";
 import type { FactoryContext } from "../runtime/wiring.js";
 import { classifyCommand } from "../safety/commandGuard.js";
 import { checkFileWrite } from "../safety/fsGuard.js";
+import { checkWithLiveHook, compareVerdicts } from "../safety/liveHook.js";
 import { scanRepo } from "../scan/repoScan.js";
 import { loadSkillRegistry } from "../skills/loader.js";
 import { systemGitAdapter } from "../adapters/gitAdapter.js";
@@ -106,9 +108,11 @@ function parseArgs<N extends ToolName>(
 
 /**
  * How a tool handler opens Dispatch. Injected so tests can pass a shared
- * in-memory facade; production wires the real `openDispatch`. A factory function
- * (rather than a single instance) so read-only tools never open a DB they do not
- * need, and `get_factory_status` can probe reachability and discard the handle.
+ * in-memory facade; production wires the real `openDispatch` with `mustExist`
+ * (server.ts `mcpDispatchOpener`), so no tool ever creates a missing DB. A
+ * factory function (rather than a single instance) so a tool opens Dispatch only
+ * when called, and `get_factory_status` can probe reachability and discard the
+ * handle.
  */
 export type DispatchOpener = (ctx: FactoryContext) => Promise<DispatchClient>;
 
@@ -217,27 +221,44 @@ function withAudit(
 
 /**
  * Build the handler map. Read-only tools never mutate; `run_idle_loop` is the
- * only mutating tool (and only ever creates *draft* tickets).
+ * only mutating tool: it files idle-loop findings as tickets (drafts, unless a
+ * loop's mode or the self-improve gate readies them) and never edits code.
  */
 export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
   const { ctx } = deps;
   const open = deps.openDispatch;
   const auditOpts = deps.audit;
 
+  /**
+   * crew.yaml's repos merged with Dispatch's registry (what onboarding writes),
+   * exactly as `crew idle` / `crew maintain` see them, so a dashboard-onboarded
+   * repo is visible to every tool. Falls back to crew.yaml alone when Dispatch
+   * can't be opened, so the read-only tools still answer.
+   */
+  async function reposFor(dispatch?: DispatchClient): Promise<RepoRegistry> {
+    try {
+      return withDispatchRepos(ctx.repoRegistry, dispatch ?? (await open(ctx)));
+    } catch {
+      return ctx.repoRegistry;
+    }
+  }
+
   const handlers: Record<ToolName, ToolHandler> = {
     get_factory_status: () =>
       guard(async () => {
         const { config } = ctx.loaded;
         let dispatch: { ok: boolean; error?: { code: string; message: string } };
+        let repos = ctx.repoRegistry;
         try {
-          // Probe with a real read, not a bare open(). The real client's open()
-          // creates the sqlite (+ schema) when absent, so opening alone can never
-          // prove the store is queryable. `listReady()` exercises the connection
-          // and schema, so `dispatch.ok` means "actually usable", which is what
+          // Probe with a real read, not a bare open(). The default opener refuses
+          // a missing sqlite, but an existing file can still be unusable, so
+          // opening alone can't prove the store is queryable. `listReady()`
+          // exercises the connection and schema, so `dispatch.ok` means "actually usable", which is what
           // the agent relies on before calling get_context_packet / run_idle_loop.
           const wg = await open(ctx);
           wg.listReady();
           dispatch = { ok: true };
+          repos = await reposFor(wg);
         } catch (err) {
           // Reachability probe must report, not throw — the rest of the status
           // is still useful when Dispatch is mid-build or absent.
@@ -253,7 +274,7 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
             mode: config.factory.mode,
             timezone: config.factory.timezone,
           },
-          repoCount: ctx.repoRegistry.list().length,
+          repoCount: repos.list().length,
           agentCount: ctx.agentRegistry.list().length,
           activeAgentCount: ctx.agentRegistry.active().length,
           loops: {
@@ -290,18 +311,19 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
     list_repos: (rawArgs) =>
       guard(async () => {
         const args = parseArgs("list_repos", rawArgs);
-        const repos = ctx.repoRegistry.list().map((repo) => {
+        const registry = await reposFor();
+        const repos = registry.list().map((repo) => {
           const base = {
             id: repo.id,
             name: repo.name,
-            path: ctx.repoRegistry.absolutePath(repo),
+            path: registry.absolutePath(repo),
             defaultBranch: repo.default_branch,
             stack: repo.stack,
             mutationMode: repo.mutation_mode,
             riskLevel: repo.risk_level,
           };
           if (!args.scan) return base;
-          return { ...base, scan: scanRepo(ctx.repoRegistry.absolutePath(repo), systemGitAdapter) };
+          return { ...base, scan: scanRepo(registry.absolutePath(repo), systemGitAdapter) };
         });
         return { repos };
       }),
@@ -310,6 +332,7 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
       guard(async () => {
         const args = parseArgs("get_context_packet", rawArgs);
         const dispatch = await open(ctx);
+        const repoRegistry = await reposFor(dispatch);
 
         // Pre-fetch lore (async) for the ticket's repos + title, then seed a SYNC
         // client so the unchanged sync packet builder can use it. Degrades to the
@@ -325,7 +348,7 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
           const bundle = dispatch.getTicket(args.ticketRef);
           const tags = [
             ...new Set(
-              bundle.repositories.flatMap((r) => ctx.repoRegistry.find(r.name)?.lore_tags ?? []),
+              bundle.repositories.flatMap((r) => repoRegistry.find(r.name)?.lore_tags ?? []),
             ),
           ];
           const records = await prefetchLore(
@@ -340,7 +363,7 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
         const packet = buildContextPacket(args.ticketRef, {
           config: ctx.loaded.config,
           policy: ctx.policy,
-          repoRegistry: ctx.repoRegistry,
+          repoRegistry,
           dispatch,
           memory,
           skillRegistry: loadSkillRegistry({ factoryDir: ctx.loaded.rootDir }),
@@ -355,44 +378,23 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
           filePath: ctx.loaded.config.logging.event_log_path,
           redact: ctx.loaded.config.logging.redact,
         });
-        const baseDeps = {
+        // The SAME idle tick `crew idle` runs (loops/idleTick.ts): Dispatch repos
+        // merged in, ingest, every enabled loop, then lore-gap / feature-backlog.
+        // One body, so the repo set, the ingest step and the loop set cannot drift.
+        const tick = await runIdleTick({
           config: ctx.loaded.config,
           repoRegistry: ctx.repoRegistry,
           dispatch,
           runner: systemCommandRunner,
           events,
           clock: systemClock,
-        };
-        // Run the SAME full idle registry the CLI runs, so the MCP idle path and
-        // `crew idle` can never drift to different loop sets.
-        const report = runIdleLoops(baseDeps);
-
-        // Async lore-gap loop, behind loops.idle_lore_gap.enabled + real Memory.
-        const asyncLore = await resolveAsyncMemory(ctx.loaded.config, events);
-        let loreGap: unknown = null;
-        let featureBacklog: unknown = null;
-        if (asyncLore) {
-          try {
-            loreGap = await runIdleLoreGap({ ...baseDeps, memory: asyncLore });
-            // Async feature-backlog loop: shares the live memory client; needs a
-            // configured brownfield decomposer too, else it no-ops.
-            const decomposer = resolveDecomposer(ctx.loaded.config);
-            if (decomposer) {
-              featureBacklog = await runIdleFeatureBacklog({
-                ...baseDeps,
-                memory: asyncLore,
-                decomposer,
-              });
-            }
-          } finally {
-            await asyncLore.close();
-          }
-        }
-
+        });
         return {
-          report,
-          ...(loreGap ? { loreGap } : {}),
-          ...(featureBacklog ? { featureBacklog } : {}),
+          ...(tick.ingest ? { ingest: tick.ingest } : {}),
+          ...(tick.jira ? { jira: tick.jira } : {}),
+          report: tick.report,
+          ...(tick.loreGap ? { loreGap: tick.loreGap } : {}),
+          ...(tick.featureBacklog ? { featureBacklog: tick.featureBacklog } : {}),
           events: events.types(),
         };
       }),
@@ -401,6 +403,13 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
       guard(async () => {
         const { git, filesystem, commands, secrets } = ctx.policy;
         return {
+          advisory: true,
+          note:
+            "safety_policy.yaml is ADVISORY: it drives crew's classifier and the mock `crew run` " +
+            "loop. The live factory boundary is runner/safety-hook.mjs (+ lib/dangerous-commands.mjs), " +
+            "which does NOT read this file — its needs_approval and custom deny entries are not " +
+            "enforced at runtime. check_command_allowed / check_path_write_allowed report the " +
+            "hook's verdict as `enforced`.",
           git: {
             requireBranchPrefix: git.require_branch_prefix,
             protectedBranches: git.protected_branches,
@@ -432,22 +441,39 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
     check_command_allowed: (rawArgs) =>
       guard(async () => {
         const args = parseArgs("check_command_allowed", rawArgs);
+        // `decision` is the ADVISORY safety_policy.yaml verdict; `enforced` is what
+        // the live PreToolUse hook (which never reads that file) would do.
         const decision = classifyCommand(args.command, {
           commands: ctx.policy.commands,
           git: ctx.policy.git,
         });
-        return { command: args.command, decision };
+        const enforced = checkWithLiveHook({ tool: "Bash", command: args.command });
+        const mismatch = compareVerdicts(decision, enforced);
+        return { command: args.command, decision, enforced, ...(mismatch ? { mismatch } : {}) };
       }),
 
     check_path_write_allowed: (rawArgs) =>
       guard(async () => {
         const args = parseArgs("check_path_write_allowed", rawArgs);
-        // Resolve the repo root the same way the CLI's `safety check` does:
-        // explicit repo ref, else the first configured repo, else cwd.
-        const repo = args.repo ? ctx.repoRegistry.get(args.repo) : ctx.repoRegistry.list()[0];
-        const repoRoot = repo ? ctx.repoRegistry.absolutePath(repo) : process.cwd();
+        // Resolve the repo root: explicit repo ref, else the first repo (crew.yaml
+        // + Dispatch), else cwd.
+        const registry = await reposFor();
+        const repo = args.repo ? registry.get(args.repo) : registry.list()[0];
+        const repoRoot = repo ? registry.absolutePath(repo) : process.cwd();
         const decision = checkFileWrite(args.path, { repoRoot, policy: ctx.policy.filesystem });
-        return { path: args.path, repo: repo?.id ?? null, repoRoot, decision };
+        const enforced = checkWithLiveHook(
+          { tool: "Write", filePath: args.path, writeRoots: [repoRoot] },
+          { cwd: repoRoot },
+        );
+        const mismatch = compareVerdicts(decision, enforced);
+        return {
+          path: args.path,
+          repo: repo?.id ?? null,
+          repoRoot,
+          decision,
+          enforced,
+          ...(mismatch ? { mismatch } : {}),
+        };
       }),
   };
 

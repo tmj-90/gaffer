@@ -8,7 +8,7 @@ explain the motivation, the tradeoff you made, and why this approach over altern
 - [ ] `pnpm install && pnpm -r build` (TypeScript packages build clean)
 - [ ] `npx tsc --noEmit` (no type errors)
 - [ ] `pnpm -r test` (all package test suites pass)
-- [ ] Runner tests: `for t in runner/test/*.test.mjs; do node "$t"; done && for t in runner/test/*.test.sh; do bash "$t"; done`
+- [ ] Runner tests: `pnpm test:runner`
 - [ ] Manual smoke test (describe what you ran and what you saw):
 
 ## Safety note

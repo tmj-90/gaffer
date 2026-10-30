@@ -41,6 +41,8 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/autonomy-containment.XXXXXX")"
@@ -267,12 +269,12 @@ if [ -f "$CLI_JS" ] && node -e 'require("node:sqlite")' 2>/dev/null; then
     && ok "factory.config.sh consults the dispatch CLI's autonomy policy listing" \
     || fail "factory.config.sh does not query the autonomy policy rows"
 else
-  ok "SKIP: dispatch CLI not built or node:sqlite unavailable — the policy-row case needs both"
+  skip_part "dispatch CLI not built or node:sqlite unavailable — the policy-row case needs both"
 fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "autonomy-containment: ALL $PASS checks passed"; exit 0
+  echo "autonomy-containment: ALL $PASS checks passed, $SKIPPED skipped"; exit 0
 fi
 echo "autonomy-containment: ${#FAILURES[@]} FAILURE(S):"
 for f in "${FAILURES[@]}"; do echo "  - $f"; done

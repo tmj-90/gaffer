@@ -142,7 +142,7 @@ wg review approve "$NUM" --reviewer human1 >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "ready_for_merge" ] && ok "approve → ready_for_merge (done-gate satisfied by the real branch diff)" || fail "#$NUM not ready_for_merge after approve (got '$(status_of "$NUM")')"
 gaffer_auto_merge "$DIR" "$B_WORK_BRANCH" main; MRC=$?
 [ "$MRC" -eq 0 ] && ok "gaffer_auto_merge landed the scaffold on main (rc0)" || fail "auto-merge rc=$MRC"
-git -C "$DIR" show "main:src/index.ts" 2>/dev/null | grep -q 'function track' \
+grep -q 'function track' <<<"$(git -C "$DIR" show "main:src/index.ts" 2>/dev/null)" \
   && ok "the scaffold is now on the default branch (main)" \
   || fail "scaffold did not land on main"
 wg ticket mark-merged "$NUM" --as system >/dev/null 2>&1

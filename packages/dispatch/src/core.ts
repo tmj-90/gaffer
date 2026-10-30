@@ -34,11 +34,25 @@ import {
   isActiveTicketRepoRelation,
   parseTestContract,
 } from "./domain/types.js";
-import { verifyEventChain, type ChainVerification } from "./events/eventChain.js";
+import {
+  backfillEventChain,
+  latestEventHash,
+  verifyEventChain,
+  type ChainVerification,
+} from "./events/eventChain.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
+import {
+  SquadService,
+  type AgentDisplay,
+  type AgentDisplayUpdate,
+  type ClubUpdate,
+  type ClubView,
+  type SquadAgentView,
+} from "./services/squadService.js";
 import { AcRepository } from "./repositories/acRepository.js";
 import { AgentRepository } from "./repositories/agentRepository.js";
 import { ClaimRepository, type ActiveClaimView } from "./repositories/claimRepository.js";
+import { ClubRepository } from "./repositories/clubRepository.js";
 import { DecisionRepository } from "./repositories/decisionRepository.js";
 import {
   EventRepository,
@@ -73,7 +87,11 @@ import {
   TicketScopeNodeRepository,
   type TicketScopeWithNode,
 } from "./repositories/ticketScopeNodeRepository.js";
-import { TicketRepository, type TicketListFilter } from "./repositories/ticketRepository.js";
+import {
+  TicketRepository,
+  type TicketListFilter,
+  type TicketSummary,
+} from "./repositories/ticketRepository.js";
 import {
   ClaimService,
   type ClaimNextInput,
@@ -310,6 +328,8 @@ export class Dispatch {
   /** GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) enablement store. */
   readonly autonomyPolicy: AutonomyPolicyRepository;
   readonly principals: PrincipalRepository;
+  /** SQUAD (v27): the club identity row. */
+  readonly clubRepo: ClubRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -326,6 +346,8 @@ export class Dispatch {
   readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
   readonly humanQueueSvc: HumanQueueService;
+  /** SQUAD: club identity + agent display names / shirt numbers (presentation only). */
+  readonly squadSvc: SquadService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -405,6 +427,13 @@ export class Dispatch {
     this.specCoverageRepo = new SpecCoverageRepository(db);
     this.autonomyPolicy = new AutonomyPolicyRepository(db);
     this.principals = new PrincipalRepository(db);
+    this.clubRepo = new ClubRepository(db);
+    this.squadSvc = new SquadService({
+      db,
+      clock: this.clock,
+      agents: this.agents,
+      club: this.clubRepo,
+    });
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -487,6 +516,7 @@ export class Dispatch {
       claimsRepo: this.claimsRepo,
       events: this.events,
       repos: this.repos,
+      agentDisplays: () => this.squadSvc.displayMap(),
     });
     this.dossierSvc = new DossierService({
       db,
@@ -822,6 +852,13 @@ export class Dispatch {
     return this.principals.list();
   }
 
+  /** One principal by id or name (revoked ones included). Throws NOT_FOUND. */
+  getPrincipal(ref: string): PrincipalView {
+    const row = this.principals.get(ref) ?? this.principals.getByName(ref);
+    if (!row) throw notFound("principal", ref);
+    return row;
+  }
+
   /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
   revokePrincipal(ref: string, actor: Actor): PrincipalView {
     const row = this.principals.get(ref) ?? this.principals.getByName(ref);
@@ -870,6 +907,46 @@ export class Dispatch {
 
   createTicket(raw: unknown, actor: Actor): Ticket {
     return this.ticketSvc.createTicket(raw, actor);
+  }
+
+  /**
+   * Create a ticket AND its links in ONE transaction: the primary repo, the scope
+   * nodes (the first primary, the rest secondary) and the confirmed per-repo access.
+   * A bad reference (unknown repo or scope node) rolls the whole create back, so a
+   * failed POST /tickets or MCP create_ticket never leaves an orphan draft for a
+   * retry to duplicate. (better-sqlite3 nests the services' own transactions as
+   * savepoints, as createDraftTicket already relies on.)
+   */
+  createTicketWithLinks(
+    raw: unknown,
+    links: {
+      repo?: string | undefined;
+      scopeNodeIds?: readonly string[] | undefined;
+      repoAccess?: ReadonlyArray<{ repo_id: string; access: string }> | undefined;
+    },
+    actor: Actor,
+  ): Ticket {
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.createTicket(raw, actor);
+      if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
+      (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
+        this.scope.linkTicketScope(
+          {
+            ticket_id: ticket.id,
+            scope_node_id: scopeNodeId,
+            relation: i === 0 ? "primary" : "secondary",
+          },
+          actor,
+        );
+      });
+      for (const r of links.repoAccess ?? []) {
+        this.repoSvc.setTicketRepoAccess(
+          { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
+          actor,
+        );
+      }
+      return ticket;
+    });
   }
 
   /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
@@ -1087,6 +1164,14 @@ export class Dispatch {
     return this.scope.createScopeEdge(raw, actor);
   }
 
+  getScopeEdge(edgeId: string): ScopeEdge {
+    return this.scope.getScopeEdge(edgeId);
+  }
+
+  getScopeRepo(associationId: string): ScopeRepo {
+    return this.scope.getScopeRepo(associationId);
+  }
+
   listScopeEdges(nodeId?: string): ScopeEdge[] {
     return this.scope.listScopeEdges(nodeId);
   }
@@ -1136,6 +1221,10 @@ export class Dispatch {
     );
   }
 
+  getDecision(decisionId: string): Decision {
+    return this.decisionSvc.getDecision(decisionId);
+  }
+
   listPendingDecisions(): Decision[] {
     return this.decisionSvc.listPendingDecisions();
   }
@@ -1176,15 +1265,33 @@ export class Dispatch {
   moveTicket(ticketRef: string, target: string, actor: Actor): TransitionResult {
     const ticket = this.resolveTicket(ticketRef);
     const toStatus = resolveMoveTarget(target);
-    return this.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus,
-      reason: "board_move",
-      // Pin the expected source so a stale board (card moved out from under the
-      // drag) fails cleanly with STATE_CONFLICT rather than silently moving a
-      // ticket the human is no longer looking at.
-      expectedFromStatus: ticket.status,
+    // Dragging a reviewed ticket back for rework IS a rejection: take the reject path
+    // (AC reset, attempt bump, feedback, retry-cap park) instead of a raw move that
+    // kept the previous delivery's satisfied ACs for the next done gate.
+    if (
+      (ticket.status === "in_review" || ticket.status === "ready_for_merge") &&
+      (toStatus === "ready" || toStatus === "refining")
+    ) {
+      return this.reviewGateSvc.rejectReview(ticket.id, toStatus, actor, "board_move");
+    }
+    return inTransaction(this.db, () => {
+      // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
+      // by a move stays legal; dragging work an agent still holds a lease on is not.
+      const unleasedSubmit =
+        ticket.status === "in_progress" &&
+        toStatus === "in_review" &&
+        !this.claimsRepo.hasActiveForTicket(ticket.id);
+      return this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus,
+        reason: "board_move",
+        // Pin the expected source so a stale board (card moved out from under the
+        // drag) fails cleanly with STATE_CONFLICT rather than silently moving a
+        // ticket the human is no longer looking at.
+        expectedFromStatus: ticket.status,
+        ...(unleasedSubmit ? { unleasedSubmit } : {}),
+      });
     });
   }
 
@@ -1304,12 +1411,30 @@ export class Dispatch {
   /**
    * The factory loop re-entered delivery in the existing worktree (`paused ->
    * in_progress`). Returns the resume context the runner re-invokes the agent with.
+   *
+   * With `lease`, the resume is LEASED to that runner agent in the same transaction
+   * and the claim token is returned: the runner heartbeats it and submits/releases
+   * through the normal token-gated paths, and if it dies the lease lapses and the
+   * expiry sweep returns the ticket to `paused`. Without a lease (older callers) a
+   * resumed ticket is in_progress with no claim, which nothing can recover
+   * automatically — the runner always passes one.
    */
   beginResume(
     ref: string,
     actor: Actor,
-  ): { ticketId: string; eventId: string; context: PausedDelivery } {
-    return this.pauseSvc.beginResume(ref, actor);
+    lease?: { agentId: string; ttlSeconds: number },
+  ): { ticketId: string; eventId: string; context: PausedDelivery; claimToken?: string } {
+    return inTransaction(this.db, () => {
+      const res = this.pauseSvc.beginResume(ref, actor);
+      if (!lease) return res;
+      const { claimToken } = this.claims.leaseResumedDelivery(
+        res.ticketId,
+        lease.agentId,
+        lease.ttlSeconds,
+        actor,
+      );
+      return { ...res, claimToken };
+    });
   }
 
   /** Stop/abandon a paused delivery (`paused -> cancelled`); drops the resume context. */
@@ -1470,6 +1595,11 @@ export class Dispatch {
     return this.ticketSvc.listRequiredCapabilities(ref);
   }
 
+  /** The ticket id an active claim token is held against (undefined if none). */
+  claimTicketIdForToken(claimToken: string): string | undefined {
+    return this.claims.ticketIdForToken(claimToken);
+  }
+
   heartbeat(claimToken: string): { expiresAt: string } {
     return this.claims.heartbeat(claimToken);
   }
@@ -1481,24 +1611,28 @@ export class Dispatch {
     return this.claims.recordEvidence(input, actor);
   }
 
-  submitForReview(input: SubmitForReviewInput, actor: Actor): { status: string; eventId: string } {
+  submitForReview(
+    input: SubmitForReviewInput,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
     const result = this.claims.submitForReview(input, actor);
     // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
     // AFTER the claim transaction commits so the notification can never roll the
     // transition back; best-effort inside emitGate.
     if (result.status === "in_review") {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (ticket) this.emitGate("review_needed", ticket, { detail: input.reason });
+      // The call above already resolved the ref (id or #N), so this cannot throw.
+      const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.emitGate("review_needed", ticket, { detail: input.reason });
     }
     return result;
   }
 
-  markBlocked(input: MarkBlockedInput, actor: Actor): { eventId: string } {
+  markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
     const result = this.claims.markBlocked(input, actor);
     // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
     // the block transaction commits, best-effort.
-    const ticket = this.tickets.findById(input.ticket_id);
-    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    const ticket = this.tickets.resolveRef(input.ticket_id);
+    this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     return result;
   }
 
@@ -1524,8 +1658,9 @@ export class Dispatch {
     // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
     // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
     if (result.status === "blocked") {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+      // The call above already resolved the ref (id or #N), so this cannot throw.
+      const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     }
     return result;
   }
@@ -1810,20 +1945,79 @@ export class Dispatch {
     return this.tickets.listFiltered(filter);
   }
 
+  /** A page of the filtered list + its total (GET /tickets; see TicketRepository.listPage). */
+  listTicketPage(
+    filter: TicketListFilter,
+    page: { limit?: number | undefined; offset?: number | undefined; summary?: boolean },
+  ): { tickets: Array<Ticket | TicketSummary>; total: number } {
+    return this.tickets.listPage(filter, page);
+  }
+
   /** Events for a ticket (resolved by id or number). */
   listTicketEvents(ref: string): WorkEvent[] {
     const ticket = this.resolveTicket(ref);
     return listEvents(this.db, "ticket", ticket.id);
   }
 
-  /** Active claims joined to their ticket + agent (human "active factory" view). */
-  listActiveClaims(): ActiveClaimView[] {
-    return this.claimsRepo.listActive();
+  /**
+   * Active claims joined to their ticket + agent (human "active factory" view).
+   * SQUAD: each row also carries the agent's presentation (`agent_display`).
+   */
+  listActiveClaims(): Array<ActiveClaimView & { agent_display: AgentDisplay | null }> {
+    const displays = this.squadSvc.displayMap();
+    return this.claimsRepo
+      .listActive()
+      .map((c) => ({ ...c, agent_display: displays.get(c.agent_id) ?? null }));
   }
 
-  /** All registered agents, newest first. */
-  listAgents(): Agent[] {
-    return this.agents.list();
+  /** All registered agents, newest first, each with its presentation (`agent_display`). */
+  listAgents(): Array<Agent & { agent_display: AgentDisplay | null }> {
+    const displays = this.squadSvc.displayMap();
+    return this.agents.list().map((a) => ({ ...a, agent_display: displays.get(a.id) ?? null }));
+  }
+
+  // --- Squad (club identity + agent display names; presentation only) ---------
+
+  /** The club identity (name falls back to "Gaffer" in `name_effective`). */
+  getClub(): ClubView {
+    return this.squadSvc.getClub();
+  }
+
+  /** Update the club identity (validated; recorded as `club.updated` when changed). */
+  updateClub(input: ClubUpdate, actor: Actor): { club: ClubView; changed: string[] } {
+    return this.squadSvc.updateClub(input, actor);
+  }
+
+  /** Every agent with its display name, shirt number, role and derived default. */
+  listSquad(): SquadAgentView[] {
+    return this.squadSvc.listSquad();
+  }
+
+  /**
+   * Rename an agent / set its shirt number (validated; shirt numbers unique;
+   * recorded as `agent.display_updated`). NEVER changes the agent id.
+   */
+  updateAgentDisplay(
+    ref: string,
+    input: AgentDisplayUpdate,
+    actor: Actor,
+  ): { agent: SquadAgentView; changed: string[] } {
+    return this.squadSvc.updateAgentDisplay(ref, input, actor);
+  }
+
+  /**
+   * The presentation of each REGISTERED agent among `ids`, keyed by id. Ids that
+   * are not registered agents (a human actor, "mcp-agent", …) are left out.
+   */
+  agentDisplayFor(ids: Iterable<string | null | undefined>): Record<string, AgentDisplay> {
+    const displays = this.squadSvc.displayMap();
+    const out: Record<string, AgentDisplay> = {};
+    for (const id of ids) {
+      if (!id) continue;
+      const d = displays.get(id);
+      if (d) out[id] = d;
+    }
+    return out;
   }
 
   /**
@@ -2011,8 +2205,23 @@ export class Dispatch {
     return this.autonomyRecommendations.recommend();
   }
 
-  activity(query: ActivityQuery): { events: ActivityEvent[]; total: number } {
-    return this.boardSvc.activity(query);
+  /**
+   * Cross-ticket activity feed. SQUAD: an event whose actor is a registered agent
+   * carries that agent's presentation as `agent_display` (null otherwise).
+   */
+  activity(query: ActivityQuery): {
+    events: Array<ActivityEvent & { agent_display: AgentDisplay | null }>;
+    total: number;
+  } {
+    const page = this.boardSvc.activity(query);
+    const displays = this.squadSvc.displayMap();
+    return {
+      total: page.total,
+      events: page.events.map((e) => ({
+        ...e,
+        agent_display: (e.actor_id !== null && displays.get(e.actor_id)) || null,
+      })),
+    };
   }
 
   dashboard(): DashboardSummary {
@@ -2039,5 +2248,42 @@ export class Dispatch {
    */
   verifyEventChain(): ChainVerification {
     return verifyEventChain(this.db);
+  }
+
+  /**
+   * The EXPLICIT repair path for unhashed work_events rows (`dispatch events rechain
+   * --confirm`). Opening the DB no longer re-chains them: on a chained DB a NULL
+   * hash means the row was blanked, and silently re-hashing it is what let an edit
+   * plus "blank the hashes after it" verify clean. An operator who has checked the
+   * rows can re-anchor the chain here; the re-anchor is itself appended to the log
+   * (`events.rechained`, with the old and new head hashes and what was broken), so
+   * it never happens without a trace. Rows that already carry a hash are untouched.
+   */
+  rechainEventLog(actor: Actor): {
+    rechained: number;
+    oldHead: string;
+    newHead: string;
+    verification: ChainVerification;
+  } {
+    return inTransaction(this.db, () => {
+      const before = verifyEventChain(this.db);
+      const oldHead = latestEventHash(this.db);
+      const rechained = backfillEventChain(this.db);
+      const newHead = latestEventHash(this.db);
+      writeEvent(this.db, {
+        entity_type: "event_log",
+        entity_id: "work_events",
+        actor,
+        event_type: "events.rechained",
+        payload: {
+          rechained,
+          old_head: oldHead,
+          new_head: newHead,
+          was_broken_at_seq: before.brokenAtSeq,
+          was_reason: before.reason,
+        },
+      });
+      return { rechained, oldHead, newHead, verification: verifyEventChain(this.db) };
+    });
   }
 }

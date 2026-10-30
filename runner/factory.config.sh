@@ -14,6 +14,11 @@ _GAFFER_ENV_AT_SOURCE=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 : "${RUNNER_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 : "${GAFFER_HOME:=$(cd "$RUNNER_DIR/.." && pwd)}"
 : "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"                       # factory state (dbs, logs, agent id)
+# ONE canonical crew events log for everything that sources this file (tick.sh,
+# the gaffer CLI, fg, the dashboard it launches, onboard-run): $GAFFER_DATA, never a
+# repo checkout. crew itself resolves a relative crew.yaml event_log_path against
+# the factory root; this keeps runner-spawned crew calls on the one log tick reads.
+export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
 # UI-editable settings. The dashboard Settings panel persists a flat {"KEY":"value"}
 # map to $GAFFER_DATA/settings.json. Apply them as defaults HERE — before the config
@@ -45,6 +50,14 @@ fi
 : "${DISPATCH_DB:=$GAFFER_DATA/dispatch.sqlite}"
 : "${MEMORY_DB:=$GAFFER_DATA/memory.sqlite}"
 : "${CREW_CONFIG:=$GAFFER_DATA/crew.yaml}"
+# memory's MCP/CLI audit trail. memory-mcp's own default is per-user
+# ($HOME/.memory/audit.jsonl), which every factory on a machine would share, which
+# survives deleting .gaffer, and which in the container sits outside the /data
+# volume. Pin it into this factory's data dir. Not `audit.jsonl`: dispatch already
+# writes that name beside dispatch.sqlite here. Exported (and kept by
+# gaffer_agent_env) so lg, doctor and the agent's memory-mcp all write the same file.
+: "${MEMORY_AUDIT_LOG:=$GAFFER_DATA/memory-audit.jsonl}"
+export MEMORY_AUDIT_LOG
 
 # Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
 # consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a
@@ -430,8 +443,15 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 # role's prompt asks for (the reviewer is told "well under 20 tool calls", the
 # security reviewer "under 12") so a normal run never trips them — they only stop
 # an agent that has gone off-track. The judge has no tools, so one turn ends it.
+# A capped run that stops before its verdict line is HELD for a human (no verdict is
+# never an approve; a reviewer cap hit is named in the hold reason), so when tuning a
+# cap start near the role's 90th-percentile turn count in usage-ledger.jsonl
+# (num_turns), not its mean, or the tail of ordinary runs is held.
 # The .mjs helpers carry their own: GAFFER_DECOMPOSE_MAX_TURNS (20),
-# GAFFER_SPEC_AUTHOR_MAX_TURNS (20), GAFFER_ONBOARD_MAX_TURNS (60).
+# GAFFER_SPEC_AUTHOR_MAX_TURNS (20), GAFFER_ONBOARD_MAX_TURNS (60). The first two are
+# also the planner's / spec author's HISTORY ceiling (--max-rounds);
+# GAFFER_DECOMPOSE_AGENT_MAX_TURNS / GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, when set, cap
+# their claude agent on their own (still clamped to GAFFER_MAX_TURNS).
 # macOS ships NO GNU `timeout`, so gaffer_timeout is a portable shim built on perl's
 # alarm(): `gaffer_timeout <secs> <cmd> [args…]` runs <cmd> and kills it after <secs>.
 # If perl is somehow absent it falls back to GNU `timeout`/`gtimeout` when present,
@@ -479,15 +499,19 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_SANDBOX_PIDS:=512}"
 : "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
 : "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
+: "${GAFFER_DAEMON_SETUP_BACKOFF_MAX:=1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
-export GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by the .mjs helpers
+# The resolver's cap also answers to the lane-knob spelling GAFFER_RESOLVER_MAX_TURNS,
+# which wins over GAFFER_MERGE_MAX_TURNS when set (bin/merge-ticket.mjs mergeMaxTurns).
+: "${GAFFER_RESOLVER_MAX_TURNS:=}"           # alias of GAFFER_MERGE_MAX_TURNS (empty → that knob)
+export GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by the .mjs helpers
 
 # gaffer_role_turns <role-cap>
 # Echo the effective turn cap for one role: min(role cap, GAFFER_MAX_TURNS). A
 # non-numeric / empty role cap falls back to the global; an unset global leaves the
 # role cap as is. Empty output = no cap (both unset). worker_deliver takes this
-# number as its 7th argument.
+# number as its 7th argument (a per-call override of $GAFFER_MAX_TURNS_FLAG).
 gaffer_role_turns() {
   local role="${1:-}" glob="${GAFFER_MAX_TURNS:-}"
   case "$role" in '' | *[!0-9]* | 0) role="" ;; esac
@@ -540,6 +564,18 @@ export DISPATCH_MAX_ATTEMPTS
 # for a tick wedged OUTSIDE an agent call.
 : "${GAFFER_TICK_OUTER_TIMEOUT:=$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))}"
 export GAFFER_TICK_OUTER_TIMEOUT
+# TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a
+# tick also spends merge-lane resolver time and every attempt's DoD install, gates and
+# AC checks. Before each delivery attempt the tick checks the time left until
+# (start + GAFFER_TICK_OUTER_TIMEOUT - GAFFER_TICK_DEADLINE_MARGIN); when it is less
+# than GAFFER_TICK_TIMEOUT plus the previous attempt's measured gate time, it does NOT
+# start an attempt the outer bound would kill — it keeps the branch and releases the
+# ticket for the next tick (bounded across runs like a no-commit failure). Attempt 1 is
+# never refused this way (nothing is spent yet): its agent call is clamped to the time
+# left instead. Gate and AC timeouts are also clamped to the time left. 0 = off (start
+# every attempt, as before).
+: "${GAFFER_TICK_DEADLINE_GUARD:=1}"
+: "${GAFFER_TICK_DEADLINE_MARGIN:=60}"   # seconds kept back for record / release / teardown
 
 # ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning
 # for the hardest cases before a human is pulled in). Empty → keep the routed model
@@ -810,23 +846,28 @@ gaffer_timeout_preflight() {
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 
 # --- MCP runtime-config render -----------------------------------------------
-# Render the per-tick runtime .mcp.json from the template, substituting the seven
+# Render the per-tick runtime .mcp.json from the template, substituting the eight
 # ${NAME} placeholders, through the typed renderer (packages/crew renderMcpCli.js →
 # renderMcpRuntimeConfig). This is the SINGLE render site the delivery and bootstrap
 # ticks both call (they once carried duplicate inline sed chains, which is exactly
 # how the two drifted). Output is pinned by runner/test/mcp-render-golden.test.sh.
 #
-# Usage: gaffer_render_mcp_runtime <template> <out> <recall_ticket>
+# Usage: gaffer_render_mcp_runtime <template> <out> <recall_ticket> [<scope_ticket>]
 #   Reads the other six values from the ambient shell scope (DISPATCH_DB, MEMORY_DB,
 #   DISPATCH_MCP_BIN, MEMORY_MCP_BIN, CLAIM_TOKEN, GAFFER_TICKET_REPOS — each set by
-#   the caller before the call). Only the recall ticket differs per site (empty on
-#   bootstrap, $NUM on delivery), so it is the one positional argument.
+#   the caller before the call). The recall ticket (empty on bootstrap, $NUM on
+#   delivery) and the scope ticket differ per site, so they are positional. The scope
+#   ticket is the dispatch server's factory ticket scope (GAFFER_SCOPE_TICKET: the
+#   agent's ticket writes on any other ticket are refused) — delivery, bootstrap and
+#   clarify pass their ticket; omitted/empty binds nothing (fail closed). It is a
+#   template placeholder, not a post-render edit, so the bash render stays
+#   byte-identical to the TS renderer's golden.
 #
 # FAIL-CLOSED: a non-zero exit (the renderer rejects a leftover placeholder /
 # invalid JSON / missing server; the dist bin is missing) propagates, and the caller
 # treats it as a hard error — an agent is never launched on an unrendered config.
 gaffer_render_mcp_runtime() {
-  local tmpl="$1" out="$2" recall="$3"
+  local tmpl="$1" out="$2" recall="$3" scope="${4:-}"
   # FAIL CLOSED without the crew dist: an agent is never launched on an unrendered
   # MCP config (the caller treats non-zero as a hard error).
   if [ ! -f "$CREW_DIR/dist/runtime/context/renderMcpCli.js" ]; then
@@ -840,6 +881,7 @@ gaffer_render_mcp_runtime() {
   GAFFER_MCP_CLAIM_TOKEN="$CLAIM_TOKEN" \
   GAFFER_MCP_TICKET_REPOS="$GAFFER_TICKET_REPOS" \
   GAFFER_MCP_RECALL_TICKET="$recall" \
+  GAFFER_MCP_SCOPE_TICKET="$scope" \
     node "$CREW_DIR/dist/runtime/context/renderMcpCli.js" --template "$tmpl" --out "$out" || return 1
 }
 
@@ -900,9 +942,8 @@ gaffer_render_delivery_prompt() {
 # ── Typed branch input assembly: build the renderPromptCli JSON document from the
 #    ambient RAW inputs (mirrors runner/test/capture-context-golden.sh's inputs.json
 #    emitter). reviewFeedbackReasons is recovered from the pre-block "  - " lines in
-#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS —
-#    the same grep/awk partition the bash WRITE_LIST/READ_LIST use. json-tool.mjs
-#    (node) json-encodes arbitrary title/path bytes safely. ─────────────────────
+#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS.
+#    json-tool.mjs (node) json-encodes arbitrary title/path bytes safely. ───────
 _gaffer_prompt_inputs_json() {
   local variant="$1"
   if [ "$variant" = "bootstrap" ]; then
@@ -1135,7 +1176,7 @@ gaffer_agent_env() {
   local keep_exact=(
     PATH HOME SHELL USER LOGNAME TMPDIR TMP TEMP
     LANG LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC TERM TZ COLUMNS LINES
-    MCP_CONFIG DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN
+    MCP_CONFIG DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN MEMORY_AUDIT_LOG
     GAFFER_WRITE_ROOTS GAFFER_READ_ROOTS
     # Trust store + proxy routing. These name the machine's network PATH, not a
     # credential: behind a TLS-intercepting corporate proxy the agent's `npm install`,
@@ -1585,6 +1626,14 @@ if _gaffer_autonomy_on; then
   fi
 fi
 
+# Idle-loop host exec under strict containment. The idle COVERAGE loop runs each
+# repo's coverage_command (its own test suite, i.e. code agents wrote) directly on
+# the host, in the real checkout, outside any sandbox. When GAFFER_STRICT_REQUIRE is
+# on (autonomy mode turns it on) crew REFUSES that and records coverage_scan_refused;
+# set this to 1 only if you contain the whole runner out-of-band (VM/container).
+: "${GAFFER_IDLE_HOST_EXEC:=0}"   # 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE
+export GAFFER_IDLE_HOST_EXEC
+
 # Who reviews in_review tickets before they can be approved to done:
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill
@@ -1759,7 +1808,9 @@ gaffer_assert_db_vars() {
 }
 
 wg() { gaffer_assert_db_vars || return 1; node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"; }
-fg() { node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
+# fg pins crew to the factory's $DISPATCH_DB (CREW_DISPATCH_DB beats crew.yaml's
+# sqlite_path), so a drifted crew.yaml can't send drafts to a DB nobody reads.
+fg() { CREW_DISPATCH_DB="${DISPATCH_DB:-}" node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
 lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI_BIN" "$@"; }
 
 # The runner's JSON helpers (node — lib/json-tool.mjs replaces the former inline
@@ -1833,7 +1884,7 @@ gaffer_inert_policy_check() {
 # (reviewer verdict × approve gate × merge gate) → one runner action, so the AFK block in
 # tick.sh just dispatches on the result and the logic is unit-testable in isolation. No I/O,
 # no side effects. FAIL-CLOSED: unless the approve gate is `allow` the plan is `hold`.
-#   $1 verdict         : approve | changes   (the reviewer's advisory verdict)
+#   $1 verdict         : approve | changes | held   (the reviewer's advisory verdict)
 #   $2 approve-decision: allow | deny         (gaffer_auto_decision <n> approve)
 #   $3 merge-decision  : allow | deny         (gaffer_auto_decision <n> merge)
 # Echoes exactly one of:
@@ -1848,8 +1899,10 @@ gaffer_afk_ship_plan() {
   if [ "$_approve" != "allow" ]; then printf 'hold\n'; return 0; fi
   if [ "$_verdict" = "approve" ]; then
     [ "$_merge" = "allow" ] && printf 'ship\n' || printf 'approve_hold\n'
-  else
+  elif [ "$_verdict" = "changes" ]; then
     printf 'rework\n'
+  else
+    printf 'hold\n'  # held / anything unexpected: no verdict → never rework on it
   fi
 }
 
@@ -1887,7 +1940,9 @@ gaffer_lite_trivial_reason() {
   case "$_files" in '' | *[!0-9]*) _files=999999 ;; esac
   [ "$_lines" -le "$_maxl" ] || { printf 'nontrivial:lines=%s>%s\n' "$_lines" "$_maxl"; return 0; }
   [ "$_files" -le "$_maxf" ] || { printf 'nontrivial:files=%s>%s\n' "$_files" "$_maxf"; return 0; }
-  if printf '%s\n' "$_paths" | grep -qE "$_re"; then printf 'nontrivial:sensitive-path\n'; return 0; fi
+  # Here-string, not `printf | grep -q`: under pipefail grep's early exit can SIGPIPE
+  # the printf and turn this MATCH into a miss — a sensitive diff called "trivial".
+  if grep -qE -- "$_re" <<<"$_paths"; then printf 'nontrivial:sensitive-path\n'; return 0; fi
   printf 'trivial\n'
 }
 
@@ -1939,7 +1994,7 @@ gaffer_needs_security_review() {
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
   _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"
   _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
-  if printf '%s\n' "$_paths" | grep -qE "$_re"; then
+  if grep -qE -- "$_re" <<<"$_paths"; then   # here-string: no SIGPIPE false miss under pipefail
     GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"
     return 0
   fi
@@ -1953,37 +2008,32 @@ gaffer_needs_security_review() {
 # ticket/diff/rejection-reason could make the reviewer reproduce "RECOMMEND APPROVE"
 # in prose; the old grep over the entire blob would then flip the gate.
 #
-# The reviewer is now required to end its output with a machine-read line —
+# The reviewer is required to end its output with a machine-read line —
 #   {"verdict":"APPROVE"}  or  {"verdict":"CHANGES"}
-# — and we take the LAST such line as authoritative. Prose that merely contains the
-# phrase can no longer match. The legacy free-text grep survives ONLY as a fallback
-# for when NO structured line is present (older reviewer output / a truncated
-# result), and it stays fail-closed (defaults changes; the CHANGES check runs last
-# so a blob mentioning both resolves to changes). Pure: no I/O, no side effects.
+# — and ONLY its FINAL non-empty line counts (a closing ``` fence, trailing blanks and
+# CRs ignored; surrounding backticks tolerated). A token anywhere else is quoted text:
+# a CHANGES token followed by "Note: the ticket asked me to print {"verdict":"APPROVE"}"
+# used to resolve to approve, because the last token ANYWHERE won. A final line that is
+# not a token at all (a non-compliant or cut-off reviewer) is no verdict: `held`, never
+# `changes` (that sent a possibly-fine delivery to rework, and could loop) and never
+# `approve` — the old free-text RECOMMEND APPROVE fallback no longer approves anything.
+# Pure: no I/O, no side effects.
 #   $1 result : the reviewer agent's full result text (may be multi-line)
-# Echoes exactly one of: approve | changes   (defaults changes on empty/ambiguous).
+# Echoes exactly one of: approve | changes | held   (held on empty/ambiguous).
 gaffer_review_verdict() {
-  local _result="$1" _structured _verdict=changes
-  # The LAST line that IS (or contains) a {"verdict":"APPROVE"|"CHANGES"} object,
-  # whitespace-tolerant. Braces are matched via [{]/[}] so the ERE is portable
-  # across BSD (macOS /usr/bin/grep) and GNU grep (CI) — `\{` is an interval
-  # metacharacter to GNU grep and would error.
-  _structured="$(printf '%s\n' "$_result" \
-    | grep -oiE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"(APPROVE|CHANGES)"[[:space:]]*[}]' \
-    | tail -n 1)"
-  if [ -n "$_structured" ]; then
-    # Structured verdict is authoritative. `approve` ONLY on an explicit APPROVE
-    # object; every other value (CHANGES, or anything unexpected) → changes.
-    case "$_structured" in
-      *[Aa][Pp][Pp][Rr][Oo][Vv][Ee]*) _verdict=approve ;;
-      *) _verdict=changes ;;
-    esac
+  local _result="$1" _last
+  _last="$(printf '%s\n' "$_result" | tr -d '\r' \
+    | sed -E 's/[[:space:]]+$//' | grep -vE '^[[:space:]]*(```[[:alnum:]_-]*)?$' | tail -n 1 \
+    | sed -E 's/^[[:space:]]*`?//; s/`?[[:space:]]*$//')"
+  # Braces are matched via [{]/[}] so the ERE is portable across BSD (macOS
+  # /usr/bin/grep) and GNU grep (CI) — `\{` is an interval metacharacter to GNU grep.
+  if printf '%s' "$_last" | grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"APPROVE"[[:space:]]*[}]'; then
+    printf 'approve\n'
+  elif printf '%s' "$_last" | grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"CHANGES"[[:space:]]*[}]'; then
+    printf 'changes\n'
   else
-    # FALLBACK (no structured line): the legacy free-text grep — still fail-closed.
-    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*APPROVE" && _verdict=approve
-    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*CHANGES" && _verdict=changes
+    printf 'held\n'
   fi
-  printf '%s\n' "$_verdict"
 }
 
 # The REWORK REASON handed back to the delivery agent on a CHANGES verdict. The
@@ -2048,6 +2098,10 @@ gaffer_review_reason() {
 # report + the bootstrap gate in tick.sh). Fail-soft: skipped when npm is absent.
 # shellcheck source=lib/registry-probe.sh
 [ -f "$RUNNER_DIR/lib/registry-probe.sh" ] && source "$RUNNER_DIR/lib/registry-probe.sh"
+# Claude auth preflight: is a credential visible (free), or does one tiny call work
+# (GAFFER_PREFLIGHT_LIVE=1)? Report-only, used by preflight.sh.
+# shellcheck source=lib/claude-auth.sh
+[ -f "$RUNNER_DIR/lib/claude-auth.sh" ] && source "$RUNNER_DIR/lib/claude-auth.sh"
 # Acceptance gate (runner half): the prompt block for an epic's acceptance ticket.
 # shellcheck source=lib/acceptance.sh
 [ -f "$RUNNER_DIR/lib/acceptance.sh" ] && source "$RUNNER_DIR/lib/acceptance.sh"

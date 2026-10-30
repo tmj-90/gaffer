@@ -35,7 +35,7 @@
 #        GAFFER_REWORK_BUDGET_USD, vs the ticket's measured ledger spend) parks
 #        to `blocked` on the FIRST no-commit failure once exceeded;
 #   AC7  DRY_RUN never increments the counter (side-effect-free);
-#   AC8  WIRING: tick.sh's three no-commit/wrong-branch failure paths route
+#   AC8  WIRING: tick.sh's no-commit and unrecoverable wrong-branch failure paths route
 #        through the bounded wrapper; the submit-success path clears the
 #        counter; factory.config.sh defines the configurable default;
 #   AC9  NEGATIVE CONTROL: the pre-fix shape (plain release-to-ready) never
@@ -140,7 +140,7 @@ source "$SRC"
 
 # One ready, claimable ticket → echoes its number.
 AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
+[ -n "$AGENT" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 make_ready_ticket() {
   local num
   num="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget 'd.ticket.number')"
@@ -196,7 +196,7 @@ run_nocommit_failure "$T1" run3 "delivery failed: agent exited non-zero (rc=1) w
 [ "$(status_of "$T1")" = "blocked" ] \
   && ok "AC3: failure 3/3 parked #$T1 → blocked (NOT released to ready again)" \
   || fail "AC3: #$T1 is '$(status_of "$T1")' after the bound (want blocked)"
-printf '%s' "$(feedback_of "$T1")" | grep -q 'rework_exhausted' \
+grep -q 'rework_exhausted' <<<"$(feedback_of "$T1")" \
   && ok "AC3: last_review_feedback carries code=rework_exhausted (board card surfaces WHY)" \
   || fail "AC3: last_review_feedback lacks rework_exhausted (got '$(feedback_of "$T1")')"
 [ "$(blocked_events "$T1")" -ge 1 ] 2>/dev/null \
@@ -240,7 +240,7 @@ run_nocommit_failure "$T3" t3run1 "delivery failed: agent exited non-zero (rc=1)
 [ "$(status_of "$T3")" = "blocked" ] \
   && ok "AC6: spend \$5 ≥ ceiling \$1 → parked to blocked on the FIRST failure (attempts remaining)" \
   || fail "AC6: #$T3 is '$(status_of "$T3")' with spend past the ceiling (want blocked)"
-printf '%s' "$(feedback_of "$T3")" | grep -q 'rework_exhausted' \
+grep -q 'rework_exhausted' <<<"$(feedback_of "$T3")" \
   && ok "AC6: the cost-ceiling park carries rework_exhausted too" \
   || fail "AC6: cost-ceiling park lacks rework_exhausted feedback"
 # The per-ticket delivery_budget_usd must WIN over the env default when set.
@@ -284,10 +284,8 @@ check() {  # $1 name, $2 perl-regex over $3 (file)
 }
 check "AC8: no-commit agent-crash path routes through the bounded wrapper (before skip)" \
   'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
-check "AC8: wrong-branch (default branch) path routes through the bounded wrapper" \
-  'gaffer_release_or_park_nocommit "delivery failed: worktree HEAD was[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
-check "AC8: wrong-branch (non-gaffer branch) path routes through the bounded wrapper" \
-  'gaffer_release_or_park_nocommit "delivery failed: worktree HEAD[^\n]*is not a gaffer[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
+check "AC8: an unrecoverable branch switch (no commits) routes through the bounded wrapper" \
+  'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket' "$TICK"
 check "AC8: the submit-success path clears the cross-run counter (flaky-then-fixed reset)" \
   'submitted #\$NUM for review[^\n]*\n(?:[^\n]*\n)*?[^\n]*gaffer_nocommit_clear "\$NUM"' "$TICK"
 check "AC8: factory.config.sh defines GAFFER_MAX_NOCOMMIT_FAILURES (aligned with the delivery-attempt cap)" \

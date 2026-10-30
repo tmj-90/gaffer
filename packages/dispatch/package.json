@@ -1,6 +1,7 @@
 {
   "name": "dispatch",
   "version": "0.1.0",
+  "private": true,
   "description": "Agent-ready backlog control plane \u2014 tickets, claims, evidence, events.",
   "keywords": [
     "mcp",

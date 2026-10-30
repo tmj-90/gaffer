@@ -11,15 +11,15 @@ const execFileAsync = promisify(execFile);
 // File-card + product-context primer — TS port of the DELIVERY path's
 // context blocks (P1b context assembly, docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
-// The live delivery path renders these blocks via the BASH primer
-// (runner/lib/context-primer.sh, called from tick.sh:1407/1433). A JS twin
-// exists (runner/lib/context-primer.mjs) but its framing DIVERGES from the
-// bash one: the mjs wraps "…pre-selected these from the repo's\nfile-card
-// index…" and emits the envelope tags on their own lines, while the bash
-// path wraps "…pre-selected these from the\nrepo's file-card index…" with
-// inline envelope tags, and its `$( … )` capture strips the trailing
-// newlines. The LIVE prompt embeds the BASH bytes — this module matches
-// those exactly and deliberately does NOT "fix" the mjs divergence.
+// LIVE: the bash primer (runner/lib/context-primer.sh, called from tick.sh's
+// delivery path) fetches the memory JSON and renders the block text through
+// renderContextPrimerCli.js → the formatters below. A JS twin exists
+// (runner/lib/context-primer.mjs) but its framing DIVERGES: the mjs wraps
+// "…pre-selected these from the repo's\nfile-card index…" and emits the
+// envelope tags on their own lines, while the live path wraps "…pre-selected
+// these from the\nrepo's file-card index…" with inline envelope tags, and the
+// primer's `$( … )` capture strips the trailing newlines. These formatters keep
+// the former bash bytes exactly and deliberately do NOT "fix" the mjs divergence.
 //
 // The `wg attach-evidence --type memory_primed` + delivery-metrics side
 // effects STAY in tick.sh (bookkeeping — P4); {@link primeFileCards}

@@ -5,7 +5,7 @@ import type { Actor } from "../../domain/types.js";
 import { TICKET_STATUSES } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, printJson, testerActor } from "../shared.js";
+import { cliActor, open, parseAs, printJson, testerActor, validateTtl } from "../shared.js";
 
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
@@ -61,13 +61,13 @@ export function registerTicket(program: Command): void {
     )
     .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)
     .action((ref, opts, cmd) => {
-      const wg = open(cmd.optsWithGlobals());
       const value = opts.clear ? null : opts.usd;
       if (value === undefined) {
-        printJson({ ok: false, error: "provide --usd <amount> or --clear" });
-        wg.db.close();
-        return;
+        // A structured failure (stderr JSON, exit 1) like every other CLI error — it
+        // used to print {ok:false} on stdout and exit 0, invisible to scripts.
+        throw new DispatchError("VALIDATION_ERROR", "provide --usd <amount> or --clear");
       }
+      const wg = open(cmd.optsWithGlobals());
       const t = wg.setDeliveryBudget({ ticket: ref, delivery_budget_usd: value }, cliActor());
       printJson({
         ok: true,
@@ -231,9 +231,10 @@ export function registerTicket(program: Command): void {
     .requiredOption("--resolution <summary>", "resolver's summary of what was reconciled")
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
-        opts.as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
       const res = wg.reopenForReview(
         ref,
         { reason: opts.reason, resolution: opts.resolution },
@@ -252,9 +253,10 @@ export function registerTicket(program: Command): void {
     )
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
-        opts.as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
       const res = wg.markMerged(ref, actor);
       printJson({ ok: true, ticket: res.ticket, eventId: res.eventId });
       wg.db.close();
@@ -325,8 +327,8 @@ export function registerTicket(program: Command): void {
     )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
-      const wg = open(cmd.optsWithGlobals());
       const actor = testerActor(opts.as);
+      const wg = open(cmd.optsWithGlobals());
       const res = wg.testerPass(
         ref,
         {
@@ -374,8 +376,8 @@ export function registerTicket(program: Command): void {
       if (opts.to !== "refining" && opts.to !== "ready") {
         throw new DispatchError("VALIDATION_ERROR", "--to must be refining or ready");
       }
-      const wg = open(cmd.optsWithGlobals());
       const actor = testerActor(opts.as);
+      const wg = open(cmd.optsWithGlobals());
       const res = wg.testerFail(
         ref,
         {
@@ -666,12 +668,26 @@ export function registerTicket(program: Command): void {
     .command("resume-begin <ref>")
     .description(
       "Factory-loop resume entry point: re-enter delivery in the EXISTING worktree " +
-        "(paused -> in_progress) and print the resume context (worktree, branch, attempt). System actor.",
+        "(paused -> in_progress) and print the resume context (worktree, branch, attempt). " +
+        "With --agent, the resume is leased to that agent and its claim_token printed. System actor.",
     )
-    .action((ref, _opts, cmd) => {
+    .option("--agent <id>", "lease the resumed delivery to this (runner) agent")
+    .option("--ttl <seconds>", "lease TTL in seconds (with --agent)", "900")
+    .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const res = wg.beginResume(ref, { type: "system" });
-      printJson({ ok: true, ticket_id: res.ticketId, event: res.eventId, context: res.context });
+      const lease =
+        typeof opts.agent === "string" && opts.agent !== ""
+          ? { agentId: opts.agent as string, ttlSeconds: Number(opts.ttl) }
+          : undefined;
+      if (lease) validateTtl(lease.ttlSeconds);
+      const res = wg.beginResume(ref, { type: "system" }, lease);
+      printJson({
+        ok: true,
+        ticket_id: res.ticketId,
+        event: res.eventId,
+        context: res.context,
+        claim_token: res.claimToken ?? null,
+      });
       wg.db.close();
     });
 

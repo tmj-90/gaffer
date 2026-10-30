@@ -20,12 +20,16 @@
 # DRY_RUN is always a no-op.
 #
 # The judge's model turn goes through worker_deliver — the factory's SINGLE
-# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked). The judge
-# grades text it is handed inline, so it runs TEXT-ONLY: `--tools ""` (no built-in
-# tools), an empty MCP config under --strict-mcp-config (no MCP tools),
-# --disable-slash-commands (no skill listing), from an EMPTY scratch cwd (the
-# target repo's CLAUDE.md / skills / settings never load — they cost tokens and
-# are untrusted text the judge should not read), under GAFFER_JUDGE_MAX_TURNS.
+# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked) — as a TEXT
+# GRADER: the diff is in the prompt, so it runs TEXT-ONLY: `--tools ""` (no built-in
+# tools) with every built-in tool also denied by name, an empty MCP config under
+# --strict-mcp-config (no MCP tools), --disable-slash-commands (no skill listing), no
+# acceptEdits, from an EMPTY scratch cwd that is also its only write root (never the
+# delivery worktree: the target repo's CLAUDE.md / skills / settings never load, and
+# none of the delivery's DB/ticket env reaches it), under GAFFER_JUDGE_MAX_TURNS (2).
+# It used to inherit the delivery's acceptEdits, the 200-turn delivery cap and the
+# worktree as cwd + write root — so a diff carrying a prompt injection could make a
+# "one-shot" judge edit the just-submitted delivery.
 # The reply is read back via worker.mjs `parse-result result-text` (the one
 # envelope parser).
 # =====================================================================
@@ -87,6 +91,12 @@ gaffer_eval_judge_delivery() (
   # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
   # last resort only when no plan flag is configured.
   judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
+  # The overrides are local: this function body is a subshell. CLAUDE_FLAGS is REPLACED
+  # (no acceptEdits; built-in tools denied by name as defence in depth on top of
+  # `--tools ""`); the turn cap is passed per call, so it replaces the 200-turn flag
+  # rather than adding a second --max-turns.
+  # shellcheck disable=SC2034  # read by worker_deliver
+  CLAUDE_FLAGS="--disallowedTools ${GAFFER_JUDGE_DENIED_TOOLS:-Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite}"
   judge_turns="${GAFFER_JUDGE_MAX_TURNS:-2}"
   type gaffer_role_turns >/dev/null 2>&1 && judge_turns="$(gaffer_role_turns "$judge_turns")"
   worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \

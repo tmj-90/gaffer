@@ -16,13 +16,13 @@
 #      merge=deny) → approve_hold; non-trivial → (approve=deny) → hold.
 # Containment is NOT a lite concern: DoD/hygiene stay enforced (untouched here) and
 # the safety hook / worktree isolation / egress are mode-independent.
-# Zero deps beyond bash + python3. bash 3.2 safe. Run: bash runner/test/lite-mode.test.sh
+# Zero deps beyond bash + node. bash 3.2 safe. Run: bash runner/test/lite-mode.test.sh
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
+command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$RUNNER_DIR/factory.config.sh" ] || { echo "SKIP: factory.config.sh not found"; exit 0; }
 
 PASS=0
@@ -82,10 +82,10 @@ src/authmiddleware.go internal/authhandler.go src/authconfig.ts lib/authcode.py 
 # shellcheck disable=SC2086
 CLASSIFIED="$(classify_paths $PLAIN_PATHS $SENSITIVE_PATHS)"
 for p in $PLAIN_PATHS; do
-  printf '%s\n' "$CLASSIFIED" | grep -qxF "$p plain" && ok "not sensitive: $p" || fail "false positive: $p"
+  grep -qxF "$p plain" <<<"$CLASSIFIED" && ok "not sensitive: $p" || fail "false positive: $p"
 done
 for p in $SENSITIVE_PATHS; do
-  printf '%s\n' "$CLASSIFIED" | grep -qxF "$p sensitive" && ok "sensitive: $p" || fail "false NEGATIVE (security gate): $p"
+  grep -qxF "$p sensitive" <<<"$CLASSIFIED" && ok "sensitive: $p" || fail "false NEGATIVE (security gate): $p"
 done
 # The security second-review lane falls back to the SAME default (one definition).
 grep -q 'GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"' "$RUNNER_DIR/factory.config.sh" \

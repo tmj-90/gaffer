@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-import { isActiveTicketRepoRelation } from "../domain/types.js";
+import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
 import { computeRiskAnnotations, type RiskAnnotation } from "./riskAnnotations.js";
 import type { RepoRepository } from "../repositories/repoRepository.js";
 import type { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
@@ -83,20 +83,68 @@ export interface GitResult {
   status: number | null;
   stdout: string;
   stderr: string;
+  /**
+   * True when stdout hit the runner's output cap and git was stopped early. `status`
+   * is then 0 and `stdout` holds the partial output — an oversized diff is still a
+   * real diff, so callers cap/annotate it rather than treating it as a git failure.
+   */
+  truncated?: boolean;
 }
 
-export type GitRunner = (cwd: string, args: readonly string[]) => GitResult;
+/** Per-call knobs a caller may pass to the runner (fakes are free to ignore them). */
+export interface GitRunOptions {
+  /** Stop git once stdout exceeds this many bytes (reported as `truncated`). */
+  maxBuffer?: number;
+}
+
+export type GitRunner = (cwd: string, args: readonly string[], opts?: GitRunOptions) => GitResult;
+
+/**
+ * Wall-clock cap on one git spawn. The done gate runs git on the approve path, and a
+ * hung git (slow filesystem, a huge repo) must fail closed as a `git_error` rather
+ * than stall the caller for ever.
+ */
+export const GIT_TIMEOUT_MS = 15_000;
+
+/** Default stdout cap for one git spawn: the patch is cut to MAX_DIFF_BYTES anyway. */
+const DEFAULT_GIT_MAX_BUFFER = MAX_DIFF_BYTES * 4;
+
+/**
+ * `--numstat` output must be read in full for honest stats, and is small per file;
+ * 16 MB covers hundreds of thousands of changed paths (same cap the spec readers use).
+ */
+const NUMSTAT_MAX_BUFFER = 16 * 1024 * 1024;
+
+/**
+ * Flags every diff spawn carries: never run a repo-configured external diff driver or
+ * textconv filter. Those are arbitrary commands from the repo's git config/attributes;
+ * the review diff must be the raw delivered bytes and must not execute anything.
+ */
+const SAFE_DIFF_FLAGS = ["--no-ext-diff", "--no-textconv"] as const;
 
 /**
  * Default git runner: no shell, fixed `git` binary, args array — request/branch
  * values are passed as argv elements, never interpolated into a command line, so
  * there is no command-injection surface from a recorded branch name.
  */
-export const defaultGitRunner: GitRunner = (cwd, args) => {
+export const defaultGitRunner: GitRunner = (cwd, args, opts) => {
   const res = spawnSync("git", ["-C", cwd, ...args], {
     encoding: "utf8",
-    maxBuffer: MAX_DIFF_BYTES * 4,
+    maxBuffer: opts?.maxBuffer ?? DEFAULT_GIT_MAX_BUFFER,
+    timeout: GIT_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
+  const error = res.error as NodeJS.ErrnoException | undefined;
+  if (error?.code === "ENOBUFS") {
+    // Output overflowed the cap: git was stopped, but what it printed is real.
+    return { status: 0, stdout: res.stdout ?? "", stderr: res.stderr ?? "", truncated: true };
+  }
+  if (error) {
+    // Timeout (ETIMEDOUT) or spawn failure: no status, and say why instead of failing silently.
+    const why =
+      error.code === "ETIMEDOUT" ? `git timed out after ${GIT_TIMEOUT_MS} ms` : error.message;
+    return { status: null, stdout: res.stdout ?? "", stderr: why };
+  }
   return {
     status: res.status,
     stdout: res.stdout ?? "",
@@ -157,24 +205,41 @@ function unavailableRepo(
 }
 
 /**
- * Compute the diff-in-review payload for a ticket. Resolves the ticket, walks its
- * ACTIVE write repos, and for each computes the real git diff of its delivery
- * branch against the repo's default branch. Pure read — never mutates state.
+ * A write repo whose diff can be run: branch resolved, repo on disk. The git-free
+ * half of the diff computation, shared by {@link computeTicketDiff} (the review
+ * payload) and {@link deliveryDiffProof} (the done gate).
  */
-export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): TicketDiff {
-  const runGit = deps.runGit ?? defaultGitRunner;
-  const ticket = deps.tickets.findById(ticketRef) ?? resolveByNumber(deps.tickets, ticketRef);
-  if (!ticket) {
-    // Resolution is the caller's responsibility; an unresolved ref yields nothing.
-    return { ticketId: ticketRef, repos: [] };
-  }
+interface DiffTarget {
+  repoId: string;
+  repo: string;
+  localPath: string;
+  baseBranch: string;
+  /** Delivery branch, or null for a bootstrap. */
+  branch: string | null;
+  isBootstrap: boolean;
+  /** The range argv: `base...branch`, or the empty tree → HEAD for a bootstrap. */
+  diffArgs: string[];
+  /** What the review surfaces in place of a branch name. */
+  label: string;
+  /** The range for error text. */
+  rangeDesc: string;
+}
 
+/**
+ * Resolve every ACTIVE write repo on the ticket to either a runnable {@link DiffTarget}
+ * or an already-final unavailable entry (no branch, no local_path, not on disk).
+ * Pure DB + filesystem reads; never spawns git.
+ */
+function resolveDiffTargets(
+  deps: DiffServiceDeps,
+  ticket: Ticket,
+): Array<{ target: DiffTarget } | { unavailable: RepoDiff }> {
   const links = deps.repos.accessLinksForTicket(ticket.id);
   const writeRepos = links.filter(
     (l) => isActiveTicketRepoRelation(l.relation) && l.access === "write",
   );
 
-  const repos: RepoDiff[] = writeRepos.map((repo) => {
+  return writeRepos.map((repo) => {
     const baseBranch = repo.default_branch || "main";
     const legacyBranch = deps.repos.ticketRepoBranch(ticket.id, repo.id);
     const deliveryBranch = deps.repoDeliveries.find(ticket.id, repo.id)?.branch_name ?? null;
@@ -187,52 +252,98 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
     const isBootstrap = !branch && Boolean(ticket.bootstrap);
 
     if (!branch && !isBootstrap) {
-      return unavailableRepo(
-        repo.name,
-        null,
-        baseBranch,
-        "no_branch",
-        "No delivery branch recorded for this repo yet.",
-      );
+      return {
+        unavailable: unavailableRepo(
+          repo.name,
+          null,
+          baseBranch,
+          "no_branch",
+          "No delivery branch recorded for this repo yet.",
+        ),
+      };
     }
     if (!repo.local_path || repo.local_path.trim() === "") {
-      return unavailableRepo(
-        repo.name,
-        branch,
-        baseBranch,
-        "no_local_path",
-        "Repo has no local_path on disk to diff against.",
-      );
+      return {
+        unavailable: unavailableRepo(
+          repo.name,
+          branch,
+          baseBranch,
+          "no_local_path",
+          "Repo has no local_path on disk to diff against.",
+        ),
+      };
     }
     if (!existsSync(repo.local_path)) {
-      return unavailableRepo(
-        repo.name,
-        branch,
-        baseBranch,
-        "repo_not_on_disk",
-        `Repo path "${repo.local_path}" is not on disk.`,
-      );
+      return {
+        unavailable: unavailableRepo(
+          repo.name,
+          branch,
+          baseBranch,
+          "repo_not_on_disk",
+          `Repo path "${repo.local_path}" is not on disk.`,
+        ),
+      };
     }
 
     // Diff range: a normal ticket is base...branch; a bootstrap is the empty tree →
-    // the default branch (every scaffolded file shown as an addition). `label` is what
-    // the review surfaces in place of a branch name; `rangeDesc` is for error text.
+    // the default branch (every scaffolded file shown as an addition).
     // Bootstrap diffs the empty tree against HEAD — always valid, and independent of
     // the recorded default_branch (which can be unreliable on a fresh onboard).
-    const diffArgs = isBootstrap ? [GIT_EMPTY_TREE, "HEAD"] : [`${baseBranch}...${branch}`];
-    const label = isBootstrap ? "initial commit" : branch;
-    const rangeDesc = isBootstrap ? "the initial commit" : `${baseBranch}...${branch}`;
+    return {
+      target: {
+        repoId: repo.id,
+        repo: repo.name,
+        localPath: repo.local_path,
+        baseBranch,
+        branch,
+        isBootstrap,
+        diffArgs: isBootstrap ? [GIT_EMPTY_TREE, "HEAD"] : [`${baseBranch}...${branch}`],
+        label: isBootstrap ? "initial commit" : branch!,
+        rangeDesc: isBootstrap ? "the initial commit" : `${baseBranch}...${branch}`,
+      },
+    };
+  });
+}
+
+/** Run `git diff --numstat` for a target; a truncated read drops its partial last line. */
+function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
+  const res = runGit(t.localPath, ["diff", "--numstat", ...SAFE_DIFF_FLAGS, ...t.diffArgs], {
+    maxBuffer: NUMSTAT_MAX_BUFFER,
+  });
+  if (res.truncated) {
+    const cut = res.stdout.lastIndexOf("\n");
+    return { ...res, stdout: cut === -1 ? "" : res.stdout.slice(0, cut + 1) };
+  }
+  return res;
+}
+
+/**
+ * Compute the diff-in-review payload for a ticket. Resolves the ticket, walks its
+ * ACTIVE write repos, and for each computes the real git diff of its delivery
+ * branch against the repo's default branch. Pure read — never mutates state.
+ */
+export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): TicketDiff {
+  const runGit = deps.runGit ?? defaultGitRunner;
+  const ticket = deps.tickets.findById(ticketRef) ?? resolveByNumber(deps.tickets, ticketRef);
+  if (!ticket) {
+    // Resolution is the caller's responsibility; an unresolved ref yields nothing.
+    return { ticketId: ticketRef, repos: [] };
+  }
+
+  const repos: RepoDiff[] = resolveDiffTargets(deps, ticket).map((entry) => {
+    if ("unavailable" in entry) return entry.unavailable;
+    const t = entry.target;
 
     // Stats first (cheap, bounded). A non-zero exit means the range can't be resolved
     // (unknown branch, not a git repo) — surface it as a git_error.
-    const stat = runGit(repo.local_path, ["diff", "--numstat", ...diffArgs]);
+    const stat = runNumstat(runGit, t);
     if (stat.status !== 0) {
       return unavailableRepo(
-        repo.name,
-        label,
-        baseBranch,
+        t.repo,
+        t.label,
+        t.baseBranch,
         "git_error",
-        firstLine(stat.stderr) || `git could not diff ${rangeDesc}.`,
+        firstLine(stat.stderr) || `git could not diff ${t.rangeDesc}.`,
       );
     }
     const { files, additions, deletions, paths } = parseNumstat(stat.stdout);
@@ -240,36 +351,39 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
     // deletion count. Never gates; the authoritative diff below is unchanged.
     const riskAnnotations = computeRiskAnnotations(paths, deletions);
 
-    const patch = runGit(repo.local_path, ["diff", ...diffArgs]);
+    // The runner stops git once the patch passes its cap and flags `truncated`: a
+    // lockfile regeneration or fixture drop is still a real diff, shown capped.
+    const patch = runGit(t.localPath, ["diff", ...SAFE_DIFF_FLAGS, ...t.diffArgs]);
     if (patch.status !== 0) {
       return unavailableRepo(
-        repo.name,
-        label,
-        baseBranch,
+        t.repo,
+        t.label,
+        t.baseBranch,
         "git_error",
-        firstLine(patch.stderr) || `git could not diff ${rangeDesc}.`,
+        firstLine(patch.stderr) || `git could not diff ${t.rangeDesc}.`,
       );
     }
     const rawDiff = patch.stdout;
     if (rawDiff.trim() === "") {
       return unavailableRepo(
-        repo.name,
-        label,
-        baseBranch,
+        t.repo,
+        t.label,
+        t.baseBranch,
         "empty",
-        isBootstrap
+        t.isBootstrap
           ? "The bootstrap produced no committed files."
-          : `No changes between ${baseBranch} and ${branch}.`,
+          : `No changes between ${t.baseBranch} and ${t.branch}.`,
       );
     }
 
-    const truncated = Buffer.byteLength(rawDiff, "utf8") > MAX_DIFF_BYTES;
-    const diff = truncated ? capUtf8(rawDiff, MAX_DIFF_BYTES) : rawDiff;
+    const truncated =
+      patch.truncated === true || Buffer.byteLength(rawDiff, "utf8") > MAX_DIFF_BYTES;
+    const diff = capUtf8(rawDiff, MAX_DIFF_BYTES);
 
     return {
-      repo: repo.name,
-      branch: label,
-      baseBranch,
+      repo: t.repo,
+      branch: t.label,
+      baseBranch: t.baseBranch,
       diff,
       files,
       additions,
@@ -280,6 +394,50 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
   });
 
   return { ticketId: ticket.id, repos };
+}
+
+/**
+ * The done gate's view of the delivery: whether at least one write repo has a real,
+ * non-empty git diff on its recorded branch, plus a fingerprint of the inputs that
+ * answer depends on (which repos, which paths, which ranges).
+ *
+ * Callers compute this BEFORE they open a write transaction, so git never runs while
+ * the database write lock is held; inside the transaction the gate re-derives only
+ * the fingerprint (no git) and trusts `hasDiff` when it still matches.
+ */
+export interface DeliveryDiffProof {
+  hasDiff: boolean;
+  fingerprint: string;
+}
+
+/**
+ * The git-free fingerprint of what {@link deliveryDiffProof} diffs for a ticket. Two
+ * calls that return the same string ran (or would run) the same git commands.
+ */
+export function deliveryDiffFingerprint(deps: DiffServiceDeps, ticket: Ticket): string {
+  return JSON.stringify(
+    resolveDiffTargets(deps, ticket).map((entry) =>
+      "unavailable" in entry
+        ? ["unavailable", entry.unavailable.repo, entry.unavailable.unavailable]
+        : [entry.target.repoId, entry.target.localPath, ...entry.target.diffArgs],
+    ),
+  );
+}
+
+/**
+ * Compute the done gate's {@link DeliveryDiffProof}. One `--numstat` spawn per write
+ * repo — the gate only needs "is the diff non-empty", never the patch text — and a
+ * repo qualifies only when git succeeded and reported at least one changed path.
+ */
+export function deliveryDiffProof(deps: DiffServiceDeps, ticket: Ticket): DeliveryDiffProof {
+  const runGit = deps.runGit ?? defaultGitRunner;
+  const entries = resolveDiffTargets(deps, ticket);
+  const hasDiff = entries.some((entry) => {
+    if ("unavailable" in entry) return false;
+    const stat = runNumstat(runGit, entry.target);
+    return stat.status === 0 && parseNumstat(stat.stdout).files > 0;
+  });
+  return { hasDiff, fingerprint: deliveryDiffFingerprint(deps, ticket) };
 }
 
 /** Trimmed value when non-empty, else null — for branch precedence coalescing. */

@@ -1,6 +1,6 @@
 // =====================================================================
 // Worktree-leaf derivation — strangler port of tick.sh's per-repo worktree-key
-// sanitizer (runner/tick.sh:1333-1336, the WT_ROWS build loop). P4 orchestration.
+// sanitizer (runner/tick.sh, the WT_ROWS build loop). P4 orchestration.
 // ---------------------------------------------------------------------
 // Each WRITE repo gets a throwaway git worktree under $WORKTREES_BASE, keyed by a
 // deterministic, filesystem-safe leaf derived from the repo id (fallback: the repo

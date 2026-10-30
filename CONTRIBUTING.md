@@ -18,7 +18,7 @@ runner/       bash orchestrator, skill library, safety hook
 
 ## Getting started
 
-Requires Node 22 or 24 and [pnpm](https://pnpm.io) (`pnpm@10.33.0`, pinned via
+Requires Node 22.22.1+ or 24 and [pnpm](https://pnpm.io) (`pnpm@10.33.0`, pinned via
 `packageManager`).
 
 ```bash
@@ -27,12 +27,24 @@ pnpm -r build           # build dispatch, crew, memory
 pnpm -r test            # run all package test suites
 ```
 
-Runner tests run directly with Node and bash:
+Runner tests (`runner/test/*.test.sh` + `*.test.mjs`) run through one harness —
+the same command CI runs:
 
 ```bash
-for t in runner/test/*.test.mjs; do node "$t"; done
-for t in runner/test/*.test.sh;  do bash "$t"; done
+pnpm test:runner                      # all of them, in parallel; exits 1 on ANY failure
+pnpm test:runner -j 2                 # fewer parallel jobs (`-- -j 2` works too)
+bash runner/test/run.sh runner/test/parallel-claim.test.sh   # just the ones named
+bash runner/test/parallel-claim.test.sh                      # or run one directly
 ```
+
+It caps each test's wall time, lists skips separately from passes, fails any test
+that tries to run a real `claude` (a tripwire is first on `PATH`), and warns if a
+test wrote into this checkout's `.gaffer` / `.dispatch` / `.crew` state. CI runs it
+with `GAFFER_TEST_STRICT=1`, where a skip for anything but a genuine platform gap
+(docker, macOS `sandbox-exec`, …; see `runner/test/lib/skip.sh`) is a failure. In a
+new test, skip with `gaffer_skip "<reason>"` from `runner/test/lib/skip.sh` (exit
+77) only for a missing prerequisite — a dispatch CLI call that errors or changes
+shape is a FAIL, never a skip.
 
 ## Ground rules
 
@@ -72,8 +84,8 @@ Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`, `ci`, `build`
    - `pnpm -r typecheck` (source type-check)
    - `pnpm -r typecheck:test` (STRICTER test type-check — `noUncheckedIndexedAccess`)
    - `pnpm -r test` (all package test suites)
-   - `pnpm -r test:coverage` (per-package coverage floor)
-   - Runner tests: `for t in runner/test/*.test.mjs; do node "$t"; done && for t in runner/test/*.test.sh; do bash "$t"; done`
+   - `pnpm -r test:coverage` (per-package coverage floor; CI enforces it on ubuntu / Node 22)
+   - `pnpm test:runner` (every runner test)
 4. Open a PR describing **why**, not just what. Use the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
 
 Bug reports and feature requests: open an issue using the templates in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/).

@@ -39,7 +39,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/mcp-render-seam-rc.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 # The seam + its _gaffer_sed_repl helper live in factory.config.sh. Source it
 # with the DB vars set so its top-level defaults resolve without side effects
-# (mirrors mcp-render-parity.test.sh).
+# (mirrors mcp-render-golden.test.sh).
 export GAFFER_DATA="$WORK/data" DISPATCH_DB="$WORK/data/dispatch.sqlite" MEMORY_DB="$WORK/data/memory.sqlite"
 mkdir -p "$GAFFER_DATA"
 # shellcheck source=../factory.config.sh
@@ -102,7 +102,10 @@ seam_case() {
 
   # Assertion 2: prior + the one extra placeholder-stripping sub == seam, byte for
   # byte (trailing newline included).
-  sed -e "s#\${GAFFER_TICKET_REPOS}##g" "$prior" > "$corrected"
+  # The template has since gained ${GAFFER_SCOPE_TICKET} (the dispatch server's factory
+  # ticket scope), which the frozen prior chain predates; review/clarify's scope render
+  # is checked here with it empty, so strip it the same way.
+  sed -e "s#\${GAFFER_TICKET_REPOS}##g" -e "s#\${GAFFER_SCOPE_TICKET}##g" "$prior" > "$corrected"
   if cmp -s "$corrected" "$seam"; then
     ok "$label — corrected prior render is byte-identical to the seam output"
   else

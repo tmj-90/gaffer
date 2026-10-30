@@ -370,6 +370,8 @@ export class ReviewGateService {
       expectedFromStatus: "in_review",
       approvedUnchanged,
       reviewApprove: true, // reached the merge-ready state through the guarded approve path
+      // The done gate's git runs HERE, before transition() takes the write lock.
+      deliveryDiff: this.transitions.deliveryDiffProof(ticket.id),
     });
   }
 
@@ -398,8 +400,7 @@ export class ReviewGateService {
     }
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       const ac = this.acs.findById(input.ac_id);
       if (!ac || ac.ticket_id !== ticket.id) throw notFound("acceptance_criterion", input.ac_id);
       if (!ac.check_command) {
@@ -565,6 +566,12 @@ export class ReviewGateService {
     if (summary.length === 0) {
       throw new DispatchError("VALIDATION_ERROR", "A test-result summary is required.");
     }
+    // The done gate needs real git; run it BEFORE the outer write transaction (a
+    // nested transition() is only a savepoint inside it, so "before transition()" is
+    // not enough). The gate re-checks the proof's fingerprint inside the transaction.
+    const pre = this.ticketSvc.resolveTicket(ticketRef);
+    const deliveryDiff =
+      pre.status === "in_testing" ? this.transitions.deliveryDiffProof(pre.id) : undefined;
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
@@ -610,6 +617,7 @@ export class ReviewGateService {
         reason: "tester_passed",
         expectedFromStatus: "in_testing",
         testerVerdict: true,
+        ...(deliveryDiff ? { deliveryDiff } : {}),
       });
       writeEvent(this.db, {
         entity_type: "ticket",
@@ -871,7 +879,7 @@ export class ReviewGateService {
         toStatus: target,
         reason: capReached ? `retry_cap_reached:${resolvedReason}` : resolvedReason,
         expectedFromStatus: ticket.status,
-        ...(isRequeue ? { patch: { attempt_count: nextAttempt } } : {}),
+        ...(isRequeue ? { patch: { attempt_count: nextAttempt }, reviewReject: true } : {}),
         ...(to === "cancelled" ? { wontDo: true } : {}),
         ...(capReached ? { park: true } : {}),
       });

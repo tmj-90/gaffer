@@ -44,8 +44,9 @@ turns_arg() { awk 'p { print; exit } $0 == "--max-turns" { p = 1 }' "$WORK/claud
 
 export CLAUDE_BIN="$FAKE"
 unset GAFFER_MAX_TURNS GAFFER_REVIEW_MAX_TURNS GAFFER_SECURITY_REVIEW_MAX_TURNS GAFFER_CLARIFY_MAX_TURNS \
-  GAFFER_JUDGE_MAX_TURNS GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_PO_MAX_TURNS \
-  GAFFER_DECOMPOSE_MAX_TURNS GAFFER_SPEC_AUTHOR_MAX_TURNS GAFFER_ONBOARD_MAX_TURNS
+  GAFFER_JUDGE_MAX_TURNS GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS \
+  GAFFER_PO_MAX_TURNS GAFFER_DECOMPOSE_MAX_TURNS GAFFER_SPEC_AUTHOR_MAX_TURNS GAFFER_ONBOARD_MAX_TURNS \
+  GAFFER_DECOMPOSE_AGENT_MAX_TURNS GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
 
@@ -81,7 +82,7 @@ TAIL="$(tail -n 4 "$WORK/claude.argv" | tr '\n' '|')"
 echo "== 3: every worker_deliver role passes its own cap =="
 grep -q 'gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}"' "$RUNNER_DIR/lib/review.sh" \
   && ok "reviewer passes GAFFER_REVIEW_MAX_TURNS" || fail "reviewer does not pass its cap"
-grep -q 'gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-40}"' "$RUNNER_DIR/lib/review.sh" \
+grep -qF 'gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}"' "$RUNNER_DIR/lib/review.sh" \
   && ok "security reviewer passes GAFFER_SECURITY_REVIEW_MAX_TURNS" || fail "security reviewer does not pass its cap"
 grep -q 'gaffer_role_turns "${GAFFER_CLARIFY_MAX_TURNS:-40}"' "$RUNNER_DIR/lib/clarify.sh" \
   && ok "clarify passes GAFFER_CLARIFY_MAX_TURNS" || fail "clarify does not pass its cap"

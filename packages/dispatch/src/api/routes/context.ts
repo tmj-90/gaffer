@@ -34,6 +34,20 @@ export function apiActor(): Actor {
 }
 
 /**
+ * The actor for the system/admin-only machine callbacks a full-capability REST caller
+ * may drive (mark-merged, reopen-for-review). A human principal — or the shared
+ * token's operator — acts as ADMIN under its own id, so the event names who acted
+ * (it used to be a fixed system/dispatch-api for everyone). A system or admin
+ * principal keeps its own type; an agent passes through unchanged and is refused by
+ * the service (agents never merge).
+ */
+export function operatorActor(): Actor {
+  const a = apiActor();
+  if (a.type !== "human") return a;
+  return a.id !== undefined ? { type: "admin", id: a.id } : { type: "admin" };
+}
+
+/**
  * The dependency bundle every route module receives. Assembled once per request
  * by the top-level dispatcher (from the handler's captured runners) so the
  * per-resource modules take one typed context instead of a long positional list.

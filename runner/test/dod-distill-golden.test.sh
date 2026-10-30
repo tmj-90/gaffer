@@ -77,9 +77,10 @@ printf 'GATE\ttests\tr\tPASS\t0\tt\nGATE\tlint\tr\tPASS\t0\tl\n' > "$CORPUS/res-
 : > "$CORPUS/res-empty.results"
 for r in res-mixed res-allskip res-allpass res-empty res-none; do summary_case "$r" "$CORPUS/$r.results"; count_case "$r" "$CORPUS/$r.results"; done
 
-# Feedback helpers stay fail-soft without the crew build: nothing printed, exit 0.
+# Feedback helpers stay fail-soft without the crew build. The distiller prints nothing
+# and returns NON-ZERO so the gate runners' `|| tail …` fallback keeps the raw failure.
 out="$(CREW_DIR="$WORK/nope" gaffer_dod_distill_output "$CORPUS/go.log" 40 2>/dev/null)"; rc=$?
-[ "$rc" -eq 0 ] && [ -z "$out" ] && ok "distill without the crew dist → empty, rc 0 (fail-soft feedback)" || no "distill missing dist: rc=$rc out='$out'"
+[ "$rc" -ne 0 ] && [ -z "$out" ] && ok "distill without the crew dist → empty, rc≠0 (the caller's tail fallback runs)" || no "distill missing dist: rc=$rc out='$out'"
 out="$(CREW_DIR="$WORK/nope" gaffer_dod_summary_line "$CORPUS/res-mixed.results" 2>/dev/null)"; rc=$?
 [ "$rc" -eq 0 ] && [ -z "$out" ] && ok "summary without the crew dist → empty, rc 0" || no "summary missing dist: rc=$rc out='$out'"
 

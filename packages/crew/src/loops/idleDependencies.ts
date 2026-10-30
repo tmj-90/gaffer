@@ -120,8 +120,16 @@ export function scanDependencies(
   const auditCommand = deps.config.loops.idle_dependencies.audit_command;
   if (auditCommand) {
     const result = deps.runner.run(auditCommand, root);
-    findings.push(...parseAudit(result.stdout));
-    findings.push(...parseOutdated(result.stdout));
+    if (result.timedOut || result.truncated) {
+      // Partial output must never be parsed as findings.
+      deps.events.record("dependency_audit_failed", {
+        repoName: repo.name,
+        reason: result.timedOut ? "timed out" : "output exceeded the size cap",
+      });
+    } else {
+      findings.push(...parseAudit(result.stdout));
+      findings.push(...parseOutdated(result.stdout));
+    }
   }
   return findings;
 }

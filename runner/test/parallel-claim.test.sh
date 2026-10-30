@@ -61,7 +61,7 @@ for i in 1 2 3; do
 done
 A1="$(cli agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 A2="$(cli agent register -n w2 --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$A1" ] && [ -n "$A2" ] || { echo "SKIP: could not register agents"; exit 0; }
+[ -n "$A1" ] && [ -n "$A2" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(cli agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 
 echo "== AC1: two agents race the SAME ticket → exactly one winner =="
 cli claim-ticket 1 -a "$A1" >/dev/null 2>&1 & p1=$!

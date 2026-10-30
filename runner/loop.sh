@@ -102,7 +102,7 @@ gaffer_timeout_preflight || { echo "gaffer factory: aborting — no timeout prim
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_DATA/.clarified-tickets" \
       "$GAFFER_DATA/.merge-held-tickets" "$GAFFER_DATA/.tested-tickets" \
       "$GAFFER_DATA/.backpressure-repos" "$GAFFER_DATA/.ci-gate-needs-pr-warned" \
-      "$GAFFER_DATA/.autonomy-policy-inert-warned" \
+      "$GAFFER_DATA/.autonomy-policy-inert-warned" "$GAFFER_DATA/.setup-error" \
   || echo "gaffer factory: WARNING — could not clear stale run markers in $GAFFER_DATA; this run may wrongly skip work." >&2
 
 echo "gaffer factory: starting (DRY_RUN=$DRY_RUN, max_ticks=$MAX_TICKS, stop_after_empty=$EMPTY_POLL_LIMIT, max_ticks_per_day=$MAX_TICKS_PER_DAY)"
@@ -122,6 +122,16 @@ if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
 fi
 
 RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
+
+# SETUP ERROR (tick.sh gaffer_abort_setup): a fail-closed setup check refused before any
+# agent launched — a systemic fault (an unbuilt CLI, a broken template, a missing hook)
+# that would fail every following tick the same way. Stop the run with the cause and
+# exit 3 so lib/daemon.sh backs off instead of re-running the churn every interval.
+gaffer_setup_error_line() {
+  local _why
+  _why="$(cut -f2- "$GAFFER_DATA/.setup-error" 2>/dev/null | head -1 | tr '\t' ' ' | cut -c1-300)"
+  echo "gaffer factory: setup error — ${_why:-see $GAFFER_LOG}; stopping this run (fix it, then re-run)."
+}
 
 if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   # ── Parallel path (opt-in: GAFFER_CONCURRENCY>1) ──────────────────────────
@@ -145,7 +155,26 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   export GAFFER_RUN_TICKS_FILE
   _q=$(( MAX_TICKS / N )); _r=$(( MAX_TICKS % N ))
   echo "gaffer factory: parallel mode — spawning $N worker(s) sharing MAX_TICKS=$MAX_TICKS (atomic per-tick reservation; pool total ≤ $MAX_TICKS)."
+  # STOPPABLE POOL. Background workers of a non-interactive bash start with SIGINT
+  # ignored and had no TERM handling, so Ctrl-C reaped the in-flight ticks (their perl
+  # wrapper sees the INT) while every worker went straight on to claim the next one,
+  # and a TERM to this loop orphaned the pool. Now a stop signal here writes the pool
+  # STOP FILE and TERMs every worker; a worker stops its in-flight tick (the tick's
+  # crash trap releases the claim) and never reserves another. A worker also stops on
+  # its own once this loop is gone (GAFFER_LOOP_PID), so a SIGKILL here cannot leave
+  # the pool spending until MAX_TICKS.
+  export GAFFER_LOOP_PID=$$ GAFFER_POOL_STOP_FILE="$WORKERS_DIR/stop"
+  _pool_stopping=0
   pids=()
+  _pool_stop() {
+    [ "$_pool_stopping" = 1 ] && return 0
+    _pool_stopping=1
+    : > "$GAFFER_POOL_STOP_FILE" 2>/dev/null || true
+    echo "gaffer factory: stop signal — stopping the worker pool (in-flight ticks are ended and their claims released)." >&2
+    [ "${#pids[@]}" -gt 0 ] && kill -TERM "${pids[@]}" 2>/dev/null
+    return 0
+  }
+  trap '_pool_stop' INT TERM HUP
   i=0
   while [ "$i" -lt "$N" ]; do
     _share=$_q; [ "$i" -lt "$_r" ] && _share=$((_q + 1))
@@ -154,10 +183,16 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
     i=$((i + 1))
   done
   # Wait for every worker; a non-zero worker exit is logged but never aborts the
-  # join (we still want the other workers' results + cleanup).
+  # join (we still want the other workers' results + cleanup). A trapped signal makes
+  # `wait` return early (>128) while the worker is still stopping — wait again.
   for p in "${pids[@]}"; do
-    wait "$p" || echo "gaffer factory: WARNING — a worker (pid $p) exited non-zero." >&2
+    while :; do
+      wait "$p"; _wrc=$?
+      kill -0 "$p" 2>/dev/null || break
+    done
+    [ "$_wrc" -eq 0 ] || [ "$_pool_stopping" = 1 ] || echo "gaffer factory: WARNING — a worker (pid $p) exited non-zero." >&2
   done
+  trap - INT TERM HUP
   # Aggregate per-worker result files: "<worked> <reviewed> <clarified> <idle> <nowork> <error> <ticks>".
   ticks=0; tot_worked=0; tot_reviewed=0; tot_clarified=0; tot_idle=0; tot_nowork=0; tot_error=0
   for rf in "$WORKERS_DIR"/*.result; do
@@ -179,12 +214,15 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
     [ -n "${_reclaimed_end// /}" ] && echo "gaffer factory: end-of-run reclaimed orphaned worktree(s): ${_reclaimed_end% }"
   fi
 
+  _pool_setup_error=0
+  [ -s "$GAFFER_DATA/.setup-error" ] && { _pool_setup_error=1; gaffer_setup_error_line; }
   echo "gaffer factory: done after $ticks tick(s)."
   if [ -f "$HERE/run-summary.sh" ]; then
     echo
     SUMMARY_SINCE="$RUN_STARTED" bash "$HERE/run-summary.sh" || true
   fi
   gaffer_loop_end_ping || true
+  [ "$_pool_setup_error" = 1 ] && exit 3
   exit 0
 fi
 
@@ -201,6 +239,12 @@ fi
 # behavior with the day-cap bump made fail-stop. Don't weaken the R-1 hardening.
 ticks=0
 empties=0
+_setup_error=0
+# A stop signal ends the run after the current tick (the tick runs in the foreground,
+# so bash runs this trap once it returns; Ctrl-C also reaches the tick's own wrapper).
+# Without it bash carried on to the next tick whenever the reaped tick exited normally.
+_loop_stop=0
+trap '_loop_stop=1' INT TERM HUP
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if ! gaffer_day_cap_ok; then
     echo "gaffer factory: per-day cap (MAX_TICKS_PER_DAY=$MAX_TICKS_PER_DAY, used $(gaffer_day_count)) reached — stopping."
@@ -257,6 +301,16 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   fi
   echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"
 
+  if [ "$res" = "setup_error" ]; then
+    _setup_error=1
+    gaffer_setup_error_line
+    break
+  fi
+  if [ "$_loop_stop" = 1 ]; then
+    echo "gaffer factory: stop signal — not starting another tick."
+    break
+  fi
+
   if [ "$res" = "no_work" ]; then
     empties=$((empties + 1))
     if [ "$empties" -ge "$EMPTY_POLL_LIMIT" ]; then
@@ -267,8 +321,10 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     empties=0
   fi
 
-  [ "$ticks" -lt "$MAX_TICKS" ] && sleep "$TICK_SLEEP"
+  [ "$ticks" -lt "$MAX_TICKS" ] && { sleep "$TICK_SLEEP" & wait "$!" 2>/dev/null; }
+  [ "$_loop_stop" = 1 ] && { echo "gaffer factory: stop signal — not starting another tick."; break; }
 done
+trap - INT TERM HUP
 echo "gaffer factory: done after $ticks tick(s)."
 
 # End-of-run report: landed / failed-safe / parked / re-queued / oversized /
@@ -279,3 +335,5 @@ if [ -f "$HERE/run-summary.sh" ]; then
   SUMMARY_SINCE="$RUN_STARTED" bash "$HERE/run-summary.sh" || true
 fi
 gaffer_loop_end_ping || true
+[ "$_setup_error" = 1 ] && exit 3
+exit 0

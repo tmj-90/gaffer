@@ -39,6 +39,8 @@ export DISPATCH_DIR="$WORK/dispatch"
 export CREW_DIR="$WORK/crew"
 export MEMORY_DIR="$WORK/memory"
 export RUNNER_DIR="$WORK/runner"
+# shellcheck source=lib/isolate.sh
+. "$HERE/lib/isolate.sh"; gaffer_test_isolate "$WORK"   # private GAFFER_DATA, not the checkout's
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR_REAL/factory.config.sh"
 

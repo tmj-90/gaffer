@@ -40,10 +40,10 @@ cd "$WORK"
 
 echo "== B-H2: glob fragments survive an adversarial cwd =="
 FRAGS="$(_hygiene_forbidden_fragments)"
-printf '%s\n' "$FRAGS" | grep -qxF '*.events.jsonl' \
+grep -qxF '*.events.jsonl' <<<"$FRAGS" \
   && ok "literal '*.events.jsonl' fragment survives (not expanded to a cwd match)" \
   || fail "'*.events.jsonl' was glob-expanded away — list is: $(printf '%s' "$FRAGS" | tr '\n' ' ')"
-printf '%s\n' "$FRAGS" | grep -qxF 'decoy.events.jsonl' \
+grep -qxF 'decoy.events.jsonl' <<<"$FRAGS" \
   && fail "a cwd filename (decoy.events.jsonl) leaked INTO the fragment list" \
   || ok "no cwd filename leaked into the fragment list"
 

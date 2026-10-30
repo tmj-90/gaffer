@@ -63,7 +63,7 @@ describe("guarded transition edges (capability table)", () => {
 
   it("an unguarded edge passes with no flags at all", () => {
     expect(violatedGuard("draft->ready", { toStatus: "ready" })).toBeNull();
-    expect(violatedGuard("claimed->in_progress", { toStatus: "in_progress" })).toBeNull();
+    expect(violatedGuard("blocked->ready", { toStatus: "ready" })).toBeNull();
   });
 
   it("table hygiene: no duplicate exact edge across rules, every flag is a known input flag", () => {
@@ -80,7 +80,7 @@ describe("guarded transition edges (capability table)", () => {
       expect(rule.message.length).toBeGreaterThan(10);
       expect(rule.why.length).toBeGreaterThan(10);
     }
-    expect(GUARDED_EDGES.length).toBe(12);
+    expect(GUARDED_EDGES.length).toBe(15);
   });
 
   it("live: a raw board move onto a guarded edge throws the table's message; the facade path passes", () => {

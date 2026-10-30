@@ -18,6 +18,7 @@ import {
   listDrafts,
   rejectLore,
   supersedeLore,
+  supersedeRefusal,
   suggestLore,
   updateLore,
   verifyLore,
@@ -318,7 +319,7 @@ export async function cmdReview(args: ReturnType<typeof parseArgs>): Promise<num
     let skipped = 0;
     for (let i = 0; i < drafts.length; i++) {
       const d = drafts[i]!;
-      const full = getLore(db, d.id);
+      const full = getLore(db, d.id, { recordRead: false });
       if (!full) continue; // raced / deleted
 
       process.stdout.write(`── Draft ${i + 1} of ${drafts.length} ──\n`);
@@ -445,15 +446,25 @@ export async function cmdSupersede(args: ReturnType<typeof parseArgs>): Promise<
   const oldId = args.positionals[0];
   const newId = getString(args.flags, "with");
   if (!oldId || !newId) {
-    process.stderr.write("memory: supersede <old-id> --with <new-id>\n");
+    process.stderr.write("memory: supersede <old-id> --with <new-id> [--approve]\n");
     return 2;
   }
+  const approve = getBool(args.flags, "approve");
   const db = openDb();
   try {
-    const lore = supersedeLore(db, oldId, newId);
+    const lore = supersedeLore(db, oldId, newId, { approveReplacement: approve });
     if (!lore) {
+      // Re-derive the reason for an actionable message (a rolled-back --approve
+      // leaves the DB as it was, so the same check explains the refusal).
+      const reason = supersedeRefusal(db, oldId, newId);
+      const why: Record<string, string> = {
+        same_id: "an id cannot supersede itself",
+        not_found: "check both ids exist",
+        replacement_not_active: `replacement ${newId} is not active — approve it first (\`memory approve ${newId}\`) or pass --approve if it is a draft`,
+        old_not_active: `${oldId} is not active (only an active record can be superseded)`,
+      };
       process.stderr.write(
-        `memory: couldn't supersede ${oldId} with ${newId} (check both ids exist and are not the same)\n`,
+        `memory: couldn't supersede ${oldId} with ${newId} (${why[reason ?? ""] ?? "refused"})\n`,
       );
       return 1;
     }

@@ -70,6 +70,10 @@ import {
 } from "./usage-ledger.mjs";
 import { Worker, roleTurnCap } from "./worker.mjs";
 import { loadRegistry, routeModel } from "../bin/route-model.mjs";
+import {
+  extractLastJsonBlock as extractJson,
+  quarantine as sharedQuarantine,
+} from "./agent-io.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -522,12 +526,10 @@ export function gatherMaterial(repoPath, scan) {
 /**
  * Wrap an UNTRUSTED field (README / manifest content) in a delimited envelope so an
  * embedded "SYSTEM:" / "ignore previous" line lands as DATA, not as a fresh
- * instruction. Strips any literal delimiter the data tries to smuggle. (Mirrors
- * bin/decompose.mjs `quarantine`.)
+ * instruction — the shared lib/agent-io.mjs quarantine, data on its own lines.
  */
 export function quarantine(tag, value) {
-  const data = String(value ?? "").replace(new RegExp(`</?\\s*untrusted-${tag}\\s*>`, "gi"), "");
-  return `<untrusted-${tag}>\n${data}\n</untrusted-${tag}>`;
+  return sharedQuarantine(tag, value, { block: true });
 }
 
 const QUARANTINE_NOTICE =
@@ -956,55 +958,16 @@ export function validateLore(rawLore) {
 }
 
 /**
- * Pull the LAST fenced ```json block (or last bare {...}) out of the model text and
- * parse it. Mirrors bin/decompose.mjs `extractLastJsonBlock`. Returns the object or
- * null when nothing parses.
+ * Pull the model's result out of its text: the LAST parseable JSON block `isResult`
+ * accepts (each call site names the shape it expects — a card has `tldr`, a review a
+ * `verdict`, the analysis a `digest`), else the last parseable object. The shared
+ * extractor (lib/agent-io.mjs): this file's copy took only the LAST fence, so an example
+ * ```json block after the real result replaced it.
  */
-export function extractLastJsonBlock(text) {
-  if (!text) return null;
-  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
-  let match;
-  let lastFence = null;
-  while ((match = fenceRe.exec(text)) !== null) lastFence = match[1];
-  const candidates = [];
-  if (lastFence) candidates.push(lastFence);
-  const bare = lastBalancedObject(text);
-  if (bare) candidates.push(bare);
-  for (const c of candidates) {
-    try {
-      return JSON.parse(c);
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  return null;
+export function extractLastJsonBlock(text, isResult = null) {
+  return extractJson(text, isResult);
 }
-
-function lastBalancedObject(text) {
-  let depth = 0;
-  let start = -1;
-  let last = null;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
-    }
-  }
-  return last;
-}
+const hasKey = (k) => (o) => Boolean(o) && typeof o === "object" && !Array.isArray(o) && k in o;
 
 /**
  * Validate + normalise the model's analysis into { digest, features }. A missing
@@ -1140,6 +1103,9 @@ export function agentChildEnv(base = process.env) {
   // placeholder, which would bucket every onboarding retrieval under a fake
   // ticket that can never join to a real outcome.
   env["GAFFER_RECALL_TICKET"] = "";
+  // Likewise the dispatch server's "${GAFFER_SCOPE_TICKET}": onboarding is bound to no
+  // ticket, so pin it EMPTY rather than let an inherited value widen the agent's scope.
+  env["GAFFER_SCOPE_TICKET"] = "";
   return env;
 }
 
@@ -1222,7 +1188,14 @@ export const TEXT_ONLY_MAX_TURNS = 2;
  * usage in the ledger (kind "onboard"), and return the agent's `.result` text.
  * Reuses bin/decompose.mjs's invocation pattern EXACTLY: --output-format json for
  * the usage ledger, the chosen model, the per-call turn + timeout caps, and the
- * credential-stripped child env. Returns { timedOut, stdout }.
+ * credential-stripped child env.
+ *
+ * Returns { timedOut, stdout, status, failed, errorText }. `failed` is a CLI-level
+ * failure — a non-zero exit, or claude's JSON reporting `is_error` (auth, rate limit:
+ * often with exit 0 and an empty stderr) — with `errorText` its first line (claude's
+ * `.result`, else stderr, else stdout). A failed turn's stdout is "" so callers never
+ * mine an error message for JSON. Callers used to see only stdout, so an expired login
+ * read as "no usable JSON" and every card was retried one by one.
  *
  * textOnly (the card + card-review turns): the prompt inlines everything the model
  * needs and asks for one JSON block, so the call runs as a plain completion — no
@@ -1299,11 +1272,12 @@ export function runAnalysisTurn(
         reason: "onboard analysis claude call timed out",
         elapsedMs: Date.now() - t0,
       });
-      return { timedOut: true, stdout: "" };
+      return { timedOut: true, stdout: "", status: null, failed: false, errorText: "" };
     }
     throw res.error;
   }
   const rawStdout = res.stdout || "";
+  const status = res.status ?? 0;
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
     recordKilledCall({
@@ -1311,10 +1285,80 @@ export function runAnalysisTurn(
       reason: "no parseable --output-format json on stdout",
       elapsedMs: Date.now() - t0,
     });
-    return { timedOut: false, stdout: rawStdout };
+  } else {
+    appendUsageRecord(buildUsageRecord({ json, kind }));
   }
-  appendUsageRecord(buildUsageRecord({ json, kind }));
-  return { timedOut: false, stdout: extractResultText(json) };
+  const isError = json !== null && json.is_error === true;
+  if (status !== 0 || isError) {
+    const errorText =
+      firstLine(isError ? extractResultText(json) : "") ||
+      firstLine(res.stderr) ||
+      firstLine(rawStdout) ||
+      "no output";
+    return { timedOut: false, stdout: "", status, failed: true, errorText };
+  }
+  return {
+    timedOut: false,
+    stdout: json === null ? rawStdout : extractResultText(json),
+    status,
+    failed: false,
+    errorText: "",
+  };
+}
+
+/** The first non-empty line of `text`, trimmed and capped (for one-line error reports). */
+function firstLine(text) {
+  const line = String(text ?? "")
+    .split("\n")
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  return line ? line.slice(0, 300) : "";
+}
+
+/**
+ * A model turn that failed at the CLI level (see runAnalysisTurn's `failed`). The card
+ * and review turns return one instead of null so the pass can tell "claude is down"
+ * (stop calling it) from "the model answered badly" (retry / mechanical-only).
+ */
+export function modelFailure(turn) {
+  return { modelFailed: true, status: turn.status, errorText: turn.errorText };
+}
+export function isModelFailure(v) {
+  return Boolean(v && typeof v === "object" && v.modelFailed === true);
+}
+
+/**
+ * The shared circuit breaker over every model call in one onboard (analysis, cards,
+ * reviews). It trips when the analysis turn fails at the CLI level, or after
+ * CLAUDE_BREAKER_LIMIT consecutive failed card/review turns; once tripped every
+ * remaining model call is skipped (mechanical-only cards). Without it an
+ * unauthenticated claude was spawned once per file — up to the 4000-file cap.
+ */
+export const CLAUDE_BREAKER_LIMIT = 2;
+export function claudeBreaker(log = () => {}, limit = CLAUDE_BREAKER_LIMIT) {
+  const b = {
+    tripped: false,
+    consecutive: 0,
+    failedTurns: 0,
+    error: null,
+    /** Record a failed turn; `trip` forces the breaker open immediately. */
+    fail(f, { trip = false } = {}) {
+      b.failedTurns += 1;
+      b.consecutive += 1;
+      b.error = b.error ?? `exit ${f.status ?? "?"}: ${f.errorText}`;
+      if (!b.tripped && (trip || b.consecutive >= limit)) {
+        b.tripped = true;
+        log(
+          `claude unavailable (${b.error}) — skipping model calls for the rest of this onboard ` +
+            "(mechanical-only cards); check `claude` auth, then re-run the onboard",
+        );
+      }
+    },
+    ok() {
+      b.consecutive = 0;
+    },
+  };
+  return b;
 }
 
 // ── Memory-store writes (the SAME memory CLI verbs the merge producer uses) ─────
@@ -2172,7 +2216,8 @@ function runCardTurn(prompt, env = process.env) {
   const cardEnv = cardTurnEnv(env);
   const turn = runAnalysisTurn(prompt, cardEnv, "onboard", { textOnly: true });
   if (turn.timedOut) return null;
-  return validateCardFields(extractLastJsonBlock(turn.stdout));
+  if (turn.failed) return modelFailure(turn);
+  return validateCardFields(extractLastJsonBlock(turn.stdout, hasKey("tldr")));
 }
 
 /** Scope the card model onto a child env, overriding both synth-model knobs. */
@@ -2183,14 +2228,18 @@ function cardTurnEnv(env) {
 
 /**
  * Run ONE model turn over a BATCH of `count` files (ledgered under "onboard").
- * Returns a dense array (fields | null per index) or null on timeout (caller then
- * writes mechanical-only cards for the whole batch). Same cheap card model as
- * runCardTurn. Injectable in tests.
+ * Returns a dense array (fields | null per index) when the model answered with JSON;
+ * null on a timeout or an answer with no JSON block at all (a TOTAL failure — the
+ * caller writes mechanical-only cards for the batch and does not retry per file); a
+ * modelFailure when claude itself failed. Same cheap card model as runCardTurn.
+ * Injectable in tests.
  */
 export function runCardBatchTurn(prompt, count, env = process.env) {
   const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard", { textOnly: true });
   if (turn.timedOut) return null;
-  return validateCardBatch(extractLastJsonBlock(turn.stdout), count);
+  if (turn.failed) return modelFailure(turn);
+  const parsed = extractLastJsonBlock(turn.stdout, (o) => Array.isArray(o) || hasKey("cards")(o));
+  return parsed === null ? null : validateCardBatch(parsed, count);
 }
 
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
@@ -2232,7 +2281,8 @@ function upsertCardCli(
 export function runCardReviewTurn(prompt, env = process.env) {
   const turn = runAnalysisTurn(prompt, env, "onboard-review", { textOnly: true });
   if (turn.timedOut) return null;
-  return validateCardReviewResult(extractLastJsonBlock(turn.stdout));
+  if (turn.failed) return modelFailure(turn);
+  return validateCardReviewResult(extractLastJsonBlock(turn.stdout, hasKey("verdict")));
 }
 
 /** Run the `memory card mark-failed` CLI verb for one card. */
@@ -2278,7 +2328,17 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  */
 export function runCardReviewSample(
   candidates,
-  { cfg, canonical, repo, repoRoot, head, env = process.env, log = () => {}, runReviewTurn },
+  {
+    cfg,
+    canonical,
+    repo,
+    repoRoot,
+    head,
+    env = process.env,
+    log = () => {},
+    runReviewTurn,
+    breaker = claudeBreaker(log),
+  },
 ) {
   const rawCap = parseInt(env.GAFFER_CARD_REVIEW_SAMPLE ?? "", 10);
   const maxReviews = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : CARD_REVIEW_SAMPLE_DEFAULT;
@@ -2333,7 +2393,13 @@ export function runCardReviewSample(
   for (const c of sample) {
     try {
       const prompt = buildCardReviewPrompt(c.rel, c.fileType, c.structure, c.snippet, c.fields);
-      const result = runReviewTurn(prompt);
+      // claude down (breaker open): no call — the card is unverified, same as a
+      // failed review below (fail closed).
+      let result = breaker.tripped ? null : runReviewTurn(prompt);
+      if (isModelFailure(result)) {
+        breaker.fail(result);
+        result = null;
+      } else if (result) breaker.ok();
       // FAIL-CLOSED: no parseable verdict → the card is unverified, so its model
       // fields are NOT trusted. Downgrade to mechanical-only rather than
       // letting an unreviewable (possibly poisoned) card keep its model text.
@@ -2403,6 +2469,7 @@ export function emitFileCards(
     runTurn = (p) => runCardTurn(p, env),
     runBatchTurn = (p, count) => runCardBatchTurn(p, count, env),
     runReviewTurn = (p) => runCardReviewTurn(p, env),
+    breaker = claudeBreaker(log),
   } = {},
 ) {
   const stats = {
@@ -2411,6 +2478,11 @@ export function emitFileCards(
     modelCarded: 0,
     skipped: 0,
     failed: 0,
+    // Model turns claude itself failed (exit / is_error), and files carded
+    // mechanical-only without a call because the breaker was open. `failed` stays
+    // what it always counted: card upserts the memory store refused.
+    modelFailed: 0,
+    modelSkipped: 0,
     capsHit: [],
     coverageNote: null,
     watermark: null,
@@ -2530,6 +2602,23 @@ export function emitFileCards(
   // Used for oversized-file isolation so a monster never shares a batch prompt.
   const processChunk = (entries, { forceSolo = false } = {}) => {
     if (entries.length === 0) return;
+    // One guarded model call covering `n` files: null when the breaker is open (no
+    // call; the files count as model-skipped) or claude failed (recorded on the
+    // breaker), else the turn's own result.
+    const guarded = (call, n = 1) => {
+      if (breaker.tripped) {
+        stats.modelSkipped += n;
+        return null;
+      }
+      const r = call();
+      if (isModelFailure(r)) {
+        stats.modelFailed += 1;
+        breaker.fail(r);
+        return null;
+      }
+      breaker.ok();
+      return r;
+    };
     let fieldsList;
     if (batch === 1 || forceSolo) {
       // Single-file path: B=1 safe fallback OR oversized isolation.
@@ -2537,7 +2626,9 @@ export function emitFileCards(
       fieldsList = entries.map((e) => {
         let fields = null;
         try {
-          fields = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+          fields = guarded(() =>
+            runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet)),
+          );
         } catch (err) {
           log(`card model turn failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
         }
@@ -2547,7 +2638,10 @@ export function emitFileCards(
       // Batch path: one call covers all entries.
       let arr = null;
       try {
-        arr = runBatchTurn(buildCardBatchPrompt(entries), entries.length);
+        arr = guarded(
+          () => runBatchTurn(buildCardBatchPrompt(entries), entries.length),
+          entries.length,
+        );
       } catch (err) {
         log(
           `card batch turn failed for ${entries.length} file(s) ` +
@@ -2557,8 +2651,9 @@ export function emitFileCards(
       // Per-file retry on PARTIAL shortfall: the batch returned but some slots are
       // null (the model dropped or mis-aligned them). Retry each missing file
       // individually so a bad batch costs a retry, not N lost cards. Log it honestly.
-      // A TOTAL failure (arr === null — e.g. timeout) is left as mechanical-only;
-      // retrying all files after a complete timeout isn't worth the additional cost.
+      // A TOTAL failure (arr === null — a timeout, no JSON at all, or claude itself
+      // failing) is left as mechanical-only: retrying every file after a complete
+      // failure multiplies the cost (and, with claude down, the spawns) for nothing.
       if (arr !== null) {
         const missing = [];
         for (let j = 0; j < entries.length; j++) {
@@ -2572,7 +2667,9 @@ export function emitFileCards(
           for (const j of missing) {
             const e = entries[j];
             try {
-              arr[j] = runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet));
+              arr[j] = guarded(() =>
+                runTurn(buildCardPrompt(e.rel, e.fileType, e.structure, e.snippet)),
+              );
             } catch (err) {
               log(`card retry failed for ${e.rel} (${err?.message ?? err}) — mechanical-only`);
             }
@@ -2648,7 +2745,8 @@ export function emitFileCards(
     const note =
       `file-card coverage: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded} skipped=${stats.skipped} ` +
-      `failed=${stats.failed} caps-hit=[${capsHit.join(", ")}]`;
+      `failed=${stats.failed} model-failed=${stats.modelFailed} ` +
+      `model-skipped=${stats.modelSkipped} caps-hit=[${capsHit.join(", ")}]`;
     stats.coverageNote = note;
     log(`COVERAGE NOTE — ${note}`);
   }
@@ -2656,6 +2754,7 @@ export function emitFileCards(
   log(
     `file cards: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
+      `model-failed=${stats.modelFailed} model-skipped=${stats.modelSkipped} ` +
       `cardModel=${cardModel(env)} batch=${batch} snippet=${snippetChars} ` +
       `watermark=${stats.watermark ?? "none"}`,
   );
@@ -2675,6 +2774,7 @@ export function emitFileCards(
         env,
         log: (m) => log(`review: ${m}`),
         runReviewTurn,
+        breaker,
       });
       stats.reviewStats = reviewStats;
     } catch (err) {
@@ -2718,6 +2818,7 @@ export function refreshFileCards(
   } = {},
 ) {
   const result = { refreshed: 0, deleted: 0, skipped: 0, failed: 0, watermark: null };
+  const breaker = claudeBreaker(log);
   if (!cfg) {
     log("memory CLI not configured — skipping card refresh");
     return result;
@@ -2796,7 +2897,13 @@ export function refreshFileCards(
     const structure = extractStructureSummary(content, fileType);
     const snippet = cardSnippet(content, snippetChars);
     try {
-      fields = runTurn(buildCardPrompt(rel, fileType, structure, snippet));
+      // claude down (breaker open after failed turns): keep the existing summary
+      // (keepModel) instead of spawning it once per changed file.
+      fields = breaker.tripped ? null : runTurn(buildCardPrompt(rel, fileType, structure, snippet));
+      if (isModelFailure(fields)) {
+        breaker.fail(fields);
+        fields = null;
+      } else if (fields) breaker.ok();
     } catch (err) {
       log(`card model turn failed for ${rel} (${err?.message ?? err}) — mechanical-only`);
     }
@@ -2855,7 +2962,7 @@ export function refreshFileCards(
  *
  * `runTurn` (digest analysis) and `runCardTurn` (per-file cards) are injectable —
  * the live model turns in production; stubs in tests. Returns
- * { ran, usedModel, stats, cardStats } for the caller's log/JSON.
+ * { ran, usedModel, stats, cardStats, modelError? } for the caller's log/JSON.
  */
 export function analyzeAndWrite(
   repoPath,
@@ -2882,6 +2989,8 @@ export function analyzeAndWrite(
   }
 
   const material = gatherMaterial(repoPath, scan);
+  // ONE breaker for every model call below (analysis → cards → reviews).
+  const breaker = claudeBreaker(log);
 
   let understanding = null;
   let usedModel = false;
@@ -2890,8 +2999,16 @@ export function analyzeAndWrite(
     const turn = runTurn(prompt);
     if (turn.timedOut) {
       log("model analysis timed out — falling back to a minimal honest digest");
+    } else if (turn.failed) {
+      // claude itself failed (auth, rate limit, crash): say WHY, and do not spawn it
+      // again for every file of the card pass.
+      log(
+        `model analysis failed: claude exited ${turn.status ?? "?"}: ${turn.errorText} — ` +
+          "falling back to a minimal honest digest",
+      );
+      breaker.fail(turn, { trip: true });
     } else {
-      const parsed = extractLastJsonBlock(turn.stdout);
+      const parsed = extractLastJsonBlock(turn.stdout, hasKey("digest"));
       understanding = validateAnalysis(parsed);
       if (understanding) {
         usedModel = true;
@@ -2925,6 +3042,7 @@ export function analyzeAndWrite(
         runTurn: runCardTurnInjected,
         runBatchTurn: runCardBatchTurnInjected,
         runReviewTurn: runReviewTurnInjected,
+        breaker,
       });
     } catch (err) {
       log(`cards: file-card pass failed (${err?.message ?? err}) — onboard unaffected`);
@@ -2978,5 +3096,13 @@ export function analyzeAndWrite(
     }
   }
 
-  return { ran: true, usedModel, stats, ...(cardStats ? { cardStats } : {}) };
+  return {
+    ran: true,
+    usedModel,
+    stats,
+    ...(cardStats ? { cardStats } : {}),
+    // Why model analysis was unavailable (claude's own error line), for the onboard
+    // summary + the dashboard run record. Absent when claude worked.
+    ...(breaker.error ? { modelError: breaker.error } : {}),
+  };
 }

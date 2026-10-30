@@ -235,13 +235,14 @@ and per-repo config.
 # 1. Build the servers
 pnpm -C .. -r build   # build all three packages from the repo root
 
-# 2. Watch a dry run (no Claude invoked, nothing mutated) — DRY_RUN=1 is the default
-bash loop.sh
+# 2. Watch a dry run (no Claude invoked, nothing mutated)
+./gaffer run --dry-run
 #   → prints each tick: what it WOULD claim, the recommended skills, the exact
 #     headless-claude command, or the idle-scan it WOULD run.
 
-# 3. Go live (only after reviewing) — claims real tickets and runs Claude
-DRY_RUN=0 bash loop.sh
+# 3. Go live (only after reviewing) — claims real tickets and runs Claude.
+#    `gaffer run` is LIVE by default (only --dry-run / DRY_RUN=1 keeps it a preview).
+./gaffer run
 
 # 4. Unattended: render + install the launchd agent (every 15 min, keep DRY_RUN=1 first).
 #    The plist is a TEMPLATE — substitute the repo + data paths, then load it (run from repo root):
@@ -254,7 +255,7 @@ Config + stop conditions (cost guards) live in `factory.config.sh`; the full
 knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 (`node scripts/config-reference.mjs`). Logs land in
 `<repo-root>/.gaffer/factory.log`; the full audit trail is Dispatch's event log
-(`dispatch ticket show <n>`) and its web UI.
+(`./gaffer wg ticket show <n>`) and its web UI.
 
 ## Files
 - `factory.config.sh` — paths, identity, **DRY_RUN**, stop conditions, CLI helpers
@@ -280,7 +281,7 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `test/intake-gate.test.sh` — clarify intake-gate wiring (`bash test/intake-gate.test.sh`)
 - `lib/hygiene.sh` — delivery-hygiene assertions: hard-fail guard against the leaks an unattended run produced (copied src tree, leaked `.crew/events.jsonl`, self-referential/broken symlinks, `node_modules` added/deleted)
 - `lib/minimalism.sh` — minimalism post-condition (smallest-change note required; oversized diffs flagged `needs_human_review: oversized_diff`)
-- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured command is SKIPPED, not failed** (and logged). Configurable per repo + factory-wide (`definition_of_done` in `crew.yaml`); `GAFFER_DOD=0` disables enforcement (today's behaviour). Commands come from each repo's dispatch `test_command`/`lint_command` (+ `GAFFER_DOD_TYPECHECK_CMD` for typecheck, which has no dispatch field). **Ships:** tests · typecheck · lint. **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
+- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` (+ `GAFFER_DOD_TYPECHECK_CMD` for typecheck, which has no dispatch field). **Ships:** tests · typecheck · lint. **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
 - `lib/backpressure.sh` — per-repo backpressure (unmerged `gaffer/*` branches + in_review tickets + active claims vs cap)
 - `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state); printed by `loop.sh`
 - `test/hygiene.test.sh` — delivery-hygiene validation (`bash test/hygiene.test.sh`)

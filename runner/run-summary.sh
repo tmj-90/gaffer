@@ -97,7 +97,7 @@ oversized_flagged() {
     for n in $nums; do
       # Substring match on the raw ticket JSON — a plain grep is far cheaper to spawn
       # than a python per ticket (this loop runs once per ticket across 4 statuses).
-      if sum_show "$n" 2>/dev/null | grep -qi 'oversized_diff'; then
+      if grep -qi 'oversized_diff' <<<"$(sum_show "$n" 2>/dev/null)"; then
         printf '    #%s (oversized_diff)\n' "$n"; found=1
       fi
     done
@@ -145,7 +145,7 @@ for status in refining blocked in_review 'done'; do
   nums="$(status_numbers "$status")"
   for n in $nums; do
     # grep (cheap to spawn) instead of a per-ticket python; substring match on raw JSON.
-    if sum_show "$n" 2>/dev/null | grep -qiE 'hygiene violation|post-teardown leak'; then
+    if grep -qiE 'hygiene violation|post-teardown leak' <<<"$(sum_show "$n" 2>/dev/null)"; then
       printf "    ${c_red}✗${c_off} #%s carries a hygiene-leak note\n" "$n"; LEAK_HITS=$((LEAK_HITS+1))
     fi
   done

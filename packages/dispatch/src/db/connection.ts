@@ -9,6 +9,16 @@ import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.js";
 export type Db = Database.Database;
 
 /**
+ * How to upgrade, for "this DB is newer than this build" messages. Never a bare
+ * `npm i -g <name>`: the npm names `dispatch` and `memory-mcp` belong to unrelated
+ * third-party packages, so that command installs a stranger's code and fixes nothing.
+ * Gaffer ships from a git checkout or a GitHub release tarball.
+ */
+export const DISPATCH_UPGRADE_HINT =
+  "from a checkout: git pull && pnpm install && pnpm -r build; from a release: " +
+  "npm install -g <the newer dispatch-X.tgz from https://github.com/tmj-90/gaffer/releases>";
+
+/**
  * Thrown when the database on disk records a `schema_version` NEWER than this
  * build understands — i.e. it was written by a newer Dispatch. Refusing to
  * open is deliberate: Dispatch is designed to be shared (CLI + MCP server +
@@ -27,7 +37,7 @@ export class DatabaseTooNewError extends Error {
       "this Dispatch database was written by a newer version of Dispatch.\n" +
         `  On-disk schema_version is ${found}; this build supports up to ${supported}.\n` +
         "  Upgrade Dispatch before opening it:\n" +
-        "    npm i -g dispatch@latest\n" +
+        `    ${DISPATCH_UPGRADE_HINT}\n` +
         "  (Refusing to open — an older schema could corrupt newer data.)",
     );
     this.name = "DatabaseTooNewError";
@@ -103,23 +113,96 @@ export function openDatabase(path: string): Db {
 }
 
 /**
- * Apply the schema and stamp the version. Safe to call repeatedly. Refuses
- * (via {@link DatabaseTooNewError}) any DB whose recorded `schema_version`
- * exceeds {@link SCHEMA_VERSION} — checked BEFORE applying schema SQL so a
- * newer DB is never touched by an older build.
+ * First schema_version whose `work_events` rows carry the tamper-evident hash
+ * chain. Only a DB migrating up from below it (and an import of a bundle written
+ * below it) has legitimately unhashed rows to backfill.
+ */
+export const EVENT_CHAIN_SCHEMA_VERSION = 23;
+
+/**
+ * How long a process waits for another process's migration to finish. A real
+ * migration (a table rebuild, hashing a large event log) can outlast the normal
+ * {@link BUSY_TIMEOUT_MS}; the waiter then finds the DB already current and returns.
+ */
+const MIGRATE_BUSY_TIMEOUT_MS = 60_000;
+
+/** The stamped `schema_version`, or null when there is no schema_meta table or row. */
+function readSchemaVersion(db: Db): number | null {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'")
+    .get();
+  if (!table) return null;
+  const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
+    { value: string } | undefined;
+  if (!row) return null;
+  const found = Number(row.value);
+  return Number.isFinite(found) ? found : null;
+}
+
+/**
+ * Apply the schema and stamp the version. Safe to call repeatedly, and safe for
+ * several processes to call at once. Refuses (via {@link DatabaseTooNewError}) any
+ * DB whose recorded `schema_version` exceeds {@link SCHEMA_VERSION} — checked
+ * BEFORE applying schema SQL so a newer DB is never touched by an older build.
+ *
+ * A DB already at {@link SCHEMA_VERSION} takes a fast path that writes nothing: it
+ * re-applies the idempotent CREATE ... IF NOT EXISTS schema (a lock-free self-heal
+ * for a dropped index) and returns. Every open (each `wg` call, MCP server and API
+ * start) therefore no longer queues for the single write lock, and a long writer
+ * elsewhere cannot make a read-only open fail with SQLITE_BUSY.
+ *
+ * An older (or fresh) DB is migrated in ONE `BEGIN IMMEDIATE` transaction that
+ * re-reads the version once it holds the lock. Two processes starting together
+ * after an upgrade serialise: the first migrates, the second waits, sees the new
+ * stamp and returns — no "duplicate column name" from a racing ALTER, no table
+ * rebuild run twice. A failed step rolls the whole migration back.
  */
 export function migrate(db: Db): void {
+  // Pragmas cannot change inside a transaction, so set them up front (they used to
+  // sit at the top of SCHEMA_SQL). openDatabase sets them too; a caller handing a
+  // bare connection to migrate() still gets the documented posture.
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+
+  const stamped = readSchemaVersion(db);
+  if (stamped !== null && stamped > SCHEMA_VERSION) {
+    throw new DatabaseTooNewError(stamped, SCHEMA_VERSION);
+  }
+  if (stamped === SCHEMA_VERSION) {
+    db.exec(SCHEMA_SQL);
+    return;
+  }
+
+  // The table-rebuild recipe needs foreign_keys OFF, and that PRAGMA is ignored
+  // inside a transaction: switch it off around the whole migration (the per-rebuild
+  // toggles below then see it already off). A long migration elsewhere is waited for.
+  const fkWasOn = (db.pragma("foreign_keys", { simple: true }) as number) === 1;
+  const busyWas = db.pragma("busy_timeout", { simple: true }) as number;
+  if (fkWasOn) db.pragma("foreign_keys = OFF");
+  db.pragma(`busy_timeout = ${Math.max(busyWas, MIGRATE_BUSY_TIMEOUT_MS)}`);
+  try {
+    db.transaction(() => migrateLocked(db)).immediate();
+  } finally {
+    db.pragma(`busy_timeout = ${busyWas}`);
+    if (fkWasOn) db.pragma("foreign_keys = ON");
+  }
+}
+
+/** The migration body, run under the write lock by {@link migrate}. */
+function migrateLocked(db: Db): void {
   // schema_meta may not exist on a brand-new DB; create it first so the guard
   // can read any stamped version without a "no such table" error.
   db.exec("CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
-    { value: string } | undefined;
-  if (row) {
-    const found = Number(row.value);
-    if (Number.isFinite(found) && found > SCHEMA_VERSION) {
-      throw new DatabaseTooNewError(found, SCHEMA_VERSION);
-    }
+  // Re-read under the lock: another process may have migrated while we waited.
+  const found = readSchemaVersion(db);
+  if (found !== null && found > SCHEMA_VERSION) {
+    throw new DatabaseTooNewError(found, SCHEMA_VERSION);
   }
+  if (found === SCHEMA_VERSION) return;
+  // foreign_keys is OFF for the rebuilds; make sure the migration itself leaves no
+  // dangling reference behind. Pre-existing violations are not this build's to fail
+  // an upgrade on, so only an INCREASE aborts (and rolls everything back).
+  const fkViolationsBefore = (db.pragma("foreign_key_check") as unknown[]).length;
   // Bring an existing ticket_repos up to the v3 shape BEFORE applying SCHEMA_SQL:
   // the schema creates an index on the new `access` column, which would fail if
   // the column were still missing. On a fresh DB ticket_repos doesn't exist yet,
@@ -214,6 +297,12 @@ export function migrate(db: Db): void {
   // tickets table — a plain additive ALTER (0/1, default 0, no CHECK to widen), so no
   // rebuild. No-op on a fresh DB (SCHEMA_SQL creates it) and idempotent afterwards.
   alterTicketsAddAcceptance(db);
+  // SQUAD (v26→v27): add the presentation-only `squad_name` + `shirt_number` columns
+  // to an EXISTING agents table — plain additive ALTERs (NULL backfill ⇒ unnamed,
+  // no number), so no rebuild. Must run BEFORE SCHEMA_SQL, whose partial unique
+  // index on shirt_number needs the column. The new `club` table is created by
+  // SCHEMA_SQL's CREATE TABLE IF NOT EXISTS. No-op on a fresh DB; idempotent.
+  alterAgentsAddSquadColumns(db);
   // Spec-Driven Development (v16→v17): the `specs` table. A brand-new standalone
   // table (no FKs — a spec outlives the repo/scope it references) created
   // idempotently by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like runs /
@@ -258,7 +347,19 @@ export function migrate(db: Db): void {
   // rowid order from the genesis constant. Existing rows are never rewritten.
   alterEventsAddHashChain(db);
   db.exec(SCHEMA_SQL);
-  backfillEventChain(db);
+  // Only a log written before the chain existed is legitimately unhashed. On a
+  // chained DB a NULL hash means the row was blanked, and it must stay visible as
+  // `unhashed` to `events verify` instead of being silently re-chained here (which
+  // made "edit a row, blank the hashes after it, reopen" verify clean).
+  if (found === null || found < EVENT_CHAIN_SCHEMA_VERSION) backfillEventChain(db);
+  const fkViolationsAfter = (db.pragma("foreign_key_check") as unknown[]).length;
+  if (fkViolationsAfter > fkViolationsBefore) {
+    throw new Error(
+      `migrating this Dispatch database to schema_version ${SCHEMA_VERSION} would leave ` +
+        `${fkViolationsAfter - fkViolationsBefore} dangling foreign-key reference(s); ` +
+        "nothing was changed. Restore a backup or report the database's schema.",
+    );
+  }
   db.prepare(
     "INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -353,6 +454,25 @@ function alterTicketsAddAcceptance(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("acceptance")) {
     db.exec("ALTER TABLE tickets ADD COLUMN acceptance INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+/**
+ * SQUAD additive migration (v26→v27): the operator-chosen presentation name and
+ * squad number on an EXISTING agents table. The CHECK mirrors SCHEMA_SQL (SQLite
+ * accepts a CHECK on ADD COLUMN; every existing row is NULL so it holds). The
+ * uniqueness of a set shirt number is the partial index SCHEMA_SQL creates after.
+ */
+function alterAgentsAddSquadColumns(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the columns.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("squad_name")) db.exec("ALTER TABLE agents ADD COLUMN squad_name TEXT");
+  if (!cols.has("shirt_number")) {
+    db.exec(
+      "ALTER TABLE agents ADD COLUMN shirt_number INTEGER " +
+        "CHECK (shirt_number IS NULL OR (shirt_number BETWEEN 1 AND 99))",
+    );
   }
 }
 

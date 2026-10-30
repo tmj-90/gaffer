@@ -20,6 +20,8 @@ import {
   memoryLoreQuery,
   rejectLoreBody,
   settingsBody,
+  updateClubBody,
+  updateSquadAgentBody,
 } from "../schemas.js";
 import { listSettings, writeSettings } from "../settings.js";
 import { apiActor } from "./context.js";
@@ -94,13 +96,18 @@ export async function routeApi(
   // PER-PRINCIPAL CREDENTIALS — GET/POST /api/principals, DELETE /api/principals/:id.
   // Named bearer tokens bound to an actor identity + capability. Creation returns
   // the token ONCE; the list never carries hashes. Mutations need the full tier
-  // (the capability gate upstream), so a read principal can see but not mint.
+  // (the capability gate upstream), so a read principal can see but not mint — AND
+  // the operator's own credential: a principal token may not mint or revoke
+  // principals at all. Otherwise a CI/bot credential could mint an admin identity
+  // under any actor_id (forging attribution, including admin "ground truth" for the
+  // autonomy recommendations) or revoke other people's tokens.
   if (segments.length === 2 && segments[1] === "principals") {
     if (method === "GET") {
       sendJson(res, 200, { principals: wg.listPrincipals() });
       return;
     }
     if (method === "POST") {
+      if (refuseIfPrincipal(req, res)) return;
       const body = createPrincipalBody.parse(await readJsonBody(req));
       const { principal, token } = wg.createPrincipal(
         {
@@ -117,9 +124,52 @@ export async function routeApi(
     return methodNotAllowed(res);
   }
   if (segments.length === 3 && segments[1] === "principals") {
+    // GET one principal (id or name) — the Location POST /api/principals returns.
+    if (method === "GET") {
+      sendJson(res, 200, { principal: wg.getPrincipal(segments[2] ?? "") });
+      return;
+    }
     if (method !== "DELETE") return methodNotAllowed(res);
+    if (refuseIfPrincipal(req, res)) return;
     const principal = wg.revokePrincipal(segments[2] ?? "", apiActor());
     sendJson(res, 200, { principal });
+    return;
+  }
+  // SQUAD — the operator's team identity for the dashboard's Match Day view.
+  //   GET   /api/club                — the club (name / short name / kit; "Gaffer" default).
+  //   PATCH /api/club                — partial update; null or "" clears a field.
+  //   GET   /api/squad               — the club + every agent's display name, shirt
+  //                                    number, role and derived default name.
+  //   PATCH /api/squad/agents/:id    — set an agent's display name / shirt number.
+  // Presentation only: the agent id claims/events/audit record never changes.
+  // Writes need the full capability (the non-GET gate upstream) and are recorded in
+  // the tamper-evident event log (club.updated / agent.display_updated) as the
+  // request's actor. No MCP tool writes these — an agent cannot rename itself.
+  if (segments.length === 2 && segments[1] === "club") {
+    if (method === "GET") {
+      sendJson(res, 200, { club: wg.getClub() });
+      return;
+    }
+    if (method === "PATCH") {
+      const body = updateClubBody.parse(await readJsonBody(req));
+      sendJson(res, 200, wg.updateClub(body, apiActor()));
+      return;
+    }
+    return methodNotAllowed(res);
+  }
+  if (segments.length === 2 && segments[1] === "squad") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, { club: wg.getClub(), agents: wg.listSquad() });
+    return;
+  }
+  if (segments.length === 4 && segments[1] === "squad" && segments[2] === "agents") {
+    if (method !== "PATCH") return methodNotAllowed(res);
+    const ref = safeDecode(segments[3] as string);
+    if (ref === null) {
+      return sendJson(res, 422, errorBody("VALIDATION_ERROR", "Malformed agent id."));
+    }
+    const body = updateSquadAgentBody.parse(await readJsonBody(req));
+    sendJson(res, 200, wg.updateAgentDisplay(ref, body, apiActor()));
     return;
   }
   // GET/PUT /api/idle-loops — dashboard control for the crew idle scan loops.
@@ -279,6 +329,12 @@ const STREAM_HEARTBEAT_MS = 15_000;
 const STREAM_BATCH = 200;
 /** Concurrent stream cap: this is a single-operator control plane, not a broadcast bus. */
 const STREAM_MAX_CLIENTS = 16;
+/**
+ * Hard lifetime of one stream (ms). The credential is re-checked on every tick, so
+ * this is the backstop that forces a periodic re-authentication; the dashboard
+ * reconnects with ?since=<last seq> and loses nothing.
+ */
+const STREAM_MAX_LIFETIME_MS = 60 * 60 * 1000;
 let streamClients = 0;
 
 function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerResponse): void {
@@ -308,10 +364,21 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
     streamClients -= 1;
     clearInterval(poll);
     clearInterval(beat);
+    clearTimeout(lifetime);
     if (!res.writableEnded) res.end();
   };
+  // The bearer gate ran once, when the stream opened. Re-resolve the SAME request's
+  // credential before every write, so revoking a principal (or rotating the token)
+  // cuts off a live feed at once instead of when the connection happens to drop.
+  // A named frame tells the client why, so it does not read it as a network blip.
+  const stillAuthorised = (): boolean => {
+    if (requestCapability(req) !== null) return true;
+    if (!res.writableEnded) res.write("event: auth_revoked\ndata: {}\n\n");
+    stop();
+    return false;
+  };
   const tick = (): void => {
-    if (closed) return;
+    if (closed || !stillAuthorised()) return;
     let rows: ReturnType<typeof wg.events.listSince>;
     try {
       rows = wg.events.listSince(cursor, STREAM_BATCH);
@@ -327,13 +394,33 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   };
   const poll = setInterval(tick, STREAM_POLL_MS);
   const beat = setInterval(() => {
-    if (!closed) res.write(": ping\n\n");
+    if (!closed && stillAuthorised()) res.write(": ping\n\n");
   }, STREAM_HEARTBEAT_MS);
+  const lifetime = setTimeout(stop, STREAM_MAX_LIFETIME_MS);
   // Timers must never keep the process alive on their own (tests, shutdown).
   poll.unref?.();
   beat.unref?.();
+  lifetime.unref?.();
   req.on("close", stop);
   res.on("close", stop);
   res.on("error", stop);
   tick();
+}
+
+/**
+ * Principal management is the operator's job: only the shared token (or a server
+ * with auth disabled — no principal resolves then) may mint or revoke principals.
+ * Writes the 403 and returns true when the caller authenticated with a principal.
+ */
+function refuseIfPrincipal(req: IncomingMessage, res: ServerResponse): boolean {
+  if (requestPrincipal(req) === null) return false;
+  sendJson(
+    res,
+    403,
+    errorBody(
+      "PRINCIPAL_ADMIN_REQUIRED",
+      "Only the shared operator token (or the local CLI) may create or revoke principals.",
+    ),
+  );
+  return true;
 }

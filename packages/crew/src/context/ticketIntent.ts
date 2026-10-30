@@ -7,17 +7,25 @@ import type { LoreSuggestionInput } from "../memory/client.js";
  * REAL product intent — WHY this work exists and WHY it was built the way it
  * was. At close that intent evaporates: the ticket is marked done and nothing
  * durable captures it. This module distills that intent into DRAFT lore so the
- * "why" survives the ticket. It NEVER auto-promotes — the drafts are flushed via
- * the Memory `suggest_lore` boundary and a human ratifies them.
+ * "why" survives the ticket. This module only DISTILLS; promotion is the
+ * caller's policy: crew's mock loop flushes the drafts through the Memory
+ * `suggest_lore` boundary for a human to ratify, while the live runner (tick.sh
+ * gaffer_distill_ticket_intent, via runtime/context/distillIntentCli.ts) drafts
+ * them and auto-promotes only under MEMORY_AUTO_APPROVE / GAFFER_MEMORY_AUTO_PROMOTE.
+ *
+ * This is the SINGLE source of the live distillation text (the former JS twin in
+ * runner/lib/json-tool.mjs was removed); runner/test/distill-intent-golden.test.sh
+ * pins its output.
  *
  * The distillation is deliberately conservative: if a ticket carries neither
- * acceptance criteria nor decisions there is nothing durable to harvest, so it
- * returns `[]` rather than drafting noise.
+ * acceptance criteria (with any non-blank text) nor decisions there is nothing
+ * durable to harvest, so it returns `[]` rather than drafting noise.
  */
 
 /** The ticket signals a distillation is built from. */
 export interface TicketIntentSource {
-  number: number;
+  /** Rendered verbatim (the live CLI passes the runner's string ticket number). */
+  number: number | string;
   title: string;
   description?: string;
   acceptanceCriteria: ReadonlyArray<{ text: string; status: string }>;
@@ -54,7 +62,12 @@ export function distillTicketIntent(
   repoName: string,
   src: TicketIntentSource,
 ): LoreSuggestionInput[] {
-  const acLines = src.acceptanceCriteria.map((ac) => `- ${ac.text}`);
+  // Blank / whitespace-only criteria carry no intent: drop them, so a ticket with
+  // only empty ACs drafts nothing instead of a body of bare "- " lines.
+  const acLines = src.acceptanceCriteria
+    .map((ac) => (ac.text ?? "").trim())
+    .filter((text) => text.length > 0)
+    .map((text) => `- ${text}`);
   const hasAc = acLines.length > 0;
   const hasDecisions = (src.decisions?.length ?? 0) > 0 || (src.rejectReasons?.length ?? 0) > 0;
   if (!hasAc && !hasDecisions) return [];
@@ -66,7 +79,7 @@ export function distillTicketIntent(
       title: `Requirement from #${src.number}: ${src.title}`.slice(0, MAX_TITLE),
       summary: clampSummary(
         `Why '${repoName}' ticket #${src.number} ("${src.title}") was built — the requirement it ` +
-          `served (distilled at close for ratification; not auto-promoted):\n${acLines.join("\n")}` +
+          `served (distilled at close from the delivered work):\n${acLines.join("\n")}` +
           (src.outcomeSummary ? `\n\nOutcome: ${src.outcomeSummary}` : ""),
       ),
       tags: ["ticket-intent", "requirement", `ticket-${src.number}`],
@@ -86,7 +99,7 @@ export function distillTicketIntent(
       title: `Decision from #${src.number}: ${src.title}`.slice(0, MAX_TITLE),
       summary: clampSummary(
         `Why '${repoName}' ticket #${src.number} ("${src.title}") was built THIS way ` +
-          `(distilled at close; not auto-promoted):\n${parts.join("\n\n")}`,
+          `(distilled at close):\n${parts.join("\n\n")}`,
       ),
       tags: ["ticket-intent", "decision", `ticket-${src.number}`],
       kind: "decision",

@@ -126,7 +126,7 @@ INSTALL_SRC="$(extract_fn "$TICK" "gaffer_install_agent_env" "  }")"
 [ -n "$INSTALL_SRC" ] && eval "$INSTALL_SRC"
 
 RETRY_SRC="$(extract_retry_block)"
-printf '%s' "$RETRY_SRC" | grep -q 'worktree add' \
+grep -q 'worktree add' <<<"$RETRY_SRC" \
   && ok "extracted the retry worktree re-add block from tick.sh (real source)" \
   || fail "could not extract the retry re-add block from tick.sh"
 
@@ -213,7 +213,7 @@ grep -q 'refusing live run (fail closed)' "$TICK" \
   && ok "tick.sh still refuses a live run when safety-hook.mjs is missing" \
   || fail "tick.sh lost the fail-closed hook-presence guard"
 # The retry block itself must call the installer (per-attempt, not pre-loop only).
-printf '%s' "$RETRY_SRC" | grep -q 'gaffer_install_agent_env' \
+grep -q 'gaffer_install_agent_env' <<<"$RETRY_SRC" \
   && ok "the retry path re-installs the agent env for every attempt" \
   || fail "the retry path does NOT re-install the agent env (attempt ≥2 runs without the safety hook)"
 

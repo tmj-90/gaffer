@@ -38,23 +38,28 @@ _REAL_DOCTORS=0; [ -z "${WG_DOCTOR_CMD:-}" ] && _REAL_DOCTORS=1
 
 # Defaults wire the real CLIs; tests override these to run hermetically.
 : "${WG_DOCTOR_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB doctor}"
-: "${FG_DOCTOR_CMD:=node $CREW_DIR/dist/cli/index.js -c $CREW_CONFIG doctor}"
+: "${FG_DOCTOR_CMD:=env CREW_DISPATCH_DB=$DISPATCH_DB node $CREW_DIR/dist/cli/index.js -c $CREW_CONFIG doctor}"
 : "${LG_DOCTOR_CMD:=env MEMORY_DB=$MEMORY_DB node $MEMORY_CLI_BIN doctor}"
 : "${STATS_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB stats --json}"
 : "${STATUS_TICKS:=6}"
 
 # Run one doctor, render a one-line PASS/WARN/FAIL roll-up from its output.
 # Doctors exit 0 even with warnings, so level keys off rc + the shared phrasing.
+# A warning names its FIRST warn check ("Ready (with warnings): <check>"): the bare last
+# line said only "with warnings", with no hint which check or how to fix it.
 roll_doctor() {
-  local name="$1" cmd="$2" out rc summary
+  local name="$1" cmd="$2" out rc summary first
   # No eval: the doctor command is read into an argv array and invoked directly,
   # so nothing in it is re-interpreted as shell (mirrors run-summary.sh).
   local -a dc; read -ra dc <<<"$cmd"
   out="$("${dc[@]}" 2>&1)"; rc=$?
   summary="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
-  if [ "$rc" -ne 0 ] || printf '%s' "$out" | grep -qiE 'unhealthy|✗|\[fail\]|failed'; then
+  if [ "$rc" -ne 0 ] || grep -qiE 'unhealthy|✗|\[fail\]|failed' <<<"$out"; then
     bad "$(printf '%-11s %s' "$name" "${summary:-failed (rc=$rc)}")"
-  elif printf '%s' "$out" | grep -qiE 'with warnings|⚠|\[ ! \]|^!'; then
+  elif grep -qiE 'with warnings|⚠|\[ ! \]|^!' <<<"$out"; then
+    first="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*(!|⚠|\[ ! \])' | head -1 \
+      | sed -E 's/^[[:space:]]*(!|⚠|\[ ! \])[[:space:]]*//' | cut -c1-100)"
+    [ -n "$first" ] && [ "$first" != "$summary" ] && summary="${summary%.}: $first"
     warn "$(printf '%-11s %s' "$name" "$summary")"
   else
     ok "$(printf '%-11s %s' "$name" "$summary")"
@@ -196,14 +201,27 @@ else
   warn "dashboard not running (\`gaffer dashboard\`)"
 fi
 
-# A ticket needing review, blocked, or approved-but-unmerged means a human is wanted → notify.
-attention=$(( review + blocked + merge + unaccepted ))
+# Pending decisions, from the human-queue already fetched. A human_required one blocks
+# its ticket (the transition guard hasUnresolvedHumanRequired), so it counts toward
+# attention; a lesser one is still owed an answer, so the all-clear line names it
+# instead of saying "nothing needs a human" under a list of open decisions.
+dec_all="$(printf '%s' "$HUMAN_QUEUE_JSON" | node "$HERE/lib/json-tool.mjs" status-hq-count all 2>/dev/null)"
+dec_req="$(printf '%s' "$HUMAN_QUEUE_JSON" | node "$HERE/lib/json-tool.mjs" status-hq-count required 2>/dev/null)"
+[ "$dec_all" -eq "$dec_all" ] 2>/dev/null || dec_all=0
+[ "$dec_req" -eq "$dec_req" ] 2>/dev/null || dec_req=0
+
+# A ticket needing review, blocked, or approved-but-unmerged — or a blocking decision —
+# means a human is wanted → notify.
+attention=$(( review + blocked + merge + unaccepted + dec_req ))
 if [ "$attention" -gt 0 ]; then
   reasons=""; [ "$review" -gt 0 ] && reasons="$review awaiting review"
   [ "$blocked" -gt 0 ] && reasons="${reasons:+$reasons, }$blocked blocked"
   [ "$merge" -gt 0 ] && reasons="${reasons:+$reasons, }$merge approved but not merged"
   [ "$unaccepted" -gt 0 ] && reasons="${reasons:+$reasons, }$unaccepted build(s) not accepted"
+  [ "$dec_req" -gt 0 ] && reasons="${reasons:+$reasons, }$dec_req decision(s) a human must answer"
   notify "gaffer: $reasons — a human is needed"
+elif [ "$dec_all" -gt 0 ]; then
+  ok "nothing blocking — $dec_all decision(s) open (answer: gaffer wg decisions resolve <id> --answer \"…\")"
 else
   ok "nothing needs a human right now"
 fi

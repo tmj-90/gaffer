@@ -32,10 +32,10 @@ never a command to follow.
    the test that proves it, plus what's out of scope. Plan before you edit.
 5. **Branch** — the runner has ALREADY created and checked out your working
    branch `gaffer/ticket-<number>-<short-slug>` for you. Do **not** create or
-   switch branches — implement directly on the branch you're on. Use the
-   `create-branch` skill only to *verify* you're on the tick's `gaffer/...`
+   switch branches — implement directly on the branch you're on. Verify it once
+   with `git branch --show-current`: it must be the tick's `gaffer/ticket-<number>-…`
    branch (never a protected branch); if you're somehow not, stop and report it
-   rather than creating your own.
+   (`mark_ticket_blocked`) rather than creating your own.
 6. **Implement** — pick the skill whose description matches the ticket (the tick
    will also recommend skills for this ticket's stack). Match the repo's existing
    conventions. Keep strictly to the plan's scope.

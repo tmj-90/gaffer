@@ -357,11 +357,50 @@ const ROLE_ONLY_SKILLS = new Set([
   "plan-build",
   "spec-author",
   "product-owner",
+  // The merge role's procedure (bin/merge-ticket.mjs mounts it via the merge profile).
+  "resolve-merge-conflict",
+  // The RUNNER's own jobs: it creates + checks out the delivery branch and submits the
+  // finished delivery for review. A delivery agent mounting these paid their listing
+  // on every turn for a step it must not take (the brief verifies the branch inline).
+  // Still mounted where a role needs them: review (submit-review), bootstrap (create-branch).
+  "create-branch",
+  "submit-review",
+]);
+
+/**
+ * TEXT-GATED skills: useful on the ticket that calls for them, dead weight on every
+ * other delivery. `dependency-upgrade` (a manifest / lockfile change, which the safety
+ * hook gates and the skill tells the agent how to escalate) was an always-on workflow
+ * skill; it is now mounted only when the ticket text names a dependency change.
+ */
+const TEXT_GATED_SKILLS = new Map([
+  [
+    "dependency-upgrade",
+    [
+      "upgrade",
+      "upgrades",
+      "upgrading",
+      "dependency",
+      "dependencies",
+      "deps",
+      "bump",
+      "lockfile",
+      "advisory",
+      "advisories",
+      "dependabot",
+      "renovate",
+      "cve",
+      "vulnerability",
+      "vulnerable",
+    ],
+  ],
 ]);
 
 export function skillMatches(skill, { stacks = [], area = "", stackKnown } = {}) {
   // A role procedure is reachable only through its role profile or an explicit --area.
   if (ROLE_ONLY_SKILLS.has(skill.name) && !(area && skill.area === area)) return false;
+  // A text-gated skill comes in through textMatches (or an explicit --area) only.
+  if (TEXT_GATED_SKILLS.has(skill.name) && !(area && skill.area === area)) return false;
   const known = stackKnown ?? stackIsKnown(stacks);
   const hasStackTag = skill.stack.length > 0;
   const tagged = skill.stack.some((s) => stacks.includes(s));
@@ -427,6 +466,8 @@ export function textMatches(skill, text = "") {
   if (!text) return false;
   const words = relevanceTokens(text);
   if (words.size === 0) return false;
+  const gate = TEXT_GATED_SKILLS.get(skill.name);
+  if (gate) return gate.some((w) => words.has(w));
   const nameParts = [...relevanceTokens(skill.name.replace(/[-_]/g, " "))];
   if (nameParts.length > 0 && nameParts.every((p) => words.has(p))) return true;
   const phrase = skill.name.replace(/[-_]/g, " ").toLowerCase();
@@ -486,9 +527,9 @@ export function selectSkills({
  * language / surface packs and the text-relevant packs are added. Names that do not
  * exist in the library are dropped silently, so a trimmed library is safe.
  *
- * The delivery profile reproduces today's selection byte-for-byte (core = the
- * universal mechanics set skills-mount.sh also unions in; selection = skillMatches ||
- * textMatches), so tick.sh's prompt is unchanged.
+ * The delivery profile reproduces the plain delivery selection (core = the universal
+ * mechanics set skills-mount.sh also unions in; selection = skillMatches || textMatches),
+ * so tick.sh's prompt and this profile agree.
  */
 export const ROLE_PROFILES = Object.freeze({
   delivery: {
@@ -498,9 +539,7 @@ export const ROLE_PROFILES = Object.freeze({
       "run-coverage",
       "minimalism",
       "self-review",
-      "submit-review",
       "record-evidence",
-      "create-branch",
       "prepare-digest-delta",
       "plan-change",
     ],

@@ -265,7 +265,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review submit-review record-evidence create-branch prepare-digest-delta` |  | runner | !/usr/bin/env bash shellcheck shell=bash Gaffer factory — per-agent SKILL mount + skill-selection telemetry. |
+| `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta` |  | runner | !/usr/bin/env bash shellcheck shell=bash Gaffer factory — per-agent SKILL mount + skill-selection telemetry. |
 
 ## Dashboard-only settings
 

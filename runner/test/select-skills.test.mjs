@@ -816,11 +816,6 @@ check("selectSkills without text is byte-identical to before (no text arg == emp
   );
 });
 
-if (failures.length) {
-  console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
-  for (const f of failures) console.error("  ✗ " + f);
-  process.exit(1);
-}
 // --- ROLE profiles: every agent role gets its own set, not the delivery's ---------
 const libNames = new Set(loadSkills().map((s) => s.name));
 check("every ROLE_PROFILES core skill exists in the library (no dangling names)", () => {
@@ -923,4 +918,51 @@ check("roles never return duplicates", () => {
   }
 });
 
+check("delivery never mounts the runner's / another role's jobs (listing paid every turn)", () => {
+  for (const stacks of [["typescript"], ["python"], []]) {
+    const names = selectSkills({ stacks, text: "Add a REST endpoint for tasks" }).map(
+      (s) => s.name,
+    );
+    for (const n of [
+      "create-branch",
+      "submit-review",
+      "resolve-merge-conflict",
+      "dependency-upgrade",
+    ])
+      assert(
+        !names.includes(n),
+        `delivery (${stacks.join(",") || "no stack"}) must NOT mount ${n}`,
+      );
+    const role = selectForRole("delivery", { stacks, text: "Add a REST endpoint" }).map(
+      (s) => s.name,
+    );
+    for (const n of ["create-branch", "submit-review", "resolve-merge-conflict"])
+      assert(!role.includes(n), `delivery profile must NOT mount ${n}`);
+  }
+});
+check("dependency-upgrade is pulled in only when the ticket text names a dependency change", () => {
+  for (const text of [
+    "Upgrade express to v5",
+    "Fix the Dependabot advisory for lodash",
+    "Bump react and refresh the lockfile",
+  ]) {
+    const names = selectSkills({ stacks: ["typescript"], text }).map((s) => s.name);
+    assert(names.includes("dependency-upgrade"), `"${text}" should mount dependency-upgrade`);
+  }
+});
+check("the role that owns each still mounts it", () => {
+  assert(selectForRole("review", { stacks: ["go"] }).some((s) => s.name === "submit-review"));
+  assert(
+    selectForRole("merge", { stacks: ["go"] }).some((s) => s.name === "resolve-merge-conflict"),
+  );
+  assert(selectForRole("bootstrap", { stacks: ["go"] }).some((s) => s.name === "create-branch"));
+});
+
+// Report once, AFTER every check: this block used to sit above the ROLE-profile
+// checks, so a failing role check was never reported.
+if (failures.length) {
+  console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
+  for (const f of failures) console.error("  ✗ " + f);
+  process.exit(1);
+}
 console.log(`PASS — ${passed} checks passed (library: ${DEFAULT_SKILLS_DIR})`);

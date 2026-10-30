@@ -141,7 +141,7 @@ describe("web: Map view (the scouting map)", () => {
     expect(pay!.querySelector("a.sg-name")?.getAttribute("href")).toBe("#/node/n-pay");
     const mags = Array.from(pay!.querySelectorAll("a.mag"));
     expect(mags.map((a) => a.getAttribute("href"))).toEqual(["#/ticket/t3", "#/ticket/t2"]);
-    expect(mags[0].getAttribute("aria-label")).toBe("#3 Blocked: Ticket 3");
+    expect(mags[0]!.getAttribute("aria-label")).toBe("#3 Blocked: Ticket 3");
     expect(pay!.querySelector("a a, [aria-hidden='true'] a")).toBeNull();
   });
 

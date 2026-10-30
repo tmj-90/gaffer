@@ -142,13 +142,13 @@ describe("web: Match Day season and Plan-a-build page", () => {
 
     location.hash = "#/epics";
     await settle();
-    // An earlier test's module instance may still own a scrim (it keeps its window
-    // listeners): this module's scrim is the last one appended.
-    const panels = Array.from(document.querySelectorAll(".pb-scrim .pb-panel"));
-    const back = (panels[panels.length - 1] as HTMLElement) || null;
-    expect(back).not.toBeNull();
-    expect(back!.getAttribute("role")).toBe("dialog");
-    expect(back!.classList.contains("pb-inline")).toBe(false);
+    // The page hands the SAME panel element back to its scrim. An earlier test's
+    // module instance may still own a scrim of its own (it keeps its window
+    // listeners), so follow the element, not "the last scrim in the document".
+    const back = panel!;
+    expect(back.closest(".pb-scrim")).not.toBeNull();
+    expect(back.getAttribute("role")).toBe("dialog");
+    expect(back.classList.contains("pb-inline")).toBe(false);
 
     // And the season's Plan a build opens it as the sheet again.
     const trigger = Array.from(document.querySelectorAll(".view-head button")).find((b) =>
@@ -156,6 +156,6 @@ describe("web: Match Day season and Plan-a-build page", () => {
     ) as HTMLButtonElement;
     trigger.click();
     await tick();
-    expect(back!.closest(".pb-scrim")!.classList.contains("open")).toBe(true);
+    expect(back.closest(".pb-scrim")!.classList.contains("open")).toBe(true);
   });
 });

@@ -14,7 +14,7 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "exactOptionalPropertyTypes": false,
     "types": ["node"]
   },

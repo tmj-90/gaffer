@@ -114,8 +114,8 @@ describe("web: Memory view, the club-wide read", () => {
     expect(groups).toEqual(["Awaiting your signature", "On the record"]);
     const approves = Array.from(document.querySelectorAll("button.lore-approve"));
     expect(approves).toHaveLength(2);
-    expect(approves[0].classList.contains("primary")).toBe(true);
-    expect(approves[1].classList.contains("primary")).toBe(false);
+    expect(approves[0]!.classList.contains("primary")).toBe(true);
+    expect(approves[1]!.classList.contains("primary")).toBe(false);
     // The view carries a data signature, so an unchanged refresh keeps the DOM.
     expect((document.querySelector(".view-memory") as HTMLElement).dataset.sig).toBeTruthy();
   });

@@ -187,9 +187,9 @@ describe("web: the Overview's loading, failure and match report", () => {
     const rows = [...report!.querySelectorAll(".mr-list .mr-row")];
     // claim.created + its move in the same second read as ONE line; evidence is left off.
     expect(rows).toHaveLength(1);
-    expect(rows[0].querySelector(".mr-ref")?.textContent).toBe("#27");
-    expect(rows[0].querySelector(".mr-what")?.textContent).toMatch(/Ready\s*→\s*Claimed/);
-    expect(rows[0].querySelector(".mr-who")?.textContent).toContain("crew-delivery-02");
+    expect(rows[0]!.querySelector(".mr-ref")?.textContent).toBe("#27");
+    expect(rows[0]!.querySelector(".mr-what")?.textContent).toMatch(/Ready\s*→\s*Claimed/);
+    expect(rows[0]!.querySelector(".mr-who")?.textContent).toContain("crew-delivery-02");
     // Every event, book-keeping included, is still one click away.
     const all = report!.querySelector("details.mr-all");
     expect(all).not.toBeNull();

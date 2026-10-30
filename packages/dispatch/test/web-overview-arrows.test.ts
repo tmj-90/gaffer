@@ -33,7 +33,7 @@ const MOVES: Record<string, { status: string; moves: [string, string, number][] 
 const num = (id: string) => Number(id.slice(3));
 
 function events(id: string) {
-  return MOVES[id].moves.map(([from, to, min], i) => ({
+  return MOVES[id]!.moves.map(([from, to, min], i) => ({
     id: `${id}-e${i}`,
     entity_type: "ticket",
     entity_id: id,
@@ -66,10 +66,12 @@ function stubFetch(): void {
       }
       if (url.includes("/api/board")) return json(null);
       const one = url.match(/\/tickets\/(tk-\d+)/);
-      if (one && MOVES[one[1]])
+      const oneId = one?.[1];
+      const oneMoves = oneId ? MOVES[oneId] : undefined;
+      if (oneId && oneMoves)
         return json({
-          ticket: { id: one[1], number: num(one[1]), status: MOVES[one[1]].status },
-          events: events(one[1]),
+          ticket: { id: oneId, number: num(oneId), status: oneMoves.status },
+          events: events(oneId),
           repositories: [{ name: "billing-api", access: "write" }],
           scopes: [],
         });

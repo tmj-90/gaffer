@@ -230,6 +230,9 @@ describe("web: What I own lane", () => {
     expect(panel!.querySelector(".own-row")).toBeNull();
     const empty = panel!.querySelector(".empty-state");
     expect(empty).not.toBeNull();
-    expect(empty!.textContent).toMatch(/nothing is waiting on you/i);
+    // Match Day Overview: the empty Team Sheet speaks the comp's line ("Nothing
+    // needs you. Every ticket in play is with an agent or the queue.").
+    expect(empty!.textContent).toMatch(/nothing needs you/i);
+    expect(empty!.textContent).toMatch(/with an agent or the queue/i);
   });
 });

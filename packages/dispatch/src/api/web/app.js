@@ -983,16 +983,7 @@ function skeleton(kind = "list") {
     "aria-busy": "true",
     "aria-label": "Loading",
   });
-  if (kind === "overview") {
-    wrap.appendChild(el("div", { class: "skeleton sk-scoreboard" }));
-    wrap.appendChild(
-      el("div", { class: "grid-2" }, [
-        el("div", { class: "skeleton sk-card" }),
-        el("div", { class: "skeleton sk-card" }),
-      ]),
-    );
-    return wrap;
-  }
+  if (kind === "overview") return overviewSkeleton();
   wrap.appendChild(el("div", { class: "skeleton sk-bar", style: "width:40%" }));
   wrap.appendChild(el("div", { class: "skeleton sk-line" }));
   if (kind === "board") {
@@ -1211,6 +1202,13 @@ function mountView(content) {
   }
 }
 
+/**
+ * Views that draw their own failure page (one specific message + Try again). The
+ * router uses it only for a navigation; a failed background refresh keeps the
+ * view on screen, and a later refresh that succeeds replaces the failure page.
+ */
+const VIEW_ERROR_PAGES = { overview: (e) => overviewError(e) };
+
 async function router() {
   const { view, param } = parseHash();
   // Unknown views fall through to Overview; aliases are resolved in parseHash.
@@ -1243,6 +1241,11 @@ async function router() {
       if (!isCurrent()) return; // a stale failure never paints over the new view
       // A 401 is already handled inside api() (the login screen is shown).
       if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
+      // A view may draw its own failure in its own language (the Overview's dark scoreboard).
+      if (VIEW_ERROR_PAGES[view]) {
+        mountView(VIEW_ERROR_PAGES[view](e));
+        return;
+      }
       // One specific message + a retry, shown once — not repeated in a toast.
       const panel = emptyState(
         "That page could not load.",
@@ -2832,9 +2835,59 @@ function overviewScoreboard(f) {
   const nowIso = new Date(f.now).toISOString();
   return el("section", { class: "scoreboard bleed", "aria-label": "Scoreboard" }, [
     el("div", { class: "scoreboard-in" }, [
-      el("div", { class: "sb-main" }, [
-        el("h1", { class: "hl" }, lead),
-        subP,
+      el("div", { class: "sb-main" }, [el("h1", { class: "hl" }, lead), subP]),
+      el("div", { class: "sb-side" }, [
+        el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
+          statCell({
+            label: "Need you",
+            value: String(total).padStart(2, "0"),
+            needs: total > 0,
+            href: "#what-i-own",
+            flip: "needs",
+            title: `${total} waiting for you`,
+          }),
+          statCell({
+            label: "On the pitch",
+            value: f.slots ? `${onPitch}/${f.slots}` : String(onPitch),
+            href: "#tactics",
+            flip: "pitch",
+            title: f.slots
+              ? `${onPitch} of ${f.slots} agent slots working`
+              : `${onPitch} agents working`,
+          }),
+          statCell({
+            label: "Delivered today",
+            value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
+            href: "#/work?status=done",
+            flip: "delivered",
+          }),
+          statCell({
+            label: "Wage bill",
+            value: today == null ? "—" : money(today),
+            flip: "wage",
+            title: "API-equivalent spend today, from the usage ledger",
+            after:
+              today != null && f.budget
+                ? el("div", { class: "sc-band" }, [
+                    band(
+                      today,
+                      f.budget,
+                      `${money(today)} of the ${moneyW(f.budget)} daily budget (${Math.round((today / f.budget) * 100)}%)`,
+                    ),
+                    el("span", { class: "kpi-sub" }, `of ${moneyW(f.budget)} today`),
+                  ])
+                : el("span", { class: "kpi-sub" }, "today, API-equivalent"),
+          }),
+        ]),
+      ]),
+      // The board's small print, top right: when it was read and the ledger's
+      // integrity (an altered log reads red and bold).
+      el("div", { class: "sb-small" }, [
+        el(
+          "time",
+          { class: "sb-clock", datetime: nowIso },
+          `${fmtDay(nowIso)} · ${clockTime(f.now)}`,
+        ),
         logStatus
           ? el("p", { class: `view-hero-status${chain?.chain_ok !== false ? " ok" : ""}` }, [
               chain?.chain_ok !== false ? glyph("done", 14) : glyph("failed", 14),
@@ -2842,53 +2895,6 @@ function overviewScoreboard(f) {
             ])
           : null,
       ]),
-      el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
-        statCell({
-          label: "Need you",
-          value: String(total).padStart(2, "0"),
-          needs: total > 0,
-          href: "#what-i-own",
-          flip: "needs",
-          title: `${total} waiting for you`,
-        }),
-        statCell({
-          label: "On the pitch",
-          value: f.slots ? `${onPitch}/${f.slots}` : String(onPitch),
-          href: "#tactics",
-          flip: "pitch",
-          title: f.slots
-            ? `${onPitch} of ${f.slots} agent slots working`
-            : `${onPitch} agents working`,
-        }),
-        statCell({
-          label: "Delivered today",
-          value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
-          href: "#/work?status=done",
-          flip: "delivered",
-        }),
-        statCell({
-          label: "Wage bill",
-          value: today == null ? "—" : money(today),
-          flip: "wage",
-          title: "API-equivalent spend today, from the usage ledger",
-          after:
-            today != null && f.budget
-              ? el("div", { class: "sc-band" }, [
-                  band(
-                    today,
-                    f.budget,
-                    `${money(today)} of the ${moneyW(f.budget)} daily budget (${Math.round((today / f.budget) * 100)}%)`,
-                  ),
-                  el("span", { class: "kpi-sub" }, `of ${moneyW(f.budget)} today`),
-                ])
-              : el("span", { class: "kpi-sub" }, "today, API-equivalent"),
-        }),
-      ]),
-      el(
-        "time",
-        { class: "sb-clock", datetime: nowIso },
-        `${fmtDay(nowIso)} · ${clockTime(f.now)}`,
-      ),
     ]),
   ]);
 }
@@ -2934,12 +2940,25 @@ function whatIOwnPanel(queue, f) {
     ],
   );
   if (!items.length) {
+    // Nothing needs you: say so, then the one thing a gaffer can do with a quiet
+    // hour (the bench: drafts and refining tickets wait for criteria), when any.
+    const bench = f ? f.tickets.filter((t) => ON_BENCH.has(t.status)) : [];
+    const drafts = bench.filter((t) => t.status === "draft").length;
     card.appendChild(
-      el(
-        "div",
-        { class: "empty-state" },
-        "Nothing is waiting on you right now. Every ticket in play is with an agent or the queue.",
-      ),
+      el("div", { class: "empty-state" }, [
+        el(
+          "p",
+          { class: "es-title" },
+          "Nothing needs you. Every ticket in play is with an agent or the queue.",
+        ),
+        bench.length
+          ? el("p", { class: "es-sub" }, [
+              `On the bench: ${[drafts ? `${drafts} draft` : "", bench.length - drafts ? `${bench.length - drafts} refining` : ""].filter(Boolean).join(", ")}. `,
+              el("a", { href: "#/work?status=draft" }, "Pick one to sharpen"),
+              " and it joins the fixtures.",
+            ])
+          : null,
+      ]),
     );
     return card;
   }
@@ -3009,6 +3028,18 @@ function ownAction(it, primary, f) {
         : null;
   }
 }
+/** How long a team-sheet row has waited, in words a programme would print: "9 h 16 min". */
+function fmtWait(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "under a minute";
+  if (min < 60) return `${min} min`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} h ${min % 60} min`;
+  const day = Math.floor(hr / 24);
+  return `${day} ${day === 1 ? "day" : "days"} ${hr % 24} h`;
+}
+
 /** A decision's question: its title from /decisions (the reason is the detail). */
 function decisionTitle(it, f) {
   const d = f && f.decisions.find((x) => x.id === it.decisionId);
@@ -3040,10 +3071,19 @@ function renderOwnedItem(it, i = 0, f = null) {
         el(
           "span",
           { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
-          `waited ${fmtDuration(it.waitedMs)}`,
+          `Waited ${fmtWait(it.waitedMs)}`,
         ),
-        it.reasonCode != null ? el("span", { class: "own-code" }, it.reasonCode) : null,
-        it.suggestedAction ? el("span", { class: "own-action" }, `→ ${it.suggestedAction}`) : null,
+        // The server's structured code and its advice, as the referee's notebook.
+        it.reasonCode != null
+          ? el("span", { class: "own-code", title: "The server's reason code" }, it.reasonCode)
+          : null,
+        it.suggestedAction
+          ? el(
+              "span",
+              { class: "own-action", title: "What the server suggests" },
+              `→ ${it.suggestedAction}`,
+            )
+          : null,
       ]),
     ]),
     el("div", { class: "own-cta" }, ownAction(it, i === 0, f)),
@@ -3229,18 +3269,26 @@ function readyApprovalSheet(t, it) {
 
 // --- The Tactics Board -------------------------------------------------------
 
-/** Which repos get a channel: those with tickets in play or done, most busy first. */
+/**
+ * Which repos get a channel: those with tickets in play or done. The busiest get
+ * a channel (in play counts most); the channels then run from the wing with the
+ * club's biggest squad (most tickets) to the smallest, as the comp draws them, so
+ * a repo keeps its channel while its tickets move.
+ */
 function pitchChannels(f) {
   const score = new Map();
+  const size = new Map();
   for (const t of f.tickets) {
     const r = f.repoOf.get(t.id);
-    if (!r) continue;
+    if (!r || t.status === "cancelled") continue;
+    size.set(r, (size.get(r) || 0) + 1);
     if (ON_PITCH.has(t.status)) score.set(r, (score.get(r) || 0) + 10);
     else if (t.status === "done") score.set(r, (score.get(r) || 0) + 1);
   }
+  const bySize = (a, b) => size.get(b) - size.get(a) || a.localeCompare(b);
   const all = [...score.keys()].sort((a, b) => score.get(b) - score.get(a) || a.localeCompare(b));
-  if (all.length <= PITCH_MAX_CHANNELS) return { channels: all.sort(), other: null };
-  const keep = all.slice(0, PITCH_MAX_CHANNELS - 1).sort();
+  if (all.length <= PITCH_MAX_CHANNELS) return { channels: all.sort(bySize), other: null };
+  const keep = all.slice(0, PITCH_MAX_CHANNELS - 1).sort(bySize);
   return { channels: [...keep, "Other repos"], other: new Set(all.slice(PITCH_MAX_CHANNELS - 1)) };
 }
 
@@ -4047,7 +4095,7 @@ function tacticsBoard(f) {
           { viewBox: "0 0 40 12", width: 40, height: 12, "aria-hidden": "true" },
           svgS("path", { d: "M2 9 Q20 0 36 6", class: "key-arrow" }),
         ),
-        "A move",
+        win.recent ? "Moved in the last 3 h" : "Moved in the 3 h to the last move",
       ]),
       ...channels
         .filter((r) => r !== "Other repos")
@@ -4680,18 +4728,296 @@ function fixtures(f) {
   );
 }
 
-/** The match report: the latest events, in words, with who did them. */
+/**
+ * The match report: the latest moves as commentary, minute by minute. Each line
+ * is one real event: when (HH:MM), the state it left the ticket in (§6 glyph),
+ * who did it (an agent's shirt and name, priya.raman, the runner) and what, with
+ * the from → to read from the ticket's own event payload when the detail cache
+ * has it. Book-keeping (evidence rows, criteria added, repo links) is left off
+ * the commentary but kept, every event, in the folded full log beneath.
+ */
+const REPORT_QUIET = new Set([
+  "evidence.recorded",
+  "ac.added",
+  "ticket.repo_linked",
+  "ticket.repo_access_set",
+  "ticket.testable_set",
+  "ticket.test_contract_set",
+  "ticket.budget_set",
+  "ticket.repo_delivery_recorded",
+  "ticket.acceptance_criteria_reset",
+]);
+const PITCH_WORD = { ready_for_merge: "To merge" };
+function reportLine(f, e) {
+  const det = f.details.get(e.entity_id);
+  const full = det?.events?.find((x) => x.id === e.id);
+  const p = full?.payload_json ? parseJsonSafe(full.payload_json) || {} : {};
+  const word = (st) => PITCH_WORD[st] || statusLabel(st);
+  switch (e.event_type) {
+    case "ticket.created":
+      return { st: "draft", say: "created" };
+    case "ticket.transitioned":
+      return p.to
+        ? { st: p.to, say: [p.from ? `${word(p.from)} → ` : "→ ", el("b", {}, word(p.to))] }
+        : { st: null, say: "moved" };
+    case "claim.created":
+      return { st: "claimed", say: "claimed" };
+    case "claim.completed":
+      return { st: null, say: "claim completed" };
+    case "claim.released":
+      return { st: null, say: "claim released" };
+    case "ticket.reworking":
+      return {
+        st: "failed",
+        say: p.attempt
+          ? `back for rework ${p.attempt}/${p.max_attempts}${p.gate ? ` on ${p.gate}` : ""}`
+          : "back for rework",
+      };
+    case "ticket.delivery_recorded":
+      return { st: "in_review", say: "delivery recorded" };
+    case "ticket.blocked":
+      return { st: "blocked", say: "parked: it needs you" };
+    case "ticket.paused":
+      return {
+        st: "paused",
+        say: p.reason ? `paused (${String(p.reason).replace(/_/g, " ")})` : "paused",
+      };
+    case "ticket.routed_to_testing":
+      return { st: "in_testing", say: "sent to testing" };
+    case "ticket.dependency_added":
+      return {
+        st: null,
+        say: p.depends_on_number ? `now waits on #${p.depends_on_number}` : "gains a dependency",
+      };
+    case "decision.created":
+      return { st: "decision", say: "a question for the gaffer" };
+    case "epic.created":
+      return { st: null, say: "epic created" };
+    default:
+      return { st: null, say: humanizeEvent(e.event_type).toLowerCase() };
+  }
+}
 function matchReport(f) {
-  const evs = f.events.slice(0, 10);
+  // A claim writes two events in the same instant (the claim and the move to
+  // Claimed): the report says it once, as the move.
+  const movedAt = new Set(
+    f.events
+      .filter((e) => e.event_type === "ticket.transitioned")
+      .map((e) => `${e.entity_id}@${String(e.created_at).slice(0, 19)}`),
+  );
+  const lines = f.events
+    .filter((e) => !REPORT_QUIET.has(e.event_type))
+    .filter(
+      (e) =>
+        e.event_type !== "claim.created" ||
+        !movedAt.has(`${e.entity_id}@${String(e.created_at).slice(0, 19)}`),
+    )
+    .slice(0, 10);
+  let day = "";
+  const half = Math.ceil(lines.length / 2);
+  const rows = lines.map((e, i) => {
+    const { st, say } = reportLine(f, e);
+    const d = fmtDay(e.created_at);
+    const head = d !== day ? (day = d) : null;
+    const agent = e.actor_type === "agent" && e.actor_id ? agentNames.get(e.actor_id) : null;
+    const who = actorName(e.actor_type, e.actor_id);
+    const ref =
+      e.ticket_number != null
+        ? el(
+            "a",
+            { class: "mr-ref", href: `#/ticket/${e.entity_id}`, title: e.ticket_title || "" },
+            `#${e.ticket_number}`,
+          )
+        : null;
+    const cls = [
+      "mr-row",
+      st ? `mr-${st}` : "",
+      i >= half ? "is-col-b" : "",
+      i % half === 0 ? "is-col-top" : "",
+    ];
+    return el("li", { class: cls.filter(Boolean).join(" ") }, [
+      el("time", { class: "mr-min tabnum", datetime: e.created_at }, [
+        head ? el("span", { class: "mr-day" }, head) : null,
+        clockTime(Date.parse(e.created_at)),
+      ]),
+      st ? glyph(st, 16) : el("span", { class: "mr-dot", "aria-hidden": "true" }),
+      el("p", { class: "mr-say" }, [
+        ref,
+        ref ? " " : null,
+        e.ticket_title ? el("span", { class: "mr-t" }, e.ticket_title) : null,
+        el("span", { class: "mr-what" }, [" ", say]),
+      ]),
+      el("span", { class: "mr-who" }, [agent ? agentShirt(agent, 26) : null, who]),
+    ]);
+  });
+  const evs = f.events.slice(0, 30);
   return progPage(
     "report",
     "ink",
     "Match report",
-    f.events.length ? `latest ${evs.length}` : null,
-    evs.length
-      ? el("ul", { class: "feed" }, evs.map(renderFeedRow))
-      : el("p", { class: "quiet" }, "No activity recorded yet."),
+    f.events.length ? `the latest ${plural(lines.length, "move")}` : null,
+    lines.length || evs.length
+      ? [
+          lines.length
+            ? el("ol", { class: "mr-list", style: { "--mr-rows": String(half) } }, rows)
+            : null,
+          el("details", { class: "mr-all" }, [
+            el("summary", {}, `Every event, book-keeping included (latest ${evs.length})`),
+            el("ul", { class: "feed" }, evs.map(renderFeedRow)),
+          ]),
+        ]
+      : el(
+          "p",
+          { class: "quiet" },
+          "No activity recorded yet. The report starts with the first ticket.",
+        ),
   );
+}
+
+/**
+ * The Overview while it loads: the ground before kick-off. The scoreboard is lit
+ * with its four counters named but blank ("––", never a number the server has
+ * not given), the Team Sheet's block with three empty rows, and the pitch drawn
+ * with its markings and stage names but nobody on it. Same shape as the view, so
+ * nothing jumps when the data lands; invisible for its first 300ms.
+ */
+function overviewSkeleton() {
+  const empty = {
+    now: Date.now(),
+    tickets: [],
+    items: [],
+    events: [],
+    claims: [],
+    repoOf: new Map(),
+    details: new Map(),
+    byId: new Map(),
+    claimByTicket: new Map(),
+    runByTicket: new Map(),
+  };
+  let pitch;
+  try {
+    pitch = el("div", { class: "pitch-wrap" }, [
+      el("div", { class: "pw-land" }, pitchBoard(empty, "landscape").svg),
+      el("div", { class: "pw-port" }, pitchBoard(empty, "portrait").svg),
+    ]);
+    for (const svg of pitch.querySelectorAll("svg")) {
+      svg.setAttribute("aria-hidden", "true");
+      svg.removeAttribute("role");
+    }
+  } catch {
+    pitch = el("div", { class: "skeleton sk-board" });
+  }
+  const cell = (label) =>
+    el("div", { class: "kpi" }, [
+      el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
+      el("span", { class: "kpi-val sk-digits" }, "––"),
+    ]);
+  const row = () =>
+    el("li", { class: "sk-own" }, [
+      el("span", { class: "skeleton sk-rank" }),
+      el("span", { class: "sk-own-lines" }, [
+        el("span", { class: "skeleton sk-l1" }),
+        el("span", { class: "skeleton sk-l2" }),
+        el("span", { class: "skeleton sk-l3" }),
+      ]),
+    ]);
+  return el(
+    "div",
+    {
+      class: "view view-overview skeleton-view sk-overview",
+      "aria-busy": "true",
+      "aria-label": "Loading the Overview",
+    },
+    [
+      el("section", { class: "scoreboard bleed", "aria-hidden": "true" }, [
+        el("div", { class: "scoreboard-in" }, [
+          el("div", { class: "sb-main sk-hl" }, [
+            el("span", { class: "skeleton sk-hl1" }),
+            el("span", { class: "skeleton sk-hl2" }),
+            el("span", { class: "skeleton sk-hl3" }),
+          ]),
+          el("div", { class: "sb-side" }, [
+            el("div", { class: "sb-cells kpi-row" }, [
+              cell("Need you"),
+              cell("On the pitch"),
+              cell("Delivered today"),
+              cell("Wage bill"),
+            ]),
+          ]),
+        ]),
+      ]),
+      el("div", { class: "ov-main", "aria-hidden": "true" }, [
+        el("div", { class: "card what-i-own" }, [
+          panelHead("Team sheet", null, null, { kit: "claret" }),
+          el("ol", { class: "own-well" }, [row(), row(), row()]),
+        ]),
+        el("section", { class: "tactics" }, [
+          el("div", { class: "tactics-head" }, [el("h2", { class: "tb-title" }, "Tactics board")]),
+          pitch,
+        ]),
+      ]),
+    ],
+  );
+}
+
+/**
+ * The Overview when its read fails: the scoreboard stays dark and says what
+ * happened in one sentence (no number it could not read), the server's own words
+ * under it, and one way on: Try again. A background refresh retries every 9s and
+ * replaces this page as soon as the factory answers.
+ */
+function overviewError(e) {
+  const code = (e && e.code) || "";
+  const head =
+    code === "NETWORK"
+      ? "Can’t reach the factory."
+      : code === "BAD_GATEWAY"
+        ? "Something else answered for the factory."
+        : "The factory couldn’t make up the scoreboard.";
+  const detail =
+    code === "NETWORK"
+      ? "The dashboard server isn’t answering. Check it is still running; this page tries again by itself every 9 seconds."
+      : code === "BAD_GATEWAY"
+        ? `${e.message} A proxy or another server is in the way; this page tries again every 9 seconds.`
+        : `It said: “${(e && e.message) || "the request failed"}”. This page tries again every 9 seconds.`;
+  const retry = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: () => router() },
+    "Try again",
+  );
+  return el("div", { class: "view view-overview ov-error" }, [
+    el("section", { class: "scoreboard bleed sb-dark", "aria-label": "Scoreboard" }, [
+      el("div", { class: "scoreboard-in" }, [
+        el("div", { class: "sb-main" }, [
+          el("h1", { class: "hl" }, [el("span", { class: "hl-nb" }, [glyph("failed", 34), head])]),
+          el("p", { class: "hl-sub" }, detail),
+        ]),
+        el("div", { class: "sb-side" }, [
+          el(
+            "div",
+            { class: "sb-cells kpi-row sb-off", role: "group", "aria-label": "Today (not read)" },
+            ["Need you", "On the pitch", "Delivered today", "Wage bill"].map((label) =>
+              el("div", { class: "kpi" }, [
+                el("div", { class: "kpi-top" }, el("span", { class: "kpi-label" }, label)),
+                el("span", { class: "kpi-val sk-digits" }, [
+                  el("span", { "aria-hidden": "true" }, "––"),
+                  el("span", { class: "sr-only" }, "not read"),
+                ]),
+              ]),
+            ),
+          ),
+        ]),
+      ]),
+    ]),
+    el("div", { class: "empty-state is-error ov-error-act" }, [
+      el("div", { class: "es-actions" }, [
+        retry,
+        el("a", { class: "btn", href: "#/work" }, "Open the Work board"),
+        el("a", { class: "btn", href: "#/health" }, "Open Health"),
+      ]),
+      code ? el("p", { class: "es-sub" }, `Error code: ${code}`) : null,
+    ]),
+  ]);
 }
 
 async function renderOverview() {

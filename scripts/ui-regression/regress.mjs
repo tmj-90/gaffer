@@ -340,8 +340,10 @@ try {
     'input[placeholder="Short, action-oriented title"]',
     `Add clearDone helper to the task list (${RUN_TAG})`,
   );
+  // #/create now leads with Plan a build (its composer is the page's first textarea);
+  // the single-ticket form is the "One ticket" section beside it.
   await page.fill(
-    "textarea",
+    "#one-ticket textarea",
     "Users need to drop completed tasks. Add clearDone(list) with a unit test.",
   );
   // "Repos & scope": pick the repo in the "Add a repo…" select (access stays `write`) and press Add.
@@ -356,14 +358,14 @@ try {
     return true;
   });
   if (attached) {
-    await page.click('button:has-text("Add")');
+    await page.click('#one-ticket button:has-text("Add")');
     await sleep(400);
     const txt = await page.textContent("#app");
     /taskflow-mini/.test(txt) && !/No repos attached yet/.test(txt)
       ? ok("Create view: attached taskflow-mini (write) via the repo select + Add")
       : bad("Create view: Add did not attach the repo");
   } else note("Create view: 'Add a repo…' select does not list taskflow-mini");
-  await page.click('button:has-text("Create ticket")');
+  await page.click('#one-ticket button:has-text("Create ticket")');
   const ticket = await waitFor(
     async () => {
       const r = await api("GET", "/tickets");

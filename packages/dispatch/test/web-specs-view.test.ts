@@ -164,12 +164,12 @@ describe("web: Specs view", () => {
     expect(card).not.toBeNull();
   });
 
-  it("renders a stats row and a scanner-frame thumbnail for each spec", async () => {
+  it("renders a stats row and a clause form guide for each spec", async () => {
     stubFetch();
     mountShell("#/specs");
     await boot();
 
-    // Stats row reuses KPI styling: total specs + coverage + gaps + updated.
+    // Stats row reuses the stat cells: total specs + coverage + gaps + updated.
     const stats = document.querySelector(".spec-stats");
     expect(stats).not.toBeNull();
     const statText = stats!.textContent || "";
@@ -180,15 +180,21 @@ describe("web: Specs view", () => {
     expect(statText).toContain("67");
     expect(statText).toContain("1");
 
-    // Each card carries a scanner-frame thumbnail: four corner brackets + icon.
-    const thumb = document.querySelector(".spec-card .spec-thumb");
-    expect(thumb).not.toBeNull();
-    expect(thumb!.querySelectorAll(".tc").length).toBe(4);
-    expect(thumb!.querySelector(".spec-thumb-icon")).not.toBeNull();
-
-    // A status dot accompanies the (retained) status label.
-    expect(document.querySelector(".spec-card-status .scs-dot")).not.toBeNull();
-    // The newest spec is the primary card (amber rail).
+    // Match Day: the scanner-frame thumbnail (an icon tile, BRIEF §5) and the status
+    // dot are gone. Each row now leads with the status mark + word and carries a
+    // form guide: one square per clause, in order, coloured by its coverage state,
+    // beside the sentence that states the same counts.
+    const card = document.querySelector(".spec-card[data-spec-id='spec-1']")!;
+    expect(card.querySelector(".spec-card-status")?.textContent).toContain("Frozen");
+    const squares = Array.from(card.querySelectorAll(".spec-form .fg"));
+    expect(squares.map((s) => s.className)).toEqual([
+      "fg fg-satisfied",
+      "fg fg-open",
+      "fg fg-orphan",
+    ]);
+    expect(card.textContent || "").toContain("2 of 3 covered · 1 satisfied · 1 gap");
+    // The row is a link to the spec's trace, and the newest spec is marked.
+    expect(card.getAttribute("href")).toBe("#/specs/spec-1");
     expect(document.querySelector(".spec-card--primary")).not.toBeNull();
   });
 

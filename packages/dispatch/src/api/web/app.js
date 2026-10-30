@@ -2047,7 +2047,7 @@ const VIEW_TITLES = {
   ticket: "Ticket",
   repo: "Repo",
   node: "Map",
-  create: "New ticket",
+  create: "Plan a build",
   hidden: "Hidden repos",
 };
 function setDocTitle(view, detail) {
@@ -2185,9 +2185,9 @@ async function buildPaletteSources() {
     {
       group: "Create",
       label: "New ticket",
-      hint: "create",
+      hint: "one ticket, outside any campaign",
       icon: "plus",
-      run: () => navigate("#/create"),
+      run: () => navigate("#/create/ticket"),
     },
     {
       group: "Create",
@@ -10340,10 +10340,10 @@ function renderSettingInput(s, editors) {
 
 const POLICY_PACKS = ["solo_loose", "team_light", "factory_strict", "regulated"];
 
-async function renderCreate() {
+async function renderCreate(param) {
   const [nodesRes, reposRes] = await Promise.all([
-    api("GET", "/scope/nodes"),
-    api("GET", "/repositories"),
+    api("GET", "/scope/nodes", undefined, { signal: routeSignal() }),
+    api("GET", "/repositories", undefined, { signal: routeSignal() }),
   ]);
   const nodes = nodesRes.nodes || [];
   const allRepos = reposRes.repositories || [];
@@ -10420,21 +10420,39 @@ async function renderCreate() {
       selector.node,
       validationMsg,
       el("div", { class: "btn-row" }, [
-        el("button", { class: "btn primary", type: "submit" }, "Create ticket"),
+        el("button", { class: "btn", type: "submit" }, "Create ticket"),
       ]),
     ],
   );
 
-  const wrap = el("div", { class: "view" });
+  // The page: Plan a build (the team talk, the same panel as the sheet) leads;
+  // one ticket on its own (a friendly, outside any campaign) sits beside it.
+  const epicsN = nodes.filter((n) => n.type === "epic").length;
+  const wrap = el("div", { class: "view view-create" });
   wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/work") },
-      "← Back to Work",
+    viewHead(
+      "Plan a build",
+      `${plural(allRepos.length, "repo")} to build on · ${plural(epicsN, "campaign")} this season`,
+      el("a", { class: "btn", href: "#one-ticket" }, "Or add one ticket"),
     ),
   );
-  wrap.appendChild(viewHead("New ticket"));
-  wrap.appendChild(el("div", { class: "card" }, form));
+  const planHost = el("div", { class: "cr-plan" });
+  const ticketPage = el(
+    "section",
+    { class: "card prog cr-ticket", id: "one-ticket", "aria-labelledby": "one-ticket-h" },
+    [
+      (() => {
+        const h = panelHead("One ticket", "a friendly: outside any campaign", null, { kit: "sky" });
+        h.querySelector(".panel-title").id = "one-ticket-h";
+        return h;
+      })(),
+      el("div", { class: "cr-ticket-body" }, form),
+    ],
+  );
+  wrap.appendChild(el("div", { class: "cr-grid" }, [planHost, ticketPage]));
+  wrap._dispose = mountPlanBuildInline(planHost);
+  // After the router's scroll-to-top, not before it.
+  if (param === "ticket") wrap._mounted = () => setTimeout(() => jumpTo("one-ticket"), 0);
   // Initial suggestion pass once the form is in the DOM (empty draft → likely
   // empty, but a pre-selected scope or single repo can still surface a candidate).
   selector.refreshSuggestions();
@@ -13403,34 +13421,106 @@ function computePhases(tickets, depsById) {
   return byPhase;
 }
 
+/** The epic's acceptance ticket (its Final): flagged by the server, or named so. */
+function isAcceptanceTicket(t) {
+  return !!(
+    t &&
+    (t.acceptance === 1 || t.acceptance === true || /^Acceptance/i.test(t.title || ""))
+  );
+}
+
+/**
+ * The acceptance ticket is always the Final: it takes a round of its own after
+ * every other round, whatever its dependency depth says (an acceptance ticket
+ * whose edges were never drawn would otherwise share a round with the work).
+ */
+function pinAcceptanceLast(byPhase) {
+  const keys = [...byPhase.keys()].sort((a, b) => a - b);
+  if (keys.length === 0) return byPhase;
+  const moved = [];
+  for (const k of keys) {
+    const list = byPhase.get(k);
+    moved.push(...list.filter(isAcceptanceTicket));
+    const rest = list.filter((t) => !isAcceptanceTicket(t));
+    if (rest.length) byPhase.set(k, rest);
+    else byPhase.delete(k);
+  }
+  if (moved.length) {
+    const left = [...byPhase.keys()];
+    byPhase.set(left.length ? Math.max(...left) + 1 : 0, moved);
+  }
+  return byPhase;
+}
+
+/** Why a held ticket is held, in the ticket page's own words (its lede, minus the status word). */
+function heldReason(t, detail) {
+  if (!detail) return [];
+  const parts = ticketLede(t, detail.rework_trail || [], detail.events || []);
+  return parts.slice(1).filter((p) => typeof p === "string");
+}
+
+/** A small red card (held) for a block heading or a table cell: always next to words. */
+function redCard(size = 16) {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 12 16",
+      width: (size * 0.75).toFixed(1),
+      height: size,
+      class: "rcard",
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    svgEl("rect", {
+      x: 1,
+      y: 1,
+      width: 10,
+      height: 14,
+      rx: 1.4,
+      fill: "var(--red)",
+      stroke: "var(--ycard-edge)",
+      "stroke-width": 1.2,
+    }),
+  );
+}
+
+const NEEDS_SIGN_OFF = new Set(["in_review", "ready_for_merge"]);
+
 async function renderEpics(param) {
   // A deep link (#/epics/:nodeId) scrolls to that campaign.
   const focusId = param || null;
   const signal = routeSignal();
-  const [nodesRes, ticketsRes] = await Promise.all([
+  // Claims (who wears which ticket) and specs (what a campaign is played to) are
+  // extras: the season still reads without them.
+  const extra = (p, fallback) =>
+    api("GET", p, undefined, { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return fallback;
+    });
+  const [nodesRes, ticketsRes, claimsRes, specsRes] = await Promise.all([
     api("GET", "/scope/nodes", undefined, { signal }),
     api("GET", "/tickets", undefined, { signal }),
+    extra("/claims", { claims: [] }),
+    extra("/specs", { specs: [] }),
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
-  const actions = [
-    el("button", { class: "btn", type: "button", onclick: () => openSpecBuild() }, [
-      icon("spark"),
-      el("span", {}, "Author a spec"),
-    ]),
-    el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
-      icon("spark"),
-      el("span", {}, "Plan a build"),
-    ]),
-  ];
+  const planBtn = el(
+    "button",
+    { class: "btn primary", type: "button", onclick: () => openPlanBuild() },
+    [icon("spark"), el("span", {}, "Plan a build")],
+  );
+  // Authoring a spec lives on Specs; the season links there.
+  const specsLink = el("a", { class: "btn", href: "#/specs" }, "Specs");
   const wrap = el("div", { class: "view view-epics" });
 
   if (epics.length === 0) {
-    wrap.appendChild(viewHead("The season", "No campaigns yet", actions));
+    wrap.dataset.sig = "empty";
+    wrap.appendChild(viewHead("The season", "No campaigns yet", [specsLink, planBtn]));
     wrap.appendChild(
       emptyState(
         "No campaigns on the fixture list.",
-        "Describe what to build in plain words: Plan a build proposes a phased plan of draft tickets, and it lands here as a cup run, round by round.",
+        "Describe what to build in plain words: Plan a build proposes the draw (draft tickets, round by round), and the campaign lands here once you confirm it.",
         null,
         el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
           icon("spark"),
@@ -13449,6 +13539,7 @@ async function renderEpics(param) {
   const membersByEpic = new Map(epics.map((e) => [e.id, []]));
   const depsById = new Map();
   const depViewById = new Map();
+  const repoByTicket = new Map();
   for (const t of tickets) {
     const detail = detailById.get(t.id);
     if (!detail) continue;
@@ -13458,266 +13549,578 @@ async function renderEpics(param) {
       deps.map((d) => d.depends_on_ticket_id),
     );
     depViewById.set(t.id, deps);
+    const repos = detail.repositories || [];
+    const repoW = repos.find((r) => r.access === "write") || repos[0];
+    if (repoW) repoByTicket.set(t.id, repoW.name);
     for (const sc of detail.scopes || []) {
       if (membersByEpic.has(sc.id)) membersByEpic.get(sc.id).push({ ...t, ...detail.ticket });
     }
   }
+  const agentByTicket = new Map();
+  for (const c of (claimsRes && claimsRes.claims) || []) {
+    if (c.status && c.status !== "active") continue;
+    agentByTicket.set(c.ticket_id, c.agent_display_name || actorName("agent", c.agent_id));
+  }
 
-  // The season in one line: how many campaigns, which are held, how far along.
-  const all = [...membersByEpic.values()].flat();
-  const held = epics.filter((e) =>
-    (membersByEpic.get(e.id) || []).some((m) => OFF_PITCH.has(m.status)),
+  // A campaign played to a spec: the spec names the epic as its scope node.
+  const specByEpic = new Map();
+  for (const s of (specsRes && specsRes.specs) || []) {
+    if (s.scope_node_id && membersByEpic.has(s.scope_node_id) && !specByEpic.has(s.scope_node_id))
+      specByEpic.set(s.scope_node_id, { spec: s, rollup: null });
+  }
+  await Promise.all(
+    [...specByEpic.values()].map((v) =>
+      extra(`/specs/${encodeURIComponent(v.spec.id)}/coverage`, null).then((r) => {
+        v.rollup = specCoverageRollup(r && r.coverage);
+      }),
+    ),
   );
-  const doneN = all.filter((m) => m.status === "done").length;
+
+  const ctx = { depsById, depViewById, detailById, repoByTicket, agentByTicket };
+  const seasons = epics.map((epic) => campaignFacts(epic, membersByEpic.get(epic.id) || [], ctx));
+
+  // Same data → same signature → the refresh leaves the page (and its open folds) alone.
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      epics.map((e) => [e.id, e.name, e.description || ""]),
+      seasons.map((s) =>
+        s.members.map((m) => [
+          m.id,
+          m.status,
+          m.title,
+          agentByTicket.get(m.id) || "",
+          (depViewById.get(m.id) || []).map((d) => `${d.depends_on_ticket_id}:${d.satisfied}`),
+        ]),
+      ),
+      [...specByEpic.entries()].map(([k, v]) => [k, v.spec.id, v.spec.status, v.rollup]),
+    ]),
+  );
+
+  const allMembers = seasons.flatMap((s) => s.members);
+  const heldN = seasons.filter((s) => s.held.length).length;
+  const doneN = allMembers.filter((m) => m.status === "done").length;
   wrap.appendChild(
     viewHead(
       "The season",
-      `${plural(epics.length, "campaign")} · ${held.length ? `${held.length} held` : "none held"} · ${doneN} of ${plural(all.length, "ticket")} done`,
-      actions,
+      `${plural(epics.length, "campaign")} · ${heldN ? `${heldN} held` : "none held"} · ${doneN} of ${plural(allMembers.length, "ticket")} done`,
+      [specsLink, planBtn],
     ),
   );
+  if (seasons.length > 1) wrap.appendChild(seasonTable(seasons));
+
   const list = el("div", { class: "epic-list" });
-  for (const epic of epics) {
-    list.appendChild(
-      renderEpicCard(
-        epic,
-        membersByEpic.get(epic.id) || [],
-        depsById,
-        depViewById,
-        focusId === epic.id,
-      ),
-    );
-  }
+  for (const s of seasons)
+    list.appendChild(renderEpicCard(s, ctx, specByEpic.get(s.epic.id), focusId === s.epic.id));
   wrap.appendChild(list);
-  if (focusId) wrap._mounted = () => jumpTo(`epic-${focusId}`);
+
+  // The draw's bracket lines are measured once the page is laid out, and again
+  // whenever a draw changes size (fonts landing, a resize, a fold opening).
+  let ro = null;
+  wrap._mounted = () => {
+    const draws = [...wrap.querySelectorAll(".ep-draw")];
+    draws.forEach(drawEpicLines);
+    if (typeof window.ResizeObserver === "function") {
+      ro = new window.ResizeObserver((entries) => {
+        for (const e of entries) drawEpicLines(e.target);
+      });
+      draws.forEach((d) => ro.observe(d));
+    }
+    if (document.fonts && document.fonts.ready)
+      document.fonts.ready.then(() => draws.forEach(drawEpicLines)).catch(() => {});
+    // After the router's scroll-to-top, not before it.
+    if (focusId) setTimeout(() => jumpTo(`epic-${focusId}`), 0);
+  };
+  wrap._dispose = () => {
+    if (ro) ro.disconnect();
+    ro = null;
+  };
   return wrap;
+}
+
+/** Everything one campaign's page and its table row say, computed once. */
+function campaignFacts(epic, members, ctx) {
+  const byPhase = pinAcceptanceLast(computePhases(members, ctx.depsById));
+  const phases = [...byPhase.keys()].sort((a, b) => a - b);
+  const done = members.filter((m) => m.status === "done").length;
+  const held = members
+    .filter((m) => OFF_PITCH.has(m.status))
+    .sort((a, b) => (a.number || 0) - (b.number || 0));
+  const heldIds = new Set(held.map((m) => m.id));
+  const waits = members.filter(
+    (m) => m.status !== "done" && (ctx.depsById.get(m.id) || []).some((d) => heldIds.has(d)),
+  );
+  const needs = members.filter((m) => NEEDS_SIGN_OFF.has(m.status));
+  const nextUp = members.filter((m) => m.status === "ready");
+  const liveIdx = phases.findIndex((p) => (byPhase.get(p) || []).some((t) => t.status !== "done"));
+  const won = members.length > 0 && done === members.length;
+  return {
+    epic,
+    members,
+    byPhase,
+    phases,
+    done,
+    held,
+    heldIds,
+    waits,
+    needs,
+    nextUp,
+    liveIdx,
+    won,
+  };
+}
+
+/** "#8, #9 and #10" */
+function ticketList(ts) {
+  const ns = ts.map((t) => `#${t.number}`);
+  return ns.length > 1 ? `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}` : ns[0] || "";
+}
+
+/** The table: one line per campaign — its rounds, how far it has got, what holds it. */
+function seasonTable(seasons) {
+  const rows = seasons.map((s) => {
+    const name = s.epic.name;
+    const where = s.held.length
+      ? el("span", { class: "ep-where is-red" }, [
+          redCard(16),
+          el("span", {}, [
+            "Held at ",
+            el(
+              "a",
+              { href: `#/ticket/${s.held[0].id}`, title: s.held[0].title },
+              `#${s.held[0].number}`,
+            ),
+            s.waits.length
+              ? ` · ${ticketList(s.waits)} ${s.waits.length === 1 ? "waits" : "wait"}`
+              : "",
+          ]),
+        ])
+      : s.needs.length
+        ? el("span", { class: "ep-where" }, [
+            ycard(16),
+            el("span", {}, [
+              el("a", { href: `#/review/${s.needs[0].id}` }, `#${s.needs[0].number}`),
+              s.needs[0].status === "in_review"
+                ? " waits for your sign-off"
+                : " waits for the merge",
+            ]),
+          ])
+        : el(
+            "span",
+            { class: "ep-where" },
+            s.won
+              ? [glyph("done", 16), el("span", {}, "Won")]
+              : !s.members.length
+                ? "No tickets yet"
+                : s.nextUp.length
+                  ? [
+                      glyph("ready", 16),
+                      el("span", {}, [
+                        "Next: ",
+                        el(
+                          "a",
+                          { href: `#/ticket/${s.nextUp[0].id}`, title: s.nextUp[0].title },
+                          `#${s.nextUp[0].number}`,
+                        ),
+                      ]),
+                    ]
+                  : [glyph("in_progress", 16), el("span", {}, "In play")],
+          );
+    const roundsLabel = s.phases.length
+      ? s.won
+        ? `All ${s.phases.length} rounds won`
+        : `Round ${s.liveIdx + 1} of ${s.phases.length}`
+      : "No rounds";
+    return el("tr", { class: s.held.length ? "is-held" : "" }, [
+      el(
+        "th",
+        { scope: "row", class: "ep-t-name" },
+        el("a", { href: `#epic-${s.epic.id}`, title: name }, name),
+      ),
+      el("td", { class: "ep-t-rounds" }, [
+        el(
+          "span",
+          { class: "ep-mini", role: "img", "aria-label": roundsLabel },
+          s.phases.map((p, i) => {
+            const tix = s.byPhase.get(p) || [];
+            const d = tix.filter((t) => t.status === "done").length;
+            const isHeld = tix.some((t) => s.heldIds.has(t.id));
+            return el("i", {
+              class: isHeld
+                ? "is-held"
+                : d === tix.length
+                  ? "is-won"
+                  : i === s.liveIdx
+                    ? "is-live"
+                    : "",
+              style: { "--p": `${tix.length ? Math.round((d / tix.length) * 100) : 0}%` },
+            });
+          }),
+        ),
+        el("span", { class: "ep-t-sub", "aria-hidden": "true" }, roundsLabel),
+      ]),
+      el("td", { class: "ep-t-num tabnum" }, `${s.done}/${s.members.length}`),
+      el("td", { class: "ep-t-where" }, where),
+    ]);
+  });
+  return progPage("ep-table", "claret", "The table", `${plural(seasons.length, "campaign")}`, [
+    el("div", { class: "ep-table-scroll" }, [
+      el("table", { class: "ep-season" }, [
+        el(
+          "caption",
+          { class: "sr-only" },
+          "Every campaign: its rounds, tickets done and what holds it",
+        ),
+        el("thead", {}, [
+          el("tr", {}, [
+            el("th", { scope: "col" }, "Campaign"),
+            el("th", { scope: "col" }, "Rounds"),
+            el("th", { scope: "col", class: "ep-t-num" }, "Done"),
+            el("th", { scope: "col" }, "Where it stands"),
+          ]),
+        ]),
+        el("tbody", {}, rows),
+      ]),
+    ]),
+  ]);
 }
 
 /**
  * One campaign: a programme page. The sky block carries its name and how far it
- * has got; then what holds it (or that nothing does), the rounds as a progress
- * strip, the draw (every ticket, round by round, with the dependency lines), and
- * the next fixture (what can be claimed now).
+ * has got (a red card when a ticket holds it); then what holds it and the one
+ * thing to do about it, the brief, the spec it is played to, the draw (every
+ * ticket, round by round, joined by bracket lines), and the next fixture.
  */
-function renderEpicCard(epic, members, depsById, depViewById, focused) {
-  const byPhase = computePhases(members, depsById);
-  const phases = [...byPhase.keys()].sort((a, b) => a - b);
-  const done = members.filter((m) => m.status === "done").length;
-  const held = members.filter((m) => OFF_PITCH.has(m.status));
-  const heldIds = new Set(held.map((m) => m.id));
-  const waits = members.filter((m) => (depsById.get(m.id) || []).some((d) => heldIds.has(d)));
-  const live = phases.find((p) => (byPhase.get(p) || []).some((t) => t.status !== "done"));
-  const nextUp = members.filter((m) => m.status === "ready");
-  const card = el(
-    "article",
-    {
-      class: `card epic-card campaign${held.length ? " is-held" : ""}${focused ? " card-accent" : ""}`,
-      id: `epic-${epic.id}`,
-    },
-    [
-      panelHead(
-        epic.name,
-        members.length
-          ? `${live != null ? `round ${phases.indexOf(live) + 1} of ${phases.length}` : "all rounds played"} · ${done} of ${members.length} done`
-          : "no tickets",
-        { text: "On the map", href: `#/node/${epic.id}` },
-        { kit: held.length ? "claret" : "sky", level: "h2" },
-      ),
-      epic.description ? el("p", { class: "epic-desc" }, epic.description) : null,
-      members.length
-        ? el(
-            "p",
-            { class: held.length ? "cup-why is-red" : "cup-why" },
-            held.length
-              ? [
-                  glyph("blocked", 16),
-                  el("span", {}, [
-                    el("a", { href: `#/ticket/${held[0].id}` }, `Held at #${held[0].number}`),
-                    waits.length
-                      ? `: ${waits.map((w) => "#" + w.number).join(", ")} ${waits.length === 1 ? "waits" : "wait"} on it.`
-                      : ".",
-                  ]),
-                ]
-              : done === members.length
-                ? "Won: every ticket is done."
-                : "Nothing is holding it.",
-          )
-        : null,
-    ],
+function renderEpicCard(s, ctx, specLink, focused) {
+  const { epic, members, byPhase, phases, done, held, waits, needs, nextUp, liveIdx, won } = s;
+  const aux = members.length
+    ? `${won ? "all rounds won" : `round ${liveIdx + 1} of ${phases.length}`} · ${done} of ${members.length} done`
+    : "no tickets";
+  const head = panelHead(
+    epic.name,
+    aux,
+    { text: "On the map", href: `#/node/${epic.id}` },
+    { kit: "sky", level: "h2" },
   );
+  if (held.length)
+    head.appendChild(el("span", { class: "ep-flag" }, [redCard(22), el("span", {}, "Held")]));
+  else if (needs.length)
+    head.appendChild(el("span", { class: "ep-flag" }, [ycard(22), el("span", {}, "Needs you")]));
+  else if (won) head.appendChild(el("span", { class: "ep-flag" }, [glyph("done", 20), "Won"]));
+
+  const card = el("article", {
+    class: `card epic-card campaign${held.length ? " is-held" : ""}${focused ? " card-accent" : ""}`,
+    id: `epic-${epic.id}`,
+    "aria-labelledby": `epic-h-${epic.id}`,
+  });
+  head.querySelector(".panel-title").id = `epic-h-${epic.id}`;
+  card.appendChild(head);
+
   if (members.length === 0) {
-    card.appendChild(el("p", { class: "dim" }, "This campaign has no tickets yet."));
+    if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
+    card.appendChild(el("p", { class: "ep-lede" }, "This campaign has no tickets yet."));
     return card;
   }
-  card.appendChild(phaseProgress(byPhase, phases));
-  card.appendChild(renderEpicDag(byPhase, phases, depViewById));
-  card.appendChild(
-    el("p", { class: "epic-next" }, [
-      el("b", {}, "Next fixture: "),
-      nextUp.length
-        ? nextUp.flatMap((t, i) => [
-            i ? ", " : "",
-            el("a", { href: `#/ticket/${t.id}` }, `#${t.number} ${t.title}`),
-          ])
-        : held.length
-          ? "nothing can be claimed until the hold is cleared."
+
+  // Where it stands, in one sentence from the data, with the one thing to do.
+  const h = held[0];
+  const lede = held.length
+    ? el("div", { class: "ep-stands is-held" }, [
+        el("p", { class: "ep-lede" }, [
+          el("b", { class: "is-red" }, [
+            glyph("blocked", 18),
+            " Held at ",
+            el("a", { href: `#/ticket/${h.id}` }, `#${h.number}`),
+            ".",
+          ]),
+          " ",
+          el("span", { class: "ep-held-t" }, `“${h.title}”`),
+          " ",
+          ...heldReason(h, ctx.detailById.get(h.id)),
+          waits.length
+            ? ` ${ticketList(waits)} ${waits.length === 1 ? "waits" : "wait"} on it.`
+            : "",
+          held.length > 1
+            ? ` ${held.length - 1} more ${held.length === 2 ? "is" : "are"} off the pitch.`
+            : "",
+        ]),
+        el("div", { class: "btn-row" }, [
+          h.status === "blocked"
+            ? el(
+                "button",
+                {
+                  class: "btn",
+                  type: "button",
+                  onclick: () =>
+                    unblockSheet(h, {
+                      reason: heldReason(h, ctx.detailById.get(h.id)).join("").trim(),
+                    }),
+                },
+                `Unblock #${h.number}…`,
+              )
+            : null,
+          el("a", { class: "btn quiet", href: `#/ticket/${h.id}` }, `Open #${h.number}`),
+        ]),
+      ])
+    : el(
+        "p",
+        { class: "ep-lede" },
+        needs.length
+          ? [
+              ycard(16),
+              " ",
+              el("a", { href: `#/review/${needs[0].id}` }, `#${needs[0].number}`),
+              needs[0].status === "in_review"
+                ? " waits for your sign-off."
+                : " is approved and waits for the merge.",
+              needs.length > 1 ? ` ${needs.length - 1} more after it.` : "",
+              " Nothing is holding the campaign.",
+            ]
+          : won
+            ? "Won: every ticket is done, the Final included."
+            : `Round ${liveIdx + 1} of ${phases.length} is being played. Nothing is holding it.`,
+      );
+  card.appendChild(lede);
+  if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
+  if (specLink) {
+    const { spec, rollup } = specLink;
+    card.appendChild(
+      el("p", { class: "ep-spec" }, [
+        "Played to the spec ",
+        el("a", { href: `#/specs/${encodeURIComponent(spec.id)}` }, `“${spec.title}”`),
+        ` (${(SPEC_STATUS_LABEL[spec.status] || spec.status || "").toLowerCase()})`,
+        rollup && rollup.total
+          ? `: ${rollup.covered} of ${plural(rollup.total, "clause")} covered${rollup.orphans ? `, ${plural(rollup.orphans, "gap")}` : ""}.`
+          : ".",
+      ]),
+    );
+  }
+
+  const draw = renderEpicDag(byPhase, phases, { ...ctx, heldIds: s.heldIds, epicName: epic.name });
+  const next = el("p", { class: "epic-next" }, [
+    el("b", {}, "Next fixture: "),
+    nextUp.length
+      ? nextUp.flatMap((t, i) => [
+          i ? ", " : "",
+          el("a", { href: `#/ticket/${t.id}` }, `#${t.number} ${t.title}`),
+        ])
+      : held.length
+        ? "nothing can be claimed until the hold is cleared."
+        : won
+          ? "none: the campaign is won."
           : "nothing is ready to claim.",
-    ]),
-  );
+  ]);
+  if (won) {
+    // A won campaign keeps its page short: the draw folds away.
+    card.appendChild(
+      el("details", { class: "ep-fold" }, [
+        el("summary", {}, `Show the draw (${plural(members.length, "ticket")})`),
+        draw,
+      ]),
+    );
+  } else {
+    card.appendChild(draw);
+    card.appendChild(next);
+  }
   return card;
 }
 
 /** A round's name: the last round is the Final when it holds the acceptance ticket. */
 function epicRoundName(byPhase, phases, i) {
   const p = phases[i];
-  return i === phases.length - 1 &&
-    i > 0 &&
-    (byPhase.get(p) || []).some((t) => /^Acceptance/i.test(t.title))
+  return i === phases.length - 1 && i > 0 && (byPhase.get(p) || []).some(isAcceptanceTicket)
     ? "Final"
-    : `Round ${p + 1}`;
+    : `Round ${i + 1}`;
 }
 
-/** Phase progress strip — one segment per phase, filled by its done-ratio, so
- *  you can see the gate front advancing through the plan at a glance. */
-function phaseProgress(byPhase, phases) {
-  const active = new Set(["in_progress", "claimed", "in_review", "in_testing", "ready_for_merge"]);
-  return el(
-    "div",
-    { class: "phase-strip" },
-    phases.map((p, i) => {
-      const tix = byPhase.get(p) || [];
-      const done = tix.filter((t) => t.status === "done").length;
-      const pct = tix.length ? Math.round((done / tix.length) * 100) : 0;
-      const state =
-        tix.length && done === tix.length
-          ? "done"
-          : tix.some((t) => active.has(t.status))
-            ? "active"
-            : "idle";
-      return el("div", { class: `phase-seg is-${state}` }, [
-        el("div", { class: "ps-top" }, [
-          el("span", { class: "ps-label" }, epicRoundName(byPhase, phases, i)),
-          el("span", { class: "ps-frac mono" }, `${done}/${tix.length}`),
-        ]),
-        el("div", { class: "ps-bar" }, el("i", { style: `width:${pct}%` })),
-      ]);
-    }),
-  );
-}
-
-/** The dependency DAG — phases laid out as columns (topological layers), tickets
- *  as nodes, and dependsOn edges drawn between them. Satisfied edges are solid
- *  cyan; unmet edges are dashed amber (the live gate front). */
-function renderEpicDag(byPhase, phases, depViewById) {
-  const NODE_W = 208,
-    NODE_H = 100,
-    COLG = 70,
-    ROWG = 18,
-    PADX = 12,
-    PADT = 42,
-    PADB = 14;
-  const cols = phases.map((p) =>
-    (byPhase.get(p) || []).slice().sort((a, b) => (a.number || 0) - (b.number || 0)),
-  );
-  const pos = new Map();
-  cols.forEach((tix, ci) => {
-    const x = PADX + ci * (NODE_W + COLG);
-    tix.forEach((t, ri) => pos.set(t.id, { x, y: PADT + ri * (NODE_H + ROWG), t }));
+/**
+ * The draw: one mown lane per round (a column at desktop, stacked on a phone),
+ * every ticket a fixture card in its round, ordered so the bracket lines cross
+ * as little as they can. The lines (drawn by drawEpicLines once laid out) join
+ * each ticket to what it waits on: solid when met, dashed when not, red dashed
+ * out of a held ticket.
+ */
+function renderEpicDag(byPhase, phases, ctx) {
+  const { depViewById, agentByTicket, repoByTicket, heldIds } = ctx;
+  const rowOf = new Map();
+  const cols = phases.map((p, ci) => {
+    const tix = (byPhase.get(p) || []).slice();
+    const bary = (t) => {
+      const ys = (depViewById.get(t.id) || [])
+        .map((d) => rowOf.get(d.depends_on_ticket_id))
+        .filter((y) => y != null);
+      return ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : Infinity;
+    };
+    tix.sort((a, b) =>
+      ci === 0
+        ? (a.number || 0) - (b.number || 0)
+        : bary(a) - bary(b) || (a.number || 0) - (b.number || 0),
+    );
+    tix.forEach((t, i) => rowOf.set(t.id, i));
+    return tix;
   });
-  const maxRows = Math.max(1, ...cols.map((c) => c.length));
-  const width = PADX * 2 + phases.length * NODE_W + Math.max(0, phases.length - 1) * COLG;
-  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
 
-  // edges (drawn behind the nodes)
-  let paths = "";
-  for (const [id, { x, y }] of pos) {
-    for (const d of depViewById.get(id) || []) {
-      const from = pos.get(d.depends_on_ticket_id);
-      if (!from) continue;
-      const x1 = from.x + NODE_W,
-        y1 = from.y + NODE_H / 2,
-        x2 = x,
-        y2 = y + NODE_H / 2;
-      const mx = (x1 + x2) / 2;
-      paths += `<path class="edge ${d.satisfied ? "sat" : "pend"}" d="M${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}"/>`;
+  const edges = [];
+  const tie = (t) => {
+    const deps = depViewById.get(t.id) || [];
+    const blockers = deps.filter((d) => !d.satisfied);
+    for (const d of deps) {
+      if (!rowOf.has(d.depends_on_ticket_id)) continue;
+      edges.push({
+        from: d.depends_on_ticket_id,
+        to: t.id,
+        cls: heldIds.has(d.depends_on_ticket_id) ? "held" : d.satisfied ? "sat" : "pend",
+      });
     }
-  }
-  const svg = el("div", {
-    class: "dag-edges",
-    html: `<svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" preserveAspectRatio="none">${paths}</svg>`,
-  });
-
-  const labels = phases.map((p, ci) =>
-    el(
-      "div",
-      { class: "dag-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
-      [
-        el("span", { class: "dcl-num" }, epicRoundName(byPhase, phases, ci)),
-        ci > 0 ? el("span", { class: "dcl-gate" }, "after the round before") : null,
-      ],
-    ),
-  );
-
-  const counter = (t, style) => {
-    const blockers = (depViewById.get(t.id) || []).filter((d) => !d.satisfied);
+    const agent = agentByTicket.get(t.id);
+    const repo = repoByTicket.get(t.id);
+    const needs = NEEDS_SIGN_OFF.has(t.status);
+    const waitsOnHeld = blockers.some((b) => heldIds.has(b.depends_on_ticket_id));
+    const label = [
+      `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+      repo ? `in ${repo}` : "",
+      agent ? `${agent} on it` : "",
+      needs ? (t.status === "in_review" ? "waits for your sign-off" : "waits for the merge") : "",
+      blockers.length ? `waiting on ${blockers.map((b) => "#" + b.number).join(", ")}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     return el(
       "a",
       {
-        class: `dag-node status-${t.status}`,
+        class: `dag-node status-${t.status}${isAcceptanceTicket(t) ? " is-final" : ""}`,
         href: `#/ticket/${t.id}`,
-        style,
+        title: t.title,
+        "aria-label": label,
+        dataset: { id: t.id },
       },
       [
-        el("div", { class: "dn-top" }, [
-          el("span", { class: "dn-num mono" }, t.number != null ? `#${t.number}` : "—"),
+        el("span", { class: "dn-top" }, [
+          el("span", { class: "dn-num" }, t.number != null ? `#${t.number}` : "—"),
+          needs ? ycard(16) : null,
           statusBadge(t.status),
         ]),
-        el("div", { class: "dn-title" }, t.title),
-        blockers.length
-          ? el("div", { class: "dn-block" }, [
-              icon("clock", "dn-block-ico"),
-              `waiting on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
-            ])
-          : null,
+        el("span", { class: "dn-title" }, t.title),
+        el("span", { class: "dn-foot" }, [
+          repo
+            ? el("span", { class: "dn-repo" }, [kitShirt(repo, 16), el("span", {}, repo)])
+            : null,
+          agent
+            ? el("span", { class: "dn-agent" }, [
+                agentShirt(agent, 22),
+                el("span", {}, agentNo(agent)),
+              ])
+            : null,
+          blockers.length
+            ? el("span", { class: `dn-block${waitsOnHeld ? " is-red" : ""}` }, [
+                waitsOnHeld ? glyph("blocked", 12) : icon("clock", "dn-block-ico", 12),
+                `waits on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
+              ])
+            : null,
+        ]),
       ],
     );
   };
-  const nodes = [];
-  for (const [, { x, y, t }] of pos)
-    nodes.push(counter(t, `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`));
 
-  // A phone cannot hold the draw sideways: the same rounds stack, in order.
-  const stack = el(
-    "ol",
-    { class: "dag-stack", "aria-label": "Rounds" },
-    phases.map((p, ci) =>
-      el("li", { class: "dst-round" }, [
-        el("div", { class: "dag-collabel" }, [
-          el("span", { class: "dcl-num" }, epicRoundName(byPhase, phases, ci)),
-          ci > 0 ? el("span", { class: "dcl-gate" }, "after the round before") : null,
+  const rounds = phases.map((p, ci) => {
+    const tix = cols[ci];
+    const name = epicRoundName(byPhase, phases, ci);
+    const done = tix.filter((t) => t.status === "done").length;
+    const isHeld = tix.some((t) => heldIds.has(t.id));
+    return el(
+      "section",
+      {
+        class: `ep-round${name === "Final" ? " is-final" : ""}${isHeld ? " is-held" : ""}`,
+        "aria-label": `${name}: ${done} of ${tix.length} done`,
+      },
+      [
+        el("header", { class: "ep-round-head" }, [
+          el("h3", { class: "ep-round-name" }, name),
+          el(
+            "span",
+            { class: "ep-round-frac tabnum", "aria-hidden": "true" },
+            `${done}/${tix.length}`,
+          ),
+          el(
+            "span",
+            { class: "ep-round-bar", "aria-hidden": "true" },
+            el("i", {
+              style: { width: `${tix.length ? Math.round((done / tix.length) * 100) : 0}%` },
+            }),
+          ),
         ]),
         el(
-          "div",
-          { class: "dst-list" },
-          cols[ci].map((t) => counter(t)),
+          "ol",
+          { class: "ep-ties" },
+          tix.map((t) => el("li", {}, tie(t))),
         ),
-      ]),
-    ),
-  );
+      ],
+    );
+  });
 
-  return el("div", { class: "dag-wrap" }, [
-    el("div", { class: "dag-scroll" }, [
-      el(
-        "div",
-        {
-          class: "dag",
-          style: `width:${width}px;height:${height}px;background-size:${width + 23}px 100%`,
-        },
-        [svg, ...labels, ...nodes],
-      ),
-    ]),
-    stack,
+  const lines = svgEl("svg", { class: "ep-lines", "aria-hidden": "true", focusable: "false" });
+  const draw = el("div", { class: "ep-draw", style: { "--rounds": String(phases.length) } }, [
+    lines,
+    ...rounds,
   ]);
+  draw._edges = edges;
+  return el(
+    "div",
+    {
+      class: "ep-draw-scroll",
+      role: "region",
+      "aria-label": `${ctx.epicName || "Campaign"}: the draw`,
+      tabindex: phases.length >= 6 ? "0" : undefined,
+    },
+    draw,
+  );
+}
+
+/**
+ * Draw the bracket lines of one draw from where its cards actually are. Each
+ * line leaves the right edge of the ticket waited on, turns at the lane edge of
+ * the waiting ticket's round, and enters its left edge. Rounds that stack (a
+ * phone) carry "waits on #N" on the cards instead, and no lines.
+ */
+function drawEpicLines(draw) {
+  const svg = draw && draw.querySelector(".ep-lines");
+  if (!svg || !draw.isConnected) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const rounds = [...draw.querySelectorAll(".ep-round")];
+  const box = draw.getBoundingClientRect();
+  const side =
+    rounds.length > 1 &&
+    Math.abs(rounds[0].getBoundingClientRect().top - rounds[1].getBoundingClientRect().top) < 2 &&
+    box.width > 0;
+  svg.style.display = side ? "" : "none";
+  if (!side) return;
+  const w = Math.round(draw.scrollWidth),
+    h = Math.round(draw.scrollHeight);
+  svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", String(w));
+  svg.setAttribute("height", String(h));
+  const nodeOf = new Map([...draw.querySelectorAll(".dag-node")].map((n) => [n.dataset.id, n]));
+  const roundOf = (n) => n.closest(".ep-round");
+  const order = { sat: 0, pend: 1, held: 2 };
+  for (const e of (draw._edges || []).slice().sort((a, b) => order[a.cls] - order[b.cls])) {
+    const a = nodeOf.get(e.from),
+      b = nodeOf.get(e.to);
+    if (!a || !b) continue;
+    const ra = a.getBoundingClientRect(),
+      rb = b.getBoundingClientRect(),
+      lane = roundOf(b).getBoundingClientRect();
+    const x1 = ra.right - box.left,
+      y1 = ra.top + Math.min(ra.height / 2, 28) - box.top,
+      x2 = rb.left - box.left,
+      y2 = rb.top + Math.min(rb.height / 2, 28) - box.top;
+    if (x2 <= x1) continue;
+    const xm = Math.max(x1 + 6, Math.min(x2 - 6, lane.left - box.left));
+    svg.appendChild(
+      svgEl("path", {
+        class: `edge ${e.cls}`,
+        d: `M${x1.toFixed(1)} ${y1.toFixed(1)} H${xm.toFixed(1)} V${y2.toFixed(1)} H${x2.toFixed(1)}`,
+      }),
+    );
+  }
 }
 
 // ===========================================================================
@@ -13779,20 +14182,25 @@ function ensurePlanBuild() {
     },
     [icon("check"), el("span", {}, "Build the tickets")],
   );
-  const actions = el("div", { class: "pb-actions" }, [forceBtn, sendBtn]);
+  const actions = el("div", { class: "pb-actions" }, [
+    forceBtn,
+    el("span", { class: "pb-keys" }, "Enter sends · Shift+Enter for a new line"),
+    sendBtn,
+  ]);
   const form = el("form", { class: "pb-composer" }, [input, actions]);
+  const titleEl = el("div", { class: "pb-title" }, "Plan a build");
+  const subEl = el("div", { class: "pb-sub" }, "Your brief → the planner's questions → the draw");
+  const closeBtn = el(
+    "button",
+    { class: "icon-btn pb-close", type: "button", "aria-label": "Close", onclick: closePlanBuild },
+    icon("close", "", 20),
+  );
   const panel = el(
     "aside",
     { class: "pb-panel", role: "dialog", "aria-modal": "true", "aria-label": "Plan a build" },
     [
       el("header", { class: "pb-head" }, [
-        el("div", { class: "pb-head-main" }, [
-          icon("spark", "pb-head-ico"),
-          el("div", {}, [
-            el("div", { class: "pb-title" }, "Plan a build"),
-            el("div", { class: "pb-sub dim" }, "Brief → phased epic of draft tickets"),
-          ]),
-        ]),
+        el("div", { class: "pb-head-main" }, [titleEl, subEl]),
         el("div", { class: "pb-head-actions" }, [
           el(
             "button",
@@ -13804,20 +14212,12 @@ function ensurePlanBuild() {
             },
             "New plan",
           ),
-          el(
-            "button",
-            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closePlanBuild },
-            el("span", { html: "✕" }),
-          ),
+          closeBtn,
         ]),
       ]),
-      el("div", { class: "pb-guardrail" }, [
-        icon("alert", "pb-guard-ico"),
-        el(
-          "span",
-          {},
-          "Proposes only. Nothing runs — confirmed tickets land as draft for you to ready.",
-        ),
+      el("p", { class: "pb-guardrail" }, [
+        el("b", {}, "Proposes only. "),
+        "Nothing runs until you confirm, and confirmed tickets land as draft (or ready, if you say so).",
       ]),
       log,
       form,
@@ -13843,7 +14243,19 @@ function ensurePlanBuild() {
   scrim.appendChild(panel); // the panel must live inside the scrim (click-outside closes; panel stops propagation)
   document.body.appendChild(scrim);
 
-  planBuildEls = { scrim, panel, log, input, sendBtn, forceBtn, form };
+  planBuildEls = {
+    scrim,
+    panel,
+    log,
+    input,
+    sendBtn,
+    forceBtn,
+    form,
+    titleEl,
+    subEl,
+    closeBtn,
+    inline: null,
+  };
   return planBuildEls;
 }
 
@@ -13944,7 +14356,55 @@ async function archivePlanBuildSession(status) {
 }
 
 function openPlanBuild(opts = {}) {
-  const { scrim, input } = ensurePlanBuild();
+  const els = ensurePlanBuild();
+  // On the Plan-a-build page the panel is part of the page: (re)start it there.
+  if (els.inline && els.inline.isConnected && els.inline.contains(els.panel)) {
+    startPlanBuild(opts);
+    els.panel.scrollIntoView?.({
+      block: "start",
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+    return;
+  }
+  startPlanBuild(opts);
+  els.scrim.classList.add("open");
+  document.addEventListener("keydown", planBuildKeydown);
+}
+
+/**
+ * The Plan-a-build page (#/create) hosts the same panel inline: the conversation
+ * state, the session persistence and the tests' hooks are shared with the sheet.
+ * Returns the undo, which hands the panel back to its scrim — but only while this
+ * host still holds it (a newer render of the page may have taken it already).
+ */
+function mountPlanBuildInline(host) {
+  const els = ensurePlanBuild();
+  closePlanBuild();
+  host.appendChild(els.panel);
+  els.inline = host;
+  els.panel.classList.add("pb-inline");
+  els.panel.setAttribute("role", "region");
+  els.panel.removeAttribute("aria-modal");
+  els.closeBtn.hidden = true;
+  els.titleEl.textContent = "The team talk";
+  els.subEl.textContent =
+    "You give the brief. The planner asks what it needs, then proposes the draw.";
+  startPlanBuild({ focus: false });
+  return () => {
+    if (!host.contains(els.panel)) return;
+    els.scrim.appendChild(els.panel);
+    els.inline = null;
+    els.panel.classList.remove("pb-inline");
+    els.panel.setAttribute("role", "dialog");
+    els.panel.setAttribute("aria-modal", "true");
+    els.closeBtn.hidden = false;
+    els.titleEl.textContent = "Plan a build";
+    els.subEl.textContent = "Your brief → the planner's questions → the draw";
+  };
+}
+
+function startPlanBuild(opts = {}) {
+  const { input } = ensurePlanBuild();
   // `mode` is the start toggle: "new" (greenfield app) vs "extend" (add tickets
   // to an existing scope node / epic). `target` holds the chosen extend node and
   // becomes the `context` sent to the decomposer on the first turn. `nodes` is
@@ -13970,11 +14430,9 @@ function openPlanBuild(opts = {}) {
     spec: Array.isArray(opts.spec) && opts.spec.length ? opts.spec : null,
   };
   renderPlanBuildLog();
-  scrim.classList.add("open");
-  document.addEventListener("keydown", planBuildKeydown);
   // Seeded from a spec: pre-fill the brief so the user can immediately "Build the tickets".
   if (planBuildState.brief && input) input.value = planBuildState.brief;
-  setTimeout(() => input.focus(), 50);
+  if (opts.focus !== false) setTimeout(() => input.focus(), 50);
   // Best-effort: restore the in-progress session from the server, and populate
   // the "Extend existing" picker. Both are non-blocking; the panel works without them.
   guard(async () => {
@@ -14046,15 +14504,22 @@ function renderPlanBuildLog() {
     log.appendChild(
       el("div", { class: "pb-intro" }, [
         renderPlanBuildModeToggle(),
+        planBuildState.spec
+          ? el(
+              "p",
+              { class: "pb-spec-note" },
+              `Built to a frozen spec: its ${plural(planBuildState.spec.length, "clause")} ride along, so every criterion names the clause it proves.`,
+            )
+          : null,
         planBuildState.mode === "extend"
           ? el(
               "p",
-              {},
+              { class: "pb-ask" },
               planBuildState.target
-                ? `Tell me what to add to "${planBuildState.target.name}" in one line — for example:`
-                : "Pick what to extend, then tell me what to add in one line — for example:",
+                ? `Say what to add to “${planBuildState.target.name}” in a line or two. For example:`
+                : "Pick what to extend, then say what to add in a line or two. For example:",
             )
-          : el("p", {}, "Tell me what to build in one line — for example:"),
+          : el("p", { class: "pb-ask" }, "Say what to build in a line or two. For example:"),
         el(
           "ul",
           { class: "pb-examples" },
@@ -14084,17 +14549,32 @@ function renderPlanBuildLog() {
     );
   }
 
+  let userTurn = 0;
   for (const turn of planBuildState.history) {
     if (turn.role === "user") {
-      log.appendChild(el("div", { class: "pb-msg pb-user" }, turn.answer || turn.brief || ""));
+      log.appendChild(
+        el("div", { class: "pb-msg pb-user" }, [
+          el("div", { class: "pb-bot-label" }, userTurn++ === 0 ? "Your brief" : "You"),
+          el("div", { class: "pb-msg-t" }, turn.answer || turn.brief || ""),
+        ]),
+      );
     } else if (turn.role === "assistant" && turn.questions) {
       log.appendChild(
         el("div", { class: "pb-msg pb-bot" }, [
-          el("div", { class: "pb-bot-label dim" }, "Clarifying questions"),
           el(
-            "ul",
+            "div",
+            { class: "pb-bot-label" },
+            `The planner asks ${turn.questions.length === 1 ? "one question" : `${turn.questions.length} questions`}`,
+          ),
+          el(
+            "ol",
             { class: "pb-questions" },
             turn.questions.map((q) => el("li", {}, q)),
+          ),
+          el(
+            "p",
+            { class: "pb-hint" },
+            "Answer below in your own words, or build the tickets now.",
           ),
         ]),
       );
@@ -14117,12 +14597,15 @@ function renderPlanBuildLog() {
     log.appendChild(renderPlanProposal(planBuildState.plan));
   }
 
+  if (planBuildState.notice) {
+    log.appendChild(el("p", { class: "pb-notice", role: "alert" }, planBuildState.notice));
+  }
+
   if (planBuildState.busy) {
     log.appendChild(
-      el("div", { class: "pb-msg pb-bot pb-thinking" }, [
-        el("span", { class: "pb-dot" }),
-        el("span", { class: "pb-dot" }),
-        el("span", { class: "pb-dot" }),
+      el("div", { class: "pb-msg pb-bot pb-thinking", role: "status" }, [
+        el("span", { class: "btn-spinner", "aria-hidden": "true" }),
+        el("span", {}, "The planner is working on it…"),
       ]),
     );
   }
@@ -14152,6 +14635,9 @@ function updatePlanBuildActions() {
   // Hide the whole composer once a plan is proposed — the create path owns it now.
   form.hidden = hasPlan;
   if (hasPlan) return;
+  planBuildEls.input.placeholder = turns
+    ? "Answer the planner, or add anything it should know…"
+    : "Describe what to build…";
   // A bare first turn has no brief yet — force-plan with nothing to go on is a no-op.
   forceBtn.disabled = planBuildState.busy || turns === 0;
   forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
@@ -14451,14 +14937,14 @@ function renderPlanBuildModeToggle() {
         newRadio,
         el("span", {}, [
           el("strong", {}, "New app"),
-          el("span", { class: "dim" }, " — greenfield"),
+          el("span", { class: "mode-sub" }, "a new repo, from scratch"),
         ]),
       ]),
       el("label", { class: "mode-option" }, [
         extendRadio,
         el("span", {}, [
           el("strong", {}, "Extend existing"),
-          el("span", { class: "dim" }, " — add to a scope"),
+          el("span", { class: "mode-sub" }, "add to a repo or scope we have"),
         ]),
       ]),
     ]),
@@ -14477,6 +14963,7 @@ function renderPlanBuildModeToggle() {
       multiple: false,
       onChange: (target) => {
         planBuildState.target = target;
+        planBuildState.notice = null;
         renderPlanBuildLog();
         planBuildEls.input.focus();
       },
@@ -14487,71 +14974,134 @@ function renderPlanBuildModeToggle() {
   return el("div", { class: "pb-mode" }, children);
 }
 
-/** Render the proposed epic + tickets for review, with the confirm button. */
+/**
+ * The proposal as the draw: the epic's name and brief, then its tickets round by
+ * round (a ticket's round is its dependency depth in the plan), then the Final
+ * the factory adds on confirm, then the two ways to confirm.
+ */
 function renderPlanProposal(plan) {
   const epic = plan.epic || {};
   const tickets = plan.tickets || [];
-  const wrap = el("div", { class: "pb-proposal card card-amber" });
-  wrap.appendChild(
-    el("div", { class: "pb-proposal-head" }, [
-      badge("proposal", "no-dot"),
-      el("h3", { class: "pb-proposal-name" }, epic.name || "Proposed epic"),
-    ]),
-  );
-  if (epic.description)
-    wrap.appendChild(el("p", { class: "pb-proposal-desc dim" }, epic.description));
+  const depthMemo = new Map();
+  const depth = (i, seen = new Set()) => {
+    if (depthMemo.has(i)) return depthMemo.get(i);
+    if (seen.has(i)) return 0;
+    seen.add(i);
+    const deps = (Array.isArray(tickets[i]?.dependsOn) ? tickets[i].dependsOn : []).filter(
+      (d) => Number.isInteger(d) && d >= 0 && d < tickets.length && d !== i,
+    );
+    const v = deps.length ? 1 + Math.max(...deps.map((d) => depth(d, seen))) : 0;
+    depthMemo.set(i, v);
+    return v;
+  };
+  const rounds = [];
+  tickets.forEach((t, i) => {
+    const d = depth(i);
+    (rounds[d] = rounds[d] || []).push(i);
+  });
+  const filled = rounds.filter(Boolean);
+  const known = new Set(((planBuildState && planBuildState.repos) || []).map((r) => r.name));
+  const withFinal = epic.acceptance !== false;
 
-  wrap.appendChild(
-    el(
-      "ol",
-      { class: "pb-tickets" },
-      tickets.map((t, i) => {
-        const deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
-        return el("li", { class: "pb-ticket" }, [
-          el("div", { class: "pb-ticket-top" }, [
-            el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
-            t.bootstrap ? badge("bootstrap", "no-dot") : null,
-            typeof t.priority === "number"
-              ? el("span", { class: "dim tabnum" }, `P${t.priority}`)
-              : null,
-            t.repo ? el("code", { class: "mono pb-repo" }, t.repo) : null,
+  const ticketRow = (i) => {
+    const t = tickets[i];
+    const deps = Array.isArray(t.dependsOn) ? t.dependsOn : [];
+    const acs = Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria : [];
+    const acText = (ac) => (typeof ac === "string" ? ac : (ac && ac.text) || "");
+    return el("li", { class: "pb-ticket" }, [
+      el("div", { class: "pb-ticket-top" }, [
+        el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
+        el("span", { class: "pb-ticket-title" }, t.title),
+      ]),
+      el("div", { class: "pb-ticket-meta" }, [
+        t.repo
+          ? known.has(t.repo)
+            ? repoTag(t.repo, 16)
+            : el("span", { class: "pb-repo-new" }, [kitShirt(t.repo, 16), `new repo: ${t.repo}`])
+          : el("span", {}, "no repo named"),
+        t.bootstrap ? badge("bootstrap") : null,
+        typeof t.priority === "number"
+          ? el("span", { class: "tabnum" }, `priority ${t.priority}`)
+          : null,
+        deps.length
+          ? el(
+              "span",
+              { class: "pb-ticket-deps" },
+              `after ${deps.map((d) => `#${d + 1}`).join(", ")}`,
+            )
+          : null,
+      ]),
+      t.description ? el("p", { class: "pb-ticket-desc" }, t.description) : null,
+      acs.length
+        ? el("details", { class: "pb-acs-fold" }, [
+            el("summary", {}, plural(acs.length, "acceptance criterion", "acceptance criteria")),
+            el(
+              "ul",
+              { class: "pb-acs" },
+              acs.map((ac) => el("li", {}, acText(ac))),
+            ),
+          ])
+        : el(
+            "p",
+            { class: "pb-ticket-noac" },
+            "No acceptance criterion: it stays draft until one is added.",
+          ),
+    ]);
+  };
+
+  const wrap = el(
+    "section",
+    { class: "pb-proposal", "aria-label": `Proposed campaign: ${epic.name || "epic"}` },
+    [
+      el("header", { class: "pb-proposal-head" }, [
+        el("h3", { class: "pb-proposal-name" }, epic.name || "Proposed epic"),
+        el(
+          "p",
+          { class: "pb-proposal-aux" },
+          `The draw, proposed · ${plural(tickets.length, "ticket")} in ${plural(filled.length, "round")}${withFinal ? " + the Final" : ""}`,
+        ),
+      ]),
+      epic.description ? el("p", { class: "pb-proposal-desc" }, epic.description) : null,
+      el("ol", { class: "pb-rounds" }, [
+        ...filled.map((idxs, ri) =>
+          el("li", { class: "pb-round" }, [
+            el("h4", { class: "pb-round-name" }, `Round ${ri + 1}`),
+            el("ol", { class: "pb-tickets" }, idxs.map(ticketRow)),
           ]),
-          el("div", { class: "pb-ticket-title" }, t.title),
-          t.description ? el("p", { class: "pb-ticket-desc dim" }, t.description) : null,
-          Array.isArray(t.acceptanceCriteria) && t.acceptanceCriteria.length
-            ? el(
-                "ul",
-                { class: "pb-acs" },
-                t.acceptanceCriteria.map((ac) => el("li", {}, ac)),
-              )
-            : null,
-          deps.length
-            ? el("div", { class: "pb-ticket-deps dim" }, [
-                icon("link", "dep-ico"),
-                `depends on ${deps.map((d) => `#${d + 1}`).join(", ")}`,
-              ])
-            : null,
-        ]);
-      }),
-    ),
+        ),
+        withFinal
+          ? el("li", { class: "pb-round is-final" }, [
+              el("h4", { class: "pb-round-name" }, "Final"),
+              el("div", { class: "pb-final" }, [
+                el("span", { class: "pb-ticket-title" }, `Acceptance: ${epic.name || "the build"}`),
+                el(
+                  "p",
+                  { class: "pb-ticket-desc" },
+                  "Added by the factory when you confirm. Your brief is its contract; it runs last, against the whole build, and the independent tester decides it.",
+                ),
+              ]),
+            ])
+          : null,
+      ]),
+    ],
   );
 
   wrap.appendChild(
     el("div", { class: "pb-confirm-row" }, [
       el(
         "p",
-        { class: "pb-confirm-note dim" },
-        `${tickets.length} ticket${tickets.length === 1 ? "" : "s"} — create as draft to review first, or create & ready to queue them for delivery now (the AC gate still applies per ticket).`,
+        { class: "pb-confirm-note" },
+        `Create as draft to look them over first, or create and ready them for the squad now. Readying asks each ticket's gate: one with no acceptance criterion stays draft.`,
       ),
       el("div", { class: "pb-confirm-actions" }, [
         el(
           "button",
           {
-            class: "btn ghost",
+            class: "btn",
             type: "button",
             onclick: () => confirmPlanBuild(plan),
           },
-          [icon("check"), el("span", {}, "Create as draft")],
+          el("span", {}, "Create as draft"),
         ),
         el(
           "button",
@@ -14587,15 +15137,20 @@ async function submitPlanBuildTurn(opts = {}) {
   const isFirst = planBuildState.history.length === 0;
   // Extend mode requires a target before the first turn, otherwise "extend" has
   // nothing to extend. Later turns inherit the locked target, so only gate the first.
+  // Both refusals are said inline, next to the composer, not in a toast.
   if (isFirst && planBuildState.mode === "extend" && !planBuildState.target) {
-    toast("Pick a scope node or epic to extend first.");
+    planBuildState.notice = "Pick the repo or scope to extend first.";
+    renderPlanBuildLog();
     return;
   }
   // Force-plan with nothing said yet has nothing to plan from — ask for the brief.
   if (forcePlan && isFirst && !text) {
-    toast("Tell me what to build first, then I can build the tickets.");
+    planBuildState.notice = "Write the brief first: the tickets are built from it.";
+    renderPlanBuildLog();
+    input.focus();
     return;
   }
+  planBuildState.notice = null;
 
   // Record the user's message. On a force-plan turn the input may be empty (the
   // user just pressed "Build the tickets"), so only push a message when there is text.
@@ -14836,11 +15391,12 @@ function ensureSpecBuild() {
     [
       el("header", { class: "pb-head" }, [
         el("div", { class: "pb-head-main" }, [
-          icon("spark", "pb-head-ico"),
-          el("div", {}, [
-            el("div", { class: "pb-title" }, "Author a spec"),
-            el("div", { class: "pb-sub dim" }, "Brief → editable clauses → freeze"),
-          ]),
+          el("div", { class: "pb-title" }, "Author a spec"),
+          el(
+            "div",
+            { class: "pb-sub" },
+            "Your brief → clauses you edit → frozen into the playbook",
+          ),
         ]),
         el("div", { class: "pb-head-actions" }, [
           el(
@@ -14855,18 +15411,19 @@ function ensureSpecBuild() {
           ),
           el(
             "button",
-            { class: "icon-btn", type: "button", "aria-label": "Close", onclick: closeSpecBuild },
-            el("span", { html: "✕" }),
+            {
+              class: "icon-btn pb-close",
+              type: "button",
+              "aria-label": "Close",
+              onclick: closeSpecBuild,
+            },
+            icon("close", "", 20),
           ),
         ]),
       ]),
-      el("div", { class: "pb-guardrail" }, [
-        icon("alert", "pb-guard-ico"),
-        el(
-          "span",
-          {},
-          "Proposes only. Nothing is created until you press Create spec — and nothing is locked until you Freeze.",
-        ),
+      el("p", { class: "pb-guardrail" }, [
+        el("b", {}, "Proposes only. "),
+        "Nothing is created until you press Create spec, and nothing is locked until you freeze it.",
       ]),
       log,
       form,
@@ -15063,12 +15620,16 @@ function renderSpecDraft(draft) {
   const clauses = draft.clauses || [];
   const created = specBuildState.createdSpec;
   const frozen = created && created.status === "frozen";
-  const wrap = el("div", { class: "pb-proposal sb-draft card card-amber" });
+  const wrap = el("section", { class: "pb-proposal sb-draft", "aria-label": "Proposed spec" });
 
   wrap.appendChild(
-    el("div", { class: "pb-proposal-head" }, [
-      badge(frozen ? "frozen" : created ? "created" : "draft", "no-dot"),
+    el("header", { class: "pb-proposal-head" }, [
       el("h3", { class: "pb-proposal-name" }, "Proposed spec"),
+      el(
+        "p",
+        { class: "pb-proposal-aux" },
+        `${frozen ? "Frozen: in the playbook" : created ? "Created as a draft spec" : "A draft: edit any clause"} · ${plural(clauses.length, "clause")}`,
+      ),
     ]),
   );
 
@@ -15655,8 +16216,59 @@ async function renderSpecs(param) {
   return specId ? renderSpecDetail(specId) : renderSpecList();
 }
 
+/** A spec's status: its mark + its word (a lock when frozen: the clauses cannot change). */
+function specStatusMark(status) {
+  const word = SPEC_STATUS_LABEL[status] || status || "—";
+  const mark =
+    status === "frozen"
+      ? icon("lock", "spec-lock", 16)
+      : glyph(status === "superseded" ? "cancelled" : "draft", 16);
+  return el("span", { class: `spec-card-status status-${status}` }, [mark, el("span", {}, word)]);
+}
+
+/** One clause's coverage state, from the coverage read model. */
+function clauseState(c) {
+  return c.orphan ? "orphan" : c.satisfied ? "satisfied" : "open";
+}
+
+/**
+ * The form guide: one square per clause, in the order written — filled when
+ * satisfied, outlined when covered but not yet satisfied, red when no criterion
+ * covers it. Decorative next to the sentence that states the same counts.
+ */
+function specFormGuide(clauses) {
+  return el(
+    "span",
+    { class: "spec-form", "aria-hidden": "true" },
+    clauses.map((c, i) =>
+      el(
+        "i",
+        {
+          class: `fg fg-${clauseState(c)}`,
+          title: `Clause ${i + 1} (${CLAUSE_KIND_LABEL[c.kind] || c.kind}): ${c.text}`,
+        },
+        String(i + 1),
+      ),
+    ),
+  );
+}
+
+/** "6 of 8 covered · 2 satisfied · 2 gaps" — the counts the form guide draws. */
+function specCoverageWords(r) {
+  if (!r) return "Coverage unavailable";
+  if (!r.total) return "No clauses yet";
+  return [
+    `${r.covered} of ${r.total} covered`,
+    r.satisfied != null ? `${r.satisfied} satisfied` : null,
+    r.orphans ? plural(r.orphans, "gap") : "no gaps",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 async function renderSpecList() {
-  const res = await api("GET", "/specs");
+  const signal = routeSignal();
+  const res = await api("GET", "/specs", undefined, { signal });
   const specs = res.specs || [];
 
   const wrap = el("div", { class: "view view-specs", dataset: { view: "specs" } });
@@ -15665,12 +16277,20 @@ async function renderSpecList() {
     { class: "btn primary", type: "button", onclick: () => openSpecBuild() },
     [icon("spark"), el("span", {}, "Author a spec")],
   );
+  const by = (st) => specs.filter((s) => s.status === st).length;
   wrap.appendChild(
     viewHead(
       "The playbook",
       specs.length
-        ? `${plural(specs.length, "play")} written: frozen intent, traced clause by clause to acceptance criteria.`
-        : "No plays written yet.",
+        ? [
+            plural(specs.length, "spec"),
+            by("frozen") ? `${by("frozen")} frozen` : null,
+            by("draft") ? `${by("draft")} draft` : null,
+            by("superseded") ? `${by("superseded")} superseded` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
+        : "No specs written yet.",
       author,
     ),
   );
@@ -15679,8 +16299,8 @@ async function renderSpecList() {
     // What is on the pitch without a written play: the campaigns and live tickets,
     // so the empty page still says something true about this club.
     const [nodesRes, ticketsRes] = await Promise.all([
-      api("GET", "/scope/nodes", undefined, { signal: routeSignal() }).catch(() => ({ nodes: [] })),
-      api("GET", "/tickets", undefined, { signal: routeSignal() }).catch(() => ({ tickets: [] })),
+      api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
+      api("GET", "/tickets", undefined, { signal }).catch(() => ({ tickets: [] })),
     ]);
     const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
     const live = (ticketsRes.tickets || []).filter((t) => !TERMINAL.has(t.status));
@@ -15724,46 +16344,83 @@ async function renderSpecList() {
     return wrap;
   }
 
-  // Best-effort coverage: fetch each spec's coverage rollup in parallel so the
-  // stats row can report real covered% / gaps. A failed fetch just drops that
-  // spec from the coverage maths (the stat degrades to "—", never crashes).
-  const coverages = await Promise.all(
-    specs.map((s) =>
-      api("GET", `/specs/${encodeURIComponent(s.id)}/coverage`)
-        .then((r) => (r && r.coverage) || null)
-        .catch(() => null),
+  // Coverage per spec (best-effort: a failed read shows "Coverage unavailable" on
+  // that row, never a broken page) and the campaign names the specs are played in.
+  const [coverages, nodesRes] = await Promise.all([
+    Promise.all(
+      specs.map((s) =>
+        api("GET", `/specs/${encodeURIComponent(s.id)}/coverage`, undefined, { signal })
+          .then((r) => (r && r.coverage) || null)
+          .catch(() => null),
+      ),
     ),
-  );
+    api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
+  ]);
   const covById = new Map(specs.map((s, i) => [s.id, coverages[i]]));
+  const nodeName = new Map(((nodesRes && nodesRes.nodes) || []).map((n) => [n.id, n.name]));
 
   wrap.appendChild(specStatsRow(specs, coverages));
 
-  // Newest spec (by updated_at) is the primary card — it gets the amber rail.
+  // The newest spec (by updated_at) is marked: it is the one most likely in play.
   const newestId = specs
     .slice()
     .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0]?.id;
 
-  const list = el("div", { class: "spec-list" });
+  const list = el("div", { class: "spec-list", role: "list" });
   for (const spec of specs)
     list.appendChild(
-      renderSpecCard(spec, { coverage: covById.get(spec.id), isPrimary: spec.id === newestId }),
+      el(
+        "div",
+        { role: "listitem" },
+        renderSpecCard(spec, {
+          coverage: covById.get(spec.id),
+          isPrimary: spec.id === newestId,
+          campaign: spec.scope_node_id ? nodeName.get(spec.scope_node_id) : null,
+        }),
+      ),
     );
-  wrap.appendChild(list);
+  wrap.appendChild(
+    el("section", { class: "card prog spec-plays", "aria-labelledby": "spec-plays-h" }, [
+      (() => {
+        const h = panelHead("The plays", `${plural(specs.length, "spec")}, as written`, null, {
+          kit: "claret",
+        });
+        h.querySelector(".panel-title").id = "spec-plays-h";
+        return h;
+      })(),
+      list,
+      el("p", { class: "spec-key" }, [
+        el("span", { class: "spec-form", "aria-hidden": "true" }, [
+          el("i", { class: "fg fg-satisfied" }, "1"),
+        ]),
+        " satisfied ",
+        el("span", { class: "spec-form", "aria-hidden": "true" }, [
+          el("i", { class: "fg fg-open" }, "2"),
+        ]),
+        " covered, not yet satisfied ",
+        el("span", { class: "spec-form", "aria-hidden": "true" }, [
+          el("i", { class: "fg fg-orphan" }, "3"),
+        ]),
+        " a gap: no acceptance criterion covers it. Each square is a clause, in the order written.",
+      ]),
+    ]),
+  );
   return wrap;
 }
 
-/** A rollup {total,covered,orphans} from a coverage payload, defensively read. */
+/** A rollup {total,covered,satisfied,orphans} from a coverage payload, defensively read. */
 function specCoverageRollup(coverage) {
   const src =
     coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
   if (!src) return null;
   const total = Number(src.total) || 0;
   const covered = Number(src.covered) || 0;
+  const satisfied = src.satisfied != null ? Number(src.satisfied) || 0 : null;
   const orphans = Array.isArray(src.orphans) ? src.orphans.length : Number(src.orphans) || 0;
-  return { total, covered, orphans };
+  return { total, covered, satisfied, orphans };
 }
 
-/** Stats row for the spec library: total specs · avg coverage · gaps · updated. */
+/** The playbook's numbers: total specs · average coverage · gaps · last updated. */
 function specStatsRow(specs, coverages) {
   const rollups = coverages.map(specCoverageRollup).filter(Boolean);
   const withClauses = rollups.filter((r) => r.total > 0);
@@ -15772,143 +16429,106 @@ function specStatsRow(specs, coverages) {
     ? Math.round(covPcts.reduce((a, b) => a + b, 0) / covPcts.length)
     : null;
   const gaps = rollups.length ? rollups.reduce((a, r) => a + r.orphans, 0) : null;
-
   const newest = specs
     .slice()
     .filter((s) => s.updated_at)
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
 
-  return el("div", { class: "spec-stats kpi-row" }, [
-    specStatCard({ label: "Total specs", value: String(specs.length), unit: "in library" }),
-    specStatCard({
+  return el("div", { class: "kpi-row spec-stats" }, [
+    statCell({ label: "Total specs", value: String(specs.length), sub: "in the playbook" }),
+    statCell({
       label: "Coverage",
       value: avgCoverage == null ? "—" : String(avgCoverage),
-      unit: avgCoverage == null ? "no data" : "% avg covered",
-      tone: "ok",
-      series: covPcts.length > 1 ? covPcts : null,
+      unit: avgCoverage == null ? null : "%",
+      sub: avgCoverage == null ? "no coverage read" : "of clauses covered, on average",
     }),
-    specStatCard({
+    statCell({
       label: "Gaps",
       value: gaps == null ? "—" : String(gaps),
-      unit: gaps == null ? "no data" : "orphan clauses",
-      tone: gaps ? "danger" : "ok",
+      sub:
+        gaps == null
+          ? "no coverage read"
+          : gaps
+            ? "clauses no criterion covers"
+            : "every clause is covered",
     }),
-    specStatCard({
+    statCell({
       label: "Last updated",
       value: newest ? fmtRelative(newest.updated_at) : "—",
-      unit: newest && newest.target_repo ? newest.target_repo : "—",
-      tone: "amber",
-      small: true,
+      sub: newest ? newest.title : null,
     }),
   ]);
 }
 
-/**
- * A stat tile reusing the KPI card's visual language (label · big value · unit ·
- * optional sparkline) but rendered as a non-navigating div — the spec library
- * has no single "drill" target for an aggregate stat.
- */
-function specStatCard({ label, value, unit, tone = "accent", series, small = false }) {
-  return el("div", { class: `kpi tone-${tone}${small ? " kpi-sm" : ""}` }, [
-    el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
-    el("div", { class: "kpi-figure" }, [
-      el("span", { class: "kpi-val tabnum" }, value),
-      unit ? el("span", { class: "kpi-unit" }, unit) : null,
-    ]),
-    series && series.length > 1 ? el("div", { class: "kpi-spark", html: svgSpark(series) }) : null,
-  ]);
-}
-
-/** Keyword-match a spec title to a scanner-frame line icon. */
-function specThumbIcon(title) {
-  const t = (title || "").toLowerCase();
-  if (/\b(auth|password|login|sign[- ]?in|sign[- ]?up|credential|token|oauth|secur)/.test(t))
-    return "lock";
-  if (/\b(data|residency|storage|region|geo|locale|country|tenant|migrat)/.test(t)) return "globe";
-  if (/\b(rate|throttle|limit|quota|budget|throughput|latency|perf|speed)/.test(t)) return "gauge";
-  return "doc";
-}
-
-/** Four amber L-shaped corner brackets framing a spec thumbnail icon. */
-function specThumb(title) {
-  return el("span", { class: "spec-thumb" }, [
-    el("i", { class: "tc tl" }),
-    el("i", { class: "tc tr" }),
-    el("i", { class: "tc bl" }),
-    el("i", { class: "tc br" }),
-    icon(specThumbIcon(title), "spec-thumb-icon"),
-  ]);
-}
-
-/** One spec = a card linking to its coverage trace, with a scanner-frame thumb. */
-function renderSpecCard(spec, { coverage, isPrimary = false } = {}) {
+/** One spec = one line of the playbook, linking to its clause-by-clause trace. */
+function renderSpecCard(spec, { coverage, isPrimary = false, campaign = null } = {}) {
   const count = specClauseCount(spec);
-  // Status dot: frozen (reaching agents) = amber, draft (live/authoring) = green.
-  const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
   const rollup = specCoverageRollup(coverage);
+  const clauses = coverage && Array.isArray(coverage.clauses) ? coverage.clauses : [];
+  const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
+  const words = specCoverageWords(rollup);
   return el(
-    "button",
+    "a",
     {
-      class: `spec-card${isPrimary ? " spec-card--primary" : ""}`,
-      type: "button",
+      class: `spec-card${isPrimary ? " spec-card--primary" : ""}${rollup && rollup.orphans ? " has-gaps" : ""}`,
+      href: `#/specs/${encodeURIComponent(spec.id)}`,
       dataset: { specId: spec.id, status: spec.status },
-      onclick: () => navigate(`#/specs/${encodeURIComponent(spec.id)}`),
+      "aria-label": `${spec.title}: ${statusLabel}, ${plural(count, "clause")}, ${words}${campaign ? `, played in ${campaign}` : ""}`,
     },
     [
-      specThumb(spec.title),
-      el("div", { class: "spec-card-body" }, [
-        el("div", { class: "spec-card-head" }, [
-          el("span", { class: "spec-card-title" }, spec.title),
-          el("span", { class: `spec-card-status status-${spec.status}` }, [
-            el("span", { class: "scs-dot" }),
-            statusLabel,
-          ]),
-        ]),
-        spec.brief ? el("p", { class: "spec-card-brief dim" }, spec.brief) : null,
-        el("div", { class: "spec-card-meta dim" }, [
-          el("span", {}, `${count} clause${count === 1 ? "" : "s"}`),
-          spec.target_repo ? el("span", { class: "tag-chip" }, spec.target_repo) : null,
-          rollup && rollup.total > 0
-            ? el(
-                "span",
-                { class: "spec-card-cov mono" },
-                `${Math.round((rollup.covered / rollup.total) * 100)}% covered`,
-              )
-            : null,
-          spec.updated_at
-            ? el("span", { class: "spec-card-updated" }, fmtRelative(spec.updated_at))
-            : null,
+      el("span", { class: "spec-card-lead" }, [
+        specStatusMark(spec.status),
+        isPrimary ? el("span", { class: "spec-card-new" }, "newest") : null,
+      ]),
+      el("span", { class: "spec-card-body" }, [
+        el("span", { class: "spec-card-title" }, spec.title),
+        spec.brief ? el("span", { class: "spec-card-brief" }, spec.brief) : null,
+        el("span", { class: "spec-card-meta" }, [
+          el("span", {}, plural(count, "clause")),
+          spec.target_repo ? repoTag(spec.target_repo, 16) : null,
+          campaign ? el("span", {}, `Campaign: ${campaign}`) : null,
+          spec.updated_at ? el("span", {}, `updated ${fmtRelative(spec.updated_at)}`) : null,
         ]),
       ]),
-      icon("chevron", "spec-card-chevron"),
+      el("span", { class: "spec-card-cov" }, [
+        clauses.length ? specFormGuide(clauses) : null,
+        el("span", { class: `spec-card-words${rollup && rollup.orphans ? " is-red" : ""}` }, words),
+      ]),
     ],
   );
 }
 
 async function renderSpecDetail(specId) {
-  const res = await api("GET", `/specs/${encodeURIComponent(specId)}/coverage`);
+  const signal = routeSignal();
+  const [res, specRes, nodesRes] = await Promise.all([
+    api("GET", `/specs/${encodeURIComponent(specId)}/coverage`, undefined, { signal }),
+    api("GET", `/specs/${encodeURIComponent(specId)}`, undefined, { signal }).catch(() => null),
+    api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
+  ]);
   const cov = res && res.coverage;
+  // GET /specs/:id answers { spec }; tolerate a list-shaped answer too.
+  const spec =
+    (specRes && specRes.spec) ||
+    ((specRes && specRes.specs) || []).find((s) => s.id === specId) ||
+    null;
 
-  const wrap = el("div", { class: "view", dataset: { view: "specs" } });
+  const wrap = el("div", { class: "view view-spec", dataset: { view: "specs" } });
+  const back = el("a", { class: "back-link", href: "#/specs" }, [
+    icon("back", "", 16),
+    "The playbook",
+  ]);
+  wrap.appendChild(back);
 
   // Defensive: a missing / empty / malformed coverage payload must render a
-  // clean empty state, not blank the whole spec view (an unguarded `cov.rollup`
-  // would throw, leaving the router's skeleton stuck on screen). Guard on shape
-  // rather than exact fields — other work may extend this payload.
+  // clean empty state, not blank the whole spec view.
   if (!cov || typeof cov !== "object") {
-    wrap.appendChild(
-      viewHead("Spec", "Coverage", [
-        el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
-          icon("arrow"),
-          el("span", {}, "All specs"),
-        ]),
-      ]),
-    );
+    wrap.appendChild(viewHead((spec && spec.title) || "Spec", "Coverage"));
     wrap.appendChild(
       emptyState(
         "Coverage unavailable",
         "This spec's coverage report could not be loaded. It may have been removed, or the report is still being built.",
-        "specs",
+        null,
+        el("a", { class: "btn", href: "#/specs" }, "Back to the playbook"),
       ),
     );
     return wrap;
@@ -15923,91 +16543,202 @@ async function renderSpecDetail(specId) {
     orphans,
   };
   const clauses = Array.isArray(cov.clauses) ? cov.clauses : [];
-  wrap.appendChild(
-    viewHead(cov.title || "Spec", `Spec · ${SPEC_STATUS_LABEL[cov.status] || cov.status || "—"}`, [
-      el("button", { class: "btn", type: "button", onclick: () => navigate("#/specs") }, [
-        icon("arrow"),
-        el("span", {}, "All specs"),
-      ]),
-      cov.scope_node_id
-        ? el(
-            "button",
-            {
-              class: "btn",
-              type: "button",
-              onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
-            },
-            [icon("epics"), el("span", {}, "Open epic")],
-          )
-        : null,
-    ]),
-  );
+  const status = cov.status || (spec && spec.status) || "";
+  const targetRepo = (spec && spec.target_repo) || cov.target_repo || null;
+  const campaign = cov.scope_node_id
+    ? ((nodesRes && nodesRes.nodes) || []).find((n) => n.id === cov.scope_node_id)
+    : null;
+  const brief = (spec && spec.brief) || cov.brief || null;
 
-  // Rollup: covered / satisfied / orphans — the at-a-glance coverage health.
-  wrap.appendChild(
-    el("div", { class: "spec-rollup", dataset: { total: String(r.total) } }, [
-      specStat("Clauses", r.total, "total"),
-      specStat("Covered", `${r.covered}/${r.total}`, "covered"),
-      specStat("Satisfied", `${r.satisfied}/${r.total}`, "satisfied"),
-      specStat("Gaps", r.orphans.length, r.orphans.length > 0 ? "gap" : "ok"),
-    ]),
-  );
-
-  // Coverage gaps: orphan clauses (no covering AC) called out first.
-  if (r.orphans.length > 0) {
-    const orphanClauses = clauses.filter((c) => c.orphan);
-    wrap.appendChild(
-      el("div", { class: "coverage-gaps", dataset: { count: String(orphanClauses.length) } }, [
-        el("div", { class: "coverage-gaps-head" }, [
-          icon("alert"),
+  // The lede: where the spec stands, from its coverage.
+  const gapsN = r.orphans.length;
+  const lede = [
+    el("b", {}, `${SPEC_STATUS_LABEL[status] || status || "Spec"}. `),
+    r.total
+      ? `${r.covered} of its ${plural(r.total, "clause")} ${r.covered === 1 ? "is" : "are"} covered by acceptance criteria${r.satisfied ? `, ${r.satisfied} already satisfied` : ""}.`
+      : "It has no clauses yet.",
+    gapsN
+      ? [
+          " ",
           el(
-            "strong",
-            {},
-            `${orphanClauses.length} coverage gap${orphanClauses.length === 1 ? "" : "s"}`,
+            "span",
+            { class: "is-red" },
+            `${gapsN} ${gapsN === 1 ? "has" : "have"} no criterion, so nothing proves ${gapsN === 1 ? "it" : "them"} yet.`,
           ),
-          el("span", { class: "dim" }, "— clauses with no acceptance criterion covering them"),
-        ]),
-        el(
-          "ul",
-          { class: "coverage-gaps-list" },
-          orphanClauses.map((c) =>
-            el("li", { dataset: { clauseId: c.clause_id } }, [
-              badge(CLAUSE_KIND_LABEL[c.kind] || c.kind, `clause-kind kind-${c.kind}`),
-              el("span", {}, c.text),
-            ]),
-          ),
-        ),
-      ]),
+        ]
+      : r.total
+        ? " Every clause has a criterion."
+        : "",
+    status === "draft"
+      ? " Freeze it to lock the clauses and seed them as lore for the agents."
+      : "",
+  ];
+
+  const actions = [];
+  if (cov.scope_node_id) {
+    actions.push(
+      el(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
+        },
+        [icon("epics"), el("span", {}, "Open epic")],
+      ),
+    );
+  }
+  if (status === "draft") {
+    actions.unshift(
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: (e) =>
+            runAsyncAction(e.currentTarget, "Freezing…", async () => {
+              await api("POST", `/specs/${encodeURIComponent(specId)}/freeze`);
+              toast("Spec frozen: its clauses are locked and seeded as lore.", { ok: true });
+              router();
+            }),
+        },
+        [icon("lock", "", 18), el("span", {}, "Freeze spec")],
+      ),
+    );
+  } else if (status === "frozen" && !cov.scope_node_id && clauses.length) {
+    // A frozen spec with no campaign yet: build one from it, clause provenance and all.
+    actions.unshift(
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: () =>
+            openPlanBuild({
+              spec: clauses
+                .filter((c) => c.clause_id && c.kind && c.text)
+                .map((c) => ({
+                  clause_id: c.clause_id,
+                  kind: c.kind,
+                  text: c.text,
+                  ...(c.rationale ? { rationale: c.rationale } : {}),
+                })),
+              brief: brief || cov.title || "Build from the frozen spec.",
+              ...(targetRepo ? { repo: targetRepo } : {}),
+            }),
+        },
+        [icon("spark"), el("span", {}, "Plan a build from it")],
+      ),
     );
   }
 
-  // The trace: one block per clause → covering ACs → satisfied/open.
-  const trace = el("div", { class: "spec-trace" });
-  for (const clause of clauses) trace.appendChild(renderClauseTrace(clause));
-  wrap.appendChild(trace);
+  wrap.appendChild(
+    el("header", { class: "spec-head" }, [
+      el("p", { class: "spec-meta" }, [
+        specStatusMark(status),
+        targetRepo ? repoTag(targetRepo, 20) : el("span", {}, "Every repo"),
+        campaign
+          ? el(
+              "a",
+              { href: `#/epics/${encodeURIComponent(campaign.id)}` },
+              `Campaign: ${campaign.name}`,
+            )
+          : null,
+        el("span", {}, plural(r.total, "clause")),
+        spec && spec.updated_at ? el("span", {}, `updated ${fmtRelative(spec.updated_at)}`) : null,
+      ]),
+      el("h1", { class: "detail-title" }, cov.title || (spec && spec.title) || "Spec"),
+      el("p", { class: "spec-lede" }, lede),
+      brief ? el("p", { class: "spec-brief" }, [el("b", {}, "The brief: "), `“${brief}”`]) : null,
+      actions.length ? el("div", { class: "btn-row" }, actions) : null,
+    ]),
+  );
+
+  // The numbers, league-table style.
+  wrap.appendChild(
+    el("div", { class: "kpi-row spec-rollup", dataset: { total: String(r.total) } }, [
+      statCell({ label: "Clauses", value: String(r.total), sub: "written" }),
+      statCell({ label: "Covered", value: `${r.covered}/${r.total}`, sub: "have a criterion" }),
+      statCell({ label: "Satisfied", value: `${r.satisfied}/${r.total}`, sub: "criteria met" }),
+      statCell({
+        label: "Gaps",
+        value: String(gapsN),
+        sub: gapsN ? "no criterion covers them" : "none",
+      }),
+    ]),
+  );
+
+  const indexOf = new Map(clauses.map((c, i) => [c.clause_id, i + 1]));
+  // Coverage gaps: orphan clauses (no covering AC) called out first.
+  if (gapsN > 0) {
+    const orphanClauses = clauses.filter((c) => c.orphan);
+    wrap.appendChild(
+      el(
+        "section",
+        {
+          class: "card coverage-gaps",
+          dataset: { count: String(orphanClauses.length) },
+          "aria-label": "Coverage gaps",
+        },
+        [
+          panelHead(
+            `${orphanClauses.length} coverage gap${orphanClauses.length === 1 ? "" : "s"}`,
+            "clauses with no acceptance criterion covering them",
+            null,
+            { kit: "red" },
+          ),
+          el(
+            "ul",
+            { class: "coverage-gaps-list" },
+            orphanClauses.map((c) =>
+              el("li", { dataset: { clauseId: c.clause_id } }, [
+                el("span", { class: "sc-no" }, String(indexOf.get(c.clause_id) || "")),
+                badge(CLAUSE_KIND_LABEL[c.kind] || c.kind, `clause-kind kind-${c.kind}`),
+                el("span", { class: "cg-text" }, c.text),
+              ]),
+            ),
+          ),
+          el(
+            "p",
+            { class: "cg-hint" },
+            "Cover a gap with an acceptance criterion, on the ticket that delivers it, that names the clause.",
+          ),
+        ],
+      ),
+    );
+  }
+
+  // The trace: one row per clause → its covering ACs → satisfied / open.
+  const trace = el(
+    "ol",
+    { class: "spec-trace" },
+    clauses.map((c, i) => el("li", {}, renderClauseTrace(c, i + 1))),
+  );
+  wrap.appendChild(
+    progPage(
+      "spec-clauses",
+      "ink",
+      "The clauses",
+      `${plural(clauses.length, "clause")}, in the order written`,
+      [specFormGuide(clauses), trace],
+    ),
+  );
 
   if (cov.gate_enabled) {
     wrap.appendChild(
       el(
         "p",
-        { class: "dim section-note" },
-        "Spec-coverage DoD gate is ARMED (advisory): a clause with no satisfied AC will be flagged.",
+        { class: "section-note" },
+        "The spec-coverage gate is on (advisory): a clause with no satisfied criterion is flagged at the Definition of Done.",
       ),
     );
   }
   return wrap;
 }
 
-function specStat(label, value, tone) {
-  return el("div", { class: "spec-stat", dataset: { tone } }, [
-    el("span", { class: "spec-stat-value" }, String(value)),
-    el("span", { class: "spec-stat-label dim" }, label),
-  ]);
-}
-
-/** One clause's trace row: kind + text, coverage state, bounce count, its ACs. */
-function renderClauseTrace(clause) {
-  const state = clause.orphan ? "orphan" : clause.satisfied ? "satisfied" : "open";
+/** One clause's trace row: its number, kind and text, its state, and the criteria that prove it. */
+function renderClauseTrace(clause, n) {
+  const state = clauseState(clause);
   const block = el("div", {
     class: "spec-clause",
     dataset: {
@@ -16018,68 +16749,74 @@ function renderClauseTrace(clause) {
       satisfied: String(clause.satisfied),
     },
   });
+  const stateMark =
+    state === "orphan"
+      ? el("span", { class: "sc-state is-red" }, [
+          glyph("failed", 16),
+          el("span", {}, "Gap — no AC"),
+        ])
+      : state === "satisfied"
+        ? el("span", { class: "sc-state is-ok" }, [glyph("done", 16), el("span", {}, "Satisfied")])
+        : el("span", { class: "sc-state" }, [glyph("in_progress", 16), el("span", {}, "Open")]);
 
-  const head = el("div", { class: "spec-clause-head" }, [
-    badge(CLAUSE_KIND_LABEL[clause.kind] || clause.kind, `clause-kind kind-${clause.kind}`),
-    el("span", { class: "spec-clause-text" }, clause.text),
-  ]);
-  const tags = el("div", { class: "spec-clause-tags" });
-  // Coverage state chip: green satisfied / amber open / red gap.
-  tags.appendChild(
-    clause.orphan
-      ? badge("Gap — no AC", "clause-state state-orphan")
-      : clause.satisfied
-        ? badge("Satisfied", "clause-state state-satisfied")
-        : badge("Open", "clause-state state-open"),
-  );
+  const tags = el("div", { class: "spec-clause-tags" }, [stateMark]);
   if (clause.bounce_count > 0) {
-    tags.appendChild(badge(`bounced ${clause.bounce_count}×`, "clause-bounce no-dot"));
+    tags.appendChild(badge(`bounced ${clause.bounce_count}×`, "clause-bounce"));
   }
   if (clause.lore_status && clause.lore_status !== "unknown") {
     const label = LORE_STATUS_LABEL[clause.lore_status] || clause.lore_status;
     tags.appendChild(
       badge(
         `lore: ${clause.lore_status}${label ? ` (${label})` : ""}`,
-        `lore-${clause.lore_status === "active" ? "active" : "draft"} no-dot`,
+        `lore-${clause.lore_status === "active" ? "active" : "draft"}`,
       ),
     );
   }
-  head.appendChild(tags);
-  block.appendChild(head);
-  if (clause.rationale) {
-    block.appendChild(el("p", { class: "spec-clause-rationale dim" }, clause.rationale));
-  }
 
+  const main = el("div", { class: "spec-clause-main" }, [
+    el("div", { class: "spec-clause-head" }, [
+      badge(CLAUSE_KIND_LABEL[clause.kind] || clause.kind, `clause-kind kind-${clause.kind}`),
+      el("span", { class: "spec-clause-text" }, clause.text),
+    ]),
+    clause.rationale ? el("p", { class: "spec-clause-rationale" }, clause.rationale) : null,
+  ]);
   if (clause.orphan) {
-    block.appendChild(
+    main.appendChild(
       el(
         "p",
-        { class: "spec-clause-empty dim" },
+        { class: "spec-clause-empty" },
         "No acceptance criterion covers this clause — it is a coverage gap.",
       ),
     );
-    return block;
+  } else {
+    main.appendChild(
+      el(
+        "ul",
+        { class: "spec-clause-acs" },
+        (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
+          el("li", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
+            glyph(ac.satisfied ? "done" : "ready", 14, ac.satisfied ? "satisfied" : ac.ac_status),
+            el("span", { class: "spec-ac-text" }, ac.ac_text),
+            el(
+              "a",
+              {
+                class: "spec-ac-ticket",
+                href: `#/ticket/${encodeURIComponent(ac.ticket_id)}`,
+                title: ac.ticket_title || "",
+              },
+              ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
+            ),
+            ac.ticket_status
+              ? el("span", { class: "spec-ac-st" }, statusLabel(ac.ticket_status))
+              : null,
+          ]),
+        ),
+      ),
+    );
   }
-
-  const acs = el(
-    "div",
-    { class: "spec-clause-acs" },
-    (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
-      el("div", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
-        badge(
-          ac.satisfied ? "satisfied" : ac.ac_status,
-          `ac-${ac.satisfied ? "satisfied" : "pending"}`,
-        ),
-        el("span", { class: "spec-ac-text" }, ac.ac_text),
-        el(
-          "a",
-          { class: "spec-ac-ticket", href: `#/ticket/${encodeURIComponent(ac.ticket_id)}` },
-          ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
-        ),
-      ]),
-    ),
-  );
-  block.appendChild(acs);
+  block.appendChild(el("span", { class: "sc-no", "aria-hidden": "true" }, String(n)));
+  block.appendChild(main);
+  block.appendChild(tags);
   return block;
 }
 

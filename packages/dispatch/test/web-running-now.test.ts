@@ -43,7 +43,8 @@ function mountShell(): void {
       <main id="app" class="app"><p class="loading">Loading…</p></main>
       <nav id="bottomnav" class="bottomnav" hidden></nav>
     </div>`;
-  location.hash = "#/overview";
+  // Match Day: Running now lives in the Health view (the physio room).
+  location.hash = "#/health";
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));

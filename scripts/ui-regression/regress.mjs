@@ -212,8 +212,8 @@ try {
     { timeout: 15000 },
   );
   const overviewText = await page.textContent("#app");
-  /cycle time|throughput|flow/i.test(overviewText)
-    ? ok("Overview renders the headline metrics")
+  /team sheet/i.test(overviewText) && /tactics board/i.test(overviewText)
+    ? ok("Overview renders the team sheet and the tactics board")
     : bad("Overview did not render metrics: " + overviewText.slice(0, 200));
   await shot(page, "overview-empty");
 
@@ -720,6 +720,9 @@ try {
   if (!(await page.$('[data-testid="maintenance-toggle"]'))) {
     bad("Settings: Idle loops panel has no maintenance toggle");
   } else {
+    // The boot room folds its long sections; open the idle-loop scans as a user
+    // would (its summary), then work its switches.
+    if (!(await page.$("#idle-loops[open]"))) await page.click("#idle-loops > summary");
     // The switch inputs are visually hidden (the track is the control), so a user
     // toggles them by clicking the label — do the same rather than forcing the input.
     const setSwitch = async (selector, on) => {

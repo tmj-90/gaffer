@@ -1,0 +1,372 @@
+/* The physio room's flow panels (moved from the Overview): form guide, governance
+   ROI, the cost line, development flow, the treatment table, running now. */
+@layer views {
+  /* --- form guide (flow numbers on paper) --------------------------------- */
+  .form-guide .kpi-row {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  /* --- two-up / three-up rows -------------------------------------------- */
+  .ov-grid.ov-2 {
+    grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  }
+  .ov-grid.ov-3 {
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  }
+
+  /* --- development flow: five stage counters on the line ------------------- */
+  .pipeline {
+    display: flex;
+    align-items: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+    min-width: 0;
+  }
+  .pl-live {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .pl-node {
+    position: relative;
+    flex: 1 1 0;
+    min-width: 72px;
+    display: grid;
+    justify-items: center;
+    gap: 6px;
+    padding: 4px 0;
+    color: inherit;
+    text-decoration: none;
+  }
+  .pl-node:not(:first-child)::before {
+    content: "";
+    position: absolute;
+    top: 26px;
+    right: 50%;
+    left: -50%;
+    height: 2px;
+    background: var(--rule);
+    z-index: 0;
+  }
+  .pl-disc {
+    position: relative;
+    z-index: 1;
+    width: 48px;
+    height: 48px;
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-round);
+    background: var(--paper);
+    border: 2px solid var(--rule);
+    color: var(--ink-2);
+    box-shadow: var(--counter-shadow);
+  }
+  .pl-disc svg {
+    width: 22px;
+    height: 22px;
+  }
+  .pl-node.active .pl-disc {
+    border-color: var(--ink);
+    color: var(--ink);
+  }
+  .pl-label {
+    font: 700 var(--t14) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .pl-count {
+    font: 800 var(--t34) / 1 var(--f-display);
+  }
+  .pl-node.dim .pl-count {
+    color: var(--ink-2);
+  }
+
+  /* --- needs your attention (severity rows) ---------------------------------- */
+  .needs-list {
+    display: grid;
+  }
+  .needs-item .ni-link {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 10px 0;
+    border-top: var(--hair);
+    color: inherit;
+    text-decoration: none;
+  }
+  .needs-item:first-child .ni-link {
+    border-top: 0;
+  }
+  .ni-icon svg {
+    width: 18px;
+    height: 18px;
+  }
+  .needs-item[data-sev="critical"] .ni-icon,
+  .needs-item[data-sev="critical"] .ni-title {
+    color: var(--red);
+  }
+  .ni-body {
+    display: grid;
+    min-width: 0;
+  }
+  .ni-title {
+    font: 700 var(--t16) / 1.3 var(--f-text);
+  }
+  .ni-sub {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .ni-action {
+    font: 700 var(--t14) var(--f-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .ni-arrow {
+    display: none;
+  }
+  .needs-empty {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font: 600 var(--t16) var(--f-text);
+  }
+
+  /* --- league table: progress by repository --------------------------------- */
+  .repo-prog {
+    display: grid;
+  }
+  .rp-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px 44px;
+    gap: 12px;
+    align-items: center;
+    padding: 8px 0;
+    border-top: var(--hair);
+  }
+  .rp-row:first-child {
+    border-top: 0;
+  }
+  .rp-dot {
+    display: none;
+  }
+  .rp-name {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .rp-note {
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .rp-bar {
+    height: 8px;
+    background: var(--rule-2);
+  }
+  .rp-bar i {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+  .rp-bar i.warn {
+    background: var(--red);
+  }
+  .rp-pct {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-align: right;
+  }
+
+  .flow-eff .band {
+    height: 12px;
+  }
+
+  /* --- governance ROI + cost line ---------------------------------------------- */
+  .gov-panel {
+    display: grid;
+    gap: var(--s3);
+  }
+  .gov-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .gov-title {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .gov-tiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: var(--frame);
+  }
+  .gov-tile {
+    padding: 10px 14px;
+    border-left: var(--hair);
+    display: grid;
+    gap: 2px;
+  }
+  .gov-tile:first-child {
+    border-left: 0;
+  }
+  .gov-tile-label {
+    font: 700 var(--t14) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .gov-tile-val {
+    font: 800 var(--t34) / 1 var(--f-display);
+  }
+  .gov-tile-sub,
+  .gov-emptystate {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .cost-banner {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    align-items: baseline;
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .cost-item {
+    display: inline-flex;
+    gap: 6px;
+    align-items: baseline;
+  }
+  .cost-val {
+    font: 800 var(--t20) / 1 var(--f-display);
+    color: var(--ink);
+  }
+  .cost-est {
+    font-size: var(--t12);
+  }
+
+  /* --- running now, bouncing, decisions, activity ------------------------------ */
+  .run-list {
+    display: grid;
+  }
+  .run-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+  }
+  .run-row--clickable {
+    cursor: pointer;
+  }
+  .run-row--clickable:hover {
+    background: var(--paper-2);
+  }
+  .run-kind {
+    font-weight: 700;
+  }
+  .run-repo,
+  .run-elapsed {
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .run-viewlog {
+    margin-left: auto;
+  }
+  .run-recent-title {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    padding-top: 8px;
+  }
+  .run-log-pre,
+  .run-detail-log-pre {
+    white-space: pre-wrap;
+    max-height: 60vh;
+    overflow: auto;
+    font: 12.5px / 1.5 var(--f-mono);
+    background: var(--board);
+    color: var(--board-ink);
+    padding: 10px 12px;
+    border-radius: var(--r);
+  }
+  .run-detail,
+  .run-detail-meta,
+  .run-detail-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: center;
+  }
+  .run-detail {
+    display: grid;
+  }
+  .bouncing-list {
+    display: grid;
+  }
+  .bounce-row {
+    grid-template-columns: 52px minmax(0, 1fr) auto auto;
+  }
+  .bounce-num {
+    font: 800 var(--t20) / 1 var(--f-display);
+  }
+  .bounce-title {
+    overflow-wrap: anywhere;
+  }
+  .bounce-count {
+    font: 800 var(--t20) / 1 var(--f-display);
+  }
+  .bounce-samegate {
+    font: 700 var(--t12) var(--f-cond);
+    color: var(--red);
+    border: 1.5px solid var(--red);
+    padding: 2px 6px;
+    border-radius: var(--r);
+  }
+  .decisions-well {
+    display: grid;
+    gap: var(--s3);
+  }
+  .decisions-card.has-overflow .decisions-well {
+    max-height: 560px;
+    overflow-y: auto;
+  }
+
+  @media (max-width: 1180px) {
+    .form-guide .kpi-row {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 760px) {
+    .form-guide .kpi-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .form-guide .kpi:nth-child(odd) {
+      border-left: 0;
+    }
+    .gov-tiles {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .gov-tile {
+      border-left: 0;
+      border-top: var(--hair);
+    }
+    .pl-node {
+      min-width: 0;
+    }
+    .pl-disc {
+      width: 40px;
+      height: 40px;
+    }
+    .pl-node:not(:first-child)::before {
+      top: 22px;
+    }
+    .pl-count {
+      font-size: var(--t26);
+    }
+    .bounce-row {
+      grid-template-columns: 44px minmax(0, 1fr) auto;
+    }
+    .bounce-samegate {
+      grid-column: 2;
+      justify-self: start;
+    }
+  }
+}

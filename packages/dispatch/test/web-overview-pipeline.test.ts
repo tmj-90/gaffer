@@ -67,7 +67,9 @@ function mountShell(): void {
       <main id="app" class="app"><p class="loading">Loading…</p></main>
       <nav id="bottomnav" class="bottomnav" hidden></nav>
     </div>`;
-  location.hash = "#/overview";
+  // Match Day: the development-flow strip and the treatment table (needs your
+  // attention) moved to the Health view; the Overview carries the tactics board.
+  location.hash = "#/health";
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));

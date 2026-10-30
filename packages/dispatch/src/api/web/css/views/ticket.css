@@ -10,19 +10,156 @@
     padding: 4px 0;
     min-height: 32px;
   }
-  /* The head card: number in stencil claret, the title as a headline. */
-  .detail-grid .card.card-accent {
-    box-shadow: none;
+  /* The head: a referee's card when it is out, the meta line, the headline, the lede. */
+  .card.tk-head {
     display: grid;
-    gap: var(--s3);
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s5);
+    border: 0;
+    background: none;
+    padding: 0;
   }
-  .detail-grid .card.card-accent > .num {
-    font: 900 var(--t26) / 1 var(--f-stencil);
+  .card.tk-head.is-out {
+    grid-template-columns: 120px minmax(0, 1fr);
+    align-items: start;
+  }
+  .ref-card {
+    transform: rotate(-6deg);
+    margin-top: 6px;
+  }
+  .ref-card-shadow {
+    fill: rgb(0 0 0 / 0.22);
+  }
+  .ref-red .ref-card-face {
+    fill: var(--red);
+    stroke: var(--ycard-edge);
+    stroke-width: 2;
+  }
+  .ref-card-glyph {
+    fill: #fff;
+  }
+  .tk-head-main {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+  .tk-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    font-size: var(--t14);
+  }
+  .tk-epic-link {
+    color: var(--ink);
+  }
+  .tk-head .detail-title {
+    font: 800 var(--t52) / 1.02 var(--f-display);
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+  .tk-no {
+    font-family: var(--f-stencil);
     color: var(--claret-ink);
+  }
+  .tk-lede {
+    max-width: 62ch;
+    font-size: var(--t20);
+    line-height: 1.4;
+  }
+  .tk-lede .is-red {
+    color: var(--red);
+  }
+  .tk-move-t {
+    max-width: 70ch;
+  }
+  .card.tk-move {
+    border-color: var(--claret);
+  }
+  .card.tk-move:has(> .block-ink) {
+    border-color: var(--ink);
   }
   .desc {
     max-width: 75ch;
     white-space: pre-wrap;
+  }
+
+  /* The failing test: file › name, then Expected v Received as a scoreline. */
+  .ft-name {
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  .scoreline {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: stretch;
+    background: var(--board);
+    color: var(--board-ink);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .sl-side {
+    display: grid;
+    gap: 6px;
+    padding: 14px 16px;
+    min-width: 0;
+  }
+  .sl-rec {
+    border-bottom: 4px solid var(--red);
+  }
+  .sl-l {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--board-ink-2);
+  }
+  .sl-v {
+    font: 400 var(--t20) / 1.25 var(--f-mono);
+    color: #fff;
+    overflow-wrap: anywhere;
+  }
+  .sl-rec .sl-v {
+    color: #ff9ea8;
+  }
+  .sl-v-sep {
+    display: grid;
+    place-items: center;
+    padding: 0 12px;
+    font: 800 var(--t26) / 1 var(--f-display);
+    color: var(--yellow);
+    border-inline: 2px solid var(--board-rule);
+  }
+  .ft-where {
+    font: 600 var(--t14) / 1.4 var(--f-cond);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+
+  /* The epic as a cup run, in the side column. */
+  .tk-rounds {
+    display: grid;
+    gap: 10px;
+  }
+  .tk-rounds > li {
+    display: grid;
+    gap: 6px;
+  }
+  .tk-rounds ul {
+    display: grid;
+    gap: 6px;
+  }
+  .tie.is-here a {
+    outline: 3px solid var(--sky);
+    outline-offset: 1px;
+  }
+  .tk-waits {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font: 700 var(--t14) var(--f-text);
+  }
+  .tk-waits.is-red {
+    color: var(--red);
   }
   .claim-box {
     display: grid;
@@ -141,15 +278,10 @@
     background: var(--ink);
   }
 
-  /* Attempts: the failure history, newest first. */
+  /* Attempts: a penalty shootout, oldest first; each attempt's output folds away. */
   .failure-history {
     display: grid;
     gap: var(--s3);
-  }
-  .failure-history h2 {
-    display: flex;
-    align-items: center;
-    gap: 8px;
   }
   .failure-history-sub {
     font-size: var(--t14);
@@ -157,19 +289,49 @@
   }
   .failure-trail {
     display: grid;
-    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--s4);
   }
   .failure-attempt {
-    border: var(--hair);
-    border-radius: var(--r);
-    padding: 10px 12px;
     display: grid;
     gap: 6px;
+    align-content: start;
+    min-width: 0;
+  }
+  .shoot {
+    width: 100%;
+    max-width: 220px;
+    height: auto;
+    border-radius: var(--r);
+  }
+  .shoot-grass {
+    fill: var(--pitch);
+  }
+  .shoot-post {
+    fill: none;
+    stroke: var(--chalk);
+    stroke-width: 5;
+    stroke-linejoin: round;
+  }
+  .shoot-net {
+    stroke: var(--chalk);
+    stroke-width: 1;
+    opacity: 0.4;
+  }
+  .shoot-ball {
+    fill: var(--chalk);
+    stroke: var(--ink-on-pitch);
+    stroke-width: 1.5;
+  }
+  .shoot-x {
+    stroke: #ff6b78;
+    stroke-width: 4;
+    stroke-linecap: round;
   }
   .failure-attempt-head {
     display: flex;
-    align-items: center;
-    gap: 10px;
+    align-items: baseline;
+    gap: 4px 10px;
     flex-wrap: wrap;
   }
   .failure-attempt-num {
@@ -183,6 +345,10 @@
   .failure-gate {
     color: var(--red);
     font-weight: 700;
+    font-size: var(--t14);
+  }
+  .failure-more > summary {
+    font: 700 var(--t14) var(--f-text);
   }
   .failure-detail {
     white-space: pre-wrap;
@@ -193,6 +359,10 @@
     color: var(--board-ink);
     padding: 10px 12px;
     border-radius: var(--r);
+    margin-top: 6px;
+  }
+  .failure-detail:focus-visible {
+    outline: 3px solid var(--focus);
   }
 
   /* Memory primed for this delivery. */
@@ -240,8 +410,30 @@
   }
 
   @media (max-width: 760px) {
-    .detail-grid .card.card-accent .detail-title {
+    .card.tk-head.is-out {
+      grid-template-columns: 64px minmax(0, 1fr);
+      gap: var(--s3);
+    }
+    .ref-card {
+      width: 60px;
+      height: 75px;
+    }
+    .tk-head .detail-title {
       font-size: var(--t34);
+    }
+    .tk-lede {
+      font-size: var(--t16);
+    }
+    .scoreline {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sl-v-sep {
+      border-inline: 0;
+      border-block: 2px solid var(--board-rule);
+      padding: 4px 0;
+    }
+    .failure-trail {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 }

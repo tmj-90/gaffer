@@ -128,7 +128,7 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("opens a chip dialog (not window.prompt) when rejecting to rework", async () => {
     await bootReview();
-    const sendBack = buttonByText("Send back to rework");
+    const sendBack = buttonByText("Send back…");
     expect(sendBack, "the rework reject button should render").toBeDefined();
 
     sendBack!.click();
@@ -141,7 +141,7 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("NEGATIVE CONTROL: no chip + no text ⇒ submit is inert, no reject sent", async () => {
     await bootReview();
-    buttonByText("Send back to rework")!.click();
+    buttonByText("Send back…")!.click();
 
     const submit = submitButton();
     expect(submit, "the dialog submit should render").not.toBeNull();
@@ -156,7 +156,7 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("tapping a preset chip submits the reject with that reason", async () => {
     await bootReview();
-    buttonByText("Send back to rework")!.click();
+    buttonByText("Send back…")!.click();
 
     const chip = document.querySelector(".reject-chip") as HTMLButtonElement;
     const chipText = chip.textContent!.trim();
@@ -177,7 +177,7 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
 
   it("typing a free-text reason (no chip) also submits", async () => {
     await bootReview();
-    buttonByText("Won't do")!.click();
+    buttonByText("Won't do…")!.click();
 
     const input = document.querySelector(".reject-reason-input") as HTMLInputElement;
     input.value = "Superseded by a newer ticket";

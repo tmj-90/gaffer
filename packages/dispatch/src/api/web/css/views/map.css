@@ -9,8 +9,12 @@
     border-radius: var(--r);
     background: var(--lane-a);
   }
+  /* One mown lane per column of the ground (264px = a node + its gap). */
   .graph {
     position: relative;
+    min-width: 100%;
+    background: repeating-linear-gradient(90deg, var(--lane-a) 0 264px, var(--lane-b) 264px 528px);
+    background-position: -26px 0;
   }
   .graph-edges {
     position: absolute;
@@ -41,7 +45,11 @@
     z-index: 1;
     font: 800 var(--t16) / 1 var(--f-display);
     text-transform: uppercase;
-    color: var(--ink-2);
+    color: var(--ink);
+    background: var(--paper);
+    padding: 3px 6px;
+    width: auto !important;
+    border-radius: var(--r);
   }
   .scope-gnode {
     position: absolute;
@@ -223,9 +231,8 @@
     grid-template-columns: 52px minmax(0, 1fr) auto;
   }
   .repo-ticket-title {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .repo-ticket-time {
     font: 600 var(--t12) var(--f-cond);

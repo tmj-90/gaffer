@@ -3,8 +3,73 @@
    every knob as a labelled row with its key, help and control. */
 
 @layer views {
-  .settings-view > * {
-    max-width: 960px;
+  /* Two columns: the sticky index, then the room (full width, no half-empty page). */
+  .boot-room {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .boot-main {
+    display: grid;
+    gap: var(--s5);
+    min-width: 0;
+  }
+  .boot-index {
+    position: sticky;
+    top: var(--s4);
+    display: grid;
+    gap: var(--s3);
+    padding: var(--s4);
+    background: var(--paper);
+    border: var(--frame);
+    border-top: 6px solid var(--sky);
+    border-radius: var(--r);
+  }
+  .boot-index ul {
+    display: grid;
+  }
+  .boot-index li a {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 0;
+    border-top: var(--hair);
+    color: var(--ink);
+    text-decoration: none;
+    font: 600 var(--t14) / 1.25 var(--f-text);
+  }
+  .boot-index li:first-child a {
+    border-top: 0;
+  }
+  .boot-index li a:hover {
+    text-decoration: underline;
+  }
+  .boot-n,
+  .boot-find-n {
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .boot-unsaved {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 700 var(--t14) var(--f-text);
+  }
+  .boot-find-f input {
+    width: 100%;
+  }
+  .boot-dirty {
+    font: 600 var(--t14) var(--f-text);
+    color: var(--ink-2);
+    margin-right: auto;
+  }
+  .boot-dirty.is-dirty {
+    color: var(--ink);
+    font-weight: 800;
+  }
+  .settings-group > .panel-head .panel-title {
+    font-size: var(--t26);
   }
   .settings-note {
     display: flex;
@@ -32,10 +97,23 @@
   }
   .settings-rows {
     display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--s6);
+  }
+  .settings-rows > .setting-row:nth-child(2) {
+    border-top: 0;
+  }
+  @media (max-width: 1280px) {
+    .settings-rows {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .settings-rows > .setting-row:nth-child(2) {
+      border-top: var(--hair);
+    }
   }
   .setting-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(140px, 260px);
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 200px);
     gap: 8px 20px;
     align-items: center;
     padding: 12px 0;
@@ -88,24 +166,84 @@
     border-radius: var(--r);
   }
 
-  /* The autonomy dial (team instructions): gates open, as a band + chips. */
-  .autonomy-dial {
+  /* The formation: each autonomy gate is a position on a drawn pitch. */
+  .formation {
     display: grid;
-    grid-template-columns: 200px minmax(0, 1fr);
-    gap: var(--s5);
-    align-items: center;
+    gap: var(--s4);
+  }
+  .formation-board {
+    position: relative;
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .formation-pitch {
+    display: block;
+    width: 100%;
+    height: 200px;
+  }
+  .fp-grass {
+    fill: var(--pitch);
+  }
+  .fp-mow {
+    fill: var(--pitch-2);
+  }
+  .fp-line {
+    fill: none;
+    stroke: var(--chalk);
+    stroke-width: 2;
+    opacity: 0.8;
+  }
+  .formation-pos {
+    position: absolute;
+    inset: 0;
+  }
+  .formation-pos > li {
+    position: absolute;
+    left: var(--x);
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 150px;
+  }
+  .fp-spot {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    padding: 8px 6px;
+    text-align: center;
+    text-decoration: none;
+    color: var(--board-ink);
+    background: var(--board);
+    border: 2px solid var(--board);
+    border-radius: var(--r);
+  }
+  .fp-spot.off {
+    border-color: var(--yellow);
+  }
+  .fp-spot:hover .fp-label {
+    text-decoration: underline;
+  }
+  .fp-label {
+    font: 700 var(--t14) / 1.2 var(--f-cond);
+  }
+  .fp-who {
+    font: 800 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--board-ink-2);
+  }
+  .fp-spot.off .fp-who {
+    color: var(--yellow);
+  }
+  .fp-spot .shirt .shirt-no {
+    display: none;
   }
   .ad-gauge {
-    display: grid;
-    gap: 8px;
-  }
-  .ad-center {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
+    align-items: center;
+    gap: 10px;
   }
   .ad-frac {
-    font: 800 var(--t52) / 1 var(--f-display);
+    font: 800 var(--t34) / 1 var(--f-display);
   }
   .ad-cap {
     font: 700 var(--t14) var(--f-cond);
@@ -114,52 +252,9 @@
     color: var(--ink-2);
   }
   .ad-gauge .band {
+    flex: 1;
+    max-width: 320px;
     height: 12px;
-  }
-  .ad-body {
-    display: grid;
-    gap: 8px;
-    min-width: 0;
-  }
-  .ad-level-row {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-  }
-  .ad-level {
-    font: 800 var(--t34) / 1 var(--f-display);
-    text-transform: uppercase;
-  }
-  .ad-badge {
-    font: 700 var(--t14) var(--f-cond);
-    color: var(--ink-2);
-  }
-  .ad-gates {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-  .ad-gate {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
-    border: 1.5px solid var(--rule);
-    border-radius: var(--r);
-    font: 600 var(--t12) var(--f-cond);
-  }
-  .ad-gate.on {
-    border-color: var(--ink);
-    background: var(--yellow);
-    color: var(--on-yellow);
-  }
-  .ad-gate-dot {
-    width: 8px;
-    height: 8px;
-    border: 1.5px solid currentColor;
-  }
-  .ad-gate.on .ad-gate-dot {
-    background: currentColor;
   }
 
   /* Autonomy recommendations / active policies / access. */
@@ -304,6 +399,14 @@
     min-height: 32px;
   }
 
+  @media (max-width: 1180px) {
+    .boot-room {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .boot-index {
+      position: static;
+    }
+  }
   @media (max-width: 760px) {
     .setting-row {
       grid-template-columns: minmax(0, 1fr);
@@ -311,11 +414,77 @@
     .setting-control {
       justify-content: flex-start;
     }
-    .autonomy-dial {
-      grid-template-columns: minmax(0, 1fr);
+    .formation-pitch {
+      display: none;
+    }
+    .formation-pos {
+      position: static;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .formation-pos > li {
+      position: static;
+      transform: none;
+      width: auto;
     }
     .settings-actions {
       bottom: calc(68px + env(safe-area-inset-bottom));
     }
+  }
+}
+
+@layer views {
+  .setting-more > summary {
+    font: 700 var(--t12) / 1.6 var(--f-cond);
+    color: var(--ink);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .setting-more[open] > summary {
+    margin-bottom: 4px;
+  }
+}
+
+@layer views {
+  details.settings-group > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  details.settings-group > summary::-webkit-details-marker {
+    display: none;
+  }
+  details.settings-group > summary::after,
+  .boot-fold > summary::after {
+    content: "";
+    width: 10px;
+    height: 10px;
+    margin-left: auto;
+    border-right: 2.5px solid currentColor;
+    border-bottom: 2.5px solid currentColor;
+    transform: rotate(45deg);
+    align-self: center;
+  }
+  details[open].settings-group > summary::after,
+  .boot-fold[open] > summary::after {
+    transform: rotate(225deg);
+  }
+  .boot-fold > summary {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: var(--s4);
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+    cursor: pointer;
+    list-style: none;
+  }
+  .boot-fold[open] > summary {
+    margin-bottom: var(--s4);
+  }
+  .boot-fold-t {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
   }
 }

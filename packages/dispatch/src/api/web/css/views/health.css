@@ -2,13 +2,68 @@
    first), then each source as a league table of bars. All-OK reads quietly. */
 
 @layer views {
-  .health-view > .kpi-row {
-    grid-template-columns: repeat(6, minmax(0, 1fr));
-    border: var(--frame);
-    border-radius: var(--r);
+  /* The physio board: the verdict sentence and the six fitness numbers, dark. */
+  .physio-board .scoreboard-in {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .health-view > .kpi-row .kpi:first-child {
-    padding-left: 16px;
+  .physio-board .sb-cells {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+  .physio-board .kpi-val {
+    font-size: var(--t34);
+  }
+  .physio-board .kpi-spark {
+    color: var(--sky);
+  }
+  .hx-grid {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: var(--s5);
+    align-items: start;
+  }
+  .hx-span {
+    min-width: 0;
+    display: grid;
+  }
+  .hx-4 {
+    grid-column: span 4;
+  }
+  .hx-6 {
+    grid-column: span 6;
+  }
+  .hx-8 {
+    grid-column: span 8;
+  }
+  .hx-12 {
+    grid-column: 1 / -1;
+  }
+  .hx-tall {
+    grid-row: span 2;
+  }
+  @media (max-width: 1180px) {
+    .physio-board .sb-cells {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .hx-4,
+    .hx-6,
+    .hx-8 {
+      grid-column: span 6;
+    }
+  }
+  @media (max-width: 760px) {
+    .physio-board .sb-cells {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .physio-board .hl {
+      font-size: var(--t34);
+    }
+    .hx-grid {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+    }
+    .hx-span {
+      grid-column: 1 / -1;
+    }
   }
   .health-degraded {
     font-weight: 700;

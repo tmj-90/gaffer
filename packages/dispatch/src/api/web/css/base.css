@@ -94,7 +94,7 @@
   pre,
   samp {
     font-family: var(--f-mono);
-    font-size: 0.875em;
+    font-size: max(var(--t12), 0.875em); /* never under the 12px floor */
   }
   h1,
   h2,

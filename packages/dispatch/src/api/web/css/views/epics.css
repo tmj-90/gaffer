@@ -11,87 +11,43 @@
     display: grid;
     gap: var(--s4);
   }
-  .epic-card {
-    padding: 0;
-    overflow: clip;
-  }
-  .epic-card.card-accent {
-    box-shadow: none;
-  }
-  .epic-summary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    padding: 12px var(--s4);
-    list-style: none;
-    background: var(--sky);
-    color: var(--on-sky);
-  }
-  .epic-summary::-webkit-details-marker {
-    display: none;
-  }
-  .epic-summary::after {
-    content: "";
-    flex: none;
-    width: 10px;
-    height: 10px;
-    border-right: 2.5px solid currentColor;
-    border-bottom: 2.5px solid currentColor;
-    transform: rotate(45deg) translateY(-3px);
-  }
-  .epic-card[open] > .epic-summary::after {
-    transform: rotate(225deg) translateY(-2px);
-  }
-  .epic-summary-main {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-  }
-  .epic-summary-main .epic-ico {
-    width: 22px;
-    height: 22px;
-    flex: none;
-  }
-  .epic-summary-main > div {
-    min-width: 0;
-  }
-  .epic-name {
-    font: 800 var(--t26) / 1.05 var(--f-display);
-    text-transform: uppercase;
-    letter-spacing: 0.01em;
-  }
-  .epic-desc {
-    font: 600 var(--t14) / 1.3 var(--f-cond);
-    color: #1a2b3f;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    max-width: 70ch;
-  }
-  .epic-summary-meta {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
-    margin-left: auto;
-  }
-  .epic-stat {
-    font: 700 var(--t14) var(--f-cond);
-  }
-  .epic-summary .epic-stat.dim {
-    color: #1a2b3f;
-  }
-  .epic-summary .badge.st {
-    color: var(--on-sky);
-  }
-  .epic-body {
+  .epic-card.campaign {
     display: grid;
     gap: var(--s4);
-    padding: var(--s4);
-    min-width: 0;
+  }
+  .epic-card.card-accent {
+    box-shadow: 0 0 0 3px var(--sky);
+  }
+  .epic-card.is-held {
+    border-color: var(--claret);
+  }
+  .epic-desc {
+    max-width: 75ch;
+    color: var(--ink-2);
+  }
+  .epic-next {
+    max-width: none;
+    font-size: var(--t14);
+    padding-top: var(--s3);
+    border-top: var(--hair);
+  }
+  .epic-next a {
+    font-weight: 700;
+  }
+  .dag-node.status-done {
+    background: var(--ground);
+    color: var(--ink-2);
+  }
+  .dag-node.status-in_progress,
+  .dag-node.status-claimed {
+    border-color: var(--ink);
+  }
+  .dag-node.status-blocked .dn-title,
+  .dag-node.status-failed .dn-title {
+    color: var(--red);
+  }
+  .dag-node.status-blocked {
+    background: var(--red-wash);
   }
 
   /* Rounds: one segment per phase, filled by its done ratio. */
@@ -139,6 +95,12 @@
     border-radius: var(--r);
     background: var(--lane-a);
   }
+  /* One mown lane per round (a node + its gap = 278px). */
+  .dag {
+    background: repeating-linear-gradient(90deg, var(--lane-a) 0 278px, var(--lane-b) 278px 556px);
+    background-position: -23px 0;
+    min-width: 100%;
+  }
   .dag {
     position: relative;
   }
@@ -174,6 +136,9 @@
   .dcl-num {
     font: 800 var(--t16) / 1 var(--f-display);
     text-transform: uppercase;
+    background: var(--paper);
+    padding: 3px 6px;
+    border-radius: var(--r);
   }
   .dcl-gate {
     font: 700 var(--t12) var(--f-cond);
@@ -234,18 +199,8 @@
   }
 
   @media (max-width: 760px) {
-    .epic-summary {
-      flex-wrap: wrap;
-    }
-    .epic-summary-meta {
-      justify-content: flex-start;
-      margin-left: 0;
-    }
     .phase-strip {
       grid-auto-flow: row;
-    }
-    .epic-name {
-      font-size: var(--t20);
     }
   }
 }

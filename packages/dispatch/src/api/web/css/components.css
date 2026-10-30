@@ -239,6 +239,8 @@
     overflow: hidden;
     text-overflow: ellipsis;
     vertical-align: middle;
+    /* A one-word tag never gives up its width to a flex row (it clipped at 390). */
+    flex: none;
   }
   .badge svg {
     width: 14px;
@@ -370,7 +372,7 @@
   }
   .mono {
     font-family: var(--f-mono);
-    font-size: 0.875em;
+    font-size: max(var(--t12), 0.875em); /* never under the 12px floor */
     overflow-wrap: anywhere;
   }
   .tabnum {
@@ -464,6 +466,9 @@
   }
   .panel-link {
     font: 700 var(--t14) var(--f-text);
+  }
+  .panel-head.block {
+    justify-content: flex-start;
   }
   .card > .panel-head.block {
     margin: calc(-1 * var(--s4)) calc(-1 * var(--s4)) 0;
@@ -978,6 +983,11 @@
     font-size: var(--t12);
     color: var(--ink-2);
     margin-top: 2px;
+  }
+  .ev-pair,
+  .ev-val {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .ev-key {
     font-weight: 700;

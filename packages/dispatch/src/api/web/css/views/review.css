@@ -4,77 +4,243 @@
    The diff styles here are shared with the ticket page. */
 
 @layer views {
-  .gate-console {
+  /* --- the queue: one tab per change waiting ------------------------------- */
+  .rv-queue {
     display: flex;
-    justify-content: space-between;
+    gap: 0;
+    overflow-x: auto;
+    border-bottom: var(--frame);
+    scrollbar-width: thin;
+  }
+  .rv-tab {
+    display: inline-flex;
     align-items: center;
-    gap: 10px 20px;
-    flex-wrap: wrap;
-  }
-  .gate-aside {
-    display: flex;
-    gap: 10px 20px;
-    align-items: center;
-    flex-wrap: wrap;
-    justify-content: space-between;
-    width: 100%;
-  }
-  .gate-risk {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-  .gr {
-    font: 700 var(--t12) / 1 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    padding: 4px 6px;
-    border: 1.5px solid var(--ink-2);
-    border-radius: var(--r);
-    color: var(--ink-2);
-  }
-  .gr.high,
-  .gr.critical {
-    border-color: var(--ink);
+    gap: 8px;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 460px;
+    padding: 10px 16px;
+    border: 2px solid transparent;
+    border-bottom: 0;
+    margin-bottom: -2px;
     color: var(--ink);
-    background: var(--sky-wash);
+    text-decoration: none;
+    font-size: var(--t14);
+    white-space: nowrap;
   }
-  .gate-keys {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--t12);
-    color: var(--ink-2);
+  .rv-tab b {
+    font: 800 var(--t20) / 1 var(--f-display);
   }
-  .gate-keys-label {
-    margin-right: 8px;
+  .rv-tab-t {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  @media (hover: none) and (pointer: coarse) {
-    .gate-keys {
-      display: none;
-    }
+  .rv-tab:hover .rv-tab-t {
+    text-decoration: underline;
+  }
+  .rv-tab[aria-current="page"] {
+    background: var(--paper);
+    border-color: var(--ink);
+    border-top-width: 6px;
+    border-top-color: var(--sky);
   }
 
-  /* One change under review. */
-  .view-review > .card {
+  /* --- the change: card, number, title, facts ------------------------------ */
+  .rv-head {
     display: grid;
-    gap: var(--s3);
+    gap: 10px;
   }
-  .review-title {
-    font: 800 var(--t34) / 1.02 var(--f-display);
+  .rv-title {
+    font: 800 var(--t52) / 1.02 var(--f-display);
     overflow-wrap: anywhere;
+    text-wrap: balance;
   }
-  .view-review .meta-row .num {
+  .rv-card {
+    display: inline-block;
+    vertical-align: -2px;
+    margin-right: 12px;
+    transform: rotate(-8deg);
+  }
+  .rv-no {
     font-family: var(--f-stencil);
-    font-size: var(--t26);
     color: var(--claret-ink);
   }
+  .rv-meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 20px;
+    font-size: var(--t14);
+  }
+  .rv-by {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rv-wait {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .rv-branch {
+    font: 600 var(--t14) / 1.4 var(--f-cond);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .rv-branch code {
+    color: var(--ink-2);
+  }
+
+  /* --- sign-off | diff ----------------------------------------------------- */
+  .rv-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .rv-left,
+  .rv-right {
+    display: grid;
+    gap: var(--s4);
+    min-width: 0;
+    align-content: start;
+  }
+  .signoff {
+    display: grid;
+    gap: var(--s4);
+    border-color: var(--claret);
+  }
+  .view-review .card.card-accent {
+    box-shadow: none;
+  }
+  .signoff.card-armed {
+    box-shadow: 0 0 0 4px var(--yellow);
+  }
+  .signoff-sum {
+    font-size: var(--t16);
+    line-height: 1.45;
+  }
   .review-card-actions {
-    padding-top: var(--s3);
-    border-top: var(--hair);
+    align-items: center;
   }
   .review-card-actions .btn.danger {
     margin-left: auto;
+  }
+  .rv-done {
+    font: 700 var(--t16) / 1.4 var(--f-text);
+    padding: 10px 12px;
+    background: var(--ok-wash);
+    border-radius: var(--r);
+  }
+  .rv-done:focus-visible {
+    outline: 3px solid var(--focus);
+  }
+  .rv-keys {
+    font: 600 var(--t12) / 1.6 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .rv-keys .kbd {
+    margin: 0 2px;
+  }
+  .rv-next {
+    font: 700 var(--t14) / 1.4 var(--f-text);
+  }
+  @media (hover: none) and (pointer: coarse) {
+    .rv-keys {
+      display: none;
+    }
+  }
+  .rv-h2 {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .rv-h2 .panel-aux {
+    font-size: var(--t16);
+  }
+  .flag-list {
+    display: grid;
+    gap: var(--s3);
+  }
+  .flag {
+    display: grid;
+    grid-template-columns: 30px minmax(0, 1fr);
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+  }
+  .flag-card {
+    transform: rotate(-8deg);
+    margin-top: 2px;
+  }
+  .flag-title {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .flag-text {
+    margin-top: 6px;
+    font-size: var(--t14);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .flag-src {
+    margin-top: 6px;
+    font: 600 var(--t12) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .flag-none {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .rv-ac .ac-list {
+    display: grid;
+  }
+  .ac-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: baseline;
+    padding: 8px 0;
+    border-top: var(--hair);
+    font-size: var(--t14);
+  }
+  .ac-row:first-child {
+    border-top: 0;
+  }
+  .ac-row .glyph {
+    align-self: center;
+  }
+  .ac-satisfied .glyph {
+    color: var(--ok);
+  }
+  .ac-failed .glyph,
+  .ac-failed .ac-state {
+    color: var(--red);
+  }
+  .ac-state {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    white-space: nowrap;
+  }
+  .rv-evidence > summary {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .rv-evidence[open] > summary {
+    margin-bottom: var(--s3);
+  }
+  .rv-gone {
+    display: grid;
+    gap: var(--s3);
+  }
+  .rv-gone-h {
+    font: 800 var(--t34) / 1.05 var(--f-display);
   }
   .ac-meta {
     font: 600 var(--t14) / 1.35 var(--f-cond);
@@ -213,38 +379,80 @@
   .diff-del-stat {
     color: var(--del);
   }
+  /* The file list: flag · path · +/− · goal-difference bar. */
   .diff-filestrip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 8px 12px;
-    border-bottom: var(--hair);
+    display: grid;
+    border-bottom: var(--frame);
   }
   .diff-filejump {
-    display: inline-flex;
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 6px;
-    max-width: 100%;
-    padding: 2px 8px;
-    border: 1px solid var(--rule);
-    border-radius: var(--r);
-    font-size: var(--t12);
-    text-decoration: none;
+    gap: 10px;
+    width: 100%;
+    min-height: 34px;
+    padding: 6px 12px;
+    border: 0;
+    border-top: var(--hair);
+    background: var(--paper);
+    color: var(--ink);
+    text-align: left;
+    font-size: var(--t14);
   }
-  .diff-filejump:hover {
-    border-color: var(--ink);
+  .diff-filejump:first-child {
+    border-top: 0;
+  }
+  .diff-filejump.has-risk {
+    background: var(--mark-wash);
+  }
+  .diff-filejump:hover .diff-filejump-path {
+    text-decoration: underline;
   }
   .diff-filejump-path {
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-wrap: anywhere;
+    font-size: var(--t14);
+  }
+  .diff-filejump-stat {
+    display: inline-flex;
+    gap: 4px;
+    font: 700 var(--t14) var(--f-cond);
     white-space: nowrap;
-    max-width: 32ch;
+  }
+  .gd {
+    display: inline-flex;
+    gap: 1px;
+    width: 128px;
+  }
+  .gd i {
+    width: 7px;
+    height: 12px;
+    background: var(--add);
+  }
+  .gd i.gd-d {
+    background: var(--del);
   }
   .diff-file-risk {
-    width: 14px;
-    height: 14px;
     flex: none;
-    color: var(--ink);
+  }
+  .diff-file-tag {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    padding: 3px 6px;
+    border: 1px solid var(--board-ink-2);
+    border-radius: var(--r);
+    color: var(--board-ink);
+    white-space: nowrap;
+  }
+  .diff-file-flag {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--mark-wash);
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  .diff-file-block.is-flagged {
+    box-shadow: inset 0 0 0 3px var(--yellow);
   }
   .diff-files {
     display: grid;
@@ -264,14 +472,24 @@
     gap: 8px;
     padding: 8px 12px;
     font-size: var(--t14);
-    background: var(--paper-2);
+    background: var(--board);
+    color: var(--board-ink);
+  }
+  .diff-file-summary .diff-add-stat {
+    color: #8ee0a8;
+  }
+  .diff-file-summary .diff-del-stat {
+    color: #ff9ea8;
+  }
+  .diff-file-summary :focus-visible,
+  .diff-file-summary:focus-visible {
+    outline-color: var(--yellow);
   }
   .diff-file-path {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
     min-width: 0;
     flex: 1;
+    color: var(--board-ink);
   }
   .diff-block-banner {
     margin: 0;
@@ -291,6 +509,46 @@
     white-space: pre;
     padding: 0 12px;
     min-width: max-content;
+  }
+  .diff-line[data-ln]::before,
+  .diff-line.diff-del::before {
+    content: attr(data-ln);
+    display: inline-block;
+    width: 3.2em;
+    margin-left: -12px;
+    padding-right: 10px;
+    text-align: right;
+    color: var(--ink-2);
+    user-select: none;
+  }
+  .diff-line.diff-del::before {
+    content: "";
+  }
+  .diff-file-block {
+    display: block;
+  }
+  .view-review .risk-overlay {
+    display: none;
+  }
+  .diff-line[data-ln]::before,
+  .diff-line.diff-del::before {
+    content: attr(data-ln);
+    display: inline-block;
+    width: 3.2em;
+    margin-left: -12px;
+    padding-right: 10px;
+    text-align: right;
+    color: var(--ink-2);
+    user-select: none;
+  }
+  .diff-line.diff-del::before {
+    content: "";
+  }
+  .diff-file-block {
+    display: block;
+  }
+  .view-review .risk-overlay {
+    display: none;
   }
   .diff-line.diff-add {
     background: var(--add-wash);
@@ -326,18 +584,41 @@
     font-weight: 700;
   }
 
-  @media (max-width: 760px) {
-    .review-title {
-      font-size: var(--t26);
+  @media (max-width: 1180px) {
+    .rv-grid {
+      grid-template-columns: minmax(0, 1fr);
     }
-    .review-card-actions .btn.ok {
+  }
+  @media (max-width: 760px) {
+    .rv-title {
+      font-size: var(--t34);
+    }
+    .rv-card {
+      width: 22px;
+      height: 30px;
+      margin-right: 8px;
+    }
+    /* On a phone the queue is the numbers; each tab still names its change. */
+    .rv-tab {
+      padding: 8px 14px;
+    }
+    .rv-tab-t {
+      display: none;
+    }
+    .review-card-actions .btn.primary {
       flex: 1 1 100%;
     }
-    .review-card-actions .btn:not(.ok) {
+    .review-card-actions .btn:not(.primary) {
       flex: 1;
     }
     .review-card-actions .btn.danger {
       margin-left: 0;
+    }
+    .diff-filejump {
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+    }
+    .gd {
+      display: none;
     }
     .review-evi {
       grid-template-columns: minmax(0, 1fr);

@@ -65,7 +65,7 @@ function stubFetch(): void {
   );
 }
 
-function mountShell(): void {
+function mountShell(hash = "#/overview"): void {
   document.body.innerHTML = `
     <div id="toast" class="toast" role="alert" hidden></div>
     <div class="shell">
@@ -73,7 +73,7 @@ function mountShell(): void {
       <main id="app" class="app"><p class="loading">Loading…</p></main>
       <nav id="bottomnav" class="bottomnav" hidden></nav>
     </div>`;
-  location.hash = "#/overview";
+  location.hash = hash;
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
@@ -108,6 +108,9 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
   });
 
   it("renders cycle-time and throughput from /api/health, not a client recompute", async () => {
+    // Match Day: the form guide (cycle time, throughput…) lives in the Health view
+    // (the physio room); the Overview is the comp's programme (team sheet, board).
+    location.hash = "#/health";
     await loadApp();
 
     // Cycle time reads the server value (3.5), NOT the 10-day client cycle.
@@ -153,6 +156,7 @@ describe("web: Overview cycle-time/throughput from /api/health", () => {
   it("falls back to a zeroed shape when /api/health is unavailable", async () => {
     healthPayload = null;
     ticketsPayload = { tickets: [] };
+    location.hash = "#/health";
     await loadApp();
 
     // With no health payload the cards still render (zeroed), never crashing.

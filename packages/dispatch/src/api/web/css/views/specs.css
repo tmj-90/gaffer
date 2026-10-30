@@ -225,3 +225,61 @@
     font: 800 var(--t16) / 1 var(--f-display);
   }
 }
+
+/* The empty playbook: how a play works, and what is playing without one. */
+@layer views {
+  .playbook-empty {
+    display: grid;
+    gap: var(--s5);
+  }
+  .pb-steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    background: var(--pitch);
+    border-radius: var(--r);
+  }
+  .pb-step {
+    display: grid;
+    gap: 6px;
+    padding: var(--s4) var(--s5);
+    color: var(--chalk);
+    border-left: 2px dashed rgb(242 247 239 / 0.5);
+  }
+  .pb-step:first-child {
+    border-left: 0;
+  }
+  .pb-step h3 {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .pb-step p {
+    font: 600 var(--t16) / 1.4 var(--f-text);
+  }
+  .pb-n {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--r-round);
+    background: #fff;
+    color: #0e1726;
+    font: 800 var(--t20) / 1 var(--f-display);
+    box-shadow: var(--counter-shadow);
+  }
+  .pb-now {
+    font-size: var(--t16);
+  }
+  @media (max-width: 760px) {
+    .pb-steps {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .pb-step {
+      border-left: 0;
+      border-top: 2px dashed rgb(242 247 239 / 0.5);
+    }
+    .pb-step:first-child {
+      border-top: 0;
+    }
+  }
+}

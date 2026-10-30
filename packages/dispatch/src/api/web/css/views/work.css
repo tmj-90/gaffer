@@ -113,13 +113,16 @@
     color: var(--board-ink);
   }
   .board-col-title {
-    font: 800 var(--t16) / 1.05 var(--f-display);
+    font: 800 15px / 1.05 var(--f-display);
     text-transform: uppercase;
-    letter-spacing: 0.02em;
-    overflow-wrap: anywhere;
+    letter-spacing: 0;
+    white-space: nowrap;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .board-col-count {
-    font: 800 var(--t34) / 1 var(--f-display);
+    font: 800 var(--t26) / 1 var(--f-display);
   }
   .col-blocked .board-col-head {
     box-shadow: inset 0 -4px 0 var(--red);
@@ -263,8 +266,15 @@
   .card-rework-exhausted .card-reject-label {
     color: var(--red);
   }
-  .col-blocked .board-card {
+  /* Red is blocked or failed only: a paused card in the same lane stays ink. */
+  .board-card.bc-blocked,
+  .board-card.bc-failed {
     border: 2px solid var(--red);
+  }
+  .card-needs {
+    display: inline-flex;
+    margin-left: 6px;
+    transform: rotate(8deg);
   }
   .card-human-btn {
     justify-self: start;
@@ -337,9 +347,8 @@
   }
   .tr-title {
     font-weight: 700;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .tr-chips {
     display: flex;
@@ -374,12 +383,18 @@
     }
   }
   @media (max-width: 760px) {
-    /* Three filters on one line, the reset beside the mode toggle. */
+    /* Two filters a line, so "All statuses" / "All repos" read in full. */
     .view-work .filters {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 8px;
       width: 100%;
+      align-items: end;
+    }
+    .view-work .filters select {
+      min-width: 0;
+      width: 100%;
+      font-size: var(--t14);
     }
     .view-work .filters .field > label {
       font-size: var(--t12);

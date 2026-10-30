@@ -120,7 +120,7 @@ describe("web: What I own lane", () => {
     // needs-you list); same #what-i-own hook, renamed title.
     expect(panel!.querySelector(".panel-title")?.textContent).toMatch(/team sheet/i);
     // Count badge reflects the total owed.
-    expect(panel!.querySelector(".panel-aux")?.textContent).toBe("3");
+    expect(panel!.querySelector(".panel-aux")?.textContent).toBe("needs you · 3");
 
     const rows = panel!.querySelectorAll(".own-row");
     expect(rows).toHaveLength(3);
@@ -131,8 +131,10 @@ describe("web: What I own lane", () => {
     expect(decisionRow.querySelector(".own-reason")?.textContent).toBe(
       "Postgres or SQLite for the ledger?",
     );
-    // Row links to its ticket.
-    expect(decisionRow.getAttribute("href")).toBe("#/ticket/tk-1");
+    // The row's title links to its ticket; the row itself is not a link (its
+    // action is a real button: Match Day review, "rows that look like buttons").
+    expect(decisionRow.querySelector(".own-title a")?.getAttribute("href")).toBe("#/ticket/tk-1");
+    expect(decisionRow.querySelector("button.own-act")?.textContent).toBe("Answer…");
     // Ticket ref + a waited stamp are shown.
     expect(decisionRow.querySelector(".own-ref")?.textContent).toBe("#12");
     expect(decisionRow.querySelector(".own-age")?.textContent).toMatch(/waited/i);
@@ -172,7 +174,9 @@ describe("web: What I own lane", () => {
     const panel = document.getElementById("what-i-own")!;
     const row = panel.querySelector(".own-row--parked");
     expect(row).not.toBeNull();
-    expect(row!.querySelector(".own-kind--parked")?.textContent).toMatch(/parked/i);
+    // A parked ticket leads with the referee's word for it: Blocked.
+    expect(row!.querySelector(".own-kind--parked")?.textContent).toMatch(/blocked/i);
+    expect(row!.querySelector("button.own-act")?.textContent).toBe("Unblock…");
     expect(row!.querySelector(".own-reason")?.textContent).toBe(
       "DoD failed after 3 attempts (branch preserved)",
     );

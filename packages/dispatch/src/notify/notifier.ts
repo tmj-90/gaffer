@@ -1,4 +1,11 @@
-import type { NotifyEvent, NotifyKind, NotifyLogger, Notifier, NotifySink } from "./types.js";
+import type {
+  NotifyDeliveryReport,
+  NotifyEvent,
+  NotifyKind,
+  NotifyLogger,
+  Notifier,
+  NotifySink,
+} from "./types.js";
 
 /** Logger default — wraps `console.warn` so prod logs land somewhere visible. */
 const consoleLogger: NotifyLogger = {
@@ -67,6 +74,33 @@ export class CompositeNotifier implements Notifier {
     for (const sink of this.sinks) {
       this.fireOne(sink, outbound);
     }
+  }
+
+  /**
+   * Deliver to every sink and await each one, reporting per-sink success — the
+   * setup check's path. `notify` stays fire-and-forget for real transitions; this
+   * exists so `dispatch notify test` can say "your only sink failed" instead of
+   * reporting success for an event nobody received.
+   */
+  async notifyAndReport(event: NotifyEvent): Promise<NotifyDeliveryReport> {
+    if (!this.allow.has(event.kind)) return { filtered: true, sinks: [] };
+    const outbound = this.redact ? redactEvent(event) : event;
+    const sinks = await Promise.all(
+      this.sinks.map(async (sink) => {
+        try {
+          await sink.deliver(outbound);
+          return { name: sink.name, ok: true };
+        } catch (err) {
+          this.logFailure(sink.name, err);
+          return {
+            name: sink.name,
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }),
+    );
+    return { filtered: false, sinks };
   }
 
   /** Deliver to one sink, isolating both sync throws and async rejections. */

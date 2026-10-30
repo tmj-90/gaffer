@@ -7,7 +7,10 @@
 #   1. A ticket whose only linked repo is `read` produced an EMPTY write-root list
 #      that tick.sh mistook for a legacy (pre-boundary) ticket and fell back to
 #      "write into repositories[0]" — a worktree + branch + hook-allowed writes in a
-#      repo the operator had marked read-only. Now: park → ready, skip, no worktree.
+#      repo the operator had marked read-only. Now: `ready` refuses it up front
+#      (WRITE_REPO_REQUIRED); one whose access changed AFTER it was readied is parked
+#      → refining (not back to ready, where every run re-claimed it), skipped, no
+#      worktree.
 #   2. A ticket linked to a repo with no local path was released back to `ready`
 #      WITHOUT being skipped, so the next tick re-claimed the same head ticket
 #      forever. Now: released AND skipped; the next tick moves on.
@@ -61,12 +64,18 @@ echo "== 1. only READ access on the linked repo → parked, skipped, no worktree
 A="$(wg ticket create -t "Read-only scoped ticket" -d "must not be delivered into a read-only repo" 2>/dev/null | jget 'd.ticket.number')"
 wg ac add "$A" -t "nothing happens" >/dev/null 2>&1
 wg ticket repo-access set "$A" readonly-repo --access read --relation confirmed >/dev/null 2>&1
+RDY="$(wg ticket ready "$A" 2>&1)"
+[ "$(st "$A")" != "ready" ] && grep -q "WRITE_REPO_REQUIRED" <<<"$RDY" \
+  && ok "\`ready\` refuses a ticket whose only repo is READ access (WRITE_REPO_REQUIRED)" || fail "#$A readied with no write repo: $(st "$A") $RDY"
+# Access narrowed AFTER the ticket was readied: the runner must still refuse it.
+wg ticket repo-access set "$A" readonly-repo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$A" >/dev/null 2>&1
-[ "$(st "$A")" = "ready" ] && ok "#$A is ready with a single READ-access repo" || fail "#$A not ready: $(st "$A")"
+wg ticket repo-access set "$A" readonly-repo --access read --relation confirmed >/dev/null 2>&1
+[ "$(st "$A")" = "ready" ] && ok "#$A is ready, then its only repo is narrowed to READ" || fail "#$A not ready: $(st "$A")"
 OUT1="$(run_tick)"
 grep -q '^TICK_RESULT=no_work$' <<<"$OUT1" && ok "tick → no_work (nothing deliverable)" || fail "tick result: $OUT1"
 grep -q "has no WRITE repo" "$GAFFER_DATA/factory.log" && ok "tick logs the refusal (no WRITE repo)" || fail "no 'no WRITE repo' log line"
-[ "$(st "$A")" = "ready" ] && ok "#$A released back to ready for a human" || fail "#$A ended '$(st "$A")'"
+[ "$(st "$A")" = "refining" ] && ok "#$A parked → refining for a human (not back to ready, where every run re-claimed it)" || fail "#$A ended '$(st "$A")'"
 [ ! -e "$GAFFER_DATA/stub-claude.log" ] && ok "the agent was never invoked" || fail "agent invoked: $(cat "$GAFFER_DATA/stub-claude.log")"
 [ -z "$(ls -A "$GAFFER_DATA/worktrees" 2>/dev/null)" ] && ok "no delivery worktree was created" || fail "worktrees created: $(ls "$GAFFER_DATA/worktrees")"
 [ "$(git -C "$R" branch --list 'gaffer/*' | wc -l | tr -d ' ')" = "0" ] && ok "no gaffer/ branch in the read-only repo" || fail "branch created in read-only repo: $(git -C "$R" branch --list 'gaffer/*')"

@@ -4,7 +4,39 @@
 # dashboard launcher uses it to tell an operator override (which locks a setting in
 # the UI) from a value this config derived (settings.json, mode preset, default) —
 # those are unset for the dashboard process so the UI can still edit them.
-_GAFFER_ENV_AT_SOURCE=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
+#
+# RE-SOURCE HYGIENE. This file is sourced by a parent (gaffer, loop.sh, a daemon pass)
+# and again by every child (tick.sh, worker.sh). The parent EXPORTS what it derived —
+# settings.json values and exported defaults — so a child used to inherit them as if
+# they were real env, and the assign-if-unset below kept the stale value: a dashboard
+# edit (daily USD cap, MAX_TICKS_PER_DAY, review mode, turn cap) never reached a
+# running `gaffer run --daemon` or loop until the operator restarted it. So:
+#   * the operator's env is captured ONCE per process tree (_GAFFER_OPERATOR_ENV is
+#     exported) — a child does not mistake its parent's derived values for overrides;
+#   * at the end of this file every variable THIS source newly exported is recorded
+#     with its value (_GAFFER_DV_<KEY>, exported; the `_GAFFER_` prefix keeps it out of
+#     the agent env, whose allow-list is `GAFFER_*`);
+#   * on a re-source, a recorded key the operator did not set and nobody has changed
+#     since (value == recorded) is unset first, so settings.json, the mode preset and
+#     the defaults derive it afresh. A value a parent script changed on purpose (e.g.
+#     `gaffer run` passing DRY_RUN=0 to loop.sh) differs from the record and is kept.
+if [ -n "${_GAFFER_OPERATOR_ENV+x}" ]; then
+  while IFS= read -r _dv; do
+    [ -n "$_dv" ] || continue
+    _dk="${_dv#_GAFFER_DV_}"
+    case "$_GAFFER_OPERATOR_ENV" in *" $_dk "*) unset "$_dv"; continue ;; esac
+    if [ -n "${!_dk+x}" ] && [ "${!_dk}" = "${!_dv}" ]; then unset "$_dk"; fi
+    unset "$_dv"
+  done < <(compgen -v _GAFFER_DV_ 2>/dev/null)
+  unset _dv _dk
+else
+  _GAFFER_OPERATOR_ENV=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
+  export _GAFFER_OPERATOR_ENV
+fi
+_GAFFER_ENV_AT_SOURCE="$_GAFFER_OPERATOR_ENV"
+# What was already exported when THIS source began (after the hygiene step): those
+# are the operator's or a parent's on purpose, never recorded as derived here.
+_GAFFER_EXPORTED_AT_START=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 
 # This file lives in runner/ of the Gaffer monorepo, so RUNNER_DIR is its own dir
 # and GAFFER_HOME is the mono root — which holds runner/ alongside
@@ -700,10 +732,9 @@ export GAFFER_CAP_DETECT_TURNS
 # Set to 0 to fall back to the legacy park-to-refining + teardown behaviour.
 : "${GAFFER_PAUSE_ON_CAP:=1}"        # 1 = pause+keep worktree (default); 0 = legacy park+teardown
 export GAFFER_PAUSE_ON_CAP
-# How many resume-requested paused tickets the loop re-enters per tick (≥1). Bounds
-# the per-tick resume work so a backlog of Continue presses doesn't starve new claims.
-: "${GAFFER_MAX_RESUMES_PER_TICK:=1}"
-export GAFFER_MAX_RESUMES_PER_TICK
+# (GAFFER_MAX_RESUMES_PER_TICK was removed: nothing read it. A tick delivers ONE
+# ticket, so it re-enters at most one Continue'd paused ticket — first, before any
+# new claim — and the next tick takes the next one.)
 # Dashboard base URL embedded in the cap-hit / park / loop-end notify so the operator
 # can click straight through to the ticket from their phone.
 #
@@ -2251,3 +2282,15 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # memory-lift telemetry). Always fail-soft.
 # shellcheck source=lib/eval-judge.sh
 [ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"
+
+# RE-SOURCE HYGIENE (see the top of this file): record every variable this source
+# newly exported, with its value, so a child's re-source can tell a stale derived
+# value (unchanged → derived afresh from settings.json / the mode / the defaults) from
+# one a parent changed on purpose (kept). Keep this block LAST.
+while IFS= read -r _dk; do
+  case "$_dk" in '' | _GAFFER_*) continue ;; esac
+  case "$_GAFFER_EXPORTED_AT_START" in *" $_dk "*) continue ;; esac
+  printf -v "_GAFFER_DV_$_dk" '%s' "${!_dk}"
+  export "_GAFFER_DV_$_dk"
+done < <(compgen -e 2>/dev/null)
+unset _dk _GAFFER_EXPORTED_AT_START

@@ -60,18 +60,45 @@ gaffer_dashboard_pid() {
 # before the config ran (_GAFFER_ENV_AT_SOURCE) is a real override and stays. The
 # dashboard re-applies settings.json to its own env at startup (applySettingsToEnv),
 # so nothing is lost — it just stops mistaking its own defaults for locks. The six
-# tick-only knobs are always unset, as before. Fail-soft: with no dispatch dist the
-# list is empty and the launch is unchanged.
+# tick-only knobs are always unset, as before. With no dispatch dist the list is just
+# those six (there is no server to launch either). A dist that IS there but cannot be
+# read is NOT silently skipped: that regression (a static `import … from
+# process.argv[1]`, a syntax error swallowed by `|| true`) left 18 settings locked and
+# made every saved setting read-only after the next restart. It now warns on stderr.
+gaffer_dashboard_setting_keys() {
+  local _settings_js="${1:?settings.js path}"
+  # A dynamic import: a static `import` needs a string-literal specifier.
+  node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { SETTING_DEFS } = await import(pathToFileURL(process.argv[1]).href);
+    if (!Array.isArray(SETTING_DEFS) || SETTING_DEFS.length === 0) {
+      console.error("SETTING_DEFS is empty");
+      process.exit(3);
+    }
+    for (const d of SETTING_DEFS) console.log(d.key);
+  ' "$_settings_js"
+}
+
 gaffer_dashboard_env_unset_flags() {
   local _flags="-u GAFFER_TICK_TIMEOUT -u GAFFER_MAX_TURNS -u GAFFER_PLAN_DEBATE -u GAFFER_PLAN_DEBATE_MODELS -u GAFFER_PLAN_DEBATE_MAX_ROUNDS -u GAFFER_PLAN_DEBATE_MIN_ESTIMATE"
-  local _settings_js="${DISPATCH_DIR:-}/dist/api/settings.js" _k
+  local _settings_js="${DISPATCH_DIR:-}/dist/api/settings.js" _k _keys
   if [ -f "$_settings_js" ] && command -v node >/dev/null 2>&1; then
+    if ! _keys="$(gaffer_dashboard_setting_keys "$_settings_js")" || [ -z "$_keys" ]; then
+      printf 'gaffer: could not read the setting keys from %s — settings the config defaulted will show as env-locked in the dashboard (rebuild: pnpm -C packages/dispatch build)\n' "$_settings_js" >&2
+      _keys=""
+    fi
     while IFS= read -r _k; do
       [ -n "$_k" ] || continue
       case " ${_GAFFER_ENV_AT_SOURCE:-} " in *" $_k "*) continue ;; esac   # operator override → keep
       case "$_flags" in *" -u $_k"*|*"-u $_k "*) continue ;; esac
       _flags="$_flags -u $_k"
-    done < <(node --input-type=module -e 'import { SETTING_DEFS } from process.argv[1]; for (const d of SETTING_DEFS) console.log(d.key);' "$_settings_js" 2>/dev/null || true)
+    done <<< "$_keys"
   fi
+  # The re-source bookkeeping (factory.config.sh) is the launcher's, not the
+  # server's: the dashboard is a fresh root for the processes it spawns.
+  _flags="$_flags -u _GAFFER_OPERATOR_ENV"
+  while IFS= read -r _k; do
+    [ -n "$_k" ] && _flags="$_flags -u $_k"
+  done < <(compgen -v _GAFFER_DV_ 2>/dev/null)
   printf '%s' "$_flags"
 }

@@ -90,7 +90,7 @@ the Claude CLI; that's only for live runs.
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
 | `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the skill-driven `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). |
-| `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human. |
+| `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human (reviews, blocked, unmerged approvals, decisions, paused deliveries awaiting Continue/Stop). Finds a `--foreground` dashboard (no pid file) by probing its `/healthz`. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |
 
 See the root [`quickstart.md`](../quickstart.md) (the canonical first run), [`ONBOARDING.md`](ONBOARDING.md),
@@ -134,7 +134,13 @@ Config resolves in this precedence — highest first:
    cost guards, model tiers, CLI helpers).
 
 So a human can tune the factory from the dashboard, but anything exported in the
-environment overrides it — and env-locked keys show read-only in the UI.
+environment overrides it — and env-locked keys show read-only in the UI. "The
+environment" means the operator's REAL environment, captured once when the first
+process sources `factory.config.sh` (`_GAFFER_OPERATOR_ENV`): the values a parent
+(gaffer, `loop.sh`, a daemon pass) derived and exported are re-derived by each child,
+so a dashboard edit reaches the next tick of a running loop or `gaffer run --daemon`
+without a restart, and the dashboard launched by `gaffer dashboard` shows its own
+defaults as editable, not env-locked.
 
 ## Feature lifecycle + a fresh Repo Digest (prepare-at-delivery / apply-at-merge)
 The factory keeps the memory product's **Repo Digest** current and drives the

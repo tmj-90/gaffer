@@ -10,11 +10,15 @@ ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-fg.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
 BINDIR="$WORK/bin"; mkdir -p "$BINDIR"; CAP="$WORK/capture"
-# Fake node: when asked to run the dashboard bin, record argv + the env it received, then exit.
+# Fake node: when asked to run the dashboard bin, record argv + the env it received, then
+# exit. Every OTHER node call (factory.config.sh reading settings.json, the launcher
+# reading the setting keys from the dispatch dist) runs the real node, so the env scrub
+# is exercised exactly as it runs live.
+REAL_NODE="$(command -v node)"
 cat > "$BINDIR/node" <<EOF2
 #!/usr/bin/env bash
-for a in "\$@"; do case "\$a" in */dist/api/bin.js) { printf 'ARGV:%s\n' "\$*"; env | grep -E '^(DISPATCH_|GAFFER_DASHBOARD_URL|GAFFER_DATA|GAFFER_TICK_TIMEOUT)' | sort; } > "$CAP"; exit 0 ;; esac; done
-exit 0
+for a in "\$@"; do case "\$a" in */dist/api/bin.js) { printf 'ARGV:%s\n' "\$*"; env | grep -E '^(DISPATCH_|GAFFER_|MAX_|_GAFFER_)' | sort; } > "$CAP"; exit 0 ;; esac; done
+exec "$REAL_NODE" "\$@"
 EOF2
 chmod +x "$BINDIR/node"
 
@@ -35,6 +39,26 @@ for v in DISPATCH_TICK_CMD DISPATCH_MERGE_CMD DISPATCH_ONBOARD_CMD DISPATCH_PROD
 done
 grep -q "^GAFFER_TICK_TIMEOUT=" "$CAP" && fail "runner-only knob leaked into the server env" || ok "runner-only knobs are unset for the server (same scrub as the detached path)"
 [ -f "$WORK/d1/dashboard.pid" ] && fail "foreground must not write a pid file" || ok "no pid file (the supervisor owns the process)"
+
+echo "== config-derived settings never reach the server as env (else the UI shows them env-locked) =="
+if [ -f "$RUNNER_DIR/../packages/dispatch/dist/api/settings.js" ]; then
+  mkdir -p "$WORK/d3"
+  # A value saved through the dashboard earlier, and one the operator set for real.
+  printf '{"MAX_TICKS_PER_DAY":"7","GAFFER_IDLE_MODE":""}\n' > "$WORK/d3/settings.json"
+  ERR="$(GAFFER_REWORK_BUDGET_USD=3 run_fg "$WORK/d3" 2>&1 >/dev/null)"
+  for k in GAFFER_CONCURRENCY GAFFER_DAILY_BUDGET_USD GAFFER_PAUSE_ON_CAP GAFFER_REQUIRE_CI MAX_TICKS_PER_DAY GAFFER_CI_POLL_ATTEMPTS; do
+    grep -q "^$k=" "$CAP" && fail "$k (a default / settings.json value) leaked into the server env — the UI would lock it" || ok "$k is not in the server env (editable in the UI)"
+  done
+  grep -q "^GAFFER_REWORK_BUDGET_USD=3$" "$CAP" && ok "an operator-set key stays (a real env override locks it)" || fail "the operator's GAFFER_REWORK_BUDGET_USD was scrubbed"
+  grep -q "^_GAFFER_" "$CAP" && fail "the launcher's re-source bookkeeping leaked into the server env: $(grep '^_GAFFER_' "$CAP" | cut -d= -f1 | head -3 | tr '\n' ' ')" || ok "no _GAFFER_* bookkeeping in the server env"
+  grep -q "could not read the setting keys" <<<"$ERR" && fail "the setting-key reader failed: $ERR" || ok "the setting keys were read from the dispatch dist (no warning)"
+  # A dist the reader cannot load is reported, never silently ignored.
+  mkdir -p "$WORK/baddist/dist/api"; printf 'export const SETTING_DEFS = [;\n' > "$WORK/baddist/dist/api/settings.js"
+  ( source "$RUNNER_DIR/lib/dashboard.sh"; DISPATCH_DIR="$WORK/baddist" PATH="$BINDIR:$PATH" gaffer_dashboard_env_unset_flags ) 2>"$WORK/bad.err" >/dev/null
+  grep -q "could not read the setting keys" "$WORK/bad.err" && ok "an unreadable settings dist warns loudly (no silent || true)" || fail "an unreadable settings dist was swallowed: $(cat "$WORK/bad.err")"
+else
+  echo "  skip  dispatch dist not built (pnpm -C packages/dispatch build)"
+fi
 
 echo "== --lan binds every interface =="
 run_fg "$WORK/d2" --lan >/dev/null

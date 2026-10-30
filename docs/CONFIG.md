@@ -19,8 +19,8 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 134 |
-| Knobs editable in the dashboard | 56 |
+| Knobs with a runner default | 133 |
+| Knobs editable in the dashboard | 55 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
 
@@ -53,7 +53,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
-| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom in-flight work pauses. Empty = unlimited. |
+| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse) and in-flight work pauses. Empty = unlimited. |
 | `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
@@ -115,7 +115,6 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_PAUSE_ON_CAP` | `1` | yes (boolean) | dispatch, runner | When the spend ceiling is hit, pause in-flight work instead of hard-stopping. |
-| `GAFFER_MAX_RESUMES_PER_TICK` | `1` | yes (int) | dispatch, runner | How many times a tick may resume a timed-out agent before giving up. |
 | `GAFFER_DASHBOARD_URL` | _derived_ (`http://127.0.0.1:${DISPATCH_API_PORT:-8787}`) |  | dispatch, runner |  |
 | `GAFFER_REAP_GRACE` | `30` |  | runner | FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group reaper. |
 
@@ -193,7 +192,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `STRICT_MODE` | `0` | yes (boolean) | dispatch, runner | Wrap agent commands in the OS sandbox (sandbox-exec on macOS) for defence-in-depth. Off → the permission-hook guard only. |
+| `STRICT_MODE` | `0` | yes (boolean) | dispatch, runner | Wrap agent commands in the OS sandbox (SANDBOX_PROVIDER: docker, or sandbox-exec on macOS) for defence-in-depth. Off → the permission-hook guard only. On by default (and required) in the autonomous, strict and lite modes, where no human reviews the work before it ships. |
 | `STRICT_ALLOW_NETWORK` | `1` | yes (boolean) | dispatch, runner | When the strict sandbox is on, still permit outbound network (package installs, git, the model API). |
 | `STRICT_ALLOW_HOME` | _derived_ (`$HOME/.claude $HOME/.cache`) | yes (string) | dispatch, runner | Space-separated HOME paths the strict sandbox may write to outside the worktree (Claude Code keeps state/cache here; denying them breaks legitimate runtime writes). Defaults to ~/.claude and ~/.cache. |
 
@@ -292,7 +291,7 @@ consuming component applies its own default when the variable is unset.
 | `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). |
 | `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. |
-| `GAFFER_NOTIFY_DESKTOP` | boolean | notifications | dispatch, runner | Fire a native desktop banner (macOS/Linux) on each human gate. |
+| `GAFFER_NOTIFY_DESKTOP` | boolean | notifications | dispatch, runner | Fire a native desktop banner on each human gate (macOS: terminal-notifier or osascript; Linux: notify-send, which must be installed). Check it with `gaffer wg notify test` — it reports each sink and fails when one did not deliver. |
 | `GAFFER_NOTIFY_EVENTS` | csv | notifications | dispatch | Comma-separated allow-list of gate kinds to notify on (review_needed · ticket_blocked · ticket_parked · decision_pending). Empty = all gates. |
 | `GAFFER_NOTIFY_FULL_PAYLOAD` | boolean | notifications | dispatch | Outbound notifications are REDACTED by default (kind · ticket number · status · dashboard URL). The free-text ticket title/detail can be prompt-injection-influenced, so they never leave the box unless you opt in here. Enable ONLY when the webhook/Slack endpoint is inside your trust boundary. |
 | `SANDBOX_PROVIDER` | string: sandbox-exec / docker / none | sandbox | dispatch, runner | Which OS-level containment backend the strict sandbox uses: docker (experimental — real read + write + egress isolation, any host with a Docker daemon) · sandbox-exec (macOS — write-only containment) · none (disable OS wrapping, keep the toggle). Only consulted when the strict sandbox is on. |

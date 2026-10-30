@@ -108,7 +108,13 @@ export function evaluatePolicy(
     }
     // ---- Scope/repo confirmation (WG-003) ---------------------------------
     // Layered per pack:
-    //   solo_loose     scope optional; a scope-less ticket can be ready.
+    //   solo_loose     scope optional; a scope-less ticket can be ready. But a
+    //                  ticket the runner can never deliver is refused here, free,
+    //                  instead of cycling claim → "no WRITE repo" → release on
+    //                  every tick: linked repos with none at write access, or a
+    //                  primary scope whose repos were never confirmed (the scope's
+    //                  repos are SUGGESTIONS until a human accepts one). A
+    //                  greenfield bootstrap ticket has no repo by design.
     //   team_light     ≥1 confirmed write repo (mono_fallback counts); block
     //                  tickets with no repo at all.
     //   factory_strict primary scope required UNLESS mono_fallback applies;
@@ -127,8 +133,28 @@ export function evaluatePolicy(
       if (ctx.ticket.description.trim().length === 0) {
         warnings.push(fail("DESCRIPTION_RECOMMENDED", "A description is recommended."));
       }
+      const bootstrap = ctx.ticket.bootstrap === 1;
       if (!sr.hasAnyRepo) {
-        warnings.push(fail("REPO_RECOMMENDED", "No repository linked to this ticket."));
+        if (sr.hasPrimaryScope && !bootstrap) {
+          failures.push(
+            fail(
+              "SCOPE_REPO_UNCONFIRMED",
+              "This ticket is scoped to a product/system node, but none of its repos is " +
+                "confirmed yet — the node's repos are only suggestions. Accept a suggested " +
+                "repo (or set a repo's access to write) before readying it.",
+            ),
+          );
+        } else {
+          warnings.push(fail("REPO_RECOMMENDED", "No repository linked to this ticket."));
+        }
+      } else if (sr.writeRepoCount === 0 && !bootstrap) {
+        failures.push(
+          fail(
+            "WRITE_REPO_REQUIRED",
+            "No linked repo has confirmed write access, so the factory cannot deliver this " +
+              "ticket. Set a repo's access to write (or accept a suggested repo).",
+          ),
+        );
       }
     }
     if (pack === "team_light" || pack === "factory_strict" || pack === "regulated") {

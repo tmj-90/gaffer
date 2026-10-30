@@ -2604,20 +2604,60 @@ function pollWorkButton() {
           const res = await api("POST", "/poll-work");
           if (res && res.polled === false) {
             toast(
-              "No ready work to deliver — ready a ticket first, or turn on maintenance when idle in Settings → Idle loops.",
+              "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
               {},
             );
             return;
           }
+          const p = (res && res.pending) || {};
           if (res && res.idle === "maintenance") {
             toast("No ready work — running the idle maintenance lane…", { ok: true });
-          } else toast("Factory tick fired — refreshing the board…", { ok: true });
+          } else if (!res || res.readyCount > 0) {
+            toast("Factory tick fired — refreshing the board…", { ok: true });
+          } else if (p.resume > 0) {
+            toast("Continuing the paused delivery…", { ok: true });
+          } else if (p.review > 0) {
+            toast("Running the reviewer agent on a ticket in Review…", { ok: true });
+          } else toast("Running the tester on a ticket in Testing…", { ok: true });
           router();
+          // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
+          // USD cap already reached) would otherwise read as "fired". Watch the run
+          // briefly — poll-once.sh refuses within a second or two — and say so.
+          const runId = res && res.run && res.run.runId;
+          if (runId) void reportPollRefusal(runId);
         }),
     },
     [icon("activity"), el("span", {}, "Poll for work")],
   );
   return btn;
+}
+
+/**
+ * Follow a just-fired poll run for a few seconds; when the runner refused it (the
+ * run's outcome is REFUSED — a cap is reached or a setup check failed closed), toast
+ * the runner's own reason instead of leaving the earlier "fired" toast standing.
+ */
+async function reportPollRefusal(runId) {
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, 600));
+    let detail;
+    try {
+      detail = (await api("GET", `/api/runs/${encodeURIComponent(runId)}`)).detail;
+    } catch {
+      return;
+    }
+    if (!detail || detail.run.status === "running") continue;
+    if (detail.outcome === "REFUSED") {
+      const line = String(detail.log_tail || "")
+        .split("\n")
+        .find((l) => l.startsWith("gaffer poll: "));
+      toast(
+        `Poll refused — ${line ? line.replace(/^gaffer poll: /, "") : "a cap is reached; see the run log."}`,
+        {},
+      );
+    }
+    return;
+  }
 }
 
 /** The repo-level / node-level target picker for "Suggest work" (Feature B). */
@@ -2886,7 +2926,9 @@ function viewRunDetail(runId, kindLabel) {
       const tone =
         detail.outcome === "in_review"
           ? "ok"
-          : detail.outcome === "FAILED" || detail.outcome === "FLAGGED"
+          : detail.outcome === "FAILED" ||
+              detail.outcome === "FLAGGED" ||
+              detail.outcome === "REFUSED"
             ? "danger"
             : "warn";
       chips.push(badge(detail.outcome, tone));

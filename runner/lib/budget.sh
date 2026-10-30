@@ -241,6 +241,27 @@ gaffer_day_usd_spent() {
 # body) so an awk-metacharacter settings value coerces to 0 (`+0`) and reads as OFF,
 # never executes. Boundary: spent < cap ⇒ OK (proceed); spent == cap or over ⇒ NOT
 # OK (halt) — same "at the cap halts" semantics as gaffer_day_cap_ok.
+# ── Lifetime budget admission (GAFFER_BUDGET_USD) ────────────────────────────
+# GAFFER_BUDGET_USD is the factory's HARD lifetime ceiling; factory.config.sh sums the
+# ledger into GAFFER_BUDGET_REMAINING every time it is sourced (once per tick). It used
+# to be read only AFTER a delivery call (the budget_cap pause), so at $0 headroom every
+# new ready ticket still got one paid call before pausing — N tickets, N calls past the
+# "hard ceiling". This is the pre-spawn gate: 0 = the factory may start paid work,
+# 1 = it may not. Same shape and fail-closed rules as gaffer_day_usd_cap_ok: unset /
+# 0 / garbage budget ⇒ OFF; a budget that IS set but whose headroom could not be
+# computed (node or the ledger reader failed, so the config left it empty) ⇒ halt.
+gaffer_budget_headroom_ok() {
+  local budget="${GAFFER_BUDGET_USD:-}" rem="${GAFFER_BUDGET_REMAINING:-}"
+  [ -z "$budget" ] && return 0
+  command -v awk >/dev/null 2>&1 || { echo "gaffer: GAFFER_BUDGET_USD=$budget is set but awk is unavailable to compare it — halting rather than spending against an unenforceable budget" >&2; return 1; }
+  awk -v b="$budget" 'BEGIN{exit !(b+0 > 0)}' 2>/dev/null || return 0   # budget<=0/garbage ⇒ OFF
+  if [ -z "$rem" ]; then
+    echo "gaffer: GAFFER_BUDGET_USD=$budget is set but the remaining headroom cannot be established (node unavailable, or the usage ledger unreadable) — halting rather than spending against an unenforceable budget" >&2
+    return 1
+  fi
+  awk -v r="$rem" 'BEGIN{exit !(r+0 > 0)}' 2>/dev/null
+}
+
 gaffer_day_usd_cap_ok() {
   local cap="${GAFFER_DAILY_BUDGET_USD:-}"
   [ -z "$cap" ] && return 0

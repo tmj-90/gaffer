@@ -29,7 +29,10 @@ import { DispatchError } from "../util/errors.js";
  *     {@link writeSettings} refuses to persist them.
  *
  * The file is the source of truth for UI edits; the runner is the consumer.
- * Changes take effect on the NEXT factory tick — there is no live restart.
+ * Changes take effect on the NEXT factory tick — there is no live restart, and
+ * none is needed: every tick re-sources the config, and a running loop or
+ * `gaffer run --daemon` re-derives what its parent exported (factory.config.sh
+ * "RE-SOURCE HYGIENE"), so only the operator's real env still overrides the file.
  */
 
 /** A logical grouping for the settings panel's sections. */
@@ -235,8 +238,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Budget ceiling (USD)",
     help:
       "Total factory spend ceiling in USD (summed from the usage-ledger). As " +
-      "headroom runs low the router biases cheaper; at $0 headroom in-flight work " +
-      "pauses. Empty = unlimited.",
+      "headroom runs low the router biases cheaper; at $0 headroom no new paid work " +
+      "starts (ticks, Poll and the daemon refuse) and in-flight work pauses. " +
+      "Empty = unlimited.",
   },
   {
     key: "GAFFER_BUDGET_LOW_THRESHOLD",
@@ -313,7 +317,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "notifications",
     label: "Desktop notifications",
-    help: "Fire a native desktop banner (macOS/Linux) on each human gate.",
+    help:
+      "Fire a native desktop banner on each human gate (macOS: terminal-notifier or " +
+      "osascript; Linux: notify-send, which must be installed). Check it with " +
+      "`gaffer wg notify test` — it reports each sink and fails when one did not deliver.",
   },
   {
     key: "GAFFER_NOTIFY_EVENTS",
@@ -485,13 +492,6 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it).",
   },
   {
-    key: "GAFFER_MAX_RESUMES_PER_TICK",
-    type: "int",
-    group: "budget",
-    label: "Max resumes / tick",
-    help: "How many times a tick may resume a timed-out agent before giving up.",
-  },
-  {
     key: "GAFFER_PAUSE_ON_CAP",
     type: "boolean",
     group: "budget",
@@ -579,7 +579,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "sandbox",
     label: "Strict execution sandbox",
-    help: "Wrap agent commands in the OS sandbox (sandbox-exec on macOS) for defence-in-depth. Off → the permission-hook guard only.",
+    help:
+      "Wrap agent commands in the OS sandbox (SANDBOX_PROVIDER: docker, or sandbox-exec " +
+      "on macOS) for defence-in-depth. Off → the permission-hook guard only. On by " +
+      "default (and required) in the autonomous, strict and lite modes, where no " +
+      "human reviews the work before it ships.",
   },
   {
     key: "STRICT_ALLOW_NETWORK",
@@ -674,6 +678,15 @@ export function readSettingsFile(path: string): Record<string, string> {
  * mode; the API applies the same precedence so the dashboard shows the value the
  * tick will actually use, and so its own gates (agent approve, testing lane)
  * agree with the runner. Unknown mode ⇒ supervised (the safe posture).
+ *
+ * STRICT_MODE mirrors the runner's "autonomy REQUIRES containment" block: every
+ * mode that lets an agent approve or ship without a human (autonomous, strict,
+ * lite) defaults GAFFER_STRICT_REQUIRE=1 there, which defaults STRICT_MODE=1, so
+ * the OS sandbox is on (and mandatory) in those modes. Omitting it here made the
+ * panel report the sandbox OFF when the runner forces it on. The runner skips that
+ * default for autonomous/lite when the operator sets GAFFER_STRICT_REQUIRE=0 (see
+ * {@link presetsFor}); graduated turns it on only once an `auto` policy row exists,
+ * which this static table cannot see.
  */
 export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   autonomous: {
@@ -683,6 +696,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "1",
     GAFFER_AUTO_PUSH: "1",
     MEMORY_AUTO_APPROVE: "1",
+    STRICT_MODE: "1",
   },
   strict: {
     REVIEW_MODE: "agent",
@@ -691,6 +705,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "1",
     GAFFER_AUTO_PUSH: "1",
     MEMORY_AUTO_APPROVE: "1",
+    STRICT_MODE: "1",
   },
   lite: {
     REVIEW_MODE: "agent",
@@ -699,6 +714,7 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     AUTO_MERGE: "0",
     GAFFER_AUTO_PUSH: "0",
     MEMORY_AUTO_APPROVE: "0",
+    STRICT_MODE: "1",
   },
   graduated: {
     REVIEW_MODE: "agent",
@@ -717,6 +733,29 @@ export const MODE_PRESETS: Readonly<Record<string, Readonly<Record<string, strin
     MEMORY_AUTO_APPROVE: "0",
   },
 };
+
+/** True for the runner's truthy flag spellings (factory.config.sh _gaffer_flag_on). */
+function flagOn(v: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
+}
+
+/**
+ * The preset for `mode` as the runner will apply it in `env`: unknown ⇒ supervised,
+ * and the STRICT_MODE default dropped where the runner would not apply it — outside
+ * `strict`, an operator's explicit GAFFER_STRICT_REQUIRE=0 opts out of it.
+ */
+export function presetsFor(
+  mode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Readonly<Record<string, string>> {
+  const base = MODE_PRESETS[mode] ?? MODE_PRESETS["supervised"]!;
+  const req = env["GAFFER_STRICT_REQUIRE"];
+  if (mode !== "strict" && base["STRICT_MODE"] !== undefined && req !== undefined && !flagOn(req)) {
+    const { STRICT_MODE: _drop, ...rest } = base;
+    return rest;
+  }
+  return base;
+}
 
 /** Where a setting's effective value came from (see {@link SettingView.source}). */
 export type SettingSource = "env" | "file" | "mode" | "default";
@@ -768,7 +807,7 @@ export function applySettingsToEnv(
     applied.push(k);
   }
   const mode = (env["GAFFER_MODE"] ?? "").trim();
-  const presets = MODE_PRESETS[mode] ?? MODE_PRESETS["supervised"]!;
+  const presets = presetsFor(mode, env);
   for (const [k, v] of Object.entries(presets)) {
     if (isReal(k)) continue;
     if (derivedOf(env).get(k) === "file") continue;
@@ -800,7 +839,7 @@ export function listSettings(
 ): SettingView[] {
   const file = readSettingsFile(path);
   const mode = (env["GAFFER_MODE"] ?? file["GAFFER_MODE"] ?? "").trim();
-  const presets = MODE_PRESETS[mode] ?? MODE_PRESETS["supervised"]!;
+  const presets = presetsFor(mode, env);
   return SETTING_DEFS.map((def) => {
     const locked = isEnvLocked(env, def.key);
     const fileValue = file[def.key] ?? "";

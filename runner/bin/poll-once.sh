@@ -32,6 +32,10 @@ if [ "$DRY_RUN" != "1" ]; then
     echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2
     echo "TICK_RESULT=no_work"; exit 0
   fi
+  if declare -F gaffer_budget_headroom_ok >/dev/null 2>&1 && ! gaffer_budget_headroom_ok; then
+    echo "gaffer poll: lifetime budget (GAFFER_BUDGET_USD=${GAFFER_BUDGET_USD:-}, headroom \$${GAFFER_BUDGET_REMAINING:-unknown}) exhausted — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
   # ATOMIC ADMISSION (lib/budget.sh): reserve today's slot in one locked
   # read-modify-write BEFORE the tick — a Poll racing a daemon loop (or a pool) used
   # to check-then-bump and both admitted themselves against the same last slot. A

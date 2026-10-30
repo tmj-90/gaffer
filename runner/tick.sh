@@ -433,6 +433,15 @@ if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_day_usd_cap_ok >/dev/null 2>&
   log "BUDGET: UTC-day USD cap reached (spent \$$(gaffer_day_usd_spent) >= \$${GAFFER_DAILY_BUDGET_USD}) — not starting new paid work this tick"
   result no_work; exit 0
 fi
+# The LIFETIME ceiling (GAFFER_BUDGET_USD), gated the same way before any claim or
+# spawn: at $0 headroom a new ready ticket used to get one paid delivery call and only
+# THEN pause on budget_cap — one call past the "hard ceiling" per ticket. A resume
+# (Continue) waits here too: raising GAFFER_BUDGET_USD is what lets work continue.
+if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_budget_headroom_ok >/dev/null 2>&1 \
+   && ! gaffer_budget_headroom_ok; then
+  log "BUDGET: lifetime budget exhausted (GAFFER_BUDGET_USD=\$${GAFFER_BUDGET_USD}, headroom \$${GAFFER_BUDGET_REMAINING:-unknown}) — not starting new paid work this tick; raise GAFFER_BUDGET_USD to continue"
+  result no_work; exit 0
+fi
 
 # Ensure a stable factory agent (register once).
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
@@ -1486,10 +1495,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # are all read / test / context-only. It must NOT fall through to the legacy
   # single-repo fallback below — that made the alphabetically-first linked repo
   # WRITABLE (worktree + branch + hook allowing writes) for a ticket the operator
-  # had marked read-only. Release it for a human and skip it this run.
+  # had marked read-only. Park it for a human (refining, NOT ready: back in `ready`
+  # it was re-claimed and released by every run's first tick, forever, and held the
+  # queue non-empty so the idle maintenance lane never ran) and skip it this run.
+  # `ready` now refuses such a ticket (policy WRITE_REPO_REQUIRED /
+  # SCOPE_REPO_UNCONFIRMED), so this catches access changed after it was readied.
   if [ "$_WG_MARKERS" = 1 ] && [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
-    log "WG-002: #$NUM has no WRITE repo (all links are read/test/context-only) — refusing to deliver into a read-only repo; parking → ready"
-    gaffer_release_delivery ready "no write repo on the ticket — set a repo's access to write, then re-ready"
+    log "WG-002: #$NUM has no WRITE repo (all links are read/test/context-only) — refusing to deliver into a read-only repo; parking → refining"
+    gaffer_release_delivery refining "no write repo on the ticket — set a repo's access to write, then re-ready"
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi

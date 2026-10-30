@@ -148,6 +148,35 @@ out="$(trap - EXIT; STATS_JSON_FIXTURE='{"ticketsByStatus":{}}' \
 has "$out" "✗" && ok "an unhealthy doctor rolls up as fail" || fail "unhealthy doctor not flagged"
 has "$out" "!" && ok "a warning doctor rolls up as warn" || fail "warning doctor not flagged"
 
+# --- 7: a PAUSED delivery waits on a human (Continue / Stop) ---------
+# RESUME_REQ_CMD stubs `wg ticket resume-requested` (the paused tickets a human
+# already pressed Continue on — those the factory resumes by itself).
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "${RESUME_REQ_FIXTURE:-[]}"\n' > "$WORK/resume_req.sh"; chmod +x "$WORK/resume_req.sh"
+: > "$SINK"
+out="$(trap - EXIT; RESUME_REQ_CMD="$WORK/resume_req.sh" RESUME_REQ_FIXTURE='[]' run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0,"paused":1}}')"
+[ -s "$SINK" ] && ok "a paused ticket waiting on Continue/Stop triggers the notification" || fail "paused ticket did not notify"
+case "$out$(cat "$SINK")" in *"1 paused (Continue or Stop)"*) ok "reason names the paused ticket" ;; *) fail "reason missing 'paused (Continue or Stop)'" ;; esac
+has "$out" "nothing needs a human" && fail "pane said 'nothing needs a human' over a paused ticket" || ok "no false all-clear over a paused ticket"
+: > "$SINK"
+out="$(trap - EXIT; RESUME_REQ_CMD="$WORK/resume_req.sh" RESUME_REQ_FIXTURE='[{"ticket_id":"t1","number":4}]' run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0,"paused":1}}')"
+[ -s "$SINK" ] && fail "a paused ticket already Continue'd still notified" || ok "a Continue'd paused ticket is the factory's, not the human's (no alert)"
+has "$out" "Continue pressed: 1" && ok "pane shows it will be resumed" || fail "pane missing the Continue-pressed line"
+: > "$SINK"
+out="$(trap - EXIT; RESUME_REQ_CMD="$WORK/false-does-not-exist" run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0,"paused":2}}')"
+case "$(cat "$SINK")" in *"2 paused"*) ok "an unreadable resume queue counts every paused ticket (never a false all-clear)" ;; *) fail "unreadable resume queue hid paused tickets: $(cat "$SINK")" ;; esac
+
+# --- 8: a FOREGROUND dashboard (no pid file) is detected on its port ---------
+PORTF="$WORK/port"
+node -e 'const s=require("http").createServer((q,r)=>{r.setHeader("content-type","application/json");r.end(q.url==="/healthz"?"{\"status\":\"ok\"}":"{}")});s.listen(0,"127.0.0.1",()=>{require("fs").writeFileSync(process.argv[1],String(s.address().port))});setTimeout(()=>process.exit(0),20000)' "$PORTF" &
+SRV=$!
+for _ in $(seq 1 50); do [ -s "$PORTF" ] && break; sleep 0.1; done
+FPORT="$(cat "$PORTF" 2>/dev/null)"
+out="$(trap - EXIT; DISPATCH_API_PORT="$FPORT" run_status '{"ticketsByStatus":{}}')"
+has "$out" "dashboard answering → http://127.0.0.1:$FPORT" && ok "a foreground dashboard (no pid file) is reported up" || fail "foreground dashboard reported down: $(printf '%s' "$out" | grep -i dashboard)"
+kill "$SRV" 2>/dev/null; wait "$SRV" 2>/dev/null
+out="$(trap - EXIT; DISPATCH_API_PORT="$FPORT" run_status '{"ticketsByStatus":{}}')"
+has "$out" "dashboard not running" && ok "nothing on the port → not running" || fail "a dead port read as running"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "  ALL PASS ($PASS checks)"; exit 0
 else printf '  %d FAILURE(S), %d passed\n' "${#FAILURES[@]}" "$PASS"; exit 1; fi

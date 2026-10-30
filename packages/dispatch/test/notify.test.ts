@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Dispatch } from "../src/core.js";
@@ -332,6 +337,88 @@ describe("CompositeNotifier failure isolation", () => {
     expect(() =>
       notifier.notify({ kind: "review_needed", at: new Date().toISOString() }),
     ).not.toThrow();
+  });
+});
+
+describe("notifyAndReport — the setup check waits for and reports each sink", () => {
+  const ev = { kind: "review_needed" as const, at: new Date().toISOString() };
+
+  it("reports a failed sink as ok:false next to a delivered one", async () => {
+    const good = { name: "good", deliver: () => Promise.resolve() };
+    const bad = { name: "bad", deliver: () => Promise.reject(new Error("ENOENT notify-send")) };
+    const n = new CompositeNotifier([good, bad], ["review_needed"], { warn: () => {} });
+    const r = await n.notifyAndReport(ev);
+    expect(r.filtered).toBe(false);
+    expect(r.sinks).toEqual([
+      { name: "good", ok: true },
+      { name: "bad", ok: false, error: "ENOENT notify-send" },
+    ]);
+  });
+
+  it("a synchronous throw is a failed row, never a rejection", async () => {
+    const sync = {
+      name: "sync",
+      deliver: (): Promise<void> => {
+        throw new Error("immediate");
+      },
+    };
+    const n = new CompositeNotifier([sync], ["review_needed"], { warn: () => {} });
+    await expect(n.notifyAndReport(ev)).resolves.toEqual({
+      filtered: false,
+      sinks: [{ name: "sync", ok: false, error: "immediate" }],
+    });
+  });
+
+  it("a kind outside GAFFER_NOTIFY_EVENTS is reported filtered (no sink asked)", async () => {
+    const calls: string[] = [];
+    const s = { name: "s", deliver: () => (calls.push("x"), Promise.resolve()) };
+    const n = new CompositeNotifier([s], ["ticket_blocked"], { warn: () => {} });
+    expect(await n.notifyAndReport(ev)).toEqual({ filtered: true, sinks: [] });
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("`dispatch notify test` CLI — no false positive when the only sink fails", () => {
+  const CLI = resolve(__dirname, "../dist/cli/index.js");
+  let bin: string;
+  beforeEach(() => {
+    bin = mkdtempSync(join(tmpdir(), "wg-notify-bin-"));
+  });
+  afterEach(() => rmSync(bin, { recursive: true, force: true }));
+  // A stub desktop notifier (notify-send on Linux, osascript/terminal-notifier on
+  // macOS) that exits with `code`, on a PATH that has nothing else of the kind.
+  const stub = (code: number) => {
+    for (const name of ["notify-send", "osascript", "terminal-notifier"]) {
+      const f = join(bin, name);
+      writeFileSync(f, `#!/bin/sh\necho stub-failure >&2\nexit ${code}\n`);
+      chmodSync(f, 0o755);
+    }
+  };
+  const run = () =>
+    spawnSync(process.execPath, [CLI, "notify", "test"], {
+      encoding: "utf8",
+      env: { PATH: `${bin}:/usr/bin:/bin`, HOME: bin, GAFFER_NOTIFY_DESKTOP: "1" },
+    });
+
+  it.skipIf(!existsSync(CLI))("reports ok:false and exits 1 when the desktop sink fails", () => {
+    stub(3);
+    const r = run();
+    const out = JSON.parse(r.stdout) as {
+      ok: boolean;
+      delivered: number;
+      sinks: { ok: boolean }[];
+    };
+    expect(out.ok).toBe(false);
+    expect(out.delivered).toBe(0);
+    expect(out.sinks).toEqual([expect.objectContaining({ name: "desktop", ok: false })]);
+    expect(r.status).toBe(1);
+  });
+
+  it.skipIf(!existsSync(CLI))("reports ok:true when the sink delivered", () => {
+    stub(0);
+    const r = run();
+    const out = JSON.parse(r.stdout) as { ok: boolean; delivered: number };
+    expect([out.ok, out.delivered, r.status]).toEqual([true, 1, 0]);
   });
 });
 

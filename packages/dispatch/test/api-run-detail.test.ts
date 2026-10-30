@@ -8,7 +8,7 @@
  *   - full detail assembly       (buildRunDetail)
  */
 
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +22,7 @@ import {
   buildRunDetail,
   detectOutcome,
   logTailLines,
+  POLL_REFUSAL_RE,
   parseLastRouteInfo,
   parseRouteLine,
   ticketCostInfo,
@@ -132,6 +133,28 @@ describe("parseLastRouteInfo", () => {
 // ── detectOutcome ─────────────────────────────────────────────────────────────
 
 describe("detectOutcome", () => {
+  it("detects REFUSED when poll-once.sh refused the poll at a cap (no tick ran)", () => {
+    const usd =
+      "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=5, spent $5.10) reached — not polling.\nTICK_RESULT=no_work\n";
+    expect(detectOutcome(usd, "succeeded")).toBe("REFUSED");
+    const ticks = "gaffer poll: per-day cap (MAX_TICKS_PER_DAY=3, used 3) reached — not polling.\n";
+    expect(detectOutcome(ticks, "succeeded")).toBe("REFUSED");
+    expect(
+      detectOutcome("gaffer poll: aborting — no timeout primitive (setup error).\n", "failed"),
+    ).toBe("REFUSED");
+    // A normal tick's log never reads as refused.
+    expect(detectOutcome("delivery tick for #4 finished (rc=0)\n", "succeeded")).toBe("in_review");
+  });
+
+  it("every refusal poll-once.sh can print matches POLL_REFUSAL_RE (the UI's 'Poll refused' toast)", () => {
+    const src = readFileSync(join(__dirname, "../../../runner/bin/poll-once.sh"), "utf8");
+    const lines = [...src.matchAll(/echo "(gaffer poll: [^"]*)" >&2/g)].map((m) =>
+      m[1]!.replace(/\$\([^)]*\)|\$\{[^}]*\}|\$[A-Z_]+/g, "X"),
+    );
+    expect(lines.length).toBeGreaterThanOrEqual(4);
+    for (const l of lines) expect([l, POLL_REFUSAL_RE.test(l)]).toEqual([l, true]);
+  });
+
   it("returns null for a running run", () => {
     const log = "delivery tick for #1 finished (rc=0)";
     expect(detectOutcome(log, "running")).toBeNull();

@@ -54,6 +54,58 @@ describe("WG-003 / TEST-002: solo_loose", () => {
   });
 });
 
+// A solo_loose ticket the runner can never deliver used to ready fine and then cycle
+// claim → "no WRITE repo" → release on every tick. The Factory Map's scope → repo
+// links are SUGGESTIONS: scoping a ticket to a node grants nothing until a human
+// accepts a repo, so `ready` says so instead.
+describe("solo_loose: an undeliverable ticket is refused at ready", () => {
+  it("a ticket scoped to a node whose repos were never confirmed → SCOPE_REPO_UNCONFIRMED", () => {
+    const wg = fresh();
+    const node = wg.createScopeNode({ name: "TaskFlow", type: "product" }, human);
+    const repoB = wg.registerRepository({ name: "repoB" }, human);
+    wg.linkScopeRepo(
+      { scope_node_id: node.id, repo_id: repoB.id, relation: "owns", default_access: "write" },
+      human,
+    );
+    const t = wg.createTicket({ title: "Scoped", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
+    wg.setPrimaryScope(t.id, node.id, human);
+    expect(readyFailures(wg, t.id)).toContain("SCOPE_REPO_UNCONFIRMED");
+    expect(() => wg.markReady(t.id, human)).toThrowError(DispatchError);
+    // Accepting the node's repo (what the dashboard's suggestion "accept" writes) clears it.
+    wg.setTicketRepoAccess(
+      { ticket_id: t.id, repo_id: repoB.id, access: "write", relation: "confirmed" },
+      human,
+    );
+    expect(wg.markReady(t.id, human).ticket.status).toBe("ready");
+    wg.db.close();
+  });
+
+  it("linked repos with none at write access → WRITE_REPO_REQUIRED", () => {
+    const wg = fresh();
+    const t = wg.createTicket({ title: "Read only", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
+    const repo = wg.registerRepository({ name: "ctx" }, human);
+    wg.setTicketRepoAccess(
+      { ticket_id: t.id, repo_id: repo.id, access: "read", relation: "confirmed" },
+      human,
+    );
+    expect(readyFailures(wg, t.id)).toContain("WRITE_REPO_REQUIRED");
+    wg.db.close();
+  });
+
+  it("a greenfield bootstrap ticket (no repo by design) is still allowed with a scope", () => {
+    const wg = fresh();
+    const node = wg.createScopeNode({ name: "New", type: "product" }, human);
+    const t = wg.createTicket({ title: "Bootstrap", policy_pack: "solo_loose" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
+    wg.setPrimaryScope(t.id, node.id, human);
+    wg.db.prepare("UPDATE tickets SET bootstrap = 1 WHERE id = ?").run(t.id);
+    expect(readyFailures(wg, t.id)).toEqual([]);
+    wg.db.close();
+  });
+});
+
 // GUARD A (waste-guards): a 0-AC ticket must never be deliverable. Every
 // delivery-bound policy, solo_loose included, rejects a 0-AC ticket at `ready`.
 describe("GUARD A: ≥1 acceptance criterion required at ready (all packs)", () => {

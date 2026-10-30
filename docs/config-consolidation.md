@@ -129,7 +129,6 @@ Tier ∈ {mode, base, advanced, system, derive, delete}. `UI?` = present in
 | GAFFER_MAX_DELIVERY_ATTEMPTS | 359 | 3 | Rework attempts before park-to-blocked | ✓ | advanced |
 | GAFFER_MAX_NOCOMMIT_FAILURES | 404 | =attempts | Cross-run bound on no-commit crash re-picks | **＋** | advanced |
 | GAFFER_REWORK_BUDGET_USD | 391 | =BUDGET_USD | Per-ticket rework spend ceiling | **＋** | advanced |
-| GAFFER_MAX_RESUMES_PER_TICK | 477 | 1 | Resume-requested paused tickets re-entered/tick | ✓ | advanced |
 | GAFFER_PAUSE_ON_CAP | 473 | 1 | Pause+keep worktree on cap-hit vs park+teardown | ✓ | advanced |
 | GAFFER_CAP_DETECT_TURNS | 464 | =MAX_TURNS | num_turns ≥ this ⇒ treated as cap-hit | ✗ | advanced |
 | GAFFER_BUDGET_USD | 130 | (empty) | Total spend ceiling (USD) | ✓ | base |

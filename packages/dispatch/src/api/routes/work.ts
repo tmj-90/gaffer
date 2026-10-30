@@ -172,26 +172,72 @@ export async function routeWork(
       methodNotAllowed(res);
       return true;
     }
-    // Only fire a tick when it has something to do. Ready work is the obvious case;
-    // an EMPTY queue still has work when the idle maintenance lane is switched on in
-    // crew.yaml (the tick then runs one scheduler-chosen scan lane, which may draft
-    // and promote its own ticket). Otherwise the poll would silently do nothing and
-    // feel broken — tell the caller plainly.
-    const readyCount = wg.listTickets({ status: "ready" }).length;
+    // Only fire a tick when it has something to do. The tick works through more
+    // than the ready queue, and before it: a paused delivery a human pressed
+    // Continue on (re-entered first), and — when the operator turned the lanes on —
+    // an agent review of an in_review ticket and a black-box test of an in_testing
+    // one. An EMPTY queue still has work when the idle maintenance lane is switched
+    // on in crew.yaml (the tick then runs one scheduler-chosen scan lane, which may
+    // draft and promote its own ticket). Otherwise the poll would silently do
+    // nothing and feel broken — tell the caller plainly. Counting only `ready` made
+    // Continue + Poll a no-op whenever no daemon was running.
+    const pending = pollablePending(wg, process.env);
+    const readyCount = pending.ready;
+    const otherWork = pending.resume + pending.review + pending.testing;
     const maintenanceOn = readIdleLoops(resolveCrewConfigPath()).maintenance.enabled;
-    if (readyCount === 0 && !maintenanceOn) {
-      sendJson(res, 200, { polled: false, reason: "no_ready_work", readyCount: 0 });
+    if (readyCount === 0 && otherWork === 0 && !maintenanceOn) {
+      sendJson(res, 200, { polled: false, reason: "no_ready_work", readyCount: 0, pending });
       return true;
     }
     const result = pollWorkRunner.run();
     sendJson(res, 202, {
       polled: true,
       readyCount,
-      ...(readyCount === 0 ? { idle: "maintenance" } : {}),
+      pending,
+      ...(readyCount === 0 && otherWork === 0 ? { idle: "maintenance" } : {}),
       run: result,
     });
     return true;
   }
 
   return false;
+}
+
+/** True for the runner's truthy flag spellings (factory.config.sh _gaffer_flag_on). */
+function flagOn(v: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
+}
+
+/** What one tick (runner/tick.sh) could work on right now, by lane. */
+export interface PollablePending {
+  /** Tickets in `ready` (the delivery queue). */
+  ready: number;
+  /** Paused deliveries a human pressed Continue on (re-entered before any claim). */
+  resume: number;
+  /** in_review tickets the reviewer agent takes (REVIEW_MODE agent | both). */
+  review: number;
+  /** in_testing tickets the black-box tester takes (GAFFER_TESTING on). */
+  testing: number;
+}
+
+/**
+ * Count the work a tick would pick up, with the same switches the runner reads:
+ * resumes need GAFFER_PAUSE_ON_CAP (default on), agent review REVIEW_MODE=agent|both
+ * (default human), the tester lane GAFFER_TESTING (default off). The dashboard's env
+ * carries the operator's real overrides plus settings.json and the mode preset
+ * (applySettingsToEnv), so these agree with what the spawned tick will see.
+ */
+export function pollablePending(wg: Dispatch, env: NodeJS.ProcessEnv): PollablePending {
+  const ready = wg.listTickets({ status: "ready" }).length;
+  const pauseOnCap = (env["GAFFER_PAUSE_ON_CAP"] ?? "1").trim();
+  const resume = pauseOnCap === "1" ? wg.listResumeRequested().length : 0;
+  const reviewMode = (env["REVIEW_MODE"] ?? "human").trim().toLowerCase();
+  const review =
+    reviewMode === "agent" || reviewMode === "both"
+      ? wg.listTickets({ status: "in_review" }).length
+      : 0;
+  const testing = flagOn(env["GAFFER_TESTING"])
+    ? wg.listTickets({ status: "in_testing" }).length
+    : 0;
+  return { ready, resume, review, testing };
 }

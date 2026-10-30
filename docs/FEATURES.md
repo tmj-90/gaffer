@@ -151,10 +151,15 @@ Real products are several repos, not one. The **Factory Map** models that:
 repo is linked into a node with a **relation** and a **default access** level —
 `write`, `read`, `test`, or `none`.
 
-This is what lets a ticket scoped to a product reach exactly the repos that
-product owns, at exactly the access it's been granted — a boundary the runner
-enforces, not a suggestion. Repos with no mapping behave as standalone
-single-repo scopes, so nothing has to be mapped to start working.
+Scoping a ticket to a node turns the node's repos into **suggestions** on the
+ticket (ranked by relation, with the node's default access). A human confirms
+which ones the ticket gets, one click per repo on the ticket panel; until at
+least one is confirmed at `write`, `ready` refuses the ticket
+(`SCOPE_REPO_UNCONFIRMED`) rather than queueing work the runner cannot deliver.
+Once confirmed, the access is a boundary the runner enforces, not a suggestion:
+the agent can write only to the `write` repos and read the `read` ones. Repos
+with no mapping behave as standalone single-repo scopes, so nothing has to be
+mapped to start working.
 
 ![A scope node and its mapped repos](img/factory-map.png)
 

@@ -14,6 +14,11 @@ _GAFFER_ENV_AT_SOURCE=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 : "${RUNNER_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 : "${GAFFER_HOME:=$(cd "$RUNNER_DIR/.." && pwd)}"
 : "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"                       # factory state (dbs, logs, agent id)
+# ONE canonical crew events log for everything that sources this file (tick.sh,
+# the gaffer CLI, fg, the dashboard it launches, onboard-run): $GAFFER_DATA, never a
+# repo checkout. crew itself resolves a relative crew.yaml event_log_path against
+# the factory root; this keeps runner-spawned crew calls on the one log tick reads.
+export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
 # UI-editable settings. The dashboard Settings panel persists a flat {"KEY":"value"}
 # map to $GAFFER_DATA/settings.json. Apply them as defaults HERE — before the config

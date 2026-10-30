@@ -43,7 +43,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeAndWrite } from "../lib/onboard-analyze.mjs";
 
@@ -304,6 +304,9 @@ function main() {
       ...process.env,
       // crew reads the factory state dir as GAFFER_DATA_DIR (see `gaffer onboard`).
       GAFFER_DATA_DIR: GAFFER_DATA,
+      // The factory's one events log (as factory.config.sh exports it), so a
+      // dashboard-spawned onboard never writes `.crew/` into whatever its cwd is.
+      GAFFER_CREW_EVENTS: process.env.GAFFER_CREW_EVENTS || join(GAFFER_DATA, "events.jsonl"),
     },
   });
 

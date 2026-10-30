@@ -161,6 +161,17 @@
     color: var(--ink);
     text-decoration: underline;
   }
+  /* Detail pages (ticket, ground, repo, spec) put the way back first in the view. */
+  .view > .back-link {
+    justify-self: start;
+    padding: 4px 0;
+    min-height: 32px;
+  }
+  @media (max-width: 760px) {
+    .view > .back-link {
+      min-height: var(--tap);
+    }
+  }
   /* Segmented control (Board | List). */
   .segmented {
     display: inline-flex;

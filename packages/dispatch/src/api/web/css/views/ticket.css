@@ -7,13 +7,6 @@
    the minute-by-minute match report and the record. */
 
 @layer views {
-  .view > .back-link {
-    justify-self: start;
-    border: 0;
-    background: none;
-    padding: 4px 0;
-    min-height: 32px;
-  }
   /* The head: a referee's card when it is out, the meta line, the headline, the lede. */
   .card.tk-head {
     display: grid;
@@ -48,17 +41,17 @@
     box-shadow: var(--counter-shadow);
     text-align: center;
   }
-  .ft-l {
+  .ft-plaque .ft-l {
     font: 700 var(--t12) / 1 var(--f-cond);
     letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--yellow);
   }
-  .ft-v {
+  .ft-plaque .ft-v {
     font: 800 var(--t34) / 1 var(--f-display);
     color: #fff;
   }
-  .ft-t {
+  .ft-plaque .ft-t {
     font: 600 var(--t14) / 1 var(--f-cond);
     color: var(--board-ink-2);
   }
@@ -253,7 +246,7 @@
   }
 
   /* The failing test: file › name, then Expected v Received as a scoreline. */
-  .ft-name {
+  .ftest-name {
     font-size: var(--t14);
     overflow-wrap: anywhere;
   }
@@ -465,7 +458,7 @@
   .repo-group > ul > li:first-child {
     border-top: 0;
   }
-  .repo-row {
+  .repo-group .repo-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -762,12 +755,22 @@
   }
 
   @media (max-width: 760px) {
+    /* The comp's phone move: the one primary across the card, the rest share a row. */
+    .tk-move > .btn-row > .btn {
+      flex: 1 1 auto;
+      justify-content: center;
+    }
+    .tk-move > .btn-row > .btn.primary {
+      flex-basis: 100%;
+    }
+  }
+  @media (max-width: 760px) {
     .ft-plaque {
       width: 64px;
       padding: 8px 4px 10px;
       border-top-width: 4px;
     }
-    .ft-v {
+    .ft-plaque .ft-v {
       font-size: var(--t20);
     }
     .tk-h2 {

@@ -306,22 +306,22 @@
   .ft-row:first-child {
     border-top: 0;
   }
-  .ft-name {
+  .ft-grid .ft-name {
     display: grid;
     align-content: start;
     gap: 2px;
     padding: 14px 12px 14px var(--s4);
   }
-  .ft-name b {
+  .ft-grid .ft-name b {
     font: 800 var(--t20) / 1 var(--f-display);
     text-transform: uppercase;
   }
-  .ft-name span,
-  .ft-s {
+  .ft-grid .ft-name span,
+  .ft-grid .ft-s {
     font: 600 var(--t14) / 1.25 var(--f-cond);
     color: var(--ink-2);
   }
-  .ft-cell {
+  .ft-grid .ft-cell {
     display: grid;
     align-content: start;
     gap: 4px;
@@ -329,22 +329,22 @@
     border-left: var(--hair);
     min-width: 0;
   }
-  .ft-l {
+  .ft-grid .ft-l {
     font: 700 var(--t12) / 1.2 var(--f-cond);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--ink-2);
   }
-  .ft-v {
+  .ft-grid .ft-v {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     font: 800 var(--t34) / 1 var(--f-display);
   }
-  .ft-cell.is-bad .ft-v {
+  .ft-grid .ft-cell.is-bad .ft-v {
     color: var(--red);
   }
-  .ft-cell .band {
+  .ft-grid .ft-cell .band {
     margin-top: 4px;
   }
   .hx-12 {
@@ -383,21 +383,21 @@
     .ft-row {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
-    .ft-name {
+    .ft-grid .ft-name {
       grid-column: 1 / -1;
       display: flex;
       align-items: baseline;
       gap: 10px;
       padding: 12px var(--s4) 0;
     }
-    .ft-cell {
+    .ft-grid .ft-cell {
       padding: 8px 10px 14px;
     }
-    .ft-cell:nth-child(2) {
+    .ft-grid .ft-cell:nth-child(2) {
       border-left: 0;
       padding-left: var(--s4);
     }
-    .ft-v {
+    .ft-grid .ft-v {
       font-size: var(--t26);
     }
     .hx-grid {

@@ -221,6 +221,7 @@ const ICONS = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
   arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  backarrow: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
   chevron: '<path d="m9 6 6 6-6 6"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   alert:
@@ -9010,7 +9011,7 @@ function failingTestCard(trail) {
   const body = [];
   if (f.file || f.name)
     body.push(
-      el("p", { class: "ft-name" }, [
+      el("p", { class: "ftest-name" }, [
         f.file ? el("code", { class: "mono" }, f.file) : null,
         f.file && f.name ? " › " : null,
         f.name || "",
@@ -9267,11 +9268,7 @@ async function renderTicket(id) {
 
   const wrap = el("div", { class: "view" });
   wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate(detailBackHash) },
-      detailBackHash === "#/review" ? "← Back to Review" : "← Back to Work",
-    ),
+    backLink(detailBackHash, detailBackHash === "#/review" ? "Back to Review" : "Back to Work"),
   );
 
   const policyBox = el("div");
@@ -9653,6 +9650,21 @@ async function renderTicket(id) {
       : null,
     ...headActions,
   ].filter(Boolean);
+  // One primary per view: the first filled action in Your move is THE move, in the
+  // big display face like Unblock… and Review; any later filled one (Mark merged next
+  // to Merge now, a second ok) reads as an ordinary button beside it.
+  let movePrimary = false;
+  for (const b of moveActions) {
+    const filled = b.classList.contains("primary") || b.classList.contains("ok");
+    if (!filled) continue;
+    if (!movePrimary) {
+      b.classList.remove("ok");
+      b.classList.add("primary", "big");
+      movePrimary = true;
+    } else {
+      b.classList.remove("primary", "ok", "big");
+    }
+  }
   const yourMove =
     t.status === "done"
       ? fullTimeCard(t, { trail, events, acList, doneAt })
@@ -16143,13 +16155,18 @@ function hideRepoBtn(repo) {
   );
 }
 
+/**
+ * The one way back from a detail page: a real link (it opens in a new tab like any
+ * other), the back arrow, and "Back to <where>". Ticket, ground, repo and spec
+ * pages all use it, so the way back reads and sits the same everywhere.
+ */
+function backLink(href, label) {
+  return el("a", { class: "back-link", href }, [icon("backarrow", "", 16), el("span", {}, label)]);
+}
+
 /** The way back from a ground or repo page to the Map. */
 function backToMap() {
-  return el(
-    "button",
-    { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-    "← Back to Map",
-  );
+  return backLink("#/factory", "Back to Map");
 }
 
 // View: Hidden repos (WG-006). A deliberately low-key surface — reached only via
@@ -20553,10 +20570,7 @@ async function renderSpecDetail(specId) {
     null;
 
   const wrap = el("div", { class: "view view-spec", dataset: { view: "specs" } });
-  const back = el("a", { class: "back-link", href: "#/specs" }, [
-    icon("back", "", 16),
-    "The playbook",
-  ]);
+  const back = backLink("#/specs", "Back to the playbook");
   wrap.appendChild(back);
 
   // Defensive: a missing / empty / malformed coverage payload must render a

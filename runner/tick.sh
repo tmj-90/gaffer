@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
-# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|no_work|error|setup_error`
-# line (setup_error: a fail-closed setup check refused before any agent launched).
+# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|maintenance_drafted|
+# maintenance_ran|no_work|error|setup_error` line (setup_error: a fail-closed setup check
+# refused before any agent launched). On an idle tick: maintenance_drafted / idle_drafted =
+# it FILED work (drafts, ingested issues, an epic, lore suggestions); maintenance_ran = it
+# ran a model-backed step (feature-backlog planning) but filed nothing — counted against
+# the day cap but an empty poll for draining; no_work = nothing claimable and nothing new
+# (the deterministic scans cost nothing, so a scan that finds nothing new is no_work).
 #
 # DRY_RUN=1 (default) prints the plan and never invokes Claude or mutates a repo.
 set -uo pipefail
@@ -3424,12 +3429,18 @@ _gaffer_clarify_pass
 # decision is auditable. The rotation cursor is persisted under $GAFFER_DATA so the
 # cadence survives across ticks. Which loops it rotates through is each idle loop's
 # own enabled flag in the crew config.
+# The runner's own planner for the idle feature-backlog loop (crew falls back to it
+# when crew.yaml sets no decompose_script). Empty when it is missing.
+_gaffer_idle_decompose_script() {
+  [ -f "$HERE/bin/decompose.mjs" ] && printf '%s' "$HERE/bin/decompose.mjs"
+  return 0
+}
 if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] && [ -f "$CREW_CONFIG" ]; then
   _MAINT_ARGS=()
   [ "${GAFFER_MAINTENANCE:-}" = "1" ] && _MAINT_ARGS=(--force)
   log "no ready tickets → maintenance lane (crew.yaml decides; deterministic scheduler picks one loop)"
   if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}" && ! _gaffer_flag_on "${GAFFER_IDLE_HOST_EXEC:-0}"; then
-    log "maintenance lane: GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands (coverage_command) unsandboxed on the host (GAFFER_IDLE_HOST_EXEC=1 to allow)"
+    log "maintenance lane: GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands (coverage_command, idle_dependencies.audit_command) or the tsc/semgrep oracles unsandboxed on the host (GAFFER_IDLE_HOST_EXEC=1 to allow)"
   fi
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg maintain${_MAINT_ARGS[0]:+ --force} (scheduler-chosen maintenance loop)"; result no_work; exit 0
@@ -3437,8 +3448,14 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   # Capture crew's rc + stderr: a failed `crew maintain` (invalid crew.yaml, crash,
   # locked DB) prints nothing on stdout, and parsing that empty output as "chose
   # none, no_op" used to report a healthy `maintenance_ran` on every idle tick.
+  # The env prefix wires the async idle loops to the FACTORY's memory server + DB
+  # and to this runner's planner (lore gap, feature backlog), with no crew.yaml
+  # hand-wiring: crew's stdio transport would otherwise drop MEMORY_DB and the
+  # loops would read ~/.memory, or not run at all.
   _merr="$(mktemp "${TMPDIR:-/tmp}/gaffer-maint.XXXXXX" 2>/dev/null || echo "/tmp/gaffer-maint.$$")"
-  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>"$_merr")"
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="${DISPATCH_DB:-}" MEMORY_DB="${MEMORY_DB:-}" MEMORY_MCP_BIN="${MEMORY_MCP_BIN:-}" \
+    GAFFER_DECOMPOSE_SCRIPT="$(_gaffer_idle_decompose_script)" CLAUDE_BIN="${CLAUDE_BIN:-claude}" CLAUDE_FLAGS="${CLAUDE_FLAGS:-}" \
+    fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>"$_merr")"
   _mrc=$?
   cat "$_merr" >> "$GAFFER_LOG" 2>/dev/null || true
   # MSTATUS is "invalid" unless MOUT is crew's `{ok:true, report}` with either no
@@ -3448,8 +3465,13 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   [ "$_mrc" -eq 0 ] || MSTATUS=invalid
   MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
   MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
-  MDRAFTS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
+  # `filed` = everything this tick produced (the lane's drafts + ingested issues + a
+  # backlog epic + lore suggestions); older crews only had the lane's draftCount.
+  MDRAFTS="$(echo "$MOUT" | jget 'd.filed ?? ((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
   case "$MDRAFTS" in ''|*[!0-9]*) MDRAFTS=0 ;; esac
+  MSPENT="$(echo "$MOUT" | jget 'd.spent === true ? 1 : 0' 2>/dev/null || echo 0)"
+  # Did anything besides the scan lane run (ingest, lore gap, feature backlog)?
+  MOTHER="$(echo "$MOUT" | jget 'd.ingest || d.jira || d.loreGap || d.featureBacklog ? 1 : 0' 2>/dev/null || echo 0)"
   if [ "$MSTATUS" = "invalid" ]; then
     # FAILED, not ran: log it loudly and fall through to the legacy scan + the final
     # `no_work`, so workers still drain on EMPTY_POLL_LIMIT and the tick does not
@@ -3460,10 +3482,24 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
     # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
     log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
   else
-    log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+    log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, filed=$MDRAFTS"
     rm -f "$_merr"
-    [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
-    result maintenance_ran; exit 0
+    if [ "$MCHOSEN" = "none" ] && [ "$MDRAFTS" -eq 0 ] && [ "$MOTHER" != 1 ]; then
+      # The switch (or GAFFER_MAINTENANCE=1) only turns the lane ON; it rotates through
+      # the idle loops you enabled, and with none enabled there is nothing to run.
+      log "maintenance lane: no maintenance loop is enabled — turn on at least one lane in Settings → Idle loops (GAFFER_MAINTENANCE=1 only overrides the master switch)"
+    elif [ "$MCHOSEN" = "coverage" ] && [ "$MSTATUS" = "no_repos" ]; then
+      log "maintenance lane: the coverage lane needs a repo coverage_command — set one with \`wg repo set-commands <repo> --coverage '<cmd>'\` (or in the dashboard's repo settings)"
+    fi
+    [ "$MDRAFTS" -gt 0 ] && { result maintenance_drafted; exit 0; }
+    # Filed nothing. A deterministic scan (or a deduped re-find) calls no model and
+    # costs nothing, so it is an EMPTY poll — no_work keeps EMPTY_POLL_LIMIT draining
+    # the pool and keeps the zero-cost scan off MAX_TICKS_PER_DAY. Reporting it as a
+    # productive maintenance_ran used to fill the day cap with no-op scans and block
+    # real deliveries until midnight. Only a tick that ran a model-backed step (the
+    # feature-backlog planner) and filed nothing is maintenance_ran: it may have paid.
+    [ "$MSPENT" = 1 ] && { result maintenance_ran; exit 0; }
+    result no_work; exit 0
   fi
   rm -f "$_merr"
 fi
@@ -3476,10 +3512,17 @@ if [ "${IDLE_DRAFT_WHEN_IDLE:-0}" = "1" ] && [ -f "$CREW_DIR/dist/cli/index.js" 
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg idle"; result no_work; exit 0
   fi
-  OUT="$(fg idle 2>>"$GAFFER_LOG")"
-  DRAFTS="$(echo "$OUT" | jget '((d.outcome || {}).drafts || []).length || 0' 2>/dev/null || echo 0)"
-  log "idle scan created $DRAFTS draft(s)"
-  [ "${DRAFTS:-0}" -gt 0 ] && { result idle_drafted; exit 0; }
+  OUT="$(GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="${DISPATCH_DB:-}" MEMORY_DB="${MEMORY_DB:-}" MEMORY_MCP_BIN="${MEMORY_MCP_BIN:-}" \
+    GAFFER_DECOMPOSE_SCRIPT="$(_gaffer_idle_decompose_script)" CLAUDE_BIN="${CLAUDE_BIN:-claude}" CLAUDE_FLAGS="${CLAUDE_FLAGS:-}" \
+    fg idle 2>>"$GAFFER_LOG")"
+  # crew idle prints {ok, report:{loops, totalDrafts}, filed, spent, …}. This used to
+  # read `outcome.drafts`, a shape crew no longer emits, so every scan logged
+  # "0 draft(s)" and reported no_work however much it filed.
+  DRAFTS="$(echo "$OUT" | jget 'd.filed ?? (d.report || {}).totalDrafts ?? 0' 2>/dev/null || echo 0)"
+  case "$DRAFTS" in ''|*[!0-9]*) DRAFTS=0 ;; esac
+  log "idle scan filed $DRAFTS item(s) (drafts, ingested issues, epic tickets, lore suggestions)"
+  [ "$DRAFTS" -gt 0 ] && { result idle_drafted; exit 0; }
+  [ "$(echo "$OUT" | jget 'd.spent === true ? 1 : 0' 2>/dev/null || echo 0)" = 1 ] && { result maintenance_ran; exit 0; }
 fi
 
 log "no ready tickets and nothing to draft"

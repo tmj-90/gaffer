@@ -32,6 +32,8 @@ WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
 
 echo "== 1: gaffer_tick_counts_toward_day_cap — only no_work is exempt =="
+# (tick.sh reports a zero-cost maintenance scan that filed nothing as no_work, so it is
+# exempt through this rule — maintenance-lane.test.sh pins that mapping.)
 export DAILY_COUNTER_FILE="$WORK/.daily-ticks"
 # shellcheck source=../lib/budget.sh
 source "$RUNNER_DIR/lib/budget.sh"
@@ -68,13 +70,14 @@ chmod +x "$WORK/noop.sh"
 run_driver() {  # run_driver <script> [env assignments...]
   local script="$1"; shift
   ( trap - EXIT
-    env "$@" DRY_RUN=0 TICK_SLEEP=0 EMPTY_POLL_LIMIT=10 MAX_TICKS_PER_DAY=50 \
+    # The caller's assignments come LAST so they win over these defaults (env: last wins).
+    env DRY_RUN=0 TICK_SLEEP=0 EMPTY_POLL_LIMIT=10 MAX_TICKS_PER_DAY=50 \
       GAFFER_DATA="$WORK/data" DAILY_COUNTER_FILE="$WORK/.daily-ticks" \
       GAFFER_LOG="$WORK/factory.log" \
       DISPATCH_DIR="$WORK/nodist" DISPATCH_DB="$WORK/db.sqlite" MEMORY_DB="$WORK/mem.sqlite" \
       STUB_CALLS="$WORK/calls" STUB_QUEUE="$WORK/queue" \
       LOOP_STATS_CMD="$WORK/noop.sh" LOOP_HQ_CMD="$WORK/noop.sh" LOOP_NOTIFY_EMIT_CMD="$WORK/noop.sh" \
-      bash "$script" 2>&1 )
+      "$@" bash "$script" 2>&1 )
 }
 reset_state() { rm -f "$WORK/.daily-ticks" "$WORK/calls"; : > "$WORK/calls"; printf '%s\n' "$@" > "$WORK/queue"; }
 day_count() { awk '{print $2}' "$WORK/.daily-ticks" 2>/dev/null || echo 0; }
@@ -93,6 +96,24 @@ echo "== 3: worker.sh (parallel pool path) — same rule =="
 reset_state worked no_work error
 run_driver "$FAKE/worker.sh" WORKER_MAX_TICKS=3 GAFFER_CONCURRENCY=2 >/dev/null
 [ "$(day_count)" = "2" ] && ok "worker: worked + error counted, no_work exempt → 2" || fail "worker day counter should be 2 (got '$(day_count)')"
+
+echo "== 3b: an idle maintenance tick that filed nothing drains the run =="
+# maintenance_ran (the paid backlog planner ran, filed nothing) counts against the
+# day cap but is an EMPTY poll: with EMPTY_POLL_LIMIT=2 the run must stop after two,
+# not keep ticking (and spending) until MAX_TICKS / the day cap.
+reset_state maintenance_ran maintenance_ran maintenance_ran maintenance_ran maintenance_ran
+out="$(run_driver "$FAKE/loop.sh" MAX_TICKS=5 EMPTY_POLL_LIMIT=2)"
+[ "$(wc -l < "$WORK/calls" | tr -d ' ')" = "2" ] && ok "loop.sh: two maintenance_ran ticks → stops on EMPTY_POLL_LIMIT=2" \
+  || fail "loop.sh should stop after 2 empty maintenance_ran ticks (ran $(wc -l < "$WORK/calls")); out: $out"
+[ "$(day_count)" = "2" ] && ok "…and both counted against the day cap (they may have paid)" || fail "maintenance_ran should count (got '$(day_count)')"
+reset_state maintenance_ran maintenance_ran maintenance_ran maintenance_ran maintenance_ran
+run_driver "$FAKE/worker.sh" WORKER_MAX_TICKS=5 GAFFER_CONCURRENCY=2 EMPTY_POLL_LIMIT=2 >/dev/null
+[ "$(wc -l < "$WORK/calls" | tr -d ' ')" = "2" ] && ok "worker.sh: same — stops after two empty maintenance_ran ticks" \
+  || fail "worker.sh should stop after 2 empty maintenance_ran ticks (ran $(wc -l < "$WORK/calls"))"
+reset_state maintenance_drafted no_work no_work
+run_driver "$FAKE/loop.sh" MAX_TICKS=3 EMPTY_POLL_LIMIT=2 >/dev/null
+[ "$(wc -l < "$WORK/calls" | tr -d ' ')" = "3" ] && ok "maintenance_drafted is productive (resets the empty count)" \
+  || fail "maintenance_drafted should reset empties (ran $(wc -l < "$WORK/calls"))"
 
 echo "== 4: bin/poll-once.sh (the dashboard Poll button) goes through the caps =="
 # The real poll-once.sh, pointed at the stub tick via its test seam.

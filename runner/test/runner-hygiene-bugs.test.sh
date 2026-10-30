@@ -300,7 +300,8 @@ BUG5_OUT="$(
       (reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
       (clarified)         clarified=$((clarified + 1)); empties=0 ;;
       (idle_drafted)      idle=$((idle + 1)); empties=0 ;;
-      (maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+      (maintenance_drafted) idle=$((idle + 1)); empties=0 ;;
+      (maintenance_ran)   idle=$((idle + 1)); empties=$((empties + 1)) ;;
       (no_work)           nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
       (*)                 errors=$((errors + 1)); empties=0 ;;
     esac
@@ -316,6 +317,10 @@ BUG5_OUT="$(
     echo "BUG5_FAIL idle=$idle errors=$errors"
   fi
 )"
+# The copy above must match worker.sh: a filed-nothing maintenance_ran is an empty poll.
+grep -qF 'maintenance_ran)   idle=$((idle + 1)); empties=$((empties + 1)) ;;' "$RUNNER_DIR/worker.sh" \
+  && ok "BUG 5: worker.sh counts maintenance_ran as idle AND as an empty poll" \
+  || fail "BUG 5: worker.sh's maintenance_ran case drifted from the copy in this test"
 grep -q "^BUG5_PASS$" <<<"$BUG5_OUT" \
   && ok "BUG 5: maintenance_drafted + maintenance_ran counted as idle, not errors" \
   || fail "BUG 5: maintenance results miscounted (expected idle=3 errors=0)"
@@ -329,7 +334,8 @@ BUG5_UNKNOWN_OUT="$(
     (reviewed)          : ;;
     (clarified)         : ;;
     (idle_drafted)      idle=$((idle + 1)); empties=0 ;;
-    (maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+    (maintenance_drafted) idle=$((idle + 1)); empties=0 ;;
+    (maintenance_ran)   idle=$((idle + 1)); empties=$((empties + 1)) ;;
     (no_work)           : ;;
     (*)                 errors=$((errors + 1)); empties=0 ;;
   esac

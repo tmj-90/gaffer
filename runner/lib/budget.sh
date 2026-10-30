@@ -161,8 +161,11 @@ _gaffer_refund_run_tick_unlocked() {
 # finds nothing claimable and exits — so it must NOT consume the day cap. Before this
 # every non-dry tick was counted, and an IDLE daemon (TICK_SLEEP=30, cap 50) burned
 # the whole day's cap in ~37 minutes without delivering anything, then sat idle
-# until midnight. Every OTHER result counts: the productive ones (worked / reviewed /
-# tested / clarified / idle_drafted / maintenance_* / paused), an `error` (the agent
+# until midnight. An idle maintenance tick whose deterministic scan filed nothing is
+# reported as `no_work` too (tick.sh): the scans call no model. Every OTHER result
+# counts: the productive ones (worked / reviewed / tested / clarified / idle_drafted /
+# maintenance_drafted / paused), `maintenance_ran` (an idle tick that ran the paid
+# feature-backlog planner but filed nothing), an `error` (the agent
 # may have run before a gate failed) and an EMPTY/unknown result (the outer timeout
 # reaped a tick mid-agent — real spend with no result line). Conservative by design:
 # only the one result that provably cost nothing is exempt.

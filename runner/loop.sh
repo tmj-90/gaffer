@@ -311,7 +311,10 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     break
   fi
 
-  if [ "$res" = "no_work" ]; then
+  # An idle maintenance_ran (a paid planning step that filed nothing) counts against
+  # the day cap above but is an EMPTY poll here, like no_work: a failing planner must
+  # not keep the run alive and spending.
+  if [ "$res" = "no_work" ] || [ "$res" = "maintenance_ran" ]; then
     empties=$((empties + 1))
     if [ "$empties" -ge "$EMPTY_POLL_LIMIT" ]; then
       echo "gaffer factory: $empties consecutive empty polls — stopping."

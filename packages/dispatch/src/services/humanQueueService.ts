@@ -104,7 +104,7 @@ const REVIEWER_ASSIGNMENT_REASON =
 const PARKED_NO_CODE_LABEL = "blocked (no reason recorded)";
 // The structured runner park reason_codes the factory runner writes onto a
 // `ticket.blocked` event (via runnerRelease): rework_exhausted, bootstrap_failed,
-// strict_require_unavailable, budget_exhausted. Any non-null reason_code is a
+// strict_require_unavailable, budget_exhausted, no_write_repo, no_local_repo_path. Any non-null reason_code is a
 // coded park (→ unpark/refine); a human/agent block with no code → cancel.
 /**
  * Advisory next-action for a parked ticket (rendered as a hint only — the unpark

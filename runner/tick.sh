@@ -339,7 +339,9 @@ gaffer_trust_workspace() {
   # full repo it onboarded/created — PRIMARY_REPO, the clarify clone, the greenfield
   # bootstrap). GAFFER_TRUST_ALLOW_REPO=1 vouches for the full-repo shapes; linked
   # worktrees are still validated strictly (under the worktree root) regardless.
-  GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
+  # GAFFER_DATA is passed so the prune of dead worktree entries knows this factory's
+  # real worktree root ($GAFFER_DATA/worktrees) under a non-default data dir.
+  GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 node "$RUNNER_DIR/lib/trust-workspace.mjs" "$dir" 2>>"$GAFFER_LOG" \
     || log "TRUST: could not pre-trust $dir (headless agent may hang on an MCP tool prompt)"
   # Claude Code keys a git WORKTREE's trust on its MAIN repo working tree (the
   # git-common-dir's parent), NOT the worktree path — so trusting only a linked
@@ -352,7 +354,7 @@ gaffer_trust_workspace() {
   local main
   main="$(gaffer_git_main_worktree "$dir")"
   if [ -n "$main" ] && [ "$main" != "$dir" ] && [ -d "$main" ]; then
-    GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
+    GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_TRUST_ALLOW_REPO=1 GAFFER_TRUST_KEY_ONLY=1 \
       node "$RUNNER_DIR/lib/trust-workspace.mjs" "$main" 2>>"$GAFFER_LOG" \
       || log "TRUST: could not pre-trust main repo root $main (worktree $dir)"
   fi
@@ -1485,14 +1487,36 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "WG-002 WARNING: access-boundary partition parse yielded no markers for #$NUM (json parse failure or empty ticket show). Falling back to single-repo write root ($REPO_PATH)."
   fi
 
-  # A parsed boundary (markers present) with NO write repo is a ticket whose repos
-  # are all read / test / context-only. It must NOT fall through to the legacy
-  # single-repo fallback below — that made the alphabetically-first linked repo
-  # WRITABLE (worktree + branch + hook allowing writes) for a ticket the operator
-  # had marked read-only. Release it for a human and skip it this run.
+  # A parsed boundary (markers present) with NO write repo is a ticket with no repo
+  # linked at all (the default solo_loose pack lets one go ready with only a
+  # REPO_RECOMMENDED warning) or whose repos are all read / test / context-only. It
+  # must NOT fall through to the legacy single-repo fallback below — that made the
+  # alphabetically-first linked repo WRITABLE (worktree + branch + hook allowing
+  # writes) for a ticket the operator had marked read-only. Park it VISIBLY as
+  # `blocked` (reason_code no_write_repo — it lands in the human queue) and skip it
+  # this run. Releasing it to `ready` instead re-claimed and re-released it on every
+  # loop run forever (the skip file is per run), a claim/release pair per run.
+  # A write link whose repo has NO local_path (registered with `wg repo add --remote`
+  # and no --path) is dropped by `partition` too, so it also arrives here with empty
+  # WRITE_ROOTS. That ticket DOES have a write repo — telling the human to "set its
+  # access to write" is false and an unblock just re-parks it — so it is parked as
+  # no_local_repo_path with the register-or-clone instruction instead.
   if [ "$_WG_MARKERS" = 1 ] && [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
-    log "WG-002: #$NUM has no WRITE repo (all links are read/test/context-only) — refusing to deliver into a read-only repo; parking → ready"
-    gaffer_release_delivery ready "no write repo on the ticket — set a repo's access to write, then re-ready"
+    _NWR_NOPATH="$(echo "$SHOW" | jget '(d.repositories || []).filter((r) => r && ["confirmed", "implicit_single_repo"].includes(r.relation) && r.access === "write" && !String(r.local_path || "").trim()).length' 2>/dev/null || echo 0)"
+    if [ "${_NWR_NOPATH:-0}" -gt 0 ] 2>/dev/null; then
+      log "ticket #$NUM has no local repo path ($_NWR_NOPATH write repo(s) linked with no local checkout); parking → blocked (no_local_repo_path) for a human"
+      gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock" no_local_repo_path
+      gaffer_skip_ticket "$NUM"
+      result no_work; exit 0
+    fi
+    _NWR_COUNT="$(echo "$SHOW" | jget '(d.repositories || []).length' 2>/dev/null || echo 0)"
+    if [ "${_NWR_COUNT:-0}" -gt 0 ]; then
+      _NWR_WHY="all $_NWR_COUNT linked repo(s) are read/test/context-only"
+    else
+      _NWR_WHY="no repo is linked to the ticket"
+    fi
+    log "WG-002: #$NUM has no WRITE repo ($_NWR_WHY) — refusing to deliver; parking → blocked (no_write_repo) for a human"
+    gaffer_release_delivery blocked "no write repo on the ticket ($_NWR_WHY) — link a repo and set its access to write (wg ticket repo-access set <n> <repo> --access write --relation confirmed), then unblock" no_write_repo
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
@@ -1548,10 +1572,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
   [ -n "$LENSES" ] || LENSES="minimalism"
 
   if [ -z "$REPO_PATH" ] || [ ! -d "$REPO_PATH" ]; then
-    log "ticket #$NUM has no local repo path; leaving it for a human"
-    gaffer_release_delivery ready "no local repo path — leaving it for a human"
-    # Skip it for the rest of this run: released to `ready` at the head of the queue
-    # it would be re-claimed by the very next tick, forever (a wedged queue).
+    log "ticket #$NUM has no local repo path; parking → blocked (no_local_repo_path) for a human"
+    # Park VISIBLY as `blocked`, never back to `ready`: the skip file only lasts one
+    # loop run, so a `ready` release was re-claimed and re-released on every run
+    # forever. Skip it for the rest of this run too.
+    gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock" no_local_repo_path
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
@@ -1571,17 +1596,25 @@ if [ "$READY_COUNT" -gt 0 ]; then
 
   # ── SELF-OPERATION BAN (refuse to deliver to Gaffer's own source) ────────────
   # If the delivery target IS, or is INSIDE, one of the factory's own component
-  # dirs (dispatch / crew / memory / the runner), refuse: the factory
-  # would be editing its own source. Checked here — after REPO_PATH is resolved
-  # and PRIMARY_REPO is set, before any worktree is created — so nothing is
+  # dirs (dispatch / crew / memory / the runner) or the gaffer checkout itself,
+  # refuse: the factory would be editing its own source. Checked here — after
+  # REPO_PATH and every write root are resolved, before any worktree is created — so nothing is
   # mutated. GAFFER_ALLOW_SELF_DELIVERY=1 fully restores today's behaviour (for
   # first-party dogfooding). The ticket is BLOCKED (set aside for a human, exactly
   # like the bootstrap "no commit" / hygiene parks) AND recorded in the per-run
   # skip file, so the loop does NOT re-claim the same self-target ticket forever.
   if [ "${GAFFER_ALLOW_SELF_DELIVERY:-0}" != "1" ]; then
+    # EVERY write target is checked, not just the first: a multi-repo ticket whose
+    # gaffer checkout (or a component dir) is the 2nd+ write repo would otherwise
+    # be delivered into. Candidates, in order: each WRITE_ROOTS line, each
+    # WRITE_ROWS path column (the rows worktrees are actually added from), then
+    # REPO_PATH. First match wins; any match refuses the whole ticket (fail closed).
     SELF_HIT=""
-    if gaffer_is_self_target "$PRIMARY_REPO"; then SELF_HIT="$PRIMARY_REPO"
-    elif gaffer_is_self_target "$REPO_PATH"; then SELF_HIT="$REPO_PATH"; fi
+    __self_cands="$(printf '%s\n' "$WRITE_ROOTS"; printf '%s\n' "$WRITE_ROWS" | awk -F'\t' 'NF>=3{print $3}'; printf '%s\n' "$REPO_PATH")"
+    while IFS= read -r __self_c; do
+      [ -n "$__self_c" ] || continue
+      if gaffer_is_self_target "$__self_c"; then SELF_HIT="$__self_c"; break; fi
+    done <<< "$__self_cands"
     if [ -n "$SELF_HIT" ]; then
       log "SELF-OP: refusing to deliver #$NUM — target '$SELF_HIT' is (or is inside) a Gaffer component; the factory must not edit its own source. Set GAFFER_ALLOW_SELF_DELIVERY=1 to override (first-party dogfooding only)."
       wg attach-evidence "$NUM" --type manual_note \
@@ -1677,14 +1710,16 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
   fi
   # METRICS (chunk 2b) — record the mechanically-observable retrieval facts for
-  # this delivery: prime_context_called + cards_served + coverage. Best-effort,
-  # gated on GAFFER_DATA, fully swallowed (never affects delivery). The
+  # this delivery: prime_context_called + cards_served + the served cards' paths.
+  # Best-effort, gated on GAFFER_DATA, fully swallowed (never affects delivery). The
   # complementary reads-before-first-write signal is captured at the safety-hook
-  # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET.
+  # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET. The
+  # end-of-run summary (run-summary.sh → json-tool summary-retrieval) joins the two:
+  # reads before the first write, and how many served cards the agent then Read.
   if [ -n "${GAFFER_DATA:-}" ]; then
     {
-      printf '{"ts":"%s","ticket":"%s","prime_context_called":%s,"cards_served":%s}\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
+      printf '%s\n' "$FILE_CARDS_BLOCK" \
+        | node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
         >> "$GAFFER_DATA/delivery-metrics.jsonl"
     } 2>/dev/null || true
   fi

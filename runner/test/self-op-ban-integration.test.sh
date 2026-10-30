@@ -12,6 +12,11 @@
 #   PROOF B  (override) GAFFER_ALLOW_SELF_DELIVERY=1 restores today's behaviour:
 #            the SAME ticket proceeds to the normal delivery plan.
 #   PROOF C  (control) a NON-Gaffer target is unaffected — delivered as before.
+#   PROOF D  a ticket whose write repo is the gaffer monorepo ROOT (the obvious
+#            `gaffer onboard ~/gaffer` registration) is refused the same way.
+#   PROOF E  a MULTI-repo ticket with two confirmed write repos, where the gaffer
+#            root sorts SECOND (an ordinary repo is the primary), is still
+#            refused — the ban checks every write root, not only the first.
 #
 # Requires the built dispatch CLI. Run: bash test/self-op-ban-integration.test.sh
 # =====================================================================
@@ -107,6 +112,65 @@ if grep -q "delivering #$SELF_NUM" <<<"$OUT_AGAIN"; then
 else
   ok "later tick does NOT re-claim the set-aside self-target"
 fi
+
+echo "== PROOF D: the gaffer monorepo ROOT is a self-target too =="
+GAFFER_ROOT="$(cd "$RUNNER_DIR/.." && pwd -P)"
+WG repo add -n gaffer-root --path "$GAFFER_ROOT" --branch main --stack typescript --test "true" >/dev/null 2>&1
+ROOT_NUM="$(WG ticket create -t "Self-op: tweak the whole gaffer repo" -p solo_loose 2>&1 | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
+WG repo link "$ROOT_NUM" gaffer-root >/dev/null 2>&1
+WG ac add "$ROOT_NUM" -t "Root self-op AC" >/dev/null 2>&1
+WG ticket ready "$ROOT_NUM" >/dev/null 2>&1
+OUT_ROOT="$(run_tick)"
+if grep -q "SELF-OP: refusing to deliver #$ROOT_NUM" <<<"$OUT_ROOT"; then
+  ok "monorepo-root ticket is refused with a SELF-OP log"
+else
+  fail "monorepo-root ticket should be refused (got: $(printf '%s' "$OUT_ROOT" | grep -E 'SELF-OP|delivering|worktree|TICK_RESULT' | tail -4))"
+fi
+if grep -qE "delivering #$ROOT_NUM|would add a throwaway worktree" <<<"$OUT_ROOT"; then
+  fail "monorepo-root ticket must NOT reach the worktree/delivery plan"
+else
+  ok "monorepo-root ticket does NOT reach the worktree/delivery plan"
+fi
+ST="$(ticket_status "$ROOT_NUM")"
+[ "$ST" != "ready" ] && ok "monorepo-root ticket is set aside (status=$ST)" \
+  || fail "expected monorepo-root ticket out of 'ready' (status=$ST)"
+
+echo "== PROOF E: the gaffer root as the SECOND of two write repos is refused =="
+AAA="$WORK/aaa-repo"; mk_repo "$AAA"
+WG repo add -n aaa-repo --path "$AAA" --branch main --stack typescript --test "true" >/dev/null 2>&1
+WG repo add -n zzz-gaffer --path "$GAFFER_ROOT" --branch main --stack typescript --test "true" >/dev/null 2>&1
+MULTI_NUM="$(WG ticket create -t "Multi: ordinary repo plus the gaffer root" -p solo_loose 2>&1 | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['number'])")"
+WG ticket repo-access set "$MULTI_NUM" aaa-repo --access write --relation confirmed >/dev/null 2>&1
+WG ticket repo-access set "$MULTI_NUM" zzz-gaffer --access write --relation confirmed >/dev/null 2>&1
+WG ac add "$MULTI_NUM" -t "Multi self-op AC" >/dev/null 2>&1
+WG ticket ready "$MULTI_NUM" >/dev/null 2>&1
+# Precondition: both links are confirmed WRITE links and the ordinary repo is
+# listed FIRST, so the gaffer root really is the second write root (the case a
+# first-root-only check missed).
+MULTI_WRITES="$(WG ticket show "$MULTI_NUM" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(' '.join(r.get('name','') for r in d.get('repositories',[]) if r.get('access')=='write'))")"
+[ "$MULTI_WRITES" = "aaa-repo zzz-gaffer" ] && ok "precondition: write repos are 'aaa-repo zzz-gaffer' (gaffer root second)" \
+  || fail "precondition: expected write repos 'aaa-repo zzz-gaffer' in that order (got '$MULTI_WRITES')"
+[ "$(ticket_status "$MULTI_NUM")" = "ready" ] && ok "precondition: multi-repo ticket is ready" \
+  || fail "precondition: multi-repo ticket should be ready (status=$(ticket_status "$MULTI_NUM"))"
+OUT_MULTI="$(run_tick)"
+if grep -q "SELF-OP: refusing to deliver #$MULTI_NUM" <<<"$OUT_MULTI"; then
+  ok "multi-repo ticket with the gaffer root second is refused with a SELF-OP log"
+else
+  fail "multi-repo ticket should be refused (got: $(printf '%s' "$OUT_MULTI" | grep -E 'SELF-OP|delivering|WRITE|worktree|TICK_RESULT' | tail -4))"
+fi
+if grep -qE "would add a throwaway worktree|delivering #$MULTI_NUM" <<<"$OUT_MULTI"; then
+  fail "multi-repo self-target must NOT reach the worktree/delivery plan"
+else
+  ok "multi-repo self-target does NOT reach the worktree/delivery plan"
+fi
+if [ -n "$(git -C "$AAA" branch --list "gaffer/*")" ]; then
+  fail "no gaffer/ branch may be created in the ordinary repo of a refused ticket"
+else
+  ok "no gaffer/ branch created in the ordinary repo"
+fi
+ST="$(ticket_status "$MULTI_NUM")"
+[ "$ST" != "ready" ] && ok "multi-repo self-target is set aside (status=$ST)" \
+  || fail "expected multi-repo self-target out of 'ready' (status=$ST)"
 
 echo "== PROOF B (override): GAFFER_ALLOW_SELF_DELIVERY=1 restores delivery =="
 # Re-ready a fresh self-target ticket (the first is now blocked).

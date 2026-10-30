@@ -11,6 +11,9 @@
 #   AC4  per-repo pressure reads the backpressure file (outstanding vs cap)
 #   AC5  cleanup state flags a hygiene-leak note
 #   AC6  loop.sh prints the run summary at the end of a run
+#   AC9  retrieval: reads before the first write + file cards served vs Read, joined
+#        from delivery-metrics.jsonl and tool-metrics.jsonl (run-scoped); tick.sh
+#        writes card paths via json-tool delivery-metric
 #
 # Zero deps beyond bash + python3. Run: bash test/run-summary.test.sh
 # =====================================================================
@@ -149,6 +152,50 @@ OUT4="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
 grep -qiE 'nothing measurable this run' <<<"$OUT4" && ok "all-unknown run → 'nothing measurable', no token/cost figure" || fail "all-unknown run still reported numbers"
 grep -Eq 'billed tokens' <<<"$OUT4" && fail "all-unknown run wrongly printed a token figure" || ok "all-unknown run prints NO token figure (honest)"
 grep -q 'GAFFER_USAGE_LEDGER' "$RUNNER_DIR/factory.config.sh" && ok "factory.config.sh defines GAFFER_USAGE_LEDGER knob (mirrors GAFFER_BLOCK_LEDGER)" || fail "GAFFER_USAGE_LEDGER knob missing"
+
+echo "== AC9: retrieval section (reads before first write, cards served vs read) =="
+grep -qiE 'retrieval \(file cards' <<<"$OUT" && ok "retrieval section present" || fail "retrieval section missing"
+grep -qiE 'no deliveries primed' <<<"$OUT" && ok "no ledgers → says nothing was primed" || fail "clean-run retrieval line missing"
+# delivery-metric turns a real file-card block into a ledger line WITH the card paths.
+GOLDEN="$RUNNER_DIR/../packages/crew/test/fixtures/tick-context/file-cards-block.golden.txt"
+if [ -f "$GOLDEN" ]; then
+  DM="$(node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric 7 true 3 < "$GOLDEN")"
+  [ "$(printf '%s' "$DM" | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8"));console.log(d.card_paths.join(","), d.ticket, d.prime_context_called, d.cards_served)')" \
+    = "src/auth/reset.ts,src/auth/email.ts,src/routes/account.ts 7 true 3" ] \
+    && ok "delivery-metric extracts the served card paths from the block" || fail "delivery-metric line wrong: $DM"
+fi
+grep -q 'json-tool.mjs" delivery-metric' "$RUNNER_DIR/tick.sh" && ok "tick.sh writes delivery-metrics through delivery-metric" || fail "tick.sh does not use delivery-metric"
+# Three deliveries this run + one pre-run (excluded). #7: 2 reads (one file, twice)
+# then a write, and it Read 1 of its 2 served cards. #8: 4 reads then a write, read
+# 0 of 1 card. #9: primed, no cards, never wrote.
+cat > "$WORK/.gaffer/delivery-metrics.jsonl" <<'JSONL'
+{"ts":"2000-01-01T00:00:00Z","ticket":"7","prime_context_called":true,"cards_served":9,"card_paths":["old.ts"]}
+{"ts":"2999-01-01T00:00:00Z","ticket":"7","prime_context_called":true,"cards_served":2,"card_paths":["src/a.ts","src/b.ts"]}
+{"ts":"2999-01-01T00:00:00Z","ticket":"8","prime_context_called":true,"cards_served":1,"card_paths":["src/c.ts"]}
+{"ts":"2999-01-01T00:00:00Z","ticket":"9","prime_context_called":false,"cards_served":0,"card_paths":[]}
+JSONL
+cat > "$WORK/.gaffer/tool-metrics.jsonl" <<'JSONL'
+{"ts":"2000-01-01T00:00:01.000Z","ticket":"7","tool":"Read","kind":"read","target":"/wt/old.ts"}
+{"ts":"2999-01-01T00:00:01.000Z","ticket":"7","tool":"Read","kind":"read","target":"/wt/ticket-7/k/src/a.ts"}
+{"ts":"2999-01-01T00:00:02.000Z","ticket":"7","tool":"Read","kind":"read","target":"/wt/ticket-7/k/src/a.ts"}
+{"ts":"2999-01-01T00:00:03.000Z","ticket":"7","tool":"Edit","kind":"write","target":"/wt/ticket-7/k/src/a.ts"}
+{"ts":"2999-01-01T00:00:01.000Z","ticket":"8","tool":"Read","kind":"read","target":"/wt/ticket-8/k/src/x.ts"}
+{"ts":"2999-01-01T00:00:02.000Z","ticket":"8","tool":"Read","kind":"read","target":"/wt/ticket-8/k/src/y.ts"}
+{"ts":"2999-01-01T00:00:03.000Z","ticket":"8","tool":"Read","kind":"read","target":"/wt/ticket-8/k/src/z.ts"}
+{"ts":"2999-01-01T00:00:04.000Z","ticket":"8","tool":"Read","kind":"read","target":"/wt/ticket-8/k/src/w.ts"}
+{"ts":"2999-01-01T00:00:05.000Z","ticket":"8","tool":"Write","kind":"write","target":"/wt/ticket-8/k/src/new.ts"}
+{"ts":"2999-01-01T00:00:01.000Z","ticket":"9","tool":"Bash","kind":"bash","target":"ls"}
+JSONL
+OUT5="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlite" \
+  SUMMARY_LIST_CMD="$WORK/list.sh" SUMMARY_SHOW_CMD="$WORK/show.sh" \
+  SUMMARY_SINCE="2500-01-01T00:00:00.000Z" \
+  bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
+grep -qF '3 deliveries primed this run — 2 with file cards, 3 card(s) served' <<<"$OUT5" \
+  && ok "deliveries + cards served counted, pre-run delivery excluded" || fail "delivery count line wrong: $(grep -i 'primed' <<<"$OUT5")"
+grep -qF 'reads before first write: median 3 (2.5 distinct file(s)) over 2 deliveries that wrote; 1 made no write' <<<"$OUT5" \
+  && ok "reads-before-first-write headline (median over the deliveries that wrote)" || fail "reads-before-first-write wrong: $(grep -i 'reads before' <<<"$OUT5")"
+grep -qF 'file cards read: 1 of 3 served card(s) were then Read by the agent' <<<"$OUT5" \
+  && ok "served-vs-read headline" || fail "cards read line wrong: $(grep -i 'cards read' <<<"$OUT5")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

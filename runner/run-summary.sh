@@ -9,6 +9,7 @@
 #   • oversized     — tickets flagged needs_human_review: oversized_diff
 #   • per-repo      — outstanding work vs cap, and which repos are in backpressure
 #   • cleanup       — any hygiene leak this run flagged (post-teardown residue)
+#   • retrieval     — reads before the agent's first write, and file cards served vs Read
 #
 # Non-mutating. loop.sh prints it at the end of a run. The data sources are
 # env-overridable so the report is testable without the real CLIs:
@@ -162,6 +163,20 @@ if [ -s "$BLOCK_LEDGER" ]; then
   SUMMARY_SINCE="${SUMMARY_SINCE:-}" node "$HERE/lib/json-tool.mjs" summary-blocks "$BLOCK_LEDGER"
 else
   printf "    ${c_grn}✓${c_off} no blocks recorded (clean run, or no risky tool calls)\n"
+fi
+
+# Retrieval: did the file cards the runner primed the agent with save it reading?
+# Joins the two telemetry ledgers — delivery-metrics.jsonl (tick.sh: cards served per
+# delivery, with their paths) and tool-metrics.jsonl (the safety hook: every tool call,
+# keyed by ticket) — into the two headline numbers: Reads before the first write, and
+# served cards the agent then Read. SUMMARY_SINCE scopes it to this run.
+printf "\n  ${c_dim}retrieval (file cards → reads before first write)${c_off}\n"
+DELIVERY_METRICS="$GAFFER_DATA/delivery-metrics.jsonl"
+TOOL_METRICS="$GAFFER_DATA/tool-metrics.jsonl"
+if [ -s "$DELIVERY_METRICS" ]; then
+  SUMMARY_SINCE="${SUMMARY_SINCE:-}" node "$HERE/lib/json-tool.mjs" summary-retrieval "$DELIVERY_METRICS" "$TOOL_METRICS"
+else
+  printf "    ${c_dim}(no deliveries primed — nothing to measure)${c_off}\n"
 fi
 
 # Usage: what the headless agent calls actually cost this run. The honest signal

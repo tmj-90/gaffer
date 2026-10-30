@@ -13,7 +13,11 @@
 #   C. REWORK after review CHANGES: the next attempt re-enters on the EXISTING branch with
 #      the previous commits kept (the agent sees them at spawn). Before: `worktree add -B`
 #      reset the branch to base and the agent re-implemented everything.
-#   D. GAFFER_RETRY_FRESH_BRANCH=1 restores the clean-slate reset (opt-in).
+#   D. GAFFER_RETRY_FRESH_BRANCH=1 restores the clean-slate reset (opt-in) when a NEW
+#      tick re-enters the ticket.
+#   F. GAFFER_RETRY_FRESH_BRANCH=1 does NOT reset IN-TICK rework: a gate failure re-runs
+#      the agent in the same worktree on top of its own commits (the feedback is about
+#      that diff), which is what docs/CONFIG.md now says.
 # Run: bash runner/test/waste-controls.test.sh
 # =====================================================================
 set -uo pipefail
@@ -82,6 +86,14 @@ if [ -e .git ]; then
     edit-nocommit-hang)
       printf 'export function partial(){return 0;}\n' > "src/partial-$fn.js"
       sleep 30; exit 0 ;;
+    fail-then-fix)
+      # Attempt 1 (nothing on the branch yet) commits a helper whose test FAILS the
+      # test gate; any later attempt fixes the test on top.
+      grep -q "$fn" src/a.js || printf 'export function %s(){return 2;}\n' "$fn" >> src/a.js
+      want=2; [ "$(cat "$D/commits-at-spawn")" = "0" ] && want=3
+      printf 'import test from "node:test"; import assert from "node:assert/strict";\nimport { %s } from "../src/a.js";\ntest("%s", () => { assert.equal(%s(), %s); });\n' "$fn" "$fn" "$fn" "$want" > "test/$fn.test.js"
+      git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: $fn (want $want)" >/dev/null 2>&1 || true
+      printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: helper.","total_cost_usd":0.02,"num_turns":1}\n'; exit 0 ;;
     *)
       grep -q "$fn" src/a.js || printf 'export function %s(){return 2;}\n' "$fn" >> src/a.js
       [ "$MODE" = "deliver-with-test" ] && printf 'import test from "node:test"; import assert from "node:assert/strict";\nimport { %s } from "../src/a.js";\ntest("%s", () => { assert.equal(%s(), 2); });\n' "$fn" "$fn" "$fn" > "test/$fn.test.js"
@@ -190,6 +202,23 @@ grep -q "BOOTSTRAP #$F ('Bootstrap the r repo') → create new repo" "$GAFFER_DA
 D4="$(last_delivery)"
 [ -n "$D4" ] && [ "$(cat "$D4/commits-at-spawn")" -ge 1 ] && ok "E: the rework agent saw the prior scaffold commit at spawn (branch $BF kept)" || fail "E: rework did not keep the scaffold commit (commits-at-spawn=$(cat "$D4/commits-at-spawn" 2>/dev/null))"
 [ "$(st "$F")" = "in_review" ] && ok "E: bootstrap rework re-delivered → in_review" || fail "E: status=$(st "$F")"
+
+echo "== F. GAFFER_RETRY_FRESH_BRANCH=1 leaves IN-TICK rework on the agent's own commits =="
+review_tick >/dev/null   # clear the review lane left by case E
+echo fail-then-fix > "$MODE"; echo approve > "$REVIEW"
+G="$(new_ready "In-tick rework helper" "deliver a helper")"
+BEFORE_F="$(ls -1 "$CALLS" | wc -l | tr -d ' ')"
+GAFFER_RETRY_FRESH_BRANCH=1 run_tick >/dev/null
+SPAWNS=""; for d in "$CALLS"/*; do
+  [ "$(basename "$d")" -gt "$BEFORE_F" ] 2>/dev/null || continue
+  [ "$(cat "$d/kind" 2>/dev/null)" = delivery ] && SPAWNS+="$(cat "$d/commits-at-spawn") "
+done
+SPAWNS="${SPAWNS% }"
+case "$SPAWNS" in
+  "0 "[1-9]*) ok "F: attempt 1 spawned on base, the in-tick retry on its commits (commits-at-spawn: $SPAWNS)" ;;
+  *) fail "F: expected an in-tick retry on the kept branch (commits-at-spawn per attempt: '${SPAWNS}')" ;;
+esac
+[ "$(st "$G")" = "in_review" ] && ok "F: the in-tick rework delivered → in_review" || fail "F: status=$(st "$G")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

@@ -178,6 +178,22 @@ for (const [role, p] of Object.entries(ROLE_PROFILES)) {
   for (const n of p.core) assert(`role ${role}: core skill ${n} exists`, dirs.includes(n));
 }
 
+// 6. the skill counts the READMEs state match the library (only for the real
+// library — a SKILLS_DIR override is a fixture). The runner README said 31 while
+// 118 shipped.
+if (!process.env.SKILLS_DIR) {
+  for (const [doc, re] of [
+    [join(RUNNER_DIR, "README.md"), /ships \*\*(\d+) skills\*\*/],
+    [join(ROOT, "README.md"), /the safety hook, (\d+) skills/],
+  ]) {
+    const m = existsSync(doc) ? readFileSync(doc, "utf8").match(re) : null;
+    assert(
+      `${doc.slice(ROOT.length + 1)} states the skill count (${m ? m[1] : "none found"}) = ${dirs.length}`,
+      m !== null && Number(m[1]) === dirs.length,
+    );
+  }
+}
+
 console.log(
   `skills-lint: ${dirs.length} skills, ${passed} checks passed, ${failures.length} failed`,
 );

@@ -14,6 +14,9 @@
 //   4. A committed `.claude/settings.local.json` in the target is NEUTRALIZED
 //      (regular file → {} with a .gaffer-orig backup; symlink → unlinked).
 //   5. UNPARSEABLE ~/.claude.json → refused, left untouched.
+//   6. NON-DEFAULT GAFFER_DATA: dead worktree entries under $GAFFER_DATA/worktrees
+//      (no `/.gaffer/` in the path) are pruned too, live ones and unrelated dead
+//      paths are kept, and factory worktree entries are capped.
 //
 // Hermetic: HOME is redirected to a temp dir so the "global" config is a throwaway
 // file; GAFFER_TRUST_WORKTREE_ROOT scopes the expected root; fake linked-worktree
@@ -277,6 +280,65 @@ console.log("== 6) GAFFER_TRUST_KEY_ONLY writes the trust key but SKIPS neutrali
     "KEY_ONLY still writes the trust key hasTrustDialogAccepted:true",
     conf.projects?.[target]?.hasTrustDialogAccepted === true,
   );
+}
+
+// ---------------------------------------------------------------------
+console.log("== 6) non-default GAFFER_DATA: dead worktree entries pruned, capped ==");
+{
+  const home = freshHome();
+  const data = join(ROOT, "custom-data"); // NOT <repo>/.gaffer
+  const wtBase = join(data, "worktrees");
+  const projects = { "/home/dev/keep-me": { hasTrustDialogAccepted: true } };
+  // 300 dead delivery + review worktree entries under the custom data dir.
+  const dead = [];
+  for (let i = 0; i < 150; i++) {
+    dead.push(join(wtBase, `ticket-${i}`, `key-${i}`));
+    dead.push(join(wtBase, `review-wt-${i}`));
+  }
+  for (const p of dead) projects[p] = { hasTrustDialogAccepted: true };
+  // A dead path that is NOT a factory worktree must be left alone.
+  const foreignDead = join(ROOT, "gone", "my-own-project");
+  projects[foreignDead] = { hasTrustDialogAccepted: true };
+  // A LIVE worktree entry from an earlier delivery is kept.
+  const liveOld = makeWorktree(join(wtBase, "ticket-900"), "live");
+  projects[liveOld] = { hasTrustDialogAccepted: true };
+  writeFileSync(confPath(home), JSON.stringify({ projects }, null, 2));
+
+  const target = makeWorktree(join(wtBase, "ticket-901"), "now");
+  // root:"" — no explicit test root: GAFFER_DATA (as tick.sh passes it) is the only hint.
+  const r = runTrust(target, { home, root: "", extraEnv: { GAFFER_DATA: data } });
+  assert("trust exited 0 under a non-default GAFFER_DATA", r.status === 0);
+  const conf = readConf(home);
+  assert(
+    "every dead worktree entry under $GAFFER_DATA/worktrees pruned",
+    dead.every((p) => !(p in conf.projects)),
+  );
+  assert("live earlier worktree entry kept", liveOld in conf.projects);
+  assert("dead NON-factory entry left alone", foreignDead in conf.projects);
+  assert("unrelated project kept", "/home/dev/keep-me" in conf.projects);
+  assert("target trusted", conf.projects[target]?.hasTrustDialogAccepted === true);
+
+  // Cap: 250 LIVE factory worktree entries (e.g. orphans) → bounded at 200, the
+  // oldest dropped, the target and unrelated entries kept.
+  const home2 = freshHome();
+  const many = { "/home/dev/keep-me": { hasTrustDialogAccepted: true } };
+  const live = [];
+  for (let i = 0; i < 250; i++) {
+    const w = makeWorktree(join(wtBase, `ticket-${1000 + i}`), "k");
+    live.push(w);
+    many[w] = { hasTrustDialogAccepted: true };
+  }
+  writeFileSync(confPath(home2), JSON.stringify({ projects: many }, null, 2));
+  const t2 = makeWorktree(join(wtBase, "ticket-2000"), "now");
+  const r2 = runTrust(t2, { home: home2, root: "", extraEnv: { GAFFER_DATA: data } });
+  assert("trust exited 0 with many live entries", r2.status === 0);
+  const c2 = readConf(home2);
+  const factoryCount = Object.keys(c2.projects).filter((p) => p.startsWith(wtBase)).length;
+  assert(`factory worktree entries capped at 200 (got ${factoryCount})`, factoryCount === 200);
+  assert("the oldest live entry was the one dropped", !(live[0] in c2.projects));
+  assert("the newest live entry kept", live[249] in c2.projects);
+  assert("the target survives the cap", t2 in c2.projects);
+  assert("unrelated project survives the cap", "/home/dev/keep-me" in c2.projects);
 }
 
 console.log();

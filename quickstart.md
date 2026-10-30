@@ -114,7 +114,10 @@ Rules the `ready` gate enforces, so you don't discover them by failing:
 - **at least one acceptance criterion** — the agent proves each one, and a criterion with
   `--check '<cmd>'` is run by the runner itself in the delivery worktree (exit 0 ⇒ satisfied);
 - **a confirmed repo** (`repo-access set … --access write` is the default) — without it the
-  runner has nowhere to branch;
+  runner has nowhere to branch. The default `solo_loose` pack only *warns*
+  (`REPO_RECOMMENDED`) and lets the ticket go ready; the runner then parks it as
+  `blocked` (`no_write_repo`) for you rather than delivering it. The stricter packs
+  refuse the `ready` move outright;
 - the default policy pack is `solo_loose`; the strict packs also need a reviewer (see the
   note in the next section).
 

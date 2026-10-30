@@ -94,7 +94,7 @@ computed from other knobs at runtime.
 | `GAFFER_DAEMON_SETUP_BACKOFF_MAX` | `1800` |  | runner | ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3) |
 | `GAFFER_RESOLVER_MAX_TURNS` | _(empty)_ |  | runner | alias of GAFFER_MERGE_MAX_TURNS (empty → that knob) |
 | `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
-| `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a retry (rework / gate retry / timeout) keeps the ticket branch's previous commits and re-enters on them; 1 = the old clean-slate reset to base. |
+| `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that tick (in-tick rework is never reset). |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
 | `GAFFER_TICK_OUTER_TIMEOUT` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 120 ))`) |  | runner | FINDING-6 (a): the OUTER per-tick wall-clock bound loop.sh/worker.sh wrap around the WHOLE tick.sh. |
@@ -142,7 +142,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_ALLOW_SELF_DELIVERY` | `0` | yes (boolean) | dispatch, runner | Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident. |
+| `GAFFER_ALLOW_SELF_DELIVERY` | `0` | yes (boolean) | dispatch, runner | Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident: a ticket where any of its write repos (not only the first) is the gaffer checkout root (or any directory above it), a component dir inside it, or a worktree of the same git repo is set aside for a human instead of delivered. |
 
 ### Safety / stop conditions
 

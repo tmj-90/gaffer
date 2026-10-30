@@ -18,6 +18,9 @@
 #      answers disabled, tick logs the pointer to Settings → Idle loops, no_work.
 #   5. GAFFER_MAINTENANCE unset + crew.yaml switch ON → the lane runs → drafted.
 #   6. DRY_RUN logs intent without invoking crew.
+#   7-9. A FAILED `crew maintain` (rc≠0 / empty stdout / unknown status) is logged
+#      as FAILED and falls through to the legacy scan + no_work — never reported
+#      as a healthy maintenance_ran.
 #
 # Hermetic: stub `dispatch` + `crew` CLIs stand in for the real servers, so no
 # real factory state is touched and Claude is never invoked. Zero deps.
@@ -64,6 +67,16 @@ const a = process.argv.slice(2);
 fs.appendFileSync(process.env.CREW_CALLS, a.join(" ") + "\n");
 const out = (o) => process.stdout.write(JSON.stringify(o));
 if (a.includes("maintain")) {
+  if (process.env.MAINT_FAIL === "1") {
+    // What the real CLI does on an invalid crew.yaml: error JSON on stderr,
+    // nothing on stdout, exit 1.
+    process.stderr.write('{"ok":false,"code":"INVALID_CONFIG","message":"bad crew.yaml"}\n');
+    process.exit(1);
+  }
+  if (process.env.MAINT_STATUS) {
+    out({ ok: true, report: { chosen: "docs", reason: "r", outcome: { status: process.env.MAINT_STATUS } } });
+    process.exit(0);
+  }
   if (process.env.MAINT_ENABLED === "0" && !a.includes("--force")) {
     out({
       ok: true,
@@ -95,6 +108,7 @@ CREW_CONFIG="$WORK/crew.config.yaml"; printf 'factory:\n  name: t\n' > "$CREW_CO
 
 run_tick() {
   CREW_CALLS="$CREW_CALLS" MAINT_ENABLED="${MAINT_ENABLED:-1}" \
+  MAINT_FAIL="${MAINT_FAIL:-0}" MAINT_STATUS="${MAINT_STATUS:-}" \
   RUNNER_DIR="$RUNNER_DIR" GAFFER_HOME="$WORK" GAFFER_DATA="$GAFFER_DATA" \
   DISPATCH_DIR="$WORK/dispatch" CREW_DIR="$WORK/crew" CREW_CONFIG="$CREW_CONFIG" \
   DRY_RUN="${DRY_RUN:-0}" REVIEW_MODE=human \
@@ -171,6 +185,47 @@ if [ -s "$CREW_CALLS" ]; then
 else
   ok "DRY_RUN does not invoke crew"
 fi
+
+# ── 7. crew maintain FAILS (rc=1, empty stdout) → not a healthy "ran" ────────
+# A broken crew.yaml used to read as "chose none, no_op" → maintenance_ran on every
+# idle tick: hidden, and a productive result kept workers from ever draining.
+reset_log
+OUT7="$(MAINT_FAIL=1 IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
+echo "$OUT7" | grep -q '^TICK_RESULT=no_work$' \
+  && ok "a failed crew maintain → TICK_RESULT=no_work (not maintenance_ran)" \
+  || fail "expected no_work when crew maintain fails, got: $(echo "$OUT7" | grep '^TICK_RESULT=')"
+grep -q 'maintenance lane FAILED (rc=1): {"ok":false,"code":"INVALID_CONFIG"' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "the failure is logged with crew's rc and first stderr line" \
+  || fail "missing the 'maintenance lane FAILED (rc=1): …' log line"
+if grep -q "maintenance lane chose" "$GAFFER_DATA/factory.log" 2>/dev/null; then
+  fail "a failed run must not be logged as a chosen lane"
+else
+  ok "a failed run is not logged as a chosen lane"
+fi
+
+# ── 8. a failed lane falls through to the legacy idle scan ───────────────────
+reset_log
+OUT8="$(MAINT_FAIL=1 IDLE_DRAFT_WHEN_IDLE=1 run_tick)"
+grep -qw 'idle' "$CREW_CALLS" \
+  && ok "IDLE_DRAFT_WHEN_IDLE=1 still runs the legacy idle scan after a failed lane" \
+  || fail "the legacy idle scan did not run after a failed lane (calls: $(tr '\n' '|' < "$CREW_CALLS"))"
+echo "$OUT8" | grep -q '^TICK_RESULT=no_work$' \
+  && ok "…and the tick still ends no_work when the scan drafts nothing" \
+  || fail "expected no_work after the fall-through, got: $(echo "$OUT8" | grep '^TICK_RESULT=')"
+
+# ── 9. an unknown outcome status is a failure, not a run ─────────────────────
+reset_log
+OUT9="$(MAINT_STATUS=exploded IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
+echo "$OUT9" | grep -q '^TICK_RESULT=no_work$' \
+  && grep -q 'maintenance lane FAILED (rc=0)' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "an unknown outcome status → FAILED + no_work" \
+  || fail "expected FAILED + no_work for an unknown status, got: $(echo "$OUT9" | grep '^TICK_RESULT=')"
+# A known non-drafting status still reports a run.
+reset_log
+OUT10="$(MAINT_STATUS=no_findings run_tick)"
+echo "$OUT10" | grep -q '^TICK_RESULT=maintenance_ran$' \
+  && ok "a known status (no_findings) still reports maintenance_ran" \
+  || fail "expected maintenance_ran for no_findings, got: $(echo "$OUT10" | grep '^TICK_RESULT=')"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

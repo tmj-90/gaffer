@@ -3111,20 +3111,38 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg maintain${_MAINT_ARGS[0]:+ --force} (scheduler-chosen maintenance loop)"; result no_work; exit 0
   fi
-  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>>"$GAFFER_LOG")"
+  # Capture crew's rc + stderr: a failed `crew maintain` (invalid crew.yaml, crash,
+  # locked DB) prints nothing on stdout, and parsing that empty output as "chose
+  # none, no_op" used to report a healthy `maintenance_ran` on every idle tick.
+  _merr="$(mktemp "${TMPDIR:-/tmp}/gaffer-maint.XXXXXX" 2>/dev/null || echo "/tmp/gaffer-maint.$$")"
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>"$_merr")"
+  _mrc=$?
+  cat "$_merr" >> "$GAFFER_LOG" 2>/dev/null || true
+  # MSTATUS is "invalid" unless MOUT is crew's `{ok:true, report}` with either no
+  # outcome (nothing was due: no_op) or a status from the registry's outcome enum
+  # (IdleLoopRunOutcome in packages/crew/src/loops/idleRegistry.ts).
+  MSTATUS="$(echo "$MOUT" | jget '(() => { const r = d && d.ok === true ? d.report : null; if (!r || typeof r !== "object") return "invalid"; const o = r.outcome; if (o == null) return "no_op"; return ["skipped_tickets_ready", "no_repos", "no_findings", "draft_created", "ready_created", "observed", "suggested", "disabled"].includes(o.status) ? o.status : "invalid"; })()' 2>/dev/null || echo invalid)"
+  [ "$_mrc" -eq 0 ] || MSTATUS=invalid
   MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
   MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
-  MSTATUS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).status || "no_op"' 2>/dev/null || echo no_op)"
   MDRAFTS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
-  if [ "$MSTATUS" = "disabled" ]; then
+  case "$MDRAFTS" in ''|*[!0-9]*) MDRAFTS=0 ;; esac
+  if [ "$MSTATUS" = "invalid" ]; then
+    # FAILED, not ran: log it loudly and fall through to the legacy scan + the final
+    # `no_work`, so workers still drain on EMPTY_POLL_LIMIT and the tick does not
+    # count against the day cap (a productive result here made the pool spin).
+    log "maintenance lane FAILED (rc=$_mrc): $(grep . "$_merr" 2>/dev/null | head -1 | cut -c1-300) — check $CREW_CONFIG (\`gaffer status\` runs crew doctor)"
+  elif [ "$MSTATUS" = "disabled" ]; then
     # The switch is off: say so once per idle tick (it is the most common reason an
     # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
     log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
   else
     log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+    rm -f "$_merr"
     [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
     result maintenance_ran; exit 0
   fi
+  rm -f "$_merr"
 fi
 
 # Nothing ready → idle scan to draft new work (crew). OFF by default: an idle

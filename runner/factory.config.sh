@@ -162,6 +162,36 @@ GAFFER_IMPL_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_IMPL_MODEL:-}")"
 : "${GAFFER_BUDGET_USD:=}"
 export GAFFER_BUDGET_USD
 
+# GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd`
+#   so ONE runaway call is stopped while it runs (every other guard acts only between
+#   calls). OPT-IN: empty (the default) = off, no flag, behaviour unchanged. When set,
+#   each call's cap is the lowest of this value, the factory headroom
+#   (GAFFER_BUDGET_REMAINING) and — for a delivery — the ticket's own remaining
+#   ceiling (delivery_budget_usd / GAFFER_REWORK_BUDGET_USD minus its spend). A call
+#   stopped by it is a `budget_cap` pause (work kept, one-click Continue), never a
+#   turn-cap. Claude Code checks it between turns, so a call can overshoot by one turn.
+#   OWNER DECISION PENDING: whether to ship a default (e.g. 5) and/or a default
+#   per-ticket ceiling (GAFFER_REWORK_BUDGET_USD, e.g. 10) — both are empty today.
+: "${GAFFER_MAX_CALL_USD:=}"
+export GAFFER_MAX_CALL_USD
+
+# gaffer_call_budget_usd [ticket-remaining]
+# Echo the per-call `--max-budget-usd` value, or nothing when GAFFER_MAX_CALL_USD is
+# unset (off) or a headroom is already ≤ 0 (the pre-spawn gates own that case).
+# Parity with lib/worker.mjs callBudgetUsd.
+gaffer_call_budget_usd() {
+  [ -n "${GAFFER_MAX_CALL_USD:-}" ] || return 0
+  awk -v c="${GAFFER_MAX_CALL_USD}" -v r="${GAFFER_BUDGET_REMAINING:-}" -v t="${1:-}" '
+    function num(v) { return (v ~ /^[0-9]*\.?[0-9]+$/) }
+    BEGIN {
+      if (!num(c) || c + 0 <= 0) exit 0
+      m = c + 0
+      if (r != "" && r ~ /^-?[0-9]*\.?[0-9]+$/ && r + 0 < m) m = r + 0
+      if (t != "" && t ~ /^-?[0-9]*\.?[0-9]+$/ && t + 0 < m) m = t + 0
+      if (m > 0) printf "%.4f", m
+    }' 2>/dev/null || true
+}
+
 # GAFFER_BUDGET_REMAINING — live USD headroom. Recomputed here from the ledger
 # so the I1 router (gaffer_route_model) and Guard C (ask-on-cap) can read a
 # real figure instead of "unlimited". Empty = unlimited (GAFFER_BUDGET_USD unset

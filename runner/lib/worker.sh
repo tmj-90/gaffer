@@ -115,6 +115,15 @@ worker_deliver() {
   case "${7:-}" in '' | *[!0-9]* | 0) ;; *) _turns_flag="--max-turns $7" ;; esac
   local _extra=()
   [ "$#" -gt 7 ] && _extra=("${@:8}")
+  # Opt-in per-call dollar cap (GAFFER_MAX_CALL_USD, clamped to the factory headroom):
+  # appended unless the site already passed its own (the delivery passes one that also
+  # carries the ticket's remaining ceiling). Unset knob → nothing appended.
+  case " ${_extra[*]-} " in *" --max-budget-usd "*) ;; *)
+    if command -v gaffer_call_budget_usd >/dev/null 2>&1; then
+      local _cb; _cb="$(gaffer_call_budget_usd)"
+      [ -n "$_cb" ] && _extra+=(--max-budget-usd "$_cb")
+    fi ;;
+  esac
   # How long the agent ran (whole seconds → ms), read by gaffer_usage_record so a
   # killed call's cost estimate scales with its run time. Reset first: a refused
   # spawn below must not inherit the previous call's figure.

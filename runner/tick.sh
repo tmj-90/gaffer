@@ -556,6 +556,21 @@ gaffer_budget_exhausted() {
   GAFFER_BUDGET_SPENT="$_spent"; GAFFER_BUDGET_CEIL="$_ceil"; return 0
 }
 
+# gaffer_ticket_budget_remaining <num>
+# Echo the ticket's remaining USD under its effective ceiling (the same ceiling
+# gaffer_budget_exhausted resolves: delivery_budget_usd, else GAFFER_REWORK_BUDGET_USD)
+# minus its cumulative spend; nothing when no ceiling is configured. Feeds the
+# opt-in per-call cap (gaffer_call_budget_usd) so one call cannot overshoot it.
+gaffer_ticket_budget_remaining() {
+  local _num="$1" _tb _ceil _spent
+  _tb="$(printf '%s' "${SHOW:-}" | jget 'd.ticket.delivery_budget_usd' 2>/dev/null || true)"
+  case "$_tb" in ""|None|null) _tb="" ;; esac
+  if [ -n "$_tb" ] && _num_pos "$_tb"; then _ceil="$_tb"; else _ceil="${GAFFER_REWORK_BUDGET_USD:-}"; fi
+  { [ -n "$_ceil" ] && _num_pos "$_ceil"; } || return 0
+  _spent="$(gaffer_ticket_rework_spend "$_num" 2>/dev/null || echo 0)"
+  awk -v c="$_ceil" -v s="$_spent" 'BEGIN{printf "%.6f", (c+0)-(s+0)}' 2>/dev/null || true
+}
+
 # Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
 # completing the claim); a resumed delivery (no token, already in_progress) is moved
@@ -2278,7 +2293,15 @@ $_trail_q
     "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
     "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
   )
-  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
+  # Opt-in per-call dollar cap (GAFFER_MAX_CALL_USD): for a delivery it also carries
+  # the ticket's remaining ceiling, so this one call cannot run past it.
+  _CALL_BUDGET_ARGS=()
+  if [ -n "${GAFFER_MAX_CALL_USD:-}" ]; then
+    _CALL_BUDGET="$(gaffer_call_budget_usd "$(gaffer_ticket_budget_remaining "$NUM")")"
+    [ -n "$_CALL_BUDGET" ] && _CALL_BUDGET_ARGS=(--max-budget-usd "$_CALL_BUDGET")
+  fi
+  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
+    "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
   # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
   # best-effort, which were APPLIED — detected from the agent's output JSON) so a
@@ -2327,6 +2350,11 @@ $_trail_q
   if [ -n "$_LIVE_REMAINING" ] && _num_le "$_LIVE_REMAINING" 0; then
     _BUDGET_HIT=1
   fi
+  # The call stopped on its own per-call dollar cap (--max-budget-usd): a budget pause,
+  # never a turn-cap one, so a Continue is not misread as "it needs more turns". On a
+  # Continue the pre-spawn gate re-checks the ticket's ceiling and parks it
+  # (budget_exhausted) when that is what ran out, instead of respawning into $0.
+  if gaffer_is_budget_stop "$USAGE_JSON"; then _BUDGET_HIT=1; fi
   # WASTE CONTROL: a cap that lands before the agent's first commit used to mean no
   # pause (nothing on the branch to keep) and a from-scratch retry. Checkpoint the
   # uncommitted work first, so the pause below has commits to preserve.

@@ -185,10 +185,13 @@ check() {  # $1 name, $2 perl-regex over tick.sh
 }
 check "path-A wiring: bounded release-or-park before skip on no-commit agent failure" \
   'gaffer_release_or_park_nocommit "delivery failed: agent exited non-zero \(rc=\$rc\) with no commits;[^\n]*\n[^\n]*gaffer_skip_ticket'
-check "path-B wiring: bounded release-or-park before skip on wrong-branch (default branch)" \
-  'gaffer_release_or_park_nocommit "delivery failed: worktree HEAD was[^\n]*\n[^\n]*gaffer_skip_ticket'
-check "path-C wiring: bounded release-or-park before skip on wrong-branch (non-gaffer branch)" \
-  'gaffer_release_or_park_nocommit "delivery failed: worktree HEAD[^\n]*is not a gaffer[^\n]*\n[^\n]*gaffer_skip_ticket'
+# The wrong-branch paths (default branch / non-gaffer branch / detached) are one
+# block now: a recoverable branch switch is fast-forwarded or retried, and only a
+# switch that left the ticket branch with NO commits takes the bounded release.
+check "path-B wiring: bounded release-or-park before skip on an unrecoverable branch switch (no commits)" \
+  'gaffer_release_or_park_nocommit "delivery failed: \$_BS_FAIL;[^\n]*had no commits[^\n]*\n[^\n]*gaffer_skip_ticket'
+check "path-C wiring: a branch switch WITH commits is recoverable (retry-or-park), never a no-commit release" \
+  'if gaffer_any_branch_has_commits "\$WT_ROWS"; then\n[^\n]*\n[^\n]*\n[^\n]*_recover_or_park "branch"'
 if perl -0777 -ne 'exit 1 if /wg ticket move "\$NUM" refining --reason "delivery failed/ms; exit 0' "$TICK"; then
   ok "the retired submit-status move-or-block fallback is gone from the failure paths"
 else

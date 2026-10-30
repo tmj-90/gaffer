@@ -148,6 +148,17 @@ gaffer_crash_cleanup() {
   # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
   # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
   rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* 2>/dev/null || true
+  # RESUME ABORT: a resumed delivery (paused → Continue → in_progress) that ends here
+  # without completing — a signal, the outer timeout, a fail-closed setup exit, a
+  # worktree that could not be reused — used to stay in_progress with nothing left to
+  # pick it up (no queue lists it, and the keep-worktree guard below skipped every
+  # release). Put it back to `paused` with its resume context so it shows a Continue
+  # button again. Guarded inside on the ticket still being in flight, so a resume that
+  # re-paused, parked or submitted is left alone. Worktree + branch are untouched.
+  if [ "${_RESUMING:-0}" = "1" ] && [ "${GAFFER_DELIVERY_COMPLETE:-0}" != "1" ] \
+     && declare -F gaffer_resume_abort >/dev/null 2>&1; then
+    gaffer_resume_abort "the resumed tick ended before the delivery finished (${_GAFFER_EXIT_CAUSE:-exit})" || true
+  fi
   # A paused delivery keeps its worktree + branch ALIVE for the one-click resume —
   # the crash-cleanup must never tear it down. This is the load-bearing PAUSE-ON-CAP
   # invariant: a paused worktree survives the tick's exit.
@@ -188,7 +199,14 @@ gaffer_crash_cleanup() {
      && [ "${GAFFER_DELIVERY_COMPLETE:-0}" != "1" ] \
      && [ "${GAFFER_PAUSE_KEEP_WORKTREE:-0}" != "1" ] \
      && declare -F gaffer_release_delivery >/dev/null 2>&1; then
-    gaffer_release_delivery ready "runner killed mid-delivery — claim released by crash trap" || true
+    # Say WHICH way the tick ended: a signal is a kill, anything else is an exit the
+    # normal flow did not resolve (a setup error that bypassed gaffer_abort_setup, a
+    # bug). One fixed "runner killed" reason sent operators looking for kills.
+    if [ "${_GAFFER_EXIT_CAUSE:-exit}" = "signal" ]; then
+      gaffer_release_delivery ready "runner killed mid-delivery (signal) — claim released by crash trap" || true
+    else
+      gaffer_release_delivery ready "tick exited mid-delivery without resolving the claim (${_GAFFER_EXIT_CAUSE:-exit}) — claim released by crash trap" || true
+    fi
   fi
   # Nothing to clean until worktree setup has defined the teardown helper + its rows.
   # Before that point (config/candidate/skill/access parsing) this is a safe no-op.
@@ -212,11 +230,13 @@ gaffer_crash_cleanup() {
 gaffer_on_exit() {
   local rc=$?
   trap - EXIT INT TERM
+  _GAFFER_EXIT_CAUSE="${_GAFFER_EXIT_CAUSE:-rc=$rc}"
   gaffer_crash_cleanup
   exit "$rc"
 }
 gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
   trap - EXIT INT TERM
+  _GAFFER_EXIT_CAUSE=signal
   gaffer_crash_cleanup
   exit "$1"
 }
@@ -446,6 +466,42 @@ gaffer_release_delivery() {
   # logged). Mark it so the EXIT crash trap does NOT re-attempt the release with
   # the now-void token and page a spurious "needs a human" (N3).
   GAFFER_CLAIM_RESOLVED=1
+}
+
+# RESUME ABORT: put a resumed delivery that did not finish back to `paused` through
+# the guarded in_progress → paused edge, re-using its own resume context (reason,
+# branch, worktree map, attempt, spend), so the human sees the Continue button again.
+# The upsert leaves resume_requested=0: a human presses Continue once more rather than
+# the loop re-crashing on the same resume every tick. $1 = why (logged + noted).
+# Acts only while the ticket is still in flight (in_progress/claimed); best-effort.
+gaffer_resume_abort() {
+  local why="$1" st ctx
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  [ "${_RESUME_ABORTED:-0}" = "1" ] && return 0
+  [ -n "${NUM:-}" ] || return 0
+  st="$(wg ticket show "$NUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '')"
+  case "$st" in in_progress|claimed) ;; *) return 0 ;; esac
+  _RESUME_ABORTED=1
+  ctx="$(wg ticket paused-context "$NUM" 2>/dev/null || echo '{}')"
+  local _r _b _w _wj _repo _a _sp
+  _r="$(printf '%s' "$ctx" | jget '(d.context && d.context.reason) || "timeout"' 2>/dev/null || echo timeout)"
+  _b="$(printf '%s' "$ctx" | jget '(d.context && d.context.branch_name) || ""' 2>/dev/null || true)"
+  _w="$(printf '%s' "$ctx" | jget '(d.context && d.context.worktree_path) || ""' 2>/dev/null || true)"
+  _wj="$(printf '%s' "$ctx" | jget '(d.context && d.context.worktrees_json) || ""' 2>/dev/null || true)"
+  _repo="$(printf '%s' "$ctx" | jget '(d.context && d.context.repo) || ""' 2>/dev/null || true)"
+  _a="$(printf '%s' "$ctx" | jget 'String((d.context && d.context.attempt) || 0)' 2>/dev/null || echo 0)"
+  _sp="$(printf '%s' "$ctx" | jget '(d.context && d.context.spend) || ""' 2>/dev/null || true)"
+  if wg ticket pause "$NUM" --reason "$_r" --attempt "${_a:-0}" \
+      ${_b:+--branch "$_b"} ${_w:+--worktree "$_w"} ${_wj:+--worktrees-json "$_wj"} \
+      ${_repo:+--repo "$_repo"} ${_sp:+--spend "$_sp"} >/dev/null 2>&1; then
+    GAFFER_CLAIM_RESOLVED=1
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "RESUME ABORTED: $why — re-paused with its worktree + branch kept; press Continue to retry" >/dev/null 2>&1 || true
+    log "RESUME: #$NUM did not finish ($why) — re-paused (→ paused); worktree + branch ${_b:-$WORK_BRANCH} kept, Continue to retry"
+  else
+    log "RESUME: WARNING — #$NUM did not finish ($why) and could not be re-paused; it is still '$st' — needs a human"
+  fi
+  return 0
 }
 
 # ── FINDING-3: CROSS-RUN no-commit failure counter ───────────────────────────
@@ -1697,10 +1753,20 @@ EOF
   # run, (b) success removal — keep the branch, (c) failure rollback — drop the
   # branch too, so a botched run leaves the real repo 100% clean. Always defensive
   # (`git worktree prune`) and never fatal.
+  # BRANCH RETENTION: `drop-branch` deletes $WORK_BRANCH ONLY in the repos where THIS
+  # tick created it (`worktree add -B`, recorded in _BRANCH_CREATED_THIS_TICK by repo
+  # path). A branch this tick merely re-attached — a rework's reviewed commits, a
+  # resume — predates the tick and is never deleted by any caller: the crash trap
+  # (signals, the outer timeout, setup exits, the pre-spawn budget park), the
+  # multi-repo setup rollback, or a failure path. Those used to delete reviewed,
+  # paid-for commits. A kept branch with commits is logged.
+  _BRANCH_CREATED_THIS_TICK=""
+  _gaffer_branch_created_here() { printf '%s\n' "$_BRANCH_CREATED_THIS_TICK" | grep -qxF -- "$1"; }
   gaffer_cleanup_worktrees() {
-    # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo.
+    # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
+    # tick created it (see BRANCH RETENTION above).
     local drop_branch="${1:-}"
-    local _rid _rname _rpath _rbase _rwt
+    local _rid _rname _rpath _rbase _rwt _kept
     while IFS=$'\t' read -r _rid _rname _rpath _rbase _rwt; do
       [ -n "$_rpath" ] || continue
       git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && rm -rf "$_rwt"; continue; }
@@ -1717,7 +1783,13 @@ EOF
       fi
       git -C "$_rpath" worktree prune >/dev/null 2>&1 || true
       if [ "$drop_branch" = "drop-branch" ]; then
-        git -C "$_rpath" branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+        if _gaffer_branch_created_here "$_rpath"; then
+          git -C "$_rpath" branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+        else
+          _kept="$(git -C "$_rpath" rev-list --count "${_rbase:-main}..$WORK_BRANCH" 2>/dev/null || echo 0)"
+          [ "${_kept:-0}" -gt 0 ] 2>/dev/null \
+            && log "branch $WORK_BRANCH KEPT in ${_rname:-repo} ($_rpath): it predates this tick ($_kept commit(s) over ${_rbase:-main}); only the worktree was removed"
+        fi
       fi
     done <<< "$WT_ROWS"
     # Also remove the (now empty) ticket worktrees base dir if nothing else uses it.
@@ -1815,6 +1887,7 @@ EOF
       esac
       gaffer_link_node_modules "$rpath" "$rwt"
     elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
+      _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'   # this tick owns the branch (BRANCH RETENTION)
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -1841,6 +1914,7 @@ EOF
       # the worktree-retention flag so nothing is torn down.
       gaffer_skip_ticket "$NUM"
       log "RESUME FAILED for #$NUM — could not reuse the paused worktree; branch $WORK_BRANCH left intact for a human"
+      gaffer_resume_abort "the paused worktree could not be reused or re-attached"
       result error; exit 0
     fi
     # Roll back anything partially created so a failed setup leaves no residue, and
@@ -2234,7 +2308,8 @@ $_trail_q
       # are the starting point for rework. Fall back to -B off base if the branch
       # somehow vanished (defensive — it should always exist).
       if ! git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
-        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 || true
+        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 \
+          && _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'
       fi
       gaffer_link_node_modules "$rpath" "$rwt"
     done <<< "$WT_ROWS"
@@ -2430,32 +2505,68 @@ $_trail_q
 
   # Branch assertion (FG-008: "verifies current branch after agent execution"):
   # the runner created each WORKTREE on the ticket branch, so EACH worktree's HEAD
-  # MUST still be on a gaffer/ branch (and NOT the repo's default branch). If the
-  # agent switched away or reset onto the default branch in ANY worktree, recording
-  # a delivery would attribute work to the wrong branch — fail the whole delivery
-  # (skip + error + rollback), record nothing. In single-repo mode this is exactly
-  # today's single-repo assertion, just checked on the worktree.
+  # MUST still be on a gaffer/ branch (and NOT the repo's default branch) — recording
+  # a delivery on the wrong branch would attribute work to it. In single-repo mode this
+  # is exactly today's single-repo assertion, just checked on the worktree.
+  # BRANCH-SWITCH RECOVERY: an agent that switched away (`checkout -b x`, `switch -c`,
+  # a detached `checkout <sha>`, back onto the default branch) used to get the whole
+  # delivery failed with the ticket branch DELETED — a rework's reviewed commits with
+  # it — while its own commits were stranded on an unswept branch, and the failure was
+  # counted as "no commits". Now, per worktree:
+  #   • HEAD still contains $WORK_BRANCH (the agent only moved forward): fast-forward
+  #     $WORK_BRANCH to HEAD and check it out again (same commit, so uncommitted edits
+  #     carry over), delete a stray non-gaffer, non-default branch that is now fully
+  #     contained, and carry on to the gates;
+  #   • HEAD diverged from $WORK_BRANCH: leave $WORK_BRANCH as it was, KEEP the stray
+  #     branch (logged with its sha for a human to salvage), put the worktree back on
+  #     $WORK_BRANCH so a retry runs on the right branch, and retry-or-park when the
+  #     ticket branch carries commits. Only a branch with nothing on it is dropped.
+  _BS_FAIL=""; _BS_FAIL_REPO=""
   while IFS=$'\t' read -r rid rname rpath rbase rwt; do
     [ -n "$rwt" ] || continue
     rbase="${rbase:-main}"
     git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
     HEAD_BRANCH="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     case "$HEAD_BRANCH" in
-      "$rbase"|"")
-        gaffer_cleanup_worktrees drop-branch
-        gaffer_release_or_park_nocommit "delivery failed: worktree HEAD was '$HEAD_BRANCH' (expected gaffer/ branch); branch dropped"
-        gaffer_skip_ticket "$NUM"
-        log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD is '$HEAD_BRANCH' (expected a gaffer/ branch, not the default '$rbase'); removed worktrees + branch, not recording delivery"
-        result error; exit 0 ;;
-      gaffer/*) : ;;  # on the runner-owned branch as expected
-      *)
-        gaffer_cleanup_worktrees drop-branch
-        gaffer_release_or_park_nocommit "delivery failed: worktree HEAD '$HEAD_BRANCH' is not a gaffer/ branch; branch dropped"
-        gaffer_skip_ticket "$NUM"
-        log "delivery FAILED for #$NUM — worktree for ${rname:-repo} ($rwt) HEAD '$HEAD_BRANCH' is not a gaffer/ branch; removed worktrees + branch, not recording delivery"
-        result error; exit 0 ;;
+      "$WORK_BRANCH") continue ;;
+      "$rbase"|"") : ;;
+      gaffer/*) continue ;;  # on a runner-owned branch as expected
+      *) : ;;
     esac
+    _bs_head="$(git -C "$rwt" rev-parse --verify --quiet HEAD 2>/dev/null || echo '')"
+    if [ -n "$_bs_head" ] && git -C "$rwt" merge-base --is-ancestor "$WORK_BRANCH" "$_bs_head" 2>/dev/null \
+       && git -C "$rwt" checkout -q -B "$WORK_BRANCH" "$_bs_head" >/dev/null 2>&1; then
+      log "RECOVERED branch switch for #$NUM in ${rname:-repo}: the agent left $WORK_BRANCH for '${HEAD_BRANCH:-?}' but only built on it — $WORK_BRANCH fast-forwarded to $(printf '%s' "$_bs_head" | cut -c1-12) and checked out again"
+      case "$HEAD_BRANCH" in
+        "$rbase"|""|HEAD|gaffer/*) : ;;
+        *) if [ "$(git -C "$rpath" rev-parse --verify --quiet "refs/heads/$HEAD_BRANCH" 2>/dev/null)" = "$_bs_head" ]; then
+             git -C "$rpath" branch -D "$HEAD_BRANCH" >/dev/null 2>&1 \
+               && log "RECOVERED branch switch for #$NUM: deleted the agent's stray branch '$HEAD_BRANCH' (fully contained in $WORK_BRANCH)"
+           fi ;;
+      esac
+      continue
+    fi
+    # Diverged (or HEAD unreadable): never move $WORK_BRANCH; the stray work stays where
+    # the agent put it. Re-checkout $WORK_BRANCH so the worktree (and any retry) is on it.
+    log "BRANCH SWITCH: #$NUM worktree for ${rname:-repo} ($rwt) is on '${HEAD_BRANCH:-?}' at ${_bs_head:-unknown}, which does not contain $WORK_BRANCH — $WORK_BRANCH left as it was, the agent's commits kept on '${HEAD_BRANCH:-?}' / ${_bs_head:-?} for a human to salvage"
+    git -C "$rwt" checkout -q -f "$WORK_BRANCH" >/dev/null 2>&1 || true
+    _BS_FAIL="worktree HEAD '${HEAD_BRANCH:-?}' (${_bs_head:-?}) diverged from $WORK_BRANCH"
+    _BS_FAIL_REPO="${rname:-repo} ($rwt)"
   done <<< "$WT_ROWS"
+  if [ -n "$_BS_FAIL" ]; then
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      # The ticket branch carries work (a rework's reviewed commits, or this attempt's):
+      # recoverable, never dropped. The feedback tells the agent to stay on the branch.
+      _recover_or_park "branch" "you switched branches ($_BS_FAIL in $_BS_FAIL_REPO); commit ONLY on $WORK_BRANCH — never create, switch or detach branches"
+      [ "$_DELIV_OUTCOME" = "retry" ] && continue
+      result error; exit 0
+    fi
+    gaffer_cleanup_worktrees drop-branch
+    gaffer_release_or_park_nocommit "delivery failed: $_BS_FAIL; $WORK_BRANCH had no commits and was dropped"
+    gaffer_skip_ticket "$NUM"
+    log "delivery FAILED for #$NUM — $_BS_FAIL in $_BS_FAIL_REPO; $WORK_BRANCH had no commits (removed with the worktrees), not recording delivery"
+    result error; exit 0
+  fi
 
   # ── Auto-commit safety net ─────────────────────────────────────────────────
   # Agents sometimes EDIT files but STOP WITHOUT running git commit; the change then
@@ -2695,6 +2806,9 @@ $_trail_q
       # work — PRESERVE it (worktree-only teardown). Re-invoking the agent cannot
       # fix an unresolvable gate-command/env problem, so this does NOT retry; it
       # parks once with the branch kept for a human to resolve the config + re-run.
+      # Raise retention BEFORE exiting: the EXIT trap otherwise `drop-branch`es the
+      # branch this tick created — the very branch the log calls PRESERVED.
+      GAFFER_KEEP_DELIVERY_BRANCH=1
       gaffer_cleanup_worktrees
       gaffer_skip_ticket "$NUM"
       log "delivery FAILED for #$NUM — DoD gate commands unresolvable; parked, removed worktree, branch $WORK_BRANCH PRESERVED (config problem — needs a human), not recording delivery"

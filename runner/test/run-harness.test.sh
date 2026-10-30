@@ -17,6 +17,12 @@
 #   H8  argument parsing: the `--` pnpm 10 forwards (`pnpm test:runner -- -j 2`) is
 #       dropped, not run as a "test"; an unknown option, a missing FILE or a bad -j
 #       is a usage error (exit 2), never a run
+#   H9  sharding: `--shard K/N` / GAFFER_RUN_SHARD=K/N over the REAL test set — the
+#       shards partition it exactly for N=2 and N=3 (union == all, pairwise
+#       disjoint), the assignment is identical across invocations and between the
+#       flag and the env var, a K/N out of range (or malformed) is a usage error, a
+#       sharded run runs only its shard and names it in the banner, and an outer
+#       GAFFER_RUN_SHARD (a CI shard job running this file) never leaks into a test
 # Run: bash runner/test/run-harness.test.sh
 # =====================================================================
 set -uo pipefail
@@ -34,7 +40,8 @@ trap 'rm -rf "$WORK"' EXIT
 T="$WORK/t"; mkdir -p "$T" "$WORK/root/.gaffer"
 mk() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$T/$1"; }
 # A nested run must not write into the outer CI job's step summary or annotations.
-harness() { env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT GAFFER_RUN_STATE_ROOT="$WORK/root" bash "$HERE/run.sh" -j 2 "$@" >"$WORK/out" 2>&1; }
+# Nor be sharded by the outer CI job's GAFFER_RUN_SHARD.
+harness() { env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT -u GAFFER_RUN_SHARD GAFFER_RUN_STATE_ROOT="$WORK/root" bash "$HERE/run.sh" -j 2 "$@" >"$WORK/out" 2>&1; }
 
 echo "== H1: a failure is not hidden by a later pass =="
 mk a-fail.test.sh 'echo "FAIL: deliberate"; exit 1'
@@ -119,11 +126,63 @@ harness -j x "$T/z-pass.test.sh"; rc=$?
 [ "$rc" -eq 2 ] && ok "H8 a non-numeric -j is a usage error" || fail "H8 -j x (rc $rc): $(tail -3 "$WORK/out")"
 # The real pnpm path (CONTRIBUTING.md documents it), when pnpm is on PATH.
 if command -v pnpm >/dev/null 2>&1; then
-  (cd "$ROOT" && env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT GAFFER_RUN_STATE_ROOT="$WORK/root" \
+  (cd "$ROOT" && env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT -u GAFFER_RUN_SHARD GAFFER_RUN_STATE_ROOT="$WORK/root" \
     pnpm --silent test:runner -- -j 1 "$T/z-pass.test.sh") >"$WORK/out" 2>&1; rc=$?
   [ "$rc" -eq 0 ] && grep -q '1 passed, 0 skipped, 0 failed' "$WORK/out" \
     && ok "H8 \`pnpm test:runner -- -j 1 FILE\` runs exactly that FILE" || fail "H8 pnpm path (rc $rc): $(tail -5 "$WORK/out")"
 fi
+
+echo "== H9: sharding =="
+# --list prints what a run would run, so the partition is checked over all ~200 real
+# test files without running them. C collation: the comparison, not the shard, is
+# what needs a fixed order.
+lst() { env -u GAFFER_RUN_SHARD bash "$HERE/run.sh" --list "$@" 2>&1 | LC_ALL=C sort; }
+lst >"$WORK/all"
+n_all=$(wc -l <"$WORK/all" | tr -d ' ')
+[ "$n_all" -gt 50 ] && ok "H9 --list (no shard) lists the whole real set ($n_all files)" || fail "H9 --list gave $n_all files: $(head -3 "$WORK/all")"
+for N in 2 3; do
+  : >"$WORK/union"; sum=0; empty=0
+  for k in $(seq 1 "$N"); do
+    lst --shard "$k/$N" >"$WORK/s$k"
+    c=$(wc -l <"$WORK/s$k" | tr -d ' '); sum=$((sum + c)); [ "$c" -gt 0 ] || empty=1
+    cat "$WORK/s$k" >>"$WORK/union"
+  done
+  LC_ALL=C sort "$WORK/union" >"$WORK/union.sorted"
+  cmp -s "$WORK/union.sorted" "$WORK/all" && ok "H9 N=$N: the union of the shards is exactly the full set" \
+    || fail "H9 N=$N union != all: $(diff "$WORK/union.sorted" "$WORK/all" | head -4 | tr '\n' ' ')"
+  [ "$sum" -eq "$n_all" ] && [ -z "$(LC_ALL=C uniq -d "$WORK/union.sorted")" ] \
+    && ok "H9 N=$N: the shards are pairwise disjoint (sizes sum to $n_all, no file twice)" \
+    || fail "H9 N=$N overlap: sizes sum to $sum of $n_all; twice: $(LC_ALL=C uniq -d "$WORK/union.sorted" | head -3 | tr '\n' ' ')"
+  [ "$empty" -eq 0 ] && ok "H9 N=$N: no shard is empty" || fail "H9 N=$N: an empty shard"
+done
+lst --shard 2/3 >"$WORK/a"; lst --shard 2/3 >"$WORK/b"
+(cd "$ROOT/runner" && env GAFFER_RUN_SHARD=2/3 bash test/run.sh --list | LC_ALL=C sort) >"$WORK/c"
+lst --shard=2/3 >"$WORK/d"
+cmp -s "$WORK/a" "$WORK/b" && ok "H9 the assignment is stable across two invocations" || fail "H9 2/3 differs between two invocations"
+cmp -s "$WORK/a" "$WORK/c" && cmp -s "$WORK/a" "$WORK/d" \
+  && ok "H9 GAFFER_RUN_SHARD=2/3, --shard 2/3 and --shard=2/3 (from another cwd) pick the same files" \
+  || fail "H9 env / flag / cwd disagree on shard 2/3"
+for bad in 0/3 4/3 3/0 1/ x/2 2 -1/2; do
+  harness --shard "$bad" "$T/z-pass.test.sh"; rc=$?
+  [ "$rc" -eq 2 ] && grep -q 'needs K/N' "$WORK/out" && ! grep -q 'Runner tests' "$WORK/out" \
+    && ok "H9 --shard $bad is a usage error (exit 2), not a run" || fail "H9 --shard $bad (rc $rc): $(tail -3 "$WORK/out")"
+done
+env GAFFER_RUN_SHARD=5/4 bash "$HERE/run.sh" --list >"$WORK/out" 2>&1; rc=$?
+[ "$rc" -eq 2 ] && ok "H9 GAFFER_RUN_SHARD=5/4 is a usage error too" || fail "H9 env 5/4 (rc $rc)"
+# A real sharded run over fixtures: it runs exactly its shard's files and says so.
+for x in p1 p2 p3 p4 p5; do mk "shard-$x.test.sh" 'echo ok; exit 0'; done
+SF=("$T"/shard-p*.test.sh)
+harness --shard 1/2 --list "${SF[@]}"; n1=$(grep -c 'shard-p' "$WORK/out")
+harness --shard 2/2 --list "${SF[@]}"; n2=$(grep -c 'shard-p' "$WORK/out")
+harness --shard 1/2 "${SF[@]}"; rc=$?
+[ "$rc" -eq 0 ] && grep -q "run.sh: shard 1/2: $n1 of 5 test file(s)" "$WORK/out" && grep -q "$n1 passed, 0 skipped, 0 failed" "$WORK/out" \
+  && [ $((n1 + n2)) -eq 5 ] && grep -q '(shard 1/2)' "$WORK/out" \
+  && ok "H9 a sharded run runs only its $n1 of 5 fixtures and names the shard in the banner and summary" \
+  || fail "H9 sharded run (rc $rc, $n1+$n2): $(grep -E 'run.sh:|Runner tests' "$WORK/out" | tr '\n' ' ')"
+mk shard-leak.test.sh '[ -z "${GAFFER_RUN_SHARD:-}" ] || { echo "FAIL: inherited GAFFER_RUN_SHARD=$GAFFER_RUN_SHARD"; exit 1; }'
+env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT GAFFER_RUN_STATE_ROOT="$WORK/root" GAFFER_RUN_SHARD=1/1 \
+  bash "$HERE/run.sh" -j 1 "$T/shard-leak.test.sh" >"$WORK/out" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "H9 a test never inherits the run's GAFFER_RUN_SHARD" || fail "H9 GAFFER_RUN_SHARD leaked into a test: $(grep FAIL "$WORK/out" | head -1)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

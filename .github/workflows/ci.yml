@@ -13,16 +13,22 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Layout — the wall clock is the slowest job, so the work is spread, not repeated:
+#   checks    every platform-independent gate, ONCE (ubuntu / node 22): audit, lint,
+#             shellcheck, format, engines floor, build, generated-docs drift,
+#             typecheck, package tests + coverage floor, maintenance-lane e2e, gate
+#             replay. It is also the ubuntu/22 package-test cell.
+#   packages  `pnpm -r test` on the remaining cells. Only ubuntu/24 is listed: the
+#             macOS package tests run inside `runner` shard 1 (see the note there).
+#   runner    runner/test/run.sh — the CPU-bound bulk (~50 CPU-minutes on a 3-core
+#             macOS runner) — split into shards per os × node, so no one job carries
+#             the whole suite.
+#   ui-regression, sandbox-containment — their own jobs, as before.
 jobs:
-  build-and-test:
-    name: ${{ matrix.os }} / node ${{ matrix.node }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node: [22, 24]
+  checks:
+    name: checks / ubuntu-latest / node 22
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -33,10 +39,10 @@ jobs:
       - name: Install pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
 
-      - name: Setup Node ${{ matrix.node }}
+      - name: Setup Node 22
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -45,13 +51,14 @@ jobs:
       # Real audit gate: audit-gate.sh fails on any HIGH/CRITICAL advisory NOT
       # documented in .github/audit-allowlist.txt. Accepted advisories are listed
       # + justified there; everything new fails the build.
-      # The bare `pnpm audit` call above is display-only (human-readable table);
+      # The bare `pnpm audit` call below is display-only (human-readable table);
       # `|| true` is intentional — pnpm audit exits non-zero for ANY advisory,
       # including allowlisted ones, so omitting it would abort the step before
       # audit-gate.sh (the actual enforcement) runs. The gate is audit-gate.sh.
       # Lock the gate's exit-code contract (retired-endpoint→skip, HIGH→fail,
       # unknown→fail-closed, clean→ok) with a hermetic, network-free self-test so a
       # future edit can't silently turn the gate into a false all-clear.
+      # The lockfile is the same on every OS and Node, so one job audits it.
       - name: Audit-gate self-test
         shell: bash
         run: bash .github/scripts/audit-gate.test.sh
@@ -83,9 +90,9 @@ jobs:
       # unquoted-glob-in-test classes); warnings are reported in the log for the baseline
       # burn-down but do not fail the job yet. `-x` follows `source` so factory.config.sh's
       # sourced libs are checked in context. LC_ALL=C.UTF-8: shellcheck 0.9 aborts on
-      # non-ASCII comments under a POSIX locale.
+      # non-ASCII comments under a POSIX locale. Linux-only (apt); its verdict does not
+      # depend on the OS, so this job is the one place it runs.
       - name: Shellcheck (runner bash)
-        if: runner.os == 'Linux'
         shell: bash
         env:
           LC_ALL: C.UTF-8
@@ -106,7 +113,7 @@ jobs:
 
       # The root engines.node is the Node floor the docs promise; with engine-strict a
       # dependency that raises its own floor above it makes that floor uninstallable,
-      # and the matrix below never sees it (setup-node resolves `22` to the newest 22.x).
+      # and the matrix jobs never see it (setup-node resolves `22` to the newest 22.x).
       # Fails when any locked package's engines.node excludes the root's minimum version.
       - name: Node floor admits every locked dependency
         run: node scripts/check-engines.mjs
@@ -129,6 +136,7 @@ jobs:
       - name: OpenAPI contract is current
         run: node scripts/openapi.mjs --check
 
+      # tsc's verdict does not depend on the OS or the Node version, so it runs once.
       - name: Typecheck
         run: pnpm -r typecheck
 
@@ -142,48 +150,18 @@ jobs:
       # per-package floor (thresholds live in each packages/*/vitest.config.ts).
       # A drop below the floor fails the job. Runs after the plain test step so a
       # coverage-provider hiccup is distinguishable from a real test failure. The
-      # floors are platform-independent, so ONE cell enforces them — the other three
+      # floors are platform-independent, so ONE job enforces them — the other cells
       # would only re-run the same suites (70-100s each) for the same verdict.
       - name: Coverage (floor gate)
-        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: pnpm -r test:coverage
-
-      # Every runner test (runner/test/*.test.sh + *.test.mjs) through the shared
-      # harness, runner/test/run.sh — the same command contributors run locally
-      # (`pnpm test:runner`). It runs them in parallel (-j = CPU count) with each
-      # test's output buffered into its own ::group::, a per-test wall-clock cap
-      # (perl alarm — GNU `timeout` isn't on macOS: .sh 120s, .mjs 300s; the long
-      # e2e tests are queued FIRST with a 600s cap), and exits non-zero on ANY failure.
-      # The harness also: counts exit 77 / "SKIP…" lines as skips (listed in the step
-      # summary, never as passes); under GAFFER_TEST_STRICT=1 fails every skip whose
-      # reason is not a genuine platform gap (runner/test/lib/skip.sh allowlist —
-      # this job builds every package, so "not built" is a failure here); puts a
-      # `claude` tripwire on PATH so a test that would make a real model call fails;
-      # and fails if a test wrote into the checkout's .gaffer/.dispatch/.crew dirs.
-      - name: Runner tests
-        shell: bash
-        env:
-          GAFFER_TEST_STRICT: "1"
-          GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
-        run: bash runner/test/run.sh
-
-      # Forensics for a failing runner test that left evidence (e.g. the
-      # concurrency-bookkeeping D3 snapshot: a consistent copy of its dispatch DB +
-      # the per-delivery logs). Nothing is uploaded when a test saved nothing.
-      - name: Upload runner-test evidence
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: runner-test-evidence-${{ matrix.os }}-node${{ matrix.node }}
-          path: ${{ runner.temp }}/gaffer-test-artifacts
-          if-no-files-found: ignore
-          retention-days: 14
 
       # The idle maintenance lane END TO END through the real tick.sh: a fixture repo
       # with a planted god-file, tick 1 drafts the tech-debt finding with its
       # machine-checkable oracle and self-improve promotes it, tick 2 delivers it with
       # the stub worker and the runner verifies the oracle, tick 3 dedupes. Its own
-      # step (three real ticks, ~15s) so the 120s per-test cap above never bites it.
+      # step (three real ticks, ~15s) so the 120s per-test cap of runner/test/run.sh
+      # never bites it. It drives real git + bash, where the platforms differ, so
+      # `runner` macOS node 22 shard 1 runs it too.
       - name: Maintenance lane end to end (real runner, stub worker)
         shell: bash
         run: perl -e 'alarm shift; exec @ARGV' 400 bash runner/test/maintenance-e2e.sh
@@ -193,6 +171,7 @@ jobs:
       # every verdict and the resulting submit/rework outcome must match the
       # fixture's expectation. A gate that starts passing a known-bad delivery, or
       # bouncing a known-good one, fails here. results.json is printed for the log.
+      # Also on macOS (`runner` macOS node 22 shard 1), like the maintenance lane.
       - name: Gate replay (golden fixtures)
         shell: bash
         run: |
@@ -207,6 +186,194 @@ jobs:
       # test fell back to the checkout's defaults — which on a contributor's machine
       # are their LIVE factory's DBs, audit log and settings. The self-test first
       # proves the guard sees a planted file in every location it claims to watch.
+      # Every job that runs tests ends with this step.
+      - name: Tests left no operator state in the checkout
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bash .github/scripts/operator-state-guard.test.sh
+          bash .github/scripts/operator-state-guard.sh
+
+  # The package test suites (Vitest) on the os × node cells `checks` does not cover
+  # (it is ubuntu/22). The two macOS cells are deliberately NOT in this matrix:
+  # GitHub's free/pro plans run at most 5 macOS jobs at once and `runner` already has
+  # exactly 5 macOS shards, so two more macOS jobs here would queue behind them and
+  # add a whole job's length to the wall clock. Shard 1 of each macOS node version
+  # (which builds anyway) runs `pnpm -r test` instead; see `runner` below.
+  packages:
+    name: packages / ${{ matrix.os }} / node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify better-sqlite3 native binding loads
+        # Resolve the native module from EACH package (see the same step in `checks`):
+        # pnpm does not hoist it, a binding can build for one package's install
+        # context but not another, and each Node major needs its own ABI build.
+        shell: bash
+        run: |
+          for pkg in dispatch memory; do
+            ( cd "packages/$pkg" && node -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values (1)').run();if(db.prepare('select count(*) c from t').get().c!==1)throw new Error('better-sqlite3 binding check failed');db.close();console.log('$pkg: better-sqlite3 native binding OK')" )
+          done
+
+      # Cross-package imports resolve against each package's built dist/, so build first.
+      - name: Build
+        run: pnpm -r build
+
+      - name: Test (packages)
+        run: pnpm -r test
+
+      # See the same step in `checks`: no suite may write the checkout's operator state.
+      - name: Tests left no operator state in the checkout
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bash .github/scripts/operator-state-guard.test.sh
+          bash .github/scripts/operator-state-guard.sh
+
+  # Every runner test (runner/test/*.test.sh + *.test.mjs) through the shared
+  # harness, runner/test/run.sh — the same command contributors run locally
+  # (`pnpm test:runner`) — split into shards: GAFFER_RUN_SHARD=K/N runs shard K of
+  # N, and the N shards of one os × node partition the test files exactly (no file
+  # in two, none in neither), balanced by the expected durations in
+  # runner/test/lib/shard-weights.tsv. The suite is CPU-bound, so more runners is
+  # the only real wall-clock cut; the 3-core macOS runners get more shards than the
+  # 4-core ubuntu ones:
+  #   ubuntu-latest  node 22: 2 shards   node 24: 2 shards
+  #   macos-latest   node 22: 3 shards   node 24: 2 shards
+  # 5 macOS jobs is exactly GitHub's free/pro concurrent-macOS limit (a sixth would
+  # queue), which is why macOS node 24 gets 2 shards, not 3, and why the macOS
+  # package tests are folded into shard 1 of each macOS node version
+  # (`packages: true`) rather than being `packages` jobs of their own. macOS node 22
+  # shard 1 also runs the OS-sensitive maintenance-lane e2e and gate replay
+  # (`e2e: true`) so they keep macOS coverage; on ubuntu they run in `checks`.
+  runner:
+    name: runner / ${{ matrix.os }} / node ${{ matrix.node }} / ${{ matrix.shard }} of ${{ matrix.shards }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: 22, shard: 1, shards: 2 }
+          - { os: ubuntu-latest, node: 22, shard: 2, shards: 2 }
+          - { os: ubuntu-latest, node: 24, shard: 1, shards: 2 }
+          - { os: ubuntu-latest, node: 24, shard: 2, shards: 2 }
+          - { os: macos-latest, node: 22, shard: 1, shards: 3, packages: true, e2e: true }
+          - { os: macos-latest, node: 22, shard: 2, shards: 3 }
+          - { os: macos-latest, node: 22, shard: 3, shards: 3 }
+          - { os: macos-latest, node: 24, shard: 1, shards: 2, packages: true }
+          - { os: macos-latest, node: 24, shard: 2, shards: 2 }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify better-sqlite3 native binding loads
+        # Before the folded-in package tests; see the same step in `checks`.
+        if: matrix.packages
+        shell: bash
+        run: |
+          for pkg in dispatch memory; do
+            ( cd "packages/$pkg" && node -e "const D=require('better-sqlite3');const db=new D(':memory:');db.exec('create table t(x)');db.prepare('insert into t values (1)').run();if(db.prepare('select count(*) c from t').get().c!==1)throw new Error('better-sqlite3 binding check failed');db.close();console.log('$pkg: better-sqlite3 native binding OK')" )
+          done
+
+      # The runner tests drive the built dispatch / crew / memory CLIs (strict mode
+      # fails a "not built" skip), and the package tests import each other's dist/.
+      - name: Build
+        run: pnpm -r build
+
+      # This os × node cell's package tests, folded in here (the 5-macOS-job limit).
+      - name: Test (packages)
+        if: matrix.packages
+        run: pnpm -r test
+
+      # run.sh runs this shard's tests in parallel (-j = CPU count) with each
+      # test's output buffered into its own ::group::, a per-test wall-clock cap
+      # (perl alarm — GNU `timeout` isn't on macOS: .sh 120s, .mjs 300s; the long
+      # e2e tests are queued FIRST with a 600s cap), and exits non-zero on ANY failure.
+      # The harness also: counts exit 77 / "SKIP…" lines as skips (listed in the step
+      # summary, never as passes); under GAFFER_TEST_STRICT=1 fails every skip whose
+      # reason is not a genuine platform gap (runner/test/lib/skip.sh allowlist —
+      # this job builds every package, so "not built" is a failure here); puts a
+      # `claude` tripwire on PATH so a test that would make a real model call fails;
+      # and fails if a test wrote into the checkout's .gaffer/.dispatch/.crew dirs.
+      # Its banner names the shard and how many of the files it runs.
+      - name: Runner tests (shard ${{ matrix.shard }} of ${{ matrix.shards }})
+        shell: bash
+        env:
+          GAFFER_TEST_STRICT: "1"
+          GAFFER_RUN_SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
+          GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
+        run: bash runner/test/run.sh
+
+      # Forensics for a failing runner test that left evidence (e.g. the
+      # concurrency-bookkeeping D3 snapshot: a consistent copy of its dispatch DB +
+      # the per-delivery logs). Nothing is uploaded when a test saved nothing. The
+      # name carries os/node/shard: artifact names must be unique within a run.
+      - name: Upload runner-test evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-test-evidence-${{ matrix.os }}-node${{ matrix.node }}-shard${{ matrix.shard }}of${{ matrix.shards }}
+          path: ${{ runner.temp }}/gaffer-test-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # The maintenance lane end to end and the golden gate replay — the same steps
+      # as in `checks` (see the comments there), here on macOS.
+      - name: Maintenance lane end to end (real runner, stub worker)
+        if: matrix.e2e
+        shell: bash
+        run: perl -e 'alarm shift; exec @ARGV' 400 bash runner/test/maintenance-e2e.sh
+
+      - name: Gate replay (golden fixtures)
+        if: matrix.e2e
+        shell: bash
+        run: |
+          bash runner/eval/replay.sh --out "$RUNNER_TEMP/gate-replay"
+          echo "::group::results.json"
+          cat "$RUNNER_TEMP/gate-replay/results.json"
+          echo "::endgroup::"
+
+      # See the same step in `checks`: no test may write the checkout's operator state.
       - name: Tests left no operator state in the checkout
         if: ${{ !cancelled() }}
         shell: bash

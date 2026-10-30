@@ -35,13 +35,19 @@ pnpm test:runner                      # all of them, in parallel; exits 1 on ANY
 pnpm test:runner -j 2                 # fewer parallel jobs (`-- -j 2` works too)
 bash runner/test/run.sh runner/test/parallel-claim.test.sh   # just the ones named
 bash runner/test/parallel-claim.test.sh                      # or run one directly
+pnpm test:runner --shard 2/3          # one of three disjoint slices (GAFFER_RUN_SHARD=2/3 too)
+pnpm test:runner --shard 2/3 --list   # which files that slice is, without running them
 ```
 
 It caps each test's wall time, lists skips separately from passes, fails any test
 that tries to run a real `claude` (a tripwire is first on `PATH`), and warns if a
 test wrote into this checkout's `.gaffer` / `.dispatch` / `.crew` state. CI runs it
 with `GAFFER_TEST_STRICT=1`, where a skip for anything but a genuine platform gap
-(docker, macOS `sandbox-exec`, …; see `runner/test/lib/skip.sh`) is a failure. In a
+(docker, macOS `sandbox-exec`, …; see `runner/test/lib/skip.sh`) is a failure. CI
+also splits the suite over several runners with `--shard K/N`: the N shards together
+run every file exactly once, balanced by `runner/test/lib/shard-weights.tsv` (seconds
+per test file on a macOS runner; a file not listed counts 10s), so give a new test
+that takes much longer than that a line there. In a
 new test, skip with `gaffer_skip "<reason>"` from `runner/test/lib/skip.sh` (exit
 77) only for a missing prerequisite — a dispatch CLI call that errors or changes
 shape is a FAIL, never a skip.

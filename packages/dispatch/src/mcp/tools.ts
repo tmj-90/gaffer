@@ -654,6 +654,23 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           })),
           repositories: view.repositories,
           blocking_decisions: view.blockingDecisions,
+          // The human's ANSWERS: decisions linked to this ticket that were resolved
+          // (accepted/rejected). Without this the answer a human gave via
+          // `decisions resolve --answer` never reached the agent — the decision
+          // drops out of blocking_decisions once resolved, and event payloads are
+          // redacted below. Free text is enveloped: a decision's title/question may
+          // have been written by an (injectable) intake agent.
+          resolved_decisions: view.resolvedDecisions.map((d) => ({
+            id: d.id,
+            relation: d.relation,
+            status: d.status,
+            severity: d.severity,
+            title: quarantine("decision-title", d.title),
+            question: quarantine("decision-question", d.question),
+            answer: quarantine("decision-answer", d.resolved_answer),
+            resolved_by: d.resolved_by,
+            resolved_at: d.resolved_at,
+          })),
           dependencies,
           scope_summary: scope,
           work_repos: {

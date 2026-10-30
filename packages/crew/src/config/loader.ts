@@ -192,13 +192,48 @@ export function applyIdleLoopEnvOverrides(
   };
 }
 
+/**
+ * The factory's wiring for the async idle loops, as env FALLBACKS. A `crew init`
+ * config leaves `memory.mcp.command` and `loops.idle_feature_backlog.decompose_script`
+ * null and nothing (setup, the dashboard writer) ever set them, so the Settings
+ * "Feature backlog" toggle alone could never run the loop: no memory client, no
+ * decomposer. The runner's `fg` helper now names both:
+ *
+ *   - `CREW_MEMORY_MCP_BIN`    — the built memory-mcp bin; used as
+ *     `memory.mcp = { command: <node>, args: [bin] }` when crew.yaml sets no command.
+ *   - `CREW_DECOMPOSE_SCRIPT`  — runner's `bin/decompose.mjs`; used as
+ *     `loops.idle_feature_backlog.decompose_script` when crew.yaml sets none.
+ *
+ * Fallbacks only: an explicit crew.yaml value always wins, and unset/blank env
+ * leaves the config untouched (a standalone crew is byte-identical).
+ */
+export function applyFactoryWiringEnv(
+  config: CrewConfig,
+  env: NodeJS.ProcessEnv = process.env,
+  nodeBin: string = process.execPath,
+): CrewConfig {
+  const memBin = (env.CREW_MEMORY_MCP_BIN ?? "").trim();
+  const script = (env.CREW_DECOMPOSE_SCRIPT ?? "").trim();
+  const memory =
+    memBin !== "" && config.memory.mcp.command === null
+      ? { ...config.memory, mcp: { command: nodeBin, args: [memBin] } }
+      : config.memory;
+  const backlog = config.loops.idle_feature_backlog;
+  const loops =
+    script !== "" && backlog.decompose_script === null
+      ? { ...config.loops, idle_feature_backlog: { ...backlog, decompose_script: script } }
+      : config.loops;
+  if (memory === config.memory && loops === config.loops) return config;
+  return { ...config, memory, loops };
+}
+
 /** Load + validate the crew config file from disk. */
 export function loadConfig(configPath: string): LoadedConfig {
   const absolute = isAbsolute(configPath) ? configPath : resolve(process.cwd(), configPath);
   const raw = readYamlFile(absolute);
   const parsed = parseWith(crewConfigSchema, raw, "crew config", absolute);
   // B29: the dashboard's idle-loop settings reach the loops through the env.
-  const config = applyIdleLoopEnvOverrides(parsed);
+  const config = applyFactoryWiringEnv(applyIdleLoopEnvOverrides(parsed));
 
   // Resolve the events-log path (GAFFER_CREW_EVENTS, else the YAML value against
   // the factory root) to an absolute path here, so every consumer that reads

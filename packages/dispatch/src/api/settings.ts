@@ -162,10 +162,15 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "idle-loops",
     label: "Feature-backlog idle loop",
     help:
-      "When idle, pull one backlog feature from memory and plan it as an epic. Overrides " +
-      "the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the " +
-      "Feature backlog row in the Idle loops panel) for every crew run the runner " +
-      "spawns; empty = crew.yaml decides.",
+      "When idle, pull one backlog feature from memory and plan it as an epic. Each idle " +
+      "tick (before the maintenance lane) claims one `backlog` feature from the factory " +
+      "memory ledger, moves it to `building`, makes ONE paid plan call (bin/decompose.mjs " +
+      "--force-plan) and files the epic as drafts (or ready tickets if the idle-loop mode " +
+      "says so). A plan that fails leaves the feature `building` with no epic and is not " +
+      "retried; plan it from the dashboard. Overrides the crew.yaml " +
+      "`loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog " +
+      "row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml " +
+      "decides.",
   },
   {
     key: "GAFFER_IDLE_MODE",
@@ -533,7 +538,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "idle-loops",
     label: "Clarify vague drafts when idle",
-    help: "When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria.",
+    help:
+      "When idle, run the clarify pass over vague draft tickets to sharpen their acceptance " +
+      "criteria and raise blocking decisions (one paid agent call per draft, once per run). " +
+      "A draft with no linked repo on disk (a greenfield epic's tickets before the bootstrap " +
+      "links one) is skipped and logged, and the pass moves on to the next draft.",
   },
   {
     key: "IDLE_DRAFT_WHEN_IDLE",

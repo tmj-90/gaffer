@@ -159,7 +159,18 @@ export class SpawnDecomposer implements Decomposer {
 
   async decompose(request: DecomposeRequest): Promise<EpicPlan> {
     const node = this.config.node ?? process.execPath;
-    const args = [this.config.scriptPath, "--brief", request.brief, "--repo", request.repo];
+    // --force-plan: this decomposer runs UNATTENDED (the idle feature-backlog loop),
+    // so there is no human to answer a clarify round — a first-turn `phase:"clarify"`
+    // would be rejected and roll the feature back every tick. Force the best plan
+    // from the brief; the epic still lands as drafts behind the human gate.
+    const args = [
+      this.config.scriptPath,
+      "--brief",
+      request.brief,
+      "--repo",
+      request.repo,
+      "--force-plan",
+    ];
     if (request.maxTurns !== undefined) args.push("--max-turns", String(request.maxTurns));
     if (request.maxTickets !== undefined) args.push("--max-tickets", String(request.maxTickets));
 

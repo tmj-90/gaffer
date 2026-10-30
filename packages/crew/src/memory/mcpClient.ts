@@ -64,7 +64,7 @@ export interface AsyncMemoryClient {
   addFeature(input: FeatureInput): Promise<FeatureResult>;
   /**
    * Advance a feature's lifecycle status (`backlog → building → shipped`). Maps to
-   * `advance_feature(id, toStatus)`. Used to claim a backlog feature (so it is not
+   * `advance_feature(id, to_status)`. Used to claim a backlog feature (so it is not
    * picked twice) and to roll it back on a downstream failure.
    */
   advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult>;
@@ -377,7 +377,10 @@ export class McpMemoryClient implements AsyncMemoryClient {
   }
 
   async advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult> {
-    const raw = await this.callTool("advance_feature", { id, toStatus });
+    // memory-mcp's advance_feature schema names the target `to_status` (snake_case).
+    // Sending `toStatus` failed validation on EVERY call, so the backlog loop's claim
+    // always errored and no feature was ever planned.
+    const raw = await this.callTool("advance_feature", { id, to_status: toStatus });
     const parsed = advanceFeatureResultSchema.safeParse(payloadFrom(raw));
     const status = parsed.success
       ? coerceFeatureStatus(

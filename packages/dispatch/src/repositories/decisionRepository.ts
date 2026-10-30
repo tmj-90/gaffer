@@ -134,6 +134,25 @@ export class DecisionRepository {
       .all(ticketId) as Decision[];
   }
 
+  /**
+   * RESOLVED decisions linked to a ticket (accepted or rejected, any relation),
+   * oldest resolution first, each with the relation it was linked by. This is how
+   * a human's answer (`decisions resolve --answer`) reaches the agent: get_ticket
+   * surfaces these as `resolved_decisions` — `blockingForTicket` drops a decision
+   * the moment it is resolved, and event payloads are redacted from agent context.
+   * Superseded decisions are left out (their answer was replaced).
+   */
+  resolvedForTicket(ticketId: string): Array<Decision & { relation: string }> {
+    return this.db
+      .prepare(
+        `SELECT d.*, td.relation AS relation
+         FROM ticket_decisions td JOIN decisions d ON d.id = td.decision_id
+         WHERE td.ticket_id = ? AND d.status IN ('accepted','rejected')
+         ORDER BY d.resolved_at ASC, d.created_at ASC`,
+      )
+      .all(ticketId) as Array<Decision & { relation: string }>;
+  }
+
   hasUnresolvedHumanRequired(ticketId: string): boolean {
     const row = this.db
       .prepare(

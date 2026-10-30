@@ -31,11 +31,26 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
   # FINDING B-M2: pass the skip-file path via the environment, not interpolated into
   # the single-quoted Python literal — a path containing a `'` would break the string
   # (silent parse failure → the clarified-skip set is lost and the draft re-clarifies).
-  CNUM="$(echo "$DRAFT_JSON" | gaffer_json pick-unskipped "$CLARIFIED_FILE" 2>/dev/null)"
-  if [ -n "$CNUM" ]; then
-    CSHOW="$(wg ticket show "$CNUM" 2>/dev/null)"
+  # Walk the un-skipped drafts in order and clarify the FIRST one that has a linked
+  # repo on disk. A draft with no local repo (every ticket of a greenfield epic
+  # before its bootstrap links one) cannot be clarified — the intake agent needs a
+  # read-only checkout — so it is LOGGED and recorded in the per-run skip file, and
+  # the walk moves on. Previously the first draft was picked and, when it had no
+  # repo, the block was silently skipped without recording it: every later tick
+  # re-picked the same repo-less draft, so no other draft was ever clarified and the
+  # intake gate stopped for the whole factory. A draft whose repo is linked later
+  # in the run is clarified on the next run (loop.sh clears the skip file).
+  CNUM="" CSHOW="" CREPO="" CDEFAULT="" CTITLE=""
+  for _cand in $(echo "$DRAFT_JSON" | gaffer_json pick-unskipped "$CLARIFIED_FILE" --all 2>/dev/null); do
+    CSHOW="$(wg ticket show "$_cand" 2>/dev/null)"
     # The primary WRITE repo (not repositories[0], which is merely alphabetical).
     CREPO="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null)"
+    if [ -n "$CREPO" ] && [ -d "$CREPO" ]; then CNUM="$_cand"; break; fi
+    log "intake: draft #$_cand has no linked repo on disk${CREPO:+ ($CREPO missing)} — skipping its clarify pass this run"
+    _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$_cand"
+    CREPO=""
+  done
+  if [ -n "$CNUM" ]; then
     CDEFAULT="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' 2>/dev/null)"
     CTITLE="$(echo "$CSHOW" | jget 'd.ticket.title' 2>/dev/null || echo '')"
     if [ -n "$CREPO" ] && [ -d "$CREPO" ]; then

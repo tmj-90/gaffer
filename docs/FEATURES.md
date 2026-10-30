@@ -223,6 +223,13 @@ them without a human in the promote step. Off by default; the panel's status
 line says exactly what the next idle tick will do. Repos onboarded from the
 dashboard are scanned without editing `crew.yaml`.
 
+**Feature backlog when idle.** With the **Feature backlog** toggle on, an idle tick
+(before the maintenance lane) takes one `backlog` feature from the memory feature
+ledger, moves it to `building`, plans it with one model call and files the epic as
+draft tickets on that feature's repo, behind the usual human gate. Off by default.
+Confirming a brownfield epic yourself (every ticket on one existing repo) moves that
+feature to `building` too.
+
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected

@@ -266,6 +266,8 @@ function epicDescription(feature: BacklogFeature, plan: EpicPlan, clock: Clock):
     `Auto-planned from backlog feature '${feature.name}' (${feature.id}) in ${feature.repo} by the ` +
     `idle ${LOOP} loop on ${dateStamp(clock)}. The feature was advanced backlog → building as ` +
     `provenance for this run; no code was changed by the loop itself.` +
-    (planNote ? `\n\n${planNote}` : "")
+    // ONE line: dispatch refuses control characters (newlines) in an epic
+    // description, so a "\n\n" separator made every create_epic fail.
+    (planNote ? ` ${planNote.replace(/\s+/g, " ")}` : "")
   );
 }

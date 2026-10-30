@@ -215,6 +215,12 @@ export interface TicketView {
   scopes: TicketScopeWithNode[];
   blockingDecisions: Decision[];
   /**
+   * Decisions linked to this ticket that a human has RESOLVED (accepted/rejected),
+   * with the relation they were linked by. Carries `resolved_answer` — the answer
+   * the agent reads (via get_ticket's `resolved_decisions`).
+   */
+  resolvedDecisions: Array<Decision & { relation: string }>;
+  /**
    * EP-001: tickets this one must wait for, each with the depended-on ticket's
    * number/title/status and a `satisfied` flag (true once it's `done`). An
    * unsatisfied dependency blocks this ticket from being claimed.
@@ -1907,6 +1913,7 @@ export class Dispatch {
       // ones (primary/secondary/suggested/implicit) first.
       scopes: this.ticketScopes.listForTicket(ticket.id),
       blockingDecisions: this.decisions.blockingForTicket(ticket.id),
+      resolvedDecisions: this.decisions.resolvedForTicket(ticket.id),
       dependencies: this.ticketDependencies.listForTicket(ticket.id),
       evidence: this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id)),
       events: listEvents(this.db, "ticket", ticket.id),

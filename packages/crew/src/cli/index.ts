@@ -22,7 +22,8 @@ import {
 } from "../memory/prefetch.js";
 import { ingestGithubIssues } from "../ingest/githubIssues.js";
 import { ingestJiraIssues } from "../ingest/jiraIssues.js";
-import { runMaintenanceLane } from "../loops/idleRegistry.js";
+import { resolveDecomposer } from "../adapters/decomposerFactory.js";
+import { runIdleFeatureBacklog, runMaintenanceLane } from "../loops/idleRegistry.js";
 import { runIdleTick } from "../loops/idleTick.js";
 import { buildOracleSet } from "../loops/oracles/build.js";
 import { runImplementationLoop } from "../loops/implementationLoop.js";
@@ -407,6 +408,56 @@ program
       ...(tick.featureBacklog ? { featureBacklog: tick.featureBacklog } : {}),
       events: events.types(),
     });
+  });
+
+program
+  .command("feature-backlog")
+  .description(
+    "Run ONLY the idle feature-backlog loop: plan one memory `backlog` feature as an epic",
+  )
+  .action(async (_opts, cmd) => {
+    // The runner calls this on an idle tick so the Settings "Feature backlog" toggle
+    // (GAFFER_IDLE_FEATURE_BACKLOG / loops.idle_feature_backlog.enabled) runs the loop
+    // on its own — it used to be reachable only through `crew idle` (every scan loop,
+    // behind IDLE_DRAFT_WHEN_IDLE=1) and was starved whenever the maintenance lane ran.
+    const ctx = loadEverything(cmd.optsWithGlobals());
+    const { loaded } = ctx;
+    const events = new EventLog(systemClock, {
+      filePath: loaded.config.logging.event_log_path,
+      redact: loaded.config.logging.redact,
+    });
+    const cfg = loaded.config.loops.idle_feature_backlog;
+    if (!cfg.enabled) {
+      printJson({ ok: true, featureBacklog: null, skipped: "disabled" });
+      return;
+    }
+    const decomposer = resolveDecomposer(loaded.config);
+    if (!decomposer) {
+      printJson({ ok: true, featureBacklog: null, skipped: "no_decomposer" });
+      return;
+    }
+    const memory = await resolveAsyncMemory(loaded.config, events);
+    if (!memory) {
+      printJson({ ok: true, featureBacklog: null, skipped: "no_memory", events: events.types() });
+      return;
+    }
+    try {
+      const dispatch = await openDispatch(ctx, { mustExist: true });
+      const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
+      const featureBacklog = await runIdleFeatureBacklog({
+        config: loaded.config,
+        repoRegistry,
+        dispatch,
+        runner: systemCommandRunner,
+        events,
+        clock: systemClock,
+        memory,
+        decomposer,
+      });
+      printJson({ ok: true, featureBacklog, events: events.types() });
+    } finally {
+      await memory.close();
+    }
   });
 
 program

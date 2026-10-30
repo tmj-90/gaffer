@@ -218,6 +218,20 @@
   .dial:disabled .dial-stop {
     cursor: not-allowed;
   }
+  /* Forced colours drop the washes and fills: the chosen detent keeps a filled
+     dot in the system highlight and a heavy frame, so it still reads as picked. */
+  @media (forced-colors: active) {
+    .dial-stop.is-picked .dial-notch {
+      forced-color-adjust: none;
+      background: Highlight;
+      border-color: CanvasText;
+      box-shadow: inset 0 0 0 6px Canvas;
+    }
+    .dial-stop.is-picked {
+      outline: 3px solid CanvasText;
+      outline-offset: -3px;
+    }
+  }
 
   /* The formation: each gate on a delivery's way to main is a position. */
   .formation-board {
@@ -558,11 +572,30 @@
     color: var(--ink-2);
   }
   .setting-more > summary {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font: 700 var(--t12) / 1.6 var(--f-cond);
     color: var(--ink);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     cursor: pointer;
+    list-style: none;
+  }
+  .setting-more > summary::-webkit-details-marker {
+    display: none;
+  }
+  .setting-more > summary::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    margin-left: 1px;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(-45deg);
+  }
+  .setting-more[open] > summary::before {
+    transform: rotate(45deg);
   }
   .setting-more[open] > summary {
     margin-bottom: 4px;
@@ -847,6 +880,22 @@
   @media (max-width: 760px) {
     .boot-index {
       position: static;
+    }
+    /* Every fold a thumb opens is a 44px target, however small it reads. */
+    details.settings-group > summary,
+    .boot-fold > summary {
+      min-height: var(--tap);
+    }
+    .setting-more > summary {
+      min-height: var(--tap);
+      margin-block: -8px;
+      padding-inline-end: 14px;
+    }
+    .setting-more[open] > summary {
+      margin-bottom: -4px;
+    }
+    .target-picker-check {
+      min-height: var(--tap);
     }
     .boot-find-f > label,
     .boot-find-f .field-label {

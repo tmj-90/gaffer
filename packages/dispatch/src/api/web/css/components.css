@@ -63,8 +63,10 @@
     background: none;
     text-decoration-thickness: 2px;
   }
+  /* Small reads smaller (type, padding), never a smaller target: 40 on a
+     desk, 44 on a phone, like every other control. */
   .btn.small {
-    min-height: 32px;
+    min-height: var(--tap);
     padding: 0 10px;
     font-size: var(--t14);
   }
@@ -1114,7 +1116,7 @@
     align-items: center;
     gap: 10px;
     cursor: pointer;
-    min-height: 32px;
+    min-height: var(--tap);
   }
   .switch input {
     position: absolute;

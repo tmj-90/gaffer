@@ -127,25 +127,50 @@
     flex: 0 1 320px;
   }
 
-  /* The strip: league-table numbers for this repo, on paper. */
+  /* The strip: this repo's numbers on the stadium board (always dark, both
+     kits), big numerals, the drafts that wait for you lit in yellow. */
   .view > .kpi-row.mem-stats {
-    border: var(--frame);
-    border-radius: var(--r);
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    background: var(--board);
+    color: var(--board-ink);
+    border: 2px solid var(--board-rule);
+    border-bottom: 4px solid var(--yellow);
+    border-radius: var(--r);
   }
-  .view > .kpi-row.mem-stats .kpi:first-child {
-    padding-left: 16px;
+  .view > .kpi-row.mem-stats .kpi {
+    padding: 12px 20px 14px;
+    border-left-color: var(--board-rule);
   }
-  .mem-stats a.kpi:hover .kpi-label {
-    text-decoration: underline;
+  .view > .kpi-row.mem-stats .kpi-label,
+  .view > .kpi-row.mem-stats .kpi-unit,
+  .view > .kpi-row.mem-stats .kpi-sub {
+    color: var(--board-ink-2);
+  }
+  .view > .kpi-row.mem-stats .kpi-unit {
+    font-size: var(--t16);
+  }
+  .view > .kpi-row.mem-stats .kpi-val {
+    font-size: var(--t52);
+    color: var(--board-ink);
+    white-space: nowrap;
   }
   .view > .kpi-row.mem-stats .kpi-val.y {
-    padding: 0 8px;
-    background: var(--yellow);
-    color: var(--on-yellow);
-    border-radius: var(--r);
+    color: var(--yellow);
   }
-
+  .mem-stats a.kpi:hover .kpi-label {
+    color: var(--board-ink);
+    text-decoration: underline;
+    text-decoration-color: var(--yellow);
+  }
+  .mem-stats :focus-visible {
+    outline-color: var(--yellow);
+    box-shadow: none;
+  }
+  /* The lore block is the board's own black: on the floodlit ground it carries
+     the board's yellow edge so it never melts into the page. */
+  .mem-lore > .panel-head.block-ink {
+    border-bottom: 4px solid var(--yellow);
+  }
   /* Lore on the left (wide rows with their actions), the report and the
      honours board stacked on the right. One column on a phone, lore first. */
   .mem-grid {
@@ -350,8 +375,10 @@
   .scout-lede dd {
     font: 500 var(--t20) / 1.4 var(--f-text);
   }
+  /* The colophon spans the report (not the 75ch measure of its prose). */
   .digest-fresh,
   .digest-caveat {
+    max-width: none;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -463,16 +490,13 @@
     .view > .kpi-row.mem-stats .kpi {
       padding: 8px 10px 10px;
     }
-    .view > .kpi-row.mem-stats .kpi:first-child {
-      padding-left: 10px;
-    }
     .view > .kpi-row.mem-stats .kpi-label {
       font-size: var(--t12);
       line-height: 1.15;
       min-height: 2.3em;
     }
     .view > .kpi-row.mem-stats .kpi-val {
-      font-size: var(--t26);
+      font-size: var(--t34);
     }
     .lore-filters {
       grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -8891,8 +8891,8 @@ const SETTINGS_GROUPS = [
   },
   {
     id: "idle-loops",
-    label: "Idle loops",
-    note: "Background loops that run between real work, and how far they go.",
+    label: "Idle overrides",
+    note: "Run-wide overrides for what the squad does between tickets. The per-lane switches live in Idle loops, further down.",
   },
   {
     id: "budget",
@@ -9358,7 +9358,7 @@ async function renderSettings() {
     const loops = renderIdleLoopsPanel(idleLoops, repos, nodes);
     const fold = el("details", { class: "boot-fold", id: "idle-loops" }, [
       el("summary", {}, [
-        el("span", { class: "boot-fold-t" }, "Idle-loop scans"),
+        el("span", { class: "boot-fold-t" }, "Idle loops"),
         el(
           "span",
           { class: "panel-aux" },
@@ -9533,7 +9533,7 @@ async function renderSettings() {
       ...groupsUsed.map((g) =>
         el("li", {}, link(`grp-${g.id}`, g.label, all.filter((x) => x.group === g.id).length)),
       ),
-      idleLoops ? el("li", {}, link("idle-loops", "Idle-loop scans")) : null,
+      idleLoops ? el("li", {}, link("idle-loops", "Idle loops")) : null,
       el("li", {}, link("access", "Access")),
     ]),
   ]);
@@ -10453,7 +10453,7 @@ const IDLE_RECOMMENDED_LANES = [
 
 function renderIdleLoopsPanel(view, repos, nodes) {
   const card = el("div", { class: "card settings-group idle-loops-group" });
-  card.appendChild(el("h2", {}, "Idle loops"));
+  card.appendChild(el("h2", {}, "Scan lanes"));
   card.appendChild(
     el(
       "p",
@@ -16792,8 +16792,8 @@ async function renderMemory(param) {
 }
 
 /**
- * The club's numbers for this repo, as a paper league-table strip: drafts that
- * wait for you (yellow when any), the honours (features shipped of all), and the
+ * The club's numbers for this repo, on the stadium board: drafts that wait
+ * for you (lit yellow when any), the honours (features shipped of all), and the
  * date of the scouting report. Every figure is one the responses gave us.
  */
 function memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor) {

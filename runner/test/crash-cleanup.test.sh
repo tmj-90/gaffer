@@ -23,8 +23,8 @@
 #     fi
 #     return 0
 #   }
-#   gaffer_on_exit()   { local rc=$?; trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$rc"; }
-#   gaffer_on_signal() { trap - EXIT INT TERM; gaffer_crash_cleanup; exit "$1"; }
+#   gaffer_on_exit()   { local rc=$?; trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "$rc"; }
+#   gaffer_on_signal() { trap - EXIT; trap '' INT TERM; gaffer_crash_cleanup; exit "$1"; }
 #   trap gaffer_on_exit EXIT
 #   trap 'gaffer_on_signal 130' INT
 #   trap 'gaffer_on_signal 143' TERM
@@ -128,12 +128,12 @@ gaffer_crash_cleanup() {
 }
 gaffer_on_exit() {
   local rc=$?
-  trap - EXIT INT TERM
+  trap - EXIT; trap '' INT TERM
   gaffer_crash_cleanup
   exit "$rc"
 }
 gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
-  trap - EXIT INT TERM
+  trap - EXIT; trap '' INT TERM
   gaffer_crash_cleanup
   exit "$1"
 }

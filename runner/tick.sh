@@ -121,7 +121,10 @@ gaffer_reap_orphan_agent() {
 #   • EXIT vs signal: a returning bash signal trap does NOT end the script. EXIT
 #     uses gaffer_on_exit (preserves $?); INT/TERM use gaffer_on_signal which
 #     resets the trap and exits 130/143 so termination is never swallowed
-#     (FIX-SIGNAL).
+#     (FIX-SIGNAL). Both IGNORE further INT/TERM while the cleanup runs: stopping a
+#     pool delivers several TERMs (the outer reaper, the worker's group kill), and a
+#     second one must not kill the cleanup before the claim is released. The
+#     reaper's KILL after GAFFER_REAP_GRACE still bounds a wedged cleanup.
 GAFFER_DELIVERY_COMPLETE="${GAFFER_DELIVERY_COMPLETE:-0}"
 # Branch-retention seam (FIX-BRANCH): split "keep the delivered branch" from
 # "skip cleanup entirely". GAFFER_DELIVERY_COMPLETE=1 means "fully done — the trap
@@ -244,15 +247,17 @@ gaffer_crash_cleanup() {
 # keep going in an inconsistent state. We therefore split EXIT from the signal
 # handlers: each resets the trap first (so re-entry can't recurse) then exits with
 # the correct status. EXIT preserves the original `$?`; INT exits 130, TERM 143.
+# INT/TERM are ignored (not reset to default) for the cleanup itself, so a repeat
+# signal cannot kill it half-way and strand the claim, worktree and runtime file.
 gaffer_on_exit() {
   local rc=$?
-  trap - EXIT INT TERM
+  trap - EXIT; trap '' INT TERM
   _GAFFER_EXIT_CAUSE="${_GAFFER_EXIT_CAUSE:-rc=$rc}"
   gaffer_crash_cleanup
   exit "$rc"
 }
 gaffer_on_signal() {   # $1 = exit code (130 INT, 143 TERM)
-  trap - EXIT INT TERM
+  trap - EXIT; trap '' INT TERM
   _GAFFER_EXIT_CAUSE=signal
   gaffer_crash_cleanup
   exit "$1"

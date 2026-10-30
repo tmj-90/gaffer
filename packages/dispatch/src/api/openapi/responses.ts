@@ -12,6 +12,7 @@ import {
   type Ticket,
 } from "../../domain/types.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
+import type { AgentDisplay } from "../../services/squadService.js";
 
 /**
  * Response-body schemas for the main ticket, gate, decision and principal
@@ -115,6 +116,17 @@ export const PrincipalRowView = z
   } satisfies Record<keyof PrincipalView, ZodTypeAny>)
   .describe("An API principal (never carries token material).");
 
+export const AgentDisplayView = z
+  .object({
+    agent_id: str,
+    display_name: nstr,
+    display_name_effective: str,
+    default_display_name: str,
+    shirt_number: int.nullable(),
+    role: z.enum(["delivery", "reviewer", "security_reviewer", "tester"]),
+  } satisfies Record<keyof AgentDisplay, ZodTypeAny>)
+  .describe("How an agent is presented (squad name, shirt number); the agent id never changes.");
+
 // Compile-time: each row schema infers EXACTLY its TypeScript row type (keys and
 // value types), so the contract cannot drift from the code in either direction.
 type Exact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -123,6 +135,7 @@ exact<Exact<z.infer<typeof TicketRow>, Ticket>>(true);
 exact<Exact<z.infer<typeof AcceptanceCriterionRow>, AcceptanceCriterion>>(true);
 exact<Exact<z.infer<typeof DecisionRow>, Decision>>(true);
 exact<Exact<z.infer<typeof PrincipalRowView>, PrincipalView>>(true);
+exact<Exact<z.infer<typeof AgentDisplayView>, AgentDisplay>>(true);
 
 const eventId = str.describe("The id of the work event the change wrote.");
 
@@ -152,6 +165,9 @@ export const TicketDetail = z
     evidence: z.array(z.record(z.unknown())),
     events: z.array(z.record(z.unknown())),
     rework_trail: z.array(z.record(z.unknown())),
+    agent_display: z
+      .record(AgentDisplayView)
+      .describe("Every agent the ticket's claims and events name, keyed by agent id."),
   })
   .strict();
 

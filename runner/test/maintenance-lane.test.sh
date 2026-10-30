@@ -163,6 +163,19 @@ run_tick() {
 }
 reset_log() { : > "$CREW_CALLS"; : > "$CREW_CALLS.env"; : > "$GAFFER_DATA/factory.log"; }
 
+# ── 0. this file has no redirect glued to the next command ───────────────────
+# A `>/dev/null` fused with the following word (e.g. `>/dev/nullreset_log`)
+# silently drops a case's setup tick into a stray file and the suite still passes.
+glued_redirects() {
+  grep -nE '>[[:space:]]*/dev/null[^[:space:];|&)]' "${BASH_SOURCE[0]}" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'grep -nE'
+}
+if [ -n "$(glued_redirects)" ]; then
+  fail "a /dev/null redirect is glued to the next word: $(glued_redirects | head -3)"
+else
+  ok "no /dev/null redirect is glued to the next command"
+fi
+
 # ── 1. GAFFER_MAINTENANCE=1 → forced lane runs + is logged ───────────────────
 reset_log
 OUT1="$(GAFFER_MAINTENANCE=1 MAINT_ENABLED=0 run_tick)"
@@ -339,9 +352,8 @@ grep -q '^TICK_RESULT=no_work$' <<<"$OUT17" \
   && ok "fg idle filing nothing → no_work" \
   || fail "expected no_work for an empty idle scan, got: $(echo "$OUT17" | grep '^TICK_RESULT=')"
 
-# ── 13. the idle crew calls carry the memory + planner wiring ─────────────────
+# ── 13. a feature parked after failed plans → the log says how to retry ──────
 reset_log
-MAINT_ENABLED=1 run_tick >/dev/nullreset_log
 MAINT_STATUS=no_findings MAINT_SPENT=1 MAINT_EVENTS=feature_backlog_failed,feature_backlog_parked run_tick >/dev/null
 grep -q "feature backlog: a feature's plan failed on every attempt" "$GAFFER_DATA/factory.log" 2>/dev/null \
   && grep -q "feature-backlog-failures.json" "$GAFFER_DATA/factory.log" 2>/dev/null \
@@ -349,10 +361,20 @@ grep -q "feature backlog: a feature's plan failed on every attempt" "$GAFFER_DAT
   || fail "missing the parked-feature hint"
 reset_log
 MAINT_STATUS=no_findings MAINT_SPENT=1 MAINT_EVENTS=feature_backlog_failed run_tick >/dev/null
-grep -q "feature backlog: a feature's plan failed" "$GAFFER_DATA/factory.log" 2>/dev/null \
-  && fail "the parked hint fired for a failure that did not park the feature" \
-  || ok "…and stays quiet for a failure under the cap"
+grep -q 'maintain' "$CREW_CALLS" \
+  && ! grep -q "feature backlog: a feature's plan failed" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "…and stays quiet for a failure under the cap (the tick did run crew maintain)" \
+  || fail "the parked hint fired for a failure that did not park the feature, or the tick never ran"
 
+# ── 14. the idle crew calls carry the memory + planner wiring ─────────────────
+reset_log
+MAINT_ENABLED=1 run_tick >/dev/null
+# The env line below must come from THIS tick's own crew call, not a leftover
+# from an earlier case: exactly one crew call, and it is `maintain`.
+[ "$(grep -c . "$CREW_CALLS")" -eq 1 ] && grep -q 'maintain' "$CREW_CALLS" \
+  && [ "$(grep -c . "$CREW_CALLS.env")" -eq 1 ] \
+  && ok "the wiring check reads its own setup tick (one crew maintain call recorded)" \
+  || fail "the wiring check's setup tick did not run exactly one crew maintain call: $(cat "$CREW_CALLS")"
 ENVLINE="$(head -1 "$CREW_CALLS.env")"
 grep -q "MEMORY_DB=$GAFFER_DATA/memory.sqlite" <<<"$ENVLINE" \
   && grep -q "MEMORY_MCP_BIN=$WORK/memory-mcp.js" <<<"$ENVLINE" \

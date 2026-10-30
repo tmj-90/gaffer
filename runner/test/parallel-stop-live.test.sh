@@ -36,11 +36,19 @@ cleanup() {
 trap cleanup EXIT
 echo hang > "$MODE"
 
+# Launched the way a terminal launches it (see parallel-stop.test.sh): its own process
+# group, SIGINT at its default (a background job of this script starts with INT ignored,
+# and bash 3.2 then cannot trap it), and LP read from the pid the launcher records as it
+# execs loop.sh, which is also the pool's process group id.
 start_pool() {  # <case> → sets LP (the loop pid == its own process group id)
-  rm -rf "$CALLS"; mkdir -p "$CALLS"
+  rm -rf "$CALLS"; mkdir -p "$CALLS"; rm -f "$WORK/loop-$1.pid"
   ( cd "$RUNNER_DIR" && GAFFER_CONCURRENCY=2 EMPTY_POLL_LIMIT=100000 MAX_TICKS=50 TICK_SLEEP=1 GAFFER_REAP_GRACE=30 \
-      exec perl -e 'setpgrp(0, 0); exec @ARGV' bash ./loop.sh > "$WORK/loop-$1.out" 2>&1 ) &
-  LP=$!
+      exec perl -e '$SIG{INT} = "DEFAULT"; setpgrp(0, 0);
+        open(my $f, ">", shift) or die "pid file: $!"; print $f "$$\n"; close $f;
+        exec @ARGV' "$WORK/loop-$1.pid" bash ./loop.sh > "$WORK/loop-$1.out" 2>&1 ) &
+  LP=""
+  local _
+  for _ in $(seq 1 100); do [ -s "$WORK/loop-$1.pid" ] && { LP="$(cat "$WORK/loop-$1.pid")"; break; }; sleep 0.1; done
   wait_hanging
 }
 stopped_within() {  # <secs> → 0 once the loop has exited

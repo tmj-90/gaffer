@@ -186,6 +186,44 @@ r = json.loads(open(sys.argv[1]).read().splitlines()[0])
 assert r.get("judgeModel") == "opus", r
 PY
 
+echo "== H. the REAL worker seam: the judge runs as a confined one-shot grader =="
+# Real factory.config.sh + lib/worker.sh; only CLAUDE_BIN is a stub that records its argv,
+# cwd and env. The caller's state is a delivery's: acceptEdits, the 200-turn cap, and the
+# delivery's write root + DB/ticket vars in WORKER_CALL_ENV (as tick.sh leaves them).
+CAP="$WORK/judge-cap"; mkdir -p "$CAP"
+cat > "$WORK/claude-stub" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$@" > "$CAP/argv"; pwd -P > "$CAP/cwd"; env > "$CAP/env"
+printf '%s\n' '{"type":"result","subtype":"success","result":"no grading","num_turns":1}'
+STUB
+chmod +x "$WORK/claude-stub"
+(
+  export GAFFER_MAX_TURNS=200
+  # shellcheck source=../factory.config.sh
+  source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+  unset -f worker_deliver gaffer_usage_record log 2>/dev/null
+  # shellcheck source=../lib/worker.sh
+  source "$RUNNER_DIR/lib/worker.sh"
+  log() { :; }
+  export GAFFER_EVAL_JUDGE=1 DRY_RUN=0 CLAUDE_BIN="$WORK/claude-stub" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
+  CLAUDE_FLAGS="--permission-mode acceptEdits"
+  WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$REPO" "DISPATCH_DB=$WORK/d.sqlite" "MEMORY_DB=$WORK/m.sqlite" "GAFFER_TICKET=9")
+  gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 ''
+) >/dev/null 2>&1
+if [ -s "$CAP/argv" ]; then
+  [ "$(grep -cx -- '--max-turns' "$CAP/argv")" = "1" ] && [ "$(grep -A1 -x -- '--max-turns' "$CAP/argv" | tail -1)" = "2" ] \
+    && ok "exactly one --max-turns, and it is the judge's 2 (not the 200-turn delivery cap)" || no "turn cap wrong: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
+  grep -qx 'acceptEdits' "$CAP/argv" && no "the judge still runs under acceptEdits" || ok "no acceptEdits"
+  grep -qx -- '--strict-mcp-config' "$CAP/argv" && grep -qx -- '--disallowedTools' "$CAP/argv" \
+    && grep -A1 -x -- '--disallowedTools' "$CAP/argv" | tail -1 | grep -q 'Bash,Edit,Write.*Read,Grep,Glob' \
+    && ok "--strict-mcp-config + every built-in tool denied" || no "tools not disabled: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
+  [ "$(cat "$CAP/cwd")" != "$(cd "$REPO" && pwd -P)" ] && ok "cwd is the judge's temp dir, not the delivery repo" || no "judge ran in the delivery repo"
+  grep -q "^GAFFER_WRITE_ROOTS=$REPO\$" "$CAP/env" && no "the delivery repo is still the judge's write root" || ok "the delivery repo is not a write root"
+  grep -qE '^(DISPATCH_DB|MEMORY_DB|GAFFER_TICKET)=' "$CAP/env" && no "delivery DB/ticket vars leaked into the judge env" || ok "no DISPATCH_DB / MEMORY_DB / GAFFER_TICKET in the judge env"
+else
+  no "the judge never reached the stub claude"
+fi
+
 echo ""
 echo "eval-judge: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

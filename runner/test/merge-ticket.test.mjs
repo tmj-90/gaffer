@@ -259,6 +259,27 @@ console.log("== AC3: attemptMerge lands a CLEAN merge ==");
   );
 }
 
+console.log("== AC3b: an untracked file in the merge's way is a REFUSAL, not a conflict ==");
+{
+  const repo = newRepo("untracked-clobber");
+  require("node:fs").writeFileSync(resolve(repo, "added.txt"), "from the branch\n");
+  git(repo, "add", "added.txt");
+  git(repo, "commit", "-q", "-m", "add a file");
+  git(repo, "checkout", "-q", "main");
+  require("node:fs").writeFileSync(resolve(repo, "added.txt"), "the operator's own notes\n");
+  const mainBefore = git(repo, "rev-parse", "main").stdout.trim();
+  const r = attemptMerge(repo, "gaffer/ticket-7-x", "main");
+  assert(
+    "untracked clobber → checkoutFailed refusal (the resolver is never spawned)",
+    r.clean === false && r.checkoutFailed === true && /untracked file/.test(r.reason || ""),
+  );
+  assert(
+    "the operator's file and main are untouched",
+    readFileSync(resolve(repo, "added.txt"), "utf8") === "the operator's own notes\n" &&
+      git(repo, "rev-parse", "main").stdout.trim() === mainBefore,
+  );
+}
+
 console.log("== AC4: attemptMerge reports a CONFLICT and aborts (both sides intact) ==");
 {
   const repo = newRepo("conflict");
@@ -585,6 +606,46 @@ console.log(
   assert("no-op resolver: re-approval was NOT signalled", !existsSync(SPY_MARK));
   assert(
     "no-op resolver: default branch untouched",
+    git(repo, "rev-parse", "main").stdout.trim() === mainBefore,
+  );
+
+  // The resolver resolves, but the ticket cannot be reopened for review (a locked DB, a
+  // missing CLI): that used to exit 0 as conflict_resolved_pending_reapproval, and the next
+  // landing shipped the resolver's unreviewed merge. Now it fails, and the resolution is
+  // moved off the branch so no later landing can ship it.
+  const FAIL_WG = resolve(WORKDIR, "fail-wg.js");
+  writeFileSync(FAIL_WG, "process.exit(1);\n");
+  const preResolution = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+  const noReopen = runLive({
+    GAFFER_STRICT_REQUIRE: "0",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+    DISPATCH_CLI: FAIL_WG,
+    GAFFER_REAPPROVAL_BACKOFF_MS: "1",
+  });
+  assert("reopen fails: the resolver WAS spawned", existsSync(MARKER));
+  assert("reopen fails: the runner exits 1 (not success)", noReopen.code === 1);
+  assert(
+    "reopen fails: phase conflict_resolved_reapproval_failed, retried",
+    noReopen.out &&
+      noReopen.out.phase === "conflict_resolved_reapproval_failed" &&
+      noReopen.out.reapproval &&
+      noReopen.out.reapproval.ok === false &&
+      noReopen.out.reapproval.attempts === 3,
+  );
+  assert(
+    "reopen fails: the branch is back at its pre-resolution head",
+    git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim() === preResolution &&
+      noReopen.out &&
+      noReopen.out.restored === true,
+  );
+  assert(
+    "reopen fails: the resolution is kept on refs/gaffer/conflict-resolved/7 (main merged in)",
+    git(repo, "merge-base", "--is-ancestor", "main", "refs/gaffer/conflict-resolved/7").status ===
+      0,
+  );
+  assert(
+    "reopen fails: default branch untouched",
     git(repo, "rev-parse", "main").stdout.trim() === mainBefore,
   );
 

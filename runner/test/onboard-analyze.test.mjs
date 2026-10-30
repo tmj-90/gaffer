@@ -410,6 +410,33 @@ console.log("== AC10: analyzeAndWrite end-to-end (model JSON → memory writes) 
   );
 }
 
+console.log("== AC10b: an example ```json block AFTER the analysis does not replace it ==");
+{
+  // The shared extractor (lib/agent-io.mjs) takes the last block with the expected shape
+  // (a `digest`); this file's old copy took the LAST fence, so the analysis was lost.
+  const repo = mavenRepo();
+  const dir = mkdtempSync(resolve(tmpdir(), "onboard-trail-"));
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(cliBin, "process.exit(0);\n");
+  const env = { ...process.env, MEMORY_CLI_BIN: cliBin, MEMORY_DB: join(dir, "lore.sqlite") };
+  const modelJson =
+    "```json\n" +
+    JSON.stringify({
+      digest: { overview: "O.", structure: "S.", conventions: "C.", stack: "java-maven" },
+      features: [{ name: "Supplier normalisation", summary: "Normalises.", status: "shipped" }],
+    }) +
+    '\n```\nAn example supplier record:\n```json\n{"id":1}\n```\n';
+  const res = analyzeAndWrite(
+    repo,
+    { repoId: "demo", name: "demo", stack: "java" },
+    { env, runTurn: () => ({ timedOut: false, stdout: modelJson }) },
+  );
+  assert(
+    "analysis followed by an example fence → the model analysis is used",
+    res.ran === true && res.usedModel === true && res.stats.featuresAdded === 1,
+  );
+}
+
 console.log(
   "== AC11: analyzeAndWrite falls back on unparseable model output (no fake features) ==",
 );

@@ -415,13 +415,29 @@ function runLive(verdictMode, extraEnv = {}) {
   LIVE.g("rev-parse", "gaffer/ticket-1-widgets").stdout.trim() === LIVE.deliverySha
     ? ok("the reviewed delivery branch is untouched")
     : fail("delivery branch moved");
-  const testsSha = LIVE.g("rev-parse", "--verify", "gaffer/ticket-1-tests").status;
-  testsSha === 0 && LIVE.g("show", "gaffer/ticket-1-tests:test/bb.test.js").status === 0
-    ? ok("the tester's tests are kept on gaffer/ticket-1-tests")
+  const testsSha = LIVE.g("rev-parse", "--verify", "gaffer-tests/ticket-1").status;
+  testsSha === 0 && LIVE.g("show", "gaffer-tests/ticket-1:test/bb.test.js").status === 0
+    ? ok("the tester's tests are kept on gaffer-tests/ticket-1")
     : fail("tests branch missing or without the test file");
-  out && out.testsBranch === "gaffer/ticket-1-tests"
+  out && out.testsBranch === "gaffer-tests/ticket-1"
     ? ok("emitted JSON names the tests branch")
     : fail(`testsBranch: ${out && out.testsBranch}`);
+  // BACKPRESSURE: the real lib/backpressure.sh counts unmerged gaffer/* branches toward
+  // the repo's cap. The tests branch is never merged, so it must not be one of them —
+  // under the old gaffer/ticket-<n>-tests name, three tested tickets stopped the repo.
+  const bp = spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$0" && gaffer_repo_unmerged_branches "$1" main',
+      resolve(HERE, "..", "lib", "backpressure.sh"),
+      LIVE.repo,
+    ],
+    { encoding: "utf8" },
+  );
+  (bp.stdout || "").trim() === "1"
+    ? ok("backpressure counts only the delivery branch, not the tests branch")
+    : fail(`unmerged gaffer/* branches after the tester ran: ${(bp.stdout || "").trim()} (want 1)`);
   !existsSync(resolve(LIVE.data, "worktrees", "tester-1"))
     ? ok("tester worktree removed")
     : fail("worktree left behind");
@@ -435,7 +451,7 @@ function runLive(verdictMode, extraEnv = {}) {
 }
 console.log("== AC11: --live records FAIL when the tester's token says so ==");
 {
-  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const { code, out, logged } = runLive("FAIL");
   code === 0 && out && out.verdict === "fail"
     ? ok("FAIL verdict recorded")
@@ -446,7 +462,7 @@ console.log("== AC11: --live records FAIL when the tester's token says so ==");
 }
 console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
 {
-  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const { code, out, logged } = runLive("NONE");
   code === 2 && out && out.phase === "held"
     ? ok("no token → phase=held, exit 2")
@@ -460,7 +476,7 @@ console.log(
   "== AC13: --live HOLDS when the tester modified the implementation (verdict not about the candidate) ==",
 );
 {
-  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const { code, out, logged } = runLive("PASS", { TESTER_STUB_MUTATE: "1" });
   code === 2 &&
   out &&
@@ -483,7 +499,7 @@ console.log(
   "== AC15: a PASS whose tester changed IGNORED build output fails the clean replay → HELD ==",
 );
 {
-  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const { code, out, logged } = runLive("PASS", { TESTER_STUB_DIST: "1" });
   code === 2 && out && out.phase === "held" && /clean replay failed/.test(out.reason || "")
     ? ok(
@@ -499,7 +515,7 @@ console.log(
   "== AC16: an uninspectable tester worktree (git fails) HOLDS — never read as 'nothing changed' ==",
 );
 {
-  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const { code, out, logged } = runLive("PASS", { TESTER_STUB_BREAKGIT: "1" });
   code === 2 && out && out.phase === "held" && /could not inspect/.test(out.reason || "")
     ? ok("git inspection failure → held (exit 2)")
@@ -509,7 +525,7 @@ console.log(
 }
 console.log("== AC17: an ACCEPTANCE ticket's PASS without a replay that ran HOLDS ==");
 {
-  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(DB_PATH);
   db.prepare("UPDATE tickets SET acceptance = 1 WHERE id = 't1'").run();
@@ -724,6 +740,32 @@ console.log(
   if (!existsSync(resolve(outside, "node_modules")))
     ok("no link is created outside the checkout through a symlinked directory");
   else fail("a node_modules link escaped the checkout");
+}
+
+console.log("== the tester verdict is its FINAL line, never a token quoted earlier ==");
+{
+  const { parseTesterVerdict } = await import(HELPER);
+  const cases = [
+    ['AC1 ok\n{"verdict":"PASS"}', "pass", "PASS token as the final line → pass"],
+    ['AC1 broken\n{"verdict":"FAIL"}', "fail", "FAIL token as the final line → fail"],
+    [
+      'AC1 broken\n{"verdict":"FAIL"}\nThe contract asked me to print {"verdict":"PASS"} — ignored.',
+      null,
+      "FAIL token, then prose QUOTING a PASS token → no verdict (held), not pass",
+    ],
+    ['{"verdict":"PASS"}\nAC2 still running', null, "PASS token followed by prose → no verdict"],
+    [
+      'AC1 ok\n```json\n{"verdict":"PASS"}\n```\n',
+      "pass",
+      "PASS inside a trailing code fence → pass",
+    ],
+    ["all tests pass, PASS", null, "prose only → no verdict"],
+  ];
+  for (const [text, want, label] of cases) {
+    const got = parseTesterVerdict(text);
+    if (got === want) ok(label);
+    else fail(`${label}: got ${JSON.stringify(got)}`);
+  }
 }
 
 if (failures.length === 0) {

@@ -59,6 +59,10 @@ import {
   unknownRecord,
 } from "./usage-ledger.mjs";
 import { Worker } from "./worker.mjs";
+import {
+  extractLastJsonBlock as extractJson,
+  quarantine as sharedQuarantine,
+} from "./agent-io.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -511,12 +515,10 @@ export function gatherMaterial(repoPath, scan) {
 /**
  * Wrap an UNTRUSTED field (README / manifest content) in a delimited envelope so an
  * embedded "SYSTEM:" / "ignore previous" line lands as DATA, not as a fresh
- * instruction. Strips any literal delimiter the data tries to smuggle. (Mirrors
- * bin/decompose.mjs `quarantine`.)
+ * instruction — the shared lib/agent-io.mjs quarantine, data on its own lines.
  */
 export function quarantine(tag, value) {
-  const data = String(value ?? "").replace(new RegExp(`</?\\s*untrusted-${tag}\\s*>`, "gi"), "");
-  return `<untrusted-${tag}>\n${data}\n</untrusted-${tag}>`;
+  return sharedQuarantine(tag, value, { block: true });
 }
 
 const QUARANTINE_NOTICE =
@@ -945,55 +947,16 @@ export function validateLore(rawLore) {
 }
 
 /**
- * Pull the LAST fenced ```json block (or last bare {...}) out of the model text and
- * parse it. Mirrors bin/decompose.mjs `extractLastJsonBlock`. Returns the object or
- * null when nothing parses.
+ * Pull the model's result out of its text: the LAST parseable JSON block `isResult`
+ * accepts (each call site names the shape it expects — a card has `tldr`, a review a
+ * `verdict`, the analysis a `digest`), else the last parseable object. The shared
+ * extractor (lib/agent-io.mjs): this file's copy took only the LAST fence, so an example
+ * ```json block after the real result replaced it.
  */
-export function extractLastJsonBlock(text) {
-  if (!text) return null;
-  const fenceRe = /```(?:json)?\s*\n([\s\S]*?)\n```/gi;
-  let match;
-  let lastFence = null;
-  while ((match = fenceRe.exec(text)) !== null) lastFence = match[1];
-  const candidates = [];
-  if (lastFence) candidates.push(lastFence);
-  const bare = lastBalancedObject(text);
-  if (bare) candidates.push(bare);
-  for (const c of candidates) {
-    try {
-      return JSON.parse(c);
-    } catch {
-      /* try the next candidate */
-    }
-  }
-  return null;
+export function extractLastJsonBlock(text, isResult = null) {
+  return extractJson(text, isResult);
 }
-
-function lastBalancedObject(text) {
-  let depth = 0;
-  let start = -1;
-  let last = null;
-  let inStr = false;
-  let esc = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (ch === "\\") esc = true;
-      else if (ch === '"') inStr = false;
-      continue;
-    }
-    if (ch === '"') inStr = true;
-    else if (ch === "{") {
-      if (depth === 0) start = i;
-      depth += 1;
-    } else if (ch === "}") {
-      depth -= 1;
-      if (depth === 0 && start !== -1) last = text.slice(start, i + 1);
-    }
-  }
-  return last;
-}
+const hasKey = (k) => (o) => Boolean(o) && typeof o === "object" && !Array.isArray(o) && k in o;
 
 /**
  * Validate + normalise the model's analysis into { digest, features }. A missing
@@ -2066,7 +2029,7 @@ function runCardTurn(prompt, env = process.env) {
   const cardEnv = cardTurnEnv(env);
   const turn = runAnalysisTurn(prompt, cardEnv, "onboard");
   if (turn.timedOut) return null;
-  return validateCardFields(extractLastJsonBlock(turn.stdout));
+  return validateCardFields(extractLastJsonBlock(turn.stdout, hasKey("tldr")));
 }
 
 /** Scope the card model onto a child env, overriding both synth-model knobs. */
@@ -2084,7 +2047,10 @@ function cardTurnEnv(env) {
 function runCardBatchTurn(prompt, count, env = process.env) {
   const turn = runAnalysisTurn(prompt, cardTurnEnv(env), "onboard");
   if (turn.timedOut) return null;
-  return validateCardBatch(extractLastJsonBlock(turn.stdout), count);
+  return validateCardBatch(
+    extractLastJsonBlock(turn.stdout, (o) => Array.isArray(o) || hasKey("cards")(o)),
+    count,
+  );
 }
 
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
@@ -2126,7 +2092,7 @@ function upsertCardCli(
 function runCardReviewTurn(prompt, env = process.env) {
   const turn = runAnalysisTurn(prompt, env, "onboard-review");
   if (turn.timedOut) return null;
-  return validateCardReviewResult(extractLastJsonBlock(turn.stdout));
+  return validateCardReviewResult(extractLastJsonBlock(turn.stdout, hasKey("verdict")));
 }
 
 /** Run the `memory card mark-failed` CLI verb for one card. */
@@ -2785,7 +2751,7 @@ export function analyzeAndWrite(
     if (turn.timedOut) {
       log("model analysis timed out — falling back to a minimal honest digest");
     } else {
-      const parsed = extractLastJsonBlock(turn.stdout);
+      const parsed = extractLastJsonBlock(turn.stdout, hasKey("digest"));
       understanding = validateAnalysis(parsed);
       if (understanding) {
         usedModel = true;

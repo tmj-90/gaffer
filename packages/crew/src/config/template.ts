@@ -196,6 +196,14 @@ loops:
     repos: [] # strict opt-in — empty means NO repos are auto-promoted
     max_risk: low # only repos at/below this risk level may be promoted
     max_ready_per_run: 1 # hard cap on auto-promotions per idle tick
+  # Tool-backed scan oracles. OFF by default (the scan loops use grep heuristics).
+  # When on, the type-quality loop runs \`tsc --noEmit\` and the security loop
+  # \`semgrep\` (needs a LOCAL ruleset in GAFFER_SEMGREP_RULESET) in each repo,
+  # ON THE HOST, in the repo's checkout. Binaries come from PATH only, never the
+  # repo's node_modules/.bin. eslint / knip are not offered: they load repo JS.
+  oracles:
+    enabled: false
+    tools: [tsc, semgrep]
 
 # Context-packet token hygiene. Caps keep each per-ticket packet lean and
 # pre-filtered to the ticket's stack/area. Token cost per packet is measured and

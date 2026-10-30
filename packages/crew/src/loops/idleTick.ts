@@ -9,6 +9,7 @@ import { resolveAsyncMemory } from "../memory/factory.js";
 import type { AsyncMemoryClient } from "../memory/mcpClient.js";
 import { withDispatchRepos } from "../registry/dispatchRepos.js";
 import type { IdleLoopDeps } from "./idleLoop.js";
+import { buildOracleSet } from "./oracles/build.js";
 import {
   runIdleFeatureBacklog,
   runIdleLoops,
@@ -50,6 +51,8 @@ export interface IdleTickResult {
 export async function runIdleTick(deps: IdleTickDeps): Promise<IdleTickResult> {
   const { config, events } = deps;
   const repoRegistry = withDispatchRepos(deps.repoRegistry, deps.dispatch, events);
+  // Tool-backed oracles only when `loops.oracles.enabled` (default off).
+  const oracles = deps.oracles ?? buildOracleSet(deps.runner, config);
   const baseDeps: IdleLoopDeps = {
     config,
     repoRegistry,
@@ -57,6 +60,7 @@ export async function runIdleTick(deps: IdleTickDeps): Promise<IdleTickResult> {
     runner: deps.runner,
     events,
     clock: deps.clock,
+    ...(oracles ? { oracles } : {}),
   };
 
   // Pull real labelled GitHub/Jira issues BEFORE the scan loops, so an idle tick

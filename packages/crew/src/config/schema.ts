@@ -361,6 +361,19 @@ export const loopsSchema = z
         max_ready_per_run: z.number().int().positive().default(1),
       })
       .default({}),
+    // Tool-backed scan oracles (I2). OFF by default: when off the scan loops use
+    // their grep heuristics exactly as before. When on, the type-quality loop
+    // consults `tsc --noEmit` and the security loop `semgrep` (with a LOCAL
+    // ruleset, GAFFER_SEMGREP_RULESET) instead. Only these two: eslint / knip
+    // load the repo's own JS config, so they would run repo code on the host.
+    // The binaries are resolved from PATH only — never the repo's
+    // node_modules/.bin, which the repo (and the agents writing it) controls.
+    oracles: z
+      .object({
+        enabled: z.boolean().default(false),
+        tools: z.array(z.enum(["tsc", "semgrep"])).default(["tsc", "semgrep"]),
+      })
+      .default({}),
   })
   .default({});
 

@@ -24,6 +24,7 @@ import { ingestGithubIssues } from "../ingest/githubIssues.js";
 import { ingestJiraIssues } from "../ingest/jiraIssues.js";
 import { runMaintenanceLane } from "../loops/idleRegistry.js";
 import { runIdleTick } from "../loops/idleTick.js";
+import { buildOracleSet } from "../loops/oracles/build.js";
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
@@ -429,6 +430,8 @@ program
     // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
     // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
     const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
+    // Tool-backed oracles only when `loops.oracles.enabled` (default off).
+    const oracles = buildOracleSet(systemCommandRunner, loaded.config);
     const baseDeps = {
       config: loaded.config,
       repoRegistry,
@@ -436,6 +439,7 @@ program
       runner: systemCommandRunner,
       events,
       clock: systemClock,
+      ...(oracles ? { oracles } : {}),
     };
 
     // Cursor path precedence: explicit config override → $GAFFER_DATA →

@@ -57,6 +57,14 @@ README documents `scan`, `run`, `stats`, `safety check` as user-facing.
 3. **Keep, opt-in and documented as such:** `loops/*`, `ingest/*`, `crew-mcp`. They
    are advertised product surface (README, ARCHITECTURE) reachable from the
    dashboard's idle-loop toggle or by running the MCP server; dormant is not dead.
+   The tool-backed scan oracles (`loops/oracles/*`, ~650 lines) used to be
+   unreachable (no production caller set `IdleLoopDeps.oracles`). They are now
+   wired through `buildOracleSet` behind `loops.oracles.enabled` (default **off**,
+   so default behaviour is unchanged): tsc and semgrep only, resolved from PATH,
+   never the repo's `node_modules/.bin`. The eslint and knip oracles stay
+   test-only: they load the repo's own JS config, so they would run repo code on
+   the host until idle commands run inside a sandbox. Deleting them instead is the
+   remaining product call.
 4. **Candidates to delete — a product call, not made here:** `crew run` (mock-only
    demo; `runner/CLAUDE.md` already calls it that) with `implementationLoop.ts`,
    `hooks/*` and `postconditions.ts`; `crew stats`; `repo rescan` /

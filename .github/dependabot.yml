@@ -5,13 +5,47 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    # Group minor and patch bumps into a single PR to reduce noise.
-    # Major bumps are left ungrouped so each gets individual review.
+    # Groups are matched in order, so the test-runner group must come first.
     groups:
+      # vitest and @vitest/coverage-v8 must move together (a coverage provider only
+      # runs on its own vitest major), so ALL their bumps — majors included — arrive
+      # as ONE PR. Note: vitest 4 + coverage-v8 4 is green but moves every package's
+      # coverage numbers below its floor; re-baselining the floors is an owner call.
+      test-runner:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
+        update-types:
+          - major
+          - minor
+          - patch
+      # Group minor and patch bumps into a single PR to reduce noise.
+      # Major bumps are left ungrouped so each gets individual review.
       minor-and-patch:
         update-types:
           - minor
           - patch
+    ignore:
+      # @types/node must match the declared runtime floor (engines: node >=22). A
+      # newer major would let code that calls Node 24+ APIs typecheck while the
+      # factory still supports Node 22. Raise this with the engines floor.
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+      # HELD majors, scoped to the versions known not to build, so the NEXT major
+      # still arrives as a reminder. Remove an entry when its migration starts.
+      # zod 4: dispatch fails to build (one-arg z.record in api/schemas.ts, the route
+      # types in api/routes/api.ts) and the hand-rolled api/openapi/zodJsonSchema.ts
+      # throws UnsupportedZodType — migrate (consider zod 4's native z.toJSONSchema).
+      - dependency-name: "zod"
+        versions:
+          - ">=4.0.0 <5"
+      # TypeScript 6/7: TS 7 drops the implicit node types (TS2591 on process /
+      # node:child_process — each tsconfig needs types: ["node"]) and typescript-eslint
+      # does not support it yet.
+      - dependency-name: "typescript"
+        versions:
+          - ">=6.0.0 <8"
     open-pull-requests-limit: 10
 
   - package-ecosystem: github-actions

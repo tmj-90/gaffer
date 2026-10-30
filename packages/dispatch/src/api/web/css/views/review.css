@@ -1,7 +1,9 @@
-/* Review — the gaffer's sign-off. Each change is a programme page: title,
-   evidence, the Definition-of-Done board, the diff, then the decision row
-   (Approve is the one action fill; Won't do is danger and set apart).
-   The diff styles here are shared with the ticket page. */
+/* Review — the gaffer's sign-off, one change per page. The queue runs across
+   the top as fixture tabs; the claret sign-off block (Approve is the one action
+   fill; Won't do is danger and set apart) sits beside the diff, with the flags
+   as yellow cards, the gates and the evidence under it. The diff file list
+   carries goal-difference bars. The diff styles here are shared with the
+   ticket page. */
 
 @layer views {
   /* --- the queue: one tab per change waiting ------------------------------- */
@@ -126,14 +128,42 @@
   .review-card-actions .btn.danger {
     margin-left: auto;
   }
-  .rv-done {
-    font: 700 var(--t16) / 1.4 var(--f-text);
-    padding: 10px 12px;
-    background: var(--ok-wash);
-    border-radius: var(--r);
+  /* After Approve: a sky-wash band across the foot of the block says where the
+     change went; the next change is its own link, never an automatic move. */
+  .rv-done:not([hidden]) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 12px;
+    margin: 0 calc(-1 * var(--s4)) calc(-1 * var(--s4));
+    padding: 12px var(--s4) 14px;
+    border-top: var(--hair);
+    background: var(--sky-wash);
+    font: 400 var(--t14) / 1.45 var(--f-text);
+    max-width: none;
+  }
+  .rv-done:focus {
+    outline: none;
   }
   .rv-done:focus-visible {
     outline: 3px solid var(--focus);
+    outline-offset: -3px;
+  }
+  .rv-next-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    font-weight: 700;
+  }
+  .signoff-btn.is-approved:disabled {
+    opacity: 1;
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--ink);
+  }
+  .rv-tab-done {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    color: var(--ink-2);
   }
   .rv-keys {
     font: 600 var(--t12) / 1.6 var(--f-cond);
@@ -141,9 +171,6 @@
   }
   .rv-keys .kbd {
     margin: 0 2px;
-  }
-  .rv-next {
-    font: 700 var(--t14) / 1.4 var(--f-text);
   }
   @media (hover: none) and (pointer: coarse) {
     .rv-keys {
@@ -196,7 +223,12 @@
     font-size: var(--t14);
     color: var(--ink-2);
   }
-  .rv-ac .ac-list {
+  .rv-h3 {
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    text-transform: uppercase;
+    margin-top: var(--s2);
+  }
+  .ac-list {
     display: grid;
   }
   .ac-row {
@@ -228,12 +260,9 @@
     color: var(--ink-2);
     white-space: nowrap;
   }
-  .rv-evidence > summary {
-    font: 800 var(--t20) / 1 var(--f-display);
-    text-transform: uppercase;
-  }
-  .rv-evidence[open] > summary {
-    margin-bottom: var(--s3);
+  .rv-evid {
+    display: grid;
+    gap: var(--s3);
   }
   .rv-gone {
     display: grid;
@@ -250,19 +279,42 @@
     color: var(--ink);
   }
 
-  /* Evidence well: who said what, with provenance. */
+  /* Evidence: a minute list, oldest first — when · who · kind · what it says. */
   .review-evidence {
+    border: var(--frame);
+    border-radius: var(--r);
+    background: var(--paper);
+    padding: 4px var(--s4);
+  }
+  .evi-list {
     display: grid;
-    gap: 0;
   }
   .review-evi {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 4px 10px;
+    grid-template-columns: 48px minmax(0, 1fr);
+    gap: 10px;
     align-items: baseline;
-    padding: 7px 0;
-    border-bottom: var(--hair);
+    padding: 10px 0;
+    border-top: var(--hair);
     font-size: var(--t14);
+  }
+  .review-evi:first-child {
+    border-top: 0;
+  }
+  .evi-time {
+    font: 700 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .evi-main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .evi-prov {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
   }
   .evi-who {
     display: inline-flex;
@@ -273,37 +325,57 @@
   }
   .evi-summary {
     overflow-wrap: anywhere;
+    max-width: none;
   }
-  .evi-prov,
-  .evi-ac {
-    grid-column: 2;
+  .evi-more > summary {
+    font: 700 var(--t12) / 1.6 var(--f-cond);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .evi-pre {
+    margin-top: 6px;
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: 12px / 1.5 var(--f-mono);
+    padding: 8px 10px;
+    background: var(--ground);
+    border-radius: var(--r);
+  }
+  .evi-link {
+    justify-self: start;
+    font-weight: 700;
   }
 
-  /* Definition-of-Done board: ✓ / ✗ / skip, one line per gate. */
+  /* Definition-of-Done gates: mark · gate · repo · command · passed/failed. */
   .review-dod {
-    border: var(--frame);
-    border-radius: var(--r);
-    padding: 10px 14px;
-    background: var(--paper);
-  }
-  .review-dod.dod-fail {
-    border-color: var(--red);
+    display: grid;
+    gap: 6px;
   }
   .dod-list {
     display: grid;
   }
   .dod-item {
-    display: flex;
-    gap: 8px;
-    align-items: baseline;
-    flex-wrap: wrap;
-    padding: 4px 0;
+    display: grid;
+    grid-template-columns: 22px 96px minmax(0, max-content) minmax(0, 1fr) auto;
+    gap: 4px 10px;
+    align-items: center;
+    padding: 7px 0;
+    border-top: var(--hair);
     font-size: var(--t14);
   }
+  .dod-item:first-child {
+    border-top: 0;
+  }
   .dod-mark {
-    width: 1.2em;
-    display: inline-block;
-    font-weight: 800;
+    display: inline-grid;
+    place-items: center;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--r-round);
+    font: 800 13px / 1 var(--f-text);
+    border: 2px solid currentColor;
   }
   .dod-mark.dod-pass {
     color: var(--ok);
@@ -316,6 +388,28 @@
   }
   .dod-gate {
     font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+  .dod-cmd {
+    color: var(--ink-2);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .dod-word {
+    grid-column: 5;
+    grid-row: 1;
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .dod-w-fail {
+    color: var(--red);
+  }
+  .dod-note {
+    grid-column: 2 / -1;
+    color: var(--red);
+    overflow-wrap: anywhere;
   }
   ul.clean,
   ol.clean {
@@ -324,54 +418,55 @@
   }
 
   /* --- the diff (review + ticket) ------------------------------------------------ */
+  /* A repo's diff: a caption (repo · base…branch · totals), the file list in its
+     own frame with goal-difference bars, then one framed block per file with a
+     scoreboard-black head. A flagged file carries a yellow ring. */
   .diff-box {
     display: grid;
-    gap: var(--s3);
+    gap: var(--s4);
     min-width: 0;
   }
   .diff-section {
-    border: var(--frame);
-    border-radius: var(--r);
-    background: var(--paper);
-    overflow: hidden;
+    display: grid;
+    gap: var(--s4);
     min-width: 0;
   }
   .diff-head {
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 12px;
-    padding: 8px 12px;
-    background: var(--board);
-    color: var(--board-ink);
+    align-items: baseline;
+    gap: 4px 12px;
     font-size: var(--t14);
+    color: var(--ink-2);
   }
-  .diff-head .mono {
-    color: var(--board-ink);
+  .diff-repo {
+    font-weight: 700;
+    color: var(--ink);
   }
-  .diff-branch {
-    color: var(--board-ink-2);
+  .diff-branch .mono {
+    color: var(--ink-2);
   }
   .diff-stats {
     display: flex;
     gap: 8px;
-    align-items: center;
+    align-items: baseline;
     margin-left: auto;
   }
   .diff-stat {
     font: 700 var(--t14) var(--f-cond);
   }
-  .diff-head .diff-add-stat {
-    color: #8ee0a8;
+  .diff-stat.warn {
+    color: var(--ink);
+    background: var(--mark-wash);
+    padding: 0 6px;
+    border-radius: var(--r);
   }
-  .diff-head .diff-del-stat {
-    color: #ff9ea8;
-  }
-  .diff-head .diff-stat.dim {
-    color: var(--board-ink-2);
-  }
-  .diff-head .diff-stat.warn {
-    color: var(--yellow);
+  /* On Review the header line above already names the branch and totals. */
+  .view-review
+    .diff-box:not(.is-multi)
+    .diff-section:not(.is-truncated, .is-unavailable)
+    > .diff-head {
+    display: none;
   }
   .diff-add-stat {
     color: var(--add);
@@ -382,15 +477,18 @@
   /* The file list: flag · path · +/− · goal-difference bar. */
   .diff-filestrip {
     display: grid;
-    border-bottom: var(--frame);
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+    overflow: hidden;
   }
   .diff-filejump {
     display: grid;
-    grid-template-columns: 18px minmax(0, 1fr) auto auto;
+    grid-template-columns: 18px minmax(0, 1fr) auto 128px;
     align-items: center;
     gap: 10px;
     width: 100%;
-    min-height: 34px;
+    min-height: 36px;
     padding: 6px 12px;
     border: 0;
     border-top: var(--hair);
@@ -398,6 +496,10 @@
     color: var(--ink);
     text-align: left;
     font-size: var(--t14);
+    cursor: pointer;
+  }
+  .diff-filejump.is-static {
+    cursor: default;
   }
   .diff-filejump:first-child {
     border-top: 0;
@@ -407,6 +509,9 @@
   }
   .diff-filejump:hover .diff-filejump-path {
     text-decoration: underline;
+  }
+  .diff-filejump:focus-visible {
+    outline-offset: -3px;
   }
   .diff-filejump-path {
     overflow-wrap: anywhere;
@@ -434,6 +539,67 @@
   .diff-file-risk {
     flex: none;
   }
+  .diff-files {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s4);
+  }
+  .diff-box > *,
+  .diff-files > *,
+  .diff-section > * {
+    min-width: 0;
+  }
+  .diff-file-block {
+    display: block;
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .diff-file-block.is-flagged {
+    box-shadow: 0 0 0 3px var(--yellow);
+  }
+  .diff-file-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    padding: 8px 12px;
+    font-size: var(--t14);
+    background: var(--board);
+    color: var(--board-ink);
+    cursor: pointer;
+    list-style: none;
+  }
+  .diff-file-summary::-webkit-details-marker {
+    display: none;
+  }
+  .diff-file-chev {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    transition: transform var(--ease);
+  }
+  .diff-file-block[open] > .diff-file-summary .diff-file-chev {
+    transform: rotate(90deg);
+  }
+  .diff-file-summary .diff-add-stat {
+    color: #8ee0a8;
+  }
+  .diff-file-summary .diff-del-stat {
+    color: #ff9ea8;
+  }
+  .diff-file-summary :focus-visible,
+  .diff-file-summary:focus-visible {
+    outline-color: var(--yellow);
+    outline-offset: -3px;
+  }
+  .diff-file-path {
+    overflow-wrap: anywhere;
+    min-width: 0;
+    flex: 1;
+    color: var(--board-ink);
+  }
   .diff-file-tag {
     font: 700 var(--t12) / 1 var(--f-cond);
     padding: 3px 6px;
@@ -448,50 +614,11 @@
     gap: 10px;
     padding: 8px 12px;
     background: var(--mark-wash);
-    font-size: var(--t14);
+    border-bottom: var(--hair);
+    font: 600 var(--t14) / 1.4 var(--f-text);
     overflow-wrap: anywhere;
     /* A banner across the block, not a paragraph measure (base p is 75ch). */
     max-width: none;
-  }
-  .diff-file-block.is-flagged {
-    box-shadow: inset 0 0 0 3px var(--yellow);
-  }
-  .diff-files {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .diff-box > *,
-  .diff-files > *,
-  .diff-section > * {
-    min-width: 0;
-  }
-  .diff-file-block + .diff-file-block {
-    border-top: var(--frame);
-  }
-  .diff-file-summary {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    font-size: var(--t14);
-    background: var(--board);
-    color: var(--board-ink);
-  }
-  .diff-file-summary .diff-add-stat {
-    color: #8ee0a8;
-  }
-  .diff-file-summary .diff-del-stat {
-    color: #ff9ea8;
-  }
-  .diff-file-summary :focus-visible,
-  .diff-file-summary:focus-visible {
-    outline-color: var(--yellow);
-  }
-  .diff-file-path {
-    overflow-wrap: anywhere;
-    min-width: 0;
-    flex: 1;
-    color: var(--board-ink);
   }
   .diff-block-banner {
     margin: 0;
@@ -526,32 +653,6 @@
   .diff-line.diff-del::before {
     content: "";
   }
-  .diff-file-block {
-    display: block;
-  }
-  .view-review .risk-overlay {
-    display: none;
-  }
-  .diff-line[data-ln]::before,
-  .diff-line.diff-del::before {
-    content: attr(data-ln);
-    display: inline-block;
-    width: 3.2em;
-    margin-left: -12px;
-    padding-right: 10px;
-    text-align: right;
-    color: var(--ink-2);
-    user-select: none;
-  }
-  .diff-line.diff-del::before {
-    content: "";
-  }
-  .diff-file-block {
-    display: block;
-  }
-  .view-review .risk-overlay {
-    display: none;
-  }
   .diff-line.diff-add {
     background: var(--add-wash);
   }
@@ -566,8 +667,11 @@
     color: var(--ink-2);
     font-weight: 700;
   }
+  .view-review .risk-overlay {
+    display: none;
+  }
 
-  /* Advisory risk overlay (never gates approval). */
+  /* Advisory risk overlay (never gates approval): the ticket page's summary of it. */
   .risk-overlay {
     display: flex;
     flex-wrap: wrap;
@@ -575,11 +679,14 @@
     gap: 6px;
     padding: 8px 12px;
     background: var(--mark-wash);
-    border-bottom: var(--hair);
+    border: var(--frame);
+    border-radius: var(--r);
     font-size: var(--t14);
   }
   .risk-overlay.risk-none {
     background: none;
+    border-style: dashed;
+    border-width: 1px;
     color: var(--ink-2);
   }
   .risk-lead {
@@ -623,11 +730,21 @@
       display: none;
     }
     .review-evi {
-      grid-template-columns: minmax(0, 1fr);
+      grid-template-columns: 40px minmax(0, 1fr);
+      gap: 8px;
     }
-    .evi-prov,
-    .evi-ac {
-      grid-column: 1;
+    .dod-item {
+      grid-template-columns: 22px minmax(0, 1fr) auto;
+    }
+    .dod-repo {
+      display: none;
+    }
+    .dod-word {
+      grid-column: 3;
+    }
+    .dod-cmd,
+    .dod-note {
+      grid-column: 2 / -1;
     }
   }
 }

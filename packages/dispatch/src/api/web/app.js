@@ -5858,9 +5858,9 @@ function runDuration(run) {
 }
 
 /** Open the captured log for a finished run in a sheet (best-effort fetch). */
-async function viewRunLog(run) {
+async function viewRunLog(run, title) {
   const body = el("div", { class: "run-log" }, [el("p", { class: "dim" }, "Loading log…")]);
-  openSheet(`${runKindLabel(run.kind)} log`, body);
+  openSheet(title || `${runKindLabel(run.kind)} log`, body);
   try {
     const tok = authToken();
     const res = await fetch(`/api/runs/${encodeURIComponent(run.id)}/log`, {
@@ -5879,7 +5879,12 @@ async function viewRunLog(run) {
     }
     const text = await res.text();
     body.appendChild(
-      el("pre", { class: "run-log-pre" }, text && text.trim() ? text : "(log is empty)"),
+      // A long log scrolls inside its <pre>: focusable and named (axe scrollable-region-focusable).
+      el(
+        "pre",
+        { class: "run-log-pre", tabindex: "0", role: "region", "aria-label": "Run log" },
+        text && text.trim() ? text : "(log is empty)",
+      ),
     );
   } catch {
     clear(body);
@@ -5984,7 +5989,16 @@ function viewRunDetail(runId, kindLabel) {
 
     if (detail.log_tail) {
       logSection.appendChild(
-        el("pre", { class: "run-log-pre run-detail-log-pre" }, detail.log_tail),
+        el(
+          "pre",
+          {
+            class: "run-log-pre run-detail-log-pre",
+            tabindex: "0",
+            role: "region",
+            "aria-label": "Run log, latest lines",
+          },
+          detail.log_tail,
+        ),
       );
     } else if (detail.run.status !== "running") {
       logSection.appendChild(el("p", { class: "dim" }, "No log captured for this run."));
@@ -7230,7 +7244,7 @@ function refCard(kind) {
 }
 
 /** The sentence under a ticket's title: where it stands, in plain words, from its data. */
-function ticketLede(t, trail, events) {
+function ticketLede(t, trail, events, doneAt) {
   const last = trail[trail.length - 1];
   const f = last ? parseFailure(last.distilled_failure) : null;
   const max = last && last.max_attempts ? last.max_attempts : null;
@@ -7268,7 +7282,25 @@ function ticketLede(t, trail, events) {
     case "ready_for_merge":
       return [el("b", {}, "Approved. "), "It waits for the merge."];
     case "done":
-      return [el("b", {}, "Done. "), "Merged and delivered."];
+      return [
+        el("b", {}, "Done. "),
+        `Merged${doneAt ? ` ${fmtTime(doneAt)}` : ""}, ${
+          trail.length ? `after ${plural(trail.length, "rework")}.` : "first time, with no rework."
+        }`,
+      ];
+    case "in_testing":
+      return [
+        el("b", {}, "In testing. "),
+        "An independent tester is checking it against its test contract before it can merge.",
+      ];
+    case "claimed":
+    case "in_progress": {
+      const by = deliveredBy(events);
+      return [
+        el("b", {}, `${statusLabel(t.status)}. `),
+        by ? `${by} is on it.` : "An agent is on it.",
+      ];
+    }
     case "ready":
       return [el("b", {}, "Ready. "), "The next free agent can claim it."];
     case "draft":
@@ -7360,10 +7392,15 @@ function renderFailureHistory(trail) {
   if (!Array.isArray(trail) || trail.length === 0) return null;
   const max = trail[trail.length - 1].max_attempts;
   const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
-  const goal = (i) =>
+  const goal = (i, taken = true) =>
     svgEl(
       "svg",
-      { viewBox: "0 0 180 100", class: "shoot", "aria-hidden": "true", focusable: "false" },
+      {
+        viewBox: "0 0 180 100",
+        class: taken ? "shoot" : "shoot is-untaken",
+        "aria-hidden": "true",
+        focusable: "false",
+      },
       [
         svgEl("rect", { x: 0, y: 0, width: 180, height: 100, class: "shoot-grass" }),
         svgEl("path", { d: "M20 100 V20 H160 V100", class: "shoot-post" }),
@@ -7373,11 +7410,18 @@ function renderFailureHistory(trail) {
         ...Array.from({ length: 4 }, (_, k) =>
           svgEl("line", { x1: 20, y1: 36 + k * 16, x2: 160, y2: 36 + k * 16, class: "shoot-net" }),
         ),
-        // A miss: the ball off the frame, a cross beside it (position varies by attempt).
-        svgEl("g", { transform: `translate(${[150, 30, 160][i % 3]} ${[16, 14, 70][i % 3]})` }, [
-          svgEl("circle", { r: 11, class: "shoot-ball" }),
-          svgEl("path", { d: "M-9 -9 L9 9 M9 -9 L-9 9", class: "shoot-x" }),
-        ]),
+        taken
+          ? // A miss: the ball off the frame, a cross beside it (position varies by attempt).
+            svgEl(
+              "g",
+              { transform: `translate(${[150, 30, 160][i % 3]} ${[16, 14, 70][i % 3]})` },
+              [
+                svgEl("circle", { r: 11, class: "shoot-ball" }),
+                svgEl("path", { d: "M-9 -9 L9 9 M9 -9 L-9 9", class: "shoot-x" }),
+              ],
+            )
+          : // Not taken: the ball still on the spot.
+            svgEl("circle", { cx: 90, cy: 86, r: 9, class: "shoot-ball is-spot" }),
       ],
     );
   return el("section", { class: "card failure-history" }, [
@@ -7421,6 +7465,16 @@ function renderFailureHistory(trail) {
           ]),
         ]);
       }),
+      // The kicks still to come (or never taken, once the runner parked it).
+      ...Array.from({ length: Math.max(0, (Number(max) || 0) - trail.length) }, (_, k) =>
+        el("li", { class: "failure-kick-none" }, [
+          goal(trail.length + k, false),
+          el("div", { class: "failure-attempt-head" }, [
+            el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
+            el("span", { class: "failure-attempt-time" }, "not taken"),
+          ]),
+        ]),
+      ),
     ),
   ]);
 }
@@ -7537,55 +7591,6 @@ async function renderTicket(id) {
       detailBackHash === "#/review" ? "← Back to Review" : "← Back to Work",
     ),
   );
-
-  // Live-delivery log surface: when the factory is actively delivering this
-  // ticket, link straight to the streaming run log so a stuck/hung agent is never
-  // invisible (exactly what was missing when #88 deadlocked on a permission
-  // prompt). Best-effort — never blocks the ticket render.
-  const DELIVERING_STATUSES = new Set(["in_progress", "claimed", "in_testing"]);
-  if (DELIVERING_STATUSES.has(t.status)) {
-    const deliveringBanner = el("div", { class: "delivering-banner" }, [
-      el("span", { class: "delivering-dot" }),
-      el("span", {}, "Delivering…"),
-    ]);
-    wrap.appendChild(deliveringBanner);
-    (async () => {
-      try {
-        const runs = await api("GET", "/api/runs?active=1");
-        const run = (runs.active || []).find((r) => r.ticket_number === t.number);
-        clear(deliveringBanner);
-        if (run) {
-          deliveringBanner.append(
-            el("span", { class: "delivering-dot" }),
-            el("span", {}, `Delivering — ${runKindLabel(run.kind)}`),
-            el(
-              "button",
-              {
-                class: "btn small run-viewlog",
-                type: "button",
-                onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
-              },
-              "View live log →",
-            ),
-          );
-        } else {
-          // Marked delivering but no live run attached ⇒ likely a hung/orphaned
-          // claim (the #88 case). Say so plainly instead of a silent "in progress".
-          deliveringBanner.classList.add("is-warn");
-          deliveringBanner.append(
-            el("span", { class: "delivering-dot is-warn" }),
-            el(
-              "span",
-              {},
-              "Marked delivering, but no live run is attached — it may be stuck or already ended.",
-            ),
-          );
-        }
-      } catch {
-        clear(deliveringBanner);
-      }
-    })();
-  }
 
   const policyBox = el("div");
 
@@ -7880,32 +7885,48 @@ async function renderTicket(id) {
     (view.repositories || []).find((r) => r.access === "write") || view.repositories?.[0];
   const epicScope = (view.scopes || []).find((s) => s.type === "epic");
   const out = t.status === "blocked" || t.status === "failed";
-  const head = el("header", { class: `card tk-head tk-${t.status}${out ? " is-out" : ""}` }, [
-    out ? refCard("red") : null,
-    el("div", { class: "tk-head-main" }, [
-      el("p", { class: "tk-meta" }, [
-        statusBadge(t.status),
-        repoW ? repoTag(repoW.name, 20) : null,
-        riskBadge(t.risk_level),
-        epicScope
-          ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
-          : null,
-        badge(t.policy_pack, "no-dot"),
-        badge(`priority ${t.priority}`, "no-dot"),
-        // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
-        t.delivery_budget_usd != null
-          ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
-          : null,
+  // Yellow: it waits on you (a sign-off, a merge, a capped delivery).
+  const needsYou = ["in_review", "ready_for_merge", "paused"].includes(t.status);
+  const doneAt = t.status === "done" ? sinceStatus(events, "done") || t.updated_at : null;
+  const mark = out
+    ? refCard("red")
+    : needsYou
+      ? refCard("yellow")
+      : t.status === "done"
+        ? fullTimePlaque(doneAt)
+        : null;
+  const head = el(
+    "header",
+    {
+      class: `card tk-head tk-${t.status}${out ? " is-out" : ""}${mark ? " has-mark" : ""}`,
+    },
+    [
+      mark,
+      el("div", { class: "tk-head-main" }, [
+        el("p", { class: "tk-meta" }, [
+          statusBadge(t.status),
+          repoW ? repoTag(repoW.name, 20) : null,
+          riskBadge(t.risk_level),
+          epicScope
+            ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
+            : null,
+          badge(t.policy_pack, "no-dot"),
+          badge(`priority ${t.priority}`, "no-dot"),
+          // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
+          t.delivery_budget_usd != null
+            ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
+            : null,
+        ]),
+        el("h1", { class: "detail-title" }, [
+          el("span", { class: "tk-no" }, t.number != null ? `#${t.number}` : ""),
+          t.number != null ? " " : "",
+          t.title,
+        ]),
+        el("p", { class: "tk-lede" }, ticketLede(t, trail, events, doneAt)),
+        el("div", { class: "tk-dots" }, pipelineDots(t.status)),
       ]),
-      el("h1", { class: "detail-title" }, [
-        el("span", { class: "tk-no" }, t.number != null ? `#${t.number}` : ""),
-        t.number != null ? " " : "",
-        t.title,
-      ]),
-      el("p", { class: "tk-lede" }, ticketLede(t, trail, events)),
-      el("div", { class: "tk-dots" }, pipelineDots(t.status)),
-    ]),
-  ]);
+    ],
+  );
 
   // Claimability only means something before a claim: never "Ready to claim" on a
   // blocked, done or in-flight ticket (the endpoint answers for the dependency gate).
@@ -7915,7 +7936,7 @@ async function renderTicket(id) {
 
   // Your move: what the gaffer can do with this ticket now, in words, then the buttons.
   const moveWords = {
-    blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion below.`,
+    blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion.`,
     failed: `Send #${t.number} back to Ready for another go, or to Refining to rewrite it first.`,
     paused: "Continue resumes the delivery in its worktree; Stop abandons it.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
@@ -7923,6 +7944,8 @@ async function renderTicket(id) {
     in_testing: "The tester owns the verdict. Record it by hand only if you tested it yourself.",
     draft: "Mark it ready when its acceptance criteria say what done means.",
     refining: "Mark it ready when its acceptance criteria say what done means.",
+    ready:
+      "It waits in the fixtures for the next free agent. Nothing to do unless the plan changed.",
     cancelled: "Reopen it to bring it back to Refining.",
   };
   const moveActions = [
@@ -7932,25 +7955,27 @@ async function renderTicket(id) {
     ...headActions,
   ].filter(Boolean);
   const yourMove =
-    moveActions.length || moveWords[t.status]
-      ? el("section", { class: "card panel tk-move" }, [
-          panelHead("Your move", null, null, {
-            kit: out || t.status === "paused" ? "claret" : "ink",
-          }),
-          moveWords[t.status] ? el("p", { class: "tk-move-t" }, moveWords[t.status]) : null,
-          pausedBanner,
-          moveActions.length
-            ? el("div", { class: "btn-row" }, [
-                ...moveActions,
-                el("a", { class: "btn", href: `#/work?status=${t.status}` }, "See it on the board"),
-              ])
-            : null,
-          policyBox,
-          claimBox,
-        ])
-      : el("div", {}, [policyBox, claimBox]);
+    t.status === "done"
+      ? fullTimeCard(t, { trail, events, acList, doneAt })
+      : moveActions.length || moveWords[t.status]
+        ? el("section", { class: "card panel tk-move", "aria-label": "Your move" }, [
+            panelHead("Your move", null, null, {
+              kit: out || needsYou ? "claret" : "ink",
+            }),
+            moveWords[t.status] ? el("p", { class: "tk-move-t" }, moveWords[t.status]) : null,
+            pausedBanner,
+            el("div", { class: "btn-row" }, [
+              ...moveActions,
+              el("a", { class: "btn", href: `#/work?status=${t.status}` }, "See it on the board"),
+            ]),
+            policyBox,
+            claimBox,
+          ])
+        : claimable
+          ? el("div", { class: "tk-claim" }, [policyBox, claimBox])
+          : null;
 
-  const acCard = el("div", { class: "card tk-ac" }, [
+  const acCard = el("section", { class: "card panel tk-ac", "aria-label": "Acceptance criteria" }, [
     panelHead(
       "Acceptance criteria",
       `${acList.filter((a) => a.status === "satisfied").length} of ${acList.length} satisfied`,
@@ -7958,12 +7983,16 @@ async function renderTicket(id) {
     acList.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean tk-ac-list" },
           acList.map((ac) =>
             el(
               "li",
-              {},
+              { class: `ac-${ac.status}` },
               el("div", { class: "ac-item" }, [
+                glyph(
+                  ac.status === "satisfied" ? "done" : ac.status === "failed" ? "failed" : "draft",
+                  16,
+                ),
                 el("div", { class: "ac-text" }, [
                   el("div", {}, ac.text),
                   el(
@@ -7982,59 +8011,83 @@ async function renderTicket(id) {
                     ].join(""),
                   ),
                 ]),
-                badge(ac.status, `ac-${ac.status}`),
+                el("span", { class: "ac-state" }, String(ac.status || "").replace(/_/g, " ")),
               ]),
             ),
           ),
         )
-      : el("p", { class: "dim" }, "No acceptance criteria yet."),
-    renderAddAcForm(t.id),
+      : el("p", { class: "dim" }, "No acceptance criteria yet. Add the first below."),
+    // A shipped or abandoned ticket's criteria are its record, not a to-do list.
+    t.status === "done" || t.status === "cancelled"
+      ? null
+      : el("details", { class: "tk-add-ac", open: acList.length ? null : "" }, [
+          el("summary", {}, "Add a criterion"),
+          renderAddAcForm(t.id),
+        ]),
   ]);
 
-  const sideRepos = renderRepoPanel(t.id, claimBox);
+  // The boundary: which repos this ticket may write, read or test. Read-only once merged.
+  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done" });
 
-  // Diff-in-review: show the real per-repo git diff inline for tickets that are
-  // in review (incl. a reopened-for-review re-approval). Hidden for early-lifecycle
-  // tickets with nothing delivered yet.
-  const showDiff =
+  // The diff: the delivery once it is in review (or shipped), and the work in
+  // progress of a parked or capped delivery when it left a branch. Files fold
+  // here (the file list is the way in); the Review page reads them open.
+  const delivered =
     t.status === "in_review" ||
     t.status === "ready_for_merge" ||
     t.status === "done" ||
     reopenedForReview(events);
-  const diffCard = showDiff
-    ? el("div", { class: "card" }, [
-        el("h2", {}, "Delivery diff"),
-        reopenedForReview(events)
-          ? el("div", { class: "reopen-banner" }, [
-              icon("alert"),
-              "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
-            ])
-          : null,
-        renderTicketDiff(t.id),
+  const wip =
+    !delivered &&
+    Boolean(t.branch_name) &&
+    ["blocked", "failed", "paused", "in_testing", "refining"].includes(t.status);
+  const diffCard =
+    delivered || wip
+      ? el("section", { class: "tk-diff", "aria-label": "Diff" }, [
+          el("h2", { class: "tk-h2" }, [
+            t.status === "done" ? "What shipped" : wip ? "Work in progress" : "The delivery",
+            el(
+              "span",
+              { class: "panel-aux" },
+              t.status === "done" ? "merged" : wip ? "on its branch, not merged" : "on its branch",
+            ),
+          ]),
+          reopenedForReview(events)
+            ? el("div", { class: "reopen-banner" }, [
+                icon("alert"),
+                "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
+              ])
+            : null,
+          (t.status === "done" && shippedFiles(view.evidence || [])) ||
+            renderTicketDiff(t.id, null, { collapsed: true }),
+        ])
+      : null;
+
+  const sideBlockers = blockers.length
+    ? el("section", { class: "card panel tk-blockers", "aria-label": "Blocking decisions" }, [
+        panelHead("Blocking decisions", String(blockers.length), null, { kit: "claret" }),
+        el(
+          "ul",
+          { class: "clean tk-blocker-list" },
+          blockers.map((d) =>
+            el("li", {}, [
+              ycard(18),
+              el("div", {}, [
+                el("strong", {}, d.title),
+                el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
+              ]),
+            ]),
+          ),
+        ),
+        el("a", { class: "panel-link", href: "#/overview" }, "Answer them on the team sheet"),
       ])
     : null;
 
-  const sideBlockers = el("div", { class: "card" }, [
-    el("h2", {}, `Blocking decisions (${blockers.length})`),
-    blockers.length
-      ? el(
-          "ul",
-          { class: "clean" },
-          blockers.map((d) =>
-            el("li", {}, [
-              el("div", {}, el("strong", {}, d.title)),
-              el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
-            ]),
-          ),
-        )
-      : el("p", { class: "dim" }, "Nothing blocking."),
-  ]);
-
-  const sideFields = el("div", { class: "card" }, [
-    el("h2", {}, "Fields"),
+  const sideFields = el("section", { class: "card panel tk-record", "aria-label": "The record" }, [
+    panelHead("The record"),
     el("dl", { class: "kv" }, [
       el("dt", {}, "Branch"),
-      el("dd", {}, t.branch_name || "—"),
+      el("dd", {}, t.branch_name ? el("code", { class: "mono" }, t.branch_name) : "—"),
       el("dt", {}, "PR"),
       el(
         "dd",
@@ -8054,43 +8107,40 @@ async function renderTicket(id) {
       el("dt", {}, "Source"),
       el("dd", {}, t.source || "—"),
       el("dt", {}, "Created"),
-      el("dd", {}, fmtTime(t.created_at)),
+      el("dd", {}, [fmtTime(t.created_at), t.created_by ? ` by ${t.created_by}` : ""]),
       el("dt", {}, "Updated"),
       el("dd", {}, fmtTime(t.updated_at)),
     ]),
   ]);
 
-  const timeline = el("div", { class: "card" }, [
-    el("h2", {}, ["Match report ", el("span", { class: "count" }, `${events.length} events`)]),
-    events.length
+  // The brief: what the ticket asks for, and what it waits on.
+  const deps = view.dependencies || [];
+  const brief = el("section", { class: "card panel tk-brief", "aria-label": "The brief" }, [
+    panelHead("The brief"),
+    t.description
+      ? el("p", { class: "desc" }, t.description)
+      : el("p", { class: "desc dim" }, "No description."),
+    el("h3", { class: "tk-h3" }, "Depends on"),
+    deps.length
       ? el(
           "ul",
-          { class: "timeline" },
-          events.map((ev) =>
-            el("li", {}, [
-              el("div", { class: "ev-type" }, humanizeEvent(ev.event_type)),
-              el("div", { class: "ev-time" }, fmtTime(ev.created_at)),
-              el("div", { class: "ev-actor" }, actorName(ev.actor_type, ev.actor_id)),
-              // TRACE: the runner tick that wrote this event (work_events.correlation_id).
-              // Every event one tick produced — the runner's own calls and the agent's
-              // MCP writes — carries the same id, so the chip shows which events belong
-              // together; `dispatch events list --correlation <id>` prints the whole trail.
-              ev.correlation_id
-                ? el(
-                    "div",
-                    {
-                      class: "ev-tick mono",
-                      title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
-                    },
-                    `tick ${ev.correlation_id}`,
-                  )
-                : null,
-              ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
+          { class: "clean tk-deps" },
+          deps.map((d) =>
+            el("li", { class: `st-${d.status}` }, [
+              glyph(d.status, 16),
+              el("a", { href: `#/ticket/${d.depends_on_ticket_id}` }, [
+                el("b", {}, `#${d.number}`),
+                " ",
+                d.title,
+              ]),
+              el("span", { class: "ac-state" }, statusLabel(d.status)),
             ]),
           ),
         )
-      : el("p", { class: "dim" }, "No events recorded."),
+      : el("p", { class: "dim" }, "Nothing. It can start on its own."),
   ]);
+
+  const timeline = ticketMatchReport(events, view.repositories || []);
 
   // BBT-001: the independent black-box testing card — the testability toggle, the
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
@@ -8100,8 +8150,6 @@ async function renderTicket(id) {
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
-  // Distinct from the board's latest-only rework chip: this is the trail an
-  // operator returns to when triaging why a ticket kept bouncing.
   const failureHistory = renderFailureHistory(trail);
   const failingTest =
     OFF_PITCH.has(t.status) || t.status === "refining" ? failingTestCard(trail) : null;
@@ -8111,27 +8159,394 @@ async function renderTicket(id) {
     .catch(() => {});
 
   // PO-r2 #2: per-delivery memory attribution — what memory was primed into the agent
-  // for this delivery, paired with the outcome (shipped clean vs needed rework), so the
-  // learn-loop is visible. Distinct "no memory primed" state vs "primed" (AC3).
+  // for this delivery, paired with the outcome (shipped clean vs needed rework).
   const memoryPrimed = memoryPrimedPanel(t, view.evidence || [], view.rework_trail || []);
+
+  // The runner's logs for this ticket: live while it is on the pitch, else the record.
+  const runs = ticketRunsPanel(t, events);
+
+  const live = ["claimed", "in_progress"].includes(t.status);
+  const main =
+    t.status === "in_testing"
+      ? [
+          yourMove,
+          testingCard,
+          runs,
+          failingTest,
+          failureHistory,
+          diffCard,
+          sideRepos,
+          memoryPrimed,
+        ]
+      : live
+        ? [runs, yourMove, failureHistory, sideRepos, testingCard, memoryPrimed]
+        : [
+            yourMove,
+            failingTest,
+            failureHistory,
+            diffCard,
+            runs,
+            sideRepos,
+            memoryPrimed,
+            testingCard,
+          ];
 
   wrap.appendChild(head);
   wrap.appendChild(
-    el("div", { class: "detail-grid" }, [
-      el("div", {}, [
-        yourMove,
-        failingTest,
-        failureHistory,
-        diffCard,
-        sideRepos,
-        memoryPrimed,
-        testingCard,
+    el("div", { class: "detail-grid tk-grid" }, [
+      el("div", { class: "tk-main" }, main),
+      el("div", { class: "tk-side" }, [
+        epicCard,
+        sideBlockers,
+        brief,
+        acCard,
         timeline,
+        sideFields,
       ]),
-      el("div", {}, [epicCard, acCard, sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * What shipped, from the delivery's own diff stat (the diff_summary evidence the
+ * runner recorded): after the merge the branch and main agree, so a live diff is
+ * empty. Each file with its goal-difference bar. Null when there is no stat.
+ */
+function shippedFiles(evidence) {
+  const ev = (evidence || []).filter((e) => e.evidence_type === "diff_summary").pop();
+  if (!ev) return null;
+  const rows = [];
+  let total = null;
+  for (const line of String(ev.summary || "").split("\n")) {
+    const m = line.match(/^\s*(\S.*?)\s*\|\s*(\d+)\s*([+-]*)\s*$/);
+    if (m) rows.push({ path: m[1], n: Number(m[2]), marks: m[3] });
+    else if (/files? changed/.test(line)) total = line.trim();
+  }
+  if (!rows.length) return null;
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  return el("div", { class: "diff-box" }, [
+    el("div", { class: "diff-section" }, [
+      el("div", { class: "diff-head" }, [
+        el("span", {}, `From the delivery's diff stat, recorded ${fmtTime(ev.created_at)}`),
+        total ? el("span", { class: "diff-stats" }, total) : null,
+      ]),
+      el(
+        "ul",
+        { class: "diff-filestrip clean", "aria-label": "Files that shipped" },
+        rows.map((r) => {
+          const plus = (r.marks.match(/\+/g) || []).length;
+          const minus = (r.marks.match(/-/g) || []).length;
+          const blocks = Math.max(1, Math.round((r.n / max) * 16));
+          const add = plus + minus ? Math.round((plus / (plus + minus)) * blocks) : blocks;
+          return el("li", { class: "diff-filejump is-static" }, [
+            el("span", { class: "dfj-flag" }),
+            el("code", { class: "mono diff-filejump-path" }, r.path),
+            el("span", { class: "diff-filejump-stat" }, plural(r.n, "line")),
+            el(
+              "span",
+              { class: "gd", "aria-hidden": "true" },
+              Array.from({ length: blocks }, (_, i) =>
+                el("i", { class: i < add ? "gd-a" : "gd-d" }),
+              ),
+            ),
+          ]);
+        }),
+      ),
+    ]),
+  ]);
+}
+
+/** Full time: a done ticket's result in place of a next move — when, how many goes, the criteria. */
+function fullTimeCard(t, { trail, events, acList, doneAt }) {
+  const claimAt = (events || []).find((e) => e.event_type === "claim.created")?.created_at;
+  const sat = acList.filter((a) => a.status === "satisfied").length;
+  const goes = trail.length + 1;
+  const took = claimAt && doneAt ? Date.parse(doneAt) - Date.parse(claimAt) : null;
+  return el("section", { class: "card panel tk-ft", "aria-label": "Full time" }, [
+    panelHead("Full time", doneAt ? fmtTime(doneAt) : null, null, { kit: "ink" }),
+    el("p", { class: "tk-move-t" }, [
+      trail.length
+        ? `Merged after ${plural(trail.length, "rework")}: it went through the gates ${plural(goes, "time")}.`
+        : "Merged first time: it passed the gates on its first delivery.",
+      t.branch_name ? [" Branch ", el("code", { class: "mono" }, t.branch_name), "."] : null,
+    ]),
+    el("div", { class: "kpi-row tk-ft-row" }, [
+      statCell({ label: "Deliveries", value: String(goes) }),
+      statCell({ label: "Reworks", value: String(trail.length) }),
+      statCell({
+        label: "Criteria met",
+        value: acList.length ? `${sat}/${acList.length}` : "—",
+      }),
+      took != null && took >= 0
+        ? statCell({ label: "Claim to merge", value: fmtDuration(took) })
+        : null,
+    ]),
+    el("div", { class: "btn-row" }, [
+      t.pr_url && safeHttpUrl(t.pr_url)
+        ? el(
+            "a",
+            { class: "btn", href: safeHttpUrl(t.pr_url), target: "_blank", rel: "noopener" },
+            "Open the PR",
+          )
+        : null,
+      el("a", { class: "btn", href: "#/work?status=done" }, "See it on the board"),
+    ]),
+  ]);
+}
+
+/** The full-time plaque in a done ticket's head: scoreboard black, the merge date. */
+function fullTimePlaque(at) {
+  return el("div", { class: "ft-plaque", "aria-hidden": "true" }, [
+    el("span", { class: "ft-l" }, "Full time"),
+    el("b", { class: "ft-v" }, at ? fmtDay(at, { weekday: false }) : "Done"),
+    at ? el("span", { class: "ft-t tabnum" }, clockTime(Date.parse(at))) : null,
+  ]);
+}
+
+/** One event as a sentence a manager reads ("Ready → Claimed"), and the glyph it carries. */
+function eventSentence(ev, repos) {
+  const p = parseJsonSafe(ev.payload_json) || {};
+  const who = actorName(ev.actor_type, ev.actor_id);
+  const repoName = (id) => (repos || []).find((r) => r.id === id)?.name || "a repo";
+  const reason = typeof p.reason === "string" && /\s/.test(p.reason) ? p.reason : null;
+  switch (ev.event_type) {
+    case "ticket.created":
+      return { text: `Created by ${who}`, st: "draft" };
+    case "ticket.transitioned":
+      return {
+        text: `${statusLabel(p.from || "?")} → ${statusLabel(p.to || "?")}`,
+        note: reason,
+        st: p.to || null,
+      };
+    case "claim.created":
+      return { text: `Claimed by ${who}`, st: "claimed" };
+    case "claim.released":
+      return { text: "Claim released" };
+    case "ticket.reworking":
+      return {
+        text: `Rework ${p.attempt ?? "?"}${p.max_attempts ? `/${p.max_attempts}` : ""}${p.gate ? `: the ${p.gate} gate failed` : ""}`,
+        note: p.reason || null,
+        st: "failed",
+      };
+    case "ticket.blocked":
+      return { text: "Parked: it needs you", note: p.reason || null, st: "blocked" };
+    case "ticket.delivery_recorded":
+      return { text: p.branch_name ? `Delivered on ${p.branch_name}` : "Delivery recorded" };
+    case "ticket.repo_delivery_recorded":
+      return {
+        text: `${repoName(p.repo_id)}: ${String(p.status || "delivery").replace(/_/g, " ")}`,
+      };
+    case "ticket.repo_access_set":
+      return { text: `Boundary: ${repoName(p.repo_id)} set to ${p.access || "?"}` };
+    case "evidence.recorded":
+      return { text: `Evidence: ${evidenceKind(p.evidence_type)}` };
+    case "ac.added":
+      return { text: "Criterion added", note: p.text || null };
+    case "ticket.dependency_added":
+      return { text: `Now depends on #${p.depends_on_number ?? "?"}` };
+    case "ticket.paused":
+      return { text: "Paused at a cap", note: p.reason || null, st: "paused" };
+    default:
+      return { text: humanizeEvent(ev.event_type), note: reason };
+  }
+}
+
+/**
+ * The match report: every event, minute by minute, grouped by day — a sentence,
+ * who did it, and the tick it was written in. The raw payload is one switch away.
+ */
+function ticketMatchReport(events, repos) {
+  let day = "";
+  const list = el(
+    "ol",
+    { class: "timeline clean tk-report-list" },
+    events.map((ev) => {
+      const s = eventSentence(ev, repos);
+      const d = fmtDay(ev.created_at);
+      const dayHead = d !== day ? (day = d) : null;
+      return el("li", { class: s.st ? `rp-${s.st}` : null }, [
+        dayHead ? el("span", { class: "rp-day" }, dayHead) : null,
+        el(
+          "time",
+          { class: "ev-time tabnum", datetime: ev.created_at, title: fmtTime(ev.created_at) },
+          clockTime(Date.parse(ev.created_at)),
+        ),
+        s.st ? glyph(s.st, 14) : el("span", { class: "rp-dot", "aria-hidden": "true" }),
+        el("div", { class: "rp-body" }, [
+          el("div", { class: "ev-type" }, s.text),
+          s.note ? el("div", { class: "rp-note" }, s.note) : null,
+          el("div", { class: "ev-actor" }, [
+            actorName(ev.actor_type, ev.actor_id),
+            // TRACE: the runner tick that wrote this event (work_events.correlation_id).
+            // Every event one tick produced carries the same id, so the chip shows which
+            // events belong together; `dispatch events list --correlation <id>` prints the trail.
+            ev.correlation_id
+              ? el(
+                  "span",
+                  {
+                    class: "ev-tick mono",
+                    title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
+                  },
+                  `tick ${ev.correlation_id}`,
+                )
+              : null,
+          ]),
+          ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
+        ]),
+      ]);
+    }),
+  );
+  const raw = el(
+    "button",
+    {
+      class: "btn quiet small tk-raw",
+      type: "button",
+      "aria-pressed": "false",
+      onclick: () => {
+        const on = !list.classList.contains("show-raw");
+        list.classList.toggle("show-raw", on);
+        raw.setAttribute("aria-pressed", String(on));
+      },
+    },
+    "Show the raw data",
+  );
+  return el("section", { class: "card panel tk-report", "aria-label": "Match report" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Match report",
+        el("span", { class: "panel-aux" }, plural(events.length, "event")),
+      ]),
+      events.length ? raw : null,
+    ]),
+    events.length ? list : el("p", { class: "dim" }, "No events recorded."),
+  ]);
+}
+
+/**
+ * The runner's logs for a ticket. Delivery runs are matched by the claim they
+ * started with (a run row carries no ticket; its log's ROUTE line does, and the
+ * run detail reads it), so a live delivery links straight to its streaming log
+ * and a finished one keeps its record. A ticket marked delivering with no live
+ * run says so plainly (the #88 hung-claim case).
+ */
+function ticketRunsPanel(t, events) {
+  const delivering = ["in_progress", "claimed", "in_testing"].includes(t.status);
+  const panel = el("section", { class: "card panel tk-runs", "aria-label": "Runs" });
+  const body = el("div", { class: "tk-runs-body" }, [
+    el("p", { class: "dim" }, delivering ? "Finding the live run…" : "Reading the runner's logs…"),
+  ]);
+  panel.append(
+    panelHead(
+      delivering ? "On the pitch" : "Match footage",
+      delivering ? "the live run" : "the runner's log of each delivery",
+      null,
+      delivering ? { kit: "ink" } : {},
+    ),
+    body,
+  );
+  const claims = (events || [])
+    .filter((e) => e.event_type === "claim.created")
+    .map((e) => Date.parse(e.created_at))
+    .filter(Number.isFinite);
+  const near = (run) => claims.some((c) => Math.abs(Date.parse(run.started_at) - c) <= 5 * 60_000);
+  const signal = routeSignal();
+  (async () => {
+    let found;
+    try {
+      const res = await api("GET", "/api/runs?active=1&limit=50", undefined, { signal });
+      const pool = [...(res.active || []), ...(res.recent || [])].filter(
+        (r) => r.kind === "poll_work" || r.kind === "other",
+      );
+      // Live runs always (there are a handful); finished ones only near this ticket's claims.
+      const cand = pool.filter((r) => r.status === "running" || near(r)).slice(0, 8);
+      const details = await Promise.all(
+        cand.map((r) =>
+          api("GET", `/api/runs/${encodeURIComponent(r.id)}`, undefined, { signal })
+            .then((x) => x.detail || null)
+            .catch(() => null),
+        ),
+      );
+      found = cand
+        .map((r, i) => ({ run: r, d: details[i] }))
+        .filter((x) => x.d && x.d.ticket_number === t.number);
+    } catch (e) {
+      if (e && e.code === "ABORTED") return;
+      clear(body);
+      body.appendChild(el("p", { class: "dim" }, "The runner's logs could not be read."));
+      return;
+    }
+    clear(body);
+    const liveRun = found.find((x) => x.run.status === "running");
+    if (delivering && !liveRun) {
+      // Marked delivering but no live run attached ⇒ likely a hung/orphaned claim.
+      body.appendChild(
+        el("div", { class: "delivering-banner is-warn" }, [
+          el("span", { class: "delivering-dot is-warn" }),
+          el(
+            "span",
+            {},
+            "Marked delivering, but no live run is attached — it may be stuck or already ended.",
+          ),
+        ]),
+      );
+    }
+    if (!found.length) {
+      if (!delivering) panel.remove();
+      return;
+    }
+    body.appendChild(
+      el(
+        "ul",
+        { class: "clean tk-run-list" },
+        found.map(({ run, d }) => {
+          const on = run.status === "running";
+          const chips = [
+            d.phase ? el("span", { class: "run-detail-chip" }, d.phase) : null,
+            d.num_turns > 0
+              ? el("span", { class: "run-detail-chip" }, plural(d.num_turns, "turn"))
+              : null,
+            d.cost_usd > 0
+              ? el("span", { class: "run-detail-chip tabnum" }, money(d.cost_usd))
+              : null,
+            d.outcome ? el("span", { class: "run-detail-chip" }, `ended ${d.outcome}`) : null,
+          ];
+          return el("li", { class: `tk-run${on ? " is-live" : ""}` }, [
+            on
+              ? el("span", { class: "run-spinner", "aria-hidden": "true" })
+              : glyph(run.status === "failed" ? "failed" : "done", 16),
+            el("div", { class: "tk-run-main" }, [
+              el("p", { class: "tk-run-h" }, [
+                el("b", {}, on ? `Delivering #${t.number}` : `Delivery of #${t.number}`),
+                " ",
+                el(
+                  "span",
+                  { class: "dim" },
+                  on
+                    ? `since ${clockTime(Date.parse(run.started_at))} · ${runDuration(run)}`
+                    : `${fmtTime(run.started_at)} · ${runDuration(run)} · ${run.status}`,
+                ),
+              ]),
+              el("div", { class: "run-detail-chips" }, chips),
+            ]),
+            el(
+              "button",
+              {
+                class: "btn small run-viewlog",
+                type: "button",
+                onclick: () =>
+                  on
+                    ? viewRunDetail(run.id, `Delivery of #${t.number}`)
+                    : viewRunLog(run, `Delivery of #${t.number} · log`),
+              },
+              on ? "View live log →" : "View log",
+            ),
+          ]);
+        }),
+      ),
+    );
+  })();
+  return panel;
 }
 
 /**
@@ -8159,10 +8574,15 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
         : { txt: "in review", cls: "dim" };
 
-  const head = el("div", { class: "mem-primed-head" }, [
-    el("span", { class: "mem-primed-title" }, "Memory primed for this delivery"),
-    el("span", { class: "mem-primed-outcome " + outcome.cls }, outcome.txt),
+  const head = el("div", { class: "panel-head mem-primed-head" }, [
+    el("h2", { class: "panel-title" }, "The scouting report"),
+    el("span", { class: "panel-aux mem-primed-outcome " + outcome.cls }, outcome.txt),
   ]);
+  const sub = el(
+    "p",
+    { class: "mem-primed-title" },
+    "Memory primed for this delivery: what the club's memory briefed the agent with.",
+  );
 
   let bodyNode;
   if (primed.length === 0) {
@@ -8185,7 +8605,11 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
       ),
     );
   }
-  return el("div", { class: "card mem-primed-card" }, [head, bodyNode]);
+  return el(
+    "section",
+    { class: "card panel mem-primed-card", "aria-label": "The scouting report" },
+    [head, sub, bodyNode],
+  );
 }
 
 /**
@@ -8249,7 +8673,9 @@ function renderTestingCard(t, evidence) {
         { class: "clean" },
         testerEvidence.map((e) => {
           const prov = parseTesterProvenance(e.payload_json);
-          return el("li", {}, [
+          const verdict = parseTesterVerdict(e.payload_json);
+          return el("li", { class: `tt-row tt-${verdict}` }, [
+            glyph(verdict === "pass" ? "done" : "failed", 16, verdict === "pass" ? "Pass" : "Fail"),
             el("div", {}, [
               e.summary,
               // BBT-001 provenance badge: who produced this verdict (derived from the
@@ -8258,15 +8684,15 @@ function renderTestingCard(t, evidence) {
                 ? el("span", { class: "badge no-dot", style: "margin-left:8px" }, `by ${prov}`)
                 : null,
             ]),
-            el("div", { class: "ac-meta" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
+            el("div", { class: "ac-meta tt-who" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
           ]);
         }),
       )
     : el("p", { class: "dim" }, "No tester results recorded yet.");
 
-  return el("div", { class: "card" }, [
-    el("h2", {}, "Independent testing"),
-    el("div", { class: "setting-row" }, [
+  return el("section", { class: "card panel tk-testing", "aria-label": "Independent testing" }, [
+    panelHead("Independent testing", testable ? "black-box tester on" : "off", null, {}),
+    el("div", { class: "setting-row tk-testable" }, [
       el("div", { class: "setting-meta" }, [
         el("div", { class: "setting-label" }, [
           el("span", {}, "Eligible for black-box testing"),
@@ -8283,9 +8709,9 @@ function renderTestingCard(t, evidence) {
         el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
       ]),
     ]),
-    el("h3", { style: "margin-top:14px" }, "Test contract"),
+    el("h3", { class: "tk-h3" }, "Test contract"),
     contractRows,
-    el("h3", { style: "margin-top:14px" }, "Tester results"),
+    el("h3", { class: "tk-h3" }, "Tester results"),
     evidenceList,
   ]);
 }
@@ -8403,27 +8829,41 @@ const REPO_GROUPS = [
   { key: "rejectedRepos", title: "Rejected", note: "retained for audit", tone: "rejected" },
 ];
 
-function renderRepoPanel(ticketId, claimBox) {
+/**
+ * The boundary editor: the grounds this ticket may play on — which repos it may
+ * write, read or test. Suggestions are not a boundary until confirmed. Once the
+ * ticket is merged the boundary is its record and reads only (no controls).
+ */
+function renderRepoPanel(ticketId, claimBox, { readOnly = false } = {}) {
   const body = el("div", { class: "repo-panel-body" }, el("p", { class: "dim" }, "Loading repos…"));
-  const card = el("div", { class: "card repo-panel" }, [
-    el("h2", {}, "Execution boundary"),
-    el(
-      "p",
-      { class: "section-note dim" },
-      "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
-    ),
-    body,
-  ]);
+  const card = el(
+    "section",
+    {
+      class: `card panel repo-panel${readOnly ? " is-readonly" : ""}`,
+      "aria-label": "The boundary",
+    },
+    [
+      panelHead("The boundary", readOnly ? "read-only: merged" : "where agents may play"),
+      el(
+        "p",
+        { class: "section-note dim" },
+        readOnly
+          ? "Merged. The boundary stays as the record of where this ticket played; it can no longer change."
+          : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
+      ),
+      body,
+    ],
+  );
   const reload = () =>
     guard(async () => {
-      await refreshRepoPanel(ticketId, body, claimBox, reload);
+      await refreshRepoPanel(ticketId, body, claimBox, reload, readOnly);
       if (claimBox) loadClaimability(ticketId, claimBox);
     });
   reload();
   return card;
 }
 
-async function refreshRepoPanel(ticketId, body, claimBox, reload) {
+async function refreshRepoPanel(ticketId, body, claimBox, reload, readOnly = false) {
   const work = (await api("GET", `/tickets/${ticketId}/work-repos`)).work_repos || {};
   let suggestions = null;
   let suggestionsError = false;
@@ -8462,7 +8902,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
     const links = work[group.key] || [];
     if (!links.length) continue;
     anyRepo = true;
-    body.appendChild(renderRepoGroup(ticketId, group, links, suggMeta, reload));
+    body.appendChild(renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly));
   }
   const denied = work.deniedRepos || [];
   if (denied.length) {
@@ -8474,6 +8914,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
         denied,
         suggMeta,
         reload,
+        readOnly,
       ),
     );
   }
@@ -8485,7 +8926,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
   const freshSuggestions = (suggestions || []).filter(
     (s) => !linkedIds.has(s.repoId || s.repo_id || s.id),
   );
-  if (freshSuggestions.length) {
+  if (freshSuggestions.length && !readOnly) {
     anyRepo = true;
     body.appendChild(renderSuggestionGroup(ticketId, freshSuggestions, reload));
   }
@@ -8495,11 +8936,13 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
       el(
         "p",
         { class: "dim" },
-        "No repos on this ticket yet. Link a scope or repo on the create flow, or add one below.",
+        readOnly
+          ? "No repos were recorded on this ticket."
+          : "No repos on this ticket yet. Link a scope or repo on the create flow, or add one below.",
       ),
     );
   }
-  if (suggestionsError) {
+  if (suggestionsError && !readOnly) {
     body.appendChild(
       el(
         "p",
@@ -8508,10 +8951,10 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
       ),
     );
   }
-  body.appendChild(renderAddRepoForm(ticketId, reload));
+  if (!readOnly) body.appendChild(renderAddRepoForm(ticketId, reload));
 }
 
-function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
+function renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly = false) {
   const isRejected = group.tone === "rejected";
   const isSuggested = group.tone === "suggested";
   const rows = links.map((r) => {
@@ -8519,7 +8962,9 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
     const reasons = parseReasons(r.reasons_json) ?? (meta ? meta.reasons : null);
     const confidence = r.confidence ?? (meta ? meta.confidence : null);
     const controls = [];
-    if (!isRejected) {
+    if (readOnly) {
+      controls.push(accessBadge(r.access || "none"));
+    } else if (!isRejected) {
       controls.push(renderAccessControl(ticketId, r, reload));
       controls.push(
         el(
@@ -8551,6 +8996,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
+            kitShirt(r.name || r.id, 22),
             repoLink(r, { className: "assoc-name" }),
             isSuggested
               ? badge("suggested", "relation-suggested")
@@ -8571,7 +9017,10 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
   });
   return el("div", { class: `repo-group repo-group-${group.tone}` }, [
     el("div", { class: "repo-group-head" }, [
-      el("span", { class: "repo-group-title" }, `${group.title} (${links.length})`),
+      el("span", { class: "repo-group-title" }, [
+        group.title,
+        el("span", { class: "repo-group-n" }, String(links.length)),
+      ]),
       el("span", { class: "repo-group-note dim" }, group.note),
     ]),
     el("ul", { class: "clean" }, rows),
@@ -8590,6 +9039,7 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
+            kitShirt(name, 22),
             el("span", { class: "assoc-name plain" }, name),
             badge("suggested", "relation-suggested"),
             accessBadge(access),
@@ -8637,7 +9087,10 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
   });
   return el("div", { class: "repo-group repo-group-suggested" }, [
     el("div", { class: "repo-group-head" }, [
-      el("span", { class: "repo-group-title" }, `Suggested by engine (${suggestions.length})`),
+      el("span", { class: "repo-group-title" }, [
+        "Suggested",
+        el("span", { class: "repo-group-n" }, String(suggestions.length)),
+      ]),
       el("span", { class: "repo-group-note dim" }, "confirm to make a boundary"),
     ]),
     el("ul", { class: "clean" }, rows),
@@ -10808,7 +11261,7 @@ function splitDiffFiles(diffText) {
 /** A single repo's diff section: header (repo/branch/stats) + per-file file
  *  strip (jumper) + one collapsible `<details>` per file. `repoIdx` scopes the
  *  DOM ids to indices — a path is NEVER used to build an id or selector. */
-function repoDiffSection(rd, repoIdx = 0) {
+function repoDiffSection(rd, repoIdx = 0, { collapsed = false } = {}) {
   const statBits = [];
   if (rd.unavailable) {
     statBits.push(el("span", { class: "diff-stat dim" }, rd.message || rd.unavailable));
@@ -10832,7 +11285,7 @@ function repoDiffSection(rd, repoIdx = 0) {
   const risk = rd.unavailable ? null : riskOverlay(rd.riskAnnotations || []);
 
   if (rd.unavailable) {
-    return el("div", { class: "diff-section" }, [header, risk]);
+    return el("div", { class: "diff-section is-unavailable" }, [header, risk]);
   }
 
   // Set of risk paths, so a file can carry an ADVISORY marker when its path
@@ -10852,7 +11305,7 @@ function repoDiffSection(rd, repoIdx = 0) {
   if (files.length === 0) {
     // No parseable `diff --git` chunk (e.g. a plain textual diff): fall back to
     // the single-pre rendering so nothing is lost.
-    return el("div", { class: "diff-section" }, [header, risk, diffBody(rd.diff)]);
+    return el("div", { class: "diff-section is-plain" }, [header, risk, diffBody(rd.diff)]);
   }
 
   // The file list: one row per file, flagged files carry a yellow card, and a
@@ -10926,7 +11379,12 @@ function repoDiffSection(rd, repoIdx = 0) {
     filesBox.appendChild(
       el(
         "details",
-        { class: `diff-file-block${ann ? " is-flagged" : ""}`, open: "", id: targetId },
+        {
+          class: `diff-file-block${ann ? " is-flagged" : ""}`,
+          // Folded (the ticket page) the file list is the way in; open (Review) it reads top to bottom.
+          open: collapsed ? null : "",
+          id: targetId,
+        },
         [
           el("summary", { class: "diff-file-summary" }, summaryChildren),
           ann
@@ -10943,7 +11401,12 @@ function repoDiffSection(rd, repoIdx = 0) {
     );
   });
 
-  return el("div", { class: "diff-section" }, [header, risk, strip, filesBox]);
+  return el("div", { class: `diff-section${rd.truncated ? " is-truncated" : ""}` }, [
+    header,
+    risk,
+    strip,
+    filesBox,
+  ]);
 }
 
 /**
@@ -11015,7 +11478,7 @@ function diffApprovability(repos) {
  * Approve button on a diff the human could actually see. Until it fires, callers
  * should treat the ticket as NOT approvable (fail-closed).
  */
-function renderTicketDiff(ticketId, onState) {
+function renderTicketDiff(ticketId, onState, opts = {}) {
   const box = el("div", { class: "diff-box" }, [el("div", { class: "ac-meta" }, "Loading diff…")]);
   const report = (state, repos = []) => {
     if (typeof onState === "function") onState(state, repos);
@@ -11031,9 +11494,11 @@ function renderTicketDiff(ticketId, onState) {
         report(diffApprovability(repos));
         return;
       }
-      if (repos.length > 1)
+      if (repos.length > 1) {
+        box.classList.add("is-multi");
         box.appendChild(el("div", { class: "ac-meta" }, `Diff (${repos.length} repos)`));
-      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i)));
+      }
+      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i, opts)));
       report(diffApprovability(repos), repos);
     })
     .catch((e) => {
@@ -11116,18 +11581,25 @@ function dodChecklist(evidence) {
     const status = g.status === "PASS" ? "pass" : g.status === "FAIL" ? "fail" : "skip";
     const mark = status === "pass" ? "✓" : status === "fail" ? "✗" : "–";
     const children = [
-      el("span", { class: `dod-mark dod-${status}` }, mark),
+      el("span", { class: `dod-mark dod-${status}`, "aria-hidden": "true" }, mark),
       el("span", { class: "dod-gate" }, String(g.gate || "gate")),
       el("span", { class: "dod-repo ac-meta" }, String(g.repo || "")),
+      el(
+        "span",
+        { class: `dod-word dod-w-${status}` },
+        status === "pass" ? "passed" : status === "fail" ? "failed" : "skipped",
+      ),
     ];
-    // Only surface the note on a failing gate (it carries the captured tail/why).
+    // A passing gate names the command it ran; a failing one surfaces its captured note.
     if (status === "fail" && g.note) {
       children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
+    } else if (g.note) {
+      children.push(el("code", { class: "dod-cmd mono" }, String(g.note)));
     }
-    return el("li", { class: "dod-item" }, children);
+    return el("li", { class: `dod-item dod-i-${status}` }, children);
   });
   return el("div", { class: `review-dod dod-${overall === "PASS" ? "ok" : "bad"}` }, [
-    el("div", { class: "ac-meta" }, [
+    el("div", { class: "ac-meta dod-cap" }, [
       "Definition of Done ",
       badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
     ]),
@@ -11135,39 +11607,104 @@ function dodChecklist(evidence) {
   ]);
 }
 
-function reviewEvidenceList(evidence, acList) {
+/** Acceptance criteria as a checklist: glyph · the criterion · its state. */
+function acChecklist(acList) {
+  return el(
+    "ul",
+    { class: "ac-list" },
+    acList.map((a) =>
+      el("li", { class: `ac-row ac-${a.status}` }, [
+        glyph(a.status === "satisfied" ? "done" : a.status === "failed" ? "failed" : "draft", 16),
+        el("span", { class: "ac-row-t" }, a.text),
+        el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+      ]),
+    ),
+  );
+}
+
+/** The evidence label a reviewer reads ("test output", "diff summary"). */
+function evidenceKind(type) {
+  return String(type || "note").replace(/_/g, " ");
+}
+
+/**
+ * The evidence, oldest first, as a minute list: when · who (named, with the
+ * agent-reported chip) · what kind · the first line of what it says. Longer
+ * captures (a DoD report, a diff stat) fold their remaining lines.
+ */
+function reviewEvidenceList(evidence, acList, { repos } = {}) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
-  const rows = evidence.map((ev) => {
-    const link = safeHttpUrl(ev.uri);
-    const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
-    // Provenance line — who recorded this evidence and when, plus an explicit flag
-    // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
-    // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
-    // actor is a KNOWN registered agent (a reliable positive signal — agent ids are
-    // distinct and never collide with a human/system principal); it is never inferred
-    // from an absence. We therefore surface the amber "agent-reported" chip only on a
-    // confident match and otherwise show who/when WITHOUT asserting a trust class —
-    // no fabricated "trusted" label. `created_by` renders through el() as a text node,
-    // so it can never inject markup regardless of its content.
-    const who = ev.created_by ? String(ev.created_by) : "—";
-    const provBadge =
-      ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
-    return el("li", { class: "review-evi" }, [
-      badge(ev.evidence_type, "no-dot"),
-      el("span", { class: "evi-summary" }, ev.summary),
-      link ? el("a", { href: link, target: "_blank", rel: "noopener" }, "open") : null,
-      acLabel ? el("span", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
-      el("div", { class: "ac-meta evi-prov" }, [
-        provBadge,
-        el("span", { class: "evi-who" }, `${who} · ${fmtTime(ev.created_at)}`),
-      ]),
-    ]);
-  });
-  return el("div", { class: "review-evidence" }, [
-    el("div", { class: "ac-meta" }, `Evidence (${evidence.length})`),
-    el("ul", { class: "clean" }, rows),
-  ]);
+  const rows = evidence
+    .slice()
+    .sort((x, y) => String(x.created_at || "").localeCompare(String(y.created_at || "")))
+    .map((ev) => {
+      const link = safeHttpUrl(ev.uri);
+      const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
+      // Provenance — who recorded this evidence and when, plus an explicit flag
+      // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
+      // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
+      // actor is a KNOWN registered agent (a reliable positive signal); it is never
+      // inferred from an absence, and no "trusted" label is fabricated. `created_by`
+      // renders through el() as a text node, so it can never inject markup.
+      const raw = ev.created_by ? String(ev.created_by) : "—";
+      const who = agentNames.get(raw) || (raw === "system" ? "the runner" : raw);
+      const provBadge =
+        ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
+      const lines = String(ev.summary || "").split("\n");
+      // A blocked-write note and absolute paths read as repo-relative paths.
+      const say = (l) =>
+        l
+          .replace(/(\/[^\s\][,]+)/g, (m) => (m.split("/").length > 4 ? repoPath(m, repos) : m))
+          .replace(
+            /^FG-007 boundary violation\(s\) blocked by the safety hook during delivery:$/,
+            "FG-007: the safety hook blocked a write outside the write roots",
+          );
+      const first = say(lines[0] || "");
+      const rest = lines
+        .slice(1)
+        .filter((l) => l.trim())
+        .map(say);
+      return el("li", { class: "review-evi" }, [
+        el(
+          "time",
+          {
+            class: "evi-time tabnum",
+            datetime: ev.created_at || "",
+            title: ev.created_at ? fmtTime(ev.created_at) : null,
+          },
+          ev.created_at ? clockTime(Date.parse(ev.created_at)) : "—",
+        ),
+        el("div", { class: "evi-main" }, [
+          el("div", { class: "ac-meta evi-prov" }, [
+            el("span", { class: "evi-who" }, who),
+            badge(evidenceKind(ev.evidence_type), "no-dot evi-kind"),
+            provBadge,
+          ]),
+          el("p", { class: "evi-summary" }, first),
+          rest.length
+            ? el("details", { class: "evi-more" }, [
+                el("summary", {}, `${plural(rest.length, "more line")}`),
+                el(
+                  "pre",
+                  {
+                    class: "evi-pre",
+                    tabindex: "0",
+                    role: "region",
+                    "aria-label": `${evidenceKind(ev.evidence_type)}, in full`,
+                  },
+                  rest.join("\n"),
+                ),
+              ])
+            : null,
+          acLabel ? el("p", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
+          link
+            ? el("a", { class: "evi-link", href: link, target: "_blank", rel: "noopener" }, "open")
+            : null,
+        ]),
+      ]);
+    });
+  return el("div", { class: "review-evidence" }, [el("ol", { class: "clean evi-list" }, rows)]);
 }
 
 // Preset quick-reject reasons. Tapping a chip fills the reason so an operator
@@ -11359,9 +11896,19 @@ function blockedWrites(evidence) {
     const s = String(ev.summary || "");
     if (!/^FG-007/.test(s)) continue;
     for (const line of s.split("\n").slice(1)) {
-      const m = line.match(/^BLOCKED[^:]*:\s*(.*):\s*(\/\S+)\s*$/);
-      if (m) out.push({ why: m[1].trim(), path: m[2] });
-      else if (line.trim()) out.push({ why: line.trim(), path: null });
+      // The hook writes "<why (…)>: <target> [write-roots: a, b]" or
+      // "<why (…)>: <target> — "<cmd>"". The target is the first path after the
+      // reason; the roots in brackets are where the ticket may write (the old
+      // greedy match took the last root for the target).
+      const m = line.match(/^BLOCKED[^:]*:\s*(.*?\)):\s*(\/[^\s\]]+)(.*)$/);
+      if (m) {
+        const roots = (m[3].match(/\[write-roots:\s*([^\]]*)\]/) || [])[1];
+        out.push({
+          why: m[1].trim(),
+          path: m[2],
+          roots: roots ? roots.split(/,\s*/).filter(Boolean) : [],
+        });
+      } else if (line.trim()) out.push({ why: line.trim(), path: null, roots: [] });
     }
   }
   return out;
@@ -11372,6 +11919,70 @@ function shortPath(p) {
     .split("/")
     .filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : String(p || "");
+}
+/**
+ * Files the diff changes that the delivering agent's smallest-change note does not
+ * name. Gaffer has no out-of-scope field: this compares the note (manual_note
+ * evidence "Smallest-change note: …") with the diff's own paths, and says so.
+ * No note → no derivation (an empty answer, never a guess).
+ */
+function outsideStatedChange(evidence, repos) {
+  const note = (evidence || [])
+    .filter((e) => /^Smallest-change note:/i.test(String(e.summary || "")))
+    .pop();
+  if (!note) return [];
+  const said = (String(note.summary).match(/[\w.-]+(?:\/[\w.-]+)+|[\w-]+\.\w{1,6}/g) || []).map(
+    (x) => x.replace(/\.+$/, ""),
+  );
+  if (!said.length) return [];
+  const out = [];
+  for (const rd of repos || []) {
+    for (const f of splitDiffFiles(rd.diff)) {
+      const p = f.path;
+      if (!said.some((x) => x === p || p.endsWith("/" + x) || x.endsWith("/" + p)))
+        out.push({ path: p, noteId: note.id });
+    }
+  }
+  return out;
+}
+/** Card the diff's files that sit outside the stated change (file list + file block). */
+function markOutsideFiles(box, outside) {
+  if (!box || !outside.length) return;
+  const set = new Set(outside.map((o) => o.path));
+  for (const jump of box.querySelectorAll(".diff-filejump")) {
+    const p = jump.querySelector(".diff-filejump-path")?.textContent;
+    if (!set.has(p) || jump.classList.contains("has-risk")) continue;
+    jump.classList.add("has-risk");
+    const flag = jump.querySelector(".dfj-flag");
+    if (flag && !flag.firstChild) flag.appendChild(ycard(14, "diff-file-risk"));
+    jump.setAttribute(
+      "aria-label",
+      `${jump.getAttribute("aria-label")}, flagged (outside the stated change)`,
+    );
+    const block = box.querySelector(`[id="${jump.dataset.fileTarget}"]`);
+    if (block && !block.classList.contains("is-flagged")) {
+      block.classList.add("is-flagged");
+      block
+        .querySelector(".diff-file-summary")
+        ?.after(
+          el("p", { class: "diff-file-flag" }, [
+            ycard(14),
+            "Not in the agent's smallest-change note (derived; see the flag on the left).",
+          ]),
+        );
+    }
+  }
+}
+/** An absolute path inside a known repo, said as "repo/rel/path" (else shortened). */
+function repoPath(p, repos) {
+  const s = String(p || "");
+  for (const r of repos || []) {
+    const root = String(r.local_path || "").replace(/\/+$/, "");
+    if (!root || !r.name) continue;
+    if (s === root) return r.name;
+    if (s.startsWith(root + "/")) return `${r.name}/${s.slice(root.length + 1)}`;
+  }
+  return shortPath(s);
 }
 /** One flag: a yellow card, a caps title, what it means, who raised it. */
 function reviewFlag(title, body, source) {
@@ -11488,9 +12099,13 @@ async function renderReview(param) {
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
   // DISABLED and only enables once the diff loads with a real, non-empty change.
   let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // The sign-off's status line: hidden until Approve lands, then it says where the
+  // change went and offers the next one as its own link (never auto-advanced).
   const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
   const approve = () =>
     guard(async () => {
+      // Signed once: a second press (click or key) on a signed change does nothing.
+      if (approveBtn && approveBtn.classList.contains("is-approved")) return;
       if (!diffState.approvable) {
         toast(`Can't approve — ${diffState.reason}`, {});
         return;
@@ -11500,13 +12115,40 @@ async function renderReview(param) {
       // Stay on the diff: the button says it is done, and moving on is its own link.
       if (approveBtn) {
         approveBtn.setAttribute("disabled", "");
+        approveBtn.classList.add("is-approved");
         approveLabel.textContent = "Approved";
+        approveBtn.prepend(icon("check", "", 20));
       }
+      // The yellow card is withdrawn from the title; the queue tab shows the move.
+      const card = wrap.querySelector(".rv-title .rv-card");
+      if (card && !prefersReducedMotion() && typeof card.animate === "function")
+        card
+          .animate(
+            [
+              { transform: "rotate(-8deg)", opacity: 1 },
+              { transform: "rotate(-30deg) translate(-6px, 30px)", opacity: 0 },
+            ],
+            { duration: 300, easing: "cubic-bezier(.5,0,.75,0)", fill: "forwards" },
+          )
+          .finished.then(() => card.remove())
+          .catch(() => card.remove());
+      else if (card) card.remove();
+      const tab = wrap.querySelector('.rv-tab[aria-current="page"]');
+      if (tab) {
+        tab.querySelector(".glyph")?.replaceWith(glyph(to || "ready_for_merge", 16));
+        tab.appendChild(el("small", { class: "rv-tab-done" }, "approved"));
+      }
+      const meta = wrap.querySelector(".rv-meta .badge.st");
+      if (meta && to) meta.replaceWith(statusBadge(to));
       clear(doneLine);
       doneLine.append(
-        `Approved #${t.number}. ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+        el("b", {}, `Approved #${t.number}.`),
+        ` ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
         next
-          ? el("a", { href: `#/review/${next.id}` }, `Next in review: #${next.number}`)
+          ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
+              `Next in review: #${next.number}`,
+              icon("chevron", "", 16),
+            ])
           : "Nothing else waits for your sign-off.",
       );
       doneLine.hidden = false;
@@ -11610,7 +12252,11 @@ async function renderReview(param) {
     flagsNow.push([
       "Blocked write",
       w.path
-        ? `The safety hook stopped a write to ${shortPath(w.path)} (${w.why}). Check the change does not depend on it.`
+        ? `The safety hook stopped a write to ${repoPath(w.path, detail.repositories)}: ${w.why.replace(/^write /, "a write ")}${
+            w.roots.length
+              ? `. This ticket may write only to ${w.roots.map((r) => repoPath(r, detail.repositories)).join(", ")}`
+              : ""
+          }. Nothing landed there; check the change does not depend on it.`
         : w.why,
       "Raised by the safety hook (FG-007)",
     ]);
@@ -11629,7 +12275,7 @@ async function renderReview(param) {
       `${ac.length - satisfied} of ${ac.length} acceptance criteria are not satisfied yet.`,
       "From the ticket's criteria",
     ]);
-  const paintFlags = (riskAnns) => {
+  const paintFlags = (riskAnns, outside = []) => {
     const all = [
       ...riskAnns.map((a) => [
         String(a.kind)
@@ -11640,6 +12286,11 @@ async function renderReview(param) {
             ? ". Check it is safe to ship, and that a migration has a way back."
             : "."),
         "Raised by the server's risk check",
+      ]),
+      ...outside.map((o) => [
+        "Edit outside the stated change",
+        `${o.path} is changed, but the agent's smallest-change note does not list it. Check it belongs in this ticket.`,
+        `Derived from the diff's paths and the agent's smallest-change note (evidence ${String(o.noteId || "").slice(0, 8)})`,
       ]),
       ...flagsNow,
     ];
@@ -11687,7 +12338,12 @@ async function renderReview(param) {
       if (approveBtn) approveBtn.setAttribute("disabled", "");
     }
     const live = repos.filter((r) => !r.unavailable);
-    paintFlags(live.flatMap((r) => r.riskAnnotations || []));
+    const outside = outsideStatedChange(evidence, live);
+    paintFlags(
+      live.flatMap((r) => r.riskAnnotations || []),
+      outside,
+    );
+    markOutsideFiles(diffBox, outside);
     if (live.length) {
       const files = live.reduce((n, r) => n + (r.files || 0), 0);
       const add = live.reduce((n, r) => n + (r.additions || 0), 0);
@@ -11767,17 +12423,6 @@ async function renderReview(param) {
         ].filter(Boolean),
       ),
       doneLine,
-      next
-        ? el(
-            "p",
-            { class: "rv-next" },
-            el(
-              "a",
-              { href: `#/review/${next.id}` },
-              `Next in review: #${next.number} ${next.title}`,
-            ),
-          )
-        : null,
       el("p", { class: "rv-keys" }, [
         el("span", { class: "kbd" }, "a"),
         " twice to approve · ",
@@ -11791,25 +12436,27 @@ async function renderReview(param) {
   );
   signoff._actions = { approve, reject };
 
-  const acCard = ac.length
-    ? el("section", { class: "card panel rv-ac" }, [
-        panelHead("Acceptance criteria", `${satisfied} of ${ac.length}`),
-        el(
-          "ul",
-          { class: "ac-list" },
-          ac.map((a) =>
-            el("li", { class: `ac-row ac-${a.status}` }, [
-              glyph(
-                a.status === "satisfied" ? "done" : a.status === "failed" ? "failed" : "draft",
-                16,
-              ),
-              el("span", { class: "ac-row-t" }, a.text),
-              el("span", { class: "ac-state" }, a.status.replace(/_/g, " ")),
-            ]),
-          ),
-        ),
-      ])
-    : null;
+  // The referee's checks: the Definition-of-Done gates, then the criteria, in one page.
+  const dodBox = dodChecklist(evidence);
+  const checks = el("section", { class: "card panel rv-checks", "aria-label": "Gates" }, [
+    panelHead(
+      "The gates",
+      !dod ? "no gate report yet" : dod.dod === "PASS" ? "all passed" : "a gate failed",
+    ),
+    dodBox ||
+      el(
+        "p",
+        { class: "dim" },
+        "The runner has not recorded a Definition-of-Done report for this delivery.",
+      ),
+    ac.length
+      ? el("h3", { class: "rv-h3" }, [
+          "Acceptance criteria ",
+          el("span", { class: "count" }, `${satisfied} of ${ac.length}`),
+        ])
+      : null,
+    ac.length ? acChecklist(ac) : null,
+  ]);
 
   wrap.appendChild(
     el("div", { class: "rv-grid" }, [
@@ -11819,11 +12466,14 @@ async function renderReview(param) {
           el("h2", { class: "rv-h2" }, ["Flags ", flagCount]),
           flagList,
         ]),
-        dodChecklist(evidence),
-        acCard,
-        el("details", { class: "card rv-evidence" }, [
-          el("summary", {}, `The evidence (${evidence.length})`),
-          reviewEvidenceList(evidence, ac) || el("p", { class: "dim" }, "No evidence recorded."),
+        checks,
+        el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
+          el("h2", { class: "rv-h2" }, [
+            "Evidence ",
+            el("span", { class: "panel-aux" }, String(evidence.length)),
+          ]),
+          reviewEvidenceList(evidence, ac, { repos: detail.repositories }) ||
+            el("p", { class: "dim" }, "No evidence recorded."),
         ]),
       ]),
       el("div", { class: "rv-right" }, [

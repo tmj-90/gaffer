@@ -19,7 +19,11 @@ export function registerTicket(program: Command): void {
     .option("--risk <level>", "risk level", "medium")
     .option("--priority <n>", "priority", (v) => Number(v), 0)
     .option("--bootstrap", "mark as a greenfield (create-a-repo) bootstrap ticket", false)
-    .option("--budget <usd>", "per-ticket delivery budget ceiling in USD", (v) => Number(v))
+    .option(
+      "--budget <usd>",
+      "per-ticket cost ceiling in USD (all agent spend on the ticket)",
+      (v) => Number(v),
+    )
     .action((opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const t = wg.createTicket(
@@ -49,9 +53,11 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("budget <ref>")
-    .description("Set (or clear) a ticket's per-ticket delivery budget ceiling (USD)")
-    .option("--usd <amount>", "USD ceiling for this ticket's cumulative delivery spend", (v) =>
-      Number(v),
+    .description("Set (or clear) a ticket's per-ticket cost ceiling (USD)")
+    .option(
+      "--usd <amount>",
+      "USD ceiling for this ticket's cumulative agent spend (delivery, review, clarify, …)",
+      (v) => Number(v),
     )
     .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)
     .action((ref, opts, cmd) => {

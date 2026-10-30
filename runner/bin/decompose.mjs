@@ -94,8 +94,9 @@
 //                  ceiling the decomposer is forced to emit its best plan (same as
 //                  --force-plan) instead of rejecting and stranding the user.
 //                  (`--max-turns N` is the old spelling, still accepted.) It is a
-//                  HISTORY bound, not the claude agent-turn cap: that is
-//                  GAFFER_DECOMPOSE_AGENT_MAX_TURNS, else GAFFER_MAX_TURNS, else this value.
+//                  HISTORY bound; the claude agent-turn cap is
+//                  GAFFER_DECOMPOSE_AGENT_MAX_TURNS, else this value — either clamped
+//                  to the GAFFER_MAX_TURNS ceiling (it can lower, never raise, the cap).
 //   --max-tickets  (GAFFER_DECOMPOSE_MAX_TICKETS,  default 20) reject/refuse plans over this
 //   --timeout-ms   (GAFFER_DECOMPOSE_TIMEOUT_MS, default 180000) kill claude after this
 //
@@ -113,12 +114,12 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
-import { Worker } from "../lib/worker.mjs";
+import { Worker, roleTurnCap } from "../lib/worker.mjs";
 import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -1079,14 +1080,13 @@ function runClaudeTurn(prompt, opts, model) {
   // agent's text — just unwrapped from the JSON envelope first).
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (P1 denial-of-wallet): bound the agent's model round-trips
-  // in addition to the wall-clock timeout already passed to Worker.deliver below. Reuse
-  // the same GAFFER_MAX_TURNS knob the bash call sites use, falling back to this
-  // helper's own --max-turns (history bound) when the global knob isn't set.
-  // GAFFER_DECOMPOSE_AGENT_MAX_TURNS caps THIS lane on its own (the history ceiling is --max-rounds).
-  const maxTurns =
-    parseInt(process.env.GAFFER_DECOMPOSE_AGENT_MAX_TURNS || "", 10) ||
-    parseInt(process.env.GAFFER_MAX_TURNS || "", 10) ||
-    opts.maxTurns;
+  // in addition to the wall-clock timeout already passed to Worker.deliver below.
+  // GAFFER_DECOMPOSE_AGENT_MAX_TURNS caps THIS lane's agent on its own; else this
+  // helper's own cap (--max-rounds/--max-turns > GAFFER_DECOMPOSE_MAX_TURNS > 20).
+  // The global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
+  const maxTurns = roleTurnCap(
+    parseInt(process.env.GAFFER_DECOMPOSE_AGENT_MAX_TURNS || "", 10) || opts.maxTurns,
+  );
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
@@ -1102,6 +1102,7 @@ function runClaudeTurn(prompt, opts, model) {
   // SEE, not what it can write.
   const home = makeAgentHome("decompose-", { role: "plan" });
   let res;
+  const t0 = Date.now();
   try {
     res = Worker.deliver({
       bin: claudeBin,
@@ -1116,10 +1117,12 @@ function runClaudeTurn(prompt, opts, model) {
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      // Ledger the unmeasurable call as "unknown" (honesty rule 3: never 0).
-      appendUsageRecord(
-        unknownRecord({ kind: "decompose", reason: "decompose claude call timed out" }),
-      );
+      // Ledger the unmeasurable call as a labelled ESTIMATE (never $0, never "measured").
+      recordKilledCall({
+        kind: "decompose",
+        reason: "decompose claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -1129,9 +1132,11 @@ function runClaudeTurn(prompt, opts, model) {
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind: "decompose", reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind: "decompose",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     // Fall back to the raw stdout so a parser change in claude can't silently
     // break decomposition — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };

@@ -222,7 +222,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "budget",
     label: "Max turns / agent",
-    help: "Cap on agent turns within one ticket.",
+    help:
+      "Turn cap for one delivery agent call, and the ceiling for every other role " +
+      "(reviewer, clarify, planner, tester, …): each runs under the lower of its own " +
+      "cap and this one, so raising it never lifts a role above its own cap.",
   },
   // --- Cost-as-control (Track 3a): spend steers routing, not just reporting ---
   {
@@ -475,8 +478,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "budget",
     label: "Per-ticket rework budget (USD)",
     help:
-      "Cumulative spend ceiling for one ticket's rework loop. Delivery stops at whichever " +
-      "hits first — this or Max delivery attempts — then parks to blocked. Defaults to the " +
+      "Cumulative spend ceiling for one ticket's rework loop, counting every agent call " +
+      "booked to the ticket (delivery, review, security review, clarify, eval judge). " +
+      "Delivery stops at whichever hits first — this or Max delivery attempts — then " +
+      "parks to blocked. Defaults to the " +
       "factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it).",
   },
   {

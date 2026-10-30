@@ -155,11 +155,11 @@ export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
 }
 
 /**
- * PER-LANE TURN CAP: the `--max-turns` argv for a lane's cap knob (GAFFER_TESTER_MAX_TURNS,
- * GAFFER_RESOLVER_MAX_TURNS, GAFFER_PO_MAX_TURNS …). A positive integer → ["--max-turns",
- * "N"]; anything else (unset, empty, 0, junk) → [] — the lane keeps its wall-clock bound
- * only, exactly as before the knob existed. The ONE helper every mjs lane uses, so the
- * lanes cannot drift apart (the bash lanes use gaffer_lane_turns_flag).
+ * PER-LANE TURN CAP: the `--max-turns` argv for a lane's effective cap (the tester's,
+ * resolver's and PO's role cap, already clamped by roleTurnCap). A positive integer →
+ * ["--max-turns", "N"]; anything else (unset, empty, 0, junk) → [] — the lane keeps its
+ * wall-clock bound only. The ONE helper every mjs lane's argv builder uses, so the lanes
+ * cannot drift apart (the bash lanes pass gaffer_role_turns to worker_deliver).
  */
 export function maxTurnsArgv(raw) {
   const s = String(raw ?? "").trim();
@@ -304,7 +304,10 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
     // codex / local / any non-Claude provider — honest stub, FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
   }
-  // claude-code — the current path. With the sandbox off this is byte-identical.
+  // claude-code — the current path. With the sandbox off and no dollar cap configured
+  // this is byte-identical. An opted-in per-call cap (GAFFER_MAX_CALL_USD, clamped to
+  // GAFFER_BUDGET_REMAINING) bounds THIS call while it runs, not only between calls.
+  argv = withCallBudget(argv, process.env);
   let spawnBin = bin;
   let spawnArgv = argv;
   let spawnEnv = env;
@@ -525,6 +528,25 @@ export function extractUsage(json) {
   };
 }
 
+/**
+ * The effective `--max-turns` for one role: the role's own cap clamped to the
+ * global GAFFER_MAX_TURNS ceiling (Math.min). The global can LOWER a role cap but
+ * never raise or replace it — `GAFFER_MAX_TURNS || roleCap` used to let the
+ * factory's 200-turn delivery cap silently override the planner's 20. A missing /
+ * non-positive role cap falls back to the global; both missing → 0 (emit no flag).
+ * Parity with gaffer_role_turns in factory.config.sh.
+ */
+export function roleTurnCap(roleCap, env = process.env) {
+  const pos = (v) => {
+    const n = parseInt(String(v ?? ""), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const role = pos(roleCap);
+  const ceiling = pos(env.GAFFER_MAX_TURNS);
+  if (role && ceiling) return Math.min(role, ceiling);
+  return role || ceiling;
+}
+
 // Turn-cap markers Claude Code may surface across shapes (matches the legacy
 // delivery-recovery.sh scan exactly): "max_turns", "max-turns", "turn limit", …
 const MAX_TURNS_RE = /max[_-]?turns|turn[_ -]?limit/i;
@@ -548,6 +570,56 @@ export function stopReasonIsMaxTurns(json) {
     if (typeof v === "string" && MAX_TURNS_RE.test(v)) return true;
   }
   return false;
+}
+
+// Budget-stop markers: `--max-budget-usd` ends a run with subtype
+// "error_max_budget_usd" (and similar "budget exceeded/limit" wording).
+const MAX_BUDGET_RE = /max[_-]?budget|budget[_ -]?(exceeded|limit)/i;
+
+/**
+ * True iff the envelope says the run stopped on its per-call DOLLAR cap
+ * (--max-budget-usd). Kept separate from the turn cap: a budget stop pauses as
+ * `budget_cap`, never `cap_hit`, so a Continue is not misread as "give it more turns".
+ */
+export function stopReasonIsBudget(json) {
+  if (!json || typeof json !== "object") return false;
+  for (const v of [
+    json.stop_reason,
+    json.subtype,
+    json.finish_reason,
+    json.error && json.error.message,
+  ]) {
+    if (typeof v === "string" && MAX_BUDGET_RE.test(v)) return true;
+  }
+  return false;
+}
+
+/**
+ * The per-call dollar cap (`--max-budget-usd`). OPT-IN: it applies only when the
+ * operator sets GAFFER_MAX_CALL_USD (default empty = off, so the argv is unchanged).
+ * When on, the cap is the lowest of GAFFER_MAX_CALL_USD, the factory's live headroom
+ * (GAFFER_BUDGET_REMAINING, when a budget is set) and `ticketRemaining` (the ticket's
+ * own headroom, passed by the bash delivery site). A zero / negative headroom yields
+ * null: the pre-spawn budget gates own that case (they park or refuse before a
+ * spawn). Claude Code checks the cap between turns, so a call can overshoot it by one
+ * turn. Parity with gaffer_call_budget_usd in factory.config.sh.
+ */
+export function callBudgetUsd(env = process.env, ticketRemaining) {
+  const num = (v) => (v == null || String(v).trim() === "" ? NaN : Number(v));
+  const perCall = num(env.GAFFER_MAX_CALL_USD);
+  if (!(perCall > 0)) return null;
+  const vals = [perCall, num(env.GAFFER_BUDGET_REMAINING), num(ticketRemaining)].filter((n) =>
+    Number.isFinite(n),
+  );
+  const min = Math.min(...vals);
+  return min > 0 ? min : null;
+}
+
+/** Append `--max-budget-usd <cap>` unless the argv already names one or no cap is set. */
+export function withCallBudget(argv, env = process.env) {
+  if (!Array.isArray(argv) || argv.includes("--max-budget-usd")) return argv;
+  const cap = callBudgetUsd(env);
+  return cap == null ? argv : [...argv, "--max-budget-usd", cap.toFixed(4)];
 }
 
 /**
@@ -607,6 +679,8 @@ export const Worker = {
 //        → prints "$<total_cost_usd.toFixed(4)>" or "unknown"; exit 0
 //   node lib/worker.mjs parse-result stopreason-maxturns  --json-file <f>
 //        → exit 0 iff a max-turns stop reason is present, else exit 1
+//   node lib/worker.mjs parse-result stopreason-budget    --json-file <f>
+//        → exit 0 iff the run stopped on its --max-budget-usd cap, else exit 1
 //   node lib/worker.mjs parse-result result-text          --json-file <f>
 //        → prints the model's reply text (empty when absent); exit 0
 // =====================================================================
@@ -638,6 +712,11 @@ function parseResultCli(argv) {
   }
   if (field === "stopreason-maxturns") {
     process.exit(parsed.capHit.stopReasonIsMaxTurns ? 0 : 1);
+  }
+  if (field === "stopreason-budget") {
+    process.exit(
+      stopReasonIsBudget(parseClaudeJson(jsonFile ? readFileSafe(jsonFile) : "")) ? 0 : 1,
+    );
   }
   if (field === "result-text") {
     // The model's reply text from the envelope (empty when absent/unparseable).

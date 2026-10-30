@@ -181,6 +181,17 @@ gaffer_is_cap_hit() {
   [ -n "$cap" ] && [ "$turns" -ge "$cap" ] 2>/dev/null
 }
 
+# gaffer_is_budget_stop <json-file>
+# True (exit 0) iff the call stopped on its per-call DOLLAR cap (--max-budget-usd,
+# GAFFER_MAX_CALL_USD). Kept apart from gaffer_is_cap_hit on purpose: a budget stop
+# pauses as `budget_cap`, not `cap_hit` (the turn cap). Delegates to the worker seam.
+gaffer_is_budget_stop() {
+  local jsonfile="$1"
+  [ -f "$jsonfile" ] || return 1
+  command -v node >/dev/null 2>&1 || return 1
+  node "$GAFFER_WORKER_MJS" parse-result stopreason-budget --json-file "$jsonfile" 2>/dev/null
+}
+
 # gaffer_delivery_spend <json-file>
 # Echo Claude Code's own total_cost_usd for the call (relayed verbatim, never
 # computed), or the literal "unknown" when the JSON carried no cost figure — so a

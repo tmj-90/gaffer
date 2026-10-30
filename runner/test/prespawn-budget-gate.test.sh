@@ -8,7 +8,9 @@
 #   • no ceiling configured anywhere → never gates;
 #   • the factory-wide GAFFER_REWORK_BUDGET_USD trips at cumulative spend >= ceiling;
 #   • the per-ticket delivery_budget_usd WINS over the factory default;
-#   • the message globals (GAFFER_BUDGET_SPENT/CEIL) expose the resolved figures.
+#   • the message globals (GAFFER_BUDGET_SPENT/CEIL) expose the resolved figures;
+#   • through the REAL spend helper, a mixed-kind ledger (delivery + review +
+#     security review) trips the ceiling at the TOTAL, not the delivery share.
 # Zero deps beyond node. Run: bash test/prespawn-budget-gate.test.sh  (bash 3.2 safe)
 # =====================================================================
 set -uo pipefail
@@ -70,6 +72,35 @@ SHOW='{"ticket":{"delivery_budget_usd":0.50}}'; GAFFER_REWORK_BUDGET_USD="10.00"
 # 5. per-ticket budget, spend under it → OK (even though it's the tighter ceiling).
 SPEND="0.25"; gate
 [ "$V" = "OK" ] && ok "per-ticket \$0.50, spent \$0.25 → OK (spawn allowed)" || fail "tripped under the per-ticket budget"
+
+# 6. MIXED-KIND ledger through the REAL spend helper: the ceiling counts every agent
+#    call booked to the ticket, not only delivery. Ticket 7: delivery $1.00 + $1.10,
+#    review $2.50 + $2.40, security-review $1.20 = $8.20 against a $5 ticket budget.
+#    Delivery alone ($2.10) is under it — that is what the gate used to see.
+SPENDFN="$(mktemp "${TMPDIR:-/tmp}/spend-fn.XXXXXX")"
+LEDGER7="$(mktemp "${TMPDIR:-/tmp}/ledger7.XXXXXX")"
+trap 'rm -f "$FN" "$SPENDFN" "$LEDGER7"' EXIT
+CFG="$RUNNER_DIR/factory.config.sh"
+awk '/^_gaffer_ticket_spend\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$CFG" > "$SPENDFN"
+grep -E '^gaffer_ticket_(total|delivery|rework)_spend\(\) \{.*\}$' "$CFG" >> "$SPENDFN"
+# shellcheck disable=SC1090
+source "$SPENDFN"
+export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs" GAFFER_USAGE_LEDGER="$LEDGER7"
+{
+  printf '%s\n' '{"kind":"delivery","ticket":7,"measured":true,"total_cost_usd":1.00}'
+  printf '%s\n' '{"kind":"delivery","ticket":7,"measured":true,"total_cost_usd":1.10}'
+  printf '%s\n' '{"kind":"review","ticket":7,"measured":true,"total_cost_usd":2.50}'
+  printf '%s\n' '{"kind":"review","ticket":7,"measured":true,"total_cost_usd":2.40}'
+  printf '%s\n' '{"kind":"security-review","ticket":7,"measured":true,"total_cost_usd":1.20}'
+} > "$LEDGER7"
+SHOW='{"ticket":{"delivery_budget_usd":5}}'; GAFFER_REWORK_BUDGET_USD=""
+V=""; GAFFER_BUDGET_SPENT=""; if gaffer_budget_exhausted 7; then V=EXHAUSTED; else V=OK; fi
+[ "$V" = "EXHAUSTED" ] && ok "mixed-kind ledger: \$8.20 total (review + security included) ≥ \$5 → EXHAUSTED" \
+  || fail "mixed-kind ledger should trip the \$5 ceiling (spent '$GAFFER_BUDGET_SPENT', verdict $V)"
+case "$GAFFER_BUDGET_SPENT" in 8.2*) ok "GAFFER_BUDGET_SPENT reports the all-kinds total (\$$GAFFER_BUDGET_SPENT)" ;;
+  *) fail "spent should be the 8.20 total (got '$GAFFER_BUDGET_SPENT')" ;; esac
+case "$(gaffer_ticket_delivery_spend 7)" in 2.1*) ok "the delivery-only figure (router input) stays \$2.10" ;;
+  *) fail "delivery-only spend should be 2.10 (got '$(gaffer_ticket_delivery_spend 7)')" ;; esac
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

@@ -82,8 +82,13 @@ import { fileURLToPath } from "node:url";
 import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
-import { extractResultText, parseClaudeJson, Worker } from "../lib/worker.mjs";
-import { appendUsageRecord, buildUsageRecord, unknownRecord } from "../lib/usage-ledger.mjs";
+import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
+import {
+  appendUsageRecord,
+  buildUsageRecord,
+  recordKilledCall,
+  unknownRecord,
+} from "../lib/usage-ledger.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -121,6 +126,11 @@ const CONFIG = {
     return Number.isFinite(v) && v > 0 ? v : 900000;
   })(),
 };
+
+/** The tester's turn cap: GAFFER_TESTER_MAX_TURNS (default 80) clamped to GAFFER_MAX_TURNS. */
+export function testerMaxTurns(env = process.env) {
+  return roleTurnCap(parseInt(env.GAFFER_TESTER_MAX_TURNS ?? "", 10) || 80, env);
+}
 
 function log(msg) {
   process.stderr.write(`[tester-run] ${msg}\n`);
@@ -803,9 +813,10 @@ function runLiveTester(context) {
     prompt,
     mcpConfig: mcpRuntime,
     flags: CONFIG.claudeFlags,
-    maxTurns: process.env.GAFFER_TESTER_MAX_TURNS,
+    maxTurns: testerMaxTurns(),
   });
   log(`testing #${n} (${repo.name} @ ${branch}) in ${worktree}; skills: ${skills.join(", ")}`);
+  const t0 = Date.now();
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,
     argv,
@@ -830,20 +841,23 @@ function runLiveTester(context) {
   // Ledger + verdict.
   let verdict = null;
   let text = "";
+  const elapsedMs = Date.now() - t0;
   if (res.error) {
-    appendUsageRecord(
-      unknownRecord({
-        ticket: n,
-        kind: "tester",
-        reason:
-          res.error.code === "ETIMEDOUT" ? "tester timed out" : `spawn error: ${res.error.message}`,
-      }),
-    );
+    // A timed-out call did paid work: book the labelled estimate, never a silent $0.
+    // Any other error (ENOENT, Worker.deliver failing closed) never ran claude, so it
+    // is an "unknown" row, not an estimate — the same split decompose/spec-author use.
+    if (res.error.code === "ETIMEDOUT") {
+      recordKilledCall({ ticket: n, kind: "tester", reason: "tester timed out", elapsedMs });
+    } else {
+      appendUsageRecord(
+        unknownRecord({ ticket: n, kind: "tester", reason: `spawn error: ${res.error.message}` }),
+      );
+    }
     log(`tester did not complete (${res.error.code ?? res.error.message})`);
   } else {
     const json = parseClaudeJson(res.stdout || "");
     if (json === null) {
-      appendUsageRecord(unknownRecord({ ticket: n, kind: "tester", reason: "no parseable json" }));
+      recordKilledCall({ ticket: n, kind: "tester", reason: "no parseable json", elapsedMs });
     } else {
       appendUsageRecord(buildUsageRecord({ json, ticket: n, kind: "tester" }));
       text = extractResultText(json) ?? "";

@@ -151,23 +151,31 @@ console.log(
     prompt: "P",
     mcpConfig: "/tmp/mcp.json",
     flags: ["--permission-mode", "acceptEdits"],
+    maxTurns: 30,
   });
   // USAGE LEDGER: --output-format json is now part of every invocation so stdout
   // carries the real usage; it is non-breaking here (this run never parses stdout).
-  eq("argv shape (json envelope + skill prompt + mcp + flags + scoped MCP grant)", argv, [
-    "-p",
-    "P",
-    "--output-format",
-    "json",
-    "--mcp-config",
-    "/tmp/mcp.json",
-    "--permission-mode",
-    "acceptEdits",
-    "--allowedTools",
-    "mcp__dispatch",
-    "mcp__memory",
-  ]);
-  const noMcp = buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"] });
+  // The role turn cap rides after the flags (the PO used to run with no --max-turns).
+  eq(
+    "argv shape (json envelope + skill prompt + mcp + flags + turn cap + scoped MCP grant)",
+    argv,
+    [
+      "-p",
+      "P",
+      "--output-format",
+      "json",
+      "--mcp-config",
+      "/tmp/mcp.json",
+      "--permission-mode",
+      "acceptEdits",
+      "--max-turns",
+      "30",
+      "--allowedTools",
+      "mcp__dispatch",
+      "mcp__memory",
+    ],
+  );
+  const noMcp = buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"], maxTurns: 0 });
   eq("no mcp config → omitted (grant still appended)", noMcp, [
     "-p",
     "P",

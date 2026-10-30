@@ -59,11 +59,11 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { mountRoleSkills } from "../lib/agent-home.mjs";
-import { maxTurnsArgv, Worker } from "../lib/worker.mjs";
+import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
 import { quarantine } from "../lib/agent-io.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -540,10 +540,13 @@ export function renderPoMcpRuntime(
 
 /**
  * Build the full `claude -p` argv (the same shape decompose.mjs / tick.sh produce):
- * [-p, prompt, --mcp-config, <runtime>, ...CLAUDE_FLAGS]. Pulled out so the dry-run
- * path and tests can assert it without spawning anything.
+ * [-p, prompt, --mcp-config, <runtime>, ...CLAUDE_FLAGS, --max-turns N]. Pulled out
+ * so the dry-run path and tests can assert it without spawning anything. `maxTurns`
+ * is the caller's role cap (PO: GAFFER_PO_MAX_TURNS; tester-run.mjs reuses this with
+ * GAFFER_TESTER_MAX_TURNS), already clamped to GAFFER_MAX_TURNS by roleTurnCap —
+ * without it these agents were bounded only by their wall clock.
  */
-export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns }) {
+export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = poMaxTurns() }) {
   // USAGE LEDGER: --output-format json makes stdout a JSON result object carrying
   // the real usage and the agent's text in `.result`. The product-owner run never
   // parses this stdout for control flow (it only logs it), so the json envelope is
@@ -557,14 +560,19 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns }) {
   // PO files 0. `--allowedTools` is a per-invocation, scoped grant honored regardless
   // of workspace trust; the safety hook + acceptEdits still apply. Scoped to our own
   // dispatch+memory servers only — no global config is touched.
-  // maxTurns: the lane's turn-cap knob (PO: GAFFER_PO_MAX_TURNS, tester:
-  // GAFFER_TESTER_MAX_TURNS) — unset adds nothing (wall-clock bound only, as before).
-  // Before the variadic --allowedTools, which must stay last.
+  // maxTurns: the lane's turn cap (PO: poMaxTurns(), tester: testerMaxTurns()) through
+  // the ONE helper maxTurnsArgv; a non-positive cap adds nothing. Before the variadic
+  // --allowedTools, which must stay last.
   return args.concat(flags, maxTurnsArgv(maxTurns), [
     "--allowedTools",
     "mcp__dispatch",
     "mcp__memory",
   ]);
+}
+
+/** The PO run's turn cap: GAFFER_PO_MAX_TURNS (default 60) clamped to GAFFER_MAX_TURNS. */
+export function poMaxTurns(env = process.env) {
+  return roleTurnCap(parseInt(env.GAFFER_PO_MAX_TURNS ?? "", 10) || 60, env);
 }
 
 /**
@@ -662,7 +670,7 @@ function main() {
       prompt,
       mcpConfig: resolve(GAFFER_DATA, "po-runtime-XXXXXX", "mcp-runtime.json"),
       flags: CONFIG.claudeFlags,
-      maxTurns: process.env.GAFFER_PO_MAX_TURNS,
+      maxTurns: poMaxTurns(),
     });
     // P2-A: surface whether the (token-stripped) child env would still carry the
     // bearer token, so a dry-run can assert the strip without spawning a child.
@@ -725,12 +733,13 @@ function main() {
     prompt,
     mcpConfig: mcpRuntime,
     flags: CONFIG.claudeFlags,
-    maxTurns: process.env.GAFFER_PO_MAX_TURNS,
+    maxTurns: poMaxTurns(),
   });
   // Route through the ONE worker spawn seam (lib/worker.mjs). The argv (pinned by
   // product-owner-run.test.mjs) and this run's credential-stripped env stay built
   // here; only the spawn boundary is shared. Run in the throwaway agent-home dir,
   // NOT the registered repo — the agent writes only via the dispatch MCP.
+  const t0 = Date.now();
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,
     argv,
@@ -757,10 +766,12 @@ function main() {
 
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      // Ledger the unmeasurable call as "unknown" (honesty rule 3: never 0).
-      appendUsageRecord(
-        unknownRecord({ kind: "product-owner", reason: "product-owner claude call timed out" }),
-      );
+      // Ledger the unmeasurable call as a labelled ESTIMATE (never $0, never "measured").
+      recordKilledCall({
+        kind: "product-owner",
+        reason: "product-owner claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       fail(`product-owner run timed out after ${opts.timeoutMs}ms`);
       return;
     }
@@ -772,12 +783,11 @@ function main() {
   const json = parseClaudeJson(res.stdout || "");
   let resultText = "";
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({
-        kind: "product-owner",
-        reason: "no parseable --output-format json on stdout",
-      }),
-    );
+    recordKilledCall({
+      kind: "product-owner",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     if (res.stdout) log(res.stdout.trim());
   } else {
     appendUsageRecord(buildUsageRecord({ json, kind: "product-owner" }));

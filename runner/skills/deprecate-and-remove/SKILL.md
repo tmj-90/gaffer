@@ -42,7 +42,7 @@ secretly load-bearing is an incident.
 5. **Delete completely.** Code, tests, fixtures, types, docs, config keys, flag
    declarations, and now-unused helpers that only the dead code used. A dependency that
    becomes unused is listed in your evidence for a human to remove: package-manager
-   commands cannot run safely in a delivery worktree (the `dependency-upgrade` skill).
+   commands are hook-blocked in a delivery worktree, so give the exact removal command.
    A half-removed feature leaves a reader guessing which half is real.
 6. **Fail loudly for stragglers.** An old API caller gets an explicit error with a
    pointer (HTTP 410 Gone with a link, a CLI message naming the replacement), not a silent
@@ -76,7 +76,7 @@ the search commands and results.
 - External consumers get a dated deprecation and a documented replacement first.
 - Remove in dependency order; data removals follow the migration phases.
 - Remove the whole thing; never leave a stub that silently swallows old calls.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

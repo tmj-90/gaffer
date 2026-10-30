@@ -30,6 +30,10 @@ const {
   unknownRecord,
   estimatedRecord,
   killEstimateFromHistory,
+  killRateEstimateFromHistory,
+  deriveKillEstimate,
+  recordKilledCall,
+  VALID_KINDS,
   extractResultText,
   appendUsageRecord,
   UNKNOWN,
@@ -599,6 +603,146 @@ console.log("== PART A CLI: history-p10 basis fires once ≥5 measured same-kind
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("== PART A': the kill estimate scales with how long the killed call ran ==");
+{
+  const dir = mkdtempSync(join(tmpdir(), "kill-rate-"));
+  try {
+    const ledgerPath = join(dir, LEDGER_FILENAME);
+    // 5 measured delivery rows, each $0.10 per 60 s (rate 0.10/60000 $/ms), costs
+    // 0.10..0.50 over 60..300 s → P90 cost 0.46.
+    const rows = [1, 2, 3, 4, 5].map((k) =>
+      JSON.stringify({
+        kind: "delivery",
+        measured: true,
+        total_cost_usd: 0.1 * k,
+        duration_ms: 60000 * k,
+      }),
+    );
+    writeFileSync(ledgerPath, rows.join("\n") + "\n");
+    const env = { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" };
+    const r = killRateEstimateFromHistory(readFileSync(ledgerPath, "utf8"), "delivery", 120000);
+    assert("median rate × 120 s = $0.20", r && Math.abs(r.rateUsd - 0.2) < 1e-9);
+    assert("cap = P90 of measured cost ($0.46)", r && Math.abs(r.capUsd - 0.46) < 1e-9);
+    const short = deriveKillEstimate({
+      kind: "delivery",
+      killEstimate: "0.05",
+      elapsedMs: 120000,
+      env,
+    });
+    assert(
+      "killed after 2 min → $0.20, basis history-rate",
+      Math.abs(short.estimateUsd - 0.2) < 1e-9 && short.basis === "history-rate",
+    );
+    const long = deriveKillEstimate({
+      kind: "delivery",
+      killEstimate: "0.05",
+      elapsedMs: 1800000,
+      env,
+    });
+    assert(
+      "killed at the 30-min wall clock → clamped to the P90 cap ($0.46), not P10 ($0.14)",
+      Math.abs(long.estimateUsd - 0.46) < 1e-9 && long.basis === "history-rate",
+    );
+    const tiny = deriveKillEstimate({
+      kind: "delivery",
+      killEstimate: "0.05",
+      elapsedMs: 1000,
+      env,
+    });
+    assert(
+      "a near-instant kill never books under the flat floor",
+      Math.abs(tiny.estimateUsd - 0.05) < 1e-9,
+    );
+    const noElapsed = deriveKillEstimate({ kind: "delivery", killEstimate: "0.05", env });
+    assert(
+      "no elapsed time → the P10 history fallback, unchanged",
+      noElapsed.basis === "history-p10" && Math.abs(noElapsed.estimateUsd - 0.14) < 1e-9,
+    );
+    const otherKind = deriveKillEstimate({
+      kind: "tester",
+      killEstimate: "0.05",
+      elapsedMs: 1800000,
+      env,
+    });
+    assert(
+      "no history for the kind → the flat floor",
+      otherKind.basis === "flat-floor" && Math.abs(otherKind.estimateUsd - 0.05) < 1e-9,
+    );
+    // CLI parity: the bash path passes --elapsed-ms.
+    const cli = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "delivery",
+        "--rc",
+        "124",
+        "--kill-estimate",
+        "0.05",
+        "--elapsed-ms",
+        "1800000",
+        "--json-file",
+        "/dev/null",
+      ],
+      { env, encoding: "utf8" },
+    );
+    const last = JSON.parse(readFileSync(ledgerPath, "utf8").trim().split("\n").pop());
+    assert(
+      "CLI --elapsed-ms books the duration-scaled estimate",
+      cli.status === 0 &&
+        last.estimate_basis === "history-rate" &&
+        Math.abs(last.estimated_cost_usd - 0.46) < 1e-9,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+console.log("== PART A'': recordKilledCall — the .mjs sites book the same labelled estimate ==");
+{
+  const dir = mkdtempSync(join(tmpdir(), "kill-mjs-"));
+  try {
+    const ledgerPath = join(dir, LEDGER_FILENAME);
+    const base = { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" };
+    delete base.GAFFER_KILL_ESTIMATE_USD;
+    recordKilledCall({ kind: "decompose", reason: "timed out", elapsedMs: 5000, env: base });
+    let last = JSON.parse(readFileSync(ledgerPath, "utf8").trim().split("\n").pop());
+    assert(
+      "no GAFFER_KILL_ESTIMATE_USD in env → the 0.05 default floor (never $0)",
+      last.kind === "decompose" &&
+        last.measured === false &&
+        last.estimated === true &&
+        Math.abs(last.estimated_cost_usd - 0.05) < 1e-9 &&
+        last.estimate_basis === "flat-floor",
+    );
+    recordKilledCall({
+      kind: "decompose",
+      reason: "timed out",
+      env: { ...base, GAFFER_KILL_ESTIMATE_USD: "0.3" },
+    });
+    last = JSON.parse(readFileSync(ledgerPath, "utf8").trim().split("\n").pop());
+    assert(
+      "env GAFFER_KILL_ESTIMATE_USD sets the floor",
+      Math.abs(last.estimated_cost_usd - 0.3) < 1e-9,
+    );
+    recordKilledCall({
+      kind: "decompose",
+      reason: "timed out",
+      env: { ...base, GAFFER_KILL_ESTIMATE_USD: "0" },
+    });
+    last = JSON.parse(readFileSync(ledgerPath, "utf8").trim().split("\n").pop());
+    assert(
+      "GAFFER_KILL_ESTIMATE_USD=0 with no history opts out (plain unknown row)",
+      last.measured === false && last.estimated === undefined && last.total_cost_usd === UNKNOWN,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  for (const k of ["spec-author", "onboard-review", "inherit"]) {
+    assert(`VALID_KINDS includes '${k}' (booked by a call site)`, VALID_KINDS.has(k));
   }
 }
 

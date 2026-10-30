@@ -282,9 +282,11 @@ EOF
       REVIEW_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
       REVIEW_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
       [ -n "$REVIEW_MODEL" ] && REVIEW_MODEL_FLAG="--model $REVIEW_MODEL"
-      # Per-lane turn cap (GAFFER_REVIEW_MAX_TURNS; empty → the shared GAFFER_MAX_TURNS).
-      GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag "${GAFFER_REVIEW_MAX_TURNS:-}")" \
-        worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON"
+      # Role turn cap (GAFFER_REVIEW_MAX_TURNS, clamped to GAFFER_MAX_TURNS) — not the
+      # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
+      # hit is named in the hold reason below.
+      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
+        "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
       # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
@@ -367,8 +369,10 @@ EOF
         SEC_MODEL="$(gaffer_route_model review "$RRISK" "${RAC:-0}" "" 1 "$RNUM" 2>/dev/null || true)"
         SEC_MODEL_FLAG="${GAFFER_IMPL_MODEL_FLAG:-}"
         [ -n "$SEC_MODEL" ] && SEC_MODEL_FLAG="--model $SEC_MODEL"
-        GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-}" "${GAFFER_REVIEW_MAX_TURNS:-}")" \
-          worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON"
+        # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
+        # clamped to GAFFER_MAX_TURNS.
+        worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
+          "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
         gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
         S_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$S_USAGE_JSON" 2>/dev/null || echo '')"

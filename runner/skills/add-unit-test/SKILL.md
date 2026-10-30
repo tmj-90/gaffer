@@ -78,5 +78,5 @@ something incidental, and the reviewer approved.
 
 - Match existing conventions; no new framework, runner or assertion library.
 - Keep scope to the ticket; do not refactor source unless an AC requires it.
-- Work on the delivery branch the runner prepared (the `create-branch` skill); never a
-  protected branch.
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`);
+  never a protected branch.

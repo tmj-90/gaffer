@@ -58,9 +58,11 @@ export SHOW='{"title":"Rotate the constant","acceptanceCriteria":[{"id":"AC1","t
 
 # ── Stub worker: capture the judge prompt, emit a canned PASS reply envelope. ──
 WORKER_CALLS="$WORK/worker-calls"; : > "$WORKER_CALLS"
-worker_deliver() { # cwd prompt model_flag mcp out_json [wrap]
+worker_deliver() { # cwd prompt model_flag mcp out_json [wrap] [max_turns] [extra flags…]
   printf '%s\n' "CALLED" >> "$WORKER_CALLS"
   printf '%s' "$2" > "$WORK/last-prompt.txt"
+  # Record the spawn shape: cwd, turn cap, extra flags (one per line, "" kept visible).
+  ( printf 'cwd=%s\n' "$1"; printf 'turns=%s\n' "${7:-}"; shift 7 2>/dev/null && printf 'x<%s>\n' "$@" ) > "$WORK/last-spawn.txt"
   REPLY_OUT="$5" python3 - <<'PY'
 import json, os
 reply = "```json\n" + json.dumps({
@@ -130,6 +132,19 @@ grep -q '<untrusted-delivery-diff>' "$WORK/last-prompt.txt" \
   && ok "judge prompt quarantined the diff (untrusted envelope)" || no "prompt missing the quarantine envelope"
 grep -q 'AC1' "$WORK/last-prompt.txt" \
   && ok "judge prompt carries the acceptance criteria" || no "prompt missing the ACs"
+# TEXT-ONLY JUDGE: it grades inline text, so it gets no built-in tools, no MCP tools,
+# no skill listing, its own small turn cap, and an EMPTY scratch cwd — never the
+# target repo (whose CLAUDE.md / skills / settings would load into the judge).
+grep -qx "cwd=$REPO" "$WORK/last-spawn.txt" \
+  && no "judge spawned in the target repo (its CLAUDE.md/skills load)" \
+  || ok "judge does not spawn in the target repo"
+_jcwd="$(sed -n 's/^cwd=//p' "$WORK/last-spawn.txt")"
+case "$_jcwd" in */eval-judge.*/cwd) ok "judge cwd is its own scratch dir" ;; *) no "judge cwd is not the scratch dir ($_jcwd)" ;; esac
+grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under GAFFER_JUDGE_MAX_TURNS (default 2), not the 200 delivery cap" \
+  || no "judge turn cap wrong ($(grep turns= "$WORK/last-spawn.txt"))"
+[ "$(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')" = "x<--tools> x<> x<--strict-mcp-config> x<--disable-slash-commands> " ] \
+  && ok "judge is text-only: --tools \"\" --strict-mcp-config --disable-slash-commands" \
+  || no "judge extra flags wrong: $(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')"
 
 echo "== E. FAIL-SOFT: dead judge turn records NOTHING =="
 worker_deliver() { : > "$5"; return 70; }   # provider fail-closed: empty envelope

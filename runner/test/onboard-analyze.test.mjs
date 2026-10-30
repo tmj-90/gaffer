@@ -28,10 +28,12 @@
 // =====================================================================
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const RUNNER_DIR = resolve(HERE, "..");
 const MOD = resolve(HERE, "..", "lib", "onboard-analyze.mjs");
 const {
   parseMavenModules,
@@ -64,6 +66,9 @@ const {
   CARD_SOLO_SNIPPET_CHARS,
   agentChildEnv,
   runAnalysisTurn,
+  runCardBatchTurn,
+  runCardReviewTurn,
+  buildCardReviewPrompt,
   modelFailure,
   isModelFailure,
   claudeBreaker,
@@ -976,33 +981,181 @@ console.log("== AC17b: lore dedup survives model REWORDING across re-onboards ==
   eq("re-onboard: reworded lore skipped", second.loreSkipped, 1);
 }
 
-console.log("== cardModel: GAFFER_CARD_MODEL / default Haiku (cheap per-file tier) ==");
+console.log("== cardModel: GAFFER_CARD_MODEL / registry onboarding tier (cheap per-file) ==");
 {
-  assert("cardModel defaults to claude-haiku-4-5", cardModel({}) === "claude-haiku-4-5");
+  // The registry's `onboarding` phase routes to the cheap tier — the CLI alias
+  // 'haiku', which tracks the current generation (not a pinned claude-haiku-4-5).
+  assert("cardModel defaults to the registry's onboarding tier (haiku)", cardModel({}) === "haiku");
+  assert(
+    "cardModel ignores GAFFER_PLAN_MODEL (the planner's opus never reaches the cards)",
+    cardModel({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "1" }) === "haiku",
+  );
   assert(
     "cardModel respects GAFFER_CARD_MODEL override",
     cardModel({ GAFFER_CARD_MODEL: "claude-opus-4" }) === "claude-opus-4",
   );
   assert(
     "cardModel ignores blank GAFFER_CARD_MODEL",
-    cardModel({ GAFFER_CARD_MODEL: "  " }) === "claude-haiku-4-5",
+    cardModel({ GAFFER_CARD_MODEL: "  " }) === "haiku",
   );
+  // A registry edit reroutes cards (config-only), and an enabled localSeam pointing
+  // at a provider id the CLI cannot run yet falls back to the cheap tier.
+  const regDir = mkdtempSync(join(tmpdir(), "onb-reg-"));
+  const reg = (obj) => {
+    const f = join(regDir, `r${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(f, JSON.stringify(obj));
+    return f;
+  };
+  const tiers = { cheap: "haiku-next", mid: "sonnet-next", strong: "opus", local: "ollama:x" };
+  const order = ["cheap", "mid", "strong"];
+  assert(
+    "cardModel follows a registry's onboarding tier",
+    cardModel({ GAFFER_MODEL_REGISTRY: reg({ tiers, escalationOrder: order }) }) === "haiku-next",
+  );
+  const seam = reg({
+    tiers,
+    escalationOrder: ["local", ...order],
+    localSeam: { enabled: true, tier: "local", phases: ["onboarding"] },
+  });
+  assert(
+    "localSeam → 'ollama:x' (no adapter yet) falls back to the cheap tier, never emitted",
+    cardModel({ GAFFER_MODEL_REGISTRY: seam }) === "haiku-next",
+  );
+  assert(
+    "an unreadable registry falls back to haiku",
+    cardModel({ GAFFER_MODEL_REGISTRY: join(regDir, "missing.json") }) === "haiku",
+  );
+  rmSync(regDir, { recursive: true, force: true });
 }
 
-console.log("== analysisCaps: synthesis model stays on Sonnet (separate knob) ==");
+console.log("== analysisCaps: synthesis model is the mid tier unless an operator pins it ==");
 {
   assert(
-    "synth model defaults to claude-sonnet-4-5",
-    analysisCaps({}).model === "claude-sonnet-4-5",
+    "synth model defaults to the registry mid tier (sonnet)",
+    analysisCaps({}).model === "sonnet",
   );
   assert(
-    "GAFFER_PLAN_MODEL overrides synth model",
+    "the config's own opus default (EXPLICIT=0) does NOT move synthesis to opus",
+    analysisCaps({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "0" }).model === "sonnet",
+  );
+  assert(
+    "an operator-set GAFFER_PLAN_MODEL (EXPLICIT=1) still overrides synthesis",
+    analysisCaps({ GAFFER_PLAN_MODEL: "opus", GAFFER_PLAN_MODEL_EXPLICIT: "1" }).model === "opus",
+  );
+  assert(
+    "GAFFER_PLAN_MODEL with no config sourced (EXPLICIT absent) is the caller's choice",
     analysisCaps({ GAFFER_PLAN_MODEL: "claude-opus-4" }).model === "claude-opus-4",
   );
   assert(
     "GAFFER_ONBOARD_SYNTH_MODEL wins over GAFFER_PLAN_MODEL",
     analysisCaps({ GAFFER_ONBOARD_SYNTH_MODEL: "m1", GAFFER_PLAN_MODEL: "m2" }).model === "m1",
   );
+}
+
+{
+  // INTEGRATION: source the real factory.config.sh with no operator overrides — the
+  // production env — and resolve both models from it.
+  const cfg = join(RUNNER_DIR, "factory.config.sh");
+  const dump = spawnSync(
+    "bash",
+    [
+      "-c",
+      'source "$0" >/dev/null 2>&1; node -e "process.stdout.write(JSON.stringify(process.env))"',
+      cfg,
+    ],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        GAFFER_DATA: mkdtempSync(join(tmpdir(), "onb-cfg-")),
+      },
+    },
+  );
+  const prodEnv = JSON.parse(dump.stdout || "{}");
+  assert("sourced config exports GAFFER_PLAN_MODEL=opus", prodEnv.GAFFER_PLAN_MODEL === "opus");
+  assert(
+    "with the sourced config, synthesis is NOT opus",
+    analysisCaps(prodEnv).model === "sonnet",
+  );
+  assert("with the sourced config, cards are haiku", cardModel(prodEnv) === "haiku");
+}
+
+console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny turn cap ==");
+{
+  // A stub claude records its cwd + argv (one per line, "" kept visible) and replies
+  // with a JSON envelope — the shape of the audit's reproduction (no live model). Args
+  // are recorded whole (newlines flattened), so path asserts hold under a long TMPDIR.
+  const dir = mkdtempSync(join(tmpdir(), "onb-textonly-"));
+  const rec = join(dir, "rec.txt");
+  const stub = join(dir, "claude.sh");
+  writeFileSync(
+    stub,
+    [
+      "#!/bin/bash",
+      `{ echo "CWD=$PWD"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a//$'\\n'/ }"; done; } > "${rec}"`,
+      `echo '{"type":"result","result":"\`\`\`json\\n{\\"cards\\":[]}\\n\`\`\`","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}'`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const env = {
+    ...process.env,
+    CLAUDE_BIN: stub,
+    GAFFER_MAX_TURNS: "200",
+    GAFFER_DATA: dir,
+    MCP_CONFIG: join(RUNNER_DIR, ".mcp.json"),
+  };
+  const read = () => readFileSync(rec, "utf8").split("\n");
+  const args = (lines) => lines.filter((l) => l.startsWith("ARG<")).map((l) => l.slice(4, -1));
+  const after = (a, flag) => a[a.indexOf(flag) + 1];
+  const prompt = buildCardBatchPrompt([
+    {
+      rel: "a.js",
+      fileType: "js",
+      structure: { imports: ["x"], symbols: ["f"] },
+      snippet: "f(){}",
+    },
+  ]);
+  for (const [label, run] of [
+    ["card batch", () => runCardBatchTurn(prompt, 1, env)],
+    [
+      "card review",
+      () =>
+        runCardReviewTurn(
+          buildCardReviewPrompt("a.js", "js", { imports: [], symbols: [] }, "f(){}", { tldr: "x" }),
+          env,
+        ),
+    ],
+  ]) {
+    run();
+    const lines = read();
+    const a = args(lines);
+    const cwd = (lines.find((l) => l.startsWith("CWD=")) || "").slice(4);
+    assert(`${label}: cwd is NOT runner/ (runner/CLAUDE.md no longer loads)`, cwd !== RUNNER_DIR);
+    assert(`${label}: cwd is an empty scratch dir`, /gaffer-onboard-text-/.test(cwd));
+    assert(`${label}: built-in tools disabled (--tools "")`, after(a, "--tools") === "");
+    assert(`${label}: --strict-mcp-config`, a.includes("--strict-mcp-config"));
+    assert(
+      `${label}: the factory MCP config is NOT handed over`,
+      !a.includes(env.MCP_CONFIG) && /mcp\.json$/.test(after(a, "--mcp-config")),
+    );
+    assert(`${label}: --disable-slash-commands`, a.includes("--disable-slash-commands"));
+    assert(`${label}: --max-turns 2, not the 200 delivery cap`, after(a, "--max-turns") === "2");
+    assert(`${label}: one --max-turns only`, a.filter((x) => x === "--max-turns").length === 1);
+    assert(`${label}: write denylist kept (defence in depth)`, a.includes("--disallowedTools"));
+    assert(`${label}: scratch cwd removed after the turn`, !existsSync(cwd));
+  }
+  // The synthesis turn (not text-only) keeps its tools + MCP, under its own role cap.
+  runAnalysisTurn("synth", env);
+  const a = args(read());
+  assert(
+    "synthesis turn keeps the factory MCP config",
+    after(a, "--mcp-config") === env.MCP_CONFIG,
+  );
+  assert("synthesis turn is not tool-less", !a.includes("--tools"));
+  assert("synthesis turn: GAFFER_ONBOARD_MAX_TURNS default 60", after(a, "--max-turns") === "60");
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log("== cardBatch: GAFFER_CARD_BATCH / default 8, min 1 ==");

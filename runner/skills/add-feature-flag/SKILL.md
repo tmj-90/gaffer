@@ -75,7 +75,7 @@ message.
 - Default = old, safe behaviour, also on evaluation failure.
 - Decide at one boundary; no scattered checks; never reuse a flag name.
 - Both shipping configurations tested in the same run.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

@@ -67,7 +67,7 @@ below it, where most UI confidence is cheapest to buy.
 - The repo's runner, Testing Library, render helper and network mock; nothing parallel.
 - Queries by role and label; test ids are justified exceptions.
 - Assert what the user sees or what the app sent; never internals.
-- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`),
   never a protected branch.
 
 ## Capture lore

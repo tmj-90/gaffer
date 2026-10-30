@@ -112,7 +112,7 @@ until a human answers).
 ## Rules
 
 - Hashing is not anonymisation, and "we might need it later" is not a purpose.
-- Work on the ticket branch (the `create-branch` skill verifies this), never a
+- Work on the ticket branch (verify with `git branch --show-current`), never a
   protected branch.
 
 ## Capture lore

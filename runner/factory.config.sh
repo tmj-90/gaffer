@@ -175,6 +175,36 @@ GAFFER_IMPL_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_IMPL_MODEL:-}")"
 : "${GAFFER_BUDGET_USD:=}"
 export GAFFER_BUDGET_USD
 
+# GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd`
+#   so ONE runaway call is stopped while it runs (every other guard acts only between
+#   calls). OPT-IN: empty (the default) = off, no flag, behaviour unchanged. When set,
+#   each call's cap is the lowest of this value, the factory headroom
+#   (GAFFER_BUDGET_REMAINING) and — for a delivery — the ticket's own remaining
+#   ceiling (delivery_budget_usd / GAFFER_REWORK_BUDGET_USD minus its spend). A call
+#   stopped by it is a `budget_cap` pause (work kept, one-click Continue), never a
+#   turn-cap. Claude Code checks it between turns, so a call can overshoot by one turn.
+#   OWNER DECISION PENDING: whether to ship a default (e.g. 5) and/or a default
+#   per-ticket ceiling (GAFFER_REWORK_BUDGET_USD, e.g. 10) — both are empty today.
+: "${GAFFER_MAX_CALL_USD:=}"
+export GAFFER_MAX_CALL_USD
+
+# gaffer_call_budget_usd [ticket-remaining]
+# Echo the per-call `--max-budget-usd` value, or nothing when GAFFER_MAX_CALL_USD is
+# unset (off) or a headroom is already ≤ 0 (the pre-spawn gates own that case).
+# Parity with lib/worker.mjs callBudgetUsd.
+gaffer_call_budget_usd() {
+  [ -n "${GAFFER_MAX_CALL_USD:-}" ] || return 0
+  awk -v c="${GAFFER_MAX_CALL_USD}" -v r="${GAFFER_BUDGET_REMAINING:-}" -v t="${1:-}" '
+    function num(v) { return (v ~ /^[0-9]*\.?[0-9]+$/) }
+    BEGIN {
+      if (!num(c) || c + 0 <= 0) exit 0
+      m = c + 0
+      if (r != "" && r ~ /^-?[0-9]*\.?[0-9]+$/ && r + 0 < m) m = r + 0
+      if (t != "" && t ~ /^-?[0-9]*\.?[0-9]+$/ && t + 0 < m) m = t + 0
+      if (m > 0) printf "%.4f", m
+    }' 2>/dev/null || true
+}
+
 # GAFFER_BUDGET_REMAINING — live USD headroom. Recomputed here from the ledger
 # so the I1 router (gaffer_route_model) and Guard C (ask-on-cap) can read a
 # real figure instead of "unlimited". Empty = unlimited (GAFFER_BUDGET_USD unset
@@ -249,11 +279,12 @@ fi
 # (route-model.mjs cheapClassFromEnv) reads this and biases one tier cheaper for a
 # matching phase — but never overrides a high/critical-risk escalation. Empty
 # (default) = no class is force-cheapened.
-# HONEST SCOPE (finding 13): today ONLY the `implement` phase is routed through
-# gaffer_route_model (tick.sh's delivery call) — so `implement` is the only value
-# that has any effect (e.g. "implement"). Other phases (self-review, test,
-# onboarding, decompose…) use static model flags and do NOT consult the router yet;
-# listing them here is inert until those call sites are routed.
+# SCOPE: the phases routed through gaffer_route_model are `implement` (tick.sh's
+# delivery call), `review` (lib/review.sh — the primary reviewer AND the security
+# second-opinion reviewer) and `clarify` (lib/clarify.sh), so those three values have
+# an effect (e.g. "implement,review"). Other phases (self-review, test, onboarding,
+# decompose…) use static model flags and do NOT consult this router; listing them
+# here is inert.
 : "${GAFFER_CHEAP_PHASES:=}"
 export GAFFER_MODEL_REGISTRY GAFFER_BUDGET_REMAINING GAFFER_BUDGET_LOW_THRESHOLD GAFFER_CHEAP_PHASES
 
@@ -305,7 +336,7 @@ gaffer_route_model() {
   if [ -n "$ticket" ]; then
     # Only a POSITIVE measured spend is a difficulty signal — $0 means "no history
     # yet" (a fresh ticket), which must read as unknown/medium, never as "easy".
-    local _hist; _hist="$(gaffer_ticket_rework_spend "$ticket" 2>/dev/null || echo 0)"
+    local _hist; _hist="$(gaffer_ticket_delivery_spend "$ticket" 2>/dev/null || echo 0)"
     if [ -n "$_hist" ] && awk "BEGIN{exit !(${_hist:-0}+0 > 0)}" 2>/dev/null; then
       _diff_args+=(--historical-cost "$_hist")
     fi
@@ -397,18 +428,43 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 # Settings-panel debate toggle widens the cap without a dashboard restart.
 
 # --- Per-call resource caps (P1 denial-of-wallet / token runaway) ------------
-# Every headless `claude -p` call (delivery, bootstrap, agent-review, clarify) —
-# and the whole tick.sh from loop.sh — runs under TWO bounds so a single runaway
-# call can't burn unbounded wall-clock OR unbounded tokens:
+# Every headless `claude -p` call (delivery, bootstrap, review, security review,
+# clarify, eval judge, and the .mjs helpers: planner, spec author, onboarding,
+# product owner, tester, merge resolver) — and the whole tick.sh from loop.sh —
+# runs under TWO bounds so a single runaway call can't burn unbounded wall-clock
+# OR unbounded tokens:
 #   GAFFER_TICK_TIMEOUT — wall-clock seconds before the call is killed (SIGTERM).
 #   GAFFER_MAX_TURNS    — agent turn cap, passed to `claude --max-turns`. Bounds the
 #                        number of model round-trips (the real token-spend driver).
+#                        It is the DELIVERY/BOOTSTRAP cap and a CEILING for every
+#                        other role: a role runs under min(its own cap, this), so
+#                        the global can lower a role cap but never raise or replace it.
+# Per-role caps (each clamped to GAFFER_MAX_TURNS). Sized well above what each
+# role's prompt asks for (the reviewer is told "well under 20 tool calls", the
+# security reviewer "under 12") so a normal run never trips them — they only stop
+# an agent that has gone off-track. The judge has no tools, so one turn ends it.
+# A capped run that stops before its verdict line is HELD for a human (no verdict is
+# never an approve; a reviewer cap hit is named in the hold reason), so when tuning a
+# cap start near the role's 90th-percentile turn count in usage-ledger.jsonl
+# (num_turns), not its mean, or the tail of ordinary runs is held.
+# The .mjs helpers carry their own: GAFFER_DECOMPOSE_MAX_TURNS (20),
+# GAFFER_SPEC_AUTHOR_MAX_TURNS (20), GAFFER_ONBOARD_MAX_TURNS (60). The first two are
+# also the planner's / spec author's HISTORY ceiling (--max-rounds);
+# GAFFER_DECOMPOSE_AGENT_MAX_TURNS / GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, when set, cap
+# their claude agent on their own (still clamped to GAFFER_MAX_TURNS).
 # macOS ships NO GNU `timeout`, so gaffer_timeout is a portable shim built on perl's
 # alarm(): `gaffer_timeout <secs> <cmd> [args…]` runs <cmd> and kills it after <secs>.
 # If perl is somehow absent it falls back to GNU `timeout`/`gtimeout` when present,
 # else runs the command unbounded (best-effort — never breaks the call).
 : "${GAFFER_TICK_TIMEOUT:=1800}"   # 30 min hard wall-clock cap per claude -p call
-: "${GAFFER_MAX_TURNS:=200}"        # max agent turns per claude -p call
+: "${GAFFER_MAX_TURNS:=200}"        # max agent turns per delivery call; ceiling for every role
+: "${GAFFER_REVIEW_MAX_TURNS:=60}"           # primary reviewer
+: "${GAFFER_SECURITY_REVIEW_MAX_TURNS:=40}"  # security second-opinion reviewer
+: "${GAFFER_CLARIFY_MAX_TURNS:=40}"          # intake / clarify pass
+: "${GAFFER_JUDGE_MAX_TURNS:=2}"             # eval judge (text-only, no tools)
+: "${GAFFER_TESTER_MAX_TURNS:=80}"           # bin/tester-run.mjs
+: "${GAFFER_MERGE_MAX_TURNS:=60}"            # bin/merge-ticket.mjs conflict resolver
+: "${GAFFER_PO_MAX_TURNS:=60}"               # bin/product-owner-run.mjs
 # Definition-of-Done gate switches + bounds. The consumers (tick.sh, lib/dod.sh,
 # lib/ac-checks.sh) carry the SAME fallbacks, so these lines change nothing at
 # runtime — they exist so the knobs are documented here (docs/CONFIG.md) and
@@ -446,31 +502,22 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_DAEMON_SETUP_BACKOFF_MAX:=1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
-# PER-LANE TURN CAPS. GAFFER_MAX_TURNS is the DELIVERY cap; the other agent lanes can be
-# capped on their own. EMPTY (the default) keeps each lane exactly as it was: the reviewer
-# and the security reviewer share GAFFER_MAX_TURNS, and the tester, the conflict resolver
-# and the product-owner run have NO turn cap (their wall-clock timeout is the only bound).
-# A positive number caps that lane's `claude --max-turns`. A capped run that stops before
-# its verdict line is HELD for a human (no verdict is never an approve), so start a cap
-# near the lane's 90th-percentile turn count in usage-ledger.jsonl (num_turns), not its
-# mean, or the tail of ordinary runs is held.
-: "${GAFFER_REVIEW_MAX_TURNS:=}"           # reviewer agent (empty → GAFFER_MAX_TURNS)
-: "${GAFFER_SECURITY_REVIEW_MAX_TURNS:=}"  # security second opinion (empty → the reviewer's cap)
-: "${GAFFER_TESTER_MAX_TURNS:=}"           # independent tester (empty → no turn cap)
-: "${GAFFER_RESOLVER_MAX_TURNS:=}"         # merge-conflict resolver (empty → no turn cap)
-: "${GAFFER_PO_MAX_TURNS:=}"               # product-owner "Suggest work" run (empty → no turn cap)
-: "${GAFFER_JUDGE_MAX_TURNS:=2}"           # eval judge: a one-shot text grader with no tools
-export GAFFER_TESTER_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by bin/*.mjs children
-# gaffer_lane_turns_flag <cap>… — the `--max-turns` flag for a bash lane: the first
-# positive integer among the given caps, else $GAFFER_MAX_TURNS_FLAG (unchanged default).
-# Used as a per-call override: GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag …)" worker_deliver …
-gaffer_lane_turns_flag() {
-  local _c
-  for _c in "$@"; do
-    case "$_c" in ''|*[!0-9]*) continue ;; esac
-    [ "$_c" -gt 0 ] 2>/dev/null && { printf -- '--max-turns %s\n' "$_c"; return 0; }
-  done
-  printf '%s\n' "${GAFFER_MAX_TURNS_FLAG:-}"
+# The resolver's cap also answers to the lane-knob spelling GAFFER_RESOLVER_MAX_TURNS,
+# which wins over GAFFER_MERGE_MAX_TURNS when set (bin/merge-ticket.mjs mergeMaxTurns).
+: "${GAFFER_RESOLVER_MAX_TURNS:=}"           # alias of GAFFER_MERGE_MAX_TURNS (empty → that knob)
+export GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_RESOLVER_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by the .mjs helpers
+
+# gaffer_role_turns <role-cap>
+# Echo the effective turn cap for one role: min(role cap, GAFFER_MAX_TURNS). A
+# non-numeric / empty role cap falls back to the global; an unset global leaves the
+# role cap as is. Empty output = no cap (both unset). worker_deliver takes this
+# number as its 7th argument (a per-call override of $GAFFER_MAX_TURNS_FLAG).
+gaffer_role_turns() {
+  local role="${1:-}" glob="${GAFFER_MAX_TURNS:-}"
+  case "$role" in '' | *[!0-9]* | 0) role="" ;; esac
+  case "$glob" in '' | *[!0-9]* | 0) glob="" ;; esac
+  if [ -n "$role" ] && [ -n "$glob" ] && [ "$glob" -lt "$role" ]; then role="$glob"; fi
+  printf '%s' "${role:-$glob}"
 }
 
 # RUNNER-OWNED-BOOKKEEPING: the runner (not the agent) claims the delivery ticket at
@@ -539,7 +586,8 @@ export GAFFER_REWORK_STRONG_MODEL
 
 # DOUBLE-BOUND: a per-ticket rework COST ceiling (USD). The rework loop stops at
 # whichever hits FIRST — the attempt cap (above) OR this cumulative per-ticket spend
-# — then parks to `blocked` (rework_exhausted). Prevents unbounded token burn on one
+# (every agent call booked to the ticket: delivery, review, security review, clarify,
+# eval judge, bootstrap, tester, merge resolver) — then parks to `blocked` (rework_exhausted). Prevents unbounded token burn on one
 # stubborn ticket even when attempts remain. Defaults to the factory-wide
 # GAFFER_BUDGET_USD (a single ticket may not consume the whole budget on rework);
 # empty/0 → no per-ticket ceiling (attempt cap alone bounds it).
@@ -573,13 +621,15 @@ export GAFFER_MAX_NOCOMMIT_FAILURES
 # (GAFFER_MAX_DELIVERY_ATTEMPTS, total attempts per tick, ≥1) is defined + exported
 # once above, alongside the claim TTL it feeds — this guard only consumes it.
 
-# gaffer_ticket_rework_spend <ticket>
-# Sum this ticket's measured delivery spend (total_cost_usd) from the usage ledger
-# — the DOUBLE-BOUND's cost side. Prints a decimal USD figure (0 when unmeasured or
-# no ledger). Unmeasured ("unknown") records contribute 0 (honest: we never invent
-# a cost), so the ceiling is only ever tripped by REAL measured spend.
-gaffer_ticket_rework_spend() {
-  local ticket="$1"
+# _gaffer_ticket_spend <ticket> <all|delivery>
+# Sum this ticket's spend from the usage ledger: measured total_cost_usd, else a
+# killed/timeout call's labelled estimate. Prints a decimal USD figure (0 when
+# unmeasured or no ledger). Unmeasured ("unknown") records with no estimate
+# contribute 0 (honest: we never invent a cost). Scope `all` counts every agent
+# call booked against the ticket (delivery, bootstrap, review, security-review,
+# clarify, eval-judge, tester, merge-resolver); `delivery` only the delivery turns.
+_gaffer_ticket_spend() {
+  local ticket="$1" scope="${2:-all}"
   command -v node >/dev/null 2>&1 || { printf '0'; return 0; }
   local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
   [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }
@@ -588,16 +638,17 @@ gaffer_ticket_rework_spend() {
   # from reading total_cost_usd. Degrade path unchanged: any node/module failure
   # prints 0 (we never invent a cost).
   [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
-  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" node --input-type=module -e '
+  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" GAFFER_RW_SCOPE="$scope" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { pathToFileURL } from "node:url";
     const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
     const want=String(process.env.GAFFER_RW_TICKET);
+    const deliveryOnly=process.env.GAFFER_RW_SCOPE==="delivery";
     let text="";
     try { text=readFileSync(process.env.GAFFER_RW_LEDGER,"utf8"); } catch {}
     let spend=0;
     for (const r of parseLedger(text)) {
-      if (r.kind!=="delivery") continue;
+      if (deliveryOnly && r.kind!=="delivery") continue;
       if (String(r.ticket)!==want) continue;
       const c=r.total_cost_usd;
       if (typeof c==="number" && Number.isFinite(c) && c>=0) { spend+=c; continue; }
@@ -608,7 +659,26 @@ gaffer_ticket_rework_spend() {
     process.stdout.write(spend.toFixed(6));
   ' 2>/dev/null || printf '0'
 }
-export -f gaffer_ticket_rework_spend 2>/dev/null || true
+
+# gaffer_ticket_total_spend <ticket>
+# EVERY agent call's spend for the ticket — the DOUBLE-BOUND's cost side. The
+# per-ticket ceiling (delivery_budget_usd / GAFFER_REWORK_BUDGET_USD) bounds the
+# whole rework loop, and that loop includes the review rounds that send work back,
+# so the reviewers' (often strong-tier) spend counts too. Used by the pre-spawn
+# gate, the post-attempt rework bound and the no-commit park in tick.sh.
+gaffer_ticket_total_spend() { _gaffer_ticket_spend "$1" all; }
+
+# gaffer_ticket_delivery_spend <ticket>
+# Only the ticket's DELIVERY turns. The router's --historical-cost difficulty signal
+# reads this: route-model.mjs's HIGH/LOW_HISTORICAL_USD thresholds are sized for
+# delivery spend, and adding a review round would push nearly every reviewed ticket
+# to "hard" and over-route it to the strong tier.
+gaffer_ticket_delivery_spend() { _gaffer_ticket_spend "$1" delivery; }
+
+# gaffer_ticket_rework_spend <ticket> — the historical name, kept for the tick.sh
+# callers and test stubs. It is the TOTAL (all kinds), the figure the ceiling uses.
+gaffer_ticket_rework_spend() { gaffer_ticket_total_spend "$1"; }
+export -f _gaffer_ticket_spend gaffer_ticket_total_spend gaffer_ticket_delivery_spend gaffer_ticket_rework_spend 2>/dev/null || true
 
 # --- Ask-on-cap guard (GUARD C) ----------------------------------------------
 # When a mid-delivery agent call HITS a cap rather than failing a gate — it ran
@@ -1348,9 +1418,13 @@ export GAFFER_USAGE_LEDGER
 # When the ledger CLI hits a killed/timeout branch it instead records a CONSERVATIVE
 # ESTIMATE (measured:false, total_cost_usd stays "unknown", but a labelled
 # estimated_cost_usd that DOES count toward windowed spend). The estimate prefers the
-# P10 of the factory's OWN measured history for that kind; this value is the FLAT
-# FLOOR used when there isn't enough history (it is a floor, NOT precision). 0
-# restores today's exact $0/unknown behaviour (opt-out). Measured calls ignore it.
+# factory's OWN measured history for that kind: the median $/ms rate times how long the
+# killed call ran (capped at the kind's P90 cost), else the P10 when the run time is
+# unknown; this value is the FLAT FLOOR under it and the fallback when there isn't
+# enough history (a floor, NOT precision). The .mjs helpers (planner, spec author,
+# product owner, tester, onboarding, merge resolver) read it too (default 0.05 when
+# run outside this config). 0 restores the $0/unknown behaviour when there is no
+# usable history (opt-out). Measured calls ignore it.
 : "${GAFFER_KILL_ESTIMATE_USD:=0.05}"
 export GAFFER_KILL_ESTIMATE_USD
 
@@ -1370,6 +1444,11 @@ export GAFFER_KILL_ESTIMATE_USD
 # preserved. At concurrency 1 the lock is uncontended → behaviour is unchanged.
 gaffer_usage_record() {
   local kind="$1" ticket="${2:-}" rc="${3:-0}" jsonfile="$4"
+  # [elapsed-ms] — how long the call ran; defaults to the last worker_deliver's
+  # figure (consumed here so a later record never reuses it). It scales a killed
+  # call's estimate (usage-ledger.mjs deriveKillEstimate); a measured call ignores it.
+  local elapsed="${5:-${WORKER_LAST_ELAPSED_MS:-}}"
+  WORKER_LAST_ELAPSED_MS=""
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
   # R-4: an append failure used to be doubly hidden — node stderr went to /dev/null
@@ -1380,9 +1459,9 @@ gaffer_usage_record() {
   # tick), but the WARNING is now VISIBLE in the log.
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
 }
 
@@ -1827,6 +1906,18 @@ gaffer_afk_ship_plan() {
   fi
 }
 
+# The default SECURITY-SENSITIVE PATH regex, shared by the lite trivial classifier and
+# the security second-review lane (one definition, so the two cannot drift). The
+# `auth` stem carves out only `author`: author/authors/authoring used to trip it (an
+# extra security reviewer per approve, and a lite trivial change held as "sensitive").
+# auth + "or" matches only when followed by s/z (authorize*, authoris/zation). Every
+# other auth* path stays a PREFIX match — auth, authn, authz, oauth/OAuth2,
+# authentication, AuthGuard, auth.ts, auth/ and the lowercase compounds (authmiddleware,
+# authhandler, authconfig, authprovider) that a required word boundary would lose. The
+# other stems are PREFIX matches on purpose too — this is a security gate, so .env*
+# (incl. .envrc), secrets*, security*, migrations* keep matching.
+_GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([^o]|o[^r]|ori[sz]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)'
+
 # LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
 # to auto-approve WITHOUT a human reviewer. This is an ADDITIONAL narrowing that only
 # applies in GAFFER_MODE=lite: a trivial ticket has already passed the DoD (tests/lint/
@@ -1843,7 +1934,7 @@ gaffer_afk_ship_plan() {
 gaffer_lite_trivial_reason() {
   local _risk="$1" _lines="$2" _files="$3" _paths="$4"
   local _maxl="${GAFFER_LITE_MAX_LINES:-60}" _maxf="${GAFFER_LITE_MAX_FILES:-4}"
-  local _re="${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}"
+  local _re="${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"
   [ "$_risk" = "low" ] || { printf 'nontrivial:risk=%s\n' "$_risk"; return 0; }
   case "$_lines" in '' | *[!0-9]*) _lines=999999 ;; esac
   case "$_files" in '' | *[!0-9]*) _files=999999 ;; esac
@@ -1901,7 +1992,7 @@ gaffer_needs_security_review() {
   case "${GAFFER_SECURITY_REVIEW:-1}" in 0|false|no|off) return 1 ;; esac
   _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
-  _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}}"
+  _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"
   _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
   if grep -qE -- "$_re" <<<"$_paths"; then   # here-string: no SIGPIPE false miss under pipefail
     GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"

@@ -351,7 +351,9 @@ console.log("== AC6: buildClaudeArgv = [-p, prompt, --mcp-config, cfg, ...flags]
     prompt: "P",
     mcpConfig: "/tmp/mcp.json",
     flags: ["--permission-mode", "acceptEdits"],
+    maxTurns: 30,
   });
+  // The role turn cap rides after the flags (the resolver used to run with no --max-turns).
   eq("argv shape", argv, [
     "-p",
     "P",
@@ -359,12 +361,14 @@ console.log("== AC6: buildClaudeArgv = [-p, prompt, --mcp-config, cfg, ...flags]
     "/tmp/mcp.json",
     "--permission-mode",
     "acceptEdits",
+    "--max-turns",
+    "30",
   ]);
-  eq("no mcp config → omitted", buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"] }), [
-    "-p",
-    "P",
-    "--foo",
-  ]);
+  eq(
+    "no mcp config / no cap → both omitted",
+    buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"], maxTurns: 0 }),
+    ["-p", "P", "--foo"],
+  );
 }
 
 console.log("== AC7: buildReapprovalCommand is the single isolated re-approval call ==");
@@ -624,6 +628,49 @@ console.log(
   assert(
     "no-op resolver: default branch untouched",
     git(repo, "rev-parse", "main").stdout.trim() === mainBefore,
+  );
+
+  // A resolver that CRASHES (non-zero exit, no envelope) did paid work too: the
+  // run must book the labelled kill estimate — this branch used to write no row.
+  const CRASH = resolve(WORKDIR, "fake-claude-crash.sh");
+  writeFileSync(
+    CRASH,
+    `#!/usr/bin/env bash
+echo boom >&2
+exit 3
+`,
+  );
+  require("node:fs").chmodSync(CRASH, 0o755);
+  const ledgerPath = resolve(DATA, "usage-ledger.jsonl");
+  const ledgerRows = () =>
+    existsSync(ledgerPath)
+      ? readFileSync(ledgerPath, "utf8")
+          .split("\n")
+          .filter(Boolean)
+          .map((l) => JSON.parse(l))
+      : [];
+  const before = ledgerRows().length;
+  const crashed = runLive({
+    GAFFER_STRICT_REQUIRE: "0",
+    STRICT_MODE: "0",
+    SANDBOX_PROVIDER: "none",
+    CLAUDE_BIN: CRASH,
+    GAFFER_KILL_ESTIMATE_USD: "",
+  });
+  assert(
+    "crashed resolver: phase conflict_resolver_failed",
+    crashed.out && crashed.out.phase === "conflict_resolver_failed",
+  );
+  const crashRow = ledgerRows().slice(before).pop();
+  assert(
+    "crashed resolver: ONE merge-resolver ledger row with a labelled estimate (> $0)",
+    ledgerRows().length === before + 1 &&
+      crashRow &&
+      crashRow.kind === "merge-resolver" &&
+      crashRow.ticket === 7 &&
+      crashRow.measured === false &&
+      crashRow.estimated === true &&
+      crashRow.estimated_cost_usd > 0,
   );
 
   // The resolver resolves, but the ticket cannot be reopened for review (a locked DB, a

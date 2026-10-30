@@ -80,7 +80,7 @@ and still leaves the behaviour untested.
 
 - Contracts come from the consumer's needs; fixtures come from real provider output.
 - Breaking changes fail loudly; additive changes pass; both are asserted.
-- Work on the delivery branch the runner prepared (the `create-branch` skill verifies),
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`),
   never a protected branch.
 
 ## Capture lore

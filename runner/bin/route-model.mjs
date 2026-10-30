@@ -42,6 +42,14 @@ export const FALLBACK_REGISTRY = Object.freeze({
     onboarding: "cheap",
   },
   localSeam: { enabled: false, tier: "cheap", phases: ["onboarding"] },
+  // Owner-tunable routing thresholds (model-registry.json `thresholds`). The values
+  // here ARE today's behaviour; a registry edit changes them without a code change.
+  thresholds: { highAc: 5 },
+  // How a rework attempt's own prior spend votes: "stack" (default, today's) lets the
+  // historical-cost difficulty signal bump a tier ON TOP of the attempt ladder;
+  // "attempt-only" drops that signal when attempt > 1, so one failed attempt is
+  // counted once (by the ladder), not twice.
+  historyOnRework: "stack",
 });
 
 /** Risk ladder, weakest → strongest. An unknown/missing risk reads as "medium". */
@@ -58,7 +66,7 @@ const TRIVIAL_DOWNGRADE_PHASES = new Set(["implement", "test"]);
  * stronger tier; a ticket with TRIVIAL_AC-or-fewer ACs at low risk is a downgrade
  * candidate. Named constants — no magic numbers.
  */
-const HIGH_AC = 5;
+const HIGH_AC = FALLBACK_REGISTRY.thresholds.highAc; // registry `thresholds.highAc` overrides
 const TRIVIAL_AC = 1;
 
 /**
@@ -180,7 +188,18 @@ export function normaliseRegistry(raw) {
     ...FALLBACK_REGISTRY.localSeam,
     ...(reg.localSeam && typeof reg.localSeam === "object" ? reg.localSeam : {}),
   };
-  return { tiers, escalationOrder, phaseDefaults, localSeam };
+  // thresholds.highAc: a positive integer, else today's default.
+  const rawHighAc =
+    reg.thresholds && typeof reg.thresholds === "object" ? reg.thresholds.highAc : undefined;
+  const thresholds = {
+    highAc:
+      Number.isInteger(rawHighAc) && rawHighAc > 0
+        ? rawHighAc
+        : FALLBACK_REGISTRY.thresholds.highAc,
+  };
+  const historyOnRework =
+    reg.historyOnRework === "attempt-only" ? "attempt-only" : FALLBACK_REGISTRY.historyOnRework;
+  return { tiers, escalationOrder, phaseDefaults, localSeam, thresholds, historyOnRework };
 }
 
 /** Clamp an index into the escalation order so we never run off either end. */
@@ -261,7 +280,8 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
   //    DOWN to the cheapest tier — the cheapest-correct policy.
   const riskRank = RISK_ORDER.indexOf(risk);
   const highRisk = riskRank >= RISK_ORDER.indexOf("high");
-  const largeAc = acCount >= HIGH_AC;
+  const highAc = reg.thresholds?.highAc ?? HIGH_AC;
+  const largeAc = acCount >= highAc;
   const highDifficulty = difficulty === "high";
   const lowDifficulty = difficulty === "low";
   // A trivial ticket is low-risk + tiny AC; a low-difficulty ticket (small change,
@@ -275,7 +295,7 @@ export function routeModel(ctx = {}, registry = loadRegistry()) {
   }
   if (largeAc) {
     idx = clampIndex(idx + 1, order);
-    reasons.push(`acCount ${acCount} ≥ ${HIGH_AC} (large) → +1 tier`);
+    reasons.push(`acCount ${acCount} ≥ ${highAc} (large) → +1 tier`);
   }
   // DIFFICULTY (3b): a measured-hard ticket escalates from the START — escalation is
   // no longer only attempt-count driven. A big diff / many files / a historically
@@ -449,17 +469,24 @@ function parseArgs(argv) {
  * otherwise score the raw --diff-bytes/--file-count/--historical-cost signals.
  * Returns "" when neither is supplied (→ router default 'medium').
  */
-function resolveDifficulty(opts) {
+export function resolveDifficulty(opts, registry = loadRegistry()) {
   if (DIFFICULTY_ORDER.includes(opts.difficulty)) return opts.difficulty;
+  // historyOnRework "attempt-only": on a rework attempt the ticket's booked spend IS
+  // the prior failure the escalation ladder already counts — do not let it vote again.
+  const attempt = Number.isFinite(opts.attempt) ? opts.attempt : 1;
+  const historical =
+    registry?.historyOnRework === "attempt-only" && attempt > 1
+      ? undefined
+      : opts.historicalCostUsd;
   const hasRaw =
     Number.isFinite(opts.diffBytes) ||
     Number.isFinite(opts.fileCount) ||
-    Number.isFinite(opts.historicalCostUsd);
+    Number.isFinite(historical);
   if (!hasRaw) return "";
   return scoreDifficulty({
     diffBytes: opts.diffBytes,
     fileCount: opts.fileCount,
-    historicalCostUsd: opts.historicalCostUsd,
+    historicalCostUsd: historical,
   }).label;
 }
 
@@ -489,6 +516,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const opts = parseArgs(argv);
   const budgetRemaining =
     opts.budgetRemaining !== undefined ? opts.budgetRemaining : budgetRemainingFromEnv();
+  const registry = loadRegistry();
   const decision = routeModel(
     {
       phase: opts.phase,
@@ -496,11 +524,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       acCount: opts.acCount,
       stack: opts.stack,
       attempt: opts.attempt,
-      difficulty: resolveDifficulty(opts),
+      difficulty: resolveDifficulty(opts, registry),
       cheapClass: opts.cheapClass === true || cheapClassFromEnv(opts.phase),
       budgetRemaining,
     },
-    loadRegistry(),
+    registry,
   );
   if (argv.includes("--model-only")) {
     process.stdout.write((decision.model ?? "") + "\n");

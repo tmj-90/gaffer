@@ -73,8 +73,9 @@
 //                  ceiling the author is forced to emit its best spec (same as
 //                  --force-plan) instead of rejecting and stranding the user.
 //                  (`--max-turns N` is the old spelling, still accepted.) It is a
-//                  HISTORY bound, not the claude agent-turn cap: that is
-//                  GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, else GAFFER_MAX_TURNS, else this value.
+//                  HISTORY bound; the claude agent-turn cap is
+//                  GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS, else this value — either clamped
+//                  to the GAFFER_MAX_TURNS ceiling (it can lower, never raise, the cap).
 //   --max-clauses  (GAFFER_SPEC_AUTHOR_MAX_CLAUSES, default 40) reject specs over this
 //   --timeout-ms   (GAFFER_SPEC_AUTHOR_TIMEOUT_MS,  default 180000) kill claude after this
 //
@@ -95,9 +96,10 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
+import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
 import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
 // The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
@@ -460,16 +462,19 @@ function runClaudeTurn(prompt, opts) {
   // --output-format json makes stdout a JSON result object carrying real usage AND
   // the agent's text in `.result`. We ledger the usage and feed `.result` to the
   // existing extractLastJsonBlock parser, so the contract is preserved.
-  const args = ["-p", prompt, "--output-format", "json", ...flags];
+  let args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (denial-of-wallet): bound the agent's model round-trips in
-  // addition to the wall-clock timeout on spawnSync. Reuse GAFFER_MAX_TURNS (the
-  // shared bash knob), falling back to this helper's own --max-turns.
-  // GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS caps THIS lane on its own (the history ceiling is --max-rounds).
-  const maxTurns =
-    parseInt(process.env.GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS || "", 10) ||
-    parseInt(process.env.GAFFER_MAX_TURNS || "", 10) ||
-    opts.maxTurns;
+  // addition to the wall-clock timeout on spawnSync.
+  // GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS caps THIS lane's agent on its own; else this
+  // helper's own cap (--max-rounds/--max-turns > GAFFER_SPEC_AUTHOR_MAX_TURNS > 20).
+  // The global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
+  const maxTurns = roleTurnCap(
+    parseInt(process.env.GAFFER_SPEC_AUTHOR_AGENT_MAX_TURNS || "", 10) || opts.maxTurns,
+  );
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
+  // The opt-in per-call dollar cap (GAFFER_MAX_CALL_USD → --max-budget-usd). This
+  // spawn is outside Worker.deliver, so it applies the seam's cap itself.
+  args = withCallBudget(args);
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);
   // SKILLS: mount the factory's skills (spec-author) into a THROWAWAY agent home so the
@@ -478,6 +483,7 @@ function runClaudeTurn(prompt, opts) {
   // the turn. The read-only denylist above is unchanged.
   const home = makeAgentHome("spec-author-", { role: "spec" });
   let res;
+  const t0 = Date.now();
   try {
     res = spawnSync(claudeBin, args, {
       cwd: home.dir,
@@ -492,9 +498,11 @@ function runClaudeTurn(prompt, opts) {
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(
-        unknownRecord({ kind: "spec-author", reason: "spec-author claude call timed out" }),
-      );
+      recordKilledCall({
+        kind: "spec-author",
+        reason: "spec-author claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -502,9 +510,11 @@ function runClaudeTurn(prompt, opts) {
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind: "spec-author", reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind: "spec-author",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     // Fall back to the raw stdout so a parser change in claude can't silently break
     // spec authoring — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };

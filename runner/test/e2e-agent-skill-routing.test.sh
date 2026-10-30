@@ -172,8 +172,8 @@ D1="$(last_call delivery)"
 if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
   ok "1: the delivery agent ran (cwd $(cat "$D1/cwd" | sed "s|$WORK/||"))"
   assert_skills "1: delivery/alpha" "$D1" \
-    "typescript-conventions,add-api-endpoint,pagination-and-filtering,run-tests,run-lint,minimalism,engineering-craft,self-review,submit-review,record-evidence,create-branch" \
-    "csharp-conventions,python-conventions,rust-conventions,kotlin-conventions,swift-conventions,mobile-ui,frontend-design,react-patterns,seo-audit,terraform-patterns,kubernetes-operator,review-ticket"
+    "typescript-conventions,add-api-endpoint,pagination-and-filtering,run-tests,run-lint,minimalism,engineering-craft,self-review,record-evidence" \
+    "csharp-conventions,python-conventions,rust-conventions,kotlin-conventions,swift-conventions,mobile-ui,frontend-design,react-patterns,seo-audit,terraform-patterns,kubernetes-operator,review-ticket,create-branch,submit-review,resolve-merge-conflict,dependency-upgrade"
   n1="$(wc -l < "$D1/skills" | tr -d ' ')"
   { [ "$n1" -ge 20 ] && [ "$n1" -le 80 ]; } && ok "1: a scoped mount ($n1 skills, not the whole library)" || fail "1: mount size $n1"
   grep -qx "GAFFER_TICKET=$A1" "$D1/env" && ok "1: GAFFER_TICKET=$A1 in the agent env" || fail "1: GAFFER_TICKET missing: $(grep GAFFER_TICKET= "$D1/env")"

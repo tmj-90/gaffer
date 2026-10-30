@@ -86,5 +86,5 @@ any criterion about persistence, concurrency or failure, **the schedule is the t
 - Mock only genuine externals; never the component under test.
 - Match the repo's harness; do not install or stand up a new one.
 - No retries, skips or longer sleeps to get green (the `fix-flaky-test` skill).
-- Work on the delivery branch the runner prepared (the `create-branch` skill); never a
-  protected branch.
+- Work on the delivery branch the runner prepared (verify with `git branch --show-current`);
+  never a protected branch.

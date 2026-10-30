@@ -89,7 +89,7 @@ ticket is blocked with the exact command and your changelog analysis.
 - One package per ticket unless the ticket is a refresh; no drive-by bumps.
 - `.npmrc` and other credential files are blocked by the hook; registry and auth
   changes are a human's job.
-- Work on the delivery branch (the `create-branch` skill verifies); commit, never push.
+- Work on the delivery branch (verify with `git branch --show-current`); commit, never push.
 
 ## Capture lore
 

@@ -39,8 +39,9 @@ fights the compiler with clones, `unwrap` and `unsafe`. For the builder and the 
 - Test: `cargo test --all-features` (or `cargo nextest run` where configured; nextest
   skips doctests, so also run `cargo test --doc`); one test: `cargo test name -- --exact`.
 - Docs: `cargo doc --no-deps` with `RUSTDOCFLAGS="-D warnings"` if CI sets it.
-- Dependencies: never `cargo add`/`cargo update`; a new or bumped crate is a blocker (the
-  `dependency-upgrade` skill). `cargo deny check` where CI runs it.
+- Dependencies: never `cargo add`/`cargo update`; a new or bumped crate is a blocker:
+  `mark_ticket_blocked` with the exact command a human should run. `cargo deny check` where CI
+  runs it.
 - Unsafe: `cargo +nightly miri test` for code with `unsafe`, only if the repo uses Miri
   and the nightly toolchain is already installed.
 

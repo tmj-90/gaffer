@@ -23,6 +23,14 @@
     "onboarding": "cheap"
   },
 
+  "thresholds": {
+    "$comment": "Owner-tunable routing thresholds. highAc: a ticket with at least this many acceptance criteria routes ONE tier stronger (implement and review). OWNER DECISION PENDING: plan-build sizes tickets at 2-6 ACs and every acceptance ticket carries 5, so at 5 a large share of planned tickets (and their reviewers) start on the strong tier; 7 would keep the rule for genuinely large tickets only. Default kept at 5 (today's behaviour).",
+    "highAc": 5
+  },
+
+  "historyOnRework": "stack",
+  "$comment_historyOnRework": "How a rework attempt's own booked spend votes. \"stack\" (default, today's behaviour): the historical-cost difficulty signal can bump a tier on top of the attempt-escalation ladder, so one failed attempt counts twice (it also blocks the trivial-ticket downgrade). \"attempt-only\": on attempt > 1 that signal is dropped and the ladder alone escalates. OWNER DECISION PENDING.",
+
   "localSeam": {
     "$comment": "SEAM for local models on the cheap idle/scan path (privacy + ~zero cost). Set \"enabled\": true and point \"tier\" at a tier whose model id is a local provider (e.g. add tiers.local = \"ollama:qwen2.5-coder\" and set tier: \"local\"). When enabled, the idle/scan phases (\"onboarding\") resolve to this tier. FULL local-provider wiring (a provider adapter that turns \"ollama:...\" into the right CLI flags / base URL) is a documented FOLLOW-UP — this only wires the registry seam so the routing decision is already config-expressible.",
     "enabled": false,

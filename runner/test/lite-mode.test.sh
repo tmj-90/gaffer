@@ -77,7 +77,8 @@ src/authentication/a.ts src/authorization/b.ts src/authz/c.ts lib/authn.ts src/a
 src/AuthGuard.tsx src/authenticator.ts src/authorize.ts src/auth-service.ts src/auth_utils.py \
 src/Auth/Login.cs security/csp.ts src/securityHeaders.ts config/secrets.yml db/migrations/001.sql \
 Dockerfile Dockerfile.dev .env .env.local .envrc .github/workflows/ci.yml package-lock.json \
-yarn.lock .gaffer/x runner/safety-hook.mjs"
+yarn.lock .gaffer/x runner/safety-hook.mjs \
+src/authmiddleware.go internal/authhandler.go src/authconfig.ts lib/authcode.py src/authprovider.tsx"
 # shellcheck disable=SC2086
 CLASSIFIED="$(classify_paths $PLAIN_PATHS $SENSITIVE_PATHS)"
 for p in $PLAIN_PATHS; do

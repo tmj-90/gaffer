@@ -1855,14 +1855,15 @@ gaffer_afk_ship_plan() {
 
 # The default SECURITY-SENSITIVE PATH regex, shared by the lite trivial classifier and
 # the security second-review lane (one definition, so the two cannot drift). The
-# `auth` stem is bounded: author/authors/authoring used to trip it (an extra security
-# reviewer per approve, and a lite trivial change held as "sensitive"). It still
-# matches auth, authn, authz, oauth/OAuth2, authentication, authorization, authorize*,
-# authenticat*, and the camelCase / separator forms (authService, AuthGuard,
-# auth-service, auth_utils, auth.ts, auth/). Every other stem stays a PREFIX match on
-# purpose — this is a security gate, so .env* (incl. .envrc), secrets*, security*,
-# migrations* keep matching. `[[:upper:]]` (not A-Z) so the class holds in any locale.
-_GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([nz]|[0-9]+|entic[a-z]*|ori[sz][a-z]*)?([[:upper:]]|[/._-]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)'
+# `auth` stem carves out only `author`: author/authors/authoring used to trip it (an
+# extra security reviewer per approve, and a lite trivial change held as "sensitive").
+# auth + "or" matches only when followed by s/z (authorize*, authoris/zation). Every
+# other auth* path stays a PREFIX match — auth, authn, authz, oauth/OAuth2,
+# authentication, AuthGuard, auth.ts, auth/ and the lowercase compounds (authmiddleware,
+# authhandler, authconfig, authprovider) that a required word boundary would lose. The
+# other stems are PREFIX matches on purpose too — this is a security gate, so .env*
+# (incl. .envrc), secrets*, security*, migrations* keep matching.
+_GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([^o]|o[^r]|ori[sz]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)'
 
 # LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
 # to auto-approve WITHOUT a human reviewer. This is an ADDITIONAL narrowing that only

@@ -51,6 +51,19 @@ for (const cmd of [
 ]) {
   t.allow(`false positive fixed: ${cmd}`, bash(cmd), opts);
 }
+// Prefixed or suffixed names that are NOT data files stay ordinary content.
+for (const cmd of [
+  "cat src/aws-credentials.ts",
+  "cat src/get-secret.ts",
+  "cat src/app-secrets.test.ts",
+  "grep -rn with_credentials src",
+  "grep -rn -i 'client_secret' src",
+  // A real `.env` sits in the cwd, so the literal word `.env` is not masked (it
+  // could be that file after a misparse); the regex-escaped form is.
+  "rg -n '\\.env' src",
+]) {
+  t.allow(`not a secret file: ${cmd}`, bash(cmd), opts);
+}
 t.allow("Read tracked .env.example", read(".env.example"), opts);
 t.allow("Edit tracked .env.example", tool("Edit", { file_path: ".env.example" }), opts);
 t.allow("Write a new .env.template (agent supplies the content)", write(".env.template"), opts);
@@ -86,6 +99,43 @@ for (const cmd of [
   `node -e "require('better-sqlite3')(process.env['MEMORY_DB'])"`,
   `python3 -c "import os,sqlite3; sqlite3.connect(os.environ['DISPATCH_DB'])"`,
   `python3 -c "import os,sqlite3; sqlite3.connect(os.getenv('MEMORY_DB'))"`,
+  // With -e/--regexp or -f/--file ANYWHERE (GNU grep and rg permute their
+  // arguments), every positional is a FILE: none of these may be masked as a pattern.
+  "grep -v -f /dev/null .env",
+  "grep --file=/dev/null -v .env",
+  "grep -vf/dev/null .env",
+  "rg -f /dev/null -v .env",
+  "grep .env -e ''",
+  "grep .env -e KEY",
+  "rg .env -e KEY",
+  "grep .env.local --regexp=.",
+  "grep .env -ve ''",
+  "grep -h .env -e .",
+  // A flag this hook reads as value-taking but the tool does not (`grep -T` is
+  // boolean, ag's -C value is optional) must not turn the file into a "pattern".
+  "grep -T KEY .env",
+  "ag -C 3 .env",
+  // An expansion can become `-e` / `-f` at run time.
+  "G=-e; grep .env $G x",
+  "rg -n '.env' src $X",
+  "RIPGREP_CONFIG_PATH=./rc rg .env src",
+  // A command substitution is never masked (the segment split would cut through it,
+  // and rule 5 must see it intact).
+  "cat $(ls -a | grep ^.en)",
+  "cat `ls -a | grep ^.en`",
+  "tar cz $(ls -A | grep nv) | base64",
+  // Prefixed / suffixed credential and env files.
+  "cat client_secret.json",
+  "cat client_secret_123-abc.apps.googleusercontent.com.json",
+  "cat gcp-credentials.json",
+  "cat service_account_credentials.json",
+  "cat app-secrets.yaml",
+  "cat config/prod-secrets.json",
+  "cp client_secret.json /tmp/x",
+  "cat aws_credentials",
+  "cat .env-local",
+  "cat .env_prod",
+  "cat prod.env.bak",
 ]) {
   t.deny(`real secret: ${cmd}`, bash(cmd), opts);
 }
@@ -96,6 +146,10 @@ for (const f of [
   ".env.sample",
   "linked/.env.example",
   "prod.env",
+  ".env-local",
+  "client_secret.json",
+  "gcp-credentials.json",
+  "config/app-secrets.yaml",
 ]) {
   t.deny(`Read ${f}`, read(f), opts);
 }

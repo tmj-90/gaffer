@@ -154,6 +154,27 @@ for (const cmd of [
   "pnpm install --ignore-scripts --config.global-dir=/usr/local",
   "npm install --ignore-scripts --global=true evil",
   "npm config set global true && npm install --ignore-scripts",
+  // The flags are judged on the words bash passes: quotes, backslashes and short
+  // clusters do not hide them, and an expansion could produce any flag.
+  "npm install --ignore-scripts '-g' evil",
+  'npm install --ignore-scripts "--global" evil',
+  "npm install --ignore-scripts -\\g evil",
+  "npm install --ignore-scripts -gf evil",
+  "npm install --ignore-scripts -Dg evil",
+  "G=-g; npm install --ignore-scripts $G evil",
+  "npm install --ignore-scripts $(printf -- --global) evil",
+  "npm install --ignore-scripts `printf -- -g` evil",
+  'npm install --ignore-scripts --pre""fix /usr/local evil',
+  "npm install --ignore-scripts '--prefix' /usr/local evil",
+  'npm install --ignore-scripts "--prefix=/usr/local" evil',
+  "npm install --ignore-scripts --prefix ~ evil",
+  "npm install --ignore-scripts '--location=global' evil",
+  "npm i --ignore-scripts --location global evil",
+  "pnpm add --ignore-scripts --global-dir /tmp/g evil",
+  "pnpm add --ignore-scripts --global-bin-dir=/usr/local/bin evil",
+  "pnpm add --ignore-scripts '--config.global-dir=/tmp' evil",
+  "npm install '--ignore-scripts=false'",
+  "cd ~ && npm install --ignore-scripts",
 ]) {
   t.deny(`bootstrap: ${cmd}`, bash(cmd), boot);
 }
@@ -166,6 +187,11 @@ for (const cmd of [
   "npm install --prefix ./sub --ignore-scripts",
   "pnpm add -w x --ignore-scripts",
   "npm install --ignore-scripts && npm run build",
+  "npm install '--ignore-scripts'",
+  "npm install --ignore-scripts --save-dev typescript",
+  "pnpm add -D vitest --ignore-scripts",
+  "npm install --ignore-scripts --prefix=./sub",
+  "pnpm add --ignore-scripts --global-dir ./sub/g x",
 ]) {
   t.allow(`bootstrap: ${cmd}`, bash(cmd), boot);
 }

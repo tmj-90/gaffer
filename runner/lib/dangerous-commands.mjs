@@ -424,12 +424,16 @@ export const DANGEROUS_COMMANDS = [
   },
   {
     // Cluster CLIs talk to whatever cluster the operator's kubeconfig names. The
-    // offline forms (render / lint / client version) stay allowed.
+    // offline forms (render / lint / client version) stay allowed, and so do
+    // `config current-context|get-contexts`: they print context NAMES only (no
+    // token, no API call), and the kubernetes-operator and runbook-generator skills
+    // have the agent check that the context is a local kind cluster before any
+    // e2e run. `config view` (which can print credentials) stays refused.
     re: cmdAt(
       "kubectl|oc",
-      String.raw`(?![ \t]+(?:kustomize\b|version[ \t]+--client\b|completion\b|--help\b|help\b))`,
+      String.raw`(?![ \t]+(?:kustomize\b|version[ \t]+--client\b|completion\b|--help\b|help\b|config[ \t]+(?:current-context|get-contexts)(?=$|[ \t;&|)])))`,
     ),
-    why: "cluster CLI (acts on the operator's kubeconfig cluster); `kubectl kustomize` / `version --client` stay allowed",
+    why: "cluster CLI (acts on the operator's kubeconfig cluster); `kubectl kustomize` / `version --client` / `config current-context|get-contexts` stay allowed",
     example: "kubectl get secrets -A",
     crewFlags: false,
   },

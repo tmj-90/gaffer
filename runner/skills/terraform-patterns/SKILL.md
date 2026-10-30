@@ -9,8 +9,9 @@ area: infra
 
 Terraform changes real infrastructure, and its state file is a shared, lock-protected
 database that also holds secrets in plaintext. Follow HashiCorp's style guide and module
-guidance; verify with `fmt`, `validate` and `terraform test`; never apply from an agent
-session.
+guidance; verify with `fmt` and `validate` (the factory's safety hook refuses
+`terraform test` in an agent session, so it runs in CI or by a human); never apply from
+an agent session.
 
 ## Layout (HashiCorp style guide)
 
@@ -75,10 +76,14 @@ Names are descriptive snake_case nouns without the type (`aws_instance.web_api`,
   present and gitignored). Never run `terraform init`: it downloads providers and modules
   (with the host's ambient credentials for remote module sources) and rewrites
   `.terraform.lock.hcl`. If validate cannot run, say so in evidence.
-- `terraform test`, in an already-initialised module, with `.tftest.hcl` files that `mock_provider` every provider
-  (Terraform 1.7+): these cover variable validation, conditional resources, and
-  computed names without the cloud. Never run an unmocked test: the default
-  `command = apply` creates real resources. Add a test per AC behaviour.
+- `terraform test`: the factory's safety hook refuses it in an agent session. The hook
+  cannot tell a mocked run from one that calls the cloud, and an unmocked test's default
+  `command = apply` creates real resources with the host's ambient credentials. Still
+  write the `.tftest.hcl` files, with `mock_provider` for every provider (Terraform
+  1.7+), one test per AC behaviour: they cover variable validation, conditional
+  resources and computed names without the cloud. In evidence, state that
+  `terraform test` was not run here (refused by the safety hook) and must run in CI or
+  by a human.
 - `tflint`, `checkov -d .` or `trivy config .` if installed; no HIGH/CRITICAL findings.
 - When a human supplies a plan (for example CI output): no unexpected `destroy` or
   `-/+` replace actions.

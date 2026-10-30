@@ -158,6 +158,15 @@ describe("safety classifier parity with runner/safety-hook.mjs", () => {
       "cat secrets.json",
       "cat .credentials.json",
       "cat prod.env",
+      // Prefixed / suffixed secret files (the bare-name boundary used to drop them).
+      "cat client_secret.json",
+      "cat gcp-credentials.json",
+      "cat service_account_credentials.json",
+      "cat app-secrets.yaml",
+      "cat config/prod-secrets.json",
+      "cat aws_credentials",
+      "cat .env-local",
+      "cat .env_prod",
     ] as const) {
       it(`still denies: ${command}`, () => {
         expect(classifyCommand(command, ctx).outcome).toBe("denied");
@@ -173,6 +182,8 @@ describe("safety classifier parity with runner/safety-hook.mjs", () => {
       "grep -rn getSecret src",
       "cat test/secrets.test.ts",
       "cat src/credentials.ts",
+      "cat src/aws-credentials.ts",
+      "cat src/app-secrets.test.ts",
     ] as const) {
       it(`no longer flags as a secret read: ${command}`, () => {
         expect(classifyCommand(command, ctx).outcome).toBe("allowed");

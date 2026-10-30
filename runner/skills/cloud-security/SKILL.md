@@ -40,10 +40,10 @@ compromise to the `incident-response` skill, and behavioural anomalies to the
      it.
    - `kics scan -p <dir>`.
    - `conftest test` if the repo has OPA or Rego policies.
-   - `terraform test` only in an already-initialised module whose test files mock every
-     provider (`mock_provider`):
-     an unmocked run calls the cloud, and the default `command = apply` creates real
-     resources.
+   - Not `terraform test`: the factory's safety hook refuses it in an agent session,
+     because it cannot tell a mocked run from one that calls the cloud (the default
+     `command = apply` creates real resources). Say in evidence that it was not run
+     here and must run in CI or by a human.
    Record which scanners ran. If none is available, say
    so; the manual checklist below then is the evidence. Never run `terraform plan`,
    `apply` or `destroy`, or any cloud CLI.
@@ -56,8 +56,9 @@ compromise to the `incident-response` skill, and behavioural anomalies to the
    The reason goes inline, and you raise a `request_decision` if no exception is
    recorded in lore.
 5. **Prove it.** Re-run the same scanners and show the finding gone. Where the repo has
-   mocked `terraform test` or conftest, add an assertion for the fixed property, for example
-   Block Public Access true or `http_tokens == "required"`, so it cannot regress.
+   conftest or mocked `terraform test` files, add an assertion for the fixed property, for
+   example Block Public Access true or `http_tokens == "required"`, so it cannot regress.
+   Run conftest here; a new `terraform test` assertion runs in CI (the hook refuses it).
 6. **Classify and evidence.** Use the `security-review` skill severities.
    - **Blocking**: exploitable now, for example public data, admin ports open to the
      internet, a privilege-escalation path, or a plaintext secret.

@@ -391,19 +391,25 @@ const CLI_CREDENTIAL_FRAGMENT = String.raw`credentials\.tfrc\.json|\.config\/gh\
 //                      `$HOME/.env`, `.env.local` — never `process.env`), or a
 //                      `<name>.env` env-file token (`prod.env`) other than the
 //                      runtime env objects (`process.env`, `import.meta.env`, …).
+//                      `.env-local` / `.env_prod` (a `-` or `_` suffix) and
+//                      `prod.env.bak`-style backups count too.
 //   CRED_NAME_FRAGMENT a basename that IS `credentials[.json|.toml|…]` or
-//                      `secret(s).<data-ext>`, or a `secret(s)/` directory.
+//                      `secret(s).<data-ext>`, optionally behind a `<name>_` /
+//                      `<name>-` prefix (`gcp-credentials.json`, `aws_credentials`,
+//                      `app-secrets.yaml`, `client_secret.json`), Google's
+//                      `client_secret_<id>.json`, or a `secret(s)/` directory.
+//                      `getSecret` and `secrets.test.ts` are not data files.
 // `*.key` stays blocked (private keys use it). Applied in lock-step to the crew
 // classifier (packages/crew/src/safety/commandGuard.ts).
-const ENV_FILE_FRAGMENT = String.raw`(?<![\w$])\.env(?:\.[\w-]+)?(?![\w-])|(?<![\w$.])(?!(?:process|import\.meta|Deno|Bun)\.env(?![\w.-]))[\w-]+(?:\.[\w-]+)*\.env(?![\w.-])`;
-const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])\.?credentials(?:\.(?:json|toml|ya?ml|ini|txt))?(?![\w.-])|(?<![\w$.-])secrets?\.(?:json|ya?ml|txt|env|toml|ini)(?![\w.-])|(?<![\w$.-])secrets?\/`;
+const ENV_FILE_FRAGMENT = String.raw`(?<![\w$])\.env(?:[._-][\w-]+)?(?![\w-])|(?<![\w$.])(?!(?:process|import\.meta|Deno|Bun)\.env(?![\w.-]))[\w-]+(?:\.[\w-]+)*\.env(?:\.(?:bak|backup|old|orig|save|local))?(?![\w.-])`;
+const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])(?:\w[\w-]*[_-]|\.)?credentials(?:\.(?:json|toml|ya?ml|ini|txt))?(?![\w.-])|(?<![\w$.-])(?:\w[\w-]*[_-])?secrets?\.(?:json|ya?ml|txt|env|toml|ini)(?![\w.-])|(?<![\w$.-])client_secret[\w.-]*\.json(?![\w.-])|(?<![\w$.-])secrets?\/`;
 // Committed env TEMPLATES (`.env.example` & co.) document variable NAMES. A TRACKED
 // one is already in history, so the agent may read, edit, diff and stage it (an AC
 // like "document the new var in .env.example" was undeliverable). An untracked one
 // could be a renamed real `.env`, so it stays a secret; see isTrackedEnvTemplate.
 const ENV_TEMPLATE = /(^|\/)\.env\.(?:example|sample|template|dist|defaults)$/i;
 const SECRET_PATH = new RegExp(
-  String.raw`(^|\/)(\.env(\.[\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|\.?credentials(\.json|\.toml)?|secrets?\.(json|ya?ml|txt)|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
+  String.raw`(^|\/)(\.env([._-][\w-]+)?|[\w-][\w.-]*\.env|\.netrc|\.npmrc|\.git-credentials|${CLI_CREDENTIAL_PATHS}|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|(\.|\w[\w-]*[_-])?credentials(\.(json|toml|ya?ml|ini|txt))?|(\w[\w-]*[_-])?secrets?\.(json|ya?ml|txt|toml|ini)|client_secret[\w.-]*\.json|${MCP_RUNTIME_FILE}|${PROC_ENVIRON}|dashboard-token(\.[\w-]+)?|[\w.-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}(\.[\w-]+)?)$`,
   "i",
 );
 const GIT_INTERNAL = /(^|\/)\.git(\/|$)/;
@@ -863,6 +869,27 @@ const READ_TOOL_VERBS = new Set([
   "bat",
 ]);
 
+// Read verbs whose FIRST operand is a pattern or program, not a file.
+const PATTERN_FIRST_VERBS = new Set(["sed", "grep", "egrep", "fgrep", "rg", "awk"]);
+// Verbs that copy or encode their file operands (a credential copied into the
+// worktree, or archived to stdout, leaves as surely as one that is `cat`-ed).
+const COPY_READ_VERBS = new Set([
+  "cp",
+  "mv",
+  "ln",
+  "install",
+  "rsync",
+  "scp",
+  "tar",
+  "zip",
+  "base64",
+  "base32",
+  "sort",
+  "uniq",
+  "diff",
+  "cmp",
+]);
+
 // =====================================================================
 // BOOTSTRAP-ONLY INSTALL ALLOWANCE (greenfield create-a-repo mode)
 // ---------------------------------------------------------------------
@@ -890,8 +917,18 @@ function bootstrapInstallDir() {
 }
 
 // Install flags that relocate WHERE the install lands (the value is a directory).
-const INSTALL_DIR_FLAG =
-  /(?:^|\s)(?:--prefix|-C|--dir|--cwd|--modules-folder|--global-folder|--store-dir|--virtual-store-dir)(?:=|\s+)("[^"]*"|'[^']*'|[^\s;&|]+)/g;
+const INSTALL_DIR_FLAGS = new Set([
+  "--prefix",
+  "-C",
+  "--dir",
+  "--cwd",
+  "--modules-folder",
+  "--global-folder",
+  "--global-dir",
+  "--global-bin-dir",
+  "--store-dir",
+  "--virtual-store-dir",
+]);
 
 /**
  * Judge a bootstrap tick's install command SEGMENT BY SEGMENT (the allowance used to
@@ -903,11 +940,16 @@ const INSTALL_DIR_FLAG =
  *     dynamic cd, `popd` or a cd anywhere — including inside `sh -c` — that does
  *     not provably stay inside voids the allowance);
  *   • carry --ignore-scripts itself (and no re-enable form);
- *   • not be global (-g, --global, --location=global, `yarn global`);
- *   • relocate (--prefix, -C, --dir, --cwd, …) only to a literal dir inside it;
+ *   • not be global (-g in any short-flag cluster, --global*, --location, `yarn global`);
+ *   • relocate (--prefix, -C, --dir, --cwd, --global-dir, …) only to a literal dir
+ *     inside it;
  *   • not point at another config (--userconfig, --globalconfig, --config.<key>);
  * and the command as a whole must not set a package-manager config variable
- * (npm_config_* / yarn_*, inline or exported in an earlier segment).
+ * (npm_config_* / yarn_*, inline or exported in an earlier segment), nor carry a
+ * `$` or backtick (`G=-g; npm install $G x`, `$(printf -- --global)`: an expansion
+ * can produce any flag). The flags are judged on the words bash will pass, quotes
+ * and backslashes removed, so `'-g'`, `-\g`, `--pre""fix` and `"--prefix=/x"` are
+ * the flags they spell.
  * HONEST LIMIT: the hook is stateless, so "the FIRST install only" is not enforced
  * across tool calls; the tick's npm_config_ignore_scripts=true env (whose override
  * is deny-listed) is what keeps a later call script-free.
@@ -917,6 +959,9 @@ function bootstrapInstallReason(cmd, bootDir) {
   if (!installRules.some((r) => r.re.test(cmd))) return null;
   const outside =
     "install relocates outside the fresh bootstrap repo — the bootstrap allowance covers only an install INSIDE it";
+  if (/[$`]/.test(cmd)) {
+    return `install command carries a shell expansion (it can produce any flag: global, prefix, config) — the bootstrap allowance covers only a literal install — "${cmd.slice(0, 120)}"`;
+  }
   const cwd = canonicalize(process.cwd());
   // Any directory change anywhere in the command (a nested `sh -c` body included)
   // must provably stay inside the bootstrap dir.
@@ -924,10 +969,11 @@ function bootstrapInstallReason(cmd, bootDir) {
     /(?:^|[\s;&|(`'"])(cd|pushd|popd)(?=$|[\s;&|)`'"])[ \t]*([^\s;&|)'"`]*)/g,
   )) {
     const dest = m[2];
-    if (m[1] === "popd" || !dest || /[$`*?]/.test(dest) || dest === "-" || dest.startsWith("~")) {
+    if (m[1] === "popd" || !dest || /[$`*?]/.test(dest) || dest === "-") return outside;
+    const p = expandTildeWord(dest, cwd);
+    if (p === UNVERIFIABLE_TARGET || !isInsideRoot(bootDir, canonicalize(resolve(cwd, p)))) {
       return outside;
     }
-    if (!isInsideRoot(bootDir, canonicalize(resolve(cwd, dest)))) return outside;
   }
   // A package-manager config variable set ANYWHERE in the command (`export
   // npm_config_global=true; npm install …`, `X=1; npm install`) reaches the install
@@ -942,8 +988,7 @@ function bootstrapInstallReason(cmd, bootDir) {
     if (tokens.length === 0) continue;
     const effective = resolveEffectiveTokens(tokens);
     if (effective && (effective.verb === "cd" || effective.verb === "pushd")) {
-      const arg = effective.operands[0];
-      effectiveCwd = arg ? canonicalize(resolve(effectiveCwd, unquote(arg))) : null;
+      effectiveCwd = replayCd(effective, effectiveCwd);
       continue;
     }
     if (!installRules.some((r) => r.re.test(segment))) continue;
@@ -951,25 +996,34 @@ function bootstrapInstallReason(cmd, bootDir) {
     const shown = segment.trim().slice(0, 120);
     if (effectiveCwd === null || !isInsideRoot(bootDir, effectiveCwd))
       return `${outside}: "${shown}"`;
-    if (!installHasIgnoreScripts(segment)) {
+    // The words the package manager will receive (quote removal, as bash does it).
+    const words = tokens.map(normalizeVerb);
+    if (!installHasIgnoreScripts(words.join(" "))) {
       return `permitted install must pass --ignore-scripts on EVERY install (dependency lifecycle scripts are arbitrary code execution) — "${shown}"`;
     }
-    if (
-      /(?:^|\s)(?:-g|--global(?:=\S*)?|--location[= ]\S+)(?=$|\s)/.test(segment) ||
-      /\byarn\s+global\b/.test(segment)
-    ) {
-      return `global install (lands on PATH outside the bootstrap repo) — "${shown}"`;
-    }
-    // An alternative npmrc (or pnpm's `--config.<key>`) can set global, prefix or
-    // ignore-scripts=false where the per-flag checks above never see it.
-    if (/(?:^|\s)(?:--userconfig|--globalconfig|--config\.[\w.-]+)(?==|\s|$)/.test(segment)) {
-      return `install points the package manager at another config (an npmrc can make it global or re-enable scripts) — "${shown}"`;
-    }
-    for (const m of segment.matchAll(INSTALL_DIR_FLAG)) {
-      const v = expandTildeWord(m[1], effectiveCwd);
-      if (v === UNVERIFIABLE_TARGET || /[$`]/.test(v)) return `${outside}: "${shown}"`;
-      if (!isInsideRoot(bootDir, canonicalize(resolve(effectiveCwd, v))))
-        return `${outside}: "${shown}"`;
+    for (let k = 0; k < words.length; k += 1) {
+      const w = words[k];
+      const eq = w.indexOf("=");
+      const flag = eq > 0 ? w.slice(0, eq) : w;
+      if (INSTALL_DIR_FLAGS.has(flag)) {
+        const v = eq > 0 ? w.slice(eq + 1) : words[(k += 1)];
+        if (v === undefined || v === "" || v.startsWith("~")) return `${outside}: "${shown}"`;
+        if (!isInsideRoot(bootDir, canonicalize(resolve(effectiveCwd, v))))
+          return `${outside}: "${shown}"`;
+        continue;
+      }
+      if (
+        /^-[A-Za-z]*g/.test(w) ||
+        /^--(?:global|location)(?:$|[=-])/.test(w) ||
+        (w === "global" && basename(effective?.verb ?? "") === "yarn")
+      ) {
+        return `global install (lands on PATH outside the bootstrap repo) — "${shown}"`;
+      }
+      // An alternative npmrc (or pnpm's `--config.<key>`) can set global, prefix or
+      // ignore-scripts=false where the per-flag checks above never see it.
+      if (/^--(?:userconfig|globalconfig|config\.[\w.-]+)(?:=|$)/.test(w)) {
+        return `install points the package manager at another config (an npmrc can make it global or re-enable scripts) — "${shown}"`;
+      }
     }
   }
   // The whole command matched an install rule but no segment did (the matcher saw
@@ -1254,45 +1308,139 @@ const SEARCH_VALUE_FLAGS = new Set([
   "--sort",
   "--sortr",
 ]);
+// The same value-taking flags as single letters, for a short-flag cluster (`-iA3`).
+const SEARCH_SHORT_VALUE_LETTERS = new Set([..."ABCmgtTMjdD"]);
+
+/**
+ * The indexes in `args` (a search tool's arguments) of its content PATTERNS. GNU
+ * grep and rg permute their arguments, so once ANY `-e`/`--regexp`/`-f`/`--file`
+ * appears — anywhere, also inside a short-flag cluster (`-ve`, `-fX`) or as
+ * `--file=` / `--regexp=` — every positional is a FILE and only the `-e` values are
+ * patterns. Without one, the first positional (or the operand after `--`) is.
+ */
+function searchPatternIndexes(args) {
+  let explicit = false;
+  for (const raw of args) {
+    const tk = normalizeVerb(raw);
+    if (tk === "--") break;
+    if (/^--(?:regexp|file)(?:=|$)/.test(tk) || /^-[A-Za-z0-9]*[ef]/.test(tk)) explicit = true;
+  }
+  const out = [];
+  for (let k = 0; k < args.length; k += 1) {
+    const tk = normalizeVerb(args[k]);
+    if (tk === "--") {
+      if (!explicit && k + 1 < args.length) out.push(k + 1);
+      break;
+    }
+    if (tk === "-e" || tk === "--regexp") {
+      if (k + 1 < args.length) out.push((k += 1));
+    } else if (tk.startsWith("--regexp=")) {
+      out.push(k);
+    } else if (tk === "-f" || tk === "--file" || SEARCH_VALUE_FLAGS.has(tk)) {
+      k += 1; // a value (for -f: a FILE — never masked)
+    } else if (/^-[^-]/.test(tk)) {
+      // Short cluster: the first value-taking letter takes the rest of the token,
+      // or else the next token.
+      for (let j = 1; j < tk.length; j += 1) {
+        const c = tk[j];
+        if (c !== "e" && c !== "f" && !SEARCH_SHORT_VALUE_LETTERS.has(c)) continue;
+        const attached = j + 1 < tk.length;
+        if (c === "e" && (attached || k + 1 < args.length)) out.push(attached ? k : k + 1);
+        if (!attached) k += 1;
+        break;
+      }
+    } else if (!tk.startsWith("-") && !explicit) {
+      out.push(k);
+      break;
+    }
+  }
+  return out;
+}
+
+/** A search tool's non-flag operands other than its content patterns (its files). */
+function searchFileOperands(args) {
+  const patterns = new Set(searchPatternIndexes(args));
+  return args.filter((tk, k) => !patterns.has(k) && !tk.startsWith("-"));
+}
+
+/** Does a raw shell word carry a `$` expansion outside single quotes? */
+function hasShellExpansion(raw) {
+  return /\$[\w{@*#?!$-]/.test(raw.replace(/'[^']*'/g, ""));
+}
+
+/**
+ * May this pattern token be masked? Not when the shell could turn it into a file
+ * name (`$VAR` / `${…}` outside single quotes, an unquoted glob), and not when it
+ * names a path that EXISTS: masking that would hide a real read whenever the flag
+ * parse above is wrong for the tool at hand (an optional-valued flag, an
+ * ag/ack-only option, an `-e` in RIPGREP_CONFIG_PATH), so a misparse can only ever
+ * mask a file that is not there. The cost: searching for the literal word `.env` in
+ * a dir that holds a real `.env` is refused; `rg '\.env'` (regex-escaped) is not.
+ */
+function maskableSearchPattern(raw, cwd) {
+  if (hasShellExpansion(raw)) return false;
+  if (/[*?[]/.test(raw.replace(/'[^']*'|"[^"]*"/g, ""))) return false;
+  const p = expandTildeWord(raw, cwd);
+  if (p === UNVERIFIABLE_TARGET || p === "") return false;
+  try {
+    lstatSync(resolve(cwd, p));
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 /**
  * Replace the content PATTERN of grep-family segments with a placeholder, so a
  * search for the WORD `credentials` / `.env` (`grep -rn credentials src/`) is not
  * mistaken for a read of a file of that name. A pattern is never opened as a file;
- * `-f`/`--file` values ARE files and are kept. Separators are preserved.
+ * `-f`/`--file` values and every positional after an `-e`/`-f` ARE files and are
+ * kept. Only whole tokens are replaced, in place, so separators, quotes and any
+ * neighbouring text survive. Nothing is masked when the command has a command or
+ * process substitution: the segment split would cut through it (`cat $(ls -a |
+ * grep ^.en)`), and rule 5 must see the substitution intact.
  */
 function stripSearchPatterns(cmd) {
+  if (/\$\(|`|[<>]\(/.test(cmd)) return cmd;
   const parts = cmd.split(/(&&|\|\||[;&|\n])/);
+  let cwd = canonicalize(process.cwd());
   for (let i = 0; i < parts.length; i += 2) {
-    const tokens = tokenizeSegment(parts[i].trim());
+    const seg = parts[i];
+    const tokens = tokenizeSegment(seg);
     const eff = tokens.length ? resolveEffectiveTokens(tokens) : null;
     if (!eff) continue;
-    let args = eff.rest.slice(1);
-    if (eff.verb === "git" && args[0] === "grep") args = args.slice(1);
-    else if (!SEARCH_VERBS.has(eff.verb)) continue;
-    const patterns = [];
-    let explicit = false;
-    for (let k = 0; k < args.length; k += 1) {
-      const tk = args[k];
-      if (tk === "-e" || tk === "--regexp") {
-        explicit = true;
-        if (args[k + 1] !== undefined) patterns.push(args[(k += 1)]);
-      } else if (tk.startsWith("--regexp=")) {
-        explicit = true;
-        patterns.push(tk);
-      } else if (tk === "-f" || tk === "--file" || SEARCH_VALUE_FLAGS.has(tk)) {
-        k += 1; // a value (for -f: a FILE — never masked)
-      } else if (tk === "--") {
-        if (!explicit && args[k + 1] !== undefined) patterns.push(args[k + 1]);
-        break;
-      } else if (!tk.startsWith("-") && !explicit) {
-        patterns.push(tk);
-        break;
-      }
+    if (eff.verb === "cd" || eff.verb === "pushd" || eff.verb === "popd") {
+      cwd = eff.verb === "popd" ? null : replayCd(eff, cwd);
+      continue;
     }
-    let seg = parts[i];
-    for (const pat of patterns) seg = seg.replace(pat, "__search_pattern__");
-    parts[i] = seg;
+    // After an unprovable cd, whether a token names an existing file is unknown.
+    if (cwd === null) continue;
+    let first = tokens.length - eff.rest.length + 1;
+    if (eff.verb === "git") {
+      if (tokens[first] !== "grep") continue;
+      first += 1;
+    } else if (!SEARCH_VERBS.has(basename(eff.verb))) continue;
+    // An expansion anywhere in the arguments can become `-e` / `-f` at run time,
+    // which turns the "pattern" into a file: mask nothing in this segment.
+    if (tokens.slice(first).some(hasShellExpansion)) continue;
+    const masked = searchPatternIndexes(tokens.slice(first))
+      .map((k) => k + first)
+      .filter((k) => maskableSearchPattern(tokens[k], cwd));
+    if (masked.length === 0) continue;
+    // Token offsets: tokenizeSegment keeps each token as a verbatim slice.
+    const offsets = [];
+    let at = 0;
+    for (const tk of tokens) {
+      at = seg.indexOf(tk, at);
+      offsets.push(at);
+      at += tk.length;
+    }
+    let out = seg;
+    for (const k of masked.reverse()) {
+      out =
+        out.slice(0, offsets[k]) + "__search_pattern__" + out.slice(offsets[k] + tokens[k].length);
+    }
+    parts[i] = out;
   }
   return parts.join("");
 }
@@ -1448,6 +1596,29 @@ function expandTildePath(filePath) {
   if (filePath === "~" || filePath.startsWith("~/")) return homedir() + filePath.slice(1);
   if (filePath.startsWith("~")) return null;
   return filePath;
+}
+
+/**
+ * The effective cwd after one `cd`/`pushd` segment, for the extractors that replay
+ * directory changes left to right. A literal destination resolves; `~` and `~/…`
+ * expand to $HOME like any operand (`cd ~/.config/gh && cat hosts.yml` reads the
+ * real gh store, so the read must be judged there), and a bare `cd` IS $HOME. Only
+ * what a stateless hook cannot know returns null (the caller then fails closed or
+ * skips): `cd -`, `pushd`/`pushd +N` (dir stack), `~user` / `~-`, and a `$`, backtick
+ * or glob destination. An absolute destination resolves even after an unknown cwd.
+ */
+function replayCd(effective, cwd) {
+  const args = effective.rest.slice(1);
+  let k = 0;
+  while (k < args.length && /^-[LPe@]+$/.test(normalizeVerb(args[k]))) k += 1;
+  if (args[k] === "--") k += 1;
+  const arg = args[k];
+  if (arg === undefined) return effective.verb === "cd" ? canonicalize(homedir()) : null;
+  if (/[*?$`]/.test(arg) || /^[-+]/.test(unquote(arg))) return null;
+  const p = expandTildeWord(arg, cwd);
+  if (p === UNVERIFIABLE_TARGET || p === "") return null;
+  if (p.startsWith("/")) return canonicalize(p);
+  return cwd === null ? null : canonicalize(resolve(cwd, p));
 }
 
 // Normalise a VERB token to the command the shell would actually execute, so a
@@ -1783,10 +1954,11 @@ function extractBashWriteTargets(cmd) {
   // Effective cwd for resolving RELATIVE targets. Updated as the segment loop
   // replays `cd`/`pushd` left-to-right, so a `cd <outside> && echo x > rel`
   // resolves `rel` against <outside> — not the process cwd — closing a
-  // write-boundary escape. `null` = a dynamic/unknown cd (`cd $VAR`, `cd -`,
-  // `cd ~`, `popd`, bare `cd` → $HOME): the effective dir is unprovable, so any
-  // subsequent RELATIVE target fails closed (UNVERIFIABLE). Absolute targets are
-  // unaffected by cd and stay exactly resolvable.
+  // write-boundary escape. `cd ~/x` and a bare `cd` resolve under $HOME (see
+  // replayCd). `null` = a dynamic/unknown cd (`cd $VAR`, `cd -`, `cd ~user`,
+  // `popd`): the effective dir is unprovable, so any subsequent RELATIVE target
+  // fails closed (UNVERIFIABLE). Absolute targets are unaffected by cd and stay
+  // exactly resolvable.
   let effectiveCwd = process.cwd();
   const add = (raw) => {
     if (!raw) return;
@@ -1855,18 +2027,13 @@ function extractBashWriteTargets(cmd) {
     const effective = resolveEffectiveTokens(tokens);
 
     // `cd`/`pushd`/`popd` relocate the effective cwd for LATER segments. A
-    // provable literal dir updates it; a dynamic/unknown target (`cd $VAR`,
-    // `cd -`, `cd ~…`, bare `cd` → $HOME, or `popd` off an unknown stack) poisons
-    // it to null so any subsequent relative write fails closed. cd carries no
+    // provable dir (a literal, `~/…`, or a bare `cd` → $HOME) updates it; a
+    // dynamic/unknown target (`cd $VAR`, `cd -`, `cd ~user`, or `popd` off an
+    // unknown stack) poisons it to null so any subsequent relative write fails
+    // closed. cd carries no
     // write target of its own → handled here, before the redirect scan.
     if (effective && (effective.verb === "cd" || effective.verb === "pushd")) {
-      const arg = effective.operands[0];
-      const bare = arg ? unquote(arg) : "";
-      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
-        effectiveCwd = null;
-      } else if (effectiveCwd !== null) {
-        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
-      }
+      effectiveCwd = replayCd(effective, effectiveCwd);
       continue;
     }
     if (effective && effective.verb === "popd") {
@@ -2103,7 +2270,8 @@ function extractBashReadTargets(cmd) {
   // blocked. `null` marks a dynamic/unknown cd; unlike the write path, a relative
   // read under it is SKIPPED (not fail-closed) — reads are best-effort here (the
   // documented residual) and fail-closing them would be too aggressive.
-  let effectiveCwd = process.cwd();
+  const startCwd = canonicalize(process.cwd());
+  let effectiveCwd = startCwd;
   for (const segment of cmd.split(/(?:&&|\|\||[;&|\n])/)) {
     // Quote-aware tokenization (same as the write path). Whole-command quoting
     // ambiguity is already fail-closed by extractBashWriteTargets (which surfaces
@@ -2121,13 +2289,7 @@ function extractBashReadTargets(cmd) {
 
     // Replay cwd relocation for LATER segments (mirror of the write path).
     if (verb === "cd" || verb === "pushd") {
-      const arg = operands[0];
-      const bare = arg ? unquote(arg) : "";
-      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
-        effectiveCwd = null;
-      } else if (effectiveCwd !== null) {
-        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
-      }
+      effectiveCwd = replayCd(effective, effectiveCwd);
       continue;
     }
     if (verb === "popd") {
@@ -2146,9 +2308,16 @@ function extractBashReadTargets(cmd) {
     const readOperands =
       verb === "dd"
         ? operands.filter((t) => t.startsWith("if=")).map((t) => t.slice(3))
-        : READ_TOOL_VERBS.has(verb)
-          ? operands
-          : [];
+        : SEARCH_VERBS.has(verb)
+          ? searchFileOperands(effective.rest.slice(1))
+          : READ_TOOL_VERBS.has(verb) || COPY_READ_VERBS.has(verb)
+            ? operands
+            : [];
+    // Every operand of a file-only verb is a file, and after a cd even a bare word
+    // (`cd ~/.kube && cat config`) names a file there; elsewhere the first operand of
+    // grep/sed/awk is a pattern or script, so only path-shaped tokens are checked.
+    const everyOperand =
+      verb === "dd" || !PATTERN_FIRST_VERBS.has(verb) || effectiveCwd !== startCwd;
     for (const tok of readOperands) {
       // Expand an unquoted leading `~` exactly as bash will; `~user`/`~-` cannot be
       // resolved here, so surface the sentinel (classified "outside" → BLOCK).
@@ -2162,7 +2331,7 @@ function extractBashReadTargets(cmd) {
       // like `1,5p` / `s/a/b/`, and bare option-ish tokens.
       if (/[*?$`]|\$\{/.test(raw)) continue;
       if (/^[&\d]+$/.test(raw)) continue; // fd redirections, not paths
-      if (!raw.includes("/") && !raw.includes(".")) continue; // not path-shaped
+      if (!everyOperand && !raw.includes("/") && !raw.includes(".")) continue; // not path-shaped
       // A relative read under a dynamic/unknown cd is left best-effort (skip).
       if (!raw.startsWith("/") && effectiveCwd === null) continue;
       // Decide the /dev skip on the LEXICALLY-normalised path (mirror of the
@@ -2213,13 +2382,7 @@ function branchCreationBoundaryReason(cmd, roots) {
     const effective = resolveEffectiveTokens(tokens);
     // Replay `cd`/`pushd`/`popd` exactly as extractBashWriteTargets does.
     if (effective && (effective.verb === "cd" || effective.verb === "pushd")) {
-      const arg = effective.operands[0];
-      const bare = arg ? unquote(arg) : "";
-      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
-        effectiveCwd = null;
-      } else if (effectiveCwd !== null) {
-        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
-      }
+      effectiveCwd = replayCd(effective, effectiveCwd);
       continue;
     }
     if (effective && effective.verb === "popd") {
@@ -2299,6 +2462,8 @@ const SCRIPT_INTERPRETERS = new Set([
 // Launchers that run their operands as a command (`watch x`, `flock f x`): like an
 // interpreter, every operand is checked.
 const COMMAND_LAUNCHERS = new Set([
+  "busybox",
+  "toybox",
   "watch",
   "flock",
   "taskset",
@@ -2385,39 +2550,134 @@ function isFactoryCode(abs) {
   return abs.startsWith(pkgs) && /^[^/]+\/dist(?:\/|$)/.test(abs.slice(pkgs.length));
 }
 
+// Builtins that set a shell variable for the rest of the command (`export G=…`).
+const VAR_DECLARE_VERBS = new Set(["export", "declare", "typeset", "local", "readonly"]);
+// Verbs that run a command the hook cannot read off the segment (`eval "$X"`, a
+// command line assembled by xargs from stdin).
+const INDIRECT_EXEC_VERBS = new Set(["eval", "xargs"]);
+// An operand an interpreter would read its program from without naming the file:
+// an fd or stdin path, a find/xargs `{}` placeholder.
+const INDIRECT_SCRIPT_OPERAND = /^(?:\/dev\/fd\/|\/dev\/stdin$|\/proc\/|-$|.*\{\})/;
+
+// The live factory's code paths as an agent could spell them: absolute (canonical
+// and as installed), and `~/…` / `$HOME/…` when the factory sits under HOME.
+const FACTORY_CODE_TEXT = (() => {
+  const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const homes = new Set([FACTORY_HOME, dirname(dirname(fileURLToPath(import.meta.url)))]);
+  const forms = [];
+  const home = homedir();
+  for (const h of homes) {
+    forms.push(esc(h));
+    if (home && h.startsWith(home + "/")) {
+      const rel = esc(h.slice(home.length));
+      forms.push(`~${rel}`, `\\$HOME${rel}`, `\\$\\{HOME\\}${rel}`);
+    }
+  }
+  const runner = esc(basename(HOOK_RUNNER_DIR));
+  return new RegExp(
+    String.raw`(?:${forms.join("|")})\/(?:${runner}|packages\/[^/\s'"]+\/dist)(?![\w.-])`,
+  );
+})();
+
+/** Split a redirect glued to a word (`bash</x`, `3</x`) into word, operator, target. */
+function splitRedirectToken(tk) {
+  const m = tk.match(/^([^'"<>]*?)(\d*(?:<<<|<<|<>|>>|<|>)&?)([\s\S]*)$/);
+  return m ? [m[1], m[2], m[3]].filter(Boolean) : [tk];
+}
+
+/** Replace `$NAME` / `${NAME}` for the shell variables recorded earlier in the command. */
+function substituteVars(tk, vars) {
+  if (!vars.size || !tk.includes("$")) return tk;
+  return tk.replace(/\$\{(\w+)\}|\$([A-Za-z_]\w*)/g, (whole, a, b) =>
+    vars.has(a ?? b) ? vars.get(a ?? b) : whole,
+  );
+}
+
+/**
+ * Refuse a command that RUNS the live factory's code (RUNNER_DIR, or a sibling
+ * `packages/*\/dist`): `gaffer approve`, `merge-ticket.mjs`, `tick.sh`, the dispatch
+ * CLI. Candidates are judged after the same-command shell variables are filled in
+ * (`G=<runner>/gaffer; $G approve 3` runs exactly that path), with `cd` replayed
+ * (`cd ~/gaffer/runner && bash tick.sh`). And when the command NAMES factory code
+ * at all — literally, via a variable, or by running inside it — any execution the
+ * hook cannot resolve (`$X` still unknown, `eval`, `xargs`, an interpreter reading
+ * stdin, an fd, `/proc` or `{}`) fails closed: `exec 3<<runner>/gaffer; bash
+ * /dev/fd/3 approve 3` and `cat <runner>/gaffer | bash -s approve 3` are the same
+ * front door.
+ */
 function factoryExecutionReason(cmd, roots) {
   // An agent whose write-roots contain the live runner can already rewrite it; this
   // guard adds nothing there (and the hook's own test harness runs from RUNNER_DIR).
   if (isInsideAny(roots.writeRoots, HOOK_RUNNER_DIR)) return null;
+  const why =
+    "approving, merging, ticking and the control plane are the runner's and the human's job, never the agent's";
   let effectiveCwd = process.cwd();
+  const vars = new Map();
+  let namesFactory = FACTORY_CODE_TEXT.test(cmd);
+  let indirect = null;
+  const isFactoryWord = (word) => {
+    const p = expandTildeWord(word, effectiveCwd);
+    if (p === UNVERIFIABLE_TARGET || !p || /[$`]/.test(p)) return false;
+    if (!p.startsWith("/") && effectiveCwd === null) return false;
+    return isFactoryCode(canonicalize(resolve(effectiveCwd ?? "/", p.replace(/[)}]+$/, ""))));
+  };
   for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
-    const tokens = tokenizeSegment(segment.trim().replace(/^[({]+\s*/, ""));
-    if (tokens.length === 0) continue;
+    const raw = tokenizeSegment(segment.trim().replace(/^[({]+\s*/, "")).flatMap(
+      splitRedirectToken,
+    );
+    if (raw.length === 0) continue;
+    const tokens = raw.map((tk) => substituteVars(tk, vars));
+    // Does this segment name factory code (an operand, a redirect target, an
+    // assignment's value, or the cwd it runs in)?
+    if (effectiveCwd !== null && isFactoryCode(effectiveCwd)) namesFactory = true;
+    for (const tk of tokens) {
+      const word = ASSIGNMENT_TOKEN.test(tk) ? tk.slice(tk.indexOf("=") + 1) : tk;
+      if (/^\d*[<>]/.test(word) || word.startsWith("-")) continue;
+      if (isFactoryWord(word)) namesFactory = true;
+    }
     const effective = resolveEffectiveTokens(tokens);
+    // `G=…` alone, or `export G=…`: a shell variable for the rest of the command.
+    const declares = !effective
+      ? tokens
+      : VAR_DECLARE_VERBS.has(effective.verb)
+        ? effective.rest.slice(1)
+        : [];
+    for (const tk of declares) {
+      const m = tk.match(/^([A-Za-z_]\w*)=([\s\S]*)$/);
+      if (!m) continue;
+      const value = expandTildeWord(m[2], effectiveCwd);
+      vars.set(m[1], value === UNVERIFIABLE_TARGET ? "$" : value.replace(/^['"]|['"]$/g, ""));
+    }
     if (!effective) continue;
     if (effective.verb === "cd" || effective.verb === "pushd") {
-      const arg = effective.operands[0];
-      const bare = arg ? unquote(arg) : "";
-      if (!bare || /[*?$`]|\$\{/.test(arg) || bare === "-" || bare.startsWith("~")) {
-        effectiveCwd = null;
-      } else if (effectiveCwd !== null) {
-        effectiveCwd = canonicalize(resolve(effectiveCwd, bare));
-      }
+      effectiveCwd = replayCd(effective, effectiveCwd);
       continue;
     }
     if (effective.verb === "popd") {
       effectiveCwd = null;
       continue;
     }
-    for (const script of factoryExecCandidates(effective)) {
-      const p = expandTildeWord(script, effectiveCwd);
-      if (p === UNVERIFIABLE_TARGET || !p || /[$`]|\$\{/.test(p)) continue;
-      if (!p.startsWith("/") && effectiveCwd === null) continue;
-      const abs = canonicalize(resolve(effectiveCwd ?? "/", p.replace(/[)}]+$/, "")));
-      if (isFactoryCode(abs)) {
-        return `runs the factory's own code (${abs}) — approving, merging, ticking and the control plane are the runner's and the human's job, never the agent's`;
+    const candidates = factoryExecCandidates(effective);
+    for (const script of candidates) {
+      if (isFactoryWord(script)) {
+        const p = expandTildeWord(script, effectiveCwd);
+        const abs = canonicalize(resolve(effectiveCwd ?? "/", p.replace(/[)}]+$/, "")));
+        return `runs the factory's own code (${abs}) — ${why}`;
       }
     }
+    // Remember the first execution the hook cannot resolve (judged below).
+    const base = basename(effective.verb);
+    const runsProgram =
+      SCRIPT_INTERPRETERS.has(base) || COMMAND_LAUNCHERS.has(base) || base === "busybox";
+    if (indirect) continue;
+    if (/[$`]/.test(effective.verb) || INDIRECT_EXEC_VERBS.has(base)) indirect = segment;
+    else if (candidates.some((c) => /[$`]/.test(c) || INDIRECT_SCRIPT_OPERAND.test(unquote(c))))
+      indirect = segment;
+    else if (runsProgram && !candidates.some((c) => !/^\d*[<>]/.test(c))) indirect = segment;
+    else if (runsProgram && effective.rest.slice(1).includes("-s")) indirect = segment;
+  }
+  if (namesFactory && indirect) {
+    return `runs code the hook cannot resolve (${indirect.trim().slice(0, 80)}) in a command that names the factory's own code — ${why}`;
   }
   for (const body of extractShellDashCBodies(cmd)) {
     const nested = factoryExecutionReason(body, roots);
@@ -2494,10 +2754,23 @@ function checkCommand(cmd) {
   // Read boundary (P1) — only when roots are explicitly configured (the
   // fallback never restricted reads, and we must not become more restrictive).
   // The secret-path guard above already ran and takes precedence.
+  // A resolved read target that IS a secret file is refused under every root mode:
+  // after `cd ~/.config/gh` the operand `hosts.yml` carries no secret fragment, but
+  // the file it names is the gh token store.
+  const readTargets = extractBashReadTargets(cmd);
+  for (const target of readTargets) {
+    if (target === UNVERIFIABLE_TARGET) continue;
+    if (
+      (SECRET_PATH.test(target) || SECRET_PATH.test(target + "/")) &&
+      !isTrackedEnvTemplate(target)
+    ) {
+      block(`bash read of a secret file: ${target} — "${cmd.slice(0, 120)}"`);
+    }
+  }
   if (roots.configured) {
     const inlineRead = inlineReadBoundaryReason(cmd, roots);
     if (inlineRead) block(`${inlineRead} — "${cmd.slice(0, 120)}"`);
-    for (const target of extractBashReadTargets(cmd)) {
+    for (const target of readTargets) {
       if (classifyRootAccess(target, roots) === "outside") {
         block(
           `read outside allowed roots (bash read tool targets outside all roots): ${target} — "${cmd.slice(0, 120)}"`,

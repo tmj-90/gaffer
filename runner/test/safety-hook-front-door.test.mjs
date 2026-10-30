@@ -7,6 +7,7 @@
 // contain the word `gaffer` stay allowed.
 // Run: node test/safety-hook-front-door.test.mjs
 import { mkdirSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { bash, RUNNER_DIR, scratchDir, suite } from "./lib/hook-harness.mjs";
 
 const t = suite("safety-hook-front-door");
@@ -82,6 +83,60 @@ for (const cmd of [
   "timeout -s KILL 60 node runner/test/x.test.mjs",
 ]) {
   t.allow(`not the front door: ${cmd}`, bash(cmd), opts);
+}
+
+// The default install puts the factory under HOME (`~/gaffer`), so `cd ~/gaffer/runner
+// && bash tick.sh` must resolve exactly like the absolute form. HOME here is the
+// factory's parent dir, as on an operator's machine.
+const FACTORY = dirname(R);
+const homeOpts = {
+  env: { HOME: dirname(FACTORY), GAFFER_WRITE_ROOTS: ROOT, GAFFER_READ_ROOTS: "" },
+  cwd: ROOT,
+};
+const TR = `~/${basename(FACTORY)}/runner`;
+for (const cmd of [
+  `cd ${TR} && bash tick.sh`,
+  `cd ${TR} && ./loop.sh`,
+  `cd ${TR}/bin && node merge-ticket.mjs --ticket 3`,
+  `cd ~/${basename(FACTORY)}/packages/dispatch && node dist/cli/index.js review approve 3`,
+  `cd ~/${basename(FACTORY)} && ./runner/gaffer approve 3`,
+  `bash ${TR}/tick.sh`,
+]) {
+  t.deny(`front door under HOME: ${cmd}`, bash(cmd), homeOpts);
+}
+
+// Indirection in the same command: a shell variable holding the path is filled in,
+// and when the command names factory code at all, an execution the hook cannot
+// resolve (an fd, stdin, eval, xargs, a still-unknown `$X`) fails closed.
+for (const cmd of [
+  `G=${R}/gaffer; $G approve 3`,
+  `G=${R}/gaffer && "\${G}" approve 3`,
+  `export G=${R}/gaffer; $G approve 3`,
+  `D=${R}; bash $D/tick.sh`,
+  `G=${R}/gaffer; sh -c "$G approve 3"`,
+  `G=${R}/gaffer; X=$G; $X approve 3`,
+  `exec 3<${R}/gaffer; bash /dev/fd/3 approve 3`,
+  `busybox sh ${R}/gaffer approve 3`,
+  `cat ${R}/gaffer | bash -s approve 3`,
+  `cat ${R}/tick.sh | sh`,
+  `eval "${R}/gaffer approve 3"`,
+  `echo ${R}/gaffer | xargs -I{} bash {} approve 3`,
+  `G=$(ls ${R}/gaffer); $G approve 3`,
+  `bash<${R}/tick.sh`,
+]) {
+  t.deny(`front door via indirection: ${cmd}`, bash(cmd), opts);
+}
+for (const cmd of [
+  "G=runner/test/x.test.sh; bash $G",
+  "S=scripts/build.mjs; node $S",
+  "cat runner/test/x.sh | bash",
+  `cat ${R}/README.md`,
+  `grep -n approve ${R}/gaffer`,
+]) {
+  t.allow(`indirection without the factory's code: ${cmd}`, bash(cmd), {
+    env: { GAFFER_WRITE_ROOTS: ROOT, GAFFER_READ_ROOTS: R },
+    cwd: ROOT,
+  });
 }
 
 t.done();

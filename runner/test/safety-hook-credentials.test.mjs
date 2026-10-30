@@ -5,8 +5,8 @@
 // treats the CLI credential stores as secret paths and refuses the credential-using
 // CLIs in command position, while leaving offline forms and mere mentions alone.
 // Run: node test/safety-hook-credentials.test.mjs
-import { mkdirSync } from "node:fs";
-import { bash, read, scratchDir, suite, tool } from "./lib/hook-harness.mjs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { bash, read, RUNNER_DIR, scratchDir, suite, tool } from "./lib/hook-harness.mjs";
 
 const t = suite("safety-hook-credentials");
 const ROOT = scratchDir("gaffer-creds-root-");
@@ -67,6 +67,12 @@ for (const cmd of [
   "helm install x ./chart",
   "terraform plan",
   "terraform apply -auto-approve",
+  // `terraform test` runs `command = apply` against real providers unless every
+  // provider is mocked, which the hook cannot see: refused (the terraform skills say so).
+  "terraform test",
+  "kubectl config view",
+  "kubectl config view --raw",
+  "kubectl config current-context && kubectl get secrets -A",
   "docker login ghcr.io",
   "docker context use prod",
   "docker run --rm -v /:/host alpine cat /host/etc/shadow",
@@ -115,6 +121,10 @@ for (const cmd of [
 for (const cmd of [
   "kubectl kustomize ./k8s",
   "kubectl version --client",
+  // Context NAMES only: the kind e2e and runbook skills check them first.
+  "kubectl config current-context",
+  "kubectl config get-contexts",
+  "kubectl config get-contexts -o name",
   "helm template ./chart",
   "helm lint ./chart",
   "terraform fmt -check",
@@ -137,6 +147,26 @@ for (const cmd of [
   'echo "run kubectl get pods to check"',
 ]) {
   t.allow(`allowed: ${cmd}`, bash(cmd), opts);
+}
+
+// Hook/skill agreement: a skill must not tell an agent to run a command the hook
+// refuses. The kubectl checks the skills name are allowed (above); the terraform
+// skills must say the hook refuses `terraform test` rather than ask for it.
+const skill = (name) => readFileSync(`${RUNNER_DIR}/skills/${name}/SKILL.md`, "utf8");
+for (const name of ["kubernetes-operator", "runbook-generator"]) {
+  t.assert(
+    `${name} skill names the allowed context check`,
+    skill(name).includes("kubectl config current-context"),
+  );
+}
+for (const name of ["terraform-patterns", "cloud-security"]) {
+  const text = skill(name).replace(/\s+/g, " ");
+  t.assert(
+    `${name} skill says the safety hook refuses terraform test`,
+    /safety hook refuses (?:it|`terraform test`)/.test(text) &&
+      !/verify with `fmt`, `validate` and `terraform test`/.test(text) &&
+      !/`terraform test` only in an already-initialised module/.test(text),
+  );
 }
 
 t.done();

@@ -60,4 +60,41 @@ t.allow("tilde path that lands inside a write-root", bash("touch ~/sub/x"), {
   cwd: ROOT,
 });
 
+// `cd ~/…` relocates later RELATIVE operands under $HOME. It used to read as an
+// unknown cwd, so the relative read after it was skipped and `cd ~/.config/gh && cat
+// hosts.yml` printed the gh token while the absolute form was refused.
+const unconfigured = { env: { HOME, GAFFER_WRITE_ROOTS: "", GAFFER_READ_ROOTS: "" }, cwd: ROOT };
+for (const cmd of [
+  "cd ~/.config/gh && cat hosts.yml",
+  "cd ~/.config && cat gh/hosts.yml",
+  "cd ~/.config; cat gh/hosts.yml",
+  "cd ~/.config && head -c 9999 gh/hosts.yml",
+  "cd ~/.docker && cat config.json",
+  "cd ~/.kube && cat config",
+  "cd ~/.azure && cat msal_token_cache.json",
+  "cd ~/.config/gh && cp hosts.yml sub/x",
+  "cd ~/.config/gh && tar c hosts.yml",
+  "cd ~ && cat .zsh_history",
+  "cd && cat .config/gh/hosts.yml",
+  "pushd ~/.kube && cat config",
+]) {
+  t.deny(`tilde cd then relative read: ${cmd}`, bash(cmd), opts);
+}
+// The credential stores stay unreadable under the unconfigured fallback too, where
+// reads are otherwise not root-restricted: the resolved target IS a secret file.
+for (const cmd of [
+  "cd ~/.config/gh && cat hosts.yml",
+  "cd ~/.kube && cat config",
+  "cd ~/.docker && cat config.json",
+  "cd ~/.config/gh && cp hosts.yml sub/x",
+]) {
+  t.deny(`tilde cd then secret read (fallback roots): ${cmd}`, bash(cmd), unconfigured);
+}
+// …and a tilde cd into the worktree still works, as does a relative read there.
+t.allow("cd ~/sub inside the write-root, then a relative read", bash("cd ~/sub && cat a.ts"), {
+  env: { HOME: ROOT, GAFFER_WRITE_ROOTS: ROOT, GAFFER_READ_ROOTS: "" },
+  cwd: ROOT,
+});
+t.allow("cd sub && cat a.ts (fallback roots)", bash("cd sub && cat a.ts"), unconfigured);
+
 t.done();

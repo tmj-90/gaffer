@@ -45,6 +45,14 @@ fi
 : "${DISPATCH_DB:=$GAFFER_DATA/dispatch.sqlite}"
 : "${MEMORY_DB:=$GAFFER_DATA/memory.sqlite}"
 : "${CREW_CONFIG:=$GAFFER_DATA/crew.yaml}"
+# memory's MCP/CLI audit trail. memory-mcp's own default is per-user
+# ($HOME/.memory/audit.jsonl), which every factory on a machine would share, which
+# survives deleting .gaffer, and which in the container sits outside the /data
+# volume. Pin it into this factory's data dir. Not `audit.jsonl`: dispatch already
+# writes that name beside dispatch.sqlite here. Exported (and kept by
+# gaffer_agent_env) so lg, doctor and the agent's memory-mcp all write the same file.
+: "${MEMORY_AUDIT_LOG:=$GAFFER_DATA/memory-audit.jsonl}"
+export MEMORY_AUDIT_LOG
 
 # Shared usage-ledger READER (lib/estimate.mjs parseLedger). Every inline-node
 # consumer of the JSONL ledger imports this ONE parser instead of hand-rolling a
@@ -1049,7 +1057,7 @@ gaffer_agent_env() {
   local keep_exact=(
     PATH HOME SHELL USER LOGNAME TMPDIR TMP TEMP
     LANG LC_ALL LC_CTYPE LC_MESSAGES LC_NUMERIC TERM TZ COLUMNS LINES
-    MCP_CONFIG DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN
+    MCP_CONFIG DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN MEMORY_AUDIT_LOG
     GAFFER_WRITE_ROOTS GAFFER_READ_ROOTS
     # Trust store + proxy routing. These name the machine's network PATH, not a
     # credential: behind a TLS-intercepting corporate proxy the agent's `npm install`,

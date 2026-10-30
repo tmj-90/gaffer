@@ -75,17 +75,17 @@ ticket_status() { WG ticket show "$1" 2>/dev/null | python3 -c "import sys,json;
 # Only the self-target ticket is ready for PROOF A/B (isolate it).
 echo "== PROOF A: a self-target delivery is REFUSED by default =="
 OUT_REFUSE="$(run_tick)"
-if printf '%s' "$OUT_REFUSE" | grep -q 'SELF-OP: refusing to deliver'; then
+if grep -q 'SELF-OP: refusing to deliver' <<<"$OUT_REFUSE"; then
   ok "tick logs SELF-OP refusal for the self-target ticket"
 else
   fail "expected a SELF-OP refusal log (got: $(printf '%s' "$OUT_REFUSE" | tail -4))"
 fi
-if printf '%s' "$OUT_REFUSE" | grep -q "delivering #$SELF_NUM"; then
+if grep -q "delivering #$SELF_NUM" <<<"$OUT_REFUSE"; then
   fail "self-target ticket must NOT proceed to delivery"
 else
   ok "self-target ticket does NOT proceed to delivery"
 fi
-if printf '%s' "$OUT_REFUSE" | grep -q 'TICK_RESULT=no_work'; then
+if grep -q 'TICK_RESULT=no_work' <<<"$OUT_REFUSE"; then
   ok "tick yields no_work (set aside, not delivered)"
 else
   fail "expected no_work (got: $(printf '%s' "$OUT_REFUSE" | grep TICK_RESULT=))"
@@ -102,7 +102,7 @@ SKIP_FILE="$WORK/.gaffer/.failed-tickets"
 echo "== PROOF A (no infinite re-claim): a second tick does not re-select it =="
 # It is no longer 'ready' (un-readied), so the next tick finds no deliverable work.
 OUT_AGAIN="$(run_tick)"
-if printf '%s' "$OUT_AGAIN" | grep -q "delivering #$SELF_NUM"; then
+if grep -q "delivering #$SELF_NUM" <<<"$OUT_AGAIN"; then
   fail "set-aside self-target must not be re-claimed on a later tick"
 else
   ok "later tick does NOT re-claim the set-aside self-target"
@@ -115,12 +115,12 @@ WG repo link "$SELF2" dispatch >/dev/null 2>&1
 WG ac add "$SELF2" -t "Self-op override AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 WG ticket ready "$SELF2" >/dev/null 2>&1
 OUT_OVERRIDE="$(run_tick GAFFER_ALLOW_SELF_DELIVERY=1)"
-if printf '%s' "$OUT_OVERRIDE" | grep -q "delivering #$SELF2"; then
+if grep -q "delivering #$SELF2" <<<"$OUT_OVERRIDE"; then
   ok "override → the self-target ticket proceeds to delivery (today's behaviour restored)"
 else
   fail "GAFFER_ALLOW_SELF_DELIVERY=1 should let the self-target through (got: $(printf '%s' "$OUT_OVERRIDE" | grep -E 'SELF-OP|delivering|TICK_RESULT'))"
 fi
-if printf '%s' "$OUT_OVERRIDE" | grep -q 'SELF-OP'; then
+if grep -q 'SELF-OP' <<<"$OUT_OVERRIDE"; then
   fail "override must not log a SELF-OP refusal"
 else
   ok "override emits NO SELF-OP refusal"
@@ -133,12 +133,12 @@ WG ticket move "$SELF2" draft >/dev/null 2>&1 || true
 WG ac add "$NORM_NUM" -t "Normal control AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 WG ticket ready "$NORM_NUM" >/dev/null 2>&1
 OUT_NORMAL="$(run_tick)"
-if printf '%s' "$OUT_NORMAL" | grep -q "delivering #$NORM_NUM"; then
+if grep -q "delivering #$NORM_NUM" <<<"$OUT_NORMAL"; then
   ok "non-Gaffer target proceeds to delivery as before"
 else
   fail "non-Gaffer target should be unaffected (got: $(printf '%s' "$OUT_NORMAL" | grep -E 'SELF-OP|delivering|TICK_RESULT'))"
 fi
-if printf '%s' "$OUT_NORMAL" | grep -q 'SELF-OP'; then
+if grep -q 'SELF-OP' <<<"$OUT_NORMAL"; then
   fail "a non-Gaffer target must NOT trigger the SELF-OP guard"
 else
   ok "non-Gaffer target emits NO SELF-OP log (guard is additive)"

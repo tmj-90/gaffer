@@ -98,7 +98,7 @@ grep -q 'gaffer_day_usd_cap_ok' "$RUNNER_DIR/lib/daemon.sh" \
   && ok "daemon.sh idles until the next day on the USD cap" \
   || fail "daemon.sh should consult the day-USD gate"
 # tick.sh: the defense-in-depth gate must exit 0 with no_work BEFORE any paid call.
-awk '/gaffer_day_usd_cap_ok/{f=1} f&&/result no_work; exit 0/{print "hit"; exit}' "$RUNNER_DIR/tick.sh" | grep -q hit \
+grep -q hit <<<"$(awk '/gaffer_day_usd_cap_ok/{f=1} f&&/result no_work; exit 0/{print "hit"; exit}' "$RUNNER_DIR/tick.sh")" \
   && ok "tick.sh gate exits 0 with no_work before starting paid work" \
   || fail "tick.sh should gate on gaffer_day_usd_cap_ok → result no_work; exit 0"
 grep -q 'DRY_RUN' <(awk '/Part B \(defense-in-depth\)/,/^fi$/' "$RUNNER_DIR/tick.sh") \

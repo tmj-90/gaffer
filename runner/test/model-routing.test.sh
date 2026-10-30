@@ -151,12 +151,12 @@ else
     SMOKE_DATA="$WORK/.gaffer-tick"
     OUT="$(env DISPATCH_DB="$DB" GAFFER_DATA="$SMOKE_DATA" DRY_RUN=1 \
             bash "$RUNNER_DIR/tick.sh" 2>&1)"
-    if printf '%s' "$OUT" | grep -q "ROUTE #$NUM .*phase=implement"; then
+    if grep -q "ROUTE #$NUM .*phase=implement" <<<"$OUT"; then
       ok "DRY_RUN tick logs 'ROUTE #$NUM phase=implement …' for the delivered ticket"
     else
       fail "expected a ROUTE #$NUM line (got: $(printf '%s' "$OUT" | grep -iE 'ROUTE|delivering|TICK_RESULT' | tail -4))"
     fi
-    if printf '%s' "$OUT" | grep -q "routed implement model ="; then
+    if grep -q "routed implement model =" <<<"$OUT"; then
       ok "DRY_RUN tick logs the routed implement model"
     else
       fail "expected a 'routed implement model =' DRY_RUN line"

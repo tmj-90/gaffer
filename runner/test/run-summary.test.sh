@@ -66,31 +66,31 @@ OUT="$(trap - EXIT; env \
   bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
 
 echo "== AC1: outcome counts =="
-printf '%s' "$OUT" | grep -Eq 'landed:.*2 done'      && ok "landed = 2 done" || fail "landed count wrong"
-printf '%s' "$OUT" | grep -Eq 'failed-safe:.*1 blocked' && ok "failed-safe = 1 blocked" || fail "failed-safe wrong"
-printf '%s' "$OUT" | grep -Eq 'parked:.*1 refining' && ok "parked = 1 refining" || fail "parked wrong"
-printf '%s' "$OUT" | grep -Eq 're-queued:.*1 ready' && ok "re-queued = 1 ready" || fail "re-queued wrong"
+grep -Eq 'landed:.*2 done' <<<"$OUT"      && ok "landed = 2 done" || fail "landed count wrong"
+grep -Eq 'failed-safe:.*1 blocked' <<<"$OUT" && ok "failed-safe = 1 blocked" || fail "failed-safe wrong"
+grep -Eq 'parked:.*1 refining' <<<"$OUT" && ok "parked = 1 refining" || fail "parked wrong"
+grep -Eq 're-queued:.*1 ready' <<<"$OUT" && ok "re-queued = 1 ready" || fail "re-queued wrong"
 
 echo "== AC2: parked reasons =="
-printf '%s' "$OUT" | grep -qi 'hygiene violation' && ok "parked ticket surfaces its hygiene park reason" || fail "park reason missing"
+grep -qi 'hygiene violation' <<<"$OUT" && ok "parked ticket surfaces its hygiene park reason" || fail "park reason missing"
 
 echo "== AC3: oversized-flagged =="
-printf '%s' "$OUT" | grep -q '#6 (oversized_diff)' && ok "oversized ticket #6 listed" || fail "oversized flag missing"
+grep -q '#6 (oversized_diff)' <<<"$OUT" && ok "oversized ticket #6 listed" || fail "oversized flag missing"
 
 echo "== AC4: per-repo pressure =="
-printf '%s' "$OUT" | grep -q 'repo-a' && printf '%s' "$OUT" | grep -q '3/2/1' \
+grep -q 'repo-a' <<<"$OUT" && grep -q '3/2/1' <<<"$OUT" \
   && ok "per-repo pressure shows repo-a outstanding 3/2/1 vs cap" || fail "per-repo pressure missing"
-printf '%s' "$OUT" | grep -Eq 'caps: branches=3' && ok "caps printed for context" || fail "caps line missing"
+grep -Eq 'caps: branches=3' <<<"$OUT" && ok "caps printed for context" || fail "caps line missing"
 
 echo "== AC5: cleanup state =="
-printf '%s' "$OUT" | grep -qi 'hygiene-leak note' && ok "cleanup state flags the hygiene-leak note (#4)" || fail "cleanup leak flag missing"
+grep -qi 'hygiene-leak note' <<<"$OUT" && ok "cleanup state flags the hygiene-leak note (#4)" || fail "cleanup leak flag missing"
 
 echo "== AC6: loop.sh wires the report =="
 grep -q 'run-summary.sh' "$RUNNER_DIR/loop.sh" && ok "loop.sh prints run-summary at end of run" || fail "loop.sh does not call run-summary.sh"
 
 echo "== AC7: safety section (block ledger, run-scoped) =="
-printf '%s' "$OUT" | grep -qiE 'safety .*hook blocks' && ok "safety section present" || fail "safety section missing"
-printf '%s' "$OUT" | grep -qiE 'no blocks recorded|nothing blocked' && ok "clean run (no ledger) → nothing blocked" || fail "clean-run safety line missing"
+grep -qiE 'safety .*hook blocks' <<<"$OUT" && ok "safety section present" || fail "safety section missing"
+grep -qiE 'no blocks recorded|nothing blocked' <<<"$OUT" && ok "clean run (no ledger) → nothing blocked" || fail "clean-run safety line missing"
 # Plant a ledger: one pre-run entry (must be excluded) + two in-run (must count).
 cat > "$WORK/.gaffer/safety-blocks.jsonl" <<'EOF'
 {"ts":"2000-01-01T00:00:00.000Z","category":"secret-read"}
@@ -102,16 +102,16 @@ OUT2="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
   SUMMARY_SINCE="2500-01-01T00:00:00.000Z" \
   bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
 # Assert on the un-coloured category lines (the count itself is colour-wrapped).
-printf '%s' "$OUT2" | grep -Eq 'attempt\(s\) blocked this run' && ok "run-scoped block header present" || fail "run-scoped header missing"
-printf '%s' "$OUT2" | grep -Eq 'out-of-scope-write +1' && ok "in-run out-of-scope-write counted (1)" || fail "out-of-scope count wrong"
-printf '%s' "$OUT2" | grep -Eq 'secret-read +1' && ok "run-scoped: only the in-run secret-read counted, pre-run excluded" || fail "run-scoping wrong"
-printf '%s' "$OUT2" | grep -qi 'secret-read attempt' && ok "secret-read attempts flagged for review" || fail "secret flag missing"
+grep -Eq 'attempt\(s\) blocked this run' <<<"$OUT2" && ok "run-scoped block header present" || fail "run-scoped header missing"
+grep -Eq 'out-of-scope-write +1' <<<"$OUT2" && ok "in-run out-of-scope-write counted (1)" || fail "out-of-scope count wrong"
+grep -Eq 'secret-read +1' <<<"$OUT2" && ok "run-scoped: only the in-run secret-read counted, pre-run excluded" || fail "run-scoping wrong"
+grep -qi 'secret-read attempt' <<<"$OUT2" && ok "secret-read attempts flagged for review" || fail "secret flag missing"
 grep -q 'SUMMARY_SINCE' "$RUNNER_DIR/loop.sh" && ok "loop.sh passes SUMMARY_SINCE for run-scoping" || fail "loop.sh does not wire SUMMARY_SINCE"
 
 echo "== AC8: usage section (honest sums + labels + unknowns, run-scoped) =="
 # Clean run (no ledger) → says so plainly.
-printf '%s' "$OUT" | grep -qiE 'usage .*headless agent' && ok "usage section present" || fail "usage section missing"
-printf '%s' "$OUT" | grep -qiE 'no agent usage recorded' && ok "clean run (no ledger) → no usage recorded, said plainly" || fail "clean-run usage line missing"
+grep -qiE 'usage .*headless agent' <<<"$OUT" && ok "usage section present" || fail "usage section missing"
+grep -qiE 'no agent usage recorded' <<<"$OUT" && ok "clean run (no ledger) → no usage recorded, said plainly" || fail "clean-run usage line missing"
 # Plant a usage ledger: one PRE-run measured row (must be excluded by SUMMARY_SINCE),
 # one in-run MEASURED row (opus + sonnet), one in-run UNKNOWN row (must NOT read as 0).
 cat > "$WORK/.gaffer/usage-ledger.jsonl" <<'EOF'
@@ -124,20 +124,20 @@ OUT3="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
   SUMMARY_SINCE="2500-01-01T00:00:00.000Z" \
   bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
 # measured-vs-unknown shown, run-scoped: 1 measured (the in-run row), 1 unknown.
-printf '%s' "$OUT3" | grep -Eq '1 measured, 1 unknown' && ok "measured-vs-unknown shown (run-scoped: pre-run row excluded)" || fail "measured/unknown count wrong"
+grep -Eq '1 measured, 1 unknown' <<<"$OUT3" && ok "measured-vs-unknown shown (run-scoped: pre-run row excluded)" || fail "measured/unknown count wrong"
 # Honesty: 'unknown' must be labelled NOT zero.
-printf '%s' "$OUT3" | grep -qiE "unknown.*NOT zero" && ok "'unknown' explicitly labelled not-zero (partial run can't read as cheap)" || fail "unknown-not-zero label missing"
+grep -qiE "unknown.*NOT zero" <<<"$OUT3" && ok "'unknown' explicitly labelled not-zero (partial run can't read as cheap)" || fail "unknown-not-zero label missing"
 # Billed tokens headline INCLUDES cache (in 1.5k + out 800 + cache-read 5.0k + cache-write 200 = ~7.5k);
 # pre-run 99999 row excluded by scoping. This is the true cost driver, so it leads.
-printf '%s' "$OUT3" | grep -qF 'billed tokens: ~7.5k  (in 1.5k · out 800 · cache-read 5.0k · cache-write 200)' && ok "billed tokens headline incl. cache, human-readable (pre-run excluded)" || fail "billed tokens line wrong"
+grep -qF 'billed tokens: ~7.5k  (in 1.5k · out 800 · cache-read 5.0k · cache-write 200)' <<<"$OUT3" && ok "billed tokens headline incl. cache, human-readable (pre-run excluded)" || fail "billed tokens line wrong"
 # Cache-read (5000/7500 = 67%) is the majority, so the driver line must call it out.
-printf '%s' "$OUT3" | grep -qiE 'dominated by cache-read.*re-reads its cached context' && ok "cache-read driver explained (cost no longer looks like it came from in+out)" || fail "cache-read driver line missing"
+grep -qiE 'dominated by cache-read.*re-reads its cached context' <<<"$OUT3" && ok "cache-read driver explained (cost no longer looks like it came from in+out)" || fail "cache-read driver line missing"
 # opus-plan vs sonnet-impl split present.
-printf '%s' "$OUT3" | grep -Eq 'opus-plan +800 tokens' && ok "opus-plan split shown" || fail "opus-plan split missing"
-printf '%s' "$OUT3" | grep -Eq 'sonnet-impl +1500 tokens' && ok "sonnet-impl split shown" || fail "sonnet-impl split missing"
+grep -Eq 'opus-plan +800 tokens' <<<"$OUT3" && ok "opus-plan split shown" || fail "opus-plan split missing"
+grep -Eq 'sonnet-impl +1500 tokens' <<<"$OUT3" && ok "sonnet-impl split shown" || fail "sonnet-impl split missing"
 # API-equivalent cost RELAYED (the in-run total, NOT the excluded $99) + labelled + caveated.
-printf '%s' "$OUT3" | grep -qF 'API-equivalent cost (Claude Code'"'"'s own figure): $0.1234' && ok "cost relayed verbatim + labelled (not the pre-run \$99)" || fail "cost label/value wrong"
-printf '%s' "$OUT3" | grep -qiE 'Max/Pro subscription the marginal cost is the flat plan fee' && ok "subscription caveat present" || fail "subscription caveat missing"
+grep -qF 'API-equivalent cost (Claude Code'"'"'s own figure): $0.1234' <<<"$OUT3" && ok "cost relayed verbatim + labelled (not the pre-run \$99)" || fail "cost label/value wrong"
+grep -qiE 'Max/Pro subscription the marginal cost is the flat plan fee' <<<"$OUT3" && ok "subscription caveat present" || fail "subscription caveat missing"
 # A run where EVERY row is unknown must NOT report a cheap/zero figure.
 cat > "$WORK/.gaffer/usage-ledger.jsonl" <<'EOF'
 {"ts":"2999-01-01T00:00:00.000Z","ticket":9,"kind":"clarify","measured":false,"unknown_reason":"timeout","models":"unknown","total_cost_usd":"unknown","num_turns":"unknown","duration_ms":"unknown"}
@@ -146,8 +146,8 @@ OUT4="$(trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlit
   SUMMARY_LIST_CMD="$WORK/list.sh" SUMMARY_SHOW_CMD="$WORK/show.sh" \
   SUMMARY_SINCE="2500-01-01T00:00:00.000Z" \
   bash "$RUNNER_DIR/run-summary.sh" 2>&1)"
-printf '%s' "$OUT4" | grep -qiE 'nothing measurable this run' && ok "all-unknown run → 'nothing measurable', no token/cost figure" || fail "all-unknown run still reported numbers"
-printf '%s' "$OUT4" | grep -Eq 'billed tokens' && fail "all-unknown run wrongly printed a token figure" || ok "all-unknown run prints NO token figure (honest)"
+grep -qiE 'nothing measurable this run' <<<"$OUT4" && ok "all-unknown run → 'nothing measurable', no token/cost figure" || fail "all-unknown run still reported numbers"
+grep -Eq 'billed tokens' <<<"$OUT4" && fail "all-unknown run wrongly printed a token figure" || ok "all-unknown run prints NO token figure (honest)"
 grep -q 'GAFFER_USAGE_LEDGER' "$RUNNER_DIR/factory.config.sh" && ok "factory.config.sh defines GAFFER_USAGE_LEDGER knob (mirrors GAFFER_BLOCK_LEDGER)" || fail "GAFFER_USAGE_LEDGER knob missing"
 
 echo

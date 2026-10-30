@@ -61,7 +61,7 @@ AGENT_KEYS="$(
     '
 )"
 
-has() { printf '%s\n' "$AGENT_KEYS" | grep -qx "$1"; }
+has() { grep -qx "$1" <<<"$AGENT_KEYS"; }
 
 echo "== URL/webhook/notify/credential vars must be ABSENT from the agent env =="
 # *_URL pattern (deny: outbound endpoint exfiltration channel)

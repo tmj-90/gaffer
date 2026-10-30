@@ -85,7 +85,7 @@ echo "  removed: ${REMOVED:-<none>}"
 
 echo "== AC1/AC4: terminal-ticket worktree (#10) removed + detached =="
 [ ! -e "$GAFFER_DATA/worktrees/ticket-10" ] && ok "#10 worktree dir removed" || fail "#10 worktree dir still present"
-git -C "$REPO" worktree list --porcelain 2>/dev/null | grep -q "ticket-10/repo" \
+grep -q "ticket-10/repo" <<<"$(git -C "$REPO" worktree list --porcelain 2>/dev/null)" \
   && fail "#10 still registered as a git worktree" || ok "#10 git worktree detached from the real repo"
 
 echo "== AC2: in_progress worktree (#20) is PROTECTED =="

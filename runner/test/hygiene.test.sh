@@ -54,7 +54,7 @@ mkdir -p "$REPO/src.ticket9"
 cp "$REPO/src/index.ts" "$REPO/src.ticket9/index.ts"
 git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak copied src"
 OUT="$(gaffer_assert_clean_delivery "$REPO" main)"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'copied source tree'; then
+if [ "$RC" -ne 0 ] && grep -qi 'copied source tree' <<<"$OUT"; then
   ok "copied src tree (src.ticket9/) → rejected: $(printf '%s' "$OUT" | head -1)"
 else
   fail "copied src tree should be rejected (rc=$RC, out=$OUT)"
@@ -66,7 +66,7 @@ mkdir -p "$REPO/.crew"
 printf '{"e":1}\n' > "$REPO/.crew/events.jsonl"
 git -C "$REPO" add -A -f && git -C "$REPO" commit -q -m "leak events"
 OUT="$(gaffer_assert_clean_delivery "$REPO" main)"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'forbidden path'; then
+if [ "$RC" -ne 0 ] && grep -qi 'forbidden path' <<<"$OUT"; then
   ok "leaked .crew/events.jsonl → rejected"
 else
   fail "leaked events log should be rejected (rc=$RC, out=$OUT)"
@@ -79,7 +79,7 @@ REPO="$WORK/selflink"; new_repo "$REPO"
 ln -s . "$REPO/node_modules"
 git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak selflink"
 OUT="$(gaffer_assert_clean_delivery "$REPO" main)"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qiE 'self-referential|forbidden path'; then
+if [ "$RC" -ne 0 ] && grep -qiE 'self-referential|forbidden path' <<<"$OUT"; then
   ok "self-referential node_modules symlink → rejected"
 else
   fail "self-referential symlink should be rejected (rc=$RC, out=$OUT)"
@@ -110,7 +110,7 @@ REPO="$WORK/dangling"; new_repo "$REPO"
 ln -s ./does-not-exist "$REPO/brokenlink"
 git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak dangling"
 OUT="$(gaffer_assert_clean_delivery "$REPO" main)"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'broken/dangling symlink'; then
+if [ "$RC" -ne 0 ] && grep -qi 'broken/dangling symlink' <<<"$OUT"; then
   ok "broken/dangling symlink → rejected"
 else
   fail "dangling symlink should be rejected (rc=$RC, out=$OUT)"
@@ -135,7 +135,7 @@ mkdir -p "$REPO/src.ticket9" "$REPO/.crew"
 printf 'x\n' > "$REPO/src.ticket9/index.ts"
 printf '{}\n' > "$REPO/.crew/events.jsonl"
 OUT="$(gaffer_assert_repo_clean "$REPO")"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qiE 'copied src tree|leaked events|not clean'; then
+if [ "$RC" -ne 0 ] && grep -qiE 'copied src tree|leaked events|not clean' <<<"$OUT"; then
   ok "real repo with leaked artifacts → gaffer_assert_repo_clean fires"
 else
   fail "dirty real repo should fail gaffer_assert_repo_clean (rc=$RC, out=$OUT)"
@@ -169,7 +169,7 @@ git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak .claude + CLAUDE.fact
 OUT="$( set +u; unset HYGIENE_FORBIDDEN_PATHS
         source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
         gaffer_assert_clean_delivery "$REPO" main 2>&1 )"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -qi 'forbidden path'; then
+if [ "$RC" -ne 0 ] && grep -qi 'forbidden path' <<<"$OUT"; then
   ok "release config rejects .claude/ + CLAUDE.factory.md"
 else
   fail "release config should reject .claude/ + CLAUDE.factory.md (rc=$RC, out=$(printf '%s' "$OUT" | head -1))"
@@ -209,8 +209,8 @@ OUT="$( set +u; unset HYGIENE_FORBIDDEN_PATHS
         printf '{}\n' > "$REPO/mcp-runtime.json"
         git -C "$REPO" add -A && git -C "$REPO" commit -q -m "leak runtime configs"
         gaffer_assert_clean_delivery "$REPO" main 2>&1 )"; RC=$?
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'mcp-runtime.12345.json' \
-   && printf '%s' "$OUT" | grep -q 'forbidden path in delivery diff: mcp-runtime.json'; then
+if [ "$RC" -ne 0 ] && grep -q 'mcp-runtime.12345.json' <<<"$OUT" \
+   && grep -q 'forbidden path in delivery diff: mcp-runtime.json' <<<"$OUT"; then
   ok "generated mcp-runtime.<pid>.json + mcp-runtime.json still rejected"
 else
   fail "generated mcp-runtime artifacts must still be rejected (rc=$RC, out=$OUT)"

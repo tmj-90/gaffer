@@ -89,14 +89,14 @@ wg ac add "$N" -t "helper added" >/dev/null 2>&1
 wg ticket repo-access set "$N" repo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$N" >/dev/null 2>&1
 OUT0="$(run_tick)"
-echo "$OUT0" | grep -q '^TICK_RESULT=worked$' && [ "$(st "$N")" = "in_review" ] \
+grep -q '^TICK_RESULT=worked$' <<<"$OUT0" && [ "$(st "$N")" = "in_review" ] \
   && ok "setup: #$N delivered → in_review" || fail "setup delivery failed: $OUT0 status=$(st "$N")"
 
 echo "== A. reviewer REFUSED to run (rc=75, empty envelope) with every autonomy grant on =="
 echo refuse > "$MODE_FILE"
 rm -f "$GAFFER_DATA/.reviewed-tickets"
 OUTA="$(REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 run_tick)"
-echo "$OUTA" | grep -q '^TICK_RESULT=reviewed$' && ok "A: the review pass ran (TICK_RESULT=reviewed)" || fail "A: tick result $OUTA"
+grep -q '^TICK_RESULT=reviewed$' <<<"$OUTA" && ok "A: the review pass ran (TICK_RESULT=reviewed)" || fail "A: tick result $OUTA"
 grep -q 'verdict=held' "$GAFFER_DATA/factory.log" && grep -q 'not a verdict' "$GAFFER_DATA/factory.log" \
   && ok "A: logged as HELD — 'reviewer did not run … not a verdict'" || fail "A: no held/not-a-verdict log line: $(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
 [ "$(st "$N")" = "in_review" ] && ok "A: #$N stays in_review (not reworked, not approved)" || fail "A: #$N became '$(st "$N")'"
@@ -107,7 +107,7 @@ echo "== B. a real APPROVE with the approve gate DENIED holds as advisory =="
 echo approve > "$MODE_FILE"
 rm -f "$GAFFER_DATA/.reviewed-tickets"
 OUTB="$(REVIEW_MODE=agent run_tick)"
-echo "$OUTB" | grep -q '^TICK_RESULT=reviewed$' && ok "B: the review pass ran" || fail "B: tick result $OUTB"
+grep -q '^TICK_RESULT=reviewed$' <<<"$OUTB" && ok "B: the review pass ran" || fail "B: tick result $OUTB"
 grep -q 'verdict=approve, approve_gate=deny' "$GAFFER_DATA/factory.log" && ok "B: verdict parsed as approve, gate deny → advisory hold" || fail "B: expected verdict=approve/approve_gate=deny: $(tail -2 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
 [ "$(st "$N")" = "in_review" ] && ok "B: #$N still in_review for a human" || fail "B: #$N became '$(st "$N")'"
 
@@ -116,11 +116,11 @@ rm -f "$GAFFER_DATA/.reviewed-tickets" "$WORK/review-mcp.json"
 RBR="$(git -C "$R" branch --list "gaffer/ticket-$N-*" | tr -d ' *' | head -1)"
 # Containment out-of-band for this test (GAFFER_STRICT_REQUIRE=0): the sandbox-refusal path is case A.
 OUTC="$(REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_STRICT_REQUIRE=0 run_tick)"
-echo "$OUTC" | grep -q '^TICK_RESULT=reviewed$' && ok "C: the review pass ran" || fail "C: tick result $OUTC"
+grep -q '^TICK_RESULT=reviewed$' <<<"$OUTC" && ok "C: the review pass ran" || fail "C: tick result $OUTC"
 [ "$(st "$N")" = "done" ] && ok "C: #$N merged and marked done" || fail "C: #$N is '$(st "$N")' (log: $(grep "AFK: #$N" "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|'))"
 grep -q "AFK: #$N digest/feature applied post-merge" "$GAFFER_DATA/factory.log" \
   && ok "C: post-merge digest/feature apply ran from the AFK path (B9)" || fail "C: no digest/feature apply log line: $(tail -4 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
-lg digest repo 2>/dev/null | grep -q "source: merge:#$N" \
+grep -q "source: merge:#$N" <<<"$(lg digest repo 2>/dev/null)" \
   && ok "C: Repo Digest freshness stamped source=merge:#$N" || fail "C: digest not stamped: $(lg digest repo 2>/dev/null | grep -i source)"
 FEAT_STATUS="$(node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1],{readOnly:true});const r=d.prepare("SELECT status FROM feature WHERE id=?").get(process.argv[2]);process.stdout.write(r?r.status:"missing")' "$MEMORY_DB" "$FEAT_ID" 2>/dev/null)"
 [ "$FEAT_STATUS" = "shipped" ] && ok "C: feature $FEAT_ID advanced building → shipped via the ticket's Feature-Id (B11)" || fail "C: feature status '$FEAT_STATUS' (want shipped)"

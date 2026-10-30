@@ -63,7 +63,7 @@ serial_block='ticks=0
 empties=0
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if ! gaffer_day_cap_ok; then'
-if printf '%s' "$(cat "$RUNNER_DIR/loop.sh")" | grep -qF "$serial_block"; then
+if grep -qF -- "$serial_block" "$RUNNER_DIR/loop.sh"; then
   ok "serial loop preamble matches the pre-A-1 control shape (behavior-preserving at N=1)"
 else
   fail "serial loop preamble diverged from the pre-A-1 body"
@@ -74,11 +74,11 @@ GD="$(mktemp -d "${TMPDIR:-/tmp}/par-reg.XXXXXX")/x"; mkdir -p "$GD"
 OUT="$(GAFFER_DATA="$GD" DISPATCH_DB="$GD/d.sqlite" MEMORY_DB="$GD/m.sqlite" \
        DRY_RUN=1 MAX_TICKS=2 EMPTY_POLL_LIMIT=1 TICK_SLEEP=0 GAFFER_CONCURRENCY=1 \
        perl -e 'alarm 90; exec @ARGV' bash "$RUNNER_DIR/loop.sh" 2>&1)" || true
-printf '%s\n' "$OUT" | grep -qiE 'parallel mode|spawning [0-9]+ worker' \
+grep -qiE 'parallel mode|spawning [0-9]+ worker' <<<"$OUT" \
   && fail "concurrency=1 wrongly entered the parallel path" || ok "concurrency=1 stayed on the serial path (no worker pool)"
-printf '%s\n' "$OUT" | grep -q 'gaffer factory: starting' && ok "serial run emits the canonical 'starting' banner" || fail "missing 'starting' banner"
-printf '%s\n' "$OUT" | grep -qE 'tick 1/[0-9]+ →' && ok "serial run emits the canonical 'tick 1/N →' line" || fail "missing canonical per-tick line"
-printf '%s\n' "$OUT" | grep -qE 'gaffer factory: done after [0-9]+ tick' && ok "serial run emits the canonical 'done after N tick(s)'" || fail "missing 'done' line"
+grep -q 'gaffer factory: starting' <<<"$OUT" && ok "serial run emits the canonical 'starting' banner" || fail "missing 'starting' banner"
+grep -qE 'tick 1/[0-9]+ →' <<<"$OUT" && ok "serial run emits the canonical 'tick 1/N →' line" || fail "missing canonical per-tick line"
+grep -qE 'gaffer factory: done after [0-9]+ tick' <<<"$OUT" && ok "serial run emits the canonical 'done after N tick(s)'" || fail "missing 'done' line"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

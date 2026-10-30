@@ -196,7 +196,7 @@ run_nocommit_failure "$T1" run3 "delivery failed: agent exited non-zero (rc=1) w
 [ "$(status_of "$T1")" = "blocked" ] \
   && ok "AC3: failure 3/3 parked #$T1 → blocked (NOT released to ready again)" \
   || fail "AC3: #$T1 is '$(status_of "$T1")' after the bound (want blocked)"
-printf '%s' "$(feedback_of "$T1")" | grep -q 'rework_exhausted' \
+grep -q 'rework_exhausted' <<<"$(feedback_of "$T1")" \
   && ok "AC3: last_review_feedback carries code=rework_exhausted (board card surfaces WHY)" \
   || fail "AC3: last_review_feedback lacks rework_exhausted (got '$(feedback_of "$T1")')"
 [ "$(blocked_events "$T1")" -ge 1 ] 2>/dev/null \
@@ -240,7 +240,7 @@ run_nocommit_failure "$T3" t3run1 "delivery failed: agent exited non-zero (rc=1)
 [ "$(status_of "$T3")" = "blocked" ] \
   && ok "AC6: spend \$5 ≥ ceiling \$1 → parked to blocked on the FIRST failure (attempts remaining)" \
   || fail "AC6: #$T3 is '$(status_of "$T3")' with spend past the ceiling (want blocked)"
-printf '%s' "$(feedback_of "$T3")" | grep -q 'rework_exhausted' \
+grep -q 'rework_exhausted' <<<"$(feedback_of "$T3")" \
   && ok "AC6: the cost-ceiling park carries rework_exhausted too" \
   || fail "AC6: cost-ceiling park lacks rework_exhausted feedback"
 # The per-ticket delivery_budget_usd must WIN over the env default when set.

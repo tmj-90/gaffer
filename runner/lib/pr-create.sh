@@ -39,7 +39,7 @@ gaffer_pr_create_enabled() {
 # "github.com"). Returns 0 when a GitHub remote exists, 1 otherwise.
 gaffer_has_github_remote() {
   local repo_dir="$1"
-  git -C "$repo_dir" remote -v 2>/dev/null | grep -qiF 'github.com'
+  grep -qiF 'github.com' <<<"$(git -C "$repo_dir" remote -v 2>/dev/null)"
 }
 
 # Build the PR body from the evidence bundle on the ticket.

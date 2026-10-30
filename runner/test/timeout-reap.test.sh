@@ -63,7 +63,7 @@ sleep 1
 CHILD_PID="$(cat "$CHILD_PIDFILE" 2>/dev/null || true)"
 if [ -z "$CHILD_PID" ]; then
   fail "the grandchild never recorded its PID (test setup)"
-elif kill -0 "$CHILD_PID" 2>/dev/null && ! ps -o stat= -p "$CHILD_PID" 2>/dev/null | grep -q Z; then
+elif kill -0 "$CHILD_PID" 2>/dev/null && ! grep -q Z <<<"$(ps -o stat= -p "$CHILD_PID" 2>/dev/null)"; then
   # A ZOMBIE is dead (the group KILL landed); it only lingers until its new parent reaps
   # it. Its parent (the foreground bash) exited first, so it is reparented to PID 1, and
   # a container whose PID 1 is not a reaping init leaves it as Z — `kill -0` still
@@ -116,7 +116,7 @@ grep -q 'gaffer_reap_orphan_agent' "$tick" \
   && ok "tick defines/uses gaffer_reap_orphan_agent" \
   || fail "tick has no orphan reaper"
 # The reaper must be invoked from the crash-cleanup path.
-awk '/^gaffer_crash_cleanup\(\) \{/{f=1} f&&/gaffer_reap_orphan_agent/{print;exit}' "$tick" | grep -q gaffer_reap_orphan_agent \
+grep -q gaffer_reap_orphan_agent <<<"$(awk '/^gaffer_crash_cleanup\(\) \{/{f=1} f&&/gaffer_reap_orphan_agent/{print;exit}' "$tick")" \
   && ok "crash-cleanup invokes the orphan reaper" \
   || fail "crash-cleanup does not invoke the orphan reaper"
 

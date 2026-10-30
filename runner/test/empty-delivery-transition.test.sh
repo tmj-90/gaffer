@@ -69,19 +69,19 @@ run_case() {
 
 echo "== 1. runner holds a token → release to refining WITH --token, logged =="
 out="$(run_case "tok-123" ok)"
-printf '%s' "$out" | grep -q "released claim on #4242 → refining" && ok "logs the runner-held release to refining" || fail "did not log the token release"
-printf '%s' "$out" | grep -qE "WG_CALL: runner-release 4242 --to refining --token tok-123" && ok "invokes wg runner-release with --to refining --token" || fail "did not invoke runner-release with the token"
-printf '%s' "$out" | grep -q "WARNING" && fail "a happy-path release wrongly emitted a WARNING" || ok "no WARNING on the happy path"
+grep -q "released claim on #4242 → refining" <<<"$out" && ok "logs the runner-held release to refining" || fail "did not log the token release"
+grep -qE "WG_CALL: runner-release 4242 --to refining --token tok-123" <<<"$out" && ok "invokes wg runner-release with --to refining --token" || fail "did not invoke runner-release with the token"
+grep -q "WARNING" <<<"$out" && fail "a happy-path release wrongly emitted a WARNING" || ok "no WARNING on the happy path"
 
 echo "== 2. no runner token (resumed delivery) → tokenless release to refining =="
 out="$(run_case "" ok)"
-printf '%s' "$out" | grep -q "transitioned #4242 → refining" && ok "logs the tokenless transition to refining" || fail "did not log the tokenless transition"
-printf '%s' "$out" | grep -qE "WG_CALL: runner-release 4242 --to refining --reason" && ok "invokes wg runner-release tokenlessly (no --token)" || fail "did not invoke tokenless runner-release"
-printf '%s' "$out" | grep -q -- "--token" && fail "a tokenless release wrongly passed --token" || ok "no --token on a tokenless release"
+grep -q "transitioned #4242 → refining" <<<"$out" && ok "logs the tokenless transition to refining" || fail "did not log the tokenless transition"
+grep -qE "WG_CALL: runner-release 4242 --to refining --reason" <<<"$out" && ok "invokes wg runner-release tokenlessly (no --token)" || fail "did not invoke tokenless runner-release"
+grep -q -- "--token" <<<"$out" && fail "a tokenless release wrongly passed --token" || ok "no --token on a tokenless release"
 
 echo "== 3. release FAILS → a visible WARNING naming the ticket + target =="
 out="$(run_case "tok-123" fail)"
-printf '%s' "$out" | grep -q "WARNING — could not release claim on #4242 → refining" \
+grep -q "WARNING — could not release claim on #4242 → refining" <<<"$out" \
   && ok "a failed release is logged as a WARNING naming the ticket + target" \
   || fail "a failed release was swallowed silently"
 
@@ -89,12 +89,11 @@ echo "== 4. tick.sh's empty-delivery path parks via the runner-release helper ==
 if [ -f "$TICK" ]; then
   # The empty-delivery block calls gaffer_release_delivery refining … and NO LONGER
   # probes status to review-reject/block (that fallback is deleted).
-  awk '/EMPTY delivery for #\$NUM — 0 commits/{f=1} f&&/delivery PARKED for #\$NUM — empty/{print; exit} f' "$TICK" \
-    | grep -q 'gaffer_release_delivery refining' \
+  EMPTY_BLOCK="$(awk '/EMPTY delivery for #\$NUM — 0 commits/{f=1} f&&/delivery PARKED for #\$NUM — empty/{print; exit} f' "$TICK")"
+  grep -q 'gaffer_release_delivery refining' <<<"$EMPTY_BLOCK" \
     && ok "empty-delivery path parks via gaffer_release_delivery refining" \
     || fail "empty-delivery path does not call gaffer_release_delivery refining"
-  awk '/EMPTY delivery for #\$NUM — 0 commits/{f=1} f&&/delivery PARKED for #\$NUM — empty/{print; exit} f' "$TICK" \
-    | grep -q 'review reject.*factory-empty' \
+  grep -q 'review reject.*factory-empty' <<<"$EMPTY_BLOCK" \
     && fail "empty-delivery path still carries the deleted review-reject fallback" \
     || ok "empty-delivery path no longer carries the deleted review-reject/block fallback"
 else

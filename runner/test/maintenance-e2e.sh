@@ -113,7 +113,7 @@ tickets_titled() { wg ticket list 2>/dev/null | jget 'd.filter(t => String(t.tit
 
 # ── tick 1: idle → maintenance lane → tech-debt draft → promoted to ready ─────
 OUT1="$(run_tick)"
-echo "$OUT1" | grep -q '^TICK_RESULT=maintenance_drafted$' \
+grep -q '^TICK_RESULT=maintenance_drafted$' <<<"$OUT1" \
   && ok "tick 1 (nothing ready) → TICK_RESULT=maintenance_drafted" \
   || fail "tick 1 expected maintenance_drafted, got: $(echo "$OUT1" | grep '^TICK_RESULT=' || echo '<none>')  (log tail: $(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|'))"
 grep -q "maintenance lane chose 'tech_debt'" "$GAFFER_DATA/factory.log" \
@@ -124,19 +124,19 @@ NUM="$(wg ticket list 2>/dev/null | jget '(d.find(t => String(t.title||"").start
 SHOW="$(wg ticket show "$NUM" 2>/dev/null)"
 STATUS="$(echo "$SHOW" | jget 'd.ticket.status' 2>/dev/null)"
 [ "$STATUS" = "ready" ] && ok "self-improve promoted the draft to READY (#$NUM)" || fail "ticket #$NUM is '$STATUS', expected ready"
-echo "$SHOW" | jget 'd.ticket.description' 2>/dev/null | grep -q 'god_file @ src/legacy.js' \
+grep -q 'god_file @ src/legacy.js' <<<"$(jget 'd.ticket.description' <<<"$SHOW" 2>/dev/null)" \
   && ok "the finding names the planted god-file (src/legacy.js)" \
   || fail "description does not name src/legacy.js"
 AC_N="$(echo "$SHOW" | jget '(d.acceptanceCriteria||[]).length' 2>/dev/null)"
 AC_CMD="$(echo "$SHOW" | jget '((d.acceptanceCriteria||[])[0]||{}).check_command || ""' 2>/dev/null)"
 [ "$AC_N" = "1" ] && ok "the ticket carries exactly one acceptance criterion (the oracle)" || fail "expected 1 AC, found $AC_N"
 [ -n "$AC_CMD" ] && ok "the oracle is machine-checkable: check_command='$AC_CMD'" || fail "the oracle criterion has no check_command"
-echo "$SHOW" | jget '((d.acceptanceCriteria||[])[0]||{}).text' 2>/dev/null | grep -qi 'behaviour-preserving' \
+grep -qi 'behaviour-preserving' <<<"$(jget '((d.acceptanceCriteria||[])[0]||{}).text' <<<"$SHOW" 2>/dev/null)" \
   && ok "the criterion is the behaviour-preserving oracle" || fail "unexpected criterion text"
 
 # ── tick 2: the runner delivers the promoted ticket with the stub worker ──────
 OUT2="$(GAFFER_MAINTENANCE=0 run_tick)"
-echo "$OUT2" | grep -q '^TICK_RESULT=worked$' \
+grep -q '^TICK_RESULT=worked$' <<<"$OUT2" \
   && ok "tick 2 → TICK_RESULT=worked (the lane's ticket was claimed and delivered)" \
   || fail "tick 2 expected worked, got: $(echo "$OUT2" | grep '^TICK_RESULT=' || echo '<none>')  (log tail: $(tail -4 "$GAFFER_DATA/factory.log" | tr '\n' '|'))"
 SHOW2="$(wg ticket show "$NUM" 2>/dev/null)"
@@ -150,7 +150,7 @@ AC_BY="$(echo "$SHOW2" | jget '((d.acceptanceCriteria||[])[0]||{}).verified_by |
 
 # ── tick 3: idle again → the same finding dedupes against the open ticket ─────
 OUT3="$(run_tick)"
-echo "$OUT3" | grep -qE '^TICK_RESULT=(maintenance_ran|no_work)$' \
+grep -qE '^TICK_RESULT=(maintenance_ran|no_work)$' <<<"$OUT3" \
   && ok "tick 3 (nothing ready) → lane ran without drafting ($(echo "$OUT3" | grep '^TICK_RESULT=' | cut -d= -f2))" \
   || fail "tick 3 expected maintenance_ran/no_work, got: $(echo "$OUT3" | grep '^TICK_RESULT=' || echo '<none>')"
 [ "$(tickets_titled)" = "1" ] && ok "still exactly one tech-debt ticket (the open finding deduped)" || fail "expected 1 tech-debt ticket after tick 3, found $(tickets_titled)"

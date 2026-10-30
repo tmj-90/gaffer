@@ -83,7 +83,7 @@ print(c.execute("SELECT count(*) FROM ticket_claims tc JOIN tickets t ON t.id=tc
 PY
 }
 on_default() {  # $1 relative path, $2 marker → 0 if the marker is on the default branch tip
-  git -C "$REPO" show "main:$1" 2>/dev/null | grep -q "$2"
+  grep -q "$2" <<<"$(git -C "$REPO" show "main:$1" 2>/dev/null)"
 }
 
 # ── A real on-disk git repo: main + a passing test command ────────────────────

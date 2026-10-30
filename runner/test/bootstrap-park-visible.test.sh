@@ -110,7 +110,7 @@ gaffer_release_delivery blocked "bootstrap failed (rc=1) — scaffold left at /t
 [ "$(status_of "$NUM")" = "blocked" ] \
   && ok "AC1: bootstrap failure park landed #$NUM in blocked (was refining — invisible)" \
   || fail "AC1: #$NUM is '$(status_of "$NUM")' (want blocked)"
-printf '%s' "$(feedback_of "$NUM")" | grep -q 'bootstrap_failed' \
+grep -q 'bootstrap_failed' <<<"$(feedback_of "$NUM")" \
   && ok "AC2: last_review_feedback carries code=bootstrap_failed (card shows WHY)" \
   || fail "AC2: last_review_feedback lacks bootstrap_failed (got '$(feedback_of "$NUM")')"
 [ "$(blocked_events "$NUM" bootstrap_failed)" -ge 1 ] 2>/dev/null \
@@ -147,7 +147,7 @@ if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK"; then
 else
   ok "no bootstrap failure park targets refining any more"
 fi
-grep -c 'bootstrap_failed' "$TICK" | grep -q '^4$' \
+[ "$(grep -c 'bootstrap_failed' "$TICK")" = 4 ] \
   && ok "each bootstrap park carries the structured bootstrap_failed reason code" \
   || fail "expected the bootstrap_failed reason code on all 4 parks (found $(grep -c 'bootstrap_failed' "$TICK"))"
 # The minimalism lens must stay a FLAG (needs_human_review), not a park — lock that in so a

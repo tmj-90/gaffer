@@ -94,7 +94,7 @@ gaffer_repo_active_unmerged_branches() {
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     if [ -n "$num" ]; then
       [ -n "$self" ] && [ "$num" = "$self" ] && continue          # own branch: reused, not added
-      [ -n "$parked" ] && printf '%s\n' "$parked" | grep -qxF "$num" && continue  # parked: not in-flight
+      [ -n "$parked" ] && grep -qxF -- "$num" <<<"$parked" && continue  # parked: not in-flight
     fi
     count=$((count + 1))
   done <<< "$names"
@@ -133,7 +133,7 @@ gaffer_sweep_abandoned_branches() {
   # bash-3.2-safe at runtime.
   while IFS= read -r b; do
     [ -n "$b" ] || continue
-    printf '%s\n' "$merged" | grep -qxF "$b" && continue   # merged → not our job
+    grep -qxF -- "$b" <<<"$merged" && continue   # merged → not our job
     num="$(printf '%s' "$b" | sed -nE 's#^gaffer/ticket-([0-9]+).*#\1#p')"
     [ -n "$num" ] || continue
     tstatus="$(_bp_wg_show "$num" 2>/dev/null | node "$_GAFFER_JSON_TOOL" ticket-status 2>/dev/null)"

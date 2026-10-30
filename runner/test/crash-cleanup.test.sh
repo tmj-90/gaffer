@@ -267,7 +267,7 @@ exit 7
 EARLY
 early_err="$(bash "$WORK/early.sh" 2>&1 >/dev/null)"; early_rc=$?
 [ "$early_rc" -eq 7 ] && ok "early crash trap preserves the original exit code (7)" || fail "early crash trap changed the exit code (got $early_rc)"
-if printf '%s' "$early_err" | grep -qiE 'unbound variable|WT_ROWS:|gaffer_cleanup_worktrees: command not found'; then
+if grep -qiE 'unbound variable|WT_ROWS:|gaffer_cleanup_worktrees: command not found' <<<"$early_err"; then
   fail "early trap hit an unbound-variable / undefined-helper error: $early_err"
 else
   ok "early trap runs with no unbound-variable / undefined-helper error"

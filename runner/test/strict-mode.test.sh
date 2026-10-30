@@ -74,7 +74,7 @@ else
   DOCKER_ERR="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>&1 >/dev/null)"
   DOCKER_OUT="$(SANDBOX_PROVIDER=docker sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
   [ -z "$DOCKER_OUT" ] && ok "provider 'docker' (no daemon) echoes empty prefix + degrades" || fail "provider 'docker' (no daemon) should echo nothing (got: $DOCKER_OUT)"
-  echo "$DOCKER_ERR" | grep -q "daemon unavailable" && ok "provider 'docker' (no daemon) warns non-fatally" || fail "provider 'docker' (no daemon) should warn on stderr"
+  grep -q "daemon unavailable" <<<"$DOCKER_ERR" && ok "provider 'docker' (no daemon) warns non-fatally" || fail "provider 'docker' (no daemon) should warn on stderr"
 fi
 
 # The former `lima` stub is gone: it is now an UNKNOWN provider → empty prefix + an
@@ -82,7 +82,7 @@ fi
 LIMA_ERR="$(SANDBOX_PROVIDER=lima sandbox_wrap_cmd "$WORKTREE" "" 2>&1 >/dev/null)"
 LIMA_OUT="$(SANDBOX_PROVIDER=lima sandbox_wrap_cmd "$WORKTREE" "" 2>/dev/null)"
 [ -z "$LIMA_OUT" ] && ok "removed provider 'lima' echoes empty prefix (unknown)" || fail "provider 'lima' should echo nothing (got: $LIMA_OUT)"
-echo "$LIMA_ERR" | grep -q "unknown provider" && ok "removed provider 'lima' warns as an unknown provider" || fail "provider 'lima' should warn 'unknown provider' (got: $LIMA_ERR)"
+grep -q "unknown provider" <<<"$LIMA_ERR" && ok "removed provider 'lima' warns as an unknown provider" || fail "provider 'lima' should warn 'unknown provider' (got: $LIMA_ERR)"
 
 WRAP="$(SANDBOX_PROVIDER=sandbox-exec sandbox_wrap_cmd "$WORKTREE" "")"
 case "$WRAP" in

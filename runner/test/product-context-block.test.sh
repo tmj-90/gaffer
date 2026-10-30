@@ -51,7 +51,7 @@ CNT_PC="$(grep -c '^\${i.productContextBlock}$' "$SEAM" 2>/dev/null || echo 0)"
 [ "$CNT_PC" = "2" ] \
   && ok "PRODUCT_CONTEXT_BLOCK injected into both delivery prompts (x$CNT_PC)" \
   || fail "PRODUCT_CONTEXT_BLOCK not injected into both prompts (found $CNT_PC, want 2)"
-if grep -A1 '^\${i.fileCardsBlock}$' "$SEAM" | grep -q '^\${i.productContextBlock}$'; then
+if grep -q '^\${i.productContextBlock}$' <<<"$(grep -A1 '^\${i.fileCardsBlock}$' "$SEAM")"; then
   ok "product-context is injected AFTER the file-cards block"
 else
   fail "product-context is not injected immediately after the file-cards block"
@@ -122,7 +122,7 @@ else
   # FINDING 14: the "[kind] title — summary" separator must be a REAL em dash,
   # never the mojibake "â€”" the old "\xe2\x80\x94" Python byte-escape produced
   # in every product-intent line injected into agent prompts.
-  if printf '%s' "$BLOCK" | grep -q "$(printf '\xc3\xa2')"; then
+  if grep -q "$(printf '\xc3\xa2')" <<<"$BLOCK"; then
     fail "product-context block contains mojibake bytes (\\xc3\\xa2 — the old â€” em-dash bug)"
   else
     ok "product-context block carries no mojibake bytes"

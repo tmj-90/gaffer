@@ -82,7 +82,7 @@ if [ -f "$CLI" ]; then
   DB="$WORK/d.sqlite"
   node "$CLI" --db "$DB" init >/dev/null 2>&1
   OUT="$(node "$CLI" --db "$DB" ticket create -t "budgeted" --budget 1.5 2>/dev/null)"
-  echo "$OUT" | grep -q '"delivery_budget_usd": *1.5' \
+  grep -q '"delivery_budget_usd": *1.5' <<<"$OUT" \
     && ok "wg ticket create --budget surfaces delivery_budget_usd on the ticket" \
     || fail "ticket create --budget did not surface the field ($OUT)"
 else

@@ -100,14 +100,14 @@ grep -q "^HOME=$HOME\$" "$DUMP" && ok "HOME passed (so ~/.npmrc cafile applies)"
 echo "== 7: preflight.sh reports the probe =="
 echo ok > "$MODE"
 OUT="$(bash "$RUNNER_DIR/preflight.sh" 2>&1)"
-printf '%s\n' "$OUT" | grep -q 'npm registry reachable from the agent env' && ok "preflight ✓ line on success" || fail "preflight success line missing"
+grep -q 'npm registry reachable from the agent env' <<<"$OUT" && ok "preflight ✓ line on success" || fail "preflight success line missing"
 echo tls > "$MODE"
 OUT="$(bash "$RUNNER_DIR/preflight.sh" 2>&1)"
-printf '%s\n' "$OUT" | grep -q 'npm registry UNREACHABLE from the agent env (SELF_SIGNED_CERT_IN_CHAIN)' && ok "preflight ✗ line names the code" || fail "preflight failure line missing: $(printf '%s\n' "$OUT" | grep -i registry)"
-printf '%s\n' "$OUT" | grep -q 'NODE_EXTRA_CA_CERTS' && ok "preflight failure line carries the fix hint" || fail "preflight hint missing"
+grep -q 'npm registry UNREACHABLE from the agent env (SELF_SIGNED_CERT_IN_CHAIN)' <<<"$OUT" && ok "preflight ✗ line names the code" || fail "preflight failure line missing: $(printf '%s\n' "$OUT" | grep -i registry)"
+grep -q 'NODE_EXTRA_CA_CERTS' <<<"$OUT" && ok "preflight failure line carries the fix hint" || fail "preflight hint missing"
 echo ok > "$MODE"
 OUT="$(GAFFER_REGISTRY_PROBE=0 bash "$RUNNER_DIR/preflight.sh" 2>&1)"
-printf '%s\n' "$OUT" | grep -q 'npm registry probe skipped (skipped)' && ok "preflight ! line when skipped" || fail "preflight skipped line missing"
+grep -q 'npm registry probe skipped (skipped)' <<<"$OUT" && ok "preflight ! line when skipped" || fail "preflight skipped line missing"
 
 echo "== 8: WIRING — tick.sh gates the bootstrap before spawning =="
 TICK="$RUNNER_DIR/tick.sh"
@@ -153,14 +153,14 @@ JS
         DRY_RUN=0 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=0 GAFFER_TESTING=0 GAFFER_MAINTENANCE=0 \
         STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_TICK_TIMEOUT=120 GAFFER_REGISTRY_PROBE_TIMEOUT=5 \
         ${BOUND[@]+"${BOUND[@]}"} bash "$RUNNER_DIR/tick.sh" 2>&1)"
-  printf '%s' "$OUT" | grep -q 'BOOTSTRAP: #7 parked before spawning — environment: the npm registry is unreachable from the agent env (SELF_SIGNED_CERT_IN_CHAIN)' \
+  grep -q 'BOOTSTRAP: #7 parked before spawning — environment: the npm registry is unreachable from the agent env (SELF_SIGNED_CERT_IN_CHAIN)' <<<"$OUT" \
     && ok "tick logs the park with the npm error code" || fail "no park line (got: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|TICK_RESULT|registry' | tail -4 | tr '\n' ' ' | cut -c1-400))"
   grep -q '"runner-release"' "$WG_CALLS" && grep -q '"blocked"' "$WG_CALLS" && grep -q 'env_registry_unreachable' "$WG_CALLS" \
     && ok "claim released to blocked with reason code env_registry_unreachable (the card says why)" || fail "release call missing: $(grep -c . "$WG_CALLS") wg calls"
   grep -q 'NODE_EXTRA_CA_CERTS' "$WG_CALLS" && ok "the fix hint rides on the release reason" || fail "hint missing from the release"
   [ ! -e "$MARKER" ] && ok "the agent was NEVER spawned (zero model calls)" || fail "stub claude ran despite the failed probe"
   [ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created (gate runs before gaffer_bootstrap_init)" || fail "repo dir was created"
-  printf '%s' "$OUT" | grep -q 'TICK_RESULT=error' && ok "tick result is error (never a silent no_work)" || fail "unexpected tick result: $(printf '%s' "$OUT" | grep TICK_RESULT)"
+  grep -q 'TICK_RESULT=error' <<<"$OUT" && ok "tick result is error (never a silent no_work)" || fail "unexpected tick result: $(printf '%s' "$OUT" | grep TICK_RESULT)"
   echo ok > "$MODE"
 else
   echo "  skip (crew not built or git missing)"

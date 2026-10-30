@@ -91,8 +91,8 @@ run_gaffer() {
 echo "== AC1: qrencode present → QR of the URL WITH token embedded =="
 out_present="$(run_gaffer "$WORK/data-present" "$FAKES:$QRDIR:$PATH" --lan)"; rc_present=$?
 if [ "$rc_present" -eq 0 ] \
-   && printf '%s' "$out_present" | grep -qF "$QRMARK" \
-   && printf '%s' "$out_present" | grep -Eq 'http://[^ ]+:8787/\?token=.+'; then
+   && grep -qF "$QRMARK" <<<"$out_present" \
+   && grep -Eq 'http://[^ ]+:8787/\?token=.+' <<<"$out_present"; then
   ok "QR emitted encoding http://<LAN>:8787/?token=<TOK>"
 else
   fail "expected a QR of the token-embedded URL (rc=$rc_present)"
@@ -104,9 +104,9 @@ out_absent="$(run_gaffer "$WORK/data-absent" "$FAKES:$NOQR" --lan)"; rc_absent=$
 # FAKES supplies fake node/curl only (no qrencode); NOQR supplies coreutils minus
 # qrencode. So `command -v qrencode` must fail and the fallback prints.
 if [ "$rc_absent" -eq 0 ] \
-   && printf '%s' "$out_absent" | grep -q "token:" \
-   && ! printf '%s' "$out_absent" | grep -qF "$QRMARK" \
-   && ! printf '%s' "$out_absent" | grep -qiE 'command not found|qrencode.*not found|no such file'; then
+   && grep -q "token:" <<<"$out_absent" \
+   && ! grep -qF "$QRMARK" <<<"$out_absent" \
+   && ! grep -qiE 'command not found|qrencode.*not found|no such file' <<<"$out_absent"; then
   ok "fallback printed the token, exit 0, no qrencode error"
 else
   fail "absent-qrencode path did not degrade gracefully (rc=$rc_absent)"

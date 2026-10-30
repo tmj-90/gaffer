@@ -113,10 +113,10 @@ else BOUND=(); fi
 
 echo "== NEG: an unwired settings template → the bootstrap agent is NOT launched =="
 OUT="$(run_tick CLAUDE_SETTINGS="$UNWIRED")"
-printf '%s' "$OUT" | grep -q 'SAFETY: agent-env install failed for bootstrap #7' \
+grep -q 'SAFETY: agent-env install failed for bootstrap #7' <<<"$OUT" \
   && ok "tick logs the SAFETY refusal for the bootstrap install" \
   || fail "no SAFETY refusal logged (got: $(printf '%s' "$OUT" | grep -E 'SAFETY|BOOTSTRAP|TICK_RESULT' | tail -5 | tr '\n' ' '))"
-printf '%s' "$OUT" | grep -q 'TICK_RESULT=error' \
+grep -q 'TICK_RESULT=error' <<<"$OUT" \
   && ok "tick yields TICK_RESULT=error (fail closed, not a silent launch)" \
   || fail "expected TICK_RESULT=error (got: $(printf '%s' "$OUT" | grep TICK_RESULT= || echo none))"
 [ ! -f "$MARKER" ] \
@@ -125,7 +125,7 @@ printf '%s' "$OUT" | grep -q 'TICK_RESULT=error' \
 [ ! -e "$B_DIR/.claude/settings.json" ] \
   && ok "no unwired settings.json survives in the new repo" \
   || fail "an unwired settings.json was left in $B_DIR (the agent could load it)"
-! printf '%s' "$OUT" | grep -q 'bootstrap delivery for #7 finished' \
+! grep -q 'bootstrap delivery for #7 finished' <<<"$OUT" \
   && ok "the tick never reached the bootstrap delivery step" \
   || fail "the tick continued past the refused install"
 grep -q '"runner-release","7","--to","ready"' "$WG_CALLS" \
@@ -146,7 +146,7 @@ OUT="$(run_tick CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json")"
 [ -f "$WIRED" ] \
   && ok "at spawn time the new repo's settings.json named PreToolUse + the resolved safety-hook path (verified wiring)" \
   || fail "the agent saw no wired settings.json in $B_DIR at spawn time"
-! printf '%s' "$OUT" | grep -q 'SAFETY: agent-env install failed' \
+! grep -q 'SAFETY: agent-env install failed' <<<"$OUT" \
   && ok "no SAFETY refusal on the wired template" \
   || fail "the wired template was refused"
 

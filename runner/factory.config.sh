@@ -1780,7 +1780,9 @@ gaffer_lite_trivial_reason() {
   case "$_files" in '' | *[!0-9]*) _files=999999 ;; esac
   [ "$_lines" -le "$_maxl" ] || { printf 'nontrivial:lines=%s>%s\n' "$_lines" "$_maxl"; return 0; }
   [ "$_files" -le "$_maxf" ] || { printf 'nontrivial:files=%s>%s\n' "$_files" "$_maxf"; return 0; }
-  if printf '%s\n' "$_paths" | grep -qE "$_re"; then printf 'nontrivial:sensitive-path\n'; return 0; fi
+  # Here-string, not `printf | grep -q`: under pipefail grep's early exit can SIGPIPE
+  # the printf and turn this MATCH into a miss — a sensitive diff called "trivial".
+  if grep -qE -- "$_re" <<<"$_paths"; then printf 'nontrivial:sensitive-path\n'; return 0; fi
   printf 'trivial\n'
 }
 
@@ -1832,7 +1834,7 @@ gaffer_needs_security_review() {
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
   _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}}"
   _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
-  if printf '%s\n' "$_paths" | grep -qE "$_re"; then
+  if grep -qE -- "$_re" <<<"$_paths"; then   # here-string: no SIGPIPE false miss under pipefail
     GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"
     return 0
   fi
@@ -1873,8 +1875,8 @@ gaffer_review_verdict() {
     esac
   else
     # FALLBACK (no structured line): the legacy free-text grep — still fail-closed.
-    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*APPROVE" && _verdict=approve
-    printf '%s' "$_result" | grep -qiE "RECOMMEND[ _-]*CHANGES" && _verdict=changes
+    grep -qiE "RECOMMEND[ _-]*APPROVE" <<<"$_result" && _verdict=approve
+    grep -qiE "RECOMMEND[ _-]*CHANGES" <<<"$_result" && _verdict=changes
   fi
   printf '%s\n' "$_verdict"
 }

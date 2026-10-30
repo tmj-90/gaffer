@@ -21,6 +21,9 @@
 #   PARKED-4  fail-safe — if the parked-status lookup fails, every branch still
 #             counts (a lookup failure never opens the floodgates)
 #   PARKED-5  a branch with no derivable ticket number always counts (fail-safe)
+#   CANCELLED-1 won't-do (cancelled) tickets' KEPT delivery branches do NOT count:
+#             three won't-dos on delivered work must not leave the repo in
+#             backpressure for good (the sweep keeps recorded artifacts on purpose)
 #
 # Zero deps beyond git + python3. Run: bash test/backpressure.test.sh
 # =====================================================================
@@ -326,6 +329,55 @@ read -r PB PR PC <<< "$(GAFFER_WG_LIST_CMD="$WORK/wg_list_parked.sh" gaffer_repo
 [ "$PB" = "3" ] \
   && ok "unmappable gaffer/* branch counts (fail-safe) → branches=3" \
   || fail "unmappable branch handling wrong (got $PB, expected 3)"
+
+echo "== CANCELLED-1: won't-do tickets' kept delivery branches must NOT starve the repo =="
+# Three DELIVERED tickets marked won't do (cancelled). Each branch is a recorded
+# delivery artifact, so the abandoned sweep keeps it (never nuke recorded work) —
+# and before the fix every one still counted toward the branch cap, so a new ready
+# ticket was skipped by BACKPRESSURE on every tick until a human deleted branches.
+CREPO="$WORK/cancelledrepo"
+git init -q -b main "$CREPO"
+git -C "$CREPO" config user.email gaffer@test; git -C "$CREPO" config user.name gaffer-test
+printf 'base\n' > "$CREPO/f.txt"; git -C "$CREPO" add -A && git -C "$CREPO" commit -q -m base
+for n in 2 3 4; do
+  git -C "$CREPO" checkout -q -b "gaffer/ticket-$n-wontdo" main
+  printf 'work %s\n' "$n" >> "$CREPO/f.txt"; git -C "$CREPO" commit -q -am "work $n"
+done
+git -C "$CREPO" checkout -q main
+cat > "$WORK/wg_list_cancelled.sh" <<'EOF2'
+#!/usr/bin/env bash
+case "$1" in
+  cancelled) echo '[{"number":2},{"number":3},{"number":4}]' ;;
+  *)         echo '[]' ;;
+esac
+EOF2
+cat > "$WORK/wg_show_cancelled.sh" <<'EOF2'
+#!/usr/bin/env bash
+echo '{"ticket":{"status":"cancelled"},"repositories":[]}'
+EOF2
+cat > "$WORK/wg_deliv_recorded.sh" <<'EOF2'
+#!/usr/bin/env bash
+echo "[{\"branch_name\":\"gaffer/ticket-$1-wontdo\"}]"
+EOF2
+chmod +x "$WORK/wg_list_cancelled.sh" "$WORK/wg_show_cancelled.sh" "$WORK/wg_deliv_recorded.sh"
+SWEPTC="$(GAFFER_WG_LIST_CMD="$WORK/wg_list_cancelled.sh" GAFFER_WG_SHOW_CMD="$WORK/wg_show_cancelled.sh" \
+          GAFFER_WG_DELIVERIES_CMD="$WORK/wg_deliv_recorded.sh" gaffer_sweep_abandoned_branches "$CREPO" main)"
+[ -z "$SWEPTC" ] && [ "$(git -C "$CREPO" for-each-ref 'refs/heads/gaffer/*' | grep -c .)" = "3" ] \
+  && ok "the sweep still KEEPS the three recorded delivery branches (no data loss)" \
+  || fail "the sweep deleted recorded delivery work: '$SWEPTC'"
+read -r PB PR PC <<< "$(GAFFER_WG_LIST_CMD="$WORK/wg_list_cancelled.sh" gaffer_repo_pressure "$CREPO" main cancelledrepo 5)"
+[ "$PB" = "0" ] \
+  && ok "3 cancelled (won't do) branches → active branch pressure 0" \
+  || fail "cancelled branches still counted (branches=$PB) — the repo is in backpressure for good"
+if gaffer_repo_in_backpressure "${PB:-9}" "${PR:-0}" "${PC:-0}"; then
+  fail "a new ready ticket is SKIPPED by backpressure from won't-do branches"
+else
+  ok "a new ready ticket is claimable after three won't-dos on delivered work"
+fi
+# Fail-safe unchanged: a failed cancelled lookup excludes nothing.
+read -r PB PR PC <<< "$(GAFFER_WG_LIST_CMD="/bin/false" gaffer_repo_pressure "$CREPO" main cancelledrepo 5)"
+[ "$PB" = "3" ] && ok "cancelled-status lookup failure → the branches still count (fail-safe)" \
+  || fail "a failed lookup dropped cancelled branches from the count (got $PB)"
 
 # PROOF: tick.sh passes the candidate ticket to the pressure probe (self-bypass)
 # and the stale "one extra tick" claim is gone from the sweep guard comment.

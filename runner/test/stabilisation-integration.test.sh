@@ -11,6 +11,10 @@
 #            calls before submitting) REJECTS a branch carrying a planted bad
 #            artifact (a self-referential node_modules symlink + a copied src
 #            tree), proving the delivery would be parked, not submitted.
+#   PROOF C  WON'T DO: three DELIVERED tickets marked won't do (cancelled) keep
+#            their branches (recorded delivery artifacts — the abandoned sweep
+#            never deletes those), yet a new ready ticket in the same repo is
+#            still delivered: cancelled branches do not hold the branch cap.
 #
 # Requires the built dispatch CLI. Run: bash test/stabilisation-integration.test.sh
 # =====================================================================
@@ -128,6 +132,43 @@ grep -qi 'copied source tree' <<<"$HY_OUT" \
 grep -q 'HYGIENE: delivery for #\$NUM is NOT hygienic' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh parks (does not submit) a non-hygienic delivery" \
   || fail "tick.sh missing the hygiene park path"
+
+echo "== PROOF C: won't-do x3 on delivered work does not starve the repo =="
+# Start from a repo with no outstanding branches (drop PROOF A/B's fixtures).
+for b in gaffer/ticket-pre-1 gaffer/ticket-pre-2 gaffer/ticket-pre-3 gaffer/ticket-bad; do
+  git -C "$REPO" branch -D "$b" >/dev/null 2>&1 || true
+done
+WONT=()
+for i in 1 2 3; do
+  _wn="$(WG ticket create -t "Delivered then abandoned $i" -p solo_loose 2>&1 | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).ticket.number))')"
+  WG repo link "$_wn" repo >/dev/null 2>&1
+  git -C "$REPO" checkout -q -b "gaffer/ticket-$_wn-wontdo" main
+  printf 'delivered %s\n' "$i" >> "$REPO/README.md"
+  git -C "$REPO" commit -q -am "delivered $i"
+  WG delivery-artifact "$_wn" --branch "gaffer/ticket-$_wn-wontdo" --as system >/dev/null 2>&1
+  WG ticket repo-delivery record "$_wn" repo --branch "gaffer/ticket-$_wn-wontdo" >/dev/null 2>&1
+  WG wont-do "$_wn" --reason "superseded" >/dev/null 2>&1
+  WONT+=("$_wn")
+done
+git -C "$REPO" checkout -q main
+_ncancel=0
+for _wn in "${WONT[@]}"; do
+  [ "$(WG ticket show "$_wn" 2>/dev/null | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>console.log(JSON.parse(s).ticket.status))')" = "cancelled" ] && _ncancel=$((_ncancel + 1))
+done
+[ "$_ncancel" = "3" ] && ok "fixture: 3 delivered tickets are won't do (cancelled)" || fail "fixture: only $_ncancel of 3 tickets cancelled"
+rm -f "$WORK/.gaffer/.backpressure-repos"
+OUT_WD="$(run_tick MAX_OPEN_AGENT_BRANCHES_PER_REPO=3)"
+_kept="$(git -C "$REPO" for-each-ref --format='%(refname:short)' 'refs/heads/gaffer/*' | grep -c wontdo)"
+[ "$_kept" = "3" ] && ok "the three won't-do branches are KEPT (recorded delivery artifacts, never swept)" \
+  || fail "expected the 3 won't-do branches kept, found $_kept"
+if grep -q 'BACKPRESSURE: skipping ready' <<<"$OUT_WD"; then
+  fail "the new ready #$TNUM was skipped by BACKPRESSURE from won't-do branches: $(grep BACKPRESSURE <<<"$OUT_WD" | head -1)"
+else
+  ok "no BACKPRESSURE skip from three won't-do branches"
+fi
+grep -q "delivering #$TNUM" <<<"$OUT_WD" \
+  && ok "the new ready ticket #$TNUM still delivers at the default cap of 3" \
+  || fail "expected #$TNUM to deliver (got: $(grep -E 'delivering|BACKPRESSURE|TICK_RESULT' <<<"$OUT_WD" | tr '\n' '|'))"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

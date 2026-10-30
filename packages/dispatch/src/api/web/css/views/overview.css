@@ -79,17 +79,27 @@
   }
 
   /* --- team sheet | tactics board ----------------------------------------- */
+  /* The two columns end level: the shorter one's last panel takes up the
+     slack (the board's pitch area grows, or the squad card under the sheet),
+     so no empty band opens beside the taller one. */
   .ov-main {
     display: grid;
     grid-template-columns: 440px minmax(0, 1fr);
     gap: var(--s5);
-    align-items: start;
+    align-items: stretch;
   }
   .ov-left {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
     gap: var(--s5);
     min-width: 0;
+  }
+  /* Beside the board (the wide layout) the squad card under the sheet takes
+     the column's slack; stacked, the column keeps its natural height. */
+  @media (min-width: 1181px) {
+    .ov-left:has(> :nth-child(2)) {
+      grid-template-rows: auto 1fr;
+    }
   }
   /* The idle squad block keeps the column's edges (its span-3 would add columns). */
   .ov-left > * {
@@ -101,6 +111,7 @@
     display: grid;
     gap: 0;
     padding-bottom: 0;
+    align-content: start;
   }
   .what-i-own > .empty-state {
     font: 600 var(--t20) / 1.35 var(--f-text);
@@ -174,6 +185,29 @@
     color: var(--ink-2);
     overflow-wrap: anywhere;
   }
+  /* A long body (an intake's eight questions) shows four lines; More opens it. */
+  .own-reason.is-clamped {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4;
+    line-clamp: 4;
+    overflow: hidden;
+  }
+  .own-more {
+    justify-self: start;
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--ink);
+    font: 700 var(--t14) / 1.2 var(--f-text);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .own-more[hidden] {
+    display: none;
+  }
   .own-meta {
     display: flex;
     flex-wrap: wrap;
@@ -218,8 +252,19 @@
   }
 
   /* --- tactics board -------------------------------------------------------- */
+  /* A column: the pitch area takes the row's spare height with the pitch
+     centred in it; the touchline (off the pitch, bench) and the key stay at
+     the bottom. The pitch is never stretched: it keeps its drawn proportions. */
   .tactics {
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .tactics > .pitch-wrap {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
   }
   .tactics-head {
     display: flex;
@@ -1109,6 +1154,9 @@
     }
   }
   @media (max-width: 760px) {
+    .own-more {
+      min-height: 44px;
+    }
     .scoreboard-in {
       padding-top: 14px;
       padding-bottom: 16px;

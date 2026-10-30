@@ -94,6 +94,61 @@
     --lane-a: light-dark(#ddebda, #1c2e22); /* board lanes as mown stripes */
     --lane-b: light-dark(#d1e3ce, #203527);
 
+    /* --- the factory floor (#/floor, drawings only) ------------------------
+       The stations keep their own hues (lifecycle stage, never status): blue
+       drafts, ochre stores, orange assembly, magenta inspection and loading,
+       teal test rig, green despatch, kraft parcels. Status stays with the
+       referee's cards (yellow needs you, red blocked/failed); robots wear the
+       club kit (--claret, --shirt-no) so a club's own colours reach them too. */
+    --fl-stage: light-dark(#d9e3e8, #121f33); /* behind the slab */
+    --fl-shade: light-dark(#0b1a2b, #000814); /* mixed in for the darker faces */
+    --fl-lift: #ffffff; /* mixed in for the lit faces */
+    --fl-draft: light-dark(#6e93e6, #7fa2f5);
+    --fl-ready: light-dark(#f0a830, #f5b651);
+    --fl-build: light-dark(#f26b2a, #ff8a4c);
+    --fl-inspect: light-dark(#d81b60, #ff5c9a);
+    --fl-test: light-dark(#1aa6b7, #3bc2d4);
+    --fl-done: light-dark(#3fa45b, #5cc46e);
+    --fl-ground: light-dark(#eef3f6, #1b2d45); /* the slab's top */
+    --fl-joint: light-dark(#d5e0e7, #243a57);
+    --fl-slab-l: light-dark(#9fb3c1, #0a1424);
+    --fl-slab-r: light-dark(#b9cad5, #122036);
+    --fl-yard: light-dark(#c5d1d8, #142339);
+    --fl-walk: light-dark(#e9b21c, #b88c1a);
+    --fl-wall: light-dark(#f7f9fa, #2e4462);
+    --fl-wall-f: light-dark(#e6ecf0, #263a55);
+    --fl-wall-s: light-dark(#ccd7de, #1d2e45);
+    --fl-roof: light-dark(#dce4e9, #2a3f5c);
+    --fl-glass: light-dark(#a8c3d3, #122033); /* an empty station's glass */
+    --fl-glass-lit: light-dark(#ffe3a6, #ffd27a); /* the station holds work */
+    --fl-belt: light-dark(#31404f, #0b1524);
+    --fl-belt-side: light-dark(#8b9caa, #3a506b);
+    --fl-roller: light-dark(#4a5b6b, #1e2f45);
+    --fl-kraft-t: light-dark(#e6c08a, #d9b27a);
+    --fl-kraft-f: light-dark(#cfa062, #b68a50);
+    --fl-kraft-s: light-dark(#b3833f, #946b35);
+    --fl-tape: light-dark(#f4e1bd, #e9d3a8);
+    --fl-flat-t: light-dark(#d9e5fa, #2d4675);
+    --fl-flat-f: light-dark(#b9cbee, #243b63);
+    --fl-flat-s: light-dark(#9db4e3, #1c3050);
+    --fl-flat-line: light-dark(#6e93e6, #8fb0ff);
+    --fl-bot-t: light-dark(#ffffff, #e6edf3);
+    --fl-bot-f: light-dark(#e9eef2, #c9d4de);
+    --fl-bot-s: light-dark(#c3cfd8, #9dacba);
+    --fl-bot-leg: light-dark(#52677a, #7d8ea0);
+    --fl-bot-visor: light-dark(#17283a, #08111c);
+    --fl-bot-eye: #7fe0ec;
+    --fl-shelf: light-dark(#d9e1e6, #3a506b);
+    --fl-post: light-dark(#52677a, #7d8ea0);
+    --fl-shutter: light-dark(#c4d0d8, #3a506b);
+    --fl-shutter-line: light-dark(#9fb0bc, #263a55);
+    --fl-jam-floor: light-dark(#f6d3cd, #4a2430);
+    --fl-hazard: light-dark(#f7c325, #f2c230); /* jam tape only */
+    --fl-hazard-ink: #1d2430;
+    --fl-lorry: light-dark(#2b7a3d, #3e9b52);
+    --fl-lorry-deck: light-dark(#7d8b97, #4d6079);
+    --fl-wheel: light-dark(#1d2430, #0b1524);
+
     /* --- referee's cards: status ------------------------------------------ */
     --yellow: #ffcc1f; /* needs you — fill only, ink on it 11.9:1 */
     --on-yellow: #0e1726;

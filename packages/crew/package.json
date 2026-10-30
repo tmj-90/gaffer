@@ -55,7 +55,7 @@
     "prepublishOnly": "npm run typecheck && npm run test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "commander": "^15.0.0",
     "dispatch": "workspace:*",
     "yaml": "^2.5.1",

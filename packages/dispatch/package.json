@@ -59,7 +59,7 @@
     "prepublishOnly": "npm run typecheck && npm run test"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "^12.10.0",
     "commander": "^15.0.0",
     "yaml": "^2.5.1",

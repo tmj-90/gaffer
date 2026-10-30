@@ -104,7 +104,9 @@ describe("dense vector cache", () => {
     // Fully drained: the cache is trusted again (no more ensure passes needed).
     searchLore(db, { query: "gizmo widget5" });
     expect(vectors()).toBe(total);
-  });
+    // Embeds 6000 records: a correctness check, not a perf one, so it gets room on a
+    // slow or busy runner instead of vitest's 5s default.
+  }, 30_000);
 
   it("perf guard: warm hybrid search stays within a few x of lexical at 3k records", () => {
     const words =

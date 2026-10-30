@@ -12,5 +12,13 @@
 # Review this list whenever dependencies are bumped; drop entries the moment the
 # advisory's patched version is reachable.
 
-# (No accepted advisories at present. The former vitest@2 / vite entries were retired
-# once every package moved to vitest >=3.2.6 — the condition they named.)
+# The former vitest@2 / vite entries were retired once every package moved to
+# vitest >=3.2.6, the condition they named.
+
+# zod: memory exhaustion when an array schema collects an issue for every failing
+# element (the $ZodArray core). Patched only in zod >=4.6.6; every 3.x release is
+# flagged because zod 3.25 ships that core under `zod/v4`. Our schemas are zod 3
+# and validate local input (stdio MCP from the factory's own agents, and the
+# dashboard API behind its token), with body-size limits applied first. DROP this
+# entry when the zod 4 migration lands (all three packages on zod >=4.6.6).
+GHSA-mrhx-c7xc-m3w5

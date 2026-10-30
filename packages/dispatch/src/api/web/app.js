@@ -3551,16 +3551,26 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     // A crowded cell packs tighter, then wraps into a second row.
     const zoneW = z.x1 - z.x0;
     const step0 = withAgent ? SH + (P ? 30 : 24) : 2.2 * R + (P ? 4 : 10);
-    const perRow = Math.max(1, Math.floor((P ? CH : zoneW) / step0));
+    // A phone's channel is narrow: counters squeeze side by side down to a
+    // shirt's width apart before they wrap, so a shirt never sits on the disc
+    // (and its ticket number) of the counter beside it.
+    const span = P ? CH - 8 : zoneW,
+      minStep = P ? (withAgent ? SH + 6 : 2 * R + 6) : step0;
+    const perRow = Math.max(1, Math.floor(span / minStep));
     const rows = Math.ceil(list.length / perRow);
+    const step = P ? Math.min(step0, span / Math.min(perRow, list.length)) : step0;
+    // Wrapped rows on a phone stagger across the channel, and sit a full
+    // counter apart when the stagger alone cannot clear a shirt.
+    const stagger = P && rows > 1 ? (perRow > 1 ? step / 2 : Math.min(SH + 6, span - SH)) : 0;
+    const rowStep = P ? (withAgent && stagger < SH ? SH + R : 2.4 * R) : 0;
     list.forEach((t, i) => {
       const row = Math.floor(i / perRow),
         col = i % perRow;
       const inRow = Math.min(perRow, list.length - row * perRow);
       let qx = (z.x0 + z.x1) / 2,
         qy = (c + 0.5) * CH;
-      const off = (col - (inRow - 1) / 2) * step0;
-      const roff = (row - (rows - 1) / 2) * (P ? 2.4 * R : Math.min(CH / rows, 2.4 * R));
+      const off = (col - (inRow - 1) / 2) * step + (row % 2 ? 0.5 : -0.5) * stagger;
+      const roff = (row - (rows - 1) / 2) * (P ? rowStep : Math.min(CH / rows, 2.4 * R));
       if (P) {
         qy += off;
         qx += roff;
@@ -3579,7 +3589,8 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   };
   const needs = new Set(f.items.map((i) => i.ticket?.id).filter(Boolean));
   const win = arrowWindow(f);
-  const shirtTop = (y) => y - R - SH * 0.925 + (P ? 11 : 9);
+  // On a phone the shirt sits a touch higher, so its hem clears the ticket number.
+  const shirtTop = (y) => y - R - SH * 0.925 + (P ? 3 : 9);
   const geo = new Map();
   for (const t of inPlay) {
     const [x, y] = T(...pos.get(t.id));
@@ -3687,6 +3698,22 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     [0, 1].map((i) => (1 - u) * (1 - v) * a[i] + ((1 - u) * v + u * (1 - v)) * b[i] + u * v * c[i]);
   const inAny = (p, cs) => cs.some((c) => Math.hypot(p[0] - c.x, p[1] - c.y) < c.r);
   const labelBoxes = obs.filter((o) => ["zl", "cl", "kit", "done"].includes(o.why));
+  // Where a move started: the cell's centre, or the nearest open turf in that
+  // cell when another counter stands there, so the tail never reads as that
+  // counter having moved.
+  const freeSpot = (st, repo, own) => {
+    const [cx, cy] = zoneCentre(st, repo),
+      z = PITCH_ZONES.find((x) => x.key === st);
+    const taken = allCircles.filter((c) => !own.includes(c)).map((c) => ({ ...c, r: c.r + 4 }));
+    const zw = z.x1 - z.x0;
+    const cands = [];
+    for (const u of [0, 0.3, -0.3, 0.42, -0.42])
+      for (const v of [0, 0.32, -0.32]) cands.push([cx + v * zw, cy + u * CH]);
+    cands.sort((p, q) => Math.hypot(p[0] - cx, p[1] - cy) - Math.hypot(q[0] - cx, q[1] - cy));
+    const onLabel = ([x, y]) =>
+      labelBoxes.some((o) => x > o.x0 - 8 && x < o.x1 + 8 && y > o.y0 - 8 && y < o.y1 + 8);
+    return cands.find((q) => !inAny(T(...q), taken) && !onLabel(T(...q))) || [cx, cy];
+  };
   const plans = [];
   for (const t of f.tickets) {
     const evs = (f.details.get(t.id)?.events || []).filter((e) => {
@@ -3713,7 +3740,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     });
     const far = (q) => q && Math.hypot(b[0] - q[0], b[1] - q[1]) >= 30;
     const onAt = froms.find((s) => ON_PITCH.has(s));
-    let a = onAt ? T(...zoneCentre(onAt, repo)) : null,
+    let a = onAt ? T(...freeSpot(onAt, repo, geo.get(t.id)?.circles || [])) : null,
       on = false;
     if (!far(a) && !done && froms.some((s) => s && !ON_PITCH.has(s))) {
       const here = PITCH_ZONES.find((z) => z.key === t.status);
@@ -3837,8 +3864,12 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     let n = 0;
     for (const o of obs)
       if (b.x0 < o.x1 + 3 && b.x1 > o.x0 - 3 && b.y0 < o.y1 + 3 && b.y1 > o.y0 - 3) n += 60;
+    // Chalk under a plate costs a little, but never enough on its own to send
+    // the plate off on a leader line: the arrows are re-routed round the plates.
+    let chalk = 0;
     for (const [qx, qy] of arrowPts)
-      if (qx > b.x0 - 5 && qx < b.x1 + 5 && qy > b.y0 - 5 && qy < b.y1 + 5) n += 4;
+      if (qx > b.x0 - 5 && qx < b.x1 + 5 && qy > b.y0 - 5 && qy < b.y1 + 5) chalk += 4;
+    n += Math.min(chalk, 48);
     if (b.x0 < pitchBox.x0 || b.x1 > pitchBox.x1 || b.y0 < pitchBox.y0 || b.y1 > pitchBox.y1)
       n += 400;
     return n;
@@ -3893,6 +3924,10 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
           { x0: x - R, y0: y + R + gap + 2 },
           { x0: x + R - w, y0: y + R + gap + 2 },
           { x0: x - w / 2, y0: top - gap - h },
+          // Over the shirt, flush with either side of it: a phone's pair of
+          // counters side by side leaves room above, not beside.
+          { x0: x - SH / 2, y0: top - gap - h },
+          { x0: x + SH / 2 - w, y0: top - gap - h },
           { x0: x + SH / 2 + gap, y0: top - 4 },
           { x0: x - SH / 2 - gap - w, y0: top - 4 },
         ].map((c) => ({ x0: c.x0, y0: c.y0, x1: c.x0 + w, y1: c.y0 + h }));
@@ -3907,6 +3942,28 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
           if (!hN) break;
         }
         let lead = null;
+        // A leader line that runs through another counter would tie the plate
+        // to the wrong ticket.
+        const others = obs.filter(
+          (o) =>
+            (o.why === "disc" || o.why === "shirt") &&
+            !(o.x0 <= x && o.x1 >= x && o.y0 <= y - 1 && o.y1 >= y - 1) &&
+            !(o.why === "shirt" && o.x0 === x - SH / 2),
+        );
+        const leadCrosses = (c) => {
+          const above = c.y1 < shirt.top + SH * 0.2;
+          const ox = x,
+            oy = above ? shirt.top + SH * 0.12 : y;
+          const tx = Math.min(Math.max(ox, c.x0), c.x1),
+            ty = Math.min(Math.max(oy, c.y0), c.y1);
+          let n = 0;
+          for (let j = 1; j < 12; j++) {
+            const px = ox + ((tx - ox) * j) / 12,
+              py = oy + ((ty - oy) * j) / 12;
+            if (others.some((o) => px > o.x0 && px < o.x1 && py > o.y0 && py < o.y1)) n += 60;
+          }
+          return n;
+        };
         if (bestHits >= 60) {
           let bestScore = bestHits * 1000;
           for (let gy = -5; gy <= 5; gy++)
@@ -3915,7 +3972,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
               c.x1 = c.x0 + w;
               c.y1 = c.y0 + h;
               const d = Math.hypot((c.x0 + c.x1) / 2 - x, (c.y0 + c.y1) / 2 - y);
-              const sc = hits(c) * 1000 + d;
+              const sc = (hits(c) + leadCrosses(c)) * 1000 + d;
               if (sc < bestScore) {
                 bestScore = sc;
                 best = c;
@@ -4478,7 +4535,7 @@ function wageSvg(f, W) {
     const v = spend.get(d),
       x = padL + gap / 2 + i * bw,
       today = d === todayKey,
-      w = bw - gap,
+      w = Math.max(1, bw - gap),
       cx = x + w / 2;
     if (v != null) {
       svg.append(
@@ -4541,7 +4598,9 @@ function wageBill(f) {
   let lastW = 0;
   const fit = () => {
     const w = Math.floor(host.clientWidth);
-    if (!w || Math.abs(w - lastW) < 2) return;
+    // A host caught mid-layout (narrower than the axis plus a few px a day)
+    // would draw negative bars; wait for its real width.
+    if (w < 160 || Math.abs(w - lastW) < 2) return;
     lastW = w;
     host.replaceChildren(wageSvg(f, w));
   };

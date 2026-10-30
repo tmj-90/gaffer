@@ -34,6 +34,15 @@ export const INERT_CONFIG_KEYS: readonly InertKey[] = [
   // Any per-repo override is a deliberate setting, so nothing counts as untouched.
   { path: "repos[].definition_of_done", scope: "unread", note: DOD_NOTE, untouched: [] },
   {
+    path: "repos[].typecheck_command",
+    scope: "unread",
+    note:
+      "the live typecheck DoD gate runs GAFFER_DOD_TYPECHECK_CMD, else the command " +
+      "auto-detected from the repo's package.json (a typecheck script); crew.yaml's " +
+      "per-repo command is not read",
+    untouched: [null],
+  },
+  {
     path: "hooks.enabled",
     scope: "mock-only",
     note: "hooks run only inside the mock `crew run` loop",

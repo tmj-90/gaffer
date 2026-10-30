@@ -9,14 +9,16 @@
 //
 // The note arrives on STDIN (it is free-form multi-line text — stdin avoids any
 // argv/shell-escaping risk). Diff stats + the changed-file list are argv; the
-// caps + enforce flag are read from the env (OVERSIZED_MAX_LINES / _FILES /
-// MINIMALISM_ENFORCE), same names + defaults as the bash.
+// caps + the note requirement are read from the env (OVERSIZED_MAX_LINES / _FILES
+// / MINIMALISM_REQUIRE_NOTE — the same knob tick.sh hard-fails a missing note on,
+// default 0 = flag), so the return code says what the live gate does.
 //
-// OUTPUT — three lines, matching the bash's THREE observable outputs so a caller
-// can reproduce all of them:
+// OUTPUT — four lines:
 //   line 1  the verdict token   (bash: echoed to stdout)
 //   line 2  the return code      (bash: the function's exit status)
 //   line 3  the reason           (bash: GAFFER_MINIMALISM_REASON)
+//   line 4  the oversized_diff reason when the diff is over a cap, whatever the
+//           verdict, else empty  (bash: GAFFER_MINIMALISM_OVERSIZED)
 // The reason is written as a latin1 Buffer (byte-preserving) so the note excerpt
 // stays byte-identical to the bash `cut -c` output.
 // =====================================================================
@@ -56,11 +58,11 @@ try {
     changed: flag(argv, "--changed"),
     maxLines: intOr(process.env.OVERSIZED_MAX_LINES, 400),
     maxFiles: intOr(process.env.OVERSIZED_MAX_FILES, 12),
-    enforce: (process.env.MINIMALISM_ENFORCE ?? "1") === "1",
+    enforce: (process.env.MINIMALISM_REQUIRE_NOTE ?? "0") === "1",
   });
-  // token + code + reason, each on its own line (reason as UTF-8 — it may carry
-  // the em-dash in the oversized-diff reason; the reason never contains a newline).
-  process.stdout.write(`${v.verdict}\n${v.code}\n${v.reason}\n`);
+  // token + code + reason + oversized, each on its own line (UTF-8 — the oversized
+  // reason carries an em-dash; neither reason ever contains a newline).
+  process.stdout.write(`${v.verdict}\n${v.code}\n${v.reason}\n${v.oversized ?? ""}\n`);
 } catch (err) {
   process.stderr.write(`minimalism: ${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(3);

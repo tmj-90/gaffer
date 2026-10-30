@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 135 |
+| Knobs with a runner default | 133 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
@@ -78,7 +78,7 @@ computed from other knobs at runtime.
 | `GAFFER_DOD_TESTS` | `1` |  | crew, runner | 1 = run the repo's test gate on every delivery; 0 skips it |
 | `GAFFER_DOD_LINT` | `1` |  | crew, runner | 1 = run the lint gate |
 | `GAFFER_DOD_TYPECHECK` | `1` |  | crew, runner | 1 = run the typecheck gate (auto-detected command) |
-| `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | runner | override the auto-detected typecheck command |
+| `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | crew, runner | override the auto-detected typecheck command |
 | `GAFFER_DOD_TIMEOUT` | `900` |  | crew, runner | wall-clock cap (seconds) per gate and per AC check command |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
@@ -132,8 +132,6 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `DISPATCH_PRODUCT_OWNER_CMD` | _derived_ (`node $RUNNER_DIR/bin/product-owner-run.mjs`) |  | dispatch, runner | NOTE on the DISPATCH_*_CMD defaults below: these are plain command STRINGS that Dispatch's parseCommand whitespace-splits. |
 | `DISPATCH_ONBOARD_CMD` | _derived_ (`node $RUNNER_DIR/bin/onboard-run.mjs`) |  | dispatch, runner | The dashboard Memory view's "Onboard a repo" button (POST /repos/onboard) spawns this command (detached, with DISPATCH_ONBOARD_REPO in its env naming the repo — a registered name/id OR a local path — to onboard). |
-| `DISPATCH_TESTER_CMD` | _derived_ (`node $RUNNER_DIR/bin/tester-run.mjs`) |  | dispatch, runner | BBT-001: the independent black-box tester runner. |
-| `DISPATCH_EPIC_FEATURE_CMD` | _derived_ (`node $RUNNER_DIR/bin/epic-feature.mjs`) |  | dispatch, runner | The BROWNFIELD epic → feature(`building`) hook. |
 | `GAFFER_AGENT_NAME` | `gaffer-factory` |  | runner | Factory identity + bookkeeping |
 | `GAFFER_AGENT_ID_FILE` | _derived_ (`$GAFFER_DATA/agent_id`) |  | runner |  |
 | `GAFFER_REVIEWER_ID_FILE` | _derived_ (`$GAFFER_DATA/agent_reviewer_id`) |  | runner | The runner's REVIEWER principal: a second, separately registered agent whose id the review pass presents on `review approve\|reject --as agent`. |
@@ -204,9 +202,9 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `HYGIENE_ENFORCE` | `1` | yes (boolean) | dispatch, runner | Reject deliveries that touch forbidden paths (node_modules, .claude/, factory internals). On by default. |
 | `HYGIENE_FORBIDDEN_PATHS` | `node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime. .terraform/` |  | crew, runner | Newline/space-separated glob fragments that, if ADDED or DELETED by the diff, fail the hygiene check. |
-| `MINIMALISM_ENFORCE` | `1` | yes (boolean) | crew, dispatch, runner | Flag oversized/sprawling diffs against the caps below, so a ticket ships a focused change. |
-| `OVERSIZED_MAX_LINES` | `400` | yes (int) | crew, dispatch, runner | A diff changing more than this many lines trips the minimalism check. |
-| `OVERSIZED_MAX_FILES` | `12` | yes (int) | crew, dispatch, runner | A diff touching more than this many files trips the minimalism check. |
+| `MINIMALISM_REQUIRE_NOTE` | `0` | yes (boolean) | crew, dispatch, runner | On: a delivery that records no smallest-change note goes back to rework instead of review. Off (default): it goes to review flagged needs_human_review. Oversized diffs are always flagged, never failed. |
+| `OVERSIZED_MAX_LINES` | `400` | yes (int) | crew, dispatch, runner | A diff changing more than this many lines is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the lines cap off). |
+| `OVERSIZED_MAX_FILES` | `12` | yes (int) | crew, dispatch, runner | A diff touching more than this many files is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the files cap off). |
 | `GAFFER_BOOTSTRAP_ROOT` | _derived_ (`$HOME/git`) |  | runner | parent dir new bootstrap repos are created under |
 | `MAX_OPEN_AGENT_BRANCHES_PER_REPO` | `3` | yes (int) | dispatch, runner | Ceiling on undelivered agent branches per repo — backpressure so work merges before more starts. |
 | `MAX_OPEN_AGENT_PRS_PER_REPO` | `3` | yes (int) | dispatch, runner | Ceiling on open agent-authored PRs per repo. |

@@ -1304,16 +1304,6 @@ gaffer_agent_env() {
 # Absolute path so the detached child resolves it.
 : "${DISPATCH_ONBOARD_CMD:=node $RUNNER_DIR/bin/onboard-run.mjs}"
 
-# BBT-001: the independent black-box tester runner. When GAFFER_TESTING is on and a
-# ticket is approved+testable, the dispatch state machine routes it in_review ->
-# in_testing; this command is the seam that assembles a CONTRACT-ONLY context (AC +
-# test_contract — never the diff) and would spawn the tester agent, recording the
-# pass/fail verdict back through dispatch. Mirrors DISPATCH_MERGE_CMD /
-# DISPATCH_ONBOARD_CMD: a fixed operator command, no shell, absolute path so the
-# detached child resolves it. The live `claude -p` tester is the documented
-# follow-up; the seam + context assembly + verdict→transition wiring are real today.
-: "${DISPATCH_TESTER_CMD:=node $RUNNER_DIR/bin/tester-run.mjs}"
-
 # The BROWNFIELD epic → feature(`building`) hook. POST /epics spawns this (detached,
 # no shell, request values as discrete argv) when every ticket of a just-created
 # epic targets ONE existing registered repo: bin/epic-feature.mjs adds that feature
@@ -1802,12 +1792,14 @@ fi
 # MUST match the library fallback in lib/hygiene.sh — keep the two in sync.
 : "${HYGIENE_FORBIDDEN_PATHS:=node_modules .crew/ *.events.jsonl .claude/ CLAUDE.factory.md .mcp.json mcp-runtime. .terraform/}"
 
-# (2) MINIMALISM hard post-condition. Every completed delivery MUST record a
+# (2) MINIMALISM post-condition. Every completed delivery should record a
 # smallest-change note (+ files/lines counts computed from the diff, why-each-file,
-# tests-run, evidence). A MISSING smallest-change note FAILS the post-condition
-# (park/flag — must not glide through). An oversized diff does NOT fail but flags
-# the ticket `needs_human_review: oversized_diff` visibly.
-: "${MINIMALISM_ENFORCE:=1}"          # 1 = a missing smallest-change note fails the post-condition
+# tests-run, evidence). A MISSING note is flagged `needs_human_review` by default
+# and the delivery goes on to review, where the human judges minimality from the
+# diff; MINIMALISM_REQUIRE_NOTE=1 sends it back to rework instead (for unsupervised
+# runs). An oversized diff never fails: it flags `needs_human_review: oversized_diff`
+# visibly, also when the note is missing or boilerplate.
+: "${MINIMALISM_REQUIRE_NOTE:=0}"     # 1 = a delivery with no smallest-change note goes back to rework (0 = flag it for review)
 : "${OVERSIZED_MAX_LINES:=400}"       # > this many changed lines → flag (not fail) oversized_diff
 : "${OVERSIZED_MAX_FILES:=12}"        # > this many changed files → flag (not fail) oversized_diff
 

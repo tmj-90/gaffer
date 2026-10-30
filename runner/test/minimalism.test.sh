@@ -4,14 +4,18 @@
 # ---------------------------------------------------------------------
 # Proves, against a REAL git repo + the REAL functions:
 #   AC1  gaffer_diff_stats computes files + lines (added+deleted) from a diff
-#   AC2  a missing smallest-change note FAILS the post-condition (return 1)
+#   AC2  under MINIMALISM_REQUIRE_NOTE=1 a missing smallest-change note FAILS the
+#        post-condition (return 1)
 #   AC3  a present note with a small diff PASSES (return 0, verdict ok)
 #   AC4  an oversized diff (over a cap) FLAGS but does NOT fail (return 2)
 #   AC5  caps are configurable (OVERSIZED_MAX_LINES / OVERSIZED_MAX_FILES)
-#   AC6  MINIMALISM_ENFORCE=0 downgrades a missing note to a flag (return 2)
+#   AC6  by default (MINIMALISM_REQUIRE_NOTE=0) a missing note is a flag (return 2)
 #   AC7  the config keys are present + commented in factory.config.sh
 #   AC8  the verdict reaches tick.sh through GAFFER_MINIMALISM_VERDICT, never a
 #        fixed $GAFFER_DATA scratch file that concurrent workers share
+#   AC9  the size check is independent: a missing or boilerplate note over a cap
+#        still sets GAFFER_MINIMALISM_OVERSIZED, and tick.sh's own gate lines then
+#        attach BOTH flags (the note flag + needs_human_review: oversized_diff)
 #
 # Zero deps; needs only git. Run: bash test/minimalism.test.sh
 # =====================================================================
@@ -25,7 +29,7 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # Defaults the functions read.
-export OVERSIZED_MAX_LINES=400 OVERSIZED_MAX_FILES=12 MINIMALISM_ENFORCE=1
+export OVERSIZED_MAX_LINES=400 OVERSIZED_MAX_FILES=12 MINIMALISM_REQUIRE_NOTE=1
 # shellcheck source=../lib/minimalism.sh
 source "$RUNNER_DIR/lib/minimalism.sh"
 
@@ -88,15 +92,23 @@ echo "== AC5: caps are configurable =="
   && ok "caps of 0 disable the oversized check" \
   || fail "cap=0 should disable oversized detection"
 
-echo "== AC6: MINIMALISM_ENFORCE=0 downgrades a missing note to a flag =="
-( export MINIMALISM_ENFORCE=0
+echo "== AC6: by default (MINIMALISM_REQUIRE_NOTE unset/0) a missing note is a flag =="
+( unset MINIMALISM_REQUIRE_NOTE
   V="$(gaffer_check_minimalism 1 10 "")"; RC=$?
   [ "$RC" -eq 2 ] ) \
-  && ok "MINIMALISM_ENFORCE=0 → missing note returns 2 (flag, not fail)" \
-  || fail "enforce=0 should not hard-fail a missing note"
+  && ok "MINIMALISM_REQUIRE_NOTE unset → missing note returns 2 (flag, not fail)" \
+  || fail "the default should not hard-fail a missing note"
+( export MINIMALISM_REQUIRE_NOTE=0
+  V="$(gaffer_check_minimalism 1 10 "")"; RC=$?
+  [ "$RC" -eq 2 ] ) \
+  && ok "MINIMALISM_REQUIRE_NOTE=0 → missing note returns 2 (flag, not fail)" \
+  || fail "MINIMALISM_REQUIRE_NOTE=0 should not hard-fail a missing note"
+! grep -q 'MINIMALISM_ENFORCE' "$RUNNER_DIR/factory.config.sh" "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/lib/minimalism.sh" \
+  && ok "the retired MINIMALISM_ENFORCE knob is gone from the live path (it never changed an outcome)" \
+  || fail "MINIMALISM_ENFORCE is still referenced on the live path"
 
 echo "== AC7: config keys present + commented =="
-for k in 'MINIMALISM_ENFORCE:=1' 'OVERSIZED_MAX_LINES:=400' 'OVERSIZED_MAX_FILES:=12'; do
+for k in 'MINIMALISM_REQUIRE_NOTE:=0' 'OVERSIZED_MAX_LINES:=400' 'OVERSIZED_MAX_FILES:=12'; do
   grep -Eq "^: \"\\\$\{$k\}\"" "$RUNNER_DIR/factory.config.sh" \
     && ok "$k default present in factory.config.sh" \
     || fail "$k default missing from factory.config.sh"
@@ -133,6 +145,49 @@ wait
   && ok "AC8 two concurrent gate runs on one GAFFER_DATA each saw their OWN verdict (0 wrong/empty of 40+40)" \
   || fail "AC8 concurrent gate runs read each other's verdict (wrong: with-note=$(cat "$WORK/mz-a"), no-note=$(cat "$WORK/mz-b"))"
 ! grep -q '\$GAFFER_DATA/\.mz-verdict' "$RUNNER_DIR/tick.sh" && ok "AC8 tick.sh no longer uses the fixed \$GAFFER_DATA/.mz-verdict path" || fail "AC8 tick.sh still writes \$GAFFER_DATA/.mz-verdict"
+
+echo "== AC9: oversized is flagged even when the note is missing or boilerplate =="
+( unset MINIMALISM_REQUIRE_NOTE
+  gaffer_check_minimalism 1 450 "" "src/a.js " >/dev/null 2>&1
+  [ "$GAFFER_MINIMALISM_VERDICT" = "missing_note" ] && [[ "$GAFFER_MINIMALISM_OVERSIZED" == "oversized_diff: 1 files / 450 lines"* ]] ) \
+  && ok "AC9 missing note + 450-line diff → GAFFER_MINIMALISM_OVERSIZED is set" \
+  || fail "AC9 a missing note over the line cap did not report oversized"
+( gaffer_check_minimalism 1 450 "boilerplate words only" "src/a.js " >/dev/null 2>&1
+  [ "$GAFFER_MINIMALISM_VERDICT" = "unverified_note" ] && [ -n "$GAFFER_MINIMALISM_OVERSIZED" ] ) \
+  && ok "AC9 unverified note + 450-line diff → GAFFER_MINIMALISM_OVERSIZED is set" \
+  || fail "AC9 an unverified note over the line cap did not report oversized"
+( gaffer_check_minimalism 1 40 "" "src/a.js " >/dev/null 2>&1; [ -z "$GAFFER_MINIMALISM_OVERSIZED" ] ) \
+  && ok "AC9 a small diff leaves GAFFER_MINIMALISM_OVERSIZED empty" || fail "AC9 small diff reported oversized"
+# tick.sh's own gate lines, from the verdict reset to the end of the size-flag block.
+GATE="$WORK/mz-gate.sh"
+awk '/^    GAFFER_MINIMALISM_VERDICT=""$/{p=1} p{print} p && /# OVERSIZED alongside a note flag/{q=1} q && /^    esac$/{exit}' "$RUNNER_DIR/tick.sh" > "$GATE"
+grep -q 'GAFFER_MINIMALISM_OVERSIZED' "$GATE" && ok "AC9 extracted tick.sh's minimalism gate + size-flag block" || fail "AC9 could not extract the size-flag block from tick.sh"
+mzgate() { # <lines> <note> → the evidence summaries tick.sh attached, one per line
+  local NUM=7 _MZ_FILES=1 _MZ_LINES="$1" _MZ_NOTE="$2" _MZ_CHANGED="src/a.js " _MZ_VERDICT _DELIV_OUTCOME=""
+  : > "$WORK/attached"
+  wg() { [ "$1" = attach-evidence ] && printf '%s\n' "$6" >> "$WORK/attached"; return 0; }
+  log() { :; }
+  _recover_or_park() { :; }
+  result() { :; }
+  ( unset MINIMALISM_REQUIRE_NOTE
+    # shellcheck disable=SC1090
+    for _once in 1; do source "$GATE"; done )
+  cat "$WORK/attached"
+}
+OUT="$(mzgate 450 "")"
+grep -q '^needs_human_review: missing smallest-change note' <<<"$OUT" && grep -q '^needs_human_review: oversized_diff — oversized_diff: 1 files / 450 lines' <<<"$OUT" \
+  && ok "AC9 tick.sh: no note + 450 lines → BOTH the missing-note and the oversized_diff flags are attached" \
+  || fail "AC9 tick.sh attached [$OUT] (want the missing-note AND oversized_diff flags)"
+OUT="$(mzgate 450 "boilerplate words only")"
+grep -q '^needs_human_review: unverified_minimalism_note' <<<"$OUT" && grep -q '^needs_human_review: oversized_diff' <<<"$OUT" \
+  && ok "AC9 tick.sh: boilerplate note + 450 lines → BOTH flags attached" \
+  || fail "AC9 tick.sh attached [$OUT] (want unverified + oversized_diff flags)"
+OUT="$(mzgate 450 "smallest change: the loop in a.js")"
+[ "$(grep -c '^needs_human_review: oversized_diff' <<<"$OUT")" = 1 ] \
+  && ok "AC9 tick.sh: a good note over the cap → exactly ONE oversized_diff flag (no duplicate)" \
+  || fail "AC9 tick.sh attached [$OUT] (want exactly one oversized_diff flag)"
+OUT="$(mzgate 40 "")"
+! grep -q 'oversized_diff' <<<"$OUT" && ok "AC9 tick.sh: a small diff with no note → no oversized flag" || fail "AC9 small diff got an oversized flag [$OUT]"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

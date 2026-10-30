@@ -1409,7 +1409,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/repos/:id/commands",
     tag: T.repos,
     summary: "Set the Definition-of-Done gate commands",
-    description: "Test, lint and coverage commands the runner executes in the delivery worktree.",
+    description:
+      "The test and lint commands the runner executes as Definition-of-Done gates in the delivery worktree, and the coverage command the idle coverage scan runs (coverage is not a Definition-of-Done gate).",
     capability: "full",
     body: "setRepoCommandsBody",
     responses: [ok("The updated `Repository`."), notFound, invalid],

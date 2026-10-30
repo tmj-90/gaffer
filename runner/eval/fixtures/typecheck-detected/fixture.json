@@ -1,0 +1,17 @@
+{
+  "title": "Delivery whose package.json typecheck script fails, no typecheck command configured",
+  "why": "The typecheck gate auto-detects the repo's package.json typecheck script when GAFFER_DOD_TYPECHECK_CMD is unset. Before, the gate was skipped as 'no command configured' on every repo and a failing typecheck shipped to review.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added removeTask to src/tasks.js and the typecheck script",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "FAIL",
+    "dod_failed": ["typecheck"],
+    "ac": "none",
+    "outcome": "rework:definition-of-done",
+    "flags": []
+  }
+}

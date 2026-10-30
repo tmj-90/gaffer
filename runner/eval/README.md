@@ -23,7 +23,7 @@ order, over that branch:
 |---|---|---|
 | hygiene | `gaffer_assert_clean_delivery` (`lib/hygiene.sh`) | `ok` · `violation` |
 | minimalism | `gaffer_diff_stats` + `gaffer_check_minimalism` (`lib/minimalism.sh`) | `ok` · `missing_note` · `oversized_diff` · `unverified_note` |
-| Definition of Done | `gaffer_run_dod_gates` (`lib/dod.sh`) | `PASS` · `FAIL` (+ the failing gates) |
+| Definition of Done | `gaffer_dod_typecheck_cmd` + `gaffer_run_dod_gates` (`lib/dod.sh`) | `PASS` · `FAIL` (+ the failing gates) |
 | acceptance checks | `gaffer_run_ac_checks` (`lib/ac-checks.sh`) | `PASS` · `FAIL` · `none` |
 
 and derives the **outcome** `tick.sh` would take for a committed delivery:
@@ -52,6 +52,8 @@ exactly what the runner would have recorded.
 | `ac-check-fails` | ticket AC demands `archiveTask` | `rework:acceptance-check` |
 | `no-gates-configured` | no test/lint command configured | `rework:definition-of-done` flagged `zero_gates` |
 | `no-gates-waived` | same under `GAFFER_ALLOW_NO_DOD=1` | `submit` flagged `zero_gates_waived` |
+| `oversized-no-note` | the 450-line generated file, no note | `submit` flagged `missing_note` + `oversized_diff` |
+| `typecheck-detected` | failing package.json `typecheck` script, no typecheck command configured | `rework:definition-of-done`, `typecheck` fails |
 
 `runner/test/eval-replay.test.sh` proves the harness itself: it fails on an edited
 expectation **and** on a weakened gate (the hygiene rule list emptied flips the leak

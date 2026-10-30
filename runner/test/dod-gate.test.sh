@@ -449,6 +449,53 @@ grep -q 'bash -c "\$_script" ) </dev/null' "$RUNNER_DIR/lib/dod.sh" \
   && ok "F4 gaffer_dod_install_deps runs the install with stdin from /dev/null" \
   || fail "F4 the DoD install still inherits the caller's stdin"
 
+echo "== PART G: the typecheck gate's command is AUTO-DETECTED when none is configured =="
+# A node repo with a `typecheck` script, on a base branch + a delivery branch.
+TCR="$WORK/tc-repo"; git init -q -b main "$TCR"
+git -C "$TCR" config user.email t@t; git -C "$TCR" config user.name t
+printf '{"name":"x","scripts":{"test":"node --test","typecheck":"tsc --noEmit -p ."}}\n' > "$TCR/package.json"
+git -C "$TCR" add -A && git -C "$TCR" commit -qm base
+git -C "$TCR" checkout -qb gaffer/ticket-1
+tcdet() { ( unset GAFFER_DOD_TYPECHECK_CMD; gaffer_dod_typecheck_cmd "$@" ); }
+[ "$(tcdet "$TCR" main)" = "npm run typecheck" ] && ok "G1 a package.json typecheck script → 'npm run typecheck'" \
+  || fail "G1 detection wrong: '$(tcdet "$TCR" main)'"
+: > "$TCR/pnpm-lock.yaml"
+[ "$(tcdet "$TCR" main)" = "pnpm run typecheck" ] && ok "G2 a pnpm lockfile → 'pnpm run typecheck'" || fail "G2 pm wrong: '$(tcdet "$TCR" main)'"
+rm -f "$TCR/pnpm-lock.yaml"
+# The delivery DELETES the script: the base branch still names it, so the gate runs
+# (and fails loudly on the missing script) instead of silently skipping.
+printf '{"name":"x","scripts":{"test":"node --test"}}\n' > "$TCR/package.json"
+git -C "$TCR" commit -qam "drop typecheck"
+[ "$(tcdet "$TCR" main)" = "npm run typecheck" ] && ok "G3 a delivery that deletes the script cannot drop the gate (base branch read first)" \
+  || fail "G3 deleting the script dropped the gate: '$(tcdet "$TCR" main)'"
+# A repo whose base has none, but the delivery adds one (greenfield): worktree fallback.
+TCR2="$WORK/tc-repo2"; git init -q -b main "$TCR2"
+git -C "$TCR2" config user.email t@t; git -C "$TCR2" config user.name t
+printf '{"name":"y","scripts":{"test":"node --test"}}\n' > "$TCR2/package.json"
+git -C "$TCR2" add -A && git -C "$TCR2" commit -qm base
+printf '{"name":"y","packageManager":"yarn@4.1.0","scripts":{"test":"node --test","check":"tsc --noEmit"}}\n' > "$TCR2/package.json"
+[ "$(tcdet "$TCR2" main)" = "yarn run check" ] && ok "G4 a bare 'tsc --noEmit' script in the worktree + packageManager yarn → 'yarn run check'" \
+  || fail "G4 detection wrong: '$(tcdet "$TCR2" main)'"
+printf '{"name":"y","scripts":{"build":"tsc","lint":"tsc --noEmit && eslint ."}}\n' > "$TCR2/package.json"
+[ -z "$(tcdet "$TCR2" main)" ] && ok "G5 an emitting 'tsc' build or a chained lint script is NOT taken as the typecheck" \
+  || fail "G5 wrongly detected '$(tcdet "$TCR2" main)'"
+mkdir -p "$WORK/not-node"
+[ -z "$(tcdet "$WORK/not-node" main)" ] && ok "G6 no package.json → no command (the gate is skipped, as before)" || fail "G6 non-node repo got a command"
+[ "$(GAFFER_DOD_TYPECHECK_CMD='mypy src' gaffer_dod_typecheck_cmd "$TCR" main)" = "mypy src" ] \
+  && ok "G7 GAFFER_DOD_TYPECHECK_CMD overrides the detection" || fail "G7 override not honoured"
+# G8: the detected command actually runs as the typecheck gate and fails the DoD.
+printf '{"name":"z","scripts":{"typecheck":"node tc.mjs"}}\n' > "$TCR2/package.json"
+printf 'console.error("src/a.ts(1,1): error TS2322"); process.exit(2);\n' > "$TCR2/tc.mjs"
+G8_CMD="$(tcdet "$TCR2" main)"
+RESG="$WORK/g8.results"
+printf 'repo\t%s\t1\t1\t1\t-\t%s\t-\n' "$TCR2" "$G8_CMD" | gaffer_run_dod_gates "$RESG"; G8_RC=$?
+[ "$G8_RC" -eq 1 ] && grep -qE $'^GATE\ttypecheck\trepo\tFAIL' "$RESG" \
+  && ok "G8 the detected typecheck command runs as the gate and a type error FAILS the DoD" \
+  || fail "G8 detected gate did not fail (rc=$G8_RC, cmd='$G8_CMD'): $(tr '\n' '|' < "$RESG")"
+grep -q '_dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$rbase")"' "$RUNNER_DIR/tick.sh" \
+  && ok "G9 tick.sh resolves each write repo's typecheck command through gaffer_dod_typecheck_cmd" \
+  || fail "G9 tick.sh does not use gaffer_dod_typecheck_cmd for the typecheck gate"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

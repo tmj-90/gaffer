@@ -71,11 +71,14 @@ export function registerRepo(program: Command): void {
   repo
     .command("set-commands <name>")
     .description(
-      "Set a repo's Definition-of-Done gate commands (omitted = unchanged; pass '' to clear a gate)",
+      "Set a repo's test / lint Definition-of-Done gate commands and its coverage command (omitted = unchanged; pass '' to clear one)",
     )
-    .option("--test <cmd>", "test command")
-    .option("--lint <cmd>", "lint command")
-    .option("--coverage <cmd>", "coverage command")
+    .option("--test <cmd>", "test command (the DoD tests gate)")
+    .option("--lint <cmd>", "lint command (the DoD lint gate)")
+    .option(
+      "--coverage <cmd>",
+      "coverage command (feeds the idle coverage scan; NOT a DoD gate — coverage-did-not-decrease is deferred)",
+    )
     .action((name, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const r = wg.setRepoCommands(

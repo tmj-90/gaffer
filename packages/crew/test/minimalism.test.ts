@@ -11,6 +11,7 @@ describe("checkMinimalism", () => {
       verdict: "ok",
       code: 0,
       reason: "minimal: 3 files / 120 lines within caps; smallest-change note present",
+      oversized: null,
     });
   });
 
@@ -19,6 +20,7 @@ describe("checkMinimalism", () => {
       verdict: "missing_note",
       code: 1,
       reason: "missing smallest-change note (required for every completed delivery)",
+      oversized: null,
     });
   });
 
@@ -31,7 +33,26 @@ describe("checkMinimalism", () => {
       verdict: "oversized_diff",
       code: 2,
       reason: "oversized_diff: 20 files / 900 lines (caps: 12 files / 400 lines) — suggest a split",
+      oversized:
+        "oversized_diff: 20 files / 900 lines (caps: 12 files / 400 lines) — suggest a split",
     });
+  });
+
+  it("an oversized diff is reported even when the note is missing or unverified", () => {
+    const big =
+      "oversized_diff: 1 files / 450 lines (caps: 12 files / 400 lines) — suggest a split";
+    const missing = checkMinimalism({ files: 1, lines: 450, note: "" });
+    expect(missing.verdict).toBe("missing_note");
+    expect(missing.oversized).toBe(big);
+    const unverified = checkMinimalism({
+      files: 1,
+      lines: 450,
+      note: "boilerplate text",
+      changed: "src/a.ts",
+    });
+    expect(unverified.verdict).toBe("unverified_note");
+    expect(unverified.oversized).toBe(big);
+    expect(checkMinimalism({ files: 1, lines: 40, note: "" }).oversized).toBeNull();
   });
 
   it("a cap of 0 disables that dimension", () => {

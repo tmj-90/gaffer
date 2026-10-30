@@ -16600,6 +16600,8 @@ function renderRepoCommands(repo) {
  * auto-detects them from the manifest; a wrong or missing command is the top
  * reason a delivery bounces (tests gate FAIL) or ships unverified (all gates
  * SKIP), so the operator can correct them here. Empty clears a gate (skipped).
+ * The coverage command sits here too but is NOT a DoD gate: it feeds the idle
+ * coverage scan (coverage-did-not-decrease is a deferred gate).
  */
 function renderRepoCommandsEditor(repo) {
   // Named distinctly from the global `field()` labelled-control helper it calls.
@@ -16617,7 +16619,7 @@ function renderRepoCommandsEditor(repo) {
   const lint = commandField("lint_command", "Lint command", repo.lint_command, "e.g. npm run lint");
   const cov = commandField(
     "coverage_command",
-    "Coverage command",
+    "Coverage command (idle scan, not a gate)",
     repo.coverage_command,
     "optional — e.g. npm run coverage",
   );
@@ -16647,7 +16649,7 @@ function renderRepoCommandsEditor(repo) {
     el(
       "p",
       { class: "gr-note" },
-      "The runner runs these on every delivery, in its worktree. A failing check sends the delivery back; an empty one is skipped.",
+      "The runner runs these on every delivery, in its worktree. A failing check sends the delivery back; an empty one is skipped. The coverage command is not a gate: it feeds the idle coverage scan.",
     ),
     form,
   ]);

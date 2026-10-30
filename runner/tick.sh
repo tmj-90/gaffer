@@ -2908,10 +2908,14 @@ $_trail_q
 
   # ── Stabilisation gate 2: MINIMALISM post-condition ─────────────────────────
   # Compute files/lines from the PRIMARY write repo's branch diff and require a
-  # recorded smallest-change note. A MISSING note FAILS the post-condition (park,
-  # like a hygiene violation) so an unjustified change can't glide through. An
-  # OVERSIZED diff does NOT fail — it flags the ticket needs_human_review:
-  # oversized_diff visibly (recorded as an evidence note) and proceeds.
+  # recorded smallest-change note. A MISSING note is flagged needs_human_review by
+  # default (the human judges minimality from the diff at review); with
+  # MINIMALISM_REQUIRE_NOTE=1 it FAILS the post-condition (back to rework) so an
+  # unjustified change can't glide through an unsupervised run. An OVERSIZED diff
+  # does NOT fail — it flags the ticket needs_human_review: oversized_diff visibly
+  # (recorded as an evidence note) and proceeds. Size is judged on its own: a
+  # delivery with a missing or boilerplate note that is ALSO over a cap carries
+  # both flags (GAFFER_MINIMALISM_OVERSIZED), never just the first one found.
   if git -C "$PRIMARY_REPO" rev-parse --git-dir >/dev/null 2>&1; then
     read -r _MZ_FILES _MZ_LINES <<< "$(gaffer_diff_stats "$PRIMARY_REPO" "$DEFAULT_BRANCH")"
     # The smallest-change note is whatever the agent recorded as evidence: the NEWEST
@@ -2988,6 +2992,18 @@ $_trail_q
             --summary "needs_human_review: minimalism gate produced no verdict (internal error) — judge minimality from the diff" >/dev/null 2>&1 || true
         fi ;;
     esac
+    # OVERSIZED alongside a note flag: the verdict token names only the note problem,
+    # so the size flag is attached on its own here (an oversized_diff verdict already
+    # attached it above).
+    case "$_MZ_VERDICT" in
+      missing_note|unverified_note)
+        if [ -n "${GAFFER_MINIMALISM_OVERSIZED:-}" ]; then
+          log "MINIMALISM: #$NUM is ALSO oversized — flagging needs_human_review:oversized_diff ($GAFFER_MINIMALISM_OVERSIZED)"
+          wg attach-evidence "$NUM" --type manual_note \
+            --summary "needs_human_review: oversized_diff — $GAFFER_MINIMALISM_OVERSIZED" >/dev/null 2>&1 \
+            && log "MINIMALISM: recorded oversized_diff flag on #$NUM" || true
+        fi ;;
+    esac
   fi
 
   # ── Stabilisation gate 2.5: DEFINITION OF DONE (I3 — HARD FAIL) ─────────────
@@ -3009,10 +3025,14 @@ $_trail_q
   # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) are env-only: crew.yaml's
   # `definition_of_done` block is NOT read here (crew doctor warns when it is
   # changed). Commands come from each repo's dispatch
-  # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
-  # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
+  # test_command/lint_command; typecheck (no dispatch field) runs
+  # GAFFER_DOD_TYPECHECK_CMD, else the command auto-detected from the repo's
+  # package.json (gaffer_dod_typecheck_cmd in lib/dod.sh). DoD is best-effort RESILIENT: a gate command that itself
   # errors to spawn is treated as a FAIL with a clear message, never a crash.
   gaffer_clamp_gate_timeouts   # TICK DEADLINE: no gate outlives the outer bound
+  # The passing DoD checklist, kept for the eval judge's test_adequacy grading (the
+  # results file is removed below, long before the post-submit judge runs).
+  _DOD_JUDGE_TESTS=""
   if gaffer_dod_enabled; then
     # Per-repo commands from the dispatch payload, keyed by repo id (fallback name):
     #   id|name <TAB> test_cmd <TAB> lint_cmd
@@ -3065,8 +3085,12 @@ $_trail_q
       _drow="$(printf '%s\n' "$DOD_CMD_MAP" | awk -F'\t' -v k="$_dkey" '$1==k{print; exit}')"
       _dtest="$(printf '%s' "$_drow" | awk -F'\t' '{print $2}')"
       _dlint="$(printf '%s' "$_drow" | awk -F'\t' '{print $3}')"
-      # typecheck has no dispatch field — a per-run override applies to every repo.
-      _dtc="${GAFFER_DOD_TYPECHECK_CMD:-}"
+      # typecheck has no dispatch field: GAFFER_DOD_TYPECHECK_CMD (an override for every
+      # repo), else the command auto-detected from this repo's package.json, read from
+      # the base branch first so a delivery cannot delete the gate away.
+      _dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$rbase")"
+      [ -z "${GAFFER_DOD_TYPECHECK_CMD:-}" ] && [ -n "$_dtc" ] && [ "$_DOD_TC_ON" = "1" ] \
+        && log "DoD: typecheck gate for ${_dlabel} runs the auto-detected '$_dtc' (package.json script; GAFFER_DOD_TYPECHECK_CMD overrides it)"
       # Empty command fields MUST be the sentinel `-`: TAB is IFS-whitespace, so the
       # gate runner's `read` would collapse adjacent empty tabs and shift columns.
       [ -n "${_dtest// /}" ] || _dtest="-"
@@ -3125,6 +3149,7 @@ $_trail_q
         [ -n "$_DOD_EV" ] && wg attach-evidence "$NUM" --type test_output \
           --summary "$_DOD_EV" >/dev/null 2>&1 \
           && log "DoD: recorded PASS checklist evidence on #$NUM" || true
+        _DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS" 2>/dev/null || true)"
         rm -f "$DOD_RESULTS"
       else
         # ── A gate FAILED → auto-reject back to rework (never a human's time) ──
@@ -3246,9 +3271,13 @@ $_trail_q
     # verdict + real spend to the eval ledger. memoryPresent = whether durable
     # product-context primed this delivery (the memory-lift metric's arm flag).
     # Additive + fail-soft telemetry — never gates or delays the submitted work.
+    # The judge gets the DoD checklist this delivery passed (GAFFER_EVAL_TEST_OUTPUT)
+    # and the REPO NAME for the ledger record ($PRIMARY_REPO is the worktree path,
+    # whose basename is a per-ticket key, not the repo).
     if type gaffer_eval_judge_delivery >/dev/null 2>&1; then
-      gaffer_eval_judge_delivery "$NUM" "$PRIMARY_REPO" "$DEFAULT_BRANCH" "$WORK_BRANCH" \
-        "$([ -n "${PRODUCT_CONTEXT_BLOCK:-}" ] && echo 1 || echo 0)" "${_DELIVERY_SPEND_USD:-}" || true
+      GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}" \
+        gaffer_eval_judge_delivery "$NUM" "$PRIMARY_REPO" "$DEFAULT_BRANCH" "$WORK_BRANCH" \
+        "$([ -n "${PRODUCT_CONTEXT_BLOCK:-}" ] && echo 1 || echo 0)" "${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}" || true
     fi
   else
     # M1 (data-loss path): the submit FAILED. We must NOT fall through to record the

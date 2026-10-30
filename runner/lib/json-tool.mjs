@@ -231,11 +231,23 @@ switch (cmd) {
   }
 
   // ── eval-judge.sh ───────────────────────────────────────────────────────────────
-  // judge-input <diff-file> <tests-file>: env SHOW, FULL_BYTES, CAP → the judge's input
-  // JSON (title + ACs from SHOW, the bounded diff with a truncation note, test output).
+  // judge-input <diff-file> <tests-file>: env SHOW_FILE (a file holding `wg ticket show`
+  // JSON; else SHOW, the JSON itself), FULL_BYTES, CAP → the judge's input JSON (title
+  // + ACs + recorded evidence from the ticket, the bounded diff with a truncation note,
+  // test output).
   case "judge-input": {
-    const p = tryParse(process.env.SHOW || "{}");
-    const d = p.ok && p.value ? p.value : {};
+    let showText = process.env.SHOW || "{}";
+    if (process.env.SHOW_FILE) {
+      try {
+        showText = readFileSync(process.env.SHOW_FILE, "utf8") || "{}";
+      } catch {
+        showText = "{}";
+      }
+    }
+    const p = tryParse(showText);
+    const d = p.ok && isObj(p.value) ? p.value : {};
+    // `wg ticket show` nests the ticket row under `ticket`; a flat {title} is accepted too.
+    const tk = isObj(d.ticket) ? d.ticket : d;
     const acs = [];
     (d.acceptanceCriteria || []).forEach((a, i) => {
       const text = String((a && a.text) || "").trim();
@@ -255,7 +267,24 @@ switch (cmd) {
       diff += `\n\n[NOTE: delivery diff truncated to ${cap} of ${full} bytes — you are grading a PREFIX; treat unseen changes as ungraded, not absent.]`;
     }
     const tests = readf(args[1]).trim();
-    const result = { ticketTitle: String(d.title || "").trim(), acceptanceCriteria: acs, diff };
+    // Evidence the ticket carries (the agent's AC notes, the runner's gate checklists
+    // and flags), newest last, bounded: the judge reads it as untrusted data.
+    const evLines = (Array.isArray(d.evidence) ? d.evidence : [])
+      .filter((e) => isObj(e) && String(e.summary ?? "").trim() !== "")
+      .map((e) => {
+        const kind = String(e.evidence_type ?? e.type ?? "evidence");
+        const who = e.recorded_by_agent === true ? "agent" : String(e.recorded_by_actor_type ?? "");
+        const body = String(e.summary).replace(/\s+$/g, "").slice(0, 1500);
+        return `- [${kind}${who ? `, ${who}` : ""}] ${body}`;
+      });
+    let evidence = evLines.slice(-40).join("\n");
+    if (evidence.length > 12000) evidence = `…${evidence.slice(-12000)}`;
+    const result = {
+      ticketTitle: String(tk.title || d.title || "").trim(),
+      acceptanceCriteria: acs,
+      diff,
+    };
+    if (evidence) result.evidence = evidence;
     if (tests) result.testOutput = tests;
     println(JSON.stringify(result));
     break;
@@ -380,6 +409,74 @@ switch (cmd) {
     }
     break;
   }
+  // dod-typecheck-detect <worktree> [base-ref]: the typecheck DoD gate's AUTO-DETECTED
+  // command for a node repo, or "" when there is none. A package.json script named
+  // typecheck / type-check / check-types / types:check, else any script that is a
+  // bare `tsc … --noEmit` (or vue-tsc), run with the repo's package manager
+  // (package.json packageManager, else the lockfile, else npm). The BASE branch's
+  // package.json is read first, so a delivery cannot switch the gate off by deleting
+  // the script (the gate then runs the base's script name and fails loudly); the
+  // worktree's is the fallback (a delivery that adds the first typecheck script).
+  case "dod-typecheck-detect": {
+    const [wt, base] = args;
+    if (!wt) break;
+    const asPkg = (text) => {
+      const p = tryParse(text);
+      return p.ok && isObj(p.value) ? p.value : null;
+    };
+    let basePkg = null;
+    if (base) {
+      try {
+        basePkg = asPkg(
+          execFileSync("git", ["-C", wt, "show", `${base}:package.json`], {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "ignore"],
+          }),
+        );
+      } catch {
+        // no such ref / no package.json on the base: fall back to the worktree's
+      }
+    }
+    let wtPkg = null;
+    try {
+      wtPkg = asPkg(readFileSync(path.join(wt, "package.json"), "utf8"));
+    } catch {
+      // no package.json in the worktree: not a node repo
+    }
+    const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9:._-]*$/;
+    const TSC_ONLY = /^\s*(?:npx\s+)?(?:tsc|vue-tsc)\b[^&|;<>`$]*--noEmit\b[^&|;<>`$]*$/;
+    const scriptOf = (pkg) => {
+      const scripts = pkg && isObj(pkg.scripts) ? pkg.scripts : {};
+      const has = (n) => typeof scripts[n] === "string" && scripts[n].trim() !== "";
+      for (const n of ["typecheck", "type-check", "check-types", "types:check"]) {
+        if (has(n)) return n;
+      }
+      for (const [n, body] of Object.entries(scripts)) {
+        if (typeof body === "string" && SAFE_NAME.test(n) && TSC_ONLY.test(body)) return n;
+      }
+      return null;
+    };
+    const name = scriptOf(basePkg) ?? scriptOf(wtPkg);
+    if (!name) break;
+    const pmField = String(
+      (basePkg && basePkg.packageManager) || (wtPkg && wtPkg.packageManager) || "",
+    );
+    const exists = (f) => {
+      try {
+        readFileSync(path.join(wt, f));
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    let pm = "npm";
+    if (/^(pnpm|yarn|bun|npm)@/.test(pmField)) pm = pmField.split("@")[0];
+    else if (exists("pnpm-lock.yaml")) pm = "pnpm";
+    else if (exists("yarn.lock")) pm = "yarn";
+    else if (exists("bun.lockb") || exists("bun.lock")) pm = "bun";
+    println(`${pm} run ${name}`);
+    break;
+  }
   // smallest-change-note: stdin = ticket show → the MOST RECENT evidence text carrying a
   // "smallest change" marker, or "". Only evidence rows count: an agent's note can only
   // arrive as evidence, while events carry runner text (a rework event's payload says
@@ -398,6 +495,28 @@ switch (cmd) {
       ),
     );
     println(fromEvidence ?? "");
+    break;
+  }
+  // entered-status-at <status>: stdin = ticket show → created_at of the LATEST
+  // ticket.transitioned event into <status>, or "" (none / unparseable). The tester
+  // lane keys a hold on it: a re-entry into in_testing is a new stay.
+  case "entered-status-at": {
+    const p = tryParse(readStdin());
+    const d = p.ok && isObj(p.value) ? p.value : {};
+    let at = "";
+    for (const e of Array.isArray(d.events) ? d.events : []) {
+      if (!e || e.event_type !== "ticket.transitioned") continue;
+      let pl;
+      try {
+        pl = JSON.parse(e.payload_json || "{}");
+      } catch {
+        pl = {};
+      }
+      if (isObj(pl) && pl.to === args[0] && String(e.created_at || "") > at) {
+        at = String(e.created_at || "");
+      }
+    }
+    println(at.replace(/[\t\n]/g, " "));
     break;
   }
   // review-feedback: stdin = ticket show → "  - <reason>" lines for the last five

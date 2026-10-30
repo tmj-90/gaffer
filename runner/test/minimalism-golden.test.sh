@@ -38,6 +38,9 @@ mcase() {
   printf '%s\n%s\n%s\n' "$tok" "$code" "$GAFFER_MINIMALISM_REASON" > "$WORK/out"
   seam_golden minimalism "$name" "$WORK/out" "$label ([$tok/$code])"
 }
+# The pinned codes were captured with the note REQUIRED (missing note → code 1); the
+# knob is MINIMALISM_REQUIRE_NOTE (default 0 → code 2, the enforce-off case below).
+export MINIMALISM_REQUIRE_NOTE=1
 mcase ok               "ok (within caps, note present)"       3  120 "Refactored the auth module for clarity"      ""
 mcase missing-empty    "missing note (empty)"                 3  120 ""                                            ""
 mcase missing-ws       "missing note (whitespace only)"       3  120 $'  \t \n '                                    ""
@@ -49,7 +52,7 @@ mcase stem             "verified by stem (>=4 chars)"         2  50  "updated th
 mcase no-changed       "no changed list → skip relevance"     2  50  "any note here is fine"                       ""
 mcase truncation       "note excerpt truncation (>80 chars)"  2  50  "$(printf 'x%.0s' {1..120})"                  "src/z.ts"
 mcase at-cap           "exactly at line cap (not oversized)"  1  400 "right at the line cap edge"                  "src/edge.ts"
-MINIMALISM_ENFORCE=0 mcase enforce-off "MINIMALISM_ENFORCE=0 downgrades a missing note" 3 120 "" ""
+MINIMALISM_REQUIRE_NOTE=0 mcase enforce-off "MINIMALISM_REQUIRE_NOTE=0 (the default) flags a missing note" 3 120 "" ""
 
 # diff-stats: the numstat → "<files> <lines>" parse.
 dscase() {

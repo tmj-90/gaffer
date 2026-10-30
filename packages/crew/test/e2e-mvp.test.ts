@@ -53,6 +53,7 @@ describe("E2E MVP: idle draft → refine → claim → packet → branch → evi
       },
     ];
     cfg.loops.idle_coverage.repos = ["demo-repo"];
+    cfg.loops.idle_coverage.minimum_gap_threshold = 80; // 64% is below the target
     writeFileSync(cfgPath, stringify(cfg));
 
     const loaded = loadConfig(cfgPath);

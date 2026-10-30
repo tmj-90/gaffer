@@ -1,0 +1,16 @@
+{
+  "title": "The same 450-line generated table, with no smallest-change note",
+  "why": "The size check is independent of the note: a delivery with no note (or a boilerplate one) that is also over a cap carries BOTH flags. Before, the missing-note verdict returned first and an oversized diff of any size went unflagged.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "",
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "missing_note",
+    "dod": "PASS",
+    "ac": "none",
+    "outcome": "submit",
+    "flags": ["missing_note", "oversized_diff"]
+  }
+}

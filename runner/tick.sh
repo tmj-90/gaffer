@@ -294,14 +294,17 @@ _gaffer_log_line() {
   printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$GAFFER_LOG" >&2
 }
 log() { _gaffer_locked .log.lock _gaffer_log_line "$*"; }
-# The safety hook AND its deny-list sibling must BOTH be present before we launch a
-# live agent: a missing lib/dangerous-commands.mjs would make the hook fail-closed at
-# runtime (blocking every tool call), but preflighting it here refuses the tick with a
-# clear cause instead. Returns 1 (logged) if either is absent. Callers apply their own
-# fail-closed action (exit 1 / return 1).
+# The safety hook, its decision core AND its deny-list sibling must ALL be present
+# before we launch a live agent: a missing safety-hook-core.mjs or
+# lib/dangerous-commands.mjs would make the hook fail-closed at runtime (blocking
+# every tool call), but preflighting them here refuses the tick with a clear cause
+# instead. Returns 1 (logged) if any is absent. Callers apply their own fail-closed
+# action (exit 1 / return 1).
 gaffer_assert_safety_hook() {
   [ -f "$RUNNER_DIR/safety-hook.mjs" ] \
     || { log "SAFETY: hook missing at $RUNNER_DIR/safety-hook.mjs (fail closed)"; return 1; }
+  [ -f "$RUNNER_DIR/safety-hook-core.mjs" ] \
+    || { log "SAFETY: hook decision core missing at $RUNNER_DIR/safety-hook-core.mjs — the hook cannot decide; refusing (fail closed)"; return 1; }
   [ -f "$RUNNER_DIR/lib/dangerous-commands.mjs" ] \
     || { log "SAFETY: deny-list missing at $RUNNER_DIR/lib/dangerous-commands.mjs — the hook cannot load its rules; refusing (fail closed)"; return 1; }
   return 0

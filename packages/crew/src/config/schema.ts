@@ -385,7 +385,8 @@ export const loopsSchema = z
  * Context-packet token hygiene. Caps what gets assembled into the per-ticket
  * context so the packet stays lean and pre-filtered to the ticket's stack/area:
  *  - `lore_limit` — max ratified lore records pulled into a packet.
- *  - `max_skills` — max skills selected for the packet after stack filtering.
+ *  - `max_skills` — max skills selected for the packet after stack filtering. MOCK-ONLY
+ *    (config/inertKeys.ts): the live runner mounts skills by role profile, uncapped.
  *  - `product_context_limit` — max product-intent lore records (decisions /
  *    requirements / non-goals) surfaced in the packet's `productContext`
  *    section, budgeted separately so recall can be aimed at "why".

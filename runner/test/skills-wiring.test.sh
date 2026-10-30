@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # =====================================================================
-# B30 — skills leftovers: the bootstrap selector's text relevance, the `fg skills`
-# fallback returning REAL library skills, and `gaffer skills list` telling the truth.
+# B30 — skills leftovers: the bootstrap selector's text relevance and role profile, the
+# empty-selection fallback, and `gaffer skills list` telling the truth.
 # ---------------------------------------------------------------------
 #   1. tick.sh's BOOTSTRAP skill selection passes the ticket title/description as
 #      `--text`, like the delivery path (it passed none, so an off-domain pack the
 #      brief plainly called for was unreachable from a bootstrap).
-#   2. `fg skills --stack <label>` (the tick.sh fallback when the selector yields
-#      nothing) returns skills from the SKILL.md library — needs the crew dist.
+#   1b. the bootstrap selection is the `--role bootstrap` profile (CI / Docker / shell
+#      scaffold packs), run from tick.sh's own line.
+#   2. when the selector yields nothing, tick.sh recommends the universal mechanics
+#      (GAFFER_UNIVERSAL_SKILLS) — never the crew registry's `fg skills`, which lists
+#      role-only skills and names the library does not carry.
 #   3. `gaffer skills list` describes role-based selection, not "auto-loads all".
 # Run: bash test/skills-wiring.test.sh
 # =====================================================================
@@ -42,29 +45,29 @@ grep -q 'add-cli-command' <<<"$SEL" \
   && ok "--text pulls a text-relevant pack (add-cli-command) into a bootstrap selection" \
   || fail "expected add-cli-command in: $SEL"
 
-echo "== 2: fg skills --stack returns REAL library skills (the tick.sh fallback) =="
-CREW_CLI="$ROOT/packages/crew/dist/cli/index.js"
-if [ -f "$CREW_CLI" ]; then
-  mkdir -p "$WORK/factory"
-  node "$CREW_CLI" init --dir "$WORK/factory" -n skills-wiring >/dev/null 2>&1 || true
-  if [ -f "$WORK/factory/crew.yaml" ]; then
-    OUT="$(node "$CREW_CLI" -c "$WORK/factory/crew.yaml" skills --stack typescript-react 2>/dev/null)"
-    IDS="$(printf '%s' "$OUT" | node "$RUNNER_DIR/lib/json-tool.mjs" expr '(Array.isArray(d) ? d : d.skills || []).map((s) => s.id ?? s.name ?? "").join(", ")' 2>/dev/null || true)"
-    grep -q 'typescript-conventions' <<<"$IDS" \
-      && ok "fg skills --stack typescript-react lists typescript-conventions (library, stack expanded)" \
-      || fail "fg skills should list typescript-conventions (got: ${IDS:0:200})"
-    grep -q 'react-patterns' <<<"$IDS" \
-      && ok "…and react-patterns (the compound label's second token)" || fail "fg skills should list react-patterns"
-    grep -q 'fix-bug' <<<"$IDS" \
-      && ok "…and a stack-agnostic library skill (fix-bug)" || fail "fg skills should list fix-bug"
-    # The exact jget expression tick.sh uses yields a non-empty comma list.
-    [ -n "$IDS" ] && ok "tick.sh's fallback expression yields a non-empty skill list" || fail "fallback expression yielded nothing"
-  else
-    echo "  SKIP: could not initialise a crew.yaml for the CLI probe"
-  fi
-else
-  echo "  SKIP: crew not built ($CREW_CLI) — run: pnpm -C $ROOT/packages/crew build"
-fi
+echo "== 1b: the bootstrap mounts the BOOTSTRAP role profile (scaffold packs) =="
+grep -q -- '--role bootstrap' <<<"$B_LINE" \
+  && ok "bootstrap select-skills passes --role bootstrap" || fail "bootstrap select-skills should pass --role bootstrap"
+# Run tick.sh's own B_SKILLS line (not a copy) with its inputs stubbed.
+B_CMD="$(sed -n 's/^[[:space:]]*\(B_SKILLS="\$(node "\$HERE\/bin\/select-skills.mjs".*\)$/\1/p' "$RUNNER_DIR/tick.sh" | head -1)"
+B_OUT="$(HERE="$RUNNER_DIR" STACK=go B_AREA="" _B_SKILL_TEXT="Scaffold a Go CLI for gym sessions" SKILLS_DIR="$RUNNER_DIR/skills" \
+  bash -c "$B_CMD"'; printf "%s" "$B_SKILLS"' 2>/dev/null)"
+for want in ci-cd-pipeline docker-development shell-scripting go-conventions run-tests; do
+  grep -qw -- "$want" <<<"$B_OUT" && ok "live bootstrap selection mounts $want" || fail "live bootstrap selection lacks $want (got: ${B_OUT:0:300})"
+done
+grep -qw -- create-branch <<<"$B_OUT" && fail "bootstrap mounted create-branch (the runner branches)" || ok "bootstrap does not mount create-branch"
+
+echo "== 2: an empty selection falls back to the universal mechanics, never the crew registry =="
+TICK_CODE="$(grep -vE '^[[:space:]]*#' "$RUNNER_DIR/tick.sh")"
+grep -q 'fg skills' <<<"$TICK_CODE" \
+  && fail "tick.sh still falls back to 'fg skills' (role-only + unknown names)" \
+  || ok "tick.sh no longer calls 'fg skills'"
+F_CMD="$(grep -E '^[[:space:]]*\[ -n "\$SKILLS" \] \|\| SKILLS=.*GAFFER_UNIVERSAL_SKILLS' "$RUNNER_DIR/tick.sh" | head -1)"
+[ -n "$F_CMD" ] && ok "the delivery fallback line names GAFFER_UNIVERSAL_SKILLS" || fail "delivery fallback line not found"
+# shellcheck source=../lib/skills-mount.sh
+F_OUT="$(SKILLS="" bash -c 'source "$1/lib/skills-mount.sh"; eval "$2"; printf "%s" "$SKILLS"' _ "$RUNNER_DIR" "$F_CMD" 2>/dev/null)"
+[ "$F_OUT" = "run-tests, run-lint, run-coverage, minimalism, self-review, record-evidence, prepare-digest-delta, plan-change" ] \
+  && ok "an empty selection recommends the universal set (incl. plan-change)" || fail "fallback gave: '$F_OUT'"
 
 echo "== 3: gaffer skills list describes ROLE-BASED selection =="
 LIST="$(GAFFER_DATA="$WORK/data" bash "$RUNNER_DIR/gaffer" skills list 2>/dev/null)"

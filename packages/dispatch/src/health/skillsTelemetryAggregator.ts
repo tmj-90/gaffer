@@ -1,10 +1,12 @@
 /**
  * Skill-selection telemetry aggregation — selected-vs-applied hit-rate.
  *
- * The runner writes one JSONL row per delivery to `skills-telemetry.jsonl`
- * (see runner/bin/record-skill-usage.mjs) capturing which skills were SELECTED
- * (mounted / recommended for the ticket) and which were APPLIED (their name
- * appeared in the agent's output). Until now that trail had ZERO consumers.
+ * The runner writes one JSONL row per agent run (delivery, bootstrap, review,
+ * security-review, clarify, and the plan / spec / product / test / merge runners) to
+ * `skills-telemetry.jsonl` (see runner/bin/record-skill-usage.mjs) capturing which
+ * skills were SELECTED (mounted for the run) and which were APPLIED (named in the
+ * agent's output, or opened per the safety hook's tool ledger). Until now that trail
+ * had ZERO consumers.
  *
  * This module reads it and answers one question: for the skills we SELECT, how
  * often does the agent actually USE them? A skill selected 40 times but applied

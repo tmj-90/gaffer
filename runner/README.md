@@ -88,7 +88,7 @@ the Claude CLI; that's only for live runs.
 | Command | What it does |
 | --- | --- |
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
-| `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the skill-driven `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
+| `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). |
 | `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |
@@ -161,35 +161,21 @@ write is **idempotent** (re-running re-stamps the same `source` / re-asserts `sh
 See `lib/feature-digest.mjs` for the pure builders/parser and the full design note.
 
 ## Selection: how the *right* skill gets used
-The library ships **118 skills** under `skills/<name>/SKILL.md` — generic delivery
-(plan/clarify/branch/evidence/self-review/submit/refactor/docs), testing,
-frontend, backend, security, language conventions, and review/admin.
-(`test/skills-lint.test.mjs` fails when this count drifts from the library.)
-
-- Each skill has a sharp **"Use when…" description**;
-  Claude selects by matching the ticket's intent + acceptance criteria.
-- Each skill is also **tagged in its frontmatter** by `stack` (a list of languages /
-  runtimes; empty = any) and `area` (its domain pack — `frontend`, `backend`,
-  `security`, `language`, `testing`, `review`, `docs`, `workflow`, …).
-- The tick injects **stack/area-recommended skills** for the ticket's stack via
-  `bin/select-skills.mjs` (zero-dependency), so selection is steered, not just
-  guessed. A skill matches when its `stack` is empty *or* intersects the ticket's
-  stack, **and** its `area` is empty *or* equals the requested area — the same rule
-  the Crew registry uses, so local and registry selection agree. If the local
-  library is unavailable the tick falls back to the Crew skills registry.
-
-### Domain skill packs
-Beyond the generic delivery skills, the library ships domain packs the agent selects
-by stack/area:
-- **frontend** — `frontend-component`, `frontend-a11y`, `frontend-responsive` (+ `brand`)
-- **backend** — `add-api-endpoint`, `add-db-migration`, `backend-service`
-- **security** — `security-authz`, `security-input-validation`, `security-secret-handling`
-- **language** — `typescript-conventions` (`stack: [typescript, javascript, node]`)
+The library ships **118 skills** under `skills/<name>/SKILL.md`, each tagged in its
+frontmatter by `stack` (languages / runtimes; empty = any) and `area` (its bucket:
+universal delivery mechanics, task packs, stack packs, off-domain packs). Every agent
+role gets its own mount from `bin/select-skills.mjs --role <role>` (delivery, review,
+clarify, test, plan, spec, product, merge, bootstrap): task packs are broad-inclusion,
+language and surface packs follow the stack (fail-open on an unknown stack),
+off-domain packs are opt-in by tag, `--area` or the ticket text, and role-only /
+user-only skills stay with their role. The full model, the per-role table and who
+mounts what: [docs/skill-selection-and-stacks.md](../docs/skill-selection-and-stacks.md).
 
 ```bash
-node bin/select-skills.mjs --stack node --area security   # → the security pack
-node bin/select-skills.mjs --list-areas                   # → all area packs
-node test/select-skills.test.mjs                          # → selector tests
+node bin/select-skills.mjs --stack typescript --text "Add an orders endpoint"   # delivery
+node bin/select-skills.mjs --role review --stack python                          # a role
+node bin/select-skills.mjs --list-areas                                           # buckets
+node test/select-skills.test.mjs                                                  # tests
 ```
 
 ## Security model (deterministic, not trust-based)
@@ -246,13 +232,11 @@ pnpm -C .. -r build   # build all three packages from the repo root
 ./gaffer run
 
 # 4. Unattended: render + install the launchd agent (every 15 min, keep DRY_RUN=1 first).
-#    The plist is a TEMPLATE. render.mjs fills in the repo + data paths AND a PATH that
-#    starts with the directory of the node running it (launchd's own PATH is a bare
-#    /usr/bin:/bin:/usr/sbin:/sbin with no node in it). Run from the repo root, in the
-#    shell you normally use gaffer from; re-render after moving node or the checkout:
+#    The plist is a TEMPLATE — substitute the repo + data paths, then load it (run from repo root):
 OUT=~/Library/LaunchAgents/com.gaffer.factory.plist
-node runner/launchd/render.mjs --out "$OUT"     # --data DIR / --path PATH to override
-plutil -lint "$OUT" && launchctl load "$OUT"
+sed -e "s#__GAFFER_REPO__#$(pwd)#g" -e "s#__GAFFER_DATA__#$(pwd)/.gaffer#g" \
+  runner/launchd/com.gaffer.factory.plist.template > "$OUT"
+launchctl load "$OUT"
 ```
 Config + stop conditions (cost guards) live in `factory.config.sh`; the full
 knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
@@ -286,15 +270,13 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `lib/minimalism.sh` — minimalism post-condition (smallest-change note required; oversized diffs flagged `needs_human_review: oversized_diff`)
 - `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` (+ `GAFFER_DOD_TYPECHECK_CMD` for typecheck, which has no dispatch field). **Ships:** tests · typecheck · lint. **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
 - `lib/backpressure.sh` — per-repo backpressure (unmerged `gaffer/*` branches + in_review tickets + active claims vs cap)
-- `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state / safety blocks / retrieval: reads before the agent's first write and file cards served vs Read, from `delivery-metrics.jsonl` + `tool-metrics.jsonl` / usage); printed by `loop.sh`
+- `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state); printed by `loop.sh`
 - `test/hygiene.test.sh` — delivery-hygiene validation (`bash test/hygiene.test.sh`)
 - `test/minimalism.test.sh` — minimalism post-condition validation (`bash test/minimalism.test.sh`)
 - `test/backpressure.test.sh` — per-repo backpressure validation (`bash test/backpressure.test.sh`)
 - `test/run-summary.test.sh` — run-summary report validation (`bash test/run-summary.test.sh`)
 - `test/stabilisation-integration.test.sh` — end-to-end proof the hygiene + backpressure gates fire against real `tick.sh` (`bash test/stabilisation-integration.test.sh`)
 - `test/dod-gate.test.sh` — Definition-of-Done validation: a failing `test_command` fails the gate; all-pass proceeds; an un-configured gate is skipped not failed; a disabled gate is not run; an unrunnable command is a fail not a crash; `GAFFER_DOD=0` disables enforcement; and (against the **real dispatch CLI**) a DoD failure review-rejects an in_review ticket to refining with the checklist recorded as evidence (`bash test/dod-gate.test.sh`)
-- `test/launchd-render.test.sh` — renders the launchd plist, lints it, and runs the job under `env -i` with only the plist's environment: it gets past SETUP, while launchd's bare PATH stops with a message naming node (`bash test/launchd-render.test.sh`)
-- `test/self-op-ban.test.sh` — self-operation ban unit tests for `gaffer_is_self_target` (component dirs, the monorepo root and its ancestors, a linked worktree of the runner's repo) + tick.sh wiring (`bash test/self-op-ban.test.sh`)
-- `test/self-op-ban-integration.test.sh` — end-to-end proof the self-op ban refuses a delivery whose target is a Gaffer component or the gaffer monorepo root (including as the second write repo of a multi-repo ticket), honours `GAFFER_ALLOW_SELF_DELIVERY=1`, and leaves a non-Gaffer target unaffected (`bash test/self-op-ban-integration.test.sh`)
-- `launchd/com.gaffer.factory.plist.template` — scheduled-run template with `__GAFFER_REPO__` / `__GAFFER_DATA__` / `__GAFFER_PATH__` placeholders (disabled by default; render with `node launchd/render.mjs` before loading — it writes the job's PATH so launchd can find node)
-- `launchd/render.mjs` — renders the template with this machine's checkout, data dir and a PATH holding node, claude and git
+- `test/self-op-ban.test.sh` — self-operation ban unit tests for `gaffer_is_self_target` + tick.sh wiring (`bash test/self-op-ban.test.sh`)
+- `test/self-op-ban-integration.test.sh` — end-to-end proof the self-op ban refuses a delivery whose target is a Gaffer component, honours `GAFFER_ALLOW_SELF_DELIVERY=1`, and leaves a non-Gaffer target unaffected (`bash test/self-op-ban-integration.test.sh`)
+- `launchd/com.gaffer.factory.plist.template` — scheduled-run template with `__GAFFER_REPO__` / `__GAFFER_DATA__` placeholders (disabled by default; render with `sed` before loading)

@@ -1,9 +1,16 @@
 #!/usr/bin/env node
 // Gaffer factory — skill-selection telemetry writer.
 //
-// Appends one JSONL record per delivery capturing which skills were SELECTED
-// (mounted / recommended for the ticket) and, best-effort, which were APPLIED
-// (their name appears in the agent's raw output). This is the "instrument first
+// Appends one JSONL record per agent run (delivery, bootstrap, review,
+// security-review, clarify, and the headless plan / spec / product / test / merge
+// runners) capturing which skills were SELECTED (mounted for the run — the mount
+// dir is the source of truth when given, so the universal mechanics count too) and,
+// best-effort, which were APPLIED: their name appears in the agent's final output,
+// or the agent OPENED one of the skill's files (a Read / Bash target under
+// `.claude/skills/<name>/` in the safety hook's tool ledger,
+// $GAFFER_DATA/tool-metrics.jsonl). A Skill-tool invocation itself is not visible to
+// either signal (the hook does not see the Skill tool and the json envelope carries
+// no tool calls), so `applied` is a lower bound. This is the "instrument first
 // so pruning isn't blind" step: the data-driven prune of the ~50 generic skills
 // is a LATER follow-up that needs this usage trail accumulated over time.
 //
@@ -14,11 +21,13 @@
 //   record-skill-usage.mjs --ticket 42 --role delivery --stack typescript-react \
 //     --selected "run-tests,run-lint,frontend-component" \
 //     [--applied "run-tests"] [--scan /path/to/agent-output.json] \
+//     [--mount <skill-mount-dir>] [--tool-ledger <tool-metrics.jsonl> \
+//      --since <iso-ts> --root <agent-dir>] \
 //     --out /path/to/skills-telemetry.jsonl
 //
 // Exported helpers are unit-tested directly (see test/skill-telemetry.test.mjs).
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 
 /** Split a comma/whitespace/newline-separated list into a de-duped, ordered array. */
 export function parseList(value) {
@@ -56,8 +65,70 @@ export function detectApplied(selected, outputText) {
   });
 }
 
+/**
+ * Skills the agent OPENED, from the safety hook's tool ledger (one JSON row per tool
+ * call: {ts, ticket, tool, target}). A row counts when it is at or after `since` and
+ * belongs to THIS run — it carries this `ticket` (delivery sets GAFFER_TICKET) or its
+ * target names one of this run's `roots` (the agent's worktree / mount dir; the other
+ * roles run without a ticket) — and its target is a path inside a selected skill's dir
+ * (`.claude/skills/<name>/…`, the mount's `<name>/…`). Bounded to SELECTED skills.
+ * Never throws.
+ */
+export function detectOpened(selected, ledgerText, { ticket = "", since = "", roots = [] } = {}) {
+  const sinceMs = since ? Date.parse(since) : NaN;
+  // A root matches only as a whole path: it must start at a non-path character (or the
+  // start of the target) and end at `/`, a shell separator or the end. A bare substring
+  // test let root `…/review-wt-7` claim `…/review-wt-71/…` reads (another ticket's agent).
+  const scopes = roots
+    .map((r) => String(r ?? "").replace(/\/+$/, ""))
+    .filter(Boolean)
+    .map(
+      (r) =>
+        new RegExp(
+          `(^|[^A-Za-z0-9_.~/-])${r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s"'\`;&|)<>])`,
+        ),
+    );
+  const res = selected.map((name) => [
+    name,
+    new RegExp(
+      `(^|[\\s"'=/])(\\.claude/skills|skills-mount|skills-mounts/[^/\\s]+|skills)/${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+    ),
+  ]);
+  const opened = new Set();
+  for (const line of String(ledgerText ?? "").split("\n")) {
+    if (!line.trim()) continue;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const target = typeof row?.target === "string" ? row.target : "";
+    if (!target) continue;
+    if (!Number.isNaN(sinceMs) && !(Date.parse(row.ts) >= sinceMs)) continue;
+    const ours =
+      (ticket && row.ticket != null && String(row.ticket) === String(ticket)) ||
+      scopes.some((re) => re.test(target));
+    if (!ours) continue;
+    for (const [name, re] of res) if (re.test(target)) opened.add(name);
+  }
+  return selected.filter((n) => opened.has(n));
+}
+
+/** The skill names actually mounted in a per-agent mount dir ([] when unreadable). */
+export function mountedNames(mountDir) {
+  if (!mountDir) return [];
+  try {
+    return readdirSync(mountDir)
+      .filter((n) => !n.startsWith("."))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 /** Build the telemetry record (pure — no I/O). */
-export function buildRecord({ ticket, role, stack, selected, applied }) {
+export function buildRecord({ ticket, role, stack, selected, applied, opened = [] }) {
   return {
     ts: new Date().toISOString(),
     ticket: ticket || null,
@@ -66,6 +137,7 @@ export function buildRecord({ ticket, role, stack, selected, applied }) {
     count: selected.length,
     selected,
     applied,
+    opened,
   };
 }
 
@@ -77,6 +149,10 @@ export function parseArgs(argv) {
     selected: "",
     applied: "",
     scan: "",
+    mount: "",
+    toolLedger: "",
+    since: "",
+    roots: [],
     out: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -101,6 +177,18 @@ export function parseArgs(argv) {
       case "--scan":
         opts.scan = next();
         break;
+      case "--mount":
+        opts.mount = next();
+        break;
+      case "--tool-ledger":
+        opts.toolLedger = next();
+        break;
+      case "--since":
+        opts.since = next();
+        break;
+      case "--root":
+        opts.roots.push(next());
+        break;
       case "--out":
         opts.out = next();
         break;
@@ -113,7 +201,8 @@ export function parseArgs(argv) {
 
 /** Compose a record from parsed opts, reading the scan file if provided. */
 export function recordFromOpts(opts) {
-  const selected = parseList(opts.selected);
+  // The mount is what the agent could actually see (selection ∪ the universal set).
+  const selected = parseList([opts.selected, ...mountedNames(opts.mount)].join(","));
   const explicit = parseList(opts.applied);
   let scanned = [];
   if (opts.scan) {
@@ -123,8 +212,70 @@ export function recordFromOpts(opts) {
       scanned = [];
     }
   }
-  const applied = parseList([...explicit, ...scanned].join(","));
-  return buildRecord({ ...opts, selected, applied });
+  let opened = [];
+  if (opts.toolLedger) {
+    try {
+      opened = detectOpened(selected, readFileSync(opts.toolLedger, "utf8"), {
+        ticket: opts.ticket,
+        since: opts.since,
+        roots: [...(opts.roots ?? []), opts.mount].filter(Boolean),
+      });
+    } catch {
+      opened = [];
+    }
+  }
+  const applied = parseList([...explicit, ...scanned, ...opened].join(","));
+  return buildRecord({ ...opts, selected, applied, opened });
+}
+
+/**
+ * Append one record for a headless .mjs runner (decompose, spec-author,
+ * product-owner-run, tester-run, merge-ticket). Fail-soft: never throws. Writes to
+ * GAFFER_SKILL_TELEMETRY, else $GAFFER_DATA/skills-telemetry.jsonl; nothing when
+ * neither is set.
+ */
+export function recordSkillUsage({
+  ticket = "",
+  role = "",
+  stack = "",
+  selected = [],
+  output = "",
+  agentDir = "",
+  since = "",
+  env = process.env,
+} = {}) {
+  try {
+    const out =
+      env.GAFFER_SKILL_TELEMETRY ||
+      (env.GAFFER_DATA ? `${env.GAFFER_DATA}/skills-telemetry.jsonl` : "");
+    if (!out) return null;
+    const names = parseList(Array.isArray(selected) ? selected.join(",") : selected);
+    const scanned = detectApplied(names, output);
+    let opened = [];
+    if (env.GAFFER_DATA) {
+      try {
+        opened = detectOpened(
+          names,
+          readFileSync(`${env.GAFFER_DATA}/tool-metrics.jsonl`, "utf8"),
+          { ticket: "", since, roots: [agentDir].filter(Boolean) },
+        );
+      } catch {
+        opened = [];
+      }
+    }
+    const record = buildRecord({
+      ticket: String(ticket ?? ""),
+      role,
+      stack,
+      selected: names,
+      applied: parseList([...scanned, ...opened].join(",")),
+      opened,
+    });
+    appendFileSync(out, JSON.stringify(record) + "\n");
+    return record;
+  } catch {
+    return null;
+  }
 }
 
 function main() {

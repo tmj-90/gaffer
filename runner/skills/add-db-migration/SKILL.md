@@ -78,9 +78,9 @@ the deploy, take only brief locks, and be reversible or explicitly justified.
 - `ADD COLUMN … NOT NULL` without a default on a populated table.
 - A single `UPDATE` over the whole table inside the migration transaction.
 - `CREATE INDEX` without `CONCURRENTLY` on a large PostgreSQL table.
-- Installing DB tooling (never install anything: the hook blocks npm/pip installs, and
-  `go install`, `cargo install` and the like are equally forbidden though not blocked),
-  or writing secret/`.env` files (hook-blocked).
+- Installing DB tooling (never install anything: the hook blocks npm/pip installs,
+  `go install` and `cargo install`; `poetry install`, `uv sync` and `cargo update` are
+  equally forbidden though not blocked), or writing secret/`.env` files (hook-blocked).
 
 The reviewer judges this change with the `migration-review` skill; meet that bar here.
 

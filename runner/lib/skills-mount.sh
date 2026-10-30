@@ -18,12 +18,12 @@
 # digest delta the prompt mandates). Space-separated skill
 # DIRECTORY names; override via env. Only names that actually exist in
 # $SKILLS_DIR are linked, so a trimmed library is safe.
-# FINDING 16: prepare-digest-delta is part of the universal set — the delivery
-# prompt MANDATES it, so it must survive the select-skills fallback too.
-# create-branch / submit-review are NOT here: the runner creates the branch and submits
-# the delivery, so they are role-only (select-skills.mjs ROLE_ONLY_SKILLS) — the
-# reviewer and bootstrap profiles still mount them.
-: "${GAFFER_UNIVERSAL_SKILLS:=run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta}"
+# prepare-digest-delta and plan-change are part of the universal set — the delivery
+# prompt / brief MANDATE them, so they must survive the select-skills fallback too.
+# This list IS select-skills.mjs ROLE_PROFILES.delivery.core
+# (test/select-skills.test.mjs pins the two equal). create-branch is NOT here: the
+# runner creates the branch (it is a user-only skill, never mounted on a factory agent).
+: "${GAFFER_UNIVERSAL_SKILLS:=run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta plan-change}"  # skills mounted on every delivery (= select-skills ROLE_PROFILES.delivery.core)
 
 # Root under which per-agent mounts live. Factory state (never the target repo),
 # so leaving a mount in place between ticks is harmless; each build rebuilds its
@@ -150,22 +150,31 @@ gaffer_skills_mount_cleanup() {
   gaffer_skills_unmount "${2:-}"
 }
 
-# gaffer_record_skill_usage <ticket> <role> <stack> <selected> [<scan_file>]
-#   Append one skill-selection telemetry record (JSONL) for this delivery so a
+# gaffer_record_skill_usage <ticket> <role> <stack> <selected> [<scan_file>] [<mount_key>] [<agent_dir>] [<since>]
+#   Append one skill-selection telemetry record (JSONL) for this agent run so a
 #   LATER, data-driven prune of the generic skills isn't blind. Records which
-#   skills were SELECTED (mounted/recommended) and, if <scan_file> is given (the
-#   agent's raw output JSON), best-effort which SELECTED skills were APPLIED
-#   (their name appears in the agent's output). FAIL-SOFT: a telemetry failure
-#   must never fail a delivery.
+#   skills were SELECTED — with <mount_key>, the names actually in that per-agent
+#   mount (the selection ∪ the universal set) — and, best-effort, which were APPLIED:
+#   named in the agent's output JSON (<scan_file>), or OPENED (a Read / Bash target
+#   under the skill's dir in $GAFFER_DATA/tool-metrics.jsonl at or after <since>,
+#   scoped to this <ticket> or to <agent_dir> / the mount). Called by the delivery,
+#   bootstrap, review, security-review and clarify sites. FAIL-SOFT: a telemetry
+#   failure must never fail a run.
 gaffer_record_skill_usage() {
   local ticket="${1:-}" role="${2:-}" stack="${3:-}" selected="${4:-}" scan="${5:-}"
+  local mount_key="${6:-}" agent_dir="${7:-}" since="${8:-}" mount=""
   [ -n "${GAFFER_DATA:-}" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   local bin="${RUNNER_DIR:-.}/bin/record-skill-usage.mjs"
   [ -f "$bin" ] || return 0
+  [ -n "$mount_key" ] && mount="$(_gaffer_skills_mount_root)/$(_gaffer_skills_mount_key "$mount_key")"
   node "$bin" \
     --ticket "$ticket" --role "$role" --stack "$stack" --selected "$selected" \
     ${scan:+--scan "$scan"} \
+    ${mount:+--mount "$mount"} \
+    --tool-ledger "$GAFFER_DATA/tool-metrics.jsonl" \
+    ${since:+--since "$since"} \
+    ${agent_dir:+--root "$agent_dir"} \
     --out "${GAFFER_SKILL_TELEMETRY:-$GAFFER_DATA/skills-telemetry.jsonl}" \
     >/dev/null 2>&1 || true
 }

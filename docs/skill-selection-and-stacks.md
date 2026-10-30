@@ -20,7 +20,7 @@ A skill's `area:` frontmatter tag sorts it into one of four buckets
 | **Universal** | `quality`, `testing`, `review`, `workflow`, `security` | Always eligible — the delivery mechanics fire on every ticket. |
 | **Delivery** | `backend`, `data`, `refactor`, `docs` | Always eligible — every task-shaped pack fires regardless of stack (broad inclusion). |
 | **Stack packs** | `language`, `frontend`, `mobile` | Follow the repo's **stack**: the stack's own conventions pack; the web design bar when the stack has a web token (`react`, `web`, `next`, `vue`, `svelte`, `angular`…); the mobile pack when it has a mobile token (`react-native`, `expo`, `ios`, `android`, `swift`, `kotlin`). **Fail-open**: an empty stack, or one made only of tokens the library does not recognise, mounts every stack pack. The ticket text pulls a pack in by name ("port the Kotlin client" → `kotlin-conventions`). |
-| **Off-domain** | `marketing`, `product`, `planning`, `devops`, `infra`, `meta`, `security-ops` | Opt-in — mounted only if the skill is stack-tagged and the ticket's stack intersects, an explicit `--area` names it, or the ticket text plainly calls for it. |
+| **Off-domain** | `marketing`, `product`, `planning`, `devops`, `infra`, `meta`, `security-ops` | Opt-in — mounted only if the skill is stack-tagged and the ticket's stack intersects (an empty or unknown stack is **not** a match here: no fail-open onto Terraform / Docker / the Kubernetes Operator pack), an explicit `--area` names it, or the ticket text plainly calls for it. |
 
 Two refinements apply across buckets:
 
@@ -29,8 +29,35 @@ Two refinements apply across buckets:
   `react, web, …`) and the `accessibility-review` lens (web/mobile) stay off a
   Node or Python backend; `contract-test` and `e2e-browser-test` (tagged `node`)
   ride a Node service. Unknown stack → fail-open, as above.
+- A **`node` tag means the JS/TS server runtime**, so it is satisfied by a
+  `typescript` or `javascript` stack token too (`TAG_ALIASES`). The onboarding
+  scanner labels most Node services `typescript` / `typescript-react`, never
+  `node`; an exact-token compare kept ~25 backend / data / security packs
+  (`add-api-endpoint`, `add-db-migration`, `error-handling`, `auth-session-and-oauth`,
+  `data-privacy`…, all tagged `[node, python, go, …]`) off every TypeScript backend.
 - A skill with **no `area:`** and no stack tag is fully cross-cutting and always
-  eligible.
+  eligible. `gaffer skills add` refuses one (see the lint gate below).
+- **Text relevance** (`--text`, the ticket title + description head): an off-domain
+  pack is pulled in when the text names it (every part of its name, or its name as
+  a phrase), shares two distinctive words with its description, or — for packs whose
+  names do not match how a ticket asks for them — contains one of its trigger words
+  (`TEXT_TRIGGERS`): `runbook-generator` (runbook, playbook, on-call),
+  `incident-response` (postmortem, outage, incident), `docker-development`
+  (Docker, Dockerfile, docker-compose), `terraform-patterns` (terraform, OpenTofu),
+  `kubernetes-operator` (CRD, kubebuilder, operator-sdk) and `seo-audit` (SEO, meta
+  tags). A pack with a trigger list does not use the two-description-words rule
+  (`seo-audit` used to ride "health check endpoint" through "SEO health check").
+  There is no generic Kubernetes-manifests pack: the Operator pack says it is not
+  one, so plain "kubernetes" / "helm" pull nothing.
+- **Role-only, builder-only and user-only skills.** A role's own procedure
+  (`review-ticket`, `adversarial-reviewer`, `black-box-test`, `clarify`, `plan-build`,
+  `spec-author`, `product-owner`, `resolve-merge-conflict`) is mounted only by its
+  role profile. The builder's skills (`self-review`, `submit-review` — "fix and
+  re-test", "commit on the ticket branch") ride every delivery but are never another
+  role's review lens. `caveman` (a chat mode a user switches on) and `create-branch`
+  (the runner creates every factory branch; the delivery brief carries the branch and
+  clean-tree check) are **user-only**: shipped for `gaffer skills install` into a
+  human's own Claude Code, never mounted on a factory agent.
 
 ### Why broad inclusion for the task packs
 
@@ -79,32 +106,72 @@ though `review-ticket` tells it to "review Java like Java") or the whole library
 
 | Role | Core (always) | Lens areas | Stack packs | Text packs |
 | --- | --- | --- | --- | --- |
-| `delivery` | the universal mechanics (`run-tests`, `run-lint`, `run-coverage`, `minimalism`, `self-review`, `record-evidence`, `prepare-digest-delta`, `plan-change`; never `create-branch` / `submit-review` / `resolve-merge-conflict`, which are the runner's and other roles' jobs) | — (the legacy stack/area selection, byte-identical) | language + surface | yes |
-| `review` | `review-ticket`, `adversarial-reviewer`, `submit-review`, `record-evidence`, `engineering-craft`, `minimalism` | `review` (the lenses: `security-review`, `performance-review`, `accessibility-review`, `test-quality-review`, `migration-review`, `concurrency-review`, `api-design-reviewer`), `security` | language + surface | no |
+| `delivery` | the universal mechanics (`run-tests`, `run-lint`, `run-coverage`, `minimalism`, `self-review`, `record-evidence`, `prepare-digest-delta`, `plan-change` — exactly `GAFFER_UNIVERSAL_SKILLS` in `runner/lib/skills-mount.sh`, the set mounted even when the selector fails; a test pins the two equal) | — (the plain stack/area/text selection, which includes `submit-review`) | language + surface | yes |
+| `review` | `review-ticket`, `adversarial-reviewer`, `record-evidence`, `engineering-craft`, `minimalism` | `review` (the lenses: `security-review`, `performance-review`, `accessibility-review`, `test-quality-review`, `migration-review`, `concurrency-review`, `api-design-reviewer`; not the builder's `self-review` / `submit-review`), `security` | language + surface | no |
 | `clarify` | `clarify`, `record-evidence`, `user-story`, `prd` | `security` | language | no |
 | `test` | `black-box-test`, `run-tests`, `add-integration-test`, `e2e-browser-test`, `contract-test`, `test-fixtures-and-factories`, `record-evidence` | `testing` | language | no |
 | `plan` | `plan-build`, `spec-author`, `user-story`, `rice`, `prd`, `product-discovery`, `database-schema-designer`, `api-design-reviewer`, `design-system`, `write-adr` | `planning` | language + surface | yes |
 | `spec` | `spec-author`, `prd`, `user-story`, `product-discovery`, `write-adr` | `planning` | — | no |
-| `product` | `product-owner`, `prd`, `rice`, `user-story`, `product-discovery`, `brand`, `page-cro` | `product` | — | yes |
+| `product` | `product-owner`, `prd`, `rice`, `user-story`, `product-discovery`, `brand`, `page-cro` | `product`, `marketing` (the PO proposes growth work too, and its run has no ticket text to pull `copywriting` / `seo-audit` / `aeo` with) | — | no |
 | `merge` | `resolve-merge-conflict`, `run-tests`, `run-lint`, `record-evidence`, `minimalism` | — | language | no |
-| `bootstrap` | `create-branch`, `record-evidence`, `minimalism`, `run-tests`, `run-lint`, `ci-cd-pipeline`, `docker-development`, `shell-scripting` | `quality` | language + surface | yes |
+| `bootstrap` | `record-evidence`, `minimalism`, `run-tests`, `run-lint`, `ci-cd-pipeline`, `docker-development`, `shell-scripting`, plus the delivery selection | `quality` | language + surface | yes |
 
 "Language packs" are the `area: language` skills whose `stack` tags intersect the
 repo's stack (`typescript-conventions` for a TS repo, `java-conventions` for Java…).
 "Surface packs" are the `frontend` / `mobile` packs, added when the stack is a web or
 mobile one. Both fail open — every pack — when the stack is unknown (§1), and a lens
 whose own stack tag rules the stack out (`accessibility-review` on a backend) is skipped.
-The headless runners mount their role's set through `runner/lib/agent-home.mjs`
-(`mountRoleSkills`): decompose → `plan`, spec-author → `spec`, product-owner-run →
-`product`, tester-run → `test`; before this they symlinked the whole library. Names a profile lists that are not in the library are dropped silently, so
-a trimmed library is safe. `review.sh` and `clarify.sh` mount their role's set (without
-the delivery mechanics) and the reviewer's prompt names the lenses mounted for it.
+Who mounts which profile (every live spawn site):
+
+| Agent | Site | Profile | Stack / text it selects with |
+| --- | --- | --- | --- |
+| delivery | `tick.sh` | plain selection + `GAFFER_UNIVERSAL_SKILLS` | repo stack (narrowed by the paths the ticket names), title + description |
+| greenfield bootstrap | `tick.sh` | `--role bootstrap` | the ticket's stack, title + description |
+| reviewer, security reviewer | `lib/review.sh` | `--role review` | repo stack narrowed to the diff's paths |
+| clarify | `lib/clarify.sh` | `--role clarify` | repo stack |
+| tester | `bin/tester-run.mjs` | `test` | repo stack |
+| decompose | `bin/decompose.mjs` | `plan` | the brownfield target repo's registered stack, the brief head (greenfield: no stack) |
+| spec author | `bin/spec-author.mjs` | `spec` | — |
+| product owner | `bin/product-owner-run.mjs` | `product` | — |
+| merge-conflict resolver | `bin/merge-ticket.mjs` | `merge` | repo stack |
+
+The `.mjs` runners mount through `runner/lib/agent-home.mjs` (`mountRoleSkills`).
+Before this decompose passed no stack and no text (so a Python API's plan got
+`swift-conventions`, `mobile-ui` and the React state pack through the empty-stack
+fail-open) and the merge resolver symlinked the whole library. Names a profile lists
+that are not in the library are dropped silently, so a trimmed library is safe.
+`review.sh` and `clarify.sh` mount their role's set (without the delivery mechanics)
+and the reviewer's prompt names the lenses mounted for it. When the delivery selector
+prints nothing, the prompt recommends `GAFFER_UNIVERSAL_SKILLS` (the crew registry's
+`fg skills` used to be the fallback; it lists role-only skills and names the library
+does not carry).
+
+crew.yaml's `context.max_skills` caps only the crew context packet (the mock `crew run`
+loop and the crew MCP); `crew doctor` names it as mock-only. The live mounts above are
+uncapped by design — an unused mounted skill costs one description line.
+
+### Skill telemetry
+
+Every spawn site above appends one row to `$GAFFER_DATA/skills-telemetry.jsonl`
+(`GAFFER_SKILL_TELEMETRY` overrides) through `bin/record-skill-usage.mjs`: the role,
+the stack, the skills actually MOUNTED (the mount dir, so the universal set counts),
+and, best-effort, which were APPLIED — named in the agent's final output, or OPENED
+(a Read or Bash target under `.claude/skills/<name>/` in the safety hook's tool ledger,
+`$GAFFER_DATA/tool-metrics.jsonl`, scoped to the run's ticket or worktree and start
+time; the opened list is recorded separately). The Health page's skill hit-rate reads
+these rows. A Skill-tool invocation itself is visible to neither signal (the hook does
+not see the Skill tool, and the json envelope carries no tool calls), so `applied` is a
+lower bound.
 
 ### The lint gate
 
-`runner/test/skills-lint.test.mjs` is the quality gate every `SKILL.md` must pass:
+`runner/test/skills-lint.test.mjs` is the quality gate every `SKILL.md` must pass, and
+`gaffer skills add` (`bin/skill-add.mjs`) runs the same per-skill checks
+(`runner/lib/skill-lint.mjs`) on an outside skill before installing it, plus a
+duplicate-description check against the installed library; a failing skill is refused
+and nothing is written. The checks:
 frontmatter (`name` = directory, trigger-phrased one-line `description`, `stack` list,
-`area` in the buckets above), body shape (H1, ≥ 2 sections, a procedure, ≥ 220 words),
+`area` in the buckets above — a skill with no area would be always-eligible on every delivery), body shape (H1, ≥ 2 sections, a procedure, ≥ 220 words),
 every backticked MCP-tool-shaped token names a real dispatch/memory tool, every
 "`x` skill" cross-reference exists, no duplicate names or descriptions, and every role
 profile's core skills exist. It exists because a skill once named a tool that does not

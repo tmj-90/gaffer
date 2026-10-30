@@ -53,8 +53,11 @@ const GAFFER_HOME = resolve(RUNNER_DIR, "..");
  * no role, or when nothing resolves, `.claude/skills` points at the whole library (the
  * pre-role behaviour — never an empty mount). Returns the mounted skill names.
  */
-export function mountRoleSkills(claudeDir, { role = "", stacks = [], text = "" } = {}) {
-  const skillsDir = process.env.SKILLS_DIR || resolve(RUNNER_DIR, "skills");
+export function mountRoleSkills(
+  claudeDir,
+  { role = "", stacks = [], text = "", skillsDir = process.env.SKILLS_DIR || "" } = {},
+) {
+  skillsDir = skillsDir || resolve(RUNNER_DIR, "skills");
   const link = resolve(claudeDir, "skills");
   rmSync(link, { recursive: true, force: true });
   let names = [];

@@ -150,7 +150,7 @@ gaffer/
 └── quickstart.md
 ```
 
-`runner/gaffer skills install` links the skill library into `.claude/skills` in the current directory (`--user` for `~/.claude/skills`), and `runner/gaffer skills add <path|git-url>` validates an outside skill before adding it to the factory's library.
+`runner/gaffer skills install` links the skill library into `.claude/skills` in the current directory (`--user` for `~/.claude/skills`), and `runner/gaffer skills add <path|git-url>` validates an outside skill against the same lint gate the bundled library passes (a known `area`, a trigger-phrased description, a real procedure, real MCP tool names) before adding it to the factory's library.
 
 ## Further reading
 

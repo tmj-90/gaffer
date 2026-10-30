@@ -3,7 +3,7 @@
 // it records which skills were SELECTED per delivery and, best-effort, which were
 // APPLIED (detected in the agent's output). Run: node test/skill-telemetry.test.mjs
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -11,6 +11,9 @@ import {
   detectApplied,
   buildRecord,
   recordFromOpts,
+  detectOpened,
+  mountedNames,
+  recordSkillUsage,
 } from "../bin/record-skill-usage.mjs";
 
 let passed = 0;
@@ -145,6 +148,191 @@ check("CLI appends one JSONL record per delivery to --out", () => {
     const first = JSON.parse(lines[0]);
     eq(first.selected, ["run-tests", "minimalism"], "first record's selected");
     eq(first.role, "delivery", "role recorded");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// --- what was MOUNTED, and what the agent OPENED -----------------------------
+check("recordFromOpts counts the mount's names as selected (universal set included)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-telem-mount-"));
+  try {
+    for (const n of ["run-tests", "plan-change", "add-api-endpoint"]) mkdirSync(join(dir, n));
+    const rec = recordFromOpts({ selected: "add-api-endpoint", mount: dir });
+    eq(rec.selected, ["add-api-endpoint", "plan-change", "run-tests"], "selection ∪ mount");
+    eq(mountedNames("/no/such/mount"), [], "unreadable mount → []");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+const ledger = (rows) => rows.map((r) => JSON.stringify(r)).join("\n") + "\n";
+check("detectOpened: a Read of .claude/skills/<name>/ in THIS run counts as applied", () => {
+  const text = ledger([
+    // before the run started → ignored
+    {
+      ts: "2026-01-01T09:59:59.000Z",
+      ticket: "7",
+      tool: "Read",
+      target: "/wt/7/.claude/skills/run-lint/SKILL.md",
+    },
+    // this delivery (ticket match), absolute Read
+    {
+      ts: "2026-01-01T10:00:01.500Z",
+      ticket: "7",
+      tool: "Read",
+      target: "/wt/7/.claude/skills/run-tests/SKILL.md",
+    },
+    // this delivery, a Bash cat with a relative path
+    {
+      ts: "2026-01-01T10:00:02.000Z",
+      ticket: "7",
+      tool: "Bash",
+      target: "cat .claude/skills/self-review/SKILL.md",
+    },
+    // another ticket's agent → ignored
+    {
+      ts: "2026-01-01T10:00:03.000Z",
+      ticket: "8",
+      tool: "Read",
+      target: "/wt/8/.claude/skills/minimalism/SKILL.md",
+    },
+    // a ticketless reviewer in its own worktree root → counted when the root matches
+    {
+      ts: "2026-01-01T10:00:04.000Z",
+      ticket: null,
+      tool: "Read",
+      target: "/data/worktrees/review-7/.claude/skills/review-ticket/SKILL.md",
+    },
+    // an unselected skill → never invented
+    {
+      ts: "2026-01-01T10:00:05.000Z",
+      ticket: "7",
+      tool: "Read",
+      target: "/wt/7/.claude/skills/seo-audit/SKILL.md",
+    },
+    "not json",
+  ]);
+  const sel = ["run-tests", "run-lint", "self-review", "minimalism", "review-ticket"];
+  eq(
+    detectOpened(sel, text, { ticket: "7", since: "2026-01-01T10:00:00Z" }),
+    ["run-tests", "self-review"],
+    "delivery (ticket-scoped)",
+  );
+  eq(
+    detectOpened(sel, text, {
+      since: "2026-01-01T10:00:00Z",
+      roots: ["/data/worktrees/review-7"],
+    }),
+    ["review-ticket"],
+    "reviewer (root-scoped, no ticket)",
+  );
+  eq(detectOpened(sel, "", { ticket: "7" }), [], "no ledger → nothing");
+});
+check("detectOpened: a root matches on a path boundary, never as a bare prefix", () => {
+  const at = "2026-01-01T10:00:01.000Z";
+  const text = ledger([
+    // a concurrent ticketless agent on ticket 71 / 7NN → must NOT be credited to root review-7
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/x/review-71/.claude/skills/security-review/SKILL.md",
+    },
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/x/review-700/.claude/skills/run-tests/SKILL.md",
+    },
+    {
+      ts: at,
+      ticket: null,
+      tool: "Bash",
+      target: "cat /x/review-7x/.claude/skills/run-lint/SKILL.md",
+    },
+    // the same root nested under another prefix is a different path
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/other/x/review-7/.claude/skills/minimalism/SKILL.md",
+    },
+    // the run's own root: absolute Read, and a Bash `cd <root> && cat …`
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/x/review-7/.claude/skills/review-ticket/SKILL.md",
+    },
+    {
+      ts: at,
+      ticket: null,
+      tool: "Bash",
+      target: "cd /x/review-7 && cat .claude/skills/self-review/SKILL.md",
+    },
+  ]);
+  const sel = [
+    "security-review",
+    "run-tests",
+    "run-lint",
+    "minimalism",
+    "review-ticket",
+    "self-review",
+  ];
+  eq(
+    detectOpened(sel, text, { roots: ["/x/review-7/"] }),
+    ["review-ticket", "self-review"],
+    "only the run's own root",
+  );
+  eq(
+    detectOpened(sel, text, { roots: ["/x/review-71"] }),
+    ["security-review"],
+    "the sibling root claims its own row",
+  );
+});
+check("recordFromOpts unions opened skills into applied and records them", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-telem-ledger-"));
+  try {
+    const tl = join(dir, "tool-metrics.jsonl");
+    writeFileSync(
+      tl,
+      ledger([
+        {
+          ts: new Date().toISOString(),
+          ticket: "3",
+          tool: "Read",
+          target: "/wt/.claude/skills/run-lint/SKILL.md",
+        },
+      ]),
+    );
+    const rec = recordFromOpts({
+      ticket: "3",
+      selected: "run-tests, run-lint",
+      toolLedger: tl,
+      since: new Date(Date.now() - 60000).toISOString(),
+    });
+    eq(rec.opened, ["run-lint"], "opened");
+    eq(rec.applied, ["run-lint"], "applied includes opened");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+check("recordSkillUsage (the .mjs runners' seam) appends a role record; fail-soft", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-telem-role-"));
+  try {
+    const rec = recordSkillUsage({
+      ticket: "",
+      role: "plan",
+      stack: "python",
+      selected: ["plan-build", "python-conventions"],
+      output: "followed the plan-build skill",
+      env: { GAFFER_DATA: dir },
+    });
+    eq(rec.applied, ["plan-build"], "applied from output");
+    const rows = readFileSync(join(dir, "skills-telemetry.jsonl"), "utf8").trim().split("\n");
+    eq(JSON.parse(rows[0]).role, "plan", "role recorded");
+    eq(recordSkillUsage({ role: "plan", env: {} }), null, "no GAFFER_DATA → no write");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

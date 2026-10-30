@@ -56,6 +56,7 @@ describe("INERT_CONFIG_KEYS stays honest", () => {
     // Only the keys the template keeps ON PURPOSE (each labelled below) remain.
     expect(present.sort()).toEqual(
       [
+        "context.max_skills",
         "definition_of_done",
         "hooks.enabled",
         "loops.implementation.post_conditions.enabled",
@@ -78,6 +79,9 @@ describe("INERT_CONFIG_KEYS stays honest", () => {
     expect(template).toMatch(/Hooks — crew run \(MOCK runtime\) only, not read by the live runner/);
     expect(template).toMatch(
       /post-conditions — crew run \(MOCK runtime\) only, not read\s+#\s+by the live runner/,
+    );
+    expect(template).toMatch(
+      /max_skills — crew run \(MOCK runtime\) \+ crew MCP packet only, not read by the live\s+#\s+runner/,
     );
     expect(template).not.toMatch(/The runner runs these gates/);
     expect(template).not.toMatch(/secrets never enter model context/);

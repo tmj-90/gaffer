@@ -62,6 +62,7 @@ import {
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
+import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
 import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
 import { quarantine } from "../lib/agent-io.mjs";
@@ -766,6 +767,14 @@ function main() {
       GAFFER_WRITE_ROOTS: agentHome,
       GAFFER_READ_ROOTS: resolved.localPath,
     },
+  });
+  // SKILL TELEMETRY (fail-soft): the product role's mount and, best-effort, what was used.
+  recordSkillUsage({
+    role: "product",
+    selected: mountedNames(resolve(agentHome, ".claude", "skills-mount")),
+    output: res.stdout || "",
+    agentDir: agentHome,
+    since: new Date(t0).toISOString(),
   });
 
   if (res.error) {

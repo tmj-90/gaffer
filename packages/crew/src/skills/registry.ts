@@ -66,7 +66,8 @@ function matches(declared: readonly string[], wanted: readonly string[]): boolea
  * ("typescript-react-native-expo", "typescript", "react", "native", "expo") so a skill
  * tagged with either the broad or the specific stack matches. Mirrors the runner's
  * `select-skills.mjs expandStacks` and the context packet's `ticketStacks` EXACTLY, so
- * `fg skills --stack <label>` (tick.sh's fallback selector) agrees with both. Lower-cased,
+ * `fg skills --stack <label>` agrees with both (tick.sh no longer falls back to it: an
+ * empty selection recommends the runner's universal set). Lower-cased,
  * de-duplicated, order preserved (whole label first).
  */
 export function expandStackLabels(labels: readonly string[]): string[] {

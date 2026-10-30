@@ -461,7 +461,7 @@
     height: 40px;
     border-radius: var(--r-round);
     background: #fff;
-    color: #0e1726;
+    color: var(--counter-ink);
     font: 800 var(--t20) / 1 var(--f-display);
     box-shadow: var(--counter-shadow);
   }

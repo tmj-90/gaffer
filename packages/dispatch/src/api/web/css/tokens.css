@@ -76,6 +76,11 @@
     --board-ink: #ffffff;
     --board-ink-2: #b9c0cc;
     --board-rule: #3a3f4c;
+    --board-red: #ff6b78; /* red glyphs on the board (blocked, failed) */
+    --board-red-2: #ff9ea8; /* red text on the board (received, − lines) */
+    --board-ok: #8ee0a8; /* + lines and passed marks on the board */
+    --board-ink-3: #8a93a3; /* separators on the board, never text that carries meaning */
+    --counter-ink: #0e1726; /* ink on a white magnet counter: counters stay white in both kits */
 
     /* --- pitch (drawings only) -------------------------------------------- */
     --pitch: light-dark(#2c7a43, #1f5a32);

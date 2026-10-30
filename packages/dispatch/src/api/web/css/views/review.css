@@ -634,10 +634,10 @@
     transform: rotate(90deg);
   }
   .diff-file-summary .diff-add-stat {
-    color: #8ee0a8;
+    color: var(--board-ok);
   }
   .diff-file-summary .diff-del-stat {
-    color: #ff9ea8;
+    color: var(--board-red-2);
   }
   .diff-file-summary :focus-visible,
   .diff-file-summary:focus-visible {

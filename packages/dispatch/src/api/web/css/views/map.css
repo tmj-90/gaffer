@@ -297,12 +297,12 @@
     padding: 0 4px;
     border-radius: var(--r-round);
     background: #fff;
-    border: 1.5px solid #0e1726;
+    border: 1.5px solid var(--counter-ink);
     box-shadow: 0 2px 0 rgb(0 0 0 / 0.3);
   }
   .mag-n {
     font: 800 var(--t16) / 1 var(--f-display);
-    color: #0e1726;
+    color: var(--counter-ink);
   }
   .mag-card {
     position: absolute;
@@ -346,11 +346,11 @@
         #fff 7px 9px,
         transparent 9px
       )
-      #0e1726;
+      var(--counter-ink);
     background-size: 100% 8px;
     background-position: 0 2px;
     background-repeat: no-repeat;
-    background-color: #0e1726;
+    background-color: var(--counter-ink);
     outline: 1.5px solid #fff;
   }
   /* a counter on the Map is a link to its ticket, above the card's own link */

@@ -56,8 +56,8 @@
     place-items: center;
     border-radius: var(--r-round);
     background: #fff;
-    border: 1.5px solid #0e1726;
-    color: #0e1726;
+    border: 1.5px solid var(--counter-ink);
+    color: var(--counter-ink);
     box-shadow: 0 2px 0 rgb(0 0 0 / 0.3);
   }
   .pl-node.dim .pl-disc {

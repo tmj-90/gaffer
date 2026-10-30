@@ -32,10 +32,10 @@
     display: inline-block;
     vertical-align: -3px;
     margin-right: 10px;
-    color: #ff6b78;
+    color: var(--board-red);
   }
   .hl-sub .sep {
-    color: #8a93a3;
+    color: var(--board-ink-3);
   }
   .sb-side {
     display: grid;
@@ -336,7 +336,7 @@
   }
   .disc {
     fill: #fff;
-    stroke: #0e1726;
+    stroke: var(--counter-ink);
     stroke-width: 1.5;
   }
   .disc-shadow {
@@ -344,7 +344,7 @@
   }
   .disc-n {
     font: 800 22px var(--f-display);
-    fill: #0e1726;
+    fill: var(--counter-ink);
   }
   .tag-plate {
     fill: var(--board);
@@ -370,7 +370,7 @@
   }
   .ycard-on {
     fill: var(--yellow);
-    stroke: #0e1726;
+    stroke: var(--counter-ink);
     stroke-width: 1.5;
   }
   .counter {
@@ -1352,7 +1352,7 @@
     display: inline-block;
     vertical-align: -3px;
     margin-right: 12px;
-    color: #ff6b78;
+    color: var(--board-red);
   }
   .ov-error .hl .hl-nb {
     white-space: normal;

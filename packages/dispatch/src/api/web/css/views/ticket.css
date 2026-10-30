@@ -280,7 +280,7 @@
     overflow-wrap: anywhere;
   }
   .sl-rec .sl-v {
-    color: #ff9ea8;
+    color: var(--board-red-2);
   }
   .sl-v-sep {
     display: grid;
@@ -564,7 +564,7 @@
     stroke-width: 1.5;
   }
   .shoot-x {
-    stroke: #ff6b78;
+    stroke: var(--board-red);
     stroke-width: 4;
     stroke-linecap: round;
   }

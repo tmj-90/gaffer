@@ -2,6 +2,7 @@ import type { ZodTypeAny } from "zod";
 
 import { VERSION } from "../../version.js";
 import * as S from "../schemas.js";
+import * as R from "./responses.js";
 import { type JsonSchema, zodToJsonSchema } from "./zodJsonSchema.js";
 
 /**
@@ -15,9 +16,11 @@ import { type JsonSchema, zodToJsonSchema } from "./zodJsonSchema.js";
  * `test/api-openapi.test.ts`: every literal path segment here must appear in the
  * route source, and every route sub-path constant must appear here.
  *
- * Response bodies are described, not schema'd, in this first version: the read
- * models are composed views whose shapes live in TypeScript types, not zod. Each
- * operation names the type it returns in its description so a reader can find it.
+ * Response bodies: the main ticket, gate, decision and principal operations name a
+ * response schema from `./responses.ts` (`schema`), pinned to the row types at compile
+ * time and to the live routes by `test/api-openapi-responses.test.ts`. The read models
+ * are composed views whose shapes live in TypeScript types; those operations name the
+ * type they return in their description.
  */
 
 /** Who may call an operation (see api/auth.ts). */
@@ -28,6 +31,8 @@ export interface ResponseSpec {
   description: string;
   /** Media type of the body; omitted = no body. */
   content?: "json" | "text" | "markdown" | "sse" | "html";
+  /** A JSON body's schema: an export of `./responses.ts` (else a bare object). */
+  schema?: keyof typeof R;
 }
 
 export interface EndpointSpec {
@@ -49,11 +54,17 @@ export interface EndpointSpec {
   operationId?: string;
 }
 
-const ok = (description: string): ResponseSpec => ({ status: 200, description, content: "json" });
-const created = (description: string): ResponseSpec => ({
+const ok = (description: string, schema?: keyof typeof R): ResponseSpec => ({
+  status: 200,
+  description,
+  content: "json",
+  ...(schema ? { schema } : {}),
+});
+const created = (description: string, schema?: keyof typeof R): ResponseSpec => ({
   status: 201,
   description: `${description} The Location header names the created resource.`,
   content: "json",
+  ...(schema ? { schema } : {}),
 });
 const accepted = (description: string): ResponseSpec => ({
   status: 202,
@@ -134,7 +145,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description:
       "The capability tier, the actor this credential's writes are attributed to, and the principal (`null` for the shared token).",
     capability: "read",
-    responses: [ok("`{ capability, actor: { type, id }, principal: { id, name } | null }`.")],
+    responses: [
+      ok("`{ capability, actor: { type, id }, principal: { id, name } | null }`.", "Whoami"),
+    ],
   },
   {
     method: "GET",
@@ -156,7 +169,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     capability: "full",
     body: "createPrincipalBody",
     responses: [
-      created("`{ principal, token }` — the only time the token is shown."),
+      created("`{ principal, token }` — the only time the token is shown.", "PrincipalCreated"),
       invalid,
       principalAdminRequired,
       {
@@ -167,6 +180,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
   {
+    method: "GET",
+    path: "/api/principals/:id",
+    tag: T.config,
+    summary: "Get an API principal",
+    description:
+      "One principal by id or name, revoked ones included — the `Location` that POST /api/principals returns. Never carries token material.",
+    capability: "read",
+    responses: [ok("`{ principal }`.", "PrincipalEnvelope"), notFound],
+  },
+  {
     method: "DELETE",
     path: "/api/principals/:id",
     tag: T.config,
@@ -175,7 +198,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "Stamps `revoked_at`; the row stays for the audit trail. `:id` accepts the id or the name. Shared operator token only: a principal token is refused.",
     capability: "full",
     responses: [
-      ok("`{ principal }`."),
+      ok("`{ principal }`.", "PrincipalEnvelope"),
       notFound,
       principalAdminRequired,
       { status: 409, description: "Already revoked (`NO_OP`).", content: "json" },
@@ -471,7 +494,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     capability: "read",
     query: "ticketListQuery",
     responses: [
-      ok("`{ tickets: Ticket[], total, limit?, offset? }` (`limit`/`offset` echoed when paging)."),
+      ok(
+        "`{ tickets, total, limit?, offset? }` (`limit`/`offset` echoed when paging).",
+        "TicketList",
+      ),
       invalid,
     ],
   },
@@ -484,7 +510,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
     capability: "full",
     body: "createTicketBody",
-    responses: [created("The new `Ticket`."), notFound, invalid],
+    responses: [created("`{ ticket }` — the new ticket.", "TicketEnvelope"), notFound, invalid],
   },
   {
     method: "GET",
@@ -494,7 +520,13 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description:
       "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail. `:id` accepts the ticket id or number.",
     capability: "read",
-    responses: [ok("`TicketView`."), notFound],
+    responses: [
+      ok(
+        "`TicketView` as `{ ticket, acceptance_criteria, repositories, scopes, blocking_decisions, dependencies, evidence, events, rework_trail }`.",
+        "TicketDetail",
+      ),
+      notFound,
+    ],
   },
   {
     method: "POST",
@@ -505,7 +537,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "An AC may carry a `check_command` the runner executes in the delivery worktree; the done gate refuses a checked AC the runner has not passed.",
     capability: "full",
     body: "addAcBody",
-    responses: [created("The new `AcceptanceCriterion`."), notFound, invalid],
+    responses: [created("`{ acceptance_criterion, event_id }`.", "AcCreated"), notFound, invalid],
   },
   {
     method: "POST",
@@ -513,7 +545,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Mark ready for delivery",
     capability: "full",
-    responses: [ok("The updated `Ticket`."), notFound, conflict],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict],
   },
   {
     method: "POST",
@@ -523,7 +555,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description: "A human board move through the state machine; illegal edges are refused.",
     capability: "full",
     body: "moveTicketBody",
-    responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict, invalid],
   },
   {
     method: "POST",
@@ -532,7 +564,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Claim a ready ticket by hand",
     capability: "full",
     body: "humanClaimBody",
-    responses: [ok("The updated `Ticket` (in_progress)."), notFound, conflict],
+    responses: [ok("`{ ticket_id, number, human_owned: true }`."), notFound, conflict],
   },
   {
     method: "POST",
@@ -541,7 +573,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Hand a by-hand ticket back to the queue",
     capability: "full",
     body: "humanClaimBody",
-    responses: [ok("The updated `Ticket` (ready)."), notFound, conflict],
+    responses: [ok("`{ ticket_id, status, event_id }`."), notFound, conflict],
   },
   {
     method: "POST",
@@ -549,7 +581,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Grant the regulated-pack ready approval",
     capability: "full",
-    responses: [ok("The updated `Ticket`."), notFound, conflict],
+    responses: [ok("`{ ticket_id, event_id }`."), notFound, conflict],
   },
   {
     method: "GET",
@@ -557,7 +589,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.events,
     summary: "Ticket event timeline",
     capability: "read",
-    responses: [ok("`WorkEvent[]` (with `correlation_id` per tick and the hash chain)."), notFound],
+    responses: [
+      ok("`{ events: WorkEvent[] }` (with `correlation_id` per tick and the hash chain)."),
+      notFound,
+    ],
   },
   {
     method: "GET",
@@ -566,7 +601,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Ordered rework history",
     description: "Why the ticket bounced, oldest first.",
     capability: "read",
-    responses: [ok("`ReworkTrailEntry[]`."), notFound],
+    responses: [ok("`{ rework_trail: ReworkTrailEntry[] }`."), notFound],
   },
   {
     method: "POST",
@@ -576,7 +611,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description:
       "Moves the ticket to ready_for_merge and triggers the merge runner. The reviewer may not be the delivering agent.",
     capability: "full",
-    responses: [ok("`{ ticket, merge }`."), notFound, conflict],
+    responses: [ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"), notFound, conflict],
   },
   {
     method: "POST",
@@ -587,7 +622,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store.",
     capability: "full",
     body: "rejectReviewBody",
-    responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],
+    responses: [
+      ok("`{ ticket, event_id, lore_capture? }`.", "TicketTransition"),
+      notFound,
+      conflict,
+      invalid,
+    ],
   },
   {
     method: "POST",
@@ -608,7 +648,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "ready_for_merge → done. A human principal acts as admin under its own id (the event " +
       "names who marked it merged); a system or admin principal keeps its type.",
     capability: "full",
-    responses: [ok("The updated `Ticket`."), notFound, conflict],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict],
   },
   {
     method: "POST",
@@ -620,7 +660,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "mark-merged: a human principal acts as admin under its own id.",
     capability: "full",
     body: "reopenForReviewBody",
-    responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],
+    responses: [
+      ok("`{ ticket_id, status, event_id }`.", "ReopenedForReview"),
+      notFound,
+      conflict,
+      invalid,
+    ],
   },
   {
     method: "GET",
@@ -658,7 +703,14 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Set black-box testability",
     capability: "full",
     body: "setTestableBody",
-    responses: [ok("The updated `Ticket`."), notFound, invalid],
+    responses: [
+      ok(
+        "`{ ticket_id, can_be_tested, event_id }` (plus deprecated camelCase twins).",
+        "TestableSet",
+      ),
+      notFound,
+      invalid,
+    ],
   },
   {
     method: "POST",
@@ -667,7 +719,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Record the testing handover contract",
     capability: "full",
     body: "setTestContractBody",
-    responses: [ok("The updated `Ticket`."), notFound, invalid],
+    responses: [ok("`{ test_contract }`.", "TestContractSet"), notFound, invalid],
   },
   {
     method: "POST",
@@ -682,7 +734,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "`CONTRACT_MISMATCH`.",
     capability: "full",
     body: "testerVerdictBody",
-    responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict, invalid],
   },
   {
     method: "POST",
@@ -691,7 +743,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Mark won't-do",
     capability: "full",
     body: "wontDoBody",
-    responses: [ok("The updated `Ticket` (cancelled)."), notFound, conflict, invalid],
+    responses: [
+      ok("`{ ticket, event_id }` (cancelled).", "TicketTransition"),
+      notFound,
+      conflict,
+      invalid,
+    ],
   },
   {
     method: "POST",
@@ -700,7 +757,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Reopen a won't-do ticket",
     capability: "full",
     body: "reopenWontDoBody",
-    responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],
+    responses: [ok("`{ ticket, event_id }`.", "TicketTransition"), notFound, conflict, invalid],
   },
   {
     method: "POST",
@@ -710,7 +767,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description: "For a delivery paused on a spend cap.",
     capability: "full",
     body: "continuePausedBody",
-    responses: [ok("The updated `Ticket`."), notFound, conflict],
+    responses: [ok("`{ ticket_id, event_id, resume_requested: true }`."), notFound, conflict],
   },
   {
     method: "POST",
@@ -719,7 +776,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Stop a paused delivery",
     capability: "full",
     body: "stopPausedBody",
-    responses: [ok("The updated `Ticket` (cancelled)."), notFound, conflict, invalid],
+    responses: [ok("`{ ticket, event_id }` (cancelled)."), notFound, conflict, invalid],
   },
   {
     method: "POST",
@@ -729,7 +786,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description: "Branch, PR URL, commit and diff summary.",
     capability: "full",
     body: "recordDeliveryArtifactBody",
-    responses: [ok("The updated `Ticket`."), notFound, invalid],
+    responses: [ok("`{ ticket_id, branch_name, pr_url, event_id }`."), notFound, invalid],
   },
   {
     method: "PUT",
@@ -738,7 +795,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Assign the reviewer",
     capability: "full",
     body: "assignReviewerBody",
-    responses: [ok("The updated `Ticket`."), notFound, invalid],
+    responses: [ok("`{ ticket_id, reviewer, event_id }`."), notFound, invalid],
   },
   {
     method: "GET",
@@ -816,7 +873,14 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.scopes,
     summary: "Promote a single unmapped repository to write access",
     capability: "full",
-    responses: [ok("The updated access rows."), notFound, conflict],
+    responses: [
+      ok(
+        "`{ applied, ticket_id, repo_id?, reason?, event_id? }` (plus deprecated camelCase twins).",
+        "MonoFallback",
+      ),
+      notFound,
+      conflict,
+    ],
   },
   {
     method: "GET",
@@ -884,7 +948,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.decisions,
     summary: "List pending decisions",
     capability: "read",
-    responses: [ok("`Decision[]`.")],
+    responses: [ok("`{ decisions: Decision[] }`.")],
   },
   {
     method: "POST",
@@ -893,7 +957,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Create a decision",
     capability: "full",
     body: "createDecisionBody",
-    responses: [created("The new `Decision`."), invalid],
+    responses: [created("`{ decision }`.", "DecisionEnvelope"), invalid],
+  },
+  {
+    method: "GET",
+    path: "/decisions/:id",
+    tag: T.decisions,
+    summary: "Get a decision",
+    description: "One decision in any status — the `Location` that POST /decisions returns.",
+    capability: "read",
+    responses: [ok("`{ decision }`.", "DecisionEnvelope"), notFound],
   },
   {
     method: "POST",
@@ -902,7 +975,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Resolve a decision",
     capability: "full",
     body: "resolveDecisionBody",
-    responses: [ok("The resolved `Decision`."), notFound, conflict, invalid],
+    responses: [ok("`{ decision }` — resolved.", "DecisionEnvelope"), notFound, conflict, invalid],
   },
 
   // --- /claims ------------------------------------------------------------------------
@@ -1000,7 +1073,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "List scope edges",
     capability: "read",
     query: { node: { description: "Only edges touching this node." } },
-    responses: [ok("`ScopeEdge[]`.")],
+    responses: [ok("`{ edges: ScopeEdge[] }`.")],
   },
   {
     method: "POST",
@@ -1009,7 +1082,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Create a scope edge",
     capability: "full",
     body: "createScopeEdgeBody",
-    responses: [created("The new `ScopeEdge`."), invalid],
+    responses: [created("`{ edge }`."), invalid],
+  },
+  {
+    method: "GET",
+    path: "/scope/edges/:id",
+    tag: T.scope,
+    summary: "Get a scope edge",
+    description: "The `Location` that POST /scope/edges returns.",
+    capability: "read",
+    responses: [ok("`{ edge }`."), notFound],
   },
   {
     method: "DELETE",
@@ -1017,7 +1099,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.scope,
     summary: "Delete a scope edge",
     capability: "full",
-    responses: [ok("`{ ok: true }`."), notFound],
+    responses: [ok("`{ edge_id, event_id }`."), notFound],
   },
   {
     method: "GET",
@@ -1039,7 +1121,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Link a repository to a scope node",
     capability: "full",
     body: "createScopeRepoBody",
-    responses: [created("The new `ScopeRepo`."), invalid],
+    responses: [created("`{ association }`."), invalid],
+  },
+  {
+    method: "GET",
+    path: "/scope/repos/:id",
+    tag: T.scope,
+    summary: "Get a scope↔repo association",
+    description: "The `Location` that POST /scope/repos returns.",
+    capability: "read",
+    responses: [ok("`{ association }`."), notFound],
   },
   {
     method: "PATCH",
@@ -1048,7 +1139,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Update a scope-repository link",
     capability: "full",
     body: "updateScopeRepoBody",
-    responses: [ok("The updated `ScopeRepo`."), notFound, invalid],
+    responses: [ok("`{ association }`."), notFound, invalid],
   },
   {
     method: "DELETE",
@@ -1056,7 +1147,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.scope,
     summary: "Unlink a repository from a scope node",
     capability: "full",
-    responses: [ok("`{ ok: true }`."), notFound],
+    responses: [ok("`{ association_id, event_id }`."), notFound],
   },
 
   // --- /plan-sessions ----------------------------------------------------------------------
@@ -1370,6 +1461,13 @@ export function buildOpenApiDocument(): Record<string, unknown> {
     if (!schemas[name as string]) schemas[name as string] = zodToJsonSchema(z, String(name));
     return name as string;
   };
+  const useResponseSchema = (name: keyof typeof R): string => {
+    const z = R[name];
+    if (!isZod(z))
+      throw new Error(`openapi: ${String(name)} is not a zod schema export of responses.ts`);
+    if (!schemas[name]) schemas[name] = zodToJsonSchema(z, String(name));
+    return name;
+  };
   schemas[ERROR_SCHEMA_NAME] = {
     type: "object",
     required: ["error"],
@@ -1436,9 +1534,11 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         const schema: JsonSchema =
           r.status >= 400
             ? { $ref: `#/components/schemas/${ERROR_SCHEMA_NAME}` }
-            : r.content === "json"
-              ? { type: "object" }
-              : { type: "string" };
+            : r.schema
+              ? { $ref: `#/components/schemas/${useResponseSchema(r.schema)}` }
+              : r.content === "json"
+                ? { type: "object" }
+                : { type: "string" };
         entry.content = { [media]: { schema } };
       }
       if (responses[key]) {
@@ -1460,11 +1560,15 @@ export function buildOpenApiDocument(): Record<string, unknown> {
           "application/json": { schema: { $ref: `#/components/schemas/${ERROR_SCHEMA_NAME}` } },
         },
       };
+      // An operation's own 403 (e.g. PRINCIPAL_ADMIN_REQUIRED) is kept and the
+      // auth-gate reasons appended, never overwritten.
+      const own403 = (responses["403"] as { description?: string } | undefined)?.description;
+      const gate403 =
+        e.capability === "full"
+          ? "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`)."
+          : "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).";
       responses["403"] = {
-        description:
-          e.capability === "full"
-            ? "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`)."
-            : "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+        description: own403 ? `${own403} ${gate403}` : gate403,
         content: {
           "application/json": { schema: { $ref: `#/components/schemas/${ERROR_SCHEMA_NAME}` } },
         },
@@ -1507,7 +1611,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         "The control plane's REST surface: tickets and their gates, the Factory Map scope graph, plan sessions, epics and specs, repositories, runner actions, configuration, read models and the live event stream.\n\n" +
         "**Authentication.** Every data route requires `Authorization: Bearer <token>`. Two credentials exist: the **full** token (`DISPATCH_API_TOKEN`, or `$GAFFER_DATA/dashboard-token`) and a **read-scoped** token derived from it one-way (`dispatch-api print-read-token`) that may call GET routes only; a mutating call with the read token is refused with 403 `READ_ONLY_TOKEN`. Each operation's `x-capability` says which it needs (`public`, `read`, `full`). Token-less requests are also subject to a Host/Origin check (403 `FORBIDDEN_HOST`).\n\n" +
         "**Errors** are `{ error: { code, message, details? } }` with a stable `code`; 422 is validation, 409 a state-machine or claim conflict, 404 an unknown resource.\n\n" +
-        "**Actors.** The API acts as one operator identity; there is no per-user RBAC. Response bodies are described by the TypeScript view type they serialise (named in each description) rather than schema'd.",
+        "**Actors.** A request acts as the principal its token names (`GET /api/whoami`), or as the single `dispatch-api` operator for the shared token; there is no per-repository RBAC. The main ticket, gate, decision and principal operations carry response schemas; the read models are described by the TypeScript view type they serialise (named in each description).",
     },
     servers: [{ url: "http://127.0.0.1:8787", description: "Default local dashboard bind." }],
     tags: [...tagSet].sort().map((name) => ({ name })),

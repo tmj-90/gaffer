@@ -827,6 +827,13 @@ export class Dispatch {
   }
 
   /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
+  /** One principal by id or name (revoked ones included). Throws NOT_FOUND. */
+  getPrincipal(ref: string): PrincipalView {
+    const row = this.principals.get(ref) ?? this.principals.getByName(ref);
+    if (!row) throw notFound("principal", ref);
+    return row;
+  }
+
   revokePrincipal(ref: string, actor: Actor): PrincipalView {
     const row = this.principals.get(ref) ?? this.principals.getByName(ref);
     if (!row) throw notFound("principal", ref);
@@ -1131,6 +1138,14 @@ export class Dispatch {
     return this.scope.createScopeEdge(raw, actor);
   }
 
+  getScopeEdge(edgeId: string): ScopeEdge {
+    return this.scope.getScopeEdge(edgeId);
+  }
+
+  getScopeRepo(associationId: string): ScopeRepo {
+    return this.scope.getScopeRepo(associationId);
+  }
+
   listScopeEdges(nodeId?: string): ScopeEdge[] {
     return this.scope.listScopeEdges(nodeId);
   }
@@ -1178,6 +1193,10 @@ export class Dispatch {
       { ...input, ...(ticketId !== undefined ? { ticketId } : {}) },
       actor,
     );
+  }
+
+  getDecision(decisionId: string): Decision {
+    return this.decisionSvc.getDecision(decisionId);
   }
 
   listPendingDecisions(): Decision[] {

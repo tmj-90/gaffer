@@ -306,6 +306,20 @@ export class ScopeService {
    * Link a repo into a scope node with a relation + default access. A repo may
    * be linked to many scope nodes; the (scope, repo, relation) triple is unique.
    */
+  /** One scope edge by id. Throws NOT_FOUND. */
+  getScopeEdge(edgeId: string): ScopeEdge {
+    const edge = this.scopeEdges.findById(edgeId);
+    if (!edge) throw notFound("scope_edge", edgeId);
+    return edge;
+  }
+
+  /** One scope↔repo association by id. Throws NOT_FOUND. */
+  getScopeRepo(associationId: string): ScopeRepo {
+    const link = this.scopeRepos.findById(associationId);
+    if (!link) throw notFound("scope_repo", associationId);
+    return link;
+  }
+
   linkScopeRepo(raw: unknown, actor: Actor): ScopeRepo {
     const input = linkScopeRepoInput.parse(raw);
     const now = this.clock.now();

@@ -354,7 +354,16 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.TESTABLE && method === "POST") {
     const body = setTestableBody.parse(await readJsonBody(req));
     const result = wg.setTestable(id, body.can_be_tested, apiActor());
-    sendJson(res, 200, result);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      can_be_tested: result.canBeTested,
+      event_id: result.eventId,
+      // DEPRECATED camelCase twins of the snake_case keys above (every sibling route
+      // answers in snake_case). Kept for one release so existing clients keep working.
+      ticketId: result.ticketId,
+      canBeTested: result.canBeTested,
+      eventId: result.eventId,
+    });
     return;
   }
 
@@ -634,8 +643,24 @@ export async function routeTickets(
 
   // /tickets/:id/mono-fallback — POST to promote a single unmapped repo to write.
   if (segments.length === 3 && sub === TICKET_SUB.MONO_FALLBACK && method === "POST") {
-    const result = wg.applyMonoFallback(id, apiActor());
-    sendJson(res, 200, result);
+    const result = wg.applyMonoFallback(id, apiActor()) as {
+      applied: boolean;
+      ticketId: string;
+      repoId?: string;
+      reason?: string;
+      eventId?: string;
+    };
+    sendJson(res, 200, {
+      applied: result.applied,
+      ticket_id: result.ticketId,
+      ...(result.repoId !== undefined ? { repo_id: result.repoId } : {}),
+      ...(result.reason !== undefined ? { reason: result.reason } : {}),
+      ...(result.eventId !== undefined ? { event_id: result.eventId } : {}),
+      // DEPRECATED camelCase twins (see /testable), kept for one release.
+      ticketId: result.ticketId,
+      ...(result.repoId !== undefined ? { repoId: result.repoId } : {}),
+      ...(result.eventId !== undefined ? { eventId: result.eventId } : {}),
+    });
     return;
   }
 

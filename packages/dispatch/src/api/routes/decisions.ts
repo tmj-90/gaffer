@@ -36,6 +36,12 @@ export async function routeDecisions(
     return;
   }
 
+  // /decisions/:id — one decision (any status); the Location POST /decisions returns.
+  if (segments.length === 2 && method === "GET") {
+    sendJson(res, 200, { decision: wg.getDecision(segments[1] as string) });
+    return;
+  }
+
   // /decisions/:id/resolve
   if (segments.length === 3 && segments[2] === "resolve" && method === "POST") {
     const body = resolveDecisionBody.parse(await readJsonBody(req));

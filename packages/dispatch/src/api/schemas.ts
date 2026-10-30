@@ -318,7 +318,6 @@ export const resolveDecisionBody = z.object({
 });
 export type ResolveDecisionBody = z.infer<typeof resolveDecisionBody>;
 
-/** Query-string filters for GET /tickets. */
 /** Largest page GET /tickets returns when the caller pages (`limit` is clamped to it). */
 export const TICKET_LIST_MAX_LIMIT = 1_000;
 

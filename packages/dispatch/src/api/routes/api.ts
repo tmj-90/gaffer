@@ -122,6 +122,11 @@ export async function routeApi(
     return methodNotAllowed(res);
   }
   if (segments.length === 3 && segments[1] === "principals") {
+    // GET one principal (id or name) — the Location POST /api/principals returns.
+    if (method === "GET") {
+      sendJson(res, 200, { principal: wg.getPrincipal(segments[2] ?? "") });
+      return;
+    }
     if (method !== "DELETE") return methodNotAllowed(res);
     if (refuseIfPrincipal(req, res)) return;
     const principal = wg.revokePrincipal(segments[2] ?? "", apiActor());

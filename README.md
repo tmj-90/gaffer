@@ -107,7 +107,7 @@ To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OA
 
 <!-- screenshot: tactics-board -->
 
-A gaffer is the manager, so the dashboard is being rebuilt as match day. That work isn't merged yet, so read this section as a preview. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today and the wage bill against the daily budget. Beside it is the Team Sheet, a numbered list of everything waiting on you with one action on each row. The Tactics Board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The Gaffer's Sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen.
+A gaffer is the manager, so the dashboard is match day. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today and the wage bill against the daily budget. Beside it is the Team Sheet, a numbered list of everything waiting on you with one action on each row. The Tactics Board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The Gaffer's Sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen.
 
 <!-- screenshot: review -->
 

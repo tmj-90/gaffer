@@ -142,7 +142,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_ALLOW_SELF_DELIVERY` | `0` | yes (boolean) | dispatch, runner | Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident: a ticket where any of its write repos (not only the first) is the gaffer checkout root (or any directory above it), a component dir inside it, or a worktree of the same git repo is set aside for a human instead of delivered. |
+| `GAFFER_ALLOW_SELF_DELIVERY` | `0` | yes (boolean) | dispatch, runner | Permit the factory to deliver into its OWN repo. Off (default) is the safe choice — it never edits itself by accident. |
 
 ### Safety / stop conditions
 

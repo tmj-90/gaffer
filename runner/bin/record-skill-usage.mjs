@@ -76,7 +76,18 @@ export function detectApplied(selected, outputText) {
  */
 export function detectOpened(selected, ledgerText, { ticket = "", since = "", roots = [] } = {}) {
   const sinceMs = since ? Date.parse(since) : NaN;
-  const scopes = roots.map((r) => String(r ?? "").replace(/\/+$/, "")).filter(Boolean);
+  // A root matches only as a whole path: it must start at a non-path character (or the
+  // start of the target) and end at `/`, a shell separator or the end. A bare substring
+  // test let root `…/review-wt-7` claim `…/review-wt-71/…` reads (another ticket's agent).
+  const scopes = roots
+    .map((r) => String(r ?? "").replace(/\/+$/, ""))
+    .filter(Boolean)
+    .map(
+      (r) =>
+        new RegExp(
+          `(^|[^A-Za-z0-9_.~/-])${r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s"'\`;&|)<>])`,
+        ),
+    );
   const res = selected.map((name) => [
     name,
     new RegExp(
@@ -97,7 +108,7 @@ export function detectOpened(selected, ledgerText, { ticket = "", since = "", ro
     if (!Number.isNaN(sinceMs) && !(Date.parse(row.ts) >= sinceMs)) continue;
     const ours =
       (ticket && row.ticket != null && String(row.ticket) === String(ticket)) ||
-      scopes.some((r) => target.includes(r));
+      scopes.some((re) => re.test(target));
     if (!ours) continue;
     for (const [name, re] of res) if (re.test(target)) opened.add(name);
   }

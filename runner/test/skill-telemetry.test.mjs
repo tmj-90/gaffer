@@ -229,6 +229,68 @@ check("detectOpened: a Read of .claude/skills/<name>/ in THIS run counts as appl
   );
   eq(detectOpened(sel, "", { ticket: "7" }), [], "no ledger → nothing");
 });
+check("detectOpened: a root matches on a path boundary, never as a bare prefix", () => {
+  const at = "2026-01-01T10:00:01.000Z";
+  const text = ledger([
+    // a concurrent ticketless agent on ticket 71 / 7NN → must NOT be credited to root review-7
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/x/review-71/.claude/skills/security-review/SKILL.md",
+    },
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/x/review-700/.claude/skills/run-tests/SKILL.md",
+    },
+    {
+      ts: at,
+      ticket: null,
+      tool: "Bash",
+      target: "cat /x/review-7x/.claude/skills/run-lint/SKILL.md",
+    },
+    // the same root nested under another prefix is a different path
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/other/x/review-7/.claude/skills/minimalism/SKILL.md",
+    },
+    // the run's own root: absolute Read, and a Bash `cd <root> && cat …`
+    {
+      ts: at,
+      ticket: null,
+      tool: "Read",
+      target: "/x/review-7/.claude/skills/review-ticket/SKILL.md",
+    },
+    {
+      ts: at,
+      ticket: null,
+      tool: "Bash",
+      target: "cd /x/review-7 && cat .claude/skills/self-review/SKILL.md",
+    },
+  ]);
+  const sel = [
+    "security-review",
+    "run-tests",
+    "run-lint",
+    "minimalism",
+    "review-ticket",
+    "self-review",
+  ];
+  eq(
+    detectOpened(sel, text, { roots: ["/x/review-7/"] }),
+    ["review-ticket", "self-review"],
+    "only the run's own root",
+  );
+  eq(
+    detectOpened(sel, text, { roots: ["/x/review-71"] }),
+    ["security-review"],
+    "the sibling root claims its own row",
+  );
+});
 check("recordFromOpts unions opened skills into applied and records them", () => {
   const dir = mkdtempSync(join(tmpdir(), "skill-telem-ledger-"));
   try {

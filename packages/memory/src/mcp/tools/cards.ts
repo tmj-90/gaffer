@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
+import { mcpToolInput } from "../../util/zod3Compat.js";
+
 import { audit } from "../../core/audit.js";
 import {
   diagnoseRepoKeyMismatch,
@@ -45,7 +47,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
         "Pass `repoCanonical` = the repo's remote origin URL (preferred) or its " +
         "absolute realpath on disk. The display `repo` name is used for digest " +
         "and lore queries only.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repoCanonical: z
           .string()
           .min(1)
@@ -59,7 +61,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
           .string()
           .min(1)
           .describe("Relative file path within the repo (e.g. 'src/api/payments.ts')."),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -130,7 +132,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
         "For a budgeted, prioritised multi-tier assembly (path-first, then FTS, " +
         "then lore) use `cards_for_scope` instead — it is the preferred call " +
         "for starting a task.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repoCanonical: z
           .string()
           .min(1)
@@ -144,7 +146,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
           .max(50)
           .optional()
           .describe("Max results. Default 20, hard cap 50."),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -241,7 +243,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
         "  `coverage.missing` lists requested paths with no card in the DB.\n" +
         "  `truncationReason` explains why the result was cut short.\n" +
         "  Absence of a card ≠ the file is unimportant.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repoCanonical: z
           .string()
           .min(1)
@@ -301,7 +303,7 @@ export function registerCardTools(server: McpServer, db: Database): void {
               "truncated to fit. The card is still returned — truncated content " +
               "is better than no content.",
           ),
-      },
+      }),
     },
     async (args) => {
       try {

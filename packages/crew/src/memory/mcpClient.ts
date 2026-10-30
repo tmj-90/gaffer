@@ -100,7 +100,7 @@ const loreRecordSchema = z
     // record. It's the authoritative record type; prefer it over recordType.
     kind: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const searchResultSchema = z
   .object({
@@ -108,7 +108,7 @@ const searchResultSchema = z
     results: z.array(loreRecordSchema).optional(),
     lore: z.array(loreRecordSchema).optional(),
   })
-  .passthrough();
+  .loose();
 
 const suggestResultSchema = z
   .object({
@@ -117,7 +117,7 @@ const suggestResultSchema = z
     id: z.string().optional(),
     status: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const repoDigestResultSchema = z
   .object({
@@ -126,7 +126,7 @@ const repoDigestResultSchema = z
     created: z.boolean().optional(),
     updated: z.boolean().optional(),
   })
-  .passthrough();
+  .loose();
 
 const featureResultSchema = z
   .object({
@@ -135,21 +135,21 @@ const featureResultSchema = z
     id: z.string().optional(),
     status: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const featureRecordSchema = z
   .object({
     repo: z.string().optional(),
     name: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const listFeaturesResultSchema = z
   .object({
     features: z.array(featureRecordSchema).optional(),
     results: z.array(featureRecordSchema).optional(),
   })
-  .passthrough();
+  .loose();
 
 /** A richer feature row carrying id/summary/status/ordering fields (list_features). */
 const backlogFeatureSchema = z
@@ -165,14 +165,14 @@ const backlogFeatureSchema = z
     createdAt: z.string().optional(),
     created_at: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 const listBacklogFeaturesResultSchema = z
   .object({
     features: z.array(backlogFeatureSchema).optional(),
     results: z.array(backlogFeatureSchema).optional(),
   })
-  .passthrough();
+  .loose();
 
 const advanceFeatureResultSchema = z
   .object({
@@ -183,18 +183,18 @@ const advanceFeatureResultSchema = z
     toStatus: z.string().optional(),
     to_status: z.string().optional(),
   })
-  .passthrough();
+  .loose();
 
 /** The CallToolResult shape we read from (only the bits we need). */
 const callToolResultSchema = z
   .object({
     content: z
-      .array(z.object({ type: z.string(), text: z.string().optional() }).passthrough())
+      .array(z.object({ type: z.string(), text: z.string().optional() }).loose())
       .optional(),
-    structuredContent: z.record(z.unknown()).optional(),
+    structuredContent: z.record(z.string(), z.unknown()).optional(),
     isError: z.boolean().optional(),
   })
-  .passthrough();
+  .loose();
 
 function normaliseRecord(raw: z.infer<typeof loreRecordSchema>, index: number): LoreRecord {
   return {

@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+// Validation errors keep their zod 3 codes, fields and messages (see the module).
+import "../util/zod3Compat.js";
+
 import {
   EVIDENCE_TYPES,
   POLICY_PACKS,
@@ -204,7 +207,7 @@ export const recordDeliveryArtifactInput = z
     diff_summary: z.string().trim().min(1).max(20_000).optional(),
   })
   .refine((v) => v.branch_name !== undefined || v.pr_url !== undefined, {
-    message: "At least one of branch_name or pr_url is required.",
+    error: "At least one of branch_name or pr_url is required.",
   });
 export type RecordDeliveryArtifactInput = z.infer<typeof recordDeliveryArtifactInput>;
 

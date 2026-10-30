@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { CrewError } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import { ingestIssueAsDraft, shellQuote, type IngestDeps, type IngestSummary } from "./core.js";
 import type { NormalizedIssue } from "./core.js";
 
@@ -52,7 +53,7 @@ function parseSearch(stdout: string): JiraIssue[] {
   const parsed = jiraSearchSchema.safeParse(json);
   if (!parsed.success) {
     throw new CrewError("INGEST_PARSE_FAILED", "Unexpected 'jira issue list' shape.", {
-      issues: parsed.error.issues,
+      issues: toZod3Issues(parsed.error.issues),
     });
   }
   return parsed.data.issues;

@@ -12,7 +12,7 @@
 
 import type { AddressInfo } from "node:net";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { ZodTypeAny } from "zod";
+import type { ZodType } from "zod";
 
 import { setPrincipalResolver } from "../src/api/auth.js";
 import * as R from "../src/api/openapi/responses.js";
@@ -91,7 +91,7 @@ async function expectContract(
   expect(name, `${op} declares a response schema`).toBeDefined();
   const res = await call(method, path ?? specPath, body);
   expect(res.status, `${op}: ${JSON.stringify(res.body).slice(0, 300)}`).toBe(status);
-  const parsed = (R[name!] as ZodTypeAny).safeParse(res.body);
+  const parsed = (R[name!] as ZodType).safeParse(res.body);
   expect(parsed.success, `${op} body vs ${name}: ${JSON.stringify(parsed.error?.issues)}`).toBe(
     true,
   );

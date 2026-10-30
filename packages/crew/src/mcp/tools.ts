@@ -19,6 +19,7 @@ import { loadSkillRegistry } from "../skills/loader.js";
 import { systemGitAdapter } from "../adapters/gitAdapter.js";
 import { systemClock } from "../util/clock.js";
 import { CrewError } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import type { DispatchClient } from "../dispatch/client.js";
 
 /**
@@ -66,7 +67,9 @@ async function guard(fn: () => Promise<Record<string, unknown>>): Promise<ToolRe
       return toolError(err.code, err.message, { details: err.details });
     }
     if (err instanceof z.ZodError) {
-      return toolError("VALIDATION_ERROR", "Invalid tool arguments.", { issues: err.issues });
+      return toolError("VALIDATION_ERROR", "Invalid tool arguments.", {
+        issues: toZod3Issues(err.issues),
+      });
     }
     throw err;
   }
@@ -101,7 +104,9 @@ function parseArgs<N extends ToolName>(
   name: N,
   args: Record<string, unknown>,
 ): z.infer<z.ZodObject<(typeof toolSchemas)[N]>> {
-  return z.object(toolSchemas[name]).parse(args ?? {}) as z.infer<
+  // zod 4 infers the object from the shape with `readonly` stripped, which TS cannot
+  // relate back to the generic `N`; the value is exactly what this shape parses to.
+  return z.object(toolSchemas[name]).parse(args ?? {}) as unknown as z.infer<
     z.ZodObject<(typeof toolSchemas)[N]>
   >;
 }

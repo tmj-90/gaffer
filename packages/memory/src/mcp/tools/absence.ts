@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
+import { mcpToolInput } from "../../util/zod3Compat.js";
+
 import { audit } from "../../core/audit.js";
 import { recordAbsence } from "../../core/absence.js";
 import { ABSENCE_DISABLED_REFUSAL, shouldGateAbsenceWrite } from "../redact.js";
@@ -38,7 +40,7 @@ export function registerAbsenceTools(server: McpServer, db: Database): void {
         "as a substitute for suggest_lore (markers say 'no policy', not " +
         "'here's a policy'); do NOT chain into a suggest_lore that just " +
         "re-states the absence.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         query: z
           .string()
           .min(1)
@@ -74,7 +76,7 @@ export function registerAbsenceTools(server: McpServer, db: Database): void {
               "and a bad call from one agent can't poison retrieval for a " +
               "whole month.",
           ),
-      },
+      }),
     },
     async (args) => {
       const sanitised: Record<string, unknown> = {

@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
+import { mcpToolInput } from "../../util/zod3Compat.js";
+
 import { audit } from "../../core/audit.js";
 import { findDependents, suggestBoundary } from "../../core/boundaries.js";
 import type { Boundary } from "../../db/types.js";
@@ -56,7 +58,7 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
         "`consumers` list is a concrete warning to coordinate the change. " +
         "If you discover a producer/consumer relationship that ISN'T in " +
         "the map, call `declare_boundary` to add it (lands as a draft).",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         contract: z
           .string()
           .min(1)
@@ -66,7 +68,7 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
               "normalisation (lowercased / hyphenated), so casing and " +
               "spacing don't matter.",
           ),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -136,7 +138,7 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
         "promote your own edges; same trust gate as suggest_lore. Don't " +
         "declare speculative or transient links — only durable " +
         "integration points a future agent should see.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repo: z
           .string()
           .min(1)
@@ -170,14 +172,13 @@ export function registerBoundaryTools(server: McpServer, db: Database): void {
               "the evidence you saw. ≤ 800 chars.",
           ),
         source: z
-          .string()
           .url()
           .refine((u) => /^https?:\/\//i.test(u), {
-            message: "source must be an http(s) URL",
+            error: "source must be an http(s) URL",
           })
           .optional()
           .describe("URL to the code / PR / doc that evidences this edge."),
-      },
+      }),
     },
     async (args) => {
       const sanitised: Record<string, unknown> = {

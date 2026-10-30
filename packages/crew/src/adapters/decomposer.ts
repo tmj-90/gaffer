@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { z } from "zod";
 
 import { CrewError } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 
 /** One ticket in a brownfield epic plan (matches decompose.mjs `phase:"plan"`). */
 export interface EpicTicketPlan {
@@ -65,7 +66,7 @@ const ticketPlanSchema = z
     bootstrap: z.boolean().default(false),
     dependsOn: z.array(z.number().int()).default([]),
   })
-  .passthrough();
+  .loose();
 
 const planEnvelopeSchema = z.object({
   phase: z.string(),
@@ -96,7 +97,7 @@ export function parseEpicPlan(stdout: string, repo: string, maxTickets?: number)
   const parsed = planEnvelopeSchema.safeParse(decoded);
   if (!parsed.success) {
     throw new CrewError("DECOMPOSE_FAILED", "Decompose output did not match the expected shape.", {
-      issues: parsed.error.issues.map((i) => i.message),
+      issues: toZod3Issues(parsed.error.issues).map((i) => i.message),
     });
   }
   const envelope = parsed.data;

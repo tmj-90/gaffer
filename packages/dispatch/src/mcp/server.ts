@@ -6,6 +6,7 @@ import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import type { Actor } from "../domain/types.js";
 import { systemClock } from "../util/clock.js";
 import { resolveDbPath } from "../util/paths.js";
+import { mcpToolInput } from "../util/zod3Compat.js";
 import { VERSION } from "../version.js";
 import { makeHandlers, toolSchemas, type ToolResult } from "./tools.js";
 
@@ -275,7 +276,7 @@ export function createDispatchServer(wg: Dispatch, actor: Actor): McpServer {
       name,
       {
         description: TOOL_DESCRIPTIONS[name],
-        inputSchema: toolSchemas[name],
+        inputSchema: mcpToolInput(toolSchemas[name]),
       },
       // The SDK passes parsed args; our handlers re-validate defensively.
       (args: Record<string, unknown>): ToolResult => handler(args ?? {}),

@@ -1,4 +1,4 @@
-import type { ZodTypeAny } from "zod";
+import type { ZodType } from "zod";
 
 import { VERSION } from "../../version.js";
 import * as S from "../schemas.js";
@@ -1484,8 +1484,8 @@ const MEDIA: Record<NonNullable<ResponseSpec["content"]>, string> = {
 
 const ERROR_SCHEMA_NAME = "ErrorBody";
 
-function isZod(v: unknown): v is ZodTypeAny {
-  return typeof v === "object" && v !== null && "_def" in (v as object);
+function isZod(v: unknown): v is ZodType {
+  return typeof v === "object" && v !== null && "_zod" in (v as object);
 }
 
 /** `/tickets/:id/scopes/:nodeId` → `/tickets/{id}/scopes/{nodeId}` + the param names. */
@@ -1569,7 +1569,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       description: PARAM_DESCRIPTIONS[name] ?? `${name}.`,
     }));
     if (typeof e.query === "string") {
-      const qs = zodToJsonSchema((S as Record<string, unknown>)[e.query] as ZodTypeAny, e.query);
+      const qs = zodToJsonSchema((S as Record<string, unknown>)[e.query] as ZodType, e.query);
       const props = (qs.properties ?? {}) as Record<string, JsonSchema>;
       const required = new Set((qs.required as string[] | undefined) ?? []);
       for (const [name, schema] of Object.entries(props)) {

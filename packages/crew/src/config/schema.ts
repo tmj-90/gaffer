@@ -13,16 +13,18 @@ export const factorySchema = z.object({
 export const dispatchSchema = z
   .object({
     mode: z.enum(["local", "shared"]).default("local"),
-    local: z.object({ sqlite_path: z.string().default("./.dispatch/dispatch.sqlite") }).default({}),
+    local: z
+      .object({ sqlite_path: z.string().default("./.dispatch/dispatch.sqlite") })
+      .prefault({}),
     shared: z
       .object({
         base_url: z.string().nullable().default(null),
         auth_profile: z.string().nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     default_policy_pack: z.string().default("solo_loose"),
   })
-  .default({});
+  .prefault({});
 
 export const memorySchema = z
   .object({
@@ -35,7 +37,7 @@ export const memorySchema = z
         command: z.string().nullable().default(null),
         args: z.array(z.string()).default([]),
       })
-      .default({}),
+      .prefault({}),
     // Memory CLI write bridge. When `command` is set (or `MEMORY_CLI_BIN` is in
     // the environment), the onboard flush writes the digest + feature inventory via
     // the memory CLI verbs (`digest set` / `feature add`) instead of spawning an MCP
@@ -45,18 +47,18 @@ export const memorySchema = z
       .object({
         command: z.string().nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     // DEPRECATED — no consumer (config/inertKeys.ts); accepted so old configs load.
-    required_before: z.object({ tags: z.array(z.string()).default([]) }).default({}),
+    required_before: z.object({ tags: z.array(z.string()).default([]) }).prefault({}),
     // DEPRECATED — no consumer (config/inertKeys.ts).
     suggestion_policy: z
       .object({
         after_ticket_done: z.boolean().default(true),
         auto_approve: z.boolean().default(false),
       })
-      .default({}),
+      .prefault({}),
   })
-  .default({});
+  .prefault({});
 
 /**
  * Per-loop behaviour for the idle scan loops:
@@ -113,7 +115,7 @@ export const definitionOfDoneSchema = z
     // Run the repo's lint_command as a gate (the enforced require_lint_clean).
     lint: z.boolean().default(true),
   })
-  .default({});
+  .prefault({});
 
 export const repoSchema = z.object({
   id: z.string().min(1),
@@ -132,8 +134,10 @@ export const repoSchema = z.object({
   // typecheck gate is SKIPPED for this repo, not failed.
   typecheck_command: z.string().nullable().default(null),
   // I3: per-repo Definition-of-Done override. Omitted ⇒ inherit the factory
-  // default (`definition_of_done` at the top level).
-  definition_of_done: definitionOfDoneSchema.optional(),
+  // default (`definition_of_done` at the top level). The bare object, not the
+  // defaulted one: zod 4 applies a default inside `.optional()`, which would turn
+  // an omitted override into an all-true one and hide the factory default.
+  definition_of_done: definitionOfDoneSchema.unwrap().optional(),
   mutation_mode: mutationModeSchema.default("branch_only"),
   risk_level: z.enum(["low", "medium", "high", "critical"]).default("medium"),
   owners: z.array(z.string()).default([]),
@@ -165,7 +169,7 @@ export const safetyRefSchema = z
     redact_secrets_in_context: z.boolean().default(true),
     model_may_read_secret_files: z.boolean().default(false),
   })
-  .default({});
+  .prefault({});
 
 /**
  * Per-repo delivered-ticket gate. A scan loop must SKIP a repo until that repo
@@ -202,9 +206,9 @@ export const loopsSchema = z
             require_ac_evidence: z.boolean().default(true),
             require_lint_clean: z.boolean().default(true),
           })
-          .default({}),
+          .prefault({}),
       })
-      .default({}),
+      .prefault({}),
     idle_coverage: z
       .object({
         // OFF by default — opt in per factory. Each idle tick spends model
@@ -218,7 +222,7 @@ export const loopsSchema = z
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
         minimum_gap_threshold: z.number().default(10),
       })
-      .default({}),
+      .prefault({}),
     idle_test_quality: z
       .object({
         enabled: z.boolean().default(false),
@@ -227,7 +231,7 @@ export const loopsSchema = z
         repos: z.array(z.string()).default([]),
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     idle_documentation: z
       .object({
         enabled: z.boolean().default(false),
@@ -236,7 +240,7 @@ export const loopsSchema = z
         repos: z.array(z.string()).default([]),
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     idle_dependencies: z
       .object({
         enabled: z.boolean().default(false),
@@ -248,7 +252,7 @@ export const loopsSchema = z
         // Idle loops never install; this is parsed for findings only.
         audit_command: z.string().nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     idle_security_hotspot: z
       .object({
         enabled: z.boolean().default(false),
@@ -257,7 +261,7 @@ export const loopsSchema = z
         repos: z.array(z.string()).default([]),
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     idle_type_quality: z
       .object({
         enabled: z.boolean().default(false),
@@ -266,7 +270,7 @@ export const loopsSchema = z
         repos: z.array(z.string()).default([]),
         min_delivered_tickets: minDeliveredTicketsSchema.nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     idle_tech_debt: z
       .object({
         enabled: z.boolean().default(false),
@@ -279,7 +283,7 @@ export const loopsSchema = z
         // A churn×size hotspot is flagged when (commit count × LOC) exceeds this.
         churn_size_product_threshold: z.number().int().positive().default(5000),
       })
-      .default({}),
+      .prefault({}),
     idle_lore_gap: z
       .object({
         // Off by default: only meaningful with a real Memory configured.
@@ -294,7 +298,7 @@ export const loopsSchema = z
         // When true, also drafts a Dispatch ticket to ratify the suggestion.
         draft_ratify_ticket: z.boolean().default(false),
       })
-      .default({}),
+      .prefault({}),
     idle_feature_backlog: z
       .object({
         // Off by default: only meaningful with a real Memory configured AND a
@@ -324,7 +328,7 @@ export const loopsSchema = z
         // Hard cap on the number of tickets the epic plan may contain.
         max_tickets: z.number().int().positive().default(20),
       })
-      .default({}),
+      .prefault({}),
     // The idle MAINTENANCE LANE (audit item A4). OFF BY DEFAULT. When enabled,
     // a quiet idle tick (no claimable ticket) runs ONE maintenance loop chosen
     // by a deterministic priority + rotation scheduler — NO LLM in the choice —
@@ -342,7 +346,7 @@ export const loopsSchema = z
         // at the call site; an explicit path overrides it (handy for tests).
         cursor_path: z.string().nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
     // The self-improving closed loop. OFF BY DEFAULT. When enabled, idle ticks may
     // auto-promote their own DRAFT improvement tickets to `ready` so the delivery
     // loop claims them — without a human in the promote step. It is deliberately
@@ -360,7 +364,7 @@ export const loopsSchema = z
         // Hard cap on auto-promotions per idle tick (the bound).
         max_ready_per_run: z.number().int().positive().default(1),
       })
-      .default({}),
+      .prefault({}),
     // Tool-backed scan oracles (I2). OFF by default: when off the scan loops use
     // their grep heuristics exactly as before. When on, the type-quality loop
     // consults `tsc --noEmit` and the security loop `semgrep` (with a LOCAL
@@ -373,9 +377,9 @@ export const loopsSchema = z
         enabled: z.boolean().default(false),
         tools: z.array(z.enum(["tsc", "semgrep"])).default(["tsc", "semgrep"]),
       })
-      .default({}),
+      .prefault({}),
   })
-  .default({});
+  .prefault({});
 
 /**
  * Context-packet token hygiene. Caps what gets assembled into the per-ticket
@@ -395,7 +399,7 @@ export const contextSchema = z
     product_context_limit: z.number().int().positive().default(6),
     token_budget: z.number().int().positive().nullable().default(null),
   })
-  .default({});
+  .prefault({});
 
 /**
  * GitHub issue ingest. Off by default so existing configs stay valid. When
@@ -413,7 +417,7 @@ export const ingestSchema = z
         ingested_label: z.string().min(1).default("agent-queued"),
         repos: z.array(z.string()).optional(),
       })
-      .default({}),
+      .prefault({}),
     // Jira ingest. Mirrors the github adapter and shares its dedup contract
     // (identity = the issue's `self` REST URL). Off by default. Requires the
     // `jira` CLI authenticated on the host. `jql` overrides the default
@@ -425,9 +429,9 @@ export const ingestSchema = z
         jql: z.string().nullable().default(null),
         repo: z.string().nullable().default(null),
       })
-      .default({}),
+      .prefault({}),
   })
-  .default({});
+  .prefault({});
 
 export const hooksSchema = z
   .object({
@@ -445,9 +449,9 @@ export const hooksSchema = z
         // the dedicated idle_lore_gap loop.
         capture_lore_reflection: z.boolean().default(true),
       })
-      .default({}),
+      .prefault({}),
   })
-  .default({});
+  .prefault({});
 
 export const loggingSchema = z
   .object({
@@ -455,7 +459,7 @@ export const loggingSchema = z
     event_log_path: z.string().default("./.crew/events.jsonl"),
     redact: z.boolean().default(true),
   })
-  .default({});
+  .prefault({});
 
 export const crewConfigSchema = z.object({
   factory: factorySchema,

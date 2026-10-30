@@ -176,6 +176,17 @@ describe("MCP — tool registration", () => {
     );
   });
 
+  it("publishes the zod 3 (zod-to-json-schema) input schemas: closed objects, no safe-int bounds", async () => {
+    client = await connectClient(db);
+    const { tools } = await client.listTools();
+    for (const t of tools) {
+      const schema = t.inputSchema as Record<string, unknown>;
+      expect(schema.additionalProperties, t.name).toBe(false);
+      expect(Object.keys(schema).at(-1), t.name).toBe("$schema");
+      expect(JSON.stringify(schema), t.name).not.toContain("9007199254740991");
+    }
+  });
+
   it("every tool has a title and a non-trivial description", async () => {
     client = await connectClient(db);
     const { tools } = await client.listTools();

@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
+import { mcpToolInput } from "../../util/zod3Compat.js";
+
 import { audit } from "../../core/audit.js";
 import {
   addFeature,
@@ -62,7 +64,7 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
         "Node addressing: omit `scope_node` for every feature in the repo; " +
         "pass a node name to narrow to that sub-area. The `scope_node` is a " +
         "soft reference — the scope graph itself lives in dispatch.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repo: z.string().min(1).describe("The repo whose ledger to list."),
         status: z
           .enum(["backlog", "building", "shipped"])
@@ -75,7 +77,7 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
           .describe(
             "Optional scope-node filter (e.g. 'auth'). Omit for all " + "features in the repo.",
           ),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -138,7 +140,7 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
         "draft/review gate): a backlog idea is cheap and reversible, and " +
         "the ledger's value is in staying current. Use `provenance` to " +
         "record where the idea came from.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repo: z.string().min(1).describe("The repo this feature belongs to."),
         name: z.string().min(1).max(200).describe("Short feature name (≤ 200 chars)."),
         summary: z.string().describe("One-line summary of the feature."),
@@ -166,7 +168,7 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
           .string()
           .optional()
           .describe("Where the idea came from, or the epic/ticket ref."),
-      },
+      }),
     },
     async (args) => {
       // Length-bound + sanitize BEFORE applying. add_feature applies directly
@@ -271,12 +273,12 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
         "feature is now in the product), so this APPLIES DIRECTLY rather " +
         "than going through the lore draft/review gate. Each transition is " +
         "recorded in the audit trail.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         id: z.string().min(1).describe("The feature id to advance."),
         to_status: z
           .enum(["backlog", "building", "shipped"])
           .describe("The status to move the feature to."),
-      },
+      }),
     },
     async (args) => {
       try {

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 
 import { DispatchError, type DispatchErrorCode } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 
 /**
  * Shared HTTP primitives + error mapping for the REST surface. Extracted from
@@ -134,7 +135,9 @@ export function handleError(res: ServerResponse, err: unknown): void {
     sendJson(
       res,
       422,
-      errorBody("VALIDATION_ERROR", "Invalid request payload.", { issues: err.issues }),
+      errorBody("VALIDATION_ERROR", "Invalid request payload.", {
+        issues: toZod3Issues(err.issues),
+      }),
     );
     return;
   }

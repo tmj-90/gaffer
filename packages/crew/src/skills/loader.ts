@@ -6,6 +6,7 @@ import { parse as parseYaml } from "yaml";
 import { ZodError } from "zod";
 
 import { invalidConfig } from "../util/errors.js";
+import { toZod3Issues } from "../util/zod3Compat.js";
 import { builtinSkills } from "./builtins.js";
 import { SkillRegistry } from "./registry.js";
 import { skillFileSchema, skillSchema, type Skill } from "./schema.js";
@@ -41,12 +42,13 @@ export function parseSkillFile(yamlText: string, source = "<string>"): Skill[] {
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch (err) {
     if (err instanceof ZodError) {
-      const detail = err.issues
+      const issues = toZod3Issues(err.issues);
+      const detail = issues
         .map((i) => `  - ${i.path.length ? i.path.join(".") : "(root)"}: ${i.message}`)
         .join("\n");
       throw invalidConfig(`Invalid skill definition (${source}):\n${detail}`, {
         source,
-        issues: err.issues,
+        issues,
       });
     }
     throw err;

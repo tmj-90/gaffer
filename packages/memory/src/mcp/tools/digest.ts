@@ -2,6 +2,8 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
 
+import { mcpToolInput } from "../../util/zod3Compat.js";
+
 import { audit } from "../../core/audit.js";
 import { getDigest, upsertDigest } from "../../core/repoUnderstanding.js";
 import { checkMaxLen, DIGEST_CAPS } from "../validation.js";
@@ -32,9 +34,9 @@ export function registerDigestTools(server: McpServer, db: Database): void {
         "you can judge freshness, and a `caveat`: the digest is a SUMMARY — " +
         "verify it against the actual code before high-stakes work. Returns " +
         "`null` when no digest has been written for the repo yet.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repo: z.string().min(1).describe("The repo name to fetch the digest for."),
-      },
+      }),
     },
     async (args) => {
       try {
@@ -112,7 +114,7 @@ export function registerDigestTools(server: McpServer, db: Database): void {
         "not an opinion that needs human ratification — so it APPLIES " +
         "DIRECTLY. Set `source` to record provenance: 'onboard', " +
         "'merge:#<pr>', or 'manual'.",
-      inputSchema: {
+      inputSchema: mcpToolInput({
         repo: z.string().min(1).describe("The repo this digest describes."),
         overview: z.string().min(1).describe("TLDR prose: what this repo is and does."),
         structure: z.string().min(1).describe("Key modules / dirs and the role each plays."),
@@ -128,7 +130,7 @@ export function registerDigestTools(server: McpServer, db: Database): void {
           .string()
           .min(1)
           .describe("Provenance: 'onboard' | 'merge:#<pr-number>' | 'manual'."),
-      },
+      }),
     },
     async (args) => {
       // Length-bound + sanitize BEFORE applying. The digest applies directly

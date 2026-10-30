@@ -14,7 +14,7 @@ export const skillSchema = z.object({
       stacks: z.array(z.string()).default([]),
       capabilities: z.array(z.string()).default([]),
     })
-    .default({}),
+    .prefault({}),
   steps: z.array(z.string().min(1)).min(1, "a skill needs at least one step"),
   evidence: z.array(z.string()).default([]),
   /**

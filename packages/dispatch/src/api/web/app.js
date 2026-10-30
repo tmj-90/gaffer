@@ -1311,7 +1311,9 @@ async function router() {
   const isCurrent = () => gen === routeGen;
 
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
-  app.dataset.view = view;
+  // The view actually rendered: a stray bare fragment (#grp-nothing) opens the
+  // Overview, so it is named "overview", not after the fragment.
+  app.dataset.view = VIEWS[view] ? view : notFound ? "notfound" : "overview";
   syncNav();
   updateNavBadges();
   setDocTitle(view); // detail views refine this once their data loads
@@ -9377,10 +9379,11 @@ async function renderSettings() {
   main.appendChild(acc);
 
   // The sticky save bar: the unsaved count (named), Discard, and the one primary.
-  const saveBtn = el("button", { class: "btn primary", type: "submit", form: "settings-form" }, [
-    icon("check"),
-    el("span", {}, "Save changes"),
-  ]);
+  const saveBtn = el(
+    "button",
+    { class: "btn primary", type: "submit", form: "settings-form", disabled: "" },
+    [icon("check"), el("span", {}, "Save changes")],
+  );
   const discardBtn = el(
     "button",
     { class: "btn quiet", type: "button", disabled: "", onclick: () => router() },
@@ -9423,6 +9426,8 @@ async function renderSettings() {
     } else dirtyNote.textContent = "No unsaved changes.";
     dirtyNote.classList.toggle("is-dirty", n > 0);
     discardBtn.disabled = n === 0;
+    // Nothing to save, nothing to press: the primary waits for a change.
+    saveBtn.disabled = n === 0;
     saveBar.classList.toggle("is-clean", n === 0);
     idxDirty.textContent = n ? String(n) : "none";
     idxDirty.className = n ? "nav-count urgent" : "boot-n";
@@ -9455,6 +9460,8 @@ async function renderSettings() {
       const v = ed.read();
       if (ed.initial === undefined || v !== ed.initial) payload[key] = v;
     }
+    // A submit is the intent (the primary only rests disabled while clean).
+    saveBtn.disabled = false;
     runAsyncAction(saveBtn, "Saving…", async () => {
       const res = await api("POST", "/api/settings", { settings: payload });
       const written = (res.written || []).length;
@@ -9680,6 +9687,16 @@ const WHO_WORDS = {
   both: "squad, then you",
   none: "not played",
 };
+/** The autonomy-policy gate behind a formation position (per-repo × risk grants). */
+const FORMATION_POLICY_GATE = { approve: "approve", merge: "merge", lore: "memory" };
+/** Enabled auto grants for a formation position (0 when it has none or no policy gate). */
+function formationGrants(policies, gateId, posture) {
+  const gate = FORMATION_POLICY_GATE[gateId];
+  if (!gate || !Array.isArray(policies)) return 0;
+  // Grants are read only by the agent review pass: with review human they are inert.
+  if (posture && String(posture.REVIEW_MODE?.value || "human") === "human") return 0;
+  return policies.filter((p) => p && p.gate === gate && p.mode === "auto").length;
+}
 
 /**
  * Go/No-Go before raising the dial: checks read from the posture the new mode
@@ -9837,26 +9854,39 @@ function teamInstructions(all, editors, policies) {
           const a = g.who(now);
           const b = g.who(next);
           const moving = a !== b;
+          // A position the gaffer holds can still be played by the squad where a
+          // per-repo grant says so (risk=low on one repo, say): show the grants,
+          // since "you" alone would misstate who acts.
+          const grants = b === "you" ? formationGrants(policies, g.id, next) : 0;
+          const words = (who) =>
+            who === "you" && grants
+              ? `you · ${plural(grants, "grant")} to the squad`
+              : WHO_WORDS[who];
           const mark = (who) =>
             who === "squad"
               ? agentShirt("squad", 44)
               : who === "both"
                 ? el("span", { class: "fp-pair" }, [agentShirt("squad", 40), ycard(32, "fp-card")])
-                : who === "you"
-                  ? ycard(36, "fp-card")
-                  : el("span", { class: "fp-empty", "aria-hidden": "true" });
+                : who === "you" && grants
+                  ? el("span", { class: "fp-pair is-grant" }, [
+                      ycard(32, "fp-card"),
+                      agentShirt("squad", 34),
+                    ])
+                  : who === "you"
+                    ? ycard(36, "fp-card")
+                    : el("span", { class: "fp-empty", "aria-hidden": "true" });
           return el("li", { style: { "--x": `${10 + step * i}%` } }, [
             el(
               "a",
               {
-                class: `fp-spot who-${b}${moving ? " is-moving" : ""}`,
-                href: `#set-${g.key}`,
-                "aria-label": `${g.label}: ${WHO_WORDS[b]}${moving ? ` after save (now ${WHO_WORDS[a]})` : ""}`,
+                class: `fp-spot who-${b}${grants ? " has-grants" : ""}${moving ? " is-moving" : ""}`,
+                href: grants ? "#autonomy-policies" : `#set-${g.key}`,
+                "aria-label": `${g.label}: ${words(b)}${moving ? ` after save (now ${WHO_WORDS[a]})` : ""}`,
               },
               [
                 mark(b),
                 el("span", { class: "fp-label" }, g.label),
-                el("span", { class: "fp-who" }, moving ? `→ ${WHO_WORDS[b]}` : WHO_WORDS[b]),
+                el("span", { class: "fp-who" }, moving ? `→ ${words(b)}` : words(b)),
               ],
             ),
           ]);
@@ -9882,7 +9912,17 @@ function teamInstructions(all, editors, policies) {
         el("p", { class: "ti-lede" }, [
           el("strong", {}, next === current ? `${d.name}.` : `${d.name}, once you save.`),
           ` The squad plays ${squadCount(after)} of ${FORMATION_GATES.length} positions on its own; `,
-          `you make the call on ${FORMATION_GATES.filter((g) => ["you", "both"].includes(g.who(after))).length}.`,
+          `you make the call on ${FORMATION_GATES.filter((g) => ["you", "both"].includes(g.who(after))).length}`,
+          (() => {
+            const granted = FORMATION_GATES.filter(
+              (g) => g.who(after) === "you" && formationGrants(policies, g.id, after),
+            );
+            if (!granted.length) return ".";
+            const n = granted.reduce((t, g) => t + formationGrants(policies, g.id, after), 0);
+            return `, though ${plural(n, "per-repo grant")} hand${n === 1 ? "s" : ""} ${granted
+              .map((g) => g.label.toLowerCase())
+              .join(" and ")} to the squad on the repos and risks they name.`;
+          })(),
         ]),
       );
       drawFormation(now, after);
@@ -10826,7 +10866,14 @@ function renderSettingInput(s, editors) {
   const input = el("input", {
     type: "text",
     value: s.value,
-    placeholder: s.type === "csv" ? "comma,separated,values" : "",
+    // The same "default" placeholder every blank control shows (a sample list
+    // read like a real value); a list says how to write it.
+    placeholder:
+      s.effective && s.effective !== s.value
+        ? s.effective
+        : s.type === "csv"
+          ? "default · comma-separated"
+          : "default",
     "aria-label": s.label,
   });
   // `initial` makes a text edit count as unsaved (and an untouched one stay out of
@@ -15981,7 +16028,7 @@ function buildFromFrozenSpec() {
 // view surfaces three read-only memory artefacts and never mutates anything:
 //   • Repo Digest   — the repo's understanding (overview/structure/conventions/
 //                     stack) with its freshness line + honesty caveat.
-//   • Features      — the ledger split Current (shipped) / Building / Backlog,
+//   • Features      — the ledger split Shipped / Building / Backlog,
 //                     filterable by scope node.
 //   • Lore          — the team's recorded lore (read-only).
 //
@@ -15990,7 +16037,7 @@ function buildFromFrozenSpec() {
 // "memory unavailable" panel from that — it never errors the dashboard.
 
 const FEATURE_GROUPS = [
-  { status: "shipped", label: "Current", note: "Shipped — live in the repo." },
+  { status: "shipped", label: "Shipped", note: "Live in the repo." },
   { status: "building", label: "Building", note: "In flight right now." },
   { status: "backlog", label: "Backlog", note: "Proposed, not yet started." },
 ];
@@ -16110,7 +16157,7 @@ function onboardButton(repos, presetRepo, opts) {
       title: "Scan a repo and build its Memory digest + feature inventory",
       onclick: () => openOnboardPicker(repos, presetRepo),
     },
-    [icon("plus"), el("span", {}, "Onboard a repo")],
+    [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
   return btn;
 }
@@ -16632,7 +16679,7 @@ async function renderMemory(param) {
         clubDrafts == null
           ? null
           : clubDrafts
-            ? `${plural(clubDrafts, "lore draft")} across the club await your signature`
+            ? `${plural(clubDrafts, "lore draft")} across the club ${clubDrafts === 1 ? "awaits" : "await"} your signature`
             : "no lore drafts waiting",
       ]
         .filter(Boolean)
@@ -16693,9 +16740,14 @@ async function renderMemory(param) {
       ),
     ],
   );
+  // On a phone the header's Onboard folds into this row (one line, not two), so
+  // the first draft to sign sits above the fold.
+  const pickOnboard = onboardButton(repos, repo, { label: "Onboard" });
+  pickOnboard.classList.add("mem-pick-onboard");
   wrap.appendChild(
     el("div", { class: `filters mem-pick${repos.length > 1 ? "" : " is-solo"}` }, [
       field("Repo", repoSel),
+      pickOnboard,
     ]),
   );
 
@@ -16732,7 +16784,7 @@ async function renderMemory(param) {
       digestRes,
       featuresRes,
       loreSlot._res || null,
-      loreFilter,
+      { ...loreFilter, foldOpen: undefined },
       memoryState,
     ]),
   );
@@ -16834,7 +16886,15 @@ async function remountMemory(param) {
 // that changes. `limit` is a page, not a cap — the pager walks `total`.
 const LORE_STATUSES = ["draft", "active", "deprecated", "superseded"];
 const LORE_KINDS = ["decision", "requirement", "non-goal", "convention", "gotcha", "other"];
-const loreFilter = { status: "", kind: "", repo: "", pageRepo: null, offset: 0, limit: 50 };
+const loreFilter = {
+  status: "",
+  kind: "",
+  repo: "",
+  pageRepo: null,
+  offset: 0,
+  limit: 50,
+  foldOpen: false,
+};
 
 /** The lore read for the current filters: GET /api/memory/lore?repo&status&kind&limit&offset. */
 function loreQueryPath() {
@@ -16880,16 +16940,22 @@ async function mountLoreCard(slot, repos, reload) {
  * the tabs and the strip agree. A refused decision (already ratified elsewhere,
  * unknown id) surfaces as a toast, never a silent no-op.
  */
-async function ratifyLore(l, action, refresh, btn) {
+async function ratifyLore(l, action, refresh, btn, reason) {
+  // Busy without the `disabled` attribute: the browser blurs a disabled button to
+  // <body>, and keyboard triage would then lose its place (WCAG 2.4.3). aria-disabled
+  // keeps focus on the row so the re-render can hand it to the next draft's Approve.
+  const group = btn ? [...(btn.closest(".lore-actions")?.querySelectorAll("button") || [btn])] : [];
+  if (btn && btn.getAttribute("aria-disabled") === "true") return;
+  for (const b of group) b.setAttribute("aria-disabled", "true");
   if (btn) {
-    btn.disabled = true;
     btn.classList.add("is-busy");
+    btn.setAttribute("aria-busy", "true");
   }
   try {
     await api(
       "POST",
       `/api/memory/lore/${encodeURIComponent(l.id)}/${action}`,
-      action === "reject" ? {} : undefined,
+      action === "reject" ? (reason ? { reason } : {}) : undefined,
     );
     toast(
       action === "approve"
@@ -16899,9 +16965,10 @@ async function ratifyLore(l, action, refresh, btn) {
     );
   } catch (e) {
     toast(e && e.message ? e.message : `Could not ${action} the draft.`, { code: e && e.code });
+    for (const b of group) b.removeAttribute("aria-disabled");
     if (btn) {
-      btn.disabled = false;
       btn.classList.remove("is-busy");
+      btn.removeAttribute("aria-busy");
     }
   }
   if (refresh) await refresh();
@@ -17043,7 +17110,7 @@ function renderFeatureLedger(repo, res) {
     return card;
   }
 
-  // Current (shipped) / Building / Backlog, each grouped by scope node.
+  // Shipped / Building / Backlog, each grouped by scope node.
   const lanes = el("div", { class: "ledger" });
   for (const group of FEATURE_GROUPS) {
     const inGroup = features.filter((f) => f.status === group.status);
@@ -17188,13 +17255,45 @@ function renderLoreList(res, repo, opts = {}) {
     ],
   );
   kindSel.addEventListener("change", () => onFilter({ kind: kindSel.value }));
-  card.appendChild(
-    el("div", { class: "filters lore-filters" }, [
-      field("Repo", repoSel),
-      field("Status", statusSel),
-      field("Kind", kindSel),
-    ]),
+  // The filters fold behind one line on a phone (the repo filter follows the
+  // page's repo anyway), so "Awaiting your signature" and the first Approve are on
+  // screen at load; on a desk they stay open and the summary line is hidden. The
+  // fold remembers being opened across the live re-render.
+  const narrow =
+    typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+  const setBits = [
+    loreFilter.repo !== (memoryState.repo || "")
+      ? loreFilter.repo
+        ? loreFilter.repo
+        : "all repos"
+      : null,
+    loreFilter.status ? (loreFilter.status === "draft" ? "drafts" : loreFilter.status) : null,
+    loreFilter.kind || null,
+  ].filter(Boolean);
+  const fold = el(
+    "details",
+    { class: "lore-fold", open: !narrow || loreFilter.foldOpen ? "" : undefined },
+    [
+      el("summary", { class: "lore-fold-sum" }, [
+        el("span", { class: "lore-fold-label" }, "Filter"),
+        el(
+          "span",
+          { class: "lore-fold-set" },
+          setBits.length ? setBits.join(" · ") : `${repo || "all repos"} · all lore`,
+        ),
+      ]),
+      el("div", { class: "filters lore-filters" }, [
+        field("Repo", repoSel),
+        field("Status", statusSel),
+        field("Kind", kindSel),
+      ]),
+    ],
   );
+  fold.addEventListener("toggle", () => {
+    if (typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches)
+      loreFilter.foldOpen = fold.open;
+  });
+  card.appendChild(fold);
 
   if (!ok) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
@@ -17241,8 +17340,53 @@ function renderLoreList(res, repo, opts = {}) {
             { class: "btn small lore-reject", type: "button", "aria-label": `Reject “${l.title}”` },
             "Reject",
           );
-          reject.addEventListener("click", () => ratifyLore(l, "reject", reload, reject));
-          return el("div", { class: "lore-actions" }, [approve, reject]);
+          const actionsEl = el("div", { class: "lore-actions" }, [approve, reject]);
+          // Reject asks for an optional reason in place (the memory CLI recommends
+          // one: the agent that filed the draft reads it). Enter rejects, with or
+          // without words; Escape puts the buttons back.
+          reject.addEventListener("click", () => {
+            const why = el("input", {
+              type: "text",
+              class: "lore-reason",
+              maxlength: "2000",
+              placeholder: "Why? Optional; the agent reads it",
+              "aria-label": `Reason for rejecting “${l.title}” (optional)`,
+            });
+            const confirm = el(
+              "button",
+              { class: "btn small danger lore-reject-confirm", type: "submit" },
+              "Reject",
+            );
+            const cancel = el("button", { class: "btn small quiet", type: "button" }, "Cancel");
+            const form = el("form", { class: "lore-reject-form" }, [
+              why,
+              el("div", { class: "lore-reject-btns" }, [confirm, cancel]),
+            ]);
+            const close = () => {
+              actionsEl.replaceChildren(approve, reject);
+              reject.focus();
+            };
+            cancel.addEventListener("click", close);
+            form.addEventListener("keydown", (e) => {
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                close();
+              }
+            });
+            form.addEventListener("submit", (e) => {
+              e.preventDefault();
+              // Focus rides on the confirm button so the re-render can hand it on.
+              confirm.focus();
+              why.readOnly = true;
+              ratifyLore(l, "reject", reload, confirm, why.value.trim()).finally(() => {
+                why.readOnly = false; // a refused reject leaves the reason editable
+              });
+            });
+            actionsEl.replaceChildren(form);
+            why.focus();
+          });
+          return actionsEl;
         })()
       : null;
     return el(

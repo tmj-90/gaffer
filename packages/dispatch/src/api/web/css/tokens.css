@@ -67,6 +67,7 @@
     --on-claret-2: #f3d9e1; /* secondary text on claret (≥ 7:1) */
     --sky: #95cdeb; /* chevron, collar, the hoop under the header */
     --on-sky: #0e1726;
+    --on-sky-2: #1d3a52; /* secondary text on sky (6.9:1) */
     --sky-wash: light-dark(#ddeff9, #1e3442); /* selected / hover wash */
 
     /* --- the scoreboard: always dark, both kits --------------------------- */
@@ -90,6 +91,7 @@
     --ycard-edge: light-dark(#0e1726, #111318);
     --red: light-dark(#c8102e, #ff7b7b); /* blocked / failed — text + glyph */
     --on-red: light-dark(#ffffff, #111318);
+    --on-red-2: light-dark(#ffe1e5, #3a1018); /* secondary text on red (≥ 4.8:1) */
     --red-wash: light-dark(#fbe6e8, #3a1e24);
     --ok: light-dark(#1f6b3a, #7fd49a); /* passed gates, + lines (text ≥ 4.5:1) */
     --ok-wash: light-dark(#e3f2e4, #18301f);

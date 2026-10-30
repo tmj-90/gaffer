@@ -58,6 +58,71 @@
   .mem-pick .field {
     flex: 1 1 auto;
   }
+  /* On a phone the header's Onboard rides in the repo row instead. */
+  .mem-pick {
+    flex-wrap: nowrap;
+  }
+  .mem-pick-onboard {
+    flex: none;
+  }
+  @media (max-width: 760px) {
+    .view-memory:has(.mem-pick:not(.is-solo)) .view-head-actions {
+      display: none;
+    }
+  }
+
+  /* The lore filters: open on a desk (no summary line), folded to one line on a phone. */
+  .lore-fold-sum {
+    display: none;
+  }
+  @media (max-width: 760px) {
+    .lore-fold-sum {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: var(--tap);
+      padding: 0 12px;
+      border: 2px solid var(--ink);
+      border-radius: var(--r);
+      background: var(--paper);
+      list-style: none;
+    }
+    .lore-fold-sum::-webkit-details-marker {
+      display: none;
+    }
+    .lore-fold-sum::after {
+      content: "";
+      flex: none;
+      width: 8px;
+      height: 8px;
+      margin-left: auto;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: translateY(-2px) rotate(45deg);
+    }
+    .lore-fold[open] > .lore-fold-sum::after {
+      transform: translateY(2px) rotate(-135deg);
+    }
+    .lore-fold[open] > .lore-fold-sum {
+      margin-bottom: var(--s3);
+    }
+    .lore-fold-label {
+      font: 800 var(--t16) / 1 var(--f-display);
+      text-transform: uppercase;
+      letter-spacing: 0.02em;
+    }
+    .lore-fold-set {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--ink-2);
+      font: 600 var(--t14) var(--f-cond);
+    }
+    .view > .kpi-row.mem-stats .kpi-sub {
+      display: none;
+    }
+  }
   .mem-node .field {
     flex: 0 1 320px;
   }
@@ -219,6 +284,30 @@
   }
   .lore-actions .btn {
     justify-content: center;
+  }
+  /* Reject asks for its reason in place: the actions take the row's full width
+     under the body while the reason is being written. */
+  .lore-actions:has(.lore-reject-form) {
+    grid-column: 2 / -1;
+    min-width: 0;
+  }
+  .lore-reject-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    width: 100%;
+  }
+  .lore-reason {
+    flex: 1 1 240px;
+    min-width: 0;
+    min-height: var(--tap);
+  }
+  .lore-reject-btns {
+    display: flex;
+    gap: 8px;
+  }
+  .lore-reject-btns .btn {
+    min-height: var(--tap);
   }
   .lore-note {
     padding-top: var(--s3);
@@ -410,6 +499,12 @@
     }
     .lore-actions .btn {
       flex: 1;
+    }
+    .lore-actions:has(.lore-reject-form) {
+      grid-column: auto;
+    }
+    .lore-reject-btns {
+      flex: 1 1 100%;
     }
     .ledger-lane {
       grid-template-columns: minmax(0, 1fr);

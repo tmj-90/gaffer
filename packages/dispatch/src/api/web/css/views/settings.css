@@ -604,6 +604,12 @@
     border-radius: var(--r);
     box-shadow: var(--counter-shadow);
   }
+  /* Clean, the bar rests at the foot of the room instead of riding over the
+     panels; it starts riding along the moment something is unsaved. */
+  .boot-save.is-clean {
+    position: static;
+    box-shadow: none;
+  }
   .boot-dirty {
     margin-right: auto;
     font: 600 var(--t14) / 1.3 var(--f-text);

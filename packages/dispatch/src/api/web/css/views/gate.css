@@ -165,9 +165,11 @@
     padding: var(--s6) 0;
     max-width: 1040px;
   }
+  /* The inline padding keeps the tilted board's corners inside the page gutter. */
   .err-board {
     display: grid;
     justify-items: center;
+    padding-inline: 12px;
   }
   .err-face {
     display: grid;

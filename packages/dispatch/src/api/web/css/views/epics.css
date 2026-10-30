@@ -1,0 +1,251 @@
+/* Epics — the season's campaigns: each epic is a cup run, its phases are the
+   rounds (filled as they are won), and the dependency DAG is the draw, laid on
+   mown lanes with tickets as paper counters and drawn edges between them. */
+
+@layer views {
+  .epics-lede {
+    max-width: 70ch;
+    color: var(--ink-2);
+  }
+  .epic-list {
+    display: grid;
+    gap: var(--s4);
+  }
+  .epic-card {
+    padding: 0;
+    overflow: clip;
+  }
+  .epic-card.card-accent {
+    box-shadow: none;
+  }
+  .epic-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px var(--s4);
+    list-style: none;
+    background: var(--sky);
+    color: var(--on-sky);
+  }
+  .epic-summary::-webkit-details-marker {
+    display: none;
+  }
+  .epic-summary::after {
+    content: "";
+    flex: none;
+    width: 10px;
+    height: 10px;
+    border-right: 2.5px solid currentColor;
+    border-bottom: 2.5px solid currentColor;
+    transform: rotate(45deg) translateY(-3px);
+  }
+  .epic-card[open] > .epic-summary::after {
+    transform: rotate(225deg) translateY(-2px);
+  }
+  .epic-summary-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+  }
+  .epic-summary-main .epic-ico {
+    width: 22px;
+    height: 22px;
+    flex: none;
+  }
+  .epic-summary-main > div {
+    min-width: 0;
+  }
+  .epic-name {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+  }
+  .epic-desc {
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    color: #1a2b3f;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 70ch;
+  }
+  .epic-summary-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+  }
+  .epic-stat {
+    font: 700 var(--t14) var(--f-cond);
+  }
+  .epic-summary .epic-stat.dim {
+    color: #1a2b3f;
+  }
+  .epic-summary .badge.st {
+    color: var(--on-sky);
+  }
+  .epic-body {
+    display: grid;
+    gap: var(--s4);
+    padding: var(--s4);
+    min-width: 0;
+  }
+
+  /* Rounds: one segment per phase, filled by its done ratio. */
+  .phase-strip {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+  .phase-seg {
+    display: grid;
+    gap: 6px;
+  }
+  .ps-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .ps-label {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ps-frac {
+    font: 700 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ps-bar {
+    height: 8px;
+    background: var(--rule-2);
+    overflow: hidden;
+  }
+  .ps-bar i {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+  .phase-seg.is-active .ps-bar {
+    box-shadow: inset 0 0 0 1.5px var(--ink);
+  }
+
+  /* The draw: the dependency DAG on the pitch-side ground. */
+  .dag-scroll {
+    overflow-x: auto;
+    border-radius: var(--r);
+    background: var(--lane-a);
+  }
+  .dag {
+    position: relative;
+  }
+  .dag-edges {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .dag-edges svg {
+    display: block;
+    max-width: none;
+    overflow: visible;
+  }
+  .dag-edges .edge {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  .dag-edges .edge.sat {
+    stroke: var(--ink);
+  }
+  .dag-edges .edge.pend {
+    stroke: var(--ink-2);
+    stroke-dasharray: 2 6;
+  }
+  .dag-collabel {
+    position: absolute;
+    top: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .dcl-num {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .dcl-gate {
+    font: 700 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .dag-node {
+    position: absolute;
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    padding: 8px 10px;
+    overflow: hidden;
+    background: var(--paper);
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+    color: inherit;
+    text-decoration: none;
+  }
+  .dag-node:hover {
+    border-color: var(--ink);
+  }
+  .dag-node.status-blocked,
+  .dag-node.status-failed {
+    border: 2px solid var(--red);
+  }
+  .dn-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .dn-num {
+    font: 800 var(--t20) / 1 var(--f-display);
+  }
+  .dn-top .badge.st {
+    font-size: var(--t12);
+  }
+  .dn-title {
+    font: 600 var(--t14) / 1.25 var(--f-cond);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .dn-block {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: 700 var(--t12) var(--f-cond);
+    color: var(--red);
+  }
+  .dn-block-ico {
+    width: 12px;
+    height: 12px;
+  }
+
+  @media (max-width: 760px) {
+    .epic-summary {
+      flex-wrap: wrap;
+    }
+    .epic-summary-meta {
+      justify-content: flex-start;
+      margin-left: 0;
+    }
+    .phase-strip {
+      grid-auto-flow: row;
+    }
+    .epic-name {
+      font-size: var(--t20);
+    }
+  }
+}

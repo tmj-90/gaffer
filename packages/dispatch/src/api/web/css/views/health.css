@@ -1,0 +1,106 @@
+/* Health — the physio's room: the fitness numbers on one strip (degraded
+   first), then each source as a league table of bars. All-OK reads quietly. */
+
+@layer views {
+  .health-view > .kpi-row {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    border: var(--frame);
+    border-radius: var(--r);
+  }
+  .health-view > .kpi-row .kpi:first-child {
+    padding-left: 16px;
+  }
+  .health-degraded {
+    font-weight: 700;
+  }
+  .hlist {
+    display: grid;
+  }
+  .hrow {
+    grid-template-columns: minmax(0, 1fr) 92px 120px;
+    gap: 12px;
+  }
+  .hrow-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: 600;
+  }
+  .hrow-val {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-align: right;
+  }
+  .df-bar {
+    height: 8px;
+    background: var(--rule-2);
+    overflow: hidden;
+  }
+  .df-bar i {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+  .tone-danger .df-bar i,
+  .tone-bad .df-bar i {
+    background: var(--red);
+  }
+  .recall-figures {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0;
+    border-top: var(--hair);
+  }
+  .recall-stat {
+    display: grid;
+    gap: 2px;
+    padding: 8px 0;
+    border-bottom: var(--hair);
+  }
+  .recall-stat-val {
+    font: 800 var(--t34) / 1 var(--f-display);
+  }
+  .recall-stat-label {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .health-spark {
+    height: 46px;
+    color: var(--ink);
+  }
+  .health-spark svg {
+    height: 46px;
+  }
+
+  @media (max-width: 1180px) {
+    .health-view > .kpi-row {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+    .health-view > .kpi-row .kpi:nth-child(3n + 1) {
+      border-left: 0;
+      padding-left: 16px;
+    }
+    .health-view > .kpi-row .kpi:nth-child(n + 4) {
+      border-top: var(--hair);
+    }
+  }
+  @media (max-width: 760px) {
+    .health-view > .kpi-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .health-view > .kpi-row .kpi:nth-child(3n + 1) {
+      border-left: var(--hair);
+      padding-left: 10px;
+    }
+    .health-view > .kpi-row .kpi:nth-child(odd) {
+      border-left: 0;
+    }
+    .health-view > .kpi-row .kpi:nth-child(n + 3) {
+      border-top: var(--hair);
+    }
+    .hrow {
+      grid-template-columns: minmax(0, 1fr) 72px 80px;
+    }
+  }
+}

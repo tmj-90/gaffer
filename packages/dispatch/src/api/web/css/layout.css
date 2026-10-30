@@ -1,0 +1,118 @@
+/* ===========================================================================
+   Layout — the main column and the page-level grids views compose with. The
+   shell chrome (club header, nav, bottom nav) is in shell.css. Three
+   breakpoints only:
+     ≤ 760px  phone (16px gutter, bottom nav, 44px targets)
+     761–1180 narrow desktop / tablet (nav collapses into "More" by measurement)
+     ≥ 1181   desktop
+   =========================================================================== */
+
+@layer layout {
+  /* --- main column ------------------------------------------------------- */
+  /* #app is full width; each view is a full-bleed grid whose content track is
+     1392px (1440 less the gutters), so a scoreboard can run edge to edge at any
+     width (.bleed) while everything else keeps the programme measure. */
+  .app {
+    flex: 1 0 auto;
+    width: 100%;
+    padding: 0 0 64px;
+    min-width: 0;
+  }
+  .app:focus {
+    outline: none;
+  }
+  .app > :not(.view) {
+    max-width: 1440px;
+    margin-inline: auto;
+    padding-inline: var(--gut);
+  }
+  .view {
+    --content: 1392px;
+    display: grid;
+    grid-template-columns:
+      [full-start] minmax(var(--gut), 1fr)
+      [content-start] minmax(0, var(--content))
+      [content-end] minmax(var(--gut), 1fr)
+      [full-end];
+    row-gap: var(--s5);
+    align-content: start;
+    padding-top: var(--s5);
+    min-width: 0;
+  }
+  .view > * {
+    grid-column: content;
+    min-width: 0;
+  }
+  /* A view that opens on a full-bleed band (the scoreboard) runs it edge to edge. */
+  .view > .bleed {
+    grid-column: full;
+    margin-top: calc(-1 * var(--s5));
+  }
+  .footer {
+    display: none;
+  }
+
+  /* Page grids views compose with (children never widen a track). */
+  .grid-2,
+  .grid-3,
+  .ov-grid,
+  .detail-grid {
+    display: grid;
+    gap: var(--s5);
+    align-items: start;
+  }
+  .grid-2 > *,
+  .grid-3 > *,
+  .ov-grid > *,
+  .detail-grid > * {
+    min-width: 0;
+  }
+  .grid-2,
+  .ov-grid.ov-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .grid-3,
+  .ov-grid.ov-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  /* Object pages: main column + a 400px side column (sheet facts, actions). */
+  .detail-grid {
+    grid-template-columns: minmax(0, 1fr) 400px;
+  }
+  .detail-grid > div {
+    display: grid;
+    gap: var(--s5);
+    align-content: start;
+    min-width: 0;
+  }
+  .stack {
+    display: grid;
+    gap: var(--s4);
+    min-width: 0;
+  }
+  .stack > * {
+    min-width: 0;
+  }
+
+  @media (max-width: 1180px) {
+    .grid-3,
+    .ov-grid.ov-3 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .detail-grid {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  @media (max-width: 760px) {
+    .app {
+      padding-bottom: calc(96px + env(safe-area-inset-bottom));
+    }
+    .grid-2,
+    .grid-3,
+    .ov-grid.ov-2,
+    .ov-grid.ov-3 {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+}

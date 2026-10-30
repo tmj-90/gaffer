@@ -116,7 +116,9 @@ describe("web: What I own lane", () => {
 
     const panel = document.getElementById("what-i-own");
     expect(panel).not.toBeNull();
-    expect(panel!.querySelector(".panel-title")?.textContent).toMatch(/what i own/i);
+    // Match Day: the "What I own" lane is the Overview's Team Sheet (the ONE ranked
+    // needs-you list); same #what-i-own hook, renamed title.
+    expect(panel!.querySelector(".panel-title")?.textContent).toMatch(/team sheet/i);
     // Count badge reflects the total owed.
     expect(panel!.querySelector(".panel-aux")?.textContent).toBe("3");
 

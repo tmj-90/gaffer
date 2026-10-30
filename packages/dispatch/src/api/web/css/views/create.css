@@ -1,0 +1,397 @@
+/* Create — sign a new ticket (the transfer form), and the two docked sheets:
+   Plan a build (brief → phased epic) and Author a spec (brief → clauses).
+   The scope selector here is shared with the ticket page. */
+
+@layer views {
+  /* --- new ticket ---------------------------------------------------------- */
+  .where-section,
+  .selector-section {
+    display: grid;
+    gap: var(--s3);
+    align-content: start;
+  }
+  .where-heading {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+    text-transform: uppercase;
+  }
+  .where-intro,
+  .selector-hint,
+  .selector-sub {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .selector-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .chip-x {
+    border: 0;
+    background: none;
+    padding: 0 0 0 4px;
+    font-weight: 800;
+    color: inherit;
+  }
+  .selector-add-repo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 10px;
+  }
+  .selector-add-repo .field.grow {
+    flex: 1 1 200px;
+  }
+  .selector-repos,
+  .selector-suggestions {
+    display: grid;
+    gap: 6px;
+  }
+  .selector-repo-row,
+  .selector-suggestion {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 6px 0;
+    border-bottom: var(--hair);
+  }
+  .selector-repo-controls,
+  .suggestion-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .mode-toggle {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .mode-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    flex: 1 1 200px;
+    padding: 10px 12px;
+    border: 2px solid var(--rule);
+    border-radius: var(--r);
+    cursor: pointer;
+  }
+  .mode-option:has(:checked) {
+    border-color: var(--ink);
+    background: var(--sky-wash);
+  }
+  .decision-title {
+    font: 800 var(--t20) / 1.15 var(--f-display);
+  }
+
+  /* --- plan-a-build / author-a-spec: a docked sheet --------------------------- */
+  .pb-scrim {
+    display: flex;
+    align-items: stretch;
+    justify-content: flex-end;
+  }
+  .pb-panel {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-width: 520px;
+    height: 100dvh;
+    background: var(--paper);
+    color: var(--ink);
+    border-left: 6px solid var(--claret);
+    overflow: clip;
+  }
+  .pb-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 18px 12px;
+    border-bottom: var(--frame);
+  }
+  .pb-head-main {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+  }
+  .pb-head-ico {
+    width: 22px;
+    height: 22px;
+  }
+  .pb-title {
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .pb-sub,
+  .pb-intro {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .pb-head-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .pb-guardrail {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 18px;
+    background: var(--sky-wash);
+    font: 600 var(--t14) var(--f-cond);
+  }
+  .pb-guardrail .pb-guard-ico {
+    width: 15px;
+    height: 15px;
+    flex: none;
+  }
+  .pb-mode {
+    display: grid;
+    gap: 10px;
+    padding: 12px 18px 0;
+  }
+  .pb-extend-field {
+    display: grid;
+    gap: 5px;
+  }
+  .pb-log {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 14px 18px;
+  }
+  .pb-examples {
+    display: grid;
+    gap: 8px;
+  }
+  .pb-example {
+    width: 100%;
+    justify-content: flex-start;
+    white-space: normal;
+    text-align: left;
+    min-height: 44px;
+    padding: 8px 12px;
+  }
+  .pb-msg {
+    max-width: 88%;
+    padding: 10px 12px;
+    border-radius: var(--r);
+    font-size: var(--t14);
+    line-height: 1.45;
+    white-space: pre-wrap;
+  }
+  .pb-user {
+    align-self: flex-end;
+    background: var(--board);
+    color: var(--board-ink);
+  }
+  .pb-bot {
+    align-self: flex-start;
+    background: var(--paper-2);
+    border: var(--hair);
+  }
+  .pb-bot-label {
+    display: block;
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+    margin-bottom: 4px;
+  }
+  .pb-questions {
+    display: grid;
+    gap: 5px;
+    padding-left: 18px;
+    list-style: decimal;
+  }
+  .pb-thinking {
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .pb-dot {
+    width: 6px;
+    height: 6px;
+    background: var(--ink-2);
+    border-radius: var(--r-round);
+  }
+  .pb-error-msg {
+    color: var(--red);
+    font-weight: 700;
+  }
+  .pb-error-hint {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .pb-proposal {
+    align-self: stretch;
+    max-width: 100%;
+    border: var(--frame);
+    border-radius: var(--r);
+    padding: 12px;
+    display: grid;
+    gap: 10px;
+  }
+  .pb-proposal-head {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .pb-proposal-name {
+    font: 800 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .pb-proposal-desc {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .pb-tickets {
+    display: grid;
+    gap: 8px;
+  }
+  .pb-ticket {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+  }
+  .pb-ticket-top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pb-ticket-idx {
+    font: 800 var(--t20) / 1 var(--f-display);
+  }
+  .pb-ticket-title {
+    font-weight: 700;
+  }
+  .pb-ticket-desc,
+  .pb-acs {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .pb-acs {
+    display: grid;
+    gap: 3px;
+  }
+  .pb-ticket-deps {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 var(--t12) var(--f-cond);
+  }
+  .pb-repo {
+    font: 600 var(--t12) var(--f-cond);
+  }
+  .pb-confirm-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .pb-confirm-note {
+    flex: 1 1 180px;
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .pb-confirm-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .pb-composer {
+    display: grid;
+    gap: 10px;
+    padding: 12px 18px 16px;
+    border-top: var(--frame);
+  }
+  .pb-input {
+    width: 100%;
+    min-height: 46px;
+    max-height: 160px;
+  }
+  .pb-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .pb-send {
+    flex: none;
+    min-width: 44px;
+    height: 44px;
+  }
+  .pb-send svg,
+  .pb-force svg {
+    width: 18px;
+    height: 18px;
+  }
+  .pb-force {
+    flex: none;
+    height: 44px;
+  }
+
+  /* Author-a-spec draft clauses. */
+  .sb-draft {
+    display: grid;
+    gap: 10px;
+  }
+  .sb-title {
+    width: 100%;
+  }
+  .sb-clauses {
+    display: grid;
+    gap: 10px;
+  }
+  .sb-clause {
+    display: grid;
+    gap: 6px;
+    padding: 10px;
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+  }
+  .sb-clause-top,
+  .sb-add-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .sb-clause-text {
+    min-height: 40px;
+    width: 100%;
+  }
+  .sb-clause-rationale,
+  .sb-add {
+    width: 100%;
+  }
+  .sb-action-error {
+    color: var(--red);
+    font-weight: 700;
+    font-size: var(--t14);
+  }
+
+  @media (max-width: 760px) {
+    .pb-scrim {
+      align-items: flex-end;
+    }
+    .pb-panel {
+      height: min(92dvh, 760px);
+      max-width: none;
+      border-left: 0;
+      border-top: 6px solid var(--claret);
+    }
+  }
+}

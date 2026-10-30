@@ -1,0 +1,245 @@
+/* Map — the club's grounds: the scope graph as a scouting map (nodes are
+   paper counters on mown lanes, one lane per depth), plus the node, repo and
+   hidden-repo pages. */
+
+@layer views {
+  /* --- scope graph --------------------------------------------------------- */
+  .graph-scroll {
+    overflow-x: auto;
+    border-radius: var(--r);
+    background: var(--lane-a);
+  }
+  .graph {
+    position: relative;
+  }
+  .graph-edges {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+  }
+  .graph-edges svg {
+    display: block;
+    max-width: none;
+    overflow: visible;
+  }
+  .gedge {
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+  .gedge.contains {
+    stroke: var(--ink);
+  }
+  .gedge.dep {
+    stroke: var(--ink-2);
+    stroke-dasharray: 2 6;
+  }
+  .graph-collabel {
+    position: absolute;
+    top: 8px;
+    z-index: 1;
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .scope-gnode {
+    position: absolute;
+    z-index: 1;
+    display: grid;
+    align-content: center;
+    gap: 6px;
+    padding: 10px 12px;
+    overflow: hidden;
+    background: var(--paper);
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+    color: inherit;
+    text-decoration: none;
+  }
+  .scope-gnode:hover {
+    border-color: var(--ink);
+  }
+  .scope-gnode.type-factory {
+    background: var(--claret);
+    color: var(--on-claret);
+    border-color: var(--claret);
+  }
+  .scope-gnode.type-factory .badge {
+    background: transparent;
+    color: var(--on-claret-2);
+    border-color: rgb(255 255 255 / 0.4);
+  }
+  .scope-gnode.type-external_dependency {
+    border-style: dashed;
+    border-color: var(--ink-2);
+  }
+  .sg-name {
+    font: 800 var(--t20) / 1.05 var(--f-display);
+    overflow-wrap: anywhere;
+  }
+  .sg-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: center;
+    font: 600 var(--t12) var(--f-cond);
+    color: inherit;
+    opacity: 0.85;
+  }
+  .scope-gnode.is-hidden,
+  .scope-gnode[hidden] {
+    display: none;
+  }
+  .graph-legend {
+    display: flex;
+    gap: var(--s4);
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .gl-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .gl-line {
+    width: 24px;
+    height: 0;
+    border-top: 2px solid var(--ink);
+  }
+  .gl-line.dep {
+    border-top: 2px dotted var(--ink-2);
+  }
+
+  /* --- unmapped repos + commands ------------------------------------------- */
+  .repo-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .row-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .cmd-block,
+  .cmd-editor {
+    display: grid;
+    gap: 6px;
+  }
+  .cmd-editor-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .cmd-list {
+    display: grid;
+    gap: 3px;
+  }
+  .cmd-row {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    min-width: 0;
+    font-size: var(--t14);
+  }
+  .cmd-label {
+    flex: 0 0 48px;
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .factory-footer {
+    font-size: var(--t14);
+  }
+  .hidden-repos-link {
+    font-weight: 600;
+  }
+
+  /* --- node + repo detail -------------------------------------------------- */
+  .tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .assoc-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 8px 0;
+    border-top: var(--hair);
+  }
+  .assoc-row:first-child {
+    border-top: 0;
+  }
+  .assoc-row-edit {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .assoc-name {
+    font-weight: 700;
+  }
+  .assoc-meta,
+  .assoc-edit-main {
+    display: flex;
+    gap: 6px 10px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .assoc-edit-field {
+    display: grid;
+    gap: 3px;
+  }
+  .assoc-edit-label {
+    font: 700 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .map-repo-box {
+    display: grid;
+    gap: var(--s3);
+  }
+  .map-repo-controls,
+  .assoc-edit-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .map-repo-lead {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .repo-tickets,
+  .repo-ticket-list {
+    display: grid;
+  }
+  .repo-ticket-row {
+    grid-template-columns: 52px minmax(0, 1fr) auto;
+  }
+  .repo-ticket-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .repo-ticket-time {
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .repo-ticket-more {
+    font-size: var(--t14);
+    padding-top: 6px;
+  }
+  .edge-text {
+    font-size: var(--t14);
+  }
+  .desc {
+    max-width: 75ch;
+    white-space: pre-wrap;
+  }
+}

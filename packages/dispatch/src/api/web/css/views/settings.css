@@ -1,0 +1,321 @@
+/* Settings — the boot room: mode and gates first (the autonomy dial is the
+   team's instructions: how much the squad may do without the gaffer), then
+   every knob as a labelled row with its key, help and control. */
+
+@layer views {
+  .settings-view > * {
+    max-width: 960px;
+  }
+  .settings-note {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .settings-note-ico {
+    width: 16px;
+    height: 16px;
+    flex: none;
+  }
+  .settings-form {
+    display: grid;
+    gap: var(--s5);
+  }
+  .settings-group {
+    display: grid;
+    gap: var(--s3);
+  }
+  .settings-group > h2 {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+    text-transform: uppercase;
+  }
+  .settings-rows {
+    display: grid;
+  }
+  .setting-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 260px);
+    gap: 8px 20px;
+    align-items: center;
+    padding: 12px 0;
+    border-top: var(--hair);
+  }
+  .setting-row:first-child {
+    border-top: 0;
+  }
+  .setting-meta {
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+  }
+  .setting-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-weight: 700;
+  }
+  .setting-key {
+    font-size: var(--t12);
+    color: var(--ink-2);
+  }
+  .setting-help {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .setting-control {
+    display: flex;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+  .setting-control input:not([type="checkbox"]),
+  .setting-control select {
+    width: 100%;
+    max-width: 260px;
+  }
+  .badge.env-locked .lock-ico {
+    width: 12px;
+    height: 12px;
+  }
+  .settings-actions {
+    position: sticky;
+    bottom: 8px;
+    justify-content: flex-end;
+    padding: 10px 14px;
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+  }
+
+  /* The autonomy dial (team instructions): gates open, as a band + chips. */
+  .autonomy-dial {
+    display: grid;
+    grid-template-columns: 200px minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: center;
+  }
+  .ad-gauge {
+    display: grid;
+    gap: 8px;
+  }
+  .ad-center {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .ad-frac {
+    font: 800 var(--t52) / 1 var(--f-display);
+  }
+  .ad-cap {
+    font: 700 var(--t14) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .ad-gauge .band {
+    height: 12px;
+  }
+  .ad-body {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ad-level-row {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .ad-level {
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ad-badge {
+    font: 700 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ad-gates {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .ad-gate {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border: 1.5px solid var(--rule);
+    border-radius: var(--r);
+    font: 600 var(--t12) var(--f-cond);
+  }
+  .ad-gate.on {
+    border-color: var(--ink);
+    background: var(--yellow);
+    color: var(--on-yellow);
+  }
+  .ad-gate-dot {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid currentColor;
+  }
+  .ad-gate.on .ad-gate-dot {
+    background: currentColor;
+  }
+
+  /* Autonomy recommendations / active policies / access. */
+  .ar-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .ar-ico {
+    width: 20px;
+    height: 20px;
+    flex: none;
+  }
+  .ar-title {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+    text-transform: uppercase;
+  }
+  .ar-list,
+  .access-list {
+    display: grid;
+  }
+  .ar-item,
+  .access-item,
+  .ap-item {
+    display: grid;
+    gap: 6px;
+    padding: 10px 0;
+    border-top: var(--hair);
+  }
+  .ar-item:first-child,
+  .access-item:first-child,
+  .ap-item:first-child {
+    border-top: 0;
+  }
+  .ar-item-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ar-repo,
+  .access-name {
+    font-weight: 700;
+  }
+  .ar-reasons {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .ar-action {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .ar-confirm {
+    width: 100%;
+  }
+  .ar-enabled-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .autonomy-inert-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: var(--t14);
+  }
+  .access-form {
+    display: grid;
+    gap: var(--s3);
+  }
+  .access-form-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--s3);
+    align-items: end;
+  }
+  .access-token {
+    width: 100%;
+    font-family: var(--f-mono);
+  }
+  .access-token-note,
+  .access-whoami {
+    font-size: var(--t14);
+  }
+  .access-select {
+    min-width: 92px;
+  }
+
+  /* Idle loops (maintenance lanes). */
+  .idle-loops-rows {
+    display: grid;
+    gap: 0;
+  }
+  .idle-loop-row {
+    display: grid;
+    gap: 10px;
+    padding: 12px 0;
+    border-top: var(--hair);
+  }
+  .idle-loop-row:first-child {
+    border-top: 0;
+  }
+  .idle-loop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .idle-loop-label {
+    display: grid;
+    gap: 3px;
+  }
+  .idle-loops-note {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .target-picker {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+  }
+  .target-picker-reposlot:empty {
+    display: none;
+  }
+  .target-picker-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+  }
+  .target-picker-grouplabel,
+  .target-picker-sublabel {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .target-picker-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 32px;
+  }
+
+  @media (max-width: 760px) {
+    .setting-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .setting-control {
+      justify-content: flex-start;
+    }
+    .autonomy-dial {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .settings-actions {
+      bottom: calc(68px + env(safe-area-inset-bottom));
+    }
+  }
+}

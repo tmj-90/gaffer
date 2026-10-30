@@ -1,0 +1,95 @@
+/* Utilities + global modes: view transitions, reduced motion, forced colours,
+   print. Last layer, so these win over every component and view rule. */
+
+@layer utilities {
+  .u-hide-phone {
+    display: revert;
+  }
+  .u-nowrap {
+    white-space: nowrap;
+  }
+  .u-grow {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .u-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  @media (max-width: 760px) {
+    .u-hide-phone {
+      display: none !important;
+    }
+  }
+
+  /* Route changes cross-fade (220ms); the header never travels. */
+  ::view-transition-group(*) {
+    animation-duration: 220ms;
+    animation-timing-function: var(--ease-move);
+  }
+  .appbar {
+    view-transition-name: club-header;
+  }
+  .bottomnav {
+    view-transition-name: bottom-nav;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) {
+      animation: none !important;
+    }
+  }
+
+  /* Forced colours: state is carried by shape and text, so frames are enough. */
+  @media (forced-colors: active) {
+    .card,
+    .btn,
+    .segmented,
+    .kpi-row,
+    .board-card,
+    .sheet,
+    .palette,
+    .movemenu,
+    .reject-dialog {
+      border: 2px solid CanvasText;
+    }
+    .btn.primary,
+    .btn.ok {
+      border-color: ButtonText;
+    }
+    .ycard rect {
+      fill: Mark;
+      stroke: CanvasText;
+    }
+    .nav-link.active::after,
+    .bottomnav-item.active {
+      background: Highlight;
+    }
+    .glyph {
+      forced-color-adjust: auto;
+    }
+  }
+
+  @media print {
+    .appbar,
+    .bottomnav,
+    .toast,
+    .offline-strip {
+      display: none !important;
+    }
+    body {
+      background: #fff;
+    }
+  }
+}

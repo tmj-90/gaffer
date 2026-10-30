@@ -1,10 +1,12 @@
-// Dispatch human control surface — plain ES-module SPA over the REST API.
+// Gaffer dashboard — plain ES-module SPA over the Dispatch REST API.
 // No framework, no build step. Every view calls the JSON API via fetch().
 //
-// Redesign: dark "mission-control" skin. The API client + auth gate are
-// UNCHANGED in behaviour — only the rendering layer was rebuilt onto a new
-// token-driven design system and a 5-area information architecture
-// (Overview · Work · Review · Map · ⌘K), with every previous view ported.
+// Presentation: "Match Day". The gaffer is the manager and the factory is the
+// club on match day — a claret club header, a stadium scoreboard, programme
+// pages with kit-colour section blocks, referee's cards for status. The tokens,
+// components and conventions are in css/ (see css/tokens.css) and the shared
+// helpers below (el/field/icon/glyph, viewHead, panelHead, emptyState,
+// skeleton, statCell, charts). Every mark carries data the server gave us.
 
 // --- API client ------------------------------------------------------------
 
@@ -45,24 +47,70 @@ function adoptTokenFromUrl() {
  * On a non-2xx response it throws an Error carrying the API error envelope
  * ({ error: { code, message } }) so callers can surface it to the user.
  * A 401 means the server requires a token — render the login gate and stop.
+ *
+ * Honest failure modes: a network failure or timeout becomes code NETWORK with
+ * one plain sentence (never the browser's raw "Failed to fetch"); a non-JSON
+ * body (a proxy's HTML error page) becomes BAD_GATEWAY instead of a SyntaxError.
+ * Every outcome is reported to the freshness tracker that drives the header's
+ * "Data as of" line. `opts.signal` lets the router abort a superseded view's
+ * reads; an aborted call rejects with code ABORTED and is never toasted.
  */
-async function api(method, path, body) {
+const API_GET_TIMEOUT_MS = 15000;
+async function api(method, path, body, opts = {}) {
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
-  const res = await fetch(path, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
+  const signals = [];
+  if (opts.signal) signals.push(opts.signal);
+  // Reads time out; writes may legitimately run long (spawns, merges) and do not.
+  if (method === "GET" && typeof AbortSignal !== "undefined" && AbortSignal.timeout) {
+    signals.push(AbortSignal.timeout(opts.timeoutMs || API_GET_TIMEOUT_MS));
+  }
+  const signal =
+    signals.length > 1 && typeof AbortSignal.any === "function"
+      ? AbortSignal.any(signals)
+      : signals[0];
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
+    });
+  } catch (cause) {
+    if (opts.signal && opts.signal.aborted) {
+      const e = new Error("Superseded");
+      e.code = "ABORTED";
+      throw e;
+    }
+    freshness.fail("network");
+    const e = new Error("Can't reach the factory — retrying.");
+    e.code = "NETWORK";
+    e.cause = cause;
+    throw e;
+  }
   if (res.status === 401) {
+    freshness.fail("auth");
     renderLogin(Boolean(tok)); // tok present + still 401 ⇒ wrong token
     const e = new Error("Authentication required");
     e.code = "UNAUTHORIZED";
     throw e;
   }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data = {};
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      freshness.fail("network");
+      const e = new Error(`The factory answered ${res.status} with a page that isn't data.`);
+      e.code = "BAD_GATEWAY";
+      throw e;
+    }
+  }
+  // Any parsed answer from the server — even a 4xx refusal — proves it is up.
+  freshness.ok();
   if (!res.ok) {
     const err =
       data && data.error ? data.error : { code: String(res.status), message: res.statusText };
@@ -88,14 +136,24 @@ function prefersReducedMotion() {
   );
 }
 
-/** Create an element with attributes + children. Strings become text nodes. */
+/**
+ * Create an element with attributes + children. Strings become text nodes.
+ * `style` may be a string or an object; object keys starting with `--` are set
+ * with setProperty (Object.assign silently drops custom properties).
+ */
 function el(tag, attrs = {}, children = []) {
   const node = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (v === undefined || v === null || v === false) continue;
     if (k === "class") node.className = v;
     else if (k === "dataset") Object.assign(node.dataset, v);
-    else if (k.startsWith("on") && typeof v === "function") {
+    else if (k === "style" && typeof v === "object") {
+      for (const [sk, sv] of Object.entries(v)) {
+        if (sv === undefined || sv === null) continue;
+        if (sk.startsWith("--")) node.style.setProperty(sk, String(sv));
+        else node.style[sk] = sv;
+      }
+    } else if (k.startsWith("on") && typeof v === "function") {
       node.addEventListener(k.slice(2).toLowerCase(), v);
     } else if (k === "html") node.innerHTML = v;
     else node.setAttribute(k, v);
@@ -107,6 +165,21 @@ function el(tag, attrs = {}, children = []) {
         ? document.createTextNode(String(child))
         : child,
     );
+  }
+  return node;
+}
+
+/** Create an SVG element (same attribute rules as el(), no listeners). */
+const SVGNS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === undefined || v === null || v === false) continue;
+    node.setAttribute(k, String(v));
+  }
+  for (const child of [].concat(children)) {
+    if (child === null || child === undefined || child === false) continue;
+    node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
   }
   return node;
 }
@@ -184,36 +257,251 @@ const ICONS = {
   gauge:
     '<path d="m12 13 3.5-3.5"/><path d="M4 18.5a10 10 0 1 1 16 0"/><circle cx="12" cy="19" r="1"/>',
   doc: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  more: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
+  chevdown: '<path d="m6 9 6 6 6-6"/>',
+  back: '<path d="M15 6 9 12l6 6"/>',
+  external: '<path d="M10 4H4v16h16v-6M14 4h6v6M20 4l-9 9"/>',
+  logout: '<path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/>',
 };
-function icon(name, cls) {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
+/**
+ * Inline SVG icon (24×24 stroke icons, currentColor). Always carries width and
+ * height attributes (default 20px) so a class that sets only colour can never
+ * leave an unsized SVG to stretch across its flex row (the 830px Access lock).
+ * CSS width/height still override the attributes.
+ */
+function icon(name, cls, size = 20) {
+  const svg = document.createElementNS(SVGNS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
   svg.setAttribute("fill", "none");
   svg.setAttribute("stroke", "currentColor");
-  svg.setAttribute("stroke-width", "1.9");
+  svg.setAttribute("stroke-width", "1.75");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
-  if (cls) svg.setAttribute("class", cls);
+  svg.setAttribute("class", cls ? `ico ${cls}` : "ico");
   svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
   svg.innerHTML = ICONS[name] || "";
   return svg;
 }
-/** Dispatch shield mark via the inlined <symbol>. */
-function shield(cls) {
-  const ns = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(ns, "svg");
-  if (cls) svg.setAttribute("class", cls);
-  svg.setAttribute("viewBox", "0 0 256 280");
-  svg.setAttribute("aria-hidden", "true");
-  const use = document.createElementNS(ns, "use");
-  use.setAttribute("href", "#wg-shield");
-  svg.appendChild(use);
+
+/**
+ * §6 status glyphs, the same shape everywhere (20px grid, currentColor, 1.75
+ * stroke). The status WORD is always adjacent (statusBadge) or in the accessible
+ * name (pass `label`). Squares are blocked, triangles failed, bars paused.
+ */
+const GLYPHS = {
+  draft: '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/>',
+  refining:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-dasharray="1.6 2.6" stroke-linecap="round"/>',
+  ready:
+    '<path d="M10 3 A7 7 0 1 1 4.5 5.7" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>',
+  claimed:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M10 10 L10 3 A7 7 0 0 1 17 10 Z" fill="currentColor"/>',
+  in_progress:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M10 3 A7 7 0 0 1 10 17 Z" fill="currentColor"/>',
+  in_review:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><circle cx="10" cy="10" r="2.6" fill="currentColor"/>',
+  in_testing:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M7 10.5 L9.2 12.6" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>',
+  ready_for_merge:
+    '<circle cx="10" cy="10" r="8" fill="currentColor"/><path d="M6.5 10 H13 M10.5 7 L13.5 10 L10.5 13" fill="none" stroke="var(--glyph-knock)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>',
+  done: '<circle cx="10" cy="10" r="8" fill="currentColor"/><path d="M6.4 10.3 L8.9 12.7 L13.8 7.6" fill="none" stroke="var(--glyph-knock)" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>',
+  blocked: '<rect x="3.5" y="3.5" width="13" height="13" rx="1" fill="currentColor"/>',
+  failed: '<path d="M10 2.8 L17.6 16.4 H2.4 Z" fill="currentColor" stroke-linejoin="round"/>',
+  paused:
+    '<rect x="5" y="4" width="3.4" height="12" rx=".6" fill="currentColor"/><rect x="11.6" y="4" width="3.4" height="12" rx=".6" fill="currentColor"/>',
+  cancelled:
+    '<circle cx="10" cy="10" r="7" fill="none" stroke="currentColor" stroke-width="1.75"/><path d="M5 15 L15 5" stroke="currentColor" stroke-width="1.75"/>',
+  decision:
+    '<path d="M10 2.5 L17.5 10 L10 17.5 L2.5 10 Z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/><circle cx="10" cy="10" r="2" fill="currentColor"/>',
+};
+function glyph(status, size = 16, label) {
+  const svg = document.createElementNS(SVGNS, "svg");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.setAttribute("width", String(size));
+  svg.setAttribute("height", String(size));
+  svg.setAttribute("class", `glyph g-${status}`);
+  svg.setAttribute("focusable", "false");
+  if (label) {
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", label);
+  } else svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = GLYPHS[status] || GLYPHS.draft;
   return svg;
 }
 
+/** The referee's yellow card: needs you. Always paired with words on its row. */
+function ycard(size = 14, cls = "") {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 12 16",
+      width: (size * 0.75).toFixed(1),
+      height: size,
+      class: `ycard ${cls}`.trim(),
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    svgEl("rect", {
+      x: 1,
+      y: 1,
+      width: 10,
+      height: 14,
+      rx: 1.4,
+      fill: "var(--yellow)",
+      stroke: "var(--ycard-edge)",
+      "stroke-width": 1.2,
+    }),
+  );
+}
+
+// Kit drawings. A repo is identified by its kit PATTERN (not a hue), which
+// survives greyscale and forced colours; an agent wears the club shirt with its
+// stencil squad number. The shirt outline is shared.
+const SHIRT_PATH =
+  "M13 4 L7 6.5 L1.5 12.5 L6 18 L10 15.5 L10 37 L30 37 L30 15.5 L34 18 L38.5 12.5 L33 6.5 L27 4 Q20 9.5 13 4 Z";
+const KIT_PATTERNS = ["stripes", "hoops", "halves", "sash", "quarters"];
+let svgUid = 0;
+/** Stable kit pattern for a repo name (a hash, so adding a repo never reshuffles). */
+function kitPattern(name) {
+  let h = 0;
+  for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return KIT_PATTERNS[h % KIT_PATTERNS.length];
+}
+function kitShirt(repoName, size = 18) {
+  const id = "kit" + ++svgUid;
+  const pat = kitPattern(repoName);
+  const fill = svgEl("g", { "clip-path": `url(#${id})`, fill: "currentColor" });
+  if (pat === "stripes")
+    for (let x = 8; x < 34; x += 8)
+      fill.appendChild(svgEl("rect", { x, y: 0, width: 4, height: 40 }));
+  if (pat === "hoops")
+    for (let y = 10; y < 40; y += 8)
+      fill.appendChild(svgEl("rect", { x: 0, y, width: 40, height: 4 }));
+  if (pat === "halves") fill.appendChild(svgEl("rect", { x: 0, y: 0, width: 20, height: 40 }));
+  if (pat === "sash") fill.appendChild(svgEl("path", { d: "M2 6 L10 2 L40 34 L34 40 Z" }));
+  if (pat === "quarters") {
+    fill.appendChild(svgEl("rect", { x: 0, y: 0, width: 20, height: 20 }));
+    fill.appendChild(svgEl("rect", { x: 20, y: 20, width: 20, height: 20 }));
+  }
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 40 40",
+      width: size,
+      height: size,
+      class: `kit kit-${pat}`,
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("defs", {}, svgEl("clipPath", { id }, svgEl("path", { d: SHIRT_PATH }))),
+      svgEl("path", { d: SHIRT_PATH, fill: "var(--paper)" }),
+      fill,
+      svgEl("path", {
+        d: SHIRT_PATH,
+        fill: "none",
+        stroke: "currentColor",
+        "stroke-width": 2.2,
+        "stroke-linejoin": "round",
+      }),
+    ],
+  );
+}
+/** A repo name with its kit, e.g. ▥ billing-api. */
+function repoTag(name, size = 18) {
+  return el("span", { class: "repo" }, [kitShirt(name, size), el("span", {}, name)]);
+}
+/** The squad number an agent wears: the trailing digits of its name (01, 02…). */
+function agentNo(name) {
+  const m = String(name || "").match(/(\d+)$/);
+  return m ? m[1].slice(-2).padStart(2, "0") : "";
+}
+/** An agent: the club shirt (claret, sky chevron + collar) with its stencil number. */
+function agentShirt(name, size = 24) {
+  const id = "shirt" + ++svgUid;
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 40 40",
+      width: size,
+      height: size,
+      class: "shirt",
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("defs", {}, svgEl("clipPath", { id }, svgEl("path", { d: SHIRT_PATH }))),
+      svgEl("path", { d: SHIRT_PATH, fill: "var(--claret)" }),
+      svgEl("g", { "clip-path": `url(#${id})`, fill: "var(--sky)" }, [
+        svgEl("path", { d: "M13 4 Q20 9.5 27 4 L27 6.4 Q20 12 13 6.4 Z" }),
+        svgEl("path", { d: "M10 9.6 L20 15 L30 9.6 L30 12.6 L20 18 L10 12.6 Z" }),
+        svgEl("rect", { x: 0, y: 15.5, width: 6.5, height: 3 }),
+        svgEl("rect", { x: 33.5, y: 15.5, width: 6.5, height: 3 }),
+      ]),
+      svgEl("path", {
+        d: SHIRT_PATH,
+        fill: "none",
+        stroke: "var(--shirt-edge)",
+        "stroke-width": 1.4,
+        "stroke-linejoin": "round",
+      }),
+      svgEl("text", { x: 20, y: 34, "text-anchor": "middle", class: "shirt-no" }, agentNo(name)),
+    ],
+  );
+}
+function agentTag(name, size = 22) {
+  return el("span", { class: "agent" }, [agentShirt(name, size), el("span", {}, name)]);
+}
+/** The club crest: a shield split claret and sky with a fern frond — the product mark. */
+function crest(cls = "crest", w = 34, h = 40) {
+  return svgEl(
+    "svg",
+    {
+      viewBox: "0 0 44 52",
+      width: w,
+      height: h,
+      class: cls,
+      "aria-hidden": "true",
+      focusable: "false",
+    },
+    [
+      svgEl("path", {
+        d: "M22 2 L41 8 V26 C41 38 32 46 22 50 C12 46 3 38 3 26 V8 Z",
+        fill: "var(--sky)",
+        stroke: "var(--crest-edge)",
+        "stroke-width": 2.4,
+      }),
+      svgEl("path", { d: "M22 2 L41 8 V26 C41 38 32 46 22 50 Z", fill: "var(--claret)" }),
+      svgEl("path", {
+        d: "M14 40 C15 30 18 22 26 13",
+        fill: "none",
+        stroke: "var(--claret)",
+        "stroke-width": 2,
+        "stroke-linecap": "round",
+      }),
+      ...[0, 1, 2, 3, 4].map((i) =>
+        svgEl("path", {
+          d: `M${15.2 + i * 2.2} ${35 - i * 5} q-6 -1 -8 -5`,
+          fill: "none",
+          stroke: "var(--claret)",
+          "stroke-width": 1.8,
+          "stroke-linecap": "round",
+        }),
+      ),
+      svgEl("text", { x: 31.5, y: 31, "text-anchor": "middle", class: "crest-t" }, "G"),
+    ],
+  );
+}
+
+/** One neutral tag. Status and risk have their own helpers (glyph + word). */
 function badge(text, kind) {
-  return el("span", { class: `badge ${kind}` }, text);
+  return el("span", { class: kind ? `badge ${kind}` : "badge" }, text);
 }
 
 /** Compact, human-friendly duration from milliseconds (e.g. "2d 3h", "45m"). */
@@ -430,9 +718,9 @@ function renderLogin(wasWrong) {
     "aria-label": "Access token",
   });
   const form = el("form", { class: "login-gate" }, [
-    shield("login-mark"),
-    el("h1", {}, "Dispatch"),
-    el("p", {}, "This factory requires an access token."),
+    crest("login-mark", 52, 62),
+    el("h1", {}, "Gaffer"),
+    el("p", {}, "This factory needs an access token."),
     wasWrong ? el("p", { class: "login-error" }, "That token was rejected — try again.") : null,
     input,
     el("button", { class: "btn primary", type: "submit" }, "Enter"),
@@ -481,11 +769,16 @@ const STATUS_LABELS = {
 function statusLabel(status) {
   return STATUS_LABELS[status] || status;
 }
+/** A status: its §6 glyph + its word, together (never colour alone). */
 function statusBadge(status) {
-  return badge(statusLabel(status), `status-${status}`);
+  return el("span", { class: `badge st status-${status}` }, [
+    glyph(status, 16),
+    el("span", {}, statusLabel(status)),
+  ]);
 }
+/** Risk: outlined condensed caps ("HIGH RISK" reads on its own, not by hue). */
 function riskBadge(risk) {
-  return badge(risk, `risk-${risk}`);
+  return el("span", { class: `badge risk-${risk}`, title: `${risk} risk` }, risk);
 }
 function accessBadge(access) {
   return badge(access, `access-${access}`);
@@ -513,9 +806,10 @@ function repoLink(repo, { className = "", stop = false } = {}) {
 }
 
 /**
- * Pipeline-dots lifecycle indicator (cyan → amber → cyan). The lifecycle stage
- * the ticket sits in is amber ("now"); everything before it is a filled cyan
- * dot; everything after is hollow. Terminal failure paints the active dot red.
+ * Lifecycle progress marks: five stages (draft → ready → in progress → review →
+ * done); stages passed are filled, the current one is the long mark, a terminal
+ * failure paints it red. Class `.pdots` — `.pipeline` belongs to the Overview's
+ * development-flow strip (the old shared name broke its overflow on phones).
  */
 const LIFECYCLE = ["draft", "ready", "in_progress", "in_review", "done"];
 const STAGE_FOR_STATUS = {
@@ -542,7 +836,7 @@ function pipelineDots(status) {
   const stage = STAGE_FOR_STATUS[status] ?? 0;
   const failed = status === "failed" || status === "cancelled";
   const wrap = el("span", {
-    class: "pipeline",
+    class: "pdots",
     role: "img",
     "aria-label": `Lifecycle: ${statusLabel(status)}`,
   });
@@ -557,90 +851,60 @@ function pipelineDots(status) {
 
 // --- View scaffolding -------------------------------------------------------
 
-function viewHead(title, countText, actions) {
-  // Instrument header: a mono kicker line over a confident display title, all
-  // riding on a hairline baseline — like the label plate on a console section.
-  return el("div", { class: "view-head" }, [
+/**
+ * A view's programme-page header: the title in Big Shoulders (mixed case — it is
+ * a name, not an eyebrow), one line of real counts beneath it, and the view's
+ * actions on the right. No hero bands, no slogans. `sub` may be a string or a node.
+ */
+function viewHead(title, sub, actions) {
+  return el("header", { class: "view-head" }, [
     el("div", { class: "view-head-main" }, [
-      el("div", { class: "view-kicker" }, [
-        el("span", { class: "view-kicker-tick" }),
-        el("span", {}, countText ? String(countText).toUpperCase() : "GAFFER FACTORY"),
-      ]),
       el("h1", {}, title),
+      sub ? el("p", { class: "view-sub" }, sub) : null,
     ]),
     actions ? el("div", { class: "view-head-actions" }, [].concat(actions)) : null,
   ]);
 }
 
 /**
- * Atmospheric hero band that sits at the very TOP of a view, below the nav.
- * A dark sci-fi image carries the amber focal on its RIGHT; a two-axis scrim
- * (see `.view-hero` in styles.css) darkens the LEFT and fades the band into the
- * OLED content below, so real headline text stays legible at AAA contrast.
- *
- * The image is purely decorative background; all copy is live DOM text (screen
- * readers get the eyebrow/title/subtitle/status verbatim). The leading ◆ / ●
- * marks are rendered as decorative, aria-hidden spans — do not bake them into
- * the passed strings.
- *
- * @param {object}  o
- * @param {string}  o.image        asset path, e.g. "assets/bg/hero-city.jpg"
- * @param {string} [o.eyebrow]     small mono caps line (amber ◆ prepended)
- * @param {string}  o.title        editorial headline (Space Grotesk)
- * @param {string} [o.subtitle]    muted supporting line(s)
- * @param {string} [o.status]      status line text (● dot prepended)
- * @param {boolean}[o.statusOk]    green dot + text when healthy (default true)
+ * Idle / empty: one quiet sentence (and an optional second line + actions), never
+ * an icon in a box. `iconName` is accepted for older callers and ignored.
  */
-function viewHero({ image, eyebrow, title, subtitle, status, statusOk = true }) {
-  return el("header", { class: "view-hero", style: `background-image:url("${image}")` }, [
-    el("div", { class: "view-hero-inner" }, [
-      eyebrow
-        ? el("div", { class: "view-hero-eyebrow mono" }, [
-            el("span", { class: "view-hero-diamond", "aria-hidden": "true" }, "◆"),
-            el("span", {}, eyebrow),
-          ])
-        : null,
-      el("h1", { class: "view-hero-title" }, title),
-      subtitle ? el("p", { class: "view-hero-sub" }, subtitle) : null,
-      status
-        ? el("div", { class: `view-hero-status${statusOk ? " ok" : ""}` }, [
-            el("span", { class: "view-hero-dot", "aria-hidden": "true" }),
-            el("span", {}, status),
-          ])
-        : null,
-    ]),
-  ]);
-}
-
-function emptyState(title, sub, iconName = "check") {
+function emptyState(title, sub, _iconName, actions) {
   return el("div", { class: "empty-state" }, [
-    el("div", { class: "es-icon" }, icon(iconName)),
-    el("div", { class: "es-title" }, title),
-    sub ? el("div", { class: "es-sub" }, sub) : null,
+    el("p", { class: "es-title" }, title),
+    sub ? el("p", { class: "es-sub" }, sub) : null,
+    actions ? el("div", { class: "es-actions" }, [].concat(actions)) : null,
   ]);
 }
 
-/** Generic loading skeleton for a view. */
+/**
+ * A loading skeleton shaped like the view it stands in for. CSS keeps it
+ * invisible for the first 300ms so a fast view never flashes it.
+ */
 function skeleton(kind = "list") {
-  const wrap = el("div", { class: "skeleton-view", "aria-busy": "true" });
-  wrap.appendChild(el("div", { class: "skeleton sk-bar", style: "width:40%" }));
+  const wrap = el("div", {
+    class: `skeleton-view sk-${kind}`,
+    "aria-busy": "true",
+    "aria-label": "Loading",
+  });
   if (kind === "overview") {
-    wrap.appendChild(el("div", { class: "skeleton sk-card" }));
-    const bento = el("div", { class: "bento" });
-    for (let i = 0; i < 4; i++) bento.appendChild(el("div", { class: "skeleton sk-card" }));
-    wrap.appendChild(bento);
+    wrap.appendChild(el("div", { class: "skeleton sk-scoreboard" }));
+    wrap.appendChild(
+      el("div", { class: "grid-2" }, [
+        el("div", { class: "skeleton sk-card" }),
+        el("div", { class: "skeleton sk-card" }),
+      ]),
+    );
+    return wrap;
   }
+  wrap.appendChild(el("div", { class: "skeleton sk-bar", style: "width:40%" }));
+  wrap.appendChild(el("div", { class: "skeleton sk-line" }));
   if (kind === "board") {
-    const board = el("div", { class: "board" });
-    for (let c = 0; c < 4; c++) {
-      const col = el("div", { class: "skeleton", style: "height:260px;border-radius:14px" });
-      board.appendChild(col);
-    }
-    wrap.appendChild(board);
+    wrap.appendChild(el("div", { class: "skeleton sk-board" }));
+    return wrap;
   }
-  for (let i = 0; i < (kind === "board" ? 0 : 5); i++) {
-    wrap.appendChild(el("div", { class: "skeleton sk-row" }));
-  }
+  for (let i = 0; i < 5; i++) wrap.appendChild(el("div", { class: "skeleton sk-row" }));
   return wrap;
 }
 
@@ -769,23 +1033,6 @@ const VIEW_ALIASES = {
   map: "factory",
 };
 
-// Primary nav entries (order = bottom-nav + desktop rail order).
-// Two tiers. "primary" is the loop an operator actually drives — the same four
-// areas the mobile bottom-nav promotes. "utility" is reference & config you
-// visit occasionally; the rail sets it apart with a divider so the primary loop
-// reads first instead of drowning in a flat nine-item list.
-const NAV = [
-  { id: "overview", label: "Overview", icon: "overview", group: "primary" },
-  { id: "work", label: "Work", icon: "work", group: "primary" },
-  { id: "review", label: "Review", icon: "review", group: "primary" },
-  { id: "factory", label: "Map", icon: "map", group: "primary" },
-  { id: "health", label: "Health", icon: "health", group: "utility" },
-  { id: "epics", label: "Epics", icon: "epics", group: "utility" },
-  { id: "specs", label: "Specs", icon: "specs", group: "utility" },
-  { id: "memory", label: "Memory", icon: "memory", group: "utility" },
-  { id: "settings", label: "Settings", icon: "settings", group: "utility" },
-];
-
 // Sub-views highlight their parent area in the nav.
 const AREA_FOR_VIEW = {
   ticket: "work",
@@ -815,27 +1062,52 @@ function navigate(hash) {
   else location.hash = next;
 }
 
-// Navigation order — used to decide which way the "camera" steps so a forward
-// move (Overview → Settings) and a back move read differently. This is what
-// makes navigating feel like walking through a plan rather than a page reload.
-const NAV_ORDER = [
-  "overview",
-  "work",
-  "review",
-  "factory",
-  "health",
-  "epics",
-  "specs",
-  "memory",
-  "settings",
-];
-let lastAreaIndex = 0;
-
 let activeArea = "overview";
 // Where a ticket detail's "← Back" returns to. Tracks the last LIST view the
 // operator came from (Work or Review) so opening a ticket from the Review queue
 // returns to Review, not always Work.
 let detailBackHash = "#/work";
+
+// Route generations. Every navigation bumps routeGen and aborts the previous
+// route's reads. A render that resolves after the operator has moved on is
+// DISCARDED (and disposed, so its document-level key handlers die with it):
+// a slow Review render must never land under the Specs URL with live Approve
+// buttons (router-stale-render-race).
+let routeGen = 0;
+let routeAbort = null;
+/** The AbortSignal for the current route's reads (views pass it to api()). */
+function routeSignal() {
+  return routeAbort ? routeAbort.signal : undefined;
+}
+/**
+ * Tear down a rendered view tree: views register cleanup as `node._dispose`
+ * (document listeners, timers, observers). Safe to call twice.
+ */
+function disposeView(node) {
+  if (!node) return;
+  const fns = [];
+  if (typeof node._dispose === "function") fns.push(node._dispose);
+  if (node.querySelectorAll) {
+    for (const n of node.querySelectorAll("*")) {
+      if (typeof n._dispose === "function") fns.push(n._dispose);
+    }
+  }
+  for (const fn of fns) {
+    try {
+      fn();
+    } catch {
+      /* cleanup is best-effort */
+    }
+  }
+  node._dispose = null;
+}
+/** Swap #app's content, disposing whatever view was there. */
+function mountView(content) {
+  for (const child of [...app.children]) disposeView(child);
+  clear(app);
+  app.appendChild(content);
+}
+
 async function router() {
   const { view, param } = parseHash();
   // Unknown views fall through to Overview; aliases are resolved in parseHash.
@@ -843,60 +1115,61 @@ async function router() {
   activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : "overview");
   if (view === "work" || view === "review") detailBackHash = "#/" + view;
 
-  // Decide the step direction (forward = deeper into the plan, back = out).
-  const idx = NAV_ORDER.indexOf(activeArea);
-  const dir = idx === -1 || idx === lastAreaIndex ? "none" : idx > lastAreaIndex ? "fwd" : "back";
-  if (idx !== -1) lastAreaIndex = idx;
-  document.documentElement.dataset.step = dir;
+  const gen = ++routeGen;
+  workRefCache = null; // a navigation re-reads repos/nodes (the refresh reuses them)
+  if (routeAbort) routeAbort.abort();
+  routeAbort = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const isCurrent = () => gen === routeGen;
 
   app.dataset.area = activeArea; // lets CSS give width-hungry views (work/map/epics) the full screen
+  app.dataset.view = view;
   syncNav();
   updateNavBadges();
   setDocTitle(view); // detail views refine this once their data loads
   app.classList.remove("login-shell");
 
-  // The actual DOM swap: skeleton in, awaited content in. Wrapped in a View
-  // Transition so the browser tweens the old frame to the new one — the nav
-  // marker glides between rail items and the content does a depth "camera step".
+  // The DOM swap: a view-shaped skeleton (invisible for its first 300ms), then the
+  // awaited content — unless a newer navigation superseded this one meanwhile.
   const swap = async () => {
-    clear(app);
-    app.appendChild(
-      skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"),
-    );
+    if (!isCurrent()) return;
+    mountView(skeleton(view === "overview" ? "overview" : view === "work" ? "board" : "list"));
+    let content;
     try {
-      const content = await render(param);
-      clear(app);
-      app.appendChild(content);
-      app.scrollTop = 0;
-      stagger(content);
-      animateReadouts(content);
-      // Tell a screen reader the view changed (one short line, not the whole DOM).
-      announce(`${VIEW_TITLES[view] || "View"} loaded`);
+      content = await render(param);
     } catch (e) {
-      // A 401 is already handled inside api() (the login screen is shown) — returning
-      // here avoids clobbering it. For any OTHER failure, replace the skeleton with an
-      // error panel + retry instead of leaving a misleading permanent "loading" state.
-      if (e && e.code === "UNAUTHORIZED") return;
-      toast((e && e.message) || "Unexpected error", { code: e && e.code });
-      clear(app);
+      if (!isCurrent()) return; // a stale failure never paints over the new view
+      // A 401 is already handled inside api() (the login screen is shown).
+      if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
+      // One specific message + a retry, shown once — not repeated in a toast.
       const panel = emptyState(
-        "Couldn’t load this view",
+        "That page could not load.",
         (e && e.message) || "The request failed. Check the connection and retry.",
-        "alert",
+        null,
+        el(
+          "button",
+          { class: "btn primary", type: "button", onclick: () => router() },
+          "Try again",
+        ),
       );
-      panel.appendChild(el("button", { class: "btn", onClick: () => router() }, "Retry"));
-      app.appendChild(panel);
+      panel.classList.add("is-error");
+      mountView(el("div", { class: "view" }, panel));
+      return;
     }
+    if (!isCurrent()) {
+      disposeView(content);
+      return;
+    }
+    mountView(content);
+    window.scrollTo?.(0, 0);
+    flipDigits(content);
+    // Tell a screen reader the view changed (one short line, not the whole DOM).
+    announce(`${VIEW_TITLES[view] || "View"} loaded`);
   };
 
   const reduce = prefersReducedMotion();
-  if (document.startViewTransition && !reduce) {
-    // Snapshot synchronously, then run the marker-glide; the awaited content
-    // resolves inside the transition's update callback. A rapid navigation aborts
-    // the in-flight transition, rejecting its .ready/.finished with
-    // InvalidStateError — the DOM update still runs, so swallow those rejections (and
-    // any synchronous throw) to keep an unguarded exception off every interrupted
-    // view change.
+  if (document.startViewTransition && !reduce && app.childElementCount) {
+    // A rapid navigation aborts the in-flight transition, rejecting its promises
+    // with InvalidStateError; the update still runs (and bails if stale).
     try {
       const vt = document.startViewTransition(swap);
       vt.ready?.catch(() => {});
@@ -910,194 +1183,496 @@ async function router() {
   }
 }
 
-/** Stagger the entrance of a freshly-mounted view's top-level blocks so the
- *  screen assembles itself, top-down, like instruments coming online. */
-function stagger(root) {
-  const blocks = root.querySelectorAll(":scope > *");
-  blocks.forEach((b, i) => {
-    b.style.setProperty("--stagger", `${Math.min(i, 9) * 60}ms`);
-    b.classList.add("rise-in");
-  });
+/**
+ * Scoreboard digits flip in on first paint (and when a refresh changes them):
+ * each character of a `.kpi-val[data-flip]` becomes a `.dg` with a stagger index.
+ * A flip, never a count-up — we never show a number the server did not give.
+ */
+function flipDigits(root, prev = null) {
+  if (prefersReducedMotion() || !root || !root.querySelectorAll) return;
+  for (const node of root.querySelectorAll("[data-flip]")) {
+    const text = node.textContent || "";
+    if (node.dataset.flipped === text) continue;
+    node.dataset.flipped = text;
+    // A background refresh flips only the numbers that actually changed.
+    if (prev && prev[node.dataset.flip] === text) continue;
+    clear(node);
+    [...text].forEach((ch, i) =>
+      node.appendChild(el("span", { class: "dg", style: { "--i": i } }, ch)),
+    );
+    node.classList.add("flip");
+  }
+}
+/** The current text of every flip-digit node under root, keyed by data-flip. */
+function digitValues(root) {
+  const out = {};
+  if (root && root.querySelectorAll)
+    for (const n of root.querySelectorAll("[data-flip]")) out[n.dataset.flip] = n.textContent;
+  return out;
 }
 
-/** The instruments "come up": telemetry numbers spin from 0 to their value and
- *  fill gauges sweep out. Honest — the target is the real number; we only
- *  animate the approach. Skipped under reduced-motion. */
-function animateReadouts(root) {
-  if (prefersReducedMotion()) return;
+// --- Data freshness ----------------------------------------------------------
+//
+// The header shows WHEN the data on screen was last confirmed by the server —
+// the time of the last API response or live-stream byte — never a lamp that
+// stays lit when the factory is unreachable (live-lamp-hardcoded). States:
+//   live     the event stream is connected (pushes arrive within a second)
+//   polling  the stream is down but API calls succeed (9s refresh fallback)
+//   offline  the last call failed to reach the server, or nothing has been
+//            confirmed for 2.5 refresh intervals — actions pause, data is stale
+//   auth     the server refused our token
+const FRESH_STALE_MS = 2.5 * 9000;
+const freshness = {
+  lastOkAt: 0,
+  lastFailAt: 0,
+  failKind: null,
+  stream: "down",
+  listeners: new Set(),
+  ok() {
+    const was = this.state();
+    this.lastOkAt = Date.now();
+    this.failKind = null;
+    this.emit(was);
+  },
+  fail(kind) {
+    const was = this.state();
+    this.lastFailAt = Date.now();
+    this.failKind = kind;
+    this.emit(was);
+  },
+  setStream(state) {
+    const was = this.state();
+    this.stream = state;
+    if (state === "up") this.lastOkAt = Date.now();
+    this.emit(was);
+  },
+  state(now = Date.now()) {
+    if (this.failKind === "auth") return "auth";
+    if (this.failKind === "network" && this.lastFailAt >= this.lastOkAt) return "offline";
+    if (!this.lastOkAt) return "connecting";
+    if (now - this.lastOkAt > FRESH_STALE_MS && this.stream !== "up") return "offline";
+    return this.stream === "up" ? "live" : "polling";
+  },
+  emit(was) {
+    const now = this.state();
+    for (const fn of this.listeners) fn(now, was);
+  },
+};
 
-  // Silos fill up from empty, left to right — the line charging.
-  root.querySelectorAll(".silo-fill").forEach((bar, i) => {
-    const target = bar.style.height || "0%";
-    bar.style.height = "0%";
-    setTimeout(
-      () => requestAnimationFrame(() => (bar.style.height = target)),
-      200 + Math.min(i, 9) * 90,
-    );
-  });
-
-  // Fill gauges (other views): start collapsed, then transition to width.
-  root.querySelectorAll(".gauge-track i").forEach((bar, i) => {
-    const target = bar.style.width || "0%";
-    bar.style.width = "0%";
-    setTimeout(
-      () => requestAnimationFrame(() => (bar.style.width = target)),
-      220 + Math.min(i, 9) * 60,
-    );
-  });
-
-  // Count-up on big numeric readouts (silo values + any gauge values).
-  root.querySelectorAll(".silo-val, .gauge-value").forEach((node, i) => {
-    const target = parseInt(node.textContent, 10);
-    if (!Number.isFinite(target) || target === 0) return;
-    const dur = 620;
-    const start = performance.now() + 180 + Math.min(i, 9) * 60;
-    node.textContent = "0";
-    const tick = (now) => {
-      const t = (now - start) / dur;
-      if (t < 0) {
-        requestAnimationFrame(tick);
-        return;
-      }
-      if (t >= 1) {
-        node.textContent = String(target);
-        return;
-      }
-      const eased = 1 - Math.pow(1 - t, 3); // easeOutCubic
-      node.textContent = String(Math.round(eased * target));
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
+/** "18:58" in the viewer's clock (the header line is a fact, not a countdown). */
+function clockTime(ms) {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-// --- App chrome (app bar + bottom nav) --------------------------------------
+/** Paint the header freshness line from the tracker (also re-run every 15s). */
+function paintFreshness() {
+  const node = document.getElementById("freshness");
+  if (!node) return;
+  const st = freshness.state();
+  node.dataset.state = st;
+  clear(node);
+  const at = freshness.lastOkAt;
+  if (st === "auth") {
+    node.appendChild(el("span", { class: "rail-status-text" }, "Token refused"));
+  } else if (st === "offline") {
+    node.appendChild(glyph("blocked", 12));
+    node.appendChild(
+      el("span", {}, [
+        "Offline",
+        at
+          ? el("span", { class: "rail-status-text" }, [
+              " · data from ",
+              el("time", { datetime: new Date(at).toISOString() }, clockTime(at)),
+            ])
+          : null,
+      ]),
+    );
+  } else if (at) {
+    node.appendChild(
+      el("span", { class: "rail-status-text" }, [
+        st === "live" ? "Live · data as of " : "Data as of ",
+        el("time", { datetime: new Date(at).toISOString() }, clockTime(at)),
+      ]),
+    );
+  } else {
+    node.appendChild(el("span", { class: "rail-status-text" }, "Connecting…"));
+  }
+  node.title =
+    st === "live"
+      ? "Connected to the factory's event stream; updates arrive as they happen."
+      : st === "polling"
+        ? "The live stream is down; the view refreshes every 9 seconds."
+        : st === "offline"
+          ? "Can't reach the factory. What you see is from the time shown; actions are paused."
+          : st === "auth"
+            ? "The factory refused this token."
+            : "Waiting for the first answer from the factory.";
+  document.body.classList.toggle("is-offline", st === "offline");
+  const strip = document.getElementById("offline-strip");
+  if (strip) {
+    strip.hidden = st !== "offline";
+    if (st === "offline") {
+      clear(strip);
+      strip.appendChild(
+        el("div", {}, [
+          glyph("blocked", 14),
+          at
+            ? `Can't reach the factory. You're looking at data from ${clockTime(at)}; actions are paused until it answers.`
+            : "Can't reach the factory. Actions are paused until it answers.",
+        ]),
+      );
+    }
+  }
+}
+let freshPainted = "";
+freshness.listeners.add((now, was) => {
+  // Repaint only when what the line says would change (state or the minute shown).
+  const key = `${now}|${freshness.lastOkAt ? clockTime(freshness.lastOkAt) : ""}`;
+  if (key !== freshPainted) {
+    freshPainted = key;
+    paintFreshness();
+  }
+  // Coming back: re-read the view at once instead of waiting for the next tick.
+  if (was === "offline" && (now === "live" || now === "polling")) refreshCurrentView();
+});
+
+// --- Theme (per-viewer kit) ----------------------------------------------------
+
+const THEME_KEY = "gaffer_theme";
+function storedTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    return t === "light" || t === "dark" ? t : "system";
+  } catch {
+    return "system";
+  }
+}
+/** The kit actually showing: the stored override, else the system setting. */
+function effectiveTheme() {
+  const t = storedTheme();
+  if (t !== "system") return t;
+  return typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+/** Pin the kit ("light" | "dark") or follow the system ("system"). */
+function setTheme(t) {
+  try {
+    if (t === "light" || t === "dark") localStorage.setItem(THEME_KEY, t);
+    else localStorage.removeItem(THEME_KEY);
+  } catch {
+    /* storage blocked: the choice lasts for this page only */
+  }
+  if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  else document.documentElement.removeAttribute("data-theme");
+  paintThemeToggle();
+}
+function toggleTheme() {
+  setTheme(effectiveTheme() === "dark" ? "light" : "dark");
+}
+function paintThemeToggle() {
+  for (const b of document.querySelectorAll(".theme-toggle")) {
+    const dark = effectiveTheme() === "dark";
+    clear(b);
+    b.appendChild(icon(dark ? "sun" : "moon", null, 18));
+    b.setAttribute(
+      "aria-label",
+      dark ? "Switch to the day kit (light)" : "Switch to the floodlit kit (dark)",
+    );
+    b.title = b.getAttribute("aria-label");
+  }
+}
+
+// --- App chrome: the club header + the phone bottom nav ----------------------
+
+// Primary nav in programme order. Counts are live data from /api/dashboard:
+// Review's count is yellow (it needs you); Work's is plain (load, not a demand).
+const NAV = [
+  { id: "overview", label: "Overview", icon: "overview" },
+  { id: "work", label: "Work", icon: "work" },
+  { id: "review", label: "Review", icon: "review" },
+  { id: "epics", label: "Epics", icon: "epics" },
+  { id: "factory", label: "Map", icon: "map" },
+  { id: "specs", label: "Specs", icon: "specs" },
+  { id: "memory", label: "Memory", icon: "memory" },
+  { id: "health", label: "Health", icon: "health" },
+  { id: "settings", label: "Settings", icon: "settings" },
+];
+/** The phone bottom nav: the loop an operator drives; the rest sit under More. */
+const BOTTOM_NAV_IDS = ["overview", "work", "review"];
+const navCounts = {};
+
+function navCountEl(id) {
+  return el("span", { class: "nav-count", dataset: { count: id }, hidden: true });
+}
 
 function buildChrome() {
-  // App bar.
   clear(appbar);
   const brand = el("a", { class: "brand", href: "#/overview", "aria-label": "Gaffer — Overview" }, [
-    el("img", { class: "brand-icon", src: "/gaffer-icon.svg", alt: "" }),
-    el("span", { class: "brand-text" }, [
+    crest(),
+    el("span", { class: "brand-t" }, [
       el("span", { class: "brand-name" }, "Gaffer"),
-      el("span", { class: "brand-sub" }, "CONTROL ROOM"),
+      el("span", { class: "brand-sub", id: "brand-sub" }),
     ]),
   ]);
 
-  // LIVE lamp — a breathing amber status light. The single most "alive" pixel
-  // in the room; it tells you the factory is on watch.
-  const live = el("div", { class: "rail-status", title: "Factory online" }, [
-    el("span", { class: "live-lamp" }),
-    el("span", { class: "rail-status-text" }, "LIVE"),
-    el("span", { class: "rail-status-meta mono", id: "live-tick" }, "tick 001"),
+  const railItems = NAV.map((n) =>
+    el("a", { class: "nav-link", href: `#/${n.id}`, dataset: { area: n.id }, onclick: reselect }, [
+      el("span", { class: "nav-label" }, n.label),
+      navCountEl(n.id),
+    ]),
+  );
+  const more = el(
+    "button",
+    {
+      class: "nav-more",
+      type: "button",
+      "aria-haspopup": "true",
+      "aria-expanded": "false",
+      hidden: true,
+      onclick: (e) => toggleNavMenu(e.currentTarget),
+    },
+    ["More", icon("chevdown", null, 16)],
+  );
+  const rail = el("nav", { class: "nav-rail", "aria-label": "Primary views" }, [
+    ...railItems,
+    more,
   ]);
-  const railItems = [];
-  let sepPlaced = false;
-  for (const n of NAV) {
-    // One thin divider where the primary loop ends and the utility cluster begins.
-    if (n.group === "utility" && !sepPlaced) {
-      railItems.push(el("span", { class: "nav-sep", "aria-hidden": "true" }));
-      sepPlaced = true;
-    }
-    railItems.push(
-      el(
-        "button",
-        {
-          class: `nav-link nav-${n.group}`,
-          type: "button",
-          dataset: { area: n.id },
-          onclick: () => navigate(`#/${n.id}`),
-        },
-        [
-          el("span", { class: "nav-rule" }),
-          icon(n.icon, "nav-ico"),
-          el("span", { class: "nav-label" }, n.label),
-          el("span", { class: "nav-count", dataset: { count: n.id }, hidden: true }),
-        ],
-      ),
-    );
-  }
-  const rail = el("nav", { class: "nav-rail", "aria-label": "Primary views" }, railItems);
 
+  const freshnessNode = el("span", {
+    class: "rail-status",
+    id: "freshness",
+    role: "status",
+    "aria-live": "polite",
+    dataset: { state: "connecting" },
+  });
   const cmdk = el(
     "button",
     {
-      class: "cmdk-trigger",
+      class: "btn-club cmdk-trigger",
       type: "button",
-      "aria-label": "Open command palette",
+      "aria-label": "Search",
+      "aria-keyshortcuts": "Control+K Meta+K",
       onclick: () => openPalette(),
     },
     [
-      icon("search"),
-      el("span", { class: "cmdk-label" }, "Jump to…"),
+      icon("search", null, 18),
+      el("span", { class: "cmdk-label" }, "Search"),
       el("span", { class: "kbd" }, "⌘K"),
     ],
   );
-
-  const newBtn = el(
-    "button",
-    {
-      class: "btn primary small",
-      type: "button",
-      onclick: () => navigate("#/create"),
-    },
-    [icon("plus"), el("span", { class: "cmdk-label" }, "New")],
-  );
-
-  appbar.append(brand, live, rail, el("div", { class: "appbar-spacer" }), cmdk, newBtn);
+  const theme = el("button", {
+    class: "btn-club icon-only theme-toggle",
+    type: "button",
+    onclick: toggleTheme,
+  });
+  const newBtn = el("a", { class: "btn-club btn-new", href: "#/create" }, [
+    icon("plus", null, 18),
+    el("span", {}, "New"),
+  ]);
+  const end = el("div", { class: "club-end" }, [freshnessNode, cmdk, theme, newBtn]);
   // Logout affordance — only when authenticating with a token.
   if (authToken()) {
-    appbar.appendChild(
-      el("button", { class: "logout-btn", type: "button", onclick: logout }, "Logout"),
+    end.appendChild(
+      el("button", { class: "btn-club logout-btn", type: "button", onclick: logout }, "Logout"),
     );
   }
+  appbar.appendChild(el("div", { class: "club-in" }, [brand, rail, end]));
   appbar.hidden = false;
+  if (!document.getElementById("offline-strip")) {
+    appbar.after(
+      el("div", { class: "offline-strip", id: "offline-strip", role: "alert", hidden: true }),
+    );
+  }
 
-  // Bottom nav (mobile): the primary loop only — Overview · Work · Review · Map · +.
-  // Looping the full 9-item desktop NAV crammed 10 cells into a phone width (~36px
-  // each, below the 44px touch target, labels clipped); the reference/config views
-  // stay reachable via ⌘K and the desktop rail.
+  // Phone bottom nav: Overview · Work · Review · More (the More sheet reaches every
+  // other route plus Search and the kit switch — nothing is unreachable on a phone).
   clear(bottomnav);
-  const BOTTOM_NAV_IDS = new Set(["overview", "work", "review", "factory"]);
-  for (const n of NAV.filter((x) => BOTTOM_NAV_IDS.has(x.id))) {
+  for (const n of NAV.filter((x) => BOTTOM_NAV_IDS.includes(x.id))) {
     bottomnav.appendChild(
       el(
-        "button",
-        {
-          class: "bottomnav-item",
-          type: "button",
-          dataset: { area: n.id },
-          onclick: () => navigate(`#/${n.id}`),
-        },
-        [icon(n.icon), el("span", {}, n.label)],
+        "a",
+        { class: "bottomnav-item", href: `#/${n.id}`, dataset: { area: n.id }, onclick: reselect },
+        [el("span", {}, n.label), navCountEl(n.id)],
       ),
     );
   }
   bottomnav.appendChild(
     el(
       "button",
-      {
-        class: "bottomnav-item is-fab",
-        type: "button",
-        "aria-label": "New ticket",
-        onclick: () => navigate("#/create"),
-      },
-      [el("span", { class: "fab-disc" }, icon("plus")), el("span", {}, "New")],
+      { class: "bottomnav-item bottomnav-more", type: "button", onclick: openMoreSheet },
+      "More",
     ),
   );
   bottomnav.hidden = false;
 
-  startLiveTick();
+  paintThemeToggle();
+  paintFreshness();
+  fitNav();
+  if (typeof window.ResizeObserver === "function" && !appbar._ro) {
+    appbar._ro = new window.ResizeObserver(() => fitNav());
+    appbar._ro.observe(appbar);
+  }
+  if (typeof document.fonts?.ready?.then === "function") document.fonts.ready.then(fitNav);
+  if (!window._freshTimer) window._freshTimer = setInterval(paintFreshness, 15000);
   startAutoRefresh();
 }
 
-// Hot-refresh: read-mostly views quietly re-fetch on an interval so the board,
-// overview and review reflect what the factory is doing without a manual reload
-// (fixes the stale-board bug — there was no polling or server push). It never
-// fights the operator: skipped while typing, while dragging, when the tab is
-// hidden, or if the route changed mid-fetch — and it preserves scroll so a
-// background refresh is invisible. Forms (create/settings) and ticket detail are
-// deliberately excluded so in-flight input is never clobbered.
+/**
+ * Re-selecting the view you are on still re-reads it: an identical hash fires no
+ * hashchange, so the nav link routes explicitly (as navigate() does).
+ */
+function reselect(e) {
+  const href = e.currentTarget.getAttribute("href");
+  if (href && location.hash === href) {
+    e.preventDefault();
+    router();
+  }
+}
+
+/**
+ * Priority+ nav: show as many tabs as fit in the bar, in order, and move the rest
+ * into the More menu — so the header can never be wider than the viewport
+ * (appbar-overflow-760-1565). The active area always stays visible.
+ */
+function fitNav() {
+  const rail = appbar.querySelector(".nav-rail");
+  if (!rail || !rail.clientWidth) return;
+  const links = [...rail.querySelectorAll(".nav-link")];
+  const more = rail.querySelector(".nav-more");
+  links.forEach((l) => (l.hidden = false));
+  more.hidden = true;
+  if (rail.scrollWidth <= rail.clientWidth) return;
+  more.hidden = false;
+  const order = [...links].reverse().filter((l) => l.dataset.area !== activeArea);
+  for (const l of order) {
+    if (rail.scrollWidth <= rail.clientWidth) break;
+    l.hidden = true;
+  }
+  more.classList.toggle(
+    "active",
+    links.some((l) => l.hidden && l.dataset.area === activeArea),
+  );
+}
+
+let navMenuEl = null;
+function closeNavMenu() {
+  if (!navMenuEl) return;
+  navMenuEl.remove();
+  navMenuEl = null;
+  const btn = appbar.querySelector(".nav-more");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+  document.removeEventListener("click", navMenuOutside, true);
+  document.removeEventListener("keydown", navMenuKey);
+}
+function navMenuOutside(e) {
+  if (navMenuEl && !navMenuEl.contains(e.target) && !e.target.closest?.(".nav-more"))
+    closeNavMenu();
+}
+function navMenuKey(e) {
+  if (e.key === "Escape") {
+    const btn = appbar.querySelector(".nav-more");
+    closeNavMenu();
+    btn?.focus();
+  }
+}
+function toggleNavMenu(btn) {
+  if (navMenuEl) {
+    closeNavMenu();
+    return;
+  }
+  const hidden = [...appbar.querySelectorAll(".nav-link[hidden]")];
+  const items = hidden.map((l) => {
+    const id = l.dataset.area;
+    const n = NAV.find((x) => x.id === id);
+    return el(
+      "a",
+      {
+        href: `#/${id}`,
+        "aria-current": id === activeArea ? "page" : null,
+        onclick: closeNavMenu,
+      },
+      [n ? n.label : id, navCounts[id] ? navCountBadge(id) : null],
+    );
+  });
+  navMenuEl = el("div", { class: "nav-menu", role: "menu", "aria-label": "More views" }, items);
+  const r = btn.getBoundingClientRect();
+  navMenuEl.style.top = `${r.bottom + 6}px`;
+  navMenuEl.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 240))}px`;
+  navMenuEl.style.position = "fixed";
+  document.body.appendChild(navMenuEl);
+  btn.setAttribute("aria-expanded", "true");
+  navMenuEl.querySelector("a")?.focus();
+  setTimeout(() => document.addEventListener("click", navMenuOutside, true), 0);
+  document.addEventListener("keydown", navMenuKey);
+}
+function navCountBadge(id) {
+  const v = navCounts[id];
+  return el("span", { class: `nav-count${id === "review" ? " urgent" : ""}` }, String(v));
+}
+
+/** The phone More sheet: every route not in the bottom nav, Search, the kit. */
+function openMoreSheet() {
+  const links = NAV.filter((n) => !BOTTOM_NAV_IDS.includes(n.id)).map((n) =>
+    el(
+      "a",
+      {
+        class: "more-link",
+        href: `#/${n.id}`,
+        "aria-current": n.id === activeArea ? "page" : null,
+        onclick: closeSheet,
+      },
+      [n.label, icon("chevron", null, 18)],
+    ),
+  );
+  const dark = effectiveTheme() === "dark";
+  openSheet(
+    "More",
+    el("div", { class: "more-list" }, [
+      el(
+        "button",
+        {
+          class: "btn",
+          type: "button",
+          onclick: () => {
+            closeSheet();
+            openPalette();
+          },
+        },
+        [icon("search", null, 18), "Search tickets and views"],
+      ),
+      ...links,
+      el(
+        "button",
+        {
+          class: "more-link",
+          type: "button",
+          onclick: () => {
+            toggleTheme();
+            closeSheet();
+          },
+        },
+        [dark ? "Day kit (light)" : "Floodlit kit (dark)", icon(dark ? "sun" : "moon", null, 18)],
+      ),
+      authToken()
+        ? el("button", { class: "more-link", type: "button", onclick: logout }, [
+            "Log out",
+            icon("logout", null, 18),
+          ])
+        : null,
+    ]),
+  );
+}
+
+// Hot-refresh: read-mostly views quietly re-fetch so the board, overview and
+// review reflect what the factory is doing without a manual reload. It never
+// fights the operator: skipped while typing, dragging, with a sheet/menu open,
+// when the tab is hidden, or if the route changed mid-fetch. It keeps the scroll
+// position (on the document — the real scroller), holds the view's height while
+// async parts (diffs) settle so the page can't shrink and clamp scroll to 0, and
+// skips the swap entirely when the view's data signature did not change.
 const AUTO_REFRESH_MS = 9000;
 const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory"]);
 let autoRefreshTimer;
@@ -1114,15 +1689,16 @@ function busyEditing() {
 // --- live event stream --------------------------------------------------------
 // The control plane pushes its append-only event log as Server-Sent Events
 // (GET /api/events/stream). Every push schedules ONE debounced refresh of the
-// current view, so the board reacts within a second of a transition instead of
-// on the next blind interval. Streamed with fetch (not EventSource) so the bearer
-// token travels in the Authorization header, never in the URL. The interval
-// refresh below stays as the fallback when the stream is unavailable.
+// current view. Streamed with fetch (not EventSource) so the bearer token travels
+// in the Authorization header, never in the URL. A read watchdog treats ~40s of
+// silence (the server pings every 15s) as a dead connection, so a half-open
+// socket after sleep or a network change can't keep the header saying "Live".
 let liveStreamAbort = null;
 let liveStreamSeq = null;
 let liveRefreshTimer = null;
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
 const LIVE_RECONNECT_MS = 5000;
+const LIVE_WATCHDOG_MS = 40000;
 
 function scheduleLiveRefresh() {
   if (liveRefreshTimer) return;
@@ -1141,15 +1717,24 @@ async function startLiveStream() {
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
   const since = liveStreamSeq === null ? "" : `?since=${liveStreamSeq}`;
+  let watchdog = null;
+  const pet = () => {
+    clearTimeout(watchdog);
+    watchdog = setTimeout(() => controller.abort(), LIVE_WATCHDOG_MS);
+  };
   try {
     const res = await fetch(`/api/events/stream${since}`, { headers, signal: controller.signal });
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
+    pet();
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
+      pet();
+      if (freshness.stream !== "up") freshness.setStream("up");
+      else freshness.lastOkAt = Date.now();
       buf += decoder.decode(value, { stream: true });
       let idx;
       while ((idx = buf.indexOf("\n\n")) !== -1) {
@@ -1166,46 +1751,98 @@ async function startLiveStream() {
   } catch {
     // fall through to reconnect (the interval refresh keeps the UI honest meanwhile)
   } finally {
+    clearTimeout(watchdog);
     liveStreamAbort = null;
-    if (!controller.signal.aborted && document.visibilityState !== "hidden") {
-      setTimeout(startLiveStream, LIVE_RECONNECT_MS);
-    }
+    freshness.setStream("down");
+    if (document.visibilityState !== "hidden") setTimeout(startLiveStream, LIVE_RECONNECT_MS);
   }
+}
+// A phone tab coming back to the foreground re-checks at once instead of
+// trusting its old state: restart the stream and re-read the view.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || !autoRefreshTimer) return;
+  startLiveStream();
+  refreshCurrentView();
+});
+
+/**
+ * Cheap per-view change signatures. When a refresh's signature matches the one
+ * the view on screen was rendered from, the view is left alone: no detail or diff
+ * re-fetches, no DOM swap, nothing moves (review-n-plus-one-refresh).
+ */
+const VIEW_SIGNATURES = {
+  review: async () => {
+    const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+    return reviewSignature(tickets);
+  },
+};
+function reviewSignature(tickets) {
+  return tickets.map((t) => `${t.id}@${t.updated_at || ""}`).join("|");
 }
 
 /** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
+let refreshing = false;
 function refreshCurrentView() {
-  if (document.visibilityState !== "visible") return;
+  if (document.visibilityState === "hidden") return;
   if (busyEditing()) return;
-  // don't yank a card mid-drag or a menu/sheet out from under a click. Match `.sheet.open`
-  // (an OPEN sheet), not `.sheet` — the latter is the always-present container, so it would
-  // pause auto-refresh permanently after the first sheet ever opens.
+  // don't yank a card mid-drag or a menu/sheet out from under a click.
   if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
-  // A modal owns the screen — use the single source of truth (isModalOpen), not a
-  // narrower ad-hoc list, so a refresh never fires under the reject dialog, move
-  // menu, or command palette and detach the nodes they anchor to.
+  if (navMenuEl) return;
+  // A modal owns the screen (reject dialog, move menu, command palette).
   if (isModalOpen()) return;
-  // Never tear down the review queue mid-triage: a blind re-render resets the
-  // j/k cursor, silently DISARMS a pending approve, and reloads every diff. Skip
-  // while an approve is armed (keyboard `.card-armed` or the mouse `.btn-armed`),
-  // or while the operator is focused inside a review card.
+  // Never tear down the review queue mid-triage (armed approve or focus in a card).
   if (reviewInteractionInProgress()) return;
   const { view, param } = parseHash();
   if (!AUTO_REFRESHABLE.has(view)) return;
   const render = VIEWS[view];
-  if (!render) return;
-  const y = app.scrollTop;
-  guard(async () => {
-    const content = await render(param);
-    // bail if the operator navigated or started interacting during the fetch — the
-    // armed-approve check must run AGAIN here: a refresh that started a moment before
-    // the first Approve click would otherwise swap in a fresh, unarmed button under
-    // the confirming second click (the click then only re-arms; nothing is approved).
-    if (parseHash().view !== view || busyEditing() || reviewInteractionInProgress()) return;
-    clear(app);
-    app.appendChild(content);
-    app.scrollTop = y;
-  });
+  if (!render || refreshing) return;
+  const gen = routeGen;
+  const current = app.firstElementChild;
+  refreshing = true;
+  (async () => {
+    try {
+      const sigFn = VIEW_SIGNATURES[view];
+      if (sigFn && current && current.dataset.sig != null) {
+        const sig = await sigFn();
+        if (sig === current.dataset.sig) return;
+      }
+      const content = await render(param);
+      // bail if the operator navigated or started interacting during the fetch — the
+      // armed-approve check must run AGAIN here: a refresh that started a moment before
+      // the first Approve click would otherwise swap in a fresh, unarmed button under
+      // the confirming second click (the click then only re-arms; nothing is approved).
+      if (gen !== routeGen || busyEditing() || reviewInteractionInProgress() || isModalOpen()) {
+        disposeView(content);
+        return;
+      }
+      if (content.dataset.sig != null && current && content.dataset.sig === current.dataset.sig) {
+        disposeView(content); // same data: keep the DOM (and its scroll + open details)
+        return;
+      }
+      const se = document.scrollingElement || document.documentElement;
+      const y = se.scrollTop;
+      const prevDigits = digitValues(current);
+      // Hold the old height across the swap: async parts of the new view (diffs)
+      // mount as short placeholders, and a shorter page would clamp scroll to 0.
+      app.style.minHeight = `${app.offsetHeight}px`;
+      mountView(content);
+      se.scrollTop = y;
+      flipDigits(content, prevDigits);
+      const release = () => {
+        if (app.firstElementChild === content) app.style.minHeight = "";
+      };
+      if (content._settled && typeof content._settled.then === "function") {
+        Promise.race([content._settled, new Promise((r) => setTimeout(r, 8000))]).then(release);
+      } else release();
+    } catch (e) {
+      if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
+      // The header already says "Offline"; one toast per outage, not one per tick.
+      if (e && e.code === "NETWORK") return;
+      toast(e.message || "Refresh failed", { code: e.code });
+    } finally {
+      refreshing = false;
+    }
+  })();
 }
 
 /** An approve is armed (keyboard `.card-armed` or mouse `.btn-armed`) or the operator is focused inside a review card. */
@@ -1221,32 +1858,17 @@ function startAutoRefresh() {
   autoRefreshTimer = setInterval(refreshCurrentView, AUTO_REFRESH_MS);
 }
 
-// Live heartbeat — the tick counter breathes in the bar so the room reads
-// "on watch". Purely cosmetic; the number is a monotonic tick, not real data.
-let liveTickTimer;
-function startLiveTick() {
-  if (liveTickTimer) return;
-  let n = 0;
-  liveTickTimer = setInterval(() => {
-    n++;
-    const t = document.getElementById("live-tick");
-    if (!t) return;
-    t.textContent = "tick " + String(n).padStart(3, "0");
-    if (prefersReducedMotion()) return;
-    t.classList.add("tick-flash");
-    setTimeout(() => t.classList.remove("tick-flash"), 200);
-  }, 6000);
-}
-
 function syncNav() {
   document.querySelectorAll("[data-area]").forEach((n) => {
     const on = n.dataset.area === activeArea;
     n.classList.toggle("active", on);
-    // Programmatic active state for assistive tech (the amber tint alone is
-    // color-only — WCAG 1.4.1). `page` marks the current view in the nav.
+    // Programmatic active state for assistive tech (WCAG 1.4.1).
     if (on) n.setAttribute("aria-current", "page");
     else n.removeAttribute("aria-current");
   });
+  const moreBtn = bottomnav && bottomnav.querySelector(".bottomnav-more");
+  if (moreBtn) moreBtn.classList.toggle("active", !BOTTOM_NAV_IDS.includes(activeArea));
+  fitNav();
 }
 
 // One-line polite announcement into the dedicated #sr-status region (see
@@ -1256,7 +1878,7 @@ function announce(msg) {
   const r = document.getElementById("sr-status");
   if (!r) return;
   r.textContent = "";
-  // A microtask gap makes the region change register as a fresh announcement.
+  // A frame gap makes the region change register as a fresh announcement.
   requestAnimationFrame(() => {
     r.textContent = msg;
   });
@@ -1277,14 +1899,16 @@ const VIEW_TITLES = {
   ticket: "Ticket",
   repo: "Repo",
   node: "Map",
+  create: "New ticket",
+  hidden: "Hidden repos",
 };
 function setDocTitle(view, detail) {
   const base = VIEW_TITLES[view] || "Gaffer";
   document.title = detail ? `${detail} · Gaffer` : `${base} · Gaffer`;
 }
 
-/** Live, data-driven nav badges: Work shows open (in-flight) tickets, Review
- *  shows the gate queue. Best-effort; the rail works fine without them. */
+/** Live nav counts from /api/dashboard: Review = the gate queue (yellow: it needs
+ *  you); Work = tickets in flight (plain). Best-effort; the nav works without them. */
 let navBadgeBusy = false;
 async function updateNavBadges() {
   if (navBadgeBusy) return;
@@ -1292,7 +1916,7 @@ async function updateNavBadges() {
   try {
     const { summary } = await api("GET", "/api/dashboard");
     const s = summary.ticketsByStatus || {};
-    const open =
+    navCounts.work =
       (s.ready || 0) +
       (s.in_progress || 0) +
       (s.claimed || 0) +
@@ -1300,18 +1924,23 @@ async function updateNavBadges() {
       (s.in_testing || 0) +
       (s.ready_for_merge || 0) +
       (s.blocked || 0);
-    const counts = { work: open, review: summary.openDecisions != null ? s.in_review || 0 : 0 };
-    counts.review = s.in_review || 0;
-    document.querySelectorAll(".nav-count[data-count]").forEach((el) => {
-      const v = counts[el.dataset.count];
+    navCounts.review = s.in_review || 0;
+    const club = summary.club?.name || summary.clubName;
+    const sub = document.getElementById("brand-sub");
+    if (sub && club) sub.textContent = club;
+    document.querySelectorAll(".nav-count[data-count]").forEach((n) => {
+      const id = n.dataset.count;
+      const v = navCounts[id];
       if (v > 0) {
-        el.textContent = String(v);
-        el.hidden = false;
-        el.classList.toggle("urgent", el.dataset.count === "review");
+        n.textContent = String(v);
+        n.hidden = false;
+        n.classList.toggle("urgent", id === "review");
+        n.setAttribute("aria-label", id === "review" ? `${v} waiting for you` : `${v} in flight`);
       } else {
-        el.hidden = true;
+        n.hidden = true;
       }
     });
+    fitNav();
   } catch {
     /* best-effort */
   } finally {
@@ -1418,6 +2047,20 @@ async function buildPaletteSources() {
       hint: "map",
       icon: "map",
       run: () => navigate("#/node"),
+    },
+    {
+      group: "Kit",
+      label: effectiveTheme() === "dark" ? "Day kit (light theme)" : "Floodlit kit (dark theme)",
+      hint: "this browser only",
+      icon: effectiveTheme() === "dark" ? "sun" : "moon",
+      run: () => toggleTheme(),
+    },
+    {
+      group: "Kit",
+      label: "Follow the system theme",
+      hint: storedTheme() === "system" ? "on" : "off",
+      icon: "settings",
+      run: () => setTheme("system"),
     },
   ];
   let tickets = [];
@@ -1621,7 +2264,6 @@ async function renderOverview() {
     }
     return days.map((d) => m[d.key]);
   };
-  const actByDay = bucket(events, (e) => e.created_at);
 
   // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
   // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
@@ -1691,83 +2333,78 @@ async function renderOverview() {
             )) *
             100,
         );
-  // honest deltas: second-half avg vs first-half avg of the relevant series
-  const half = (s) => {
-    const h = Math.floor(s.length / 2);
-    const a = s.slice(0, h).reduce((x, y) => x + y, 0) / Math.max(1, h);
-    const b = s.slice(h).reduce((x, y) => x + y, 0) / Math.max(1, s.length - h);
-    return a === 0 ? (b > 0 ? 100 : 0) : Math.round(((b - a) / a) * 100);
-  };
+  const wrap = el("div", { class: "view view-overview" });
 
-  const wrap = el("div", { class: "view" });
+  // --- The scoreboard: the headline sentence + four counters, all server data ---
+  // Opens the programme. The event-log integrity line is the honest status: the
+  // server re-derives the sha256 chain; a broken chain is never papered over.
+  const chain = healthRes?.event_log;
+  const logStatus =
+    chain?.chain_ok === false
+      ? `Ledger: event log ALTERED at seq ${chain.broken_at_seq} — see Health`
+      : chain?.chain_ok === true
+        ? `Ledger: event log intact (${chain.events} events)`
+        : null;
   wrap.appendChild(
-    viewHero({
-      image: "assets/bg/hero-city.jpg",
-      title: "Ship better software, faster.",
-      subtitle:
-        "Real-time insight into your factory. Track flow, focus on what matters, and keep everything moving.",
-      // Honest status line: the dashboard is up, AND the event log the whole room is
-      // derived from verifies (the server re-derives the sha256 chain). A broken
-      // chain means an event was rewritten, deleted or re-ordered after the fact —
-      // the one thing a control room must never paper over.
-      status:
-        healthRes?.event_log?.chain_ok === false
-          ? `Factory online · event log ALTERED at seq ${healthRes.event_log.broken_at_seq} — see Health`
-          : healthRes?.event_log?.chain_ok === true
-            ? `Factory online · event log intact (${healthRes.event_log.events} events)`
-            : "Factory online",
-      statusOk: healthRes?.event_log?.chain_ok !== false,
+    overviewScoreboard({
+      queue: humanQueueRes,
+      summary,
+      cost: costRes,
+      blocked,
+      inReview,
+      logStatus,
+      logOk: chain?.chain_ok !== false,
     }),
   );
 
-  // Queue-first: what needs YOU leads the room, sitting above the metrics.
-  wrap.appendChild(whatIOwnPanel(humanQueueRes));
+  // Queue-first: the team sheet (what needs YOU) holds the left column; the
+  // factory's form, flow and activity fill the right.
+  const left = el("div", { class: "ov-left stack" }, [whatIOwnPanel(humanQueueRes)]);
+  const right = el("div", { class: "ov-right stack" });
+  wrap.appendChild(el("div", { class: "ov-main" }, [left, right]));
 
-  // --- KPI row --------------------------------------------------------------
-  wrap.appendChild(
-    el("div", { class: "kpi-row" }, [
-      kpiCard({
-        label: "Cycle time",
-        value: cycleTime.toFixed(1),
-        unit: "days",
-        tone: "accent",
-        delta: half(cycleLine),
-        goodWhenDown: true,
-        series: cycleLine,
-      }),
-      kpiCard({
-        label: "Throughput",
-        value: String(last7),
-        unit: "shipped / 7d",
-        tone: "ok",
-        delta: prev7 === 0 ? (last7 > 0 ? 100 : 0) : Math.round(((last7 - prev7) / prev7) * 100),
-        series: doneByDay,
-      }),
-      kpiCard({
-        label: "Flow efficiency",
-        value: String(flowEff),
-        unit: "%",
-        tone: "accent",
-        delta: half(actByDay),
-        series: flowEffSeries,
-      }),
-      kpiCard({
-        label: "Deployments",
-        value: String(doneTickets.length),
-        unit: "all-time",
-        tone: "amber",
-        delta: half(doneByDay),
-        series: deploySeries,
-      }),
-      kpiCard({
-        label: "Lead time",
-        value: leadTime.toFixed(1),
-        unit: "days",
-        tone: "accent",
-        delta: half(cycleLine),
-        goodWhenDown: true,
-        series: leadSeries,
-      }),
+  // --- Form guide: the flow numbers, each from the server's one definition ------
+  right.appendChild(
+    el("section", { class: "card panel form-guide", "aria-label": "Flow" }, [
+      panelHead("Form guide", "last 14 days"),
+      el("div", { class: "kpi-row" }, [
+        statCell({
+          label: "Cycle time",
+          value: cycleTime.toFixed(1),
+          unit: "days",
+          series: cycleLine,
+          flip: "cycle",
+        }),
+        statCell({
+          label: "Throughput",
+          value: String(last7),
+          unit: "shipped / 7d",
+          sub: `${prev7} the week before`,
+          series: doneByDay,
+          flip: "thr",
+        }),
+        statCell({
+          label: "Flow efficiency",
+          value: String(flowEff),
+          unit: "%",
+          series: flowEffSeries,
+          flip: "eff",
+        }),
+        statCell({
+          label: "Deployments",
+          value: String(doneTickets.length),
+          unit: "all-time",
+          series: deploySeries,
+          flip: "dep",
+        }),
+        statCell({
+          label: "Lead time",
+          value: leadTime.toFixed(1),
+          unit: "days",
+          series: leadSeries,
+          flip: "lead",
+        }),
+      ]),
     ]),
   );
 
@@ -1859,7 +2496,7 @@ async function renderOverview() {
       );
     };
     paint(health.governance);
-    wrap.appendChild(govPanel);
+    right.appendChild(govPanel);
   }
 
   // --- Cost banner (H1) -------------------------------------------------------
@@ -1882,7 +2519,7 @@ async function renderOverview() {
             `incl. ${fmtUsd(v)} est.`,
           )
         : null;
-    wrap.appendChild(
+    right.appendChild(
       el(
         "div",
         {
@@ -1917,7 +2554,7 @@ async function renderOverview() {
   }
 
   // --- Development flow + Needs your attention (2-up) -----------------------
-  wrap.appendChild(
+  right.appendChild(
     el("div", { class: "ov-grid ov-2" }, [
       devFlowPanel(tickets, byStatus, now),
       needsPanel({
@@ -1931,22 +2568,29 @@ async function renderOverview() {
   );
 
   // --- Progress by repo + Cycle-time chart + Flow-efficiency donut (3-up) ---
-  wrap.appendChild(
+  right.appendChild(
     el("div", { class: "ov-grid ov-3" }, [
       repoProgressPanel(summary.repoProgress || []),
       el("div", { class: "card panel" }, [
-        panelHead("Cycle time", "days"),
-        el("div", { class: "chart", html: svgLine(cycleLine, days) }),
+        panelHead("Cycle time", "days per day shipped"),
+        el("div", {
+          class: "chart",
+          html: svgBars(cycleLine, {
+            labels: days.map((d) => d.lbl),
+            fmt: (v) => `${(+v).toFixed(1)}d`,
+            label: "Median cycle time by day",
+            today: true,
+          }),
+        }),
       ]),
-      el("div", { class: "card panel" }, [
-        panelHead("Flow efficiency", "value-add"),
-        el("div", { class: "donut-wrap tone-violet" }, [
-          el("div", { class: "donut", html: svgDonut(flowEff) }),
-          el("div", { class: "donut-center" }, [
-            el("span", { class: "donut-pct tabnum" }, `${flowEff}%`),
-            el("span", { class: "donut-cap" }, "efficient"),
-          ]),
-        ]),
+      el("div", { class: "card panel flow-eff" }, [
+        panelHead("Flow efficiency", `${flowEff}%`),
+        band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+        el(
+          "p",
+          { class: "section-note" },
+          "Share of each shipped ticket's lead time spent being worked on, not waiting (median).",
+        ),
       ]),
     ]),
   );
@@ -1955,7 +2599,7 @@ async function renderOverview() {
   // Polls GET /api/runs every ~3s so a triggered background run (Suggest work /
   // onboard / poll-work / merge) is visible while it churns, with its captured
   // log a click away when it finishes. Quiet empty state when nothing's running.
-  wrap.appendChild(runActivityPanel());
+  left.appendChild(runActivityPanel());
 
   // --- Decisions (inline, when present) ------------------------------------
   if (decisions.length) {
@@ -1965,7 +2609,7 @@ async function renderOverview() {
     const well = el("div", { class: "decisions-well" });
     decisions.forEach((d) => well.appendChild(renderDecisionCard(d)));
     decCard.appendChild(well);
-    wrap.appendChild(decCard);
+    left.appendChild(decCard);
   }
 
   // --- FAILURE-DIAGNOSIS: "these keep bouncing" quality signal --------------
@@ -1974,11 +2618,11 @@ async function renderOverview() {
   // actually bouncing (a quiet factory shows no panel).
   const bouncing = (bouncingRes && bouncingRes.bouncing) || [];
   if (bouncing.length) {
-    wrap.appendChild(renderBouncingPanel(bouncing));
+    right.appendChild(renderBouncingPanel(bouncing));
   }
 
   // --- Live activity --------------------------------------------------------
-  wrap.appendChild(
+  right.appendChild(
     el("div", { class: "card panel" }, [
       panelHead("Live activity", `${activity.total ?? events.length}`),
       events.length
@@ -1991,6 +2635,110 @@ async function renderOverview() {
 }
 
 /**
+ * The Overview's stadium scoreboard: a generated headline sentence from the real
+ * human queue, its clauses linked to their objects, and four counters (needs
+ * you · on the pitch · delivered today · wage bill). Full-bleed, always dark.
+ */
+function overviewScoreboard({ queue, summary, cost, blocked, inReview, logStatus, logOk }) {
+  const items = (queue && queue.items) || [];
+  const total = (queue && queue.counts && queue.counts.total) || items.length;
+  const kinds = {};
+  for (const it of items) kinds[it.kind] = (kinds[it.kind] || 0) + 1;
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const headline = total
+    ? `${total} ${total === 1 ? "thing needs" : "things need"} you.`
+    : "Nothing needs you.";
+  const clauses = [];
+  if (kinds.review)
+    clauses.push(
+      el(
+        "a",
+        { href: "#/review" },
+        plural(kinds.review, "diff awaits review", "diffs await review"),
+      ),
+    );
+  if (kinds.decision)
+    clauses.push(el("a", { href: "#what-i-own" }, plural(kinds.decision, "decision", "decisions")));
+  if (kinds.parked)
+    clauses.push(
+      el(
+        "a",
+        { href: "#/work?status=blocked" },
+        plural(kinds.parked, "parked ticket", "parked tickets"),
+      ),
+    );
+  if (kinds.awaiting_merge)
+    clauses.push(el("a", { href: "#what-i-own" }, `${kinds.awaiting_merge} approved, not merged`));
+  const onPitch = summary.activeClaims ?? 0;
+  clauses.push(`${plural(onPitch, "agent", "agents")} on the pitch`);
+  if (cost && typeof cost.today_usd === "number")
+    clauses.push(`$${cost.today_usd.toFixed(2)} wage bill today`);
+  const sub = el("p", { class: "hl-sub" });
+  clauses.forEach((c, i) => {
+    if (i) sub.appendChild(el("span", { class: "sep", "aria-hidden": "true" }, " · "));
+    sub.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  });
+  const today = new Date();
+  return el("section", { class: "scoreboard bleed", "aria-label": "Scoreboard" }, [
+    el("div", { class: "scoreboard-in" }, [
+      el("div", { class: "sb-main" }, [
+        el("h1", { class: "hl" }, [
+          blocked > 0
+            ? el("span", { class: "hl-count" }, [headline, " "])
+            : el("span", { class: "hl-count" }, headline),
+          blocked > 0
+            ? el("a", { class: "hl-block", href: "#/work?status=blocked" }, [
+                glyph("blocked", 30),
+                `${blocked} blocked.`,
+              ])
+            : null,
+        ]),
+        sub,
+        logStatus
+          ? el("div", { class: `view-hero-status${logOk ? " ok" : ""}` }, [
+              logOk ? glyph("done", 14) : glyph("failed", 14),
+              el("span", {}, logStatus),
+            ])
+          : null,
+      ]),
+      el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
+        statCell({
+          label: "Need you",
+          value: String(total).padStart(2, "0"),
+          needs: total > 0,
+          href: "#what-i-own",
+          flip: "needs",
+        }),
+        statCell({
+          label: "On the pitch",
+          value: String(onPitch),
+          sub: inReview ? `${inReview} in review` : null,
+          href: "#/work?status=in_progress",
+          flip: "pitch",
+        }),
+        statCell({
+          label: "Delivered today",
+          value: String(summary.deliveredToday ?? 0).padStart(2, "0"),
+          href: "#/work?status=done",
+          flip: "delivered",
+        }),
+        statCell({
+          label: "Wage bill",
+          value: cost && typeof cost.today_usd === "number" ? `$${cost.today_usd.toFixed(2)}` : "—",
+          sub: "today, API-equivalent",
+          flip: "wage",
+        }),
+      ]),
+      el(
+        "time",
+        { class: "sb-clock", datetime: today.toISOString() },
+        today.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" }),
+      ),
+    ]),
+  ]);
+}
+
+/**
  * Track 2a "What I own": the operator's first-class lane. Surfaces the HUMAN's
  * queue — the decisions/approvals the agent delegated to them — so the operator
  * sees at a glance what is waiting on THEM, distinct from the board (what the
@@ -2000,40 +2748,62 @@ async function renderOverview() {
 function whatIOwnPanel(queue) {
   const items = (queue && queue.items) || [];
   const total = (queue && queue.counts && queue.counts.total) || items.length;
-  const card = el("div", { class: "card what-i-own", id: "what-i-own" }, [
-    el("div", { class: "panel-head" }, [
-      el("span", { class: "panel-title" }, [icon("lock"), "What I own"]),
-      el("span", { class: "panel-aux mono" }, String(total)),
-    ]),
-    el(
-      "p",
-      { class: "dim what-i-own-sub" },
-      "Decisions and approvals waiting on you — distinct from what the agent is churning.",
-    ),
-  ]);
+  // The team sheet: the ONE ranked list of what is waiting on the gaffer.
+  const card = el(
+    "section",
+    { class: "card what-i-own", id: "what-i-own", "aria-label": "Team sheet" },
+    [panelHead("Team sheet", String(total), null, { kit: "claret" })],
+  );
   if (!items.length) {
     card.appendChild(el("div", { class: "empty-state" }, "Nothing is waiting on you right now."));
     return card;
   }
-  const well = el("div", { class: "own-well" });
-  items.forEach((it) => well.appendChild(renderOwnedItem(it)));
+  const well = el("ol", { class: "own-well" });
+  items.forEach((it) => well.appendChild(el("li", {}, renderOwnedItem(it))));
   card.appendChild(well);
   return card;
 }
 
-/** One "What I own" row: kind chip · reason · ticket ref · how long it waited. */
+/** The verb on each team-sheet row: the one thing the gaffer does next. */
+const OWN_VERB = {
+  review: "Review",
+  decision: "Answer…",
+  parked: "Unblock…",
+  awaiting_merge: "Merge…",
+  ready_approval: "Approve…",
+  reviewer_assignment: "Assign…",
+  dependency_cancelled: "Re-plan…",
+};
+/** The glyph each kind of row carries beside its yellow card. */
+const OWN_GLYPH = {
+  review: "in_review",
+  decision: "decision",
+  parked: "blocked",
+  awaiting_merge: "ready_for_merge",
+  ready_approval: "ready",
+  dependency_cancelled: "cancelled",
+};
+
+/** One team-sheet row: card · kind · #ref, the ticket title, the reason, how long it waited. */
 function renderOwnedItem(it) {
   const t = it.ticket;
   const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : "—";
-  // Link each item to its ticket; a decision with no ticket links to the
-  // decisions well on the overview so it can still be actioned.
-  const href = t ? `#/ticket/${t.id}` : "#/overview";
+  // Link each item to its ticket (a review to the gate); a decision with no ticket
+  // links to the decisions well on the overview so it can still be actioned.
+  const href = t ? `#/ticket/${t.id}` : "#decisions";
   return el("a", { class: `own-row own-row--${it.kind}`, href }, [
-    el("span", { class: `own-kind own-kind--${it.kind}` }, it.label),
     el("span", { class: "own-body" }, [
+      el("span", { class: "own-head" }, [
+        el("span", { class: `own-kind own-kind--${it.kind}` }, [
+          ycard(14),
+          OWN_GLYPH[it.kind] ? glyph(OWN_GLYPH[it.kind], 14) : null,
+          it.label,
+        ]),
+        el("span", { class: "own-ref" }, ref),
+      ]),
+      t && t.title ? el("span", { class: "own-title" }, t.title) : null,
       el("span", { class: "own-reason" }, it.reason || "(no reason given)"),
       el("span", { class: "own-meta" }, [
-        el("span", { class: "own-ref mono" }, ref),
         // Parked items only: the structured park reason_code and advisory action.
         // Both are short enum-ish strings, but rendered as string children (text
         // nodes) for uniformity — never interpolated into markup or an attribute.
@@ -2048,6 +2818,7 @@ function renderOwnedItem(it) {
         ),
       ]),
     ]),
+    el("span", { class: "own-cta", "aria-hidden": "true" }, OWN_VERB[it.kind] || "Open"),
   ]);
 }
 
@@ -2097,36 +2868,145 @@ function renderBouncingPanel(bouncing) {
   ]);
 }
 
-/** A panel header: a title with an optional trailing meta/aux label. */
-function panelHead(title, aux, link) {
-  return el("div", { class: "panel-head" }, [
-    el("span", { class: "panel-title" }, title),
+/**
+ * A section header on a programme page: Big Shoulders caps title + a condensed
+ * count/aux (or a link). `opts.kit` paints it as a kit-colour block across the top
+ * of its .card — "claret" (what needs you), "ink" (the factory's drawings),
+ * "sky" (campaigns / reference), "red" (broken). Use a block for the one or two
+ * sections a view leads with; everything else stays a plain heading.
+ */
+function panelHead(title, aux, link, opts = {}) {
+  const kit = opts.kit;
+  return el("div", { class: kit ? `panel-head block block-${kit}` : "panel-head" }, [
+    el(opts.level || "h2", { class: "panel-title" }, [
+      title,
+      aux != null && link ? el("span", { class: "panel-aux" }, aux) : null,
+    ]),
     link
       ? el("a", { class: "panel-link", href: link.href }, link.text)
-      : aux
-        ? el("span", { class: "panel-aux mono" }, aux)
+      : aux != null && aux !== ""
+        ? el("span", { class: "panel-aux" }, aux)
         : null,
   ]);
 }
 
-/** A KPI card: label, big value + unit, a signed delta chip, and a sparkline. */
-function kpiCard({ label, value, unit, tone, delta, series, goodWhenDown = false }) {
-  const dir = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
-  const good = delta === 0 ? "flat" : delta > 0 !== goodWhenDown ? "good" : "bad";
-  return el("a", { class: `kpi tone-${tone}`, href: "#/work" }, [
-    el("div", { class: "kpi-top" }, [
-      el("span", { class: "kpi-label" }, label),
-      el("span", { class: `kpi-delta ${good}` }, [
-        el("span", { class: "kpi-arrow" }, dir === "up" ? "▲" : dir === "down" ? "▼" : "—"),
-        `${Math.abs(delta)}%`,
-      ]),
-    ]),
+/**
+ * A stat cell (scoreboard / league-table typography): condensed caps label, the
+ * number the server gave us in Big Shoulders, its unit, an optional sub line and
+ * an optional sparkline with its own baseline. No delta chips: a "▲100%" the data
+ * cannot support is not shown. `flip` keys a digit flip on first paint/change.
+ */
+function statCell({ label, value, unit, sub, series, href, flip, needs = false, title }) {
+  return el(href ? "a" : "div", { class: "kpi", href, title }, [
+    el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
     el("div", { class: "kpi-figure" }, [
-      el("span", { class: "kpi-val tabnum" }, value),
+      el(
+        "span",
+        { class: `kpi-val tabnum${needs ? " y" : ""}`, dataset: flip ? { flip } : undefined },
+        value,
+      ),
       unit ? el("span", { class: "kpi-unit" }, unit) : null,
     ]),
-    el("div", { class: "kpi-spark", html: svgSpark(series) }),
+    sub ? el("div", { class: "kpi-sub" }, sub) : null,
+    series && series.length > 1 ? el("div", { class: "kpi-spark", html: svgSpark(series) }) : null,
   ]);
+}
+/** @deprecated kept for older callers: a statCell (the delta/tone are ignored). */
+function kpiCard({ label, value, unit, series }) {
+  return statCell({ label, value, unit, series });
+}
+
+/**
+ * Band-and-pointer bar: how much of a limit is used (budget, slots, queue).
+ * `max` is the band; the tick marks the limit; a fill past it turns red.
+ * Returns an element with an accessible label stating both numbers.
+ */
+function band(value, max, label) {
+  const v = Number(value) || 0;
+  const m = Number(max) || 0;
+  const pct = m > 0 ? Math.min(100, (v / m) * 100) : 0;
+  return el("div", { class: "band", role: "img", "aria-label": label || `${v} of ${m}` }, [
+    el("span", { class: `band-fill${m > 0 && v > m ? " over" : ""}`, style: `width:${pct}%` }),
+    m > 0 ? el("span", { class: "band-tick", style: "left:100%" }) : null,
+  ]);
+}
+
+// --- inline SVG chart primitives (no libraries; axes always drawn) -----------
+
+const esc = (t) =>
+  String(t).replace(
+    /[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
+  );
+
+/**
+ * A sparkline with a baseline: currentColor line, a dot on the latest value.
+ * Used beside a number that already states the value; returns markup.
+ */
+function svgSpark(series) {
+  const vals = series.map((v) => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v)));
+  if (vals.length < 2) vals.push(vals[0] ?? 0);
+  const w = 132,
+    h = 28,
+    p = 3;
+  const max = Math.max(...vals),
+    min = Math.min(0, ...vals);
+  const X = (i) => p + (i / (vals.length - 1)) * (w - 2 * p);
+  const Y = (v) => h - p - ((v - min) / (max - min || 1)) * (h - 2 * p);
+  let line = "";
+  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark-svg" aria-hidden="true" focusable="false">
+    <line class="spark-base" x1="${p}" y1="${h - p}" x2="${w - p}" y2="${h - p}"/>
+    <path class="spark-line" d="${line}"/>
+    <circle class="spark-end" cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="2.4"/>
+  </svg>`;
+}
+
+/**
+ * A bar chart with a baseline, a max gridline labelled with its value, and a tick
+ * label per bar (thinned when narrow). Every bar carries its value in a <title>;
+ * the chart's accessible name lists all of them. `opts.fmt` formats values,
+ * `opts.today` highlights the last bar, `opts.labels` labels the x axis.
+ */
+function svgBars(series, opts = {}) {
+  const vals = series.map((v) => (v == null || !Number.isFinite(Number(v)) ? 0 : Number(v)));
+  const labels = opts.labels || vals.map((_, i) => String(i + 1));
+  const fmt = opts.fmt || ((v) => String(v));
+  const w = opts.width || 340,
+    h = opts.height || 140,
+    pl = 4,
+    pr = 4,
+    pt = 18,
+    pb = 22;
+  const max = Math.max(1, ...vals);
+  const n = Math.max(1, vals.length);
+  const slot = (w - pl - pr) / n;
+  const bw = Math.max(2, slot * 0.66);
+  const Y = (v) => pt + (1 - v / max) * (h - pt - pb);
+  const every = Math.max(1, Math.ceil(n / Math.max(1, Math.floor((w - pl - pr) / 36))));
+  const bars = vals
+    .map((v, i) => {
+      const x = pl + i * slot + (slot - bw) / 2;
+      const y = Y(v);
+      const cls = `chart-bar${v === 0 ? " is-zero" : ""}${opts.today && i === n - 1 ? " is-today" : ""}`;
+      return `<rect class="${cls}" x="${x.toFixed(1)}" y="${(v === 0 ? h - pb - 1.5 : y).toFixed(1)}" width="${bw.toFixed(1)}" height="${(v === 0 ? 1.5 : h - pb - y).toFixed(1)}"><title>${esc(labels[i])}: ${esc(fmt(v))}</title></rect>`;
+    })
+    .join("");
+  const ticks = labels
+    .map((l, i) =>
+      i % every === 0 || i === n - 1
+        ? `<text class="chart-tick" x="${(pl + i * slot + slot / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${esc(l)}</text>`
+        : "",
+    )
+    .join("");
+  const name = `${opts.label ? opts.label + ": " : ""}${labels.map((l, i) => `${l} ${fmt(vals[i])}`).join(", ")}`;
+  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg" role="img" aria-label="${esc(name)}">
+    <line class="chart-axis" x1="${pl}" y1="${pt}" x2="${w - pr}" y2="${pt}"/>
+    <text class="chart-val" x="${pl}" y="${pt - 5}">${esc(fmt(max))}</text>
+    ${bars}
+    <line class="chart-base" x1="${pl}" y1="${h - pb}" x2="${w - pr}" y2="${h - pb}"/>
+    ${ticks}
+  </svg>`;
 }
 
 /**
@@ -2172,7 +3052,11 @@ function devFlowPanel(_tickets, byStatus, _now) {
   return el("div", { class: "card panel pipeline-panel" }, [
     el("div", { class: "panel-head" }, [
       el("span", { class: "panel-title" }, "Development flow"),
-      el("span", { class: "pl-live" }, [el("span", { class: "pl-live-dot" }), "LIVE"]),
+      // When these counts were read — a fact from the response, not a "LIVE" lamp.
+      el("span", { class: "pl-live", title: "The time these counts were read from the factory" }, [
+        "as of ",
+        el("time", { datetime: new Date().toISOString() }, clockTime(Date.now())),
+      ]),
     ]),
     el(
       "div",
@@ -2312,7 +3196,7 @@ function repoProgressPanel(rows) {
             return el("div", { class: "rp-row", title: `${r.done}/${r.total} tickets done` }, [
               el("span", { class: `rp-dot ${warn ? "warn" : "ok"}` }),
               el("span", { class: "rp-name" }, [
-                el("span", { class: "rp-repo" }, r.repo),
+                el("span", { class: "rp-repo" }, repoTag(r.repo, 18)),
                 el("span", { class: "rp-note" }, note),
               ]),
               el(
@@ -2326,94 +3210,6 @@ function repoProgressPanel(rows) {
         )
       : el("p", { class: "dim" }, "No repositories linked to tickets yet."),
   ]);
-}
-
-// --- tiny hand-rolled SVG charts (no libraries) -----------------------------
-
-/** A compact sparkline; uses currentColor so the KPI tone drives the colour. */
-function svgSpark(series) {
-  const vals = series.map((v) => (v == null ? 0 : v));
-  if (vals.length < 2) vals.push(vals[0] ?? 0);
-  const w = 132,
-    h = 38,
-    p = 4;
-  const max = Math.max(...vals),
-    min = Math.min(...vals);
-  const X = (i) => p + (i / (vals.length - 1)) * (w - 2 * p);
-  const Y = (v) => h - p - ((v - min) / (max - min || 1)) * (h - 2 * p);
-  let line = "";
-  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
-  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - p} L${X(0).toFixed(1)} ${h - p} Z`;
-  const gid = "sp" + Math.random().toString(36).slice(2, 8);
-  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" class="spark-svg">
-    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.30"/>
-      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-    <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
-    <circle cx="${X(vals.length - 1).toFixed(1)}" cy="${Y(vals[vals.length - 1]).toFixed(1)}" r="2.4" fill="currentColor"/>
-  </svg>`;
-}
-
-/** A line chart with a soft area fill, dots and a few x-axis ticks. */
-function svgLine(series, days) {
-  const vals = series.map((v) => (v == null ? 0 : v));
-  const w = 340,
-    h = 150,
-    pl = 6,
-    pr = 6,
-    pt = 12,
-    pb = 22;
-  const max = Math.max(1, ...vals),
-    min = Math.min(...vals, 0);
-  const X = (i) => pl + (i / (vals.length - 1)) * (w - pl - pr);
-  const Y = (v) => h - pb - ((v - min) / (max - min || 1)) * (h - pt - pb);
-  let line = "";
-  vals.forEach((v, i) => (line += `${i ? "L" : "M"}${X(i).toFixed(1)} ${Y(v).toFixed(1)} `));
-  const area = `${line}L${X(vals.length - 1).toFixed(1)} ${h - pb} L${X(0).toFixed(1)} ${h - pb} Z`;
-  const grid = [0.25, 0.5, 0.75, 1]
-    .map((f) => {
-      const y = (pt + (h - pt - pb) * (1 - f)).toFixed(1);
-      return `<line x1="${pl}" y1="${y}" x2="${w - pr}" y2="${y}" class="cg"/>`;
-    })
-    .join("");
-  const ticks = days
-    .map((d, i) =>
-      i % 3 === 0 ? `<text x="${X(i).toFixed(1)}" y="${h - 6}" class="cx">${d.lbl}</text>` : "",
-    )
-    .join("");
-  const dots = vals
-    .map((v, i) =>
-      i % 3 === 0 || i === vals.length - 1
-        ? `<circle cx="${X(i).toFixed(1)}" cy="${Y(v).toFixed(1)}" r="2.4" class="cd"/>`
-        : "",
-    )
-    .join("");
-  const gid = "ln" + Math.random().toString(36).slice(2, 8);
-  return `<svg viewBox="0 0 ${w} ${h}" class="chart-svg" preserveAspectRatio="none">
-    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="currentColor" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
-    ${grid}
-    <path d="${area}" fill="url(#${gid})"/>
-    <path d="${line}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    ${dots}${ticks}
-  </svg>`;
-}
-
-/** A donut gauge; the filled arc uses currentColor (tone-driven). */
-function svgDonut(pct) {
-  const r = 46,
-    cx = 60,
-    cy = 60,
-    c = 2 * Math.PI * r;
-  const off = c * (1 - Math.max(0, Math.min(100, pct)) / 100);
-  return `<svg viewBox="0 0 120 120" class="donut-svg">
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="11"/>
-    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="currentColor" stroke-width="11"
-      stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${off.toFixed(1)}"
-      transform="rotate(-90 ${cx} ${cy})"/>
-  </svg>`;
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
@@ -2999,8 +3795,8 @@ function finishedRunRow(run) {
  */
 function runActivityPanel() {
   const POLL_MS = 3000;
-  const card = el("div", { class: "card run-activity", id: "running-now" }, [
-    el("h2", {}, [icon("activity"), "Running now"]),
+  const card = el("div", { class: "card panel run-activity", id: "running-now" }, [
+    panelHead("Running now", "background runs"),
   ]);
   const listWrap = el("div", { class: "run-activity-body" }, [
     el("p", { class: "dim" }, "Loading runs…"),
@@ -3013,7 +3809,7 @@ function runActivityPanel() {
     clear(listWrap);
     if ((!active || active.length === 0) && (!recent || recent.length === 0)) {
       listWrap.appendChild(
-        emptyState("Nothing running", "Background runs you trigger show up here.", "activity"),
+        emptyState("Nothing running.", "Polls, suggestions and merges you start show up here."),
       );
       return;
     }
@@ -3086,25 +3882,42 @@ function runActivityPanel() {
   return card;
 }
 
-async function renderWork() {
-  readWorkStateFromUrl();
-
-  // Board endpoint powers the board; the filtered /tickets list powers list mode.
-  // Repos + scope nodes feed the "Suggest work" target picker (Feature B).
-  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
-  const [board, reposRes, nodesRes] = await Promise.all([
-    api("GET", `/api/board${boardQs}`),
+// Repos + scope nodes change rarely; the 9s refresh reuses them for a minute
+// instead of re-fetching both on every tick (board-unbounded-render).
+const WORK_REF_TTL_MS = 60000;
+let workRefCache = null;
+async function workReference() {
+  if (workRefCache && Date.now() - workRefCache.at < WORK_REF_TTL_MS) return workRefCache;
+  const [reposRes, nodesRes] = await Promise.all([
     api("GET", "/repositories"),
     api("GET", "/scope/nodes"),
   ]);
-  const repos = reposRes.repositories || [];
-  const nodes = nodesRes.nodes || [];
-  const columns = board.columns || [];
-  const closed = board.closed || [];
-  const wontDo = board.wontDo || [];
-  const live = columns.reduce((n, c) => n + (c.cards || []).length, 0);
+  workRefCache = {
+    at: Date.now(),
+    repos: reposRes.repositories || [],
+    nodes: nodesRes.nodes || [],
+  };
+  return workRefCache;
+}
 
-  const wrap = el("div", { class: "view" });
+async function renderWork() {
+  readWorkStateFromUrl();
+
+  // Board endpoint powers the board; the filtered /tickets list powers list mode
+  // (list mode does not fetch the board at all). Repos + scope nodes feed the
+  // "Suggest work" target picker (Feature B) and the repo filter.
+  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
+  const [board, ref] = await Promise.all([
+    workState.mode === "list" ? null : api("GET", `/api/board${boardQs}`),
+    workReference(),
+  ]);
+  const { repos, nodes } = ref;
+  const columns = (board && board.columns) || [];
+  const closed = (board && board.closed) || [];
+  const wontDo = (board && board.wontDo) || [];
+  const counts = boardCounts(columns, closed, wontDo);
+
+  const wrap = el("div", { class: "view view-work" });
 
   const modeToggle = el("div", { class: "segmented", role: "tablist", "aria-label": "View mode" }, [
     el(
@@ -3119,7 +3932,7 @@ async function renderWork() {
           writeWorkStateToUrl();
         },
       },
-      [icon("work"), "Board"],
+      "Board",
     ),
     el(
       "button",
@@ -3133,29 +3946,20 @@ async function renderWork() {
           writeWorkStateToUrl();
         },
       },
-      [icon("overview"), "List"],
+      "List",
     ),
   ]);
 
   wrap.appendChild(
-    viewHero({
-      image: "assets/bg/hero-factory.jpg",
-      eyebrow: `${live} LIVE · ${wontDo.length} WON'T DO · ${closed.length} CLOSED`,
-      title: "Work",
-      subtitle: "Plan, prioritize and ship with confidence.",
-    }),
+    viewHead(
+      "Work board",
+      board ? workSummaryLine(columns, counts) : "Every ticket, one row each.",
+      [pollWorkButton(), suggestWorkButton(repos, nodes)],
+    ),
   );
-  wrap.appendChild(
-    el("div", { class: "view-toolbar" }, [
-      modeToggle,
-      el("div", { class: "view-toolbar-actions" }, [
-        pollWorkButton(),
-        suggestWorkButton(repos, nodes),
-      ]),
-    ]),
-  );
-  if (workState.mode === "board") wrap.appendChild(workFlowHeader(columns, closed.length));
-  wrap.appendChild(renderWorkFilters(repos));
+  wrap.appendChild(el("div", { class: "view-toolbar" }, [renderWorkFilters(repos), modeToggle]));
+  if (workState.mode === "board")
+    wrap.appendChild(workFlowHeader(columns, { failed: closed.length }));
 
   if (workState.mode === "list") {
     wrap.appendChild(await renderWorkList());
@@ -3164,24 +3968,70 @@ async function renderWork() {
   }
 
   // Active claims — folded in as a collapsible panel (replaces the Claims tab).
-  wrap.appendChild(await renderClaimsPanel());
+  const claimsPanel = await renderClaimsPanel();
+  wrap.appendChild(claimsPanel);
+
+  // Change signature: an unchanged board (same payload, same filters) is not
+  // re-rendered by the background refresh, so nothing on it moves.
+  if (board)
+    wrap.dataset.sig = `${hashText(JSON.stringify(board))}:${location.hash}:${claimsPanel.dataset.sig || ""}`;
 
   return wrap;
 }
 
-/** A flow-summary header above the board: per-stage WIP counts and a single
- *  distribution bar so the shape of the board reads before you scan the lanes. */
-function workFlowHeader(columns, shippedCount) {
+/** A short, stable hash of a string (djb2) for change signatures. */
+function hashText(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * One set of board counts, used by the header line, the flow strip and the lane
+ * heads alike, so they can never disagree (work-shipped-count-wrong):
+ *   live    = every lane except Done (draft … ready for merge)
+ *   shipped = the Done lane
+ *   failed  = the closed area (the board puts only `failed` tickets there)
+ *   wontDo  = cancelled
+ */
+function boardCounts(columns, closed = [], wontDo = []) {
   const by = {};
-  for (const c of columns) by[c.column] = (c.cards || []).length;
-  const cells = [
-    { label: "Draft", v: by.draft || 0, tone: "idle" },
-    { label: "Ready", v: by.ready || 0, tone: "accent" },
-    { label: "In progress", v: by.in_progress || 0, tone: "accent" },
-    { label: "In review", v: by.in_review || 0, tone: "amber" },
-    { label: "Blocked", v: by.blocked || 0, tone: "danger" },
-    { label: "Shipped", v: shippedCount, tone: "ok" },
-  ];
+  for (const c of columns) by[c.column] = c.total ?? (c.cards || []).length;
+  const live = Object.entries(by)
+    .filter(([k]) => k !== "done")
+    .reduce((n, [, v]) => n + v, 0);
+  return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
+}
+
+/** "25 tickets in lanes: 6 draft · 4 ready … 6 done. 2 failed, listed under Done." */
+function workSummaryLine(columns, counts) {
+  const parts = columns
+    .filter((c) => counts.by[c.column] > 0)
+    .map(
+      (c) => `${counts.by[c.column]} ${(BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase()}`,
+    );
+  const inLanes = counts.live + counts.shipped;
+  const extra = [];
+  if (counts.failed) extra.push(`${counts.failed} failed`);
+  if (counts.wontDo) extra.push(`${counts.wontDo} won't do`);
+  return (
+    `${inLanes} ${inLanes === 1 ? "ticket" : "tickets"} in lanes${parts.length ? ": " + parts.join(" · ") : ""}.` +
+    (extra.length ? ` ${extra.join(", ")}, listed under the board.` : "")
+  );
+}
+
+/** A flow-summary strip above the board: one cell per lane (built from the
+ *  board's own columns, so none is ever left out) plus Failed, and a single
+ *  distribution bar so the shape of the board reads before you scan the lanes.
+ *  Shipped is the Done lane; failed tickets are counted as failed, never shipped. */
+function workFlowHeader(columns, { failed = 0 } = {}) {
+  const { by } = boardCounts(columns);
+  const cells = columns.map((c) => ({
+    key: c.column,
+    label: c.column === "done" ? "Shipped" : BOARD_COLUMN_LABELS[c.column] || c.column,
+    v: by[c.column] || 0,
+  }));
+  cells.push({ key: "failed", label: "Failed", v: failed });
   const flowTotal = Math.max(
     1,
     cells.reduce((n, c) => n + c.v, 0),
@@ -3190,24 +4040,19 @@ function workFlowHeader(columns, shippedCount) {
     .filter((c) => c.v > 0)
     .map((c) =>
       el("span", {
-        class: `wf-seg tone-${c.tone}`,
+        class: `wf-seg wf-${c.key}`,
         style: `width:${(c.v / flowTotal) * 100}%`,
         title: `${c.label}: ${c.v}`,
       }),
     );
-  return el("div", { class: "card panel work-flow" }, [
-    el(
-      "div",
-      { class: "wf-cells" },
-      cells.map((c) =>
-        el("div", { class: `wf-cell tone-${c.tone}` }, [
-          el("span", { class: "wf-val tabnum" }, String(c.v)),
-          el("span", { class: "wf-label" }, c.label),
-        ]),
-      ),
-    ),
-    el("div", { class: "wf-bar" }, seg),
-  ]);
+  // The lane heads already carry each count, so this is one slim distribution
+  // bar (the shape of the board before you scan it), its numbers in its name.
+  const label = cells.map((c) => `${c.label} ${c.v}`).join(", ");
+  return el(
+    "div",
+    { class: "work-flow", role: "img", "aria-label": `Tickets per lane: ${label}` },
+    [el("div", { class: "wf-bar" }, seg)],
+  );
 }
 
 function renderWorkFilters(repos) {
@@ -3434,11 +4279,39 @@ function moveMenuKeydown(e) {
   if (e.key === "Escape") closeMoveMenu();
 }
 
+/**
+ * The board renders a bounded number of cards per lane: the whole Done history
+ * (and a runaway live lane) would otherwise grow the DOM forever and jank every
+ * 9s refresh (board-unbounded-render). Done shows the newest BOARD_DONE_CAP;
+ * live lanes show BOARD_LANE_CAP. The lane head always shows the TRUE count, and
+ * the remainder is one link away in the List view, filtered to that status.
+ */
+const BOARD_DONE_CAP = 25;
+const BOARD_LANE_CAP = 60;
+const BOARD_CLOSED_CAP = 25;
+function capLane(column, cards) {
+  if (column === "done") {
+    const newest = [...cards].sort((a, b) =>
+      String(b.updated_at || "").localeCompare(String(a.updated_at || "")),
+    );
+    return newest.slice(0, BOARD_DONE_CAP);
+  }
+  return cards.slice(0, BOARD_LANE_CAP);
+}
+function laneMoreLink(column, shown, total) {
+  if (total <= shown) return null;
+  return el(
+    "a",
+    { class: "lane-more", href: `#/work?mode=list&status=${encodeURIComponent(column)}` },
+    `Showing ${shown} of ${total} — see all in the list`,
+  );
+}
+
 /** Board (kanban) — columns by status; filters dim non-matching cards client-side. */
 function renderBoard(columns, closed, wontDo = []) {
-  const wrap = el("div");
+  const wrap = el("div", { class: "board-wrap" });
   // repo is filtered server-side via ?repo= on /api/board; only status and
-  // risk need client-side dimming here (no repo field on BoardCard).
+  // risk need client-side filtering here (no repo field on BoardCard).
   const matches = (card) =>
     (!workState.status || card.status === workState.status) &&
     (!workState.risk || card.risk_level === workState.risk);
@@ -3446,29 +4319,29 @@ function renderBoard(columns, closed, wontDo = []) {
   const cols = el(
     "div",
     { class: "board" },
-    columns.map((c) => {
-      const cards = (c.cards || []).filter(matches);
+    columns.map((c, laneIdx) => {
+      const all = (c.cards || []).filter(matches);
+      const cards = capLane(c.column, all);
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
-          ? cards.map(renderBoardCard)
-          : el("div", { class: "board-empty" }, [
-              el("span", { class: "board-empty-dot" }),
-              el("span", {}, "Empty"),
-            ]),
+          ? [...cards.map(renderBoardCard), laneMoreLink(c.column, cards.length, all.length)]
+          : el("div", { class: "board-empty" }, "Nothing here."),
       );
+      const label = BOARD_COLUMN_LABELS[c.column] || c.column;
       const section = el(
         "section",
         {
-          class: `board-col col-${c.column}`,
+          class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
           dataset: { column: c.column },
-          "aria-label": BOARD_COLUMN_LABELS[c.column] || c.column,
+          "aria-label": `${label}: ${all.length}`,
         },
         [
           el("div", { class: "board-col-head" }, [
-            el("span", { class: "board-col-title" }, BOARD_COLUMN_LABELS[c.column] || c.column),
-            el("span", { class: "board-col-count tabnum" }, String(cards.length)),
+            glyph(c.column === "ready_for_merge" ? "ready_for_merge" : c.column, 16),
+            el("h2", { class: "board-col-title" }, label),
+            el("span", { class: "board-col-count tabnum" }, String(all.length)),
           ]),
           body,
         ],
@@ -3481,20 +4354,40 @@ function renderBoard(columns, closed, wontDo = []) {
 
   // Won't-do bucket: terminal "will NOT be built" tickets, distinct from rework
   // and from the failed/closed area. Each card carries a discreet "Reopen" action
-  // (-> refining) so an abandoned ticket is reversible.
+  // (-> refining) so an abandoned ticket is reversible. Cards are built only when
+  // the disclosure is opened.
+  const lazyArea = (cls, summary, list, renderOne, open = false) => {
+    const details = el("details", { class: cls, open: open ? "" : null });
+    details.appendChild(el("summary", {}, summary));
+    const body = el("div", { class: "closed-cards" });
+    details.appendChild(body);
+    const fill = () => {
+      if (body.childElementCount) return;
+      const shown = list.slice(0, BOARD_CLOSED_CAP);
+      shown.forEach((c) => body.appendChild(renderOne(c)));
+      if (list.length > shown.length)
+        body.appendChild(
+          el("p", { class: "section-note" }, `Showing ${shown.length} of ${list.length}.`),
+        );
+    };
+    if (open) fill();
+    details.addEventListener("toggle", () => details.open && fill());
+    return details;
+  };
   const wontDoVisible = wontDo.filter(matches);
   if (wontDoVisible.length) {
-    const details = el("details", { class: "closed-area wont-do-area", open: "" });
-    details.appendChild(el("summary", {}, `Won't do (${wontDoVisible.length})`));
-    details.appendChild(el("div", { class: "closed-cards" }, wontDoVisible.map(renderWontDoCard)));
-    wrap.appendChild(details);
+    wrap.appendChild(
+      lazyArea(
+        "closed-area wont-do-area",
+        `Won't do (${wontDoVisible.length})`,
+        wontDoVisible,
+        renderWontDoCard,
+        true,
+      ),
+    );
   }
-
   if (closed.length) {
-    const details = el("details", { class: "closed-area" });
-    details.appendChild(el("summary", {}, `Closed · failed (${closed.length})`));
-    details.appendChild(el("div", { class: "closed-cards" }, closed.map(renderBoardCard)));
-    wrap.appendChild(details);
+    wrap.appendChild(lazyArea("closed-area", `Failed (${closed.length})`, closed, renderBoardCard));
   }
   return wrap;
 }
@@ -3648,8 +4541,7 @@ function renderBoardCard(card) {
             title: card.claim.stale ? "Lease past expiry" : "Lease active",
           },
           [
-            el("span", { class: "claim-dot" }),
-            card.claim.agentDisplayName || card.claim.agentId.slice(0, 8),
+            agentTag(card.claim.agentDisplayName || card.claim.agentId.slice(0, 8), 20),
             card.claim.stale ? " · stale" : "",
           ],
         )
@@ -3679,7 +4571,7 @@ function renderBoardCard(card) {
                 navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`);
               },
             },
-            [icon("map", "chip-ico"), el("span", {}, r.name)],
+            [kitShirt(r.name, 16), el("span", {}, r.name)],
           ),
         ),
         cardRepos.length > 2
@@ -3766,7 +4658,6 @@ function renderBoardCard(card) {
     [
       el("div", { class: "card-top" }, [
         el("span", { class: "num" }, card.number != null ? `#${card.number}` : card.id.slice(0, 8)),
-        pipelineDots(card.status),
       ]),
       el("div", { class: "card-title" }, card.title),
       chips,
@@ -3877,7 +4768,8 @@ async function renderWorkList() {
 /** Active claims, folded into Work as a collapsible panel (was the Claims tab). */
 async function renderClaimsPanel() {
   const claims = (await api("GET", "/claims")).claims || [];
-  const details = el("details", { class: "card" });
+  const details = el("details", { class: "card claims-panel" });
+  details.dataset.sig = hashText(JSON.stringify(claims));
   details.appendChild(
     el("summary", { style: "cursor:pointer;font-weight:650" }, `Active claims (${claims.length})`),
   );
@@ -5629,11 +6521,11 @@ function autonomyDial(all) {
         : `${on} of ${total} gates are open. The factory acts on its own for the toggles marked below.`;
   return el("div", { class: `card panel autonomy-dial tone-${tone}` }, [
     el("div", { class: "ad-gauge" }, [
-      el("div", { class: "ad-donut", html: svgDonut(pct) }),
       el("div", { class: "ad-center" }, [
         el("span", { class: "ad-frac tabnum" }, `${on}/${total}`),
         el("span", { class: "ad-cap" }, "gates open"),
       ]),
+      band(on, total, `${on} of ${total} autonomy gates open (${pct}%)`),
     ]),
     el("div", { class: "ad-body" }, [
       el("div", { class: "ad-level-row" }, [
@@ -6878,7 +7770,7 @@ function renderDecisionCard(d) {
         badge(d.severity, "no-dot"),
         badge(d.status, "no-dot"),
       ]),
-      el("h3", { style: "font-size:var(--step-0)" }, d.title),
+      el("h3", { class: "decision-title" }, d.title),
       el("p", { class: "desc" }, d.question),
       el("div", { class: "inline-form", style: "margin:0;border:0;padding:0" }, [
         field("Answer", answer),
@@ -6914,7 +7806,11 @@ function safeHttpUrl(url) {
  * (never innerHTML), so a hostile diff line can never inject markup. Returns the
  * scrollable `<pre>` well.
  */
-function diffPre(lines) {
+/**
+ * One diff as a keyboard-scrollable region: a wide diff scrolls sideways inside
+ * its <pre>, so the <pre> is focusable and named (axe scrollable-region-focusable).
+ */
+function diffPre(lines, label = "Diff") {
   const rows = lines.map((line) => {
     let cls = "diff-line";
     const first = line.charAt(0);
@@ -6925,12 +7821,12 @@ function diffPre(lines) {
     // Render an empty line as a non-breaking space so the row keeps its height.
     return el("div", { class: cls }, line === "" ? " " : line);
   });
-  return el("pre", { class: "diff-pre" }, rows);
+  return el("pre", { class: "diff-pre", tabindex: "0", role: "region", "aria-label": label }, rows);
 }
 
 /** Back-compat: render a whole unified diff as one `<pre>`. */
-function diffBody(diffText) {
-  return diffPre(String(diffText || "").split("\n"));
+function diffBody(diffText, label) {
+  return diffPre(String(diffText || "").split("\n"), label);
 }
 
 /**
@@ -7079,7 +7975,7 @@ function repoDiffSection(rd, repoIdx = 0) {
     filesBox.appendChild(
       el("details", { class: "diff-file-block", open: "", id: targetId }, [
         el("summary", { class: "diff-file-summary" }, summaryChildren),
-        diffPre(f.lines),
+        diffPre(f.lines, `Diff of ${f.path}`),
       ]),
     );
   });
@@ -7161,14 +8057,14 @@ function renderTicketDiff(ticketId, onState) {
   const report = (state) => {
     if (typeof onState === "function") onState(state);
   };
-  api("GET", `/tickets/${ticketId}/diff`)
+  // `_settled` resolves once the diff (or its error) is on screen, so a background
+  // refresh can hold the page height until then (review-scroll-jumps-to-top).
+  box._settled = api("GET", `/tickets/${ticketId}/diff`, undefined, { signal: routeSignal() })
     .then((res) => {
       clear(box);
       const repos = (res && res.repos) || [];
       if (repos.length === 0) {
-        box.appendChild(
-          el("p", { class: "dim", style: "font-size:var(--step--1)" }, "No write repos to diff."),
-        );
+        box.appendChild(el("p", { class: "section-note" }, "No write repos to diff."));
         report(diffApprovability(repos));
         return;
       }
@@ -7482,15 +8378,23 @@ function isModalOpen() {
 
 async function renderReview() {
   const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(viewHead("Review", `${tickets.length} awaiting review`));
+  const wrap = el("div", { class: "view view-review" });
+  // The refresh compares this before re-reading anything (see VIEW_SIGNATURES).
+  wrap.dataset.sig = reviewSignature(tickets);
+  wrap.appendChild(
+    viewHead(
+      "The gaffer's sign-off",
+      tickets.length
+        ? `${tickets.length} ${tickets.length === 1 ? "change waits" : "changes wait"} for your sign-off. Nothing merges until you approve it.`
+        : null,
+    ),
+  );
 
   if (tickets.length === 0) {
     wrap.appendChild(
       emptyState(
-        "Nothing in review",
-        "When agents deliver work it lands here for your sign-off.",
-        "review",
+        "Nothing waits for your sign-off.",
+        "When an agent delivers, its diff lands here for you to approve or send back.",
       ),
     );
     return wrap;
@@ -7499,18 +8403,7 @@ async function renderReview() {
   // Gate console header — frames the human gate and the decision controls.
   const riskCount = (lvl) => tickets.filter((t) => t.risk_level === lvl).length;
   wrap.appendChild(
-    el("div", { class: "card panel gate-console" }, [
-      el("div", { class: "gate-main" }, [
-        el("span", { class: "gate-lamp" }),
-        el("div", {}, [
-          el("div", { class: "gate-title" }, "You hold the gate"),
-          el(
-            "div",
-            { class: "gate-sub" },
-            `${tickets.length} ${tickets.length === 1 ? "change is" : "changes are"} waiting on your sign-off. Nothing merges until you approve it.`,
-          ),
-        ]),
-      ]),
+    el("div", { class: "gate-console" }, [
       el("div", { class: "gate-aside" }, [
         el("div", { class: "gate-risk" }, [
           riskCount("critical")
@@ -7535,8 +8428,12 @@ async function renderReview() {
     ]),
   );
 
-  const details = await Promise.all(tickets.map((t) => api("GET", `/tickets/${t.id}`)));
+  const signal = routeSignal();
+  const details = await Promise.all(
+    tickets.map((t) => api("GET", `/tickets/${t.id}`, undefined, { signal })),
+  );
   const cards = [];
+  const settles = [];
 
   for (let i = 0; i < tickets.length; i++) {
     const t = tickets[i];
@@ -7609,7 +8506,7 @@ async function renderReview() {
     const approveBtn = canApprove
       ? el(
           "button",
-          { class: "btn ok", type: "button", disabled: "", "aria-label": "Approve and merge" },
+          { class: "btn ok big", type: "button", disabled: "", "aria-label": "Approve and merge" },
           [icon("check"), approveLabel],
         )
       : null;
@@ -7664,6 +8561,8 @@ async function renderReview() {
       }
     };
 
+    const diffBox = renderTicketDiff(t.id, canApprove ? applyDiffState : undefined);
+    if (diffBox._settled) settles.push(diffBox._settled);
     const card = el("div", { class: "card", dataset: { reviewIdx: String(i) }, tabindex: "-1" }, [
       el("div", { class: "meta-row" }, [
         el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
@@ -7671,7 +8570,7 @@ async function renderReview() {
         badge(`AC ${satisfied}/${ac.length} satisfied`, "no-dot"),
         pipelineDots(t.status),
       ]),
-      el("h2", { style: "font-size:var(--step-1);margin-bottom:6px" }, t.title),
+      el("h2", { class: "review-title" }, t.title),
       isReopened
         ? el("div", { class: "reopen-banner" }, [
             icon("alert"),
@@ -7682,7 +8581,7 @@ async function renderReview() {
       dodChecklist(evidence),
       reviewEvidenceList(evidence, ac),
       canApprove ? diffBlockBanner : null,
-      renderTicketDiff(t.id, canApprove ? applyDiffState : undefined),
+      diffBox,
       // Driven off the single TICKET_ACTION_KEYS map so the review surface offers
       // exactly the in_review action set (approve / rework / won't do) and can
       // never drift from the detail page. "Open detail" is always present.
@@ -7757,6 +8656,7 @@ async function renderReview() {
   // visibly carries the cursor before any key is pressed.
   cards[0]?.classList.add("card-accent");
   const onKey = (e) => {
+    if (!wrap.isConnected) return; // never act on a queue that is not on screen
     // A modal (reject dialog, command palette, detail sheet, move-menu) owns the
     // keyboard while open — never let a queue shortcut fire underneath it. The
     // reject dialog in particular lives on document.body, so this observer's
@@ -7789,15 +8689,20 @@ async function renderReview() {
     }
   };
   document.addEventListener("keydown", onKey);
-  // Detach the handler when the view is replaced.
-  const observer = new MutationObserver(() => {
-    if (!document.body.contains(wrap)) {
-      document.removeEventListener("keydown", onKey);
-      if (armTimer) clearTimeout(armTimer); // no stray timer touching detached nodes
-      observer.disconnect();
-    }
+  // Detach the handler when the view is replaced — or discarded unmounted by the
+  // router because a newer navigation won (a stale queue must not keep j/k/a/r).
+  let observer = null;
+  const teardown = () => {
+    document.removeEventListener("keydown", onKey);
+    if (armTimer) clearTimeout(armTimer); // no stray timer touching detached nodes
+    if (observer) observer.disconnect();
+  };
+  wrap._dispose = teardown;
+  observer = new MutationObserver(() => {
+    if (!document.body.contains(wrap)) teardown();
   });
   observer.observe(app, { childList: true });
+  wrap._settled = Promise.allSettled(settles);
 
   return wrap;
 }
@@ -11358,13 +12263,12 @@ async function renderSpecList() {
 
   const wrap = el("div", { class: "view", dataset: { view: "specs" } });
   wrap.appendChild(
-    viewHero({
-      image: "assets/bg/hero-spec.jpg",
-      eyebrow: "SPEC LIBRARY",
-      title: "Specs define intent. Code delivers it.",
-      subtitle:
-        "Each spec is a frozen statement of product intent. Trace every clause through to acceptance criteria and see the coverage gaps.",
-    }),
+    viewHead(
+      "The playbook",
+      specs.length
+        ? `${specs.length} ${specs.length === 1 ? "spec" : "specs"}: frozen intent, traced clause by clause to acceptance criteria.`
+        : null,
+    ),
   );
   wrap.appendChild(
     el("div", { class: "view-toolbar" }, [
@@ -12251,24 +13155,7 @@ function renderLoreList(res, repo, opts = {}) {
 
 // --- Wiring -----------------------------------------------------------------
 
-// Power-on: the room boots once. The grid draws in, the rail items rack down
-// one by one, the LIVE lamp ignites, then the first view comes up. CSS owns the
-// choreography via the `.booting` flag; we just raise and lower it.
-if (!prefersReducedMotion()) {
-  document.documentElement.classList.add("booting");
-  setTimeout(() => document.documentElement.classList.remove("booting"), 1600);
-}
-
 adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
 buildChrome();
-// Preload the Overview hero image only when the Overview is the landing view: a
-// static <link rel=preload> in index.html fetched 200 KB on EVERY deep link
-// (#/ticket/…, #/review) and the browser then warned that the preload went
-// unused. Any other view's hero loads with its own render.
-if (parseHash().view === "overview") {
-  document.head.appendChild(
-    el("link", { rel: "preload", as: "image", href: "assets/bg/hero-city.jpg" }),
-  );
-}
 window.addEventListener("hashchange", router);
 router();

@@ -126,11 +126,15 @@ describe("web: Overview development-flow node pipeline", () => {
     expect(nodeByLabel("Plan")?.querySelector(".pl-disc svg")).not.toBeNull();
   });
 
-  it("shows a LIVE badge on the pipeline panel", async () => {
+  it("stamps the pipeline panel with when its counts were read, not a fake LIVE lamp", async () => {
+    // live-lamp-hardcoded: the old badge always said "LIVE", even with the API down.
+    // The panel now states the time the counts were read from the response.
     await loadApp();
-    const live = document.querySelector(".pipeline-panel .pl-live");
-    expect(live).not.toBeNull();
-    expect(live?.textContent || "").toContain("LIVE");
+    const stamp = document.querySelector(".pipeline-panel .pl-live");
+    expect(stamp).not.toBeNull();
+    expect(stamp?.textContent || "").not.toContain("LIVE");
+    expect(stamp?.textContent || "").toMatch(/^as of \d{2}:\d{2}$/);
+    expect(stamp?.querySelector("time")?.getAttribute("datetime")).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 });
 

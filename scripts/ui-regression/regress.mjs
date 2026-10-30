@@ -1,4 +1,4 @@
-/* global document */
+/* global document, window, getComputedStyle */
 /* eslint-disable @typescript-eslint/no-unused-expressions -- `cond ? ok(…) : bad(…)` is the assertion idiom of this harness */
 // UI regression against a LIVE Gaffer dashboard with the stub worker wired in.
 // Driven by scripts/ui-regression/run.sh — see its header for setup. Env:
@@ -91,6 +91,87 @@ async function shot(page, name) {
     path: `${OUT}/${String(shotN).padStart(2, "0")}-${name}.png`,
     fullPage: true,
   });
+}
+
+// WCAG 2.1 A + AA audit of the rendered view. critical/serious violations fail the
+// run; moderate/minor are notes. axe reports colour contrast it cannot compute
+// (text over a pseudo-element or an image) as "incomplete" rather than failing,
+// which let 1.8:1 chips through at desktop width (axe-gate-blind-contrast). So:
+// decorative ::before/::after are neutralised for the audit, and more than a
+// small budget of incomplete colour-contrast nodes fails too, naming them.
+const CONTRAST_INCOMPLETE_BUDGET = 3;
+async function auditA11y(pg, v, width) {
+  // Inject axe into THIS document. Hash routing keeps one document alive, so an
+  // init script (new documents only) never lands; a string evaluate runs as an
+  // indirect eval in the page's global scope, is not subject to the page CSP, and
+  // defines `axe` once.
+  if (!(await pg.evaluate(() => typeof globalThis.axe !== "undefined"))) {
+    await pg.evaluate(AXE_SOURCE);
+  }
+  const res = await pg
+    .evaluate(async () => {
+      const neutral = document.createElement("style");
+      neutral.textContent = "*::before,*::after{content:none!important}";
+      document.head.appendChild(neutral);
+      try {
+        // eslint-disable-next-line no-undef
+        const r = await axe.run(document, {
+          runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
+        });
+        const violations = r.violations.map((x) => {
+          const n0 = x.nodes[0];
+          const data = n0?.any?.[0]?.data ?? n0?.all?.[0]?.data ?? null;
+          const detail =
+            data && typeof data === "object" && "contrastRatio" in data
+              ? ` fg=${data.fgColor} bg=${data.bgColor} ratio=${data.contrastRatio} need=${data.expectedContrastRatio}`
+              : "";
+          return {
+            id: x.id,
+            impact: x.impact,
+            nodes: x.nodes.length,
+            sample: `${n0?.target?.[0] ?? ""}${detail}`,
+          };
+        });
+        // Count what axe could not measure because of what is BEHIND the text
+        // (pseudo-elements, images, gradients, overlap). Content it declines to
+        // judge as text (a lone "·", "✓" or crest letter) and SVG chart text (its
+        // <svg> is an image to axe; chart text uses the ink tokens) are not budgeted.
+        const inc = r.incomplete.find((x) => x.id === "color-contrast");
+        const incomplete = inc
+          ? inc.nodes
+              .filter((n) => {
+                const key = n.any?.[0]?.data?.messageKey;
+                if (key === "shortTextContent" || key === "nonBmp") return false;
+                const el = document.querySelector(String(n.target?.[0] ?? ""));
+                return !(el && el.closest && el.closest("svg"));
+              })
+              .map((n) => String(n.target?.[0] ?? ""))
+          : [];
+        return { violations, incomplete };
+      } finally {
+        neutral.remove();
+      }
+    })
+    .catch((e) => ({
+      violations: [{ id: "axe-run-failed", impact: "serious", nodes: 0, sample: String(e) }],
+      incomplete: [],
+    }));
+  const serious = res.violations.filter((x) => x.impact === "critical" || x.impact === "serious");
+  const minor = res.violations.filter((x) => !(x.impact === "critical" || x.impact === "serious"));
+  const fmt = (xs) => xs.map((x) => `${x.id}[${x.impact}]×${x.nodes} @${x.sample}`).join("; ");
+  const tag = `${v}@${width}`;
+  serious.length
+    ? bad(`a11y '${tag}': ${fmt(serious)}`)
+    : ok(
+        `a11y '${tag}': no critical/serious WCAG 2.1 A/AA violations${minor.length ? ` (${minor.length} moderate/minor)` : ""}`,
+      );
+  if (minor.length) note(`a11y '${tag}' moderate/minor: ${fmt(minor)}`);
+  if (res.incomplete.length > CONTRAST_INCOMPLETE_BUDGET)
+    bad(
+      `a11y '${tag}': ${res.incomplete.length} text nodes' contrast could not be measured (budget ${CONTRAST_INCOMPLETE_BUDGET}): ${res.incomplete.slice(0, 6).join(", ")}`,
+    );
+  else if (res.incomplete.length)
+    note(`a11y '${tag}': contrast unmeasured for ${res.incomplete.join(", ")}`);
 }
 
 // Browser: PLAYWRIGHT_CHROMIUM=<path to a chrome/chromium binary> (e.g. from `npx playwright install chromium`
@@ -437,6 +518,54 @@ try {
     ? ok("Review view renders the server-computed diff (shows the stub's added function)")
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
+
+  // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
+  //        reader back to the top of the diff they are reading. On a short
+  //        viewport, scroll to the bottom of the queue, then make the factory emit
+  //        an unrelated event (the live stream schedules a refresh) and check the
+  //        scroll position held. Before the fix the refresh rebuilt every card with
+  //        "Loading diff…" placeholders, the page shrank and scrollY clamped to 0.
+  {
+    await page.setViewportSize({ width: 1400, height: 420 });
+    await sleep(500);
+    const y0 = await page.evaluate(() => {
+      const se = document.scrollingElement;
+      se.scrollTop = se.scrollHeight;
+      return se.scrollTop;
+    });
+    if (y0 < 150) note(`review scroll check: queue only ${y0}px taller than the viewport`);
+    // Mark the view on screen: an unchanged queue must not be rebuilt at all
+    // (review-n-plus-one-refresh), which is what keeps the reader's place.
+    const diffReads = [];
+    const onReq = (req) => {
+      if (/\/tickets\/[^/]+\/diff/.test(req.url())) diffReads.push(req.url());
+    };
+    page.on("request", onReq);
+    await page.evaluate(() => {
+      document.querySelector("#app > .view").__scrollMark = true;
+    });
+    await api("POST", "/tickets", {
+      title: "Unrelated ticket during review (scroll check)",
+      description: "created via API while the reviewer is scrolled down",
+    });
+    await sleep(3500); // > the stream's 400ms debounce + a render
+    const y1 = await page.evaluate(() => document.scrollingElement.scrollTop);
+    const kept = await page.evaluate(
+      () => document.querySelector("#app > .view")?.__scrollMark === true,
+    );
+    page.off("request", onReq);
+    Math.abs(y1 - y0) <= 50
+      ? ok(`Review keeps the reader's scroll across a live refresh (${y0} → ${y1})`)
+      : bad(`Review scroll jumped on a live refresh: ${y0} → ${y1}`);
+    kept && diffReads.length === 0
+      ? ok("Review: an unchanged queue is not rebuilt or re-diffed by a live refresh")
+      : bad(
+          `Review: a live refresh rebuilt the unchanged queue (view replaced=${!kept}, diff reads=${diffReads.length})`,
+        );
+    await page.setViewportSize({ width: 1400, height: 1000 });
+    await sleep(300);
+  }
+
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
   // stream while the diff loads, and a handle taken before that detaches
   // ("Element is not attached to the DOM"). A locator re-resolves on every action.
@@ -728,48 +857,134 @@ try {
           `view '${v}' problem: len=${txt.trim().length} newErrors=${consoleErrors.slice(before).join(" | ")}`,
         );
     await shot(page, `view-${v}`);
-    if (AXE_SOURCE) {
-      // Inject axe into THIS document. Hash routing keeps one document alive for
-      // the whole loop, so an init script (new documents only) never lands; a
-      // string evaluate runs as an indirect eval in the page's global scope, is
-      // not subject to the page CSP, and defines `axe` once.
-      if (!(await page.evaluate(() => typeof globalThis.axe !== "undefined"))) {
-        await page.evaluate(AXE_SOURCE);
+    if (AXE_SOURCE) await auditA11y(page, v, "1400");
+  }
+
+  // ── 7b. layout sweep: every view at phone, tablet and laptop widths ────────
+  //   appbar-overflow-760-1565: the header never scrolls the page sideways and its
+  //     controls (Search, New, Logout) stay inside the viewport;
+  //   mobile-overview-overflow: no view is wider than the viewport, down to 320px;
+  //   settings-access-giant-icon: no 24-grid icon renders wider than 48px;
+  //   hero-banners-below-fold: the first board card / the team sheet are on screen;
+  //   axe-gate-blind-contrast: the WCAG audit also runs at 390px.
+  {
+    const views = [
+      "overview",
+      "work",
+      "review",
+      "health",
+      "epics",
+      "factory",
+      "specs",
+      "settings",
+      "memory",
+      `ticket/${ticket.id}`,
+      `repo/${encodeURIComponent(repo.id)}`,
+    ];
+    const sweep = [
+      { w: 390, h: 844, views, axe: true },
+      { w: 768, h: 1000, views },
+      { w: 1024, h: 768, views },
+      { w: 1280, h: 800, views },
+      { w: 1440, h: 900, views },
+      { w: 360, h: 780, views: ["overview", "work", "review"] },
+      { w: 320, h: 640, views: ["overview", "work"] },
+    ];
+    for (const { w, h, views: vs, axe: runAxe } of sweep) {
+      const c2 = await browser.newContext({ viewport: { width: w, height: h } });
+      const p2 = await c2.newPage();
+      p2.on("pageerror", (err) => consoleErrors.push(`pageerror@${w}: ${err.message}`));
+      await p2.goto(`${BASE}/?token=${TOKEN}#/overview`, { waitUntil: "load" });
+      await sleep(900);
+      const problems = [];
+      for (const v of vs) {
+        await p2.goto(`${BASE}/#/${v}`, { waitUntil: "load" });
+        await sleep(900);
+        const m = await p2.evaluate(() => {
+          const vw = window.innerWidth;
+          const inView = (sel) => {
+            const n = document.querySelector(sel);
+            if (!n) return null;
+            const r = n.getBoundingClientRect();
+            if (!r.width) return null; // not shown at this width
+            return r.left >= -1 && r.right <= vw + 1;
+          };
+          const wide = [...document.querySelectorAll('#app svg[viewBox="0 0 24 24"]')]
+            .map((s) => s.getBoundingClientRect().width)
+            .filter((x) => x > 48);
+          const pipe = document.querySelector(".pipeline-panel .pipeline");
+          const card = document.querySelector(".board-card");
+          const sheet = document.getElementById("what-i-own");
+          return {
+            sw: document.documentElement.scrollWidth,
+            vw,
+            vh: window.innerHeight,
+            search: inView(".cmdk-trigger"),
+            newBtn: inView(".btn-new"),
+            logout: inView(".logout-btn"),
+            wide,
+            pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
+            card: card ? card.getBoundingClientRect().toJSON() : null,
+            sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
+          };
+        });
+        const tag = `${v}@${w}`;
+        if (m.sw > m.vw) problems.push(`${tag} scrollWidth ${m.sw} > ${m.vw}`);
+        for (const k of ["search", "newBtn", "logout"])
+          if (m[k] === false) problems.push(`${tag} header ${k} outside the viewport`);
+        if (m.wide.length) problems.push(`${tag} ${m.wide.length} icon(s) wider than 48px`);
+        if (m.pipeDisplay && m.pipeDisplay !== "flex")
+          problems.push(`${tag} dev-flow strip is display:${m.pipeDisplay}`);
+        if (v === "work" && m.card) {
+          const onScreen = w <= 400 ? m.card.top <= m.vh : m.card.bottom <= m.vh;
+          if (!onScreen && (w === 390 || w === 1280 || w === 1440))
+            problems.push(`${tag} first board card below the fold (${Math.round(m.card.top)})`);
+        }
+        if (v === "overview" && m.sheetTop != null && m.sheetTop > m.vh && w >= 390)
+          problems.push(`${tag} team sheet below the fold (${Math.round(m.sheetTop)})`);
+        if (runAxe && AXE_SOURCE) await auditA11y(p2, v, String(w));
       }
-      // WCAG 2.1 A + AA over the rendered view. critical/serious fail the run;
-      // moderate/minor are reported as notes so they are visible but not blocking.
-      const violations = await page
-        .evaluate(async () => {
-          // eslint-disable-next-line no-undef
-          const r = await axe.run(document, {
-            runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] },
-          });
-          return r.violations.map((x) => {
-            const n0 = x.nodes[0];
-            const data = n0?.any?.[0]?.data ?? n0?.all?.[0]?.data ?? null;
-            const detail =
-              data && typeof data === "object" && "contrastRatio" in data
-                ? ` fg=${data.fgColor} bg=${data.bgColor} ratio=${data.contrastRatio} need=${data.expectedContrastRatio}`
-                : "";
-            return {
-              id: x.id,
-              impact: x.impact,
-              nodes: x.nodes.length,
-              sample: `${n0?.target?.[0] ?? ""}${detail}`,
-            };
-          });
-        })
-        .catch((e) => [{ id: "axe-run-failed", impact: "serious", nodes: 0, sample: String(e) }]);
-      const serious = violations.filter((x) => x.impact === "critical" || x.impact === "serious");
-      const minor = violations.filter((x) => !(x.impact === "critical" || x.impact === "serious"));
-      const fmt = (xs) => xs.map((x) => `${x.id}[${x.impact}]×${x.nodes} @${x.sample}`).join("; ");
-      serious.length
-        ? bad(`a11y '${v}': ${fmt(serious)}`)
+      problems.length
+        ? bad(`layout @${w}px: ${problems.join("; ")}`)
         : ok(
-            `a11y '${v}': no critical/serious WCAG 2.1 A/AA violations${minor.length ? ` (${minor.length} moderate/minor)` : ""}`,
+            `layout @${w}px: ${vs.length} views fit (no sideways scroll, header controls on screen, icons sized)`,
           );
-      if (minor.length) note(`a11y '${v}' moderate/minor: ${fmt(minor)}`);
+      if (w === 1440) await shot(p2, "layout-1440-overview").catch(() => {});
+      await c2.close();
     }
+  }
+
+  // ── 7c. the a11y gate measures contrast: a planted 1.8:1 chip whose box sits
+  //        behind a decorative ::before (which axe alone reports only as
+  //        "incomplete") must FAIL. Proves the neutraliser + incomplete budget work.
+  if (AXE_SOURCE) {
+    await page.goto(`${BASE}/#/overview`, { waitUntil: "load" });
+    await sleep(900);
+    const caught = await page.evaluate(async () => {
+      const host = document.createElement("div");
+      host.id = "axe-self-test";
+      host.innerHTML =
+        '<style>#axe-self-test .chip-x::before{content:"";position:absolute;inset:0;background:linear-gradient(90deg,#ffb224,#ffb224)}</style>' +
+        '<span class="chip-x" style="position:relative;display:inline-block;padding:4px 8px;background:#ffb224;color:#fff;font-size:12px">review</span>';
+      document.getElementById("app").appendChild(host);
+      try {
+        const neutral = document.createElement("style");
+        neutral.textContent = "*::before,*::after{content:none!important}";
+        document.head.appendChild(neutral);
+        // eslint-disable-next-line no-undef
+        const r = await axe.run("#axe-self-test", {
+          runOnly: { type: "rule", values: ["color-contrast"] },
+        });
+        neutral.remove();
+        // With the neutraliser the chip's own background is measurable: a violation.
+        return r.violations.length > 0;
+      } finally {
+        host.remove();
+      }
+    });
+    caught
+      ? ok("a11y gate self-test: a planted 1.8:1 chip behind a ::before is caught")
+      : bad("a11y gate self-test: the planted 1.8:1 chip was NOT caught (contrast is unmeasured)");
   }
 
   // ── 8. SSE live refresh: a ticket created out-of-band appears on the board without reload

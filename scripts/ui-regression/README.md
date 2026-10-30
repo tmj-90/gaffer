@@ -26,11 +26,26 @@ after touching `app.js`, the runner's delivery loop, or the review gate.
 
 Every rendered view in the "views" pass (the primary views plus the ticket and
 repo detail pages) is audited with [axe-core](https://github.com/dequelabs/axe-core)
-against WCAG 2.1 A + AA (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`). A
-**critical** or **serious** violation fails the run and is reported with the rule
-id, the impact, the node count and the first offending selector (colour-contrast
-findings add the computed foreground/background and ratio); **moderate/minor**
-findings are printed as notes. axe is installed into the throwaway out dir next to
-playwright-core and injected per view through an indirect eval, which the page CSP
-(`script-src 'self'`) does not govern — the dashboard's real CSP stays in force for
-everything the page itself loads.
+against WCAG 2.1 A + AA (`wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`) at 1400px, and
+again at 390px in the layout sweep. A **critical** or **serious** violation fails the
+run and is reported with the rule id, the impact, the node count and the first
+offending selector (colour-contrast findings add the computed foreground/background
+and ratio); **moderate/minor** findings are printed as notes.
+
+Contrast is actually measured, not skipped: axe reports text it cannot compute
+(over a pseudo-element or an image) as *incomplete*, which once let 1.8:1 chips
+pass. Decorative `::before`/`::after` are neutralised for the audit, more than a
+small budget of incomplete colour-contrast nodes per view fails the run, and a
+self-test plants a 1.8:1 chip behind a `::before` and requires the gate to catch it.
+axe is installed into the throwaway out dir next to playwright-core and injected
+per view through an indirect eval, which the page CSP (`script-src 'self'`) does not
+govern — the dashboard's real CSP stays in force for everything the page itself loads.
+
+## Layout sweep
+
+Every view is loaded at 390, 768, 1024, 1280 and 1440px (and the Overview/Work at
+360 and 320px). Each must be no wider than the viewport, keep the header's Search,
+New and Logout controls on screen, render no 24-grid icon wider than 48px, keep the
+Overview's development-flow strip a scrolling flex row, and show the first board
+card / the team sheet above the fold. The Review step also checks that a live
+refresh never moves the reader's scroll position.

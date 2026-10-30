@@ -1,0 +1,247 @@
+/* Ticket — one object page: the state and its one next action lead (a red
+   card when blocked), then boundary, diff, failure history ("attempts"),
+   acceptance criteria, testing and the minute-by-minute match report. */
+
+@layer views {
+  .view > .back-link {
+    justify-self: start;
+    border: 0;
+    background: none;
+    padding: 4px 0;
+    min-height: 32px;
+  }
+  /* The head card: number in stencil claret, the title as a headline. */
+  .detail-grid .card.card-accent {
+    box-shadow: none;
+    display: grid;
+    gap: var(--s3);
+  }
+  .detail-grid .card.card-accent > .num {
+    font: 900 var(--t26) / 1 var(--f-stencil);
+    color: var(--claret-ink);
+  }
+  .desc {
+    max-width: 75ch;
+    white-space: pre-wrap;
+  }
+  .claim-box {
+    display: grid;
+    gap: 8px;
+  }
+  .claim-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+  }
+  .claim-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--r-round);
+    background: var(--ink);
+  }
+  .claim-off {
+    color: var(--ink-2);
+  }
+  .claim-blockers {
+    display: grid;
+    gap: 4px;
+    font-size: var(--t14);
+  }
+  .claim-blockers li::before {
+    content: "■ ";
+    color: var(--red);
+  }
+  .delivering-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: var(--r-round);
+    background: var(--ink);
+    flex: none;
+  }
+  .delivering-dot.is-warn {
+    background: var(--red);
+  }
+
+  /* Acceptance criteria: glyph · text · state, one rule between. */
+  .ac-item {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: var(--hair);
+  }
+  .ac-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .policy-result {
+    font: 700 var(--t14) var(--f-text);
+  }
+  .policy-result.ok {
+    color: var(--ok);
+  }
+  .policy-result.fail {
+    color: var(--red);
+  }
+  .reason-list {
+    display: grid;
+    gap: 2px;
+    font-size: var(--t14);
+  }
+
+  /* Execution boundary (repo panel). */
+  .repo-panel,
+  .repo-panel-body,
+  .repo-group {
+    display: grid;
+    gap: var(--s3);
+  }
+  .repo-group-head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .repo-group-title {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .repo-group-note {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .repo-row-main {
+    min-width: 0;
+    flex: 1 1 200px;
+  }
+  .repo-row-head,
+  .repo-row-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .confidence {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 600 var(--t12) var(--f-cond);
+  }
+  .conf-bar {
+    width: 54px;
+    height: 6px;
+    background: var(--rule-2);
+    overflow: hidden;
+  }
+  .conf-fill {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+
+  /* Attempts: the failure history, newest first. */
+  .failure-history {
+    display: grid;
+    gap: var(--s3);
+  }
+  .failure-history h2 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .failure-history-sub {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .failure-trail {
+    display: grid;
+    gap: 10px;
+  }
+  .failure-attempt {
+    border: var(--hair);
+    border-radius: var(--r);
+    padding: 10px 12px;
+    display: grid;
+    gap: 6px;
+  }
+  .failure-attempt-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .failure-attempt-num {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .failure-attempt-time {
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .failure-gate {
+    color: var(--red);
+    font-weight: 700;
+  }
+  .failure-detail {
+    white-space: pre-wrap;
+    max-height: 260px;
+    overflow: auto;
+    font: 13px / 1.5 var(--f-mono);
+    background: var(--board);
+    color: var(--board-ink);
+    padding: 10px 12px;
+    border-radius: var(--r);
+  }
+
+  /* Memory primed for this delivery. */
+  .mem-primed-card {
+    display: grid;
+    gap: var(--s3);
+  }
+  .mem-primed-head,
+  .mem-primed-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .mem-primed-list {
+    display: grid;
+  }
+  .mem-primed-item {
+    padding: 6px 0;
+    border-bottom: var(--hair);
+    font-size: var(--t14);
+  }
+  .mem-primed-title {
+    font-weight: 700;
+  }
+  .mem-primed-at {
+    white-space: nowrap;
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .mem-primed-none,
+  .mem-primed-summary,
+  .mem-primed-outcome {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+
+  /* Timeline (match report). */
+  .ev-type {
+    font-weight: 700;
+  }
+  .ev-actor {
+    font: 600 var(--t12) var(--f-cond);
+    color: var(--ink-2);
+  }
+
+  @media (max-width: 760px) {
+    .detail-grid .card.card-accent .detail-title {
+      font-size: var(--t34);
+    }
+  }
+}

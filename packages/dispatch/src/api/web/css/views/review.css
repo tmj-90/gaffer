@@ -1,0 +1,350 @@
+/* Review — the gaffer's sign-off. Each change is a programme page: title,
+   evidence, the Definition-of-Done board, the diff, then the decision row
+   (Approve is the one action fill; Won't do is danger and set apart).
+   The diff styles here are shared with the ticket page. */
+
+@layer views {
+  .gate-console {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px 20px;
+    flex-wrap: wrap;
+  }
+  .gate-aside {
+    display: flex;
+    gap: 10px 20px;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    width: 100%;
+  }
+  .gate-risk {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .gr {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 4px 6px;
+    border: 1.5px solid var(--ink-2);
+    border-radius: var(--r);
+    color: var(--ink-2);
+  }
+  .gr.high,
+  .gr.critical {
+    border-color: var(--ink);
+    color: var(--ink);
+    background: var(--sky-wash);
+  }
+  .gate-keys {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--t12);
+    color: var(--ink-2);
+  }
+  .gate-keys-label {
+    margin-right: 8px;
+  }
+  @media (hover: none) and (pointer: coarse) {
+    .gate-keys {
+      display: none;
+    }
+  }
+
+  /* One change under review. */
+  .view-review > .card {
+    display: grid;
+    gap: var(--s3);
+  }
+  .review-title {
+    font: 800 var(--t34) / 1.02 var(--f-display);
+    overflow-wrap: anywhere;
+  }
+  .view-review .meta-row .num {
+    font-family: var(--f-stencil);
+    font-size: var(--t26);
+    color: var(--claret-ink);
+  }
+  .review-card-actions {
+    padding-top: var(--s3);
+    border-top: var(--hair);
+  }
+  .review-card-actions .btn.danger {
+    margin-left: auto;
+  }
+  .ac-meta {
+    font: 600 var(--t14) / 1.35 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .ac-meta code {
+    color: var(--ink);
+  }
+
+  /* Evidence well: who said what, with provenance. */
+  .review-evidence {
+    display: grid;
+    gap: 0;
+  }
+  .review-evi {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 4px 10px;
+    align-items: baseline;
+    padding: 7px 0;
+    border-bottom: var(--hair);
+    font-size: var(--t14);
+  }
+  .evi-who {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    font: 600 var(--t12) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .evi-summary {
+    overflow-wrap: anywhere;
+  }
+  .evi-prov,
+  .evi-ac {
+    grid-column: 2;
+  }
+
+  /* Definition-of-Done board: ✓ / ✗ / skip, one line per gate. */
+  .review-dod {
+    border: var(--frame);
+    border-radius: var(--r);
+    padding: 10px 14px;
+    background: var(--paper);
+  }
+  .review-dod.dod-fail {
+    border-color: var(--red);
+  }
+  .dod-list {
+    display: grid;
+  }
+  .dod-item {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    flex-wrap: wrap;
+    padding: 4px 0;
+    font-size: var(--t14);
+  }
+  .dod-mark {
+    width: 1.2em;
+    display: inline-block;
+    font-weight: 800;
+  }
+  .dod-mark.dod-pass {
+    color: var(--ok);
+  }
+  .dod-mark.dod-fail {
+    color: var(--red);
+  }
+  .dod-mark.dod-skip {
+    color: var(--ink-2);
+  }
+  .dod-gate {
+    font-weight: 700;
+  }
+  ul.clean,
+  ol.clean {
+    list-style: none;
+    padding: 0;
+  }
+
+  /* --- the diff (review + ticket) ------------------------------------------------ */
+  .diff-box {
+    display: grid;
+    gap: var(--s3);
+    min-width: 0;
+  }
+  .diff-section {
+    border: var(--frame);
+    border-radius: var(--r);
+    background: var(--paper);
+    overflow: hidden;
+    min-width: 0;
+  }
+  .diff-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 8px 12px;
+    background: var(--board);
+    color: var(--board-ink);
+    font-size: var(--t14);
+  }
+  .diff-head .mono {
+    color: var(--board-ink);
+  }
+  .diff-branch {
+    color: var(--board-ink-2);
+  }
+  .diff-stats {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-left: auto;
+  }
+  .diff-stat {
+    font: 700 var(--t14) var(--f-cond);
+  }
+  .diff-head .diff-add-stat {
+    color: #8ee0a8;
+  }
+  .diff-head .diff-del-stat {
+    color: #ff9ea8;
+  }
+  .diff-head .diff-stat.dim {
+    color: var(--board-ink-2);
+  }
+  .diff-head .diff-stat.warn {
+    color: var(--yellow);
+  }
+  .diff-add-stat {
+    color: var(--add);
+  }
+  .diff-del-stat {
+    color: var(--del);
+  }
+  .diff-filestrip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 12px;
+    border-bottom: var(--hair);
+  }
+  .diff-filejump {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 2px 8px;
+    border: 1px solid var(--rule);
+    border-radius: var(--r);
+    font-size: var(--t12);
+    text-decoration: none;
+  }
+  .diff-filejump:hover {
+    border-color: var(--ink);
+  }
+  .diff-filejump-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 32ch;
+  }
+  .diff-file-risk {
+    width: 14px;
+    height: 14px;
+    flex: none;
+    color: var(--ink);
+  }
+  .diff-files {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .diff-box > *,
+  .diff-files > *,
+  .diff-section > * {
+    min-width: 0;
+  }
+  .diff-file-block + .diff-file-block {
+    border-top: var(--frame);
+  }
+  .diff-file-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    font-size: var(--t14);
+    background: var(--paper-2);
+  }
+  .diff-file-path {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+  }
+  .diff-block-banner {
+    margin: 0;
+  }
+  .diff-pre {
+    margin: 0;
+    max-height: 560px;
+    overflow: auto;
+    font: 13px / 1.6 var(--f-mono);
+    padding: 6px 0;
+    background: var(--paper);
+  }
+  .diff-pre:focus-visible {
+    outline-offset: -3px;
+  }
+  .diff-line {
+    white-space: pre;
+    padding: 0 12px;
+    min-width: max-content;
+  }
+  .diff-line.diff-add {
+    background: var(--add-wash);
+  }
+  .diff-line.diff-del {
+    background: var(--del-wash);
+  }
+  .diff-line.diff-hunk {
+    color: var(--ink-2);
+    background: var(--ground);
+  }
+  .diff-line.diff-file {
+    color: var(--ink-2);
+    font-weight: 700;
+  }
+
+  /* Advisory risk overlay (never gates approval). */
+  .risk-overlay {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    background: var(--mark-wash);
+    border-bottom: var(--hair);
+    font-size: var(--t14);
+  }
+  .risk-overlay.risk-none {
+    background: none;
+    color: var(--ink-2);
+  }
+  .risk-lead {
+    font-weight: 700;
+  }
+
+  @media (max-width: 760px) {
+    .review-title {
+      font-size: var(--t26);
+    }
+    .review-card-actions .btn.ok {
+      flex: 1 1 100%;
+    }
+    .review-card-actions .btn:not(.ok) {
+      flex: 1;
+    }
+    .review-card-actions .btn.danger {
+      margin-left: 0;
+    }
+    .review-evi {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .evi-prov,
+    .evi-ac {
+      grid-column: 1;
+    }
+  }
+}

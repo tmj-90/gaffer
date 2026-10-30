@@ -353,7 +353,8 @@
   .kit-chalk {
     color: var(--chalk);
   }
-  .kit-chalk path:nth-of-type(2) {
+  /* On grass the shirt has no paper ground: the pattern is chalk on the pitch. */
+  .kit-chalk .kit-paper {
     fill: transparent;
   }
   .disc {
@@ -1052,8 +1053,15 @@
       grid-template-columns: minmax(0, 1fr);
       gap: var(--s4);
     }
+    /* On a phone the pitch comes before the squad that moved up beside it. */
     .ov-left {
-      grid-template-columns: minmax(0, 1fr);
+      display: contents;
+    }
+    .ov-main > .ov-left > * {
+      grid-column: 1 / -1;
+    }
+    .ov-main > .ov-left > .squad {
+      order: 1;
     }
     .own-row {
       grid-template-columns: 28px minmax(0, 1fr);
@@ -1107,8 +1115,9 @@
       border-left: 0;
       padding: 0;
     }
+    /* One tie per line: a 2-up cell cut titles to two or three words. */
     .round ul {
-      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      grid-template-columns: minmax(0, 1fr);
     }
     .lt th,
     .lt td {

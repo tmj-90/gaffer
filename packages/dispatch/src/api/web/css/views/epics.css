@@ -93,13 +93,15 @@
   .dag-scroll {
     overflow-x: auto;
     border-radius: var(--r);
-    background: var(--lane-a);
   }
   /* One mown lane per round (a node + its gap = 278px). */
   .dag {
     background: repeating-linear-gradient(90deg, var(--lane-a) 0 278px, var(--lane-b) 278px 556px);
     background-position: -23px 0;
-    min-width: 100%;
+    background-repeat: no-repeat;
+  }
+  .dag-stack {
+    display: none;
   }
   .dag {
     position: relative;
@@ -201,6 +203,35 @@
   @media (max-width: 760px) {
     .phase-strip {
       grid-auto-flow: row;
+    }
+    .dag-scroll {
+      display: none;
+    }
+    .dag-stack {
+      display: grid;
+      gap: 0;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .dst-round {
+      display: grid;
+      gap: 8px;
+      padding: 10px 12px 12px;
+      background: var(--lane-a);
+    }
+    .dst-round:nth-child(even) {
+      background: var(--lane-b);
+    }
+    .dag-stack .dag-collabel {
+      position: static;
+    }
+    .dst-list {
+      display: grid;
+      gap: 8px;
+    }
+    .dag-stack .dag-node {
+      position: relative;
     }
   }
 }

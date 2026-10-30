@@ -168,11 +168,194 @@
     font-weight: 600;
   }
 
-  /* --- node + repo detail -------------------------------------------------- */
+  /* --- a ground (scope node) and a repo's page ------------------------------
+     The head reads like the ticket page: a big mark (the repo's kit), the meta
+     line, the headline and a lede from real counts; then a stat strip and
+     programme pages with kit-colour title blocks. */
+  .gr-head {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    gap: var(--s5);
+    align-items: start;
+  }
+  .gr-head.is-node {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .gr-kit {
+    display: grid;
+    place-items: center;
+    width: 112px;
+    height: 112px;
+    background: var(--paper);
+    border: var(--frame);
+    border-radius: var(--r);
+    color: var(--ink);
+  }
+  .gr-head-main {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+  }
+  .gr-head .detail-title {
+    font: 800 var(--t52) / 1.02 var(--f-display);
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+  .gr-lede {
+    max-width: 62ch;
+    font-size: var(--t20);
+    line-height: 1.4;
+  }
+  .gr-lede .is-red {
+    color: var(--red);
+  }
+  .gr-mapped {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: 700 var(--t14) var(--f-text);
+  }
+  .gr-mapped.is-off {
+    color: var(--ink-2);
+  }
+  .gr-type {
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--claret-ink);
+  }
+  .gr-owner {
+    font: 600 var(--t14) var(--f-cond);
+    color: var(--ink-2);
+  }
+  .gr-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .gr-edit > summary {
+    list-style: none;
+    cursor: pointer;
+  }
+  .gr-edit > summary::-webkit-details-marker {
+    display: none;
+  }
+  .gr-edit[open] {
+    order: 1;
+    flex-basis: 100%;
+    display: grid;
+    gap: 10px;
+    justify-items: start;
+  }
+  .gr-edit[open] > .gr-edit-body {
+    justify-self: stretch;
+    max-width: 920px;
+  }
+  /* The stat strip: the same cells as the Health and Overview boards, on paper. */
+  .view > .kpi-row.gr-stats {
+    border: var(--frame);
+    border-radius: var(--r);
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .view > .kpi-row.gr-stats .kpi,
+  .view > .kpi-row.gr-stats .kpi:first-child {
+    padding-left: 16px;
+  }
+  .gr-card {
+    display: grid;
+    gap: var(--s4);
+    align-content: start;
+  }
+  .gr-card > .panel-head.block {
+    margin-bottom: 0;
+  }
+  .gr-card .quiet,
+  .gr-note {
+    color: var(--ink-2);
+    font-size: var(--t14);
+    line-height: 1.45;
+  }
+  .gr-sub {
+    padding-top: var(--s3);
+    border-top: var(--hair);
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    text-transform: uppercase;
+    letter-spacing: 0.01em;
+  }
+  /* The ground's particulars: one row per key, the value on the key's line. */
+  .gr-kv {
+    grid-template-columns: 140px minmax(0, 1fr);
+    gap: 0;
+    font-size: var(--t14);
+  }
+  .gr-kv dt,
+  .gr-kv dd {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 6px 0;
+    border-top: var(--hair);
+  }
+  .gr-kv dt:first-of-type,
+  .gr-kv dd:first-of-type {
+    border-top: 0;
+  }
+  .gr-kv dt {
+    font: 700 var(--t14) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .gr-kv dd code {
+    overflow-wrap: anywhere;
+  }
+  .gr-kv-act {
+    display: inline-flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .gr-warn {
+    align-items: center;
+  }
+  .gr-warn p {
+    max-width: none;
+  }
+  .gr-rel {
+    font: 700 var(--t14) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--ink-2);
+  }
+  .gr-repo {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink);
+  }
+  .gr-repo .kit {
+    color: var(--ink);
+    flex: none;
+  }
+  /* Gate commands: three fields in a row, Save at the end of the line. */
+  .cmd-fields {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--s3);
+  }
+  .cmd-save {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: var(--s3);
+  }
+
   .tag-row {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+  }
+  .gr-rows {
+    display: grid;
   }
   .assoc-row {
     display: flex;
@@ -180,15 +363,15 @@
     justify-content: space-between;
     gap: 12px;
     flex-wrap: wrap;
-    padding: 8px 0;
+    padding: 10px 0;
     border-top: var(--hair);
   }
-  .assoc-row:first-child {
+  li:first-child > .assoc-row {
     border-top: 0;
+    padding-top: 0;
   }
   .assoc-row-edit {
-    flex-direction: column;
-    align-items: stretch;
+    align-items: flex-end;
   }
   .assoc-name {
     font-weight: 700;
@@ -200,17 +383,24 @@
     align-items: center;
     flex-wrap: wrap;
   }
+  .assoc-edit-main {
+    align-self: center;
+  }
   .assoc-edit-field {
     display: grid;
     gap: 3px;
   }
   .assoc-edit-label {
     font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     color: var(--ink-2);
   }
   .map-repo-box {
     display: grid;
     gap: var(--s3);
+    padding-top: var(--s3);
+    border-top: var(--hair);
   }
   .map-repo-controls,
   .assoc-edit-controls {
@@ -219,34 +409,127 @@
     gap: 10px;
     align-items: flex-end;
   }
+  .assoc-edit-controls .btn {
+    min-height: var(--tap);
+  }
   .map-repo-lead {
     font-size: var(--t14);
     color: var(--ink-2);
   }
+  /* Results & fixtures: number, title, then the status and the time stacked. */
   .repo-tickets,
   .repo-ticket-list {
     display: grid;
   }
   .repo-ticket-row {
-    grid-template-columns: 52px minmax(0, 1fr) auto;
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr) max-content;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 0;
+    border-top: var(--hair);
+    color: var(--ink);
+    text-decoration: none;
+  }
+  .repo-ticket-list li:first-child > .repo-ticket-row {
+    border-top: 0;
+    padding-top: 0;
+  }
+  .repo-ticket-row:hover .repo-ticket-title {
+    text-decoration: underline;
+  }
+  .repo-ticket-row .num {
+    font: 800 var(--t26) / 1 var(--f-display);
+    color: var(--claret-ink);
   }
   .repo-ticket-title {
     min-width: 0;
     overflow-wrap: anywhere;
+    font-size: var(--t14);
+    line-height: 1.35;
+  }
+  .repo-ticket-side {
+    display: grid;
+    justify-items: end;
+    gap: 2px;
   }
   .repo-ticket-time {
     font: 600 var(--t12) var(--f-cond);
     color: var(--ink-2);
+    white-space: nowrap;
   }
   .repo-ticket-more {
+    max-width: none;
     font-size: var(--t14);
-    padding-top: 6px;
+    padding-top: 8px;
+    border-top: var(--hair);
   }
   .edge-text {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
     font-size: var(--t14);
   }
   .desc {
     max-width: 75ch;
     white-space: pre-wrap;
+  }
+
+  @media (max-width: 760px) {
+    .gr-head {
+      grid-template-columns: 64px minmax(0, 1fr);
+      gap: var(--s3);
+    }
+    .gr-kit {
+      width: 64px;
+      height: 64px;
+    }
+    .gr-kit .kit {
+      width: 52px;
+      height: 52px;
+    }
+    .gr-head .detail-title {
+      font-size: var(--t34);
+    }
+    .gr-lede {
+      font-size: var(--t16);
+    }
+    .view > .kpi-row.gr-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .view > .kpi-row.gr-stats .kpi:nth-child(n + 3) {
+      border-top: var(--hair);
+    }
+    .view > .kpi-row.gr-stats .kpi:nth-child(3) {
+      border-left: 0;
+    }
+    .gr-kv {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .gr-kv dt {
+      min-height: 0;
+      padding-bottom: 0;
+    }
+    .gr-kv dd {
+      border-top: 0;
+      min-height: 0;
+      padding-top: 2px;
+    }
+    .cmd-fields {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .cmd-save .btn {
+      width: 100%;
+    }
+    .repo-ticket-row {
+      grid-template-columns: 44px minmax(0, 1fr);
+    }
+    .repo-ticket-side {
+      grid-column: 2;
+      grid-auto-flow: column;
+      justify-content: start;
+      align-items: center;
+      gap: 10px;
+    }
   }
 }

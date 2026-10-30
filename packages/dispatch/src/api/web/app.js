@@ -118,6 +118,8 @@ async function api(method, path, body, opts = {}) {
     e.code = err.code;
     throw e;
   }
+  if (data && Array.isArray(data.repositories))
+    learnKits(data.repositories.map((r) => r && r.name));
   return data;
 }
 
@@ -367,11 +369,45 @@ const SHIRT_PATH =
   "M13 4 L7 6.5 L1.5 12.5 L6 18 L10 15.5 L10 37 L30 37 L30 15.5 L34 18 L38.5 12.5 L33 6.5 L27 4 Q20 9.5 13 4 Z";
 const KIT_PATTERNS = ["stripes", "hoops", "halves", "sash", "quarters"];
 let svgUid = 0;
-/** Stable kit pattern for a repo name (a hash, so adding a repo never reshuffles). */
-function kitPattern(name) {
+// Every repo name the server has shown us. Patterns are assigned over the whole
+// roster so no two repos wear the same kit (while there are patterns to go round).
+const kitRoster = new Set();
+let kitAssigned = null;
+function kitHash(name) {
   let h = 0;
   for (const ch of String(name || "")) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return KIT_PATTERNS[h % KIT_PATTERNS.length];
+  return h;
+}
+/** Record repo names so their kits are assigned distinctly. */
+function learnKits(names) {
+  for (const n of names || []) {
+    if (n && !kitRoster.has(n)) {
+      kitRoster.add(n);
+      kitAssigned = null;
+    }
+  }
+}
+/**
+ * The kit pattern a repo wears. Each repo (in name order) takes its hashed
+ * pattern, or the next one no other repo has taken; adding a repo only moves a
+ * later-named repo whose pattern it now takes. Past five repos, kits repeat.
+ */
+function kitPattern(name) {
+  const key = String(name || "");
+  if (!kitRoster.has(key)) learnKits([key]);
+  if (!kitAssigned) {
+    kitAssigned = new Map();
+    const used = new Set();
+    for (const n of [...kitRoster].sort()) {
+      let i = kitHash(n) % KIT_PATTERNS.length;
+      if (used.size < KIT_PATTERNS.length)
+        while (used.has(KIT_PATTERNS[i])) i = (i + 1) % KIT_PATTERNS.length;
+      else used.clear();
+      used.add(KIT_PATTERNS[i]);
+      kitAssigned.set(n, KIT_PATTERNS[i]);
+    }
+  }
+  return kitAssigned.get(key);
 }
 function kitShirt(repoName, size = 18) {
   const id = "kit" + ++svgUid;
@@ -401,7 +437,7 @@ function kitShirt(repoName, size = 18) {
     },
     [
       svgEl("defs", {}, svgEl("clipPath", { id }, svgEl("path", { d: SHIRT_PATH }))),
-      svgEl("path", { d: SHIRT_PATH, fill: "var(--paper)" }),
+      svgEl("path", { d: SHIRT_PATH, fill: "var(--paper)", class: "kit-paper" }),
       fill,
       svgEl("path", {
         d: SHIRT_PATH,
@@ -2381,6 +2417,29 @@ function svgS(tag, attrs = {}, ...children) {
 // Text measurement for the board's layout engine (tags, label boxes). jsdom and
 // some locked-down browsers have no 2D canvas: fall back to an average glyph width.
 let measureCtx;
+/**
+ * Break a name into at most `max` lines that each fit `width` (breaking after
+ * - _ / . first); the last line is cut with an ellipsis if it still overflows.
+ */
+function wrapLabel(str, size, width, max = 2) {
+  const parts = String(str).match(/[^-_/.]+[-_/.]?/g) || [String(str)];
+  const lines = [];
+  let cur = "";
+  for (const p of parts) {
+    if (cur && textWidth(cur + p, size) > width && lines.length < max - 1) {
+      lines.push(cur);
+      cur = p;
+    } else cur += p;
+  }
+  lines.push(cur);
+  const last = lines.length - 1;
+  if (textWidth(lines[last], size) > width) {
+    let t = lines[last];
+    while (t.length > 1 && textWidth(t + "…", size) > width) t = t.slice(0, -1);
+    lines[last] = t + "…";
+  }
+  return lines;
+}
 function textWidth(str, size, track = 0) {
   if (measureCtx === undefined) {
     try {
@@ -2576,6 +2635,7 @@ async function loadMatchDay() {
     const name = write?.name || t.repos?.[0]?.name || null;
     if (name) repoOf.set(t.id, name);
   }
+  learnKits([...repoOf.values()].sort());
 
   const setting = (k) => {
     const s = (settings?.settings || []).find((x) => x.key === k);
@@ -3216,13 +3276,16 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
   const L = 1050,
     W = 680,
     CH = W / NC;
-  const M = P ? { l: 14, t: 124, r: 14, b: 70 } : { l: 14, t: 58, r: 104, b: 14 };
+  const fz = (design, floor = 12.5) => Math.max(design, floor * k);
+  // Portrait leaves room under the kits for each channel's repo name (2 lines).
+  const M = P
+    ? { l: 14, t: 124, r: 14, b: 70 + Math.ceil(2 * fz(17) * 1.15) + 6 }
+    : { l: 14, t: 58, r: 104, b: 14 };
   const VW = P ? M.l + W + M.r : M.l + L + M.r,
     VH = P ? M.t + L + M.b : M.t + W + M.b;
   const T = (px, py) => (P ? [M.l + py, M.t + (L - px)] : [M.l + px, M.t + py]);
   const R = P ? 25 : 19,
     SH = P ? 56 : 46;
-  const fz = (design, floor = 12.5) => Math.max(design, floor * k);
   const pxs = (n) => ({ fontSize: n.toFixed(2) + "px" });
   const FS = {
     zl: fz(P ? 24 : 18, 12.5),
@@ -3370,7 +3433,25 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     kt.classList.add("kit-chalk");
     kits.append(kt);
     box(kx, ky, kx + ks, ky + ks, "kit");
-    if (!P) {
+    if (P) {
+      // A phone has no room beside the kit: the name sits under it, wrapped.
+      const lines = wrapLabel(r, FS.cl, CH - 10, 2);
+      lines.forEach((ln, i) =>
+        kits.append(
+          svgS(
+            "text",
+            {
+              x,
+              y: ky + ks + 6 + FS.cl * (0.9 + i * 1.15),
+              "text-anchor": "middle",
+              class: "cl cl-p",
+              style: pxs(FS.cl),
+            },
+            ln,
+          ),
+        ),
+      );
+    } else {
       kits.append(
         svgS(
           "text",
@@ -4619,7 +4700,9 @@ async function renderOverview() {
     document.fonts?.load?.('700 16px "Sofia Sans Condensed"').catch(() => null),
   ]);
   const wrap = el("div", { class: "view view-overview" });
-  const idle = !f.items.length;
+  // A short Team Sheet (nothing, or one or two rows) leaves the column beside
+  // the pitch mostly empty: Squad & form moves up into it, as in the idle comp.
+  const idle = f.items.length <= 2;
   wrap.appendChild(overviewScoreboard(f));
   const sheet = whatIOwnPanel(f.queue, f);
   const board = tacticsBoard(f);
@@ -5004,7 +5087,7 @@ async function fitnessRoomPanels(healthRes) {
     el("div", { class: "ov-grid ov-3" }, [
       repoProgressPanel(summary.repoProgress || []),
       el("div", { class: "card panel" }, [
-        panelHead("Cycle time", "days per day shipped"),
+        panelHead("Cycle time", "median days to ship, by day"),
         el("div", {
           class: "chart",
           html: svgBars(cycleLine, {
@@ -5218,7 +5301,8 @@ function svgBars(series, opts = {}) {
     .join("");
   const ticks = labels
     .map((l, i) =>
-      i % every === 0 || i === n - 1
+      // The last label always shows; a regular tick closer than one step to it is dropped.
+      i === n - 1 || (i % every === 0 && n - 1 - i >= every)
         ? `<text class="chart-tick" x="${(pl + i * slot + slot / 2).toFixed(1)}" y="${h - 6}" text-anchor="middle">${esc(l)}</text>`
         : "",
     )
@@ -12194,7 +12278,7 @@ function renderRepoCommandsEditor(repo) {
   const form = el(
     "form",
     {
-      class: "inline-form cmd-editor",
+      class: "cmd-editor",
       onsubmit: (e) => {
         e.preventDefault();
         guard(async () => {
@@ -12208,17 +12292,17 @@ function renderRepoCommandsEditor(repo) {
         });
       },
     },
-    [test.row, lint.row, cov.row, el("button", { class: "btn", type: "submit" }, "Save")],
+    [
+      el("div", { class: "cmd-fields" }, [test.row, lint.row, cov.row]),
+      el("div", { class: "cmd-save" }, el("button", { class: "btn", type: "submit" }, "Save")),
+    ],
   );
   return el("div", { class: "cmd-block" }, [
-    el("div", { class: "cmd-editor-head" }, [
-      el("strong", {}, "Definition-of-Done gates"),
-      el(
-        "span",
-        { class: "dim" },
-        " — run by the runner in the delivery worktree; a failing gate bounces the delivery, an empty gate is skipped.",
-      ),
-    ]),
+    el(
+      "p",
+      { class: "gr-note" },
+      "The runner runs these on every delivery, in its worktree. A failing check sends the delivery back; an empty one is skipped.",
+    ),
     form,
   ]);
 }
@@ -12250,6 +12334,15 @@ function hideRepoBtn(repo) {
       },
     },
     "Hide",
+  );
+}
+
+/** The way back from a ground or repo page to the Map. */
+function backToMap() {
+  return el(
+    "button",
+    { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
+    "← Back to Map",
   );
 }
 
@@ -12378,118 +12471,157 @@ async function renderNode(id) {
   const view = await api("GET", `/scope/nodes/${id}`);
   const node = view.node;
   const repos = view.repos || [];
-  const tickets = view.tickets || view.recent_tickets || null;
 
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Map",
-    ),
-  );
+  // The ground's fixtures: the tickets of every repo that plays here (best-effort).
+  let tickets = null;
+  try {
+    const lists = await Promise.all(
+      repos
+        .filter((r) => r.name)
+        .map((r) =>
+          api("GET", `/tickets?repo=${encodeURIComponent(r.name)}`).then((x) => x.tickets || []),
+        ),
+    );
+    const seen = new Set();
+    tickets = lists.flat().filter((t) => (seen.has(t.id) ? false : seen.add(t.id)));
+  } catch {
+    tickets = null;
+  }
+
+  const wrap = el("div", { class: "view view-ground" });
+  wrap.appendChild(backToMap());
 
   const tags = parseTags(node.tags_json);
   const loreTags = parseTags(node.lore_tags_json);
+  const byId = new Map(allNodes.map((n) => [n.id, n]));
+  const outgoing = allEdges.filter((e) => e.from_node_id === node.id);
+  const incoming = allEdges.filter((e) => e.to_node_id === node.id);
+  const parent = incoming.find((e) => e.relation === "contains");
+  const parentNode = parent ? byId.get(parent.from_node_id) : null;
 
-  const head = el("div", { class: "card card-accent" }, [
-    el("h1", { class: "detail-title" }, node.name),
-    el("div", { class: "meta-row" }, [
-      badge(typeLabel(node.type), `type-${node.type}`),
-      riskBadge(node.risk_level),
-      node.owner ? badge(`@${node.owner}`, "no-dot") : null,
-    ]),
-    node.description
-      ? el("p", { class: "desc" }, node.description)
-      : el("p", { class: "desc dim" }, "No description."),
-    tags.length || loreTags.length
-      ? el("div", { class: "tag-row" }, [
-          ...tags.map((t) => el("span", { class: "tag-chip" }, t)),
-          ...loreTags.map((t) => el("span", { class: "tag-chip lore" }, `lore:${t}`)),
-        ])
-      : null,
+  const editDetails = el("details", { class: "edit-panel gr-edit" }, [
+    el("summary", { class: "btn small" }, "Edit node"),
+    el("div", { class: "card gr-edit-body" }, renderNodeForm(node)),
   ]);
-  const editDetails = el("details", { class: "edit-panel" }, [
-    el("summary", {}, "Edit node"),
-    renderNodeForm(node),
-  ]);
-  head.appendChild(editDetails);
-  head.appendChild(
-    el("div", { class: "btn-row", style: "margin-top:14px" }, [
-      el(
-        "button",
-        {
-          class: "btn danger",
-          type: "button",
-          onclick: () =>
-            guard(async () => {
-              if (!window.confirm(`Delete scope node “${node.name}”? This cannot be undone.`))
-                return;
-              await api("DELETE", `/scope/nodes/${node.id}`);
-              toast("Scope node deleted", { ok: true });
-              navigate("#/factory");
-            }),
-        },
-        "Delete node",
-      ),
+  const deleteBtn = el(
+    "button",
+    {
+      class: "btn danger small",
+      type: "button",
+      onclick: () =>
+        guard(async () => {
+          if (!window.confirm(`Delete scope node “${node.name}”? This cannot be undone.`)) return;
+          await api("DELETE", `/scope/nodes/${node.id}`);
+          toast("Scope node deleted", { ok: true });
+          navigate("#/factory");
+        }),
+    },
+    "Delete node",
+  );
+
+  wrap.appendChild(
+    el("header", { class: "gr-head is-node" }, [
+      el("div", { class: "gr-head-main" }, [
+        el("div", { class: "tk-meta" }, [
+          el("span", { class: "gr-type" }, typeLabel(node.type)),
+          riskBadge(node.risk_level),
+          node.owner ? el("span", { class: "gr-owner" }, `Run by @${node.owner}`) : null,
+          parentNode
+            ? el("span", {}, [
+                "Part of ",
+                el(
+                  "a",
+                  { class: "tk-epic-link", href: `#/node/${parentNode.id}` },
+                  parentNode.name,
+                ),
+              ])
+            : null,
+        ]),
+        el("h1", { class: "detail-title" }, node.name),
+        node.description
+          ? el("p", { class: "gr-lede desc" }, node.description)
+          : el("p", { class: "gr-lede dim" }, "No description yet."),
+        tags.length || loreTags.length
+          ? el("div", { class: "tag-row" }, [
+              ...tags.map((t) => el("span", { class: "tag-chip" }, t)),
+              ...loreTags.map((t) => el("span", { class: "tag-chip lore" }, `lore:${t}`)),
+            ])
+          : null,
+        el("div", { class: "gr-actions" }, [editDetails, deleteBtn]),
+      ]),
     ]),
   );
 
-  const repoCard = el("div", { class: "card" }, [
-    el("h2", {}, `Linked repos (${repos.length})`),
+  const count = (pred) => (tickets ? tickets.filter(pred).length : 0);
+  wrap.appendChild(
+    el("div", { class: "kpi-row gr-stats" }, [
+      statCell({
+        label: "Repos",
+        value: String(repos.length),
+        sub: `${repos.filter((r) => r.default_access === "write").length} with write access`,
+      }),
+      statCell({
+        label: "Connections",
+        value: String(outgoing.length + incoming.length),
+        sub: `${outgoing.length} out · ${incoming.length} in`,
+      }),
+      tickets
+        ? statCell({ label: "In play", value: String(count((t) => ON_PITCH.has(t.status))) })
+        : null,
+      tickets
+        ? statCell({ label: "Done", value: String(count((t) => t.status === "done")) })
+        : null,
+    ]),
+  );
+
+  const repoCard = el("section", { class: "card gr-card", "aria-label": "Who plays here" }, [
+    panelHead("Who plays here", `${repos.length} repo${repos.length === 1 ? "" : "s"}`, null, {
+      kit: "claret",
+    }),
     repos.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean gr-rows" },
           repos.map((r) =>
             el(
               "li",
               {},
               el("div", { class: "assoc-row" }, [
-                el("a", { class: "assoc-name", href: `#/repo/${r.id}` }, r.name || r.id),
+                el("a", { class: "assoc-name gr-repo", href: `#/repo/${r.id}` }, [
+                  kitShirt(r.name || r.id, 22),
+                  el("span", {}, r.name || r.id),
+                ]),
                 el("div", { class: "assoc-meta" }, [
-                  badge(r.relation, "no-dot"),
+                  el("span", { class: "gr-rel" }, r.relation),
                   accessBadge(r.default_access),
                 ]),
               ]),
             ),
           ),
         )
-      : el("p", { class: "dim" }, "No repos linked to this node yet."),
+      : el("p", { class: "quiet" }, "No repos play here yet. Link one below."),
+    el("h3", { class: "gr-sub" }, "Link a repo"),
     renderLinkRepoForm(node.id),
   ]);
 
-  const ticketCard = el("div", { class: "card" }, [
-    el("h2", {}, "Recent tickets"),
-    Array.isArray(tickets) && tickets.length
-      ? el(
-          "ul",
-          { class: "clean" },
-          tickets.map((t) =>
-            el("li", {}, [
-              el(
-                "a",
-                { class: "feed-ticket", href: `#/ticket/${t.id}` },
-                t.number != null ? `#${t.number}` : t.id.slice(0, 8),
-              ),
-              " ",
-              el("span", {}, t.title || ""),
-            ]),
-          ),
-        )
-      : el(
-          "p",
-          { class: "dim" },
-          "No ticket data yet — node→ticket links arrive in a later backend wave.",
+  const ticketCard = tickets
+    ? el("section", { class: "card gr-card", "aria-label": "Results and fixtures" }, [
+        panelHead(
+          "Results & fixtures",
+          tickets.length ? `latest ${Math.min(8, tickets.length)} of ${tickets.length}` : "",
+          null,
+          { kit: "ink" },
         ),
-  ]);
+        renderRepoTickets(null, tickets),
+      ])
+    : null;
 
   const connCard = renderConnectionsCard(node, allNodes, allEdges);
 
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, repoCard, ticketCard]),
-      el("div", {}, [connCard]),
+      el("div", { class: "stack" }, [repoCard, ticketCard]),
+      el("div", { class: "stack" }, [connCard]),
     ]),
   );
   return wrap;
@@ -12598,9 +12730,7 @@ function renderConnectionsCard(node, allNodes, allEdges) {
       {},
       el("div", { class: "assoc-row" }, [
         el("span", { class: "edge-text" }, [
-          dir === "out" ? "→ " : "← ",
-          badge(e.relation, "no-dot"),
-          " ",
+          el("span", { class: "gr-rel" }, edgePhrase(e.relation, dir)),
           other
             ? el("a", { class: "assoc-name", href: `#/node/${otherId}` }, other.name)
             : el("span", { class: "dim" }, otherId.slice(0, 8)),
@@ -12629,12 +12759,23 @@ function renderConnectionsCard(node, allNodes, allEdges) {
           ...outgoing.map((e) => edgeRow(e, "out")),
           ...incoming.map((e) => edgeRow(e, "in")),
         ])
-      : el("p", { class: "dim" }, "No connections yet.");
-  return el("div", { class: "card" }, [
-    el("h2", {}, "Connections"),
+      : el("p", { class: "quiet" }, "No connections yet: this ground stands alone on the map.");
+  return el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
+    panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
+      kit: "sky",
+    }),
     list,
+    el("h3", { class: "gr-sub" }, "Add a connection"),
     renderAddEdgeForm(node, allNodes),
   ]);
+}
+/** An edge read from this node's side: "Contains", "Depends on", "Part of", "Needed by". */
+function edgePhrase(relation, dir) {
+  const words = String(relation || "").replace(/_/g, " ");
+  if (dir === "out") return words.charAt(0).toUpperCase() + words.slice(1);
+  if (relation === "contains") return "Part of";
+  if (relation === "depends_on") return "Needed by";
+  return `${words.charAt(0).toUpperCase() + words.slice(1)} (from)`;
 }
 
 function renderAddEdgeForm(node, allNodes) {
@@ -12757,163 +12898,227 @@ async function renderRepo(id) {
   const scopes = scopesRes.scopes || [];
   const allNodes = nodesRes.nodes || [];
 
-  const wrap = el("div", { class: "view" });
-  wrap.appendChild(
-    el(
-      "button",
-      { class: "back-link", type: "button", onclick: () => navigate("#/factory") },
-      "← Back to Map",
-    ),
-  );
+  const wrap = el("div", { class: "view view-ground" });
+  wrap.appendChild(backToMap());
   if (!repo) {
     wrap.appendChild(
       emptyState("Repository not found", "It may have been removed or renamed.", "map"),
     );
     return wrap;
   }
+  // The repo's fixtures: every ticket whose boundary includes it (best-effort).
+  let tickets = null;
+  let ticketErr = null;
+  try {
+    tickets = (await api("GET", `/tickets?repo=${encodeURIComponent(repo.name)}`)).tickets || [];
+  } catch (e) {
+    ticketErr = e;
+  }
 
   const isMapped = scopes.length > 0;
   const hasWrite = scopes.some((s) => s.default_access === "write");
+  const count = (pred) => (tickets ? tickets.filter(pred).length : null);
+  const inPlay = count((t) => ON_PITCH.has(t.status));
+  const done = count((t) => t.status === "done");
+  const held = count((t) => OFF_PITCH.has(t.status));
 
-  const head = el("div", { class: "card card-accent" }, [
-    el("h1", { class: "detail-title" }, repo.name),
-    el("div", { class: "meta-row" }, [
-      badge(isMapped ? "mapped" : "unmapped", isMapped ? "status-ready" : "no-dot"),
-      riskBadge(repo.risk_level),
-      repo.stack ? badge(repo.stack, "no-dot") : null,
-      badge(`${scopes.length} scope${scopes.length === 1 ? "" : "s"}`, "no-dot"),
-      repo.hidden ? badge("hidden", "no-dot") : null,
-    ]),
-    el("dl", { class: "kv" }, [
-      el("dt", {}, "Path"),
-      el("dd", {}, repo.local_path ? el("code", { class: "mono" }, repo.local_path) : "—"),
-      el("dt", {}, "Default branch"),
-      el("dd", {}, [
-        el("code", { class: "mono" }, repo.default_branch || "main"),
-        " ",
-        el(
-          "button",
-          {
-            class: "btn small",
-            type: "button",
-            "aria-label": `Edit default branch for ${repo.name}`,
-            title:
-              "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
-            onclick: () =>
-              guard(async () => {
-                const next = window.prompt(
-                  `Default branch for “${repo.name}” — the base every delivery branches off:`,
-                  repo.default_branch || "main",
-                );
-                if (next == null) return;
-                const branch = next.trim();
-                if (!branch || branch === repo.default_branch) return;
-                await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
-                toast(`${repo.name} default branch → ${branch}`, { ok: true });
-                router();
-              }),
-          },
-          "Edit",
-        ),
+  const hideBtn = repo.hidden
+    ? el(
+        "button",
+        {
+          class: "btn small",
+          type: "button",
+          "aria-label": `Unhide ${repo.name}`,
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/repos/${repo.id}/hidden`, { hidden: false });
+              toast(`${repo.name} un-hidden`, { ok: true });
+              router();
+            }),
+        },
+        "Unhide repo",
+      )
+    : el(
+        "button",
+        {
+          class: "btn small",
+          type: "button",
+          "aria-label": `Hide ${repo.name} from the dashboard`,
+          title: "Hide this repo from the dashboard (reversible)",
+          onclick: () =>
+            guard(async () => {
+              if (
+                !window.confirm(
+                  `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
+                )
+              )
+                return;
+              await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
+              toast(`${repo.name} hidden`, { ok: true });
+              navigate("#/factory");
+            }),
+        },
+        "Hide repo",
+      );
+
+  const lede = tickets
+    ? tickets.length
+      ? [
+          el("b", {}, `${tickets.length} ticket${tickets.length === 1 ? "" : "s"}`),
+          ` ${tickets.length === 1 ? "has" : "have"} played here: ${inPlay} in play, ${done} done`,
+          held ? el("span", { class: "is-red" }, `, ${held} off the pitch`) : null,
+          ".",
+        ]
+      : "No ticket has played here yet."
+    : null;
+
+  wrap.appendChild(
+    el("header", { class: "gr-head" }, [
+      el("div", { class: "gr-kit" }, kitShirt(repo.name, 96)),
+      el("div", { class: "gr-head-main" }, [
+        el("div", { class: "tk-meta" }, [
+          el("span", { class: `gr-mapped${isMapped ? "" : " is-off"}` }, [
+            glyph(isMapped ? "done" : "draft", 16),
+            el(
+              "span",
+              {},
+              isMapped
+                ? `On the map · ${scopes.length} ground${scopes.length === 1 ? "" : "s"}`
+                : "Not on the map",
+            ),
+          ]),
+          riskBadge(repo.risk_level),
+          repo.stack ? el("span", { class: "gr-owner" }, `Stack: ${repo.stack}`) : null,
+          repo.hidden ? badge("hidden") : null,
+        ]),
+        el("h1", { class: "detail-title" }, repo.name),
+        lede ? el("p", { class: "gr-lede" }, lede) : null,
+        el("div", { class: "gr-actions" }, [hideBtn]),
       ]),
-      el("dt", {}, "Remote"),
-      el("dd", {}, repo.remote_url ? el("code", { class: "mono" }, repo.remote_url) : "—"),
     ]),
-    renderRepoCommandsEditor(repo),
-    el(
-      "div",
-      { class: "repo-visibility dim" },
-      repo.hidden
-        ? el(
-            "button",
-            {
-              class: "btn primary small",
-              type: "button",
-              "aria-label": `Unhide ${repo.name}`,
-              onclick: () =>
-                guard(async () => {
-                  await api("POST", `/repos/${repo.id}/hidden`, { hidden: false });
-                  toast(`${repo.name} un-hidden`, { ok: true });
-                  router();
-                }),
-            },
-            "Unhide repo",
-          )
-        : el(
-            "button",
-            {
-              class: "btn small",
-              type: "button",
-              "aria-label": `Hide ${repo.name} from the dashboard`,
-              title: "Hide this repo from the dashboard (reversible)",
-              onclick: () =>
-                guard(async () => {
-                  if (
-                    !window.confirm(
-                      `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
-                    )
-                  )
-                    return;
-                  await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
-                  toast(`${repo.name} hidden`, { ok: true });
-                  navigate("#/factory");
-                }),
-            },
-            "Hide repo",
-          ),
-    ),
-  ]);
-  if (!isMapped) head.appendChild(renderMapRepoBox(repo, allNodes));
-  if (!hasWrite) {
-    head.appendChild(
-      el("div", { class: "warn-box" }, [
-        el("strong", {}, "⚠ No write association. "),
-        isMapped
-          ? "This repo is mapped but no association grants write access, so agents cannot deliver code to it."
-          : "This repo is unmapped (single-repo mode). Map it to a node with write access to use it in factory mode.",
+  );
+  if (tickets && tickets.length) {
+    wrap.appendChild(
+      el("div", { class: "kpi-row gr-stats" }, [
+        statCell({ label: "Tickets", value: String(tickets.length) }),
+        statCell({ label: "In play", value: String(inPlay) }),
+        statCell({
+          label: "Done",
+          value: String(done),
+          sub: `${Math.round((done / tickets.length) * 100)}% of all`,
+        }),
+        statCell({ label: "Off the pitch", value: String(held), sub: "blocked, paused or failed" }),
       ]),
     );
   }
 
-  const scopeCard = el("div", { class: "card" }, [
-    el("h2", {}, `Scope nodes (${scopes.length})`),
+  const branchBtn = el(
+    "button",
+    {
+      class: "btn small",
+      type: "button",
+      "aria-label": `Edit default branch for ${repo.name}`,
+      title:
+        "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
+      onclick: () =>
+        guard(async () => {
+          const next = window.prompt(
+            `Default branch for “${repo.name}” — the base every delivery branches off:`,
+            repo.default_branch || "main",
+          );
+          if (next == null) return;
+          const branch = next.trim();
+          if (!branch || branch === repo.default_branch) return;
+          await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
+          toast(`${repo.name} default branch → ${branch}`, { ok: true });
+          router();
+        }),
+    },
+    "Edit",
+  );
+  const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
+  const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
+    panelHead("The ground", "where the work is done", null, { kit: "claret" }),
+    el("dl", { class: "kv gr-kv" }, [
+      ...kvRow(
+        "Path",
+        repo.local_path
+          ? el("code", { class: "mono" }, repo.local_path)
+          : el("span", { class: "dim" }, "Not set"),
+      ),
+      ...kvRow(
+        "Default branch",
+        el("span", { class: "gr-kv-act" }, [
+          el("code", { class: "mono" }, repo.default_branch || "main"),
+          branchBtn,
+        ]),
+      ),
+      ...kvRow(
+        "Remote",
+        repo.remote_url
+          ? el("code", { class: "mono" }, repo.remote_url)
+          : el("span", { class: "dim" }, "None: local only"),
+      ),
+    ]),
+    !isMapped ? renderMapRepoBox(repo, allNodes) : null,
+    !hasWrite
+      ? el("div", { class: "warn-box gr-warn" }, [
+          ycard(22),
+          el("p", {}, [
+            el("strong", {}, "No write access. "),
+            isMapped
+              ? "This repo is on the map, but no link grants write access, so agents cannot deliver code to it."
+              : "This repo plays on its own (single-repo mode). Put it on the map with write access to use it in factory mode.",
+          ]),
+        ])
+      : null,
+  ]);
+
+  const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
+    panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
+    renderRepoCommandsEditor(repo),
+  ]);
+
+  const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
+    panelHead("On the map", `${scopes.length} ground${scopes.length === 1 ? "" : "s"}`, null, {
+      kit: "ink",
+    }),
     el(
       "p",
-      { class: "section-note dim" },
-      "Every Map node this repo is linked to, with its relation and the default access agents inherit. Change access in place; change relation by re-linking.",
+      { class: "gr-note" },
+      "Each ground on the Map this repo plays for, with its relation and the access agents inherit. Change access in place; change the relation by re-linking.",
     ),
     scopes.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean gr-rows" },
           scopes.map((s) => renderRepoScopeRow(repo, s)),
         )
-      : el(
-          "p",
-          { class: "dim" },
-          "Unmapped — this repo belongs to no scope node and behaves as a standalone single-repo scope.",
-        ),
+      : el("p", { class: "quiet" }, "Not on the map: this repo is its own single-repo scope."),
+    el("h3", { class: "gr-sub" }, "Link to a ground"),
     renderAddAssociationForm(repo, allNodes, scopes),
   ]);
 
-  const ticketCard = el("div", { class: "card" }, [
-    el("h2", {}, "Recent tickets"),
-    el("p", { class: "section-note dim" }, "Tickets whose execution boundary includes this repo."),
-    renderRepoTickets(repo),
-  ]);
-
-  const scanCard = el("div", { class: "card" }, [
-    el("h2", {}, "Context & scan status"),
-    el("div", { class: "warn-box scan-status" }, [
-      el("strong", {}, "Scan status not available in this view. "),
-      "Repo context freshness and scan state come from Crew's context store (FG-004), which the Dispatch control surface cannot reach yet. This panel lights up in a later wave once the status is exposed here.",
-    ]),
-  ]);
+  const ticketCard = el(
+    "section",
+    { class: "card gr-card", "aria-label": "Results and fixtures" },
+    [
+      panelHead(
+        "Results & fixtures",
+        tickets && tickets.length
+          ? `latest ${Math.min(8, tickets.length)} of ${tickets.length}`
+          : "",
+        null,
+        { kit: "ink" },
+      ),
+      renderRepoTickets(repo, tickets, ticketErr),
+    ],
+  );
 
   wrap.appendChild(
     el("div", { class: "detail-grid" }, [
-      el("div", {}, [head, scopeCard]),
-      el("div", {}, [ticketCard, scanCard]),
+      el("div", { class: "stack" }, [groundCard, checksCard, scopeCard]),
+      el("div", { class: "stack" }, [ticketCard]),
     ]),
   );
   return wrap;
@@ -13049,59 +13254,58 @@ function renderMapRepoBox(repo, allNodes) {
   ]);
 }
 
-function renderRepoTickets(repo) {
-  const box = el(
-    "div",
-    { class: "repo-tickets" },
-    el("p", { class: "dim" }, "Loading recent tickets…"),
-  );
-  (async () => {
-    let tickets;
-    try {
-      tickets = (await api("GET", `/tickets?repo=${encodeURIComponent(repo.name)}`)).tickets || [];
-    } catch (e) {
-      clear(box);
-      box.appendChild(
-        el("p", { class: "dim" }, `Recent tickets unavailable${e.code ? ` (${e.code})` : ""}.`),
-      );
-      return;
-    }
-    clear(box);
-    if (!tickets.length) {
-      box.appendChild(el("p", { class: "dim" }, "No tickets reference this repo yet."));
-      return;
-    }
-    const recent = [...tickets]
-      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
-      .slice(0, 8);
+function renderRepoTickets(repo, tickets, err) {
+  const box = el("div", { class: "repo-tickets" });
+  if (!tickets) {
     box.appendChild(
       el(
-        "ul",
-        { class: "clean repo-ticket-list" },
-        recent.map((t) =>
-          el(
-            "li",
-            {},
-            el("a", { class: "repo-ticket-row", href: `#/ticket/${t.id}` }, [
-              el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
-              el("span", { class: "repo-ticket-title" }, t.title),
-              statusBadge(t.status),
-              el("span", { class: "dim tabnum repo-ticket-time" }, fmtTime(t.updated_at)),
-            ]),
-          ),
-        ),
+        "p",
+        { class: "quiet" },
+        `Recent tickets unavailable${err && err.code ? ` (${err.code})` : ""}.`,
       ),
     );
-    if (tickets.length > recent.length) {
-      box.appendChild(
-        el("p", { class: "dim repo-ticket-more" }, [
-          `${tickets.length - recent.length} more — `,
-          el("a", { href: "#/work", class: "assoc-name plain" }, "open Work"),
-          ".",
-        ]),
-      );
-    }
-  })();
+    return box;
+  }
+  if (!tickets.length) {
+    box.appendChild(el("p", { class: "quiet" }, "No tickets reference this repo yet."));
+    return box;
+  }
+  const recent = [...tickets]
+    .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")))
+    .slice(0, 8);
+  box.appendChild(
+    el(
+      "ul",
+      { class: "clean repo-ticket-list" },
+      recent.map((t) =>
+        el(
+          "li",
+          {},
+          el("a", { class: "repo-ticket-row", href: `#/ticket/${t.id}` }, [
+            el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
+            el("span", { class: "repo-ticket-title" }, t.title),
+            el("span", { class: "repo-ticket-side" }, [
+              statusBadge(t.status),
+              el(
+                "time",
+                { class: "repo-ticket-time", datetime: t.updated_at },
+                fmtTime(t.updated_at),
+              ),
+            ]),
+          ]),
+        ),
+      ),
+    ),
+  );
+  if (tickets.length > recent.length) {
+    box.appendChild(
+      el("p", { class: "repo-ticket-more" }, [
+        `${tickets.length - recent.length} more on the `,
+        el("a", { href: "#/work" }, "Work board"),
+        ".",
+      ]),
+    );
+  }
   return box;
 }
 
@@ -13363,6 +13567,16 @@ function renderEpicCard(epic, members, depsById, depViewById, focused) {
   return card;
 }
 
+/** A round's name: the last round is the Final when it holds the acceptance ticket. */
+function epicRoundName(byPhase, phases, i) {
+  const p = phases[i];
+  return i === phases.length - 1 &&
+    i > 0 &&
+    (byPhase.get(p) || []).some((t) => /^Acceptance/i.test(t.title))
+    ? "Final"
+    : `Round ${p + 1}`;
+}
+
 /** Phase progress strip — one segment per phase, filled by its done-ratio, so
  *  you can see the gate front advancing through the plan at a glance. */
 function phaseProgress(byPhase, phases) {
@@ -13370,7 +13584,7 @@ function phaseProgress(byPhase, phases) {
   return el(
     "div",
     { class: "phase-strip" },
-    phases.map((p) => {
+    phases.map((p, i) => {
       const tix = byPhase.get(p) || [];
       const done = tix.filter((t) => t.status === "done").length;
       const pct = tix.length ? Math.round((done / tix.length) * 100) : 0;
@@ -13382,7 +13596,7 @@ function phaseProgress(byPhase, phases) {
             : "idle";
       return el("div", { class: `phase-seg is-${state}` }, [
         el("div", { class: "ps-top" }, [
-          el("span", { class: "ps-label" }, `Round ${p + 1}`),
+          el("span", { class: "ps-label" }, epicRoundName(byPhase, phases, i)),
           el("span", { class: "ps-frac mono" }, `${done}/${tix.length}`),
         ]),
         el("div", { class: "ps-bar" }, el("i", { style: `width:${pct}%` })),
@@ -13438,54 +13652,71 @@ function renderEpicDag(byPhase, phases, depViewById) {
       "div",
       { class: "dag-collabel", style: `left:${PADX + ci * (NODE_W + COLG)}px;width:${NODE_W}px` },
       [
-        el(
-          "span",
-          { class: "dcl-num" },
-          ci === phases.length - 1 &&
-            ci > 0 &&
-            (byPhase.get(p) || []).some((t) => /^Acceptance/i.test(t.title))
-            ? "Final"
-            : `Round ${p + 1}`,
-        ),
+        el("span", { class: "dcl-num" }, epicRoundName(byPhase, phases, ci)),
         ci > 0 ? el("span", { class: "dcl-gate" }, "after the round before") : null,
       ],
     ),
   );
 
-  const nodes = [];
-  for (const [id, { x, y, t }] of pos) {
-    const blockers = (depViewById.get(id) || []).filter((d) => !d.satisfied);
-    nodes.push(
-      el(
-        "a",
-        {
-          class: `dag-node status-${t.status}`,
-          href: `#/ticket/${t.id}`,
-          style: `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`,
-        },
-        [
-          el("div", { class: "dn-top" }, [
-            el("span", { class: "dn-num mono" }, t.number != null ? `#${t.number}` : "—"),
-            statusBadge(t.status),
-          ]),
-          el("div", { class: "dn-title" }, t.title),
-          blockers.length
-            ? el("div", { class: "dn-block" }, [
-                icon("clock", "dn-block-ico"),
-                `waiting on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
-              ])
-            : null,
-        ],
-      ),
+  const counter = (t, style) => {
+    const blockers = (depViewById.get(t.id) || []).filter((d) => !d.satisfied);
+    return el(
+      "a",
+      {
+        class: `dag-node status-${t.status}`,
+        href: `#/ticket/${t.id}`,
+        style,
+      },
+      [
+        el("div", { class: "dn-top" }, [
+          el("span", { class: "dn-num mono" }, t.number != null ? `#${t.number}` : "—"),
+          statusBadge(t.status),
+        ]),
+        el("div", { class: "dn-title" }, t.title),
+        blockers.length
+          ? el("div", { class: "dn-block" }, [
+              icon("clock", "dn-block-ico"),
+              `waiting on ${blockers.map((b) => (b.number != null ? "#" + b.number : "?")).join(", ")}`,
+            ])
+          : null,
+      ],
     );
-  }
+  };
+  const nodes = [];
+  for (const [, { x, y, t }] of pos)
+    nodes.push(counter(t, `left:${x}px;top:${y}px;width:${NODE_W}px;height:${NODE_H}px`));
 
-  return el("div", { class: "dag-scroll" }, [
-    el("div", { class: "dag", style: `width:${width}px;height:${height}px` }, [
-      svg,
-      ...labels,
-      ...nodes,
+  // A phone cannot hold the draw sideways: the same rounds stack, in order.
+  const stack = el(
+    "ol",
+    { class: "dag-stack", "aria-label": "Rounds" },
+    phases.map((p, ci) =>
+      el("li", { class: "dst-round" }, [
+        el("div", { class: "dag-collabel" }, [
+          el("span", { class: "dcl-num" }, epicRoundName(byPhase, phases, ci)),
+          ci > 0 ? el("span", { class: "dcl-gate" }, "after the round before") : null,
+        ]),
+        el(
+          "div",
+          { class: "dst-list" },
+          cols[ci].map((t) => counter(t)),
+        ),
+      ]),
+    ),
+  );
+
+  return el("div", { class: "dag-wrap" }, [
+    el("div", { class: "dag-scroll" }, [
+      el(
+        "div",
+        {
+          class: "dag",
+          style: `width:${width}px;height:${height}px;background-size:${width + 23}px 100%`,
+        },
+        [svg, ...labels, ...nodes],
+      ),
     ]),
+    stack,
   ]);
 }
 

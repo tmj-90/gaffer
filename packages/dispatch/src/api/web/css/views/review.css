@@ -450,6 +450,8 @@
     background: var(--mark-wash);
     font-size: var(--t14);
     overflow-wrap: anywhere;
+    /* A banner across the block, not a paragraph measure (base p is 75ch). */
+    max-width: none;
   }
   .diff-file-block.is-flagged {
     box-shadow: inset 0 0 0 3px var(--yellow);

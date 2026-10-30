@@ -357,6 +357,19 @@
     content: "■ ";
     color: var(--red);
   }
+  .claim-blockers li.is-wait::before {
+    content: "□ ";
+    color: var(--ink-2);
+  }
+  /* The acceptance ticket's plaque: the Final, as the season names it. */
+  .tk-final {
+    padding: 2px 8px 1px;
+    background: var(--board);
+    color: var(--board-ink);
+    border-bottom: 2px solid var(--yellow);
+    font: 800 var(--t14) / 1.2 var(--f-display);
+    text-transform: uppercase;
+  }
   .delivering-dot {
     width: 9px;
     height: 9px;

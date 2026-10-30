@@ -427,8 +427,10 @@ export const DANGEROUS_COMMANDS = [
   {
     // The same raw-DB reach from the other inline interpreters (`python -c` with
     // os.environ["DISPATCH_DB"] / os.getenv, `ruby -e` ENV[…], …) and from a
-    // heredoc-fed program.
-    re: /\b(?:python3?|ruby|perl|php|deno|bun)\b[^\n|;&]*\s(?:-c|-e|-E|-r|--eval)\b[^\n]*\b(?:DISPATCH_DB|MEMORY_DB)\b|\b(?:python3?|node|nodejs|ruby|perl|php|deno|bun)\b[^\n]*<<[\s\S]*\b(?:DISPATCH_DB|MEMORY_DB)\b/i,
+    // heredoc-fed program. `(?=(…*?X))\1` is an atomic "up to the FIRST flag / <<":
+    // a DB name after any later one is also after the first, so retrying each later
+    // one only cost time (cubic: ~0.1s per 4KB of `bun -c` repeats, minutes at 40KB).
+    re: /\b(?:python3?|ruby|perl|php|deno|bun)\b(?=([^\n|;&]*?\s(?:-c|-e|-E|-r|--eval)\b))\1[^\n]*\b(?:DISPATCH_DB|MEMORY_DB)\b|\b(?:python3?|node|nodejs|ruby|perl|php|deno|bun)\b(?=([^\n]*?<<))\2[\s\S]*\b(?:DISPATCH_DB|MEMORY_DB)\b/i,
     why: "inline interpreter reaching the Dispatch/Memory DB directly (bypasses the actor/gate system; use the scoped MCP tools)",
     example: "python3 -c \"import os,sqlite3; sqlite3.connect(os.environ['DISPATCH_DB'])\"",
     crewFlags: false,

@@ -106,6 +106,7 @@ for (const cmd of [
   // stdin is not a TTY), so every override form is refused.
   "npm_config_yes=true npx evil",
   "NPM_CONFIG_YES=true npx evil",
+  "Npm_Config_Yes=1 npx evil",
   "export npm_config_yes=true; npx evil",
   "env npm_config_yes=1 npm exec evil",
   "env -u npm_config_yes npx evil",

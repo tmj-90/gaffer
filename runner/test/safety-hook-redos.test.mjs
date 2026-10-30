@@ -6,7 +6,10 @@
 // hook for minutes, past Claude Code's hook timeout, which (without onFailure: block)
 // lets the tool run unchecked. This pins:
 //   • every deny rule evaluates 40 repeated wrapper pairs in well under a second;
-//   • the whole hook answers them in seconds (and still denies `gh auth token`);
+//   • the whole hook answers them (still denying `gh auth token`) in < 1s beyond its
+//     own start-up cost;
+//   • the inline-interpreter DB rule, which retried every later `-c` / `<<` (cubic:
+//     42s for the whole hook on 26KB of `bun -c --yes`), stays fast on long input;
 //   • the prefix still sees through real valued options (`nice -n 5 gh …`).
 // Run: node test/safety-hook-redos.test.mjs
 import { spawnSync } from "node:child_process";
@@ -30,12 +33,17 @@ const inputs = {
   "yarn --prod workspace": `yarn ${"--prod workspace ".repeat(N)}`,
   "yarn --cwd": `yarn ${"--cwd --cwd x ".repeat(N)}`,
 };
+// Long-input cases for polynomial (not exponential) blow-ups: rule level only.
+const longInputs = {
+  "2048x bun -c --yes": `yarn ${"bun -c --yes ".repeat(2048)}`,
+  "2048x node <<": `node ${"x << ".repeat(2048)}`,
+};
 
 // Rule level: a failed match (`zz` is no command) is where backtracking explodes.
 // Timed in a child process with a hard kill, so a regression reports instead of
 // hanging the suite (the exponential form never finishes at N=40).
 const RULES = new URL("../lib/dangerous-commands.mjs", import.meta.url).href;
-for (const [label, prefix] of Object.entries(inputs)) {
+for (const [label, prefix] of Object.entries({ ...inputs, ...longInputs })) {
   const res = spawnSync(
     process.execPath,
     [
@@ -50,12 +58,13 @@ for (const [label, prefix] of Object.entries(inputs)) {
     { encoding: "utf8", timeout: 10_000 },
   );
   const ms = res.status === 0 ? Number(res.stdout.trim()) : Infinity;
-  t.assert(`all deny rules on ${N}x "${label}" finish in < 1s (took ${ms}ms)`, ms < 1000);
+  t.assert(`all deny rules on "${label}" finish in < 1s (took ${ms}ms)`, ms < 1000);
 }
 
 // Whole hook: a spawned process with a hard kill, so a regression reports instead of
-// hanging the suite. The budget covers node start-up on a slow CI host; the
-// exponential form took minutes, so any pass here is far from it.
+// hanging the suite. Each pathological command must cost < 1s MORE than the slowest
+// of a few trivial calls (node start-up and module load, which vary by host); the
+// exponential form took minutes.
 const timed = (command) => {
   const start = Date.now();
   const res = spawnSync(process.execPath, [HOOK], {
@@ -67,6 +76,7 @@ const timed = (command) => {
   });
   return { status: res.status, ms: Date.now() - start };
 };
+const baseline = Math.max(...[1, 2, 3].map(() => timed("echo hi").ms));
 for (const [label, prefix] of Object.entries(inputs)) {
   for (const [tail, want] of [
     ["gh auth token", 2],
@@ -75,8 +85,8 @@ for (const [label, prefix] of Object.entries(inputs)) {
     if (label.startsWith("yarn")) continue;
     const { status, ms } = timed(`${prefix}${tail}`);
     t.assert(
-      `hook answers ${N}x "${label}" + ${tail} with exit ${want} in < 5s (exit ${status}, ${ms}ms)`,
-      status === want && ms < 5000,
+      `hook answers ${N}x "${label}" + ${tail} with exit ${want} in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+      status === want && ms - baseline < 1000,
     );
   }
 }

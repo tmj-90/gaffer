@@ -122,7 +122,7 @@ export class TicketRepository {
   /**
    * TRACK-3a: set (or, with `null`, clear) the ticket's per-ticket delivery-budget
    * ceiling in USD. A plain write — no row_version bump — since the budget is
-   * independent of the status machine (it only bounds cumulative delivery spend).
+   * independent of the status machine (it only bounds the ticket's cumulative agent spend).
    */
   setDeliveryBudget(id: string, value: number | null, nowIso: string): void {
     this.db

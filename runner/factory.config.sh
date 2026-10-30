@@ -292,7 +292,7 @@ gaffer_route_model() {
   if [ -n "$ticket" ]; then
     # Only a POSITIVE measured spend is a difficulty signal — $0 means "no history
     # yet" (a fresh ticket), which must read as unknown/medium, never as "easy".
-    local _hist; _hist="$(gaffer_ticket_rework_spend "$ticket" 2>/dev/null || echo 0)"
+    local _hist; _hist="$(gaffer_ticket_delivery_spend "$ticket" 2>/dev/null || echo 0)"
     if [ -n "$_hist" ] && awk "BEGIN{exit !(${_hist:-0}+0 > 0)}" 2>/dev/null; then
       _diff_args+=(--historical-cost "$_hist")
     fi
@@ -519,7 +519,8 @@ export GAFFER_REWORK_STRONG_MODEL
 
 # DOUBLE-BOUND: a per-ticket rework COST ceiling (USD). The rework loop stops at
 # whichever hits FIRST — the attempt cap (above) OR this cumulative per-ticket spend
-# — then parks to `blocked` (rework_exhausted). Prevents unbounded token burn on one
+# (every agent call booked to the ticket: delivery, review, security review, clarify,
+# eval judge, bootstrap, tester, merge resolver) — then parks to `blocked` (rework_exhausted). Prevents unbounded token burn on one
 # stubborn ticket even when attempts remain. Defaults to the factory-wide
 # GAFFER_BUDGET_USD (a single ticket may not consume the whole budget on rework);
 # empty/0 → no per-ticket ceiling (attempt cap alone bounds it).
@@ -553,13 +554,15 @@ export GAFFER_MAX_NOCOMMIT_FAILURES
 # (GAFFER_MAX_DELIVERY_ATTEMPTS, total attempts per tick, ≥1) is defined + exported
 # once above, alongside the claim TTL it feeds — this guard only consumes it.
 
-# gaffer_ticket_rework_spend <ticket>
-# Sum this ticket's measured delivery spend (total_cost_usd) from the usage ledger
-# — the DOUBLE-BOUND's cost side. Prints a decimal USD figure (0 when unmeasured or
-# no ledger). Unmeasured ("unknown") records contribute 0 (honest: we never invent
-# a cost), so the ceiling is only ever tripped by REAL measured spend.
-gaffer_ticket_rework_spend() {
-  local ticket="$1"
+# _gaffer_ticket_spend <ticket> <all|delivery>
+# Sum this ticket's spend from the usage ledger: measured total_cost_usd, else a
+# killed/timeout call's labelled estimate. Prints a decimal USD figure (0 when
+# unmeasured or no ledger). Unmeasured ("unknown") records with no estimate
+# contribute 0 (honest: we never invent a cost). Scope `all` counts every agent
+# call booked against the ticket (delivery, bootstrap, review, security-review,
+# clarify, eval-judge, tester, merge-resolver); `delivery` only the delivery turns.
+_gaffer_ticket_spend() {
+  local ticket="$1" scope="${2:-all}"
   command -v node >/dev/null 2>&1 || { printf '0'; return 0; }
   local ledger="${GAFFER_USAGE_LEDGER:-${GAFFER_DATA:+$GAFFER_DATA/usage-ledger.jsonl}}"
   [ -n "$ledger" ] && [ -f "$ledger" ] || { printf '0'; return 0; }
@@ -568,16 +571,17 @@ gaffer_ticket_rework_spend() {
   # from reading total_cost_usd. Degrade path unchanged: any node/module failure
   # prints 0 (we never invent a cost).
   [ -f "${GAFFER_ESTIMATE_LIB:-}" ] || { printf '0'; return 0; }
-  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" node --input-type=module -e '
+  GAFFER_RW_TICKET="$ticket" GAFFER_RW_LEDGER="$ledger" GAFFER_RW_SCOPE="$scope" node --input-type=module -e '
     import { readFileSync } from "node:fs";
     import { pathToFileURL } from "node:url";
     const { parseLedger } = await import(pathToFileURL(process.env.GAFFER_ESTIMATE_LIB).href);
     const want=String(process.env.GAFFER_RW_TICKET);
+    const deliveryOnly=process.env.GAFFER_RW_SCOPE==="delivery";
     let text="";
     try { text=readFileSync(process.env.GAFFER_RW_LEDGER,"utf8"); } catch {}
     let spend=0;
     for (const r of parseLedger(text)) {
-      if (r.kind!=="delivery") continue;
+      if (deliveryOnly && r.kind!=="delivery") continue;
       if (String(r.ticket)!==want) continue;
       const c=r.total_cost_usd;
       if (typeof c==="number" && Number.isFinite(c) && c>=0) { spend+=c; continue; }
@@ -588,7 +592,26 @@ gaffer_ticket_rework_spend() {
     process.stdout.write(spend.toFixed(6));
   ' 2>/dev/null || printf '0'
 }
-export -f gaffer_ticket_rework_spend 2>/dev/null || true
+
+# gaffer_ticket_total_spend <ticket>
+# EVERY agent call's spend for the ticket — the DOUBLE-BOUND's cost side. The
+# per-ticket ceiling (delivery_budget_usd / GAFFER_REWORK_BUDGET_USD) bounds the
+# whole rework loop, and that loop includes the review rounds that send work back,
+# so the reviewers' (often strong-tier) spend counts too. Used by the pre-spawn
+# gate, the post-attempt rework bound and the no-commit park in tick.sh.
+gaffer_ticket_total_spend() { _gaffer_ticket_spend "$1" all; }
+
+# gaffer_ticket_delivery_spend <ticket>
+# Only the ticket's DELIVERY turns. The router's --historical-cost difficulty signal
+# reads this: route-model.mjs's HIGH/LOW_HISTORICAL_USD thresholds are sized for
+# delivery spend, and adding a review round would push nearly every reviewed ticket
+# to "hard" and over-route it to the strong tier.
+gaffer_ticket_delivery_spend() { _gaffer_ticket_spend "$1" delivery; }
+
+# gaffer_ticket_rework_spend <ticket> — the historical name, kept for the tick.sh
+# callers and test stubs. It is the TOTAL (all kinds), the figure the ceiling uses.
+gaffer_ticket_rework_spend() { gaffer_ticket_total_spend "$1"; }
+export -f _gaffer_ticket_spend gaffer_ticket_total_spend gaffer_ticket_delivery_spend gaffer_ticket_rework_spend 2>/dev/null || true
 
 # --- Ask-on-cap guard (GUARD C) ----------------------------------------------
 # When a mid-delivery agent call HITS a cap rather than failing a gate — it ran

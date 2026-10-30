@@ -88,10 +88,15 @@ gaffer_build_escalation 3
 GAFFER_REWORK_STRONG_MODEL="opus"
 
 echo "== PART B: gaffer_ticket_rework_spend — the cost side of the double-bound =="
-SPEND_SRC="$(extract_fn "$CFG" "gaffer_ticket_rework_spend" "}")"
-[ -n "$SPEND_SRC" ] && ok "B extracted gaffer_ticket_rework_spend from factory.config.sh (real source)" \
-  || fail "B could not extract gaffer_ticket_rework_spend"
+# The summation lives in _gaffer_ticket_spend; the three public names are one-line
+# scope wrappers (total = every kind, the ceiling's figure; delivery = the router's).
+SPEND_SRC="$(extract_fn "$CFG" "_gaffer_ticket_spend" "}")"
+WRAP_SRC="$(grep -E '^gaffer_ticket_(total|delivery|rework)_spend\(\) \{.*\}$' "$CFG")"
+[ -n "$SPEND_SRC" ] && [ "$(printf '%s\n' "$WRAP_SRC" | wc -l)" -eq 3 ] \
+  && ok "B extracted _gaffer_ticket_spend + its three wrappers from factory.config.sh (real source)" \
+  || fail "B could not extract the ticket-spend helpers"
 eval "$SPEND_SRC"
+eval "$WRAP_SRC"
 # The runtime exports this before the function can exist (factory.config.sh sets
 # it at source time); the extracted-function harness must mirror that contract.
 # The function parses the ledger via the ONE shared reader (lib/estimate.mjs).
@@ -110,10 +115,23 @@ LEDGER="$WORK/usage-ledger.jsonl"
   printf '%s\n' '{"kind":"clarify","ticket":88,"measured":true,"total_cost_usd":9.00}'
 } > "$LEDGER"
 
-SPENT="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_rework_spend 88)"
+# The per-ticket CEILING counts every agent call booked to the ticket — the clarify
+# $9.00 is real spend in the same rework loop and must not be invisible to the bound.
+TOTAL="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_rework_spend 88)"
+awk "BEGIN{exit !(($TOTAL+0) > 9.349 && ($TOTAL+0) < 9.351)}" \
+  && ok "B1 the ceiling's figure sums ALL of ticket 88's spend (0.35 delivery + 9.00 clarify, ignoring other tickets/unknowns)" \
+  || fail "B1 expected ~9.35 total for ticket 88, got $TOTAL"
+TOTAL2="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_total_spend 88)"
+[ "$TOTAL2" = "$TOTAL" ] && ok "B1 gaffer_ticket_rework_spend is gaffer_ticket_total_spend" \
+  || fail "B1 rework_spend ($TOTAL) should equal total_spend ($TOTAL2)"
+# The router's difficulty signal stays DELIVERY-only (its thresholds are sized for it).
+SPENT="$(GAFFER_USAGE_LEDGER="$LEDGER" gaffer_ticket_delivery_spend 88)"
 awk "BEGIN{exit !(($SPENT+0) > 0.349 && ($SPENT+0) < 0.351)}" \
-  && ok "B1 sums ONLY ticket 88's measured DELIVERY spend (0.35, ignoring other tickets/kinds/unknowns)" \
-  || fail "B1 expected ~0.35 for ticket 88, got $SPENT"
+  && ok "B1 gaffer_ticket_delivery_spend sums ONLY ticket 88's DELIVERY spend (0.35)" \
+  || fail "B1 expected ~0.35 delivery spend for ticket 88, got $SPENT"
+grep -q '_hist="$(gaffer_ticket_delivery_spend "$ticket"' "$CFG" \
+  && ok "B1 the router's --historical-cost reads the delivery-only figure" \
+  || fail "B1 gaffer_route_model should feed --historical-cost from gaffer_ticket_delivery_spend"
 
 # The per-ticket ceiling decision (the exact awk tick.sh uses): 0.35 >= 0.30 → trip.
 GAFFER_REWORK_BUDGET_USD="0.30"

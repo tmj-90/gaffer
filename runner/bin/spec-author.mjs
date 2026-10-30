@@ -95,6 +95,7 @@ import {
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
+import { roleTurnCap } from "../lib/worker.mjs";
 
 // The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
 // helper no longer needs its own runner-dir path.
@@ -498,9 +499,10 @@ function runClaudeTurn(prompt, opts) {
   // existing extractLastJsonBlock parser, so the contract is preserved.
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (denial-of-wallet): bound the agent's model round-trips in
-  // addition to the wall-clock timeout on spawnSync. Reuse GAFFER_MAX_TURNS (the
-  // shared bash knob), falling back to this helper's own --max-turns.
-  const maxTurns = parseInt(process.env.GAFFER_MAX_TURNS || "", 10) || opts.maxTurns;
+  // addition to the wall-clock timeout on spawnSync. This helper's own cap
+  // (--max-turns > GAFFER_SPEC_AUTHOR_MAX_TURNS > 20) wins; the global
+  // GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
+  const maxTurns = roleTurnCap(opts.maxTurns);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);

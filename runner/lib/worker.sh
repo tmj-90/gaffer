@@ -17,10 +17,10 @@
 # ---------------------------------------------------
 # The emitted argv + env + wrapper are EXACTLY what each site emitted before. Only
 # the genuinely per-site inputs are parameters; every constant (CLAUDE_BIN,
-# CLAUDE_FLAGS, --output-format json, --max-turns via GAFFER_MAX_TURNS_FLAG, the
-# tick timeout, the log sink, the agent-env allowlist scrub) is fixed here. The
-# unquoted expansions ($wrap, $model_flag, $CLAUDE_FLAGS, $GAFFER_MAX_TURNS_FLAG)
-# preserve the original word-splitting semantics verbatim.
+# CLAUDE_FLAGS, --output-format json, the tick timeout, the log sink, the agent-env
+# allowlist scrub) is fixed here. --max-turns is GAFFER_MAX_TURNS_FLAG unless the
+# site passes its role cap ($7). The unquoted expansions ($wrap, $model_flag,
+# $CLAUDE_FLAGS, $_turns_flag) preserve the original word-splitting semantics verbatim.
 #
 # Phase 2 (done) moved the Claude-JSON result PARSER behind the worker seam too:
 # lib/worker.mjs owns parseResult, and the bash cap/spend guards in
@@ -56,11 +56,17 @@
 #   $5 out_json                        — file to capture the JSON stdout (usage capture)
 #   $6 wrap       (optional)           — OS-sandbox command prefix, word-split unquoted;
 #                                        empty at three sites, "$WRAP" at the delivery site
+#   $7 max_turns  (optional) interface: maxTurns — this call's turn cap (a number, from
+#                                        gaffer_role_turns). Empty ⇒ $GAFFER_MAX_TURNS_FLAG,
+#                                        the delivery cap, exactly as before.
+#   $8… extra     (optional)           — extra claude flags for THIS call, appended AFTER
+#                                        $CLAUDE_FLAGS so an operator override cannot undo
+#                                        them (the text-only judge passes `--tools ""` here)
 #   Global array WORKER_CALL_ENV  interface: env — the per-call `KEY=VALUE` assignments
 #                                        layered on top of the credential-stripped allowlist
 #   Globals read (constant across sites):
 #     GAFFER_TICK_TIMEOUT   interface: timeout
-#     GAFFER_MAX_TURNS_FLAG interface: maxTurns
+#     GAFFER_MAX_TURNS_FLAG interface: maxTurns (when $7 is empty)
 #     CLAUDE_BIN, CLAUDE_FLAGS, GAFFER_LOG, GAFFER_AGENT_ENV
 #
 # OUTPUT
@@ -103,6 +109,12 @@ _worker_mcp_bridge_on() {
 
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
+  # Per-call turn cap: a role passes its own (already clamped to GAFFER_MAX_TURNS by
+  # gaffer_role_turns); delivery/bootstrap pass none and keep the global flag.
+  local _turns_flag="${GAFFER_MAX_TURNS_FLAG:-}"
+  case "${7:-}" in '' | *[!0-9]* | 0) ;; *) _turns_flag="--max-turns $7" ;; esac
+  local _extra=()
+  [ "$#" -gt 7 ] && _extra=("${@:8}")
   # The MCP config the AGENT is handed. Under the docker provider with the bridge on,
   # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
   # real servers — and their env, including the claim token — run host-side in `serve`.
@@ -211,7 +223,7 @@ worker_deliver() {
       ( cd "$cwd" && CLAUDE_BIN="$_sbx_claude_bin" \
         && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
            env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" ${_sbx_env[@]+"${_sbx_env[@]}"} \
-             "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$_mcp_for_agent" $CLAUDE_FLAGS $model_flag $GAFFER_MAX_TURNS_FLAG \
+             "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$_mcp_for_agent" $CLAUDE_FLAGS $model_flag $_turns_flag ${_extra[@]+"${_extra[@]}"} \
       ) >"$out_json" 2>>"$GAFFER_LOG"
       _rc=$?
       # Tear the bridge down with the agent: the host-side servers exit with their

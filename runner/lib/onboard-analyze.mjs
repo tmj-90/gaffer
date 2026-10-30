@@ -58,7 +58,7 @@ import {
   parseClaudeJson,
   unknownRecord,
 } from "./usage-ledger.mjs";
-import { Worker } from "./worker.mjs";
+import { Worker, roleTurnCap } from "./worker.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
@@ -1137,7 +1137,8 @@ export function agentChildEnv(base = process.env) {
  *   timeout — GAFFER_ONBOARD_TIMEOUT (overrides GAFFER_TICK_TIMEOUT for onboard
  *             card calls so a tight delivery tick cap doesn't kill card generation).
  *             Falls back to GAFFER_TICK_TIMEOUT, then the hardcoded default (1800 s).
- *   maxTurns — GAFFER_MAX_TURNS (default 60).
+ *   maxTurns — GAFFER_ONBOARD_MAX_TURNS (default 60), clamped to the global
+ *             GAFFER_MAX_TURNS ceiling (roleTurnCap: the global lowers, never replaces).
  *   model    — GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default
  *             (deep reasoning; digest/feature/lore synthesis + the card-review gate).
  */
@@ -1153,7 +1154,7 @@ export function analysisCaps(env = process.env) {
         ? tickSec
         : 1800;
   const timeoutMs = timeoutSec * 1000;
-  const maxTurns = parseInt(env.GAFFER_MAX_TURNS ?? "", 10) || 60;
+  const maxTurns = roleTurnCap(parseInt(env.GAFFER_ONBOARD_MAX_TURNS ?? "", 10) || 60, env);
   // Synthesis model (digest / features / lore analysis + the card-review gate).
   // A FEW deep-reasoning calls — keep them on Sonnet. Knob precedence:
   // GAFFER_ONBOARD_SYNTH_MODEL → GAFFER_PLAN_MODEL → Sonnet default. The per-file

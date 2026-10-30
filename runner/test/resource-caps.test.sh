@@ -78,9 +78,14 @@ SCRUBBED="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WORKER" || true)"
 [ "$SCRUBBED" = "$TOTAL" ] && ok "the invocation launches via env -i agent-env allowlist (C1/M2)" \
   || fail "the worker invocation does not use the env -i allowlist scrub"
 # --max-turns stays on the same line as the claude invocation, so the line-bound check holds.
-TURNS="$(grep -cE '"\$CLAUDE_BIN" -p.*\$GAFFER_MAX_TURNS_FLAG' "$WORKER" || true)"
-[ "$TURNS" = "$TOTAL" ] && ok "the invocation carries \$GAFFER_MAX_TURNS_FLAG" \
+# It is $_turns_flag: the caller's role cap ($7), else $GAFFER_MAX_TURNS_FLAG (turn-caps.test.sh
+# drives the real seam to prove both).
+TURNS="$(grep -cE '"\$CLAUDE_BIN" -p.*\$_turns_flag' "$WORKER" || true)"
+[ "$TURNS" = "$TOTAL" ] && ok "the invocation carries the per-call --max-turns (\$_turns_flag)" \
   || fail "the worker invocation does not carry --max-turns"
+grep -q '_turns_flag="${GAFFER_MAX_TURNS_FLAG:-}"' "$WORKER" \
+  && ok "the per-call cap defaults to \$GAFFER_MAX_TURNS_FLAG" \
+  || fail "worker_deliver should default the per-call cap to \$GAFFER_MAX_TURNS_FLAG"
 
 echo "== bootstrap install can't run lifecycle scripts =="
 grep -q 'npm_config_ignore_scripts=true' "$RUNNER_DIR/tick.sh" \

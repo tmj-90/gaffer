@@ -222,7 +222,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "budget",
     label: "Max turns / agent",
-    help: "Cap on agent turns within one ticket.",
+    help:
+      "Turn cap for one delivery agent call, and the ceiling for every other role " +
+      "(reviewer, clarify, planner, tester, …): each runs under the lower of its own " +
+      "cap and this one, so raising it never lifts a role above its own cap.",
   },
   // --- Cost-as-control (Track 3a): spend steers routing, not just reporting ---
   {

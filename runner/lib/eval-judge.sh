@@ -20,9 +20,14 @@
 # DRY_RUN is always a no-op.
 #
 # The judge's model turn goes through worker_deliver — the factory's SINGLE
-# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked) — with an
-# empty MCP config (the judge grades text; it gets NO tools). The reply is read
-# back via worker.mjs `parse-result result-text` (the one envelope parser).
+# claude -p spawn seam (env-scrubbed, timeout-bounded, safety-hooked). The judge
+# grades text it is handed inline, so it runs TEXT-ONLY: `--tools ""` (no built-in
+# tools), an empty MCP config under --strict-mcp-config (no MCP tools),
+# --disable-slash-commands (no skill listing), from an EMPTY scratch cwd (the
+# target repo's CLAUDE.md / skills / settings never load — they cost tokens and
+# are untrusted text the judge should not read), under GAFFER_JUDGE_MAX_TURNS.
+# The reply is read back via worker.mjs `parse-result result-text` (the one
+# envelope parser).
 # =====================================================================
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 
@@ -69,16 +74,23 @@ gaffer_eval_judge_delivery() (
     node "$_GAFFER_JSON_TOOL" judge-input "$tmp/diff" "$tmp/tests" > "$tmp/input.json" 2>/dev/null || return 0
 
   # ── 3. Render the judge prompt (quarantined by the CLI), then ONE model turn
-  #      through the worker seam with an empty MCP config (no tools). ──
+  #      through the worker seam, text-only (no tools, no MCP, empty cwd). ──
   prompt="$(node "$judge_cli" --mode prompt < "$tmp/input.json" 2>/dev/null)" || return 0
   [ -n "$prompt" ] || return 0
   printf '{"mcpServers":{}}' > "$tmp/mcp.json"
+  mkdir -p "$tmp/cwd" || return 0
+  # The judge's own boundary: its scratch cwd is the only write root (the sandbox
+  # wrap, when on, is derived from these), never the caller's delivery roots.
+  WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$tmp/cwd" "GAFFER_READ_ROOTS=")
   # JUDGE INDEPENDENCE: default the judge to the PLAN-tier (strong) model, not the
   # implementer's — a model grading its own tier's output is the weakest reading the
   # eval can take. GAFFER_JUDGE_MODEL_FLAG still overrides; the implementer flag is the
   # last resort only when no plan flag is configured.
   judge_flag="${GAFFER_JUDGE_MODEL_FLAG:-${GAFFER_PLAN_MODEL_FLAG:-${GAFFER_IMPL_MODEL_FLAG:-}}}"
-  worker_deliver "$repo_dir" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" \
+  judge_turns="${GAFFER_JUDGE_MAX_TURNS:-2}"
+  type gaffer_role_turns >/dev/null 2>&1 && judge_turns="$(gaffer_role_turns "$judge_turns")"
+  worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \
+    "$judge_turns" --tools "" --strict-mcp-config --disable-slash-commands \
     >/dev/null 2>&1
   worker_rc=$?   # a failed judge turn is fail-soft; the guard below skips
   # B28(e): the judge's model turn is PAID work — book it in the usage ledger like

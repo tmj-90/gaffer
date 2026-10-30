@@ -114,13 +114,13 @@ grep -q 'ROUTE_IMPL_FLAG="--model \$DELIVERY_MODEL"' "$RUNNER_DIR/tick.sh" \
 # implement flag ($_ATTEMPT_IMPL_FLAG) as the model argument — the escalation ladder
 # initialises it to the routed $ROUTE_IMPL_FLAG on attempt 1 and escalates to the
 # stronger model on the final rework attempt. worker_deliver then splices that model
-# flag between $CLAUDE_FLAGS and $GAFFER_MAX_TURNS_FLAG on the invocation.
+# flag between $CLAUDE_FLAGS and the per-call turn flag on the invocation.
 grep -qE 'worker_deliver "\$PRIMARY_REPO" "\$PROMPT\$_REWORK_BLOCK" "\$_ATTEMPT_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
   && ok "the delivery call passes \$_ATTEMPT_IMPL_FLAG as the worker model flag (routed by default, escalates on the final attempt)" \
   || fail "the delivery worker_deliver call should pass \$_ATTEMPT_IMPL_FLAG as the model argument"
-grep -q 'CLAUDE_FLAGS \$model_flag \$GAFFER_MAX_TURNS_FLAG' "$RUNNER_DIR/lib/worker.sh" \
-  && ok "worker_deliver splices the model flag between \$CLAUDE_FLAGS and \$GAFFER_MAX_TURNS_FLAG" \
-  || fail "worker_deliver should splice \$model_flag between \$CLAUDE_FLAGS and \$GAFFER_MAX_TURNS_FLAG"
+grep -q 'CLAUDE_FLAGS \$model_flag \$_turns_flag' "$RUNNER_DIR/lib/worker.sh" \
+  && ok "worker_deliver splices the model flag between \$CLAUDE_FLAGS and the turn flag" \
+  || fail "worker_deliver should splice \$model_flag between \$CLAUDE_FLAGS and \$_turns_flag"
 grep -q '_ATTEMPT_IMPL_FLAG="\$ROUTE_IMPL_FLAG"' "$RUNNER_DIR/tick.sh" \
   && ok "the per-attempt flag defaults to the routed \$ROUTE_IMPL_FLAG (attempt 1)" \
   || fail "the per-attempt flag should default to \$ROUTE_IMPL_FLAG"

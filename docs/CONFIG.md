@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 118 |
+| Knobs with a runner default | 125 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 68 |
+| Env reads in code with no default and no UI entry | 69 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -65,7 +65,14 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_TICK_TIMEOUT` | `1800` | yes (int) | dispatch, runner | Wall-clock cap on a single tick before it is killed. |
-| `GAFFER_MAX_TURNS` | `200` | yes (int) | dispatch, runner | Cap on agent turns within one ticket. |
+| `GAFFER_MAX_TURNS` | `200` | yes (int) | dispatch, runner | Turn cap for one delivery agent call, and the ceiling for every other role (reviewer, clarify, planner, tester, …): each runs under the lower of its own cap and this one, so raising it never lifts a role above its own cap. |
+| `GAFFER_REVIEW_MAX_TURNS` | `60` |  | runner | primary reviewer |
+| `GAFFER_SECURITY_REVIEW_MAX_TURNS` | `40` |  | runner | security second-opinion reviewer |
+| `GAFFER_CLARIFY_MAX_TURNS` | `40` |  | runner | intake / clarify pass |
+| `GAFFER_JUDGE_MAX_TURNS` | `2` |  | runner | eval judge (text-only, no tools) |
+| `GAFFER_TESTER_MAX_TURNS` | `80` |  | runner | bin/tester-run.mjs |
+| `GAFFER_MERGE_MAX_TURNS` | `60` |  | runner | bin/merge-ticket.mjs conflict resolver |
+| `GAFFER_PO_MAX_TURNS` | `60` |  | runner | bin/product-owner-run.mjs |
 | `GAFFER_DOD_TESTS` | `1` |  | runner | 1 = run the repo's test gate on every delivery; 0 skips it |
 | `GAFFER_DOD_LINT` | `1` |  | runner | 1 = run the lint gate |
 | `GAFFER_DOD_TYPECHECK` | `1` |  | runner | 1 = run the typecheck gate (auto-detected command) |
@@ -321,6 +328,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_LITE_MAX_LINES` | `60` | `runner/factory.config.sh` |
 | `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
 | `GAFFER_MERGE_TIMEOUT_MS` | `600000` | `runner/lib/land.sh` |
+| `GAFFER_ONBOARD_MAX_TURNS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |

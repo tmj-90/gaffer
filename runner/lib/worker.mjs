@@ -511,6 +511,25 @@ export function extractUsage(json) {
   };
 }
 
+/**
+ * The effective `--max-turns` for one role: the role's own cap clamped to the
+ * global GAFFER_MAX_TURNS ceiling (Math.min). The global can LOWER a role cap but
+ * never raise or replace it — `GAFFER_MAX_TURNS || roleCap` used to let the
+ * factory's 200-turn delivery cap silently override the planner's 20. A missing /
+ * non-positive role cap falls back to the global; both missing → 0 (emit no flag).
+ * Parity with gaffer_role_turns in factory.config.sh.
+ */
+export function roleTurnCap(roleCap, env = process.env) {
+  const pos = (v) => {
+    const n = parseInt(String(v ?? ""), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const role = pos(roleCap);
+  const ceiling = pos(env.GAFFER_MAX_TURNS);
+  if (role && ceiling) return Math.min(role, ceiling);
+  return role || ceiling;
+}
+
 // Turn-cap markers Claude Code may surface across shapes (matches the legacy
 // delivery-recovery.sh scan exactly): "max_turns", "max-turns", "turn limit", …
 const MAX_TURNS_RE = /max[_-]?turns|turn[_ -]?limit/i;

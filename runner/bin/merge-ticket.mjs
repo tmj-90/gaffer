@@ -107,7 +107,7 @@ import {
   featureIdFromView,
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
-import { Worker } from "../lib/worker.mjs";
+import { Worker, roleTurnCap } from "../lib/worker.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -513,13 +513,21 @@ export function buildResolverPrompt({ ticketNumber, repoName, worktree, branch, 
 
 /**
  * Build the full resolver `claude -p` argv (the same shape decompose.mjs /
- * product-owner-run.mjs produce): [-p, prompt, --mcp-config, <runtime>, ...flags].
- * Pulled out so the dry-run path and tests can assert it without spawning anything.
+ * product-owner-run.mjs produce): [-p, prompt, --mcp-config, <runtime>, ...flags,
+ * --max-turns N]. Pulled out so the dry-run path and tests can assert it without
+ * spawning anything. The turn cap is GAFFER_MERGE_MAX_TURNS (default 60) clamped to
+ * GAFFER_MAX_TURNS — without it the resolver was bounded only by its wall clock.
  */
-export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
+export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = mergeMaxTurns() }) {
   const args = ["-p", prompt];
   if (mcpConfig) args.push("--mcp-config", mcpConfig);
-  return args.concat(flags);
+  const turns = maxTurns > 0 ? ["--max-turns", String(maxTurns)] : [];
+  return args.concat(flags, turns);
+}
+
+/** The resolver's turn cap: GAFFER_MERGE_MAX_TURNS (default 60) clamped to GAFFER_MAX_TURNS. */
+export function mergeMaxTurns(env = process.env) {
+  return roleTurnCap(parseInt(env.GAFFER_MERGE_MAX_TURNS ?? "", 10) || 60, env);
 }
 
 /**

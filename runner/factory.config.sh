@@ -384,18 +384,36 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 # Settings-panel debate toggle widens the cap without a dashboard restart.
 
 # --- Per-call resource caps (P1 denial-of-wallet / token runaway) ------------
-# Every headless `claude -p` call (delivery, bootstrap, agent-review, clarify) —
-# and the whole tick.sh from loop.sh — runs under TWO bounds so a single runaway
-# call can't burn unbounded wall-clock OR unbounded tokens:
+# Every headless `claude -p` call (delivery, bootstrap, review, security review,
+# clarify, eval judge, and the .mjs helpers: planner, spec author, onboarding,
+# product owner, tester, merge resolver) — and the whole tick.sh from loop.sh —
+# runs under TWO bounds so a single runaway call can't burn unbounded wall-clock
+# OR unbounded tokens:
 #   GAFFER_TICK_TIMEOUT — wall-clock seconds before the call is killed (SIGTERM).
 #   GAFFER_MAX_TURNS    — agent turn cap, passed to `claude --max-turns`. Bounds the
 #                        number of model round-trips (the real token-spend driver).
+#                        It is the DELIVERY/BOOTSTRAP cap and a CEILING for every
+#                        other role: a role runs under min(its own cap, this), so
+#                        the global can lower a role cap but never raise or replace it.
+# Per-role caps (each clamped to GAFFER_MAX_TURNS). Sized well above what each
+# role's prompt asks for (the reviewer is told "well under 20 tool calls", the
+# security reviewer "under 12") so a normal run never trips them — they only stop
+# an agent that has gone off-track. The judge has no tools, so one turn ends it.
+# The .mjs helpers carry their own: GAFFER_DECOMPOSE_MAX_TURNS (20),
+# GAFFER_SPEC_AUTHOR_MAX_TURNS (20), GAFFER_ONBOARD_MAX_TURNS (60).
 # macOS ships NO GNU `timeout`, so gaffer_timeout is a portable shim built on perl's
 # alarm(): `gaffer_timeout <secs> <cmd> [args…]` runs <cmd> and kills it after <secs>.
 # If perl is somehow absent it falls back to GNU `timeout`/`gtimeout` when present,
 # else runs the command unbounded (best-effort — never breaks the call).
 : "${GAFFER_TICK_TIMEOUT:=1800}"   # 30 min hard wall-clock cap per claude -p call
-: "${GAFFER_MAX_TURNS:=200}"        # max agent turns per claude -p call
+: "${GAFFER_MAX_TURNS:=200}"        # max agent turns per delivery call; ceiling for every role
+: "${GAFFER_REVIEW_MAX_TURNS:=60}"           # primary reviewer
+: "${GAFFER_SECURITY_REVIEW_MAX_TURNS:=40}"  # security second-opinion reviewer
+: "${GAFFER_CLARIFY_MAX_TURNS:=40}"          # intake / clarify pass
+: "${GAFFER_JUDGE_MAX_TURNS:=2}"             # eval judge (text-only, no tools)
+: "${GAFFER_TESTER_MAX_TURNS:=80}"           # bin/tester-run.mjs
+: "${GAFFER_MERGE_MAX_TURNS:=60}"            # bin/merge-ticket.mjs conflict resolver
+: "${GAFFER_PO_MAX_TURNS:=60}"               # bin/product-owner-run.mjs
 # Definition-of-Done gate switches + bounds. The consumers (tick.sh, lib/dod.sh,
 # lib/ac-checks.sh) carry the SAME fallbacks, so these lines change nothing at
 # runtime — they exist so the knobs are documented here (docs/CONFIG.md) and
@@ -432,6 +450,20 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
+export GAFFER_TESTER_MAX_TURNS GAFFER_MERGE_MAX_TURNS GAFFER_PO_MAX_TURNS   # read by the .mjs helpers
+
+# gaffer_role_turns <role-cap>
+# Echo the effective turn cap for one role: min(role cap, GAFFER_MAX_TURNS). A
+# non-numeric / empty role cap falls back to the global; an unset global leaves the
+# role cap as is. Empty output = no cap (both unset). worker_deliver takes this
+# number as its 7th argument.
+gaffer_role_turns() {
+  local role="${1:-}" glob="${GAFFER_MAX_TURNS:-}"
+  case "$role" in '' | *[!0-9]* | 0) role="" ;; esac
+  case "$glob" in '' | *[!0-9]* | 0) glob="" ;; esac
+  if [ -n "$role" ] && [ -n "$glob" ] && [ "$glob" -lt "$role" ]; then role="$glob"; fi
+  printf '%s' "${role:-$glob}"
+}
 
 # RUNNER-OWNED-BOOKKEEPING: the runner (not the agent) claims the delivery ticket at
 # selection and holds the claim for the whole delivery. The lease TTL must therefore

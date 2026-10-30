@@ -63,7 +63,7 @@ import {
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { mountRoleSkills } from "../lib/agent-home.mjs";
-import { Worker } from "../lib/worker.mjs";
+import { Worker, roleTurnCap } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -418,10 +418,13 @@ export function renderPoMcpRuntime(
 
 /**
  * Build the full `claude -p` argv (the same shape decompose.mjs / tick.sh produce):
- * [-p, prompt, --mcp-config, <runtime>, ...CLAUDE_FLAGS]. Pulled out so the dry-run
- * path and tests can assert it without spawning anything.
+ * [-p, prompt, --mcp-config, <runtime>, ...CLAUDE_FLAGS, --max-turns N]. Pulled out
+ * so the dry-run path and tests can assert it without spawning anything. `maxTurns`
+ * is the caller's role cap (PO: GAFFER_PO_MAX_TURNS; tester-run.mjs reuses this with
+ * GAFFER_TESTER_MAX_TURNS), already clamped to GAFFER_MAX_TURNS by roleTurnCap —
+ * without it these agents were bounded only by their wall clock.
  */
-export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
+export function buildClaudeArgv({ prompt, mcpConfig, flags, maxTurns = poMaxTurns() }) {
   // USAGE LEDGER: --output-format json makes stdout a JSON result object carrying
   // the real usage and the agent's text in `.result`. The product-owner run never
   // parses this stdout for control flow (it only logs it), so the json envelope is
@@ -435,7 +438,13 @@ export function buildClaudeArgv({ prompt, mcpConfig, flags }) {
   // PO files 0. `--allowedTools` is a per-invocation, scoped grant honored regardless
   // of workspace trust; the safety hook + acceptEdits still apply. Scoped to our own
   // dispatch+memory servers only — no global config is touched.
-  return args.concat(flags, ["--allowedTools", "mcp__dispatch", "mcp__memory"]);
+  const turns = maxTurns > 0 ? ["--max-turns", String(maxTurns)] : [];
+  return args.concat(flags, turns, ["--allowedTools", "mcp__dispatch", "mcp__memory"]);
+}
+
+/** The PO run's turn cap: GAFFER_PO_MAX_TURNS (default 60) clamped to GAFFER_MAX_TURNS. */
+export function poMaxTurns(env = process.env) {
+  return roleTurnCap(parseInt(env.GAFFER_PO_MAX_TURNS ?? "", 10) || 60, env);
 }
 
 /**

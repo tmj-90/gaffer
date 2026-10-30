@@ -313,7 +313,9 @@ console.log("== AC6: buildClaudeArgv = [-p, prompt, --mcp-config, cfg, ...flags]
     prompt: "P",
     mcpConfig: "/tmp/mcp.json",
     flags: ["--permission-mode", "acceptEdits"],
+    maxTurns: 30,
   });
+  // The role turn cap rides after the flags (the resolver used to run with no --max-turns).
   eq("argv shape", argv, [
     "-p",
     "P",
@@ -321,12 +323,14 @@ console.log("== AC6: buildClaudeArgv = [-p, prompt, --mcp-config, cfg, ...flags]
     "/tmp/mcp.json",
     "--permission-mode",
     "acceptEdits",
+    "--max-turns",
+    "30",
   ]);
-  eq("no mcp config → omitted", buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"] }), [
-    "-p",
-    "P",
-    "--foo",
-  ]);
+  eq(
+    "no mcp config / no cap → both omitted",
+    buildClaudeArgv({ prompt: "P", mcpConfig: "", flags: ["--foo"], maxTurns: 0 }),
+    ["-p", "P", "--foo"],
+  );
 }
 
 console.log("== AC7: buildReapprovalCommand is the single isolated re-approval call ==");

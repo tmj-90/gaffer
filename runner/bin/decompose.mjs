@@ -115,7 +115,7 @@ import {
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
-import { Worker } from "../lib/worker.mjs";
+import { Worker, roleTurnCap } from "../lib/worker.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const _require = createRequire(import.meta.url);
@@ -1060,10 +1060,10 @@ function runClaudeTurn(prompt, opts, model) {
   // agent's text — just unwrapped from the JSON envelope first).
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   // Per-call turn cap (P1 denial-of-wallet): bound the agent's model round-trips
-  // in addition to the wall-clock timeout already passed to Worker.deliver below. Reuse
-  // the same GAFFER_MAX_TURNS knob the bash call sites use, falling back to this
-  // helper's own --max-turns (history bound) when the global knob isn't set.
-  const maxTurns = parseInt(process.env.GAFFER_MAX_TURNS || "", 10) || opts.maxTurns;
+  // in addition to the wall-clock timeout already passed to Worker.deliver below.
+  // This helper's own cap (--max-turns > GAFFER_DECOMPOSE_MAX_TURNS > 20) wins;
+  // the global GAFFER_MAX_TURNS is only a CEILING that can lower it (roleTurnCap).
+  const maxTurns = roleTurnCap(opts.maxTurns);
   if (maxTurns > 0) args.push("--max-turns", String(maxTurns));
   const mcp = process.env.MCP_CONFIG;
   if (mcp) args.unshift("--mcp-config", mcp);

@@ -82,7 +82,7 @@ import { fileURLToPath } from "node:url";
 import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
-import { extractResultText, parseClaudeJson, Worker } from "../lib/worker.mjs";
+import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
 import { appendUsageRecord, buildUsageRecord, unknownRecord } from "../lib/usage-ledger.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -121,6 +121,11 @@ const CONFIG = {
     return Number.isFinite(v) && v > 0 ? v : 900000;
   })(),
 };
+
+/** The tester's turn cap: GAFFER_TESTER_MAX_TURNS (default 80) clamped to GAFFER_MAX_TURNS. */
+export function testerMaxTurns(env = process.env) {
+  return roleTurnCap(parseInt(env.GAFFER_TESTER_MAX_TURNS ?? "", 10) || 80, env);
+}
 
 function log(msg) {
   process.stderr.write(`[tester-run] ${msg}\n`);
@@ -792,7 +797,12 @@ function runLiveTester(context) {
   }
 
   const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name });
-  const argv = buildClaudeArgv({ prompt, mcpConfig: mcpRuntime, flags: CONFIG.claudeFlags });
+  const argv = buildClaudeArgv({
+    prompt,
+    mcpConfig: mcpRuntime,
+    flags: CONFIG.claudeFlags,
+    maxTurns: testerMaxTurns(),
+  });
   log(`testing #${n} (${repo.name} @ ${branch}) in ${worktree}; skills: ${skills.join(", ")}`);
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,

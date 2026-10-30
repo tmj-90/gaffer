@@ -826,7 +826,6 @@ export class Dispatch {
     return this.principals.list();
   }
 
-  /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
   /** One principal by id or name (revoked ones included). Throws NOT_FOUND. */
   getPrincipal(ref: string): PrincipalView {
     const row = this.principals.get(ref) ?? this.principals.getByName(ref);
@@ -834,6 +833,7 @@ export class Dispatch {
     return row;
   }
 
+  /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
   revokePrincipal(ref: string, actor: Actor): PrincipalView {
     const row = this.principals.get(ref) ?? this.principals.getByName(ref);
     if (!row) throw notFound("principal", ref);

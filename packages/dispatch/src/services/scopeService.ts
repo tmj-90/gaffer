@@ -300,18 +300,14 @@ export class ScopeService {
     });
   }
 
-  // --- Factory Map: scope↔repo associations (FG-002) -----------------------
-
-  /**
-   * Link a repo into a scope node with a relation + default access. A repo may
-   * be linked to many scope nodes; the (scope, repo, relation) triple is unique.
-   */
   /** One scope edge by id. Throws NOT_FOUND. */
   getScopeEdge(edgeId: string): ScopeEdge {
     const edge = this.scopeEdges.findById(edgeId);
     if (!edge) throw notFound("scope_edge", edgeId);
     return edge;
   }
+
+  // --- Factory Map: scope↔repo associations (FG-002) -----------------------
 
   /** One scope↔repo association by id. Throws NOT_FOUND. */
   getScopeRepo(associationId: string): ScopeRepo {
@@ -320,6 +316,10 @@ export class ScopeService {
     return link;
   }
 
+  /**
+   * Link a repo into a scope node with a relation + default access. A repo may
+   * be linked to many scope nodes; the (scope, repo, relation) triple is unique.
+   */
   linkScopeRepo(raw: unknown, actor: Actor): ScopeRepo {
     const input = linkScopeRepoInput.parse(raw);
     const now = this.clock.now();

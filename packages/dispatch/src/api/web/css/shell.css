@@ -35,24 +35,44 @@
     align-items: center;
     gap: 10px;
     color: var(--on-claret);
-    text-decoration: none;
     flex: none;
+    min-width: 0;
   }
   .crest {
     flex: none;
   }
   .crest-t {
     font: 900 15px var(--f-display);
-    fill: #fff;
+    fill: var(--on-claret);
+  }
+  /* The crest is the club's badge: with a full token it opens "Name your club". */
+  .crest-btn {
+    display: inline-flex;
+    flex: none;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    border-radius: var(--r);
+  }
+  button.crest-btn {
+    cursor: pointer;
   }
   .brand-t {
     display: grid;
     line-height: 1;
+    min-width: 0;
+    color: var(--on-claret);
+    text-decoration: none;
   }
   .brand-name {
     font: 900 var(--t26) / 1 var(--f-display);
     letter-spacing: 0.01em;
     text-transform: uppercase;
+    max-width: 14ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .brand-sub {
     font: 600 var(--t12) / 1.2 var(--f-cond);
@@ -88,7 +108,7 @@
     gap: 6px;
     padding: 0 10px;
     flex: none;
-    color: #fbe9ee;
+    color: var(--on-claret-2);
     font: 600 15px var(--f-text);
     text-decoration: none;
     white-space: nowrap;
@@ -96,11 +116,11 @@
     border: 0;
   }
   .nav-link:hover {
-    color: #fff;
+    color: var(--on-claret);
   }
   .nav-link.active,
   .nav-link[aria-current="page"] {
-    color: #fff;
+    color: var(--on-claret);
     font-weight: 800;
   }
   .nav-link.active::after,
@@ -111,7 +131,7 @@
     right: 6px;
     bottom: -6px;
     height: 6px;
-    background: #fff;
+    background: var(--on-claret);
   }
   /* A count is real data: yellow = it needs you (a referee's card), plain = load. */
   .nav-count {
@@ -122,8 +142,8 @@
     padding: 0 6px;
     border-radius: var(--r);
     font: 800 15px / 1 var(--f-display);
-    background: rgb(255 255 255 / 0.14);
-    color: #fff;
+    background: color-mix(in srgb, var(--on-claret) 14%, transparent);
+    color: var(--on-claret);
   }
   .nav-count.urgent {
     background: var(--yellow);
@@ -135,20 +155,20 @@
     gap: 4px;
     padding: 0 10px;
     flex: none;
-    color: #fbe9ee;
+    color: var(--on-claret-2);
     font: 600 15px var(--f-text);
     background: none;
     border: 0;
   }
   .nav-more:hover,
   .nav-more[aria-expanded="true"] {
-    color: #fff;
+    color: var(--on-claret);
   }
   .nav-more {
     position: relative;
   }
   .nav-more.active {
-    color: #fff;
+    color: var(--on-claret);
     font-weight: 800;
   }
   .nav-more .nav-count {
@@ -184,7 +204,7 @@
     white-space: nowrap;
   }
   .rail-status time {
-    color: #fff;
+    color: var(--on-claret);
   }
   .rail-status[data-state="offline"],
   .rail-status[data-state="auth"] {
@@ -208,15 +228,15 @@
     height: 40px;
     padding: 0 12px;
     background: transparent;
-    border: 2px solid rgb(255 255 255 / 0.55);
-    color: #fff;
+    border: 2px solid color-mix(in srgb, var(--on-claret) 55%, transparent);
+    color: var(--on-claret);
     border-radius: var(--r);
     font: 700 15px var(--f-text);
     text-decoration: none;
     white-space: nowrap;
   }
   .btn-club:hover {
-    border-color: #fff;
+    border-color: var(--on-claret);
   }
   .btn-club .kbd {
     font: 600 var(--t12) var(--f-cond);
@@ -226,16 +246,16 @@
     padding: 0;
   }
   .btn-club.btn-new {
-    background: #fff;
-    color: #7a1631;
-    border-color: #fff;
+    background: var(--on-claret);
+    color: var(--claret);
+    border-color: var(--on-claret);
   }
   .btn-club.icon-only {
     width: 40px;
     padding: 0;
   }
   .appbar :focus-visible {
-    outline-color: #fff;
+    outline-color: var(--on-claret);
     box-shadow: 0 0 0 2px var(--claret);
   }
 
@@ -321,6 +341,13 @@
   @media (max-width: 760px) {
     .club-in {
       gap: 10px;
+    }
+    /* On a phone the name gives way to the controls (Search, New, Logout). */
+    .brand {
+      flex: 0 1 auto;
+    }
+    .brand-name {
+      max-width: 9ch;
     }
     .nav-rail,
     .rail-status-text,

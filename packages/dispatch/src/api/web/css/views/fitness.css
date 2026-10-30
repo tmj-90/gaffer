@@ -344,4 +344,23 @@
       justify-self: start;
     }
   }
+  /* Who is in the agent slots: shirt, name and the ticket each one holds. */
+  .ft-agents {
+    list-style: none;
+    margin: var(--s2) 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    min-width: 0;
+  }
+  .ft-agents li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .ft-agent-t {
+    font: 600 var(--t14) / 1 var(--f-cond);
+  }
 }

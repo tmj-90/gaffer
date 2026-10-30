@@ -41,14 +41,21 @@ ticks_in() { [ -f "$1/factory.log" ] || { echo 0; return; }; wc -l < "$1/factory
 # its default. A background job of this non-interactive script starts with SIGINT
 # ignored, and a signal ignored on entry cannot be trapped (POSIX; bash 3.2 on macOS
 # enforces it), so without the reset P1 tested a launch no user ever makes.
+# LP is read from the pid the launcher itself records just before it execs loop.sh, not
+# from $!: macOS bash 3.2 can fork once more inside `( ... exec perl ... ) &`, so $! is
+# then the loop's PARENT, and P1's INT went to a process group the pool is not in.
 start_pool() {  # <case> → sets LP (the loop pid == its own process group id), D
   D="$WORK/$1"; mkdir -p "$D/data"
   ( export GAFFER_DATA="$D/data"; cd "$RUNNER_DIR" && source ./factory.config.sh >/dev/null 2>&1 && wg init >/dev/null 2>&1 )
   ( cd "$RUNNER_DIR" && GAFFER_DATA="$D/data" DRY_RUN=1 GAFFER_CONCURRENCY=2 EMPTY_POLL_LIMIT=100000 MAX_TICKS=100000 \
       TICK_SLEEP=1 GAFFER_MAINTENANCE=0 GAFFER_REAP_GRACE=2 \
-      exec perl -e '$SIG{INT} = "DEFAULT"; setpgrp(0, 0); exec @ARGV' bash ./loop.sh > "$D/loop.out" 2>&1 ) &
-  LP=$!
+      exec perl -e '$SIG{INT} = "DEFAULT"; setpgrp(0, 0);
+        open(my $f, ">", shift) or die "pid file: $!"; print $f "$$\n"; close $f;
+        exec @ARGV' "$D/loop.pid" bash ./loop.sh > "$D/loop.out" 2>&1 ) &
+  LP=""
   local _
+  for _ in $(seq 1 100); do [ -s "$D/loop.pid" ] && { LP="$(cat "$D/loop.pid")"; break; }; sleep 0.1; done
+  [ -n "$LP" ] || return 1
   for _ in $(seq 1 100); do [ "$(workers | wc -l | tr -d ' ')" -ge 2 ] && [ "$(ticks_in "$D/data")" -ge 2 ] && return 0; sleep 0.2; done
   return 1
 }

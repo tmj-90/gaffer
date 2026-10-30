@@ -97,8 +97,8 @@ if [ -f "$TICK" ]; then
     && fail "empty-delivery path still carries the deleted review-reject fallback" \
     || ok "empty-delivery path no longer carries the deleted review-reject/block fallback"
 else
-  ok "tick.sh not found (skipping static assertion)"
-  ok "tick.sh not found (skipping static assertion)"
+  # tick.sh is the file under test and lives in this repo: missing is a FAIL, not two oks.
+  fail "tick.sh not found at $TICK — the static empty-delivery assertions did not run"
 fi
 
 echo

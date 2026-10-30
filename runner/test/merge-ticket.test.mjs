@@ -614,6 +614,16 @@ console.log(
     "a real resolution: the default branch is merged into the branch head",
     git(repo, "merge-base", "--is-ancestor", "main", "gaffer/ticket-7-x").status === 0,
   );
+  // Refused, gave-up and resolved runs alike leave no per-ticket MCP runtime behind.
+  const leftover = existsSync(DATA)
+    ? require("node:fs")
+        .readdirSync(DATA)
+        .filter((f) => /^mcp-merge-ticket-.*-runtime\.json$/.test(f))
+    : [];
+  assert(
+    `the resolver's per-ticket MCP runtime is removed after the spawn (left: ${leftover.join(", ") || "none"})`,
+    leftover.length === 0,
+  );
 }
 
 console.log("== AC10: --dry-run is BOUNDED — timeout-ms reported ==");

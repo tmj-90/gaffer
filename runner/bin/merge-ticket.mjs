@@ -542,12 +542,6 @@ export function buildChildEnv(baseEnv, { dispatchDb, memoryDb, writeRoot }) {
   return env;
 }
 
-/**
- * Install the project-local .claude wiring (settings + safety hook, skills symlink)
- * and the MCP runtime config into the resolver's WORKTREE — exactly as tick.sh /
- * product-owner-run.mjs do — so the headless run gets the same safety boundary and the
- * dispatch/memory MCP servers. Returns the runtime MCP config path.
- */
 /** The resolver's rendered MCP runtime config for ticket `n` (under GAFFER_DATA). */
 export function mergeTicketMcpRuntimePath(n) {
   return resolve(
@@ -556,6 +550,12 @@ export function mergeTicketMcpRuntimePath(n) {
   );
 }
 
+/**
+ * Install the project-local .claude wiring (settings + safety hook, skills symlink)
+ * and the MCP runtime config into the resolver's WORKTREE — exactly as tick.sh /
+ * product-owner-run.mjs do — so the headless run gets the same safety boundary and the
+ * dispatch/memory MCP servers. Returns the runtime MCP config path.
+ */
 export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) {
   const claudeDir = resolve(worktreePath, ".claude");
   mkdirSync(claudeDir, { recursive: true });
@@ -1247,6 +1247,7 @@ function main() {
   try {
     mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name);
   } catch (e) {
+    rmSync(mergeTicketMcpRuntimePath(resolved.number), { force: true });
     removeWorktree(repo.localPath, worktree);
     fail(`failed to install project-local wiring: ${e?.message ?? e}`);
     return;
@@ -1277,6 +1278,9 @@ function main() {
       writeRoot: worktree,
     }),
   });
+  // The rendered runtime served this one spawn: drop it whatever the outcome, so
+  // GAFFER_DATA does not collect one mcp-merge-ticket-<n>-runtime.json per ticket.
+  rmSync(mcpRuntime, { force: true });
 
   if (res.error) {
     removeWorktree(repo.localPath, worktree);

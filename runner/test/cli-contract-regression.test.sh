@@ -9,7 +9,8 @@
 # to the real node but (a) renames "id" → "agentId" in `agent register` output
 # (exit 0 — a shape change, not a crash) and (b) with TICKET_BREAK=1 makes
 # `ticket create` exit 1. Every listed test must then FAIL (non-zero, not 77)
-# and must not report a SKIP.
+# with its contract message ("… the dispatch CLI contract this test guards") —
+# so a timeout or an unrelated crash does not count — and must not report a SKIP.
 # Run: bash runner/test/cli-contract-regression.test.sh
 # =====================================================================
 set -uo pipefail
@@ -50,7 +51,8 @@ check() { # <test> [ENV=VAL …]
   local t="$1"; shift
   local out rc
   out="$(env PATH="$WORK/bin:$PATH" "$@" perl -e 'alarm shift; exec @ARGV' 120 bash "$HERE/$t.test.sh" 2>&1 </dev/null)"; rc=$?
-  if [ "$rc" -ne 0 ] && [ "$rc" -ne 77 ] && ! grep -qE '^[[:space:]]*(ok[[:space:]]+)?SKIP' <<<"$out"; then
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 77 ] && ! grep -qE '^[[:space:]]*(ok[[:space:]]+)?SKIP' <<<"$out" \
+     && grep -q 'FAIL.*the dispatch CLI contract this test guards' <<<"$out"; then
     ok "$t FAILS (rc $rc) when the CLI contract breaks"
   else
     fail "$t did not fail on a CLI contract regression (rc $rc): $(grep -E 'SKIP|FAIL' <<<"$out" | head -2 | tr '\n' ' ')"

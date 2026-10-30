@@ -970,6 +970,143 @@ console.log("== AC9c: the RE-GATE — a resolution is re-tested before it goes b
       resolveGateCommands(resolve(WORKDIR, "nope.sqlite"), 7) === null,
     );
   }
+  // (6) the gates run on the COMMITTED resolution, not the resolver's working tree. A
+  //     resolver that commits a broken resolution and leaves the fix UNCOMMITTED (or the
+  //     file the tests need UNTRACKED) used to pass the re-gate: the gates ran on the
+  //     dirty tree, the worktree was force-removed (discarding the fix) and the evidence
+  //     said "green on the resolved head" for a commit whose tests fail.
+  {
+    const EVLOG = resolve(WORKDIR, "regate-evidence.log");
+    const SPY_EV = resolve(WORKDIR, "regate-spy-ev.js");
+    writeFileSync(
+      SPY_EV,
+      `const fs = require("node:fs"); const a = process.argv;\n` +
+        `if (a.includes("reopen-for-review")) fs.writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\n` +
+        `if (a.includes("attach-evidence")) fs.appendFileSync(${JSON.stringify(EVLOG)}, a[a.indexOf("--summary") + 1] + "\\n----\\n");\n` +
+        `process.stdout.write('{"ok":true}\\n');\n`,
+    );
+    const commitAs = "git -c user.email=r@r -c user.name=r commit -qm";
+    // Commits value=2 (the test wants 1) and leaves value=1 in the working tree.
+    const DIRTY_FIX = resolve(WORKDIR, "regate-dirty-fix.sh");
+    writeFileSync(
+      DIRTY_FIX,
+      `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '2\\n' > value.txt\ngit add value.txt\n${commitAs} "resolve (broken)" >/dev/null 2>&1\nprintf '1\\n' > value.txt\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+    );
+    // Commits the resolution but never `git add`s the file the tests need.
+    const UNTRACKED = resolve(WORKDIR, "regate-untracked.sh");
+    writeFileSync(
+      UNTRACKED,
+      `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '1\\n' > value.txt\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+    );
+    // Control: the same fix, committed.
+    const COMMITTED = resolve(WORKDIR, "regate-committed.sh");
+    writeFileSync(
+      COMMITTED,
+      `#!/usr/bin/env bash\ngit merge -q -X ours --no-edit main >/dev/null 2>&1\nprintf '1\\n' > value.txt\ngit add value.txt\n${commitAs} "resolve" >/dev/null 2>&1\nprintf 'scratch\\n' > notes.tmp\nprintf '%s\\n' '{"result":"resolved"}'\n`,
+    );
+    for (const f of [DIRTY_FIX, UNTRACKED, COMMITTED]) require("node:fs").chmodSync(f, 0o755);
+    const testCommand = 'test "$(cat value.txt 2>/dev/null)" = 1';
+    const gateLeftovers = () =>
+      existsSync(resolve(WORKDIR, "regate-data", "worktrees"))
+        ? require("node:fs")
+            .readdirSync(resolve(WORKDIR, "regate-data", "worktrees"))
+            .filter((f) => /regate/.test(f))
+        : [];
+
+    for (const [name, bin] of [
+      ["uncommitted fix", DIRTY_FIX],
+      ["untracked file", UNTRACKED],
+    ]) {
+      const repo = conflictRepo(`regate-${name.replace(/ /g, "-")}`);
+      const pre = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+      const main0 = git(repo, "rev-parse", "main").stdout.trim();
+      rmSync(EVLOG, { force: true });
+      const r = runRegate(repo, dbFor(repo, { testCommand }), {
+        CLAUDE_BIN: bin,
+        DISPATCH_CLI: SPY_EV,
+      });
+      assert(
+        `${name}: phase conflict_resolution_gate_failed with dod FAIL (the committed head was gated)`,
+        r.code === 1 &&
+          r.out?.phase === "conflict_resolution_gate_failed" &&
+          r.out?.regate?.dod === "FAIL",
+      );
+      assert(`${name}: the ticket was NOT reopened for review`, !existsSync(SPY_MARK));
+      assert(
+        `${name}: the branch is back at its pre-resolution head, the resolution kept aside`,
+        git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim() === pre &&
+          r.out?.restored === true &&
+          git(repo, "rev-parse", "--verify", "-q", "refs/gaffer/conflict-resolved/7").status === 0,
+      );
+      const ev = existsSync(EVLOG) ? readFileSync(EVLOG, "utf8") : "";
+      assert(
+        `${name}: the evidence says FAIL and names the discarded residue (value.txt), never PASS`,
+        /^DoD: FAIL/.test(ev) &&
+          /uncommitted\/untracked path\(s\)[^\n]*value\.txt/.test(ev) &&
+          !/DoD: PASS/.test(ev),
+      );
+      assert(
+        `${name}: default branch untouched`,
+        git(repo, "rev-parse", "main").stdout.trim() === main0,
+      );
+      assert(`${name}: no gate checkout left behind`, gateLeftovers().length === 0);
+    }
+
+    // Control: the committed fix passes; residue (notes.tmp) is noted but does not count.
+    {
+      const repo = conflictRepo("regate-committed-fix");
+      rmSync(EVLOG, { force: true });
+      const r = runRegate(repo, dbFor(repo, { testCommand }), {
+        CLAUDE_BIN: COMMITTED,
+        DISPATCH_CLI: SPY_EV,
+      });
+      const head = git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim();
+      const ev = existsSync(EVLOG) ? readFileSync(EVLOG, "utf8") : "";
+      assert(
+        "committed fix (control): reopened with dod PASS",
+        r.code === 0 &&
+          r.out?.phase === "conflict_resolved_pending_reapproval" &&
+          r.out?.regate?.dod === "PASS" &&
+          existsSync(SPY_MARK),
+      );
+      assert(
+        "committed fix (control): the PASS evidence names the gated commit = the branch head",
+        new RegExp(`clean checkout of the resolved head ${head.slice(0, 12)}`).test(ev) &&
+          /notes\.tmp/.test(ev),
+      );
+      assert("committed fix (control): no gate checkout left behind", gateLeftovers().length === 0);
+    }
+
+    // Unit: a resolver checkout whose HEAD is not the branch head fails closed, nothing run.
+    {
+      const { regateResolution } = await import(HELPER);
+      const repo = conflictRepo("regate-head-mismatch");
+      const r = regateResolution({
+        repoPath: repo,
+        commit: git(repo, "rev-parse", "gaffer/ticket-7-x").stdout.trim(),
+        worktree: repo, // checked out on main
+        parents: [git(repo, "rev-parse", "main").stdout.trim()],
+        label: "demo",
+        commands: { test: "true", lint: "" },
+        gateDir: resolve(WORKDIR, "regate-unit-gate"),
+      });
+      assert(
+        "HEAD mismatch: ok:false, nothing gated, no gate checkout created",
+        r.ok === false &&
+          r.dod === "NOT_RUN" &&
+          /not the branch head/.test(r.reason) &&
+          !existsSync(resolve(WORKDIR, "regate-unit-gate")),
+      );
+      const none = regateResolution({
+        repoPath: repo,
+        commit: "",
+        parents: [],
+        label: "demo",
+        commands: {},
+      });
+      assert("no resolved head: ok:false (fail closed)", none.ok === false);
+    }
+  }
 }
 
 console.log("== AC10: --dry-run is BOUNDED — timeout-ms reported ==");

@@ -138,8 +138,10 @@ structural barrier the whole design hangs on.
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates
-  (tests · typecheck · lint) green on the resolved head, recorded as fresh
-  evidence — before the ticket goes back to review. A resolution that fails is
+  (tests · typecheck · lint) green on a clean checkout of the committed
+  resolution (what would land; anything the resolver left uncommitted is
+  discarded, never gated), recorded as fresh evidence — before the ticket goes
+  back to review. A resolution that fails is
   moved off the branch (`refs/gaffer/conflict-resolved/<n>`) and held for a
   human.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason

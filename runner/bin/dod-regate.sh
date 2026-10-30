@@ -5,9 +5,11 @@
 # merges the default branch INTO the delivery branch) is NEW code that nothing had
 # gated: a resolution that broke the tests went back to review with the stale
 # pre-resolution PASS as its evidence, the reviewer was told to trust that, and it
-# landed on the default branch. merge-ticket.mjs runs THIS script on the resolved
-# worktree BEFORE it reopens the ticket for re-review; a FAIL keeps the resolution off
-# the branch and holds the ticket for a human.
+# landed on the default branch. merge-ticket.mjs runs THIS script BEFORE it reopens
+# the ticket for re-review, on a FRESH DETACHED CHECKOUT of the branch's committed head
+# (never the resolver's own worktree, whose uncommitted/untracked leftovers would be
+# gated but not landed); a FAIL keeps the resolution off the branch and holds the
+# ticket for a human.
 #
 #   dod-regate.sh <worktree> <repo-label> <test_cmd|-> <lint_cmd|->
 #

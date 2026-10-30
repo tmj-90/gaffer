@@ -779,45 +779,131 @@ export function resolveGateCommands(dbPath, number) {
  * pass on the resolved head (bin/dod-regate.sh: the delivery gate's runner, toggles,
  * install step, sandbox and zero-gates rule). Without it a resolution that failed the
  * tests (or committed raw `<<<<<<<` markers) was re-reviewed against the stale
- * pre-resolution DoD PASS and landed. Returns
- *   { ok, markers, dod: "PASS"|"FAIL"|"OFF", evidence, reason }
+ * pre-resolution DoD PASS and landed.
+ *
+ * Both checks run on a FRESH DETACHED CHECKOUT of `commit` (the branch's committed
+ * head — the thing that lands), never on the resolver's worktree: the gates used to run
+ * on that worktree's WORKING TREE, so a fix the resolver left uncommitted (or a new
+ * file it never `git add`ed) made a broken committed resolution pass, the worktree was
+ * then force-removed (discarding the fix) and the evidence said "green on the resolved
+ * head" for a commit whose tests fail. `worktree` (the resolver's checkout) is only
+ * used to confirm its HEAD IS `commit` (a resolver that committed on a detached HEAD or
+ * another branch did not resolve the branch that lands) and to note residue it left,
+ * which is discarded. Returns
+ *   { ok, markers, dod: "PASS"|"FAIL"|"OFF"|"NOT_RUN", commit, evidence, reason }
  * evidence = the summary to record on the ticket. Fail CLOSED on anything unrunnable.
  */
-export function regateResolution({ worktree, parents, label, commands, env = process.env }) {
-  const mk = introducedConflictMarkers(worktree, parents);
+export function regateResolution({
+  repoPath,
+  commit,
+  worktree,
+  parents,
+  label,
+  commands,
+  gateDir,
+  env = process.env,
+}) {
+  const failed = (reason, gate = "config", extra = {}) => ({
+    ok: false,
+    markers: [],
+    dod: "FAIL",
+    commit: commit || "",
+    reason,
+    evidence:
+      "DoD: FAIL\n" +
+      JSON.stringify({
+        dod: "FAIL",
+        gates: [{ gate, repo: label, status: "FAIL", rc: "-", note: reason }],
+      }) +
+      "\n\nconflict resolution re-gate: " +
+      reason,
+    ...extra,
+  });
+  if (!repoPath || !commit || !/^[0-9a-f]{7,64}$/i.test(String(commit)))
+    return failed("the resolved branch head could not be read — nothing was gated", "config", {
+      dod: "NOT_RUN",
+    });
+  if (worktree) {
+    const head = git(worktree, "rev-parse", "-q", "--verify", "HEAD^{commit}");
+    if (head.status !== 0 || head.stdout.trim() !== commit)
+      return failed(
+        `the resolver's checkout HEAD (${(head.stdout || "?").trim().slice(0, 12) || "?"}) is not the branch head ${commit.slice(0, 12)} — only the branch's committed head can land`,
+        "config",
+        { dod: "NOT_RUN" },
+      );
+  }
+  // Residue the resolver left in its checkout (uncommitted edits, files never added).
+  // It is NOT part of what lands and is NOT gated; the note tells the reviewer it was
+  // discarded. The factory's own .claude wiring is not the resolver's.
+  let residue = [];
+  if (worktree) {
+    const st = git(
+      worktree,
+      "status",
+      "--porcelain",
+      "--untracked-files=all",
+      "--",
+      ".",
+      ":(exclude).claude",
+    );
+    if (st.status === 0)
+      residue = (st.stdout || "")
+        .split("\n")
+        .map((l) => l.slice(3).trim())
+        .filter(Boolean);
+  }
+  const residueNote = residue.length
+    ? `\n\nnote: the resolver left ${residue.length} uncommitted/untracked path(s) in its checkout (${residue.slice(0, 10).join(", ")}${residue.length > 10 ? ", …" : ""}); they are NOT part of the resolution, were NOT gated and were discarded`
+    : "";
+
+  // The gate checkout: detached at `commit`, nothing but the committed tree.
+  const gateWt =
+    gateDir || resolve(GAFFER_DATA, "worktrees", `merge-regate-${process.pid}-${Date.now()}`);
+  mkdirSync(dirname(gateWt), { recursive: true });
+  git(repoPath, "worktree", "remove", "--force", gateWt);
+  rmSync(gateWt, { recursive: true, force: true });
+  const add = git(repoPath, "worktree", "add", "--detach", "--force", gateWt, commit);
+  const cleanup = () => {
+    git(repoPath, "worktree", "remove", "--force", gateWt);
+    rmSync(gateWt, { recursive: true, force: true });
+    git(repoPath, "worktree", "prune");
+  };
+  if (add.status !== 0) {
+    cleanup();
+    return failed(
+      `a clean checkout of the resolved head could not be created (${(add.stderr || add.stdout || "").trim().slice(0, 200)}) — nothing was gated`,
+      "config",
+      { dod: "NOT_RUN" },
+    );
+  }
+  try {
+    const head = git(gateWt, "rev-parse", "HEAD").stdout.trim();
+    if (head !== commit)
+      return failed(
+        `the gate checkout is at ${head.slice(0, 12)}, not the resolved head ${commit.slice(0, 12)}`,
+        "config",
+        { dod: "NOT_RUN" },
+      );
+    const r = gateCheckout({ gateWt, parents, label, commands, env, failed });
+    if (residueNote) r.evidence = (r.evidence || "") + residueNote;
+    return { ...r, commit, residue };
+  } finally {
+    cleanup();
+  }
+}
+
+/** The marker check + DoD gates on the clean gate checkout (regateResolution). */
+function gateCheckout({ gateWt, parents, label, commands, env, failed }) {
+  const mk = introducedConflictMarkers(gateWt, parents);
   if (!mk.ok || mk.markers.length > 0) {
     const reason = mk.ok
       ? `the resolution left conflict markers in ${mk.markers.slice(0, 10).join(", ")}`
       : `the resolution could not be checked for conflict markers (${mk.error})`;
-    return {
-      ok: false,
-      markers: mk.markers,
-      dod: "NOT_RUN",
-      reason,
-      evidence:
-        "DoD: FAIL\n" +
-        JSON.stringify({
-          dod: "FAIL",
-          gates: [{ gate: "conflict-markers", repo: label, status: "FAIL", rc: "-", note: reason }],
-        }) +
-        "\n\nconflict resolution re-gate: " +
-        reason,
-    };
+    return failed(reason, "conflict-markers", { markers: mk.markers, dod: "NOT_RUN" });
   }
   if (commands === null) {
     const reason = "the repo's gate commands could not be read from the dispatch DB";
-    return {
-      ok: false,
-      markers: [],
-      dod: "FAIL",
-      reason,
-      evidence:
-        "DoD: FAIL\n" +
-        JSON.stringify({
-          dod: "FAIL",
-          gates: [{ gate: "config", repo: label, status: "FAIL", rc: "-", note: reason }],
-        }),
-    };
+    return failed(reason);
   }
   // Each gate is bounded by GAFFER_DOD_TIMEOUT inside the script; this outer cap only
   // stops a wedged script (install + three gates + slack).
@@ -826,7 +912,7 @@ export function regateResolution({ worktree, parents, label, commands, env = pro
     "bash",
     [
       resolve(RUNNER_DIR, "bin", "dod-regate.sh"),
-      worktree,
+      gateWt,
       label,
       commands.test || "-",
       commands.lint || "-",
@@ -841,19 +927,8 @@ export function regateResolution({ worktree, parents, label, commands, env = pro
   const reason = r.error
     ? `the DoD re-gate could not run (${r.error.code === "ETIMEDOUT" ? "timed out" : (r.error.message ?? r.error)})`
     : "the Definition-of-Done gates fail on the resolved head";
-  return {
-    ok: false,
-    markers: [],
-    dod: "FAIL",
-    reason,
-    evidence:
-      out ||
-      "DoD: FAIL\n" +
-        JSON.stringify({
-          dod: "FAIL",
-          gates: [{ gate: "config", repo: label, status: "FAIL", rc: "-", note: reason }],
-        }),
-  };
+  if (out) return { ok: false, markers: [], dod: "FAIL", reason, evidence: out };
+  return failed(reason);
 }
 
 /**
@@ -1685,11 +1760,16 @@ function main() {
     return;
   }
 
-  // RE-GATE the resolved head (still checked out in the worktree) BEFORE it goes back to
-  // review: the DoD gates ran once, on the delivery, and the reviewer is told to trust
-  // that evidence — a resolution is new code nobody had tested.
+  // RE-GATE the resolved head BEFORE it goes back to review: the DoD gates ran once, on
+  // the delivery, and the reviewer is told to trust that evidence — a resolution is new
+  // code nobody had tested. The gates run on a clean detached checkout of the branch's COMMITTED head (what
+  // lands), not on this worktree: anything the resolver left uncommitted is discarded.
+  const resolvedHead = branchHead(repo.localPath, branch);
   const regate = regateResolution({
+    repoPath: repo.localPath,
+    commit: resolvedHead,
     worktree,
+    gateDir: resolve(GAFFER_DATA, "worktrees", `merge-ticket-${resolved.number}-regate`),
     parents: [preResolution, defaultTip],
     label: repo.name || "repo",
     commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number),
@@ -1782,7 +1862,7 @@ function main() {
       ? recordEvidence(
           resolved.number,
           "test_output",
-          `${regate.evidence}\n\nconflict resolution re-gate: the DoD gates were re-run on the resolved head ${(branchHead(repo.localPath, branch) || "").slice(0, 12)} (no conflict markers)`,
+          `${regate.evidence}\n\nconflict resolution re-gate: the DoD gates were re-run on a clean checkout of the resolved head ${(regate.commit || "").slice(0, 12)} (no conflict markers)`,
         )
       : false;
   emit(

@@ -116,6 +116,9 @@ async function api(method, path, body, opts = {}) {
       data && data.error ? data.error : { code: String(res.status), message: res.statusText };
     const e = new Error(err.message || "Request failed");
     e.code = err.code;
+    // The HTTP status rides along: callers test it (a ticket's 404) and the
+    // error page shows it; it was never set, so `e.status === 404` never matched.
+    e.status = res.status;
     throw e;
   }
   if (data && Array.isArray(data.repositories))
@@ -807,25 +810,41 @@ function renderLogin(wasWrong) {
   const input = el("input", {
     type: "password",
     name: "token",
-    placeholder: "access token",
+    id: "login-token",
+    placeholder: "paste the token",
     autocomplete: "off",
     autofocus: "",
-    "aria-label": "Access token",
+    "aria-describedby": wasWrong ? "login-error login-hint" : "login-hint",
+    "aria-invalid": wasWrong ? "true" : null,
   });
-  const form = el("form", { class: "login-gate" }, [
-    crest("login-mark", 52, 62),
-    el("h1", {}, "Gaffer"),
-    el("p", {}, "This factory needs an access token."),
-    wasWrong ? el("p", { class: "login-error" }, "That token was rejected — try again.") : null,
-    input,
-    el("button", { class: "btn primary", type: "submit" }, "Enter"),
-    // Tell a new operator where the token actually comes from — the hardest
-    // first-run wall was a gate that never said this.
-    el(
-      "p",
-      { class: "login-hint" },
-      "Printed in the terminal that started Dispatch, or set as DISPATCH_API_TOKEN.",
-    ),
+  // The members' entrance: a match ticket. The claret stub is the club; the
+  // rest is the one field, the one button, and where the token comes from.
+  const form = el("form", { class: "login-gate gate-ticket", "aria-labelledby": "login-title" }, [
+    el("div", { class: "gate-stub", "aria-hidden": "true" }, [
+      crest("login-mark", 64, 76),
+      el("span", { class: "gate-club" }, "Gaffer"),
+      el("span", { class: "gate-admit" }, "Admit one · the gaffer"),
+    ]),
+    el("div", { class: "gate-main" }, [
+      el("h1", { id: "login-title" }, "Members’ entrance"),
+      el("p", { class: "gate-lede" }, "This factory needs an access token."),
+      wasWrong
+        ? el("p", { class: "login-error", id: "login-error", role: "alert" }, [
+            glyph("failed", 16),
+            el("span", {}, "That token was rejected — try again."),
+          ])
+        : null,
+      el("label", { class: "gate-label", for: "login-token" }, "Access token"),
+      input,
+      el("button", { class: "btn primary", type: "submit" }, "Enter"),
+      // Tell a new operator where the token actually comes from — the hardest
+      // first-run wall was a gate that never said this.
+      el("p", { class: "login-hint", id: "login-hint" }, [
+        "Printed in the terminal that started Dispatch, or set as ",
+        el("code", { class: "mono" }, "DISPATCH_API_TOKEN"),
+        ".",
+      ]),
+    ]),
   ]);
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -1211,11 +1230,78 @@ function mountView(content) {
   }
 }
 
+/**
+ * The error page in the club's language: the fourth official's board held up
+ * with the code the server (or the router) gave, one plain sentence of what went
+ * wrong, and the one useful way on. `code` is shown only when it is a real code.
+ */
+function errorPage({ code, caption, title, lede, detail, actions, error = false }) {
+  const board = code
+    ? el("div", { class: "err-board", "aria-hidden": "true" }, [
+        el("div", { class: "err-face" }, [
+          el("span", { class: "err-code tabnum" }, code),
+          caption ? el("span", { class: "err-cap" }, caption) : null,
+        ]),
+        el("span", { class: "err-handle" }),
+      ])
+    : el("div", { class: "err-board is-card", "aria-hidden": "true" }, refCard("red"));
+  return el("div", { class: `view view-error${error ? " is-error" : ""}` }, [
+    el("section", { class: "err-page", "aria-labelledby": "err-title" }, [
+      board,
+      el("div", { class: "err-body" }, [
+        el("h1", { id: "err-title" }, title),
+        lede ? el("p", { class: "err-lede" }, lede) : null,
+        detail ? el("p", { class: "err-detail" }, detail) : null,
+        actions && actions.length ? el("div", { class: "err-actions" }, actions) : null,
+      ]),
+    ]),
+  ]);
+}
+
+/** #/<anything that is not a page>: say which address, and offer the way back. */
+function renderNotFound() {
+  const addr = decodeURIComponent((location.hash || "#/").split("?")[0]);
+  setDocTitle("", "Page not found");
+  return errorPage({
+    code: "404",
+    caption: "page not found",
+    title: `No page at ${addr}`,
+    lede: "Gaffer has no page at this address. It may be an old link or a typo.",
+    actions: [
+      el("a", { class: "btn primary", href: "#/overview" }, "Go to the Overview"),
+      el("button", { class: "btn", type: "button", onclick: () => openPalette() }, [
+        icon("search"),
+        el("span", {}, "Search"),
+      ]),
+    ],
+  });
+}
+
+/** A view that failed to load: one specific message and a retry, shown once (not toasted). */
+function loadErrorPage(e) {
+  const status = e && Number.isInteger(e.status) && e.status >= 400 ? String(e.status) : "";
+  const offline = e && (e.code === "NETWORK" || e.code === "BAD_GATEWAY");
+  return errorPage({
+    code: status,
+    caption: status ? "the server answered" : null,
+    title: offline ? "Can't reach the factory." : "That page could not load.",
+    lede: (e && e.message) || "The request failed. Check the connection and retry.",
+    error: true,
+    actions: [
+      el("button", { class: "btn primary", type: "button", onclick: () => router() }, "Try again"),
+      el("a", { class: "btn", href: "#/overview" }, "Go to the Overview"),
+    ],
+  });
+}
+
 async function router() {
   const { view, param } = parseHash();
-  // Unknown views fall through to Overview; aliases are resolved in parseHash.
-  const render = VIEWS[view] || renderOverview;
-  activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : "overview");
+  // Aliases are resolved in parseHash. An address under #/ that names no view is
+  // a 404 page (one link back); a bare fragment that is not a section on this
+  // page still opens the Overview, as it always has.
+  const notFound = !VIEWS[view] && (location.hash || "").startsWith("#/");
+  const render = VIEWS[view] || (notFound ? renderNotFound : renderOverview);
+  activeArea = AREA_FOR_VIEW[view] || (VIEWS[view] ? view : notFound ? "" : "overview");
   if (view === "work" || view === "review") detailBackHash = "#/" + view;
 
   const gen = ++routeGen;
@@ -1244,18 +1330,7 @@ async function router() {
       // A 401 is already handled inside api() (the login screen is shown).
       if (e && (e.code === "UNAUTHORIZED" || e.code === "ABORTED")) return;
       // One specific message + a retry, shown once — not repeated in a toast.
-      const panel = emptyState(
-        "That page could not load.",
-        (e && e.message) || "The request failed. Check the connection and retry.",
-        null,
-        el(
-          "button",
-          { class: "btn primary", type: "button", onclick: () => router() },
-          "Try again",
-        ),
-      );
-      panel.classList.add("is-error");
-      mountView(el("div", { class: "view" }, panel));
+      mountView(loadErrorPage(e));
       return;
     }
     if (!isCurrent()) {
@@ -7511,15 +7586,13 @@ async function renderTicket(id) {
   } catch (e) {
     // A missing ticket is not worth a retry: say so, and point back to the board.
     if (e && (e.status === 404 || e.code === "NOT_FOUND" || /not found/i.test(e.message || ""))) {
-      return el("div", { class: "view" }, [
-        viewHead("No such ticket", null),
-        emptyState(
-          "There is no ticket at this address.",
-          "It may have been a mistyped link. Every ticket is on the Work board.",
-          null,
-          el("a", { class: "btn primary", href: "#/work" }, "Open the Work board"),
-        ),
-      ]);
+      return errorPage({
+        code: "404",
+        caption: "no such ticket",
+        title: "No such ticket",
+        lede: "There is no ticket at this address. It may have been a mistyped link. Every ticket is on the Work board.",
+        actions: [el("a", { class: "btn primary", href: "#/work" }, "Open the Work board")],
+      });
     }
     throw e;
   }
@@ -9138,6 +9211,8 @@ async function renderSettings() {
   // Load the env-override settings plus the crew idle-loop config + the repos and
   // scope nodes the idle-loop target picker needs. Best-effort on the extras: a
   // failure there must not blank the whole Settings page.
+  const signal = routeSignal();
+  const get = (p) => api("GET", p, undefined, { signal });
   const [
     { settings },
     idleLoopsRes,
@@ -9148,20 +9223,22 @@ async function renderSettings() {
     whoamiRes,
     principalsRes,
   ] = await Promise.all([
-    api("GET", "/api/settings"),
-    api("GET", "/api/idle-loops").catch(() => null),
-    api("GET", "/repositories").catch(() => ({ repositories: [] })),
-    api("GET", "/scope/nodes").catch(() => ({ nodes: [] })),
+    get("/api/settings"),
+    get("/api/idle-loops").catch(() => null),
+    get("/repositories").catch(() => ({ repositories: [] })),
+    get("/scope/nodes").catch(() => ({ nodes: [] })),
     // GRADUATED-AUTONOMY (Spec 2): advisory recommendations — best-effort, must never
     // blank the page if the endpoint is unavailable.
-    api("GET", "/api/autonomy/recommendations").catch(() => null),
+    get("/api/autonomy/recommendations").catch(() => null),
     // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies.
-    api("GET", "/api/autonomy/policies").catch(() => null),
+    get("/api/autonomy/policies").catch(() => null),
     // PER-PRINCIPAL CREDENTIALS: who this session is + the named credentials.
-    api("GET", "/api/whoami").catch(() => null),
-    api("GET", "/api/principals").catch(() => null),
+    get("/api/whoami").catch(() => null),
+    get("/api/principals").catch(() => null),
   ]);
   const all = Array.isArray(settings) ? settings : [];
+  const modeRow = all.find((x) => x.key === "GAFFER_MODE");
+  settingsModeName = (modeRow && (modeRow.effective || modeRow.value)) || "supervised";
   const idleLoops = idleLoopsRes && idleLoopsRes.idle_loops ? idleLoopsRes.idle_loops : null;
   const repos = reposRes.repositories || [];
   const nodes = nodesRes.nodes || [];
@@ -9174,10 +9251,15 @@ async function renderSettings() {
 
   const wrap = el("div", { class: "view settings-view" });
   const groupsUsed = SETTINGS_GROUPS.filter((g) => all.some((s) => s.group === g.id));
-  const fromFile = all.filter(
-    (s) => s.source === "file" || (s.value !== "" && s.value != null && !s.envLocked),
-  ).length;
+  const fromFile = all.filter((s) => s.source === "file").length;
   const locked = all.filter((s) => s.envLocked).length;
+
+  // Standing note: edits land in settings.json; the runner reads it on its NEXT
+  // tick, so nothing restarts live.
+  const note = el("p", { class: "settings-note" }, [
+    icon("clock", "settings-note-ico", 16),
+    el("span", {}, "Changes apply on the next tick — no live restart."),
+  ]);
   wrap.appendChild(
     viewHead(
       "The boot room",
@@ -9187,19 +9269,12 @@ async function renderSettings() {
     ),
   );
 
-  // Standing note: edits land in settings.json; the runner reads it on its NEXT
-  // tick, so nothing restarts live.
-  const note = el("div", { class: "settings-note" }, [
-    icon("clock", "settings-note-ico"),
-    el("span", {}, "Changes apply on the next tick — no live restart."),
-  ]);
-
   // Empty/abnormal state: the allow-list is static server-side, so an empty list
   // means the API answered oddly. Surface it rather than render a blank page.
   if (all.length === 0) {
     wrap.appendChild(note);
     wrap.appendChild(
-      emptyState("No settings available", "The config API returned no known settings.", "alert"),
+      emptyState("No settings available", "The config API returned no known settings."),
     );
     return wrap;
   }
@@ -9211,46 +9286,16 @@ async function renderSettings() {
   wrap.appendChild(layout);
   main.appendChild(note);
 
-  // Autonomy dial — the headline: the formation, how many gates the squad plays.
-  main.appendChild(autonomyDial(all));
-
-  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
-  // one-click reversible OFF. Rendered above the suggestions so the active posture is
-  // the first thing an operator sees.
-  // B17: those policies are consulted ONLY by the agent review pass. Under
-  // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
-  // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
-  const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
-  if (inertCount > 0) main.appendChild(inertPoliciesNote(inertCount));
-  const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });
-  if (polPanel) main.appendChild(polPanel);
-
-  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
-  // track record — each is now an ENABLE action (evidence + explicit confirm → POST).
-  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies, {
-    inert: inertCount > 0,
-  });
-  if (recPanel) main.appendChild(recPanel);
-
-  // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
-  main.appendChild(
-    accessPanel(
-      whoamiRes,
-      principalsRes && Array.isArray(principalsRes.principals) ? principalsRes.principals : [],
-    ),
-  );
-
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
   const editors = new Map();
-
-  const form = el("form", { class: "settings-form" });
+  const form = el("form", { class: "settings-form", id: "settings-form" });
 
   for (const grp of SETTINGS_GROUPS) {
     const inGroup = all.filter((s) => s.group === grp.id);
     if (inGroup.length === 0) continue;
     // Each group folds (the room ran 12,000px): the first opens, the index jumps.
-    const changed = inGroup.filter((x) => x.value !== "" && x.value != null && !x.envLocked).length;
+    const changed = inGroup.filter((x) => x.source === "file").length;
     const card = el("details", {
       class: "card settings-group",
       id: `grp-${grp.id}`,
@@ -9264,38 +9309,139 @@ async function renderSettings() {
           { class: "panel-aux" },
           `${plural(inGroup.length, "setting")}${changed ? ` · ${changed} set in settings.json` : ""}`,
         ),
+        el("span", { class: "grp-dirty", hidden: true }),
       ]),
     );
-    card.appendChild(el("p", { class: "section-note dim" }, grp.note));
+    card.appendChild(el("p", { class: "section-note" }, grp.note));
     const rows = el("div", { class: "settings-rows" });
     for (const s of inGroup) rows.appendChild(renderSettingRow(s, editors));
     card.appendChild(rows);
     form.appendChild(card);
   }
+  const noMatch = el("p", { class: "boot-nomatch", hidden: true });
+  form.appendChild(noMatch);
 
-  const saveBtn = el("button", { class: "btn primary", type: "submit" }, [
+  // The headline: the team's instructions (GAFFER_MODE as a five-detent dial) and
+  // the formation it plays (who takes each gate on a delivery's way to main).
+  const instructions = teamInstructions(all, editors, autonomyPolicies);
+  main.appendChild(instructions.node);
+
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): the currently-enabled policies, each with a
+  // one-click reversible OFF, above the suggestions so the active posture comes first.
+  // B17: those policies are consulted ONLY by the agent review pass. Under
+  // REVIEW_MODE=human (supervised, the default) no reviewer agent runs, so an enabled
+  // grant showed "Enabled" here and never acted. Say so wherever a grant is shown.
+  const inertCount = autonomyPoliciesInert(autonomyPolicies, all);
+  if (inertCount > 0) main.appendChild(inertPoliciesNote(inertCount));
+  const polPanel = autonomyPoliciesPanel(autonomyPolicies, { inert: inertCount > 0 });
+  if (polPanel) {
+    polPanel.id = "autonomy-policies";
+    main.appendChild(polPanel);
+  }
+  // GRADUATED-AUTONOMY (Spec 2, Phase 3): advisory recommendations backed by the review
+  // track record — each is an ENABLE action (evidence + explicit confirm → POST).
+  const recPanel = autonomyRecommendationsPanel(autonomyRecs, autonomyPolicies, {
+    inert: inertCount > 0,
+  });
+  if (recPanel) {
+    recPanel.id = "autonomy-recs";
+    main.appendChild(recPanel);
+  }
+
+  main.appendChild(form);
+
+  // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
+  // crew.yaml (not settings.json), so they save through their own endpoint.
+  if (idleLoops) {
+    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes);
+    const fold = el("details", { class: "boot-fold", id: "idle-loops" }, [
+      el("summary", {}, [
+        el("span", { class: "boot-fold-t" }, "Idle-loop scans"),
+        el(
+          "span",
+          { class: "panel-aux" },
+          "what the squad does when no ticket is ready · crew.yaml",
+        ),
+      ]),
+      loops,
+    ]);
+    main.appendChild(fold);
+  }
+
+  // PER-PRINCIPAL CREDENTIALS: who is signed in, the named credentials, mint/revoke.
+  const acc = accessPanel(
+    whoamiRes,
+    principalsRes && Array.isArray(principalsRes.principals) ? principalsRes.principals : [],
+  );
+  acc.id = "access";
+  main.appendChild(acc);
+
+  // The sticky save bar: the unsaved count (named), Discard, and the one primary.
+  const saveBtn = el("button", { class: "btn primary", type: "submit", form: "settings-form" }, [
     icon("check"),
     el("span", {}, "Save changes"),
   ]);
+  const discardBtn = el(
+    "button",
+    { class: "btn quiet", type: "button", disabled: "", onclick: () => router() },
+    "Discard",
+  );
   const dirtyNote = el("span", { class: "boot-dirty", role: "status" }, "No unsaved changes.");
-  form.appendChild(el("div", { class: "btn-row settings-actions" }, [dirtyNote, saveBtn]));
-  // How many switches differ from what was loaded (the same test Save uses).
-  const dirtyCount = () => {
-    let n = 0;
-    for (const [, ed] of editors) {
-      if (ed.initial !== undefined && ed.read() !== ed.initial) n++;
+  const saveBar = el(
+    "div",
+    { class: "boot-save settings-actions is-clean", role: "group", "aria-label": "Save settings" },
+    [dirtyNote, discardBtn, saveBtn],
+  );
+  main.appendChild(saveBar);
+  const idxDirty = el("span", { class: "boot-n" }, "none");
+  const labelOf = new Map(all.map((s) => [s.key, s.label || s.key]));
+  // Which switches differ from what was loaded (the same test Save uses).
+  const dirtyKeys = () => {
+    const out = [];
+    for (const [key, ed] of editors) {
+      if (ed.initial !== undefined && ed.read() !== ed.initial) out.push(key);
     }
-    return n;
+    return out;
   };
   const paintDirty = () => {
-    const n = dirtyCount();
-    dirtyNote.textContent = n ? `${plural(n, "unsaved change")}.` : "No unsaved changes.";
+    const keys = dirtyKeys();
+    const n = keys.length;
+    clear(dirtyNote);
+    if (n) {
+      const names = keys.slice(0, 2).map((k) => labelOf.get(k));
+      dirtyNote.append(
+        el("strong", {}, [
+          `${n} unsaved`,
+          el("span", { class: "bd-word" }, n === 1 ? " change" : " changes"),
+        ]),
+        el(
+          "span",
+          { class: "bd-names" },
+          `: ${names.join(", ")}${n > 2 ? ` and ${n - 2} more` : ""}.`,
+        ),
+      );
+    } else dirtyNote.textContent = "No unsaved changes.";
     dirtyNote.classList.toggle("is-dirty", n > 0);
+    discardBtn.disabled = n === 0;
+    saveBar.classList.toggle("is-clean", n === 0);
     idxDirty.textContent = n ? String(n) : "none";
     idxDirty.className = n ? "nav-count urgent" : "boot-n";
+    const dirty = new Set(keys);
+    for (const [key, ed] of editors)
+      if (ed.row) ed.row.classList.toggle("is-dirty", dirty.has(key));
+    for (const g of form.querySelectorAll(".settings-group")) {
+      const c = g.querySelectorAll(".setting-row.is-dirty").length;
+      const tag = g.querySelector(".grp-dirty");
+      tag.hidden = !c;
+      tag.textContent = c ? `${c} unsaved` : "";
+      const link = index.querySelector(`a[href="#${g.id}"] .boot-n`);
+      if (link) link.classList.toggle("is-dirty", c > 0);
+    }
+    instructions.sync();
   };
   form.addEventListener("input", paintDirty);
   form.addEventListener("change", paintDirty);
+  instructions.onPick = paintDirty;
 
   form.addEventListener("submit", (e) => {
     e.preventDefault();
@@ -9329,27 +9475,8 @@ async function renderSettings() {
     });
   });
 
-  main.appendChild(form);
-
-  // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
-  // crew.yaml (not settings.json), so they save through their own endpoint.
-  if (idleLoops) {
-    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes);
-    const fold = el("details", { class: "boot-fold", id: "idle-loops" }, [
-      el("summary", {}, [
-        el("span", { class: "boot-fold-t" }, "Idle-loop scans"),
-        el(
-          "span",
-          { class: "panel-aux" },
-          "what the squad does when no ticket is ready · crew.yaml",
-        ),
-      ]),
-      loops,
-    ]);
-    main.appendChild(fold);
-  }
-
   // The index: find a setting by name, key or help; jump to any section.
+  const findCount = el("span", { class: "boot-find-n", role: "status" });
   const find = el("input", {
     type: "search",
     class: "boot-find",
@@ -9368,123 +9495,474 @@ async function renderSettings() {
         if (q && !g.hidden) g.open = true;
       }
       findCount.textContent = q ? `${plural(shown, "match", "matches")}` : "";
+      noMatch.hidden = !q || shown > 0;
+      // While finding, the rows are the page: the panels above step aside.
+      main.classList.toggle("is-finding", !!q);
+      noMatch.textContent = q && !shown ? `No setting matches “${e.target.value.trim()}”.` : "";
     },
   });
-  const findCount = el("span", { class: "boot-find-n", role: "status" });
-  const idxDirty = el("span", { class: "boot-n" }, "none");
   const link = (id, label, n) =>
     el("a", { href: `#${id}` }, [
       el("span", {}, label),
       n != null ? el("span", { class: "boot-n" }, String(n)) : null,
     ]);
-  index.append(
-    field("Find a setting", find, { class: "boot-find-f" }),
-    findCount,
-    el("ul", {}, [
-      el("li", {}, link("formation", "Formation")),
-      polPanel ? el("li", {}, link(polPanel.id || "autonomy-policies", "Active autonomy")) : null,
-      recPanel ? el("li", {}, link(recPanel.id || "autonomy-recs", "Suggested autonomy")) : null,
-      el("li", {}, link("access", "Access")),
-      ...SETTINGS_GROUPS.filter((g) => all.some((x) => x.group === g.id)).map((g) =>
+  // The section links. On a phone they fold behind one line (the find box stays
+  // open), so the room starts with the team instructions, not a wall of links.
+  const phone =
+    typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+  const sections = el("details", { class: "boot-sections", open: phone ? null : "" }, [
+    el("summary", {}, [
+      "Jump to a section",
+      el(
+        "span",
+        { class: "boot-n" },
+        String(groupsUsed.length + 2 + [polPanel, recPanel, idleLoops].filter(Boolean).length),
+      ),
+    ]),
+    el("ul", { class: "boot-links" }, [
+      el("li", {}, link("instructions", "Team instructions")),
+      polPanel ? el("li", {}, link(polPanel.id, "Active autonomy")) : null,
+      recPanel ? el("li", {}, link(recPanel.id, "Suggested autonomy")) : null,
+      ...groupsUsed.map((g) =>
         el("li", {}, link(`grp-${g.id}`, g.label, all.filter((x) => x.group === g.id).length)),
       ),
       idleLoops ? el("li", {}, link("idle-loops", "Idle-loop scans")) : null,
+      el("li", {}, link("access", "Access")),
     ]),
+  ]);
+  sections.addEventListener("click", (e) => {
+    // Picking a section on a phone folds the list away again.
+    if (e.target.closest("a") && phone) sections.open = false;
+  });
+  index.append(
+    field("Find a setting", find, { class: "boot-find-f" }),
+    findCount,
+    sections,
     el("p", { class: "boot-unsaved" }, ["Unsaved changes: ", idxDirty]),
   );
-  if (polPanel && !polPanel.id) polPanel.id = "autonomy-policies";
-  if (recPanel && !recPanel.id) recPanel.id = "autonomy-recs";
-  const acc = main.querySelector(".access-panel") || main.children[main.children.length - 2];
-  if (acc && !acc.id) acc.id = "access";
-
+  instructions.sync();
   return wrap;
 }
 
 /**
- * The autonomy dial as the team's formation: every autonomy gate is a position
- * on a drawn pitch. A claret shirt stands where the squad plays it on its own;
- * a yellow card marks where the gaffer still makes the call. Each position jumps
- * to its switch below. Reads the EFFECTIVE posture (env → file → GAFFER_MODE).
+ * The autonomy posture each GAFFER_MODE implies: a MIRROR of MODE_PRESETS in
+ * src/api/settings.ts (itself a mirror of runner/factory.config.sh). A value in
+ * settings.json or the environment wins over the mode, as on the server.
  */
-function autonomyDial(all) {
-  const isOn = (v) => v === true || v === "true" || v === "1" || v === "on";
-  const bools = all.filter((s) => s.group === "autonomy" && s.type === "boolean");
-  const total = Math.max(1, bools.length);
-  const onOf = (s) => isOn(s.effective !== undefined ? s.effective : s.value);
-  const on = bools.filter(onOf).length;
-  const pct = Math.round((on / total) * 100);
-  const level = on === 0 ? "Supervised" : on >= total ? "Hands-off" : "Assisted";
-  const tone = on === 0 ? "ok" : on >= total ? "danger" : "amber";
-  const blurb =
-    on === 0
-      ? "You make every call: a human approves every merge, and the squad cannot ship its own work."
-      : on >= total
-        ? "The squad plays every position: it can plan, build, review and ship without you."
-        : `The squad plays ${on} of ${total} positions on its own (the shirts); you make the call on the rest (the cards).`;
-  const W = 760,
-    H = 200,
-    step = W / (bools.length + 1);
-  const pitch = svgEl(
-    "svg",
-    {
-      viewBox: `0 0 ${W} ${H}`,
-      class: "formation-pitch",
-      preserveAspectRatio: "none",
-      "aria-hidden": "true",
-      focusable: "false",
+const MODE_PRESETS = {
+  supervised: {
+    REVIEW_MODE: "human",
+    DISPATCH_ALLOW_AGENT_APPROVE: "0",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  lite: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  graduated: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "0",
+    MERGE_ON_AGENT_REVIEW: "0",
+    AUTO_MERGE: "0",
+    GAFFER_AUTO_PUSH: "0",
+    MEMORY_AUTO_APPROVE: "0",
+  },
+  autonomous: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "1",
+    AUTO_MERGE: "1",
+    GAFFER_AUTO_PUSH: "1",
+    MEMORY_AUTO_APPROVE: "1",
+  },
+  strict: {
+    REVIEW_MODE: "agent",
+    DISPATCH_ALLOW_AGENT_APPROVE: "1",
+    MERGE_ON_AGENT_REVIEW: "1",
+    AUTO_MERGE: "1",
+    GAFFER_AUTO_PUSH: "1",
+    MEMORY_AUTO_APPROVE: "1",
+  },
+};
+/** The dial's detents, least to most autonomy (the server's own order). */
+const MODE_DETENTS = [
+  { mode: "supervised", name: "Supervised", line: "You sign off every merge." },
+  { mode: "lite", name: "Lite", line: "Agents approve the trivial ones; you still merge." },
+  {
+    mode: "graduated",
+    name: "Graduated",
+    line: "Each repo ships what it has earned; the rest waits for you.",
+  },
+  { mode: "autonomous", name: "Autonomous", line: "Agents approve, merge and push." },
+  { mode: "strict", name: "Strict", line: "Autonomous, inside an OS sandbox." },
+];
+
+const isOnValue = (v) => v === true || v === "true" || v === "1" || v === "on" || v === "yes";
+
+/**
+ * The value each key would take under `mode`, given what is saved and what the
+ * operator has changed on this page but not saved: env → pending edit → file →
+ * the mode's preset → default. Returns { value, from } per key.
+ */
+function postureFor(all, editors, mode) {
+  const presets = MODE_PRESETS[mode] || MODE_PRESETS.supervised;
+  const out = {};
+  for (const s of all) {
+    const ed = editors.get(s.key);
+    const pending = ed && ed.initial !== undefined && ed.read() !== ed.initial;
+    if (s.envLocked) out[s.key] = { value: s.effective ?? s.value ?? "", from: "env" };
+    else if (pending && s.key !== "GAFFER_MODE") out[s.key] = { value: ed.read(), from: "edit" };
+    else if (s.value !== "" && s.value != null) out[s.key] = { value: s.value, from: "file" };
+    else if (presets[s.key] !== undefined) out[s.key] = { value: presets[s.key], from: "mode" };
+    else out[s.key] = { value: "", from: "default" };
+  }
+  return out;
+}
+
+/**
+ * The gates a delivery passes on its way to main, left to right like the tactics
+ * board: who plays each one under a posture. "squad" = an agent does it, "you" =
+ * the gaffer makes the call, "both" = the squad reviews and you still sign,
+ * "none" = nobody plays it (no independent tester).
+ */
+const FORMATION_GATES = [
+  {
+    id: "testing",
+    label: "Testing",
+    key: "GAFFER_TESTING",
+    who: (p) => (isOnValue(p.GAFFER_TESTING?.value) ? "squad" : "none"),
+  },
+  {
+    id: "review",
+    label: "Review",
+    key: "REVIEW_MODE",
+    who: (p) => {
+      const v = String(p.REVIEW_MODE?.value || "human");
+      return v === "agent" ? "squad" : v === "both" ? "both" : "you";
     },
-    [
-      svgEl("rect", { x: 0, y: 0, width: W, height: H, class: "fp-grass" }),
-      ...Array.from({ length: 6 }, (_, i) =>
-        svgEl("rect", { x: (i * W) / 6, y: 0, width: W / 12, height: H, class: "fp-mow" }),
-      ),
-      svgEl("rect", { x: 8, y: 8, width: W - 16, height: H - 16, class: "fp-line" }),
-      svgEl("line", { x1: W / 2, y1: 8, x2: W / 2, y2: H - 8, class: "fp-line" }),
-      svgEl("circle", { cx: W / 2, cy: H / 2, r: 40, class: "fp-line" }),
-    ],
-  );
-  const positions = el(
-    "ol",
-    { class: "formation-pos" },
-    bools.map((s, i) => {
-      const playing = onOf(s);
-      return el("li", { style: { "--x": `${(((i + 1) * step) / W) * 100}%` } }, [
-        el(
-          "a",
-          {
-            class: `fp-spot ${playing ? "on" : "off"}`,
-            href: `#set-${s.key}`,
-            "aria-label": `${s.label || s.key}: ${playing ? "the squad plays it" : "you make the call"}`,
-          },
-          [
-            playing ? agentShirt("squad", 46) : ycard(40, "fp-card"),
-            el("span", { class: "fp-label" }, s.label || s.key),
-            el("span", { class: "fp-who" }, playing ? "squad" : "you"),
-          ],
-        ),
-      ]);
-    }),
-  );
-  return el(
+  },
+  {
+    id: "approve",
+    label: "Approve",
+    key: "DISPATCH_ALLOW_AGENT_APPROVE",
+    who: (p) => (isOnValue(p.DISPATCH_ALLOW_AGENT_APPROVE?.value) ? "squad" : "you"),
+  },
+  {
+    id: "merge",
+    label: "Merge",
+    key: "AUTO_MERGE",
+    who: (p) =>
+      isOnValue(p.AUTO_MERGE?.value) || isOnValue(p.MERGE_ON_AGENT_REVIEW?.value) ? "squad" : "you",
+  },
+  {
+    id: "push",
+    label: "Push",
+    key: "GAFFER_AUTO_PUSH",
+    who: (p) => (isOnValue(p.GAFFER_AUTO_PUSH?.value) ? "squad" : "you"),
+  },
+  {
+    id: "lore",
+    label: "Lore",
+    key: "MEMORY_AUTO_APPROVE",
+    who: (p) => (isOnValue(p.MEMORY_AUTO_APPROVE?.value) ? "squad" : "you"),
+  },
+];
+const WHO_WORDS = {
+  squad: "the squad",
+  you: "you",
+  both: "squad, then you",
+  none: "not played",
+};
+
+/**
+ * Go/No-Go before raising the dial: checks read from the posture the new mode
+ * would run with. They advise; Save still applies the mode.
+ */
+function goNoGo(posture, mode, policies) {
+  const v = (k) => (posture[k] ? posture[k].value : "");
+  const checks = [
+    {
+      key: "GAFFER_TESTING",
+      ok: isOnValue(v("GAFFER_TESTING")),
+      go: "An independent tester checks every delivery.",
+      nogo: "No independent tester: the squad marks its own work.",
+    },
+    {
+      key: "GAFFER_DAILY_BUDGET_USD",
+      ok: Number(v("GAFFER_DAILY_BUDGET_USD")) > 0,
+      go: `A daily budget caps the wage bill (${moneyW(Number(v("GAFFER_DAILY_BUDGET_USD")))} a day).`,
+      nogo: "No daily budget: nothing caps the wage bill.",
+    },
+    {
+      key: "GAFFER_REQUIRE_CI",
+      ok: isOnValue(v("GAFFER_REQUIRE_CI")),
+      go: "CI must be green before review.",
+      nogo: "CI is not required before review.",
+    },
+  ];
+  if (mode === "lite" || mode === "strict") {
+    const p = v("SANDBOX_PROVIDER");
+    checks.push({
+      key: "SANDBOX_PROVIDER",
+      ok: p === "docker" || p === "sandbox-exec",
+      go: `The squad runs inside an OS sandbox (${p}).`,
+      nogo: `No OS sandbox is chosen: ${mode} needs one.`,
+    });
+  }
+  if (mode === "graduated") {
+    const n = (policies || []).filter((x) => x.mode === "auto").length;
+    checks.push({
+      key: null,
+      href: "#autonomy-recs",
+      ok: n > 0,
+      go: `${plural(n, "repo grant")} let the squad ship what it has earned.`,
+      nogo: "No repo has earned a grant yet, so graduated holds every ticket for you.",
+    });
+  }
+  return checks;
+}
+
+/**
+ * Team instructions: GAFFER_MODE as a five-detent dial, the formation it plays
+ * (a pitch where each gate is a position: a claret shirt where the squad plays
+ * it, a yellow card where the gaffer makes the call), what moving the dial would
+ * change, and the Go/No-Go checks before raising it. The dial drives the
+ * GAFFER_MODE select in the form, so it saves (and counts as unsaved) with the rest.
+ */
+function teamInstructions(all, editors, policies) {
+  const modeSetting = all.find((s) => s.key === "GAFFER_MODE");
+  const modeEd = editors.get("GAFFER_MODE");
+  const modeSelect = modeEd && modeEd.row ? modeEd.row.querySelector("select") : null;
+  const savedMode = String((modeSetting && (modeSetting.effective || modeSetting.value)) || "");
+  const current = MODE_PRESETS[savedMode] ? savedMode : "supervised";
+  const lockedMode = !!(modeSetting && modeSetting.envLocked);
+  const rank = (m) => MODE_DETENTS.findIndex((d) => d.mode === m);
+  const picked = () => {
+    const v = modeSelect ? modeSelect.value : savedMode;
+    return MODE_PRESETS[v] ? v : "supervised";
+  };
+
+  const head = el("div", { class: "ti-head" });
+  const dial = el("fieldset", { class: "dial", disabled: lockedMode ? "" : null }, [
+    el("legend", { class: "sr-only" }, "Autonomy mode"),
+  ]);
+  const radios = [];
+  for (const d of MODE_DETENTS) {
+    const input = el("input", {
+      type: "radio",
+      name: "mode-dial",
+      value: d.mode,
+      class: "dial-input",
+    });
+    input.checked = d.mode === current;
+    input.addEventListener("change", () => {
+      if (!input.checked || !modeSelect) return;
+      // Choosing the saved mode again restores the stored value (no false "unsaved").
+      modeSelect.value = d.mode === current ? modeEd.initial : d.mode;
+      modeSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      if (typeof api_.onPick === "function") api_.onPick();
+    });
+    radios.push(input);
+    dial.appendChild(
+      el("label", { class: "dial-stop", dataset: { mode: d.mode } }, [
+        input,
+        el("span", { class: "dial-notch", "aria-hidden": "true" }),
+        el("span", { class: "dial-name" }, d.name),
+        el("span", { class: "dial-line" }, d.line),
+        d.mode === current ? el("span", { class: "dial-now" }, "Now") : null,
+      ]),
+    );
+  }
+  const board = el("div", { class: "formation-board" });
+  const changes = el("div", { class: "ti-changes", "aria-live": "polite" });
+  const node = el(
     "section",
-    {
-      class: `card panel autonomy-dial formation tone-${tone}`,
-      id: "formation",
-      "aria-label": "Formation",
-    },
+    { class: "card boot-page instructions", id: "instructions", "aria-label": "Team instructions" },
     [
-      panelHead(`Formation: ${level}`, `${on} of ${total} positions to the squad`, null, {
-        kit: "claret",
-      }),
-      el("p", { class: "ad-note" }, blurb),
-      el("div", { class: "formation-board" }, [pitch, positions]),
-      el("div", { class: "ad-gauge" }, [
-        el("span", { class: "ad-frac tabnum" }, `${on}/${total}`),
-        el("span", { class: "ad-cap" }, "gates open"),
-        band(on, total, `${on} of ${total} autonomy gates open (${pct}%)`),
+      panelHead("Team instructions", null, null, { kit: "claret" }),
+      head,
+      dial,
+      board,
+      changes,
+      el("p", { class: "ti-foot" }, [
+        lockedMode
+          ? "The mode is set by the environment, so the dial is locked here. "
+          : "The dial is the Autonomy mode setting below and saves with the rest of the room. ",
+        "A switch you set yourself always beats the mode. ",
+        el("a", { href: "#set-GAFFER_MODE" }, "Autonomy mode"),
       ]),
     ],
   );
+
+  const drawFormation = (now, next) => {
+    clear(board);
+    const W = 1000;
+    const H = 220;
+    board.appendChild(
+      svgEl(
+        "svg",
+        {
+          viewBox: `0 0 ${W} ${H}`,
+          class: "formation-pitch",
+          preserveAspectRatio: "none",
+          "aria-hidden": "true",
+          focusable: "false",
+        },
+        [
+          svgEl("rect", { x: 0, y: 0, width: W, height: H, class: "fp-grass" }),
+          ...Array.from({ length: 6 }, (_, i) =>
+            svgEl("rect", { x: (i * W) / 6, y: 0, width: W / 12, height: H, class: "fp-mow" }),
+          ),
+          svgEl("rect", { x: 10, y: 10, width: W - 20, height: H - 20, class: "fp-line" }),
+          svgEl("line", { x1: W / 2, y1: 10, x2: W / 2, y2: H - 10, class: "fp-line" }),
+          svgEl("circle", { cx: W / 2, cy: H / 2, r: 46, class: "fp-line" }),
+          svgEl("rect", { x: 10, y: H / 2 - 56, width: 70, height: 112, class: "fp-line" }),
+          svgEl("rect", { x: W - 80, y: H / 2 - 56, width: 70, height: 112, class: "fp-line" }),
+        ],
+      ),
+    );
+    const step = 80 / (FORMATION_GATES.length - 1);
+    board.appendChild(
+      el(
+        "ol",
+        { class: "formation-pos", "aria-label": "Who plays each gate" },
+        FORMATION_GATES.map((g, i) => {
+          const a = g.who(now);
+          const b = g.who(next);
+          const moving = a !== b;
+          const mark = (who) =>
+            who === "squad"
+              ? agentShirt("squad", 44)
+              : who === "both"
+                ? el("span", { class: "fp-pair" }, [agentShirt("squad", 40), ycard(32, "fp-card")])
+                : who === "you"
+                  ? ycard(36, "fp-card")
+                  : el("span", { class: "fp-empty", "aria-hidden": "true" });
+          return el("li", { style: { "--x": `${10 + step * i}%` } }, [
+            el(
+              "a",
+              {
+                class: `fp-spot who-${b}${moving ? " is-moving" : ""}`,
+                href: `#set-${g.key}`,
+                "aria-label": `${g.label}: ${WHO_WORDS[b]}${moving ? ` after save (now ${WHO_WORDS[a]})` : ""}`,
+              },
+              [
+                mark(b),
+                el("span", { class: "fp-label" }, g.label),
+                el("span", { class: "fp-who" }, moving ? `→ ${WHO_WORDS[b]}` : WHO_WORDS[b]),
+              ],
+            ),
+          ]);
+        }),
+      ),
+    );
+  };
+
+  const api_ = {
+    node,
+    onPick: null,
+    sync() {
+      const next = picked();
+      for (const r of radios) r.checked = r.value === next;
+      for (const lab of dial.querySelectorAll(".dial-stop"))
+        lab.classList.toggle("is-picked", lab.dataset.mode === next);
+      const now = postureFor(all, new Map(), current);
+      const after = postureFor(all, editors, next);
+      const squadCount = (p) => FORMATION_GATES.filter((g) => g.who(p) === "squad").length;
+      clear(head);
+      const d = MODE_DETENTS[rank(next)];
+      head.append(
+        el("p", { class: "ti-lede" }, [
+          el("strong", {}, next === current ? `${d.name}.` : `${d.name}, once you save.`),
+          ` The squad plays ${squadCount(after)} of ${FORMATION_GATES.length} positions on its own; `,
+          `you make the call on ${FORMATION_GATES.filter((g) => ["you", "both"].includes(g.who(after))).length}.`,
+        ]),
+      );
+      drawFormation(now, after);
+      clear(changes);
+      if (next === current) return;
+      // What moving the dial changes, key by key, and what it cannot change.
+      const rows = Object.keys(MODE_PRESETS.supervised).map((k) => {
+        const s = all.find((x) => x.key === k);
+        const a = now[k];
+        const b = after[k];
+        const same = String(a.value) === String(b.value);
+        const show = (v) =>
+          s && s.type === "boolean" ? (isOnValue(v.value) ? "On" : "Off") : v.value || "default";
+        return el("tr", { class: same ? "is-same" : "is-change" }, [
+          el("th", { scope: "row" }, el("a", { href: `#set-${k}` }, (s && s.label) || k)),
+          el("td", {}, show(a)),
+          el("td", {}, [
+            show(b),
+            b.from === "file" || b.from === "env" || b.from === "edit"
+              ? el(
+                  "span",
+                  { class: "ti-kept" },
+                  b.from === "env"
+                    ? " · set by the environment"
+                    : b.from === "edit"
+                      ? " · your unsaved edit"
+                      : " · kept from settings.json",
+                )
+              : null,
+          ]),
+        ]);
+      });
+      changes.appendChild(
+        el("table", { class: "ti-table" }, [
+          el("caption", {}, `Moving from ${MODE_DETENTS[rank(current)].name} to ${d.name}`),
+          el("thead", {}, [
+            el("tr", {}, [
+              el("th", { scope: "col" }, "Switch"),
+              el("th", { scope: "col" }, "Now"),
+              el("th", { scope: "col" }, "After save"),
+            ]),
+          ]),
+          el("tbody", {}, rows),
+        ]),
+      );
+      if (rank(next) > rank(current)) {
+        const checks = goNoGo(after, next, policies);
+        const go = checks.filter((c) => c.ok).length;
+        changes.appendChild(
+          el("div", { class: "gng" }, [
+            el("h3", { class: "gng-title" }, [
+              "Go / No-Go",
+              el("span", { class: "gng-n" }, `${go} of ${checks.length} go`),
+            ]),
+            el(
+              "ul",
+              { class: "gng-list" },
+              checks.map((c) =>
+                el("li", { class: c.ok ? "is-go" : "is-nogo" }, [
+                  glyph(c.ok ? "done" : "failed", 18),
+                  el("span", { class: "gng-word" }, c.ok ? "Go" : "No-go"),
+                  el("span", { class: "gng-text" }, [
+                    c.ok ? c.go : c.nogo,
+                    " ",
+                    el("a", { href: c.href || `#set-${c.key}` }, c.ok ? "See it" : "Fix it"),
+                  ]),
+                ]),
+              ),
+            ),
+            el(
+              "p",
+              { class: "gng-note" },
+              "These checks advise; Save still applies the mode. Read them before you raise it.",
+            ),
+          ]),
+        );
+      }
+    },
+  };
+  return api_;
 }
 
 /** Human label for an autonomy gate. */
@@ -9563,17 +10041,12 @@ function inertPoliciesNote(n) {
 function autonomyRecommendationsPanel(recs, policies, { inert = false } = {}) {
   if (!Array.isArray(recs) || recs.length === 0) return null;
   return el("div", { class: "card panel autonomy-recs" }, [
-    el("div", { class: "ar-head" }, [
-      icon("spark", "ar-ico"),
-      el("div", {}, [
-        el("h2", { class: "ar-title" }, "Autonomy suggestions"),
-        el(
-          "p",
-          { class: "section-note dim" },
-          "Based on your review track record. Advisory only — nothing changes until you explicitly enable it.",
-        ),
-      ]),
-    ]),
+    panelHead("Autonomy suggestions", "from your review track record", null, { kit: "sky" }),
+    el(
+      "p",
+      { class: "section-note" },
+      "Advisory only — nothing changes until you explicitly enable it.",
+    ),
     el(
       "ul",
       { class: "ar-list" },
@@ -9678,19 +10151,14 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
   const active = (Array.isArray(policies) ? policies : []).filter((p) => p.mode === "auto");
   if (active.length === 0) return null;
   return el("div", { class: `card panel autonomy-policies${inert ? " is-inert" : ""}` }, [
-    el("div", { class: "ar-head" }, [
-      icon(inert ? "alert" : "lock", "ar-ico"),
-      el("div", {}, [
-        el("h2", { class: "ar-title" }, inert ? "Active autonomy (inert)" : "Active autonomy"),
-        el(
-          "p",
-          { class: "section-note dim" },
-          inert
-            ? "These grants are never consulted while Review mode is human — no reviewer agent runs. Switch Review mode to agent or both for them to act, or turn them off."
-            : "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
-        ),
-      ]),
-    ]),
+    panelHead(inert ? "Active autonomy (inert)" : "Active autonomy", null, null, { kit: "sky" }),
+    el(
+      "p",
+      { class: "section-note" },
+      inert
+        ? "These grants are never consulted while Review mode is human — no reviewer agent runs. Switch Review mode to agent or both for them to act, or turn them off."
+        : "The factory acts without you at these chokepoints. Turn any off to re-gate it immediately.",
+    ),
     el(
       "ul",
       { class: "ar-list" },
@@ -9756,17 +10224,12 @@ function accessPanel(whoami, principals) {
         ? "the shared token"
         : "unknown";
   const card = el("div", { class: "card panel access-panel" }, [
-    el("div", { class: "ar-head" }, [
-      icon("lock", "ar-ico"),
-      el("div", {}, [
-        el("h2", { class: "ar-title" }, "Access"),
-        el(
-          "p",
-          { class: "section-note dim" },
-          "Named credentials for the API. Every write a principal makes is attributed to its actor in the event log.",
-        ),
-      ]),
-    ]),
+    panelHead("Access", "the keys to the ground", null, { kit: "ink" }),
+    el(
+      "p",
+      { class: "section-note" },
+      "Named credentials for the API. Every write a principal makes is attributed to its actor in the event log.",
+    ),
     el("p", { class: "access-whoami", "data-testid": "access-whoami" }, [
       "Signed in as ",
       el("strong", {}, actorId),
@@ -9856,7 +10319,7 @@ function accessPanel(whoami, principals) {
       maxlength: "200",
       autocomplete: "off",
     });
-    const submit = el("button", { class: "btn primary small", type: "submit" }, [
+    const submit = el("button", { class: "btn small", type: "submit" }, [
       icon("plus"),
       el("span", {}, "Create credential"),
     ]);
@@ -10241,20 +10704,36 @@ function settingHelp(text) {
   ]);
 }
 function renderSettingRow(s, editors) {
+  const mode = settingsModeName;
+  const src =
+    s.source === "file"
+      ? "set in settings.json"
+      : s.source === "mode"
+        ? `from the ${mode || "supervised"} mode`
+        : s.source === "env"
+          ? null
+          : "default";
   const meta = el("div", { class: "setting-meta" }, [
     el("div", { class: "setting-label" }, [
       el("span", {}, s.label || s.key),
       s.envLocked
-        ? el("span", { class: "badge env-locked no-dot" }, [icon("lock", "lock-ico"), "set by env"])
+        ? el("span", { class: "badge env-locked no-dot" }, [
+            icon("lock", "lock-ico", 12),
+            "set by env",
+          ])
         : null,
     ]),
-    el("code", { class: "mono setting-key" }, s.key),
+    el("div", { class: "setting-id" }, [
+      el("code", { class: "mono setting-key" }, s.key),
+      src ? el("span", { class: `setting-src src-${s.source}` }, src) : null,
+      el("span", { class: "setting-unsaved" }, "unsaved"),
+    ]),
     s.help ? settingHelp(s.help) : null,
   ]);
 
   const control = el("div", { class: "setting-control" }, renderSettingInput(s, editors));
 
-  return el(
+  const row = el(
     "div",
     {
       class: `setting-row${s.envLocked ? " is-locked" : ""}`,
@@ -10263,7 +10742,13 @@ function renderSettingRow(s, editors) {
     },
     [meta, control],
   );
+  const ed = editors.get(s.key);
+  if (ed) ed.row = row;
+  return row;
 }
+
+/** The mode the settings on screen were read under (for "from the graduated mode"). */
+let settingsModeName = "";
 
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
@@ -10292,9 +10777,18 @@ function renderSettingInput(s, editors) {
     // `initial` lets Save send only what the user changed: an untouched switch
     // that merely reflects a mode preset must not be written as an explicit "0".
     editors.set(s.key, { read: () => (input.checked ? "1" : "0"), initial: checked ? "1" : "0" });
-    return el("label", { class: "switch" }, [
+    const word = el(
+      "span",
+      { class: "switch-word", "aria-hidden": "true" },
+      checked ? "On" : "Off",
+    );
+    input.addEventListener("change", () => {
+      word.textContent = input.checked ? "On" : "Off";
+    });
+    return el("label", { class: "switch switch-worded" }, [
       input,
       el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
+      word,
     ]);
   }
 
@@ -10305,6 +10799,7 @@ function renderSettingInput(s, editors) {
       step: "1",
       min: "0",
       value: s.value,
+      placeholder: s.effective && s.effective !== s.value ? s.effective : "default",
       "aria-label": s.label,
     });
     editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
@@ -10334,7 +10829,9 @@ function renderSettingInput(s, editors) {
     placeholder: s.type === "csv" ? "comma,separated,values" : "",
     "aria-label": s.label,
   });
-  editors.set(s.key, { read: () => input.value.trim() });
+  // `initial` makes a text edit count as unsaved (and an untouched one stay out of
+  // the payload), the same as every other control.
+  editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
   return input;
 }
 
@@ -15516,11 +16013,10 @@ function writeMemoryStateToUrl() {
 
 /** Render the structured "memory unavailable" panel from an unavailable result. */
 function memoryUnavailable(reason) {
-  return el("div", { class: "card memory-unavailable", dataset: { state: "unavailable" } }, [
-    el("div", { class: "es-icon" }, icon("alert")),
-    el("div", { class: "es-title" }, "Memory unavailable"),
-    el("p", { class: "dim es-sub" }, reason || "The memory product is not reachable right now."),
-    el("p", { class: "dim section-note" }, [
+  return el("div", { class: "memory-unavailable", dataset: { state: "unavailable" } }, [
+    el("p", { class: "es-title" }, "Memory unavailable"),
+    el("p", { class: "es-sub" }, reason || "The memory product is not reachable right now."),
+    el("p", { class: "section-note" }, [
       "The dashboard keeps working without it. Configure the memory CLI (",
       el("code", { class: "mono" }, "MEMORY_CLI_BIN"),
       " + ",
@@ -16087,55 +16583,95 @@ async function renderMemory(param) {
   const { query } = parseHash();
   memoryState.repo = param ? decodeURIComponent(param) : "";
   memoryState.node = query.get("node") || "";
+  const signal = routeSignal();
 
-  const reposRes = await api("GET", "/repositories");
+  // The repos, and every draft across the club in one read: the drafts say which
+  // repo needs the gaffer (its tab carries a yellow card), and which repo to open
+  // when the address names none (the one whose draft is newest).
+  const [reposRes, draftsRes] = await Promise.all([
+    api("GET", "/repositories", undefined, { signal }),
+    api("GET", "/api/memory/lore?status=draft&limit=200", undefined, { signal }).catch(() => null),
+  ]);
   const repos = reposRes.repositories || [];
+  const allDrafts =
+    draftsRes && draftsRes.available !== false && Array.isArray(draftsRes.lore)
+      ? draftsRes.lore.filter((l) => l && l.status === "draft")
+      : null;
+  const draftsFor = (name) =>
+    allDrafts ? allDrafts.filter((l) => (l.repos || []).includes(name)).length : 0;
 
-  // With no repo in the address, open the first one's report (a blank page asks
-  // a question the operator should not have to answer to read anything).
-  if (!memoryState.repo && repos.length) memoryState.repo = repos[0].name;
+  // With no repo in the address, open one (a blank page asks a question the
+  // operator should not have to answer to read anything): the repo with the
+  // newest draft (the server lists newest first), else the first repo.
+  if (!memoryState.repo && repos.length) {
+    const names = new Set(repos.map((r) => r.name));
+    const withDraft = (allDrafts || []).flatMap((l) => l.repos || []).find((n) => names.has(n));
+    memoryState.repo = withDraft || repos[0].name;
+  }
+  const repo = memoryState.repo;
 
+  const [digestRes, featuresRes] = repo
+    ? await Promise.all([
+        api("GET", `/api/memory/digest/${encodeURIComponent(repo)}`, undefined, { signal }),
+        api(
+          "GET",
+          `/api/memory/features/${encodeURIComponent(repo)}${memoryState.node ? `?node=${encodeURIComponent(memoryState.node)}` : ""}`,
+          undefined,
+          { signal },
+        ),
+      ])
+    : [null, null];
+
+  const clubDrafts = allDrafts ? allDrafts.length : null;
   const wrap = el("div", { class: "view view-memory", dataset: { view: "memory" } });
   wrap.appendChild(
     viewHead(
       "Club history",
-      `Memory: scouting reports on ${plural(repos.length, "repo")}, the honours board, and the club's lore`,
-      onboardButton(repos, memoryState.repo, { primary: true }),
+      [
+        plural(repos.length, "repo") + " on the books",
+        clubDrafts == null
+          ? null
+          : clubDrafts
+            ? `${plural(clubDrafts, "lore draft")} across the club await your signature`
+            : "no lore drafts waiting",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      onboardButton(repos, repo),
     ),
   );
-  // The squad of repos: one kit per repo, the one being read marked.
+
+  // The squad of repos: one kit per repo, the one being read marked, a yellow
+  // card on every repo whose lore drafts wait for you.
   if (repos.length > 1) {
     wrap.appendChild(
       el(
         "nav",
         { class: "mem-repos", "aria-label": "Repos" },
-        repos.map((r) =>
-          el(
+        repos.map((r) => {
+          const n = draftsFor(r.name);
+          return el(
             "a",
             {
               class: "mem-repo",
               href: `#/memory/${encodeURIComponent(r.name)}`,
-              "aria-current": r.name === memoryState.repo ? "page" : null,
+              "aria-current": r.name === repo ? "page" : null,
+              "aria-label": n ? `${r.name}, ${plural(n, "lore draft")} waiting` : null,
             },
-            [kitShirt(r.name, 22), el("span", {}, r.name)],
-          ),
-        ),
+            [
+              kitShirt(r.name, 22),
+              el("span", {}, r.name),
+              n
+                ? el("span", { class: "mem-repo-n" }, [ycard(14), el("span", {}, String(n))])
+                : null,
+            ],
+          );
+        }),
       ),
     );
   }
-  wrap.appendChild(
-    el("p", { class: "mem-lede" }, [
-      "The ",
-      el("strong", {}, "scouting report"),
-      " (Repo Digest) is the factory's read of a repo; the ",
-      el("strong", {}, "honours board"),
-      " (Feature ledger) is what has shipped, is building and is backlogged; ",
-      el("strong", {}, "lore"),
-      " is what the club has learned. Lore drafts wait here for you to approve or reject.",
-    ]),
-  );
 
-  // Repo picker — drives the digest + feature ledger below.
+  // Repo picker for a phone (the kits fold away there) — drives the page.
   const repoSel = el(
     "select",
     {
@@ -16149,39 +16685,147 @@ async function renderMemory(param) {
     [
       el("option", { value: "" }, repos.length ? "Select a repo…" : "No repos known"),
       ...repos.map((r) =>
-        el("option", { value: r.name, selected: memoryState.repo === r.name }, r.name),
+        el(
+          "option",
+          { value: r.name, selected: repo === r.name },
+          draftsFor(r.name) ? `${r.name} (${plural(draftsFor(r.name), "draft")})` : r.name,
+        ),
       ),
     ],
   );
-  wrap.appendChild(el("div", { class: "filters" }, [field("Repo", repoSel, { style: "flex:1" })]));
+  wrap.appendChild(
+    el("div", { class: `filters mem-pick${repos.length > 1 ? "" : " is-solo"}` }, [
+      field("Repo", repoSel),
+    ]),
+  );
 
-  if (memoryState.repo) {
-    const [digestRes, featuresRes] = await Promise.all([
-      api("GET", `/api/memory/digest/${encodeURIComponent(memoryState.repo)}`),
-      api(
-        "GET",
-        `/api/memory/features/${encodeURIComponent(memoryState.repo)}${memoryState.node ? `?node=${encodeURIComponent(memoryState.node)}` : ""}`,
-      ),
-    ]);
-    wrap.appendChild(renderDigestCard(memoryState.repo, digestRes, repos));
-    wrap.appendChild(renderFeatureLedger(memoryState.repo, featuresRes));
+  if (repo) wrap.appendChild(memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor));
+
+  // Lore first (the drafts are the one thing here that needs you), the report
+  // and the honours board beside it. The lore card mounts into a slot so a
+  // filter change re-fetches ONLY that card, not the whole view.
+  const loreSlot = el("div", { class: "lore-slot" });
+  const side = el("div", { class: "mem-side" });
+  if (repo) {
+    side.appendChild(renderDigestCard(repo, digestRes, repos));
+    side.appendChild(renderFeatureLedger(repo, featuresRes));
   } else {
-    wrap.appendChild(
+    side.appendChild(
       emptyState(
-        "Pick a repo to read its memory",
-        "The digest and feature ledger are per-repo. Choose one above.",
-        "ticket",
+        "No repos on the books yet.",
+        "Onboard one and its scouting report and honours board land here.",
+        null,
+        onboardButton(repos, "", { primary: true }),
       ),
     );
   }
+  wrap.appendChild(el("div", { class: "mem-grid" }, [loreSlot, side]));
+  const reload = () => remountMemory(param);
+  await mountLoreCard(loreSlot, repos, reload);
 
-  // Lore: a filtered, paged read of the memory store (status / repo / kind) with
-  // approve / reject on drafts. Mounted into a slot so a filter change or a
-  // ratification re-fetches ONLY this card, not the whole view.
-  const loreSlot = el("div", { class: "lore-slot" });
-  wrap.appendChild(loreSlot);
-  await mountLoreCard(loreSlot, repos);
+  // Refresh without moving anything: an unchanged read keeps the DOM (and the
+  // open folds, the focus and the scroll) as it is.
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      repos.map((r) => r.name),
+      allDrafts,
+      digestRes,
+      featuresRes,
+      loreSlot._res || null,
+      loreFilter,
+      memoryState,
+    ]),
+  );
   return wrap;
+}
+
+/**
+ * The club's numbers for this repo, as a paper league-table strip: drafts that
+ * wait for you (yellow when any), the honours (features shipped of all), and the
+ * date of the scouting report. Every figure is one the responses gave us.
+ */
+function memoryStats(repo, digestRes, featuresRes, allDrafts, draftsFor) {
+  const drafts = allDrafts ? draftsFor(repo) : null;
+  const elsewhere = allDrafts ? allDrafts.length - drafts : 0;
+  const feats = featuresRes && featuresRes.available !== false ? featuresRes.features || [] : null;
+  const by = (s) => (feats ? feats.filter((f) => f.status === s).length : 0);
+  const digest = digestRes && digestRes.available !== false ? digestRes.digest : null;
+  const meta = (digest && digest.meta) || {};
+  return el(
+    "div",
+    { class: "kpi-row mem-stats", role: "group", "aria-label": `${repo} in numbers` },
+    [
+      statCell({
+        label: "Drafts await you",
+        value: drafts == null ? "—" : String(drafts),
+        needs: !!drafts,
+        href: "#lore",
+        sub:
+          drafts == null
+            ? "lore unavailable"
+            : elsewhere
+              ? `${elsewhere} more waiting in other repos`
+              : drafts
+                ? "lore to approve or reject"
+                : "nothing to sign",
+      }),
+      statCell({
+        label: "Honours",
+        value: feats ? String(by("shipped")) : "—",
+        unit: feats && feats.length ? `of ${feats.length}` : null,
+        sub: !feats
+          ? "ledger unavailable"
+          : feats.length
+            ? `${by("building")} building · ${by("backlog")} in the backlog`
+            : "no features recorded yet",
+      }),
+      statCell({
+        label: "Scouting report",
+        value: digest && meta.updatedAt ? fmtDay(meta.updatedAt, { weekday: false }) : "—",
+        sub: digest
+          ? `source: ${meta.source || "—"}`
+          : digestRes && digestRes.available === false
+            ? "memory unavailable"
+            : "not scouted yet",
+      }),
+    ],
+  );
+}
+
+/** Re-read the whole Memory view in place (after a ratification), keeping the scroll. */
+async function remountMemory(param) {
+  const gen = routeGen;
+  const focusIdx = (() => {
+    const rows = [...document.querySelectorAll(".lore-row[data-status='draft']")];
+    const i = rows.findIndex((r) => r.contains(document.activeElement));
+    return i;
+  })();
+  let content;
+  try {
+    content = await renderMemory(param);
+  } catch (e) {
+    if (e && e.code !== "ABORTED")
+      toast(e.message || "Could not re-read Memory.", { code: e.code });
+    return;
+  }
+  if (gen !== routeGen) {
+    disposeView(content);
+    return;
+  }
+  const se = document.scrollingElement || document.documentElement;
+  const y = se.scrollTop;
+  mountView(content);
+  se.scrollTop = y;
+  // Triage keeps its place: focus goes to the next draft's Approve (or the card).
+  if (focusIdx >= 0) {
+    const next = [...content.querySelectorAll(".lore-row[data-status='draft'] .lore-approve")];
+    const target = next[Math.min(focusIdx, next.length - 1)] || content.querySelector("#lore");
+    if (target) {
+      if (!target.hasAttribute("tabindex") && target.id === "lore")
+        target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+    }
+  }
 }
 
 // Lore card filters. They persist across the live re-render (the SSE refresh
@@ -16204,7 +16848,7 @@ function loreQueryPath() {
 }
 
 /** Fetch the current lore page and (re)render the card into `slot`. */
-async function mountLoreCard(slot, repos) {
+async function mountLoreCard(slot, repos, reload) {
   if (loreFilter.pageRepo !== memoryState.repo) {
     loreFilter.pageRepo = memoryState.repo;
     loreFilter.repo = memoryState.repo;
@@ -16212,25 +16856,35 @@ async function mountLoreCard(slot, repos) {
   }
   let res;
   try {
-    res = await api("GET", loreQueryPath());
+    res = await api("GET", loreQueryPath(), undefined, { signal: routeSignal() });
   } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
     res = { available: false, reason: e && e.message ? e.message : "The lore request failed." };
   }
   if (!slot.isConnected && slot.childNodes.length) return; // view was torn down mid-fetch
+  slot._res = res;
   clear(slot);
   slot.appendChild(
-    renderLoreList(res, loreFilter.repo, { repos, refresh: () => mountLoreCard(slot, repos) }),
+    renderLoreList(res, loreFilter.repo, {
+      repos,
+      refresh: () => mountLoreCard(slot, repos, reload),
+      reload: reload || (() => mountLoreCard(slot, repos, reload)),
+    }),
   );
 }
 
 /**
  * Ratify a draft from the dashboard: POST /api/memory/lore/:id/approve|reject. The
- * server calls the memory CLI (its write boundary); success re-fetches the page so
- * the row shows its new state (or disappears from a drafts-only filter). A refused
- * decision (already ratified elsewhere, unknown id) surfaces as a toast, never a
- * silent no-op.
+ * server calls the memory CLI (its write boundary); success re-reads the view so
+ * the row shows its new state (or leaves a drafts-only filter) and the counts on
+ * the tabs and the strip agree. A refused decision (already ratified elsewhere,
+ * unknown id) surfaces as a toast, never a silent no-op.
  */
-async function ratifyLore(l, action, refresh) {
+async function ratifyLore(l, action, refresh, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.classList.add("is-busy");
+  }
   try {
     await api(
       "POST",
@@ -16245,38 +16899,58 @@ async function ratifyLore(l, action, refresh) {
     );
   } catch (e) {
     toast(e && e.message ? e.message : `Could not ${action} the draft.`, { code: e && e.code });
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-busy");
+    }
   }
   if (refresh) await refresh();
 }
 
+/** Ticket references in a provenance line ("merge:#5", "epic Repeat orders · #6") become links. */
+function provenanceNodes(text) {
+  const out = [];
+  const re = /#(\d+)/g;
+  let last = 0;
+  let m;
+  const s = String(text);
+  while ((m = re.exec(s))) {
+    if (m.index > last) out.push(s.slice(last, m.index));
+    out.push(el("a", { href: `#/ticket/${m[1]}` }, m[0]));
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) out.push(s.slice(last));
+  return out;
+}
+
+/**
+ * The scouting report (Repo Digest): the factory's read of a repo, set as a calm
+ * document. The overview is the lede; structure, conventions and stack follow as
+ * labelled paragraphs; the freshness line and the CLI's caveat close it.
+ */
 function renderDigestCard(repo, res, repos = []) {
+  const card = el("section", {
+    class: "card mem-page mem-report",
+    dataset: { section: "digest" },
+    "aria-label": "Scouting report",
+  });
+  card.appendChild(panelHead("Scouting report", `Repo Digest · ${repo}`, null, { kit: "claret" }));
   if (!res || res.available === false) {
-    const card = el("div", { class: "card" }, [
-      el("h2", {}, ["Scouting report ", el("span", { class: "count" }, "Repo Digest")]),
-    ]);
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
   }
   const digest = res.digest;
-  const card = el("div", { class: "card", dataset: { section: "digest" } }, [
-    el("h2", {}, [
-      kitShirt(repo, 26),
-      " Scouting report ",
-      el("span", { class: "count" }, `Repo Digest · ${repo}`),
-    ]),
-  ]);
   if (!digest) {
     // No digest yet — onboard this repo to populate it. The button POSTs to
     // /repos/onboard pre-targeting THIS repo, so it's a one-click action here.
-    const es = emptyState(
-      `No digest for ${repo} yet`,
-      "Onboard this repo to scan it and build its Memory digest + feature inventory.",
-      "question",
+    card.appendChild(
+      emptyState(
+        `No digest for ${repo} yet`,
+        "Onboard this repo to scan it and build its Memory digest + feature inventory.",
+        null,
+        onboardButton(repos, repo),
+      ),
     );
-    es.appendChild(
-      el("div", { class: "es-actions" }, [onboardButton(repos, repo, { primary: true })]),
-    );
-    card.appendChild(es);
     return card;
   }
   const SECTIONS = [
@@ -16285,48 +16959,58 @@ function renderDigestCard(repo, res, repos = []) {
     ["Conventions", digest.conventions],
     ["Stack", digest.stack],
   ];
-  const grid = el(
-    "div",
-    { class: "digest-grid" },
-    SECTIONS.map(([label, body]) =>
-      el("div", { class: "digest-section" }, [
-        el("div", { class: "section-title" }, label),
-        el("p", { class: body ? "" : "dim" }, body || "—"),
-      ]),
+  card.appendChild(
+    el(
+      "dl",
+      { class: "scout" },
+      SECTIONS.map(([label, body], i) =>
+        el("div", { class: `scout-sec${i === 0 ? " scout-lede" : ""}` }, [
+          el("dt", {}, label),
+          el("dd", { class: body ? "" : "dim" }, body || "Not written yet."),
+        ]),
+      ),
     ),
   );
-  card.appendChild(grid);
   // Freshness line ("updated_at · source") — the load-bearing provenance.
   const meta = digest.meta || {};
   card.appendChild(
-    el("div", { class: "digest-fresh dim" }, [
-      icon("clock", "fresh-ico"),
+    el("p", { class: "digest-fresh" }, [
+      icon("clock", "fresh-ico", 16),
       el("span", {}, `updated ${fmtTime(meta.updatedAt)}`),
-      el("span", { class: "fresh-dot" }, "·"),
+      el("span", { "aria-hidden": "true" }, "·"),
       el("span", {}, `source: ${meta.source || "—"}`),
     ]),
   );
   // The honesty caveat — surfaced verbatim so nobody over-trusts the summary.
-  if (digest.caveat) {
-    card.appendChild(el("p", { class: "digest-caveat dim" }, digest.caveat));
-  }
+  if (digest.caveat) card.appendChild(el("p", { class: "digest-caveat" }, digest.caveat));
   return card;
 }
 
+/**
+ * The honours board (Feature ledger): what has shipped, what is building and what
+ * waits in the backlog, one mown band per stage, each feature grouped under its
+ * scope node and linked to the ticket its provenance names.
+ */
 function renderFeatureLedger(repo, res) {
-  const card = el("div", { class: "card", dataset: { section: "features" } }, [
-    el("h2", {}, [
-      "Honours board",
-      res && res.available !== false
-        ? el("span", { class: "count" }, String((res.features || []).length))
-        : null,
-    ]),
-  ]);
-  if (!res || res.available === false) {
+  const ok = res && res.available !== false;
+  const features = ok ? res.features || [] : [];
+  const card = el("section", {
+    class: "card mem-page mem-honours",
+    dataset: { section: "features" },
+    "aria-label": "Honours board",
+  });
+  card.appendChild(
+    panelHead(
+      ["Honours board", ok ? el("span", { class: "count" }, String(features.length)) : null],
+      `Feature ledger · ${repo}`,
+      null,
+      { kit: "sky" },
+    ),
+  );
+  if (!ok) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
   }
-  const features = res.features || [];
 
   // Scope-node filter — group/filter by `scope_node`. Built from the features
   // actually present so the options reflect reality.
@@ -16346,9 +17030,7 @@ function renderFeatureLedger(repo, res) {
         ...nodes.map((n) => el("option", { value: n, selected: memoryState.node === n }, `@${n}`)),
       ],
     );
-    card.appendChild(
-      el("div", { class: "filters" }, [field("Scope node", nodeSel, { style: "flex:1" })]),
-    );
+    card.appendChild(el("div", { class: "filters mem-node" }, [field("Scope node", nodeSel)]));
   }
 
   if (features.length === 0) {
@@ -16356,38 +17038,38 @@ function renderFeatureLedger(repo, res) {
       emptyState(
         `No features recorded for ${repo}${memoryState.node ? ` @${memoryState.node}` : ""}`,
         "The merge pipeline ships features into this ledger as work lands.",
-        "check",
       ),
     );
     return card;
   }
 
-  // Current (shipped) / Building / Backlog split, each grouped by scope node.
+  // Current (shipped) / Building / Backlog, each grouped by scope node.
   const lanes = el("div", { class: "ledger" });
   for (const group of FEATURE_GROUPS) {
     const inGroup = features.filter((f) => f.status === group.status);
     const lane = el("div", { class: "ledger-lane", dataset: { status: group.status } }, [
       el("div", { class: "ledger-head" }, [
+        el("span", { class: "ledger-n tabnum" }, String(inGroup.length)),
         el("span", { class: "ledger-label" }, group.label),
-        badge(String(inGroup.length), `feat-${group.status}`),
+        el("span", { class: "ledger-note" }, group.note),
       ]),
-      el("p", { class: "dim ledger-note" }, group.note),
     ]);
+    const list = el("div", { class: "ledger-list" });
     if (inGroup.length === 0) {
-      lane.appendChild(el("p", { class: "dim ledger-empty" }, "Nothing here."));
+      list.appendChild(el("p", { class: "ledger-empty" }, "Nothing here."));
     } else {
-      // Group features within a lane by their scope node for a scannable read.
       const byNode = new Map();
       for (const f of inGroup) {
         const key = f.scopeNode || "";
         if (!byNode.has(key)) byNode.set(key, []);
         byNode.get(key).push(f);
       }
-      for (const [node, list] of byNode) {
-        if (node) lane.appendChild(el("div", { class: "ledger-node dim" }, `@${node}`));
-        for (const f of list) lane.appendChild(renderFeatureCard(f));
+      for (const [node, items] of byNode) {
+        if (node) list.appendChild(el("div", { class: "ledger-node" }, `@${node}`));
+        for (const f of items) list.appendChild(renderFeatureCard(f));
       }
     }
+    lane.appendChild(list);
     lanes.appendChild(lane);
   }
   card.appendChild(lanes);
@@ -16398,47 +17080,68 @@ function renderFeatureCard(f) {
   return el("div", { class: "feature-card", dataset: { status: f.status } }, [
     el("div", { class: "feature-top" }, [
       el("span", { class: "feature-name" }, f.name),
-      f.scopeNode ? el("span", { class: "tag-chip" }, `@${f.scopeNode}`) : null,
-      f.area ? el("span", { class: "dim feature-area" }, f.area) : null,
+      f.area ? el("span", { class: "feature-area" }, f.area) : null,
     ]),
-    f.summary ? el("p", { class: "feature-summary dim" }, f.summary) : null,
+    f.summary ? el("p", { class: "feature-summary" }, f.summary) : null,
     f.provenance
-      ? el("div", { class: "feature-prov dim" }, [icon("link", "prov-ico"), f.provenance])
+      ? el("p", { class: "feature-prov" }, [
+          icon("link", "prov-ico", 14),
+          el("span", {}, provenanceNodes(f.provenance)),
+        ])
       : null,
   ]);
 }
 
+/** Lore groups on a page, in the order the gaffer works them. */
+const LORE_GROUPS = [
+  { id: "draft", label: "Awaiting your signature", statuses: ["draft"] },
+  { id: "active", label: "On the record", statuses: ["active"] },
+  { id: "retired", label: "Retired", statuses: ["deprecated", "superseded"] },
+];
+
 /**
  * The Lore card: a repo / status / kind filter row, the current page of records
- * (the SERVER filters and pages — `total` is the true count), approve / reject on
- * every draft, and a pager. `repo` is the lore-card repo filter (tagged records
- * only; "All repos" shows everything, org-wide lore included).
+ * (the SERVER filters and pages — `total` is the true count) grouped drafts
+ * first, approve / reject on every draft, and a pager. `repo` is the lore-card
+ * repo filter (tagged records only; "All repos" shows everything, org-wide lore
+ * included).
  */
 function renderLoreList(res, repo, opts = {}) {
   const lore = (res && res.lore) || [];
   const refresh = opts.refresh || null;
+  const reload = opts.reload || refresh;
+  const ok = !!res && res.available !== false;
   const total = res && typeof res.total === "number" ? res.total : lore.length;
   const flaggedCount = lore.filter((l) => l && l.flagged).length;
   const draftCount = lore.filter((l) => l && l.status === "draft").length;
-  const card = el("div", { class: "card", dataset: { section: "lore" } }, [
-    el("h2", {}, [
-      "Club lore",
-      res && res.available !== false ? el("span", { class: "count" }, String(total)) : null,
-      // Ratification queue at a glance: drafts on this page awaiting a decision.
-      draftCount > 0
-        ? badge(`${draftCount} draft${draftCount === 1 ? "" : "s"}`, "lore-draft")
+  const card = el("section", {
+    class: "card mem-page mem-lore",
+    id: "lore",
+    dataset: { section: "lore" },
+    "aria-label": "Club lore",
+  });
+  card.appendChild(
+    panelHead(
+      ["Club lore", ok ? el("span", { class: "count" }, String(total)) : null],
+      ok
+        ? [
+            // Ratification queue at a glance: drafts on this page awaiting a decision.
+            draftCount > 0 ? badge(plural(draftCount, "draft"), "lore-draft") : null,
+            // Learn-loop signal: how many conventions the loop flagged for review.
+            flaggedCount > 0 ? badge(`${flaggedCount} flagged`, "lore-flagged") : null,
+            draftCount || flaggedCount ? null : "what the club has learned",
+          ]
         : null,
-      // Learn-loop signal at a glance: how many conventions the loop flagged for review.
-      flaggedCount > 0 ? badge(`${flaggedCount} flagged`, "lore-flagged") : null,
-    ]),
-    el(
-      "p",
-      { class: "dim section-note" },
-      repo
-        ? `Knowledge tagged ${repo}. Drafts wait here for ratification — approve or reject them (the CLI's \`memory review\` does the same).`
-        : "The team's recorded knowledge across every repo. Drafts wait here for ratification — approve or reject them (the CLI's `memory review` does the same).",
+      null,
+      { kit: "ink" },
     ),
-  ]);
+  );
+
+  const loreNote = el(
+    "p",
+    { class: "section-note lore-note" },
+    `${repo ? `Lore tagged ${repo}.` : "Lore across every repo, the club's own included."} Approve a draft and delivery agents read it from the next tick; the CLI's \`memory review\` does the same.`,
+  );
 
   // Filter row — each change re-fetches from the first page.
   const onFilter = (patch) => {
@@ -16493,7 +17196,7 @@ function renderLoreList(res, repo, opts = {}) {
     ]),
   );
 
-  if (!res || res.available === false) {
+  if (!ok) {
     card.appendChild(memoryUnavailable(res ? res.reason : ""));
     return card;
   }
@@ -16510,68 +17213,107 @@ function renderLoreList(res, repo, opts = {}) {
         loreFilter.status === "draft"
           ? "Agents, onboarding and the distiller file drafts here; approving one makes it active for delivery agents."
           : "Lore captures the conventions and decisions agents should respect.",
-        "check",
       ),
     );
+    card.appendChild(loreNote);
     return card;
   }
-  const list = el(
-    "div",
-    { class: "lore-list" },
-    lore.map((l) =>
-      el("div", { class: "lore-row", dataset: { loreId: l.id || "", status: l.status || "" } }, [
-        el("div", { class: "lore-head" }, [
-          el("span", { class: "lore-title" }, l.title),
-          l.status ? badge(l.status, `lore-${l.status}`) : null,
-          l.kind ? el("span", { class: "dim lore-kind" }, l.kind) : null,
-          l.confidence ? el("span", { class: "dim lore-conf" }, `conf=${l.confidence}`) : null,
-          l.stale ? badge("stale", "lore-stale") : null,
-          // Learn-loop signal: this convention was served into a ticket that then
-          // reworked/blocked. Badge it so the operator can spot conventions dragging
-          // delivery down and curate them via the CLI review gate.
-          l.flagged ? badge("flagged", "lore-flagged") : null,
+
+  let firstDraft = true;
+  const row = (l) => {
+    const isDraft = l.status === "draft" && l.id;
+    const actions = isDraft
+      ? (() => {
+          // One sign-off per view: the first draft's Approve is the primary.
+          const approve = el(
+            "button",
+            {
+              class: `btn ${firstDraft ? "primary " : ""}small lore-approve`,
+              type: "button",
+              "aria-label": `Approve “${l.title}”`,
+            },
+            [icon("check"), el("span", {}, "Approve")],
+          );
+          firstDraft = false;
+          approve.addEventListener("click", () => ratifyLore(l, "approve", reload, approve));
+          const reject = el(
+            "button",
+            { class: "btn small lore-reject", type: "button", "aria-label": `Reject “${l.title}”` },
+            "Reject",
+          );
+          reject.addEventListener("click", () => ratifyLore(l, "reject", reload, reject));
+          return el("div", { class: "lore-actions" }, [approve, reject]);
+        })()
+      : null;
+    return el(
+      "article",
+      {
+        class: `lore-row${l.flagged ? " is-flagged" : ""}`,
+        dataset: { loreId: l.id || "", status: l.status || "" },
+      },
+      [
+        el("div", { class: "lore-mark" }, [
+          isDraft || l.flagged ? ycard(26, "lore-card") : null,
+          l.kind ? el("span", { class: "lore-kind" }, l.kind) : null,
         ]),
-        el("p", { class: "lore-summary dim" }, l.summary),
-        el("div", { class: "lore-meta dim" }, [
-          l.source ? el("span", {}, l.source) : null,
-          ...(l.repos || []).map((r) => el("span", { class: "tag-chip" }, r)),
-          ...(l.tags || []).map((t) => el("span", { class: "tag-chip subtle" }, t)),
+        el("div", { class: "lore-body" }, [
+          el("div", { class: "lore-head" }, [
+            el("h4", { class: "lore-title" }, l.title),
+            // The group already says draft / on the record; retired rows name their state.
+            l.status && !["active", "draft"].includes(l.status)
+              ? badge(l.status, `lore-${l.status}`)
+              : null,
+            l.stale ? badge("stale", "lore-stale") : null,
+            // Learn-loop signal: this convention was served into a ticket that then
+            // reworked/blocked. Badge it so the operator can spot conventions dragging
+            // delivery down and curate them via the CLI review gate.
+            l.flagged ? badge("flagged", "lore-flagged") : null,
+          ]),
+          l.summary ? el("p", { class: "lore-summary" }, l.summary) : null,
+          el("div", { class: "lore-meta" }, [
+            ...(l.repos || []).map((r) => repoTag(r, 16)),
+            ...(l.tags || []).map((t) => el("span", { class: "tag-chip" }, t)),
+            l.confidence ? el("span", { class: "lore-conf" }, `${l.confidence} confidence`) : null,
+            l.source ? el("span", { class: "lore-src" }, l.source) : null,
+          ]),
           l.flagged
             ? el(
-                "span",
-                { class: "lore-flag-hint", title: "The learn loop flagged this record for review" },
-                "⚑ served into rework/blocked — curate via `memory review`",
+                "p",
+                { class: "lore-flag-hint" },
+                "Served into a ticket that was then reworked or blocked — curate it with `memory review`.",
               )
             : null,
         ]),
         // Ratification: only a DRAFT can be approved or rejected (an active record is
         // deprecated/superseded through the CLI's lifecycle verbs, not from here).
-        l.status === "draft" && l.id
-          ? el("div", { class: "lore-actions" }, [
-              el(
-                "button",
-                {
-                  class: "btn primary small lore-approve",
-                  type: "button",
-                  onclick: () => ratifyLore(l, "approve", refresh),
-                },
-                [icon("check"), el("span", {}, "Approve")],
-              ),
-              el(
-                "button",
-                {
-                  class: "btn small lore-reject",
-                  type: "button",
-                  onclick: () => ratifyLore(l, "reject", refresh),
-                },
-                "Reject",
-              ),
-            ])
-          : null,
+        actions,
+      ],
+    );
+  };
+  const list = el("div", { class: "lore-list" });
+  for (const g of LORE_GROUPS) {
+    const items = lore.filter((l) => g.statuses.includes(l.status));
+    if (!items.length) continue;
+    list.appendChild(
+      el("h3", { class: `lore-group lore-group-${g.id}` }, [
+        g.label,
+        el("span", { class: "count" }, String(items.length)),
       ]),
-    ),
-  );
+    );
+    for (const l of items) list.appendChild(row(l));
+  }
+  const other = lore.filter((l) => !LORE_GROUPS.some((g) => g.statuses.includes(l.status)));
+  if (other.length) {
+    list.appendChild(
+      el("h3", { class: "lore-group" }, [
+        "Other",
+        el("span", { class: "count" }, String(other.length)),
+      ]),
+    );
+    for (const l of other) list.appendChild(row(l));
+  }
   card.appendChild(list);
+  card.appendChild(loreNote);
 
   // Pager — the server pages; show where this page sits in `total`.
   const from = loreFilter.offset + 1;
@@ -16583,7 +17325,7 @@ function renderLoreList(res, repo, opts = {}) {
     };
     card.appendChild(
       el("div", { class: "lore-pager" }, [
-        el("span", { class: "dim tabnum" }, `Showing ${from}–${to} of ${total}`),
+        el("span", { class: "tabnum" }, `Showing ${from}–${to} of ${total}`),
         el(
           "button",
           {

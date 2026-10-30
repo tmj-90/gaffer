@@ -1,0 +1,260 @@
+/* The gate and the error pages. Login is the members' entrance: a match ticket
+   on the club's claret, the stub carrying the crest, the rest the one field and
+   the one button. The 404 and load-failure pages hold up the fourth official's
+   board with the real code, one plain sentence and the one way on. */
+
+@layer views {
+  /* --- Login ------------------------------------------------------------- */
+  .login-shell {
+    position: relative;
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: 48px 16px;
+    background: var(--claret);
+  }
+  .login-shell::before {
+    /* The sky hoop the club header wears. */
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 8px;
+    background: var(--sky);
+  }
+  .gate-ticket {
+    position: relative;
+    width: min(760px, 100%);
+    display: grid;
+    grid-template-columns: 220px minmax(0, 1fr);
+    gap: 0;
+    justify-items: stretch;
+    padding: 0;
+    background: var(--paper);
+    border: var(--frame);
+    border-top: var(--frame);
+    border-radius: var(--r);
+    box-shadow: 0 6px 0 var(--board);
+  }
+  .gate-stub {
+    position: relative;
+    display: grid;
+    align-content: space-between;
+    justify-items: start;
+    gap: var(--s4);
+    padding: var(--s5);
+    background: var(--board);
+    color: var(--board-ink);
+    border-right: 3px dashed var(--board-rule);
+  }
+  .gate-stub::after,
+  .gate-stub::before {
+    /* The perforation notches where the stub tears off. */
+    content: "";
+    position: absolute;
+    right: -14px;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--r-round);
+    background: var(--claret);
+  }
+  .gate-stub::before {
+    top: -14px;
+  }
+  .gate-stub::after {
+    bottom: -14px;
+  }
+  .login-mark {
+    width: 64px;
+    height: 76px;
+  }
+  .gate-club {
+    font: 900 var(--t52) / 0.9 var(--f-display);
+    text-transform: uppercase;
+  }
+  .gate-admit {
+    font: 700 var(--t14) / 1.2 var(--f-cond);
+    color: var(--sky);
+  }
+  .gate-main {
+    display: grid;
+    gap: 12px;
+    align-content: start;
+    padding: var(--s5) var(--s5) var(--s5) var(--s6);
+  }
+  .gate-main h1 {
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: none;
+  }
+  .gate-lede {
+    font-size: var(--t16);
+  }
+  .gate-label {
+    margin-top: 4px;
+    font: 700 var(--t14) var(--f-text);
+  }
+  .gate-main input {
+    width: 100%;
+    font-family: var(--f-mono);
+  }
+  .gate-main .btn {
+    width: 100%;
+    min-height: 48px;
+  }
+  .login-error {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--red);
+    font-weight: 700;
+  }
+  .login-hint {
+    font-size: var(--t14);
+    color: var(--ink-2);
+  }
+  .login-hint code {
+    color: var(--ink);
+  }
+  @media (max-width: 760px) {
+    .gate-ticket {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .gate-stub {
+      grid-auto-flow: column;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: center;
+      gap: var(--s3) var(--s4);
+      padding: var(--s4);
+      border-right: 0;
+      border-bottom: 3px dashed var(--board-rule);
+    }
+    .gate-stub::before,
+    .gate-stub::after {
+      top: auto;
+      bottom: -14px;
+      right: auto;
+    }
+    .gate-stub::before {
+      left: -14px;
+    }
+    .gate-stub::after {
+      right: -14px;
+    }
+    .login-mark {
+      grid-row: span 2;
+      width: 52px;
+      height: 62px;
+    }
+    .gate-club {
+      font-size: var(--t34);
+    }
+    .gate-main {
+      padding: var(--s5) var(--s4) var(--s4);
+    }
+    .gate-main h1 {
+      font-size: var(--t26);
+    }
+  }
+
+  /* --- Error and 404 ----------------------------------------------------- */
+  .err-page {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--s6);
+    align-items: center;
+    padding: var(--s6) 0;
+    max-width: 1040px;
+  }
+  .err-board {
+    display: grid;
+    justify-items: center;
+  }
+  .err-face {
+    display: grid;
+    justify-items: center;
+    gap: 4px;
+    min-width: 240px;
+    padding: 18px 28px 16px;
+    background: var(--board);
+    color: var(--board-ink);
+    border: 4px solid var(--board-rule);
+    border-radius: 6px;
+    box-shadow: var(--counter-shadow);
+    transform: rotate(-3deg);
+  }
+  .err-code {
+    font: 800 var(--t88) / 0.9 var(--f-display);
+    color: var(--board-ink);
+  }
+  .err-cap {
+    font: 700 var(--t14) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--sky);
+  }
+  .err-handle {
+    width: 26px;
+    height: 64px;
+    margin-top: -6px;
+    background: var(--board-2);
+    border: 2px solid var(--board-rule);
+    border-radius: 0 0 var(--r) var(--r);
+    transform: rotate(-3deg);
+  }
+  .err-board.is-card .ref-card {
+    transform: rotate(-6deg);
+  }
+  .err-body {
+    display: grid;
+    gap: var(--s3);
+    justify-items: start;
+    min-width: 0;
+  }
+  .err-body h1 {
+    line-height: 1.02;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+  }
+  .err-lede {
+    font-size: var(--t20);
+    line-height: 1.4;
+    max-width: 60ch;
+  }
+  .err-detail {
+    color: var(--ink-2);
+    max-width: 70ch;
+  }
+  .err-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: var(--s2);
+  }
+  @media (max-width: 760px) {
+    .err-page {
+      grid-template-columns: minmax(0, 1fr);
+      gap: var(--s4);
+      padding: var(--s4) 0;
+    }
+    .err-board {
+      justify-items: start;
+    }
+    .err-face {
+      min-width: 180px;
+      padding: 12px 20px;
+    }
+    .err-code {
+      font-size: var(--t52);
+    }
+    .err-handle {
+      height: 36px;
+      margin-left: 76px;
+    }
+    .err-lede {
+      font-size: var(--t16);
+    }
+    .err-actions .btn {
+      flex: 1 1 auto;
+    }
+  }
+}

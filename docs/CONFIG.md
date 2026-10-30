@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 118 |
+| Knobs with a runner default | 119 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 68 |
+| Env reads in code with no default and no UI entry | 69 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -66,11 +66,11 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_TICK_TIMEOUT` | `1800` | yes (int) | dispatch, runner | Wall-clock cap on a single tick before it is killed. |
 | `GAFFER_MAX_TURNS` | `200` | yes (int) | dispatch, runner | Cap on agent turns within one ticket. |
-| `GAFFER_DOD_TESTS` | `1` |  | runner | 1 = run the repo's test gate on every delivery; 0 skips it |
-| `GAFFER_DOD_LINT` | `1` |  | runner | 1 = run the lint gate |
-| `GAFFER_DOD_TYPECHECK` | `1` |  | runner | 1 = run the typecheck gate (auto-detected command) |
+| `GAFFER_DOD_TESTS` | `1` |  | crew, runner | 1 = run the repo's test gate on every delivery; 0 skips it |
+| `GAFFER_DOD_LINT` | `1` |  | crew, runner | 1 = run the lint gate |
+| `GAFFER_DOD_TYPECHECK` | `1` |  | crew, runner | 1 = run the typecheck gate (auto-detected command) |
 | `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | runner | override the auto-detected typecheck command |
-| `GAFFER_DOD_TIMEOUT` | `900` |  | runner | wall-clock cap (seconds) per gate and per AC check command |
+| `GAFFER_DOD_TIMEOUT` | `900` |  | crew, runner | wall-clock cap (seconds) per gate and per AC check command |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the wor |
@@ -164,7 +164,7 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_MODE` | `supervised` | yes (string: supervised / lite / graduated / autonomous / strict) | dispatch, runner | Preset that sets the whole autonomy cluster at once (review mode, agent approval, auto-merge, auto-push, memory auto-approve): supervised · lite · graduated · autonomous · strict. supervised (default) keeps a human on every merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, no sensitive path) that passed every gate + earned an APPROVE from the reviewer agent — and still leaves a human to MERGE (never auto-merges); non-trivial tickets hold for you. (Because auto-approve drops the human quality gate, lite requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) graduated ships what each repo has EARNED at its risk level and holds everything else for you (the reviewer agent runs, but the per-repo/risk autonomy policy is the sole allow-path — set grants in the per-repo policy editor); autonomous lets agents approve and auto-merges + pushes approved work; strict adds OS-level sandbox containment on top of autonomous, chosen by SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on a non-macOS host strict has no OS containment beyond the deterministic hook — set GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. Picking a mode prevents a half-configured autonomy posture. The individual knobs below still override the mode — an explicitly-set flag always wins. |
 | `DISPATCH_ALLOW_AGENT_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). |
-| `MEMORY_AUTO_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, memory, runner | Accept memory draft records without a human review step. |
+| `MEMORY_AUTO_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | crew, dispatch, memory, runner | Accept memory draft records without a human review step. |
 
 ### Autonomy REQUIRES containment
 
@@ -174,6 +174,7 @@ computed from other knobs at runtime.
 | `MERGE_ON_AGENT_REVIEW` | `0` | yes (boolean) | dispatch, runner | Fire the merge command when an agent (not just a human) approves. |
 | `AUTO_MERGE` | `0` | yes (boolean) | dispatch, runner | Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human. |
 | `GAFFER_AUTO_PUSH` | `0` | yes (boolean) | dispatch, runner | The final AFK step: push the default branch to origin after a successful auto-merge. Requires Auto-merge; off → merges stay local. |
+| `GAFFER_IDLE_HOST_EXEC` | `0` |  | crew, runner | 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE |
 
 ### Strict execution mode
 
@@ -325,6 +326,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |
+| `GAFFER_SAFETY_HOOK` |  | `packages/crew/src/safety/liveHook.ts` |
 | `GAFFER_SANDBOX_CLAUDE_BIN` | `claude` | `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `GAFFER_SANDBOX_CLAUDE_CREDENTIALS` | _(empty)_ / `/nonexistent` | `runner/lib/sandbox-docker.sh`, `runner/sandbox/smoke-test.sh` |
 | `GAFFER_SANDBOX_HOME` | `/root` | `runner/lib/dod.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |

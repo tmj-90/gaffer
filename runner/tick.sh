@@ -3108,6 +3108,9 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   _MAINT_ARGS=()
   [ "${GAFFER_MAINTENANCE:-}" = "1" ] && _MAINT_ARGS=(--force)
   log "no ready tickets → maintenance lane (crew.yaml decides; deterministic scheduler picks one loop)"
+  if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}" && ! _gaffer_flag_on "${GAFFER_IDLE_HOST_EXEC:-0}"; then
+    log "maintenance lane: GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands (coverage_command) unsandboxed on the host (GAFFER_IDLE_HOST_EXEC=1 to allow)"
+  fi
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg maintain${_MAINT_ARGS[0]:+ --force} (scheduler-chosen maintenance loop)"; result no_work; exit 0
   fi

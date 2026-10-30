@@ -109,6 +109,7 @@ CREW_CONFIG="$WORK/crew.config.yaml"; printf 'factory:\n  name: t\n' > "$CREW_CO
 run_tick() {
   CREW_CALLS="$CREW_CALLS" MAINT_ENABLED="${MAINT_ENABLED:-1}" \
   MAINT_FAIL="${MAINT_FAIL:-0}" MAINT_STATUS="${MAINT_STATUS:-}" \
+  GAFFER_STRICT_REQUIRE="${GAFFER_STRICT_REQUIRE:-0}" GAFFER_IDLE_HOST_EXEC="${GAFFER_IDLE_HOST_EXEC:-0}" \
   RUNNER_DIR="$RUNNER_DIR" GAFFER_HOME="$WORK" GAFFER_DATA="$GAFFER_DATA" \
   DISPATCH_DIR="$WORK/dispatch" CREW_DIR="$WORK/crew" CREW_CONFIG="$CREW_CONFIG" \
   DRY_RUN="${DRY_RUN:-0}" REVIEW_MODE=human \
@@ -226,6 +227,20 @@ OUT10="$(MAINT_STATUS=no_findings run_tick)"
 echo "$OUT10" | grep -q '^TICK_RESULT=maintenance_ran$' \
   && ok "a known status (no_findings) still reports maintenance_ran" \
   || fail "expected maintenance_ran for no_findings, got: $(echo "$OUT10" | grep '^TICK_RESULT=')"
+
+# ── 10. strict containment: the tick says idle repo commands won't run on the host ─
+reset_log
+OUT11="$(GAFFER_STRICT_REQUIRE=1 MAINT_ENABLED=1 run_tick)"
+grep -q 'GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "GAFFER_STRICT_REQUIRE=1 → the tick logs that idle repo commands are refused on the host" \
+  || fail "missing the strict-mode idle host-exec log line (result: $(echo "$OUT11" | grep '^TICK_RESULT='))"
+reset_log
+GAFFER_STRICT_REQUIRE=1 GAFFER_IDLE_HOST_EXEC=1 MAINT_ENABLED=1 run_tick >/dev/null
+if grep -q 'idle loops will NOT run repo commands' "$GAFFER_DATA/factory.log" 2>/dev/null; then
+  fail "GAFFER_IDLE_HOST_EXEC=1 should silence the strict-mode refusal line"
+else
+  ok "GAFFER_IDLE_HOST_EXEC=1 opts back in (no refusal line)"
+fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

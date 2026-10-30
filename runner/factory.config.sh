@@ -1495,6 +1495,14 @@ if _gaffer_autonomy_on; then
   fi
 fi
 
+# Idle-loop host exec under strict containment. The idle COVERAGE loop runs each
+# repo's coverage_command (its own test suite, i.e. code agents wrote) directly on
+# the host, in the real checkout, outside any sandbox. When GAFFER_STRICT_REQUIRE is
+# on (autonomy mode turns it on) crew REFUSES that and records coverage_scan_refused;
+# set this to 1 only if you contain the whole runner out-of-band (VM/container).
+: "${GAFFER_IDLE_HOST_EXEC:=0}"   # 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE
+export GAFFER_IDLE_HOST_EXEC
+
 # Who reviews in_review tickets before they can be approved to done:
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill

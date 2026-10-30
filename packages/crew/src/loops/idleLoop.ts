@@ -38,6 +38,8 @@ export interface IdleLoopDeps {
    * tests and on a fresh config, so default behaviour is preserved.
    */
   oracles?: OracleSet;
+  /** Environment for policy switches (GAFFER_STRICT_REQUIRE, …); defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
@@ -123,6 +125,17 @@ function evidenceSummary(finding: CoverageFinding, threshold: number): string {
 }
 
 /**
+ * True when idle loops must NOT run repo-supplied commands on the host: strict
+ * containment is required (GAFFER_STRICT_REQUIRE on) and the operator has not
+ * explicitly allowed unsandboxed idle host exec (GAFFER_IDLE_HOST_EXEC=1).
+ */
+export function idleHostExecRefused(env: NodeJS.ProcessEnv): boolean {
+  const on = (v: string | undefined): boolean =>
+    ["1", "true", "yes", "on"].includes((v ?? "").trim().toLowerCase());
+  return on(env.GAFFER_STRICT_REQUIRE) && !on(env.GAFFER_IDLE_HOST_EXEC);
+}
+
+/**
  * One tick of the idle coverage loop. Only runs when Dispatch has no ready
  * tickets. For each configured repo with a coverage command, it runs the
  * command, parses output, and creates a DRAFT Dispatch ticket with an evidence
@@ -161,9 +174,31 @@ export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
   const observations: CoverageObservation[] = [];
   let readyCount = 0;
 
+  // Under strict containment (GAFFER_STRICT_REQUIRE, which autonomy mode turns on)
+  // the runner fails closed without an OS sandbox — but this loop runs the repo's
+  // own test suite (coverage_command) bare on the host, in the real checkout.
+  // Refuse it there unless the operator explicitly allows host exec.
+  const hostExecRefused = idleHostExecRefused(deps.env ?? process.env);
+
   for (const repo of candidates) {
     const cwd = deps.repoRegistry.absolutePath(repo);
+    if (hostExecRefused) {
+      events.record("coverage_scan_refused", {
+        repoName: repo.name,
+        reason:
+          "GAFFER_STRICT_REQUIRE is on and idle commands run unsandboxed on the host; set GAFFER_IDLE_HOST_EXEC=1 to allow",
+      });
+      continue;
+    }
     const result = deps.runner.run(repo.coverage_command!, cwd);
+    if (result.timedOut || result.truncated) {
+      // Partial output must never be parsed as a coverage finding.
+      events.record("coverage_scan_failed", {
+        repoName: repo.name,
+        reason: result.timedOut ? "timed out" : "output exceeded the size cap",
+      });
+      continue;
+    }
     const parsed = parseCoverage(result.stdout);
     const finding: CoverageFinding = {
       repoName: repo.name,

@@ -13,6 +13,9 @@
 #   D2. the next attempt is handed off: branch kept, ticket released to ready and
 #       skipped for the run, the handoff logged with the time it needed
 #   D3. GAFFER_TICK_DEADLINE_GUARD=0 restores the old behaviour (the bound kills it)
+#   D4. attempt 1 is never refused for a short budget: with GAFFER_MAX_DELIVERY_ATTEMPTS=1
+#       and less time left than one agent call, the agent still runs (its call clamped
+#       to the time left) and delivers
 # Run: bash runner/test/tick-deadline.test.sh
 # =====================================================================
 set -uo pipefail
@@ -61,6 +64,18 @@ D3="$(slow_ticket "Slow gate unguarded")"
 R3="$(bounded_tick GAFFER_TICK_DEADLINE_GUARD=0)"
 case "$R3" in "rc=124 "*) ok "D3: with the guard off the outer bound reaped the tick ($R3)" ;; *) fail "D3: expected the outer bound to fire, got '$R3'" ;; esac
 grep -qx "$D3" "$GAFFER_DATA/.failed-tickets" && ok "D3: a ticket the outer bound killed is skipped for the rest of the run (no immediate re-claim)" || fail "D3: killed ticket #$D3 not in the skip file"
+
+retire "$D3"
+
+echo "== D4. attempt 1 runs (clamped) even when less than one agent call is left =="
+rm -f "$GAFFER_DATA/.failed-tickets"
+D4="$(new_ready "Short budget first attempt" "deliver a helper")"
+R4="$( cd "$RUNNER_DIR" && export GAFFER_MAX_DELIVERY_ATTEMPTS=1 GAFFER_TICK_TIMEOUT=30 GAFFER_TICK_OUTER_TIMEOUT=32 \
+        GAFFER_TICK_DEADLINE_MARGIN=5 GAFFER_REAP_GRACE=3 GAFFER_DOD_INSTALL=0 \
+        && gaffer_timeout 90 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" | grep '^TICK_RESULT=' | tail -1 )"
+grep -q "DEADLINE: #$D4 attempt 1 has [0-9]*s .* clamped to [0-9]*s" "$GAFFER_DATA/factory.log" && ok "D4: attempt 1 started with its agent call clamped" || fail "D4: no clamp line for #$D4 in the log"
+! grep -q "DEADLINE: #$D4 attempt 1/1 needs" "$GAFFER_DATA/factory.log" && ok "D4: attempt 1 was not handed off" || fail "D4: attempt 1 was refused"
+[ "$R4" = "TICK_RESULT=worked" ] && [ "$(st "$D4")" = in_review ] && ok "D4: delivered ($R4, in_review)" || fail "D4: $R4 status=$(st "$D4")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

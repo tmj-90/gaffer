@@ -2346,18 +2346,30 @@ $_trail_q
   # hand the ticket to the next tick with its branch kept (released to ready, bounded
   # across runs through the same counter as a no-commit failure). Gate/AC timeouts
   # are clamped to the time left so a gate cannot outlive the bound either.
+  # Attempt 1 is never refused for a short budget (nothing is spent yet, and a slow
+  # merge lane or first install would otherwise park a ticket that was never tried):
+  # its agent call is instead clamped to the time left, so the call's own timeout
+  # (pause-eligible, work kept) fires before the outer bound would kill the tick. It
+  # is handed off only when no time is left at all.
   _GATE_SECS_LAST=0; _T_AGENT_DONE=""
   _DOD_TIMEOUT_CFG="${GAFFER_DOD_TIMEOUT:-900}"; _DOD_INSTALL_TIMEOUT_CFG="${GAFFER_DOD_INSTALL_TIMEOUT:-$_DOD_TIMEOUT_CFG}"
+  _TICK_TIMEOUT_CFG="${GAFFER_TICK_TIMEOUT:-1800}"; _AGENT_TIMEOUT="$_TICK_TIMEOUT_CFG"
   gaffer_deadline_short() {
     local rem need
     rem="$(gaffer_tick_remaining)"
-    need=$(( ${GAFFER_TICK_TIMEOUT:-1800} + ${_GATE_SECS_LAST:-0} ))
+    need=$(( _TICK_TIMEOUT_CFG + ${_GATE_SECS_LAST:-0} ))
+    _AGENT_TIMEOUT="$_TICK_TIMEOUT_CFG"
     [ "$rem" -lt "$need" ] || return 1
     _DEADLINE_REM="$rem"; _DEADLINE_NEED="$need"
+    if [ "$_DELIV_ATTEMPT" -le 1 ] && [ "$rem" -ge 1 ]; then
+      [ "$rem" -lt "$_AGENT_TIMEOUT" ] && _AGENT_TIMEOUT="$rem"
+      log "DEADLINE: #$NUM attempt 1 has ${rem}s before the outer per-tick bound (needs ~${need}s) — starting it with the agent call clamped to ${_AGENT_TIMEOUT}s"
+      return 1
+    fi
     return 0
   }
   gaffer_deadline_handoff() {
-    local why="attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS needs ~${_DEADLINE_NEED}s (GAFFER_TICK_TIMEOUT ${GAFFER_TICK_TIMEOUT:-1800}s + ${_GATE_SECS_LAST:-0}s of gates) but only ${_DEADLINE_REM}s are left before the outer per-tick bound"
+    local why="attempt $_DELIV_ATTEMPT/$_MAX_DELIVERY_ATTEMPTS needs ~${_DEADLINE_NEED}s (GAFFER_TICK_TIMEOUT ${_TICK_TIMEOUT_CFG}s + ${_GATE_SECS_LAST:-0}s of gates) but only ${_DEADLINE_REM}s are left before the outer per-tick bound"
     log "DEADLINE: #$NUM $why — not starting it; the next tick continues on branch $WORK_BRANCH"
     # Keep the branch (a retry already tore the worktree down, so its commits can only
     # be seen on the branch itself); an empty one is simply re-created next tick.
@@ -2461,8 +2473,10 @@ $_trail_q
   # What every write repo's refs held at spawn: the branch-switch recovery below only
   # adopts commits the agent made and only deletes a branch the agent created.
   _PRESPAWN_REFS="$(gaffer_snapshot_refs "$WT_ROWS")"
+  GAFFER_TICK_TIMEOUT="$_AGENT_TIMEOUT"  # the deadline guard's clamp (attempt 1 only)
   worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP"
   rc=$?
+  GAFFER_TICK_TIMEOUT="$_TICK_TIMEOUT_CFG"
   _T_AGENT_DONE="$(date +%s)"
   # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
   # best-effort, which were APPLIED — detected from the agent's output JSON) so a

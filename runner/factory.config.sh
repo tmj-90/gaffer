@@ -484,8 +484,10 @@ export GAFFER_TICK_OUTER_TIMEOUT
 # (start + GAFFER_TICK_OUTER_TIMEOUT - GAFFER_TICK_DEADLINE_MARGIN); when it is less
 # than GAFFER_TICK_TIMEOUT plus the previous attempt's measured gate time, it does NOT
 # start an attempt the outer bound would kill — it keeps the branch and releases the
-# ticket for the next tick (bounded across runs like a no-commit failure). Gate and AC
-# timeouts are also clamped to the time left. 0 = off (start every attempt, as before).
+# ticket for the next tick (bounded across runs like a no-commit failure). Attempt 1 is
+# never refused this way (nothing is spent yet): its agent call is clamped to the time
+# left instead. Gate and AC timeouts are also clamped to the time left. 0 = off (start
+# every attempt, as before).
 : "${GAFFER_TICK_DEADLINE_GUARD:=1}"
 : "${GAFFER_TICK_DEADLINE_MARGIN:=60}"   # seconds kept back for record / release / teardown
 

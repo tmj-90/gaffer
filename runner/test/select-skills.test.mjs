@@ -16,6 +16,7 @@ import {
   selectForRole,
   ROLE_PROFILES,
   ROLE_NAMES,
+  TEXT_GATED_SKILL_NAMES,
   DEFAULT_SKILLS_DIR,
 } from "../bin/select-skills.mjs";
 
@@ -940,16 +941,22 @@ check("delivery never mounts the runner's / another role's jobs (listing paid ev
       assert(!role.includes(n), `delivery profile must NOT mount ${n}`);
   }
 });
-check("no skill body points the agent at a runner-job skill it is never mounted with", () => {
+check("no skill body points the agent at a skill delivery may not have mounted", () => {
   // The runner creates the branch, submits for review and resolves merges; a skill that
   // says "(the `create-branch` skill verifies)" sends the delivery agent looking for a
-  // skill it does not have. Only those skills' own SKILL.md may name them.
-  const runnerJobs = ["create-branch", "submit-review", "resolve-merge-conflict"];
-  const re = new RegExp("`(" + runnerJobs.join("|") + ")`\\s+skill");
+  // skill it does not have. A text-gated skill (dependency-upgrade) is absent on most
+  // deliveries, so an always-mounted stack pack that says "(the `dependency-upgrade`
+  // skill)" dangles exactly when the agent finds mid-delivery that it needs one. Only
+  // those skills' own SKILL.md may name them. The bare name is matched, so a pointer
+  // that wraps across a line ("the\n`x` skill") or drops the word "skill" still fails.
+  const absent = ["create-branch", "submit-review", "resolve-merge-conflict"];
+  absent.push(...TEXT_GATED_SKILL_NAMES);
+  assert(TEXT_GATED_SKILL_NAMES.includes("dependency-upgrade"), "text-gated list lost a name");
+  const re = new RegExp("(?<![\\w-])(" + absent.join("|") + ")(?![\\w-])");
   const skills = loadSkills();
   assert(skills.length > 0, "no skills loaded");
   for (const s of skills) {
-    if (runnerJobs.includes(s.name)) continue;
+    if (absent.includes(s.name)) continue;
     const m = readFileSync(join(DEFAULT_SKILLS_DIR, s.name, "SKILL.md"), "utf8").match(re);
     assert(!m, `${s.name}/SKILL.md names the ${m && m[1]} skill`);
   }
@@ -969,7 +976,11 @@ check("the role that owns each still mounts it", () => {
   assert(
     selectForRole("merge", { stacks: ["go"] }).some((s) => s.name === "resolve-merge-conflict"),
   );
-  assert(selectForRole("bootstrap", { stacks: ["go"] }).some((s) => s.name === "create-branch"));
+  // create-branch has no live consumer: the bootstrap profile lists it, but tick.sh's
+  // bootstrap runs the plain delivery selection (no --role) and the runner creates the
+  // bootstrap branch itself. Pin that the live path really goes without it.
+  const live = selectSkills({ stacks: ["go"], text: "Scaffold a Go CLI" });
+  assert(!live.some((s) => s.name === "create-branch"), "live bootstrap mounted create-branch");
 });
 
 // Report once, AFTER every check: this block used to sit above the ROLE-profile

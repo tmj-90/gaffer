@@ -362,7 +362,9 @@ const ROLE_ONLY_SKILLS = new Set([
   // The RUNNER's own jobs: it creates + checks out the delivery branch and submits the
   // finished delivery for review. A delivery agent mounting these paid their listing
   // on every turn for a step it must not take (the brief verifies the branch inline).
-  // Still mounted where a role needs them: review (submit-review), bootstrap (create-branch).
+  // Still mounted where a role needs them: review (submit-review). The bootstrap profile
+  // lists create-branch, but the live bootstrap (tick.sh) runs the plain delivery
+  // selection and the runner creates that branch itself, so no live path mounts it.
   "create-branch",
   "submit-review",
 ]);
@@ -395,6 +397,8 @@ const TEXT_GATED_SKILLS = new Map([
     ],
   ],
 ]);
+/** The text-gated names, for the guard that no always-mounted skill points at them. */
+export const TEXT_GATED_SKILL_NAMES = Object.freeze([...TEXT_GATED_SKILLS.keys()]);
 
 export function skillMatches(skill, { stacks = [], area = "", stackKnown } = {}) {
   // A role procedure is reachable only through its role profile or an explicit --area.

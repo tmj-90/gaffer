@@ -39,7 +39,7 @@ concurrency is checked by the compiler through actors and `Sendable`. For the bu
 
 - SwiftPM: `swift build` and `swift test` (one test: `swift test --filter Suite/test`).
   Never `swift package update` or edit `Package.resolved`; a new or bumped package is a
-  blocker (the `dependency-upgrade` skill).
+  blocker: `mark_ticket_blocked` with the exact command a human should run.
 - Xcode: `xcodebuild -list`, then `xcodebuild test -scheme <Scheme> -destination
   '<CI destination>'`.
 - Lint: `swiftlint lint --strict` (if configured); `swift format lint --strict

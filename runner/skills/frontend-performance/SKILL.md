@@ -93,7 +93,8 @@ and a scripted interaction trace for the specific slow input.
   stated budget or the "good" threshold above if the ticket names none.
 - No other Core Web Vital or route bundle regressed.
 - Where the repo has budget tooling, a budget guards the improvement; otherwise the
-  evidence names the missing guard (adding one is a `dependency-upgrade` decision).
+  evidence names the missing guard (adding budget tooling is a new dependency, which a
+  human approves: name the exact install command).
   Functional tests still pass.
 
 ## Anti-patterns

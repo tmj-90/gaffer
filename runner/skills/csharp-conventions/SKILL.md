@@ -15,8 +15,8 @@ news up its dependencies gives that back. For the builder and the reviewer of a 
 
 1. **Discover the solution's conventions first.** Call `search_lore` for .NET conventions.
    Read `global.json` (SDK pin), `Directory.Build.props` and `Directory.Packages.props`
-   (central package versions; a new or bumped package is a blocker, see the
-   `dependency-upgrade` skill), the `.csproj`
+   (central package versions; a new or bumped package is a blocker:
+   `mark_ticket_blocked` with the exact command a human should run), the `.csproj`
    (`TargetFramework`, `LangVersion`, `Nullable`, `TreatWarningsAsErrors`,
    `AnalysisLevel`/`AnalysisMode`, `ImplicitUsings`), `.editorconfig` (naming and
    diagnostic severities), `.config/dotnet-tools.json`, and the CI workflow. Identify the

@@ -31,11 +31,24 @@
 # A summary (failures, skips, tripwire hits, slowest 10) is printed and, in CI,
 # appended to $GITHUB_STEP_SUMMARY.
 #
-# Usage: runner/test/run.sh [-j N] [--strict] [-v] [--] [FILE...]
-#   -j N      parallel jobs (default: $JOBS, else the CPU count)
-#   --strict  same as GAFFER_TEST_STRICT=1
-#   -v        print every test's output, not only failures'
-#   --        ignored (pnpm forwards it: `pnpm test:runner -- -j 2` works too)
+# SHARDING (CI spreads the suite over several runners): `--shard K/N` (or
+# GAFFER_RUN_SHARD=K/N) runs only shard K of N. The N shards PARTITION the file set
+# exactly — no file in two shards, none in neither — and the split depends only on
+# the file names and lib/shard-weights.tsv, never on the machine. lib/shard.mjs
+# balances them by expected duration (LPT: heaviest file first, onto the lightest
+# shard; a file missing from the weights table counts 10s; shard 1 starts with a
+# small head start, as CI also gives it the macOS package tests). Within a shard
+# everything above still holds: LONG_RE caps and queue-first, strict skips, the
+# tripwire, the operator-state guard and the summary. After adding or removing a
+# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner).
+#
+# Usage: runner/test/run.sh [-j N] [--strict] [-v] [--shard K/N] [--list] [--] [FILE...]
+#   -j N         parallel jobs (default: $JOBS, else the CPU count)
+#   --strict     same as GAFFER_TEST_STRICT=1
+#   -v           print every test's output, not only failures'
+#   --shard K/N  run only shard K of N (default: $GAFFER_RUN_SHARD, else all)
+#   --list       print the files that would run (after --shard), run nothing
+#   --           ignored (pnpm forwards it: `pnpm test:runner -- -j 2` works too)
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,7 +75,9 @@ if [ "${1:-}" = "--one" ]; then
   t0="$(date +%s)"
   (
     cd "$ROOT" || exit 1
-    unset DISPATCH_DB DISPATCH_AUDIT MEMORY_DB GAFFER_CREW_EVENTS CLAUDE_FLAGS MCP_CONFIG
+    # GAFFER_RUN_SHARD too: a test that drives run.sh itself (run-harness) must not
+    # have its nested runs sharded by the CI job's shard.
+    unset DISPATCH_DB DISPATCH_AUDIT MEMORY_DB GAFFER_CREW_EVENTS CLAUDE_FLAGS MCP_CONFIG GAFFER_RUN_SHARD
     export GAFFER_DATA="$priv/.gaffer" GAFFER_TEST_NAME="$name"
     export PATH="$R/tripwire:$PATH" CLAUDE_BIN="$R/tripwire/claude"
     exec perl -e 'alarm shift; exec @ARGV' "$cap" "$interp" "$file"
@@ -105,6 +120,7 @@ fi
 # Driver.
 # ---------------------------------------------------------------------------
 JOBS="${JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)}"
+SHARD="${GAFFER_RUN_SHARD:-}" LIST=0
 FILES=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -115,6 +131,9 @@ while [ $# -gt 0 ]; do
     -j*) JOBS="${1#-j}"; shift ;;
     --strict) export GAFFER_TEST_STRICT=1; shift ;;
     -v) export GAFFER_RUN_VERBOSE=1; shift ;;
+    --shard) SHARD="${2:-}"; shift $(($# < 2 ? 1 : 2)) ;;
+    --shard=*) SHARD="${1#--shard=}"; shift ;;
+    --list) LIST=1; shift ;;
     -h | --help) sed -n '2,/^# =====/p' "$SELF" | sed 's/^# \{0,1\}//'; exit 0 ;;
     # An unknown option or a missing FILE is a usage error, never a "test" to run.
     -*) echo "run.sh: unknown option '$1' (see --help)" >&2; exit 2 ;;
@@ -124,8 +143,31 @@ while [ $# -gt 0 ]; do
   esac
 done
 [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "run.sh: -j needs a positive integer (got '$JOBS')" >&2; exit 2; }
+SHARD_K="" SHARD_N="" SHARD_RE='^([1-9][0-9]*)/([1-9][0-9]*)$'
+if [ -n "$SHARD" ]; then
+  [[ "$SHARD" =~ $SHARD_RE ]] && [ "${BASH_REMATCH[1]}" -le "${BASH_REMATCH[2]}" ] \
+    || { echo "run.sh: --shard / GAFFER_RUN_SHARD needs K/N with 1 <= K <= N (got '$SHARD')" >&2; exit 2; }
+  SHARD_K="${BASH_REMATCH[1]}" SHARD_N="${BASH_REMATCH[2]}"
+fi
 if [ ${#FILES[@]} -eq 0 ]; then
   for f in "$HERE"/*.test.sh "$HERE"/*.test.mjs; do FILES+=("$f"); done
+fi
+N_ALL=${#FILES[@]}
+if [ -n "$SHARD_N" ]; then
+  command -v node >/dev/null 2>&1 || { echo "run.sh: node is required for --shard" >&2; exit 2; }
+  sel="$(node "$HERE/lib/shard.mjs" "$SHARD_K" "$SHARD_N" "$HERE/lib/shard-weights.tsv" "${FILES[@]}")" \
+    || { echo "run.sh: shard assignment failed" >&2; exit 2; }
+  FILES=()
+  while IFS= read -r f; do [ -n "$f" ] && FILES+=("$f"); done <<<"$sel"
+fi
+if [ "$LIST" = 1 ]; then
+  for f in "${FILES[@]+"${FILES[@]}"}"; do echo "${f#"$ROOT"/}"; done
+  exit 0
+fi
+SHARD_DESC="$([ -n "$SHARD_N" ] && echo "shard $SHARD_K/$SHARD_N: ${#FILES[@]} of $N_ALL")"
+if [ ${#FILES[@]} -eq 0 ]; then
+  echo "run.sh: $SHARD_DESC test file(s) — nothing to run"
+  exit 0
 fi
 command -v perl >/dev/null 2>&1 || { echo "run.sh: perl is required (the per-test cap)" >&2; exit 2; }
 
@@ -159,7 +201,7 @@ for f in "${FILES[@]}"; do
   case "$f" in *.mjs) echo "$CAP_MJS" >"$RES/$i.cap" ;; *) echo "$CAP_SH" >"$RES/$i.cap" ;; esac
   if [[ "$(basename "$f")" =~ $LONG_RE ]]; then echo "$CAP_LONG" >"$RES/$i.cap"; LONG+=("$i"); else REST+=("$i"); fi
 done
-echo "run.sh: ${#FILES[@]} test file(s), -j $JOBS (${#LONG[@]} long, queued first)$([ "${GAFFER_TEST_STRICT:-0}" = 1 ] && echo ', strict')"
+echo "run.sh: ${SHARD_DESC:-${#FILES[@]}} test file(s), -j $JOBS (${#LONG[@]} long, queued first)$([ "${GAFFER_TEST_STRICT:-0}" = 1 ] && echo ', strict')"
 T0="$(date +%s)"
 { [ ${#LONG[@]} -gt 0 ] && printf '%s\n' "${LONG[@]}"; [ ${#REST[@]} -gt 0 ] && printf '%s\n' "${REST[@]}"; } | xargs -n1 -P "$JOBS" bash "$SELF" --one
 WALL=$(($(date +%s) - T0))
@@ -202,7 +244,7 @@ fi
 slowest="$(for j in $(seq 1 "$i"); do printf '%s\t%s\n' "$(cat "$RES/$j.dur" 2>/dev/null || echo 0)" "$(basename "$(cat "$RES/$j.file")")"; done | sort -rn | head -10)"
 
 report() {
-  echo "### Runner tests: $n_pass passed, ${#SKIPPED[@]} skipped, ${#FAILED[@]} failed (${WALL}s, -j $JOBS)"
+  echo "### Runner tests${SHARD_N:+ (shard $SHARD_K/$SHARD_N)}: $n_pass passed, ${#SKIPPED[@]} skipped, ${#FAILED[@]} failed (${WALL}s, -j $JOBS)"
   echo
   if [ ${#FAILED[@]} -gt 0 ]; then echo "**Failed**"; echo; for x in "${FAILED[@]}"; do echo "- $x"; done; echo; fi
   if [ ${#SKIPPED[@]} -gt 0 ]; then echo "**Skipped tests**"; echo; for x in "${SKIPPED[@]}"; do echo "- $x"; done; echo; fi

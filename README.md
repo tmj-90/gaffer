@@ -115,6 +115,8 @@ You can name the club and the squad. With the full token, click the crest at the
 
 The Floor (after Squad in the nav, or under More) draws the factory as an isometric factory floor, live. A conveyor runs past the stations in lifecycle order: the drawing office (drafts and refining), Stores (ready), Assembly (claimed and in progress), Inspection (in review), the test rig, the loading bay (approved, waiting to merge) and Despatch, where a lorry carries what was done today. Every open ticket is a parcel at its station, and every live claim is a robot wearing its agent's shirt number, the same number and name as on the Tactics Board. Blocked, paused and failed tickets sit in a hazard-taped jam bay whose beacon lights while anything is in it, and a spend tank is filled to today's wage bill against the daily budget. It reads the same data as the Overview and redraws on the live stream. Every parcel, robot and station is a link, a parcel's label reads as a sentence ("#12 Fix the login redirect, in review, delivered by Kev (No. 9)"), and hovering or focusing one shows its number and title. Under the drawing, each station's tickets and who is on the benches are listed as text.
 
+![The Floor: the factory as an isometric floor, every ticket a parcel at its station and every live claim a robot wearing its agent's shirt number](docs/img/match-day-floor.png)
+
 The other screens cover the work board, epics drawn as dependency graphs, the Factory Map of repos and scopes, specs, memory, health (what it cost and where it failed) and settings. [docs/FEATURES.md](docs/FEATURES.md) goes through them.
 
 ## Safety

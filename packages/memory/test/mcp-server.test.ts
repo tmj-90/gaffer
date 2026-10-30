@@ -443,18 +443,18 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
     expect([...got.json.repos].sort()).toEqual(["auth", "payments-svc"]);
   });
 
-  it("an explicit non-empty repos always wins over the ticket scope", async () => {
+  it("an explicit in-scope repos wins over the ticket-scope default", async () => {
     process.env["GAFFER_FACTORY"] = "1";
-    process.env["GAFFER_TICKET_REPOS"] = "payments-svc";
+    process.env["GAFFER_TICKET_REPOS"] = "payments-svc:auth";
     client = await connectClient(db);
     const { json } = await callJson(client, "suggest_lore", {
-      title: "Org-wide rule",
+      title: "Auth-only rule",
       summary: "s",
       body: "b",
-      repos: ["platform"],
+      repos: ["auth"],
     });
     const got = await callJson(client, "get_lore", { id: json.id });
-    expect(got.json.repos).toEqual(["platform"]);
+    expect(got.json.repos).toEqual(["auth"]);
   });
 
   it("an explicit EMPTY repos in factory context is treated as omitted (tagged, not lost)", async () => {
@@ -494,6 +494,106 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
     expect(json.status).toBe("draft");
     const got = await callJson(client, "get_lore", { id: json.id });
     expect(got.json.repos).toEqual([]);
+  });
+});
+
+/**
+ * Regression (audit: suggest-lore-scope-guard-gap): the factory repo-scope guard
+ * covered digest / feature writes but suggest_lore and report_conflict accepted
+ * any explicit repo list, so an agent scoped to repo A could plant lore tagged
+ * for repo B (active at once under MEMORY_AUTO_APPROVE) that B's PRODUCT CONTEXT
+ * primer would serve.
+ */
+describe("MCP — lore writes are bound to the factory ticket's repo scope", () => {
+  const loreRows = (): number =>
+    (db.prepare("SELECT COUNT(*) AS n FROM lore").get() as { n: number }).n;
+  const repoRows = (): number =>
+    (db.prepare("SELECT COUNT(*) AS n FROM lore_repos").get() as { n: number }).n;
+
+  for (const autoApprove of [undefined, "1"]) {
+    it(`suggest_lore refuses an out-of-scope repo (MEMORY_AUTO_APPROVE=${autoApprove ?? "unset"})`, async () => {
+      process.env["GAFFER_FACTORY"] = "1";
+      process.env["GAFFER_TICKET_REPOS"] = "a";
+      if (autoApprove) process.env["MEMORY_AUTO_APPROVE"] = autoApprove;
+      const audit = captureAudit();
+      client = await connectClient(db);
+      for (const repos of [["b"], ["a", "b"]]) {
+        const { isError, json } = await callJson(client, "suggest_lore", {
+          title: "Planted decision",
+          summary: "s",
+          body: "b",
+          kind: "decision",
+          repos,
+        });
+        expect(isError).toBe(true);
+        expect(json).toMatchObject({ error: "repo_out_of_scope", repo: "b" });
+      }
+      expect(loreRows()).toBe(0);
+      expect(repoRows()).toBe(0);
+      expect(audit.rows().filter((r) => r["blocked"] === "repo_out_of_scope")).toHaveLength(2);
+      // In-scope explicit and defaulted repos still work.
+      const ok1 = await callJson(client, "suggest_lore", {
+        title: "Fine",
+        summary: "s",
+        body: "b",
+        repos: ["a"],
+      });
+      expect(ok1.isError).toBe(false);
+      const ok2 = await callJson(client, "suggest_lore", {
+        title: "Fine 2",
+        summary: "s",
+        body: "b",
+      });
+      expect(ok2.isError).toBe(false);
+      expect(loreRows()).toBe(2);
+    });
+  }
+
+  it("an untagged write is refused only when it would land ACTIVE (empty scope + auto-approve)", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["MEMORY_AUTO_APPROVE"] = "1";
+    client = await connectClient(db);
+    const { isError, json } = await callJson(client, "suggest_lore", {
+      title: "Untagged active",
+      summary: "s",
+      body: "b",
+    });
+    expect(isError).toBe(true);
+    expect(json.error).toBe("repo_out_of_scope");
+    expect(loreRows()).toBe(0);
+  });
+
+  it("standalone (no GAFFER_FACTORY) still accepts any repos", async () => {
+    process.env["GAFFER_TICKET_REPOS"] = "a";
+    client = await connectClient(db);
+    const { isError } = await callJson(client, "suggest_lore", {
+      title: "Anywhere",
+      summary: "s",
+      body: "b",
+      repos: ["b"],
+    });
+    expect(isError).toBe(false);
+  });
+
+  it("report_conflict refuses an explicit out-of-scope repo and writes no counter-draft", async () => {
+    const existing = addLore(db, { title: "Rule", summary: "s", body: "b", repos: ["a"] });
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "a";
+    client = await connectClient(db);
+    const { isError, json } = await callJson(client, "report_conflict", {
+      existingId: existing.id,
+      observation: "The code does the opposite.",
+      repos: ["b"],
+    });
+    expect(isError).toBe(true);
+    expect(json.error).toBe("repo_out_of_scope");
+    expect(loreRows()).toBe(1);
+    const ok = await callJson(client, "report_conflict", {
+      existingId: existing.id,
+      observation: "The code does the opposite.",
+      repos: ["a"],
+    });
+    expect(ok.isError).toBe(false);
   });
 });
 

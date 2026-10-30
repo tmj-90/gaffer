@@ -24,7 +24,12 @@ import {
 import { auditMessageForTooLong, checkLength, LENGTH_CAPS } from "../validation.js";
 import { quarantineLore, QUARANTINE_NOTICE } from "../quarantine.js";
 import { recordRetrieval } from "../retrievalLog.js";
-import { parseTicketRepos, scopeEnforcementActive } from "../scopeGuard.js";
+import {
+  firstRepoOutOfScope,
+  parseTicketRepos,
+  repoOutOfScopeRefusal,
+  scopeEnforcementActive,
+} from "../scopeGuard.js";
 
 /**
  * Register the lore-knowledge MCP tools onto `server`:
@@ -533,6 +538,32 @@ export function registerLoreTools(server: McpServer, db: Database): void {
               ? parseTicketRepos(process.env["GAFFER_TICKET_REPOS"])
               : args.repos;
         sanitised["repos"] = repos;
+        // REPO SCOPE (factory only, see scopeGuard.ts): a delivery agent must not
+        // tag lore for a repo its ticket has no scope over — once approved (or at
+        // once under MEMORY_AUTO_APPROVE) that repo's PRODUCT CONTEXT primer would
+        // serve it to future deliveries there. Any out-of-scope entry refuses the
+        // whole write. An UNTAGGED write is refused only when it would land active
+        // (an untagged active record reaches every unscoped search); an untagged
+        // draft stays human-gated, so reviewer / clarify agents (empty scope) keep
+        // their governed suggest flow.
+        if (scopeEnforcementActive(process.env)) {
+          const tagged = repos ?? [];
+          const bad =
+            tagged.length > 0
+              ? firstRepoOutOfScope(tagged, process.env)
+              : autoApprove
+                ? ""
+                : undefined;
+          if (bad !== undefined) {
+            audit({ tool: "suggest_lore", request: sanitised, blocked: "repo_out_of_scope" });
+            return {
+              isError: true,
+              content: [
+                { type: "text", text: JSON.stringify(repoOutOfScopeRefusal(bad), null, 2) },
+              ],
+            };
+          }
+        }
         const lore = suggestLore(
           db,
           {
@@ -701,6 +732,21 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         // No env check: even with MEMORY_ALLOW_RESTRICTED_MCP=1
         // the core would still throw. Telling the agent to set the
         // env var would be a lie.
+        // REPO SCOPE: an explicit repo list on the counter-draft is held to the
+        // ticket's scope exactly like suggest_lore (it is always a draft, so this
+        // is defence in depth). Omitted repos inherit from the challenged record.
+        if (scopeEnforcementActive(process.env) && args.repos && args.repos.length > 0) {
+          const bad = firstRepoOutOfScope(args.repos, process.env);
+          if (bad !== undefined) {
+            audit({ tool: "report_conflict", request: sanitised, blocked: "repo_out_of_scope" });
+            return {
+              isError: true,
+              content: [
+                { type: "text", text: JSON.stringify(repoOutOfScopeRefusal(bad), null, 2) },
+              ],
+            };
+          }
+        }
         const existing = getLore(db, args.existingId, { recordRead: false });
         if (shouldRefuseConflictAgainstRestricted(existing)) {
           audit({

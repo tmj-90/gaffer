@@ -196,18 +196,16 @@ jobs:
 
       # No test may touch the operator state a checkout's factory runs on. Every
       # suite above uses a private GAFFER_DATA / DISPATCH_DB / MEMORY_DB / crew event
-      # log; anything left in these (gitignored, hence --ignored) paths means a test
-      # fell back to the checkout's defaults — which on a contributor's machine are
-      # their LIVE factory's DBs, audit log and settings.
+      # log; anything left in the checkout's .gaffer / .dispatch / .crew paths means a
+      # test fell back to the checkout's defaults — which on a contributor's machine
+      # are their LIVE factory's DBs, audit log and settings. The self-test first
+      # proves the guard sees a planted file in every location it claims to watch.
       - name: Tests left no operator state in the checkout
         if: ${{ !cancelled() }}
         shell: bash
         run: |
-          left="$(git status --porcelain --ignored -- .gaffer .dispatch .crew runner/.crew runner/.dispatch 'packages/*/.crew' 'packages/*/.dispatch')"
-          if [ -n "$left" ]; then
-            echo "::error::tests wrote operator state into the checkout:"; printf '%s\n' "$left"; exit 1
-          fi
-          echo "clean: no .gaffer / .dispatch / .crew state in the checkout"
+          bash .github/scripts/operator-state-guard.test.sh
+          bash .github/scripts/operator-state-guard.sh
 
   # The dashboard in a REAL browser: onboard → ticket → machine-checkable AC → poll
   # (live tick with a stub worker) → review/approve → merge → product-owner run → every

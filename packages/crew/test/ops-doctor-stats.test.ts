@@ -5,7 +5,7 @@
  *   - structuredContent presence on every MCP tool;
  *   - the MCP audit wiring redacts free-text args (no command/prompt leak).
  */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -31,9 +31,13 @@ describe("ops: doctor + stats + audit wiring", () => {
   let wg: ReturnType<typeof Dispatch.open>;
   let dispatch: DispatchClient;
   let ctx: ReturnType<typeof loadFactory>;
+  // The template's event_log_path is cwd-relative (./.crew/events.jsonl): without
+  // this, run_idle_loop appends to packages/crew/.crew/ on every `pnpm test`.
+  const prevEvents = process.env.GAFFER_CREW_EVENTS;
 
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), "gaffer-ops-"));
+    process.env.GAFFER_CREW_EVENTS = join(tmp, "events.jsonl");
     auditPath = join(tmp, "audit.jsonl");
     initFactory({ dir: tmp, factoryName: "ops-factory", force: true });
 
@@ -77,6 +81,8 @@ describe("ops: doctor + stats + audit wiring", () => {
   afterAll(() => {
     wg.db.close();
     rmSync(tmp, { recursive: true, force: true });
+    if (prevEvents === undefined) delete process.env.GAFFER_CREW_EVENTS;
+    else process.env.GAFFER_CREW_EVENTS = prevEvents;
   });
 
   // ---- structuredContent ---------------------------------------------------
@@ -107,6 +113,13 @@ describe("ops: doctor + stats + audit wiring", () => {
   });
 
   // ---- audit wiring redaction ---------------------------------------------
+
+  it("tool events land in the test's own log, never the cwd's ./.crew", () => {
+    // run_idle_loop (above) appended through the config's event_log_path.
+    const log = join(tmp, "events.jsonl");
+    expect(ctx.loaded.config.logging.event_log_path).toBe(log);
+    expect(existsSync(log)).toBe(true);
+  });
 
   it("audits MCP tool calls and never writes the raw command argument", async () => {
     const handlers = makeHandlers({

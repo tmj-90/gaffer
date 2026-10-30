@@ -465,7 +465,7 @@ const SECRET_PATH_FRAGMENT = new RegExp(
 // `*credential*`, `*secret*`). We match the wildcard form specifically so
 // an ordinary glob like `*.ts` or `src/*` is not flagged.
 const SECRET_GLOB =
-  /(\.e[*?]|\.en[*?]|\.env[*?]|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?]|mcp-runtime[\w.-]*[*?])/i;
+  /(\.e[*?]|\.en[*?]|\.env[*?]|[*?][\w.-]*\.env\b|\.e\[|\.en\[|id_[*?]|id_\[|[*?][\w.]*\.pem\b|[*?][\w.]*\.key\b|[*?][\w.]*\.p12\b|[*?][\w./-]*credential|[*?][\w./-]*secret|credential[\w./-]*[*?]|secret[\w./-]*[*?]|[*?][\w./-]*token|token[\w./-]*[*?]|dashboard-token[*?]|mcp-runtime[\w.-]*[*?])/i;
 
 // Shell read/redirect/source positions that consume a file's CONTENTS
 // without naming a "reader" binary:
@@ -905,7 +905,9 @@ const INSTALL_DIR_FLAG =
  *   • carry --ignore-scripts itself (and no re-enable form);
  *   • not be global (-g, --global, --location=global, `yarn global`);
  *   • relocate (--prefix, -C, --dir, --cwd, …) only to a literal dir inside it;
- *   • not set a package-manager config env var (npm_config_* / yarn_*) inline.
+ *   • not point at another config (--userconfig, --globalconfig, --config.<key>);
+ * and the command as a whole must not set a package-manager config variable
+ * (npm_config_* / yarn_*, inline or exported in an earlier segment).
  * HONEST LIMIT: the hook is stateless, so "the FIRST install only" is not enforced
  * across tool calls; the tick's npm_config_ignore_scripts=true env (whose override
  * is deny-listed) is what keeps a later call script-free.
@@ -927,6 +929,12 @@ function bootstrapInstallReason(cmd, bootDir) {
     }
     if (!isInsideRoot(bootDir, canonicalize(resolve(cwd, dest)))) return outside;
   }
+  // A package-manager config variable set ANYWHERE in the command (`export
+  // npm_config_global=true; npm install …`, `X=1; npm install`) reaches the install
+  // through the environment, so it is judged over the whole command, not per segment.
+  if (/(?:^|[\s;&|(`'"])(?:npm_config_|yarn_)\w*=/i.test(cmd)) {
+    return `install command sets a package-manager config variable (can re-enable scripts, go global or relocate the install) — "${cmd.slice(0, 120)}"`;
+  }
   let effectiveCwd = cwd;
   let installSegments = 0;
   for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
@@ -947,19 +955,21 @@ function bootstrapInstallReason(cmd, bootDir) {
       return `permitted install must pass --ignore-scripts on EVERY install (dependency lifecycle scripts are arbitrary code execution) — "${shown}"`;
     }
     if (
-      /(?:^|\s)(?:-g|--global|--location[= ]global)(?=$|\s)/.test(segment) ||
+      /(?:^|\s)(?:-g|--global(?:=\S*)?|--location[= ]\S+)(?=$|\s)/.test(segment) ||
       /\byarn\s+global\b/.test(segment)
     ) {
       return `global install (lands on PATH outside the bootstrap repo) — "${shown}"`;
+    }
+    // An alternative npmrc (or pnpm's `--config.<key>`) can set global, prefix or
+    // ignore-scripts=false where the per-flag checks above never see it.
+    if (/(?:^|\s)(?:--userconfig|--globalconfig|--config\.[\w.-]+)(?==|\s|$)/.test(segment)) {
+      return `install points the package manager at another config (an npmrc can make it global or re-enable scripts) — "${shown}"`;
     }
     for (const m of segment.matchAll(INSTALL_DIR_FLAG)) {
       const v = expandTildeWord(m[1], effectiveCwd);
       if (v === UNVERIFIABLE_TARGET || /[$`]/.test(v)) return `${outside}: "${shown}"`;
       if (!isInsideRoot(bootDir, canonicalize(resolve(effectiveCwd, v))))
         return `${outside}: "${shown}"`;
-    }
-    if (/(?:^|[\s;&|(])(?:npm_config_|yarn_)\w*=/i.test(segment)) {
-      return `install sets a package-manager config variable inline (can re-enable scripts or relocate the install) — "${shown}"`;
     }
   }
   // The whole command matched an install rule but no segment did (the matcher saw
@@ -1465,11 +1475,14 @@ function normalizeVerb(token) {
 // Transparent wrapper commands that exec their argument program unchanged.
 // After stripping the wrapper (and its own flags/args), the NEXT token is the
 // real verb. `time`, `timeout`, `ionice`, `nice`, `stdbuf` may take their own
-// option/argument tokens; we skip leading `-flags` and, conservatively, a
-// single numeric/duration argument for the ones that take one.
+// option/argument tokens; we skip leading `-flags` (and the VALUE of the ones
+// in WRAPPER_VALUE_FLAGS) and, conservatively, a single numeric/duration
+// argument for the ones that take one. A wrapper is matched by its basename, so
+// `/usr/bin/env cmd` is the same as `env cmd`.
 const WRAPPER_COMMANDS = new Set([
   "env",
   "command",
+  "builtin",
   "nice",
   "nohup",
   "stdbuf",
@@ -1479,6 +1492,17 @@ const WRAPPER_COMMANDS = new Set([
   "ionice",
   "doas",
 ]);
+// A wrapper's options that take their value as the NEXT token (`timeout -s KILL 5`,
+// `env -u VAR`, `nice -n 5`): the value is not the verb.
+const WRAPPER_VALUE_FLAGS = {
+  env: new Set(["-u", "--unset", "-C", "--chdir"]),
+  timeout: new Set(["-s", "--signal", "-k", "--kill-after"]),
+  nice: new Set(["-n", "--adjustment"]),
+  ionice: new Set(["-c", "--class", "-n", "--classdata", "-p", "--pid"]),
+  stdbuf: new Set(["-i", "--input", "-o", "--output", "-e", "--error"]),
+  doas: new Set(["-u", "-C"]),
+  time: new Set(["-f", "--format", "-o", "--output"]),
+};
 
 // `VAR=value` leading assignment (one or more, space-separated) — these set
 // environment for the command that follows and are NOT the verb.
@@ -1502,14 +1526,15 @@ function resolveEffectiveTokens(tokens) {
     // (a) Leading `VAR=value` assignments.
     while (i < tokens.length && ASSIGNMENT_TOKEN.test(tokens[i])) i += 1;
     if (i >= tokens.length) return null;
-    const word = normalizeVerb(tokens[i]);
+    const word = basename(normalizeVerb(tokens[i]));
     if (!WRAPPER_COMMANDS.has(word)) break;
     // (b) Skip the wrapper word itself…
     i += 1;
-    // …then its own leading `-flags` and any further `VAR=` (env supports both:
-    // `env -i`, `env -u X`, `env VAR=1 cmd`).
+    // …then its own leading `-flags` (with the value of a value-taking one) and any
+    // further `VAR=` (env supports both: `env -i`, `env -u X`, `env VAR=1 cmd`).
+    const valueFlags = WRAPPER_VALUE_FLAGS[word];
     while (i < tokens.length && (tokens[i].startsWith("-") || ASSIGNMENT_TOKEN.test(tokens[i]))) {
-      i += 1;
+      i += valueFlags?.has(tokens[i]) ? 2 : 1;
     }
     // For wrappers that take a single leading numeric/duration argument
     // (`timeout 5 cmd`, `nice 10 cmd`, `ionice 3 cmd`), skip one such token.
@@ -1745,6 +1770,14 @@ function extractAwkRedirectTargets(awkBody) {
  * simply not returned (the generic secret/dangerous rules still apply), but a
  * path we DO parse is enforced against the write-roots.
  */
+// Container runtimes: management groups that precede the subcommand
+// (`docker container run`, `docker compose run`, `podman pod create`), the
+// subcommands themselves (so one is never mistaken for a global flag's value), and
+// the `run`/`create` short options that take a value (`-e X`, `-v SRC:DST`).
+const DOCKER_GROUPS = new Set(["container", "compose", "service", "pod"]);
+const DOCKER_SUBCOMMANDS = new Set(["run", "create", "cp", "exec", "build", "start"]);
+const DOCKER_SHORT_VALUE_FLAGS = new Set([..."acehlmpuvw"]);
+
 function extractBashWriteTargets(cmd) {
   const targets = [];
   // Effective cwd for resolving RELATIVE targets. Updated as the segment loop
@@ -1856,7 +1889,10 @@ function extractBashWriteTargets(cmd) {
     for (const m of segment.matchAll(/\bof=("[^"]+"|'[^']+'|[^\s;&|<>]+)/g)) add(m[1]);
 
     if (!effective) continue;
-    const { verb, operands } = effective;
+    // Dispatch on the verb's basename: `/bin/cp x /etc/y` and `/usr/bin/docker run
+    // -v /:/h` are `cp` and `docker` (a path-qualified verb used to skip every branch).
+    const { operands } = effective;
+    const verb = basename(effective.verb);
 
     // `xargs <verb>`: the real verb's target comes from STDIN — unverifiable from
     // this segment. If that inner verb is a mutating one, FAIL CLOSED. The inner
@@ -1945,8 +1981,28 @@ function extractBashWriteTargets(cmd) {
       // host path. `docker cp <ctr>:<src> <dest>` writes <dest> on the host. (Host
       // namespaces / --privileged / -H are deny-listed in lib/dangerous-commands.mjs.
       // A compose file's volumes are invisible here — the documented residual.)
+      //   The subcommand is found past the runtime's GLOBAL flags, whose values are
+      // not subcommands (`docker --log-level debug run …`), and past a management
+      // group (`docker container run`, `docker compose -f x.yml run`): a non-flag
+      // token straight after a flag is taken as that flag's value. Short flags may be
+      // combined (`-itv /:/host`): the first value-taking letter takes the rest of the
+      // token (minus a leading `=`, so `-v=/:/h` is `/`) or the next token.
       const rawArgs = effective.rest.slice(1);
-      const sub = rawArgs.findIndex((tk) => !tk.startsWith("-"));
+      let sub = -1;
+      let afterFlag = false;
+      for (let k = 0; k < rawArgs.length; k += 1) {
+        const tk = rawArgs[k];
+        if (tk.startsWith("-")) {
+          afterFlag = !tk.includes("=");
+        } else if (DOCKER_GROUPS.has(tk)) {
+          afterFlag = false;
+        } else if (DOCKER_SUBCOMMANDS.has(tk) || !afterFlag) {
+          sub = k;
+          break;
+        } else {
+          afterFlag = false;
+        }
+      }
       const subVerb = sub === -1 ? "" : rawArgs[sub];
       if (subVerb === "run" || subVerb === "create") {
         const bindSource = (src) => {
@@ -1956,11 +2012,19 @@ function extractBashWriteTargets(cmd) {
           const tk = rawArgs[k];
           let vol = null;
           let mount = null;
-          if (tk === "-v" || tk === "--volume") vol = rawArgs[(k += 1)];
+          if (tk === "--volume") vol = rawArgs[(k += 1)];
           else if (tk.startsWith("--volume=")) vol = tk.slice("--volume=".length);
-          else if (/^-v[^-]/.test(tk)) vol = tk.slice(2);
           else if (tk === "--mount") mount = rawArgs[(k += 1)];
           else if (tk.startsWith("--mount=")) mount = tk.slice("--mount=".length);
+          else if (/^-[A-Za-z]/.test(tk)) {
+            for (let c = 1; c < tk.length; c += 1) {
+              if (!DOCKER_SHORT_VALUE_FLAGS.has(tk[c])) continue;
+              let value = tk.slice(c + 1).replace(/^=/, "");
+              if (!value) value = rawArgs[(k += 1)] ?? "";
+              if (tk[c] === "v") vol = value;
+              break;
+            }
+          }
           if (vol) bindSource(vol.replace(/["']/g, "").split(":")[0]);
           if (mount) {
             const kv = Object.fromEntries(
@@ -2051,7 +2115,9 @@ function extractBashReadTargets(cmd) {
     // `env X=1 cat …`) is still recognised against READ_TOOL_VERBS.
     const effective = resolveEffectiveTokens(tokens);
     if (!effective) continue;
-    const { verb, operands } = effective;
+    // Basename, as in the write path: `/bin/cat x` is `cat`.
+    const { operands } = effective;
+    const verb = basename(effective.verb);
 
     // Replay cwd relocation for LATER segments (mirror of the write path).
     if (verb === "cd" || verb === "pushd") {
@@ -2210,7 +2276,7 @@ function branchCreationBoundaryReason(cmd, roots) {
 // =====================================================================
 const HOOK_RUNNER_DIR = canonicalize(dirname(fileURLToPath(import.meta.url)));
 const FACTORY_HOME = dirname(HOOK_RUNNER_DIR);
-// Interpreters whose first non-flag operand is the script they run.
+// Interpreters (and `exec`) whose operands include the script they run.
 const SCRIPT_INTERPRETERS = new Set([
   "bash",
   "sh",
@@ -2230,6 +2296,88 @@ const SCRIPT_INTERPRETERS = new Set([
   "exec",
 ]);
 
+// Launchers that run their operands as a command (`watch x`, `flock f x`): like an
+// interpreter, every operand is checked.
+const COMMAND_LAUNCHERS = new Set([
+  "watch",
+  "flock",
+  "taskset",
+  "chrt",
+  "unbuffer",
+  "strace",
+  "ltrace",
+]);
+// Non-shell interpreters' inline-program flags (`node -e`, `perl -e`, `python -c`):
+// a factory path NAMED inside the program (`system("…/gaffer approve")`) counts.
+const INLINE_CODE_FLAGS = new Set(["-e", "-E", "-c", "-p", "--eval", "--print", "-r"]);
+const SHELL_INTERPRETERS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+// xargs options that take their value as the NEXT token.
+const XARGS_VALUE_FLAGS = new Set([
+  "-I",
+  "-n",
+  "-P",
+  "-L",
+  "-d",
+  "-s",
+  "-a",
+  "-E",
+  "--max-args",
+  "--max-procs",
+  "--max-lines",
+  "--delimiter",
+  "--max-chars",
+  "--arg-file",
+  "--eof",
+  "--replace",
+  "--process-slot-var",
+]);
+
+/**
+ * The raw tokens a resolved segment would EXECUTE (or source), for the factory
+ * check. Matched on the verb's basename (`/bin/bash`, `/usr/bin/env`): a path-qualified
+ * verb is a candidate itself; an interpreter, `exec` or launcher contributes EVERY
+ * non-flag operand (an option's value such as `bash -o pipefail` must not hide the
+ * script that follows it), plus the absolute paths named in a non-shell inline
+ * program; `xargs` and `find -exec|-execdir|-ok|-okdir` are unwrapped to the
+ * command they run.
+ */
+function factoryExecCandidates(effective, depth = 0) {
+  if (!effective || depth > 8) return [];
+  const out = [];
+  const verb = effective.verb;
+  const base = basename(verb);
+  const args = effective.rest.slice(1);
+  if (verb.includes("/")) out.push(verb);
+  if (SCRIPT_INTERPRETERS.has(base) || COMMAND_LAUNCHERS.has(base)) {
+    for (let k = 0; k < args.length; k += 1) {
+      const tk = args[k];
+      if (tk.startsWith("-")) {
+        const code = args[k + 1];
+        if (INLINE_CODE_FLAGS.has(tk) && code !== undefined && !SHELL_INTERPRETERS.has(base)) {
+          for (const m of unquote(code).matchAll(/(?:^|[^\w./~-])(\/[^\s'"`;|&()<>,]+)/g)) {
+            out.push(m[1]);
+          }
+        }
+        continue;
+      }
+      out.push(tk);
+    }
+  } else if (base === "xargs") {
+    let k = 0;
+    while (k < args.length && args[k].startsWith("-")) k += XARGS_VALUE_FLAGS.has(args[k]) ? 2 : 1;
+    out.push(...factoryExecCandidates(resolveEffectiveTokens(args.slice(k)), depth + 1));
+  } else if (base === "find") {
+    for (let k = 0; k < args.length; k += 1) {
+      if (!/^-(?:exec|execdir|ok|okdir)$/.test(args[k])) continue;
+      let end = k + 1;
+      while (end < args.length && !/^(?:\\?;|['"];['"]|\+)$/.test(args[end])) end += 1;
+      out.push(...factoryExecCandidates(resolveEffectiveTokens(args.slice(k + 1, end)), depth + 1));
+      k = end;
+    }
+  }
+  return out;
+}
+
 /** True when `abs` is the live factory's code: RUNNER_DIR or a package dist/. */
 function isFactoryCode(abs) {
   if (isInsideRoot(HOOK_RUNNER_DIR, abs)) return true;
@@ -2245,7 +2393,7 @@ function factoryExecutionReason(cmd, roots) {
   for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
     const tokens = tokenizeSegment(segment.trim().replace(/^[({]+\s*/, ""));
     if (tokens.length === 0) continue;
-    let effective = resolveEffectiveTokens(tokens);
+    const effective = resolveEffectiveTokens(tokens);
     if (!effective) continue;
     if (effective.verb === "cd" || effective.verb === "pushd") {
       const arg = effective.operands[0];
@@ -2261,22 +2409,14 @@ function factoryExecutionReason(cmd, roots) {
       effectiveCwd = null;
       continue;
     }
-    // `exec x …` runs x: re-resolve past it.
-    if (effective.verb === "exec") effective = resolveEffectiveTokens(effective.rest.slice(1));
-    if (!effective) continue;
-    let script = "";
-    if (SCRIPT_INTERPRETERS.has(effective.verb)) {
-      script = effective.rest.slice(1).find((tk) => !tk.startsWith("-")) || "";
-    } else if (effective.verb.includes("/")) {
-      script = effective.verb;
-    }
-    if (!script) continue;
-    const p = expandTildeWord(script, effectiveCwd);
-    if (p === UNVERIFIABLE_TARGET || !p || /[$`]|\$\{/.test(p)) continue;
-    if (!p.startsWith("/") && effectiveCwd === null) continue;
-    const abs = canonicalize(resolve(effectiveCwd ?? "/", p.replace(/[)}]+$/, "")));
-    if (isFactoryCode(abs)) {
-      return `runs the factory's own code (${abs}) — approving, merging, ticking and the control plane are the runner's and the human's job, never the agent's`;
+    for (const script of factoryExecCandidates(effective)) {
+      const p = expandTildeWord(script, effectiveCwd);
+      if (p === UNVERIFIABLE_TARGET || !p || /[$`]|\$\{/.test(p)) continue;
+      if (!p.startsWith("/") && effectiveCwd === null) continue;
+      const abs = canonicalize(resolve(effectiveCwd ?? "/", p.replace(/[)}]+$/, "")));
+      if (isFactoryCode(abs)) {
+        return `runs the factory's own code (${abs}) — approving, merging, ticking and the control plane are the runner's and the human's job, never the agent's`;
+      }
     }
   }
   for (const body of extractShellDashCBodies(cmd)) {
@@ -2456,6 +2596,7 @@ function checkRead(filePath) {
 const SEARCH_SECRET_EXCLUDES = [
   "!**/.env",
   "!**/.env.*",
+  "!**/*.env",
   "!**/*.pem",
   "!**/*.key",
   "!**/*.p12",

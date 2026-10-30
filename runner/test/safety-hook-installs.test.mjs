@@ -70,6 +70,24 @@ for (const cmd of [
   "npm_config_ignore_scripts=false npm run build",
   "env -u npm_config_ignore_scripts npm rebuild",
   'sh -c "yarn"',
+  // A path-qualified wrapper or a valued wrapper option still puts the manager in
+  // command position (the base hook's unanchored rule caught `/usr/bin/env npm install`).
+  "/usr/bin/env yarn",
+  "/usr/bin/env npx -y evil",
+  "/usr/bin/env cargo install x",
+  "/usr/bin/env npm install evil",
+  "timeout -s KILL 60 npm install evil",
+  "/usr/bin/nice -n 5 pnpm add evil",
+  // Bare yarn with a redirect is still yarn's default command (install).
+  "yarn 2>&1",
+  "yarn > install.log",
+  "yarn </dev/null",
+  // A value-taking selector's value is consumed; the real verb behind it is judged.
+  "bun --cwd app install",
+  "pnpm --filter web add evil",
+  "pnpm --filter=web install",
+  "pnpm -w add evil",
+  "npm --workspace web install evil",
 ]) {
   t.deny(`normal tick: ${cmd}`, bash(cmd), normal);
 }
@@ -90,6 +108,18 @@ for (const cmd of [
   "go build ./...",
   "go test ./...",
   "cargo build",
+  // A value-taking selector's VALUE is never the verb (was blocked: `x` read as
+  // `pnpm x`, `create` as `pnpm create`, `link` as `npm link`).
+  "pnpm --filter x build",
+  "pnpm -F x test",
+  "pnpm --filter create test",
+  "pnpm --filter link test",
+  "pnpm -C x build",
+  "pnpm --dir x run lint",
+  "npm --workspace link run build",
+  "npm -w create test",
+  "yarn --cwd x build",
+  "bun --cwd app test",
 ]) {
   t.allow(`normal tick: ${cmd}`, bash(cmd), normal);
 }
@@ -114,6 +144,16 @@ for (const cmd of [
   "npm rebuild",
   "npx -y x --ignore-scripts",
   "pnpm dlx x --ignore-scripts",
+  // A config variable exported earlier in the command reaches the install too.
+  "export npm_config_global=true; npm install evil --ignore-scripts",
+  "export NPM_CONFIG_PREFIX=/usr/local && npm install evil --ignore-scripts",
+  "npm_config_global=true; npm install evil --ignore-scripts",
+  // An alternative npmrc can set global / prefix / ignore-scripts=false.
+  `npm install --ignore-scripts --userconfig ${OUT}/npmrc`,
+  `npm install --ignore-scripts --globalconfig=${OUT}/npmrc`,
+  "pnpm install --ignore-scripts --config.global-dir=/usr/local",
+  "npm install --ignore-scripts --global=true evil",
+  "npm config set global true && npm install --ignore-scripts",
 ]) {
   t.deny(`bootstrap: ${cmd}`, bash(cmd), boot);
 }

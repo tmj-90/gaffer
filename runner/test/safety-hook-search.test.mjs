@@ -43,6 +43,11 @@ t.deny(
 );
 t.deny("Grep glob **/.env", grep({ glob: "**/.env" }), opts);
 t.deny("Grep glob *.pem", grep({ glob: "*.pem" }), opts);
+// `<name>.env` is an env file (SECRET_PATH denies `cat prod.env` / Read prod.env).
+t.deny("Grep glob *.env", grep({ glob: "*.env" }), opts);
+t.deny("Grep glob **/*.env", grep({ glob: "**/*.env" }), opts);
+t.deny("Glob **/*.env", tool("Glob", { pattern: "**/*.env" }), opts);
+t.deny("Glob config/*prod.env", tool("Glob", { pattern: "config/*prod.env" }), opts);
 t.deny("Grep glob brace {.env,x}", grep({ glob: "{.env,x.ts}" }), opts);
 t.deny("Grep under fallback over $GAFFER_DATA", grep({ path: DATA }), fallback);
 t.deny("Grep under fallback over HOME", grep({ path: HOME }), fallback);
@@ -72,6 +77,8 @@ t.allow(
 );
 t.allow("Grep with a code glob", grep({ glob: "*.{ts,tsx}" }), opts);
 t.allow("Glob src/**/*.ts", tool("Glob", { pattern: "src/**/*.ts" }), opts);
+t.allow("Glob **/*.envrc is not an env file", tool("Glob", { pattern: "**/*.envrc" }), opts);
+t.allow("Glob src/**/*.environment.ts", tool("Glob", { pattern: "src/**/*.environment.ts" }), opts);
 t.allow("Grep with no path under fallback", grep({}), fallback);
 
 // An allowed Grep is rewritten so ripgrep skips secret files inside the tree.
@@ -97,6 +104,7 @@ t.allow("Grep with no path under fallback", grep({}), fallback);
   for (const ex of [
     "!**/.env",
     "!**/.env.*",
+    "!**/*.env",
     "!**/dashboard-token*",
     "!**/mcp-runtime*.json",
     "!**/*.pem",

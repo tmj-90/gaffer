@@ -40,6 +40,27 @@ for (const cmd of [
   "gaffer approve 3",
   "gaffer merge 3",
   "node ../gaffer/runner/bin/merge-ticket.mjs --ticket 3",
+  // A path-qualified wrapper or interpreter, an option's value before the script,
+  // `builtin`, and launchers that run the script for you.
+  `/usr/bin/env ${R}/gaffer approve 3`,
+  `bash -o pipefail ${R}/gaffer approve 3`,
+  `/bin/bash ${R}/tick.sh`,
+  `/bin/bash ${R}/loop.sh`,
+  `/bin/bash ${R}/worker.sh`,
+  `/usr/bin/env bash ${R}/tick.sh`,
+  `cd ${R} && /bin/bash ./tick.sh`,
+  `builtin source ${R}/factory.config.sh`,
+  `builtin . ${R}/factory.config.sh`,
+  `timeout -s KILL 900 ${R}/tick.sh`,
+  `exec -a worker ${R}/tick.sh`,
+  `find . -maxdepth 0 -exec ${R}/tick.sh {} +`,
+  `find . -maxdepth 0 -execdir ${R}/tick.sh {} \\;`,
+  `echo 3 | xargs -n 1 ${R}/gaffer approve`,
+  `echo 3 | xargs -I{} /bin/bash ${R}/tick.sh {}`,
+  `watch -n 60 ${R}/tick.sh`,
+  `perl -e 'system("${R}/gaffer approve 3")'`,
+  `node -e "require('child_process').execSync('${R}/tick.sh')"`,
+  `python3 -c 'import os; os.system("${R}/loop.sh")'`,
 ]) {
   t.deny(`front door: ${cmd}`, bash(cmd), opts);
 }
@@ -52,6 +73,13 @@ for (const cmd of [
   "node runner/test/x.test.mjs",
   "bash runner/test/x.test.sh",
   "node scripts/build.mjs",
+  "bash -o pipefail runner/test/x.test.sh",
+  "/bin/bash scripts/x.sh",
+  "/usr/bin/env node scripts/build.mjs",
+  "find . -name '*.ts' -exec grep -l foo {} +",
+  "echo a | xargs -n 1 echo",
+  'node -e "console.log(process.version)"',
+  "timeout -s KILL 60 node runner/test/x.test.mjs",
 ]) {
   t.allow(`not the front door: ${cmd}`, bash(cmd), opts);
 }

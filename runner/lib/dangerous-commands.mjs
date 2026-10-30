@@ -47,19 +47,37 @@
 // COMMAND POSITION prefix shared by the command-name rules below: line start or after
 // ; & | ( ` { ! $( then/do/else, or the start of a shell's `-c "…"` body, followed by
 // any env assignments and transparent wrappers (env [-u X] [-i], command, nice, nohup,
-// setsid, time, timeout N, exec, xargs, eval, …) and an optional path qualifier
-// (`/usr/bin/gh`, `./bin/x`). Text that only MENTIONS a command (a commit message, a
-// grep pattern, an echo argument) is not in command position and is not blocked.
-// Tokens never span ; | & ( ) < > so matching stays linear. `cmdAt(name)` builds a
-// rule regex for a command name (or alternation) at that position.
-const CMD_POS = String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval)[ \t]+(?:-u[ \t]+[^\s;&|()<>\`"'\\]+[ \t]+|-[^\s;&|()<>\`"'\\]+[ \t]+|[0-9]+[smhd]?[ \t]+)*)*(?:[^\s;&|()<>\`"'\\]*\/)?`;
+// setsid, time, timeout [-s SIG] N, exec, xargs, eval, …) and an optional path qualifier
+// (`/usr/bin/gh`, `./bin/x`). A wrapper may itself be path-qualified (`/usr/bin/env gh`)
+// and may take a valued option (`timeout -s KILL 5`, `nice -n 5`). Text that only
+// MENTIONS a command (a commit message, a grep pattern, an echo argument) is not in
+// command position and is not blocked. Tokens never span ; | & ( ) < > so matching
+// stays linear; an option's value never starts with `-` or a digit and holds no `=`,
+// so each wrapper word parses one way only. `cmdAt(name)` builds a rule regex for a
+// command name (or alternation) at that position.
+const TOK = String.raw`[^\s;&|()<>\`"'\\]+`;
+const PATH_QUAL = String.raw`(?:[^\s;&|()<>\`"'\\]*\/)?`;
+const WRAPPERS =
+  "env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval";
+const cmdPos = (wrappers = WRAPPERS) =>
+  String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|${PATH_QUAL}(?:${wrappers}))[ \t]+(?:-[A-Za-z][ \t]+(?![-0-9])[^\s;&|()<>\`"'\\=]+[ \t]+|-${TOK}[ \t]+|[0-9]+(?:\.[0-9]+)?[smhd]?[ \t]+)*)*${PATH_QUAL}`;
+const CMD_POS = cmdPos();
 // End of a command word: whitespace, a separator, a closing quote/paren, or EOL.
 const WORD_END = String.raw`(?=$|[\s;&|)\`"'<>])`;
 const cmdAt = (name, rest = "") => new RegExp(`${CMD_POS}(?:${name})${WORD_END}${rest}`);
 // A package manager's own arguments between its name and the verb: an `@version`,
-// flags, and the value-taking dir/workspace selectors (mirrors the ci rule below).
-const TOK = String.raw`[^\s;&|()<>\`"'\\]+`;
-const MGR_ARGS = String.raw`(?:@${TOK})?(?:[ \t]+(?:(?:--prefix|-C|--dir|-w|--workspace|--filter|-F|--cwd)[ \t]+${TOK}|-${TOK}|workspace[ \t]+${TOK}))*`;
+// flags, and the value-taking dir/workspace selectors. A value-taking selector is
+// matched ONLY with its value: read as a bare flag, its value became the "verb"
+// (`pnpm --filter x build` read as `pnpm x`, `pnpm --filter create test` as a
+// create). npm's `-w`/`--workspace` take a name; pnpm's are boolean (`pnpm -w add`).
+const mgrArgs = (valueFlags) =>
+  String.raw`(?:@${TOK})?(?:[ \t]+(?:(?:${valueFlags})[ \t]+${TOK}|(?!(?:${valueFlags})(?=[ \t]|$))-${TOK}|workspace[ \t]+${TOK}))*`;
+const NPM_ARGS = mgrArgs("--prefix|-C|-w|--workspace");
+const PNPM_ARGS = mgrArgs("--prefix|-C|--dir|--filter|-F|--cwd");
+// `npm|pnpm|yarn` plus its own arguments, up to (not including) the verb.
+const MGR_HEAD = String.raw`(?:npm${WORD_END}${NPM_ARGS}|(?:pnpm|yarn)${WORD_END}${PNPM_ARGS})`;
+// A redirection after a bare command (`yarn 2>&1`, `yarn > log`, `yarn </dev/null`).
+const REDIR = String.raw`[0-9]*(?:&>>?|>>?|<)(?:&[0-9-]|[ \t]*${TOK})`;
 
 /** @type {ReadonlyArray<DangerousCommandRule>} */
 export const DANGEROUS_COMMANDS = [
@@ -122,7 +140,7 @@ export const DANGEROUS_COMMANDS = [
     // dir selectors (`npm --prefix /x install`, `pnpm -C /elsewhere add`) and
     // `yarn global add`, which the adjacent-only first form missed.
     re: new RegExp(
-      String.raw`\b(npm|pnpm|yarn)\s+(i\b|install\b|add\b)|\bpip\d?\s+install\b|${CMD_POS}(?:npm|pnpm|yarn)${WORD_END}${MGR_ARGS}(?:[ \t]+global)?[ \t]+(?:i|in|ins|inst|insta|instal|install|isnt|isnta|isntal|isntall|add)${WORD_END}`,
+      String.raw`\b(npm|pnpm|yarn)\s+(i\b|install\b|add\b)|\bpip\d?\s+install\b|${CMD_POS}${MGR_HEAD}(?:[ \t]+global)?[ \t]+(?:i|in|ins|inst|insta|instal|install|isnt|isnta|isntal|isntall|add)${WORD_END}`,
     ),
     why: "dependency install (needs human approval)",
     install: true,
@@ -142,7 +160,9 @@ export const DANGEROUS_COMMANDS = [
     // Text that merely mentions the command mid-sentence (a commit message, a grep
     // pattern, an echo) is not blocked; text where ; | ( or a line break precedes it
     // is treated as a command. Tokens never span ; | & ( ) < > so matching stays linear.
-    re: /(?:^|[\n;&|(`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>`"'\\])*|env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval|corepack|npx|pnpx|bunx)[ \t]+(?:-[^\s;&|()<>`"'\\]+[ \t]+|[0-9]+[smhd]?[ \t]+)*)*(?:[^\s;&|()<>`"'\\]*\/)?(?:npm|pnpm|yarn)(?:@[^\s;&|()<>`"'\\]+)?(?:[ \t]+(?:(?:--prefix|-C|--dir|-w|--workspace|--filter|-F|--cwd)[ \t]+[^\s;&|()<>`"'\\]+|-[^\s;&|()<>`"'\\]+|workspace[ \t]+[^\s;&|()<>`"'\\]+))*[ \t]+(?:ci|clean-install|cit|install-clean|update|up|upgrade|upgrade-interactive|uninstall|remove|rm|un|r|prune|dedupe|dedup|ddp|ic|isntall-clean|clean-install-test|sit|udpate|unlink|autoclean)(?=$|[\s;&|)`"'<>])/,
+    re: new RegExp(
+      String.raw`${cmdPos(`${WRAPPERS}|corepack|npx|pnpx|bunx`)}${MGR_HEAD}[ \t]+(?:ci|clean-install|cit|install-clean|update|up|upgrade|upgrade-interactive|uninstall|remove|rm|un|r|prune|dedupe|dedup|ddp|ic|isntall-clean|clean-install-test|sit|udpate|unlink|autoclean)${WORD_END}`,
+    ),
     why: "dependency install/update/removal (rewrites the shared node_modules; needs human approval)",
     install: true,
     example: "npm ci",
@@ -158,9 +178,9 @@ export const DANGEROUS_COMMANDS = [
     // `bun run x` / `bun test` (script runs) stay allowed.
     re: new RegExp(
       [
-        String.raw`${CMD_POS}(?:npm|pnpm|yarn)${WORD_END}${MGR_ARGS}[ \t]+(?:rebuild|rb|it|install-test|install-ci-test|link|ln)${WORD_END}`,
-        String.raw`${CMD_POS}yarn${WORD_END}(?![ \t]+(?:--version|-v|--help|-h)\b)(?:[ \t]+-${TOK})*[ \t]*(?=$|[\n;&|)\`"'])`,
-        String.raw`${CMD_POS}bun${WORD_END}(?:[ \t]+-${TOK})*[ \t]+(?:install|i|add|a|update|remove|rm|link|pm)${WORD_END}`,
+        String.raw`${CMD_POS}${MGR_HEAD}[ \t]+(?:rebuild|rb|it|install-test|install-ci-test|link|ln)${WORD_END}`,
+        String.raw`${CMD_POS}yarn${WORD_END}(?![ \t]+(?:--version|-v|--help|-h)\b)(?:[ \t]+(?:-${TOK}|${REDIR}))*[ \t]*(?=$|[\n;&|)\`"'])`,
+        String.raw`${CMD_POS}bun${WORD_END}${PNPM_ARGS}[ \t]+(?:install|i|add|a|update|remove|rm|link|pm)${WORD_END}`,
       ].join("|"),
     ),
     why: "dependency install / rebuild / link (runs lifecycle scripts, rewrites the shared node_modules; needs human approval)",
@@ -180,8 +200,8 @@ export const DANGEROUS_COMMANDS = [
         String.raw`${CMD_POS}(?:bunx|pnpx|uvx)${WORD_END}`,
         String.raw`${CMD_POS}npx${WORD_END}(?=[^\n;&|]*[ \t](?:-y|--yes)\b)`,
         String.raw`${CMD_POS}npm${WORD_END}(?=[^\n;&|]*[ \t](?:exec|x)\b)(?=[^\n;&|]*[ \t](?:-y|--yes)\b)`,
-        String.raw`${CMD_POS}npm${WORD_END}${MGR_ARGS}[ \t]+(?:init|innit|create)(?:[ \t]+-${TOK})*[ \t]+[^-\s;&|()<>]`,
-        String.raw`${CMD_POS}(?:pnpm|yarn|bun)${WORD_END}${MGR_ARGS}[ \t]+(?:dlx|create|x)${WORD_END}`,
+        String.raw`${CMD_POS}npm${WORD_END}${NPM_ARGS}[ \t]+(?:init|innit|create)(?:[ \t]+-${TOK})*[ \t]+[^-\s;&|()<>]`,
+        String.raw`${CMD_POS}(?:pnpm|yarn|bun)${WORD_END}${PNPM_ARGS}[ \t]+(?:dlx|create|x)${WORD_END}`,
         String.raw`${CMD_POS}pipx${WORD_END}[ \t]+(?:run|install|inject|upgrade)\b`,
         String.raw`${CMD_POS}uv${WORD_END}[ \t]+tool[ \t]+(?:run|install)\b`,
         String.raw`${CMD_POS}corepack${WORD_END}[ \t]+(?:enable|prepare|install|use|up|pack)\b`,

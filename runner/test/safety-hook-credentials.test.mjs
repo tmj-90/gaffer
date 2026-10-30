@@ -88,6 +88,25 @@ for (const cmd of [
   "cargo publish",
   "twine upload dist/*",
   "python -m twine upload dist/*",
+  // A path-qualified wrapper and a wrapper option that takes a value.
+  "/usr/bin/env gh auth token",
+  "/usr/bin/env aws s3 ls",
+  "/usr/bin/env -u X gh api user",
+  "timeout -s KILL 5 gh auth token",
+  "/usr/bin/timeout --signal=KILL 5 gh auth token",
+  // Bind mounts behind a management group, a global flag's value, combined short
+  // flags, `-v=` and a path-qualified runtime.
+  "docker container run --rm -v /:/host alpine id",
+  "docker container create -v /:/h alpine",
+  "docker --log-level debug run -v /:/h alpine id",
+  "docker --config /tmp/dc run -v /:/h alpine id",
+  "docker run -itv /:/host alpine id",
+  "docker run -itv/:/host alpine id",
+  "docker run -v=/:/h alpine id",
+  "docker run --volume=/etc:/h alpine id",
+  "docker compose -f x.yml run -v /:/h app",
+  "/usr/bin/docker run -v /:/h alpine id",
+  "podman --log-level=debug container run -v /:/h alpine",
 ]) {
   t.deny(`credential CLI: ${cmd}`, bash(cmd), opts);
 }
@@ -105,6 +124,10 @@ for (const cmd of [
   "docker run --rm -d -p 3000:3000 app:test",
   `docker run --rm -v ${ROOT}/src:/app node:22 npm test`,
   "docker run -v data:/var/lib/data alpine",
+  `docker container run --rm -v ${ROOT}/src:/app node:22 npm test`,
+  `docker --log-level debug run -itv ${ROOT}/src:/app node:22 npm test`,
+  "docker run -it -e FOO=/x -p 8080:80 app:test",
+  "docker container ls",
   "npm config get registry",
   "npm run publish",
   "git config --global --get user.name",

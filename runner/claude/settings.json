@@ -5,6 +5,7 @@
     "allow": ["Edit", "Write", "Read", "Bash", "Glob", "Grep", "mcp__dispatch", "mcp__memory"],
     "deny": [
       "Read(**/.env)",
+      "Read(**/*.env)",
       "Read(**/.env.local)",
       "Read(**/.env.*.local)",
       "Read(**/.env.production)",

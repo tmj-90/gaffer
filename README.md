@@ -12,237 +12,162 @@
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-**A local-first, self-hosted AI coding factory that works your own backlog — autonomous coding agents you supervise, on your machine, under a human merge gate.**
+<!-- screenshot: overview -->
 
-I built Gaffer to chip away at my own side-project backlog while I'm doing something else: the boring, never-quite-urgent tickets I'd otherwise never get to. It turns a one-line idea into dependency-ordered tickets, works each one through **plan → implement → test → review**, and delivers a git branch or PR with evidence — but **nothing merges until I approve the diff** (the agent *structurally cannot* ship its own work). Vague or blocked tickets park for a human rather than being forced through.
+Gaffer is a software factory I run on my own machine. I give it tickets, or a one-line idea that it breaks into tickets, and it works through them in throwaway git worktrees while I get on with something else. When I come back there's a short list of diffs waiting for me, each with evidence that the tests really ran. Nothing merges until I've read the diff and approved it.
 
-It's a personal hacking tool, not a claim that it replaces engineers or ships production code unsupervised — it's **run-at-your-own-risk alpha**. Think of it as a tireless junior for the stuff you'd never get around to: local-first (your machine, your repos, your keys), supervised by default, hands-off autonomy strictly opt-in.
+I built it for my side-project backlog. Every project I have carries a pile of tickets that are worth doing and never urgent: the flaky test I keep re-running, or docs that drifted months ago. I wanted to hand that pile to something that would plod through it carefully and stop to ask when it got stuck.
 
-> **Alpha software.** Gaffer runs local coding agents with **shell access** inside repos you control. Use it only on **trusted repositories**, keep the **human review gate on**, and treat the host like a machine running an AI agent with developer-level access. Not production security, not a hosted service. See [`SECURITY.md`](SECURITY.md).
+Claude Code does the coding. Gaffer is the rest of the job: the queue and the order things happen in, the checks the agent can't mark itself, what it remembers about each repo, and the gate where a person decides what lands.
 
-<p align="center">
-  <img src="docs/img/overview.png" alt="Gaffer dashboard — the control room: cycle time, throughput, flow efficiency, and per-repo AI coding-agent delivery progress" width="900">
-  <br><sub><em>The control room: cycle time, throughput and flow efficiency up top, the development-flow table, what needs you now, and real per-repo progress — with live charts. (Demo data.)</em></sub>
-</p>
+It's alpha. It gives an agent a shell inside the repos you point it at, so keep it to repos you trust and read [SECURITY.md](SECURITY.md) before you loosen any of its defaults.
 
----
+## How a ticket gets done
 
-## Why Gaffer
+A ticket can't be marked ready until it has at least one acceptance criterion and a repo it's allowed to write to. A criterion can carry a check command (`--check "npm test"`), which the runner runs itself rather than taking the agent's word for it.
 
-Most coding agents are stateless renters: every run starts cold, the "memory" is a vendor black box, and the only proof a task passed is a log the agent wrote about itself. Gaffer inverts all three:
+`gaffer run` makes one pass over the ready queue and then exits. There's no daemon unless you ask for one. Each tick claims a ticket, creates a worktree on a `gaffer/ticket-<n>-<slug>` branch, and starts a headless agent session there with the skills that suit the ticket. The agent reaches the control plane and the memory store over MCP, and the safety hook sees every tool call it makes. Your own checkout is never touched.
 
-- **It builds you an asset.** Every review verdict, every piece of evidence, every learned convention persists in a control plane (Dispatch) and a gated memory (Memory) that you own and can carry between repos — so the more you run it, the more context (evidence, conventions, product intent) is there to prime the next delivery.
-- **It runs on your machine.** Local-first: the control plane, databases, repo state, worktrees, and evidence all live on your box — no per-seat cloud, fully auditable. Live agent runs use your configured Claude Code CLI, so prompts and selected repo context are sent to that model provider. Treat any connected model as part of your trust boundary.
-- **You hold the gate.** By default a human approves every merge and the agent *structurally cannot* ship its own work. Opt-in flags unlock full hands-off autonomy when you actually want it — for **unattended** runs against input you don't fully trust, pair it with the OS sandbox (`GAFFER_MODE=strict`), which is the containment boundary once the human gate is off. See [SECURITY.md](SECURITY.md#running-it-safely).
+When the agent says it's finished, the runner runs the repo's tests, typecheck and lint in the worktree, then every criterion's check command. A failure goes back for rework with the output attached. After three attempts (`GAFFER_MAX_DELIVERY_ATTEMPTS`) the ticket is parked as blocked and waits for me.
 
-## What it does
+A delivery that passes sits in review. The diff you approve is computed by the control plane from git, so it shows what actually changed, whatever the agent says. Approving sends it towards merge (through the independent tester first, if it's an Acceptance ticket), and merging lands the branch on your default branch and refreshes what Gaffer knows about the repo. By default no agent reviews anything (`REVIEW_MODE=human`). If you do let agents approve, the control plane still refuses an approval from the agent that did the work.
 
-> The screenshots below are a neutral **demo dataset** — a fake "TaskFlow" task-management product (an API and a web client). Not anyone's real repos.
+Models are tiered in [runner/model-registry.json](runner/model-registry.json). Planning gets opus and implementation gets sonnet by default, and a high-risk ticket or one with a lot of criteria is routed a tier up.
 
-### Plan → a dependency-ordered epic of tickets
+### Planning a build
 
-This is the headline. You give Gaffer a one-line brief — *"add recurring tasks"*, *"build an app that summarises PDFs"* — and it **decomposes it into a phased, dependency-ordered epic of tickets**, each ready to be worked through plan → implement → test → review.
+In the dashboard, "Plan a build" takes a one-line brief and has a short conversation about it. It usually asks a few clarifying questions first, then proposes an epic of tickets, each with its own criteria, target repo and `dependsOn` edges, so the API can wait for the data model and the docs can come last. Nothing is created until you confirm, and you can create the tickets as drafts to look them over first. If there's no repo yet, the plan starts with a bootstrap ticket that creates one.
 
-It is not a single prompt that dumps a wall of code. The planner has a conversation: it asks a few **clarifying questions**, then proposes a plan where every ticket carries its own description, acceptance criteria, target repo, and an explicit **`dependsOn`** edge — so the work is *gated phase by phase* (the API can't start until the data model lands; docs come last). Nothing is created until you confirm; confirmed tickets land as **draft** for you to ready. Every epic also gets a factory-created **Acceptance** ticket that depends on all the others: it checks the *brief* end to end (persistence across a restart, concurrent writers, failure behaviour) against the integrated default branch, so "every ticket merged" is never mistaken for "the build works". If you'd rather skip the questions, **"Build the tickets"** forces the best plan from what it has so far — you're never stuck clarifying.
+Every epic also gets an Acceptance ticket that depends on all the others. An independent tester checks the brief end to end against the merged build, working from the brief and the criteria without seeing the diff. Its pass is bound to the commit it tested, so a build where every ticket merged still isn't reported as accepted until that pass exists. Planning is dashboard-only for now.
 
-It works in two directions:
+### What it remembers
 
-- **Greenfield** — no target repo: the plan opens with a single bootstrap ticket (`git init` + scaffold) that every other ticket depends on, so a one-liner becomes a brand-new, properly-structured repo.
-- **Brownfield** — an existing repo or scope: zero bootstrap, every ticket stamped onto the target repo, so the plan *extends* what's already there instead of rebuilding it.
+Onboarding a repo writes a digest of it (overview, structure, conventions, stack), a feature ledger, and draft lore, which is notes on conventions and gotchas cited back to the code. Each merge moves the ledger on and refreshes the digest, so the next ticket starts from what the last one learned. Lore an agent suggests lands as a draft, and delivery agents can't see drafts until a human approves them with the memory CLI. The digest is only a summary, and the tool that hands it to an agent says to check the code before high-stakes work.
 
-> **Greenfield delivery has a couple of honest first-run steps** — the brand-new repo's dependencies must be present for the test gate, and hands-off delivery is opt-in. See [**Build a whole new app from one line**](quickstart.md#6-build-a-whole-new-app-from-one-line-greenfield) in the quickstart before your first run.
+## What still needs you
 
-<p align="center">
-  <img src="docs/img/plan-build.png" alt="The Plan-a-build chat that decomposes a one-line brief into a dependency-ordered epic" width="900">
-  <br><sub><em>Plan a build — the decompose sheet: greenfield or extend-existing, a one-line brief in, a phased, dependency-ordered epic out. Proposes only; nothing runs until you confirm, and confirmed tickets land as draft. (Demo data.)</em></sub>
-</p>
+Out of the box Gaffer is supervised, and these jobs stay with a person:
 
-Once confirmed, the epic is a first-class object: phases, member tickets, and the dependency graph the board enforces.
+- reading and approving each diff, then merging it
+- answering decisions, including the intake questions onboarding files about each repo
+- writing tickets, or confirming the ones a plan proposes, and marking them ready
+- unblocking tickets that ran out of attempts
+- approving or rejecting lore drafts
 
-<p align="center">
-  <img src="docs/img/epics.png" alt="The Epics view showing a phased, dependency-ordered epic" width="900">
-  <br><sub><em>The same epic as a <strong>dependency graph</strong>: phases are columns (data model → API → worker + UI → docs), tickets are nodes, and <code>dependsOn</code> edges are drawn between them — solid where satisfied, dashed‑amber where still blocking. A phase‑progress strip shows the gate front advancing. (Demo data.)</em></sub>
-</p>
+Every flag that hands one of these to an agent is off by default. `GAFFER_MODE` sets them as a group (`supervised`, `lite`, `graduated`, `autonomous`, `strict`) and the individual flags override it. [docs/CONFIG.md](docs/CONFIG.md) lists every setting and its default.
 
-### The work board
+## Getting started
 
-Every ticket moves through **draft → ready → in-progress → review** lanes, each tagged with a risk badge, a priority, acceptance-criteria progress, and the agent that claimed it. Vague tickets sit in draft until a human shapes them; blocked tickets surface rather than being forced through.
+You'll need:
 
-<p align="center">
-  <img src="docs/img/board.png" alt="The Gaffer work board" width="900">
-  <br><sub><em>The work board — a flow-summary header (per-stage WIP + distribution) over lanes of tickets with risk badges and acceptance-criteria progress; one ticket claimed and in progress, one delivered and awaiting review. (Demo data.)</em></sub>
-</p>
+- macOS or Linux. CI runs both; I don't test Windows.
+- Node 22.22.1 or newer. That's the floor in `package.json`, and `.npmrc` sets `engine-strict=true`, so pnpm refuses anything older. Node 22.22.0 is one patch short, and setup says so before it installs anything.
+- pnpm 10.33.0, pinned in `packageManager`
+- git
+- the Claude Code CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it, and onboarding falls back to a mechanical scan.
 
-### The human review gate
-
-When an agent delivers, the ticket lands in **Review** — and this is a *structural* barrier, not a courtesy. The agent **cannot approve or merge its own work**. The diff you sign off on is the **real `git diff`, computed server-side** against the delivery branch — never the agent's word for what it changed — and the Approve button stays disabled until that diff actually loads. Acceptance criteria can carry a **`check_command`**: the runner (not the agent) executes it in the delivery worktree, a pass is recorded as runner-verified evidence, a failure bounces the delivery back to rework before you ever see it, and approval is refused while a checked criterion is unverified. Approve sends it to merge; reject loops it back for rework with your reason attached.
-
-Merged is not the same as accepted. The epic's Acceptance ticket goes to an **independent tester** that gets the brief and the criteria, never the diff. Its verdict is **bound** to the exact commit it tested, a hash of the contract, and a **clean replay**: the tester's tests are re-run in a fresh checkout of that commit using the repo's own test command. The epic reads **accepted** only when a tester pass is bound to the current contract. Otherwise it reads **waived** (a human's `tester-pass --as human`, recorded as such), **stale** (the contract changed after the pass) or **unverified** (a pass without bindings). Every merge path uses one landing check, and the ticket is held unless that verdict still binds to the branch head. The merge is then pinned to the tested commit (`gh pr merge --match-head-commit` for PRs), so a later push can't slip in untested.
-
-<p align="center">
-  <img src="docs/img/review.png" alt="The Review gate with a server-computed diff and approve/reject" width="900">
-  <br><sub><em>The review gate: an in-review ticket with its evidence, satisfied acceptance criteria, and the server-verified diff — Approve / send-back are yours alone. (Demo data.)</em></sub>
-</p>
-
-### The Factory Map
-
-Repos rarely live alone. The **Factory Map** groups them into **scope nodes** (products, systems, capabilities) so the factory understands *which repos make up a product* and *what access it has to each* — `write`, `read`, `test`, or `none`. A ticket scoped to a product can reach exactly the repos that product owns, at exactly the access it's granted.
-
-<p align="center">
-  <img src="docs/img/factory-map.png" alt="The Factory Map as a node graph of scope nodes and their relations" width="900">
-  <br><sub><em>The scope graph: products, services, epics and external deps as nodes, laid out by containment, with <code>contains</code> (solid) and <code>depends&nbsp;on</code> (dashed) edges. Per-repo access is a boundary the runner enforces. (Demo data.)</em></sub>
-</p>
-
-### Durable repo memory
-
-Gaffer doesn't re-learn a repo from cold on every run — it **writes what it learns back**. **Memory** keeps a living **Repo Digest** (overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, plus a gated **lore** knowledge base of conventions, decisions, and cross-repo boundaries. Onboarding seeds it; then **every delivery advances it** — the ledger moves a feature to `shipped` stamped with the ticket that shipped it, and the digest re-derives to reflect code that didn't exist before. It's the Repo Understanding engine: agents accumulate understanding across runs instead of starting amnesiac, and lore stays **read-only in the product** — human-gated through the memory CLI's review gate, never silently rewritten by an agent.
-
-<p align="center">
-  <img src="docs/img/memory.png" alt="A repo's digest and feature ledger in the Memory view" width="900">
-  <br><sub><em>The Repo Digest for an onboarded repo — overview, structure, conventions and stack, with a freshness stamp and the honest "verify against code for high-stakes work" caveat. (Demo data.)</em></sub>
-</p>
-
-### Control you opt into
-
-The factory is **supervised by default**: a human readies tickets, a human approves merges, memory drafts wait for review. **Settings** is where you loosen that — and it's the one place every operator knob lives, grouped: **autonomy** (every flag off until you turn it on — let an agent approve reviews, auto-merge on agent review, auto-approve memory), the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, the **idle loops** that mine backlog work between tickets, **budget & caps**, the **planning debate**, the **quality gates**, the strict **sandbox**, and **notifications**. Anything also set as a real env var wins and renders read-only. Every knob — runner default, dashboard editability, and which component reads it — is listed in the generated [`docs/CONFIG.md`](docs/CONFIG.md).
-
-<p align="center">
-  <img src="docs/img/settings.png" alt="The Settings panel with the autonomy dial and opt-in flags" width="900">
-  <br><sub><em>Settings — the <strong>autonomy dial</strong> (how many human gates are open: 0/4 = fully supervised) over the opt-in flags, idle loops, and planning debate. Nothing here is on by default. (Demo data.)</em></sub>
-</p>
-
-For a longer walkthrough of each surface, see [`docs/FEATURES.md`](docs/FEATURES.md).
-
-## Architecture
-
-Four components, one workspace:
-
-| Component | Role |
-|---|---|
-| **Dispatch** · `packages/dispatch` | The control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard + CLI. |
-| **Crew** · `packages/crew` | The factory runtime — factory-level MCP tools, a hooks engine, and idle loops that draft work, ingest issues, and self-improve. |
-| **Runner** · `runner/` | The orchestrator — bash that spawns a `claude -p` agent per ticket, with a curated skill library, a deterministic safety hook, git-worktree isolation, and model tiering (plan on a strong model, implement on a fast one). |
-| **Memory** · `packages/memory` | The durable, human-gated memory the factory learns into — the lore knowledge base plus the Repo Understanding engine (digest + feature ledger). *(Also usable standalone — see [`packages/memory/README.md`](packages/memory/README.md).)* |
-
-```
-  ticket ──▶ Runner spawns an agent ──▶ plan ▸ implement ▸ test ▸ self-review
-                │                                          │
-                │  (worktree-isolated, safety-hooked)      ▼
-   Memory ◀──┴── learns conventions          deliver branch/PR + evidence
-   (memory)                                                │
-   Dispatch ◀─────────────────────────────────────────────┘
-   (control plane: human review gate → merge)
-```
-
-## The Repo Understanding engine
-
-Gaffer doesn't re-learn a repo from cold on every run. Memory keeps a living **Repo Digest** (a TLDR of overview / structure / conventions / stack) and a **feature ledger** (`backlog → building → shipped`) per repo, seeded at onboarding and refreshed deterministically as tickets merge — alongside the gated **lore** knowledge base (conventions, decisions, gotchas, cross-repo boundaries). Onboarding runs a skill-driven `claude -p` pass that produces a real digest, a feature inventory, and cited lore drafts grounded in the actual code.
-
-Digest updates use a **prepare-at-delivery / apply-at-merge** split: the delivery agent records an inert delta while it already holds the diff in context; the merge step replays it deterministically without spawning a fresh agent. A rejected delivery never touches the digest — the prepared delta is simply discarded with the branch.
-
-What that leaves in the store after a run is an asset, not a cache. The ledger carries **provenance** — which ticket shipped each feature — and the digest reflects code that didn't exist at onboarding, re-derived in place rather than duplicated:
-
-```text
-feature ledger                              status    provenance
-  add(a, b) · multiply(a, b)                shipped   onboard + re-scan
-  core-uppercase-transform                  shipped   ticket-3
-  cli-entrypoint                            shipped   ticket-4
-
-repo digest, onboarded → after delivering multiply():
-  "Addition helper."  →  "add(a, b), multiply(a, b)."   (same row, re-derived — not a duplicate)
-```
-
-The digest is **a map, not the territory** — a fast orientation that the factory verifies against the real code for high-stakes work, never a substitute for it. (See it in the [Durable repo memory](#durable-repo-memory) screenshot above.)
-
-## Install
-
-**Prerequisites:**
-- **Node 22.22.1+ or 24** and **pnpm** (`pnpm@10.33.0`, pinned via `packageManager`)
-- **Git** (the factory branches per ticket)
-- **`claude` CLI**, authenticated with Anthropic — required for live agent runs; the factory spawns `claude -p` for planning, delivery, and repo analysis
+Set up, start the dashboard and onboard a repo:
 
 ```bash
-git clone https://github.com/tmj-90/gaffer gaffer && cd gaffer
-pnpm install      # one workspace — all components, one lockfile
-pnpm -r build     # build the TypeScript packages
+git clone https://github.com/tmj-90/gaffer && cd gaffer
+runner/gaffer setup                       # install, build, create .gaffer/, start the dashboard
+runner/gaffer onboard ~/code/your-repo    # register it, scan it, write its digest and draft lore
+runner/gaffer status                      # what's registered, and anything waiting on you
 ```
 
-See [`quickstart.md`](quickstart.md) for a guided first run.
+`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
 
-Releases: tagged versions publish package tarballs, a CycloneDX SBOM, checksums, a provenance statement and the `ghcr.io/tmj-90/gaffer` image — see [docs/RELEASING.md](docs/RELEASING.md).
-
-Or in a container: `docker compose up -d` builds the image and starts the dashboard on
-`127.0.0.1:8787` (login URL in `docker compose logs dashboard`); see
-[`quickstart.md`](quickstart.md#run-it-in-a-container-instead).
-
-## Quickstart
+Give it a first ticket. `runner/gaffer wg` is the control-plane CLI pointed at this factory's database:
 
 ```bash
-runner/setup.sh                                  # install + build + initialise factory state (DBs, config, agent identity)
-runner/gaffer onboard /path/to/your/repo         # scan + register a repo, seed its memory
-runner/gaffer dashboard                          # open the control-room dashboard
-runner/gaffer wg ticket create -t "…" -d "…"     # your first ticket (then: ac add · repo-access set · ready)
-runner/gaffer demo                               # watch the whole loop, dry-run — never invokes Claude or touches a repo
-runner/gaffer run                                # go live: one pass delivers the ready queue to Review
-runner/gaffer approve 1 && runner/gaffer merge 1 # the human gate, from the terminal (or the Review view)
+runner/gaffer wg ticket create -t "Add listNotes" -d "Export listNotes(notes) from src/notes.js, newest first, input untouched."
+runner/gaffer wg ac add 1 -t "listNotes returns a new array sorted newest-first"
+runner/gaffer wg ac add 1 -t "the test suite passes" --check "npm test"
+runner/gaffer wg ticket repo-access set 1 your-repo   # the name onboard registered
+runner/gaffer wg ticket ready 1
 ```
 
-See [`quickstart.md`](quickstart.md) for the guided walkthrough and [`runner/README.md`](runner/README.md) for the full runbook.
+Then watch it, and let it go when you're happy:
+
+```bash
+runner/gaffer demo                         # the whole loop on a throwaway showcase repo, dry run
+runner/gaffer run --dry-run                # what a pass over your queue would do; nothing spent
+runner/gaffer run                          # live: one pass, delivers ready tickets to review
+runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review screen
+runner/gaffer merge 1
+```
+
+`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
+
+To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), put the repos you want worked on under `./repos`, and run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` and `docker compose logs dashboard` shows the login link.
+
+[quickstart.md](quickstart.md) is the long version, with the greenfield path and the first-run gotchas.
+
+## The dashboard
+
+<!-- screenshot: tactics-board -->
+
+A gaffer is the manager, so the dashboard is being rebuilt as match day. That work isn't merged yet, so read this section as a preview. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today and the wage bill against the daily budget. Beside it is the Team Sheet, a numbered list of everything waiting on you with one action on each row. The Tactics Board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The Gaffer's Sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen.
+
+<!-- screenshot: review -->
+
+You can name the club and the squad. `runner/gaffer wg club set --name "…" --short ABC --kit-primary "#7a1f3d" --kit-secondary "#8ec5e8"` sets the club name, the crest's short name and the kit colours. `runner/gaffer wg agent list` shows each agent's id, and `runner/gaffer wg agent rename <id> --name "…" --number 9` gives one a display name and a shirt number. The same data is served at `/api/club` and `/api/squad`, and a Squad page for it arrives with the new dashboard. Names are only for show. An agent's id, which is what claims and the event log record, never changes, and agents can't rename themselves or the club. A live view of the factory floor is on the way as well.
+
+The other screens cover the work board, epics drawn as dependency graphs, the Factory Map of repos and scopes, specs, memory, health (what it cost and where it failed) and settings. [docs/FEATURES.md](docs/FEATURES.md) goes through them.
 
 ## Safety
 
-Gaffer runs shell-capable agents, so containment is first-class:
+Every agent tool call goes through a deterministic PreToolUse hook, [runner/safety-hook.mjs](runner/safety-hook.mjs). It keeps writes inside the ticket's worktree, refuses reads of secret files and credential stores, stops the agent driving the control plane or its databases directly, and blocks when it can't prove a target is in scope. The agent starts from an allowlisted environment with token and key variables stripped. The review gate lives in the control plane, so an agent can't argue its way past it.
 
-- a **deterministic PreToolUse safety hook** scopes writes to the worktree, blocks secret reads, denies the control-plane CLI, and **fails closed** (see [SECURITY.md](SECURITY.md) for residual limits on dynamic paths);
-- every ticket runs in a **throwaway git worktree** — the real checkout is never touched;
-- an optional **OS sandbox** via a provider seam — the experimental **`docker` provider** (`SANDBOX_PROVIDER=docker`) adds real read + egress isolation on any host with Docker (container mounts only the worktree, egress via an allowlist proxy); `sandbox-exec` (macOS) is a write-only boundary; `GAFFER_STRICT_REQUIRE=1` makes a missing provider **fail closed** (refuse to launch rather than run uncontained), and enabling any autonomy flag now defaults it on;
-- the **review gate is enforced server-side** — an agent can't approve or merge its own work, and the merge gate verifies the *real git diff*, not the agent's word for it;
-- the **event log is tamper-evident** — every `work_events` row is chained by a SHA-256 hash, `dispatch events verify` (and `dispatch doctor`) name the first altered row, and every event carries the tick that wrote it.
+The hook is a string analyser for bash, and a determined agent that builds paths at runtime can get further than I'd like. That's why anything that lets an agent ship work defaults `GAFFER_STRICT_REQUIRE=1`, which refuses to launch an agent without an OS sandbox. That covers the `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE` and `MEMORY_AUTO_APPROVE` flags, the modes that set them, and a per-repo policy that lets a repo ship unattended. `SANDBOX_PROVIDER=docker` gives read and egress isolation on any host with Docker. macOS `sandbox-exec` only restricts writes.
 
-Opt-in autonomy, to be used deliberately: `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `MEMORY_AUTO_APPROVE`. Full threat model and honest residual limits: [`SECURITY.md`](SECURITY.md).
+Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`). There's no dollar cap until you set one: `GAFFER_DAILY_BUDGET_USD` for the day, `GAFFER_MAX_CALL_USD` for a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
+
+## What's rough
+
+- The Match Day dashboard described above is still on a branch, so the merged UI looks different for now.
+- The docker sandbox is experimental. Its containment is red-team tested in CI, but a full live delivery inside the container hasn't been proven yet.
+- Only one worker is supported (`GAFFER_WORKER_PROVIDER=claude-code`). The seam for others exists, but any other value refuses to run.
+- REST credentials are per principal (`runner/gaffer wg principal create`) and can be read-only, but there's no per-repo or per-ticket permission. On the CLI the actor is whatever `$USER` says.
+- Planning a build needs the dashboard, and approving lore needs the memory CLI (`MEMORY_DB=.gaffer/memory.sqlite node packages/memory/dist/bin/memory.js review`).
+- Greenfield runs have a few first-run steps, covered in [quickstart.md](quickstart.md#greenfield-gotchas-things-you-currently-have-to-do). Read them before you start one.
+- The eval judge that scores each delivery is opt-in (`GAFFER_EVAL_JUDGE=1`) while I find out whether its scores are worth having. See [docs/eval-harness.md](docs/eval-harness.md).
 
 ## Layout
 
 ```
 gaffer/
 ├── packages/
-│   ├── dispatch/    control plane  (REST + MCP + dashboard + CLI)
-│   ├── crew/   factory runtime (MCP + hooks + idle loops)
-│   └── memory/    durable gated memory + repo understanding (MCP)
-├── runner/           bash orchestrator, curated skill library, safety hook
-├── pnpm-workspace.yaml
-└── package.json
+│   ├── dispatch/   control plane: SQLite, REST, MCP, the dashboard, and the CLI behind `gaffer wg`
+│   ├── crew/       factory runtime: onboarding, context packets, hooks, idle loops, MCP tools
+│   └── memory/     lore and repo memory: digest, feature ledger, gated lore (memory-mcp)
+├── runner/         the live runtime: tick.sh, loop.sh, the safety hook, 118 skills
+├── docs/           configuration reference, feature tour, design notes
+└── quickstart.md
 ```
 
-## Status — `0.1.0` alpha
+`runner/gaffer skills install` links the skill library into `.claude/skills` in the current directory (`--user` for `~/.claude/skills`), and `runner/gaffer skills add <path|git-url>` validates an outside skill before adding it to the factory's library.
 
-Run-at-your-own-risk, local-first software. You run it on your machine, with your keys, against your repos — see [`SECURITY.md`](SECURITY.md) before pointing it at anything untrusted. Licensed under [Apache-2.0](LICENSE).
+## Further reading
 
-**What works today:**
-- Dispatch queue, tickets, epics, scopes, review gate (REST + MCP + CLI)
-- Crew MCP tool server (factory tools, hooks engine, idle loops, repo onboarding)
-- Memory: hybrid retrieval (FTS5 bm25 fused with a built-in, credential-free hashed n-gram vector per record; a model-backed embedder plugs in behind the same `Embedder` seam), Repo Digest, feature ledger, gated lore
-- Independent agent lanes beyond delivery: an **agent reviewer** (routed model, role-selected review lenses), a **security second-opinion reviewer** for high-risk or sensitive-path diffs whose CHANGES overrides a primary approve (`GAFFER_SECURITY_REVIEW`), and an **independent black-box tester** (`GAFFER_TESTING`; always on for epic Acceptance tickets) that tests an approved ticket from the brief, its contract and acceptance criteria only, in a detached worktree. It records PASS → ready_for_merge / FAIL → refining, with the verdict bound to the tested commit, the contract hash and a clean replay
-- Runner factory loop with curated skill library and model tiering — one pass with `runner/loop.sh`, or unattended on any platform with `runner/gaffer run --daemon` (re-runs the loop, honours the per-day cap, stops cleanly on a signal)
-- Execution preflight (`runner/preflight.sh`, and before every greenfield bootstrap): the package registry is probed from the agent's own allowlisted environment (`GAFFER_REGISTRY_PROBE`), so a proxy or CA problem fails fast with a fix, not as a half-built repo. The agent env passes through trust and proxy settings (`NODE_EXTRA_CA_CERTS`, `HTTPS_PROXY`, …)
-- Deterministic safety hook (`runner/safety-hook.mjs`) — worktree isolation, fails closed
-- Web dashboard: Overview, Work, Review and Map (the loop you drive), plus Health, Epics, Specs, Memory and Settings
-- Delivery-quality **eval harness** ([docs/eval-harness.md](docs/eval-harness.md)): an independent rubric judge scores every submitted delivery into an eval ledger — pass rate, per-dimension quality, real cost-per-passing-delivery, and a **memory-lift** metric that makes the "builds you an asset" claim falsifiable (`gaffer eval`; opt-in via `GAFFER_EVAL_JUDGE=1` while it soaks). Its offline half, **gate replay** ([runner/eval/](runner/eval/README.md)), replays eleven recorded deliveries through the real hygiene / minimalism / Definition-of-Done / acceptance-check pipeline on every CI run and fails when any verdict drifts (`gaffer eval replay`)
+- [quickstart.md](quickstart.md): the guided first run
+- [docs/FEATURES.md](docs/FEATURES.md): each surface in more detail
+- [docs/CONFIG.md](docs/CONFIG.md): every setting, generated from the code
+- [SECURITY.md](SECURITY.md): threat model and residual limits
+- [ARCHITECTURE.md](ARCHITECTURE.md): how the pieces fit together
+- [runner/README.md](runner/README.md) and [runner/RUNBOOK.md](runner/RUNBOOK.md): the runner in depth
+- [docs/openapi.json](docs/openapi.json): the REST contract, also served at `GET /api/openapi.json`
+- [docs/RELEASING.md](docs/RELEASING.md): how releases are cut
+- [CHANGELOG.md](CHANGELOG.md)
 
-**Not yet / honest limits:**
-- Container sandbox: the `docker` provider (read + egress isolation) is **experimental** — proven at the containment level (red-team gated: host secret unreadable, egress allowlisted, caps dropped), but the live in-container `claude -p` delivery capstone is still pending; `sandbox-exec` (macOS) remains write-only
-- No per-scope REST RBAC: credentials are per **principal** (`dispatch principal create`, full or read capability, writes attributed to the principal's actor) but not per repository or ticket. The surface itself is documented: [`docs/openapi.json`](docs/openapi.json) (also served at `GET /api/openapi.json`)
-- Safety hook is tested on macOS; non-macOS behaviour is best-effort and untested
-- No hosted skill *registry* yet — but you can bring external skills in. The bundled library is **118 skills** (build packs, language packs for TypeScript/Python/Go/Java/Rust/Kotlin/Swift/C#/Ruby/shell, frontend and testing packs, review lenses for security/concurrency and data integrity/performance/accessibility/test quality/migrations, devops, product and marketing packs), every one gated by `runner/test/skills-lint.test.mjs` (trigger-phrased description, a real procedure, only real MCP tool names, valid cross-references). Each **agent role** is handed its own set: `select-skills --role delivery|review|clarify|test|plan|spec|product|merge|bootstrap` (see [docs/skill-selection-and-stacks.md](docs/skill-selection-and-stacks.md)) — the delivery agent gets the stack/area-relevant packs plus the always-on quality lenses, the reviewer gets the review lenses and the diff's conventions pack, the tester gets the testing packs. `gaffer skills install` adds the whole library to your own Claude Code. To add an *external* skill to the factory's own library, run `gaffer skills add <path|git-url>` — it validates the `SKILL.md` against the accept contract (a safe-slug `name`, a `description` the selector matches on, and a list `stack`) **before** installing, and rejects an invalid skill with a reason instead of copying it in (`--force` replaces an existing skill of the same name). Authoring from scratch is still just dropping a `SKILL.md` into `runner/skills/` and making the lint pass.
+## Contributing
 
-## Credits / Inspired by
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules. The first one is that a change loosening the safety hook gets rejected. `pnpm check` runs the TypeScript side and `pnpm test:runner` runs the runner's tests, the same way CI does.
 
-- **[ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)** (MIT) — its design-system token architecture, component specs, states-and-variants discipline, and design-system reasoning were adapted into the `design-system` / `frontend-design` / `brand` skill packs.
-- **[alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills)** (MIT) — adapted devops/marketing/product/docs skill packs (observability, SLO, runbook, CI/CD, incident-response, terraform, kubernetes, docker, adversarial review, API review, database schema, threat detection, cloud security, landing page, CRO, copywriting, SEO audit, schema markup, AEO, slides deck, PRD, user story, RICE, product discovery, md-document, changelog, code-tour).
-- **[Matt Pocock's skills](https://github.com/mattpocock/skills)** (MIT) — caveman ultra-compressed communication pattern (voice preserved per his repo's note).
+## Credits
 
-The full MIT licence text and copyright notice for each adapted source is retained in [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md).
+Some skill packs are adapted from MIT-licensed work: [ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) for the design-system, frontend-design and brand packs, [alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills) for devops, marketing, product and docs packs, and [Matt Pocock's skills](https://github.com/mattpocock/skills) for the caveman compressed-communication pattern. Their licence texts are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-## Trademarks & non-affiliation
+## Licence
 
-Gaffer is an independent, community-driven open-source project. It is **not affiliated with, sponsored by, or endorsed by Anthropic PBC**. "Claude" and "Claude Code" are trademarks of Anthropic PBC; Gaffer uses them only to describe interoperability with the Claude Code CLI you supply and authenticate yourself. All other product names, logos, and trademarks are the property of their respective owners.
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Gaffer is an independent project and isn't affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic PBC.

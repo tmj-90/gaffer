@@ -59,7 +59,7 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { mountRoleSkills } from "../lib/agent-home.mjs";
@@ -604,6 +604,7 @@ function main() {
   // product-owner-run.test.mjs) and this run's credential-stripped env stay built
   // here; only the spawn boundary is shared. Run in the throwaway agent-home dir,
   // NOT the registered repo — the agent writes only via the dispatch MCP.
+  const t0 = Date.now();
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,
     argv,
@@ -630,10 +631,12 @@ function main() {
 
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      // Ledger the unmeasurable call as "unknown" (honesty rule 3: never 0).
-      appendUsageRecord(
-        unknownRecord({ kind: "product-owner", reason: "product-owner claude call timed out" }),
-      );
+      // Ledger the unmeasurable call as a labelled ESTIMATE (never $0, never "measured").
+      recordKilledCall({
+        kind: "product-owner",
+        reason: "product-owner claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       fail(`product-owner run timed out after ${opts.timeoutMs}ms`);
       return;
     }
@@ -644,12 +647,11 @@ function main() {
   // swallowed), and log the agent's unwrapped `.result` text (preserves the log).
   const json = parseClaudeJson(res.stdout || "");
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({
-        kind: "product-owner",
-        reason: "no parseable --output-format json on stdout",
-      }),
-    );
+    recordKilledCall({
+      kind: "product-owner",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     if (res.stdout) log(res.stdout.trim());
   } else {
     appendUsageRecord(buildUsageRecord({ json, kind: "product-owner" }));

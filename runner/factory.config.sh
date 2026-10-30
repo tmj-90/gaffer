@@ -1346,9 +1346,13 @@ export GAFFER_USAGE_LEDGER
 # When the ledger CLI hits a killed/timeout branch it instead records a CONSERVATIVE
 # ESTIMATE (measured:false, total_cost_usd stays "unknown", but a labelled
 # estimated_cost_usd that DOES count toward windowed spend). The estimate prefers the
-# P10 of the factory's OWN measured history for that kind; this value is the FLAT
-# FLOOR used when there isn't enough history (it is a floor, NOT precision). 0
-# restores today's exact $0/unknown behaviour (opt-out). Measured calls ignore it.
+# factory's OWN measured history for that kind: the median $/ms rate times how long the
+# killed call ran (capped at the kind's P90 cost), else the P10 when the run time is
+# unknown; this value is the FLAT FLOOR under it and the fallback when there isn't
+# enough history (a floor, NOT precision). The .mjs helpers (planner, spec author,
+# product owner, tester, onboarding, merge resolver) read it too (default 0.05 when
+# run outside this config). 0 restores the $0/unknown behaviour when there is no
+# usable history (opt-out). Measured calls ignore it.
 : "${GAFFER_KILL_ESTIMATE_USD:=0.05}"
 export GAFFER_KILL_ESTIMATE_USD
 
@@ -1368,6 +1372,11 @@ export GAFFER_KILL_ESTIMATE_USD
 # preserved. At concurrency 1 the lock is uncontended → behaviour is unchanged.
 gaffer_usage_record() {
   local kind="$1" ticket="${2:-}" rc="${3:-0}" jsonfile="$4"
+  # [elapsed-ms] — how long the call ran; defaults to the last worker_deliver's
+  # figure (consumed here so a later record never reuses it). It scales a killed
+  # call's estimate (usage-ledger.mjs deriveKillEstimate); a measured call ignores it.
+  local elapsed="${5:-${WORKER_LAST_ELAPSED_MS:-}}"
+  WORKER_LAST_ELAPSED_MS=""
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
   # R-4: an append failure used to be doubly hidden — node stderr went to /dev/null
@@ -1378,9 +1387,9 @@ gaffer_usage_record() {
   # tick), but the WARNING is now VISIBLE in the log.
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
 }
 

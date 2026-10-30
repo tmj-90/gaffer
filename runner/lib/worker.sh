@@ -115,6 +115,10 @@ worker_deliver() {
   case "${7:-}" in '' | *[!0-9]* | 0) ;; *) _turns_flag="--max-turns $7" ;; esac
   local _extra=()
   [ "$#" -gt 7 ] && _extra=("${@:8}")
+  # How long the agent ran (whole seconds → ms), read by gaffer_usage_record so a
+  # killed call's cost estimate scales with its run time. Reset first: a refused
+  # spawn below must not inherit the previous call's figure.
+  WORKER_LAST_ELAPSED_MS=0
   # The MCP config the AGENT is handed. Under the docker provider with the bridge on,
   # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
   # real servers — and their env, including the claim token — run host-side in `serve`.
@@ -220,12 +224,14 @@ worker_deliver() {
       # CLAUDE_BIN is rebound INSIDE the invocation subshell only (the docker case above
       # swaps in the image's binary; otherwise it is unchanged), so the single pinned
       # invocation site below stays exactly where the seam tests look for it.
+      local _t0=$SECONDS
       ( cd "$cwd" && CLAUDE_BIN="$_sbx_claude_bin" \
         && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
            env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" ${_sbx_env[@]+"${_sbx_env[@]}"} \
              "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$_mcp_for_agent" $CLAUDE_FLAGS $model_flag $_turns_flag ${_extra[@]+"${_extra[@]}"} \
       ) >"$out_json" 2>>"$GAFFER_LOG"
       _rc=$?
+      WORKER_LAST_ELAPSED_MS=$(( (SECONDS - _t0) * 1000 ))
       # Tear the bridge down with the agent: the host-side servers exit with their
       # connections; the socket + the bridged config (token-free, but per-spawn) go too.
       if [ -n "$_bridge_pid" ]; then

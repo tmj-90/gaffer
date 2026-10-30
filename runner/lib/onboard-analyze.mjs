@@ -66,7 +66,7 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "./usage-ledger.mjs";
 import { Worker, roleTurnCap } from "./worker.mjs";
 import { loadRegistry, routeModel } from "../bin/route-model.mjs";
@@ -1279,6 +1279,7 @@ export function runAnalysisTurn(
   // STRICT_MODE / GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply
   // one). This spawn used to be a bare spawnSync outside the seam.
   let res;
+  const t0 = Date.now();
   try {
     res = Worker.deliver({
       bin: claudeBin,
@@ -1293,7 +1294,11 @@ export function runAnalysisTurn(
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(unknownRecord({ kind, reason: "onboard analysis claude call timed out" }));
+      recordKilledCall({
+        kind,
+        reason: "onboard analysis claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -1301,9 +1306,11 @@ export function runAnalysisTurn(
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind, reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind,
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     return { timedOut: false, stdout: rawStdout };
   }
   appendUsageRecord(buildUsageRecord({ json, kind }));

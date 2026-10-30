@@ -83,7 +83,7 @@ import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
 import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
-import { appendUsageRecord, buildUsageRecord, unknownRecord } from "../lib/usage-ledger.mjs";
+import { appendUsageRecord, buildUsageRecord, recordKilledCall } from "../lib/usage-ledger.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -804,6 +804,7 @@ function runLiveTester(context) {
     maxTurns: testerMaxTurns(),
   });
   log(`testing #${n} (${repo.name} @ ${branch}) in ${worktree}; skills: ${skills.join(", ")}`);
+  const t0 = Date.now();
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,
     argv,
@@ -828,20 +829,22 @@ function runLiveTester(context) {
   // Ledger + verdict.
   let verdict = null;
   let text = "";
+  const elapsedMs = Date.now() - t0;
   if (res.error) {
-    appendUsageRecord(
-      unknownRecord({
-        ticket: n,
-        kind: "tester",
-        reason:
-          res.error.code === "ETIMEDOUT" ? "tester timed out" : `spawn error: ${res.error.message}`,
-      }),
-    );
+    // A timed-out / failed spawn did (or may have done) paid work: book the labelled
+    // estimate, never a silent $0.
+    recordKilledCall({
+      ticket: n,
+      kind: "tester",
+      reason:
+        res.error.code === "ETIMEDOUT" ? "tester timed out" : `spawn error: ${res.error.message}`,
+      elapsedMs,
+    });
     log(`tester did not complete (${res.error.code ?? res.error.message})`);
   } else {
     const json = parseClaudeJson(res.stdout || "");
     if (json === null) {
-      appendUsageRecord(unknownRecord({ ticket: n, kind: "tester", reason: "no parseable json" }));
+      recordKilledCall({ ticket: n, kind: "tester", reason: "no parseable json", elapsedMs });
     } else {
       appendUsageRecord(buildUsageRecord({ json, ticket: n, kind: "tester" }));
       text = extractResultText(json) ?? "";

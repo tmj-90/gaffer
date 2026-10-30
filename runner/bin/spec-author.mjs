@@ -92,7 +92,7 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
 import { roleTurnCap } from "../lib/worker.mjs";
@@ -512,6 +512,7 @@ function runClaudeTurn(prompt, opts) {
   // the turn. The read-only denylist above is unchanged.
   const home = makeAgentHome("spec-author-", { role: "spec" });
   let res;
+  const t0 = Date.now();
   try {
     res = spawnSync(claudeBin, args, {
       cwd: home.dir,
@@ -526,9 +527,11 @@ function runClaudeTurn(prompt, opts) {
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(
-        unknownRecord({ kind: "spec-author", reason: "spec-author claude call timed out" }),
-      );
+      recordKilledCall({
+        kind: "spec-author",
+        reason: "spec-author claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -536,9 +539,11 @@ function runClaudeTurn(prompt, opts) {
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind: "spec-author", reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind: "spec-author",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     // Fall back to the raw stdout so a parser change in claude can't silently break
     // spec authoring — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };

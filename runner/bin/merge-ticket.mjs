@@ -113,7 +113,7 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { landingDecision } from "../lib/tester-binding.mjs";
@@ -1263,6 +1263,7 @@ function main() {
   // GAFFER_STRICT_REQUIRE, fail closed when the host cannot supply one) and the
   // provider dispatch. This spawn used to be a bare spawnSync — the one agent that
   // runs exactly when AUTO_MERGE is on ran outside the containment seam.
+  const t0 = Date.now();
   const res = Worker.deliver({
     bin: CONFIG.claudeBin,
     argv,
@@ -1279,13 +1280,12 @@ function main() {
   if (res.error) {
     removeWorktree(repo.localPath, worktree);
     if (res.error.code === "ETIMEDOUT") {
-      appendUsageRecord(
-        unknownRecord({
-          ticket: resolved.number,
-          kind: "merge-resolver",
-          reason: "resolver claude call timed out",
-        }),
-      );
+      recordKilledCall({
+        ticket: resolved.number,
+        kind: "merge-resolver",
+        reason: "resolver claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       fail(`resolver agent timed out after ${opts.timeoutMs}ms`);
       return;
     }
@@ -1301,6 +1301,21 @@ function main() {
   // branch. Soft-fail with a descriptive JSON output so the operator can investigate.
   if (res.status !== 0 && res.status !== null) {
     removeWorktree(repo.localPath, worktree);
+    // The failed resolver still did paid work: ledger it (measured when its envelope
+    // parses, else the labelled kill estimate) — this branch used to write no row.
+    const failedJson = parseClaudeJson(res.stdout || "");
+    if (failedJson === null) {
+      recordKilledCall({
+        ticket: resolved.number,
+        kind: "merge-resolver",
+        reason: `resolver claude exited ${res.status}`,
+        elapsedMs: Date.now() - t0,
+      });
+    } else {
+      appendUsageRecord(
+        buildUsageRecord({ json: failedJson, ticket: resolved.number, kind: "merge-resolver" }),
+      );
+    }
     emit(
       {
         phase: "conflict_resolver_failed",
@@ -1317,18 +1332,21 @@ function main() {
     return;
   }
 
-  // Ledger the turn (measured when the envelope parses; an honest "unknown" row
+  // Ledger the turn (measured when the envelope parses; the labelled kill estimate
   // otherwise) and reduce the envelope to the agent's text for the re-approval summary.
   const resolverJson = parseClaudeJson(res.stdout || "");
-  appendUsageRecord(
-    resolverJson === null
-      ? unknownRecord({
-          ticket: resolved.number,
-          kind: "merge-resolver",
-          reason: "no parseable --output-format json on stdout",
-        })
-      : buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
-  );
+  if (resolverJson === null) {
+    recordKilledCall({
+      ticket: resolved.number,
+      kind: "merge-resolver",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
+  } else {
+    appendUsageRecord(
+      buildUsageRecord({ json: resolverJson, ticket: resolved.number, kind: "merge-resolver" }),
+    );
+  }
   const summary = (
     resolverJson === null ? res.stdout || "" : extractResultText(resolverJson)
   ).trim();

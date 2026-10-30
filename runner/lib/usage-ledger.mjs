@@ -117,7 +117,7 @@ export function unknownRecord({ ts, ticket, kind, reason }) {
  *   - `estimated:true` + `estimated_cost_usd:<number>` make it a first-class,
  *     clearly-labelled ESTIMATE that the windowed-spend summations DO count.
  *   - `estimate_basis` documents how the number was derived so the ledger is
- *     self-explaining ("history-p10" vs "flat-floor").
+ *     self-explaining ("history-rate", "history-p10" or "flat-floor").
  * A non-positive / non-finite estimate falls back to a plain unknownRecord — that
  * is the opt-out (GAFFER_KILL_ESTIMATE_USD=0 with no usable history) and preserves
  * today's $0/unknown behaviour exactly.
@@ -171,6 +171,55 @@ export function killEstimateFromHistory(text, kind, minSamples = KILL_ESTIMATE_M
   const hi = Math.ceil(rank);
   const p10 = lo === hi ? costs[lo] : costs[lo] + (costs[hi] - costs[lo]) * (rank - lo);
   return p10 > 0 ? p10 : null;
+}
+
+/**
+ * Duration-scaled kill estimate. A call killed at the wall clock is among the
+ * LONGEST calls of its kind, not the cheapest decile, so P10 badly under-books it
+ * (a 30-minute killed delivery read as $0.05). From the factory's OWN measured
+ * history of the same kind: the median spend RATE (total_cost_usd / duration_ms)
+ * times how long the killed call ran, capped at the P90 measured cost of the kind so
+ * one long hang can never book more than a costly real call did. Returns
+ * { rateUsd, capUsd } or null with fewer than `minSamples` usable rows or no
+ * positive elapsed time (the caller then falls back to the P10 / flat floor).
+ */
+export function killRateEstimateFromHistory(
+  text,
+  kind,
+  elapsedMs,
+  minSamples = KILL_ESTIMATE_MIN_SAMPLES,
+) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  if (!(typeof elapsedMs === "number" && Number.isFinite(elapsedMs) && elapsedMs > 0)) return null;
+  const rates = [];
+  const costs = [];
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let obj;
+    try {
+      obj = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) continue;
+    if (obj.measured !== true) continue;
+    if (kind && obj.kind !== kind) continue;
+    const c = obj.total_cost_usd;
+    const d = obj.duration_ms;
+    if (!(typeof c === "number" && Number.isFinite(c) && c >= 0)) continue;
+    costs.push(c);
+    if (typeof d === "number" && Number.isFinite(d) && d > 0) rates.push(c / d);
+  }
+  if (rates.length < minSamples) return null;
+  const pct = (arr, q) => {
+    const a = [...arr].sort((x, y) => x - y);
+    const rank = q * (a.length - 1);
+    const lo = Math.floor(rank);
+    const hi = Math.ceil(rank);
+    return lo === hi ? a[lo] : a[lo] + (a[hi] - a[lo]) * (rank - lo);
+  };
+  return { rateUsd: pct(rates, 0.5) * elapsedMs, capUsd: pct(costs, 0.9) };
 }
 
 /**
@@ -293,6 +342,7 @@ function parseCliArgs(argv) {
     jsonFile: null,
     killEstimate: null,
     killBasis: null,
+    elapsedMs: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -304,6 +354,8 @@ function parseCliArgs(argv) {
     // (measured calls ignore it). Optional --kill-basis overrides the derived basis.
     else if (a === "--kill-estimate") out.killEstimate = argv[++i];
     else if (a === "--kill-basis") out.killBasis = argv[++i];
+    // How long the killed call ran — scales the estimate (deriveKillEstimate).
+    else if (a === "--elapsed-ms") out.elapsedMs = argv[++i];
   }
   return out;
 }
@@ -330,21 +382,44 @@ function readLedgerText(env = process.env) {
 }
 
 /**
- * Derive the conservative kill-cost estimate for a killed/timeout record. Precedence
- * (cheapest-and-most-grounded first): the P10 of the factory's OWN measured history
- * for this kind, else the flat operator floor (--kill-estimate). Returns
+ * Derive the conservative kill-cost estimate for a killed/timeout record. Precedence:
+ *   1. elapsed time known + enough history → max(median $/ms × elapsed, flat floor),
+ *      capped at the kind's P90 measured cost (never below the floor) — "history-rate";
+ *   2. the P10 of the factory's OWN measured history for this kind — "history-p10";
+ *   3. the flat operator floor (--kill-estimate / GAFFER_KILL_ESTIMATE_USD) — "flat-floor".
+ * A flat floor of 0 with no usable history is the opt-out. Returns
  * { estimateUsd, basis } — estimateUsd 0 means "no estimate" (the caller then writes
  * a plain unknownRecord). Fully wrapped: any failure falls through to the floor / 0.
  */
-export function deriveKillEstimate({ kind, killEstimate, killBasis, env = process.env }) {
+export function deriveKillEstimate({
+  kind,
+  killEstimate,
+  killBasis,
+  elapsedMs,
+  env = process.env,
+}) {
   const floor = killEstimate != null ? parseFloat(killEstimate) : NaN;
+  const floorPos = Number.isFinite(floor) && floor > 0 ? floor : 0;
+  const elapsed = elapsedMs != null && elapsedMs !== "" ? Number(elapsedMs) : NaN;
   let est = null;
   let basis = null;
   try {
-    const hist = killEstimateFromHistory(readLedgerText(env), kind);
-    if (hist != null && hist > 0) {
-      est = hist;
-      basis = "history-p10";
+    const text = readLedgerText(env);
+    const rate = killRateEstimateFromHistory(text, kind, elapsed);
+    if (rate) {
+      const cap = Math.max(rate.capUsd, floorPos);
+      const v = Math.min(Math.max(rate.rateUsd, floorPos), cap);
+      if (v > 0) {
+        est = v;
+        basis = "history-rate";
+      }
+    }
+    if (est == null) {
+      const hist = killEstimateFromHistory(text, kind);
+      if (hist != null && hist > 0) {
+        est = hist;
+        basis = "history-p10";
+      }
     }
   } catch {
     /* history read is best-effort — fall through to the flat floor */
@@ -355,6 +430,32 @@ export function deriveKillEstimate({ kind, killEstimate, killBasis, env = proces
   }
   if (est == null || !(est > 0)) return { estimateUsd: 0, basis: null };
   return { estimateUsd: est, basis: killBasis || basis };
+}
+
+/** The flat kill floor default when GAFFER_KILL_ESTIMATE_USD is unset (factory.config.sh parity). */
+export const KILL_ESTIMATE_DEFAULT_USD = 0.05;
+
+/**
+ * Book a killed / timed-out / unparseable call from a .mjs call site — the same
+ * labelled ESTIMATE the bash path books (cliMain), so a planner, spec author,
+ * product owner, tester, onboarding or merge-resolver call that keeps timing out no
+ * longer reads as FREE against GAFFER_DAY_USD_CAP / GAFFER_BUDGET_USD. These helpers
+ * often run outside factory.config.sh, so the floor is read from
+ * env.GAFFER_KILL_ESTIMATE_USD here (default 0.05; 0 opts out, leaving a plain
+ * "unknown" record when there is no usable history). Never throws.
+ */
+export function recordKilledCall({ kind, ticket, reason, elapsedMs, env = process.env }) {
+  let record;
+  try {
+    const raw = env.GAFFER_KILL_ESTIMATE_USD;
+    const killEstimate =
+      raw == null || String(raw).trim() === "" ? KILL_ESTIMATE_DEFAULT_USD : String(raw);
+    const { estimateUsd, basis } = deriveKillEstimate({ kind, killEstimate, elapsedMs, env });
+    record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
+  } catch {
+    record = unknownRecord({ ticket, kind, reason });
+  }
+  return appendUsageRecord(record, env);
 }
 
 function readInput(jsonFile) {
@@ -394,6 +495,7 @@ function cliMain(argv) {
       kind,
       killEstimate: args.killEstimate,
       killBasis: args.killBasis,
+      elapsedMs: args.elapsedMs,
     });
     record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
   } else if (json === null) {
@@ -402,6 +504,7 @@ function cliMain(argv) {
       kind,
       killEstimate: args.killEstimate,
       killBasis: args.killBasis,
+      elapsedMs: args.elapsedMs,
     });
     record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
   } else {

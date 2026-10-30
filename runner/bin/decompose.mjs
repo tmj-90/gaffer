@@ -110,7 +110,7 @@ import {
   buildUsageRecord,
   extractResultText,
   parseClaudeJson,
-  unknownRecord,
+  recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
@@ -1079,6 +1079,7 @@ function runClaudeTurn(prompt, opts, model) {
   // SEE, not what it can write.
   const home = makeAgentHome("decompose-", { role: "plan" });
   let res;
+  const t0 = Date.now();
   try {
     res = Worker.deliver({
       bin: claudeBin,
@@ -1093,10 +1094,12 @@ function runClaudeTurn(prompt, opts, model) {
   }
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
-      // Ledger the unmeasurable call as "unknown" (honesty rule 3: never 0).
-      appendUsageRecord(
-        unknownRecord({ kind: "decompose", reason: "decompose claude call timed out" }),
-      );
+      // Ledger the unmeasurable call as a labelled ESTIMATE (never $0, never "measured").
+      recordKilledCall({
+        kind: "decompose",
+        reason: "decompose claude call timed out",
+        elapsedMs: Date.now() - t0,
+      });
       return { timedOut: true, stdout: "" };
     }
     throw res.error;
@@ -1106,9 +1109,11 @@ function runClaudeTurn(prompt, opts, model) {
   const rawStdout = res.stdout || "";
   const json = parseClaudeJson(rawStdout);
   if (json === null) {
-    appendUsageRecord(
-      unknownRecord({ kind: "decompose", reason: "no parseable --output-format json on stdout" }),
-    );
+    recordKilledCall({
+      kind: "decompose",
+      reason: "no parseable --output-format json on stdout",
+      elapsedMs: Date.now() - t0,
+    });
     // Fall back to the raw stdout so a parser change in claude can't silently
     // break decomposition — the existing block-extractor still gets the text.
     return { timedOut: false, stdout: rawStdout };

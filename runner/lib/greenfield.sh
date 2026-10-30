@@ -499,12 +499,12 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
   # headroom, so a hung/runaway agent here would stall the whole tick. Wrap in
   # gaffer_timeout; the argv carries its own (text-only) turn cap. Run from an EMPTY
   # scratch dir so no CLAUDE.md / project settings load into a one-word answer.
-  local scratch rc=0 text=""
+  local scratch rc=0 text="" t0=$SECONDS
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-inherit.XXXXXX")" || return 0
   ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
     >"$scratch/out.json" 2>/dev/null || rc=$?
   if type gaffer_usage_record >/dev/null 2>&1; then
-    text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" 2>/dev/null)"
+    text="$(gaffer_usage_record inherit "$tnum" "$rc" "$scratch/out.json" "$(( (SECONDS - t0) * 1000 ))" 2>/dev/null)"
   fi
   [ -n "$text" ] || text="$(node "${GAFFER_WORKER_MJS:-${RUNNER_DIR:-.}/lib/worker.mjs}" parse-result result-text --json-file "$scratch/out.json" 2>/dev/null)"
   [ -n "$text" ] || text="$(cat "$scratch/out.json" 2>/dev/null)"

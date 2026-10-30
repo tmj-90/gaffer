@@ -358,7 +358,7 @@
     letter-spacing: 0.02em;
   }
   .tag-t2 {
-    fill: var(--sky);
+    fill: var(--sky-on-board);
   }
   .tag-dot {
     fill: var(--chalk);
@@ -463,7 +463,7 @@
     border-radius: 3px;
   }
   .key-tag b {
-    color: var(--sky);
+    color: var(--sky-on-board);
   }
   .key-disc {
     fill: #fff;
@@ -859,6 +859,20 @@
   .sq-name {
     font: 800 var(--t20) / 1 var(--f-display);
     overflow-wrap: anywhere;
+  }
+  .sq-no {
+    font: 600 var(--t14) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .own-by {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+  }
+  .own-by .agent {
+    font: inherit;
+    color: var(--ink);
   }
   .sq-now {
     font-size: var(--t14);

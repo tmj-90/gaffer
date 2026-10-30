@@ -836,6 +836,47 @@ try {
     }
   }
 
+  // ── 6d. the club and the squad: the crest names the club from /api/club, and the
+  //        Squad page renames an agent in place (shirt number + display name).
+  {
+    const club = (await api("GET", "/api/club")).json.club;
+    await page.goto(`${BASE}/#/squad`, { waitUntil: "load" });
+    await sleep(1200);
+    const crestName = ((await page.textContent(".brand-name").catch(() => "")) || "").trim();
+    club && crestName.toLowerCase() === String(club.name_effective).toLowerCase()
+      ? ok(`crest names the club: '${crestName}' (GET /api/club)`)
+      : bad(`crest reads '${crestName}', /api/club says '${club && club.name_effective}'`);
+    const agents = (await api("GET", "/api/squad")).json.agents || [];
+    const rows = await page.locator(".sq-table tbody tr").count();
+    if (!agents.length) note("squad: no agents registered, rename step skipped");
+    else if (rows !== agents.length) bad(`squad: ${rows} rows for ${agents.length} agents`);
+    else {
+      const a0 = agents[0];
+      const row = page.locator(`.sq-table tbody tr[data-id="${a0.agent_id}"]`);
+      await row.locator("button.sq-rename").click();
+      await row.locator("input.sq-name-in").fill("Regression Kev");
+      await row.locator("input.sq-no-in").fill("9");
+      await row.locator("button.sq-save").click();
+      await sleep(800);
+      const after = (await api("GET", "/api/squad")).json.agents.find(
+        (x) => x.agent_id === a0.agent_id,
+      );
+      const txt = (await row.textContent()) || "";
+      after &&
+      after.display_name === "Regression Kev" &&
+      after.shirt_number === 9 &&
+      /Regression Kev/.test(txt)
+        ? ok("squad: an agent renamed inline wears No. 9 as 'Regression Kev'")
+        : bad(`squad rename did not land: ${JSON.stringify(after)} row='${txt.slice(0, 120)}'`);
+      await shot(page, "squad-renamed");
+      // Put it back, so the steps after this read the factory as seeded.
+      await api("PATCH", `/api/squad/agents/${a0.agent_id}`, {
+        display_name: a0.display_name,
+        shirt_number: a0.shirt_number,
+      });
+    }
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [
@@ -849,6 +890,7 @@ try {
     "settings",
     "hidden",
     "memory",
+    "squad",
     `ticket/${ticket.id}`,
     `repo/${encodeURIComponent(repo.id)}`,
   ]) {
@@ -885,6 +927,7 @@ try {
       "specs",
       "settings",
       "memory",
+      "squad",
       `ticket/${ticket.id}`,
       `repo/${encodeURIComponent(repo.id)}`,
     ];

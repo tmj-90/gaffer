@@ -119,10 +119,14 @@ async function api(method, path, body, opts = {}) {
     // The HTTP status rides along: callers test it (a ticket's 404) and the
     // error page shows it; it was never set, so `e.status === 404` never matched.
     e.status = res.status;
+    // The envelope's details (a 409's holder, a 422's field) for an inline message.
+    if (err.details !== undefined) e.details = err.details;
     throw e;
   }
   if (data && Array.isArray(data.repositories))
     learnKits(data.repositories.map((r) => r && r.name));
+  // Any payload that carries the server's agent_display refreshes the squad map.
+  if (data && typeof data === "object") learnDisplaysFrom(data);
   return data;
 }
 
@@ -238,6 +242,8 @@ const ICONS = {
     '<path d="M12 3v4M12 17v4M3 12h4M17 12h4"/><path d="M7.5 7.5l2.5 2.5M14 14l2.5 2.5M16.5 7.5L14 10M10 14l-2.5 2.5"/>',
   send: '<path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7Z"/>',
   link: '<path d="M9 17H7a5 5 0 0 1 0-10h2M15 7h2a5 5 0 0 1 0 10h-2M8 12h8"/>',
+  squad:
+    '<path d="M8.5 3 4 5 1.8 9.6l3.2 1.8L6 10.4V21h12V10.4l1 1 3.2-1.8L20 5l-4.5-2a3.6 3.6 0 0 1-7 0Z"/>',
   memory:
     '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/><rect x="9" y="9" width="6" height="6" rx="1"/>',
   settings:
@@ -462,8 +468,12 @@ function agentNo(name) {
   const m = String(name || "").match(/(\d+)$/);
   return m ? m[1].slice(-2).padStart(2, "0") : "";
 }
-/** An agent: the club shirt (claret, sky chevron + collar) with its stencil number. */
-function agentShirt(name, size = 24) {
+/**
+ * An agent: the club shirt (claret, sky chevron + collar) with its stencil number.
+ * `no` is the number it wears (its squad shirt_number, see agentWho); without one
+ * it falls back to the trailing digits of `name` (crew-delivery-02 wears 02).
+ */
+function agentShirt(name, size = 24, no) {
   const id = "shirt" + ++svgUid;
   return svgEl(
     "svg",
@@ -491,15 +501,35 @@ function agentShirt(name, size = 24) {
         "stroke-width": 1.4,
         "stroke-linejoin": "round",
       }),
-      svgEl("text", { x: 20, y: 34, "text-anchor": "middle", class: "shirt-no" }, agentNo(name)),
+      svgEl(
+        "text",
+        { x: 20, y: 34, "text-anchor": "middle", class: "shirt-no" },
+        no != null ? String(no) : agentNo(name),
+      ),
     ],
   );
 }
-function agentTag(name, size = 22) {
-  return el("span", { class: "agent" }, [agentShirt(name, size), el("span", {}, name)]);
+/** An agent named on screen: its shirt and its name (`title` adds the number). */
+function agentTag(name, size = 22, no, title) {
+  return el("span", { class: "agent", title: title || null }, [
+    agentShirt(name, size, no),
+    el("span", {}, name),
+  ]);
 }
-/** The club crest: a shield split claret and sky with a fern frond — the product mark. */
-function crest(cls = "crest", w = 34, h = 40) {
+/** The agent with this id as the squad knows it (its shirt and display name). */
+function agentChip(id, fallback, size = 22) {
+  const w = agentWho(id, fallback);
+  return agentTag(w.name, size, w.no, agentTitle(w));
+}
+/**
+ * The club crest: a shield split claret and sky with a fern frond. It carries the
+ * club's short name (GET /api/club short_name_effective): one letter sits on the
+ * claret half, two to four run across a claret band.
+ */
+function crest(cls = "crest", w = 34, h = 40, letters = "G") {
+  const t = String(letters || "G").slice(0, 4);
+  const band = t.length > 1;
+  const fs = [15, 16, 15, 14, 12][t.length];
   return svgEl(
     "svg",
     {
@@ -534,7 +564,29 @@ function crest(cls = "crest", w = 34, h = 40) {
           "stroke-linecap": "round",
         }),
       ),
-      svgEl("text", { x: 31.5, y: 31, "text-anchor": "middle", class: "crest-t" }, "G"),
+      band
+        ? svgEl("rect", {
+            x: 4.2,
+            y: 21,
+            width: 35.6,
+            height: 13,
+            fill: "var(--claret)",
+            stroke: "var(--sky)",
+            "stroke-width": 1.2,
+            class: "crest-band",
+          })
+        : null,
+      svgEl(
+        "text",
+        {
+          x: band ? 22 : 31.5,
+          y: band ? 27.5 + fs * 0.36 : 31,
+          "text-anchor": "middle",
+          class: "crest-t",
+          style: `font-size:${fs}px`,
+        },
+        t,
+      ),
     ],
   );
 }
@@ -629,14 +681,268 @@ function ensureAgents() {
         agentsLoaded = null;
       });
   }
-  return agentsLoaded;
+  return Promise.all([agentsLoaded, ensureSquad()]);
 }
 /** Who did it, in words: "crew-delivery-02", "priya.raman", "the runner". */
 function actorName(type, id) {
+  const d = id ? squad.byId.get(id) : null;
+  if (d && d.display_name_effective) return d.display_name_effective;
   if (id && agentNames.has(id)) return agentNames.get(id);
   if (type === "system" || (!id && type !== "human")) return "the runner";
   if (type === "agent") return id ? `an agent (${String(id).slice(0, 8)})` : "an agent";
   return id || type || "—";
+}
+
+// --- The club and its squad (GET /api/club, GET /api/squad) -----------------
+//
+// The club's identity (its name, the crest's letters, the kit colours) and how
+// each agent appears: the operator's name for it, its shirt number and role. The
+// agent id stays the identity everywhere (links, keys, joins); a name is only a
+// label. The squad is read once per page load, refreshed when the live stream
+// says it changed (club.updated, agent.display_updated, agent.registered), and
+// any payload that carries the server's `agent_display` refreshes its entry.
+const squad = {
+  club: null, // ClubView
+  agents: [], // SquadAgentView[], in registration order
+  byId: new Map(), // agent_id → AgentDisplay (+ registration facts once the squad loads)
+  capability: null, // "full" | "read" from /api/whoami; null until known
+  loaded: null, // the in-flight or settled first read
+};
+const ROLE_LABELS = {
+  delivery: "Delivery",
+  reviewer: "Reviewer",
+  security_reviewer: "Security reviewer",
+  tester: "Tester",
+};
+function learnDisplay(d) {
+  if (!d || typeof d !== "object" || !d.agent_id || !d.display_name_effective) return;
+  squad.byId.set(d.agent_id, { ...(squad.byId.get(d.agent_id) || {}), ...d });
+}
+/** The server attaches agent_display to claims, board cards, activity, /agents and a ticket. */
+function learnDisplaysFrom(data) {
+  const ad = data.agent_display;
+  if (ad && typeof ad === "object") {
+    if (ad.agent_id) learnDisplay(ad);
+    else for (const v of Object.values(ad)) learnDisplay(v);
+  }
+  for (const k of ["claims", "events", "agents"])
+    if (Array.isArray(data[k])) for (const x of data[k]) if (x) learnDisplay(x.agent_display);
+  const cards = [];
+  for (const c of Array.isArray(data.columns) ? data.columns : []) cards.push(...(c.cards || []));
+  for (const k of ["closed", "wontDo"]) if (Array.isArray(data[k])) cards.push(...data[k]);
+  for (const card of cards) if (card && card.claim) learnDisplay(card.claim.agent_display);
+}
+/** Take a GET /api/squad answer: the club (and its kit) and every agent's display. */
+function applySquad(res) {
+  if (!res || typeof res !== "object") return;
+  if (res.club) applyClub(res.club);
+  if (Array.isArray(res.agents)) {
+    squad.agents = res.agents;
+    for (const a of res.agents) learnDisplay(a);
+  }
+}
+/** Read the squad and the token's capability, once per page load (best-effort). */
+function ensureSquad() {
+  if (!squad.loaded) {
+    squad.loaded = Promise.all([
+      api("GET", "/api/squad").catch(() => null),
+      squad.capability ? null : api("GET", "/api/whoami").catch(() => null),
+    ]).then(([sq, who]) => {
+      if (who && typeof who === "object") squad.capability = who.capability || "full";
+      if (sq) applySquad(sq);
+      else squad.loaded = null; // try again on the next view
+    });
+  }
+  return squad.loaded;
+}
+/**
+ * The live stream said the club or a name changed: read the squad again, repaint
+ * the crest, and redraw the view even when its own data signature is unchanged.
+ */
+let squadRefreshBusy = false;
+function refreshSquad() {
+  if (squadRefreshBusy) return;
+  squadRefreshBusy = true;
+  squad.loaded = null;
+  ensureSquad()
+    .then(() => {
+      const cur = app.firstElementChild;
+      if (cur && cur.dataset) delete cur.dataset.sig;
+      refreshCurrentView();
+    })
+    .finally(() => {
+      squadRefreshBusy = false;
+    });
+}
+/** May this operator change names (a full token)? Unknown counts as no: no 403 surprises. */
+function canEditSquad() {
+  return squad.capability === "full";
+}
+/**
+ * An agent as the squad knows it: { id, name, no, reg, role }. `name` is the
+ * display name (the server's display_name_effective), else `fallback` (the
+ * registered label a payload carried); `no` is its shirt number, else the
+ * trailing digits of its registered name (the old index scheme: 01, 02…).
+ */
+function agentWho(id, fallback) {
+  const d = id ? squad.byId.get(id) : null;
+  const reg = (d && d.registered_name) || (id && agentNames.get(id)) || fallback || null;
+  const name =
+    (d && d.display_name_effective) ||
+    fallback ||
+    reg ||
+    (id ? `an agent (${String(id).slice(0, 8)})` : "an agent");
+  const no = d && d.shirt_number != null ? String(d.shirt_number) : agentNo(reg || name);
+  return { id, name, no, reg, role: (d && d.role) || null };
+}
+/** "Kev, No. 9 (crew-delivery-02)": the hover text for a shirt. */
+function agentTitle(w) {
+  const num = w.no ? `, No. ${Number(w.no)}` : "";
+  return `${w.name}${num}${w.reg && w.reg !== w.name ? ` (${w.reg})` : ""}`;
+}
+
+// The kit: the club's colours drive the claret/sky tokens. Contrast is guarded:
+// a kit too light for white text flips the text on it to ink, the shirt number
+// stays readable on the shirt, and claret-as-text is darkened (or lightened on
+// the floodlit kit) until it reads on paper.
+const RGB_WHITE = [255, 255, 255];
+const RGB_INK = [14, 23, 38]; // --ink / --counter-ink
+const RGB_PAPER_DARK = [31, 36, 48]; // --paper, floodlit
+const RGB_BOARD = [17, 19, 24]; // --board
+const RGB_HOUSE_CLARET = [122, 22, 49];
+const RGB_HOUSE_SKY = [149, 205, 235];
+function hexRgb(hex) {
+  const m = /^#([0-9a-f]{6})$/i.exec(String(hex || ""));
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbHex(c) {
+  return "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+function relLum(c) {
+  const f = (v) => {
+    const x = v / 255;
+    return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+  };
+  return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]);
+}
+function contrastRatio(a, b) {
+  const la = relLum(a);
+  const lb = relLum(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+const mixRgb = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+const rgbCss = (c) => `rgb(${c[0]} ${c[1]} ${c[2]})`;
+/** Move `c` towards `to` until it reads at `min`:1 on `bg`. */
+function readableOn(c, bg, to, min = 4.5) {
+  for (let t = 0; t <= 1.0001; t += 0.05) {
+    const m = mixRgb(c, to, t);
+    if (contrastRatio(m, bg) >= min) return m;
+  }
+  return to;
+}
+/** A text colour on `bg` (white or ink, whichever reads better) and its quieter tint. */
+function inkOn(bg) {
+  const light = contrastRatio(bg, RGB_WHITE) >= contrastRatio(bg, RGB_INK);
+  const on = light ? RGB_WHITE : RGB_INK;
+  const quiet = mixRgb(on, bg, 0.18);
+  return { light, on, quiet: contrastRatio(quiet, bg) >= 4.5 ? quiet : on };
+}
+/**
+ * The kit tokens for a club's colours: { token: value } (null = the house value).
+ * Applied to :root for the whole app, or to one element for a live preview.
+ */
+function kitTokens(primary, secondary) {
+  const P = hexRgb(primary);
+  const S = hexRgb(secondary);
+  const out = {
+    "--claret": null,
+    "--claret-ink": null,
+    "--on-claret": null,
+    "--on-claret-2": null,
+    "--shirt-edge": null,
+    "--sky": null,
+    "--on-sky": null,
+    "--on-sky-2": null,
+    "--sky-wash": null,
+    "--shirt-no": null,
+    "--sky-on-board": null,
+  };
+  if (P) {
+    const t = inkOn(P);
+    out["--claret"] = primary;
+    out["--on-claret"] = t.light ? null : "var(--counter-ink)";
+    out["--on-claret-2"] = rgbCss(t.quiet);
+    out["--shirt-edge"] = rgbCss(mixRgb(P, [0, 0, 0], 0.55));
+    out["--claret-ink"] =
+      `light-dark(${rgbCss(readableOn(P, RGB_WHITE, RGB_INK))}, ${rgbCss(readableOn(P, RGB_PAPER_DARK, RGB_WHITE))})`;
+  }
+  if (S) {
+    const t = inkOn(S);
+    out["--sky"] = secondary;
+    out["--on-sky"] = t.light ? "var(--board-ink)" : null;
+    out["--on-sky-2"] = rgbCss(t.quiet);
+    out["--sky-wash"] =
+      `light-dark(color-mix(in srgb, ${secondary} 20%, var(--paper)), color-mix(in srgb, ${secondary} 10%, var(--paper)))`;
+    out["--sky-on-board"] = contrastRatio(S, RGB_BOARD) < 4.5 ? "var(--board-ink-2)" : "var(--sky)";
+  }
+  if (P || S) {
+    // The stencil number is cut in the second colour: on a shirt of a close colour it
+    // takes the shirt's text colour instead.
+    const p = P || RGB_HOUSE_CLARET;
+    const s2 = S || RGB_HOUSE_SKY;
+    out["--shirt-no"] = contrastRatio(p, s2) < 3 ? "var(--on-claret)" : "var(--sky)";
+  }
+  return out;
+}
+/** The house kit's token values, read before the club's kit is first worn. */
+let houseKit = null;
+function readHouseKit() {
+  if (houseKit) return houseKit;
+  houseKit = {};
+  try {
+    const cs = window.getComputedStyle(document.documentElement);
+    for (const k of Object.keys(kitTokens(null, null))) {
+      const v = cs.getPropertyValue(k).trim();
+      if (v) houseKit[k] = v;
+    }
+  } catch {
+    /* no computed style (tests): the stylesheet's values stand */
+  }
+  return houseKit;
+}
+/**
+ * Wear `tokens` on a node. A null token is the house value: removed from :root
+ * (the stylesheet holds it), or written out on a preview inside a kitted page.
+ */
+function setKitTokens(node, tokens) {
+  const root = node === document.documentElement;
+  const house = readHouseKit();
+  for (const [k, v] of Object.entries(tokens)) {
+    if (v != null) node.style.setProperty(k, v);
+    else if (!root && house[k]) node.style.setProperty(k, house[k]);
+    else node.style.removeProperty(k);
+  }
+}
+/** The club's name and letters, with the house fallbacks. */
+function clubName() {
+  return (squad.club && squad.club.name_effective) || "Gaffer";
+}
+function clubLetters() {
+  return (squad.club && squad.club.short_name_effective) || "GAF";
+}
+/** Take a ClubView: repaint the crest and the header, and wear its kit. */
+function applyClub(club) {
+  if (!club || typeof club !== "object") return;
+  squad.club = club;
+  setKitTokens(document.documentElement, kitTokens(club.kit_primary, club.kit_secondary));
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    if (!meta.dataset.house) meta.dataset.house = meta.getAttribute("content") || "";
+    meta.setAttribute("content", club.kit_primary || meta.dataset.house);
+  }
+  paintBrand();
 }
 
 // --- Toast ------------------------------------------------------------------
@@ -1175,6 +1481,7 @@ const VIEWS = {
   review: renderReview,
   factory: renderFactory,
   memory: renderMemory,
+  squad: renderSquad,
   epics: renderEpics,
   specs: renderSpecs,
   settings: renderSettings,
@@ -1637,6 +1944,7 @@ const NAV = [
   { id: "factory", label: "Map", icon: "map" },
   { id: "specs", label: "Specs", icon: "specs" },
   { id: "memory", label: "Memory", icon: "memory" },
+  { id: "squad", label: "Squad", icon: "squad" },
   { id: "health", label: "Health", icon: "health" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
@@ -1650,13 +1958,8 @@ function navCountEl(id) {
 
 function buildChrome() {
   clear(appbar);
-  const brand = el("a", { class: "brand", href: "#/overview", "aria-label": "Gaffer — Overview" }, [
-    crest(),
-    el("span", { class: "brand-t" }, [
-      el("span", { class: "brand-name" }, "Gaffer"),
-      el("span", { class: "brand-sub", id: "brand-sub" }),
-    ]),
-  ]);
+  // The crest and the club's name (GET /api/club, painted by paintBrand once read).
+  const brand = el("div", { class: "brand" });
 
   const railItems = NAV.map((n) =>
     el("a", { class: "nav-link", href: `#/${n.id}`, dataset: { area: n.id }, onclick: reselect }, [
@@ -1721,6 +2024,8 @@ function buildChrome() {
   }
   appbar.appendChild(el("div", { class: "club-in" }, [brand, rail, end]));
   appbar.hidden = false;
+  paintBrand();
+  ensureSquad().then(paintBrand);
   if (!document.getElementById("offline-strip")) {
     appbar.after(
       el("div", { class: "offline-strip", id: "offline-strip", role: "alert", hidden: true }),
@@ -1761,6 +2066,42 @@ function buildChrome() {
 }
 
 /**
+ * The header crest: the club's short name on the badge and its name beside it
+ * (GET /api/club; "Gaffer" until one is set). With a full token the badge is a
+ * button that opens "Name your club"; a read token sees the crest, no editor.
+ */
+function paintBrand() {
+  const brand = appbar && appbar.querySelector(".brand");
+  if (!brand) return;
+  const name = clubName();
+  const letters = clubLetters();
+  const badge = canEditSquad()
+    ? el(
+        "button",
+        {
+          class: "crest-btn",
+          type: "button",
+          "aria-label": `Name your club (${name})`,
+          "aria-haspopup": "dialog",
+          title: "Name your club",
+          onclick: () => openClubSheet(),
+        },
+        crest("crest", 34, 40, letters),
+      )
+    : el("span", { class: "crest-btn is-static" }, crest("crest", 34, 40, letters));
+  const sub = brand.querySelector("#brand-sub");
+  const subText = sub && !(squad.club && squad.club.name) ? sub.textContent : "";
+  brand.replaceChildren(
+    badge,
+    el("a", { class: "brand-t", href: "#/overview", "aria-label": `${name} — Overview` }, [
+      el("span", { class: "brand-name" }, name),
+      el("span", { class: "brand-sub", id: "brand-sub" }, subText),
+    ]),
+  );
+  fitNav();
+}
+
+/**
  * Re-selecting the view you are on still re-reads it: an identical hash fires no
  * hashchange, so the nav link routes explicitly (as navigate() does).
  */
@@ -1777,7 +2118,7 @@ function reselect(e) {
  * More menu, so the header can never be wider than the viewport
  * (appbar-overflow-760-1565). Folding order, first to last: the kit switch and
  * Logout (both also live in More), then the reference tabs from the right
- * (Settings, Health, Memory, Specs, Map, Epics), then Work. Overview, Review —
+ * (Settings, Health, Squad, Memory, Specs, Map, Epics), then Work. Overview, Review —
  * with its yellow "needs you" count — and the active tab never fold. More shows
  * the sum of any counts it holds.
  */
@@ -1959,7 +2300,15 @@ function openMoreSheet() {
 // async parts (diffs) settle so the page can't shrink and clamp scroll to 0, and
 // skips the swap entirely when the view's data signature did not change.
 const AUTO_REFRESH_MS = 9000;
-const AUTO_REFRESHABLE = new Set(["overview", "work", "review", "epics", "memory", "factory"]);
+const AUTO_REFRESHABLE = new Set([
+  "overview",
+  "work",
+  "review",
+  "epics",
+  "memory",
+  "factory",
+  "squad",
+]);
 let autoRefreshTimer;
 function busyEditing() {
   const a = document.activeElement;
@@ -1979,6 +2328,7 @@ function busyEditing() {
 // silence (the server pings every 15s) as a dead connection, so a half-open
 // socket after sleep or a network change can't keep the header saying "Live".
 let liveStreamAbort = null;
+const SQUAD_EVENTS = new Set(["club.updated", "agent.display_updated", "agent.registered"]);
 let liveStreamSeq = null;
 let liveRefreshTimer = null;
 const LIVE_REFRESH_DEBOUNCE_MS = 400;
@@ -2026,11 +2376,18 @@ async function startLiveStream() {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         let isEvent = false;
+        let data = "";
         for (const line of frame.split("\n")) {
           if (line.startsWith("id: ")) liveStreamSeq = Number(line.slice(4)) || liveStreamSeq;
           else if (line.startsWith("event: work_event")) isEvent = true;
+          else if (line.startsWith("data: ")) data += line.slice(6);
         }
-        if (isEvent) scheduleLiveRefresh();
+        if (isEvent) {
+          // The stream carries no agent_display: a rename or a new agent re-reads the squad.
+          const type = (parseJsonSafe(data) || {}).event_type;
+          if (SQUAD_EVENTS.has(type)) refreshSquad();
+          else scheduleLiveRefresh();
+        }
       }
     }
   } catch {
@@ -2195,6 +2552,7 @@ const VIEW_TITLES = {
   specs: "Specs",
   factory: "Map",
   memory: "Memory",
+  squad: "Squad",
   settings: "Settings",
   ticket: "Ticket",
   repo: "Repo",
@@ -2245,9 +2603,10 @@ async function updateNavBadges() {
     // off it (blocked, paused, failed), the same two counts the board heads with.
     navCounts.work = [...ON_PITCH, ...OFF_PITCH].reduce((n, k) => n + (s[k] || 0), 0);
     navCounts.review = s.in_review || 0;
-    const club = summary.club?.name || summary.clubName || (await factoryName());
+    // Under the crest: the factory's name, while the club has no name of its own.
+    const club = squad.club && squad.club.name ? null : summary.clubName || (await factoryName());
     const sub = document.getElementById("brand-sub");
-    if (sub && club) sub.textContent = club;
+    if (sub) sub.textContent = club && club !== clubName() ? club : "";
     document.querySelectorAll(".nav-count[data-count]").forEach((n) => {
       const id = n.dataset.count;
       const v = navCounts[id];
@@ -2332,6 +2691,13 @@ async function buildPaletteSources() {
       hint: "digest · feature ledger · lore",
       icon: "memory",
       run: () => navigate("#/memory"),
+    },
+    {
+      group: "Go",
+      label: "Squad",
+      hint: "agent names · shirt numbers · the club",
+      icon: "squad",
+      run: () => navigate("#/squad"),
     },
     {
       group: "Go",
@@ -2751,6 +3117,7 @@ async function loadMatchDay() {
     opt("/api/activity?limit=200", { events: [] }),
     opt("/decisions", { decisions: [] }),
     opt("/scope/nodes", { nodes: [] }),
+    ensureSquad(),
   ]);
   const summary = dash.summary || {};
   const claims = (claimsRes && claimsRes.claims) || [];
@@ -2825,6 +3192,7 @@ async function loadMatchDay() {
         ticket_number: t.number,
         agent_id: t.claim.agentId,
         agent_display_name: t.claim.agentDisplayName,
+        agent_display: t.claim.agent_display || null,
       });
     }
   }
@@ -2853,7 +3221,7 @@ async function loadMatchDay() {
     autoMerge: (settings?.settings || []).find((x) => x.key === "AUTO_MERGE")?.effective,
     decisions: (decs && decs.decisions) || [],
     events: (activity && activity.events) || [],
-    clubName: summary.club?.name || summary.clubName || factoryNode?.name || null,
+    clubName: (squad.club && squad.club.name) || summary.clubName || factoryNode?.name || null,
   };
 }
 
@@ -3201,6 +3569,8 @@ function decisionTitle(it, f) {
   return (d && d.title) || it.title || it.reason || "Decision";
 }
 
+/** Team-sheet rows that name the agent who played the ticket. */
+const OWN_BY_KINDS = new Set(["review", "awaiting_merge", "parked"]);
 /** One team-sheet row: rank · card · kind · #ref, the title (a link), the reason, the wait, the action. */
 function renderOwnedItem(it, i = 0, f = null) {
   const t = it.ticket;
@@ -3208,6 +3578,8 @@ function renderOwnedItem(it, i = 0, f = null) {
   const href = t ? (it.kind === "review" ? `#/review/${t.id}` : `#/ticket/${t.id}`) : null;
   const title = t && t.title ? t.title : it.kind === "decision" ? decisionTitle(it, f) : null;
   const reason = it.reason || "(no reason given)";
+  // Who played it: the agent on the ticket's latest claim (a change, a merge, a parked ticket).
+  const by = f && t && OWN_BY_KINDS.has(it.kind) ? deliveredBy(f.details.get(t.id)?.events) : null;
   return el("div", { class: `own-row own-row--${it.kind}`, dataset: { kind: it.kind } }, [
     el("span", { class: "own-rank", "aria-hidden": "true" }, String(i + 1)),
     el("div", { class: "own-body" }, [
@@ -3228,6 +3600,12 @@ function renderOwnedItem(it, i = 0, f = null) {
           { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
           `Waited ${fmtWait(it.waitedMs)}`,
         ),
+        by
+          ? el("span", { class: "own-by" }, [
+              it.kind === "parked" ? "with " : "delivered by ",
+              agentChip(by.id, by.name, 18),
+            ])
+          : null,
         // The server's structured code and its advice, as the referee's notebook:
         // one group, so the advice never wraps onto a line of its own.
         it.reasonCode != null || it.suggestedAction
@@ -4213,7 +4591,8 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     const claim = claimOf(t);
     const run = f.runByTicket.get(t.number);
     const nm = needs.has(t.id);
-    const label = `#${t.number} ${statusLabel(t.status)}${claim ? ", " + claim.agent_display_name + " on it" : ""}${nm ? ", needs you" : ""}: ${t.title}`;
+    const who = claim ? agentWho(claim.agent_id, claim.agent_display_name) : null;
+    const label = `#${t.number} ${statusLabel(t.status)}${who ? `, ${who.name}${who.no ? ` (No. ${Number(who.no)})` : ""} on it` : ""}${nm ? ", needs you" : ""}: ${t.title}`;
     const a = svgS("a", {
       href: t.status === "in_review" ? `#/review/${t.id}` : `#/ticket/${t.id}`,
       class: `counter${claim ? " has-agent" : ""}${nm ? " needs" : ""}`,
@@ -4230,8 +4609,8 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
       ),
     ];
     if (claim) {
-      const no = agentNo(claim.agent_display_name);
-      const g = svgS("g", { class: "agent-on" });
+      const no = who.no;
+      const g = svgS("g", { class: "agent-on", "data-agent": claim.agent_id });
       g.append(...disc, shirtGroup(no, x - SH / 2, shirt.top, SH / 40, FS.shirt));
       a.append(g);
       const mv = moved.find((m) => m.id === t.id);
@@ -5043,8 +5422,7 @@ function squadForm(f) {
   const history = new Map();
   for (const e of f.events) {
     if (e.event_type !== "claim.created" || !e.actor_id) continue;
-    const nm = agentNames.get(e.actor_id);
-    if (!nm) continue;
+    const nm = e.actor_id;
     (history.get(nm) || history.set(nm, []).get(nm)).push({
       id: e.entity_id,
       n: e.ticket_number,
@@ -5052,10 +5430,15 @@ function squadForm(f) {
     });
   }
   const claimByAgent = new Map(f.claims.map((c) => [c.agent_id, c]));
+  // In shirt order (numbered first), then by name: the team sheet's running order.
   const agents = f.agents
     .filter((a) => a.agent_type !== "human")
-    .slice()
-    .sort((a, b) => String(a.display_name).localeCompare(String(b.display_name)));
+    .map((a) => ({ a, w: agentWho(a.id, a.display_name) }))
+    .sort(
+      (x, y) =>
+        (x.w.no ? Number(x.w.no) : 1e3) - (y.w.no ? Number(y.w.no) : 1e3) ||
+        x.w.name.localeCompare(y.w.name),
+    );
   const onPitch = f.claims.length;
   return progPage(
     "squad",
@@ -5067,7 +5450,7 @@ function squadForm(f) {
           el(
             "ul",
             { class: "sq-list" },
-            agents.map((a) => {
+            agents.map(({ a, w }) => {
               const claim = claimByAgent.get(a.id);
               const t = claim ? f.byId.get(claim.ticket_id) : null;
               const run = claim ? f.runByTicket.get(claim.ticket_number) : null;
@@ -5077,13 +5460,16 @@ function squadForm(f) {
                     .pop()
                 : null;
               const rw = rework ? parseJsonSafe(rework.payload_json) : null;
-              const form = (history.get(a.display_name) || [])
+              const form = (history.get(a.id) || [])
                 .sort((x, y) => x.at.localeCompare(y.at))
                 .slice(-6);
               return el("li", { class: `sq-row${claim ? " is-on" : ""}` }, [
-                agentShirt(a.display_name, 56),
+                agentShirt(w.name, 56, w.no),
                 el("div", { class: "sq-body" }, [
-                  el("p", { class: "sq-name" }, a.display_name),
+                  el("p", { class: "sq-name", title: agentTitle(w) }, [
+                    w.name,
+                    w.no ? el("span", { class: "sq-no tabnum" }, ` No. ${Number(w.no)}`) : null,
+                  ]),
                   el(
                     "p",
                     { class: "sq-now" },
@@ -5305,7 +5691,12 @@ function matchReport(f) {
     const { st, say } = reportLine(f, e);
     const d = fmtDay(e.created_at);
     const head = d !== day ? (day = d) : null;
-    const agent = e.actor_type === "agent" && e.actor_id ? agentNames.get(e.actor_id) : null;
+    const agent =
+      e.actor_type === "agent" &&
+      e.actor_id &&
+      (squad.byId.has(e.actor_id) || agentNames.has(e.actor_id))
+        ? agentWho(e.actor_id)
+        : null;
     const who = actorName(e.actor_type, e.actor_id);
     const ref =
       e.ticket_number != null
@@ -5333,7 +5724,10 @@ function matchReport(f) {
         e.ticket_title ? el("span", { class: "mr-t" }, e.ticket_title) : null,
         el("span", { class: "mr-what" }, [" ", say]),
       ]),
-      el("span", { class: "mr-who" }, [agent ? agentShirt(agent, 26) : null, who]),
+      el("span", { class: "mr-who", title: agent ? agentTitle(agent) : null }, [
+        agent ? agentShirt(agent.name, 26, agent.no) : null,
+        who,
+      ]),
     ]);
   });
   const evs = f.events.slice(0, 30);
@@ -5592,6 +5986,7 @@ async function fitnessRoomPanels(healthRes) {
       api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
       api("GET", "/claims").catch(() => null),
       api("GET", "/api/settings").catch(() => null),
+      ensureSquad(),
     ]);
 
   const byStatus = summary.ticketsByStatus || {};
@@ -5959,6 +6354,9 @@ async function fitnessRoomPanels(healthRes) {
     right.appendChild(
       fitnessTestPanel({
         claims: activeClaims,
+        onPitch: claimsRes
+          ? (claimsRes.claims || []).filter((c) => !c.status || c.status === "active")
+          : [],
         slots: setting("GAFFER_CONCURRENCY"),
         ready: byStatus.ready || 0,
         stale: staleClaims,
@@ -5996,6 +6394,7 @@ async function fitnessRoomPanels(healthRes) {
  */
 function fitnessTestPanel({
   claims,
+  onPitch = [],
   slots,
   ready,
   stale,
@@ -6069,10 +6468,30 @@ function fitnessTestPanel({
           claims == null ? "—" : slots ? `${claims}/${slots}` : String(claims),
           slots ? (slotsFull ? "every slot taken" : `${slots - claims} free`) : "no slot limit set",
           {
-            after:
+            after: [
               slots && claims != null
                 ? band(claims, slots, `${claims} of ${slots} agent slots in use`)
                 : null,
+              // Who is in those slots: each agent's shirt and name, and the ticket it holds.
+              onPitch.length
+                ? el(
+                    "ul",
+                    { class: "ft-agents", "aria-label": "On the pitch" },
+                    onPitch.map((c) =>
+                      el("li", {}, [
+                        agentChip(c.agent_id, c.agent_display_name, 20),
+                        c.ticket_number != null
+                          ? el(
+                              "a",
+                              { class: "ft-agent-t tabnum", href: `#/ticket/${c.ticket_id}` },
+                              `#${c.ticket_number}`,
+                            )
+                          : null,
+                      ]),
+                    ),
+                  )
+                : null,
+            ],
           },
         ),
         cell(
@@ -7503,6 +7922,7 @@ async function renderWork() {
       if (e && e.code === "ABORTED") throw e;
       return null;
     }),
+    ensureSquad(),
   ]);
   const { repos, nodes } = ref;
   const columns = (board && board.columns) || [];
@@ -8499,7 +8919,7 @@ function renderBoardCard(card, laneKey, needs) {
               : `Lease to ${fmtTime(card.claim.expiresAt)}`,
           },
           [
-            agentTag(card.claim.agentDisplayName || card.claim.agentId.slice(0, 8), 22),
+            agentChip(card.claim.agentId, card.claim.agentDisplayName, 22),
             card.claim.stale ? el("span", { class: "card-stale" }, "lease ended") : null,
           ],
         )
@@ -8691,7 +9111,7 @@ function renderWorkList(allTickets, needs, claims = []) {
                 `By hand · ${t.human_owner}`,
               ])
             : c
-              ? agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26)
+              ? agentChip(c.agent_id, c.agent_display_name, 26)
               : el("span", { class: "dim" }, "—");
           return el(
             "tr",
@@ -8755,11 +9175,12 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
   const rows = claims.map((c) => {
     const ended = Date.parse(c.expires_at) < now;
     const num = c.ticket_number != null ? `#${c.ticket_number}` : c.ticket_id.slice(0, 8);
+    const agentLabel = agentWho(c.agent_id, c.agent_display_name).name;
     return el("tr", { class: ended ? "is-stale" : "" }, [
       el(
         "th",
         { scope: "row", class: "cl-agent" },
-        agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26),
+        agentChip(c.agent_id, c.agent_display_name, 26),
       ),
       el("td", { class: "cl-ticket" }, [
         el("a", { href: `#/ticket/${c.ticket_id}` }, [
@@ -8790,7 +9211,7 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
           {
             class: "btn danger small",
             type: "button",
-            "aria-label": `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
+            "aria-label": `Revoke ${agentLabel}'s claim on ${num}`,
             // Revoking stops an agent's work, so it takes two presses: the first
             // arms the button ("Stop the work?") for five seconds.
             onclick: (e) => {
@@ -8800,17 +9221,14 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
                 btn.textContent = "Stop the work?";
                 btn.setAttribute(
                   "aria-label",
-                  `Press again to stop ${c.agent_display_name || "the agent"}'s work on ${num}`,
+                  `Press again to stop ${agentLabel}'s work on ${num}`,
                 );
                 announce(`Press Revoke again to stop the work on ${num}`);
                 setTimeout(() => {
                   if (!btn.isConnected || btn.dataset.armed !== "1") return;
                   delete btn.dataset.armed;
                   btn.textContent = "Revoke";
-                  btn.setAttribute(
-                    "aria-label",
-                    `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
-                  );
+                  btn.setAttribute("aria-label", `Revoke ${agentLabel}'s claim on ${num}`);
                 }, 5000);
                 return;
               }
@@ -8984,7 +9402,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
       const by = deliveredBy(events);
       return [
         el("b", {}, `${statusLabel(t.status)}. `),
-        by ? `${by} is on it.` : "An agent is on it.",
+        by ? `${by.name} is on it.` : "An agent is on it.",
       ];
     }
     case "ready":
@@ -14057,7 +14475,10 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
       // inferred from an absence, and no "trusted" label is fabricated. `created_by`
       // renders through el() as a text node, so it can never inject markup.
       const raw = ev.created_by ? String(ev.created_by) : "—";
-      const who = agentNames.get(raw) || (raw === "system" ? "the runner" : raw);
+      const who =
+        squad.byId.get(raw)?.display_name_effective ||
+        agentNames.get(raw) ||
+        (raw === "system" ? "the runner" : raw);
       const provBadge =
         ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
       const lines = String(ev.summary || "").split("\n");
@@ -14163,10 +14584,25 @@ function isModalOpen() {
   );
 }
 
-/** Who delivered a ticket: the agent on its latest claim. */
+/** Who delivered a ticket: the agent on its latest claim ({ id, name, no } or null). */
 function deliveredBy(events) {
   const c = (events || []).filter((e) => e.event_type === "claim.created" && e.actor_id).pop();
-  return c ? agentNames.get(c.actor_id) || null : null;
+  if (!c || !(squad.byId.has(c.actor_id) || agentNames.has(c.actor_id))) return null;
+  return agentWho(c.actor_id);
+}
+/**
+ * Who reviewed it: the ticket's assigned reviewer when that is a registered agent,
+ * else the last reviewer-role agent that acted on it ({ id, name, no } or null).
+ */
+function reviewedBy(ticket, events) {
+  const rid = ticket && ticket.reviewer;
+  if (rid && squad.byId.has(rid)) return agentWho(rid);
+  const REVIEW_ROLES = new Set(["reviewer", "security_reviewer"]);
+  const e = (events || [])
+    .filter((x) => x.actor_type === "agent" && x.actor_id)
+    .filter((x) => REVIEW_ROLES.has(squad.byId.get(x.actor_id)?.role))
+    .pop();
+  return e ? agentWho(e.actor_id) : null;
 }
 /** When the ticket last moved into its current status (the wait starts there). */
 function sinceStatus(events, status) {
@@ -14430,7 +14866,7 @@ async function renderClearDesk(wrap) {
       el("span", { class: "rv-res-no" }, `#${t.number}`),
       el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
       el("span", { class: "rv-res-st" }, [
-        c && c.agent_display_name ? agentTag(c.agent_display_name, 22) : statusBadge(t.status),
+        c && c.agent_id ? agentChip(c.agent_id, c.agent_display_name, 22) : statusBadge(t.status),
       ]),
       el(
         "span",
@@ -14549,6 +14985,7 @@ async function renderReview(param) {
   const repo =
     (detail.repositories || []).find((r) => r.access === "write") || detail.repositories?.[0];
   const by = deliveredBy(ticketEvents);
+  const rby = reviewedBy(detail.ticket || t, ticketEvents);
   const since = sinceStatus(ticketEvents, "in_review");
   const dod = parseDodEvidence(evidence);
   const writes = blockedWrites(evidence);
@@ -14885,7 +15322,12 @@ async function renderReview(param) {
         statusBadge(t.status),
         repo ? repoTag(repo.name, 20) : null,
         riskBadge(t.risk_level, { long: true }),
-        by ? el("span", { class: "rv-by" }, ["delivered by ", agentTag(by, 22)]) : null,
+        by
+          ? el("span", { class: "rv-by" }, ["delivered by ", agentChip(by.id, by.name, 22)])
+          : null,
+        rby && (!by || rby.id !== by.id)
+          ? el("span", { class: "rv-by rv-rby" }, ["reviewed by ", agentChip(rby.id, rby.name, 22)])
+          : null,
         since
           ? el(
               "span",
@@ -17482,6 +17924,7 @@ async function renderEpics(param) {
     api("GET", "/tickets", undefined, { signal }),
     extra("/claims", { claims: [] }),
     extra("/specs", { specs: [] }),
+    ensureSquad(),
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
@@ -17539,7 +17982,7 @@ async function renderEpics(param) {
   const agentByTicket = new Map();
   for (const c of (claimsRes && claimsRes.claims) || []) {
     if (c.status && c.status !== "active") continue;
-    agentByTicket.set(c.ticket_id, c.agent_display_name || actorName("agent", c.agent_id));
+    agentByTicket.set(c.ticket_id, agentWho(c.agent_id, c.agent_display_name));
   }
 
   // A campaign played to a spec: the spec names the epic as its scope node.
@@ -17569,7 +18012,7 @@ async function renderEpics(param) {
           m.id,
           m.status,
           m.title,
-          agentByTicket.get(m.id) || "",
+          agentTitle(agentByTicket.get(m.id) || { name: "" }),
           (depViewById.get(m.id) || []).map((d) => `${d.depends_on_ticket_id}:${d.satisfied}`),
         ]),
       ),
@@ -17969,7 +18412,7 @@ function renderEpicDag(byPhase, phases, ctx) {
     const label = [
       `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
       repo ? `in ${repo}` : "",
-      agent ? `${agent} on it` : "",
+      agent ? `${agent.name} on it` : "",
       needs ? (t.status === "in_review" ? "waits for your sign-off" : "waits for the merge") : "",
       blockers.length ? `waiting on ${blockers.map((b) => "#" + b.number).join(", ")}` : "",
     ]
@@ -17996,9 +18439,9 @@ function renderEpicDag(byPhase, phases, ctx) {
             ? el("span", { class: "dn-repo" }, [kitShirt(repo, 16), el("span", {}, repo)])
             : null,
           agent
-            ? el("span", { class: "dn-agent" }, [
-                agentShirt(agent, 22),
-                el("span", {}, agentNo(agent)),
+            ? el("span", { class: "dn-agent", title: agentTitle(agent) }, [
+                agentShirt(agent.name, 22, agent.no),
+                el("span", {}, agent.no || agent.name),
               ])
             : null,
           blockers.length
@@ -21868,6 +22311,491 @@ function renderLoreList(res, repo, opts = {}) {
     );
   }
   return card;
+}
+
+// ===========================================================================
+//  The club and the squad: "Name your club" (the crest) and #/squad
+// ===========================================================================
+
+/** The crest letters the server would derive: initials of up to 4 words, or 3 letters. */
+function deriveShortName(name) {
+  const words = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return "GAF";
+  if (words.length === 1) return [...words[0]].slice(0, 3).join("").toUpperCase();
+  return words
+    .slice(0, 4)
+    .map((w) => [...w][0])
+    .join("")
+    .toUpperCase();
+}
+/** The house kit's two colours as #rrggbb (the colour pickers' starting point). */
+function houseColours() {
+  const read = (token, fallback) => {
+    const v = readHouseKit()[token];
+    if (!v || typeof window.getComputedStyle !== "function") return rgbHex(fallback);
+    const probe = el("span", { hidden: "" });
+    probe.style.color = v;
+    document.body.appendChild(probe);
+    const m = /rgba?\((\d+)[, ]+(\d+)[, ]+(\d+)/.exec(window.getComputedStyle(probe).color || "");
+    probe.remove();
+    return m ? rgbHex([+m[1], +m[2], +m[3]]) : rgbHex(fallback);
+  };
+  return { primary: read("--claret", RGB_HOUSE_CLARET), secondary: read("--sky", RGB_HOUSE_SKY) };
+}
+/** Redraw the view on screen after a name or the club changed (its signature may not have). */
+function redrawForSquad() {
+  const cur = app.firstElementChild;
+  if (cur && cur.dataset) delete cur.dataset.sig;
+  refreshCurrentView();
+}
+
+/**
+ * "Name your club": the club's name, the crest's short name (1–4 characters) and
+ * the two kit colours, with a live preview of the header crest and a shirt. Save
+ * PATCHes /api/club; a refusal (422) is shown under the form, never toasted. Only
+ * a full token opens it (the crest is a plain badge for a read token).
+ */
+function openClubSheet() {
+  if (!canEditSquad()) return;
+  const club = squad.club || {};
+  const house = houseColours();
+  const dirty = { primary: false, secondary: false, cleared: false };
+  const hintId = `club-hint-${++fieldSeq}`;
+  const nameIn = el("input", {
+    type: "text",
+    name: "club_name",
+    class: "club-name-in",
+    maxlength: "60",
+    value: club.name || "",
+    placeholder: "Gaffer",
+    autocomplete: "off",
+  });
+  const shortIn = el("input", {
+    type: "text",
+    name: "short_name",
+    class: "club-short-in",
+    maxlength: "4",
+    value: club.short_name || "",
+    placeholder: deriveShortName(club.name || "Gaffer"),
+    autocomplete: "off",
+    "aria-describedby": hintId,
+  });
+  const primIn = el("input", {
+    type: "color",
+    name: "kit_primary",
+    class: "club-kit-in",
+    value: club.kit_primary || house.primary,
+  });
+  const secIn = el("input", {
+    type: "color",
+    name: "kit_secondary",
+    class: "club-kit-in",
+    value: club.kit_secondary || house.secondary,
+  });
+  const err = el("p", { class: "form-error club-err", role: "alert", hidden: "" });
+  const note = el("p", { class: "club-note", "aria-live": "polite" });
+  const prevName = el("span", { class: "cp-name" });
+  const prevCrest = el("span", { class: "cp-crest" });
+  const prevShirt = el("span", { class: "cp-shirt" });
+  const preview = el("div", { class: "club-preview", "aria-hidden": "true" }, [
+    el("div", { class: "cp-bar" }, [prevCrest, prevName]),
+    el("div", { class: "cp-pitch" }, [prevShirt, el("span", { class: "cp-cap" }, "Delivery 1")]),
+  ]);
+  const kit = () => ({
+    primary: dirty.cleared ? null : dirty.primary || club.kit_primary ? primIn.value : null,
+    secondary: dirty.cleared ? null : dirty.secondary || club.kit_secondary ? secIn.value : null,
+  });
+  const paint = () => {
+    const name = nameIn.value.trim() || "Gaffer";
+    const letters = shortIn.value.trim() || deriveShortName(name);
+    shortIn.placeholder = deriveShortName(name);
+    prevName.textContent = name;
+    prevCrest.replaceChildren(crest("crest", 34, 40, letters));
+    prevShirt.replaceChildren(agentShirt("Delivery 1", 56, "9"));
+    const k = kit();
+    const tokens = kitTokens(k.primary, k.secondary);
+    setKitTokens(preview, tokens);
+    note.textContent = tokens["--on-claret"]
+      ? "A light kit: the words on it turn dark so they stay readable."
+      : "";
+  };
+  nameIn.addEventListener("input", paint);
+  shortIn.addEventListener("input", paint);
+  primIn.addEventListener("input", () => {
+    dirty.primary = true;
+    dirty.cleared = false;
+    paint();
+  });
+  secIn.addEventListener("input", () => {
+    dirty.secondary = true;
+    dirty.cleared = false;
+    paint();
+  });
+  const houseBtn = el(
+    "button",
+    {
+      class: "btn club-house",
+      type: "button",
+      onclick: () => {
+        dirty.cleared = true;
+        dirty.primary = dirty.secondary = false;
+        primIn.value = house.primary;
+        secIn.value = house.secondary;
+        paint();
+      },
+    },
+    "House kit",
+  );
+  const save = el("button", { class: "btn primary club-save", type: "submit" }, "Save");
+  const form = el(
+    "form",
+    {
+      class: "act-sheet club-form",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        err.hidden = true;
+        const short = shortIn.value.trim();
+        if (short && !/^[\p{L}\p{N}&.]{1,4}$/u.test(short)) {
+          err.textContent =
+            "The short name is 1 to 4 letters or digits ('&' and '.' allowed), no spaces.";
+          err.hidden = false;
+          shortIn.setAttribute("aria-invalid", "true");
+          shortIn.focus();
+          return;
+        }
+        shortIn.removeAttribute("aria-invalid");
+        const body = { name: nameIn.value.trim() || null, short_name: short || null };
+        if (dirty.cleared) {
+          body.kit_primary = null;
+          body.kit_secondary = null;
+        } else {
+          if (dirty.primary) body.kit_primary = primIn.value;
+          if (dirty.secondary) body.kit_secondary = secIn.value;
+        }
+        save.disabled = true;
+        try {
+          const res = await api("PATCH", "/api/club", body);
+          if (res && res.club) applyClub(res.club);
+          closeSheet();
+          toast(`Saved: ${clubName()}`, { ok: true });
+          redrawForSquad();
+        } catch (x) {
+          if (x && x.code === "UNAUTHORIZED") return;
+          if (x && (x.status === 403 || x.code === "READ_ONLY_TOKEN")) {
+            squad.capability = "read";
+            err.textContent = "This token can only read: naming the club needs the full token.";
+            paintBrand();
+          } else err.textContent = (x && x.message) || "The club could not be saved.";
+          err.hidden = false;
+        } finally {
+          save.disabled = false;
+        }
+      },
+    },
+    [
+      el(
+        "p",
+        { class: "act-intro" },
+        "The club's name and badge head every page; the kit colours dress the header, the crest and every agent's shirt.",
+      ),
+      preview,
+      note,
+      el(
+        "p",
+        { class: "act-hint club-hint", id: hintId },
+        "The short name is 1–4 characters, shown on the crest; leave it blank to use the club's initials.",
+      ),
+      el("div", { class: "form-grid cols-2" }, [
+        field("Club name", nameIn),
+        field("Short name", shortIn),
+        field("Primary kit", primIn),
+        field("Secondary kit", secIn),
+      ]),
+      err,
+      el("div", { class: "btn-row act-actions" }, [
+        save,
+        houseBtn,
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      ]),
+    ],
+  );
+  paint();
+  openSheet("Name your club", form, { focus: nameIn });
+}
+
+/** One row of the squad table; with a full token its Rename edits it in place. */
+function squadRow(a, edit) {
+  const tr = el("tr", { class: "sq-row", dataset: { id: a.agent_id } });
+  const reg = a.registered_name || String(a.agent_id).slice(0, 8);
+  let renameBtn = null;
+  const view = () => {
+    const w = agentWho(a.agent_id, a.registered_name);
+    renameBtn = edit
+      ? el(
+          "button",
+          {
+            class: "btn small sq-rename",
+            type: "button",
+            "aria-label": `Rename ${w.name} (${reg})`,
+            onclick: editRow,
+          },
+          "Rename",
+        )
+      : null;
+    tr.classList.remove("is-editing");
+    tr.replaceChildren(
+      el(
+        "td",
+        { class: "c-shirt", "data-label": "No." },
+        el("span", { class: "sq-shirt" }, [
+          agentShirt(w.name, 36, w.no),
+          el(
+            "span",
+            { class: "sq-num tabnum" },
+            a.shirt_number != null ? String(a.shirt_number) : "—",
+          ),
+        ]),
+      ),
+      el("th", { scope: "row", class: "c-name", "data-label": "Name" }, [
+        a.display_name
+          ? el("span", { class: "sq-dn" }, a.display_name)
+          : el(
+              "span",
+              { class: "sq-dn is-default", title: "The default name, until you rename it" },
+              [a.default_display_name, el("span", { class: "sr-only" }, " (default name)")],
+            ),
+      ]),
+      el("td", { class: "c-role", "data-label": "Role" }, ROLE_LABELS[a.role] || a.role || "—"),
+      el(
+        "td",
+        { class: "c-reg", "data-label": "Registered as" },
+        el("code", { class: "mono" }, reg),
+      ),
+      el("td", { class: "c-status", "data-label": "Status" }, badge(a.status || "—")),
+      el(
+        "td",
+        { class: "c-seen tabnum", "data-label": "Last seen" },
+        a.last_seen_at
+          ? el(
+              "time",
+              { datetime: a.last_seen_at, title: fmtTime(a.last_seen_at) },
+              fmtRelative(a.last_seen_at),
+            )
+          : "never",
+      ),
+      edit ? el("td", { class: "c-act" }, renameBtn) : null,
+    );
+  };
+  function editRow() {
+    const w = agentWho(a.agent_id, a.registered_name);
+    const errId = `sq-err-${++fieldSeq}`;
+    const nameIn = el("input", {
+      type: "text",
+      class: "sq-name-in",
+      maxlength: "40",
+      value: a.display_name || "",
+      placeholder: a.default_display_name || "",
+      "aria-label": `Name for ${reg}`,
+      "aria-describedby": errId,
+      autocomplete: "off",
+    });
+    const noIn = el("input", {
+      type: "number",
+      class: "sq-no-in",
+      min: "1",
+      max: "99",
+      step: "1",
+      inputmode: "numeric",
+      value: a.shirt_number != null ? String(a.shirt_number) : "",
+      placeholder: "—",
+      "aria-label": `Shirt number for ${reg} (1–99, or blank)`,
+      "aria-describedby": errId,
+    });
+    const err = el("p", { class: "form-error sq-err", id: errId, role: "alert", hidden: "" });
+    const fail = (msg, input) => {
+      err.textContent = msg;
+      err.hidden = false;
+      for (const i of [nameIn, noIn]) i.removeAttribute("aria-invalid");
+      if (input) {
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+      }
+    };
+    const save = el("button", { class: "btn small primary sq-save", type: "button" }, "Save");
+    const cancel = () => {
+      view();
+      if (renameBtn) renameBtn.focus();
+    };
+    const doSave = async () => {
+      const name = nameIn.value.trim();
+      const raw = String(noIn.value || "").trim();
+      if (name.length > 40) return fail("A name is at most 40 characters.", nameIn);
+      let no = null;
+      if (raw !== "") {
+        no = Number(raw);
+        if (!Number.isInteger(no) || no < 1 || no > 99)
+          return fail("A shirt number is a whole number from 1 to 99, or blank.", noIn);
+      }
+      const body = {};
+      if (name !== (a.display_name || "")) body.display_name = name || null;
+      if (no !== (a.shirt_number ?? null)) body.shirt_number = no;
+      if (!Object.keys(body).length) return cancel();
+      save.disabled = true;
+      try {
+        const res = await api("PATCH", `/api/squad/agents/${encodeURIComponent(a.agent_id)}`, body);
+        if (res && res.agent) {
+          Object.assign(a, res.agent);
+          learnDisplay(res.agent);
+        }
+        const now = agentWho(a.agent_id, a.registered_name);
+        view();
+        if (renameBtn) renameBtn.focus();
+        toast(
+          a.shirt_number != null ? `${now.name} wears No. ${a.shirt_number}` : `Saved: ${now.name}`,
+          { ok: true },
+        );
+      } catch (x) {
+        if (x && x.code === "UNAUTHORIZED") return;
+        if (x && (x.status === 409 || x.code === "DUPLICATE")) {
+          const holder = x.details && x.details.agent_id;
+          const hn = holder ? agentWho(holder).name : null;
+          fail(hn ? `That number is taken by ${hn}.` : x.message || "That number is taken.", noIn);
+        } else if (x && (x.status === 403 || x.code === "READ_ONLY_TOKEN")) {
+          squad.capability = "read";
+          paintBrand();
+          fail("This token can only read: renaming needs the full token.");
+        } else fail((x && x.message) || "The name could not be saved.", nameIn);
+      } finally {
+        save.disabled = false;
+      }
+    };
+    save.addEventListener("click", doSave);
+    const keys = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        doSave();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancel();
+      }
+    };
+    nameIn.addEventListener("keydown", keys);
+    noIn.addEventListener("keydown", keys);
+    tr.classList.add("is-editing");
+    tr.replaceChildren(
+      el(
+        "td",
+        { class: "c-shirt", "data-label": "No." },
+        el("span", { class: "sq-shirt" }, [agentShirt(w.name, 36, w.no), noIn]),
+      ),
+      el("th", { scope: "row", class: "c-name", "data-label": "Name" }, [nameIn, err]),
+      el("td", { class: "c-role", "data-label": "Role" }, ROLE_LABELS[a.role] || a.role || "—"),
+      el(
+        "td",
+        { class: "c-reg", "data-label": "Registered as" },
+        el("code", { class: "mono" }, reg),
+      ),
+      el("td", { class: "c-status", "data-label": "Status" }, badge(a.status || "—")),
+      el(
+        "td",
+        { class: "c-seen tabnum", "data-label": "Last seen" },
+        a.last_seen_at ? fmtRelative(a.last_seen_at) : "never",
+      ),
+      el("td", { class: "c-act" }, [
+        save,
+        el("button", { class: "btn small sq-cancel", type: "button", onclick: cancel }, "Cancel"),
+      ]),
+    );
+    nameIn.focus();
+  }
+  view();
+  return tr;
+}
+
+/**
+ * #/squad: the club's squad as a team sheet. Shirt number, name (the default
+ * "Delivery 1" until renamed), role, the label it registered with, status and when
+ * it was last seen. A full token renames in place; a read token only reads.
+ */
+async function renderSquad() {
+  const signal = routeSignal();
+  const [res] = await Promise.all([api("GET", "/api/squad", undefined, { signal }), ensureSquad()]);
+  applySquad(res);
+  const agents = (res && res.agents) || [];
+  const edit = canEditSquad();
+  const wrap = el("div", { class: "view view-squad" });
+  wrap.dataset.sig = hashText(
+    JSON.stringify([
+      edit,
+      res && res.club,
+      agents.map((a) => [a.agent_id, a.display_name, a.shirt_number, a.status, a.last_seen_at]),
+    ]),
+  );
+  const named = agents.filter((a) => a.display_name).length;
+  const numbered = agents.filter((a) => a.shirt_number != null).length;
+  wrap.appendChild(
+    viewHead(
+      "Squad",
+      agents.length
+        ? `${plural(agents.length, "agent")} · ${named} named · ${numbered} with a shirt number`
+        : "No agents registered yet",
+      edit
+        ? el(
+            "button",
+            { class: "btn sq-club-btn", type: "button", onclick: () => openClubSheet() },
+            [crest("crest sq-club-crest", 20, 24, clubLetters()), el("span", {}, "Name your club")],
+          )
+        : null,
+    ),
+  );
+  if (!edit)
+    wrap.appendChild(
+      el(
+        "p",
+        { class: "section-note sq-readonly" },
+        "You are signed in with a read token: you can see the squad, and renaming needs the full token.",
+      ),
+    );
+  const th = (label, cls) => el("th", { scope: "col", class: cls }, label);
+  const body = agents.length
+    ? el("div", { class: "sq-table-wrap" }, [
+        el("table", { class: "sq-table", "aria-label": "The squad" }, [
+          el("thead", {}, [
+            el("tr", {}, [
+              th("No.", "c-shirt"),
+              th("Name", "c-name"),
+              th("Role", "c-role"),
+              th("Registered as", "c-reg"),
+              th("Status", "c-status"),
+              th("Last seen", "c-seen"),
+              edit ? th(el("span", { class: "sr-only" }, "Rename"), "c-act") : null,
+            ]),
+          ]),
+          el(
+            "tbody",
+            {},
+            agents.map((a) => squadRow(a, edit)),
+          ),
+        ]),
+      ])
+    : emptyState(
+        "No agents in the squad yet.",
+        "An agent joins the squad when it registers with the control plane; it gets a default name like “Delivery 1”.",
+      );
+  wrap.appendChild(progPage("squad-sheet", "claret", "The squad", clubName(), body));
+  wrap.appendChild(
+    el(
+      "p",
+      { class: "section-note sq-foot" },
+      "Names and shirt numbers are labels: every claim, event and gate still records the agent by its id. A shirt number is worn by one agent at a time.",
+    ),
+  );
+  return wrap;
 }
 
 // --- Wiring -----------------------------------------------------------------

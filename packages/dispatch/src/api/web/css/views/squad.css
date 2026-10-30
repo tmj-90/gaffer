@@ -1,0 +1,227 @@
+/* ===========================================================================
+   Squad — the club's squad as a team sheet (#/squad) and the "Name your club"
+   sheet the header crest opens. Layout only: the kit colours are tokens (the
+   club's own kit overrides them on :root, and on the sheet's live preview).
+   =========================================================================== */
+
+@layer views {
+  .view-squad .sq-club-btn .crest {
+    flex: none;
+  }
+  .sq-readonly {
+    margin: 0;
+  }
+  .sq-foot {
+    margin: 0;
+  }
+
+  /* --- the squad table ----------------------------------------------------- */
+  .sq-table-wrap {
+    min-width: 0;
+  }
+  .sq-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--t16);
+  }
+  .sq-table thead th {
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    text-align: left;
+    padding: var(--s2) var(--s3);
+    border-bottom: var(--hair);
+  }
+  .sq-table td,
+  .sq-table tbody th {
+    padding: var(--s2) var(--s3);
+    border-top: var(--hair);
+    text-align: left;
+    vertical-align: middle;
+    font-weight: 400;
+  }
+  .sq-table tbody tr:first-child > * {
+    border-top: 0;
+  }
+  .sq-table .c-shirt {
+    width: 7rem;
+    white-space: nowrap;
+  }
+  .sq-shirt {
+    display: flex;
+    align-items: center;
+    gap: var(--s2);
+  }
+  .sq-table tbody th {
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .sq-row.is-editing .c-shirt {
+    width: 9.5rem;
+  }
+  .sq-num {
+    font: 800 var(--t20) / 1 var(--f-display);
+    min-width: 2ch;
+  }
+  .sq-dn {
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    overflow-wrap: anywhere;
+  }
+  /* A default name ("Delivery 1") is a placeholder until the gaffer renames it. */
+  .sq-dn.is-default {
+    font-weight: 600;
+    font-style: italic;
+    color: var(--ink-2);
+  }
+  .sq-table .c-role,
+  .sq-table .c-seen {
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    white-space: nowrap;
+  }
+  .sq-table .c-reg code {
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  .sq-table .c-act {
+    text-align: right;
+    white-space: nowrap;
+  }
+  .sq-table .c-act .btn + .btn {
+    margin-left: var(--s2);
+  }
+  .sq-row.is-editing > * {
+    background: var(--sky-wash);
+  }
+  .sq-name-in {
+    width: 100%;
+    max-width: 22rem;
+  }
+  .sq-table .sq-no-in {
+    width: 5.5rem;
+    min-width: 5.5rem;
+  }
+  .sq-err {
+    margin-top: var(--s1);
+  }
+
+  /* On a phone each agent is a row of its own: shirt and name, then the facts. */
+  @media (max-width: 760px) {
+    .sq-table thead {
+      display: none;
+    }
+    .sq-table,
+    .sq-table tbody {
+      display: block;
+    }
+    .sq-table tr {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: var(--s1) var(--s3);
+      padding: var(--s3) var(--s4);
+      border-top: var(--hair);
+    }
+    .sq-table tbody tr:first-child {
+      border-top: 0;
+    }
+    .sq-table td,
+    .sq-table tbody th {
+      padding: 0;
+      border: 0;
+      min-width: 0;
+    }
+    .sq-table td.c-shirt {
+      grid-row: span 2;
+      width: auto;
+      align-self: start;
+    }
+    .sq-table .c-name {
+      align-self: center;
+    }
+    .sq-table .c-role,
+    .sq-table .c-reg,
+    .sq-table .c-status,
+    .sq-table .c-seen,
+    .sq-table .c-act {
+      grid-column: 2;
+      text-align: left;
+      white-space: normal;
+    }
+    .sq-table .c-reg::before,
+    .sq-table .c-seen::before {
+      content: attr(data-label) " ";
+      font: 600 var(--t12) / 1.2 var(--f-cond);
+      color: var(--ink-2);
+    }
+    .sq-table .c-act {
+      margin-top: var(--s1);
+    }
+    .sq-name-in {
+      max-width: none;
+    }
+  }
+
+  /* --- "Name your club": the live preview -------------------------------- */
+  .club-preview {
+    display: grid;
+    gap: 0;
+    border: var(--frame);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .cp-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    background: var(--claret);
+    color: var(--on-claret);
+    border-bottom: 6px solid var(--sky);
+    min-width: 0;
+  }
+  .cp-crest {
+    display: inline-flex;
+    flex: none;
+  }
+  .cp-name {
+    font: 900 var(--t26) / 1 var(--f-display);
+    text-transform: uppercase;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .cp-pitch {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 14px;
+    background: var(--pitch);
+  }
+  .cp-cap {
+    font: 700 var(--t14) / 1 var(--f-cond);
+    color: var(--board-ink);
+    background: var(--board);
+    padding: 4px 6px;
+    border-radius: var(--r);
+  }
+  .club-note:empty {
+    display: none;
+  }
+  .club-note {
+    font-size: var(--t14);
+    color: var(--ink-2);
+    margin: 0;
+  }
+  .club-hint {
+    margin: 0;
+  }
+  .club-kit-in {
+    width: 100%;
+    height: var(--tap);
+    padding: 2px;
+  }
+  .club-short-in {
+    text-transform: uppercase;
+  }
+}

@@ -103,6 +103,16 @@ the commonest reason a delivery bounces or ships unverified.
 The board is **live**: the control plane streams its event log to the browser,
 so a transition shows up within a second instead of on a polling timer.
 
+**The club and the squad.** The header crest carries the club's short name and
+its name from `/api/club`; with the full token it opens *Name your club* (name,
+crest letters, the two kit colours, with a live preview), and the kit colours
+re-dress the header, crest and shirts with a contrast guard. Every agent is shown
+by its display name and shirt number (`/api/squad`, or the `agent_display` a
+payload carries) on the board cards, the Tactics Board, Review, ticket timelines,
+Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
+renames an agent in place; a taken shirt number is refused with the holder's
+name, and a read-only token sees no editors.
+
 ![The work board](img/board.png)
 
 *Tickets spread across the lanes: drafts being shaped, ready work waiting, one

@@ -337,7 +337,7 @@
   }
   .shirt-no {
     font: 900 15px / 1 var(--f-stencil);
-    fill: var(--sky);
+    fill: var(--shirt-no);
   }
   .repo,
   .agent {
@@ -347,6 +347,12 @@
     font: 600 var(--t14) / 1.1 var(--f-cond);
     white-space: nowrap;
     min-width: 0;
+  }
+  /* A long display name (up to 40 characters) gives way before its shirt does. */
+  .agent > span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .repo-link {
     font: 600 var(--t14) / 1.2 var(--f-cond);

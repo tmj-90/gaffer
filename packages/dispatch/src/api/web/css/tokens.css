@@ -69,6 +69,10 @@
     --on-sky: #0e1726;
     --on-sky-2: #1d3a52; /* secondary text on sky (6.9:1) */
     --sky-wash: light-dark(#ddeff9, #1e3442); /* selected / hover wash */
+    --shirt-no: var(--sky); /* the stencil number on a shirt */
+    --sky-on-board: var(--sky); /* the second kit colour as text on the scoreboard */
+    /* The club's own kit (GET /api/club kit_primary / kit_secondary) overrides the
+       claret and sky tokens on :root from app.js (kitTokens), contrast-guarded. */
 
     /* --- the scoreboard: always dark, both kits --------------------------- */
     --board: light-dark(#111318, #0e1015);

@@ -78,7 +78,11 @@ import {
   TicketScopeNodeRepository,
   type TicketScopeWithNode,
 } from "./repositories/ticketScopeNodeRepository.js";
-import { TicketRepository, type TicketListFilter } from "./repositories/ticketRepository.js";
+import {
+  TicketRepository,
+  type TicketListFilter,
+  type TicketSummary,
+} from "./repositories/ticketRepository.js";
 import {
   ClaimService,
   type ClaimNextInput,
@@ -827,6 +831,13 @@ export class Dispatch {
     return this.principals.list();
   }
 
+  /** One principal by id or name (revoked ones included). Throws NOT_FOUND. */
+  getPrincipal(ref: string): PrincipalView {
+    const row = this.principals.get(ref) ?? this.principals.getByName(ref);
+    if (!row) throw notFound("principal", ref);
+    return row;
+  }
+
   /** Revoke by id or name. Idempotent on an already-revoked principal (NO_OP). */
   revokePrincipal(ref: string, actor: Actor): PrincipalView {
     const row = this.principals.get(ref) ?? this.principals.getByName(ref);
@@ -875,6 +886,46 @@ export class Dispatch {
 
   createTicket(raw: unknown, actor: Actor): Ticket {
     return this.ticketSvc.createTicket(raw, actor);
+  }
+
+  /**
+   * Create a ticket AND its links in ONE transaction: the primary repo, the scope
+   * nodes (the first primary, the rest secondary) and the confirmed per-repo access.
+   * A bad reference (unknown repo or scope node) rolls the whole create back, so a
+   * failed POST /tickets or MCP create_ticket never leaves an orphan draft for a
+   * retry to duplicate. (better-sqlite3 nests the services' own transactions as
+   * savepoints, as createDraftTicket already relies on.)
+   */
+  createTicketWithLinks(
+    raw: unknown,
+    links: {
+      repo?: string | undefined;
+      scopeNodeIds?: readonly string[] | undefined;
+      repoAccess?: ReadonlyArray<{ repo_id: string; access: string }> | undefined;
+    },
+    actor: Actor,
+  ): Ticket {
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.createTicket(raw, actor);
+      if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
+      (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
+        this.scope.linkTicketScope(
+          {
+            ticket_id: ticket.id,
+            scope_node_id: scopeNodeId,
+            relation: i === 0 ? "primary" : "secondary",
+          },
+          actor,
+        );
+      });
+      for (const r of links.repoAccess ?? []) {
+        this.repoSvc.setTicketRepoAccess(
+          { ticket_id: ticket.id, repo_id: r.repo_id, access: r.access, relation: "confirmed" },
+          actor,
+        );
+      }
+      return ticket;
+    });
   }
 
   /** TRACK-3a: set or clear a ticket's per-ticket delivery-budget ceiling (USD). */
@@ -1092,6 +1143,14 @@ export class Dispatch {
     return this.scope.createScopeEdge(raw, actor);
   }
 
+  getScopeEdge(edgeId: string): ScopeEdge {
+    return this.scope.getScopeEdge(edgeId);
+  }
+
+  getScopeRepo(associationId: string): ScopeRepo {
+    return this.scope.getScopeRepo(associationId);
+  }
+
   listScopeEdges(nodeId?: string): ScopeEdge[] {
     return this.scope.listScopeEdges(nodeId);
   }
@@ -1139,6 +1198,10 @@ export class Dispatch {
       { ...input, ...(ticketId !== undefined ? { ticketId } : {}) },
       actor,
     );
+  }
+
+  getDecision(decisionId: string): Decision {
+    return this.decisionSvc.getDecision(decisionId);
   }
 
   listPendingDecisions(): Decision[] {
@@ -1511,6 +1574,11 @@ export class Dispatch {
     return this.ticketSvc.listRequiredCapabilities(ref);
   }
 
+  /** The ticket id an active claim token is held against (undefined if none). */
+  claimTicketIdForToken(claimToken: string): string | undefined {
+    return this.claims.ticketIdForToken(claimToken);
+  }
+
   heartbeat(claimToken: string): { expiresAt: string } {
     return this.claims.heartbeat(claimToken);
   }
@@ -1522,24 +1590,28 @@ export class Dispatch {
     return this.claims.recordEvidence(input, actor);
   }
 
-  submitForReview(input: SubmitForReviewInput, actor: Actor): { status: string; eventId: string } {
+  submitForReview(
+    input: SubmitForReviewInput,
+    actor: Actor,
+  ): { ticketId: string; status: string; eventId: string } {
     const result = this.claims.submitForReview(input, actor);
     // H2: the ticket has reached `in_review` and now needs a human reviewer. Fire
     // AFTER the claim transaction commits so the notification can never roll the
     // transition back; best-effort inside emitGate.
     if (result.status === "in_review") {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (ticket) this.emitGate("review_needed", ticket, { detail: input.reason });
+      // The call above already resolved the ref (id or #N), so this cannot throw.
+      const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.emitGate("review_needed", ticket, { detail: input.reason });
     }
     return result;
   }
 
-  markBlocked(input: MarkBlockedInput, actor: Actor): { eventId: string } {
+  markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
     const result = this.claims.markBlocked(input, actor);
     // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after
     // the block transaction commits, best-effort.
-    const ticket = this.tickets.findById(input.ticket_id);
-    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+    const ticket = this.tickets.resolveRef(input.ticket_id);
+    this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     return result;
   }
 
@@ -1565,8 +1637,9 @@ export class Dispatch {
     // Parking to the VISIBLE `blocked` column needs a human to unblock it — fire the
     // gate AFTER the claim transaction commits, best-effort (mirrors markBlocked).
     if (result.status === "blocked") {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (ticket) this.emitGate("ticket_blocked", ticket, { detail: input.reason });
+      // The call above already resolved the ref (id or #N), so this cannot throw.
+      const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.emitGate("ticket_blocked", ticket, { detail: input.reason });
     }
     return result;
   }
@@ -1849,6 +1922,14 @@ export class Dispatch {
   /** Filtered backlog list for the human surface (status / repo / risk). */
   listTickets(filter: TicketListFilter = {}): Ticket[] {
     return this.tickets.listFiltered(filter);
+  }
+
+  /** A page of the filtered list + its total (GET /tickets; see TicketRepository.listPage). */
+  listTicketPage(
+    filter: TicketListFilter,
+    page: { limit?: number | undefined; offset?: number | undefined; summary?: boolean },
+  ): { tickets: Array<Ticket | TicketSummary>; total: number } {
+    return this.tickets.listPage(filter, page);
   }
 
   /** Events for a ticket (resolved by id or number). */

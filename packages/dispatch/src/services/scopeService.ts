@@ -300,7 +300,21 @@ export class ScopeService {
     });
   }
 
+  /** One scope edge by id. Throws NOT_FOUND. */
+  getScopeEdge(edgeId: string): ScopeEdge {
+    const edge = this.scopeEdges.findById(edgeId);
+    if (!edge) throw notFound("scope_edge", edgeId);
+    return edge;
+  }
+
   // --- Factory Map: scope↔repo associations (FG-002) -----------------------
+
+  /** One scope↔repo association by id. Throws NOT_FOUND. */
+  getScopeRepo(associationId: string): ScopeRepo {
+    const link = this.scopeRepos.findById(associationId);
+    if (!link) throw notFound("scope_repo", associationId);
+    return link;
+  }
 
   /**
    * Link a repo into a scope node with a relation + default access. A repo may
@@ -600,13 +614,6 @@ export class ScopeService {
   // --- Internal helpers ---------------------------------------------------
 
   private resolveTicket(ref: string): import("../domain/types.js").Ticket {
-    const byId = this.tickets.findById(ref);
-    if (byId) return byId;
-    const asNumber = Number(ref.replace(/^#/, ""));
-    if (Number.isInteger(asNumber)) {
-      const byNumber = this.tickets.findByNumber(asNumber);
-      if (byNumber) return byNumber;
-    }
-    throw notFound("ticket", ref);
+    return this.tickets.resolveRef(ref);
   }
 }

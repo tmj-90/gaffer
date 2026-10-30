@@ -195,7 +195,9 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # through the single gaffer_render_mcp_runtime seam (factory.config.sh) so
       # review, delivery + bootstrap share one byte-identical render path.
       GAFFER_TICKET_REPOS=""
-      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+      # No scope ticket (4th arg empty): a reviewer is bound through GAFFER_REVIEW_TICKET
+      # below instead.
+      gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "" \
         || { log "MCP-RENDER: failed to render review runtime .mcp.json — refusing live review (fail closed)"; result error; exit 1; }
       # REVIEWER EVIDENCE PATH: with no claim token, dispatch's record_ac_evidence refused
       # every non-human write, so the reviewer's per-AC notes (which the prompt + skill

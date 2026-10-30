@@ -400,8 +400,7 @@ export class ReviewGateService {
     }
     const now = this.clock.now();
     return inTransaction(this.db, () => {
-      const ticket = this.tickets.findById(input.ticket_id);
-      if (!ticket) throw notFound("ticket", input.ticket_id);
+      const ticket = this.tickets.resolveRef(input.ticket_id);
       const ac = this.acs.findById(input.ac_id);
       if (!ac || ac.ticket_id !== ticket.id) throw notFound("acceptance_criterion", input.ac_id);
       if (!ac.check_command) {

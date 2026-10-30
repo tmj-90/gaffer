@@ -7,6 +7,9 @@
 # ---------------------------------------------------------------------
 # REGENERATION (goldens are regenerated, never hand-edited):
 #   bash runner/test/capture-context-golden.sh
+# DRIFT CHECK (writes nothing; non-zero when the bash render no longer matches the
+# checked-in goldens — run by runner/test/context-golden-drift.test.sh):
+#   bash runner/test/capture-context-golden.sh --check
 # Writes into packages/crew/test/fixtures/tick-context/:
 #   prompt.fresh.golden.txt         — the fresh delivery PROMPT
 #   mcp-runtime.golden.json         — the rendered per-tick .mcp.json
@@ -37,6 +40,8 @@ ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 DISPATCH_CLI="$ROOT/packages/dispatch/dist/cli/index.js"
 FIXTURES="$ROOT/packages/crew/test/fixtures/tick-context"
 SKILLS_FIXTURE="$FIXTURES/skills"
+CHECK=0
+[ "${1:-}" = "--check" ] && CHECK=1
 
 # Fixed literal MCP bin paths: the MCP render is pure text (no existence check),
 # so the goldens carry stable strings instead of machine-local paths.
@@ -55,6 +60,10 @@ node --input-type=commonjs -e "require('node:sqlite')" 2>/dev/null || { echo "SK
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/capture-context.XXXXXX")"
 WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
+# Where the goldens land: the fixtures dir, or (in --check) a scratch dir compared
+# against the fixtures at the end. Inputs (skills, packets) always come from FIXTURES.
+OUT_DIR="$FIXTURES"
+[ "$CHECK" = 1 ] && { OUT_DIR="$WORK/check"; mkdir -p "$OUT_DIR"; }
 
 # capture_once <subdir>: seed a FRESH env under $WORK/<subdir>, run one
 # render-only tick, and write NORMALIZED prompt.txt + mcp-runtime.json into
@@ -161,10 +170,10 @@ BLOCK_REPO="$WORK/run1/fixture-app"
   }
   FCB="$(gaffer_prime_context_block "$BLOCK_REPO" "fixture-app" "$TICKET_TITLE $TICKET_DESC")"
   [ -n "$FCB" ] || { echo "FAIL: empty file-cards block from fixture packet" >&2; exit 1; }
-  printf '%s' "$FCB" > "$FIXTURES/file-cards-block.golden.txt"
+  printf '%s' "$FCB" > "$OUT_DIR/file-cards-block.golden.txt"
   PCB="$(gaffer_product_context_block "fixture-app")"
   [ -n "$PCB" ] || { echo "FAIL: empty product-context block from fixture rows" >&2; exit 1; }
-  printf '%s' "$PCB" > "$FIXTURES/product-context-block.golden.txt"
+  printf '%s' "$PCB" > "$OUT_DIR/product-context-block.golden.txt"
 ) || die "block-golden capture"
 echo "  ok   primer block goldens captured"
 
@@ -179,7 +188,7 @@ LENSES_STR="$(for _f in "$SKILLS_FIXTURE"/*/SKILL.md; do grep -qiE '^area:[[:spa
 [ -n "$LENSES_STR" ] || LENSES_STR="minimalism"
 WT_PATH="__GAFFER_DATA__/worktrees/ticket-$NUM/fixture-repo-id"
 NUM="$NUM" TITLE="$TICKET_TITLE" SKILLS_STR="$SKILLS_STR" LENSES_STR="$LENSES_STR" WT_PATH="$WT_PATH" \
-  DBIN="$FIX_DISPATCH_MCP_BIN" MBIN="$FIX_MEMORY_MCP_BIN" OUT="$FIXTURES/inputs.json" node --input-type=commonjs -e '
+  DBIN="$FIX_DISPATCH_MCP_BIN" MBIN="$FIX_MEMORY_MCP_BIN" OUT="$OUT_DIR/inputs.json" node --input-type=commonjs -e '
   const fs = require("node:fs");
   const e = process.env;
   fs.writeFileSync(e.OUT, JSON.stringify({
@@ -203,10 +212,27 @@ NUM="$NUM" TITLE="$TICKET_TITLE" SKILLS_STR="$SKILLS_STR" LENSES_STR="$LENSES_ST
       claimToken: "__CLAIM_TOKEN__",
       ticketRepos: "fixture-app",
       recallTicket: e.NUM,
+      scopeTicket: e.NUM,
     },
   }, null, 2) + "\n");
 ' || die "write inputs.json"
 
-cp -f "$WORK/run1/out/prompt.txt" "$FIXTURES/prompt.fresh.golden.txt"
-cp -f "$WORK/run1/out/mcp-runtime.json" "$FIXTURES/mcp-runtime.golden.json"
+cp -f "$WORK/run1/out/prompt.txt" "$OUT_DIR/prompt.fresh.golden.txt"
+cp -f "$WORK/run1/out/mcp-runtime.json" "$OUT_DIR/mcp-runtime.golden.json"
+if [ "$CHECK" = 1 ]; then
+  drift=0
+  for _g in prompt.fresh.golden.txt mcp-runtime.golden.json file-cards-block.golden.txt \
+            product-context-block.golden.txt inputs.json; do
+    if cmp -s "$OUT_DIR/$_g" "$FIXTURES/$_g"; then
+      echo "  ok   $_g matches the bash render"
+    else
+      echo "  FAIL $_g drifted from the bash render (regenerate: bash runner/test/capture-context-golden.sh)" >&2
+      diff "$FIXTURES/$_g" "$OUT_DIR/$_g" | head -20 >&2
+      drift=1
+    fi
+  done
+  [ "$drift" = 0 ] || die "checked-in tick-context goldens drifted from the bash render"
+  echo "PASS — checked-in goldens match the bash render"
+  exit 0
+fi
 echo "PASS — goldens written to $FIXTURES"

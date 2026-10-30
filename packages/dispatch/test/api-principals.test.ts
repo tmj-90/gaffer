@@ -247,4 +247,38 @@ describe("principals (REST)", () => {
     // A revoked principal cannot revoke others (its token is dead), and a read one is 403.
     expect((await call(base, "DELETE", "/api/principals/viewer", r.token)).status).toBe(403);
   });
+
+  it("a principal token cannot mint or revoke principals (no self-escalation)", async () => {
+    const { base, wg } = await start();
+    const ci = (await (
+      await call(base, "POST", "/api/principals", FULL, { name: "ci-bot" })
+    ).json()) as { token: string };
+    await call(base, "POST", "/api/principals", FULL, { name: "alice" });
+    const before = wg.listPrincipals().length;
+
+    // Minting an operator-named admin identity with the CI credential is refused…
+    const mint = await call(base, "POST", "/api/principals", ci.token, {
+      name: "x2",
+      actor_type: "admin",
+      actor_id: "tom",
+    });
+    expect(mint.status).toBe(403);
+    expect(((await mint.json()) as { error: { code: string } }).error.code).toBe(
+      "PRINCIPAL_ADMIN_REQUIRED",
+    );
+    // …so is a plain mint, and revoking someone else's credential.
+    expect((await call(base, "POST", "/api/principals", ci.token, { name: "x3" })).status).toBe(
+      403,
+    );
+    expect((await call(base, "DELETE", "/api/principals/alice", ci.token)).status).toBe(403);
+    expect(wg.listPrincipals().length).toBe(before);
+    expect(wg.listPrincipals().every((p) => p.revoked_at === null)).toBe(true);
+    // The principal may still list, and still do ordinary full-tier work.
+    expect((await call(base, "GET", "/api/principals", ci.token)).status).toBe(200);
+    expect((await call(base, "POST", "/tickets", ci.token, { title: "ci work" })).status).toBe(201);
+
+    // The shared operator token still manages principals.
+    expect((await call(base, "POST", "/api/principals", FULL, { name: "x4" })).status).toBe(201);
+    expect((await call(base, "DELETE", "/api/principals/alice", FULL)).status).toBe(200);
+  });
 });

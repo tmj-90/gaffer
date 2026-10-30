@@ -180,6 +180,9 @@ if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
   # The repo scope is bound into the MEMORY MCP server's env (one-hop plumbing), not the
   # agent's own env: suggest_lore / direct-apply default to exactly this repo.
   grep -q '"GAFFER_TICKET_REPOS": *"alpha"' "$D1/mcp.json" 2>/dev/null && ok "1: memory MCP scoped to GAFFER_TICKET_REPOS=alpha" || fail "1: memory MCP repo scope: $(grep -o '"GAFFER_TICKET_REPOS": *"[^"]*"' "$D1/mcp.json" 2>/dev/null)"
+  # FACTORY TICKET SCOPE: the dispatch server is bound to the delivery ticket, so the
+  # agent's AC / dependency / contract / decision writes on any other ticket are refused.
+  grep -q "\"GAFFER_SCOPE_TICKET\": *\"$A1\"" "$D1/mcp.json" 2>/dev/null && ok "1: dispatch MCP scoped to GAFFER_SCOPE_TICKET=$A1" || fail "1: dispatch MCP lacks GAFFER_SCOPE_TICKET=$A1"
   [ "$(cat "$D1/settings")" = yes ] && ok "1: .claude/settings.json (safety hook) installed" || fail "1: no settings.json in the agent dir"
   [ "$(cat "$D1/brief")" = yes ] && ok "1: CLAUDE.factory.md brief installed" || fail "1: no factory brief in the agent dir"
   prompt_has "$D1" "typescript-conventions" && ok "1: prompt recommends the TS pack" || fail "1: prompt does not name typescript-conventions"
@@ -301,6 +304,7 @@ if [ -z "$K1" ]; then fail "5: no intake agent spawn"; else
     "clarify,record-evidence,user-story,prd,typescript-conventions" \
     "create-branch,run-coverage,add-api-endpoint,review-ticket,black-box-test,python-conventions,mobile-ui"
   prompt_has "$K1" "#$C1" && ok "5: intake prompt targets draft #$C1" || fail "5: intake prompt does not name #$C1"
+  grep -q "\"GAFFER_SCOPE_TICKET\": *\"$C1\"" "$K1/mcp.json" 2>/dev/null && ok "5: intake's dispatch MCP scoped to GAFFER_SCOPE_TICKET=$C1" || fail "5: intake's dispatch MCP lacks GAFFER_SCOPE_TICKET=$C1"
   [ "$(st "$C1")" = "draft" ] && ok "5: the draft stays a draft (intake never marks ready)" || fail "5: #$C1 is '$(st "$C1")'"
 fi
 

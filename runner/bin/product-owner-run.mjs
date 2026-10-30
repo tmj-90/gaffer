@@ -487,6 +487,9 @@ function installProjectLocalWiring(repoName) {
  *   • ${GAFFER_CLAIM_TOKEN}   → ""       (the PO run holds no delivery claim)
  *   • ${GAFFER_TICKET_REPOS}  → repoName (memory direct-apply scope = this repo)
  *   • ${GAFFER_RECALL_TICKET} → ""       (not a delivery ⇒ recall attribution inert)
+ *   • ${GAFFER_SCOPE_TICKET}  → ""       (binds no ticket: the PO writes only its own
+ *                                        drafts; the tester / resolver bind theirs via
+ *                                        GAFFER_REVIEW_TICKET)
  *   • dispatch env GAFFER_DEFAULT_TICKET_REPO = repoName — the dispatch MCP links every
  *     create_ticket that names no repo to THIS repo. Before this, the skill's drafts
  *     landed unlinked, the run's draft-count guard (which joins by repo) saw 0 and
@@ -515,6 +518,8 @@ export function renderPoMcpRuntime(
     .split("${GAFFER_TICKET_REPOS}")
     .join(repo)
     .split("${GAFFER_RECALL_TICKET}")
+    .join("")
+    .split("${GAFFER_SCOPE_TICKET}")
     .join("");
   const leftover = /\$\{[A-Z_]+\}/.exec(rendered);
   if (leftover) {

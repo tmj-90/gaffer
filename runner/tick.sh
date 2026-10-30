@@ -1198,7 +1198,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Recall is empty for a bootstrap (no delivery-recall context ⇒ memory read inert).
     # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
     # must abort the bootstrap before the agent launch — the bare sed never did.
-    gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
+    # FACTORY TICKET SCOPE: the scope ticket ($NUM, rendered into the dispatch server's
+    # GAFFER_SCOPE_TICKET) makes the server refuse this agent's writes on any OTHER
+    # ticket (it does not depend on the claim token alone, which is empty on a resume).
+    gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" "$NUM" \
       || gaffer_abort_setup MCP-RENDER "failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
@@ -2035,7 +2038,11 @@ $PRODUCT_CONTEXT_BLOCK}"
   # Recall is the ticket $NUM so the memory read path can attribute a retrieval to it.
   # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
   # must abort the delivery before the agent launch — the bare sed never did.
-  gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" \
+  # FACTORY TICKET SCOPE: the scope ticket ($NUM, rendered into the dispatch server's
+  # GAFFER_SCOPE_TICKET) makes the server refuse the agent's writes (ACs, dependencies,
+  # test contract, decisions…) on any other ticket — also on a resume, where the claim
+  # token is empty.
+  gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" "$NUM" \
     || gaffer_abort_setup MCP-RENDER "failed to render delivery runtime .mcp.json — refusing live run (fail closed)"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────

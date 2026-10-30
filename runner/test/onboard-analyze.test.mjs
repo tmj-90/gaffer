@@ -1694,6 +1694,7 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
     env.PATH === "/usr/bin" && env.MEMORY_CLI_BIN === "/x/memory.js",
   );
   assert("pins GAFFER_RECALL_TICKET empty (no delivery recall)", env.GAFFER_RECALL_TICKET === "");
+  assert("pins GAFFER_SCOPE_TICKET empty (bound to no ticket)", env.GAFFER_SCOPE_TICKET === "");
   // Structural pin: the analysis turn spawns through the ONE worker seam.
   const src = readFileSync(MOD, "utf8");
   assert("onboard-analyze imports the worker seam", /from "\.\/worker\.mjs"/.test(src));

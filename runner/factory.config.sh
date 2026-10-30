@@ -776,23 +776,28 @@ gaffer_timeout_preflight() {
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 
 # --- MCP runtime-config render -----------------------------------------------
-# Render the per-tick runtime .mcp.json from the template, substituting the seven
+# Render the per-tick runtime .mcp.json from the template, substituting the eight
 # ${NAME} placeholders, through the typed renderer (packages/crew renderMcpCli.js →
 # renderMcpRuntimeConfig). This is the SINGLE render site the delivery and bootstrap
 # ticks both call (they once carried duplicate inline sed chains, which is exactly
 # how the two drifted). Output is pinned by runner/test/mcp-render-golden.test.sh.
 #
-# Usage: gaffer_render_mcp_runtime <template> <out> <recall_ticket>
+# Usage: gaffer_render_mcp_runtime <template> <out> <recall_ticket> [<scope_ticket>]
 #   Reads the other six values from the ambient shell scope (DISPATCH_DB, MEMORY_DB,
 #   DISPATCH_MCP_BIN, MEMORY_MCP_BIN, CLAIM_TOKEN, GAFFER_TICKET_REPOS — each set by
-#   the caller before the call). Only the recall ticket differs per site (empty on
-#   bootstrap, $NUM on delivery), so it is the one positional argument.
+#   the caller before the call). The recall ticket (empty on bootstrap, $NUM on
+#   delivery) and the scope ticket differ per site, so they are positional. The scope
+#   ticket is the dispatch server's factory ticket scope (GAFFER_SCOPE_TICKET: the
+#   agent's ticket writes on any other ticket are refused) — delivery, bootstrap and
+#   clarify pass their ticket; omitted/empty binds nothing (fail closed). It is a
+#   template placeholder, not a post-render edit, so the bash render stays
+#   byte-identical to the TS renderer's golden.
 #
 # FAIL-CLOSED: a non-zero exit (the renderer rejects a leftover placeholder /
 # invalid JSON / missing server; the dist bin is missing) propagates, and the caller
 # treats it as a hard error — an agent is never launched on an unrendered config.
 gaffer_render_mcp_runtime() {
-  local tmpl="$1" out="$2" recall="$3"
+  local tmpl="$1" out="$2" recall="$3" scope="${4:-}"
   # FAIL CLOSED without the crew dist: an agent is never launched on an unrendered
   # MCP config (the caller treats non-zero as a hard error).
   if [ ! -f "$CREW_DIR/dist/runtime/context/renderMcpCli.js" ]; then
@@ -806,6 +811,7 @@ gaffer_render_mcp_runtime() {
   GAFFER_MCP_CLAIM_TOKEN="$CLAIM_TOKEN" \
   GAFFER_MCP_TICKET_REPOS="$GAFFER_TICKET_REPOS" \
   GAFFER_MCP_RECALL_TICKET="$recall" \
+  GAFFER_MCP_SCOPE_TICKET="$scope" \
     node "$CREW_DIR/dist/runtime/context/renderMcpCli.js" --template "$tmpl" --out "$out" || return 1
 }
 

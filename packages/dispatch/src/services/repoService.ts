@@ -445,13 +445,6 @@ export class RepoService {
   // --- Internal helpers ----------------------------------------------------
 
   private resolveTicket(ref: string): import("../domain/types.js").Ticket {
-    const byId = this.tickets.findById(ref);
-    if (byId) return byId;
-    const asNumber = Number(ref.replace(/^#/, ""));
-    if (Number.isInteger(asNumber)) {
-      const byNumber = this.tickets.findByNumber(asNumber);
-      if (byNumber) return byNumber;
-    }
-    throw notFound("ticket", ref);
+    return this.tickets.resolveRef(ref);
   }
 }

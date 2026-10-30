@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { registerAgent } from "../src/cli/commands/agent.js";
 import { registerReview } from "../src/cli/commands/review.js";
 import { registerTicket } from "../src/cli/commands/ticket.js";
 import { Dispatch } from "../src/core.js";
@@ -18,6 +19,8 @@ import { DispatchError } from "../src/util/errors.js";
  * one is now a VALIDATION_ERROR raised before the DB is opened, so nothing is
  * written. `ticket budget` with neither flag exited 0 with {ok:false} on stdout; it
  * is now a VALIDATION_ERROR too (main() prints it to stderr and exits 1).
+ * `delivery-artifact --as agnet` recorded the artifact as a HUMAN, skipping the
+ * CLAIM_REQUIRED check that `--as agent` enforces.
  */
 
 const human: Actor = { type: "human", id: "tom" };
@@ -27,6 +30,7 @@ function run(dbPath: string, ...args: string[]): void {
   program.exitOverride().option("--db <path>", "SQLite database path");
   registerTicket(program);
   registerReview(program);
+  registerAgent(program);
   const realWrite = process.stdout.write.bind(process.stdout);
   process.stdout.write = (() => true) as typeof process.stdout.write;
   try {
@@ -74,8 +78,10 @@ describe("CLI --as is validated", () => {
     ["ticket", "reopen-for-review", "1", "--reason", "r", "--resolution", "x", "--as", "Admin"],
     ["ticket", "tester-pass", "1", "--summary", "ok", "--as", "humna"],
     ["ticket", "tester-fail", "1", "--summary", "bad", "--as", "robot"],
+    ["delivery-artifact", "1", "--branch", "feat/x", "--as", "agnet"],
   ]) {
-    it(`${args.slice(0, 2).join(" ")} --as ${args[args.length - 1]} is refused and writes nothing`, () => {
+    const name = args[0] === "delivery-artifact" ? args[0] : args.slice(0, 2).join(" ");
+    it(`${name} --as ${args[args.length - 1]} is refused and writes nothing`, () => {
       const before = eventCount(dbPath);
       const err = thrown(() => run(dbPath, ...args));
       expect(err?.code).toBe("VALIDATION_ERROR");
@@ -88,6 +94,13 @@ describe("CLI --as is validated", () => {
     const err = thrown(() => run(dbPath, "ticket", "mark-merged", "1", "--as", "system"));
     expect(err).toBeDefined();
     expect(err?.code).not.toBe("VALIDATION_ERROR");
+  });
+
+  it("delivery-artifact --as agent still requires a claim token", () => {
+    const err = thrown(() =>
+      run(dbPath, "delivery-artifact", "1", "--branch", "feat/x", "--as", "agent"),
+    );
+    expect(err?.code).toBe("CLAIM_REQUIRED");
   });
 
   it("ticket budget with neither --usd nor --clear is a VALIDATION_ERROR", () => {

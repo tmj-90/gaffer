@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
-import { cliActor, open, printJson, validateTtl } from "../shared.js";
+import { cliActor, open, parseAs, printJson, validateTtl } from "../shared.js";
 
 export function registerAgent(program: Command): void {
   // --- Agent / claim / evidence flow (mirrors the MCP tools) -----------------
@@ -207,13 +207,16 @@ export function registerAgent(program: Command): void {
     .option("--diff <text>", "diff summary")
     .option("--as <actor>", "actor type: human|admin|system|agent", "human")
     .action((ref, opts, cmd) => {
+      // Validated before open(): a typo like `--as agnet` used to fall through to a
+      // HUMAN actor and skip the CLAIM_REQUIRED check `--as agent` enforces.
+      const as = parseAs(opts.as, ["human", "admin", "system", "agent"] as const);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
-        opts.as === "agent"
+        as === "agent"
           ? { type: "agent" }
-          : opts.as === "system"
+          : as === "system"
             ? { type: "system" }
-            : opts.as === "admin"
+            : as === "admin"
               ? { type: "admin", id: process.env.USER ?? "cli" }
               : cliActor();
       const res = wg.recordDeliveryArtifact(

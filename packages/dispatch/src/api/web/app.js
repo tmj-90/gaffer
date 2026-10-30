@@ -3581,6 +3581,58 @@ function decisionTitle(it, f) {
   return (d && d.title) || it.title || it.reason || "Decision";
 }
 
+/** A Team Sheet body longer than this is clamped to four lines behind a More toggle. */
+const OWN_CLAMP_CHARS = 220;
+/** The rows the operator opened, by kind and ticket/decision, so a refresh keeps them open. */
+const ownExpanded = new Set();
+let ownReasonSeq = 0;
+/**
+ * One watcher for every clamped body: once laid out, a body that fits its four
+ * lines after all (a wide column) drops its toggle; a narrower one gets it back.
+ */
+let ownClampObserver;
+function watchOwnClamp(p, btn) {
+  if (typeof window.ResizeObserver !== "function") return;
+  if (!ownClampObserver)
+    ownClampObserver = new window.ResizeObserver((entries) => {
+      for (const { target } of entries) {
+        if (!target.isConnected) {
+          ownClampObserver.unobserve(target);
+          continue;
+        }
+        const b = target._clampBtn;
+        if (!b || !target.classList.contains("is-clamped") || !target.clientHeight) continue;
+        b.hidden = target.scrollHeight <= target.clientHeight + 1;
+      }
+    });
+  p._clampBtn = btn;
+  ownClampObserver.observe(p);
+}
+/** A row's body (its reason), clamped when long, and its More / Less toggle. */
+function ownReason(it, i, reason) {
+  const p = el("p", { class: "own-reason" }, reason);
+  const long = reason.length > OWN_CLAMP_CHARS || (reason.match(/\n/g) || []).length >= 4;
+  if (!long) return [p];
+  const key = `${it.kind}:${(it.ticket && it.ticket.id) || it.decisionId || i}`;
+  p.id = `own-reason-${++ownReasonSeq}`;
+  const btn = el("button", { class: "own-more", type: "button", "aria-controls": p.id });
+  const paint = () => {
+    const open = ownExpanded.has(key);
+    p.classList.toggle("is-clamped", !open);
+    btn.setAttribute("aria-expanded", String(open));
+    btn.textContent = open ? "Less" : "More";
+  };
+  btn.addEventListener("click", () => {
+    if (ownExpanded.has(key)) ownExpanded.delete(key);
+    else ownExpanded.add(key);
+    btn.hidden = false;
+    paint();
+  });
+  paint();
+  watchOwnClamp(p, btn);
+  return [p, btn];
+}
+
 /** Team-sheet rows that name the agent who played the ticket. */
 const OWN_BY_KINDS = new Set(["review", "awaiting_merge", "parked"]);
 /** One team-sheet row: rank · card · kind · #ref, the title (a link), the reason, the wait, the action. */
@@ -3605,7 +3657,9 @@ function renderOwnedItem(it, i = 0, f = null) {
       ]),
       title ? el("p", { class: "own-title" }, href ? el("a", { href }, title) : title) : null,
       // A decision's reason IS its question text; the title above is its headline.
-      el("p", { class: "own-reason" }, reason),
+      // A long one (an onboarding intake's eight questions) is clamped to four
+      // lines with a More toggle, so the Tactics Board is not pushed down the page.
+      ...ownReason(it, i, reason),
       el("p", { class: "own-meta" }, [
         el(
           "span",

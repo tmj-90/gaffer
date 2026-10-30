@@ -4,7 +4,9 @@
 // Overview's own reads. One parcel per open ticket at its station in lifecycle
 // order, a robot in the agent's shirt number on every live claim, the jam bay's
 // hazard tape and beacon lit by a blocked ticket, today's despatches on the
-// lorry, sentence aria-labels, and the quiet floor's empty state.
+// lorry, sentence aria-labels, and the quiet floor's empty state. Also the
+// Overview's Team Sheet: a long card body is clamped to four lines behind a
+// More toggle, so the Tactics Board beside it is not pushed down the page.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -353,5 +355,52 @@ describe("web: the Floor", () => {
     expect(view.querySelector(".fl-bench p")?.textContent).toBe(
       "No robot is on the floor: 3 benches free.",
     );
+  });
+
+  it("the Team Sheet clamps a long card body to four lines, and More opens it", async () => {
+    const questions = Array.from(
+      { length: 8 },
+      (_, i) => `${i + 1}. [q${i + 1}] What should agents know about part ${i + 1} of the product?`,
+    ).join(" ");
+    const long = `Onboarding intake for 'taskflow-mini'. Please answer the following: ${questions}`;
+    stubFetch({
+      tickets: [tk(4, "in_review", "Fix the login redirect")],
+      items: [
+        {
+          kind: "decision",
+          decisionId: "d-1",
+          title: "Onboarding intake (8 questions)",
+          reason: long,
+        },
+        {
+          kind: "review",
+          ticket: { id: "tk-4", number: 4, title: "Fix the login redirect" },
+          reason: "delivered",
+        },
+      ],
+    });
+    mountShell("#/overview");
+    await boot();
+    const rows = await until(() => {
+      const r = document.querySelectorAll<HTMLElement>("#what-i-own .own-row");
+      return r.length === 2 ? r : null;
+    });
+    const body = rows[0]!.querySelector<HTMLElement>(".own-reason")!;
+    // The whole text is still there (and read in full by a screen reader); CSS clamps it.
+    expect(body.textContent).toBe(long);
+    expect(body.classList.contains("is-clamped")).toBe(true);
+    const more = rows[0]!.querySelector<HTMLButtonElement>("button.own-more")!;
+    expect(more.textContent).toBe("More");
+    expect(more.getAttribute("aria-expanded")).toBe("false");
+    expect(more.getAttribute("aria-controls")).toBe(body.id);
+    more.click();
+    expect(body.classList.contains("is-clamped")).toBe(false);
+    expect(more.textContent).toBe("Less");
+    expect(more.getAttribute("aria-expanded")).toBe("true");
+    more.click();
+    expect(body.classList.contains("is-clamped")).toBe(true);
+    // A short body has nothing to open.
+    expect(rows[1]!.querySelector("button.own-more")).toBeNull();
+    expect(rows[1]!.querySelector(".own-reason.is-clamped")).toBeNull();
   });
 });

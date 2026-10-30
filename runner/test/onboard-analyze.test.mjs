@@ -28,7 +28,7 @@
 // =====================================================================
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1713,6 +1713,7 @@ console.log("== hermetic: no case spawned a real claude ==");
   } catch {
     /* never written: no call */
   }
+  rmSync(TRIP_DIR, { recursive: true, force: true });
   assert(
     `no real claude spawn (tripwire calls: ${calls.split("\n").filter(Boolean).length})${calls ? ` — ${calls.slice(0, 200)}` : ""}`,
     calls === "",

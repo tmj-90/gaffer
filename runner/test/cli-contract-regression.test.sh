@@ -64,6 +64,8 @@ for t in bootstrap-park-visible concurrency-bookkeeping e2e-afk-autonomous-ship 
   check "$t"
 done
 check ac-checks TICKET_BREAK=1
+check delivery-lifecycle TICKET_BREAK=1
+check dod-gate
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

@@ -183,7 +183,9 @@ else
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('claimToken',''))" 2>/dev/null || echo '')"
   CUR="$(WG ticket show "$TNUM" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['status'])" 2>/dev/null || echo '')"
   if [ "$CUR" != "claimed" ] || [ -z "$CLAIM" ]; then
-    echo "  SKIP: could not drive #$TNUM to claimed (got '$CUR') — skipping the park assertions"
+    # agent register / claim-ticket broke: a regression in the contract this
+    # fixture drives, so a FAIL — never a SKIP (cli-contract-regression.test.sh).
+    fail "could not drive #$TNUM to claimed (got '$CUR') — a break in the dispatch CLI contract this test guards"
   else
     ok "B fixture: #$TNUM is claimed (the runner holds the delivery claim)"
 

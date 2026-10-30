@@ -27,6 +27,13 @@ mkdir -p "$GAFFER_DATA"
 # Same caps as loop.sh, checked BEFORE any paid work. DRY_RUN never spends, so it is
 # never gated (a preview must always be possible).
 _day_reserved=0
+# An existing settings.json that does not parse leaves the caps it holds unknown
+# (factory.config.sh FAIL CLOSED): refuse, preview included — DRY_RUN itself may be
+# one of the settings that could not be read.
+if declare -F gaffer_settings_readable >/dev/null 2>&1 && ! gaffer_settings_readable; then
+  echo "gaffer poll: settings.json ($GAFFER_DATA/settings.json) cannot be read — not polling." >&2
+  echo "TICK_RESULT=no_work"; exit 0
+fi
 if [ "$DRY_RUN" != "1" ]; then
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2

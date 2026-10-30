@@ -252,7 +252,11 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # a config that cannot be re-read stops the run rather than admitting against a
   # stale or missing cap (lib/budget.sh gaffer_refresh_day_caps).
   if ! gaffer_refresh_day_caps "$HERE/factory.config.sh"; then
-    echo "gaffer factory: ERROR — could not re-read the per-day caps from $HERE/factory.config.sh; stopping rather than admit against a stale cap." >&2
+    if ! gaffer_settings_readable; then
+      echo "gaffer factory: ERROR — could not re-read the per-day caps: $GAFFER_DATA/settings.json exists but cannot be parsed (or node is missing); stopping rather than admit against a stale or default cap. Fix the file and start the run again." >&2
+    else
+      echo "gaffer factory: ERROR — could not re-read the per-day caps from $HERE/factory.config.sh; stopping rather than admit against a stale cap." >&2
+    fi
     break
   fi
   if ! gaffer_day_cap_ok; then

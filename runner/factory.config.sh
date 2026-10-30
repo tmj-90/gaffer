@@ -20,19 +20,53 @@
 #     since (value == recorded) is unset first, so settings.json, the mode preset and
 #     the defaults derive it afresh. A value a parent script changed on purpose (e.g.
 #     `gaffer run` passing DRY_RUN=0 to loop.sh) differs from the record and is kept.
+#
+# FAIL CLOSED ON AN UNREADABLE settings.json. The unset above is only safe when the
+# file can be re-read: a settings.json that EXISTS but does not parse (a hand edit, a
+# truncated copy) or cannot be read at all (no node on PATH) would otherwise leave
+# every unset key to its default, so a running loop's MAX_TICKS_PER_DAY went back to
+# 50 and GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD went OFF mid-run. So the file is
+# read FIRST (before anything is unset) and, when it exists but cannot be parsed:
+#   * nothing is unset — inherited values (the last good settings) are kept;
+#   * _GAFFER_SETTINGS_UNREADABLE=1 is exported, and every spend gate refuses new paid
+#     work on it (gaffer_refresh_day_caps → loop.sh / worker.sh stop, the daemon
+#     idles, tick.sh and poll-once.sh refuse) until the file parses again.
+# A missing settings.json is not an error (nothing was configured in the UI).
+_gs_rd="${RUNNER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+_gs_file="${GAFFER_DATA:-$(cd "$_gs_rd/.." && pwd)/.gaffer}/settings.json"
+_gs_out=""; _gs_bad=0
+if [ -e "$_gs_file" ]; then
+  if command -v node >/dev/null 2>&1; then
+    # STRICT: the file must parse as a flat JSON object; anything else exits non-zero.
+    _gs_out="$(node -e 'const fs=require("fs");let s;try{s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))}catch{process.exit(3)}if(!s||typeof s!=="object"||Array.isArray(s))process.exit(3);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")' "$_gs_file" 2>/dev/null)" || _gs_bad=1
+  else
+    _gs_bad=1
+  fi
+fi
+if [ "$_gs_bad" = 1 ]; then
+  _GAFFER_SETTINGS_UNREADABLE=1; export _GAFFER_SETTINGS_UNREADABLE
+  _gs_out=""
+else
+  unset _GAFFER_SETTINGS_UNREADABLE
+fi
 if [ -n "${_GAFFER_OPERATOR_ENV+x}" ]; then
-  while IFS= read -r _dv; do
-    [ -n "$_dv" ] || continue
-    _dk="${_dv#_GAFFER_DV_}"
-    case "$_GAFFER_OPERATOR_ENV" in *" $_dk "*) unset "$_dv"; continue ;; esac
-    if [ -n "${!_dk+x}" ] && [ "${!_dk}" = "${!_dv}" ]; then unset "$_dk"; fi
-    unset "$_dv"
-  done < <(compgen -v _GAFFER_DV_ 2>/dev/null)
-  unset _dv _dk
+  # Re-source hygiene — skipped while settings.json is unreadable (see above), so the
+  # inherited values and their records survive until the file parses again.
+  if [ "$_gs_bad" != 1 ]; then
+    while IFS= read -r _dv; do
+      [ -n "$_dv" ] || continue
+      _dk="${_dv#_GAFFER_DV_}"
+      case "$_GAFFER_OPERATOR_ENV" in *" $_dk "*) unset "$_dv"; continue ;; esac
+      if [ -n "${!_dk+x}" ] && [ "${!_dk}" = "${!_dv}" ]; then unset "$_dk"; fi
+      unset "$_dv"
+    done < <(compgen -v _GAFFER_DV_ 2>/dev/null)
+    unset _dv _dk
+  fi
 else
   _GAFFER_OPERATOR_ENV=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
   export _GAFFER_OPERATOR_ENV
 fi
+unset _gs_rd _gs_file _gs_bad
 _GAFFER_ENV_AT_SOURCE="$_GAFFER_OPERATOR_ENV"
 # What was already exported when THIS source began (after the hygiene step): those
 # are the operator's or a parent's on purpose, never recorded as derived here.
@@ -61,7 +95,9 @@ export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 # closes the `${...}` early and runs the trailing text. Instead: FULLY anchor the key to
 # a shell identifier, then test-and-assign with indirect expansion (`${!_sk}`) + `printf
 # -v`, neither of which re-parses $_sk or $_sv as a command.
-if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
+# The file was read (strictly) at the top of this file, into $_gs_out; an unreadable
+# one applied nothing and set _GAFFER_SETTINGS_UNREADABLE (see FAIL CLOSED above).
+if [ -n "$_gs_out" ]; then
   while IFS=$'\t' read -r _sk _sv; do
     [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
     # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
@@ -69,9 +105,10 @@ if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
     # not only this shell. Unexported, notifications/auto-approve set in the UI
     # silently never fired.
     if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; export "${_sk?}"; fi
-  done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
+  done <<<"$_gs_out"
   unset _sk _sv
 fi
+unset _gs_out
 
 # Product locations (mono layout: packages/* under the repo root)
 : "${DISPATCH_DIR:=$GAFFER_HOME/packages/dispatch}"

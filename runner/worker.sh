@@ -100,7 +100,11 @@ while ! _should_stop && _reserve_run_tick; do
   # config before every admission (a dashboard edit reaches a running pool at its next
   # tick). Fail closed: a config that cannot be re-read stops this worker.
   if ! gaffer_refresh_day_caps "$HERE/factory.config.sh"; then
-    echo "worker $WORKER_ID: ERROR — could not re-read the per-day caps; stopping rather than admit against a stale cap." >&2
+    if ! gaffer_settings_readable; then
+      echo "worker $WORKER_ID: ERROR — could not re-read the per-day caps: $GAFFER_DATA/settings.json exists but cannot be parsed (or node is missing); stopping rather than admit against a stale or default cap." >&2
+    else
+      echo "worker $WORKER_ID: ERROR — could not re-read the per-day caps; stopping rather than admit against a stale cap." >&2
+    fi
     _refund_run_tick; break
   fi
   _day_reserved=0

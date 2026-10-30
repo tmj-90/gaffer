@@ -16,6 +16,11 @@
 #      admission: lowering it mid-run stops the loop at its next tick, a run of edits
 #      is followed edit by edit, the operator's env still wins, and a cap that cannot
 #      be re-read (not an integer) stops the run — fail closed.
+#   6. a settings.json that EXISTS but does not parse mid-run (hand edit, truncated
+#      write), or no node to read it, never lowers a ceiling: a child keeps the
+#      inherited caps (MAX_TICKS_PER_DAY, GAFFER_DAILY_BUDGET_USD, GAFFER_BUDGET_USD —
+#      not the default 50 / OFF), the marker is set, and a running loop (serial and
+#      pool) and the daemon stop instead of admitting against defaults.
 # Run: bash test/settings-resource.test.sh   (bash 3.2 safe)
 # =====================================================================
 set -uo pipefail
@@ -109,6 +114,9 @@ cat > "$FAKE/tick.sh" <<'TICKSH'
 echo "tick MAX=${MAX_TICKS_PER_DAY:-}" >> "${STUB_CALLS:?}"
 n="$(grep -c '^tick' "$STUB_CALLS")"
 [ -f "$SEQ/$n.json" ] && cp "$SEQ/$n.json" "$GAFFER_DATA/settings.json"
+# STUB_COST: each tick "spends" this many dollars in today's usage ledger.
+[ -n "${STUB_COST:-}" ] && printf '{"ts":"%s","kind":"delivery","measured":true,"total_cost_usd":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$STUB_COST" >> "$GAFFER_DATA/usage-ledger.jsonl"
 echo "TICK_RESULT=worked"
 TICKSH
 chmod +x "$FAKE/tick.sh"
@@ -116,7 +124,7 @@ printf '#!/usr/bin/env bash\nprintf "{}\\n"\n' > "$WORK/noop.sh"; chmod +x "$WOR
 # run_loop <data-dir> <seq-dir> [env...] — the REAL loop.sh, live (DRY_RUN=0), no sleeps.
 run_loop() {
   local data="$1" seq="$2"; shift 2
-  : > "$WORK/calls"; rm -f "$data/.daily-ticks"
+  : > "$WORK/calls"; rm -f "$data/.daily-ticks" "$data/usage-ledger.jsonl"
   env -i PATH="$PATH" HOME="$HOME" "$@" DRY_RUN=0 TICK_SLEEP=0 EMPTY_POLL_LIMIT=10 \
     GAFFER_DATA="$data" GAFFER_LOG="$WORK/factory.log" GAFFER_TICK_OUTER_TIMEOUT=60 \
     DISPATCH_DIR="$WORK/nodist" DISPATCH_DB="$WORK/db.sqlite" MEMORY_DB="$WORK/mem.sqlite" \
@@ -124,7 +132,7 @@ run_loop() {
     LOOP_STATS_CMD="$WORK/noop.sh" LOOP_HQ_CMD="$WORK/noop.sh" LOOP_NOTIFY_EMIT_CMD="$WORK/noop.sh" \
     timeout 120 bash "$FAKE/loop.sh" 2>&1
 }
-ticks_run() { grep -c '^tick' "$WORK/calls" 2>/dev/null || echo 0; }
+ticks_run() { local n; n="$(grep -c '^tick' "$WORK/calls" 2>/dev/null)"; echo "${n:-0}"; }
 day_used() { awk '{print $2}' "$1/.daily-ticks" 2>/dev/null || echo 0; }
 
 # 5a. The reviewer's case: cap 40 → 1 after the first tick, MAX_TICKS=4.
@@ -179,5 +187,83 @@ OUT5="$(run_loop "$L" "$S" MAX_TICKS=8 GAFFER_CONCURRENCY=2)"
   && ok "a running pool stops once the cap is lowered to 1 ($(ticks_run) tick(s), at most one per worker already admitted; was 8)" \
   || fail "pool ran $(ticks_run) tick(s) (day $(day_used "$L")) against a lowered cap of 1: $(tail -3 <<<"$OUT5")"
 grep -q 'per-day cap reached' <<<"$OUT5" && ok "pool workers log the day-cap stop" || fail "no worker day-cap stop: $(tail -5 <<<"$OUT5")"
+
+echo "== 6. an UNREADABLE settings.json mid-run never lowers a ceiling (fail closed) =="
+BAD='{"MAX_TICKS_PER_DAY":"2","GAFFER_DAILY_BUDGET_US'   # a truncated write
+# 6a. A child re-source keeps the inherited caps and sets the marker; once the file
+#     parses again the child derives from it afresh and the marker clears.
+U="$WORK/u1"; mkdir -p "$U"
+printf '{"MAX_TICKS_PER_DAY":"2","GAFFER_DAILY_BUDGET_USD":"3","GAFFER_BUDGET_USD":"20"}\n' > "$U/settings.json"
+cat > "$WORK/capprobe.sh" <<'CAPSH'
+#!/usr/bin/env bash
+source "$CFG" >/dev/null 2>&1
+printf '%s|%s|%s|%s\n' "${MAX_TICKS_PER_DAY:-}" "${GAFFER_DAILY_BUDGET_USD:-OFF}" "${GAFFER_BUDGET_USD:-OFF}" "${_GAFFER_SETTINGS_UNREADABLE:-0}"
+CAPSH
+# A PATH with no node on it (bash and the coreutils stay) — "node is missing".
+NONODE=""; IFS=: read -ra _pd <<<"$PATH"
+for d in "${_pd[@]}"; do [ -n "$d" ] && [ ! -x "$d/node" ] && NONODE="${NONODE:+$NONODE:}$d"; done
+OUT6="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$U" CFG="$CFG" W="$WORK" BAD="$BAD" NONODE="$NONODE" bash -c '
+  source "$CFG" >/dev/null 2>&1
+  echo "P:$(bash "$W/capprobe.sh")"
+  echo "N:$(PATH="$NONODE" bash "$W/capprobe.sh")"
+  printf "%s" "$BAD" > "$GAFFER_DATA/settings.json"
+  echo "B:$(bash "$W/capprobe.sh")"
+  echo "G:$(bash -c "source \"\$CFG\" >/dev/null 2>&1; bash \"\$W/capprobe.sh\"")"
+  printf "[1,2]" > "$GAFFER_DATA/settings.json"
+  echo "A:$(bash "$W/capprobe.sh")"
+  printf "{\"MAX_TICKS_PER_DAY\":\"4\"}" > "$GAFFER_DATA/settings.json"
+  echo "F:$(bash "$W/capprobe.sh")"
+')"
+for k in P N B G A F; do eval "U_$k=\"\$(sed -n 's/^$k://p' <<<\"\$OUT6\")\""; done
+[ "$U_P" = "2|3|20|0" ] && ok "parent applied the caps from settings.json" || fail "parent caps: $U_P"
+[ "$U_B" = "2|3|20|1" ] && ok "malformed mid-run: the child keeps MAX_TICKS_PER_DAY=2, daily \$3, lifetime \$20 (not 50 / OFF) and sets the marker" \
+  || fail "malformed settings.json lowered a ceiling in the child: $U_B (want 2|3|20|1)"
+[ "$U_G" = "2|3|20|1" ] && ok "a grandchild under an unreadable file keeps them too" || fail "grandchild: $U_G"
+[ "$U_A" = "2|3|20|1" ] && ok "valid JSON that is not an object ([1,2]) is unreadable too" || fail "non-object settings: $U_A"
+[ "$U_N" = "2|3|20|1" ] && ok "no node to read settings.json: the caps are kept and the marker is set" || fail "node missing: $U_N"
+[ "$U_F" = "4|OFF|OFF|0" ] && ok "once the file parses again the child derives afresh and the marker clears" || fail "after the fix: $U_F"
+
+# 6b. The reviewer's loop case: MAX_TICKS_PER_DAY=2, MAX_TICKS=5, the file breaks after
+#     tick 1. Before: the cap fell to 50 and all 5 ticks ran. Now the loop stops.
+L="$WORK/l7"; S="$WORK/s7"; mkdir -p "$L" "$S"
+printf '{"MAX_TICKS_PER_DAY":"2"}\n' > "$L/settings.json"; printf '%s' "$BAD" > "$S/1.json"
+OUT6="$(run_loop "$L" "$S" MAX_TICKS=5)"
+[ "$(ticks_run)" = 1 ] && ok "malformed settings.json mid-run stops a MAX_TICKS_PER_DAY=2 loop (1 tick; was 5)" \
+  || fail "loop ran $(ticks_run) tick(s) after settings.json broke: $(tail -3 <<<"$OUT6")"
+grep -q 'settings.json exists but cannot be parsed' <<<"$OUT6" && ok "the stop line names the unreadable settings.json" || fail "no settings.json stop line: $(tail -3 <<<"$OUT6")"
+
+# 6c. The daily USD cap must not go OFF: cap \$3, \$1.50 per tick, MAX_TICKS=6, the file
+#     breaks after tick 1. Before: the cap went OFF and \$9 was spent in 6 ticks.
+L="$WORK/l8"; S="$WORK/s8"; mkdir -p "$L" "$S"
+printf '{"GAFFER_DAILY_BUDGET_USD":"3"}\n' > "$L/settings.json"; printf '%s' "$BAD" > "$S/1.json"
+OUT6="$(run_loop "$L" "$S" MAX_TICKS=6 STUB_COST=1.5)"
+SPENT="$(awk -F'"total_cost_usd":' 'NF>1{split($2,a,"}"); s+=a[1]} END{printf "%.2f", s+0}' "$L/usage-ledger.jsonl" 2>/dev/null)"
+[ "$(ticks_run)" = 1 ] && awk -v s="$SPENT" 'BEGIN{exit !(s <= 3)}' \
+  && ok "with GAFFER_DAILY_BUDGET_USD=3 a malformed settings.json does not turn the cap OFF (1 tick, \$$SPENT spent; was \$9)" \
+  || fail "daily cap went OFF: $(ticks_run) tick(s), \$$SPENT spent against \$3: $(tail -3 <<<"$OUT6")"
+
+# 6d. Unreadable before the run starts: no tick at all (nothing to inherit but defaults).
+L="$WORK/l9"; S="$WORK/s9"; mkdir -p "$L" "$S"
+printf '%s' "$BAD" > "$L/settings.json"
+OUT6="$(run_loop "$L" "$S" MAX_TICKS=3)"
+[ "$(ticks_run)" = 0 ] && ok "a settings.json that is unreadable at start runs no tick" || fail "ran $(ticks_run) tick(s) on defaults: $(tail -3 <<<"$OUT6")"
+
+# 6e. Pool path: each worker stops on the unreadable file.
+L="$WORK/l10"; S="$WORK/s10"; mkdir -p "$L" "$S"
+printf '{"MAX_TICKS_PER_DAY":"2"}\n' > "$L/settings.json"; printf '%s' "$BAD" > "$S/1.json"
+OUT6="$(run_loop "$L" "$S" MAX_TICKS=8 GAFFER_CONCURRENCY=2)"
+[ "$(ticks_run)" -le 2 ] && grep -q 'worker .*settings.json exists but cannot be parsed' <<<"$OUT6" \
+  && ok "a running pool stops on the unreadable settings.json ($(ticks_run) tick(s), at most one per worker; was 8)" \
+  || fail "pool ran $(ticks_run) tick(s) after settings.json broke: $(tail -5 <<<"$OUT6")"
+
+# 6f. The daemon idles (no pass) while settings.json is unreadable.
+D="$WORK/d3"; mkdir -p "$D"; printf '%s' "$BAD" > "$D/settings.json"
+LOG="$WORK/passes3.log"; : > "$LOG"
+printf '#!/usr/bin/env bash\necho pass >> "%s"\n' "$LOG" > "$WORK/loop3.sh"; chmod +x "$WORK/loop3.sh"
+ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$D" GAFFER_LOOP_SH="$WORK/loop3.sh" GAFFER_DAEMON_MAX_CYCLES=2 \
+  timeout 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
+[ "$(grep -c '^pass' "$LOG")" = 0 ] && grep -q 'settings.json .* cannot be read — idle' <<<"$ERR" \
+  && ok "the daemon runs no pass while settings.json is unreadable, with a notice" \
+  || fail "daemon ran $(grep -c '^pass' "$LOG") pass(es): $ERR"
 
 echo; [ "${#FAILURES[@]}" -eq 0 ] && echo "settings-resource: ALL $PASS checks passed" || { echo "settings-resource: ${#FAILURES[@]} FAILURE(S)"; exit 1; }

@@ -31,7 +31,12 @@
 
 # Echo why today's caps refuse a pass and return 1, or return 0 when a pass may run.
 _gaffer_daemon_cap_check() {
-  if declare -F gaffer_day_cap_ok >/dev/null 2>&1 && ! gaffer_day_cap_ok; then
+  if [ "${_GAFFER_SETTINGS_UNREADABLE:-0}" != 0 ]; then
+    # settings.json exists but does not parse (or node is missing): the caps it holds
+    # cannot be read, so no pass runs until it is fixed (factory.config.sh FAIL CLOSED).
+    printf 'gaffer daemon: settings.json (%s) cannot be read — idle until it parses again\n' "${GAFFER_DATA:-.}/settings.json"
+    return 1
+  elif declare -F gaffer_day_cap_ok >/dev/null 2>&1 && ! gaffer_day_cap_ok; then
     printf 'gaffer daemon: per-day cap (MAX_TICKS_PER_DAY=%s) reached — idle until the next calendar day\n' "${MAX_TICKS_PER_DAY:-}"
     return 1
   elif declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then

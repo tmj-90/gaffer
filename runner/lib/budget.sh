@@ -195,22 +195,42 @@ gaffer_day_cap_ok() {
 # The re-source hygiene in factory.config.sh still applies, so the operator's real
 # env keeps winning over the file. Call it before EVERY admission.
 #
-# FAIL CLOSED: returns 1 (and changes nothing) when the config cannot be re-read or
-# yields a cap that is not an integer — the caller must STOP, never fall back to the
-# stale value or to "no cap". A cap of 0 (or less) still means unlimited, as above.
+# FAIL CLOSED: returns 1 (and changes nothing) when the config cannot be re-read,
+# yields a cap that is not an integer, or reports settings.json UNREADABLE (it exists
+# but does not parse, or node is missing — factory.config.sh sets
+# _GAFFER_SETTINGS_UNREADABLE and keeps the inherited values rather than falling to the
+# defaults). The caller must STOP, never fall back to the stale value, a default or
+# "no cap". A cap of 0 (or less) still means unlimited, as above.
 gaffer_refresh_day_caps() {
-  local cfg="${1:-}" out cap usd
+  local cfg="${1:-}" out line cap="" usd="" unreadable="" seen=0
   [ -n "$cfg" ] && [ -f "$cfg" ] || return 1
   out="$(GAFFER_DATA="${GAFFER_DATA:-}" bash -c '
     source "$1" >/dev/null 2>&1 || true
-    printf "caps:%s\n%s\n" "${MAX_TICKS_PER_DAY:-}" "${GAFFER_DAILY_BUDGET_USD:-}"' _ "$cfg" 2>/dev/null)" || return 1
-  case "$out" in caps:*) ;; *) return 1 ;; esac
-  cap="${out%%$'\n'*}"; cap="${cap#caps:}"
-  case "$out" in *$'\n'*) usd="${out#*$'\n'}" ;; *) usd="" ;; esac
+    printf "caps:%s\nunreadable:%s\nusd:%s\n" "${MAX_TICKS_PER_DAY:-}" "${_GAFFER_SETTINGS_UNREADABLE:-0}" "${GAFFER_DAILY_BUDGET_USD:-}"' _ "$cfg" 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      caps:*) cap="${line#caps:}"; seen=$((seen + 1)) ;;
+      unreadable:*) unreadable="${line#unreadable:}"; seen=$((seen + 1)) ;;
+      usd:*) usd="${line#usd:}"; seen=$((seen + 1)) ;;
+    esac
+  done <<<"$out"
+  [ "$seen" = 3 ] || return 1
+  if [ "$unreadable" != 0 ]; then
+    _GAFFER_SETTINGS_UNREADABLE=1; export _GAFFER_SETTINGS_UNREADABLE
+    return 1
+  fi
   [[ "$cap" =~ ^-?[0-9]+$ ]] || return 1
+  unset _GAFFER_SETTINGS_UNREADABLE
   _gaffer_set_live_cap MAX_TICKS_PER_DAY "$cap"
   _gaffer_set_live_cap GAFFER_DAILY_BUDGET_USD "$usd"
   return 0
+}
+
+# gaffer_settings_readable — 0 when settings.json was read (or there is none), 1 when
+# it exists but could not be parsed / read on the last source of factory.config.sh.
+# Every pre-spawn gate (tick.sh, poll-once.sh, the daemon) refuses paid work on 1.
+gaffer_settings_readable() {
+  [ "${_GAFFER_SETTINGS_UNREADABLE:-0}" = 0 ]
 }
 # Assign a refreshed cap in THIS shell. When the key is a value the config derived
 # and exported (it carries a _GAFFER_DV_<KEY> record), move the record with it: the

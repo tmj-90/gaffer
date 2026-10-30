@@ -422,6 +422,15 @@ gaffer_area_for_stack() {
 # never even be launched).
 gaffer_timeout_preflight || gaffer_abort_setup SETUP "no timeout primitive — aborting tick (setup error)"
 
+# An existing settings.json that does not parse (or no node to read it) leaves every
+# setting it holds — the spend caps included — unknown: factory.config.sh kept the
+# inherited values and set _GAFFER_SETTINGS_UNREADABLE. Refuse before any claim or
+# spawn, as a setup error (the loop stops, the daemon backs off), never run on
+# defaults. DRY_RUN is not exempt: it may be one of the settings that went unread.
+if declare -F gaffer_settings_readable >/dev/null 2>&1 && ! gaffer_settings_readable; then
+  gaffer_abort_setup SETUP "settings.json ($GAFFER_DATA/settings.json) exists but cannot be parsed (or node is missing) — not starting work until it is fixed"
+fi
+
 # Part B (defense-in-depth): before this tick can claim work and spawn ANY paid
 # `claude -p`, consult the per-UTC-day USD cap. If the day's ledger spend is already
 # at/over GAFFER_DAILY_BUDGET_USD, do NOT start new paid work — halt cleanly like the

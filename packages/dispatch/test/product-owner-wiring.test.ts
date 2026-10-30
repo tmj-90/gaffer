@@ -1,3 +1,7 @@
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { ACTION_COMMAND_ENVS, reportActionCommandWiring } from "../src/api/productOwner.js";
@@ -45,5 +49,28 @@ describe("reportActionCommandWiring", () => {
     expect(missing).toEqual([]);
     expect(lines[0]).toContain("missing: (none)");
     expect(lines[0]).not.toContain("no-op");
+  });
+});
+
+/**
+ * Doc-drift guard: `.env.example` presents itself as the full wiring reference
+ * and quickstart.md lists every command `gaffer dashboard` wires. A new action
+ * command missing from either means a launch configured from the docs logs it
+ * as "missing" and its dashboard action never runs.
+ */
+describe("action-command wiring docs", () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const envExample = readFileSync(resolve(repoRoot, ".env.example"), "utf8");
+  const quickstart = readFileSync(resolve(repoRoot, "quickstart.md"), "utf8");
+
+  it.each([...ACTION_COMMAND_ENVS])(".env.example sets %s", (name) => {
+    expect(envExample).toMatch(new RegExp(`^${name}="[^"]+"$`, "m"));
+  });
+
+  it.each([...ACTION_COMMAND_ENVS])("quickstart.md wiring reference names %s", (name) => {
+    const start = quickstart.indexOf("Wiring reference");
+    expect(start).toBeGreaterThanOrEqual(0);
+    const block = quickstart.slice(start, quickstart.indexOf("\n\n", start));
+    expect(block).toContain(`\`${name}\``);
   });
 });

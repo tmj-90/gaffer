@@ -91,7 +91,7 @@ function symbolsToFts(symbols: ReadonlyArray<string>): string {
 /**
  * Translate a free-text query into an FTS5 MATCH expression. Same builder
  * as lore search (core/queryTokens.ts): OR-mode with optional prefix,
- * stopwords dropped, and 3+ content terms must match at least half.
+ * stopwords dropped, and 3+ content terms must match 2 of them (a third of 7+).
  */
 function toFtsQuery(input: string, prefix = false): string {
   return toFtsMatch(input, prefix);

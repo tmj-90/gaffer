@@ -14,10 +14,18 @@
  *      ("not", "no", "never", "without") are deliberately KEPT: they carry
  *      meaning in lore ("do not change ..."). A query made only of stopwords
  *      falls back to its original terms so it still behaves as before.
- *   2. A lexical hit must match at least half (rounded up) of the content
- *      terms once a query has {@link MIN_MATCH_FROM} or more of them. One- and
- *      two-term queries stay plain OR, which keeps the "deployment kafka still
- *      surfaces kafka-only records" behaviour the OR mode exists for.
+ *   2. A lexical hit must match {@link minMatches} of the content terms
+ *      (2, or a third rounded up for 7+ terms) once a query has
+ *      {@link MIN_MATCH_FROM} or more of them. One- and two-term queries stay
+ *      plain OR, which keeps the "deployment kafka still surfaces kafka-only
+ *      records" behaviour the OR mode exists for. The bar is deliberately not
+ *      "half": lore records are terse, and a 6-8 term ticket title ("Switch
+ *      password storage from bcrypt to something stronger") typically shares
+ *      only 2-3 key terms with the decision that binds it ("Use Argon2id for
+ *      password hashing ... bcrypt is not allowed"). Half the terms dropped
+ *      those to zero hits — the absence-coaching path, wrong when a binding
+ *      decision exists — while 2 already kept off-topic sentences at zero on
+ *      the audit's noise corpus.
  *
  * Terms are whitespace-separated parts (each still matched by FTS as a quoted
  * phrase, so `snake_case_name` keeps its phrase semantics); a part counts as a
@@ -41,15 +49,28 @@ const STOPWORDS: ReadonlySet<string> = new Set(
   ).split(" "),
 );
 
-/** Queries with this many content terms or more must match at least half of them. */
+/** "can't", "don't", "won't", "isn't" (ASCII or typographic apostrophe). */
+const NEGATED_CONTRACTION = /n['\u2019]t$/i;
+
+/** Queries with this many content terms or more must match {@link minMatches} of them. */
 export const MIN_MATCH_FROM = 3;
 /**
- * Cap on content terms in one lexical query. The "at least half" rule is an OR
- * of AND-groups (C(n, ceil(n/2)) of them: 70 at n = 8), so n is bounded; the
+ * Cap on content terms in one lexical query. The min-match rule is an OR of
+ * AND-groups (C(n, minMatches(n)) of them: 56 at n = 8), so n is bounded; the
  * longest terms are kept — a cheap specificity proxy. The dense side still
  * embeds every content term.
  */
 export const MAX_QUERY_TERMS = 8;
+
+/**
+ * How many of `n` content terms a lexical hit must match: every term below
+ * {@link MIN_MATCH_FROM} (plain OR, i.e. 1), otherwise max(2, ceil(n / 3)) —
+ * 2 up to six terms, 3 for seven or eight (see the module doc for why not half).
+ */
+export function minMatches(n: number): number {
+  if (n < MIN_MATCH_FROM) return 1;
+  return Math.max(2, Math.ceil(n / 3));
+}
 
 export function isStopword(token: string): boolean {
   return STOPWORDS.has(token);
@@ -78,8 +99,10 @@ export function queryTerms(input: string): QueryTerms {
     const toks = tokenise(p);
     // A part with no letters/digits ("-", "/", "&", an em dash) is not a content
     // term: its FTS phrase matches nothing, yet it would still count toward the
-    // half-match rule ("Billing - fix invoice rounding" would need 3 of 5).
-    return toks.length > 0 && toks.some((t) => !STOPWORDS.has(t));
+    // min-match rule and dilute it.
+    // A negated contraction ("can't", "don't", "isn't") splits into stopword
+    // runs ("can" + "t") but is a negation, which the module doc keeps.
+    return toks.length > 0 && (toks.some((t) => !STOPWORDS.has(t)) || NEGATED_CONTRACTION.test(p));
   });
   // All stopwords and/or punctuation: fall back to the original parts.
   if (content.length === 0) return { terms: parts, allStopwords: parts.length > 0 };
@@ -133,8 +156,7 @@ export function toFtsMatch(input: string, prefix: boolean): string {
   const quoted = kept.map((p) => (prefix && !allStopwords && p.length >= 3 ? `"${p}"*` : `"${p}"`));
   if (quoted.length === 1) return quoted[0]!;
   if (quoted.length < MIN_MATCH_FROM || allStopwords) return quoted.join(" OR ");
-  const k = Math.ceil(quoted.length / 2);
-  return combinations(quoted, k)
+  return combinations(quoted, minMatches(quoted.length))
     .map((g) => `(${g.join(" AND ")})`)
     .join(" OR ");
 }

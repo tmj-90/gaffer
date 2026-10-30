@@ -240,6 +240,24 @@ describe("MCP — search_lore", () => {
     expect(json.next).toContain("record_absence");
   });
 
+  it("a ticket-title query finds the terse decision that binds it (no absence coach)", async () => {
+    // Regression (review r2: stopword-or-query): 6 content terms sharing only
+    // "password" + "bcrypt" with the record fell under a "match half" bar, so the
+    // agent was told to record_absence while a binding decision existed.
+    const rec = addLore(db, {
+      title: "Use Argon2id for password hashing",
+      summary: "Passwords are hashed with Argon2id, memory cost 64MB; bcrypt is not allowed.",
+      body: "b",
+      source: "https://example.com/adr/argon2",
+    });
+    client = await connectClient(db);
+    const { json } = await callJson(client, "search_lore", {
+      query: "Switch password storage from bcrypt to something stronger",
+    });
+    expect(json.results.map((r: { id: string }) => r.id)).toEqual([rec.id]);
+    expect(json.next).toBeUndefined();
+  });
+
   it("surfaces an absence_marker on a zero-hit query that matches one", async () => {
     recordAbsence(db, {
       query: "kafka exactly-once",

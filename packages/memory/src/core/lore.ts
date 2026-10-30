@@ -1330,8 +1330,8 @@ const RANK_CANDIDATE_POOL = 60;
 const DENSE_MIN_COSINE = 0.25;
 /**
  * Stricter floor for queries of MIN_MATCH_FROM+ content terms. On those the
- * lexical side's "match at least half the terms" rule is the recall gate (one
- * typo in a long query still leaves enough terms to match), so a dense hit is
+ * lexical side's min-match rule (2 terms, or a third of 7+) is the recall gate
+ * (one typo in a long query still leaves enough terms to match), so a dense hit is
  * mostly a re-ranking signal — and a long off-topic sentence shares enough
  * surface n-grams with SOME record to clear 0.25 (measured on a 1,045-record
  * corpus of repo-doc headings: off-topic sentences peaked at 0.32, while the
@@ -1855,7 +1855,7 @@ function hasIntersection(a: ReadonlyArray<string>, b: ReadonlyArray<string>): bo
  *
  * Two guards keep OR-mode from matching the corpus on sentence queries (see
  * core/queryTokens.ts): stopwords are dropped from the query, and a query of
- * 3+ content terms must match at least half of them. `prefix` suffixes terms
+ * 3+ content terms must match 2 of them (a third of 7+). `prefix` suffixes terms
  * of 3+ chars with `*` ("timez" → "timezone").
  */
 function toFtsQuery(input: string, prefix: boolean): string {

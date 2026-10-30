@@ -324,7 +324,7 @@ describe("retrieval eval set", () => {
     }
   });
 
-  it("a long query must match at least half its content terms ('in production' alone is not enough)", () => {
+  it("a long query needs 2+ of its content terms to match ('in production' alone is not enough)", () => {
     setHybrid(false);
     // Only deploy-freeze says "production"; with 4 content terms it needs 2 to match.
     expect(topKeys("why does the elasticsearch indexer stall in production")).toEqual([]);
@@ -398,5 +398,118 @@ describe("retrieval eval set", () => {
       .prepare("SELECT COUNT(*) AS n FROM lore_embeddings WHERE model = 'some-other-model'")
       .get() as { n: number };
     expect(other.n).toBe(0);
+  });
+});
+
+/**
+ * Long ticket-title / sentence queries against TERSE decision records — the
+ * dominant real query shape (the runner searches with the ticket title). Each
+ * query has 5-8 content terms but shares only 2-3 key terms with the record
+ * that binds it. Regression (review r2: stopword-or-query): a "match at least
+ * half the terms" bar returned ZERO hits for these in both rankings, which the
+ * MCP layer turns into "No ratified position found ... call record_absence"
+ * while a binding decision exists. The precision guard above must not trade
+ * this recall away again.
+ */
+describe("retrieval eval: long queries against terse decision records", () => {
+  const DECISIONS: Doc[] = [
+    {
+      key: "invoice-rounding",
+      title: "Invoice rounding uses banker's rounding",
+      summary: "All billing amounts round half-even to the cent; never round half-up.",
+    },
+    {
+      key: "invoice-immutable",
+      title: "Invoices are immutable once issued",
+      summary:
+        "An issued invoice is never edited after it is sent to the customer; corrections go through credit notes.",
+    },
+    {
+      key: "argon2",
+      title: "Use Argon2id for password hashing",
+      summary: "Passwords are hashed with Argon2id, memory cost 64MB; bcrypt is not allowed.",
+    },
+    {
+      key: "kafka-offsets",
+      title: "Kafka consumers commit offsets manually",
+      summary: "Consumer groups disable auto-commit and commit after the handler succeeds.",
+    },
+    {
+      key: "session-idle",
+      title: "Sessions expire after 30 minutes idle",
+      summary:
+        "The auth middleware drops a session after 30 minutes of inactivity; refresh tokens last 7 days.",
+    },
+    {
+      key: "dark-mode",
+      title: "Dark mode follows the OS setting",
+      summary:
+        "The settings page toggle defaults to system preference; stored per user in localStorage.",
+    },
+  ];
+  const LONG_POSITIVES: Array<{ query: string; expect: string }> = [
+    // 6 content terms, 2 shared (password, bcrypt).
+    { query: "Switch password storage from bcrypt to something stronger", expect: "argon2" },
+    // 7 content terms, 3 shared (kafka, consumer, handler).
+    {
+      query: "Kafka consumer loses messages when the handler throws an exception",
+      expect: "kafka-offsets",
+    },
+    // 8 content terms, 3 shared (invoice, round, billing).
+    {
+      query: "Fix bug where invoice totals round incorrectly in the billing service",
+      expect: "invoice-rounding",
+    },
+    // 5 content terms, 3 shared (invoice, sent, customer).
+    {
+      query: "Allow editing an invoice after it was sent to the customer",
+      expect: "invoice-immutable",
+    },
+    // 6 content terms, 3 shared (dark, mode, settings) — also 3 of 6 under the old rule.
+    { query: "Add a dark mode toggle to the settings page for the user", expect: "dark-mode" },
+  ];
+
+  let ddb: Database;
+  const dids = new Map<string, string>();
+
+  beforeEach(() => {
+    ddb = new BetterSqlite3(":memory:");
+    runMigrations(ddb);
+    dids.clear();
+    for (const d of DECISIONS) {
+      const lore = addLore(ddb, {
+        title: d.title,
+        summary: d.summary,
+        body: d.summary,
+        repos: ["eval-repo"],
+        source: "https://example.com/adr/" + d.key,
+      });
+      dids.set(d.key, lore.id);
+    }
+  });
+
+  afterEach(() => {
+    ddb.close();
+  });
+
+  it("returns the binding decision at rank 1 under both rankings", () => {
+    const byId = new Map([...dids.entries()].map(([k, v]) => [v, k]));
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const c of LONG_POSITIVES) {
+        const hits = searchLore(ddb, { query: c.query, limit: 5 }).map((h) => byId.get(h.id));
+        expect(hits[0], `"${c.query}" (hybrid=${hybrid}) → ${JSON.stringify(hits)}`).toBe(c.expect);
+        expect(searchLoreCount(ddb, { query: c.query }), `"${c.query}" count`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("off-topic sentences still get zero hits against the same records", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const q of SENTENCE_NEGATIVES) {
+        expect(searchLore(ddb, { query: q }), `"${q}" (hybrid=${hybrid})`).toHaveLength(0);
+      }
+    }
   });
 });

@@ -82,6 +82,35 @@ describe("INERT_CONFIG_KEYS stays honest", () => {
     expect(template).not.toMatch(/The runner runs these gates/);
     expect(template).not.toMatch(/secrets never enter model context/);
   });
+
+  it("no live-path doc claims crew.yaml's definition_of_done configures the gates", () => {
+    // README/SECURITY/tick.sh said DoD was "configurable per repo + factory-wide
+    // (definition_of_done in crew.yaml)" and that GAFFER_DOD_* "carry the resolved
+    // definition_of_done config": the runner never reads that block.
+    const root = join(__dirname, "..", "..", "..");
+    const lib = join(root, "runner", "lib");
+    const docs = join(root, "docs");
+    const files = [
+      join(root, "README.md"),
+      join(root, "SECURITY.md"),
+      join(root, "runner", "README.md"),
+      join(root, "runner", "tick.sh"),
+      ...readdirSync(lib)
+        .filter((f) => f.endsWith(".sh"))
+        .map((f) => join(lib, f)),
+      ...readdirSync(docs)
+        .filter((f) => f.endsWith(".md"))
+        .map((f) => join(docs, f)),
+    ];
+    const offenders = files.flatMap((file) =>
+      readFileSync(file, "utf8")
+        .split("\n")
+        .map((line, i) => ({ line, at: `${file}:${i + 1}` }))
+        .filter(({ line }) => line.includes("definition_of_done") && !/not read/i.test(line))
+        .map(({ at }) => at),
+    );
+    expect(offenders).toEqual([]);
+  });
 });
 
 describe("crew doctor names unread crew.yaml keys", () => {

@@ -819,9 +819,8 @@ gaffer_render_delivery_prompt() {
 # ── Typed branch input assembly: build the renderPromptCli JSON document from the
 #    ambient RAW inputs (mirrors runner/test/capture-context-golden.sh's inputs.json
 #    emitter). reviewFeedbackReasons is recovered from the pre-block "  - " lines in
-#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS —
-#    the same grep/awk partition the bash WRITE_LIST/READ_LIST use. json-tool.mjs
-#    (node) json-encodes arbitrary title/path bytes safely. ─────────────────────
+#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS.
+#    json-tool.mjs (node) json-encodes arbitrary title/path bytes safely. ───────
 _gaffer_prompt_inputs_json() {
   local variant="$1"
   if [ "$variant" = "bootstrap" ]; then

@@ -2638,8 +2638,9 @@ $_trail_q
   # verified); set GAFFER_ALLOW_NO_DOD=1 to waive this for repos with no runnable
   # gates (see factory.config.sh). GAFFER_DOD=0 turns enforcement off entirely.
   # Per-gate toggles
-  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) carry the resolved
-  # `definition_of_done` config; commands come from each repo's dispatch
+  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) are env-only: crew.yaml's
+  # `definition_of_done` block is NOT read here (crew doctor warns when it is
+  # changed). Commands come from each repo's dispatch
   # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
   # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
   # errors to spawn is treated as a FAIL with a clear message, never a crash.

@@ -23,6 +23,7 @@ import {
 } from "./embedding.js";
 import type { Embedder } from "./embedding.js";
 import { newLoreId } from "./ids.js";
+import { MIN_MATCH_FROM, denseQueryText, queryTerms, toFtsMatch } from "./queryTokens.js";
 
 const LORE_KIND_SET = new Set<string>(LORE_KINDS);
 
@@ -1247,6 +1248,16 @@ const RANK_CANDIDATE_POOL = 60;
  * bm25, keeping its "reorders near-ties, never flips a clear winner" contract.
  */
 const DENSE_MIN_COSINE = 0.25;
+/**
+ * Stricter floor for queries of MIN_MATCH_FROM+ content terms. On those the
+ * lexical side's "match at least half the terms" rule is the recall gate (one
+ * typo in a long query still leaves enough terms to match), so a dense hit is
+ * mostly a re-ranking signal — and a long off-topic sentence shares enough
+ * surface n-grams with SOME record to clear 0.25 (measured on a 1,045-record
+ * corpus of repo-doc headings: off-topic sentences peaked at 0.32, while the
+ * labelled blind-spot recoveries in retrieval-eval are 1–2 term queries).
+ */
+const DENSE_MIN_COSINE_LONG_QUERY = 0.35;
 const DENSE_WEIGHT = 0.5;
 const DENSE_CANDIDATE_POOL = 60;
 /** Upper bound on records embedded lazily during one search (a first search on a big legacy DB). */
@@ -1317,7 +1328,14 @@ function denseCandidates(
   opts: SearchOptions,
   embedder: Embedder,
 ): Array<{ row: LoreRow; cosine: number }> {
-  const q = embedder.embed(opts.query!.trim());
+  // Embed content terms only: stopword unigrams / bigrams / trigrams otherwise
+  // lift unrelated records over DENSE_MIN_COSINE on "the ... of ... in" alone.
+  const text = denseQueryText(opts.query!.trim());
+  const q = embedder.embed(text);
+  const minCosine =
+    queryTerms(text).terms.length >= MIN_MATCH_FROM
+      ? DENSE_MIN_COSINE_LONG_QUERY
+      : DENSE_MIN_COSINE;
   const { where, params } = buildSearchClauses({ ...opts, query: undefined });
   const rows = db
     .prepare(
@@ -1329,7 +1347,7 @@ function denseCandidates(
   const scored: Array<{ row: LoreRow; cosine: number }> = [];
   for (const r of rows) {
     const c = cosine(q, deserialiseVector(r.vec, embedder.dim));
-    if (c >= DENSE_MIN_COSINE) {
+    if (c >= minCosine) {
       const { vec: _vec, ...row } = r;
       scored.push({ row: row as LoreRow, cosine: c });
     }
@@ -1659,37 +1677,20 @@ function hasIntersection(a: ReadonlyArray<string>, b: ReadonlyArray<string>): bo
 }
 
 /**
- * Translate a free-text query into an FTS5 MATCH expression.
- * Split on whitespace, drop empties, quote each term — stops users
- * accidentally tripping FTS operators (NEAR, OR, AND, ", :, etc.).
+ * Translate a free-text query into an FTS5 MATCH expression. Each
+ * whitespace term is quoted (stops users tripping FTS operators) and the
+ * terms are OR-joined, ranked by bm25 — FTS5's default AND made multi-word
+ * queries brittle (real dogfood: 5 queries against a fresh corpus returned
+ * 0 hits because no record contained EVERY token), and bm25 still puts
+ * records matching MORE tokens, in higher-weighted columns, first.
  *
- * **OR-mode, ranked by bm25.** FTS5 defaults to AND across tokens, which
- * makes multi-word queries brittle (real dogfood: 5 queries against a
- * fresh corpus returned 0 hits because no record contained EVERY token).
- * We join with explicit `OR` so a query of N tokens surfaces records
- * matching any subset; bm25 ranking then puts records matching MORE
- * tokens (and matching them in higher-weighted columns — see column
- * weights at search-site `bm25(lore_fts, 3.0, 2.0, 1.0)`) at the top.
- * Net behaviour: "deployment kafka" surfaces Kafka-only records when
- * nothing matches both, but Kafka-and-deployment records (if any
- * existed) would still rank first.
- *
- * When `prefix` is true, every quoted token of length ≥ 3 is suffixed
- * with `*` so it matches as a prefix ("timez" → "timezone"). Tokens
- * shorter than 3 chars stay exact-match because a 1–2 char prefix is
- * usually meaningless and slow.
+ * Two guards keep OR-mode from matching the corpus on sentence queries (see
+ * core/queryTokens.ts): stopwords are dropped from the query, and a query of
+ * 3+ content terms must match at least half of them. `prefix` suffixes terms
+ * of 3+ chars with `*` ("timez" → "timezone").
  */
 function toFtsQuery(input: string, prefix: boolean): string {
-  const parts = input
-    .split(/\s+/)
-    .map((p) => p.replace(/"/g, ""))
-    .filter(Boolean);
-  if (parts.length === 0) return '""';
-  const tokens = parts.map((p) => (prefix && p.length >= 3 ? `"${p}"*` : `"${p}"`));
-  // One token: no operator needed (FTS5 happy with bare quoted term).
-  // Multiple tokens: explicit OR so partial matches surface; bm25
-  // does the ranking work.
-  return tokens.length === 1 ? tokens[0]! : tokens.join(" OR ");
+  return toFtsMatch(input, prefix);
 }
 
 export interface PossibleDuplicate extends LoreSummary {

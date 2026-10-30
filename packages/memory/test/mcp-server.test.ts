@@ -258,6 +258,24 @@ describe("MCP — search_lore", () => {
     expect(json.next).toBeUndefined(); // marker wins over coach
   });
 
+  it("an off-topic SENTENCE reaches the zero-hit path and surfaces its absence marker", async () => {
+    // Regression (audit: stopword-or-query): "the" / "for" / "is" used to match
+    // the Argon2id record above, so the marker below was unreachable.
+    recordAbsence(db, {
+      query: "employee holiday leave policy",
+      reason: "HR owns this, not engineering",
+      recordedBy: "human",
+    });
+    client = await connectClient(db);
+    const { json } = await callJson(client, "search_lore", {
+      query: "what is the policy for employee holiday leave",
+    });
+    expect(json.results).toEqual([]);
+    expect(json.absence_marker.reason).toBe(
+      "<untrusted-absence>HR owns this, not engineering</untrusted-absence>",
+    );
+  });
+
   it("reports truncation when more match than the limit", async () => {
     for (let i = 0; i < 8; i++) {
       addLore(db, { title: `widget tracker ${i}`, summary: "s", body: "b" });

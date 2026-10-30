@@ -17,6 +17,7 @@
 import type { Database } from "better-sqlite3";
 
 import { newLoreId } from "./ids.js";
+import { queryTerms } from "./queryTokens.js";
 
 export interface AbsenceMarker {
   readonly id: string;
@@ -88,8 +89,11 @@ export function normaliseAbsenceQuery(q: string): string {
 export function absenceQueryMatches(markerKey: string, queryKey: string): boolean {
   if (markerKey.length === 0 || queryKey.length === 0) return false;
   if (markerKey === queryKey) return true;
-  const markerTokens = markerKey.split(" ");
-  const queryTokens = new Set(queryKey.split(" "));
+  // Containment is judged on CONTENT terms (core/queryTokens.ts), so a stray
+  // "the" / "for" on either side does not stop "the retry policy" from
+  // matching "retry policy timeout". Stored keys are unchanged.
+  const markerTokens = queryTerms(markerKey).terms;
+  const queryTokens = new Set(queryTerms(queryKey).terms);
   const markerSet = new Set(markerTokens);
   // marker ⊆ query ?
   const markerSubsetOfQuery = markerTokens.every((t) => queryTokens.has(t));

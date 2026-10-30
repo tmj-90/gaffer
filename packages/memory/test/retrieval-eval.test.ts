@@ -18,7 +18,7 @@
 import BetterSqlite3 from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { addLore, ensureLoreEmbeddings, searchLore } from "../src/core/lore.js";
+import { addLore, ensureLoreEmbeddings, searchLore, searchLoreCount } from "../src/core/lore.js";
 import { getEmbedder } from "../src/core/embedding.js";
 import { runMigrations } from "../src/db/migrations.js";
 import type { Database } from "better-sqlite3";
@@ -146,6 +146,29 @@ const CASES: Case[] = [
 /** Queries the corpus has nothing on: hybrid must not invent hits. */
 const NEGATIVES = ["kubernetes ingress", "elasticsearch mapping", "mobile push notification"];
 
+/**
+ * Off-topic questions phrased as SENTENCES — how agents (and the runner's
+ * ticket-title query) actually search. Regression (audit: stopword-or-query):
+ * the OR-joined FTS query matched these on "the" / "for" / "in" alone, and the
+ * dense side cleared DENSE_MIN_COSINE on stopword n-grams, so the zero-hit path
+ * (absence markers, coaching) never fired for a sentence.
+ */
+const SENTENCE_NEGATIVES = [
+  "what is the policy on employee holiday leave",
+  "the best way to train a puppy at home",
+  "how do I bake a cake for the party",
+  "recipe for chocolate cake with the oven",
+  "why is the office printer out of paper again",
+];
+
+/** Sentence-form paraphrases of labelled positives: the stopword guard must keep them. */
+const SENTENCE_POSITIVES: Array<{ query: string; expect: string }> = [
+  { query: "why does the kafka consumer retry so often in production", expect: "kafka-retry" },
+  { query: "how should we hash a password for a new user", expect: "password-hash" },
+  { query: "what are the rules for a deployment freeze", expect: "deploy-freeze" },
+  { query: "how do I verify a webhook signature", expect: "webhook-sig" },
+];
+
 let db: Database;
 const ids = new Map<string, string>();
 const prevHybrid = process.env["MEMORY_HYBRID_RETRIEVAL"];
@@ -257,6 +280,67 @@ describe("retrieval eval set", () => {
     setHybrid(true);
     for (const q of NEGATIVES) {
       expect(searchLore(db, { query: q }), `"${q}" should have no hits`).toHaveLength(0);
+    }
+  });
+
+  it("returns zero hits (and a zero count) for off-topic SENTENCES under both rankings", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const q of SENTENCE_NEGATIVES) {
+        expect(searchLore(db, { query: q }), `"${q}" (hybrid=${hybrid})`).toHaveLength(0);
+        expect(searchLoreCount(db, { query: q }), `"${q}" count`).toBe(0);
+        expect(searchLore(db, { query: q, prefix: true }), `"${q}" prefix`).toHaveLength(0);
+      }
+    }
+  });
+
+  it("a sentence-form paraphrase of a labelled query still returns its record", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      for (const c of SENTENCE_POSITIVES) {
+        expect(topKeys(c.query), `"${c.query}" (hybrid=${hybrid})`).toContain(c.expect);
+      }
+    }
+  });
+
+  it("a long query must match at least half its content terms ('in production' alone is not enough)", () => {
+    setHybrid(false);
+    // Only deploy-freeze says "production"; with 4 content terms it needs 2 to match.
+    expect(topKeys("why does the elasticsearch indexer stall in production")).toEqual([]);
+    expect(searchLoreCount(db, { query: "kafka consumer lag production" })).toBe(1);
+  });
+
+  it("a long off-topic sentence gets no dense-only hit from surface n-gram overlap", () => {
+    // Real records from the audit's 1,045-heading noise corpus that an off-topic
+    // sentence pulled in dense-only at cosine 0.29–0.32 (over DENSE_MIN_COSINE).
+    for (const [title, summary] of [
+      [
+        "Verification",
+        "- Recount: every user-visible commit in the range appears exactly once; no internal-only commit leaked in.",
+      ],
+      [
+        "BAB (Before → After → Bridge)",
+        "Best when the outcome is the hook (transformation offers). [Before] Right now, [audience] [current painful state].",
+      ],
+    ] as const) {
+      addLore(db, { title, summary, body: summary });
+    }
+    setHybrid(true);
+    for (const q of [
+      "how should we handle the user interface for the mobile app",
+      "the best way to train a puppy at home",
+    ]) {
+      expect(searchLore(db, { query: q }), q).toHaveLength(0);
+    }
+    // Short queries keep the normal floor, so the blind-spot recoveries above still hold.
+    expect(topKeys("ratelimiting")).toEqual(["rate-limit"]);
+  });
+
+  it("an all-stopword query does not throw and falls back to its original terms", () => {
+    for (const hybrid of [false, true]) {
+      setHybrid(hybrid);
+      expect(() => searchLore(db, { query: "the of and to" })).not.toThrow();
+      expect(searchLoreCount(db, { query: "the" })).toBeGreaterThan(0);
     }
   });
 

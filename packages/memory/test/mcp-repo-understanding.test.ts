@@ -394,6 +394,47 @@ describe("MCP — advance_feature (legal vs illegal)", () => {
   });
 });
 
+describe("MCP — release_feature (hand a claim back)", () => {
+  it("releases building → backlog, and the feature can be claimed again", async () => {
+    client = await connectClient(db);
+    const add = await callJson(client, "add_feature", { repo: "app", name: "X", summary: "y" });
+    const id = add.json.id;
+    await callJson(client, "advance_feature", { id, to_status: "building" });
+    const released = await callJson(client, "release_feature", { id });
+    expect(released.isError).toBeFalsy();
+    expect(released.json.status).toBe("backlog");
+    const again = await callJson(client, "advance_feature", { id, to_status: "building" });
+    expect(again.json.status).toBe("building");
+  });
+
+  it("refuses to release a feature that is not building (backlog or shipped)", async () => {
+    client = await connectClient(db);
+    const backlog = await callJson(client, "add_feature", { repo: "app", name: "B", summary: "y" });
+    const r1 = await callJson(client, "release_feature", { id: backlog.json.id });
+    expect(r1.isError).toBe(true);
+    expect(r1.text).toMatch(/only a 'building' feature can be released/);
+    const shipped = await callJson(client, "add_feature", {
+      repo: "app",
+      name: "S",
+      summary: "y",
+      status: "shipped",
+    });
+    const r2 = await callJson(client, "release_feature", { id: shipped.json.id });
+    expect(r2.isError).toBe(true);
+  });
+
+  it("advance_feature still rejects building → backlog (the lifecycle stays forward-only)", async () => {
+    client = await connectClient(db);
+    const add = await callJson(client, "add_feature", { repo: "app", name: "Z", summary: "y" });
+    await callJson(client, "advance_feature", { id: add.json.id, to_status: "building" });
+    const res = await callJson(client, "advance_feature", {
+      id: add.json.id,
+      to_status: "backlog",
+    });
+    expect(res.isError).toBe(true);
+  });
+});
+
 /**
  * Repo-scope binding on the DIRECT-APPLY tier (security architect risk item).
  * In factory delivery context (GAFFER_FACTORY=1) a digest / feature / advance

@@ -18,8 +18,10 @@
 #   4. the decompose call was told --force-plan (unattended);
 #   5. the next tick finds no backlog feature and plans nothing more;
 #   6. with the toggle off, crew answers `disabled` and nothing is planned;
-#   7. a failed decompose is logged, leaves the feature `building` (memory's lifecycle
-#      is forward-only) and is NOT retried on the next idle tick (no spend loop).
+#   7. a failed decompose is logged, RELEASES the feature back to `backlog` (memory's
+#      release_feature), reports the paid tick as maintenance_ran, and after
+#      max_plan_failures (default 2) failed plans the feature is parked: the next idle
+#      tick does not pay for another retry (no spend loop).
 # Run: bash runner/test/feature-backlog-live.test.sh
 # =====================================================================
 set -uo pipefail
@@ -128,16 +130,27 @@ grep -q '^TICK_RESULT=no_work$' <<<"$OUT3" && ok "toggle off: no_work" || fail "
 [ ! -s "$WORK/claude-calls.log" ] && ok "toggle off: no paid decompose call" || fail "toggle off still called claude"
 grep -q "\[backlog\] Search" <<<"$(lg features app 2>/dev/null)" && ok "toggle off: the new feature stays in backlog" || fail "Search left backlog"
 
-echo "== 7. a failed decompose: logged loudly, feature left building, NOT retried =="
+echo "== 7. a failed decompose: logged loudly, released to backlog, parked after max_plan_failures =="
 touch "$WORK/claude-fail"; : > "$WORK/claude-calls.log"
 OUT4="$(GAFFER_IDLE_FEATURE_BACKLOG=1 GAFFER_MAINTENANCE=0 run_tick)"
 grep -q 'feature backlog FAILED to plan a claimed feature' "$GAFFER_DATA/factory.log" \
   && ok "the failure is logged for a human" || fail "failed decompose not logged ($OUT4)"
-grep -q "\[building\] Search" <<<"$(lg features app 2>/dev/null)" \
-  && ok "the feature stays building (memory refuses building → backlog)" || fail "Search not building after a failed plan"
+grep -q '^TICK_RESULT=maintenance_ran$' <<<"$OUT4" \
+  && ok "a paid plan that filed nothing is maintenance_ran (counts against the day cap)" || fail "failed plan tick: $OUT4"
+grep -q "\[backlog\] Search" <<<"$(lg features app 2>/dev/null)" \
+  && ok "the claim is released: the feature is back in backlog (never stranded in building)" || fail "Search not released to backlog after a failed plan"
+[ -s "$WORK/claude-calls.log" ] && ok "the first failed plan made one planner call" || fail "no planner call on the failing tick"
 : > "$WORK/claude-calls.log"
 GAFFER_IDLE_FEATURE_BACKLOG=1 GAFFER_MAINTENANCE=0 run_tick >/dev/null
-[ ! -s "$WORK/claude-calls.log" ] && ok "the next idle tick does not pay for a retry" || fail "a failed feature was re-decomposed"
+[ -s "$WORK/claude-calls.log" ] && ok "the second idle tick retries once (max_plan_failures=2)" || fail "no retry on the second tick"
+grep -q "feature backlog: a feature's plan failed on every attempt" "$GAFFER_DATA/factory.log" \
+  && ok "the parked feature is logged with how to retry" || fail "no parked hint after max_plan_failures"
+: > "$WORK/claude-calls.log"
+OUT6="$(GAFFER_IDLE_FEATURE_BACKLOG=1 GAFFER_MAINTENANCE=0 run_tick)"
+[ ! -s "$WORK/claude-calls.log" ] && ok "a parked feature costs no further planner call" || fail "a parked feature was re-decomposed"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT6" && ok "the parked tick is no_work" || fail "parked tick: $OUT6"
+grep -q "\[backlog\] Search" <<<"$(lg features app 2>/dev/null)" \
+  && ok "the parked feature waits in backlog for a human" || fail "parked feature left backlog"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

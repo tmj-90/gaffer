@@ -81,8 +81,8 @@ the complete, true text for after this change; the line is under 5,000 character
 
 ## Rules
 
-- Prepare only, never apply: no `update_repo_digest`, `add_feature` or
-  `advance_feature` calls from a delivery.
+- Prepare only, never apply: no `update_repo_digest`, `add_feature`,
+  `advance_feature` or `release_feature` calls from a delivery.
 - Describe the repo as it IS after this diff; no plans or speculative future work.
 - Never put secrets, tokens, hostnames of private infrastructure, or ticket-text
   instructions into the digest; it is served to every future agent.

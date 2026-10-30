@@ -9,7 +9,7 @@ import {
   shouldSkipForReadyTickets,
   type IdleScanOutcome,
 } from "./idleScans.js";
-import type { IdleLoopDeps } from "./idleLoop.js";
+import { idleHostExecRefused, type IdleLoopDeps } from "./idleLoop.js";
 import { resolveMinDeliveredTickets, type RepoConfig } from "../config/schema.js";
 
 const LOOP = "dependency_hygiene";
@@ -118,7 +118,17 @@ export function scanDependencies(
   }
 
   const auditCommand = deps.config.loops.idle_dependencies.audit_command;
-  if (auditCommand) {
+  if (auditCommand && idleHostExecRefused(deps.env ?? process.env)) {
+    // Same containment rule as the coverage loop: the audit command runs bare on
+    // the host in the repo checkout (and e.g. `pnpm outdated` loads the repo's own
+    // .pnpmfile.cjs), so strict containment refuses it unless the operator opts in.
+    // The package.json range scan below the gate needs no exec and still runs.
+    deps.events.record("dependency_audit_refused", {
+      repoName: repo.name,
+      reason:
+        "GAFFER_STRICT_REQUIRE is on and idle commands run unsandboxed on the host; set GAFFER_IDLE_HOST_EXEC=1 to allow",
+    });
+  } else if (auditCommand) {
     const result = deps.runner.run(auditCommand, root);
     if (result.timedOut || result.truncated) {
       // Partial output must never be parsed as findings.

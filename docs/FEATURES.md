@@ -260,21 +260,32 @@ documentation, dependencies) chosen by a deterministic priority-and-rotation
 scheduler, no model in the choice. Each finding becomes a draft ticket that
 carries a behaviour-preserving acceptance criterion with the repo's own test
 command as its check, so the runner verifies the fix mechanically. The coverage
-lane files a draft only when the coverage command reports a total **below** the
-`minimum_gap_threshold` target (a percentage); a repo at or above it, or a report
-with no recognisable total (coverage.py `TOTAL`, istanbul `All files`, Node's
-built-in `# all files` report), files nothing. The **Idle
-loops** panel holds the master switch, the lane toggles, a recommended set, and
-the **self-improve** gate: opted-in repos, a risk ceiling and a per-tick cap
-under which the tick promotes its own drafts to ready so the delivery loop fixes
-them without a human in the promote step. Off by default; the panel's status
-line says exactly what the next idle tick will do. Repos onboarded from the
-dashboard are scanned without editing `crew.yaml`.
+lane files a draft only when the coverage command succeeds and reports a total
+**below** the `minimum_gap_threshold` target (a percentage); a repo at or above
+it, a run that exits non-zero, or a report with no recognisable total
+(coverage.py `TOTAL`, istanbul `All files`, Node's built-in `# all files`
+report) files nothing. The same tick ingests labelled GitHub/Jira issues and
+runs the lore-gap loop when it is on; the feature backlog runs just before the
+lane, on its own switch. The scans cost nothing, so a tick that finds nothing
+new is an empty poll (it drains the run and stays off the day cap); only the
+feature backlog spends a model call, and it stops claiming a feature whose plan
+failed twice in a row (`max_plan_failures`). The **Idle loops** panel holds the master
+switch, the lane toggles, a recommended set, the dependency lane's audit
+command, and the **self-improve** gate: opted-in repos, a risk ceiling and a
+per-tick cap under which the tick promotes its own drafts to ready so the
+delivery loop fixes them without a human in the promote step. Off by default;
+the panel's status line says what the next idle tick will do — one lane per
+tick, rotating — reading the runner's `GAFFER_MAINTENANCE`, `GAFFER_IDLE_MODE`
+and `IDLE_DRAFT_WHEN_IDLE` overrides and each lane's prerequisites (the
+coverage lane needs a repo coverage command and files only below its target).
+Repos onboarded from the dashboard are scanned without editing `crew.yaml`.
 
 **Feature backlog when idle.** With the **Feature backlog** toggle on, an idle tick
 (before the maintenance lane) takes one `backlog` feature from the memory feature
 ledger, moves it to `building`, plans it with one model call and files the epic as
-draft tickets on that feature's repo, behind the usual human gate. Off by default.
+draft tickets on that feature's repo, behind the usual human gate. A plan that fails
+hands the feature back to `backlog`; after two failed plans in a row it is left there
+for you. Off by default.
 Confirming a brownfield epic yourself (every ticket on one existing repo) moves that
 feature to `building` too.
 

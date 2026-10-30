@@ -28,6 +28,12 @@ export interface LoreSearchQuery {
   text?: string;
   repoName?: string;
   limit?: number;
+  /**
+   * Also match DRAFT records awaiting human approval (memory's `includeDrafts`).
+   * Off by default; the idle lore-gap loop turns it on so it does not re-suggest
+   * a convention that is already sitting in the review queue.
+   */
+  includeDrafts?: boolean;
 }
 
 export interface LoreSuggestionInput {

@@ -108,6 +108,21 @@ describe("RealDispatchClient.createEpic against the real dispatch", () => {
       "ready",
       "ready",
     ]);
+    expect(res.ready).toBe(true);
+  });
+
+  it("reports ready:false when the gate refuses to ready a ticket (what happened, not what was asked)", async () => {
+    const client = await RealDispatchClient.open(":memory:");
+    const res = client.createEpic({
+      ...plan(true),
+      tickets: [
+        { title: "Theme state", acceptanceCriteria: ["theme persists"] },
+        { title: "No criteria yet", acceptanceCriteria: [], dependsOn: [0] },
+      ],
+    });
+    const statuses = res.ticketIds.map((id) => client.getTicket(id).ticket.status);
+    expect(statuses).toContain("draft");
+    expect(res.ready).toBe(false);
   });
 });
 

@@ -1,8 +1,14 @@
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import { FakeCommandRunner } from "../src/adapters/commandRunner.js";
 import {
   parseEpicPlan,
+  SpawnDecomposer,
   type Decomposer,
   type DecomposeRequest,
   type EpicPlan,
@@ -14,6 +20,13 @@ import {
   type IdleFeatureBacklogDeps,
 } from "../src/loops/idleFeatureBacklog.js";
 import { runIdleFeatureBacklog } from "../src/loops/idleRegistry.js";
+import {
+  FEATURE_FAILURES_FILE,
+  featureFailuresPath,
+  FileFeatureFailureStore,
+  MemoryFeatureFailureStore,
+  type FeatureFailureStore,
+} from "../src/loops/featureBacklogFailures.js";
 import { CrewError } from "../src/util/errors.js";
 import { RepoRegistry } from "../src/index.js";
 import { TestClock } from "../src/util/clock.js";
@@ -71,8 +84,22 @@ class FakeMemory implements AsyncMemoryClient {
     );
   }
   async advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult> {
+    // Mirror memory's forward-only lifecycle: building → backlog is refused there
+    // (an earlier fake accepted it, which hid the stranded-in-building bug).
+    const from = this.statusOf(id);
+    const legal =
+      (from === "backlog" && (toStatus === "building" || toStatus === "shipped")) ||
+      (from === "building" && toStatus === "shipped");
+    if (!legal) throw new CrewError("MEMORY_UNAVAILABLE", `illegal ${from} -> ${toStatus}`);
     this.advances.push({ id, toStatus });
     return { id, status: toStatus };
+  }
+  readonly releases: string[] = [];
+  async releaseFeature(id: string): Promise<AdvanceFeatureResult> {
+    if (this.statusOf(id) !== "building") throw new CrewError("MEMORY_UNAVAILABLE", "not building");
+    this.releases.push(id);
+    this.advances.push({ id, toStatus: "backlog" });
+    return { id, status: "backlog" };
   }
   async addFeature(_input: FeatureInput): Promise<FeatureResult> {
     return { featureId: "f", status: "added" };
@@ -147,6 +174,7 @@ function deps(
   memory: FakeMemory,
   decomposer: Decomposer,
   wg = new FakeDispatchClient(),
+  failures: FeatureFailureStore = new MemoryFeatureFailureStore(),
 ): IdleFeatureBacklogDeps {
   return {
     config: cfg,
@@ -157,6 +185,7 @@ function deps(
     clock: new TestClock(),
     memory: memory,
     decomposer,
+    failures,
   };
 }
 
@@ -290,11 +319,13 @@ describe("idle feature-backlog loop", () => {
     const outcome = await runIdleFeatureBacklogLoop(d);
 
     expect(outcome.status).toBe("no_findings");
-    // Advanced to building, then rolled back to backlog — not stranded.
+    // Advanced to building, then RELEASED back to backlog (memory's release_feature,
+    // not a backward advance_feature, which memory refuses) — not stranded.
     expect(memory.advances).toEqual([
       { id: "feat-1", toStatus: "building" },
       { id: "feat-1", toStatus: "backlog" },
     ]);
+    expect(memory.releases).toEqual(["feat-1"]);
     expect(memory.statusOf("feat-1")).toBe("backlog");
     expect(wg.epics).toHaveLength(0); // nothing filed
     expect(d.events.types()).toContain("feature_backlog_rolled_back");
@@ -314,6 +345,33 @@ describe("idle feature-backlog loop", () => {
 
     expect(outcome.status).toBe("no_findings");
     expect(memory.statusOf("feat-1")).toBe("backlog");
+  });
+
+  it("files the epic with a single-line name + description (Dispatch scope nodes refuse newlines)", async () => {
+    const memory = new FakeMemory([feature()]);
+    const multiLine = plan("demo");
+    multiLine.epic = { name: "Add\nexport", description: "Line one.\n\nLine two.\tTabbed." };
+    const decomposer = new FakeDecomposer({ kind: "ok", plan: multiLine });
+    const wg = new FakeDispatchClient();
+    const seen: Array<{ name: string; description?: string }> = [];
+    const original = wg.createEpic.bind(wg);
+    wg.createEpic = (p) => {
+      seen.push({
+        name: p.name,
+        ...(p.description !== undefined ? { description: p.description } : {}),
+      });
+      return original(p);
+    };
+    const d = deps(config("create_draft_tickets"), memory, decomposer, wg);
+
+    const outcome = await runIdleFeatureBacklogLoop(d);
+
+    expect(outcome.status).toBe("draft_created");
+    // eslint-disable-next-line no-control-regex -- asserting no control bytes reach Dispatch.
+    const control = /[\x00-\x1f]/;
+    expect(seen[0]!.name).toBe("Add export");
+    expect(control.test(seen[0]!.description ?? "")).toBe(false);
+    expect(seen[0]!.description).toContain("Line one. Line two. Tabbed.");
   });
 
   it("no-ops when there are no backlog features", async () => {
@@ -377,4 +435,183 @@ describe("runIdleFeatureBacklog registry entry", () => {
     expect(result?.id).toBe("feature_backlog");
     expect(result?.outcome).toEqual({ status: "draft_created", draftCount: 2 });
   });
+});
+
+describe("a feature whose plan keeps failing is not re-claimed every idle tick", () => {
+  const failing = () =>
+    new FakeDecomposer({
+      kind: "fail",
+      error: new CrewError("DECOMPOSE_FAILED", "Decompose returned phase 'clarify', not a plan."),
+    });
+
+  it("stops claiming the feature after max_plan_failures failed plans (default 2)", async () => {
+    const memory = new FakeMemory([feature()]);
+    const decomposer = failing();
+    const wg = new FakeDispatchClient();
+    const store = new MemoryFeatureFailureStore();
+    const cfg = config("create_draft_tickets");
+    expect(cfg.loops.idle_feature_backlog.max_plan_failures).toBe(2);
+
+    const runs: string[] = [];
+    let last: IdleFeatureBacklogDeps | undefined;
+    for (let i = 0; i < 4; i += 1) {
+      last = deps(cfg, memory, decomposer, wg, store);
+      runs.push((await runIdleFeatureBacklogLoop(last)).status);
+    }
+
+    expect(runs).toEqual(["no_findings", "no_findings", "no_findings", "no_findings"]);
+    // Two paid planner calls, then none: the feature is parked, not re-claimed.
+    expect(decomposer.calls).toHaveLength(2);
+    expect(memory.releases).toEqual(["feat-1", "feat-1"]);
+    expect(memory.statusOf("feat-1")).toBe("backlog"); // waits for a human, never stranded
+    expect(last!.events.types()).toContain("feature_backlog_skipped_failing");
+    expect(last!.events.types()).not.toContain("feature_backlog_claimed");
+  });
+
+  it("says when a feature is parked, and still plans the next backlog feature", async () => {
+    const memory = new FakeMemory([
+      feature({ id: "doomed", priority: 1 }),
+      feature({ id: "fine", name: "Fine", priority: 2 }),
+    ]);
+    const store = new MemoryFeatureFailureStore();
+    const cfg = config("create_draft_tickets");
+    cfg.loops.idle_feature_backlog.max_plan_failures = 1;
+    const wg = new FakeDispatchClient();
+
+    const first = deps(cfg, memory, failing(), wg, store);
+    await runIdleFeatureBacklogLoop(first);
+    expect(first.events.types()).toContain("feature_backlog_parked");
+
+    const ok = new FakeDecomposer({ kind: "ok", plan: plan("demo") });
+    const second = deps(cfg, memory, ok, wg, store);
+    const outcome = await runIdleFeatureBacklogLoop(second);
+    expect(outcome.status).toBe("draft_created");
+    expect(outcome.status === "draft_created" && outcome.feature.id).toBe("fine");
+    expect(memory.statusOf("doomed")).toBe("backlog");
+  });
+
+  it("a filed epic clears the feature's earlier failures", async () => {
+    const memory = new FakeMemory([feature()]);
+    const store = new MemoryFeatureFailureStore();
+    const cfg = config("create_draft_tickets");
+    await runIdleFeatureBacklogLoop(deps(cfg, memory, failing(), new FakeDispatchClient(), store));
+    expect(store.failures("feat-1")).toBe(1);
+    const ok = new FakeDecomposer({ kind: "ok", plan: plan("demo") });
+    await runIdleFeatureBacklogLoop(deps(cfg, memory, ok, new FakeDispatchClient(), store));
+    expect(store.failures("feat-1")).toBe(0);
+  });
+
+  it("the file ledger persists across processes and reads a corrupt file as empty", () => {
+    const dir = mkdtempSync(join(tmpdir(), "fb-failures-"));
+    try {
+      const path = join(dir, FEATURE_FAILURES_FILE);
+      const a = new FileFeatureFailureStore(path);
+      expect(a.recordFailure("feat-1", "boom", "2026-10-30T00:00:00.000Z")).toBe(1);
+      const b = new FileFeatureFailureStore(path); // a later tick
+      expect(b.failures("feat-1")).toBe(1);
+      expect(b.recordFailure("feat-1", "boom again", "2026-10-30T01:00:00.000Z")).toBe(2);
+      expect(JSON.parse(readFileSync(path, "utf8")).features["feat-1"]).toMatchObject({
+        failures: 2,
+        lastError: "boom again",
+      });
+      b.clear("feat-1");
+      expect(a.failures("feat-1")).toBe(0);
+      writeFileSync(path, "{not json");
+      expect(a.failures("feat-1")).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("lives under $GAFFER_DATA (what the runner sets on an idle tick)", () => {
+    const cfg = config();
+    expect(featureFailuresPath(cfg, { GAFFER_DATA: "/data" })).toBe(
+      join("/data", FEATURE_FAILURES_FILE),
+    );
+    cfg.logging.event_log_path = "/factory/.crew/events.jsonl";
+    expect(featureFailuresPath(cfg, {})).toBe(join("/factory/.crew", FEATURE_FAILURES_FILE));
+    cfg.logging.event_log_path = "./.crew/events.jsonl";
+    expect(featureFailuresPath(cfg, {})).toBeNull();
+  });
+});
+
+describe("the real runner planner (bin/decompose.mjs) files an epic on an idle tick", () => {
+  // A stub `claude` that OBEYS its prompt the way the real planner does: a first turn
+  // told "THIS IS THE FIRST TURN: return a CLARIFY result" clarifies; otherwise it
+  // plans. Before SpawnDecomposer passed --force-plan, every unattended idle tick got
+  // the clarify, the plan was rejected, the feature released, and the next tick paid
+  // for the same call again.
+  const RUNNER = resolve(dirname(fileURLToPath(import.meta.url)), "../../../runner");
+  const SCRIPT = join(RUNNER, "bin", "decompose.mjs");
+
+  function obeyingStub(dir: string): { bin: string; log: string } {
+    const log = join(dir, "stub.log");
+    const bin = join(dir, "claude");
+    const clarify =
+      '```json\n{"phase":"clarify","questions":["Which screens?","What format?"]}\n```';
+    const planOut =
+      '```json\n{"phase":"plan","plan":{"epic":{"name":"CSV export","description":"stub"},' +
+      '"tickets":[{"title":"Add CSV export","description":"d","acceptanceCriteria":["header row"],' +
+      '"priority":2,"dependsOn":[]}]}}\n```';
+    // The canned replies live in files: inlined, bash would expand their backticks.
+    writeFileSync(join(dir, "clarify.txt"), clarify);
+    writeFileSync(join(dir, "plan.txt"), planOut);
+    writeFileSync(
+      bin,
+      [
+        "#!/usr/bin/env bash",
+        '[ "${1:-}" = "--version" ] && { echo "0.0.0 stub"; exit 0; }',
+        'p="$2"',
+        'if printf "%s" "$p" | grep -q "THIS IS THE FIRST TURN: return a CLARIFY"; then',
+        `  echo clarify >> ${JSON.stringify(log)}; out="$(cat ${JSON.stringify(join(dir, "clarify.txt"))})"`,
+        "else",
+        `  echo plan >> ${JSON.stringify(log)}; out="$(cat ${JSON.stringify(join(dir, "plan.txt"))})"`,
+        "fi",
+        `${JSON.stringify(process.execPath)} -e 'process.stdout.write(JSON.stringify({type:"result",subtype:"success",is_error:false,result:process.argv[1],total_cost_usd:0.001,num_turns:1})+"\\n")' "$out"`,
+        "",
+      ].join("\n"),
+    );
+    chmodSync(bin, 0o755);
+    return { bin, log };
+  }
+
+  it("plans on the first unattended turn (never clarifies) and the epic is filed", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fb-real-planner-"));
+    try {
+      const stub = obeyingStub(dir);
+      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_BIN: stub.bin, GAFFER_DATA: dir };
+      for (const k of [
+        "CLAUDE_FLAGS",
+        "MCP_CONFIG",
+        "GAFFER_DECOMPOSE_FORCE_PLAN",
+        "GAFFER_PLAN_DEBATE",
+        "DISPATCH_DB",
+        "MEMORY_DB",
+      ])
+        delete env[k];
+      const decomposer = new SpawnDecomposer({
+        scriptPath: SCRIPT,
+        cwd: RUNNER,
+        timeoutMs: 60_000,
+        env,
+      });
+      const memory = new FakeMemory([
+        feature({ name: "CSV export", summary: "Export tasks as CSV" }),
+      ]);
+      const wg = new FakeDispatchClient();
+      const d = deps(config("create_draft_tickets"), memory, decomposer, wg);
+
+      const outcome = await runIdleFeatureBacklogLoop(d);
+
+      expect(readFileSync(stub.log, "utf8").trim().split("\n")).toEqual(["plan"]);
+      expect(outcome.status).toBe("draft_created");
+      expect(wg.epics).toHaveLength(1);
+      expect(wg.epics[0]!.name).toBe("CSV export");
+      expect(wg.epics[0]!.ticketIds).toHaveLength(1);
+      expect(memory.statusOf("feat-1")).toBe("building");
+      expect(d.events.types()).not.toContain("feature_backlog_failed");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 90_000);
 });

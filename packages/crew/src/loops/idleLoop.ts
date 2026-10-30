@@ -110,20 +110,44 @@ export function parseCoverage(output: string): {
   return { total, lowFiles };
 }
 
-function evidenceSummary(finding: CoverageFinding, threshold: number): string {
-  const head =
-    finding.totalCoverage !== null
-      ? `Coverage for ${finding.repoName} is ${finding.totalCoverage}%`
-      : `Coverage scan for ${finding.repoName} completed`;
+/**
+ * The evidence line for a coverage gap. Only called for a PARSED total below the
+ * target (see {@link coverageGap}), so the "below the target" claim always holds.
+ */
+function evidenceSummary(
+  finding: CoverageFinding & { totalCoverage: number },
+  target: number,
+): string {
   const worst = finding.lowFiles
     .slice(0, 5)
     .map((f) => `  - ${f.file}: ${f.coverage}%`)
     .join("\n");
-  const gap =
-    finding.totalCoverage !== null
-      ? ` (below the ${threshold}% target by ${coverageGapPoints(finding.totalCoverage, threshold)} points).`
-      : ".";
-  return `${head}${gap}${worst ? `\nLowest-covered files:\n${worst}` : ""}`;
+  return (
+    `Coverage for ${finding.repoName} is ${finding.totalCoverage}% ` +
+    `(below the ${target}% target by ${coverageGapPoints(finding.totalCoverage, target)} points).` +
+    (worst ? `\nLowest-covered files:\n${worst}` : "")
+  );
+}
+
+/**
+ * Decide whether one coverage run is a filable gap. `loops.idle_coverage.
+ * minimum_gap_threshold` is the TARGET total coverage in percent: a repo is
+ * drafted only when its parsed total is strictly below it. Everything else is
+ * not a finding — a run that failed (non-zero exit: failing tests, a crashed
+ * tool, or a tool that enforces its own threshold), output with no recognisable
+ * total, or a total at/above the target. Pure + exported for unit tests.
+ */
+export function coverageGap(
+  result: { exitCode: number },
+  parsed: { total: number | null },
+  target: number,
+):
+  | { file: true }
+  | { file: false; reason: "command_failed" | "unparseable" | "at_or_above_target" } {
+  if (result.exitCode !== 0) return { file: false, reason: "command_failed" };
+  if (parsed.total === null) return { file: false, reason: "unparseable" };
+  if (parsed.total >= target) return { file: false, reason: "at_or_above_target" };
+  return { file: true };
 }
 
 /** Points by which `total` falls short of the target, rounded to 2 decimals (0 when met). */
@@ -146,8 +170,8 @@ export function idleHostExecRefused(env: NodeJS.ProcessEnv): boolean {
  * One tick of the idle coverage loop. Only runs when Dispatch has no ready
  * tickets. For each configured repo with a coverage command, it runs the
  * command, parses output, and — only when the parsed total is below the
- * `minimum_gap_threshold` target — creates a DRAFT Dispatch ticket with an
- * evidence summary. It never edits code.
+ * `minimum_gap_threshold` target ({@link coverageGap}) — creates a DRAFT Dispatch
+ * ticket with an evidence summary. It never edits code.
  */
 export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
   const { events } = deps;
@@ -210,37 +234,44 @@ export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
       continue;
     }
     const parsed = parseCoverage(result.stdout);
-    const finding: CoverageFinding = {
-      repoName: repo.name,
-      totalCoverage: parsed.total,
-      lowFiles: parsed.lowFiles,
-      raw: result.stdout,
-    };
     events.record("coverage_scanned", {
       repoName: repo.name,
       total: parsed.total,
       lowFileCount: parsed.lowFiles.length,
+      exitCode: result.exitCode,
     });
     // A FINDING is a measured total BELOW the target (minimum_gap_threshold, a
-    // coverage percentage). An unparseable report is not evidence of a gap, and a
-    // repo at or above the target has none: neither files (or observes) anything,
-    // so a scan never drafts "Coverage gap" work a self-improve run would then pay
-    // to deliver.
-    if (parsed.total === null) {
-      events.record("coverage_scan_unparsed", {
+    // coverage percentage) from a run that SUCCEEDED. A failed run (non-zero exit),
+    // an unparseable report, or a repo at/above the target is not a gap: none of
+    // them files (or observes) anything, so a scan never drafts "Coverage gap" work
+    // for a repo at 100% or a command that never ran — work a self-improve run
+    // would then pay to deliver.
+    const gap = coverageGap(result, parsed, threshold);
+    if (!gap.file) {
+      const event =
+        gap.reason === "at_or_above_target"
+          ? "coverage_within_target"
+          : gap.reason === "unparseable"
+            ? "coverage_scan_unparsed"
+            : "coverage_scan_failed";
+      events.record(event, {
         repoName: repo.name,
-        reason: "no coverage total recognised in the coverage command's output",
-      });
-      continue;
-    }
-    if (parsed.total >= threshold) {
-      events.record("coverage_within_target", {
-        repoName: repo.name,
+        reason: gap.reason,
+        ...(gap.reason === "unparseable"
+          ? { detail: "no coverage total recognised in the coverage command's output" }
+          : {}),
         total: parsed.total,
         threshold,
+        exitCode: result.exitCode,
       });
       continue;
     }
+    const finding = {
+      repoName: repo.name,
+      totalCoverage: parsed.total as number,
+      lowFiles: parsed.lowFiles,
+      raw: result.stdout,
+    };
 
     const summary = evidenceSummary(finding, threshold);
 

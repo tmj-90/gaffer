@@ -330,6 +330,12 @@ export const loopsSchema = z
         max_turns: z.number().int().positive().default(6),
         // Hard cap on the number of tickets the epic plan may contain.
         max_tickets: z.number().int().positive().default(20),
+        // Consecutive failed plans after which idle ticks stop claiming a feature
+        // (it stays in backlog for a human). Each attempt is a paid planner call; a
+        // failed plan releases the feature, so without this cap a feature the planner
+        // cannot plan is re-claimed on every idle tick. Counts persist in
+        // <GAFFER_DATA>/feature-backlog-failures.json; a filed epic clears them.
+        max_plan_failures: z.number().int().positive().default(2),
       })
       .prefault({}),
     // The idle MAINTENANCE LANE (audit item A4). OFF BY DEFAULT. When enabled,

@@ -166,15 +166,30 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "idle-loops",
     label: "Feature-backlog idle loop",
     help:
-      "When idle, pull one backlog feature from memory and plan it as an epic. Each idle " +
-      "tick (before the maintenance lane) claims one `backlog` feature from the factory " +
-      "memory ledger, moves it to `building`, makes ONE paid plan call (bin/decompose.mjs " +
-      "--force-plan) and files the epic as drafts (or ready tickets if the idle-loop mode " +
-      "says so). A plan that fails leaves the feature `building` with no epic and is not " +
-      "retried; plan it from the dashboard. Overrides the crew.yaml " +
-      "`loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog " +
-      "row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml " +
-      "decides.",
+      "When idle, pull one `backlog` feature from the factory's memory ledger and plan it " +
+      "as an epic. Each idle tick (before the maintenance lane) claims one `backlog` " +
+      "feature, moves it to `building`, makes ONE paid plan call (the runner's own " +
+      "bin/decompose.mjs, run unattended with --force-plan so it plans without asking " +
+      "questions; counted against the day cap) and files the epic as drafts (or ready " +
+      "tickets if the idle-loop mode says so). A failed plan releases the feature back to " +
+      "`backlog`, and after `loops.idle_feature_backlog.max_plan_failures` (default 2) " +
+      "failed plans in a row idle ticks stop claiming it; plan it from the dashboard. " +
+      "Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle " +
+      "as the Feature backlog row in the Idle loops panel) for every crew run the runner " +
+      "spawns; empty = crew.yaml decides.",
+  },
+  {
+    key: "GAFFER_MAINTENANCE",
+    type: "string",
+    choices: ["0", "1"],
+    group: "idle-loops",
+    label: "Maintenance lane override",
+    help:
+      "Overrides the Idle loops panel's master switch (crew.yaml `loops.maintenance.enabled`): " +
+      "0 = kill switch, an idle tick never runs maintenance · 1 = run the lane even while " +
+      "the switch is off · empty = the panel decides. It only turns the LANE on: it rotates " +
+      "through the lanes you enabled, so with none enabled an idle tick still does nothing " +
+      "(and reports no_work).",
   },
   {
     key: "GAFFER_IDLE_MODE",
@@ -436,7 +451,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "execution",
     label: "Empty polls before idle",
-    help: "Consecutive empty polls (no ready work) before the run stops or drops into idle loops.",
+    help:
+      "Consecutive empty polls before the run (or a pool worker) stops: a no_work tick, or " +
+      "an idle maintenance tick whose scans filed nothing (they call no model, so they do " +
+      "not keep the run alive or consume the day cap).",
   },
   {
     key: "MAX_CONCURRENT_TICKETS_PER_REPO",
@@ -556,7 +574,12 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "idle-loops",
     label: "Run every idle scan when idle (legacy)",
-    help: "When idle, run ALL enabled crew idle loops in one pass (drafts only). Superseded by the maintenance lane below, which runs one prioritised lane per idle tick and can promote its own drafts.",
+    help:
+      "When idle AND the maintenance lane is off (or failed), run ALL enabled crew idle " +
+      "loops in one pass plus GitHub/Jira ingest and the lore-gap / feature-backlog loops. " +
+      "Superseded by the maintenance lane in the Idle loops panel, which runs one " +
+      "prioritised lane per idle tick (rotating), does the same ingest + async loops, and " +
+      "can promote its own drafts. A tick that files nothing is an empty poll.",
   },
 
   // --- Quality gates: the runner's DoD guards on every delivery ---

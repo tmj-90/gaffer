@@ -146,14 +146,16 @@ export interface DispatchFacade {
     input: unknown,
     actor?: unknown,
   ): {
+    /** What Dispatch's EpicsService.createEpic returns. */
+    epicNodeId?: string;
+    ticketNumbers?: number[];
+    acceptanceTicketNumber?: number | null;
+    // Older / alternative facade shapes, still accepted.
     epicId?: string;
     id?: string;
     epic?: { id?: string };
     ticketIds?: string[];
     tickets?: Array<{ id?: string; ticketId?: string }>;
-    // Dispatch's real createEpic result (EP-001): the epic scope node + ticket numbers.
-    epicNodeId?: string;
-    ticketNumbers?: number[];
   };
   markReady?(ref: string, actor?: unknown): unknown;
   /** Resolve a ticket ref (id or number, e.g. "12") to the ticket row. */
@@ -764,6 +766,10 @@ export class RealDispatchClient implements DispatchClient {
     policyPack?: string;
   }): CreateEpicResult {
     const create = required(this.facade.createEpic, "createEpic");
+    // Dispatch's createEpicInput (camelCase per ticket; unknown keys are stripped):
+    // `acceptanceCriteria` + `dependsOn` (plan indexes) + `policy_pack`. This used to
+    // send `acceptance_criteria` / `depends_on`, which Dispatch silently dropped, so
+    // every idle-filed epic lost its criteria and its ordering.
     const tickets = p.tickets.map((t, index) => ({
       title: t.title,
       // Stamp the de-dup marker on the first ticket so a re-run maps to this epic.
@@ -771,24 +777,27 @@ export class RealDispatchClient implements DispatchClient {
         index === 0 && p.findingKey
           ? `${t.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
           : (t.description ?? ""),
-      // Dispatch's create_epic plan shape (domain epicTicketInput) is camelCase
-      // `acceptanceCriteria` / `dependsOn` and a PER-TICKET `policy_pack`. The
-      // snake_case keys sent here before were stripped by its schema, so every
-      // epic landed without its ACs and dependency order.
       acceptanceCriteria: t.acceptanceCriteria ?? [],
       ...(t.priority !== undefined ? { priority: t.priority } : {}),
       ...(t.repoName ? { repo: t.repoName } : {}),
+      // A PER-TICKET `policy_pack` (Dispatch's epicTicketInput has no epic-level one).
       policy_pack: p.policyPack ?? "solo_loose",
       dependsOn: t.dependsOn ?? [],
     }));
+    // Dispatch files every epic ticket as a DRAFT (createEpic has no ready flag). A
+    // requested `ready` is applied AFTERWARDS through the gate-aware markReady (below),
+    // and the result reports what actually happened, not what was asked for.
     const res = create.call(
       this.facade,
       { epic: { name: p.name, description: p.description ?? "" }, tickets },
       GAFFER_ACTOR,
     );
-    // Dispatch returns `{ epicNodeId, ticketNumbers }`; reading only epicId/id used to
-    // throw AFTER the epic was created, so every filed epic was reported as a failure.
-    const epicId = res.epicNodeId ?? res.epicId ?? res.id ?? res.epic?.id;
+    // Dispatch returns `{ epicNodeId, ticketNumbers }`. The epic is committed by now
+    // (Dispatch creates it in one transaction), so a result shape we do not recognise
+    // must not throw: the caller would release the feature and re-plan it next tick,
+    // filing a DUPLICATE epic and paying for a second planning call. Fall back to an
+    // empty id instead.
+    const epicId = res.epicNodeId ?? res.epicId ?? res.id ?? res.epic?.id ?? "";
     const refs =
       res.ticketIds ??
       (res.ticketNumbers ? res.ticketNumbers.map((n) => String(n)) : undefined) ??
@@ -809,19 +818,24 @@ export class RealDispatchClient implements DispatchClient {
     // create_epic always files DRAFTS. `create_ready_tickets` (an explicit operator
     // opt-in) then readies each ticket through the GATE-AWARE markReady, exactly like
     // the dashboard's "Create & ready": a ticket the intake gate refuses stays draft.
+    let readied = 0;
     if (p.ready && this.facade.markReady) {
       for (const ref of created) {
         try {
-          this.facade.markReady.call(this.facade, ref, GAFFER_ACTOR);
+          const moved = this.facade.markReady.call(this.facade, ref, GAFFER_ACTOR) as
+            { ticket?: { status?: string } } | undefined;
+          if (!moved?.ticket?.status || moved.ticket.status === "ready") readied += 1;
         } catch {
           // Gate refused (e.g. no AC) — it stays a draft for a human.
         }
       }
     }
     return {
-      epicId: String(required(epicId, "createEpic.epicId")),
+      epicId: String(epicId),
       ticketIds: created,
-      ready: p.ready,
+      // Ready only when EVERY ticket was readied; otherwise (drafts, or a ticket the
+      // gate refused) the caller reports the epic as filed for a human to ready.
+      ready: p.ready && created.length > 0 && readied === created.length,
     };
   }
 

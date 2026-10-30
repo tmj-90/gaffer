@@ -410,6 +410,41 @@ export function advanceFeature(db: Database, id: string, toStatus: FeatureStatus
   return getFeature(db, id)!;
 }
 
+/**
+ * Release a CLAIMED feature: move it from `building` back to `backlog`.
+ *
+ * This is deliberately NOT a legal {@link advanceFeature} transition — the
+ * lifecycle stays forward-only for everything that reports progress. It exists
+ * for one caller: the factory's idle feature-backlog loop claims a feature
+ * (backlog → building) before it spends a planning call, and must hand the claim
+ * back when that planning fails, or the feature is stranded in `building` with no
+ * epic behind it. Only `building` can be released; anything else is refused as an
+ * `illegal_transition`. Records a `feature_released` event so the ledger history
+ * shows the claim was returned.
+ */
+export function releaseFeature(db: Database, id: string): Feature {
+  const current = db.prepare("SELECT status FROM feature WHERE id = ?").get(id) as
+    { status: FeatureStatus } | undefined;
+  if (!current) {
+    throw new AdvanceFeatureError("unknown_id", `releaseFeature: no feature with id '${id}'`);
+  }
+  if (current.status !== "building") {
+    throw new AdvanceFeatureError(
+      "illegal_transition",
+      `releaseFeature: only a 'building' feature can be released (it is '${current.status}')`,
+    );
+  }
+  const ts = nowIso();
+  const tx = db.transaction(() => {
+    db.prepare("UPDATE feature SET status = 'backlog', updated_at = ? WHERE id = ?").run(ts, id);
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'feature_released', ?, ?)",
+    ).run(id, ts, JSON.stringify({ from: "building", to: "backlog" }));
+  });
+  tx();
+  return getFeature(db, id)!;
+}
+
 export interface ListFeaturesOptions {
   readonly status?: FeatureStatus;
   /**

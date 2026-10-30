@@ -800,6 +800,8 @@ export const idleLoopsBody = z.object({
         key: z.string().min(1).max(64),
         enabled: z.boolean(),
         repos: z.array(z.string().min(1).max(256)).max(200).default([]),
+        /** idle_dependencies only: the read-only audit/outdated command (null clears). */
+        audit_command: z.string().max(500).nullable().optional(),
       }),
     )
     // At most the known idle-loop count plus a little slack; the module rejects

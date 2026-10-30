@@ -1,7 +1,7 @@
 /**
  * Brownfield decomposer adapter.
  *
- * Wraps `runner`'s `bin/decompose.mjs --brief "<feature>" --repo <repo>`,
+ * Wraps `runner`'s `bin/decompose.mjs --brief "<feature>" --repo <repo> --force-plan`,
  * which turns a one-line feature brief into a ZERO-bootstrap, repo-targeted epic
  * plan (`{ epic, tickets }`). The contract is deliberately small and async so the
  * idle feature-backlog loop can inject a fake in tests and never spawn a real
@@ -146,29 +146,34 @@ export interface SpawnDecomposerConfig {
   cwd?: string;
   /** Hard wall-clock timeout in ms. */
   timeoutMs?: number;
+  /** Environment for the spawned helper (default: inherit this process's). */
+  env?: NodeJS.ProcessEnv;
 }
 
 /**
- * Real decomposer: spawns `node bin/decompose.mjs --brief … --repo …` and parses
- * its single-JSON-object stdout. A non-zero exit, a timeout, or an unparseable /
- * non-plan result all surface as a structured `DECOMPOSE_FAILED` CrewError
- * so the caller can roll the feature back.
+ * Real decomposer: spawns `node bin/decompose.mjs --brief … --repo … --force-plan`
+ * and parses its single-JSON-object stdout. A non-zero exit, a timeout, or an
+ * unparseable / non-plan result all surface as a structured `DECOMPOSE_FAILED`
+ * CrewError so the caller can roll the feature back.
+ *
+ * `--force-plan` is ALWAYS passed: this adapter runs unattended (an idle tick has no
+ * human to answer clarifying questions), and decompose.mjs otherwise tells the model
+ * that a first turn with no history MUST return a CLARIFY result — which
+ * {@link parseEpicPlan} rejects, so every idle tick paid for a planner call that could
+ * never file an epic. Under force-plan the helper itself rejects a clarify reply.
  */
 export class SpawnDecomposer implements Decomposer {
   constructor(private readonly config: SpawnDecomposerConfig) {}
 
   async decompose(request: DecomposeRequest): Promise<EpicPlan> {
     const node = this.config.node ?? process.execPath;
-    // --force-plan: this decomposer runs UNATTENDED (the idle feature-backlog loop),
-    // so there is no human to answer a clarify round — a first-turn `phase:"clarify"`
-    // would be rejected and roll the feature back every tick. Force the best plan
-    // from the brief; the epic still lands as drafts behind the human gate.
     const args = [
       this.config.scriptPath,
       "--brief",
       request.brief,
       "--repo",
       request.repo,
+      // Unattended: nobody can answer a clarify, so plan now (see the class doc).
       "--force-plan",
     ];
     if (request.maxTurns !== undefined) args.push("--max-turns", String(request.maxTurns));
@@ -182,6 +187,7 @@ export class SpawnDecomposer implements Decomposer {
     return new Promise((resolve, reject) => {
       const child = spawn(node, args, {
         ...(this.config.cwd ? { cwd: this.config.cwd } : {}),
+        ...(this.config.env ? { env: this.config.env } : {}),
         stdio: ["ignore", "pipe", "pipe"],
       });
       let stdout = "";
@@ -214,12 +220,33 @@ export class SpawnDecomposer implements Decomposer {
           resolve(stdout);
           return;
         }
+        // decompose.mjs reports its refusals as `{"phase":"error","error":…}` on
+        // stdout (exit 1); carry that reason so the event log says WHY it failed.
+        const reason = helperError(stdout);
         reject(
-          new CrewError("DECOMPOSE_FAILED", `Decompose exited with code ${code}.`, {
-            ...(stderr.trim() ? { stderr: stderr.trim() } : {}),
-          }),
+          new CrewError(
+            "DECOMPOSE_FAILED",
+            `Decompose exited with code ${code}${reason ? `: ${reason}` : "."}`,
+            { ...(stderr.trim() ? { stderr: stderr.trim() } : {}) },
+          ),
         );
       });
     });
   }
+}
+
+/** The `error` of a decompose.mjs `{"phase":"error"}` stdout, single-line and capped. */
+function helperError(stdout: string): string | null {
+  try {
+    const parsed: unknown = JSON.parse(stdout.trim());
+    if (parsed && typeof parsed === "object" && "error" in parsed) {
+      const error = (parsed as { error: unknown }).error;
+      if (typeof error === "string" && error.trim()) {
+        return error.replace(/\s+/g, " ").trim().slice(0, 300);
+      }
+    }
+  } catch {
+    // Not the helper's JSON (a crash, or nothing printed): no reason to add.
+  }
+  return null;
 }

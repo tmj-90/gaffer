@@ -147,10 +147,13 @@ while ! _should_stop && _reserve_run_tick; do
     reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
     clarified)         clarified=$((clarified + 1)); empties=0 ;;
     idle_drafted)      idle=$((idle + 1)); empties=0 ;;
-    # BUG 5 fix: maintenance_drafted / maintenance_ran are productive results
-    # emitted by the maintenance lane in tick.sh (~line 1898-1899). Without
-    # these cases they fell through to *) and were miscounted as errors.
-    maintenance_drafted|maintenance_ran) idle=$((idle + 1)); empties=0 ;;
+    # BUG 5 fix: the maintenance lane's results are idle results, not errors.
+    # maintenance_drafted FILED work → productive. maintenance_ran ran a paid step
+    # (feature-backlog planning) but filed nothing → it counts against the day cap,
+    # but for draining it is an EMPTY poll: a planner that keeps failing must not
+    # keep the pool alive (and spending) forever.
+    maintenance_drafted) idle=$((idle + 1)); empties=0 ;;
+    maintenance_ran)   idle=$((idle + 1)); empties=$((empties + 1)) ;;
     # PAUSE-ON-CAP: a cap-hit delivery paused IN PLACE (partial work preserved on a
     # live worktree) is PRODUCTIVE, not an error — it produced committed work and is
     # awaiting a human Continue/Stop. Count it with `worked`.
@@ -168,9 +171,9 @@ while ! _should_stop && _reserve_run_tick; do
   fi
 
   # A worker stops once the queue is drained FOR IT: EMPTY_POLL_LIMIT consecutive
-  # no_work ticks. (Other workers may still be delivering; the pool-level wait in
-  # loop.sh joins them all.)
-  if [ "$res" = "no_work" ] && [ "$empties" -ge "$EMPTY_POLL_LIMIT" ]; then
+  # empty polls (no_work, or an idle maintenance_ran that filed nothing). (Other
+  # workers may still be delivering; the pool-level wait in loop.sh joins them all.)
+  if { [ "$res" = "no_work" ] || [ "$res" = "maintenance_ran" ]; } && [ "$empties" -ge "$EMPTY_POLL_LIMIT" ]; then
     echo "worker $WORKER_ID: $empties consecutive empty polls — stopping." >&2
     break
   fi

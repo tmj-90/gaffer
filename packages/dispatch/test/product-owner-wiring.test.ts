@@ -31,7 +31,11 @@ describe("reportActionCommandWiring", () => {
     } as NodeJS.ProcessEnv;
     const { wired, missing } = reportActionCommandWiring(env, () => {});
     expect(wired).toEqual(["DISPATCH_PRODUCT_OWNER_CMD", "DISPATCH_MERGE_CMD"]);
-    expect(missing).toEqual(["DISPATCH_TICK_CMD", "DISPATCH_ONBOARD_CMD", "DISPATCH_EPIC_FEATURE_CMD"]);
+    expect(missing).toEqual([
+      "DISPATCH_TICK_CMD",
+      "DISPATCH_ONBOARD_CMD",
+      "DISPATCH_EPIC_FEATURE_CMD",
+    ]);
   });
 
   it("reports all wired with no warning when every command is set", () => {

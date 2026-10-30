@@ -29,7 +29,10 @@ It holds two kinds of knowledge:
 - Boundaries: `declare_boundary`, `find_dependents` (the cross-repo contract graph,
   for impact + ordering).
 - Repo Understanding: `get_repo_digest`, `update_repo_digest`, `list_features`,
-  `add_feature`, `advance_feature`.
+  `add_feature`, `advance_feature` (forward only: backlog → building → shipped),
+  `release_feature` (hands a claimed `building` feature back to `backlog` when its
+  planning failed; it releases only a `building` claim, is repo-scope-guarded in
+  factory context, and is audited).
 
 **CLI** (`memory`) — the human surface. The headline command is `memory review`:
 an interactive triage queue (approve / reject / edit / skip) over pending drafts,

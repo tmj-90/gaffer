@@ -77,6 +77,9 @@ class RecordingMemory implements AsyncMemoryClient {
   async advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult> {
     return { id, status: toStatus };
   }
+  async releaseFeature(id: string): Promise<AdvanceFeatureResult> {
+    return { id, status: "backlog" };
+  }
   /** When set, addFeature reports server-side de-dupe ("skipped") for these names. */
   serverSkips: Set<string> = new Set();
   async addFeature(input: FeatureInput): Promise<FeatureResult> {

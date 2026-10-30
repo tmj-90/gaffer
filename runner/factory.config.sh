@@ -1395,7 +1395,7 @@ gaffer_is_self_target() {
 # Flip to 0 only when you've reviewed everything and want it live.
 : "${DRY_RUN:=1}"
 : "${MAX_TICKS:=5}"           # hard cap on ticks per loop run (cost guard)
-: "${EMPTY_POLL_LIMIT:=2}"    # stop after this many consecutive no-work polls
+: "${EMPTY_POLL_LIMIT:=2}"    # stop after this many consecutive empty polls (no_work, or an idle maintenance tick that filed nothing)
 : "${TICK_SLEEP:=30}"         # seconds between ticks
 # Per-CALENDAR-DAY tick cap across loop.sh runs (overnight cost guard): MAX_TICKS
 # bounds one run, but launchd re-runs loop.sh, so this bounds the whole day's
@@ -1679,12 +1679,16 @@ if _gaffer_autonomy_on; then
   fi
 fi
 
-# Idle-loop host exec under strict containment. The idle COVERAGE loop runs each
-# repo's coverage_command (its own test suite, i.e. code agents wrote) directly on
-# the host, in the real checkout, outside any sandbox. When GAFFER_STRICT_REQUIRE is
-# on (autonomy mode turns it on) crew REFUSES that and records coverage_scan_refused;
-# set this to 1 only if you contain the whole runner out-of-band (VM/container).
-: "${GAFFER_IDLE_HOST_EXEC:=0}"   # 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE
+# Idle-loop host exec under strict containment. The idle loops run repo commands
+# directly on the host, in the real checkout, outside any sandbox: the COVERAGE
+# loop's coverage_command (the repo's own test suite, i.e. code agents wrote), the
+# DEPENDENCY loop's audit_command (e.g. `pnpm outdated`, which loads the repo's
+# .pnpmfile.cjs) and the tsc/semgrep ORACLES. When GAFFER_STRICT_REQUIRE is on
+# (autonomy mode turns it on) crew REFUSES all of them and records
+# coverage_scan_refused / dependency_audit_refused / oracles_refused (the in-process
+# heuristic scans still run); set this to 1 only if you contain the whole runner
+# out-of-band (VM/container).
+: "${GAFFER_IDLE_HOST_EXEC:=0}"   # 1 = allow idle repo commands (coverage_command, audit_command, tsc/semgrep oracles) on the host under GAFFER_STRICT_REQUIRE
 export GAFFER_IDLE_HOST_EXEC
 
 # Who reviews in_review tickets before they can be approved to done:
@@ -2251,8 +2255,10 @@ gaffer_review_reason() {
 # Maintenance lane ENV override. The lane's own switch is crew.yaml's
 # loops.maintenance.enabled (Settings → Idle loops). Empty (default) = crew.yaml
 # decides; 0 = kill switch (an idle tick never asks crew); 1 = force the lane even
-# when the crew.yaml switch is off.
-: "${GAFFER_MAINTENANCE:=}"   # env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force
+# when the crew.yaml switch is off. It only turns the LANE on: the lane rotates
+# through the idle loops you enabled (each loop's own flag), so with none enabled an
+# idle tick still does nothing and reports no_work.
+: "${GAFFER_MAINTENANCE:=}"   # env override for the idle maintenance lane: empty = crew.yaml decides, 0 = off, 1 = force (a lane must still be enabled)
 
 # --- H4: real PR creation (opt-in) -------------------------------------------
 # When GAFFER_CREATE_PR=1 AND the primary write repo has a GitHub remote, the

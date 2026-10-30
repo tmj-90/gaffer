@@ -166,10 +166,11 @@ function mockMemoryServer(opts: MockOptions = {}): McpServer {
 
   server.registerTool(
     "advance_feature",
-    // Mirrors the REAL memory-mcp schema: the target status is `to_status`. (This mock
-    // once declared `toStatus`, matching the client's wrong arg name, so the test
-    // passed while every real advance failed validation.)
-    { description: "Advance a feature", inputSchema: { id: z.string(), to_status: z.string() } },
+    // memory-mcp's real contract: `to_status` (snake_case), closed schema.
+    {
+      description: "Advance a feature",
+      inputSchema: z.object({ id: z.string(), to_status: z.string() }).strict(),
+    },
     async ({ id, to_status }) => {
       if (opts.failHandlers) throw new Error("advance boom");
       const data = { id, status: to_status };

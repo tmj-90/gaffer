@@ -21,6 +21,16 @@
 #   7-9. A FAILED `crew maintain` (rc≠0 / empty stdout / unknown status) is logged
 #      as FAILED and falls through to the legacy scan + no_work — never reported
 #      as a healthy maintenance_ran.
+#   10. strict containment log line.
+#   11. A lane that FILED NOTHING (no_findings / deduped / chose none) is no_work —
+#      the scans are zero-cost greps, so they must drain the pool and stay off the
+#      day cap; only a tick that ran the paid backlog planner (spent) and filed
+#      nothing is maintenance_ran. GAFFER_MAINTENANCE=1 with no lane enabled says so.
+#   12. The legacy IDLE_DRAFT_WHEN_IDLE scan reads crew's REAL `crew idle` shape
+#      ({ok, report:{loops,totalDrafts}, filed}) — it used to read outcome.drafts,
+#      which crew never prints, so every scan logged 0 drafts and reported no_work.
+#   13. The idle crew calls carry the factory's memory + planner wiring
+#      (MEMORY_DB, MEMORY_MCP_BIN, GAFFER_DECOMPOSE_SCRIPT, CLAUDE_BIN).
 #
 # The feature-backlog step (its own switch, run before this lane) is pinned OFF here
 # (GAFFER_IDLE_FEATURE_BACKLOG=0) so these crew-call assertions are about the lane
@@ -69,7 +79,15 @@ cat > "$STUB_CREW/index.js" <<'JS'
 const fs = require("fs");
 const a = process.argv.slice(2);
 fs.appendFileSync(process.env.CREW_CALLS, a.join(" ") + "\n");
+fs.appendFileSync(
+  process.env.CREW_CALLS + ".env",
+  ["MEMORY_DB", "MEMORY_MCP_BIN", "GAFFER_DECOMPOSE_SCRIPT", "CLAUDE_BIN"]
+    .map((k) => `${k}=${process.env[k] || ""}`)
+    .join(" ") + "\n",
+);
 const out = (o) => process.stdout.write(JSON.stringify(o));
+const filed = (n) => Number(process.env.MAINT_FILED || n);
+const spent = process.env.MAINT_SPENT === "1";
 if (a.includes("maintain")) {
   if (process.env.MAINT_FAIL === "1") {
     // What the real CLI does on an invalid crew.yaml: error JSON on stderr,
@@ -78,7 +96,19 @@ if (a.includes("maintain")) {
     process.exit(1);
   }
   if (process.env.MAINT_STATUS) {
-    out({ ok: true, report: { chosen: "docs", reason: "r", outcome: { status: process.env.MAINT_STATUS } } });
+    const chosen = process.env.MAINT_CHOSEN || "documentation";
+    out({
+      ok: true,
+      report: { chosen, reason: "r", outcome: { status: process.env.MAINT_STATUS } },
+      filed: filed(0),
+      spent,
+      events: (process.env.MAINT_EVENTS || "").split(",").filter(Boolean),
+    });
+    process.exit(0);
+  }
+  if (process.env.MAINT_CHOSEN === "none") {
+    // What the real CLI prints when the lane is on but no idle loop is enabled.
+    out({ ok: true, report: { chosen: null, reason: "no maintenance lane enabled", outcome: null }, filed: 0, spent: false, events: [] });
     process.exit(0);
   }
   if (process.env.MAINT_ENABLED === "0" && !a.includes("--force")) {
@@ -99,11 +129,22 @@ if (a.includes("maintain")) {
         reason: "lane 'security_hotspot' selected: highest-priority enabled lane not yet run",
         outcome: { status: "draft_created", draftCount: 1 },
       },
+      filed: filed(1),
+      spent,
       events: ["maintenance_lane_chosen"],
     });
   }
 } else {
-  out({ ok: true, outcome: { drafts: [] }, events: [] });
+  // The REAL `crew idle` shape (cli/index.ts): report.{loops,totalDrafts} + filed/spent.
+  // IDLE_OLD_SHAPE drops filed/spent (a crew built before they existed).
+  const total = Number(process.env.IDLE_TOTAL || 0);
+  const body = {
+    ok: true,
+    report: { loops: [{ id: "documentation", outcome: { status: "no_findings" } }], totalDrafts: total, selfImprovePromoted: 0 },
+    events: [],
+  };
+  if (process.env.IDLE_OLD_SHAPE !== "1") Object.assign(body, { filed: total, spent });
+  out(body);
 }
 JS
 
@@ -113,6 +154,10 @@ CREW_CONFIG="$WORK/crew.config.yaml"; printf 'factory:\n  name: t\n' > "$CREW_CO
 run_tick() {
   CREW_CALLS="$CREW_CALLS" MAINT_ENABLED="${MAINT_ENABLED:-1}" \
   MAINT_FAIL="${MAINT_FAIL:-0}" MAINT_STATUS="${MAINT_STATUS:-}" \
+  MAINT_CHOSEN="${MAINT_CHOSEN:-}" MAINT_FILED="${MAINT_FILED:-}" MAINT_SPENT="${MAINT_SPENT:-0}" \
+  MAINT_EVENTS="${MAINT_EVENTS:-}" \
+  IDLE_TOTAL="${IDLE_TOTAL:-0}" IDLE_OLD_SHAPE="${IDLE_OLD_SHAPE:-0}" \
+  MEMORY_DB="$GAFFER_DATA/memory.sqlite" MEMORY_MCP_BIN="$WORK/memory-mcp.js" CLAUDE_BIN="$WORK/stub-claude" \
   GAFFER_STRICT_REQUIRE="${GAFFER_STRICT_REQUIRE:-0}" GAFFER_IDLE_HOST_EXEC="${GAFFER_IDLE_HOST_EXEC:-0}" \
   RUNNER_DIR="$RUNNER_DIR" GAFFER_HOME="$WORK" GAFFER_DATA="$GAFFER_DATA" \
   DISPATCH_DIR="$WORK/dispatch" CREW_DIR="$WORK/crew" CREW_CONFIG="$CREW_CONFIG" \
@@ -121,7 +166,20 @@ run_tick() {
   GAFFER_IDLE_FEATURE_BACKLOG="${GAFFER_IDLE_FEATURE_BACKLOG-0}" \
     bash "$RUNNER_DIR/tick.sh" 2>>"$GAFFER_DATA/stderr.log"
 }
-reset_log() { : > "$CREW_CALLS"; : > "$GAFFER_DATA/factory.log"; }
+reset_log() { : > "$CREW_CALLS"; : > "$CREW_CALLS.env"; : > "$GAFFER_DATA/factory.log"; }
+
+# ── 0. this file has no redirect glued to the next command ───────────────────
+# A `>/dev/null` fused with the following word (e.g. `>/dev/nullreset_log`)
+# silently drops a case's setup tick into a stray file and the suite still passes.
+glued_redirects() {
+  grep -nE '>[[:space:]]*/dev/null[^[:space:];|&)]' "${BASH_SOURCE[0]}" \
+    | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'grep -nE'
+}
+if [ -n "$(glued_redirects)" ]; then
+  fail "a /dev/null redirect is glued to the next word: $(glued_redirects | head -3)"
+else
+  ok "no /dev/null redirect is glued to the next command"
+fi
 
 # ── 1. GAFFER_MAINTENANCE=1 → forced lane runs + is logged ───────────────────
 reset_log
@@ -226,12 +284,19 @@ grep -q '^TICK_RESULT=no_work$' <<<"$OUT9" \
   && grep -q 'maintenance lane FAILED (rc=0)' "$GAFFER_DATA/factory.log" 2>/dev/null \
   && ok "an unknown outcome status → FAILED + no_work" \
   || fail "expected FAILED + no_work for an unknown status, got: $(echo "$OUT9" | grep '^TICK_RESULT=')"
-# A known non-drafting status still reports a run.
+# A known non-drafting status is a healthy run — but it filed nothing and the scans
+# call no model, so it is an EMPTY poll (no_work), not a productive maintenance_ran.
 reset_log
 OUT10="$(MAINT_STATUS=no_findings run_tick)"
-grep -q '^TICK_RESULT=maintenance_ran$' <<<"$OUT10" \
-  && ok "a known status (no_findings) still reports maintenance_ran" \
-  || fail "expected maintenance_ran for no_findings, got: $(echo "$OUT10" | grep '^TICK_RESULT=')"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT10" \
+  && grep -q "maintenance lane chose 'documentation'" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "a lane that ran but filed nothing (no_findings) → logged as a run, TICK_RESULT=no_work" \
+  || fail "expected no_work + a chose-line for no_findings, got: $(echo "$OUT10" | grep '^TICK_RESULT=')"
+if grep -q 'maintenance lane FAILED' "$GAFFER_DATA/factory.log" 2>/dev/null; then
+  fail "a healthy no_findings run must not be logged as FAILED"
+else
+  ok "…and it is not logged as FAILED"
+fi
 
 # ── 10. strict containment: the tick says idle repo commands won't run on the host ─
 reset_log
@@ -246,6 +311,88 @@ if grep -q 'idle loops will NOT run repo commands' "$GAFFER_DATA/factory.log" 2>
 else
   ok "GAFFER_IDLE_HOST_EXEC=1 opts back in (no refusal line)"
 fi
+
+# ── 11. filed nothing → no_work; spent → maintenance_ran; no lane → hint ────────
+reset_log
+OUT12="$(MAINT_STATUS=no_findings MAINT_SPENT=1 run_tick)"
+grep -q '^TICK_RESULT=maintenance_ran$' <<<"$OUT12" \
+  && ok "filed nothing but ran the paid backlog planner (spent) → maintenance_ran (counts on the day cap)" \
+  || fail "expected maintenance_ran when spent, got: $(echo "$OUT12" | grep '^TICK_RESULT=')"
+reset_log
+OUT13="$(MAINT_STATUS=no_findings MAINT_FILED=2 run_tick)"
+grep -q '^TICK_RESULT=maintenance_drafted$' <<<"$OUT13" \
+  && ok "the lane filed nothing but ingest / the backlog / lore gap filed 2 (filed) → maintenance_drafted" \
+  || fail "expected maintenance_drafted from filed=2, got: $(echo "$OUT13" | grep '^TICK_RESULT=')"
+reset_log
+OUT14="$(GAFFER_MAINTENANCE=1 MAINT_CHOSEN=none run_tick)"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT14" \
+  && ok "GAFFER_MAINTENANCE=1 with no lane enabled → no_work (was a productive maintenance_ran)" \
+  || fail "expected no_work with no lane enabled, got: $(echo "$OUT14" | grep '^TICK_RESULT=')"
+grep -q 'no maintenance loop is enabled — turn on at least one lane' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "…and the log says to enable a lane (the env var only overrides the master switch)" \
+  || fail "missing the 'no maintenance loop is enabled' hint"
+reset_log
+MAINT_STATUS=no_repos MAINT_CHOSEN=coverage run_tick >/dev/null
+grep -q 'the coverage lane needs a repo coverage_command' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "coverage lane answering no_repos → the log names the missing coverage_command" \
+  || fail "missing the coverage_command hint for coverage/no_repos"
+
+# ── 12. legacy IDLE_DRAFT_WHEN_IDLE reads the real crew idle shape ─────────────
+reset_log
+OUT15="$(GAFFER_MAINTENANCE=0 IDLE_DRAFT_WHEN_IDLE=1 IDLE_TOTAL=3 run_tick)"
+grep -q '^TICK_RESULT=idle_drafted$' <<<"$OUT15" \
+  && ok "fg idle filing 3 drafts → TICK_RESULT=idle_drafted (was no_work)" \
+  || fail "expected idle_drafted for 3 drafts, got: $(echo "$OUT15" | grep '^TICK_RESULT=')"
+grep -q 'idle scan filed 3 item' "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "…and logs the real count (was always '0 draft(s)')" \
+  || fail "the idle scan log line should carry the real count"
+reset_log
+OUT16="$(GAFFER_MAINTENANCE=0 IDLE_DRAFT_WHEN_IDLE=1 IDLE_TOTAL=2 IDLE_OLD_SHAPE=1 run_tick)"
+grep -q '^TICK_RESULT=idle_drafted$' <<<"$OUT16" \
+  && ok "an older crew without 'filed' → falls back to report.totalDrafts" \
+  || fail "expected idle_drafted from report.totalDrafts, got: $(echo "$OUT16" | grep '^TICK_RESULT=')"
+reset_log
+OUT17="$(GAFFER_MAINTENANCE=0 IDLE_DRAFT_WHEN_IDLE=1 IDLE_TOTAL=0 run_tick)"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT17" \
+  && ok "fg idle filing nothing → no_work" \
+  || fail "expected no_work for an empty idle scan, got: $(echo "$OUT17" | grep '^TICK_RESULT=')"
+
+# ── 13. a feature parked after failed plans → the log says how to retry ──────
+reset_log
+MAINT_STATUS=no_findings MAINT_SPENT=1 MAINT_EVENTS=feature_backlog_failed,feature_backlog_parked run_tick >/dev/null
+grep -q "feature backlog: a feature's plan failed on every attempt" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && grep -q "feature-backlog-failures.json" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "a feature parked after failed plans → the log says idle ticks stop claiming it and where to retry" \
+  || fail "missing the parked-feature hint"
+reset_log
+MAINT_STATUS=no_findings MAINT_SPENT=1 MAINT_EVENTS=feature_backlog_failed run_tick >/dev/null
+grep -q 'maintain' "$CREW_CALLS" \
+  && ! grep -q "feature backlog: a feature's plan failed" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "…and stays quiet for a failure under the cap (the tick did run crew maintain)" \
+  || fail "the parked hint fired for a failure that did not park the feature, or the tick never ran"
+
+# ── 14. the idle crew calls carry the memory + planner wiring ─────────────────
+reset_log
+MAINT_ENABLED=1 run_tick >/dev/null
+# The env line below must come from THIS tick's own crew call, not a leftover
+# from an earlier case: exactly one crew call, and it is `maintain`.
+[ "$(grep -c . "$CREW_CALLS")" -eq 1 ] && grep -q 'maintain' "$CREW_CALLS" \
+  && [ "$(grep -c . "$CREW_CALLS.env")" -eq 1 ] \
+  && ok "the wiring check reads its own setup tick (one crew maintain call recorded)" \
+  || fail "the wiring check's setup tick did not run exactly one crew maintain call: $(cat "$CREW_CALLS")"
+ENVLINE="$(head -1 "$CREW_CALLS.env")"
+grep -q "MEMORY_DB=$GAFFER_DATA/memory.sqlite" <<<"$ENVLINE" \
+  && grep -q "MEMORY_MCP_BIN=$WORK/memory-mcp.js" <<<"$ENVLINE" \
+  && grep -q "GAFFER_DECOMPOSE_SCRIPT=$RUNNER_DIR/bin/decompose.mjs" <<<"$ENVLINE" \
+  && grep -q "CLAUDE_BIN=$WORK/stub-claude" <<<"$ENVLINE" \
+  && ok "fg maintain gets MEMORY_DB, MEMORY_MCP_BIN, GAFFER_DECOMPOSE_SCRIPT and CLAUDE_BIN" \
+  || fail "fg maintain env missing the idle wiring: $ENVLINE"
+reset_log
+GAFFER_MAINTENANCE=0 IDLE_DRAFT_WHEN_IDLE=1 run_tick >/dev/null
+grep -q "GAFFER_DECOMPOSE_SCRIPT=$RUNNER_DIR/bin/decompose.mjs" "$CREW_CALLS.env" \
+  && grep -q "MEMORY_MCP_BIN=$WORK/memory-mcp.js" "$CREW_CALLS.env" \
+  && ok "fg idle gets the same wiring" \
+  || fail "fg idle env missing the idle wiring: $(cat "$CREW_CALLS.env")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

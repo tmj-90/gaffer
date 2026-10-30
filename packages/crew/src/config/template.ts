@@ -113,8 +113,10 @@ loops:
       require_ac_evidence: true
       require_lint_clean: true
   # ── Idle SCAN loops ────────────────────────────────────────────────────────
-  # OFF by default: each idle tick spends model tokens analysing repos, so a
-  # scan loop only runs once you flip 'enabled: true'. Two knobs per loop:
+  # OFF by default. The scans themselves are local reads/greps that call no model,
+  # but every finding becomes a ticket someone (or, under self_improve, an agent)
+  # spends on, so a scan loop only runs once you flip 'enabled: true'. They run
+  # through the maintenance lane below (one lane per idle tick). Two knobs per loop:
   #   • enabled — turn the loop on for this factory.
   #   • min_delivered_tickets — per-loop delivered-ticket threshold; null means
   #     inherit loops.default_min_delivered_tickets above. A loop skips any repo
@@ -126,8 +128,10 @@ loops:
     mode: create_draft_tickets
     repos: []
     min_delivered_tickets: null # null = inherit default_min_delivered_tickets
-    # Target coverage percentage: a draft is filed only when the parsed total is
-    # BELOW it (a repo at or above it, or a report with no recognisable total, files nothing).
+    # TARGET total coverage in percent: a draft is filed only when the parsed total
+    # is BELOW it (a repo at or above it files nothing). Needs a repo coverage_command
+    # (\`wg repo set-commands <repo> --coverage '<cmd>'\` or the dashboard); a run that
+    # exits non-zero or prints no recognisable total is a failed scan, never a finding.
     minimum_gap_threshold: 10
   idle_test_quality:
     enabled: false
@@ -147,7 +151,11 @@ loops:
     mode: create_draft_tickets
     repos: []
     min_delivered_tickets: null
-    audit_command: null # e.g. "pnpm outdated --json"; read-only, never installs
+    # Without an audit command the loop only flags floating ranges (*, latest, >).
+    # Set one (e.g. "pnpm outdated --json") for outdated / vulnerable findings; it
+    # runs on the host in the repo checkout, so GAFFER_STRICT_REQUIRE refuses it
+    # unless GAFFER_IDLE_HOST_EXEC=1.
+    audit_command: null # read-only, never installs
   idle_security_hotspot:
     enabled: false # in-source secret/injection/unsafe-API scan; opt in per factory
     trigger: when_queue_empty
@@ -169,23 +177,45 @@ loops:
     god_file_lines: 500 # non-test source files over this LOC are flagged as god-files
     churn_size_product_threshold: 5000 # flag when (commit count × LOC) exceeds this
   idle_lore_gap:
-    enabled: false # requires a real Memory; emits suggestions, never edits code
+    # Suggests lore (memory DRAFTS, never approved) for conventions repeated in a
+    # repo but absent from memory, skipping any already approved or awaiting review.
+    # Runs alongside the maintenance lane on each idle tick; uses the factory's own
+    # memory server (or memory.mcp above). Never edits code.
+    enabled: false
     trigger: when_queue_empty
     mode: suggest_lore
     repos: []
     minimum_occurrences: 3
     draft_ratify_ticket: false # also draft a Dispatch ticket to ratify the lore
+  idle_feature_backlog:
+    # Pulls ONE 'backlog' feature from the memory ledger per idle tick and plans it
+    # as an epic of DRAFT tickets (a human readies them; observe_only files nothing
+    # and leaves the feature in the backlog). Runs alongside the maintenance
+    # lane. Unlike the scans, each run SPENDS a planning model call (the runner's
+    # bin/decompose.mjs, wired automatically; decompose_script overrides it). The
+    # planner runs unattended, so it plans straight away (never asks questions).
+    # A failed plan releases the feature to backlog; after max_plan_failures failed
+    # plans in a row idle ticks stop claiming it (counts live in
+    # <GAFFER_DATA>/feature-backlog-failures.json; delete an entry to retry).
+    enabled: false
+    mode: create_draft_tickets
+    repos: []
+    max_plan_failures: 2
   # ── Idle MAINTENANCE LANE (audit item A4) ──────────────────────────────────
-  # OFF by default. When ON (and GAFFER_MAINTENANCE=1 in the runner), a quiet
-  # idle tick runs ONE maintenance loop chosen by a DETERMINISTIC priority +
+  # OFF by default. When ON, a quiet idle tick runs ONE maintenance loop chosen
+  # by a DETERMINISTIC priority +
   # rotation scheduler — NO LLM in the choice — instead of every idle loop or a
   # single fixed scan. Priority: security_hotspot → coverage/test_quality →
   # type_quality/tech_debt → documentation/dependency_hygiene; it rotates so no
   # lane starves and the same lane is not picked on consecutive ticks. The lane
   # only rotates through loops you have enabled above (each loop's own flag is
-  # the on/off switch); this block gates the lane itself + the rotation cursor.
+  # the on/off switch) — with none of them enabled the lane has nothing to run.
+  # This block gates the lane itself + the rotation cursor. The same idle tick
+  # also runs GitHub/Jira ingest and the lore-gap / feature-backlog loops when
+  # those are enabled. GAFFER_MAINTENANCE in the runner's env is only an override:
+  # 0 = never run the lane, 1 = run it even while this switch is off.
   maintenance:
-    enabled: false # set true (and GAFFER_MAINTENANCE=1) for the smart prioritised lane
+    enabled: false # set true for the smart prioritised lane (and enable a loop above)
     cursor_path: null # null = <GAFFER_DATA>/maintenance-cursor.json; survives across ticks
   # The self-improving closed loop. OFF BY DEFAULT. When on, an idle tick may
   # promote its OWN drafted improvement tickets to 'ready' so the delivery loop

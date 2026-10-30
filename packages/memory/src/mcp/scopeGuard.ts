@@ -2,7 +2,8 @@
  * Repo-scope guard for DIRECT-APPLY memory writes in the factory.
  *
  * ARCHITECTURE.md's memory trust model has two tiers. The DIRECT-APPLY
- * (ungated) tier — `update_repo_digest`, `add_feature`, `advance_feature`
+ * (ungated) tier — `update_repo_digest`, `add_feature`, `advance_feature`,
+ * `release_feature`
  * (file cards are written by the CLI onboard/merge lane, not an agent MCP
  * tool, so they aren't reachable here) — applies immediately: input is
  * length-bounded, sanitised, and quarantine-wrapped on read. What those

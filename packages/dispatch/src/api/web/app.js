@@ -12140,7 +12140,7 @@ async function renderSettings() {
   // Crew idle-loop scan loops — enable + repo/scope scoping. These live in
   // crew.yaml (not settings.json), so they save through their own endpoint.
   if (idleLoops) {
-    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes);
+    const loops = renderIdleLoopsPanel(idleLoops, repos, nodes, all);
     const fold = el("details", { class: "boot-fold", id: "idle-loops" }, [
       el("summary", {}, [
         el("span", { class: "boot-fold-t" }, "Idle loops"),
@@ -13236,7 +13236,7 @@ const IDLE_RECOMMENDED_LANES = [
   "idle_documentation",
 ];
 
-function renderIdleLoopsPanel(view, repos, nodes) {
+function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
   const card = el("div", { class: "card settings-group idle-loops-group" });
   card.appendChild(el("h2", {}, "Scan lanes"));
   card.appendChild(
@@ -13329,12 +13329,30 @@ function renderIdleLoopsPanel(view, repos, nodes) {
     const sw = makeSwitch(`Enable ${label}`, loop.enabled === true, `idle-loop-${loop.key}`);
     sw.input.addEventListener("change", () => refreshStatus());
 
+    // The dependency lane's read-only audit command (crew.yaml
+    // loops.idle_dependencies.audit_command): without one the lane only flags
+    // floating ranges, so "dependency upgrades" never happen.
+    let auditInput = null;
+    if (loop.key === "idle_dependencies") {
+      auditInput = el("input", {
+        type: "text",
+        name: "idle-dependencies-audit-command",
+        placeholder: "e.g. pnpm outdated --json  (empty = floating ranges only)",
+        maxlength: "500",
+        "data-testid": "idle-dependencies-audit",
+        "aria-label": "Dependency audit command",
+      });
+      auditInput.value = loop.auditCommand || "";
+      auditInput.addEventListener("input", () => refreshStatus());
+    }
+
     editors.set(loop.key, {
       key: loop.key,
       lane: loop.maintenanceLane === true,
       toggle: sw.input,
       enabled: () => sw.input.checked,
       targets: () => (typeof picker.getTargets === "function" ? picker.getTargets() : []),
+      auditCommand: () => (auditInput ? auditInput.value.trim() : null),
     });
 
     const head = el("div", { class: "idle-loop-head" }, [
@@ -13353,6 +13371,19 @@ function renderIdleLoopsPanel(view, repos, nodes) {
           el("label", {}, "Scope to repos / scopes"),
           picker,
         ]),
+        auditInput
+          ? el("div", { class: "field" }, [
+              el("label", {}, "Audit / outdated command (read-only, runs in each repo checkout)"),
+              auditInput,
+              el(
+                "p",
+                { class: "dim" },
+                "Its output is parsed for outdated and vulnerable packages; the lane never installs. " +
+                  "It runs on the host, so under GAFFER_STRICT_REQUIRE it is refused unless " +
+                  "GAFFER_IDLE_HOST_EXEC=1.",
+              ),
+            ])
+          : null,
       ]),
     );
   }
@@ -13423,29 +13454,118 @@ function renderIdleLoopsPanel(view, repos, nodes) {
   ]);
   card.appendChild(status);
 
+  // The effective runner env the panel cannot see from crew.yaml alone: the
+  // GAFFER_MAINTENANCE override, the idle MODE override and the legacy every-loop
+  // scan. `effective` is what the factory will use (env → settings.json → preset).
+  const envOf = (key) => {
+    const row = (envSettings || []).find((s) => s && s.key === key);
+    const v = row ? (row.effective !== undefined ? row.effective : row.value) : "";
+    return String(v === undefined || v === null ? "" : v).trim();
+  };
+  const flagOn = (v) => ["1", "true", "yes", "on"].includes(String(v).toLowerCase());
+  const reposWithCoverage = (repos || []).filter((r) => r && r.coverage_command).map((r) => r.name);
+
   function refreshStatus() {
-    const lanesOn = [...editors.values()].filter((e) => e.lane && e.enabled()).length;
-    const maintOn = maint.input.checked;
+    const lanes = [...editors.values()].filter((e) => e.lane && e.enabled());
+    const lanesOn = lanes.length;
+    const envMaint = envOf("GAFFER_MAINTENANCE");
+    const panelOn = maint.input.checked;
+    // GAFFER_MAINTENANCE wins over the panel switch: 0 kills the lane, 1 forces it.
+    const maintOn = envMaint === "0" ? false : envMaint === "1" ? true : panelOn;
+    const legacyScan = flagOn(envOf("IDLE_DRAFT_WHEN_IDLE"));
+    const idleMode = envOf("GAFFER_IDLE_MODE") || view.mode || "create_draft_tickets";
     const siOn = siSwitch.input.checked;
+    const backlog = editors.get("idle_feature_backlog");
+    const backlogOn = backlog ? backlog.enabled() : false;
+    const filing =
+      idleMode === "observe_only"
+        ? "findings are observed only — nothing is filed (GAFFER_IDLE_MODE=observe_only)"
+        : idleMode === "create_ready_tickets"
+          ? "findings are filed READY, past the human gate (GAFFER_IDLE_MODE=create_ready_tickets)"
+          : siOn
+            ? `findings are filed as drafts and may be promoted to ready for the opted-in repos (risk ≤ ${riskSel.value}, ≤ ${capInput.value || 1} per tick)`
+            : "findings are filed as drafts for you to promote";
+    const notes = [];
     let tone = "ok";
     let text;
-    if (!maintOn && lanesOn === 0) {
+    // What the legacy every-loop scan (tick.sh's `fg idle`) runs in one pass.
+    const legacyPass =
+      lanesOn === 0
+        ? "runs no scan lane (none is enabled), only ingest and the memory loops"
+        : `runs ALL ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"} in one pass (plus ingest and the memory loops)`;
+    if (envMaint === "0" && !legacyScan) {
+      text =
+        "GAFFER_MAINTENANCE=0 in the runner's settings is the kill switch: idle ticks skip maintenance " +
+        "entirely, whatever this panel says.";
+      tone = "warn";
+    } else if (!maintOn && lanesOn === 0 && !legacyScan && backlogOn) {
+      // The feature backlog has its own switch and runs BEFORE the maintenance lane
+      // (tick.sh's `fg feature-backlog`), so it runs with maintenance off too.
+      text = `Maintenance is off, so each idle tick runs only the feature backlog; ${filing}.`;
+      if (idleMode === "create_ready_tickets") tone = "warn";
+    } else if (!maintOn && lanesOn === 0 && !legacyScan) {
       text =
         "Idle ticks poll and stop. Turn on maintenance and at least one lane to work the backlog while idle.";
       tone = "dim";
-    } else if (maintOn && lanesOn === 0) {
+    } else if (!maintOn && legacyScan) {
+      // GAFFER_MAINTENANCE=0 only skips the maintenance lane: tick.sh still falls
+      // through to the legacy scan when IDLE_DRAFT_WHEN_IDLE=1.
       text =
-        "Maintenance is on but no lane is enabled — idle ticks will do nothing. Enable a lane or use the recommended set.";
+        (envMaint === "0"
+          ? "GAFFER_MAINTENANCE=0 skips the maintenance lane, but IDLE_DRAFT_WHEN_IDLE=1 (legacy) is on: each idle tick "
+          : "IDLE_DRAFT_WHEN_IDLE=1 (legacy): with maintenance off, each idle tick ") +
+        `${legacyPass}; ${filing}.`;
+      tone = "warn";
+    } else if (maintOn && lanesOn === 0 && backlogOn) {
+      text =
+        "No scan lane is enabled, so each idle tick runs only the feature backlog (plus ingest and the lore-gap loop when on)" +
+        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        `; ${filing}.`;
+      if (idleMode === "create_ready_tickets") tone = "warn";
+    } else if (maintOn && lanesOn === 0 && !backlogOn) {
+      text =
+        (envMaint === "1"
+          ? "GAFFER_MAINTENANCE=1 forces the lane on, but "
+          : "Maintenance is on but ") +
+        "no lane is enabled — idle ticks will do nothing (no_work). Enable a lane or use the recommended set.";
       tone = "warn";
     } else if (!maintOn) {
       text = `${lanesOn} lane${lanesOn === 1 ? "" : "s"} enabled but maintenance is off — they will not run until you turn it on.`;
       tone = "warn";
-    } else if (siOn) {
-      text = `Idle ticks will run ${lanesOn} lane${lanesOn === 1 ? "" : "s"} and may promote drafts to ready for the opted-in repos (risk ≤ ${riskSel.value}, ≤ ${capInput.value || 1} per tick).`;
     } else {
-      text = `Idle ticks will run ${lanesOn} lane${lanesOn === 1 ? "" : "s"}; findings are filed as drafts for you to promote.`;
+      text =
+        `Each idle tick runs ONE of the ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"}, rotating by priority` +
+        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        `; ${filing}.`;
+      if (idleMode === "create_ready_tickets") tone = "warn";
     }
-    statusText.textContent = text;
+    if (maintOn || legacyScan) {
+      const cov = editors.get("idle_coverage");
+      if (cov && cov.enabled()) {
+        const scope = cov.targets().map((t) => t.name);
+        const covered = scope.length
+          ? scope.filter((n) => reposWithCoverage.includes(n))
+          : reposWithCoverage;
+        if (covered.length === 0) {
+          notes.push(
+            "The coverage lane needs a repo with a coverage command (repo settings → coverage); it will answer no_repos until one is set.",
+          );
+          tone = tone === "ok" ? "warn" : tone;
+        }
+      }
+      const dep = editors.get("idle_dependencies");
+      if (dep && dep.enabled() && !dep.auditCommand()) {
+        notes.push(
+          "Without an audit command the dependency lane only flags floating ranges (*, latest, >), never outdated or vulnerable packages.",
+        );
+      }
+    }
+    if (backlogOn) {
+      notes.push(
+        "The feature backlog plans one `backlog` feature from memory per idle tick, before the maintenance lane and whatever its switch says (one model call, counted against the day cap); add features with `lg feature add`.",
+      );
+    }
+    statusText.textContent = notes.length ? `${text} ${notes.join(" ")}` : text;
     status.dataset.tone = tone;
     statusIcon.innerHTML = "";
     statusIcon.appendChild(icon(tone === "warn" ? "alert" : tone === "ok" ? "check" : "clock"));
@@ -13484,7 +13604,9 @@ function renderIdleLoopsPanel(view, repos, nodes) {
       };
       const loops = [];
       for (const ed of editors.values()) {
-        loops.push({ key: ed.key, enabled: ed.enabled(), repos: await namesOf(ed.targets()) });
+        const row = { key: ed.key, enabled: ed.enabled(), repos: await namesOf(ed.targets()) };
+        if (ed.key === "idle_dependencies") row.audit_command = ed.auditCommand() || null;
+        loops.push(row);
       }
       const cap = Math.min(20, Math.max(1, Math.trunc(Number(capInput.value) || 1)));
       await api("PUT", "/api/idle-loops", {

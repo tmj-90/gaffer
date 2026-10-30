@@ -1,0 +1,553 @@
+/* ===========================================================================
+   Floor — the factory floor (#/floor): an isometric drawing of the live state.
+   The chrome is the club's (the ink head bar, the 2px programme frame); the
+   drawing keeps the station hues from the tokens' "factory floor" block. Every
+   colour is a token (tokens.css), so both kits come from one set. The only
+   pattern is the jam bay's hazard tape, and the only loop is its beacon.
+   =========================================================================== */
+
+@layer views {
+  .view-floor {
+    display: grid;
+    gap: var(--s4);
+    min-width: 0;
+  }
+  .fl-facts {
+    font: 600 var(--t14) / 1.4 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .fl-stream {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--red-wash);
+    color: var(--ink);
+    border: 1px solid var(--red);
+    font: 600 var(--t14) / 1.35 var(--f-text);
+  }
+  .fl-stream[hidden] {
+    display: none;
+  }
+  .fl-stream .glyph {
+    color: var(--red);
+    flex: none;
+    margin-top: 1px;
+  }
+  .fl-quiet .es-title {
+    font: 600 var(--t20) / 1.35 var(--f-text);
+  }
+
+  /* --- the panel: head bar, stage, legend ------------------------------- */
+  .fl-panel {
+    min-width: 0;
+  }
+  .fl-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    background: var(--board);
+    color: var(--board-ink);
+    padding: 10px 16px;
+  }
+  .fl-title {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 10px;
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .fl-title .panel-aux {
+    color: var(--board-ink-2);
+  }
+  .fl-note {
+    flex: 1 1 260px;
+    min-width: 0;
+    color: var(--board-ink-2);
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+  }
+  .fl-stage {
+    position: relative;
+    background: var(--fl-stage);
+    border: 2px solid var(--board);
+    border-top: 0;
+    padding: 8px 8px 4px;
+    overflow: hidden;
+  }
+  .fl-svg {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .fl-legend {
+    display: grid;
+    gap: var(--s3);
+    background: var(--paper);
+    border: 2px solid var(--board);
+    border-top: 0;
+    padding: 12px 16px 16px;
+  }
+  .fl-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 18px;
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .fl-key li {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .fl-sw {
+    display: inline-block;
+    flex: none;
+    width: 12px;
+    height: 12px;
+    border-radius: var(--r);
+    border: 1px solid var(--rule);
+  }
+  .fl-sw-needs {
+    background: var(--yellow);
+    border-color: var(--ycard-edge);
+  }
+  .fl-sw-red,
+  .fl-sw-jam {
+    background: var(--red);
+  }
+  .fl-sw-lit {
+    background: var(--fl-glass-lit);
+  }
+  .fl-sw-bot {
+    background: var(--claret);
+  }
+  .fl-sw-tank,
+  .fl-sw-stores {
+    background: var(--fl-ready);
+  }
+  .fl-sw-drawing {
+    background: var(--fl-draft);
+  }
+  .fl-sw-assembly {
+    background: var(--fl-build);
+  }
+  .fl-sw-inspection,
+  .fl-sw-loading {
+    background: var(--fl-inspect);
+  }
+  .fl-sw-testrig {
+    background: var(--fl-test);
+  }
+  .fl-sw-despatch {
+    background: var(--fl-done);
+  }
+  .fl-lists {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    gap: var(--s3) var(--s5);
+  }
+  .fl-stations {
+    display: grid;
+    gap: 0;
+    font-size: var(--t14);
+  }
+  .fl-stations li {
+    display: grid;
+    grid-template-columns: 12px minmax(0, 9em) minmax(0, 1fr) 2.5em;
+    align-items: baseline;
+    gap: 2px 10px;
+    padding: 6px 0;
+    border-top: var(--hair);
+  }
+  .fl-stations li:first-child {
+    border-top: 0;
+  }
+  .fl-st-name {
+    font-weight: 700;
+  }
+  .fl-st-what {
+    color: var(--ink-2);
+    font: 600 var(--t14) / 1.3 var(--f-cond);
+  }
+  .fl-st-n {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-align: right;
+  }
+  .fl-st-tickets {
+    grid-column: 2 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    font: 600 var(--t14) / 1.4 var(--f-cond);
+  }
+  .fl-bench h3 {
+    font: 800 var(--t20) / 1 var(--f-display);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .fl-bench ul {
+    display: grid;
+    gap: 8px;
+  }
+  .fl-bench li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    font-size: var(--t14);
+    min-width: 0;
+  }
+  .fl-bench li > a {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .fl-bench-st {
+    color: var(--ink-2);
+    font: 600 var(--t12) / 1.3 var(--f-cond);
+  }
+  .fl-bench p {
+    color: var(--ink-2);
+    font-size: var(--t14);
+  }
+
+  /* --- the hover / focus card (kept inside the stage) ------------------- */
+  .fl-tip {
+    position: absolute;
+    z-index: 2;
+    max-width: min(300px, calc(100% - 8px));
+    padding: 8px 12px;
+    background: var(--board);
+    color: var(--board-ink);
+    border-radius: var(--r);
+    font: 600 var(--t14) / 1.35 var(--f-text);
+    pointer-events: none;
+  }
+  .fl-tip[hidden] {
+    display: none;
+  }
+  .fl-tip b {
+    font-family: var(--f-mono);
+    font-weight: 400;
+  }
+  .fl-tip-sub {
+    display: block;
+    color: var(--board-ink-2);
+    font: 600 var(--t12) / 1.35 var(--f-cond);
+  }
+
+  /* --- the drawing ------------------------------------------------------- */
+  .fl-svg .f {
+    stroke-width: 0.6;
+    stroke-linejoin: round;
+  }
+  .fl-joints {
+    stroke: var(--fl-joint);
+    stroke-width: 1;
+    fill: none;
+  }
+  .fl-walk {
+    stroke: var(--fl-walk);
+    stroke-width: 2;
+    stroke-dasharray: 10 7;
+    fill: none;
+  }
+  .fl-rollers {
+    stroke: var(--fl-roller);
+    stroke-width: 1;
+    fill: none;
+  }
+  .fl-tape {
+    fill: var(--fl-tape);
+  }
+  .fl-flat-line {
+    stroke: var(--fl-flat-line);
+    stroke-width: 1;
+    fill: none;
+  }
+  .fl-sign-board {
+    fill: var(--paper);
+    stroke: var(--ink);
+    stroke-opacity: 0.2;
+    stroke-width: 0.8;
+  }
+  .fl-sign-text {
+    font: 700 13px var(--f-cond);
+    fill: var(--ink);
+  }
+  .fl-signs,
+  .fl-tags {
+    pointer-events: none;
+  }
+  .fl-shutter-lines {
+    stroke: var(--fl-shutter-line);
+    stroke-width: 1;
+    fill: none;
+  }
+  .fl-lamp-post {
+    stroke: var(--fl-post);
+    stroke-width: 2;
+  }
+  .fl-lamp {
+    fill: var(--yellow);
+    stroke: var(--ycard-edge);
+    stroke-width: 1.5;
+  }
+  .fl-gate-lamp {
+    fill: var(--paper);
+    stroke: var(--fl-test);
+    stroke-width: 1.5;
+  }
+  .fl-bay {
+    fill: color-mix(in oklab, var(--fl-build) 10%, transparent);
+    stroke: var(--fl-build);
+    stroke-width: 1.5;
+    stroke-dasharray: 6 4;
+  }
+  .fl-hazard-base {
+    stroke: var(--fl-hazard-ink);
+    stroke-width: 5;
+    fill: none;
+  }
+  .fl-hazard {
+    stroke: var(--fl-hazard);
+    stroke-width: 5;
+    fill: none;
+  }
+  .fl-beacon {
+    fill: var(--rule);
+    stroke: var(--fl-post);
+    stroke-width: 1;
+  }
+  .fl-beacon.is-on {
+    fill: var(--red);
+    stroke: var(--paper);
+    stroke-width: 1.5;
+  }
+  .fl-beacon-cap {
+    fill: var(--fl-post);
+  }
+  .fl-bot-no {
+    font: 800 12px var(--f-stencil);
+    fill: var(--shirt-no);
+  }
+  .fl-hat {
+    fill: var(--fl-build);
+  }
+  .fl-hat-brim {
+    fill: color-mix(in oklab, var(--fl-build), var(--fl-shade) 22%);
+  }
+  .fl-antenna {
+    stroke: var(--fl-bot-leg);
+    stroke-width: 1.4;
+  }
+  .fl-antenna-tip {
+    fill: var(--fl-build);
+  }
+  .fl-wheel {
+    fill: var(--fl-wheel);
+    stroke: var(--fl-post);
+    stroke-width: 1.5;
+  }
+  .fl-tank-base .fl-cyl-body,
+  .fl-tank-base .fl-cyl-top,
+  .fl-tank-cap .fl-cyl-body {
+    fill: var(--fl-post);
+  }
+  .fl-tank-cap .fl-cyl-top {
+    fill: color-mix(in oklab, var(--fl-post), var(--fl-lift) 20%);
+  }
+  .fl-tank-glass .fl-cyl-body {
+    fill: color-mix(in oklab, var(--fl-glass), var(--fl-lift) 30%);
+    stroke: var(--fl-post);
+    stroke-width: 1.2;
+  }
+  .fl-tank-glass .fl-cyl-top {
+    fill: none;
+  }
+  .fl-tank-fuel .fl-cyl-body {
+    fill: var(--fl-ready);
+  }
+  .fl-tank-fuel .fl-cyl-top {
+    fill: color-mix(in oklab, var(--fl-ready), var(--fl-lift) 30%);
+  }
+  .fl-tank.is-hot .fl-tank-fuel .fl-cyl-body,
+  .fl-tank.is-hot .fl-tank-fuel .fl-cyl-top {
+    fill: var(--red);
+  }
+  .fl-grad {
+    fill: none;
+    stroke: var(--ink);
+    stroke-opacity: 0.32;
+    stroke-width: 1;
+  }
+  .fl-tick {
+    stroke: var(--ink-2);
+    stroke-width: 1.2;
+  }
+  .fl-tick-label {
+    font: 400 12px var(--f-mono);
+    fill: var(--ink-2);
+  }
+
+  /* links: a ring on hover, the focus ring from the tokens on focus */
+  .fl-hit {
+    cursor: pointer;
+    outline: none;
+  }
+  .fl-ring {
+    fill: none;
+    stroke: none;
+    stroke-linejoin: round;
+  }
+  .fl-hit:hover .fl-ring {
+    stroke: var(--ink);
+    stroke-opacity: 0.55;
+    stroke-width: 2;
+  }
+  .fl-hit:focus-visible .fl-ring {
+    stroke: var(--focus);
+    stroke-opacity: 1;
+    stroke-width: 3;
+  }
+
+  /* tags: flat, upright, placed clear of every sign */
+  .fl-tag-box {
+    fill: var(--paper);
+    stroke: var(--ink);
+    stroke-opacity: 0.3;
+    stroke-width: 1;
+  }
+  .fl-tag-text {
+    font: 400 12px var(--f-mono);
+    fill: var(--ink);
+  }
+  .fl-tag-stem {
+    stroke: var(--ink);
+    stroke-opacity: 0.45;
+    stroke-width: 1.2;
+  }
+  .fl-tag-dot {
+    fill: var(--ink);
+    fill-opacity: 0.6;
+  }
+  .fl-tag-needs .fl-tag-box {
+    fill: var(--yellow);
+    stroke: var(--ycard-edge);
+    stroke-opacity: 1;
+  }
+  .fl-tag-needs .fl-tag-text {
+    fill: var(--on-yellow);
+  }
+  .fl-tag-danger .fl-tag-box {
+    fill: var(--red);
+    stroke: none;
+  }
+  .fl-tag-danger .fl-tag-text {
+    fill: var(--on-red);
+  }
+  .fl-tag-danger .fl-tag-stem,
+  .fl-tag-danger .fl-tag-dot {
+    stroke: var(--red);
+    fill: var(--red);
+    stroke-opacity: 1;
+    fill-opacity: 1;
+  }
+
+  /* motion: parcels drop in once per visit; the beacon is the one loop */
+  @media (prefers-reduced-motion: no-preference) {
+    .is-arriving .fl-drop {
+      animation: fl-drop 520ms var(--ease-card) both;
+      animation-delay: calc(var(--i) * 28ms);
+      transform-box: fill-box;
+      transform-origin: 50% 100%;
+    }
+    .is-arriving .fl-bot-wrap {
+      animation: fl-step-in 640ms var(--ease) both;
+      animation-delay: calc(240ms + var(--i) * 90ms);
+    }
+    .is-arriving .fl-tags {
+      animation: fl-fade 300ms 520ms both;
+    }
+    .fl-beacon.is-on {
+      animation: fl-beacon 2s step-end infinite;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fl-beacon.is-on {
+      stroke-width: 3;
+    }
+  }
+  @keyframes fl-drop {
+    0% {
+      transform: translateY(-26px);
+      opacity: 0;
+    }
+    70% {
+      transform: translateY(0) scaleY(0.92);
+      opacity: 1;
+    }
+    100% {
+      transform: none;
+    }
+  }
+  @keyframes fl-step-in {
+    from {
+      transform: translate(-26px, -13px);
+      opacity: 0;
+    }
+  }
+  @keyframes fl-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes fl-beacon {
+    50% {
+      fill: color-mix(in oklab, var(--red), var(--fl-shade) 45%);
+    }
+  }
+  @media (forced-colors: active) {
+    .fl-svg .f {
+      forced-color-adjust: none;
+    }
+    .fl-tag-box {
+      stroke: CanvasText;
+    }
+  }
+
+  /* --- narrow: the scene scales with its viewBox, the legend stacks ----- */
+  @media (max-width: 980px) {
+    .fl-lists {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (max-width: 760px) {
+    .fl-title {
+      font-size: var(--t26);
+    }
+    .fl-head {
+      padding: 10px 12px;
+    }
+    .fl-stage {
+      padding: 4px 2px 2px;
+    }
+    .fl-legend {
+      padding: 12px;
+    }
+    .fl-key {
+      flex-direction: column;
+      gap: 6px;
+    }
+    .fl-stations li {
+      grid-template-columns: 12px minmax(0, 1fr) 2.5em;
+    }
+    .fl-st-what {
+      grid-column: 2 / -1;
+      grid-row: 2;
+    }
+    .fl-st-tickets {
+      grid-row: 3;
+    }
+  }
+}

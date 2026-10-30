@@ -226,17 +226,21 @@ describe("pause-on-cap — continue / resume / stop transitions", () => {
     // rolled back the WHOLE sweep, wedging it permanently on that ticket.
     const clock = new TestClock();
     const wg = freshWg(clock);
-    const { ticketId } = claimedTicket(wg); // claimed, ttl 600, original claim active
-    wg.pauseDelivery(ticketId, CTX, system);
+    const { ticketId } = claimedTicket(wg); // claimed, ttl 600
+    wg.pauseDelivery(ticketId, CTX, system); // the pause releases the lease
     wg.continuePaused(ticketId, human);
-    wg.beginResume(ticketId, system); // paused -> in_progress; the ORIGINAL claim is still active
+    const runner = wg.registerAgent({ display_name: "runner" }, human);
+    // paused -> in_progress, leased to the resuming runner for 600 s
+    wg.beginResume(ticketId, system, { agentId: runner.id, ttlSeconds: 600 });
     expect(wg.view(ticketId).ticket.status).toBe("in_progress");
 
-    clock.advanceSeconds(1200); // the in-flight claim goes stale
+    clock.advanceSeconds(1200); // the resumed delivery's runner died; its lease lapses
     const { expired } = wg.expireStaleClaims(system);
     expect(expired).toBe(1);
-    // Recovered cleanly to ready (previously threw and rolled the sweep back).
-    expect(wg.view(ticketId).ticket.status).toBe("ready");
+    // Recovered cleanly (previously threw and rolled the sweep back) — and back to the
+    // human's Continue gate with its context, not re-queued to a fresh agent.
+    expect(wg.view(ticketId).ticket.status).toBe("paused");
+    expect(wg.pausedContext(ticketId)).not.toBeNull();
   });
 });
 

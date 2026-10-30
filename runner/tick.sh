@@ -391,9 +391,10 @@ declare -F gaffer_inert_policy_check >/dev/null 2>&1 && gaffer_inert_policy_chec
 # ── RUNNER-OWNED-BOOKKEEPING: the runner holds the delivery claim ────────────
 # The runner (not the agent) claims the chosen ticket at SELECTION, holds the claim
 # token for the whole delivery, submits after ITS gates pass, and releases/parks the
-# claim on failure. CLAIM_TOKEN is captured by the candidate-loop claim below; it
-# stays EMPTY for a resumed delivery (the runner holds no token — the ticket is
-# already in_progress) and for DRY_RUN (never claims).
+# claim on failure. CLAIM_TOKEN is captured by the candidate-loop claim below, or by
+# resume-begin for a resumed delivery (which leases the resume to this runner); it
+# stays EMPTY for DRY_RUN (never claims) and only falls back to empty on a resume if
+# resume-begin printed no token (the tokenless branches below remain for that case).
 CLAIM_TOKEN=""
 
 # Release/park the runner-held delivery claim (RUNNER-OWNED-BOOKKEEPING). $1 =
@@ -558,8 +559,9 @@ gaffer_budget_exhausted() {
 
 # Submit a passed delivery for review (RUNNER-OWNED-BOOKKEEPING). With a runner-held
 # token (normal delivery) it uses the claim-gated submit (claimed → in_review,
-# completing the claim); a resumed delivery (no token, already in_progress) is moved
-# straight to in_review. $1 = reason. Returns non-zero (logged) on failure.
+# completing the claim; a leased resume goes in_progress → in_review the same way); a
+# tokenless resume fallback is moved straight to in_review. $1 = reason. Returns
+# non-zero (logged) on failure.
 # Derive the delivery-branch slug from a ticket title. SHARED by the normal delivery
 # path AND the greenfield bootstrap so both mint the identical `gaffer/ticket-N-<slug>`
 # branch shape the reviewer's fallback grep (`gaffer/ticket-$NUM-[a-z0-9-]*`) expects.
@@ -763,7 +765,14 @@ if [ -n "$RESUME_NUM" ]; then
   REPO_PATH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
   STACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
   TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
-  if wg ticket resume-begin "$NUM" >/dev/null 2>&1; then
+  # The resume is LEASED to this runner (--agent/--ttl): the pause released the old
+  # lease, and resume-begin takes a fresh one and prints its token. From here a resumed
+  # delivery uses the same token paths as a fresh one — heartbeat, claim-gated submit,
+  # token release, MCP evidence — and if this tick dies the lapsed lease returns the
+  # ticket to `paused` (worktree kept) instead of stranding it in_progress unleased.
+  if _RESUME_JSON="$(wg ticket resume-begin "$NUM" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null)"; then
+    CLAIM_TOKEN="$(printf '%s' "$_RESUME_JSON" | jget 'd.claim_token ?? ""' 2>/dev/null || echo '')"
+    [ -n "$CLAIM_TOKEN" ] || log "RESUME: WARNING — resume-begin returned no lease token for #$NUM; continuing tokenless"
     _RESUMING=1
     # Keep the (existing) worktree alive even if THIS resumed tick crashes mid-way —
     # the partial work must never be torn down by the trap. A clean success still tears
@@ -1898,9 +1907,9 @@ EOF
   gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"; result error; exit 1; }
   # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
   # MCP server env (GAFFER_CLAIM_TOKEN) so the agent's token-gated evidence writes
-  # resolve it from the server env — the agent never handles the token. Empty for a
-  # resumed delivery (the runner holds no token), which the MCP server treats as
-  # "no token" (the resume agent's evidence writes are best-effort, as before).
+  # resolve it from the server env — the agent never handles the token. A resumed
+  # delivery carries the lease token resume-begin took; only a tokenless resume
+  # fallback leaves it empty, which the MCP server treats as "no token".
   #
   # MEMORY-SCOPE BINDING: the ticket's in-scope repo NAMES (WT_ROWS col-2, the
   # names sourced from repositories.name in the same rows that produce
@@ -2211,7 +2220,7 @@ $_trail_q
   # RUNNER-OWNED-BOOKKEEPING: heartbeat the runner-held claim at the start of each
   # attempt so the lease covers the whole delivery even across retries (belt-and-
   # braces with the generously-sized GAFFER_CLAIM_TTL). No-op when the runner holds
-  # no token (a resumed delivery). Best-effort — a failed heartbeat is logged, and
+  # no token (a tokenless resume fallback). Best-effort — a failed heartbeat is logged, and
   # the generous TTL still covers the delivery.
   [ -n "${CLAIM_TOKEN:-}" ] && { wg heartbeat "$CLAIM_TOKEN" >/dev/null 2>&1 || log "heartbeat for #$NUM claim failed (non-fatal; TTL still covers the delivery)"; }
   # ESCALATION: pick THIS attempt's implement-model + rework prompt suffix from the
@@ -2285,10 +2294,11 @@ $_trail_q
   # LATER data-driven prune of the generic skills isn't blind. Fail-soft; captured
   # here before the ledger removes $USAGE_JSON on either the pause or normal path.
   gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON"
-  # RESUME REPORT: a resumed delivery holds no claim, so its own record_ac_evidence calls
-  # are refused and its prompt tells it to END its message with the AC -> test lines and
-  # the smallest-change note. Record that final text as evidence (runner-attributed) so
-  # the minimalism gate and the reviewer can read it. Fail-soft.
+  # RESUME REPORT: the resume prompt tells the agent to END its message with the AC ->
+  # test lines and the smallest-change note (written for the tokenless resume, whose
+  # record_ac_evidence calls are refused; a leased resume's evidence writes now land
+  # too). Record that final text as evidence (runner-attributed) so the minimalism gate
+  # and the reviewer can read it either way. Fail-soft.
   if [ "$_RESUMING" = "1" ]; then
     gaffer_record_resume_report "$NUM" "$USAGE_JSON" \
       || log "RESUME: could not record the resumed agent's report for #$NUM (continuing)"
@@ -2853,7 +2863,8 @@ $_trail_q
   # Every gate passed. The runner (which holds the claim) now submits the ticket for
   # review — deterministic + token-free from the agent's perspective. A normal
   # delivery uses the claim-gated `wg submit` (claimed → in_review, completing the
-  # claim); a resumed delivery (no runner-held token) is moved in_progress → in_review.
+  # claim; a leased resume uses it too); a tokenless resume fallback is moved
+  # in_progress → in_review.
   # The delivery-artifact / diff_summary / per-repo records BELOW run as a SYSTEM actor
   # and are status-independent, so submitting first (matching the old agent-submit
   # ordering) keeps the done-gate's PR/diff evidence attached to an in_review ticket.

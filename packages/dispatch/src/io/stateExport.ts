@@ -20,8 +20,8 @@
  * round-tripping it preserves the claim/trust history. No new secret is exposed.
  */
 import type { Db } from "../db/connection.js";
-import { backfillEventChain } from "../events/eventChain.js";
-import { migrate } from "../db/connection.js";
+import { backfillEventChain, EVENT_CHAIN_GENESIS, verifyEventChain } from "../events/eventChain.js";
+import { EVENT_CHAIN_SCHEMA_VERSION, migrate } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { DispatchError } from "../util/errors.js";
 
@@ -123,7 +123,11 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   scope_repos: "id",
   ticket_decisions: "ticket_id, decision_id, relation",
   evidence: "id",
-  work_events: "id",
+  // The event log's ORDER is its meaning: the hash chain, every timeline, the stream
+  // cursor and the cycle-time rollups all read work_events in rowid (insertion)
+  // order, and ids are random UUIDs. Export in rowid order; import inserts rows in
+  // bundle order (see orderEventsForImport), so the restored rowids follow it.
+  work_events: "rowid",
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
   rework_attempts: "id",
   autonomy_policy: "id",
@@ -276,6 +280,78 @@ function countExistingRows(db: Db): number {
 }
 
 /**
+ * Put a bundle's `work_events` rows into their original insertion order before
+ * they are inserted (insert order becomes the restored rowid order).
+ *
+ * A chained bundle (every row hashed) carries its own order: each row's `prev_hash`
+ * names its predecessor, so walk the links from genesis. This also restores bundles
+ * written before the export ordered by rowid (they listed events in random UUID
+ * order). A fork, a gap or a missing link means the bundle was edited: refuse it.
+ *
+ * A pre-chain bundle (schema_version below {@link EVENT_CHAIN_SCHEMA_VERSION}, no
+ * hashes) has no links; best effort is a stable sort by `created_at`. A chained-era
+ * bundle with unhashed rows is refused: the hashes were stripped, and re-chaining
+ * them here would launder an edit into a log that verifies clean.
+ */
+function orderEventsForImport(
+  rows: ReadonlyArray<Record<string, unknown>>,
+  schemaVersion: number,
+): Array<Record<string, unknown>> {
+  const hashed = (r: Record<string, unknown>): boolean =>
+    typeof r.hash === "string" && typeof r.prev_hash === "string";
+  const nHashed = rows.filter(hashed).length;
+  if (rows.length === 0) return [];
+
+  if (nHashed === 0 && schemaVersion < EVENT_CHAIN_SCHEMA_VERSION) {
+    return rows
+      .map((row, index) => ({ row, index }))
+      .sort((a, b) => {
+        const ca = String(a.row.created_at ?? "");
+        const cb = String(b.row.created_at ?? "");
+        return ca < cb ? -1 : ca > cb ? 1 : a.index - b.index;
+      })
+      .map((e) => e.row);
+  }
+  if (nHashed !== rows.length) {
+    throw new DispatchError(
+      "INCONSISTENT_BUNDLE",
+      `Bundle has ${rows.length - nHashed} work_events row(s) with no hash although it was ` +
+        `written at schema_version ${schemaVersion} (hash-chained since ` +
+        `${EVENT_CHAIN_SCHEMA_VERSION}); its event log was altered — nothing was changed.`,
+      { unhashed: rows.length - nHashed },
+    );
+  }
+
+  const byPrev = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    const prev = row.prev_hash as string;
+    if (byPrev.has(prev)) {
+      throw new DispatchError(
+        "INCONSISTENT_BUNDLE",
+        "Bundle's event log forks (two events claim the same predecessor) — nothing was changed.",
+        { prev_hash: prev },
+      );
+    }
+    byPrev.set(prev, row);
+  }
+  const ordered: Array<Record<string, unknown>> = [];
+  let cursor = EVENT_CHAIN_GENESIS;
+  for (let next = byPrev.get(cursor); next; next = byPrev.get(cursor)) {
+    ordered.push(next);
+    cursor = next.hash as string;
+  }
+  if (ordered.length !== rows.length) {
+    throw new DispatchError(
+      "INCONSISTENT_BUNDLE",
+      `Bundle's event log chain links only ${ordered.length} of ${rows.length} events from ` +
+        "genesis; it was edited or truncated — nothing was changed.",
+      { linked: ordered.length, total: rows.length },
+    );
+  }
+  return ordered;
+}
+
+/**
  * Build an `INSERT INTO <table>(cols...) VALUES(?...)` for the given row's column
  * set. Column names come from the bundle row keys; values are bound as parameters
  * (never interpolated), so a malicious value cannot inject SQL. Unknown columns
@@ -336,19 +412,33 @@ export function importState(
         }
       }
       for (const table of EXPORT_TABLES) {
-        const rows = bundle.tables[table] ?? [];
+        const raw = (bundle.tables[table] ?? []) as ReadonlyArray<Record<string, unknown>>;
+        const rows =
+          table === "work_events" ? orderEventsForImport(raw, bundle.schema_version) : raw;
         let n = 0;
         for (const row of rows) {
-          insertRow(db, table, row as Record<string, unknown>);
+          insertRow(db, table, row);
           n++;
         }
         byTable[table] = n;
         rowsInserted += n;
       }
       // A bundle written before v23 carries no event hashes: chain the restored
-      // log now so `dispatch events verify` passes on the imported board. Rows
-      // that arrived WITH hashes keep them (the export carried the chain over).
-      backfillEventChain(db);
+      // log now so `dispatch events verify` passes on the imported board. A
+      // chained-era bundle keeps the hashes it carried (orderEventsForImport has
+      // already refused one with unhashed rows) and is never re-chained.
+      if (bundle.schema_version < EVENT_CHAIN_SCHEMA_VERSION) backfillEventChain(db);
+      // The restored log must verify: a bundle whose rows were edited (content no
+      // longer matches its hash) is rejected and the whole import rolls back.
+      const chain = verifyEventChain(db);
+      if (!chain.ok) {
+        throw new DispatchError(
+          "INCONSISTENT_BUNDLE",
+          `Bundle's event log fails verification at event ${chain.brokenEventId} ` +
+            `(${chain.reason}) — it was altered after export; nothing was changed.`,
+          { brokenEventId: chain.brokenEventId, reason: chain.reason },
+        );
+      }
       // A foreign_keys=OFF bulk load can leave a dangling reference if the bundle is
       // internally inconsistent. Verify integrity INSIDE the transaction, before it
       // commits: throwing here rolls the whole load back, so a rejected bundle leaves

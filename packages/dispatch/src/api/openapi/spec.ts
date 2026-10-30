@@ -507,7 +507,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/move",
     tag: T.tickets,
     summary: "Move on the board",
-    description: "A human board move through the state machine; illegal edges are refused.",
+    description:
+      "A human board move through the state machine; illegal edges are refused. Moving a reviewed ticket back to `ready`/`refining` is a rejection (ACs reset, attempt counted, feedback recorded, parked at the retry cap); agent-leased in-flight work cannot be moved into review.",
     capability: "full",
     body: "moveTicketBody",
     responses: [ok("The updated `Ticket`."), notFound, conflict, invalid],

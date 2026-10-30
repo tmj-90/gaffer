@@ -25,7 +25,10 @@ export class DatabaseTooNewError extends Error {
       "this lore database was written by a newer version of memory.\n" +
         `  It has migrations this version doesn't recognise: ${unknownMigrations.join(", ")}.\n` +
         "  Upgrade to the latest release before opening it:\n" +
-        "    npm i -g memory-mcp@latest\n" +
+        // Never `npm i -g memory-mcp`: that npm name is an unrelated third-party package
+        // whose bin would shadow this one. Gaffer ships from git or a release tarball.
+        "    from a checkout: git pull && pnpm install && pnpm -r build; from a release:\n" +
+        "    npm install -g <the newer memory-mcp-X.tgz from https://github.com/tmj-90/gaffer/releases>\n" +
         "  (Refusing to open — an older schema could corrupt newer data.)",
     );
     this.name = "DatabaseTooNewError";

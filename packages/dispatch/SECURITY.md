@@ -52,8 +52,12 @@ Two append-only trails exist, and **neither records content or credentials**:
   `prev_hash` (its predecessor's hash) and `hash = sha256(prev_hash ‖ row)`, so
   a row rewritten, deleted or re-ordered after the fact breaks every hash after
   it. `dispatch events verify` (and `dispatch doctor`) re-derive the chain and
-  name the first broken row. This proves the log was not altered once written;
-  it does not authenticate who wrote it.
+  name the first broken row. The chain is unkeyed: it catches naive and
+  accidental edits, but someone with write access to the file can recompute the
+  hashes, so anchor it by recording the printed chain head outside the DB. A
+  blanked hash is never silently re-chained on open (`dispatch events rechain
+  --confirm` is the explicit, logged repair). It does not authenticate who
+  wrote a row.
 - **Audit log** (`audit.jsonl`, beside the DB or at `DISPATCH_AUDIT`) —
   one JSON line per MCP tool call: timestamp, tool, actor, a **sanitised**
   request, and the result ids/count or error code.

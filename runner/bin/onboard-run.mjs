@@ -307,6 +307,8 @@ function main() {
       // The factory's one events log (as factory.config.sh exports it), so a
       // dashboard-spawned onboard never writes `.crew/` into whatever its cwd is.
       GAFFER_CREW_EVENTS: process.env.GAFFER_CREW_EVENTS || join(GAFFER_DATA, "events.jsonl"),
+      // Register into the factory's DB even if crew.yaml's sqlite_path has drifted.
+      ...(process.env.DISPATCH_DB ? { CREW_DISPATCH_DB: process.env.DISPATCH_DB } : {}),
     },
   });
 

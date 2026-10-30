@@ -215,13 +215,27 @@ export function loadConfig(configPath: string): LoadedConfig {
 }
 
 /**
- * Resolve the Dispatch sqlite path for a loaded config. An absolute value is
- * used as-is; a relative value resolves against the config file's directory
- * (the factory root) — NEVER against process.cwd(). This mirrors how the policy
- * path is resolved in {@link loadSafetyPolicy} and guarantees every consumer
- * opens the same db the orchestrator + dashboard use, regardless of cwd.
+ * Resolve the Dispatch sqlite path for a loaded config.
+ *
+ * `CREW_DISPATCH_DB` wins when set: the runner's `fg` exports it as the factory's
+ * $DISPATCH_DB, so a crew.yaml whose sqlite_path has drifted (a moved or restored
+ * $GAFFER_DATA, an overridden DISPATCH_DB) can no longer send idle drafts and
+ * onboard registrations to a DB nobody reads. Otherwise crew.yaml's value: an
+ * absolute value is used as-is; a relative value resolves against the config
+ * file's directory (the factory root) — NEVER against process.cwd(). This mirrors
+ * how the policy path is resolved in {@link loadSafetyPolicy}.
  */
-export function resolveSqlitePath(loaded: LoadedConfig): string {
+export function resolveSqlitePath(
+  loaded: LoadedConfig,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const override = env.CREW_DISPATCH_DB?.trim();
+  if (override) return resolve(process.cwd(), override);
+  return configuredSqlitePath(loaded);
+}
+
+/** crew.yaml's own sqlite_path, resolved against the factory root (no env override). */
+export function configuredSqlitePath(loaded: LoadedConfig): string {
   const p = loaded.config.dispatch.local.sqlite_path;
   return isAbsolute(p) ? p : resolve(loaded.rootDir, p);
 }

@@ -38,7 +38,7 @@ _REAL_DOCTORS=0; [ -z "${WG_DOCTOR_CMD:-}" ] && _REAL_DOCTORS=1
 
 # Defaults wire the real CLIs; tests override these to run hermetically.
 : "${WG_DOCTOR_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB doctor}"
-: "${FG_DOCTOR_CMD:=node $CREW_DIR/dist/cli/index.js -c $CREW_CONFIG doctor}"
+: "${FG_DOCTOR_CMD:=env CREW_DISPATCH_DB=$DISPATCH_DB node $CREW_DIR/dist/cli/index.js -c $CREW_CONFIG doctor}"
 : "${LG_DOCTOR_CMD:=env MEMORY_DB=$MEMORY_DB node $MEMORY_CLI_BIN doctor}"
 : "${STATS_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB stats --json}"
 : "${STATUS_TICKS:=6}"

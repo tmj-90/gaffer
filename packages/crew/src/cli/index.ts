@@ -130,7 +130,7 @@ repo
   .option("--list-scopes", "list attachable scope nodes and exit", false)
   .action(async (path, opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
 
     if (opts.listScopes) {
       printJson({ ok: true, scopeNodes: availableScopeNodes(dispatch) });
@@ -215,7 +215,7 @@ repo
   .option("--tag <tag...>", "lore tags to record (replaces existing tags)")
   .action(async (id, opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     const store = new RepoContextStore({
       factoryId: factoryIdFromName(ctx.loaded.config.factory.name),
     });
@@ -362,7 +362,7 @@ program
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     const deps = {
       config: loaded.config,
       repoRegistry,
@@ -385,7 +385,7 @@ program
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     // The shared idle tick (loops/idleTick.ts): Dispatch repos merged into
     // crew.yaml's, GitHub/Jira ingest, every enabled idle loop, then the async
     // lore-gap + feature-backlog loops. crew-mcp's run_idle_loop runs the same body.
@@ -426,7 +426,7 @@ program
       filePath: loaded.config.logging.event_log_path,
       redact: loaded.config.logging.redact,
     });
-    const dispatch = await openDispatch(ctx);
+    const dispatch = await openDispatch(ctx, { mustExist: true });
     // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
     // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
     const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
@@ -487,7 +487,11 @@ program
   .option("--json", "emit the structured report instead of the rendered checks", false)
   .action(async (opts, cmd) => {
     const ctx = loadEverything(cmd.optsWithGlobals());
-    const report = await runDoctor({ ctx, openDispatch });
+    // mustExist: a bare open would CREATE a missing DB and report it "reachable".
+    const report = await runDoctor({
+      ctx,
+      openDispatch: (c) => openDispatch(c, { mustExist: true }),
+    });
     if (opts.json) printJson({ ok: report.ok, checks: report.checks });
     else process.stdout.write(`${renderDoctor(report)}\n`);
     if (!report.ok) process.exitCode = 1;

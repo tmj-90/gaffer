@@ -371,9 +371,14 @@ gaffer_bootstrap_onboard() {
   fi
 
   # 2) Onboard into the Factory Map (crew). Standalone single-repo scope.
-  # Non-fatal: a missing/unbuilt crew must not fail the bootstrap delivery.
+  # Non-fatal: a missing/unbuilt crew must not fail the bootstrap delivery — but a
+  # refused onboard (e.g. crew can't find the factory DB) is LOGGED, not swallowed.
   if type fg >/dev/null 2>&1; then
-    fg repo onboard "$dir" --name "$name" --standalone >/dev/null 2>&1 || true
+    local onb_err
+    if ! onb_err="$(fg repo onboard "$dir" --name "$name" --standalone 2>&1 >/dev/null)"; then
+      type log >/dev/null 2>&1 \
+        && log "onboard: 'crew repo onboard $name' failed (non-fatal): $(printf '%s' "$onb_err" | head -c 300 | tr '\n' ' ')"
+    fi
   fi
 
   return "$wg_ok"

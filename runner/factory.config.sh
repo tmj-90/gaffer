@@ -1677,7 +1677,9 @@ gaffer_assert_db_vars() {
 }
 
 wg() { gaffer_assert_db_vars || return 1; node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"; }
-fg() { node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
+# fg pins crew to the factory's $DISPATCH_DB (CREW_DISPATCH_DB beats crew.yaml's
+# sqlite_path), so a drifted crew.yaml can't send drafts to a DB nobody reads.
+fg() { CREW_DISPATCH_DB="${DISPATCH_DB:-}" node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
 lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI_BIN" "$@"; }
 
 # The runner's JSON helpers (node — lib/json-tool.mjs replaces the former inline

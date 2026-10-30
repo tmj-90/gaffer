@@ -5,7 +5,9 @@ import { parse as parseYaml } from "yaml";
 
 import { isAuditDisabled, resolveAuditPath } from "../audit/index.js";
 import { findInertKeys } from "../config/inertKeys.js";
-import { resolveSqlitePath } from "../config/loader.js";
+import { configuredSqlitePath, resolveSqlitePath } from "../config/loader.js";
+import { cliConfigFromEnv } from "../memory/cliClient.js";
+import { withDispatchRepos } from "../registry/dispatchRepos.js";
 import { resolveAsyncMemory, hasRealMemory } from "../memory/factory.js";
 import type { FactoryContext } from "../runtime/wiring.js";
 import { loadSkillRegistry } from "../skills/loader.js";
@@ -63,17 +65,49 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     ok("Config valid", `${ctx.loaded.configPath} (mode: ${ctx.loaded.config.factory.mode})`),
   );
 
-  // 2. Repos resolve to real directories on disk.
-  const repos = ctx.repoRegistry.list();
+  // 2. Dispatch reachable. Probed FIRST: the repo check below merges Dispatch's
+  // registry (what onboarding writes), exactly as `crew idle` / `crew maintain` do.
+  //
+  // `open()` alone is a weak probe: the real client calls `Dispatch.open(path)`,
+  // which CREATES the sqlite file (and its schema) when absent. The CLI therefore
+  // opens with `mustExist` (a missing file fails here instead of being created),
+  // and we issue an actual read query (`listReady`) against the opened store:
+  // a locked DB, a corrupt file, or a store whose schema doesn't satisfy the
+  // facade surfaces here as a `fail` rather than slipping through.
+  let dispatch: DispatchClient | null = null;
+  let dispatchCheck: DoctorCheck;
+  try {
+    const wg = await deps.openDispatch(ctx);
+    wg.listReady();
+    dispatch = wg;
+    dispatchCheck = ok("Dispatch reachable", resolveSqlitePath(ctx.loaded, env));
+  } catch (err) {
+    const code = err instanceof CrewError ? err.code : "UNKNOWN";
+    const missingDb = err instanceof CrewError && typeof err.details.path === "string";
+    dispatchCheck = {
+      label: "Dispatch reachable",
+      level: "fail",
+      detail: `${code}: ${err instanceof Error ? err.message : String(err)}`,
+      fix: missingDb
+        ? "Point crew.yaml's dispatch.local.sqlite_path (or CREW_DISPATCH_DB) at the factory's DB."
+        : code === "DISPATCH_UNAVAILABLE"
+          ? "Build the dispatch package first: `pnpm -C ../dispatch build`."
+          : "Check the configured dispatch sqlite_path is reachable, not locked, and schema-initialised.",
+    };
+  }
+
+  // 3. Repos resolve to real directories on disk (crew.yaml + Dispatch).
+  const registry = dispatch ? withDispatchRepos(ctx.repoRegistry, dispatch) : ctx.repoRegistry;
+  const repos = registry.list();
   if (repos.length === 0) {
     checks.push({
       label: "Repos configured",
       level: "warn",
-      detail: "no repositories in crew.yaml",
-      fix: "Add at least one repo under `repos:` so loops have something to work on.",
+      detail: "no repositories onboarded (none in Dispatch or crew.yaml)",
+      fix: "Onboard a repo: `gaffer onboard <path>` (or `dispatch repo add`).",
     });
   } else {
-    const missing = repos.filter((r) => !existsDir(ctx.repoRegistry.absolutePath(r)));
+    const missing = repos.filter((r) => !existsDir(registry.absolutePath(r)));
     if (missing.length === 0) {
       checks.push(ok("Repos resolve", `${repos.length} repo(s) present on disk`));
     } else {
@@ -83,53 +117,48 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         detail: `${missing.length} of ${repos.length} repo path(s) missing: ${missing
           .map((r) => r.id)
           .join(", ")}`,
-        fix: "Fix each repo's `path` in crew.yaml (paths resolve against the config dir).",
+        fix: "Fix each repo's path (Dispatch's local_path, or `path` in crew.yaml, which resolves against the config dir).",
       });
     }
   }
 
-  // 3. At least one active agent to route work to.
+  // 4. Agents. Only the mock `crew run` loop routes work to crew.yaml agents; the
+  // live runner never reads them, so none configured is informational, never a warn.
   const active = ctx.agentRegistry.active();
-  if (active.length === 0) {
-    checks.push({
-      label: "Active agents",
-      level: "warn",
-      detail: `${ctx.agentRegistry.list().length} configured, 0 active`,
-      fix: "Set an agent's `status: active` so the implementation loop can claim work.",
-    });
-  } else {
-    checks.push(ok("Active agents", `${active.length} active`));
-  }
+  checks.push(
+    ok(
+      "Active agents",
+      active.length === 0
+        ? `${ctx.agentRegistry.list().length} configured, 0 active (only needed for \`crew run\`)`
+        : `${active.length} active`,
+    ),
+  );
 
-  // 4. Dispatch reachable.
-  //
-  // `open()` alone is a weak probe: the real client calls `Dispatch.open(path)`,
-  // which CREATES the sqlite file (and its schema) when absent — so a bare open
-  // can never fail on a fresh/empty path and "reachable" would be vacuously true.
-  // To make the check meaningful we issue an actual read query (`listReady`)
-  // against the opened store. That exercises the connection and the schema: a
-  // locked DB, a corrupt file, or a store whose schema doesn't satisfy the
-  // facade surfaces here as a `fail` rather than slipping through.
-  try {
-    const wg = await deps.openDispatch(ctx);
-    wg.listReady();
-    checks.push(ok("Dispatch reachable", resolveSqlitePath(ctx.loaded)));
-  } catch (err) {
-    const code = err instanceof CrewError ? err.code : "UNKNOWN";
+  checks.push(dispatchCheck);
+  // crew.yaml's own sqlite_path vs the DB actually opened (CREW_DISPATCH_DB, which
+  // the runner's fg sets to $DISPATCH_DB). A mismatch means crew.yaml has drifted.
+  const configured = configuredSqlitePath(ctx.loaded);
+  const effective = resolveSqlitePath(ctx.loaded, env);
+  if (configured !== effective) {
     checks.push({
-      label: "Dispatch reachable",
-      level: "fail",
-      detail: `${code}: ${err instanceof Error ? err.message : String(err)}`,
-      fix:
-        code === "DISPATCH_UNAVAILABLE"
-          ? "Build the dispatch package first: `pnpm -C ../dispatch build`."
-          : "Check the configured dispatch sqlite_path is reachable, not locked, and schema-initialised.",
+      label: "crew.yaml points at the factory DB",
+      level: "warn",
+      detail: `crew.yaml sqlite_path ${configured} ≠ factory DB ${effective} (using the factory DB via CREW_DISPATCH_DB)`,
+      fix: `Set dispatch.local.sqlite_path: ${effective} in crew.yaml, so a direct crew call opens the same DB.`,
     });
   }
 
   // 5. Memory reachable (optional subsystem).
   if (!hasRealMemory(ctx.loaded.config)) {
-    checks.push(ok("Memory", "not configured (using offline Null client)"));
+    // The factory's real memory path is the CLI bridge (MEMORY_CLI_BIN + MEMORY_DB,
+    // or memory.cli.command), not an MCP server.
+    const cli = cliConfigFromEnv(env);
+    const configuredCli = ctx.loaded.config.memory.cli.command;
+    checks.push(
+      cli || configuredCli
+        ? ok("Memory", `memory CLI bridge (${cli ? "MEMORY_CLI_BIN" : "memory.cli.command"})`)
+        : ok("Memory", "not configured (using offline Null client)"),
+    );
   } else {
     const lore = await resolveAsyncMemory(ctx.loaded.config);
     if (lore) {

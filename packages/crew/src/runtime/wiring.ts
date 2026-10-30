@@ -35,10 +35,15 @@ export function loadFactory(opts: { config?: string }): FactoryContext {
 
 /**
  * Open the real Dispatch adapter against the factory's configured SQLite path.
- * Lazy: only the real adapter is touched here. If Dispatch is mid-build this
+ * `mustExist` refuses a missing file instead of creating an empty DB (the
+ * commands that write into the factory's DB pass it). Lazy: only the real
+ * adapter is touched here. If Dispatch is mid-build this
  * throws a structured {@link import("../util/errors.js").CrewError} rather
  * than crashing the host process.
  */
-export async function openDispatch(ctx: FactoryContext): Promise<DispatchClient> {
-  return RealDispatchClient.open(resolveSqlitePath(ctx.loaded));
+export async function openDispatch(
+  ctx: FactoryContext,
+  opts: { mustExist?: boolean } = {},
+): Promise<DispatchClient> {
+  return RealDispatchClient.open(resolveSqlitePath(ctx.loaded), opts);
 }

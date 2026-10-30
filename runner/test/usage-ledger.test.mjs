@@ -36,6 +36,7 @@ const {
   VALID_KINDS,
   extractResultText,
   appendUsageRecord,
+  resolveLedgerPath,
   UNKNOWN,
   LEDGER_FILENAME,
 } = await import(MOD);
@@ -743,6 +744,44 @@ console.log("== PART A'': recordKilledCall — the .mjs sites book the same labe
   }
   for (const k of ["spec-author", "onboard-review", "inherit"]) {
     assert(`VALID_KINDS includes '${k}' (booked by a call site)`, VALID_KINDS.has(k));
+  }
+}
+
+// ── GAFFER_USAGE_LEDGER=0/off: the ledger is off, never a file named "0" ──
+{
+  const dir = mkdtempSync(join(tmpdir(), "ledger-off-"));
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    for (const v of ["0", "off", "FALSE", "no", " 0 "]) {
+      assert(
+        `GAFFER_USAGE_LEDGER=${JSON.stringify(v)} resolves to no ledger`,
+        resolveLedgerPath({ GAFFER_USAGE_LEDGER: v, GAFFER_DATA: dir }) === null,
+      );
+      assert(
+        `GAFFER_USAGE_LEDGER=${JSON.stringify(v)}: append is a no-op`,
+        appendUsageRecord({ measured: true }, { GAFFER_USAGE_LEDGER: v }) === false,
+      );
+    }
+    assert("no stray ledger file written in the cwd", readdirSync(dir).length === 0);
+    assert(
+      "a relative GAFFER_USAGE_LEDGER resolves under GAFFER_DATA",
+      resolveLedgerPath({ GAFFER_USAGE_LEDGER: "u.jsonl", GAFFER_DATA: "/data" }) ===
+        join("/data", "u.jsonl"),
+    );
+    assert(
+      "an absolute GAFFER_USAGE_LEDGER is kept",
+      resolveLedgerPath({ GAFFER_USAGE_LEDGER: "/x/u.jsonl", GAFFER_DATA: "/data" }) ===
+        "/x/u.jsonl",
+    );
+    assert(
+      "unset: $GAFFER_DATA/usage-ledger.jsonl",
+      resolveLedgerPath({ GAFFER_DATA: "/data" }) === join("/data", "usage-ledger.jsonl"),
+    );
+    assert("unset, no GAFFER_DATA: no ledger", resolveLedgerPath({}) === null);
+  } finally {
+    process.chdir(cwd);
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

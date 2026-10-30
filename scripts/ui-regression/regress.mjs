@@ -602,6 +602,15 @@ try {
     1000,
   );
   ok(`ticket #${ticket.number} → ${merged.status} after approval`);
+  if (merged.status === "ready_for_merge") {
+    // AUTO_MERGE is off by default: a human approval waits in Ready for merge until
+    // someone presses Merge now. The ticket page's action is the way in.
+    ok("Auto-merge on approval is off: the approval waits in Ready for merge");
+    await page.goto(`${BASE}/#/ticket/${ticket.id}`, { waitUntil: "load" });
+    await page.waitForSelector('button:has-text("Merge now")', { timeout: 15000 });
+    await page.click('button:has-text("Merge now")');
+    ok("Ticket page: Merge now pressed (runs the merge runner)");
+  }
   const done = await waitFor(
     async () => {
       const t = (await api("GET", `/tickets/${ticket.id}`)).json.ticket;

@@ -76,7 +76,9 @@ COMMANDS
                             --prefix (match tokens of 3+ chars as
                             prefixes), --updated-after, --include-drafts,
                             --include-deprecated, --include-superseded,
-                            --include-restricted, --limit
+                            --include-restricted, --limit,
+                            --no-record-reads (bookkeeping lookups: don't
+                            count the hits as reads in memory stats)
   show <id>                 Print the full record (body included).
   history <id>              List the record's earlier versions (every update
                             snapshots the previous row), newest first.
@@ -98,8 +100,10 @@ COMMANDS
                             the agent (or future-you) a record of WHY
                             the draft was dropped.
   deprecate <id>            Mark deprecated.
-  supersede <old-id> --with <new-id>
-                            Mark <old-id> as superseded by <new-id>.
+  supersede <old-id> --with <new-id> [--approve]
+                            Mark <old-id> as superseded by <new-id>. Both
+                            must be active; --approve first approves a
+                            draft <new-id> in the same transaction.
   verify <id> [--review-after <iso-date>]
                             Bump last_verified_at; if review-after has
                             lapsed, push it 90 days forward (or use the

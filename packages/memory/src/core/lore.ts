@@ -778,13 +778,23 @@ export function reportConflict(db: Database, input: ReportConflictInput): Lore {
   // Re-fetch so the returned Lore reflects the post-UPDATE
   // conflicts_with field (insertLore returned the row before the
   // UPDATE landed).
-  return getLore(db, draft.id)!;
+  return getLore(db, draft.id, { recordRead: false })!;
 }
 
-export function getLore(db: Database, id: string): Lore | null {
+export interface GetLoreOptions {
+  /**
+   * Record a `read` event (default true). Pass false for anything that is not
+   * an agent pulling the record into its context — an operator's `show` /
+   * `history`, a re-fetch after a write — so `memory stats` top-cited and the
+   * retirement candidates reflect real use, not browsing or bookkeeping.
+   */
+  readonly recordRead?: boolean;
+}
+
+export function getLore(db: Database, id: string, opts: GetLoreOptions = {}): Lore | null {
   const row = db.prepare("SELECT * FROM lore WHERE id = ?").get(id) as LoreRow | undefined;
   if (!row) return null;
-  recordRead(db, [id], "get");
+  if (opts.recordRead !== false) recordRead(db, [id], "get");
   return rowToLore(row, reposOf(db, id), tagsOf(db, id));
 }
 
@@ -824,7 +834,7 @@ export function approveLore(db: Database, id: string): Lore | null {
     .run(ts, id);
   if (r.changes === 0) return null;
   db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(id, ts);
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
 }
 
 /** Mark deprecated — stays findable only with `includeDeprecated`. */
@@ -835,39 +845,88 @@ export function deprecateLore(db: Database, id: string): Lore | null {
     .run(ts, id);
   if (r.changes === 0) return null;
   db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deprecated', ?)").run(id, ts);
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
+}
+
+/** Thrown inside the supersede transaction to roll back an `approveReplacement`. */
+class SupersedeAborted extends Error {}
+
+/** Why {@link supersedeLore} refused, for a caller that wants to explain it. */
+export type SupersedeRefusal =
+  "same_id" | "not_found" | "replacement_not_active" | "old_not_active";
+
+/**
+ * Check whether `oldId` can be superseded by `newId`; null when it can.
+ * Both records must exist and be ACTIVE. A draft replacement is refused: the
+ * old record would vanish from every default (active-only) search while its
+ * replacement is still unapproved — and rejecting the draft afterwards left
+ * the original pointing at a deleted id with no CLI path back. A non-active
+ * old record is refused too, so a draft is never "superseded" and an existing
+ * supersede chain is never silently re-pointed.
+ */
+export function supersedeRefusal(
+  db: Database,
+  oldId: string,
+  newId: string,
+): SupersedeRefusal | null {
+  if (oldId === newId) return "same_id";
+  const statusOf = db.prepare("SELECT status FROM lore WHERE id = ?");
+  const replacement = statusOf.get(newId) as { status: LoreStatus } | undefined;
+  const old = statusOf.get(oldId) as { status: LoreStatus } | undefined;
+  if (!replacement || !old) return "not_found";
+  if (old.status !== "active") return "old_not_active";
+  if (replacement.status !== "active") return "replacement_not_active";
+  return null;
 }
 
 /**
  * Mark `oldId` as superseded by `newId`. Old record → status='superseded'
- * + supersededBy=newId. New record is left as-is (typically already active).
- *
- * Validates: oldId exists, newId exists, oldId !== newId, and newId
- * itself is not a tombstone (deprecated / superseded). Returns null
- * on any failure rather than throwing — the CLI surfaces a single
- * explanatory message rather than an unhandled error.
+ * + supersededBy=newId. New record is left as-is. Refusals (see
+ * {@link supersedeRefusal}) return null rather than throwing — the CLI asks
+ * `supersedeRefusal` for the reason. With `approveReplacement`, a DRAFT
+ * replacement is approved in the same transaction first (all or nothing).
  */
-export function supersedeLore(db: Database, oldId: string, newId: string): Lore | null {
-  if (oldId === newId) return null;
-  const replacement = db.prepare("SELECT id, status FROM lore WHERE id = ?").get(newId) as
-    { id: string; status: LoreStatus } | undefined;
-  if (!replacement) return null;
-  if (replacement.status === "deprecated" || replacement.status === "superseded") {
-    return null;
-  }
+export function supersedeLore(
+  db: Database,
+  oldId: string,
+  newId: string,
+  opts: { approveReplacement?: boolean } = {},
+): Lore | null {
   const ts = nowIso();
-  const r = db
-    .prepare(
+  const done = db.transaction((): boolean => {
+    if (opts.approveReplacement) {
+      const r = db
+        .prepare(
+          "UPDATE lore SET status = 'active', updated_at = ? WHERE id = ? AND status = 'draft'",
+        )
+        .run(ts, newId);
+      if (r.changes > 0) {
+        db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'approved', ?)").run(
+          newId,
+          ts,
+        );
+      }
+    }
+    if (supersedeRefusal(db, oldId, newId) !== null) {
+      // Roll back an approval made above: the supersede is all or nothing.
+      if (opts.approveReplacement) throw new SupersedeAborted();
+      return false;
+    }
+    db.prepare(
       "UPDATE lore SET status = 'superseded', superseded_by = ?, updated_at = ? WHERE id = ?",
-    )
-    .run(newId, ts, oldId);
-  if (r.changes === 0) return null;
-  db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'superseded', ?, ?)").run(
-    oldId,
-    ts,
-    JSON.stringify({ supersededBy: newId }),
-  );
-  return getLore(db, oldId);
+    ).run(newId, ts, oldId);
+    db.prepare(
+      "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'superseded', ?, ?)",
+    ).run(oldId, ts, JSON.stringify({ supersededBy: newId }));
+    return true;
+  });
+  try {
+    if (!done()) return null;
+  } catch (err) {
+    if (err instanceof SupersedeAborted) return null;
+    throw err;
+  }
+  return getLore(db, oldId, { recordRead: false });
 }
 
 /**
@@ -906,7 +965,7 @@ export function verifyLore(db: Database, id: string, nextReviewAfter?: string | 
     ts,
     JSON.stringify({ reviewAfter: newReview }),
   );
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
 }
 
 /**
@@ -1107,7 +1166,7 @@ export function updateLore(db: Database, id: string, input: UpdateLoreInput): Lo
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'updated', ?)").run(id, ts);
   });
   tx();
-  return getLore(db, id);
+  return getLore(db, id, { recordRead: false });
 }
 
 /**
@@ -1138,6 +1197,24 @@ export function rejectLore(db: Database, id: string, reason?: string): boolean {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
+    // Edited draft text must not outlive the rejection (migration 014's trigger
+    // also does this; explicit so the scrub is obvious here).
+    db.prepare("DELETE FROM lore_version WHERE lore_id = ?").run(id);
+    // A record superseded by this draft (possible before supersedeLore required an
+    // active replacement) would otherwise point at a deleted id with no CLI way
+    // back: restore it, since the replacement was never approved.
+    const orphaned = db
+      .prepare("SELECT id FROM lore WHERE superseded_by = ? AND status = 'superseded'")
+      .pluck()
+      .all(id) as string[];
+    for (const oldId of orphaned) {
+      db.prepare(
+        "UPDATE lore SET status = 'active', superseded_by = NULL, updated_at = ? WHERE id = ?",
+      ).run(ts, oldId);
+      db.prepare(
+        "INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'reactivated', ?, ?)",
+      ).run(oldId, ts, JSON.stringify({ reason: "replacement_rejected", replacement: id }));
+    }
     db.prepare("INSERT INTO events (lore_id, kind, ts, payload) VALUES (?, 'rejected', ?, ?)").run(
       id,
       ts,
@@ -1195,6 +1272,9 @@ export function deleteLore(db: Database, id: string): boolean {
     db.prepare("DELETE FROM lore_fts WHERE rowid = ?").run(row.rowid);
     db.prepare("DELETE FROM lore WHERE id = ?").run(id);
     db.prepare("DELETE FROM lore_embeddings WHERE lore_id = ?").run(id);
+    // "Edit, then delete" is how a leaked secret gets scrubbed: the snapshots of
+    // the earlier text go too (and migration 014's trigger guarantees it).
+    db.prepare("DELETE FROM lore_version WHERE lore_id = ?").run(id);
     db.prepare("INSERT INTO events (lore_id, kind, ts) VALUES (?, 'deleted', ?)").run(id, ts);
   });
   tx();
@@ -1624,7 +1704,7 @@ export function searchLore(db: Database, opts: SearchOptions = {}): LoreSummary[
       retrievalOf.get(row.id),
     ),
   );
-  recordRead(db, ids, "search");
+  if (opts.recordReads !== false) recordRead(db, ids, "search");
   return annotatePossibleConflicts(summaries);
 }
 
@@ -1851,8 +1931,10 @@ function tokenizeTitleForDuplicates(title: string): string[] {
  * freshest first. Used by `memory list` for at-a-glance browse.
  */
 export function listRecent(db: Database, limit = 20): LoreSummary[] {
+  // A browse, not a retrieval: it must not feed `memory stats` reads (see listLore).
   return searchLore(db, {
     limit,
+    recordReads: false,
     includeRestricted: true,
     includeDrafts: true,
     includeDeprecated: true,

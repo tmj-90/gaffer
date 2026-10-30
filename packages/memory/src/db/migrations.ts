@@ -547,6 +547,24 @@ export const MIGRATIONS: ReadonlyArray<Migration> = [
       `);
     },
   },
+  {
+    // VERSION HISTORY DIES WITH ITS RECORD. lore_version (012) has no FK, and
+    // deleteLore / rejectLore never touched it, so "edit, then delete" — the
+    // obvious way to scrub a leaked secret or rejected poison — left the original
+    // text on disk forever (and in every copy of a shared DB). Purge the orphans
+    // already there, and cascade every future delete in the schema itself so any
+    // delete path (current, future, or a direct SQL delete) is covered. A
+    // trigger rather than a FK rebuild: no table copy on upgrade.
+    id: "014-lore-version-cascade",
+    up(db) {
+      db.exec(`
+        DELETE FROM lore_version WHERE lore_id NOT IN (SELECT id FROM lore);
+        CREATE TRIGGER lore_version_ad AFTER DELETE ON lore BEGIN
+          DELETE FROM lore_version WHERE lore_id = old.id;
+        END;
+      `);
+    },
+  },
 ];
 
 /**

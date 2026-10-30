@@ -701,7 +701,7 @@ export function registerLoreTools(server: McpServer, db: Database): void {
         // No env check: even with MEMORY_ALLOW_RESTRICTED_MCP=1
         // the core would still throw. Telling the agent to set the
         // env var would be a lie.
-        const existing = getLore(db, args.existingId);
+        const existing = getLore(db, args.existingId, { recordRead: false });
         if (shouldRefuseConflictAgainstRestricted(existing)) {
           audit({
             tool: "report_conflict",
@@ -737,7 +737,8 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           conflictsWith: draft.conflictsWith ?? [],
           message:
             "Counter-draft created. A human will review with `memory review` and " +
-            "either approve / reject / edit / supersede the original.",
+            "either reject / edit it, or approve it and then supersede the original " +
+            "(`memory supersede <original> --with <draft> --approve` does both).",
         };
         return {
           content: [

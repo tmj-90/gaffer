@@ -33,7 +33,8 @@
 import type { Database } from "better-sqlite3";
 
 import { newLoreId } from "./ids.js";
-import type { LoreConfidence } from "../db/types.js";
+import { clampConfidence } from "./lore.js";
+import type { LoreConfidence, LoreStatus } from "../db/types.js";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -61,6 +62,10 @@ function stepConfidence(current: LoreConfidence, direction: 1 | -1): LoreConfide
   if (idx < 0) return current;
   const next = Math.min(CONFIDENCE_LADDER.length - 1, Math.max(0, idx + direction));
   return CONFIDENCE_LADDER[next]!;
+}
+
+function higherOf(a: LoreConfidence, b: LoreConfidence): LoreConfidence {
+  return CONFIDENCE_LADDER.indexOf(a) >= CONFIDENCE_LADDER.indexOf(b) ? a : b;
 }
 
 // ── Recall logging (the read-event edge) ──────────────────────────────
@@ -213,13 +218,12 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
 
   const ts = nowIso();
   const isReward = outcome === "clean";
-  const direction: 1 | -1 = isReward ? 1 : -1;
   const flag = isReward ? 0 : 1;
 
   const loreAdjusted: string[] = [];
   const cardsAdjusted: string[] = [];
 
-  const readLore = db.prepare("SELECT confidence FROM lore WHERE id = ?");
+  const readLore = db.prepare("SELECT confidence, source, status FROM lore WHERE id = ?");
   const updateLoreReward = db.prepare(
     `UPDATE lore
        SET confidence = ?, flagged_for_review = 0, last_verified_at = ?, updated_at = ?
@@ -239,10 +243,18 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
 
   const tx = db.transaction(() => {
     for (const id of loreIds) {
-      const row = readLore.get(id) as { confidence: LoreConfidence } | undefined;
+      const row = readLore.get(id) as
+        { confidence: LoreConfidence; source: string | null; status: LoreStatus } | undefined;
       if (!row) continue; // served item since deleted — skip, don't fabricate
       const from = row.confidence;
-      const to = stepConfidence(from, direction);
+      // A reward still honours the confidence invariants (clampConfidence: no
+      // `high` without a source, a draft caps at `medium`) — a lucky clean ticket
+      // must not turn an unsourced agent claim authoritative. A demote can only
+      // lower confidence, so it is never clamped (that could RAISE a legacy row),
+      // and a reward never LOWERS one either (a legacy unsourced `high` stays put).
+      const to = isReward
+        ? higherOf(from, clampConfidence(stepConfidence(from, 1), !!row.source, row.status))
+        : stepConfidence(from, -1);
       if (isReward) {
         updateLoreReward.run(to, ts, ts, id);
       } else {

@@ -1201,6 +1201,58 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
   });
 });
 
+describe("CLI — browsing records no reads (audit: browse-records-reads)", () => {
+  function reads(): number {
+    const db = openDb();
+    try {
+      return (
+        db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = 'read'").get() as { n: number }
+      ).n;
+    } finally {
+      db.close();
+    }
+  }
+
+  it("list / show / history / search --no-record-reads leave the read count unchanged", async () => {
+    delete process.env["MEMORY_AUDIT_OFF"];
+    process.env["MEMORY_AUDIT_LOG"] = join(dir, "audit.jsonl");
+    await run("add", "--title", "Retry policy", "--summary", "s", "--body", "b", "--tag", "t-1");
+    const id = firstId(out);
+    await run("update", id, "--title", "Retry policy v2");
+    expect(reads()).toBe(0);
+    for (let i = 0; i < 3; i++) {
+      expect(await run("list")).toBe(0);
+      expect(await run("show", id)).toBe(0);
+      expect(await run("history", id)).toBe(0);
+      expect(
+        await run("search", "--tag", "t-1", "--include-drafts", "--no-record-reads", "--json"),
+      ).toBe(0);
+    }
+    expect(reads()).toBe(0);
+    // A real search still counts one read per hit.
+    expect(await run("search", "retry")).toBe(0);
+    expect(reads()).toBe(1);
+  });
+});
+
+describe("CLI — supersede refuses a draft replacement with an actionable reason", () => {
+  it("explains the refusal; --approve does both in one step", async () => {
+    await run("add", "--title", "Old rule", "--summary", "s", "--body", "b");
+    const oldId = firstId(out);
+    out = "";
+    await run("suggest", "--title", "New rule", "--summary", "s", "--body", "b");
+    const draftId = firstId(out);
+    err = "";
+    expect(await run("supersede", oldId, "--with", draftId)).toBe(1);
+    expect(err).toContain(`memory approve ${draftId}`);
+    out = "";
+    expect(await run("supersede", oldId, "--with", draftId, "--approve")).toBe(0);
+    out = "";
+    await run("show", draftId);
+    expect(out).toMatch(/\[active\]/);
+  });
+});
+
 describe("CLI — stats --roi (retrieval-ROI report)", () => {
   const REPO = "app";
 

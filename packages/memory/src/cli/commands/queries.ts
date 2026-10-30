@@ -72,10 +72,13 @@ export async function cmdSearch(args: ReturnType<typeof parseArgs>): Promise<num
   const prefix = getBool(args.flags, "prefix");
   const kind = parseKinds(args);
   const json = getBool(args.flags, "json");
+  // Bookkeeping callers (the runner's distill dedupe) opt out of read events.
+  const recordReads = !getBool(args.flags, "no-record-reads");
   const db = openDb();
   try {
     const searchOpts = {
       query,
+      recordReads,
       repo,
       tag,
       ...(kind ? { kind } : {}),
@@ -139,7 +142,8 @@ export async function cmdShow(args: ReturnType<typeof parseArgs>): Promise<numbe
   }
   const db = openDb();
   try {
-    const lore = getLore(db, id);
+    // Operator viewing, not agent recall: no read event.
+    const lore = getLore(db, id, { recordRead: false });
     if (!lore) {
       process.stderr.write(`memory: no record with id ${id}\n`);
       return 1;
@@ -165,7 +169,7 @@ export async function cmdHistory(args: ReturnType<typeof parseArgs>): Promise<nu
   }
   const db = openDb();
   try {
-    const lore = getLore(db, id);
+    const lore = getLore(db, id, { recordRead: false });
     if (!lore) {
       process.stderr.write(`memory: no record with id ${id}\n`);
       return 1;

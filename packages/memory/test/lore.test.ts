@@ -20,6 +20,7 @@ import {
   searchLore,
   searchLoreCount,
   supersedeLore,
+  supersedeRefusal,
   suggestLore,
   trustRankAdjustment,
   updateLore,
@@ -768,6 +769,62 @@ describe("core/lore", () => {
       deprecateLore(db, b.id);
       expect(supersedeLore(db, a.id, b.id)).toBeNull();
       expect(getLore(db, a.id)?.status).toBe("active");
+    });
+    // Regression (audit: supersede-to-draft): a draft replacement used to be
+    // accepted, hiding the canonical record from every default search; rejecting
+    // the draft afterwards left the original pointing at a deleted id.
+    it("refuses a DRAFT replacement; the original stays active and searchable", () => {
+      const a = addLore(db, { title: "requireSession on every route", summary: "s", body: "b" });
+      const d = suggestLore(db, { title: "Counter claim", summary: "s", body: "b" });
+      expect(supersedeLore(db, a.id, d.id)).toBeNull();
+      expect(supersedeRefusal(db, a.id, d.id)).toBe("replacement_not_active");
+      expect(getLore(db, a.id)?.status).toBe("active");
+      expect(searchLore(db, { query: "requireSession" }).map((h) => h.id)).toEqual([a.id]);
+      // …and rejecting the draft afterwards leaves the original intact.
+      expect(rejectLore(db, d.id)).toBe(true);
+      expect(getLore(db, a.id)?.status).toBe("active");
+    });
+    it("refuses to supersede a non-active record (a draft, or an existing chain)", () => {
+      const d = suggestLore(db, { title: "D", summary: "s", body: "b" });
+      const b = addLore(db, { title: "B", summary: "s", body: "b" });
+      expect(supersedeLore(db, d.id, b.id)).toBeNull();
+      expect(supersedeRefusal(db, d.id, b.id)).toBe("old_not_active");
+      const a = addLore(db, { title: "A", summary: "s", body: "b" });
+      const c = addLore(db, { title: "C", summary: "s", body: "b" });
+      supersedeLore(db, a.id, b.id);
+      expect(supersedeLore(db, a.id, c.id)).toBeNull(); // no silent re-point
+      expect(getLore(db, a.id)?.supersededBy).toBe(b.id);
+    });
+    it("approveReplacement approves a draft and supersedes in one step", () => {
+      const a = addLore(db, { title: "A", summary: "s", body: "b" });
+      const d = suggestLore(db, { title: "D", summary: "s", body: "b" });
+      const r = supersedeLore(db, a.id, d.id, { approveReplacement: true });
+      expect(r?.status).toBe("superseded");
+      expect(r?.supersededBy).toBe(d.id);
+      expect(getLore(db, d.id)?.status).toBe("active");
+    });
+    it("approveReplacement is all-or-nothing: a refused supersede leaves the draft a draft", () => {
+      const old = suggestLore(db, { title: "Old draft", summary: "s", body: "b" });
+      const d = suggestLore(db, { title: "D", summary: "s", body: "b" });
+      expect(supersedeLore(db, old.id, d.id, { approveReplacement: true })).toBeNull();
+      expect(getLore(db, d.id)?.status).toBe("draft");
+      const approved = db
+        .prepare("SELECT COUNT(*) AS n FROM events WHERE lore_id = ? AND kind = 'approved'")
+        .get(d.id) as { n: number };
+      expect(approved.n).toBe(0);
+    });
+    it("rejecting a draft that a legacy supersede points at restores the original", () => {
+      const a = addLore(db, { title: "A", summary: "s", body: "b" });
+      const d = suggestLore(db, { title: "D", summary: "s", body: "b" });
+      // The pre-fix state: superseded by a still-draft record.
+      db.prepare("UPDATE lore SET status = 'superseded', superseded_by = ? WHERE id = ?").run(
+        d.id,
+        a.id,
+      );
+      expect(rejectLore(db, d.id)).toBe(true);
+      const back = getLore(db, a.id)!;
+      expect(back.status).toBe("active");
+      expect(back.supersededBy).toBeUndefined();
     });
     it("emits a 'superseded' event with the target id in payload", () => {
       const a = addLore(db, { title: "Old", summary: "s", body: "b" });
@@ -1795,5 +1852,95 @@ describe("lore version history (migration 012)", () => {
     updateLore(db, a.id, { title: "A2" });
     expect(listLoreVersions(db, a.id)).toHaveLength(1);
     expect(listLoreVersions(db, b.id)).toHaveLength(0);
+  });
+});
+
+/**
+ * Regression (audit: version-history-survives-delete): lore_version has no FK and
+ * delete / reject never touched it, so "edit, then delete" — the way to scrub a
+ * leaked secret — left the original text on disk indefinitely.
+ */
+describe("version history is scrubbed with its record", () => {
+  let db: Database;
+  beforeEach(() => {
+    db = newInMemoryDb();
+  });
+  const versionRows = (id: string): number =>
+    (
+      db.prepare("SELECT COUNT(*) AS n FROM lore_version WHERE lore_id = ?").get(id) as {
+        n: number;
+      }
+    ).n;
+
+  it("update then delete leaves no lore_version rows", () => {
+    const a = addLore(db, {
+      title: "t",
+      summary: "password is hunter2",
+      body: "AWS_SECRET=abc123",
+    });
+    updateLore(db, a.id, { summary: "redacted", body: "redacted" });
+    expect(versionRows(a.id)).toBe(1);
+    expect(deleteLore(db, a.id)).toBe(true);
+    expect(versionRows(a.id)).toBe(0);
+    const leaked = db
+      .prepare("SELECT COUNT(*) AS n FROM lore_version WHERE body LIKE '%AWS_SECRET%'")
+      .get() as { n: number };
+    expect(leaked.n).toBe(0);
+  });
+
+  it("update then reject (a draft) leaves no lore_version rows", () => {
+    const d = suggestLore(db, { title: "t", summary: "s", body: "poison v1" });
+    updateLore(db, d.id, { body: "poison v2" });
+    expect(versionRows(d.id)).toBe(1);
+    expect(rejectLore(db, d.id)).toBe(true);
+    expect(versionRows(d.id)).toBe(0);
+  });
+
+  it("a direct SQL delete also cascades (migration 014 trigger)", () => {
+    const a = addLore(db, { title: "t", summary: "s", body: "v1" });
+    updateLore(db, a.id, { body: "v2" });
+    db.prepare("DELETE FROM lore WHERE id = ?").run(a.id);
+    expect(versionRows(a.id)).toBe(0);
+  });
+
+  it("migration 014 purges orphans left by older binaries", () => {
+    const raw = new BetterSqlite3(":memory:");
+    // Apply everything up to 013, plant an orphan, then let 014 run.
+    runMigrations(raw);
+    raw.exec("DROP TRIGGER lore_version_ad");
+    raw.prepare("DELETE FROM migrations WHERE id = '014-lore-version-cascade'").run();
+    raw
+      .prepare(
+        `INSERT INTO lore_version (lore_id, version, title, summary, body, confidence, status,
+           snapshot_of, replaced_at) VALUES ('gonegone', 1, 't', 's', 'AWS_SECRET=x', 'medium',
+           'active', '2026-01-01', '2026-01-02')`,
+      )
+      .run();
+    runMigrations(raw);
+    expect((raw.prepare("SELECT COUNT(*) AS n FROM lore_version").get() as { n: number }).n).toBe(
+      0,
+    );
+    raw.close();
+  });
+
+  it("listLoreVersions is part of the public package API", async () => {
+    const m = await import("../src/index.js");
+    expect(typeof m.listLoreVersions).toBe("function");
+    expect(typeof m.supersedeRefusal).toBe("function");
+  });
+
+  it("openDb turns on secure_delete so freed pages are overwritten", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { openDb } = await import("../src/db/index.js");
+    const dir = mkdtempSync(join(tmpdir(), "lore-secure-"));
+    try {
+      const fileDb = openDb(join(dir, "x.db"));
+      expect(fileDb.pragma("secure_delete", { simple: true })).toBe(1);
+      fileDb.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import BetterSqlite3 from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { addLore, getLore, listRecent } from "../src/core/lore.js";
+import { addLore, getLore, listRecent, suggestLore } from "../src/core/lore.js";
 import { renderSummary } from "../src/cli/format.js";
 import { repoKey, upsertFileCard } from "../src/core/fileCards.js";
 import {
@@ -229,11 +229,13 @@ describe("core/recallFeedback", () => {
   });
 
   it("a DIFFERENT outcome on the same ticket still applies (only same outcome is idempotent)", () => {
+    // Sourced: only a sourced record may reach `high` (see the clamp tests below).
     const l = addLore(db, {
       title: "t",
       summary: "s",
       body: "b",
       repos: ["app"],
+      source: "https://example.com/adr",
       confidence: "medium",
     });
     logRecall(db, { repo: "app", ticket: "1", loreIds: [l.id] });
@@ -241,6 +243,58 @@ describe("core/recallFeedback", () => {
     expect(confOf(db, l.id)).toBe("high");
     const blocked = recallFeedback(db, { repo: "app", ticket: "1", outcome: "blocked" }); // → medium
     expect(blocked.alreadyApplied).toBe(false);
+    expect(confOf(db, l.id)).toBe("medium");
+  });
+
+  // Regression (audit: recall-bump-bypasses-clamp): the reward step skipped
+  // clampConfidence, so one clean ticket made an unsourced claim (or a draft) `high`.
+  it("a clean outcome never raises an UNSOURCED record to high", () => {
+    const l = addLore(db, { title: "t", summary: "s", body: "b", confidence: "medium" });
+    logRecall(db, { repo: "app", ticket: "1", loreIds: [l.id] });
+    const res = recallFeedback(db, { repo: "app", ticket: "1", outcome: "clean" });
+    expect(res.loreAdjusted).toEqual([l.id]); // still verified + unflagged
+    expect(confOf(db, l.id)).toBe("medium");
+    // The audit event records the step that was STORED, not the unclamped one.
+    const ev = db
+      .prepare("SELECT payload FROM events WHERE lore_id = ? AND kind = 'recall_feedback_applied'")
+      .get(l.id) as { payload: string };
+    expect(JSON.parse(ev.payload)).toMatchObject({ from: "medium", to: "medium" });
+  });
+
+  it("a clean outcome raises a SOURCED record medium → high", () => {
+    const l = addLore(db, {
+      title: "t",
+      summary: "s",
+      body: "b",
+      source: "https://example.com/adr",
+      confidence: "medium",
+    });
+    logRecall(db, { repo: "app", ticket: "1", loreIds: [l.id] });
+    recallFeedback(db, { repo: "app", ticket: "1", outcome: "clean" });
+    expect(confOf(db, l.id)).toBe("high");
+  });
+
+  it("a clean outcome on a sourced DRAFT stays at medium or lower", () => {
+    const d = suggestLore(db, {
+      title: "t",
+      summary: "s",
+      body: "b",
+      source: "https://example.com/adr",
+      confidence: "high",
+    });
+    expect(confOf(db, d.id)).toBe("medium");
+    logRecall(db, { repo: "app", ticket: "1", loreIds: [d.id] });
+    recallFeedback(db, { repo: "app", ticket: "1", outcome: "clean" });
+    expect(confOf(db, d.id)).toBe("medium");
+  });
+
+  it("a reward never LOWERS a legacy unsourced high (and a demote still steps down)", () => {
+    const l = addLore(db, { title: "t", summary: "s", body: "b" });
+    db.prepare("UPDATE lore SET confidence = 'high' WHERE id = ?").run(l.id);
+    logRecall(db, { repo: "app", ticket: "1", loreIds: [l.id] });
+    recallFeedback(db, { repo: "app", ticket: "1", outcome: "clean" });
+    expect(confOf(db, l.id)).toBe("high");
+    recallFeedback(db, { repo: "app", ticket: "1", outcome: "blocked" });
     expect(confOf(db, l.id)).toBe("medium");
   });
 

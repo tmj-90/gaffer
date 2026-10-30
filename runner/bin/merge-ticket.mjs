@@ -74,8 +74,10 @@
 //              { "phase":"conflict_resolved_pending_reapproval", ticket, repo, branch,
 //                defaultBranch, reapproval:{...} }
 //              — the merge conflicted; the resolver committed a resolution ON THE
-//                BRANCH and the ticket was signalled for re-approval. The branch is
-//                NOT landed to the default branch.
+//                BRANCH, the resolution passed the re-gate (no conflict markers, the
+//                DoD gates green on the resolved head — recorded as fresh evidence for
+//                the re-review) and the ticket was signalled for re-approval. The
+//                branch is NOT landed to the default branch.
 //   conflict_resolved_reapproval_failed:
 //              { "phase":"conflict_resolved_reapproval_failed", ticket, repo, branch,
 //                defaultBranch, reapproval:{...}, sideRef, restored, error }   (exit 1)
@@ -83,6 +85,16 @@
 //                (after retries). The unreviewed resolution is moved to `sideRef` and
 //                the branch is put back to its pre-resolution head (compare-and-swap),
 //                so no later landing can ship it; the ticket waits for a human.
+//   conflict_resolution_gate_failed:
+//              { "phase":"conflict_resolution_gate_failed", ticket, repo, branch,
+//                defaultBranch, regate:{ markers, dod, evidence }, sideRef, restored,
+//                error }   (exit 1)
+//              — the resolver committed a resolution, but the RE-GATE on the resolved
+//                head failed: it left conflict markers in the tree, or the repo's
+//                Definition-of-Done gates (tests · typecheck · lint, bin/dod-regate.sh)
+//                fail on it. The ticket is NOT reopened; the resolution is moved to
+//                `sideRef` and the branch restored (as above), the failing checklist is
+//                recorded as evidence, and the ticket waits for a human.
 //   conflict_resolver_failed:
 //              { "phase":"conflict_resolver_failed", ticket, repo, branch, defaultBranch,
 //                resolver_exit, resolver_stderr, error }   (exit 1)
@@ -691,6 +703,207 @@ export function resolutionLanded(worktree, defaultBranch) {
   if (anc.status !== 0)
     return { ok: false, reason: `could not compare "${defaultBranch}" with the branch head` };
   return { ok: true, reason: "" };
+}
+
+/**
+ * Conflict markers the resolution INTRODUCED. `git diff --check <parent> HEAD` flags a
+ * "leftover conflict marker" for each marker-shaped line HEAD adds relative to <parent>;
+ * a line is the resolver's only when it is new relative to EVERY parent (the
+ * pre-resolution branch head and the default-branch tip merged in) — a marker-shaped
+ * line either side already had (a markdown `=======` underline on main) is not flagged.
+ * Whitespace findings are ignored. Returns { ok, markers: ["path:line", …], error? };
+ * ok:false (git could not compare) is a FAIL for the caller (fail closed).
+ */
+export function introducedConflictMarkers(worktree, parents) {
+  const sets = [];
+  for (const parent of (parents || []).filter(Boolean)) {
+    const r = git(worktree, "diff", "--check", parent, "HEAD", "--");
+    // --check exits 0 (clean) or 2 (findings); anything else is an error.
+    if (r.error || (r.status !== 0 && r.status !== 2))
+      return { ok: false, markers: [], error: `git diff --check against ${parent} failed` };
+    sets.push(
+      new Set(
+        (r.stdout || "")
+          .split("\n")
+          .filter((l) => l.endsWith(": leftover conflict marker"))
+          .map((l) => l.slice(0, -": leftover conflict marker".length)),
+      ),
+    );
+  }
+  if (sets.length === 0) return { ok: false, markers: [], error: "no parent commit to compare" };
+  const [first, ...rest] = sets;
+  return { ok: true, markers: [...first].filter((m) => rest.every((s) => s.has(m))) };
+}
+
+/**
+ * The repo's DoD gate commands (repositories.test_command / lint_command) for the
+ * ticket's write repo — the same fields tick.sh's delivery gate reads from `ticket
+ * show`. A schema without the columns resolves to no commands (the zero-gates rule then
+ * applies); an unreadable DB returns null (the caller fails closed).
+ */
+export function resolveGateCommands(dbPath, number) {
+  const num = parseInt(String(number ?? "").trim(), 10);
+  if (!Number.isInteger(num) || num <= 0 || !existsSync(dbPath)) return null;
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    let row;
+    try {
+      row = db
+        .prepare(
+          "SELECT r.test_command AS test, r.lint_command AS lint FROM tickets t " +
+            "JOIN ticket_repos tr ON tr.ticket_id = t.id JOIN repositories r ON r.id = tr.repo_id " +
+            "WHERE t.number = ? ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC LIMIT 1",
+        )
+        .get(num);
+    } catch (e) {
+      if (/no such column/i.test(String(e?.message ?? e))) return { test: "", lint: "" };
+      throw e;
+    }
+    return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim() };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
+ * RE-GATE a committed conflict resolution before it goes back to review: (1) no
+ * conflict markers introduced (introducedConflictMarkers), (2) the repo's DoD gates
+ * pass on the resolved head (bin/dod-regate.sh: the delivery gate's runner, toggles,
+ * install step, sandbox and zero-gates rule). Without it a resolution that failed the
+ * tests (or committed raw `<<<<<<<` markers) was re-reviewed against the stale
+ * pre-resolution DoD PASS and landed. Returns
+ *   { ok, markers, dod: "PASS"|"FAIL"|"OFF", evidence, reason }
+ * evidence = the summary to record on the ticket. Fail CLOSED on anything unrunnable.
+ */
+export function regateResolution({ worktree, parents, label, commands, env = process.env }) {
+  const mk = introducedConflictMarkers(worktree, parents);
+  if (!mk.ok || mk.markers.length > 0) {
+    const reason = mk.ok
+      ? `the resolution left conflict markers in ${mk.markers.slice(0, 10).join(", ")}`
+      : `the resolution could not be checked for conflict markers (${mk.error})`;
+    return {
+      ok: false,
+      markers: mk.markers,
+      dod: "NOT_RUN",
+      reason,
+      evidence:
+        "DoD: FAIL\n" +
+        JSON.stringify({
+          dod: "FAIL",
+          gates: [{ gate: "conflict-markers", repo: label, status: "FAIL", rc: "-", note: reason }],
+        }) +
+        "\n\nconflict resolution re-gate: " +
+        reason,
+    };
+  }
+  if (commands === null) {
+    const reason = "the repo's gate commands could not be read from the dispatch DB";
+    return {
+      ok: false,
+      markers: [],
+      dod: "FAIL",
+      reason,
+      evidence:
+        "DoD: FAIL\n" +
+        JSON.stringify({
+          dod: "FAIL",
+          gates: [{ gate: "config", repo: label, status: "FAIL", rc: "-", note: reason }],
+        }),
+    };
+  }
+  // Each gate is bounded by GAFFER_DOD_TIMEOUT inside the script; this outer cap only
+  // stops a wedged script (install + three gates + slack).
+  const perGate = Math.max(1, parseInt(env.GAFFER_DOD_TIMEOUT ?? "", 10) || 900);
+  const r = spawnSync(
+    "bash",
+    [
+      resolve(RUNNER_DIR, "bin", "dod-regate.sh"),
+      worktree,
+      label,
+      commands.test || "-",
+      commands.lint || "-",
+    ],
+    { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
+  );
+  const out = (r.stdout || "").trim();
+  if (!r.error && r.status === 3)
+    return { ok: true, markers: [], dod: "OFF", reason: "DoD is off (GAFFER_DOD=0)", evidence: "" };
+  if (!r.error && r.status === 0)
+    return { ok: true, markers: [], dod: "PASS", reason: "", evidence: out };
+  const reason = r.error
+    ? `the DoD re-gate could not run (${r.error.code === "ETIMEDOUT" ? "timed out" : (r.error.message ?? r.error)})`
+    : "the Definition-of-Done gates fail on the resolved head";
+  return {
+    ok: false,
+    markers: [],
+    dod: "FAIL",
+    reason,
+    evidence:
+      out ||
+      "DoD: FAIL\n" +
+        JSON.stringify({
+          dod: "FAIL",
+          gates: [{ gate: "config", repo: label, status: "FAIL", rc: "-", note: reason }],
+        }),
+  };
+}
+
+/**
+ * Take an unreviewable resolution OFF the delivery branch: park it on
+ * refs/gaffer/conflict-resolved/<n> and put the branch back to its pre-resolution head
+ * (compare-and-swap: only if it still points at the resolution). The ticket stays
+ * ready_for_merge, its next landing conflicts again, and the .merge-conflict-resolved
+ * marker holds it for a human — so the resolution can never land unreviewed.
+ */
+function setResolutionAside(repoPath, branch, preResolution, ticketNumber, why) {
+  const resolvedHead = branchHead(repoPath, branch);
+  const sideRef = `refs/gaffer/conflict-resolved/${ticketNumber}`;
+  let restored = false;
+  if (resolvedHead && preResolution && resolvedHead !== preResolution) {
+    const side = spawnSync("git", ["-C", repoPath, "update-ref", sideRef, resolvedHead], {
+      encoding: "utf8",
+    });
+    if (side.status === 0) {
+      const reset = spawnSync(
+        "git",
+        [
+          "-C",
+          repoPath,
+          "update-ref",
+          "-m",
+          `gaffer: undo unreviewed conflict resolution (${why})`,
+          `refs/heads/${branch}`,
+          preResolution,
+          resolvedHead,
+        ],
+        { encoding: "utf8" },
+      );
+      restored = reset.status === 0;
+    }
+  }
+  return { sideRef, restored };
+}
+
+/** Record runner evidence on the ticket (system actor). Best-effort: false on failure. */
+function recordEvidence(ticketNumber, type, summary) {
+  if (!summary) return false;
+  const r = runDispatch([
+    "attach-evidence",
+    String(ticketNumber),
+    "--type",
+    type,
+    "--summary",
+    summary,
+  ]);
+  return !r.error && r.status === 0;
 }
 
 // Call the Dispatch CLI directly. `wg` is a bash FUNCTION (factory.config.sh), not a
@@ -1322,6 +1535,9 @@ function main() {
   // The branch head BEFORE the resolver touches it: if the ticket cannot be sent back for
   // review afterwards, the resolution is undone to exactly this commit.
   const preResolution = branchHead(repo.localPath, branch);
+  // …and the default-branch tip it merges in: the conflict-marker check compares the
+  // resolution against BOTH sides.
+  const defaultTip = branchHead(repo.localPath, repo.defaultBranch);
   let worktree;
   try {
     worktree = addWorktree(repo.localPath, branch, resolved.number);
@@ -1469,9 +1685,55 @@ function main() {
     return;
   }
 
+  // RE-GATE the resolved head (still checked out in the worktree) BEFORE it goes back to
+  // review: the DoD gates ran once, on the delivery, and the reviewer is told to trust
+  // that evidence — a resolution is new code nobody had tested.
+  const regate = regateResolution({
+    worktree,
+    parents: [preResolution, defaultTip],
+    label: repo.name || "repo",
+    commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number),
+  });
+
   // The resolution lives on the branch (the resolver committed to it in the worktree).
   // Tear the worktree down — the branch ref keeps the commits.
   removeWorktree(repo.localPath, worktree);
+
+  if (!regate.ok) {
+    const aside = setResolutionAside(
+      repo.localPath,
+      branch,
+      preResolution,
+      resolved.number,
+      "re-gate failed",
+    );
+    const recorded = recordEvidence(
+      resolved.number,
+      "test_output",
+      `${regate.evidence}\n\nconflict resolution re-gate FAILED: ${regate.reason} — the resolution was NOT sent to review` +
+        (aside.restored ? ` (kept on ${aside.sideRef}; ${branch} restored)` : ""),
+    );
+    emit(
+      {
+        phase: "conflict_resolution_gate_failed",
+        ticket: resolved.number,
+        repo: repo.name,
+        branch,
+        defaultBranch: repo.defaultBranch,
+        regate: { markers: regate.markers, dod: regate.dod, evidence_recorded: recorded },
+        sideRef: aside.restored ? aside.sideRef : null,
+        restored: aside.restored,
+        error:
+          `${regate.reason} — the ticket was NOT reopened for review; ` +
+          (aside.restored
+            ? `the resolution was moved to ${aside.sideRef} and ${branch} restored to ${preResolution.slice(0, 12)}`
+            : `the resolution could NOT be moved off ${branch}; do not merge it`) +
+          `; held for a human`,
+      },
+      1,
+    );
+    return;
+  }
 
   // 3. Signal the ticket back for re-approval (single isolated Dispatch call).
   const reapproval = signalReapproval(
@@ -1484,31 +1746,13 @@ function main() {
     // while the log said it had gone back for review. Move the resolution aside and put
     // the branch back (compare-and-swap: only if it still points at the resolution). It
     // conflicts again, and the .merge-conflict-resolved marker holds it for a human.
-    const resolvedHead = branchHead(repo.localPath, branch);
-    const sideRef = `refs/gaffer/conflict-resolved/${resolved.number}`;
-    let restored = false;
-    if (resolvedHead && preResolution && resolvedHead !== preResolution) {
-      const side = spawnSync("git", ["-C", repo.localPath, "update-ref", sideRef, resolvedHead], {
-        encoding: "utf8",
-      });
-      if (side.status === 0) {
-        const reset = spawnSync(
-          "git",
-          [
-            "-C",
-            repo.localPath,
-            "update-ref",
-            "-m",
-            "gaffer: undo unreviewed conflict resolution (re-approval failed)",
-            `refs/heads/${branch}`,
-            preResolution,
-            resolvedHead,
-          ],
-          { encoding: "utf8" },
-        );
-        restored = reset.status === 0;
-      }
-    }
+    const { sideRef, restored } = setResolutionAside(
+      repo.localPath,
+      branch,
+      preResolution,
+      resolved.number,
+      "re-approval failed",
+    );
     emit(
       {
         phase: "conflict_resolved_reapproval_failed",
@@ -1531,6 +1775,16 @@ function main() {
     return;
   }
 
+  // Fresh evidence for the re-review: the DoD verdict on the RESOLVED head, recorded
+  // after the reopen so it is the newest checklist the reviewer reads.
+  const regateRecorded =
+    regate.dod === "PASS"
+      ? recordEvidence(
+          resolved.number,
+          "test_output",
+          `${regate.evidence}\n\nconflict resolution re-gate: the DoD gates were re-run on the resolved head ${(branchHead(repo.localPath, branch) || "").slice(0, 12)} (no conflict markers)`,
+        )
+      : false;
   emit(
     {
       phase: "conflict_resolved_pending_reapproval",
@@ -1539,6 +1793,7 @@ function main() {
       branch,
       defaultBranch: repo.defaultBranch,
       reapproval,
+      regate: { markers: [], dod: regate.dod, evidence_recorded: regateRecorded },
     },
     0,
   );

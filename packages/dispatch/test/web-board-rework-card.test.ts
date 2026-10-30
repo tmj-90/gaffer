@@ -155,7 +155,12 @@ describe("rework loop web: the board card surfaces the rework state", () => {
     expect(text).toContain("attempt 3/3");
     expect(text).toContain("branch preserved");
     expect(blocked?.querySelector(".card-rework-exhausted")).toBeTruthy();
-    // the parked ticket is a real, visible card (a human can find it)
-    expect(blocked?.querySelector("a.board-card")).toBeTruthy();
+    // the parked ticket is a real, visible card (a human can find it). The card is
+    // an <article> whose title is the link (it used to be an <a> holding buttons,
+    // which nested interactive elements — BRIEF §4), so look for the card and its link.
+    expect(blocked?.querySelector("article.board-card")).toBeTruthy();
+    expect(blocked?.querySelector(".board-card .card-link")?.getAttribute("href")).toMatch(
+      /^#\/ticket\//,
+    );
   });
 });

@@ -151,11 +151,14 @@ describe("web: Work board counts and bounds", () => {
     expect(more?.textContent).toContain("200");
   });
 
-  it("draws lifecycle marks as .pdots (no .pipeline collision) and no hero band", async () => {
+  it("never draws the Overview's .pipeline class on Work, and no hero band", async () => {
     board = { columns: columns({ ready: [card(1, "ready")] }), closed: [], wontDo: [] };
     await loadApp();
     expect(document.querySelector("#app .view-hero")).toBeNull();
     expect(document.querySelector("#app .pipeline")).toBeNull();
-    expect(document.querySelector("#app .board-card .pdots")).not.toBeNull();
+    // Board cards no longer carry lifecycle marks: the lane a card sits in is its
+    // stage (the comp's card drops them). The list keeps them as .pdots.
+    expect(document.querySelector("#app .board-card")).not.toBeNull();
+    expect(document.querySelector("#app .board-card .pdots")).toBeNull();
   });
 });

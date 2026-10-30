@@ -40,9 +40,12 @@ describe("crew-mcp merges Dispatch's repo registry like `crew idle`", () => {
     const cfgPath = join(tmp, "crew.yaml");
     const cfg = parse(readFileSync(cfgPath, "utf8")) as Record<string, unknown>;
     cfg.repos = []; // dashboard-onboarded: crew.yaml lists NO repos
-    const loops = cfg.loops as { idle_coverage: { enabled: boolean; repos: string[] } };
+    const loops = cfg.loops as {
+      idle_coverage: { enabled: boolean; repos: string[]; minimum_gap_threshold: number };
+    };
     loops.idle_coverage.enabled = true;
     loops.idle_coverage.repos = [];
+    loops.idle_coverage.minimum_gap_threshold = 80; // the seeded 64% is below this target
     writeFileSync(cfgPath, stringify(cfg));
     ctx = loadFactory({ config: cfgPath });
   });

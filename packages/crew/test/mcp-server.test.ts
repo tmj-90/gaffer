@@ -65,9 +65,12 @@ describe("MCP server: factory tools", () => {
     cfg.agents = [
       { id: "agent-a", display_name: "Agent A", capabilities: ["impl"], max_risk: "high" },
     ];
-    const idleCfg = cfg.loops as { idle_coverage: { enabled: boolean; repos: string[] } };
+    const idleCfg = cfg.loops as {
+      idle_coverage: { enabled: boolean; repos: string[]; minimum_gap_threshold: number };
+    };
     idleCfg.idle_coverage.enabled = true;
     idleCfg.idle_coverage.repos = ["demo-repo"];
+    idleCfg.idle_coverage.minimum_gap_threshold = 80; // the seeded 64% is a gap against this target
     writeFileSync(cfgPath, stringify(cfg));
 
     ctx = loadFactory({ config: cfgPath });

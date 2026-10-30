@@ -5,7 +5,7 @@
 // known not to build (zod 4, TypeScript 6/7), a @types/node major above the engines
 // floor, and vitest + @vitest/coverage-v8 majors as two PRs that cannot land apart.
 //   D1  vitest + @vitest/* in ONE group covering majors, matched before minor-and-patch
-//   D2  @types/node majors ignored while engines.node is ">=22"
+//   D2  @types/node majors ignored while engines.node is a Node 22 floor
 //   D3  zod / typescript holds are VERSION-SCOPED (the next major still arrives)
 // Run: node runner/test/dependabot-config.test.mjs
 // =====================================================================
@@ -55,7 +55,12 @@ console.log("== D2: @types/node tracks the engines floor ==");
 const ignores = npm?.ignore || [];
 const engines = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf8")).engines?.node;
 const typesNode = ignores.find((i) => i["dependency-name"] === "@types/node");
-check(engines === ">=22", `D2 engines.node is ">=22" (got ${engines})`);
+// The floor's MAJOR is what @types/node must track; the patch floor (22.22.1, which
+// lint-staged needs) is check-engines.mjs's business.
+check(
+  /^>=22(\.\d+){0,2}$/.test(engines ?? ""),
+  `D2 engines.node is a Node 22 floor (got ${engines})`,
+);
 check(
   (typesNode?.["update-types"] || []).includes("version-update:semver-major"),
   "D2 @types/node majors are ignored (a Node 24+ API must not typecheck on a Node 22 floor)",

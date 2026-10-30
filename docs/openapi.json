@@ -12079,6 +12079,62 @@
               "type": "object",
               "additionalProperties": {}
             }
+          },
+          "agent_display": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "agent_id": {
+                  "type": "string"
+                },
+                "display_name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "display_name_effective": {
+                  "type": "string"
+                },
+                "default_display_name": {
+                  "type": "string"
+                },
+                "shirt_number": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "delivery",
+                    "reviewer",
+                    "security_reviewer",
+                    "tester"
+                  ]
+                }
+              },
+              "required": [
+                "agent_id",
+                "display_name",
+                "display_name_effective",
+                "default_display_name",
+                "shirt_number",
+                "role"
+              ],
+              "description": "How an agent is presented (squad name, shirt number); the agent id never changes."
+            },
+            "description": "Every agent the ticket's claims and events name, keyed by agent id."
           }
         },
         "required": [
@@ -12090,7 +12146,8 @@
           "dependencies",
           "evidence",
           "events",
-          "rework_trail"
+          "rework_trail",
+          "agent_display"
         ],
         "additionalProperties": false
       },

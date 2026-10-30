@@ -61,7 +61,6 @@ repos: []
 #   package_manager: poetry
 #   test_command: poetry run pytest
 #   lint_command: poetry run ruff check .
-#   typecheck_command: poetry run mypy auth_service
 #   coverage_command: poetry run pytest --cov=auth_service
 #   mutation_mode: branch_only
 #   risk_level: high
@@ -127,6 +126,8 @@ loops:
     mode: create_draft_tickets
     repos: []
     min_delivered_tickets: null # null = inherit default_min_delivered_tickets
+    # Target coverage percentage: a draft is filed only when the parsed total is
+    # BELOW it (a repo at or above it, or a report with no recognisable total, files nothing).
     minimum_gap_threshold: 10
   idle_test_quality:
     enabled: false

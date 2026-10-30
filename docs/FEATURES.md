@@ -96,9 +96,14 @@ worktree after the Definition-of-Done gates. Exit 0 marks the criterion
 satisfied as *runner-verified*, with the output stored as evidence; a failure
 sends the delivery back to rework with that output as feedback — and the done
 gate refuses a checked criterion an agent merely *claimed* to have met. The
-repo page holds the Definition-of-Done gate commands (test / lint / coverage),
-auto-detected at onboarding and editable there, because a wrong gate command is
-the commonest reason a delivery bounces or ships unverified.
+repo page holds the Definition-of-Done gate commands (test / lint), auto-detected
+at onboarding and editable there, because a wrong gate command is the commonest
+reason a delivery bounces or ships unverified. The typecheck gate runs the repo's
+package.json typecheck script (a `typecheck`-style script or a bare
+`tsc --noEmit`), read from the base branch so a delivery cannot delete it away;
+`GAFFER_DOD_TYPECHECK_CMD` overrides it. The repo's coverage command is stored on
+the same page but is **not** a Definition-of-Done gate (coverage-did-not-decrease
+needs a stored baseline and is deferred): it feeds the idle coverage scan below.
 
 The board is **live**: the control plane streams its event log to the browser,
 so a transition shows up within a second instead of on a polling timer.
@@ -215,7 +220,11 @@ lane (security hotspots, coverage, test quality, type quality, tech debt,
 documentation, dependencies) chosen by a deterministic priority-and-rotation
 scheduler, no model in the choice. Each finding becomes a draft ticket that
 carries a behaviour-preserving acceptance criterion with the repo's own test
-command as its check, so the runner verifies the fix mechanically. The **Idle
+command as its check, so the runner verifies the fix mechanically. The coverage
+lane files a draft only when the coverage command reports a total **below** the
+`minimum_gap_threshold` target (a percentage); a repo at or above it, or a report
+with no recognisable total (coverage.py `TOTAL`, istanbul `All files`, Node's
+built-in `# all files` report), files nothing. The **Idle
 loops** panel holds the master switch, the lane toggles, a recommended set, and
 the **self-improve** gate: opted-in repos, a risk ceiling and a per-tick cap
 under which the tick promotes its own drafts to ready so the delivery loop fixes

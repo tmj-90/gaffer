@@ -96,7 +96,9 @@ export const mutationModeSchema = z.enum([
  *   - tests     → the repo's `test_command`
  *   - lint      → the repo's `lint_command` (this is the existing
  *                 `require_lint_clean` policy, now actually RUN, not just asserted)
- *   - typecheck → the repo's `typecheck_command` (null on most repos ⇒ skipped)
+ *   - typecheck → GAFFER_DOD_TYPECHECK_CMD, else the command auto-detected from
+ *                 the repo's package.json (runner/lib/dod.sh gaffer_dod_typecheck_cmd);
+ *                 `typecheck_command` below is not read by the live runner
  *
  * DEFERRED (documented follow-ups, intentionally NOT gates here):
  *   coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2),
@@ -130,8 +132,9 @@ export const repoSchema = z.object({
   lint_command: z.string().nullable().default(null),
   coverage_command: z.string().nullable().default(null),
   build_command: z.string().nullable().default(null),
-  // I3: the typecheck DoD gate's command (e.g. "pnpm typecheck"). Null ⇒ the
-  // typecheck gate is SKIPPED for this repo, not failed.
+  // NOT READ BY THE LIVE RUNNER (config/inertKeys.ts): its typecheck DoD gate runs
+  // GAFFER_DOD_TYPECHECK_CMD, else the command auto-detected from the repo's
+  // package.json. Accepted so existing configs stay valid.
   typecheck_command: z.string().nullable().default(null),
   // I3: per-repo Definition-of-Done override. Omitted ⇒ inherit the factory
   // default (`definition_of_done` at the top level). The bare object, not the

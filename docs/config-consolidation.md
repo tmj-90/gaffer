@@ -150,7 +150,7 @@ Tier ∈ {mode, base, advanced, system, derive, delete}. `UI?` = present in
 | MAX_OPEN_AGENT_PRS_PER_REPO | 1175 | 3 | Backpressure: in_review tickets/repo | ✓ | advanced |
 | HYGIENE_ENFORCE | 1129 | 1 | Hard-fail deliveries touching forbidden paths | ✓ | advanced |
 | HYGIENE_FORBIDDEN_PATHS | 1142 | node_modules … | Glob fragments that fail the hygiene check | ✗ | advanced |
-| MINIMALISM_ENFORCE | 1149 | 1 | Require a smallest-change note per delivery | ✓ | advanced |
+| MINIMALISM_ENFORCE | 1149 | 1 | Require a smallest-change note per delivery (since replaced by MINIMALISM_REQUIRE_NOTE: it never changed an outcome) | ✓ | advanced |
 | OVERSIZED_MAX_LINES | 1150 | 400 | Changed-line count that flags oversized_diff | ✓ | advanced |
 | OVERSIZED_MAX_FILES | 1151 | 12 | Changed-file count that flags oversized_diff | ✓ | advanced |
 | CLARIFY_DRAFTS_WHEN_IDLE | 1315 | 0 | Clarify vague drafts when idle | ✓ | advanced |
@@ -193,7 +193,7 @@ because it is an operator knob and already in the UI. Not part of the 84.
 | GAFFER_MODEL_REGISTRY | 113 | RUNNER_DIR | model-registry.json path | system |
 | DISPATCH_PRODUCT_OWNER_CMD | 887 | RUNNER_DIR | "Suggest work" button command | system |
 | DISPATCH_ONBOARD_CMD | 897 | RUNNER_DIR | "Onboard repo" button command | system |
-| DISPATCH_TESTER_CMD | 907 | RUNNER_DIR | Black-box tester runner command | system |
+| DISPATCH_TESTER_CMD | 907 | RUNNER_DIR | Black-box tester runner command (since removed: nothing ever ran it) | system |
 | GAFFER_AGENT_NAME | 910 | gaffer-factory | Registered agent name | system |
 | GAFFER_AGENT_ID_FILE | 911 | GAFFER_DATA | Persisted agent id file | system |
 | GAFFER_LOG | 912 | GAFFER_DATA | Factory log path | system |

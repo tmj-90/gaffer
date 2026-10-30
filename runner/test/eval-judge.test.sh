@@ -11,6 +11,10 @@
 #   E  FAIL-SOFT: a dead judge turn (worker rc 70, empty envelope) records
 #      NOTHING (an infra failure must not poison the metric) and exits 0
 #   F  empty diff → no-op (never spawns the worker)
+#   I  the judge grades on REAL input: the ticket title from `wg ticket show`'s
+#      nested {ticket:{title}} shape, the evidence the delivery recorded (read
+#      fresh), the DoD checklist tick.sh hands over (GAFFER_EVAL_TEST_OUTPUT; its
+#      results file is gone by then) and the repo NAME, not the worktree dir
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,7 +58,9 @@ printf 'export const x = 2; // rotated\n' > "$REPO/app.ts"
 git -C "$REPO" commit -qam "deliver"
 git -C "$REPO" checkout -q main
 
-export SHOW='{"title":"Rotate the constant","acceptanceCriteria":[{"id":"AC1","text":"x becomes 2"}]}'
+# The REAL `wg ticket show` shape: the ticket row is nested under "ticket" (a flat
+# {"title"} fixture used to hide that the judge was reading an empty title).
+export SHOW='{"ticket":{"number":9,"title":"Rotate the constant"},"acceptanceCriteria":[{"id":"AC1","text":"x becomes 2"}],"evidence":[]}'
 
 # ── Stub worker: capture the judge prompt, emit a canned PASS reply envelope. ──
 WORKER_CALLS="$WORK/worker-calls"; : > "$WORKER_CALLS"
@@ -139,6 +145,9 @@ grep -q '<untrusted-delivery-diff>' "$WORK/last-prompt.txt" \
   && ok "judge prompt quarantined the diff (untrusted envelope)" || no "prompt missing the quarantine envelope"
 grep -q 'AC1' "$WORK/last-prompt.txt" \
   && ok "judge prompt carries the acceptance criteria" || no "prompt missing the ACs"
+grep -qx 'Ticket: Rotate the constant' "$WORK/last-prompt.txt" \
+  && ok "judge prompt carries the ticket title from the nested ticket show shape" \
+  || no "judge prompt title wrong: $(grep '^Ticket:' "$WORK/last-prompt.txt")"
 # TEXT-ONLY JUDGE: it grades inline text, so it gets no built-in tools, no MCP tools,
 # no skill listing, its own small turn cap, and an EMPTY scratch cwd — never the
 # target repo (whose CLAUDE.md / skills / settings would load into the judge).
@@ -259,6 +268,36 @@ if [ -s "$CAP/argv" ]; then
 else
   no "the judge never reached the stub claude"
 fi
+
+echo "== I. real judge input: fresh evidence, the tick's DoD checklist, the repo name =="
+rm -f "$LEDGER" "$GAFFER_DATA/.dod-9.results"   # tick.sh removes its results file on a PASS
+# `wg ticket show` NOW carries what the delivery recorded after $SHOW was read.
+wg() {
+  [ "$1 $2" = "ticket show" ] || return 1
+  printf '%s' '{"ticket":{"number":9,"title":"Rotate the constant"},"acceptanceCriteria":[{"id":"AC1","text":"x becomes 2"}],"evidence":[{"evidence_type":"test_output","summary":"AC1: x is 2 — npm test passes","recorded_by_agent":true},{"evidence_type":"manual_note","summary":"smallest-change: one line in app.ts","recorded_by_agent":true}]}'
+}
+GAFFER_EVAL_TEST_OUTPUT=$'GATE\ttests\tdemo\tPASS\t0\tnpm test\nGATE\tlint\tdemo\tPASS\t0\tnpm run lint' \
+  gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 '' demo-repo; rc=$?
+unset -f wg
+[ "$rc" -eq 0 ] && ok "judge run with the tick's inputs exits 0" || no "judge run failed (rc=$rc)"
+grep -q $'GATE\ttests\tdemo\tPASS' "$WORK/last-prompt.txt" && ! grep -q '(no test output captured)' "$WORK/last-prompt.txt" \
+  && ok "the DoD checklist tick.sh hands over reaches the judge (no results file needed)" \
+  || no "the judge did not see the DoD checklist"
+grep -q 'AC1: x is 2 — npm test passes' "$WORK/last-prompt.txt" && ! grep -q '(no evidence recorded)' "$WORK/last-prompt.txt" \
+  && ok "the evidence the delivery recorded (read fresh) reaches the judge" \
+  || no "the judge did not see the recorded evidence"
+python3 - "$LEDGER" <<'PY' && ok "the ledger record names the repo (demo-repo), not the worktree dir" || no "ledger repo wrong"
+import json, sys
+r = json.loads(open(sys.argv[1]).read().splitlines()[0])
+assert r["repo"] == "demo-repo", r
+PY
+grep -q 'GAFFER_EVAL_TEST_OUTPUT="${_DOD_JUDGE_TESTS:-}"' "$RUNNER_DIR/tick.sh" \
+  && grep -q '"${_DELIVERY_SPEND_USD:-}" "${_CARD_REPO_NAME:-}"' "$RUNNER_DIR/tick.sh" \
+  && ok "tick.sh passes the DoD checklist and the primary repo's name to the judge" \
+  || no "tick.sh does not pass the checklist / repo name to the judge"
+awk '/_DOD_EV="\$\(gaffer_dod_evidence_summary "\$DOD_RESULTS" PASS\)"/{p=1} p&&/rm -f "\$DOD_RESULTS"/{print; exit} p' "$RUNNER_DIR/tick.sh" | grep -q '_DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS"' \
+  && ok "tick.sh keeps the PASS checklist BEFORE removing the results file" \
+  || no "tick.sh removes the DoD results before the judge can see them"
 
 echo ""
 echo "eval-judge: $pass passed, $fail failed"

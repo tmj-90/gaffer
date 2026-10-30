@@ -28,7 +28,12 @@ falsifiable.
    through `worker_deliver` (the single env-scrubbed, timeout-bounded `claude -p`
    seam) with an **empty MCP config** (the judge gets no tools), parses the reply
    via `worker.mjs parse-result result-text`, and appends the verdict to the
-   ledger. Additive + fail-soft: any failure (unbuilt crew, dead model turn,
+   ledger. The judge grades the ticket's title and acceptance criteria, the
+   evidence on the ticket as it stands after the delivery (read fresh, not the
+   pre-delivery snapshot), the bounded diff, and the Definition-of-Done checklist
+   the delivery passed (tick.sh hands it over in `GAFFER_EVAL_TEST_OUTPUT`, because
+   its results file is gone by then); the ledger record names the primary write
+   repo, not the per-ticket worktree directory. Additive + fail-soft: any failure (unbuilt crew, dead model turn,
    empty reply) records nothing and never blocks the delivery. An empty reply is
    treated as an infra failure, not a quality fail — it must not poison the
    metric. `DRY_RUN` is a no-op.

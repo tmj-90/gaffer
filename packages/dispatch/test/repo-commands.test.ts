@@ -5,8 +5,10 @@
  */
 import type { AddressInfo } from "node:net";
 
+import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { registerRepo } from "../src/cli/commands/repo.js";
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
@@ -106,5 +108,22 @@ describe("POST /repos/:id/commands", () => {
     });
     const get = await fetch(`${baseUrl}/repos/${repo.id}/commands`);
     expect(get.status).toBe(405);
+  });
+});
+
+describe("set-commands help says what each command feeds", () => {
+  // The live Definition-of-Done gate runs tests / typecheck / lint only (runner
+  // tick.sh); the coverage command feeds the idle coverage scan. The help used to
+  // call all three "Definition-of-Done gate commands".
+  it("does not present the coverage command as a DoD gate", () => {
+    const program = new Command();
+    registerRepo(program);
+    const repo = program.commands.find((c) => c.name() === "repo");
+    const setCommands = repo?.commands.find((c) => c.name() === "set-commands");
+    expect(setCommands).toBeDefined();
+    const coverage = setCommands!.options.find((o) => o.long === "--coverage");
+    expect(coverage?.description).toMatch(/idle coverage scan/);
+    expect(coverage?.description).toMatch(/NOT a DoD gate/);
+    expect(setCommands!.description()).toMatch(/test \/ lint Definition-of-Done gate commands/);
   });
 });

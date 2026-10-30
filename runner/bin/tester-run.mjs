@@ -17,12 +17,12 @@
 // nothing about HOW the change was implemented. That is what makes the test
 // independent: it catches "impl passes its own tests but doesn't satisfy the AC".
 //
-// This pass implements the REAL, TESTED pieces: the context assembly (proven to
-// omit the diff), the DISPATCH_TESTER_CMD seam, and the pass/fail -> transition
-// wiring (stubbable so it is exercised without a live model). The live `claude -p`
-// tester invocation is the documented follow-up: with --dry-run (or no
-// DISPATCH_TESTER_VERDICT_CMD configured) this runner reports the planned context
-// WITHOUT spawning a model, exactly like merge-ticket.mjs --dry-run.
+// The tested pieces: the context assembly (proven to omit the diff), the pass/fail
+// -> transition wiring (stubbable so it is exercised without a live model) and the
+// live tester (--live), which the tick's tester pass (runner/lib/tester.sh) runs by
+// invoking THIS file directly — there is no configurable tester-runner command.
+// With --dry-run this runner reports the planned context WITHOUT spawning a model,
+// exactly like merge-ticket.mjs --dry-run.
 //
 // =====================================================================
 // CLI CONTRACT
@@ -924,7 +924,16 @@ function runLiveTester(context) {
       .pop() || "";
   if (verdict === null) {
     log(`no verdict token from the tester for #${n} — HOLDING in_testing for a human`);
-    emit({ phase: "held", ticket: n, reason: "tester produced no verdict token", testsBranch }, 2);
+    emit(
+      {
+        phase: "held",
+        ticket: n,
+        reason: "the tester produced no verdict token",
+        testsBranch,
+        testedCommit,
+      },
+      2,
+    );
     return;
   }
   if (!inspection.ok) {

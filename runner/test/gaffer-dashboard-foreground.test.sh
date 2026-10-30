@@ -30,9 +30,13 @@ grep -q "ARGV:.*--port 8787" "$CAP" && ok "passes the port" || fail "port missin
 TOK="$(cat "$WORK/d1/dashboard-token")"
 grep -q "^DISPATCH_API_TOKEN=$TOK$" "$CAP" && ok "the server received the token" || fail "server token missing"
 grep -q "?token=$TOK" <<<"$OUT" && ok "login URL with the token printed BEFORE exec (for container logs)" || fail "login URL not printed: $OUT"
-for v in DISPATCH_TICK_CMD DISPATCH_MERGE_CMD DISPATCH_ONBOARD_CMD DISPATCH_PRODUCT_OWNER_CMD DISPATCH_TESTER_CMD DISPATCH_DB GAFFER_DASHBOARD_URL; do
+for v in DISPATCH_TICK_CMD DISPATCH_MERGE_CMD DISPATCH_ONBOARD_CMD DISPATCH_PRODUCT_OWNER_CMD DISPATCH_DB GAFFER_DASHBOARD_URL; do
   grep -q "^$v=." "$CAP" && ok "action-command env wired: $v" || fail "$v missing from the server env"
 done
+# The tester has no dashboard button and the tick runs the bundled bin/tester-run.mjs,
+# so a DISPATCH_TESTER_CMD knob would be a setting that changes nothing.
+grep -q "^DISPATCH_TESTER_CMD=" "$CAP" && fail "the dead DISPATCH_TESTER_CMD is still exported to the server" \
+  || ok "no dead DISPATCH_TESTER_CMD in the server env (the tick runs bin/tester-run.mjs itself)"
 grep -q "^GAFFER_TICK_TIMEOUT=" "$CAP" && fail "runner-only knob leaked into the server env" || ok "runner-only knobs are unset for the server (same scrub as the detached path)"
 [ -f "$WORK/d1/dashboard.pid" ] && fail "foreground must not write a pid file" || ok "no pid file (the supervisor owns the process)"
 

@@ -69,7 +69,7 @@ login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only; ev
 
 > **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
 > every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,
-> `DISPATCH_TICK_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_TESTER_CMD`) into the API's
+> `DISPATCH_TICK_CMD`, `DISPATCH_ONBOARD_CMD`) into the API's
 > environment. An ad-hoc launch (`node packages/dispatch/dist/api/bin.js`) leaves them
 > unset, so the dashboard's buttons silently no-op. The API logs a
 > `dispatch-api action commands — wired: …; missing: …` line at startup so a

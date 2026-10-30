@@ -10,6 +10,11 @@
 //   unverified_note— note references NONE of the changed files      code 2
 //   oversized_diff — note present but over a size cap (flag, not fail) code 2
 //
+// The size check is INDEPENDENT of the note checks: `oversized` carries the
+// oversized_diff reason whenever the diff is over a cap, whatever the verdict, so
+// a delivery with a missing or boilerplate note is still flagged oversized (the
+// verdict token alone reports only the first problem found).
+//
 // PURE: every input is pre-computed by the caller (diff stats come from
 // gaffer_diff_stats' git call, which stays in bash). This module only decides.
 // The note excerpt in the unverified reason is byte-oriented (cut -c under LC=C).
@@ -25,7 +30,7 @@ export interface MinimalismInput {
   maxLines?: number;
   /** OVERSIZED_MAX_FILES (default 12); 0 disables the files dimension. */
   maxFiles?: number;
-  /** MINIMALISM_ENFORCE (default true): a missing note fails (code 1) vs flags (2). */
+  /** MINIMALISM_REQUIRE_NOTE (the CLI's default: off): a missing note fails (code 1) vs flags (2). */
   enforce?: boolean;
 }
 
@@ -33,6 +38,8 @@ export interface MinimalismVerdict {
   verdict: "ok" | "missing_note" | "unverified_note" | "oversized_diff";
   code: number;
   reason: string;
+  /** The oversized_diff reason when the diff is over a cap (any verdict), else null. */
+  oversized: string | null;
 }
 
 /** ASCII-only lowercase, matching the bash `tr 'A-Z' 'a-z'` (byte, not Unicode). */
@@ -57,12 +64,17 @@ export function checkMinimalism(input: MinimalismInput): MinimalismVerdict {
   const maxLines = input.maxLines ?? 400;
   const maxFiles = input.maxFiles ?? 12;
   const enforce = input.enforce ?? true;
+  // Oversized diff → flag (never fail). A cap of 0 disables that dimension.
+  const oversized =
+    (maxLines > 0 && lines > maxLines) || (maxFiles > 0 && files > maxFiles)
+      ? `oversized_diff: ${files} files / ${lines} lines (caps: ${maxFiles} files / ${maxLines} lines) — suggest a split`
+      : null;
 
   // Smallest-change note is MANDATORY; whitespace-only (POSIX [:space:]) = missing.
   const trimmed = note.replace(/[ \t\n\v\f\r]/g, "");
   if (trimmed === "") {
     const reason = "missing smallest-change note (required for every completed delivery)";
-    return { verdict: "missing_note", code: enforce ? 1 : 2, reason };
+    return { verdict: "missing_note", code: enforce ? 1 : 2, reason, oversized };
   }
 
   // Relevance: a note referencing NONE of the changed files looks like boilerplate.
@@ -91,16 +103,14 @@ export function checkMinimalism(input: MinimalismInput): MinimalismVerdict {
       // only divergence, harmless in a flag reason.)
       const excerpt = note.replace(/\n/g, "").slice(0, 80);
       const reason = `smallest-change note references no changed file (possible boilerplate): "${excerpt}"`;
-      return { verdict: "unverified_note", code: 2, reason };
+      return { verdict: "unverified_note", code: 2, reason, oversized };
     }
   }
 
-  // Oversized diff → flag (never fail). A cap of 0 disables that dimension.
-  if ((maxLines > 0 && lines > maxLines) || (maxFiles > 0 && files > maxFiles)) {
-    const reason = `oversized_diff: ${files} files / ${lines} lines (caps: ${maxFiles} files / ${maxLines} lines) — suggest a split`;
-    return { verdict: "oversized_diff", code: 2, reason };
+  if (oversized !== null) {
+    return { verdict: "oversized_diff", code: 2, reason: oversized, oversized };
   }
 
   const reason = `minimal: ${files} files / ${lines} lines within caps; smallest-change note present`;
-  return { verdict: "ok", code: 0, reason };
+  return { verdict: "ok", code: 0, reason, oversized: null };
 }

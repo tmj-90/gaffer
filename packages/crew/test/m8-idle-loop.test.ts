@@ -41,6 +41,54 @@ describe("parseCoverage", () => {
   it("handles istanbul-style 'All files' output", () => {
     expect(parseCoverage("All files | 42.5 |").total).toBe(42.5);
   });
+
+  it("reads Node's built-in test-runner coverage report (tap '#' and spec 'ℹ' prefixes)", () => {
+    const tap = [
+      "# start of coverage report",
+      "# file       | line % | branch % | funcs % | uncovered lines",
+      "# a.mjs      |  71.43 |    66.67 |  100.00 | 3-4",
+      "# all files  |  71.43 |    80.00 |  100.00 | ",
+      "# end of coverage report",
+    ].join("\n");
+    expect(parseCoverage(tap).total).toBe(71.43);
+    expect(parseCoverage("ℹ all files  | 100.00 |    80.00 |  100.00 | ").total).toBe(100);
+  });
+
+  it("keeps the decimals of a coverage.py TOTAL line (never reads 75.00% as 0)", () => {
+    expect(parseCoverage("TOTAL   120   30   75.00%").total).toBe(75);
+    expect(parseCoverage("TOTAL 10 0 100%").total).toBe(100);
+  });
+});
+
+describe("idle coverage loop: only a real gap is filed", () => {
+  // testConfig's idle_coverage.minimum_gap_threshold is 80 (the target percentage).
+  function run(stdout: string) {
+    const wg = new FakeDispatchClient();
+    const d = idleDeps(wg, new FakeCommandRunner({ stdout, exitCode: 0 }));
+    return { outcome: runIdleCoverageLoop(d), wg, d };
+  }
+
+  it("files nothing when coverage meets the target", () => {
+    const { outcome, d } = run("TOTAL 10 0 100%");
+    expect(outcome.status).toBe("no_findings");
+    expect(d.events.types()).toContain("coverage_within_target");
+    expect(d.events.types()).not.toContain("idle_ticket_created");
+  });
+
+  it("files nothing when the output carried no parseable total", () => {
+    const { outcome, d } = run("tests passed\n(no coverage table)\n");
+    expect(outcome.status).toBe("no_findings");
+    expect(d.events.types()).toContain("coverage_scan_unparsed");
+    expect(d.events.types()).not.toContain("idle_ticket_created");
+  });
+
+  it("files a draft when coverage is below the target, naming the real gap", () => {
+    const { outcome, wg } = run("# all files  |  71.43 |    80.00 |  100.00 | ");
+    expect(outcome.status).toBe("draft_created");
+    if (outcome.status !== "draft_created") throw new Error("unreachable");
+    const t = wg.getTicket(outcome.drafts[0]!.ticketId);
+    expect(t.ticket.description).toMatch(/71\.43% \(below the 80% target by 8\.57 points\)/);
+  });
 });
 
 describe("idle coverage loop", () => {

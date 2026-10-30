@@ -80,8 +80,10 @@ export type IdleLoopOutcome =
 
 /**
  * Parse coverage output minimally. Recognises a `TOTAL ... NN%` line (pytest /
- * coverage.py style) and `All files | NN` (nyc/istanbul style). Best-effort —
- * the goal is an evidence summary, not a precise report.
+ * coverage.py style, decimals kept), `All files | NN` (nyc/istanbul style) and
+ * Node's built-in test runner report (`# all files | NN.NN`, or `ℹ all files`
+ * under the spec reporter; case-insensitive). Best-effort — the goal is an
+ * evidence summary, not a precise report. `total` is null when nothing matched.
  */
 export function parseCoverage(output: string): {
   total: number | null;
@@ -90,8 +92,8 @@ export function parseCoverage(output: string): {
   let total: number | null = null;
 
   const totalMatch =
-    output.match(/^TOTAL\s+.*?(\d{1,3})%/m) ??
-    output.match(/All files\s*\|\s*(\d{1,3}(?:\.\d+)?)/m) ??
+    output.match(/^TOTAL\s+.*?(\d{1,3}(?:\.\d+)?)%/m) ??
+    output.match(/^[\s#ℹ]*All files\s*\|\s*(\d{1,3}(?:\.\d+)?)/im) ??
     output.match(/Total coverage:\s*(\d{1,3}(?:\.\d+)?)/im);
   if (totalMatch?.[1]) total = Number(totalMatch[1]);
 
@@ -119,9 +121,14 @@ function evidenceSummary(finding: CoverageFinding, threshold: number): string {
     .join("\n");
   const gap =
     finding.totalCoverage !== null
-      ? ` (below the ${threshold}% target by ${Math.max(0, threshold - finding.totalCoverage)} points).`
+      ? ` (below the ${threshold}% target by ${coverageGapPoints(finding.totalCoverage, threshold)} points).`
       : ".";
   return `${head}${gap}${worst ? `\nLowest-covered files:\n${worst}` : ""}`;
+}
+
+/** Points by which `total` falls short of the target, rounded to 2 decimals (0 when met). */
+function coverageGapPoints(total: number, threshold: number): number {
+  return Math.max(0, Math.round((threshold - total) * 100) / 100);
 }
 
 /**
@@ -138,8 +145,9 @@ export function idleHostExecRefused(env: NodeJS.ProcessEnv): boolean {
 /**
  * One tick of the idle coverage loop. Only runs when Dispatch has no ready
  * tickets. For each configured repo with a coverage command, it runs the
- * command, parses output, and creates a DRAFT Dispatch ticket with an evidence
- * summary. It never edits code.
+ * command, parses output, and — only when the parsed total is below the
+ * `minimum_gap_threshold` target — creates a DRAFT Dispatch ticket with an
+ * evidence summary. It never edits code.
  */
 export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
   const { events } = deps;
@@ -169,6 +177,8 @@ export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
     return { status: "no_repos" };
   }
 
+  // minimum_gap_threshold is the TARGET coverage percentage: a repo whose measured
+  // total is below it is a gap (see the per-repo check below).
   const { minimum_gap_threshold: threshold, mode } = deps.config.loops.idle_coverage;
   const drafts: CoverageDraft[] = [];
   const observations: CoverageObservation[] = [];
@@ -211,6 +221,26 @@ export function runIdleCoverageLoop(deps: IdleLoopDeps): IdleLoopOutcome {
       total: parsed.total,
       lowFileCount: parsed.lowFiles.length,
     });
+    // A FINDING is a measured total BELOW the target (minimum_gap_threshold, a
+    // coverage percentage). An unparseable report is not evidence of a gap, and a
+    // repo at or above the target has none: neither files (or observes) anything,
+    // so a scan never drafts "Coverage gap" work a self-improve run would then pay
+    // to deliver.
+    if (parsed.total === null) {
+      events.record("coverage_scan_unparsed", {
+        repoName: repo.name,
+        reason: "no coverage total recognised in the coverage command's output",
+      });
+      continue;
+    }
+    if (parsed.total >= threshold) {
+      events.record("coverage_within_target", {
+        repoName: repo.name,
+        total: parsed.total,
+        threshold,
+      });
+      continue;
+    }
 
     const summary = evidenceSummary(finding, threshold);
 

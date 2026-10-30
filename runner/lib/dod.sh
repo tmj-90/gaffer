@@ -20,8 +20,10 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 # board — that is tick.sh's policy (mirroring how hygiene.sh reports and tick.sh
 # parks). Keeping it pure makes it testable in isolation against a real repo.
 #
-# Gates shipped (MVP): tests · typecheck · lint. A gate whose command is empty is
-# SKIPPED (logged), never FAILED. DEFERRED follow-ups (documented, not built):
+# Gates shipped (MVP): tests · typecheck · lint. tests/lint run the repo's dispatch
+# test_command/lint_command; typecheck runs GAFFER_DOD_TYPECHECK_CMD, else the
+# command auto-detected from the repo's package.json (gaffer_dod_typecheck_cmd). A
+# gate whose command is empty is SKIPPED (logged), never FAILED. DEFERRED follow-ups (documented, not built):
 # coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2),
 # CI-green (H3), docs-updated.
 
@@ -154,6 +156,21 @@ gaffer_dod_install_deps() {
   fi
   [ "$_out" = "/dev/null" ] || rm -f "$_out"
   return 0
+}
+
+# The typecheck gate's command for ONE write repo: GAFFER_DOD_TYPECHECK_CMD when set
+# (an operator override applied to every repo), else the command AUTO-DETECTED from
+# the repo's package.json (a typecheck / type-check / check-types / types:check
+# script, or a bare `tsc --noEmit` script; json-tool dod-typecheck-detect), read
+# from the BASE branch first so a delivery cannot drop the gate by deleting the
+# script. Echoes "" when there is neither (the gate is then SKIPPED, as before).
+#   gaffer_dod_typecheck_cmd <worktree> [base-ref]
+gaffer_dod_typecheck_cmd() {
+  local wt="$1" base="${2:-}"
+  if [ -n "${GAFFER_DOD_TYPECHECK_CMD:-}" ] && [ -n "${GAFFER_DOD_TYPECHECK_CMD// /}" ]; then
+    printf '%s\n' "$GAFFER_DOD_TYPECHECK_CMD"; return 0
+  fi
+  node "$_GAFFER_JSON_TOOL" dod-typecheck-detect "$wt" "$base" 2>/dev/null || true
 }
 
 # Run ONE gate command in a worktree, bounded by gaffer_timeout. Writes the

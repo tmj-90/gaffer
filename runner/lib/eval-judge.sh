@@ -37,14 +37,18 @@
 # =====================================================================
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 
-# gaffer_eval_judge_delivery <num> <repo_dir> <base_branch> <work_branch> <memory_present:0|1> [spend_usd]
-#   Expects ticket JSON in $SHOW (same contract as gaffer_distill_ticket_intent).
+# gaffer_eval_judge_delivery <num> <repo_dir> <base_branch> <work_branch> <memory_present:0|1> [spend_usd] [repo_name]
+#   Reads the ticket fresh (`wg ticket show <num>`, so the evidence the delivery just
+#   recorded is included), falling back to $SHOW (`wg ticket show` JSON). The test
+#   output it grades test_adequacy on comes from $GAFFER_EVAL_TEST_OUTPUT (tick.sh
+#   passes the DoD checklist the delivery passed), else $GAFFER_DATA/.dod-<num>.results.
+#   repo_name is recorded in the ledger (default: basename of repo_dir).
 #   Body is a SUBSHELL (note the parens) so the temp-dir EXIT trap is scoped here
 #   and cannot collide with the caller's traps.
 gaffer_eval_judge_delivery() (
   [ "${GAFFER_EVAL_JUDGE:-0}" = "1" ] || return 0
   [ "${DRY_RUN:-0}" = "1" ] && return 0
-  num="$1"; repo_dir="$2"; base="$3"; work="$4"; mem="${5:-0}"; spend="${6:-}"
+  num="$1"; repo_dir="$2"; base="$3"; work="$4"; mem="${5:-0}"; spend="${6:-}"; repo_arg="${7:-}"
   [ -n "$num" ] && [ -d "$repo_dir" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   type worker_deliver >/dev/null 2>&1 || return 0
@@ -73,13 +77,29 @@ gaffer_eval_judge_delivery() (
   [ -s "$tmp/diff.full" ] || return 0   # nothing to judge
   head -c "$diff_cap" "$tmp/diff.full" > "$tmp/diff" 2>/dev/null || true
 
-  # Test evidence: the DoD gate results the runner just captured (if any) give
-  # the judge real ground truth for test_adequacy instead of "(no test output)".
+  # Test evidence: the DoD gate results the runner captured give the judge real
+  # ground truth for test_adequacy instead of "(no test output)". tick.sh hands them
+  # over in GAFFER_EVAL_TEST_OUTPUT (it removes its results file on a PASS, before
+  # this post-submit judge runs); the file is the fallback for other callers.
   dod_results="$GAFFER_DATA/.dod-$num.results"
-  [ -f "$dod_results" ] && tail -c 20000 "$dod_results" > "$tmp/tests" 2>/dev/null || : > "$tmp/tests"
+  if [ -n "${GAFFER_EVAL_TEST_OUTPUT:-}" ]; then
+    printf '%s\n' "$GAFFER_EVAL_TEST_OUTPUT" | tail -c 20000 > "$tmp/tests" 2>/dev/null || : > "$tmp/tests"
+  elif [ -f "$dod_results" ]; then
+    tail -c 20000 "$dod_results" > "$tmp/tests" 2>/dev/null || : > "$tmp/tests"
+  else
+    : > "$tmp/tests"
+  fi
+  # The ticket as it stands NOW: $SHOW was read before the delivery ran, so its
+  # evidence list misses everything the delivery (and its gates) just recorded.
+  show_now=""
+  type wg >/dev/null 2>&1 && show_now="$(wg ticket show "$num" 2>/dev/null)" || show_now=""
+  [ -n "$show_now" ] || show_now="${SHOW:-}"
+  # Through a FILE, not the environment: a ticket with a long event history can pass
+  # the per-variable env limit, and the spawn would then fail with E2BIG.
+  printf '%s' "$show_now" > "$tmp/show.json" 2>/dev/null || return 0
 
-  # ── 2. Judge input JSON: title + ACs from $SHOW, diff + tests from files. ──
-  SHOW="${SHOW:-}" FULL_BYTES="$(wc -c < "$tmp/diff.full" 2>/dev/null || echo 0)" CAP="$diff_cap" \
+  # ── 2. Judge input JSON: title + ACs + evidence from the ticket, diff + tests from files. ──
+  SHOW_FILE="$tmp/show.json" FULL_BYTES="$(wc -c < "$tmp/diff.full" 2>/dev/null || echo 0)" CAP="$diff_cap" \
     node "$_GAFFER_JSON_TOOL" judge-input "$tmp/diff" "$tmp/tests" > "$tmp/input.json" 2>/dev/null || return 0
 
   # ── 3. Render the judge prompt (quarantined by the CLI), then ONE model turn
@@ -151,7 +171,9 @@ gaffer_eval_judge_delivery() (
   #      judgeModel is recorded so a judge-model swap never silently breaks
   #      longitudinal comparability, and so self-grading (judge == impl model)
   #      is visible in the data rather than hidden. ──
-  repo_name="$(basename "$repo_dir")"
+  # The repo NAME the caller resolved (tick.sh passes the primary write repo's name;
+  # repo_dir is a per-ticket worktree whose basename is a key, not the repo).
+  repo_name="${repo_arg:-$(basename "$repo_dir")}"
   # Extract the value after `--model`/`--model=`; empty when the flag carries no
   # model. `sed -n …/p` prints ONLY on a successful substitution — portable across
   # GNU and BSD/macOS sed. (The `s///; t; s/.*//` idiom is NOT: BSD sed reads the

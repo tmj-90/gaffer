@@ -153,7 +153,10 @@ replay_fixture() {
       printf 'files=%s lines=%s verdict=%s reason=%s\n' "$mz_files" "$mz_lines" "$minimalism" "${GAFFER_MINIMALISM_REASON:-}" > "$work/minimalism.txt"
       # 3 · Definition of Done — the TAB-row contract, in the delivery worktree.
       dod_results="$work/dod.results"
-      if node "$FX" gate-row "$json" "$repo" | gaffer_run_dod_gates "$dod_results"; then dod=PASS; else dod=FAIL; fi
+      #     typecheck with no configured command falls back to the package.json
+      #     detection tick.sh uses (gaffer_dod_typecheck_cmd, base branch first).
+      tc_detected="$(GAFFER_DOD_TYPECHECK_CMD="" gaffer_dod_typecheck_cmd "$repo" "$base_branch")"
+      if node "$FX" gate-row "$json" "$repo" "$tc_detected" | gaffer_run_dod_gates "$dod_results"; then dod=PASS; else dod=FAIL; fi
       dod_failed_csv="$(awk -F'\t' '$1=="GATE" && $4=="FAIL" {print $2}' "$dod_results" | paste -sd, -)"
       executed="$(gaffer_dod_executed_count "$dod_results")"
       # 4 · acceptance checks — the ticket payload the library parses, `wg` recording.
@@ -175,6 +178,13 @@ replay_fixture() {
           else flags_csv="${flags_csv}missing_note,"; fi ;;
         oversized_diff) flags_csv="${flags_csv}oversized_diff," ;;
         unverified_note) flags_csv="${flags_csv}unverified_note," ;;
+      esac
+      # Size is judged on its own (tick.sh attaches the oversized flag next to a note flag).
+      case "$minimalism" in
+        missing_note|unverified_note)
+          if [ -n "${GAFFER_MINIMALISM_OVERSIZED:-}" ] && { [ "${MINIMALISM_REQUIRE_NOTE:-0}" != "1" ] || [ "$minimalism" = unverified_note ]; }; then
+            flags_csv="${flags_csv}oversized_diff,"
+          fi ;;
       esac
       if gaffer_dod_enabled; then
         if [ "$dod" = FAIL ]; then

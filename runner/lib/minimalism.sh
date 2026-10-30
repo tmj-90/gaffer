@@ -19,8 +19,11 @@
 # nothing themselves (the caller persists the outcome via Dispatch). Returns:
 #   gaffer_diff_stats        → echoes "<files> <lines>"
 #   gaffer_check_minimalism  → echoes one verdict token, sets the globals
-#                             GAFFER_MINIMALISM_VERDICT (the same token) and
-#                             GAFFER_MINIMALISM_REASON, returns 0/1/2.
+#                             GAFFER_MINIMALISM_VERDICT (the same token),
+#                             GAFFER_MINIMALISM_REASON and GAFFER_MINIMALISM_OVERSIZED
+#                             (the oversized_diff reason whenever the diff is over
+#                             a cap, whatever the verdict; empty otherwise),
+#                             returns 0/1/2.
 
 # Echo "<files-changed> <lines-changed>" for a branch diff. Lines = added+deleted
 # (the total churn — the number the oversized cap is expressed against). Counts
@@ -44,23 +47,28 @@ gaffer_diff_stats() {
 #   gaffer_check_minimalism <files> <lines> <smallest-change-note>
 # Echoes ONE verdict token to stdout and sets GAFFER_MINIMALISM_REASON:
 #   "ok"             — note present, diff within size caps               (return 0)
-#   "missing_note"   — no smallest-change note → post-condition FAILS    (return 1)
+#   "missing_note"   — no smallest-change note: return 1 when MINIMALISM_REQUIRE_NOTE=1
+#                      (tick.sh then sends the delivery back to rework), else return 2
+#                      (the default: tick.sh flags needs_human_review and proceeds)
+#   "unverified_note"— the note names none of the changed files → FLAG       (return 2)
 #   "oversized_diff" — note present but diff over a cap → FLAG, not fail  (return 2)
 #   "check_failed"   — the typed check could not run (crew unbuilt)  → FAIL (return 1)
-# When MINIMALISM_ENFORCE=0 a missing note is downgraded to a non-fatal flag so the
-# guard can be observed without blocking (debugging only — default is enforce).
+# The size check runs on its own: a missing/unverified note over a cap ALSO sets
+# GAFFER_MINIMALISM_OVERSIZED, so tick.sh can attach both flags.
 gaffer_check_minimalism() {
   local files="$1" lines="$2" note="$3" changed="${4:-}"
-  # Size caps + enforce flag (OVERSIZED_MAX_LINES / OVERSIZED_MAX_FILES / MINIMALISM_ENFORCE)
-  # are read from the env by minimalismCli.js itself.
+  # Size caps + the note requirement (OVERSIZED_MAX_LINES / OVERSIZED_MAX_FILES /
+  # MINIMALISM_REQUIRE_NOTE) are read from the env by minimalismCli.js itself.
   # GAFFER_MINIMALISM_VERDICT mirrors the echoed token so tick.sh can read the verdict
   # in its own shell without a scratch file (a shared file raced across workers).
   GAFFER_MINIMALISM_REASON=""
+  GAFFER_MINIMALISM_OVERSIZED=""
   GAFFER_MINIMALISM_VERDICT="check_failed"
 
   # Typed (packages/crew minimalismCli.js → checkMinimalism); pinned by minimalism-golden.
-  # The CLI emits the three observable outputs on three lines — token / return code /
-  # reason — plumbed back to stdout, the exit status and GAFFER_MINIMALISM_REASON.
+  # The CLI emits four lines — token / return code / reason / oversized reason —
+  # plumbed back to stdout, the exit status, GAFFER_MINIMALISM_REASON and
+  # GAFFER_MINIMALISM_OVERSIZED.
   # FAIL CLOSED: without the crew dist, or on a node error, the verdict is
   # `check_failed` (return 1) — tick.sh parks on it; a gate decision is never invented.
   local _mm_out _mm_tok _mm_code _mm_reason
@@ -71,8 +79,9 @@ gaffer_check_minimalism() {
   if _mm_out="$(printf '%s' "$note" | node "${CREW_DIR}/dist/runtime/minimalism/minimalismCli.js" --files "$files" --lines "$lines" --changed "$changed" 2>/dev/null)"; then
     _mm_tok="$(printf '%s\n' "$_mm_out" | sed -n 1p)"
     _mm_code="$(printf '%s\n' "$_mm_out" | sed -n 2p)"
-    _mm_reason="$(printf '%s\n' "$_mm_out" | sed -n '3,$p')"
+    _mm_reason="$(printf '%s\n' "$_mm_out" | sed -n 3p)"
     GAFFER_MINIMALISM_REASON="$_mm_reason"
+    GAFFER_MINIMALISM_OVERSIZED="$(printf '%s\n' "$_mm_out" | sed -n 4p)"
     GAFFER_MINIMALISM_VERDICT="$_mm_tok"
     printf '%s\n' "$_mm_tok"
     return "$_mm_code"

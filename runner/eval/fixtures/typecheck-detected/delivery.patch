@@ -1,0 +1,34 @@
+diff --git a/package.json b/package.json
+index c7e4bf5..a73f1f3 100644
+--- a/package.json
++++ b/package.json
+@@ -5,6 +5,7 @@
+   "type": "module",
+   "scripts": {
+     "test": "node --test",
+-    "lint": "node -e \"process.exit(0)\""
++    "lint": "node -e \"process.exit(0)\"",
++    "typecheck": "node scripts/typecheck.mjs"
+   }
+ }
+diff --git a/scripts/typecheck.mjs b/scripts/typecheck.mjs
+new file mode 100644
+index 0000000..f3f298b
+--- /dev/null
++++ b/scripts/typecheck.mjs
+@@ -0,0 +1,3 @@
++// Stand-in for `tsc --noEmit`: reports the type error a real checker would.
++console.error("src/tasks.js(9,3): error TS2322: Type 'string' is not assignable to type 'boolean'.");
++process.exit(2);
+diff --git a/src/tasks.js b/src/tasks.js
+index 46499a5..f5def2c 100644
+--- a/src/tasks.js
++++ b/src/tasks.js
+@@ -5,3 +5,7 @@ export function addTask(list, title) {
+ export function completeTask(list, title) {
+   return list.map((t) => (t.title === title ? { ...t, done: true } : t));
+ }
++
++export function removeTask(list, title) {
++  return list.filter((t) => t.title !== title);
++}

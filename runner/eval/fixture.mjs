@@ -6,7 +6,8 @@
 // pass/fail comparison against each fixture's expected block. No dependencies.
 //
 //   fixture.mjs read <fixture.json> <key>       print one scalar field ("" if unset)
-//   fixture.mjs gate-row <fixture.json> <wt>    the TAB row gaffer_run_dod_gates reads
+//   fixture.mjs gate-row <fixture.json> <wt> [detected-typecheck]
+//                                               the TAB row gaffer_run_dod_gates reads
 //   fixture.mjs ticket-json <fixture.json>      the ticket payload gaffer_run_ac_checks parses
 //   fixture.mjs env <fixture.json>              `KEY=value` lines from fixture.env
 //   fixture.mjs report <records.ndjson> <fixtures-dir> <out.json>
@@ -45,11 +46,15 @@ switch (cmd) {
     break;
   }
   case "gate-row": {
-    const [file, wt] = args;
+    // [detected-typecheck]: the command gaffer_dod_typecheck_cmd found in the repo's
+    // package.json — used, as tick.sh uses it, when the typecheck gate is enabled
+    // with no configured command ("").
+    const [file, wt, detectedTc] = args;
     const fx = loadFixture(file);
     const g = fx.gates || {};
+    const tcCfg = g.typecheck === "" && (detectedTc ?? "").trim() !== "" ? detectedTc : g.typecheck;
     const t = gateCell(g.tests),
-      tc = gateCell(g.typecheck),
+      tc = gateCell(tcCfg),
       l = gateCell(g.lint);
     process.stdout.write(["repo", wt, t.on, tc.on, l.on, t.cmd, tc.cmd, l.cmd].join("\t") + "\n");
     break;

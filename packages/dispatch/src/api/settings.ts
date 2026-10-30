@@ -552,25 +552,25 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help: "Reject deliveries that touch forbidden paths (node_modules, .claude/, factory internals). On by default.",
   },
   {
-    key: "MINIMALISM_ENFORCE",
+    key: "MINIMALISM_REQUIRE_NOTE",
     type: "boolean",
     group: "quality",
-    label: "Enforce minimal diffs",
-    help: "Flag oversized/sprawling diffs against the caps below, so a ticket ships a focused change.",
+    label: "Require a smallest-change note",
+    help: "On: a delivery that records no smallest-change note goes back to rework instead of review. Off (default): it goes to review flagged needs_human_review. Oversized diffs are always flagged, never failed.",
   },
   {
     key: "OVERSIZED_MAX_FILES",
     type: "int",
     group: "quality",
     label: "Oversized: max files",
-    help: "A diff touching more than this many files trips the minimalism check.",
+    help: "A diff touching more than this many files is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the files cap off).",
   },
   {
     key: "OVERSIZED_MAX_LINES",
     type: "int",
     group: "quality",
     label: "Oversized: max lines",
-    help: "A diff changing more than this many lines trips the minimalism check.",
+    help: "A diff changing more than this many lines is flagged needs_human_review: oversized_diff (a flag, never a fail; 0 turns the lines cap off).",
   },
 
   // --- Sandbox: optional OS-level execution confinement ---

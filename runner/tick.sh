@@ -1493,7 +1493,19 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # `blocked` (reason_code no_write_repo — it lands in the human queue) and skip it
   # this run. Releasing it to `ready` instead re-claimed and re-released it on every
   # loop run forever (the skip file is per run), a claim/release pair per run.
+  # A write link whose repo has NO local_path (registered with `wg repo add --remote`
+  # and no --path) is dropped by `partition` too, so it also arrives here with empty
+  # WRITE_ROOTS. That ticket DOES have a write repo — telling the human to "set its
+  # access to write" is false and an unblock just re-parks it — so it is parked as
+  # no_local_repo_path with the register-or-clone instruction instead.
   if [ "$_WG_MARKERS" = 1 ] && [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
+    _NWR_NOPATH="$(echo "$SHOW" | jget '(d.repositories || []).filter((r) => r && ["confirmed", "implicit_single_repo"].includes(r.relation) && r.access === "write" && !String(r.local_path || "").trim()).length' 2>/dev/null || echo 0)"
+    if [ "${_NWR_NOPATH:-0}" -gt 0 ] 2>/dev/null; then
+      log "ticket #$NUM has no local repo path ($_NWR_NOPATH write repo(s) linked with no local checkout); parking → blocked (no_local_repo_path) for a human"
+      gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock" no_local_repo_path
+      gaffer_skip_ticket "$NUM"
+      result no_work; exit 0
+    fi
     _NWR_COUNT="$(echo "$SHOW" | jget '(d.repositories || []).length' 2>/dev/null || echo 0)"
     if [ "${_NWR_COUNT:-0}" -gt 0 ]; then
       _NWR_WHY="all $_NWR_COUNT linked repo(s) are read/test/context-only"

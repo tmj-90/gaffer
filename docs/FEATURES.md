@@ -84,7 +84,8 @@ Day-to-day, work lives on the board. Tickets flow through
   ready.
 - **Ready** — claimable; the runner picks these up. A ready ticket with no
   repo it may write to (the default `solo_loose` pack only warns about it) is
-  parked as blocked (`no_write_repo`) rather than delivered or retried.
+  parked as blocked (`no_write_repo`) rather than delivered or retried; one
+  whose write repo has no local checkout is parked as `no_local_repo_path`.
 - **In progress** — claimed by an agent (the card shows which one).
 - **Blocked** — surfaced for a human, not silently retried forever.
 - **In review** — delivered, awaiting your sign-off.

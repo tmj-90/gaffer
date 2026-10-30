@@ -9,9 +9,10 @@
 #      "write into repositories[0]" — a worktree + branch + hook-allowed writes in a
 #      repo the operator had marked read-only. Now: park → blocked (no_write_repo),
 #      skip, no worktree.
-#   2. A ticket linked to a repo with no local path was released back to `ready`
-#      WITHOUT being skipped, so the next tick re-claimed the same head ticket
-#      forever. Now: parked → blocked (no_local_repo_path) AND skipped.
+#   2. A ticket linked (access=write) to a repo with no local path was released back
+#      to `ready` WITHOUT being skipped, so the next tick re-claimed the same head
+#      ticket forever. Now: parked → blocked (no_local_repo_path, not no_write_repo —
+#      its access already is write) AND skipped.
 #   3. A ticket with NO repo linked at all (the default solo_loose pack readies it
 #      with only a REPO_RECOMMENDED warning) was released back to `ready`; the skip
 #      file is per loop run, so every later run re-claimed and re-released it. Now:
@@ -86,7 +87,15 @@ wg ticket repo-access set "$B" pathless-repo --access write --relation confirmed
 wg ticket ready "$B" >/dev/null 2>&1
 OUT2="$(run_tick)"
 grep -q '^TICK_RESULT=no_work$' <<<"$OUT2" && ok "tick → no_work for the pathless ticket" || fail "tick result: $OUT2"
-grep -qE "has no local repo path|has no WRITE repo" "$GAFFER_DATA/factory.log" && ok "tick logs why it parked the pathless ticket" || fail "no parking log line for the pathless ticket"
+grep -q "ticket #$B has no local repo path" "$GAFFER_DATA/factory.log" && ok "tick logs that #$B's write repo has no local path" || fail "no 'has no local repo path' log line for #$B"
+grep -E "ticket #$B has no local repo path" "$GAFFER_DATA/factory.log" | grep -q "no_local_repo_path" \
+  && ok "#$B's park names reason_code no_local_repo_path" || fail "#$B's park log does not name no_local_repo_path"
+# Its access IS write: the false "read/test/context-only … set its access to write"
+# reason (an unblock just re-parks it) must not be what the human is told.
+! grep -q "#$B has no WRITE repo" "$GAFFER_DATA/factory.log" \
+  && ok "#$B is not misreported as having no WRITE repo" || fail "#$B misreported as no_write_repo: $(grep "#$B has no WRITE repo" "$GAFFER_DATA/factory.log")"
+grep -E "#$B → blocked" "$GAFFER_DATA/factory.log" | grep -q "register its path" \
+  && ok "#$B's human-queue reason says to register its path or clone it" || fail "#$B's release reason lacks the register/clone instruction"
 grep -qx "$B" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && ok "#$B is skipped (no re-claim loop)" || fail "#$B not in the skip file"
 [ "$(st "$B")" = "blocked" ] && ok "#$B parked → blocked for a human" || fail "#$B ended '$(st "$B")' (want blocked)"
 # With both head tickets skipped, another tick must not touch them again.

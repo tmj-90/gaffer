@@ -60,8 +60,20 @@ gone_within() {  # <secs> → 0 once the loop and every worker have exited
   done
   return 1
 }
+# On a failure, show what survived: each process with its parent, group, state and
+# command line, plus the loop's and every worker's log tail. A platform-only failure
+# (macOS bash 3.2) is then diagnosable from the CI log alone.
+dump_survivors() {  # <case-label>
+  echo "  -- $1 survivors (pid ppid pgid stat etime command) --"
+  ps -axo pid=,ppid=,pgid=,stat=,etime=,command= 2>/dev/null \
+    | awk '($6 ~ /(^|\/)bash$/ && $7 ~ /(worker|tick|loop)\.sh$/) || ($6 ~ /(^|\/)perl$/ && index($0, "alarm"))' \
+    | sed 's/^/     /'
+  echo "  -- loop.out (tail) --"; tail -n 15 "$D/loop.out" 2>/dev/null | sed 's/^/     /'
+  local f; for f in "$D/data/.workers"/*; do [ -f "$f" ] || continue
+    echo "  -- $(basename "$f") --"; tail -n 5 "$f" 2>/dev/null | sed 's/^/     /'; done
+}
 assert_stopped() {  # <case-label> <secs>
-  if gone_within "$2"; then ok "$1: loop and both workers exited within $2s"; else fail "$1: still running after $2s (loop alive=$(kill -0 "$LP" 2>/dev/null && echo yes || echo no), workers=$(workers | wc -l | tr -d ' '))"; fi
+  if gone_within "$2"; then ok "$1: loop and both workers exited within $2s"; else fail "$1: still running after $2s (loop alive=$(kill -0 "$LP" 2>/dev/null && echo yes || echo no), workers=$(workers | wc -l | tr -d ' '))"; dump_survivors "$1"; fi
   local n1 n2; n1="$(ticks_in "$D/data")"; sleep 3; n2="$(ticks_in "$D/data")"
   [ "$n1" = "$n2" ] && ok "$1: no new ticks after the stop ($n1 log lines, unchanged for 3s)" || fail "$1: ticks kept coming ($n1 → $n2 log lines in 3s)"
   workers | while read -r p; do kill -KILL "$p" 2>/dev/null; done

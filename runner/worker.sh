@@ -53,8 +53,10 @@ empties=0
 # the pool stop file. The in-flight tick runs in the BACKGROUND (+ `wait`) so this trap
 # fires at once instead of after the whole tick: it TERMs the tick's process group (the
 # outer gaffer_timeout records its PGID in this worker's own file), the tick's crash
-# trap releases its claim, and no further tick is reserved. SIGINT is ignored in a
-# background worker from the start, so Ctrl-C reaches us as loop.sh's TERM.
+# trap releases its claim, and no further tick is reserved. Ctrl-C normally reaches us
+# as loop.sh's TERM: bash starts a background worker with SIGINT ignored, and then the
+# INT trap below is a no-op. Where the worker does receive INT itself (bash 3.2 on
+# macOS), it stops the same way instead of dying and orphaning its tick's wrapper.
 _stop=0
 _tick_pid=""
 _TICK_PGID_FILE="$WORKERS_DIR/$WORKER_ID.tick-pgid"
@@ -68,7 +70,7 @@ _worker_stop() {
   [ -n "$_tick_pid" ] && command -v pkill >/dev/null 2>&1 && pkill -TERM -P "$_tick_pid" 2>/dev/null
   return 0
 }
-trap '_worker_stop' TERM HUP
+trap '_worker_stop' TERM HUP INT
 # True when this worker must not start another tick: told to stop, the pool stop file
 # exists, or the loop that spawned us is gone (killed with SIGKILL, so no TERM came).
 _should_stop() {

@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
-const NODES = [
+const NODES: Array<Record<string, string>> = [
   { id: "n-club", name: "Fernhill", type: "factory", risk_level: "medium" },
   { id: "n-pay", name: "Payments", type: "service", risk_level: "high", owner: "pay" },
   { id: "n-epic", name: "Repeat orders", type: "epic", risk_level: "medium" },
@@ -134,9 +134,15 @@ describe("web: Map view (the scouting map)", () => {
     expect(nums).toEqual(["3", "2"]);
     expect(pay!.querySelector(".mag.is-red .mag-red")).not.toBeNull();
     expect(pay!.querySelector(".sg-words")?.textContent).toBe("1 blocked · 1 in play");
-    // The ground's name is the one link; counters are not links (no nested controls).
-    expect(pay!.querySelectorAll("a").length).toBe(1);
-    expect(pay!.querySelector("a")?.getAttribute("href")).toBe("#/node/n-pay");
+    // The ground's name links to its page. Each counter is its own link to the
+    // ticket (siblings, never nested), with a label that says what it is: the
+    // review asked for this, as the tactics board's counters on the Overview are
+    // links, and a title= alone left touch and keyboard users at a dead end.
+    expect(pay!.querySelector("a.sg-name")?.getAttribute("href")).toBe("#/node/n-pay");
+    const mags = Array.from(pay!.querySelectorAll("a.mag"));
+    expect(mags.map((a) => a.getAttribute("href"))).toEqual(["#/ticket/t3", "#/ticket/t2"]);
+    expect(mags[0].getAttribute("aria-label")).toBe("#3 Blocked: Ticket 3");
+    expect(pay!.querySelector("a a, [aria-hidden='true'] a")).toBeNull();
   });
 
   it("counts a ticket linked to a campaign directly, with a yellow card when it awaits review", async () => {
@@ -147,6 +153,8 @@ describe("web: Map view (the scouting map)", () => {
     expect(mag?.textContent).toBe("4");
     expect(mag?.classList.contains("is-yellow")).toBe(true);
     expect(mag?.querySelector(".ycard")).not.toBeNull();
+    // A change waiting on you opens in Review.
+    expect(mag?.getAttribute("href")).toBe("#/review/t4");
     // Each ticket is counted once, so the words add up to the counters: the review
     // ticket is "to review", not also "in play" (it used to read "1 in play · 1 to
     // review" for one counter).
@@ -184,6 +192,51 @@ describe("web: Map view (the scouting map)", () => {
     expect(onboard).toBeDefined();
     onboard!.click();
     expect(document.querySelector('.sheet.open input[name="onboard-path"]')).not.toBeNull();
+  });
+
+  it("counts a paused ticket in the dugout, so the tallies add up", async () => {
+    BOARD.columns.push({ column: "paused", cards: [card("t6", 6, "paused", "r-bill")] });
+    try {
+      stubFetch([REPOS[1]]);
+      await loadApp();
+      const pay = ground("Payments");
+      const nums = Array.from(pay!.querySelectorAll(".mag .mag-n")).map((n) => n.textContent);
+      // Worst first: blocked, then paused, then in play.
+      expect(nums).toEqual(["3", "6", "2"]);
+      expect(pay!.querySelector(".mag.is-paused .mag-pause")).not.toBeNull();
+      expect(pay!.querySelector(".sg-words")?.textContent).toBe("1 blocked · 1 paused · 1 in play");
+      const row = document.querySelector('.map-register tr.repo-row[data-repo-id="r-bill"]');
+      // Blocked · To review · Paused · In play
+      expect(Array.from(row!.querySelectorAll(".reg-n")).map((n) => n.textContent)).toEqual([
+        "1",
+        "0",
+        "1",
+        "1",
+      ]);
+    } finally {
+      BOARD.columns.pop();
+    }
+  });
+
+  it("shows the server's implicit repo scope as the free agent, not as a ground outside", async () => {
+    NODES.push({
+      id: "n-impl",
+      name: "repo:loose-repo",
+      type: "external_dependency",
+      risk_level: "medium",
+      description: "Implicit single-repo scope for unmapped repo 'loose-repo'.",
+    });
+    try {
+      stubFetch([REPOS[1]]);
+      await loadApp();
+      expect(ground("repo:loose-repo")).toBeUndefined();
+      expect(document.body.textContent).not.toContain("Outside the ground");
+      expect(document.querySelector(".view-head .view-sub")?.textContent).toMatch(/^3 grounds/);
+      const free = document.querySelector("[data-section='unmapped']");
+      expect(free!.querySelector('[data-repo-id="r-free"]')).not.toBeNull();
+    } finally {
+      NODES.pop();
+    }
   });
 
   it("filters grounds and repo rows from the search box", async () => {

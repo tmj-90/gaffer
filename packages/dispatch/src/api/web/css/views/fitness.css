@@ -88,18 +88,14 @@
   .needs-list {
     display: grid;
   }
+  /* the row's rule belongs to the li (health.css); the link inside it has none */
   .needs-item .ni-link {
     display: grid;
     grid-template-columns: 24px minmax(0, 1fr) auto;
     gap: 10px;
     align-items: center;
-    padding: 10px 0;
-    border-top: var(--hair);
     color: inherit;
     text-decoration: none;
-  }
-  .needs-item:first-child .ni-link {
-    border-top: 0;
   }
   .ni-icon {
     display: grid;

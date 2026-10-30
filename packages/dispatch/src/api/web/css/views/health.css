@@ -76,6 +76,27 @@
   .pipeline-panel .pl-node {
     align-content: center;
   }
+  /* the flow note: what has waited past the limit (a queue, not an injury) */
+  .pl-wait {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+    margin: 0;
+    max-width: none;
+    font: 600 var(--t14) / 1.45 var(--f-text);
+    color: var(--ink-2);
+  }
+  .pl-wait b {
+    color: var(--ink);
+  }
+  .pl-wait a {
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .pl-wait-ico {
+    flex: none;
+    margin-top: 1px;
+  }
   /* the fitness test spreads its three rows over its page's height */
   .hx-span > .fitness-test {
     display: flex;
@@ -97,11 +118,6 @@
   }
   .needs-item:first-child {
     border-top: 0;
-  }
-  .needs-item .ni-link,
-  .needs-item:first-child .ni-link {
-    border-top: 0;
-    padding: 0;
   }
   .needs-item .ni-link:hover .ni-title {
     text-decoration: underline;
@@ -143,8 +159,13 @@
   }
   .ni-tk-more {
     align-self: center;
+    display: inline-grid;
+    place-items: center;
+    min-height: 28px;
+    padding: 0 4px;
     font: 700 var(--t14) var(--f-cond);
-    color: var(--ink-2);
+    color: var(--ink);
+    text-underline-offset: 3px;
   }
 
   /* --- the form guide's results by day --------------------------------------- */

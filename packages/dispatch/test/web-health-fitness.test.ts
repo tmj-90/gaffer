@@ -146,19 +146,27 @@ describe("web: Health — the physio room", () => {
   });
 
   it("counts each ticket once, under its worst complaint, with its tickets as links", async () => {
-    // #6 is blocked and also held too long; #9 is only held. The table must not count #6 twice.
+    // #6 is blocked and also held too long; #9 is only held (in progress for days).
+    // The table must not count #6 twice. (#9 was a draft here; a draft that waits is
+    // now a queue, not an injury: see the next test.)
     tickets = [
       { id: "t6", number: 6, title: "Six", status: "blocked", updated_at: "2026-10-29T09:00:00Z" },
-      { id: "t9", number: 9, title: "Nine", status: "draft", updated_at: "2026-10-20T09:00:00Z" },
+      {
+        id: "t9",
+        number: 9,
+        title: "Nine",
+        status: "in_progress",
+        updated_at: "2026-10-20T09:00:00Z",
+      },
     ];
     stubFetch({
-      ticketsByStatus: { blocked: 1, draft: 1, ready: 2 },
+      ticketsByStatus: { blocked: 1, in_progress: 1, ready: 2 },
       blocked: 1,
       staleClaims: 0,
       openDecisions: 0,
       stuckThresholdHours: 24,
       stuckTickets: [
-        { id: "t9", number: 9, title: "Nine", status: "draft", stuckForMs: 9e8, since: "x" },
+        { id: "t9", number: 9, title: "Nine", status: "in_progress", stuckForMs: 9e8, since: "x" },
         { id: "t6", number: 6, title: "Six", status: "blocked", stuckForMs: 5e8, since: "y" },
       ],
     });
@@ -179,6 +187,34 @@ describe("web: Health — the physio room", () => {
     // A full squad with work queued is not a yellow card either.
     expect(ftCell("Squad", "Waiting")?.querySelector(".ycard")).toBeNull();
     tickets = [];
+  });
+
+  it("keeps a backlog that has waited a day off the treatment table, as a flow note", async () => {
+    // The idle seed: nothing needs the gaffer, but drafts and ready tickets have sat
+    // over 24h. That used to read "7 things on the treatment table." in red, so a
+    // normal backlog kept Health in alarm and all-OK could never be reached.
+    stubFetch({
+      ticketsByStatus: { draft: 2, ready: 1 },
+      blocked: 0,
+      staleClaims: 0,
+      openDecisions: 0,
+      stuckThresholdHours: 24,
+      stuckTickets: [
+        { id: "t9", number: 9, title: "Nine", status: "draft", stuckForMs: 9e8, since: "x" },
+        { id: "t8", number: 8, title: "Eight", status: "ready", stuckForMs: 5e8, since: "y" },
+        { id: "t7", number: 7, title: "Seven", status: "refining", stuckForMs: 2e8, since: "z" },
+      ],
+    });
+    await loadApp();
+    expect(document.querySelector(".health-view h1")?.textContent).toBe("Fit to play.");
+    expect(document.querySelector(".needs-hero")).toBeNull();
+    const note = document.querySelector(".pipeline-panel .pl-wait");
+    expect(note?.textContent).toContain("3 tickets waiting over 24h (2 on the bench, 1 ready");
+    expect(Array.from(note!.querySelectorAll("a")).map((a) => a.getAttribute("href"))).toEqual([
+      "#/ticket/t9",
+      "#/ticket/t8",
+      "#/ticket/t7",
+    ]);
   });
 
   it("collapses a source with nothing measured into one line, not an empty page", async () => {

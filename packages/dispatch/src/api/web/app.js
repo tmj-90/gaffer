@@ -5709,9 +5709,13 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
     href: "#/work",
     tickets: stale,
   });
-  // Held too long: past the stuck threshold and not already counted above.
-  const stuckAll = summary.stuckTickets || [];
-  const stuck = take(stuckAll.map((s) => ({ ...s, updated_at: s.since })));
+  // Held too long: in flight (an agent has it, or it is paused), past the stuck
+  // threshold, and not already counted above. A draft or a ready ticket that has
+  // waited a day is a queue, not an injury: it goes to the phases of play as a
+  // flow note (card._waiting), so a normal backlog never keeps Health in alarm.
+  const stuckAll = (summary.stuckTickets || []).map((s) => ({ ...s, updated_at: s.since }));
+  const waiting = stuckAll.filter((s) => HELD_WAITING.has(s.status));
+  const stuck = take(stuckAll.filter((s) => !HELD_WAITING.has(s.status)));
   const hours = summary.stuckThresholdHours;
   if (stuck.length)
     add({
@@ -5738,7 +5742,7 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
           ? icon("clock", "ni-clock", 20)
           : ycard(20);
   const total = items.reduce((a, n) => a + n.count, 0);
-  const chips = (list) => {
+  const chips = (list, href) => {
     if (!list || !list.length) return null;
     const shown = list.slice(0, 5);
     return el("span", { class: "ni-tks" }, [
@@ -5755,7 +5759,15 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
         ),
       ),
       list.length > shown.length
-        ? el("span", { class: "ni-tk-more" }, `+${list.length - shown.length}`)
+        ? el(
+            "a",
+            {
+              class: "ni-tk-more",
+              href,
+              "aria-label": `${list.length - shown.length} more`,
+            },
+            `+${list.length - shown.length}`,
+          )
         : null,
     ]);
   };
@@ -5777,7 +5789,7 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
                 el("span", { class: "ni-arrow" }, "→"),
               ]),
             ]),
-            chips(n.tickets),
+            chips(n.tickets, n.href),
           ]),
         ),
       )
@@ -5790,7 +5802,55 @@ function needsPanel({ tickets = [], byStatus = {}, summary = {}, decisions = [],
     body,
   ]);
   card.dataset.total = String(total);
+  card._waiting = { list: waiting, hours: summary.stuckThresholdHours };
   return card;
+}
+
+/** Statuses where a ticket waits its turn: held long there is a queue, not an injury. */
+const HELD_WAITING = new Set(["draft", "refining", "ready"]);
+
+/**
+ * The flow note under the phases of play: what has waited past the stuck limit on
+ * the bench or in its box, oldest first, each a link. Null when nothing has.
+ */
+function waitingNote(w) {
+  if (!w || !w.list || !w.list.length) return null;
+  const list = w.list;
+  const by = (st) => list.filter((t) => t.status === st).length;
+  const where = [
+    by("draft") + by("refining") ? `${by("draft") + by("refining")} on the bench` : null,
+    by("ready") ? `${by("ready")} ready, not yet claimed` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const shown = list.slice(0, 6);
+  return el("p", { class: "pl-wait" }, [
+    icon("clock", "pl-wait-ico", 18),
+    el("span", {}, [
+      el(
+        "b",
+        {},
+        `${plural(list.length, "ticket")} waiting over ${w.hours ? `${w.hours}h` : "a day"}`,
+      ),
+      ` (${where}). Oldest ${fmtDuration(list[0].stuckForMs)}. A queue, not an injury: `,
+      ...shown.flatMap((t, i) => [
+        i ? " " : "",
+        el(
+          "a",
+          {
+            href: `#/ticket/${t.id}`,
+            title: t.title || "",
+            "aria-label": `#${t.number} ${t.title || ""}`,
+          },
+          `#${t.number}`,
+        ),
+      ]),
+      list.length > shown.length
+        ? [" and ", el("a", { href: "#/work" }, `${list.length - shown.length} more`)]
+        : null,
+      ".",
+    ]),
+  ]);
 }
 
 /** One reverse-chronological activity row: time · ticket · event · actor. */
@@ -9378,7 +9438,9 @@ async function renderHealth() {
   const lastRead = health.last_record_at ? fmtTime(health.last_record_at) : null;
   const facts = [
     "read from the usage ledger and the event log",
-    lastRead ? `last ledger record ${lastRead}` : null,
+    lastRead
+      ? el("span", {}, ["last ledger record ", el("span", { class: "u-nowrap" }, lastRead)])
+      : null,
   ].filter(Boolean);
   wrap.appendChild(
     el(
@@ -9398,7 +9460,10 @@ async function renderHealth() {
                   clauses.flatMap((c, i) => (i ? [" · ", c] : [c])),
                 )
               : null,
-            el("p", { class: "hl-sub" }, `Health, the physio room · ${facts.join(" · ")}`),
+            el("p", { class: "hl-sub" }, [
+              "Health, the physio room",
+              ...facts.flatMap((f) => [" · ", f]),
+            ]),
           ]),
           kpis,
         ]),
@@ -9406,6 +9471,8 @@ async function renderHealth() {
     ),
   );
   if (bouncing) bouncing.id = "health-injuries";
+  const wait = treatment ? waitingNote(treatment._waiting) : null;
+  if (wait && devFlow) devFlow.appendChild(wait);
   const span = (n, ...nodes) => {
     const kids = nodes.filter(Boolean);
     return kids.length
@@ -12281,17 +12348,33 @@ function typeLabel(type) {
   return String(type || "").replace(/_/g, " ");
 }
 // The Map's live overlay: what each ticket on the board means at a ground.
-// Red = blocked or failed, yellow = waits on your sign-off, in play = the rest
-// of the pitch. Drafts, refining and paused tickets are not shown.
+// Red = blocked or failed, yellow = waits on your sign-off, paused = off the pitch
+// in the dugout (held at a budget cap or by hand), in play = the rest of the pitch.
+// Drafts and refining tickets are on the bench and are not shown as counters.
 const MAP_RED = new Set(["blocked", "failed"]);
 const MAP_YELLOW = new Set(["in_review", "ready_for_merge"]);
 function mapTone(status) {
   if (MAP_RED.has(status)) return "red";
   if (MAP_YELLOW.has(status)) return "yellow";
+  if (status === "paused") return "paused";
   if (ON_PITCH.has(status)) return "play";
   return null;
 }
-const MAP_TONE_RANK = { red: 0, yellow: 1, play: 2 };
+const MAP_TONE_RANK = { red: 0, yellow: 1, paused: 2, play: 3 };
+/**
+ * The scope the server records for a ticket that targets a repo with no ground:
+ * an external_dependency node named "repo:<name>". It is the free agent playing
+ * as its own single-repo scope, never a third party, so the Map leaves it off the
+ * grounds and shows the repo under Free agents.
+ */
+function isImplicitScope(n) {
+  return (
+    !!n &&
+    n.type === "external_dependency" &&
+    /^repo:/.test(n.name || "") &&
+    (/^Implicit single-repo scope/i.test(n.description || "") || !n.description)
+  );
+}
 const MAP_COUNTERS = 6;
 
 /** Every ticket on the board once: the live columns, the closed area and won't-do. */
@@ -12401,11 +12484,12 @@ function groundBook(n, ov, { live = true } = {}) {
 
 /**
  * Counts, each ticket in exactly one: red (blocked or failed), yellow (waits on
- * your sign-off) and play (the rest of the pitch). live = red + yellow + play, so
- * the words on a card add up to its counters.
+ * your sign-off), paused (in the dugout) and play (the rest of the pitch).
+ * live = red + yellow + paused + play, so the words on a card add up to its
+ * counters, and live + done + bench is every ticket in the book.
  */
 function mapTally(list) {
-  const t = { red: 0, yellow: 0, play: 0, live: 0, done: 0, bench: 0 };
+  const t = { red: 0, yellow: 0, paused: 0, play: 0, live: 0, done: 0, bench: 0 };
   for (const c of list || []) {
     const tone = mapTone(c.status);
     if (tone) {
@@ -12416,31 +12500,50 @@ function mapTally(list) {
   }
   return t;
 }
-/** A tally in words, worst first: "1 blocked · 2 to review · 3 in play". */
+/** A tally in words, worst first: "1 blocked · 2 to review · 1 paused · 3 in play". */
 function tallyWords(t) {
   return [
     t.red ? el("span", { class: "is-red" }, `${t.red} blocked`) : null,
     t.yellow ? el("span", {}, `${t.yellow} to review`) : null,
+    t.paused ? el("span", {}, `${t.paused} paused`) : null,
     t.play ? el("span", {}, `${t.play} in play`) : null,
   ]
     .filter(Boolean)
     .flatMap((x, i) => (i ? [" · ", x] : [x]));
 }
-/** A ticket as a magnet counter: its number on a disc, carded when it needs you. */
-function mapCounter(c) {
+/** Where a counter goes: a change waiting on you opens in Review, the rest on its page. */
+function mapCounterHref(c) {
+  return c.status === "in_review" ? `#/review/${c.id}` : `#/ticket/${c.id}`;
+}
+/**
+ * A ticket as a magnet counter: its number on a disc, carded when it needs you.
+ * On the Map it is a link to the ticket (as the tactics board's are); inside a
+ * row that is already a link, pass `link: false`.
+ */
+function mapCounter(c, { link = true } = {}) {
   const tone = mapTone(c.status);
   const word = statusLabel(c.status);
+  const marks = [
+    el("span", { class: "mag-n tabnum" }, String(c.number ?? "?")),
+    tone === "yellow" ? ycard(12, "mag-card") : null,
+    tone === "red" ? el("span", { class: "mag-red", "aria-hidden": "true" }) : null,
+    tone === "paused" ? el("span", { class: "mag-pause", "aria-hidden": "true" }) : null,
+  ];
+  if (!link)
+    return el(
+      "span",
+      { class: `mag is-${tone}`, title: `#${c.number} ${c.title || ""} · ${word}` },
+      marks,
+    );
   return el(
-    "span",
+    "a",
     {
       class: `mag is-${tone}`,
+      href: mapCounterHref(c),
       title: `#${c.number} ${c.title || ""} · ${word}`,
+      "aria-label": `#${c.number} ${word}${tone === "yellow" ? ", needs you" : ""}: ${c.title || ""}`,
     },
-    [
-      el("span", { class: "mag-n tabnum" }, String(c.number ?? "?")),
-      tone === "yellow" ? ycard(12, "mag-card") : null,
-      tone === "red" ? el("span", { class: "mag-red", "aria-hidden": "true" }) : null,
-    ],
+    marks,
   );
 }
 
@@ -12461,7 +12564,7 @@ function mapGround(n, ov, relLine) {
     "div",
     {
       class: `scope-gnode type-${n.type}${t.red ? " has-red" : ""}`,
-      dataset: { name: (n.name || "").toLowerCase(), search },
+      dataset: { name: (n.name || "").toLowerCase(), search, node: n.id },
     },
     [
       el("div", { class: "sg-top" }, [
@@ -12486,9 +12589,19 @@ function mapGround(n, ov, relLine) {
                   el("b", { class: "tabnum" }, String(live.length)),
                   " live across the club",
                 ])
-              : el("span", { class: "sg-mags", "aria-hidden": "true" }, [
-                  ...shown.map(mapCounter),
-                  more > 0 ? el("span", { class: "sg-more" }, `+${more}`) : null,
+              : el("span", { class: "sg-mags" }, [
+                  ...shown.map((c) => mapCounter(c)),
+                  more > 0
+                    ? el(
+                        "a",
+                        {
+                          class: "sg-more mag-more",
+                          href: `#/node/${n.id}`,
+                          "aria-label": `${more} more live at ${n.name}`,
+                        },
+                        `+${more}`,
+                      )
+                    : null,
                 ]),
             el("span", { class: "sg-words" }, tallyWords(t)),
           ])
@@ -12513,6 +12626,10 @@ function mapKey() {
       disc("red", el("span", { class: "mag-red", "aria-hidden": "true" })),
       "blocked or failed",
     ]),
+    el("li", {}, [
+      disc("paused", el("span", { class: "mag-pause", "aria-hidden": "true" })),
+      "paused, in the dugout",
+    ]),
   ]);
 }
 
@@ -12531,8 +12648,12 @@ async function renderFactory() {
     soft("/repositories?hidden=only", null),
   ]);
   const hiddenN = hiddenRes ? (hiddenRes.repositories || []).length : 0;
-  const nodes = nodesRes.nodes || [];
-  const edges = edgesRes.edges || [];
+  // The server's synthetic "repo:<name>" scopes are free agents, not grounds.
+  const implicitIds = new Set((nodesRes.nodes || []).filter(isImplicitScope).map((n) => n.id));
+  const nodes = (nodesRes.nodes || []).filter((n) => !implicitIds.has(n.id));
+  const edges = (edgesRes.edges || []).filter(
+    (e) => !implicitIds.has(e.from_node_id) && !implicitIds.has(e.to_node_id),
+  );
   const unmapped = unmappedRes.repositories || [];
   const repos = reposRes.repositories || [];
   learnKits(repos.map((r) => r.name));
@@ -12563,10 +12684,15 @@ async function renderFactory() {
     ),
   );
 
-  wrap.appendChild(renderScopeGraph(nodes, edges, ov, readAt));
+  const graphCard = renderScopeGraph(nodes, edges, ov, readAt);
+  wrap.appendChild(graphCard);
+  wrap._mounted = () => graphCard._fit && graphCard._fit();
 
   const register = renderRepoRegister(repos, unmapped, ov);
-  const freeAgents = renderUnmappedSection(unmapped, repos, hiddenN);
+  const freeAgents = renderUnmappedSection(unmapped, repos, hiddenN, {
+    ov,
+    grounds: nodes.length,
+  });
   const side = el("div", { class: "stack map-side" }, [
     unmapped.length ? null : freeAgents,
     el("details", { class: "card map-help" }, [
@@ -12627,16 +12753,37 @@ const MAP_COL_WORD = {
   domain: "Domains",
   product: "Products",
   capability: "Capabilities",
+  system: "Systems",
   service: "Services",
+  library: "Libraries",
   component: "Components",
   external_dependency: "Outside the ground",
   epic: "Campaigns",
 };
+/**
+ * The map's columns, by what a ground IS, so a column's name is always true and
+ * outside grounds always stand at the far touchline: the club and its campaigns,
+ * domains, products, services (and the other parts that run), outside the ground.
+ * Empty tiers are dropped.
+ */
+const MAP_TIER = {
+  factory: 0,
+  epic: 0,
+  domain: 1,
+  product: 2,
+  capability: 2,
+  system: 3,
+  service: 3,
+  library: 3,
+  component: 3,
+  external_dependency: 4,
+};
+const mapTierOf = (n) => MAP_TIER[n.type] ?? 3;
 
 /**
- * Lay the grounds out in columns: a node sits one column right of whatever
- * contains it; a node nobody contains but something depends on sits one column
- * past its deepest dependant; each column is ordered by where its parents sit.
+ * Lay the grounds out in tiers (columns) and order each column by where the
+ * grounds it is linked to sit in the columns before it (barycentre), so contains
+ * lines cross as little as they can.
  */
 function mapLayout(nodes, edges) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -12646,55 +12793,41 @@ function mapLayout(nodes, edges) {
     if (byId.has(e.from_node_id) && byId.has(e.to_node_id))
       parents.set(e.to_node_id, e.from_node_id);
   }
-  const depthOf = (id, seen = new Set()) => {
-    const p = parents.get(id);
-    if (!p || seen.has(id)) return 0;
-    seen.add(id);
-    return 1 + depthOf(p, seen);
-  };
-  const depOnly = new Map();
-  for (const e of edges) {
-    if (e.relation === "contains" || parents.has(e.to_node_id)) continue;
-    if (!byId.has(e.from_node_id) || !byId.has(e.to_node_id)) continue;
-    const isParent = edges.some(
-      (x) => x.relation === "contains" && x.from_node_id === e.to_node_id,
-    );
-    if (!isParent)
-      depOnly.set(
-        e.to_node_id,
-        Math.max(depOnly.get(e.to_node_id) || 0, depthOf(e.from_node_id) + 1),
-      );
-  }
-  const colOf = (id) => (depOnly.has(id) ? depOnly.get(id) : depthOf(id));
-  const cols = [];
-  for (const n of nodes) {
-    const d = colOf(n.id);
-    (cols[d] = cols[d] || []).push(n);
-  }
-  for (let i = 0; i < cols.length; i++) cols[i] = cols[i] || [];
+  const tiers = [...new Set(nodes.map(mapTierOf))].sort((x, y) => x - y);
+  const cols = tiers.map((tier) => nodes.filter((n) => mapTierOf(n) === tier));
+  const colOf = new Map();
+  cols.forEach((list, ci) => list.forEach((n) => colOf.set(n.id, ci)));
   const rowOf = new Map();
   const typeRank = (n) => (n.type === "factory" ? 0 : n.type === "epic" ? 2 : 1);
   cols.forEach((list, ci) => {
     const key = (n) => {
       const ups = edges
-        .filter((e) => e.to_node_id === n.id && rowOf.has(e.from_node_id))
-        .map((e) => rowOf.get(e.from_node_id));
+        .map((e) =>
+          e.to_node_id === n.id ? e.from_node_id : e.from_node_id === n.id ? e.to_node_id : null,
+        )
+        .filter((id) => id && rowOf.has(id) && colOf.get(id) < ci)
+        .map((id) => rowOf.get(id));
       return ups.length
         ? ups.reduce((x, y) => x + y, 0) / ups.length
         : ci === 0
           ? typeRank(n) * 100
           : 999;
     };
-    list.sort((a, b) => key(a) - key(b) || a.name.localeCompare(b.name));
+    const keys = new Map(list.map((n) => [n.id, key(n)]));
+    list.sort((x, y) => keys.get(x.id) - keys.get(y.id) || x.name.localeCompare(y.name));
     list.forEach((n, ri) => rowOf.set(n.id, ri));
   });
-  const colName = (list, ci) => {
+  const word = (t) => MAP_COL_WORD[t] || typeLabel(t);
+  const colName = (list) => {
     const types = [...new Set(list.map((n) => n.type))];
-    if (types.length === 1) return MAP_COL_WORD[types[0]] || typeLabel(types[0]);
-    if (ci === 0) return "The club and its campaigns";
-    return types.map((t) => MAP_COL_WORD[t] || typeLabel(t)).join(" · ");
+    if (types.length === 1) return word(types[0]);
+    if (types.includes("factory")) return "The club and its campaigns";
+    const ws = types.map(word);
+    return ws.length === 2
+      ? `${ws[0]} and ${ws[1].toLowerCase()}`
+      : `${ws.slice(0, -1).join(", ")} and ${ws[ws.length - 1].toLowerCase()}`;
   };
-  return { byId, parents, cols, rowOf, colName };
+  return { byId, parents, cols, colOf, rowOf, colName };
 }
 
 /** "Part of Checkout · depends on Stripe": a ground's lines, read as words (the phone list). */
@@ -12743,119 +12876,240 @@ function renderScopeGraph(nodes, edges, ov, readAt = Date.now()) {
   card.appendChild(
     el("div", { class: "map-tools" }, [
       el("label", { class: "map-find" }, [el("span", { class: "map-find-l" }, "Find"), search]),
-      mapKey(),
+      nodes.length ? mapKey() : null,
     ]),
   );
   card.appendChild(el("p", { class: "map-found", role: "status", "aria-live": "polite" }));
   if (nodes.length === 0) {
     card.appendChild(
-      el("p", { class: "quiet" }, [
-        "No grounds on the map yet. ",
-        el("a", { href: "#/node" }, "Create the first scope node"),
-        " to start mapping the club.",
+      el("p", { class: "map-none" }, [
+        "No grounds on the map yet, so every repo plays as a free agent. ",
+        el("a", { href: "#/node" }, "Mark out the club's first ground"),
+        ": the club itself, then its products and the services they run on.",
       ]),
     );
     return card;
   }
-  const { byId, cols, rowOf, colName } = mapLayout(nodes, edges);
-  const NODE_W = 232,
-    NODE_H = 156,
-    COLG = 56,
-    ROWG = 20,
-    PADX = 20,
-    PADT = 50,
-    PADB = 20;
-  const pos = new Map();
-  cols.forEach((list, ci) => {
-    list.forEach((n) =>
-      pos.set(n.id, {
-        x: PADX + ci * (NODE_W + COLG),
-        y: PADT + rowOf.get(n.id) * (NODE_H + ROWG),
-        n,
-      }),
-    );
-  });
+  const { byId, cols, colOf, rowOf, colName } = mapLayout(nodes, edges);
   const maxRows = Math.max(1, ...cols.map((c) => c.length));
-  const width = PADX * 2 + cols.length * NODE_W + Math.max(0, cols.length - 1) * COLG;
-  const height = PADT + maxRows * (NODE_H + ROWG) - ROWG + PADB;
-  const pct = (v) => `${((v / width) * 100).toFixed(3)}%`;
-
-  // Chalk lines: contains solid, depends dashed. Same-column links bow out to the right.
-  let paths = "";
-  for (const e of edges) {
-    const a = pos.get(e.from_node_id),
-      b = pos.get(e.to_node_id);
-    if (!a || !b) continue;
-    const cls = e.relation === "contains" ? "contains" : "dep";
-    const ya = a.y + NODE_H / 2,
-      yb = b.y + NODE_H / 2;
-    let d;
-    if (a.x === b.x) {
-      const x = a.x + NODE_W,
-        bow = x + COLG * 0.7;
-      d = `M${x} ${ya} C ${bow} ${ya}, ${bow} ${yb}, ${x} ${yb}`;
-    } else {
-      const fwd = b.x > a.x;
-      const x1 = fwd ? a.x + NODE_W : a.x,
-        x2 = fwd ? b.x : b.x + NODE_W;
-      const mx = (x1 + x2) / 2;
-      d = `M${x1} ${ya} C ${mx} ${ya}, ${mx} ${yb}, ${x2} ${yb}`;
+  // The drawing is a CSS grid: a label row, then one row per rank, so a card is as
+  // tall as what it says (a long name or a second row of counters never clips) and
+  // the gaps between rows run clear across every column. The chalk lines are drawn
+  // once the cards are placed, through those gaps (see drawMapEdges).
+  const cells = [];
+  cols.forEach((list, ci) => {
+    cells.push(
+      el("div", {
+        class: `graph-lane${ci % 2 ? " is-alt" : ""}`,
+        style: `grid-column:${ci + 1};grid-row:1 / ${maxRows + 2}`,
+        "aria-hidden": "true",
+      }),
+      el(
+        "h3",
+        { class: "graph-collabel", style: `grid-column:${ci + 1};grid-row:1` },
+        colName(list),
+      ),
+    );
+    for (const n of list) {
+      const g = mapGround(n, ov, null);
+      g.style.gridColumn = String(ci + 1);
+      g.style.gridRow = String(rowOf.get(n.id) + 2);
+      cells.push(g);
     }
-    paths += `<path class="gedge ${cls}" vector-effect="non-scaling-stroke" d="${d}"/>`;
-  }
-  // One mown lane per column: the texture is the axis (how deep in the club).
-  const lanes = cols.map((list, ci) => {
-    const x0 = ci === 0 ? 0 : PADX + ci * (NODE_W + COLG) - COLG / 2;
-    const x1 = ci === cols.length - 1 ? width : PADX + (ci + 1) * (NODE_W + COLG) - COLG / 2;
-    return el("div", { class: "graph-lane", style: `left:${pct(x0)};width:${pct(x1 - x0)}` }, [
-      el("span", { class: "graph-collabel" }, colName(list, ci)),
-    ]);
   });
-  const gnodes = [];
-  for (const [, { x, y, n }] of pos) {
-    const g = mapGround(n, ov, null);
-    g.style.left = pct(x);
-    g.style.top = `${y}px`;
-    g.style.width = pct(NODE_W);
-    g.style.height = `${NODE_H}px`;
-    gnodes.push(g);
-  }
-  card.appendChild(
-    el(
-      "div",
-      {
-        class: "graph-scroll",
-        role: "region",
-        tabindex: "0",
-        "aria-label": "The scope graph: grounds in columns, lines for contains and depends on",
-      },
-      [
-        el("div", { class: "graph", style: `min-width:${width}px;height:${height}px` }, [
-          ...lanes,
-          el("div", {
-            class: "graph-edges",
-            "aria-hidden": "true",
-            html: `<svg viewBox="0 0 ${width} ${height}" width="100%" height="100%" preserveAspectRatio="none" focusable="false">${paths}</svg>`,
-          }),
-          ...gnodes,
-        ]),
-      ],
-    ),
+  const svgHost = el("div", { class: "graph-edges", "aria-hidden": "true" });
+  const graph = el(
+    "div",
+    {
+      class: "graph",
+      dataset: { cols: String(cols.length) },
+      style: `grid-template-columns:repeat(${cols.length}, minmax(0, 1fr));grid-template-rows:auto repeat(${maxRows}, auto)`,
+    },
+    [svgHost, ...cells],
   );
-  // The phone reads the same grounds as a list, column by column, the lines as words.
+  const scroller = el(
+    "div",
+    {
+      class: "graph-scroll",
+      role: "region",
+      "aria-label": "The scope graph: grounds in columns, lines for contains and depends on",
+    },
+    [graph],
+  );
+  card.appendChild(scroller);
+  // The same grounds as a list, tier by tier, the lines as words: the phone reads
+  // this, and so does a desktop too narrow for every column at a readable width.
   card.appendChild(
     el(
       "div",
       { class: "map-list" },
-      cols.map((list, ci) =>
-        el("section", { class: "ml-col", "aria-label": colName(list, ci) }, [
-          el("h3", { class: "ml-head" }, colName(list, ci)),
-          ...list.map((n) => mapGround(n, ov, mapRelLine(n, edges, byId))),
+      cols.map((list) =>
+        el("section", { class: "ml-col", "aria-label": colName(list) }, [
+          el("h3", { class: "ml-head" }, colName(list)),
+          el(
+            "div",
+            { class: "ml-cards" },
+            list.map((n) => mapGround(n, ov, mapRelLine(n, edges, byId))),
+          ),
         ]),
       ),
     ),
   );
+  // The narrowest a column may get before the map reads as the list instead.
+  const COL_MIN = 176,
+    COL_GAP = 36,
+    PAD = 18;
+  const need = cols.length * COL_MIN + (cols.length - 1) * COL_GAP + PAD * 2;
+  let ro = null;
+  let lastW = -1;
+  const fit = () => {
+    const w = card.clientWidth;
+    if (!w || w === lastW) return;
+    lastW = w;
+    // The card's padding is inside clientWidth; the scroller sits in its content box.
+    const cs = window.getComputedStyle(card);
+    const inner = w - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    const asList = inner < need;
+    card.classList.toggle("is-list", asList);
+    card.classList.toggle("is-graph", !asList);
+    if (!asList) drawMapEdges(graph, svgHost, edges, colOf);
+  };
+  card._fit = () => {
+    fit();
+    if (!ro && typeof window.ResizeObserver === "function") {
+      ro = new window.ResizeObserver(() => {
+        lastW = -1;
+        fit();
+      });
+      ro.observe(card);
+    }
+  };
+  card._dispose = () => ro && ro.disconnect();
   return card;
+}
+
+/**
+ * Draw the chalk lines between placed cards. Neighbouring columns join with a
+ * curve through the gap between them. A line that skips a column never runs
+ * under a card: it drops down its own gap to the nearest clear gap between rows,
+ * runs along it, and climbs the gap before its target. Same-column links bow out
+ * into the gap beside them.
+ */
+function drawMapEdges(graph, host, edges, colOf) {
+  const W = graph.offsetWidth,
+    H = graph.offsetHeight;
+  if (!W || !H) return;
+  const box = new Map();
+  for (const g of graph.querySelectorAll(".scope-gnode")) {
+    box.set(g.dataset.node, {
+      x: g.offsetLeft,
+      y: g.offsetTop,
+      w: g.offsetWidth,
+      h: g.offsetHeight,
+    });
+  }
+  // Column edges, and the clear channels between rows (and above the first, below the last).
+  const colL = [],
+    colR = [];
+  const rowTop = [],
+    rowBot = [];
+  for (const g of graph.querySelectorAll(".scope-gnode")) {
+    const b = box.get(g.dataset.node);
+    const ci = colOf.get(g.dataset.node);
+    const ri = Number(g.style.gridRow) - 2;
+    colL[ci] = Math.min(colL[ci] ?? Infinity, b.x);
+    colR[ci] = Math.max(colR[ci] ?? -Infinity, b.x + b.w);
+    rowTop[ri] = Math.min(rowTop[ri] ?? Infinity, b.y);
+    rowBot[ri] = Math.max(rowBot[ri] ?? -Infinity, b.y + b.h);
+  }
+  const rows = rowTop.length;
+  const channels = [];
+  for (let r = 0; r <= rows; r++) {
+    const above = r === 0 ? null : rowBot[r - 1];
+    const below = r === rows ? null : rowTop[r];
+    if (above == null && below != null) channels.push(below - 12);
+    else if (below == null && above != null) channels.push(Math.min(H - 8, above + 12));
+    else if (above != null) channels.push((above + below) / 2);
+  }
+  const gapAfter = (ci) =>
+    colL[ci + 1] != null ? (colR[ci] + colL[ci + 1]) / 2 : Math.min(W - 6, colR[ci] + 14);
+  const gapBefore = (ci) => (ci > 0 ? (colR[ci - 1] + colL[ci]) / 2 : Math.max(6, colL[ci] - 14));
+  const used = new Map();
+  const lane = (key) => {
+    const k = used.get(key) || 0;
+    used.set(key, k + 1);
+    return (k % 2 ? 1 : -1) * Math.ceil(k / 2) * 5;
+  };
+  // A polyline with rounded corners.
+  const round = (pts, r = 10) => {
+    let d = `M${pts[0][0]} ${pts[0][1]}`;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const [x0, y0] = pts[i - 1],
+        [x1, y1] = pts[i],
+        [x2, y2] = pts[i + 1];
+      const l1 = Math.hypot(x1 - x0, y1 - y0),
+        l2 = Math.hypot(x2 - x1, y2 - y1);
+      const k = Math.min(r, l1 / 2, l2 / 2);
+      if (!k) {
+        d += ` L${x1} ${y1}`;
+        continue;
+      }
+      const ax = x1 - ((x1 - x0) / l1) * k,
+        ay = y1 - ((y1 - y0) / l1) * k;
+      const bx = x1 + ((x2 - x1) / l2) * k,
+        by = y1 + ((y2 - y1) / l2) * k;
+      d += ` L${ax.toFixed(1)} ${ay.toFixed(1)} Q${x1} ${y1} ${bx.toFixed(1)} ${by.toFixed(1)}`;
+    }
+    const last = pts[pts.length - 1];
+    return `${d} L${last[0]} ${last[1]}`;
+  };
+  let paths = "";
+  for (const e of edges) {
+    const a = box.get(e.from_node_id),
+      b = box.get(e.to_node_id);
+    if (!a || !b) continue;
+    const ca = colOf.get(e.from_node_id),
+      cb = colOf.get(e.to_node_id);
+    const cls = e.relation === "contains" ? "contains" : "dep";
+    const ya = a.y + a.h / 2,
+      yb = b.y + b.h / 2;
+    let d;
+    if (ca === cb) {
+      // Bow into the gap beside the column (the left one at the far touchline).
+      const right = colL[ca + 1] != null || ca === 0;
+      const x = right ? a.x + a.w : a.x;
+      const bow = right ? gapAfter(ca) + 8 : gapBefore(ca) - 8;
+      const xb = right ? b.x + b.w : b.x;
+      d = `M${x} ${ya} C ${bow} ${ya}, ${bow} ${yb}, ${xb} ${yb}`;
+    } else {
+      const fwd = cb > ca;
+      const x1 = fwd ? a.x + a.w : a.x,
+        x2 = fwd ? b.x : b.x + b.w;
+      if (Math.abs(cb - ca) === 1) {
+        const mx = (x1 + x2) / 2;
+        d = `M${x1} ${ya} C ${mx} ${ya}, ${mx} ${yb}, ${x2} ${yb}`;
+      } else {
+        const gx1 = (fwd ? gapAfter(ca) : gapBefore(ca)) + lane(`g${fwd ? ca : ca - 1}`);
+        const gx2 = (fwd ? gapBefore(cb) : gapAfter(cb)) + lane(`g${fwd ? cb - 1 : cb}`);
+        // The clear channel nearest the straight line between the two ends.
+        const want = (ya + yb) / 2;
+        const ch = channels.length
+          ? channels.reduce((p, c) => (Math.abs(c - want) < Math.abs(p - want) ? c : p))
+          : want;
+        const cy = ch + lane(`c${ch}`);
+        d = round([
+          [x1, ya],
+          [gx1, ya],
+          [gx1, cy],
+          [gx2, cy],
+          [gx2, yb],
+          [x2, yb],
+        ]);
+      }
+    }
+    paths += `<path class="gedge ${cls}" d="${d}"/>`;
+  }
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" focusable="false">${paths}</svg>`;
 }
 
 /** A labelled cell: the label shows on a phone, where a row stacks. */
@@ -12867,6 +13121,7 @@ function regCount(n, tone) {
   return el("span", { class: `reg-n${n ? "" : " is-zero"}${n && tone ? ` is-${tone}` : ""}` }, [
     n && tone === "red" ? glyph("blocked", 14) : null,
     n && tone === "yellow" ? ycard(14) : null,
+    n && tone === "paused" ? glyph("paused", 14) : null,
     el("span", { class: "tabnum" }, String(n)),
   ]);
 }
@@ -12900,6 +13155,8 @@ function renderRepoRegister(repos, unmapped, ov) {
           : "No repos signed yet. Onboard a repo to bring it into the club.",
       ),
     ]);
+  // A Paused column only when a mapped repo has a ticket in the dugout.
+  const anyPaused = mapped.some((r) => mapTally(ov.liveOfRepo.get(r.id)).paused > 0);
   const rows = mapped.map((r) => {
     const t = mapTally(ov.liveOfRepo.get(r.id));
     const grounds = ov.groundsOf.get(r.id) || [];
@@ -12927,6 +13184,7 @@ function renderRepoRegister(repos, unmapped, ov) {
       ),
       regCell("Blocked", regCount(t.red, "red"), "reg-num"),
       regCell("To review", regCount(t.yellow, "yellow"), "reg-num"),
+      anyPaused ? regCell("Paused", regCount(t.paused, "paused"), "reg-num") : null,
       regCell("In play", regCount(t.play), "reg-num"),
       regCell("Gates", regGates(r), "reg-gc"),
     ]);
@@ -12942,6 +13200,7 @@ function renderRepoRegister(repos, unmapped, ov) {
           el("th", { scope: "col" }, "Plays at"),
           el("th", { scope: "col", class: "reg-num" }, "Blocked"),
           el("th", { scope: "col", class: "reg-num" }, "To review"),
+          anyPaused ? el("th", { scope: "col", class: "reg-num" }, "Paused") : null,
           el("th", { scope: "col", class: "reg-num" }, "In play"),
           el("th", { scope: "col" }, "Gates"),
         ]),
@@ -12952,7 +13211,7 @@ function renderRepoRegister(repos, unmapped, ov) {
 }
 
 /** Free agents: repos with no ground, each playing as its own single-repo scope. */
-function renderUnmappedSection(unmapped, repos = [], hiddenN = 0) {
+function renderUnmappedSection(unmapped, repos = [], hiddenN = 0, { ov = null, grounds = 0 } = {}) {
   const head = panelHead("Free agents", `${plural(unmapped.length, "repo")} with no ground`, null, {
     kit: "sky",
   });
@@ -12984,16 +13243,39 @@ function renderUnmappedSection(unmapped, repos = [], hiddenN = 0) {
     el(
       "p",
       { class: "gr-note" },
-      "No ground on the map, so each plays as its own single-repo scope. Give one a ground from its page.",
+      grounds
+        ? "No ground yet, so each plays as its own single-repo scope and its tickets count only here. Give one a ground from its page."
+        : "No ground on the map yet, so each plays as its own single-repo scope. Mark out a ground, or give one a ground from its page.",
     ),
   );
-  const rows = unmapped.map((r) =>
-    el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
-      el(
-        "th",
-        { scope: "row", class: "reg-repo" },
+  const rows = unmapped.map((r) => {
+    const live = (ov && ov.liveOfRepo.get(r.id)) || [];
+    const t = mapTally(live);
+    return el("tr", { class: "repo-row", dataset: { kind: "repo", repoId: r.id } }, [
+      el("th", { scope: "row", class: "reg-repo" }, [
         el("a", { href: `#/repo/${r.id}` }, repoTag(r.name, 22)),
-      ),
+        live.length
+          ? el("span", { class: "reg-live" }, [
+              el("span", { class: "sg-mags" }, [
+                ...live.slice(0, MAP_COUNTERS).map((c) => mapCounter(c)),
+                live.length > MAP_COUNTERS
+                  ? el(
+                      "a",
+                      {
+                        class: "sg-more mag-more",
+                        href: `#/repo/${r.id}`,
+                        "aria-label": `${live.length - MAP_COUNTERS} more live in ${r.name}`,
+                      },
+                      `+${live.length - MAP_COUNTERS}`,
+                    )
+                  : null,
+              ]),
+              el("span", { class: "sg-words" }, tallyWords(t)),
+            ])
+          : ov && ov.board
+            ? el("span", { class: "reg-sub" }, "Nothing in play")
+            : null,
+      ]),
       regCell(
         "Path",
         r.local_path
@@ -13004,8 +13286,8 @@ function renderUnmappedSection(unmapped, repos = [], hiddenN = 0) {
       regCell("Branch", el("span", {}, r.default_branch || "—")),
       regCell("Gates", renderRepoCommands(r)),
       el("td", { class: "row-actions" }, hideRepoBtn(r)),
-    ]),
-  );
+    ]);
+  });
   card.appendChild(
     el("table", { class: "reg-table reg-free" }, [
       el(
@@ -13273,7 +13555,7 @@ function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
             mapTone(t.status)
               ? el("span", { class: "gr-fx-mag" }, [
                   el("span", { class: "sr-only" }, "#"),
-                  mapCounter(t),
+                  mapCounter(t, { link: false }),
                 ])
               : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
             el("span", { class: "repo-ticket-title" }, t.title),
@@ -13304,7 +13586,11 @@ function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
 /** The stat strip a ground or repo page opens on: the Map's counts, nothing else. */
 function groundStats(t) {
   return el("div", { class: "kpi-row gr-stats" }, [
-    statCell({ label: "Live", value: String(t.live), sub: "blocked + to review + in play" }),
+    statCell({
+      label: "Live",
+      value: String(t.live),
+      sub: t.paused ? "the next four, added up" : "the next three, added up",
+    }),
     statCell({ label: "Blocked", value: String(t.red), sub: "blocked or failed" }),
     statCell({
       label: "To review",
@@ -13312,6 +13598,8 @@ function groundStats(t) {
       sub: "waits on your sign-off",
       needs: t.yellow > 0,
     }),
+    // Paused is rare: its cell shows only when something sits in the dugout.
+    t.paused ? statCell({ label: "Paused", value: String(t.paused), sub: "in the dugout" }) : null,
     statCell({ label: "In play", value: String(t.play), sub: "the rest of the pitch" }),
     statCell({ label: "Done", value: String(t.done), sub: "shipped" }),
     statCell({ label: "Bench", value: String(t.bench), sub: "drafts and refining" }),
@@ -13438,6 +13726,18 @@ async function renderNode(id) {
       ]),
     ]),
   );
+  if (isImplicitScope(node)) {
+    const repoName = node.name.slice(5);
+    const r = allRepos.find((x) => x.name === repoName);
+    wrap.appendChild(
+      el("p", { class: "gr-implicit" }, [
+        el("b", {}, "Not a ground. "),
+        "The factory records this scope when a ticket targets ",
+        r ? el("a", { href: `#/repo/${r.id}` }, repoName) : repoName,
+        ", a repo with no ground, so the ticket still has a scope. On the Map it plays as a free agent; give it a ground from its page.",
+      ]),
+    );
+  }
   if (t) wrap.appendChild(groundStats(t));
 
   const fixtures = el("section", { class: "card gr-card", "aria-label": "Fixtures" }, [

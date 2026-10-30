@@ -58,7 +58,7 @@ for i in 1 2; do
   wg ticket ready "$i" >/dev/null 2>&1
 done
 A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$A1" ] || { echo "SKIP: could not register agent"; exit 0; }
+[ -n "$A1" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 
 echo "== human takes #1 by hand =="
 wg human-claim 1 >/dev/null 2>&1

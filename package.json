@@ -34,6 +34,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "test:coverage": "pnpm -r test:coverage",
+    "test:runner": "bash runner/test/run.sh",
     "typecheck": "pnpm -r typecheck",
     "typecheck:test": "pnpm -r typecheck:test",
     "lint": "eslint .",

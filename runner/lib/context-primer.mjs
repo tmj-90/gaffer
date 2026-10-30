@@ -90,7 +90,11 @@ export function primeContextBlock({ realRepoPath, repo, query, paths = [], env =
   try {
     const cliBin =
       env.MEMORY_CLI_BIN ?? resolve(_GAFFER_HOME, "packages", "memory", "dist", "bin", "memory.js");
-    const db = env.MEMORY_DB ?? resolve(_DATA_DEFAULT, "memory.sqlite");
+    // Same precedence as factory.config.sh: MEMORY_DB, else $GAFFER_DATA/memory.sqlite,
+    // else the checkout's .gaffer. Ignoring GAFFER_DATA here read (and created) the
+    // CHECKOUT's memory DB for a caller whose data dir is elsewhere — e.g.
+    // product-owner-run.mjs under a dashboard with a custom GAFFER_DATA.
+    const db = env.MEMORY_DB ?? resolve(env.GAFFER_DATA || _DATA_DEFAULT, "memory.sqlite");
 
     if (!cliBin || !db || !existsSync(cliBin)) return "";
 

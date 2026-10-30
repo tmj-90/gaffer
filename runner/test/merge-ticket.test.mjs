@@ -48,6 +48,15 @@ try {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const HELPER = resolve(RUNNER_DIR, "bin", "merge-ticket.mjs");
+// merge-ticket.mjs resolves GAFFER_DATA / DISPATCH_DB / MEMORY_DB at IMPORT time and
+// defaults them to the checkout's .gaffer — the operator's LIVE factory state. The
+// in-process cases (W's runtime render, R-3's digest apply) wrote and read there.
+// Pin all three to a private dir BEFORE the import, overriding the developer's shell.
+const PRIVATE_DATA = mkdtempSync(resolve(tmpdir(), "merge-ticket-data-"));
+process.env.GAFFER_DATA = PRIVATE_DATA;
+process.env.DISPATCH_DB = resolve(PRIVATE_DATA, "dispatch.sqlite");
+process.env.MEMORY_DB = resolve(PRIVATE_DATA, "memory.sqlite");
+process.on("exit", () => rmSync(PRIVATE_DATA, { recursive: true, force: true }));
 const SKILL = resolve(RUNNER_DIR, "skills", "resolve-merge-conflict", "SKILL.md");
 const {
   resolveTicket,
@@ -64,6 +73,7 @@ const {
   inspectWorkingTree,
   installProjectLocalWiring,
   canLand,
+  mergeTicketMcpRuntimePath,
 } = await import(HELPER);
 
 let passed = 0;
@@ -671,6 +681,16 @@ console.log(
   assert(
     "a real resolution: the default branch is merged into the branch head",
     git(repo, "merge-base", "--is-ancestor", "main", "gaffer/ticket-7-x").status === 0,
+  );
+  // Refused, gave-up and resolved runs alike leave no per-ticket MCP runtime behind.
+  const leftover = existsSync(DATA)
+    ? require("node:fs")
+        .readdirSync(DATA)
+        .filter((f) => /^mcp-merge-ticket-.*-runtime\.json$/.test(f))
+    : [];
+  assert(
+    `the resolver's per-ticket MCP runtime is removed after the spawn (left: ${leftover.join(", ") || "none"})`,
+    leftover.length === 0,
   );
 }
 
@@ -1483,6 +1503,15 @@ console.log("== W: the resolver's MCP runtime is fully rendered and scoped to th
   const wt = mkdtempSync(resolve(tmpdir(), "mt-wiring-"));
   try {
     const runtime = installProjectLocalWiring(wt, 42, "demo-repo");
+    assert(
+      `W: the runtime lands in the private GAFFER_DATA, not the checkout (${runtime})`,
+      runtime.startsWith(PRIVATE_DATA + "/"),
+    );
+    assert(
+      "W: the runtime file is per ticket (concurrent resolvers never share one)",
+      runtime === mergeTicketMcpRuntimePath(42) &&
+        mergeTicketMcpRuntimePath(42) !== mergeTicketMcpRuntimePath(43),
+    );
     const text = readFileSync(runtime, "utf8");
     assert("W: no leftover ${PLACEHOLDER} in the rendered runtime", !/\$\{[A-Z_]+\}/.test(text));
     const cfg = JSON.parse(text);

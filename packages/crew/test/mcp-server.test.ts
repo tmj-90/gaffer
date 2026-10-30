@@ -6,7 +6,7 @@
  *   - a read-only tool (check_command_allowed) denies a destructive command;
  *   - the mutating tool (run_idle_loop) creates a DRAFT ticket.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -38,9 +38,14 @@ describe("MCP server: factory tools", () => {
   let wg: ReturnType<typeof Dispatch.open>;
   let dispatch: DispatchClient;
   let ctx: ReturnType<typeof loadFactory>;
+  // The template's event_log_path is cwd-relative (./.crew/events.jsonl), so the
+  // idle-loop / context-packet tools would append to packages/crew/.crew/ on every
+  // `pnpm test`. loadConfig applies GAFFER_CREW_EVENTS, so point it into tmp.
+  const prevEvents = process.env.GAFFER_CREW_EVENTS;
 
   beforeAll(() => {
     tmp = mkdtempSync(join(tmpdir(), "gaffer-mcp-"));
+    process.env.GAFFER_CREW_EVENTS = join(tmp, "events.jsonl");
     initFactory({ dir: tmp, factoryName: "mcp-factory", force: true });
 
     // One repo with a coverage command so the idle loop has work to do.
@@ -84,6 +89,8 @@ describe("MCP server: factory tools", () => {
   afterAll(() => {
     wg.db.close();
     rmSync(tmp, { recursive: true, force: true });
+    if (prevEvents === undefined) delete process.env.GAFFER_CREW_EVENTS;
+    else process.env.GAFFER_CREW_EVENTS = prevEvents;
   });
 
   it("exposes exactly the eight factory tools over tools/list", async () => {
@@ -152,6 +159,13 @@ describe("MCP server: factory tools", () => {
 
     expect(mcpLoopIds).toEqual(cliLoopIds);
     expect(mcpLoopIds.length).toBeGreaterThan(0);
+  });
+
+  it("tool events land in the test's own log, never the cwd's ./.crew", () => {
+    // run_idle_loop (above) appended through the config's event_log_path.
+    const log = join(tmp, "events.jsonl");
+    expect(ctx.loaded.config.logging.event_log_path).toBe(log);
+    expect(existsSync(log)).toBe(true);
   });
 
   it("get_factory_status reports repo/agent counts and dispatch reachability", async () => {

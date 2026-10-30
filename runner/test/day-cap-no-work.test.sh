@@ -104,13 +104,13 @@ run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick.sh" >/
 reset_state worked
 out="$(run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick.sh")"
 [ "$(day_count)" = "1" ] && ok "a worked poll bumps the day counter once" || fail "worked poll should bump to 1 (got '$(day_count)')"
-printf '%s' "$out" | grep -q '^TICK_RESULT=worked' && ok "poll streams the tick's TICK_RESULT line through" || fail "poll output lost the TICK_RESULT line"
+grep -q '^TICK_RESULT=worked' <<<"$out" && ok "poll streams the tick's TICK_RESULT line through" || fail "poll output lost the TICK_RESULT line"
 # Cap already hit: the poll must REFUSE before running the tick.
 reset_state worked
 printf '%s 50\n' "$(date +%Y-%m-%d)" > "$WORK/.daily-ticks"
 out="$(run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick.sh")"
 [ ! -s "$WORK/calls" ] && ok "poll at the day cap does NOT run the tick" || fail "poll ran the tick despite the day cap"
-printf '%s' "$out" | grep -q 'per-day cap' && printf '%s' "$out" | grep -q 'TICK_RESULT=no_work' \
+grep -q 'per-day cap' <<<"$out" && grep -q 'TICK_RESULT=no_work' <<<"$out" \
   && ok "poll at the cap logs the reason and reports no_work (exit 0)" || fail "poll at cap should log + report no_work; out: $out"
 [ "$(day_count)" = "50" ] && ok "a refused poll leaves the counter untouched" || fail "refused poll changed the counter to '$(day_count)'"
 # DRY_RUN previews are never gated and never counted.
@@ -126,7 +126,7 @@ rm -f "$WORK/.daily-ticks"
 mkdir -p "$WORK/data"
 printf '{"ts":"%s","kind":"delivery","measured":true,"total_cost_usd":5.00}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$WORK/data/usage-ledger.jsonl"
 out="$(run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick.sh" GAFFER_DAILY_BUDGET_USD=1.00 GAFFER_USAGE_LEDGER="$WORK/data/usage-ledger.jsonl")"
-[ ! -s "$WORK/calls" ] && printf '%s' "$out" | grep -q 'per-day USD cap' \
+[ ! -s "$WORK/calls" ] && grep -q 'per-day USD cap' <<<"$out" \
   && ok "poll at the USD day cap refuses before spawning" || fail "poll should refuse on the USD cap; out: $out"
 # Wiring: the same outer wall-clock bound loop.sh uses.
 grep -qE 'gaffer_timeout "\$GAFFER_TICK_OUTER_TIMEOUT" bash "\$GAFFER_POLL_TICK_SH"' "$RUNNER_DIR/bin/poll-once.sh" \

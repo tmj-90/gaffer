@@ -99,25 +99,25 @@ run_tick() {
 
 echo "== BUG 1: reviewer pass IS reached at the no_work juncture (REVIEW_MODE=agent) =="
 OUT_AGENT="$(run_tick agent || true)"
-printf '%s\n' "$OUT_AGENT" | grep -q "all ready tickets failed delivery this run" \
+grep -q "all ready tickets failed delivery this run" <<<"$OUT_AGENT" \
   && ok "reached the 'nothing deliverable' no_work juncture (ready non-empty, none claimable)" \
   || fail "did not reach the no_work juncture — test setup wrong: $(printf '%s' "$OUT_AGENT" | tail -3 | tr '\n' '|')"
-printf '%s\n' "$OUT_AGENT" | grep -q "would run a reviewer agent on #3" \
+grep -q "would run a reviewer agent on #3" <<<"$OUT_AGENT" \
   && ok "agent reviewer INVOKED from the no_work juncture (blocker #3 reviewed → chain can unblock)" \
   || fail "reviewer NOT invoked at no_work juncture — deadlock persists: $(printf '%s' "$OUT_AGENT" | tail -5 | tr '\n' '|')"
-printf '%s\n' "$OUT_AGENT" | grep -q "TICK_RESULT=reviewed" \
+grep -q "TICK_RESULT=reviewed" <<<"$OUT_AGENT" \
   && ok "tick reports 'reviewed' (progress made), not the dead-end 'no_work'" \
   || fail "tick did not report 'reviewed' (got: $(printf '%s' "$OUT_AGENT" | grep -o 'TICK_RESULT=[a-z_]*' | tail -1))"
-printf '%s\n' "$OUT_AGENT" | grep -q "TICK_RESULT=no_work" \
+grep -q "TICK_RESULT=no_work" <<<"$OUT_AGENT" \
   && fail "tick STILL exited no_work — reviewer was skipped (deadlock)" \
   || ok "tick did NOT fall through to no_work (reviewer short-circuited it)"
 
 echo "== BUG 1: supervised (REVIEW_MODE=human) is byte-identical — no reviewer, no_work =="
 OUT_HUMAN="$(run_tick human || true)"
-printf '%s\n' "$OUT_HUMAN" | grep -q "TICK_RESULT=no_work" \
+grep -q "TICK_RESULT=no_work" <<<"$OUT_HUMAN" \
   && ok "human mode still yields no_work at the juncture (unchanged)" \
   || fail "human mode changed — expected no_work (got: $(printf '%s' "$OUT_HUMAN" | grep -o 'TICK_RESULT=[a-z_]*' | tail -1))"
-printf '%s\n' "$OUT_HUMAN" | grep -q "would run a reviewer agent" \
+grep -q "would run a reviewer agent" <<<"$OUT_HUMAN" \
   && fail "human mode invoked the agent reviewer — supervised MUST stay untouched" \
   || ok "human mode never invokes the agent reviewer (guarded call skipped)"
 
@@ -139,9 +139,9 @@ DEFS="$(grep -c '^_gaffer_agent_review_pass() {' "$REVIEW_LIB" || true)"
   && ok "_gaffer_agent_review_pass no longer defined inline in tick.sh" \
   || fail "_gaffer_agent_review_pass still defined in tick.sh — extraction incomplete"
 # The no_work juncture must invoke the reviewer BEFORE the exit, guarded by REVIEW_MODE.
-awk '/all ready tickets failed delivery this run/{f=1}
+grep -q WIRED <<<"$(awk '/all ready tickets failed delivery this run/{f=1}
      f && /_gaffer_agent_review_pass/{g=1}
-     f && /result no_work; exit 0/{print (g?"WIRED":"MISSING"); exit}' "$TICK" | grep -q WIRED \
+     f && /result no_work; exit 0/{print (g?"WIRED":"MISSING"); exit}' "$TICK")" \
   && ok "reviewer pass invoked between the 'nothing deliverable' log and 'result no_work; exit 0'" \
   || fail "reviewer pass NOT wired at the no_work juncture"
 CALLS="$(grep -c '^[[:space:]]*_gaffer_agent_review_pass$' "$TICK" || true)"
@@ -209,15 +209,15 @@ echo "== BUG 2: the hygiene check itself still FIRES on a dangling .claude/skill
 DIRTY="$WORK/g2-dirty"; mk_repo "$DIRTY"
 mkdir -p "$DIRTY/.claude"; ln -sfn "$DIRTY/.claude/gone" "$DIRTY/.claude/skills"
 CLEAN_OUT="$(gaffer_assert_repo_clean "$DIRTY" 2>&1 || true)"
-printf '%s\n' "$CLEAN_OUT" | grep -q "broken symlink in real repo: .claude/skills" \
+grep -q "broken symlink in real repo: .claude/skills" <<<"$CLEAN_OUT" \
   && ok "hygiene check still detects a dangling .claude/skills (detector intact)" \
   || fail "hygiene check no longer catches a dangling .claude/skills: $CLEAN_OUT"
 
 echo "== BUG 2: gaffer_cleanup_worktrees purges the worktree dir (grep-proof) =="
-awk '/gaffer_cleanup_worktrees\(\) \{/{f=1}
+grep -q PURGE <<<"$(awk '/gaffer_cleanup_worktrees\(\) \{/{f=1}
      f && /worktree remove --force/{r=1}
      f && r && /rm -rf "\$_rwt"/{print "PURGE"; exit}
-     f && /^  \}/{exit}' "$TICK" | grep -q PURGE \
+     f && /^  \}/{exit}' "$TICK")" \
   && ok "gaffer_cleanup_worktrees rm -rf's the worktree path after 'git worktree remove'" \
   || fail "gaffer_cleanup_worktrees missing the post-remove 'rm -rf \$_rwt' purge"
 

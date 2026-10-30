@@ -59,19 +59,19 @@ gaffer_build_escalation 1
 
 # Attempt 2 — RETHINK, same model, carries the real failure.
 gaffer_build_escalation 2
-printf '%s' "$_REWORK_BLOCK" | grep -q 'RETHINK' \
+grep -q 'RETHINK' <<<"$_REWORK_BLOCK" \
   && ok "A2 attempt 2 → RETHINK posture (re-plan the approach)" \
   || fail "A2 attempt 2 should be a RETHINK ($_REWORK_BLOCK)"
 [ "$_ATTEMPT_IMPL_FLAG" = "$ROUTE_IMPL_FLAG" ] \
   && ok "A2 attempt 2 → same routed model (model escalates only on the final attempt)" \
   || fail "A2 attempt 2 model should stay the routed model (got: $_ATTEMPT_IMPL_FLAG)"
-printf '%s' "$_REWORK_BLOCK" | grep -q 'expected 3 to be 4' \
+grep -q 'expected 3 to be 4' <<<"$_REWORK_BLOCK" \
   && ok "A2 the real failure is fed into the rework block (well-fed)" \
   || fail "A2 the rework block should carry the real failure ($_REWORK_BLOCK)"
 
 # Attempt 3 (== max) — STRONGER model + full history.
 gaffer_build_escalation 3
-printf '%s' "$_REWORK_BLOCK" | grep -q 'FINAL' \
+grep -q 'FINAL' <<<"$_REWORK_BLOCK" \
   && ok "A3 attempt 3 → FINAL posture (last shot before a human)" \
   || fail "A3 attempt 3 should be the FINAL attempt ($_REWORK_BLOCK)"
 [ "$_ATTEMPT_IMPL_FLAG" = "--model opus" ] \
@@ -146,7 +146,7 @@ grep -q '_cost_exhausted' "$TICK" \
 RP_SRC="$(extract_fn "$TICK" "_recover_or_park" "  }")"
 [ -n "$RP_SRC" ] && ok "C extracted _recover_or_park from tick.sh (real source)" \
   || fail "C could not extract _recover_or_park"
-printf '%s\n' "$RP_SRC" | grep -q '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' \
+grep -q '^ *GAFFER_KEEP_DELIVERY_BRANCH=1' <<<"$RP_SRC" \
   && ok "C _recover_or_park raises GAFFER_KEEP_DELIVERY_BRANCH=1 (park/retry never drop-branch via the trap)" \
   || fail "C _recover_or_park must raise GAFFER_KEEP_DELIVERY_BRANCH=1"
 # The retention line must come BEFORE the first cleanup/release call in the function.
@@ -157,18 +157,18 @@ _first_cleanup_ln="$(printf '%s\n' "$RP_SRC" | grep -n 'gaffer_cleanup_worktrees
   || fail "C retention must precede teardown/release in _recover_or_park (keep=$_keep_ln cleanup=$_first_cleanup_ln)"
 # AGENT-SIDE PARK: a ticket the agent itself moved to `blocked` (a decision it opened)
 # ends the loop — no further paid attempt, branch preserved, ticket left where it is.
-printf '%s\n' "$RP_SRC" | grep -q '_cur_status" = "blocked"' \
+grep -q '_cur_status" = "blocked"' <<<"$RP_SRC" \
   && ok "C _recover_or_park stops the loop when the agent already parked the ticket to blocked" \
   || fail "C _recover_or_park must detect an agent-side park (status blocked)"
 # NOT CONVERGING: an attempt that reproduces the previous attempt's distilled failure
 # byte-for-byte parks at once instead of spending the remaining paid attempts.
-printf '%s\n' "$RP_SRC" | grep -q '_LAST_REAL_FAILURE' \
+grep -q '_LAST_REAL_FAILURE' <<<"$RP_SRC" \
   && ok "C _recover_or_park compares the failure with the previous attempt's" \
   || fail "C _recover_or_park must track _LAST_REAL_FAILURE"
-printf '%s\n' "$RP_SRC" | grep -q '\[ "\$_repeat" -eq 0 \]' \
+grep -q '\[ "\$_repeat" -eq 0 \]' <<<"$RP_SRC" \
   && ok "C a repeated identical failure skips the retry branch (parks)" \
   || fail "C the retry condition must require _repeat=0"
-printf '%s\n' "$RP_SRC" | grep -q 'not converging' \
+grep -q 'not converging' <<<"$RP_SRC" \
   && ok "C the park reason says the loop was not converging" \
   || fail "C park reason should name non-convergence"
 # GAFFER_MAX_DELIVERY_ATTEMPTS default is raised 2 → 3.

@@ -84,7 +84,7 @@ echo "== AC4: a stale mkdir-lock is reaped (no permanent wedge) =="
 # Only meaningful on the mkdir fallback (macOS). On flock systems skip — flock
 # auto-releases on holder death so there is no stale-dir to reap.
 if command -v flock >/dev/null 2>&1; then
-  ok "flock present — stale-dir reaping N/A (flock self-releases on death)"
+  printf '  SKIP: %s\n' "flock present — stale-dir reaping N/A (flock self-releases on death)"   # N/A here: a skip, not an ok
 else
   STALE="$WORK/.stale.lock.d"
   mkdir -p "$STALE"
@@ -97,7 +97,7 @@ else
       fail "stale lock NOT reaped — gaffer_with_lock wedged on a dead holder"
     fi
   else
-    ok "could not backdate mtime on this platform — skipping stale-reap probe"
+    printf '  SKIP: %s\n' "could not backdate a dir mtime on this platform — stale-reap probe not run"   # a skip, not an ok
   fi
 fi
 
@@ -108,7 +108,7 @@ echo "== AC5: a LIVE holder past GAFFER_LOCK_STALE is NOT reaped (mutual exclusi
 # reaping, a live holder is never reaped however long it holds. Only meaningful on
 # the mkdir fallback (flock self-releases on death, no mtime reaping at all).
 if command -v flock >/dev/null 2>&1; then
-  ok "flock present — live-holder reaping N/A (flock has no mtime-stale path)"
+  printf '  SKIP: %s\n' "flock present — live-holder reaping N/A (flock has no mtime-stale path)"   # N/A here: a skip, not an ok
 else
   export GAFFER_LOCK_STALE=1 GAFFER_LOCK_TIMEOUT=10
   LIVELOCK="$WORK/.live.lock"
@@ -142,7 +142,7 @@ echo "== AC6: an ABANDONED lock (dead holder PID) IS still reaped =="
 # (dead PID → fall through to acquire), proving we didn't trade one wedge for
 # another.
 if command -v flock >/dev/null 2>&1; then
-  ok "flock present — dead-holder reaping N/A (flock self-releases)"
+  printf '  SKIP: %s\n' "flock present — dead-holder reaping N/A (flock self-releases)"   # N/A here: a skip, not an ok
 else
   export GAFFER_LOCK_STALE=120 GAFFER_LOCK_TIMEOUT=10
   DEAD="$WORK/.dead.lock.d"

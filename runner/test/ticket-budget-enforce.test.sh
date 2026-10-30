@@ -27,6 +27,8 @@ PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
+# shellcheck source=lib/skip.sh
+. "$HERE/lib/skip.sh"   # gaffer_skip_part: a skipped section is counted, never an ok
 
 # The exact resolution tick.sh uses: per-ticket budget wins when > 0, else the env
 # default. Mirrored here so the policy is pinned independently of the delivery flow.
@@ -82,11 +84,11 @@ if [ -f "$CLI" ]; then
   DB="$WORK/d.sqlite"
   node "$CLI" --db "$DB" init >/dev/null 2>&1
   OUT="$(node "$CLI" --db "$DB" ticket create -t "budgeted" --budget 1.5 2>/dev/null)"
-  echo "$OUT" | grep -q '"delivery_budget_usd": *1.5' \
+  grep -q '"delivery_budget_usd": *1.5' <<<"$OUT" \
     && ok "wg ticket create --budget surfaces delivery_budget_usd on the ticket" \
     || fail "ticket create --budget did not surface the field ($OUT)"
 else
-  echo "  skip dispatch CLI not built ($CLI) — build it to exercise the surface"
+  gaffer_skip_part "dispatch CLI not built ($CLI) — build it to exercise the surface"
 fi
 
 echo

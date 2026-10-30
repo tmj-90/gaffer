@@ -81,7 +81,7 @@ mkticket() {
 echo "== A. REQUIRE_CI=1 + CREATE_PR=0 → delivery reaches in_review; gate skipped with a warning =="
 N1="$(mkticket "CI probe one")"
 OUT1="$(run_tick)"
-echo "$OUT1" | grep -q '^TICK_RESULT=worked$' && ok "A: delivery tick → worked" || fail "A: tick result: $OUT1 ($(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|'))"
+grep -q '^TICK_RESULT=worked$' <<<"$OUT1" && ok "A: delivery tick → worked" || fail "A: tick result: $OUT1 ($(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|'))"
 [ "$(st "$N1")" = "in_review" ] && ok "A: #$N1 is in_review (NOT rejected to rework)" || fail "A: #$N1 status $(st "$N1")"
 grep -q 'GAFFER_REQUIRE_CI is on but GAFFER_CREATE_PR is off' "$GAFFER_DATA/factory.log" \
   && ok "A: one clear warning names both knobs" || fail "A: no dependency warning: $(grep 'H3' "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|')"
@@ -92,7 +92,7 @@ grep -q 'CI FAILED\|auto-rejecting' "$GAFFER_DATA/factory.log" && fail "A: the g
 echo "== B. a second delivery in the same run stays quiet (warned once) =="
 N2="$(mkticket "CI probe two")"
 OUT2="$(run_tick)"
-echo "$OUT2" | grep -q '^TICK_RESULT=worked$' && [ "$(st "$N2")" = "in_review" ] \
+grep -q '^TICK_RESULT=worked$' <<<"$OUT2" && [ "$(st "$N2")" = "in_review" ] \
   && ok "B: #$N2 delivered → in_review" || fail "B: tick $OUT2 status=$(st "$N2")"
 [ "$(grep -c 'GAFFER_REQUIRE_CI is on but GAFFER_CREATE_PR is off' "$GAFFER_DATA/factory.log")" = "1" ] \
   && ok "B: still exactly one warning in the log" \

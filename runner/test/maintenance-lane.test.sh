@@ -121,7 +121,7 @@ reset_log() { : > "$CREW_CALLS"; : > "$GAFFER_DATA/factory.log"; }
 # ── 1. GAFFER_MAINTENANCE=1 → forced lane runs + is logged ───────────────────
 reset_log
 OUT1="$(GAFFER_MAINTENANCE=1 MAINT_ENABLED=0 run_tick)"
-echo "$OUT1" | grep -q '^TICK_RESULT=maintenance_drafted$' \
+grep -q '^TICK_RESULT=maintenance_drafted$' <<<"$OUT1" \
   && ok "GAFFER_MAINTENANCE=1 forces the lane even with the crew.yaml switch off → maintenance_drafted" \
   || fail "expected maintenance_drafted under force, got: $(echo "$OUT1" | grep '^TICK_RESULT=')"
 grep -q "maintenance lane chose 'security_hotspot'" "$GAFFER_DATA/factory.log" 2>/dev/null \
@@ -141,7 +141,7 @@ fi
 # ── 3. GAFFER_MAINTENANCE=0 → kill switch: crew never asked ──────────────────
 reset_log
 OUT3="$(GAFFER_MAINTENANCE=0 IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
-echo "$OUT3" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT3" \
   && ok "GAFFER_MAINTENANCE=0 + idle OFF → TICK_RESULT=no_work" \
   || fail "expected no_work with the kill switch, got: $(echo "$OUT3" | grep '^TICK_RESULT=')"
 if [ -s "$CREW_CALLS" ]; then
@@ -153,7 +153,7 @@ fi
 # ── 4. unset + crew.yaml switch OFF → crew asked, answers disabled, no_work ──
 reset_log
 OUT4="$(MAINT_ENABLED=0 IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
-echo "$OUT4" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT4" \
   && ok "crew.yaml switch off (env unset) → TICK_RESULT=no_work" \
   || fail "expected no_work with the crew.yaml switch off, got: $(echo "$OUT4" | grep '^TICK_RESULT=')"
 if grep -q '^.*maintain' "$CREW_CALLS" && ! grep -q -- '--force' "$CREW_CALLS"; then
@@ -168,14 +168,14 @@ grep -q 'maintenance lane is OFF in crew.yaml' "$GAFFER_DATA/factory.log" 2>/dev
 # ── 5. unset + crew.yaml switch ON → the lane runs ───────────────────────────
 reset_log
 OUT5="$(MAINT_ENABLED=1 run_tick)"
-echo "$OUT5" | grep -q '^TICK_RESULT=maintenance_drafted$' \
+grep -q '^TICK_RESULT=maintenance_drafted$' <<<"$OUT5" \
   && ok "crew.yaml switch on (env unset) → the lane runs → maintenance_drafted" \
   || fail "expected maintenance_drafted with the crew.yaml switch on, got: $(echo "$OUT5" | grep '^TICK_RESULT=')"
 
 # ── 6. DRY_RUN logs intent without invoking crew ─────────────────────────────
 reset_log
 OUT6="$(GAFFER_MAINTENANCE=1 DRY_RUN=1 run_tick)"
-echo "$OUT6" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT6" \
   && ok "DRY_RUN → TICK_RESULT=no_work (nothing drafted)" \
   || fail "DRY_RUN expected no_work, got: $(echo "$OUT6" | grep '^TICK_RESULT=')"
 grep -q 'DRY_RUN: would run: fg maintain --force' "$GAFFER_DATA/factory.log" 2>/dev/null \

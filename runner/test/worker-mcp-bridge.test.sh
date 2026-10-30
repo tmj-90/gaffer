@@ -97,9 +97,22 @@ GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$MCP" "$WORK/out3.json" "" 2>/
 echo "== 4: unrenderable config ⇒ fail closed (rc 76, no spawn) =="
 rm -f "$WORK"/claude.* "$WORK"/wrap.*
 BAD="$GAFFER_DATA/mcp-runtime.bad.json"; printf 'not json\n' > "$BAD"
-GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$BAD" "$WORK/out4.json" "$WRAP" 2>"$WORK/err4"; rc=$?
+# Track the EXACT socket dir the refusal creates (a recording mktemp first on PATH),
+# not a count of every /tmp/gaffer-mcp.* on the host: a live docker-mode factory, a
+# SIGKILLed worker's leftover or a concurrent bridge test made that count non-zero.
+REAL_MKTEMP="$(command -v mktemp)"; mkdir -p "$WORK/shim"; : > "$WORK/mktemp.log"
+printf '#!/bin/sh
+out="$("%s" "$@")" || exit $?
+printf "%%s\n" "$out" >> "%s"
+printf "%%s\n" "$out"
+' "$REAL_MKTEMP" "$WORK/mktemp.log" > "$WORK/shim/mktemp"
+chmod +x "$WORK/shim/mktemp"
+PATH="$WORK/shim:$PATH" GAFFER_MCP_BRIDGE=1 worker_deliver "$CWD" "p" "" "$BAD" "$WORK/out4.json" "$WRAP" 2>"$WORK/err4"; rc=$?
 [ "$rc" -eq 76 ] && ok "rc 76" || fail "expected rc 76 (got $rc)"
-[ "$(ls -d /tmp/gaffer-mcp.* 2>/dev/null | wc -l | tr -d ' ')" = "0" ] && ok "no private socket dir left behind by the refusal" || fail "refusal leaked a /tmp/gaffer-mcp.* dir"
+REFUSAL_DIR="$(grep -m1 '^/tmp/gaffer-mcp\.' "$WORK/mktemp.log")"
+[ -n "$REFUSAL_DIR" ] && ok "the refusal path created its private socket dir ($REFUSAL_DIR) — the leak check below bites" \
+  || fail "no /tmp/gaffer-mcp.* dir recorded — the leak check would be vacuous ($(tr '\n' ' ' < "$WORK/mktemp.log"))"
+[ -n "$REFUSAL_DIR" ] && [ ! -e "$REFUSAL_DIR" ] && ok "no private socket dir left behind by the refusal" || fail "refusal leaked its socket dir: ${REFUSAL_DIR:-<none recorded>}"
 [ ! -f "$WORK/claude.argv" ] && ok "claude was NOT spawned" || fail "claude spawned despite the bridge failure"
 grep -q 'fail closed' "$WORK/err4" && ok "the refusal is explained" || fail "no fail-closed message: $(cat "$WORK/err4")"
 

@@ -122,7 +122,7 @@ RES="$WORK/a7.results"
 printf 'repo\t%s\t1\t0\t0\tsh -c "echo BOOM_MARKER; exit 3"\t-\t-\n' "$WT" \
   | gaffer_run_dod_gates "$RES" || true
 EV="$(gaffer_dod_evidence_summary "$RES" FAIL)"
-printf '%s\n' "$EV" | head -1 | grep -q '^DoD: FAIL' \
+grep -q '^DoD: FAIL' <<<"$(head -1 <<<"$EV")" \
   && ok "A7 evidence summary opens with the DoD verdict line" \
   || fail "A7 expected a 'DoD: FAIL' first line ($EV)"
 printf '%s\n' "$EV" | sed -n '2p' | python3 -c "
@@ -133,7 +133,7 @@ assert any(g['gate']=='tests' and g['status']=='FAIL' for g in d['gates']), d
 " 2>/dev/null \
   && ok "A7 the JSON line parses with the failing tests gate" \
   || fail "A7 expected a parseable JSON line naming the failing gate"
-printf '%s' "$EV" | grep -q 'BOOM_MARKER' \
+grep -q 'BOOM_MARKER' <<<"$EV" \
   && ok "A7 the failing command's output tail is captured for evidence" \
   || fail "A7 expected the failing output (BOOM_MARKER) in the evidence"
 
@@ -183,7 +183,9 @@ else
     | python3 -c "import sys,json;print(json.load(sys.stdin).get('claimToken',''))" 2>/dev/null || echo '')"
   CUR="$(WG ticket show "$TNUM" 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['ticket']['status'])" 2>/dev/null || echo '')"
   if [ "$CUR" != "claimed" ] || [ -z "$CLAIM" ]; then
-    echo "  SKIP: could not drive #$TNUM to claimed (got '$CUR') — skipping the park assertions"
+    # agent register / claim-ticket broke: a regression in the contract this
+    # fixture drives, so a FAIL — never a SKIP (cli-contract-regression.test.sh).
+    fail "could not drive #$TNUM to claimed (got '$CUR') — a break in the dispatch CLI contract this test guards"
   else
     ok "B fixture: #$TNUM is claimed (the runner holds the delivery claim)"
 
@@ -256,13 +258,13 @@ AssertionError: expected 3 to be 4
       Tests  1 failed (1)
 VEOF
 V_DISTILLED="$(gaffer_dod_distill_output "$VITEST_OUT" 40)"
-printf '%s' "$V_DISTILLED" | grep -q 'AssertionError: expected 3 to be 4' \
+grep -q 'AssertionError: expected 3 to be 4' <<<"$V_DISTILLED" \
   && ok "E vitest: the distiller keeps the real assertion (expected 3 to be 4)" \
   || fail "E vitest: distiller lost the assertion ($V_DISTILLED)"
-printf '%s' "$V_DISTILLED" | grep -q 'adds numbers' \
+grep -q 'adds numbers' <<<"$V_DISTILLED" \
   && ok "E vitest: the distiller keeps the failing test name" \
   || fail "E vitest: distiller lost the failing test name ($V_DISTILLED)"
-printf '%s' "$V_DISTILLED" | grep -q 'Test Files  1 failed' \
+grep -q 'Test Files  1 failed' <<<"$V_DISTILLED" \
   && fail "E vitest: distiller kept the summary COUNT line (should drop it)" \
   || ok "E vitest: the distiller DROPS the summary count line (not a blind tail)"
 
@@ -274,7 +276,7 @@ org.opentest4j.AssertionFailedError: expected: <4> but was: <3>
 	at com.example.CalcTest.testAdd(CalcTest.java:12)
 MEOF
 M_DISTILLED="$(gaffer_dod_distill_output "$MVN_OUT" 40)"
-printf '%s' "$M_DISTILLED" | grep -q 'expected: <4> but was: <3>' \
+grep -q 'expected: <4> but was: <3>' <<<"$M_DISTILLED" \
   && ok "E maven: the distiller keeps the real assertion (expected <4> but was <3>)" \
   || fail "E maven: distiller lost the assertion ($M_DISTILLED)"
 
@@ -283,10 +285,10 @@ RESE="$WORK/e.results"
 printf 'repo\t%s\t1\t0\t0\tsh -c "echo AssertionError: boom; echo \\"  at f.ts:1:2\\"; exit 1"\t-\t-\n' "$WT" \
   | gaffer_run_dod_gates "$RESE" || true
 E_FB="$(gaffer_dod_extract_failure "$RESE")"
-printf '%s' "$E_FB" | grep -q 'AssertionError: boom' \
+grep -q 'AssertionError: boom' <<<"$E_FB" \
   && ok "E the extractor pulls the distilled real failure out of the results file" \
   || fail "E extractor lost the failure ($E_FB)"
-printf '%s' "$E_FB" | grep -q 'failing gate: tests@repo' \
+grep -q 'failing gate: tests@repo' <<<"$E_FB" \
   && ok "E the extracted feedback names the failing gate" \
   || fail "E extractor did not name the failing gate ($E_FB)"
 
@@ -294,7 +296,7 @@ printf '%s' "$E_FB" | grep -q 'failing gate: tests@repo' \
 NOSIG="$WORK/nosig.out"
 printf 'random line one\nrandom line two\n' > "$NOSIG"
 N_DISTILLED="$(gaffer_dod_distill_output "$NOSIG" 40)"
-printf '%s' "$N_DISTILLED" | grep -q 'random line two' \
+grep -q 'random line two' <<<"$N_DISTILLED" \
   && ok "E no-signal output falls back to the tail (a failure is never lost)" \
   || fail "E fallback tail lost the output ($N_DISTILLED)"
 

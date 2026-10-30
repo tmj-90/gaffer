@@ -593,6 +593,14 @@ export function buildChildEnv(baseEnv, { dispatchDb, memoryDb, writeRoot }) {
   return env;
 }
 
+/** The resolver's rendered MCP runtime config for ticket `n` (under GAFFER_DATA). */
+export function mergeTicketMcpRuntimePath(n) {
+  return resolve(
+    GAFFER_DATA,
+    `mcp-merge-ticket-${String(n).replace(/[^0-9A-Za-z_-]/g, "")}-runtime.json`,
+  );
+}
+
 /**
  * Install the project-local .claude wiring (settings + safety hook, skills symlink)
  * and the MCP runtime config into the resolver's WORKTREE — exactly as tick.sh /
@@ -617,7 +625,9 @@ export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) 
   writeFileSync(resolve(claudeDir, "settings.json"), settings);
 
   mkdirSync(GAFFER_DATA, { recursive: true });
-  const mcpRuntime = resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json");
+  // One runtime file PER TICKET: two concurrent resolvers used to share (and rewrite)
+  // a single mcp-merge-ticket-runtime.json, re-scoping each other's evidence writes.
+  const mcpRuntime = mergeTicketMcpRuntimePath(ticketNumber);
   // Render the SAME way the tester and the product-owner run do (renderPoMcpRuntime:
   // every placeholder substituted, fail closed on a leftover). This used to replace only
   // ${DISPATCH_DB}/${MEMORY_DB}/${GAFFER_RECALL_TICKET}, so the server command was the
@@ -1041,7 +1051,7 @@ function main() {
     // touching git or spawning claude.
     const resolverArgv = buildClaudeArgv({
       prompt: resolverPrompt,
-      mcpConfig: resolve(GAFFER_DATA, "mcp-merge-ticket-runtime.json"),
+      mcpConfig: mergeTicketMcpRuntimePath(resolved.number),
       flags: CONFIG.claudeFlags,
       maxTurns: process.env.GAFFER_RESOLVER_MAX_TURNS,
     });
@@ -1311,6 +1321,7 @@ function main() {
   try {
     mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name);
   } catch (e) {
+    rmSync(mergeTicketMcpRuntimePath(resolved.number), { force: true });
     removeWorktree(repo.localPath, worktree);
     fail(`failed to install project-local wiring: ${e?.message ?? e}`);
     return;
@@ -1342,6 +1353,9 @@ function main() {
       writeRoot: worktree,
     }),
   });
+  // The rendered runtime served this one spawn: drop it whatever the outcome, so
+  // GAFFER_DATA does not collect one mcp-merge-ticket-<n>-runtime.json per ticket.
+  rmSync(mcpRuntime, { force: true });
 
   if (res.error) {
     removeWorktree(repo.localPath, worktree);

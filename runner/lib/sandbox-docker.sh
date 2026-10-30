@@ -112,7 +112,7 @@ _ensure_egress() {
   sha="$( { sha256sum "$_EGRESS_FILTER" 2>/dev/null || shasum -a 256 "$_EGRESS_FILTER" 2>/dev/null; } | awk '{print $1}')"
   shafile="$data/.egress-filter.sha"
   [ -f "$shafile" ] && prev="$(cat "$shafile" 2>/dev/null)" || prev=""
-  docker ps --filter "name=^${_PROXY_NAME}$" --filter status=running -q | grep -q . && running=1
+  [ -n "$(docker ps --filter "name=^${_PROXY_NAME}$" --filter status=running -q)" ] && running=1
   if [ "$running" = 1 ] && [ -n "$sha" ] && [ "$sha" != "$prev" ]; then
     docker rm -f "$_PROXY_NAME" >/dev/null 2>&1 || true
     running=0

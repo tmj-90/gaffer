@@ -163,7 +163,7 @@ lg add --title "$BETA_DECISION" --summary "Never store a reversible or unsalted 
 lg suggest --title "$ALPHA_DRAFT" --summary "An agent proposed this; a human has not reviewed it." --body "pending" --kind requirement --repo alpha </dev/null >/dev/null 2>&1
 
 echo "== 0. ONBOARDING alpha: digest + file cards written, induction lore filed as a DRAFT =="
-( cd "$RUNNER_DIR" && DISPATCH_ONBOARD_REPO="$A" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" \
+( cd "$RUNNER_DIR" && DISPATCH_ONBOARD_REPO="$A" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" GAFFER_CREW_EVENTS="$GAFFER_DATA/events.jsonl" \
     CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" \
     node bin/onboard-run.mjs --repo "$A" >>"$GAFFER_DATA/onboard.log" 2>&1 ); orc=$?
 [ "$orc" -eq 0 ] && ok "0: onboard-run exited 0" || fail "0: onboard-run exited $orc: $(tail -3 "$GAFFER_DATA/onboard.log" | tr '\n' '|' | cut -c1-400)"
@@ -172,9 +172,9 @@ O1="$(last_call onboard)"
 IND_DRAFT_ID="$(lore_id_by_title alpha draft "$INDUCTION")"
 [ -n "$IND_DRAFT_ID" ] && ok "0: induction lore filed as a DRAFT ($IND_DRAFT_ID) — human-gated" || fail "0: induction lore not found as a draft: $(lg list --repo alpha --json 2>/dev/null | cut -c1-300)"
 [ -z "$(lore_id_by_title alpha active "$INDUCTION")" ] && ok "0: induction lore is NOT active" || fail "0: onboarding auto-activated the induction lore"
-lg list --repo alpha --status draft --json 2>/dev/null | grep -q '"kind":"decision"' && ok "0: the induction draft carries its kind (decision) — reachable by the primer once ratified" || fail "0: induction draft has no kind"
+grep -q '"kind":"decision"' <<<"$(lg list --repo alpha --status draft --json 2>/dev/null)" && ok "0: the induction draft carries its kind (decision) — reachable by the primer once ratified" || fail "0: induction draft has no kind"
 CARDS_JSON="$(lg cards-for-scope --canonical "$(lg repo-canonical --repo-root "$A" 2>/dev/null)" --repo alpha --query "tasks soft delete" --json 2>/dev/null || echo '')"
-printf '%s' "$CARDS_JSON" | grep -q 'src/tasks.js' && ok "0: onboarding indexed alpha's file cards (src/tasks.js)" || fail "0: no file card for src/tasks.js: $(printf '%s' "$CARDS_JSON" | cut -c1-200)"
+grep -q 'src/tasks.js' <<<"$CARDS_JSON" && ok "0: onboarding indexed alpha's file cards (src/tasks.js)" || fail "0: no file card for src/tasks.js: $(printf '%s' "$CARDS_JSON" | cut -c1-200)"
 
 echo "== 1. DELIVERY on alpha: alpha's ACTIVE lore + cards, nothing from beta, no drafts =="
 A1="$(new_ready_ticket alpha "Add cursor pagination to the task listing" "GET /tasks returns a page of tasks with a cursor.")"

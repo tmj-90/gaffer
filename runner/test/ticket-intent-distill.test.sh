@@ -41,13 +41,13 @@ else
   fail "helper does not draft a requirement (lg suggest --kind requirement)"
 fi
 # Fail-soft: never fatal to a delivery that already submitted.
-if grep -A80 'gaffer_distill_ticket_intent()' "$TICK" | grep -q 'non-fatal'; then
+if grep -q 'non-fatal' <<<"$(grep -A80 'gaffer_distill_ticket_intent()' "$TICK")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
 fi
 # Called at close, right after the clean/reworked recall-feedback fork.
-if grep -A6 'gaffer_recall_feedback clean' "$TICK" | grep -q 'gaffer_distill_ticket_intent'; then
+if grep -q 'gaffer_distill_ticket_intent' <<<"$(grep -A6 'gaffer_recall_feedback clean' "$TICK")"; then
   ok "distiller is called in the submit-success path (after recall-feedback)"
 else
   fail "distiller is not wired into the submit-success path"

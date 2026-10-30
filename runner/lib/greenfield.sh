@@ -355,7 +355,7 @@ gaffer_bootstrap_onboard() {
     add_out="$(wg "${add_args[@]}" 2>&1)"; add_rc=$?
     if [ "$add_rc" -eq 0 ]; then
       wg_ok=0
-    elif printf '%s' "$add_out" | grep -q '"code":"DUPLICATE"'; then
+    elif grep -q '"code":"DUPLICATE"' <<<"$add_out"; then
       # Idempotent retry: a PRIOR (partial) bootstrap already registered this repo.
       # The link target the dependent feature tickets need EXISTS — so this is a
       # success, not a failure. Without this, a re-attempt (e.g. after an unrelated
@@ -453,7 +453,7 @@ gaffer_inherit_repo() {
       # Spawn the planned claude call for this sibling.
       ans="$(printf '%s' "$plan" | _gaffer_inherit_amb_spawn "$idx")"
       ans="$(printf '%s' "$ans" | tr -d '[:space:]')"
-      if [ -n "$ans" ] && [ "$ans" != "NONE" ] && printf '%s\n' "$cands" | grep -qxF "$ans"; then
+      if [ -n "$ans" ] && [ "$ans" != "NONE" ] && grep -qxF -- "$ans" <<<"$cands"; then
         if wg ticket repo-access set "$tnum" "$ans" --access write --relation confirmed >/dev/null 2>&1; then
           log "inherited repo $ans → #$tnum (claude)"
           applied=$((applied+1))

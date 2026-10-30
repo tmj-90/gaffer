@@ -94,7 +94,8 @@ jobs:
           shellcheck --version | head -2
           FILES=(runner/tick.sh runner/loop.sh runner/worker.sh runner/factory.config.sh runner/gaffer
                  runner/setup.sh runner/preflight.sh runner/status.sh runner/run-summary.sh runner/demo.sh
-                 runner/lib/*.sh runner/eval/*.sh runner/sandbox/smoke-test.sh runner/bin/poll-once.sh runner/test/*.sh)
+                 runner/lib/*.sh runner/eval/*.sh runner/sandbox/smoke-test.sh runner/bin/poll-once.sh runner/test/*.sh
+                 runner/test/lib/*.sh)
           echo "::group::warnings (informational baseline)"
           shellcheck -S warning -x "${FILES[@]}" || true
           echo "::endgroup::"
@@ -140,47 +141,43 @@ jobs:
       # Coverage gate: re-runs the suites with v8 coverage and enforces the
       # per-package floor (thresholds live in each packages/*/vitest.config.ts).
       # A drop below the floor fails the job. Runs after the plain test step so a
-      # coverage-provider hiccup is distinguishable from a real test failure.
+      # coverage-provider hiccup is distinguishable from a real test failure. The
+      # floors are platform-independent, so ONE cell enforces them — the other three
+      # would only re-run the same suites (70-100s each) for the same verdict.
       - name: Coverage (floor gate)
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: pnpm -r test:coverage
 
-      # Each runner test runs under a per-test wall-clock cap (perl alarm — portable
-      # across the ubuntu + macOS runners; GNU `timeout` isn't on macOS). A hung test
-      # is killed and reported as a failure (exit 124) instead of stalling the job.
-      # The node cap is 300s: safety-hook.test.mjs spawns ~470 hook subprocesses and
-      # runs ~80s on a fast Linux box — slow macOS runners have hit a 180s cap on a
-      # passing suite (SIGALRM 142), so the cap leaves headroom while still catching
-      # genuine hangs.
-      - name: Runner tests (node)
+      # Every runner test (runner/test/*.test.sh + *.test.mjs) through the shared
+      # harness, runner/test/run.sh — the same command contributors run locally
+      # (`pnpm test:runner`). It runs them in parallel (-j = CPU count) with each
+      # test's output buffered into its own ::group::, a per-test wall-clock cap
+      # (perl alarm — GNU `timeout` isn't on macOS: .sh 120s, .mjs 300s; the long
+      # e2e tests are queued FIRST with a 600s cap), and exits non-zero on ANY failure.
+      # The harness also: counts exit 77 / "SKIP…" lines as skips (listed in the step
+      # summary, never as passes); under GAFFER_TEST_STRICT=1 fails every skip whose
+      # reason is not a genuine platform gap (runner/test/lib/skip.sh allowlist —
+      # this job builds every package, so "not built" is a failure here); puts a
+      # `claude` tripwire on PATH so a test that would make a real model call fails;
+      # and fails if a test wrote into the checkout's .gaffer/.dispatch/.crew dirs.
+      - name: Runner tests
         shell: bash
-        run: |
-          rc=0
-          for t in runner/test/*.test.mjs; do
-            echo "::group::$t"
-            perl -e 'alarm shift; exec @ARGV' 300 node "$t" || { c=$?; rc=1; case $c in 124|142) echo "::error::$t TIMED OUT (300s, exit $c)";; esac; }
-            echo "::endgroup::"
-          done
-          exit $rc
+        env:
+          GAFFER_TEST_STRICT: "1"
+          GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
+        run: bash runner/test/run.sh
 
-      - name: Runner tests (bash)
-        shell: bash
-        run: |
-          rc=0
-          for t in runner/test/*.test.sh; do
-            echo "::group::$t"
-            out="$(perl -e 'alarm shift; exec @ARGV' 120 bash "$t" 2>&1)" && c=0 || c=$?
-            echo "$out"
-            echo "::endgroup::"
-            if [ "$c" -ne 0 ]; then
-              rc=1
-              case $c in
-                124|142) echo "::error::$t TIMED OUT (120s, exit $c)";;
-                *) tail="$(printf '%s\n' "$out" | grep -iE 'fail|✗|✘|not ok|error|expected|assert' | head -6 | tr '\n' '|')"
-                   echo "::error::$t FAILED (exit $c) :: ${tail:-see grouped log}";;
-              esac
-            fi
-          done
-          exit $rc
+      # Forensics for a failing runner test that left evidence (e.g. the
+      # concurrency-bookkeeping D3 snapshot: a consistent copy of its dispatch DB +
+      # the per-delivery logs). Nothing is uploaded when a test saved nothing.
+      - name: Upload runner-test evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runner-test-evidence-${{ matrix.os }}-node${{ matrix.node }}
+          path: ${{ runner.temp }}/gaffer-test-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
 
       # The idle maintenance lane END TO END through the real tick.sh: a fixture repo
       # with a planted god-file, tick 1 drafts the tech-debt finding with its
@@ -203,6 +200,19 @@ jobs:
           echo "::group::results.json"
           cat "$RUNNER_TEMP/gate-replay/results.json"
           echo "::endgroup::"
+
+      # No test may touch the operator state a checkout's factory runs on. Every
+      # suite above uses a private GAFFER_DATA / DISPATCH_DB / MEMORY_DB / crew event
+      # log; anything left in the checkout's .gaffer / .dispatch / .crew paths means a
+      # test fell back to the checkout's defaults — which on a contributor's machine
+      # are their LIVE factory's DBs, audit log and settings. The self-test first
+      # proves the guard sees a planted file in every location it claims to watch.
+      - name: Tests left no operator state in the checkout
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          bash .github/scripts/operator-state-guard.test.sh
+          bash .github/scripts/operator-state-guard.sh
 
   # The dashboard in a REAL browser: onboard → ticket → machine-checkable AC → poll
   # (live tick with a stub worker) → review/approve → merge → product-owner run → every

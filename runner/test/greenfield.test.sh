@@ -393,7 +393,7 @@ gaffer_skills_mount_cleanup "bootstrap-999"
 # status — capture-then-grep is the suite's deterministic idiom (afk-delivery-loop).
 if [ -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ]; then
   LEGACY_OUT="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
-  printf '%s\n' "$LEGACY_OUT" | grep -q "broken symlink in real repo: .claude/skills" \
+  grep -q "broken symlink in real repo: .claude/skills" <<<"$LEGACY_OUT" \
     && ok "legacy path (no dest arg) leaves a dangling link the detector flags" \
     || fail "expected the detector to flag the legacy dangling link (got: $LEGACY_OUT)"
 else
@@ -417,7 +417,7 @@ echo "== AC11b: the detector STILL fires on a genuine planted dangling symlink =
 mkdir -p "$BREPO/.claude"
 ln -s "$SM_WORK/does-not-exist" "$BREPO/.claude/skills"   # dangling: target absent
 CTRL="$(gaffer_assert_repo_clean "$BREPO" 2>&1 || true)"
-printf '%s\n' "$CTRL" | grep -q "broken symlink in real repo: .claude/skills" \
+grep -q "broken symlink in real repo: .claude/skills" <<<"$CTRL" \
   && ok "gaffer_assert_repo_clean STILL fires on a planted dangling .claude/skills" \
   || fail "detector should still catch a genuine dangling symlink (got: $CTRL)"
 rm -rf "$BREPO/.claude"

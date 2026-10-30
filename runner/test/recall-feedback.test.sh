@@ -59,7 +59,7 @@ else
   fail "helper does not call lg recall-feedback"
 fi
 # Fail-soft: the helper must swallow errors (never fatal to delivery).
-if grep -A14 'gaffer_recall_feedback()' "$TICK" | grep -q 'non-fatal'; then
+if grep -q 'non-fatal' <<<"$(grep -A14 'gaffer_recall_feedback()' "$TICK")"; then
   ok "helper is fail-soft (non-fatal on error)"
 else
   fail "helper is not documented/implemented as fail-soft"
@@ -84,7 +84,7 @@ else
   fail "blocked-park does not call blocked feedback"
 fi
 # The blocked feedback call must sit next to the rework_exhausted park.
-if grep -A3 'gaffer_release_delivery blocked' "$TICK" | grep -q 'gaffer_recall_feedback blocked'; then
+if grep -q 'gaffer_recall_feedback blocked' <<<"$(grep -A3 'gaffer_release_delivery blocked' "$TICK")"; then
   ok "blocked feedback is wired at the rework_exhausted park"
 else
   fail "blocked feedback is not adjacent to the rework_exhausted park"

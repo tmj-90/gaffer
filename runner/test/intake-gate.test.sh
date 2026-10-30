@@ -67,7 +67,7 @@ run_tick() {
 
 # ── 1. ambiguous draft → clarify pass selected ───────────────────────────────
 OUT1="$(run_tick)"
-echo "$OUT1" | grep -q '^TICK_RESULT=clarified$' \
+grep -q '^TICK_RESULT=clarified$' <<<"$OUT1" \
   && ok "draft triggers a clarify pass (TICK_RESULT=clarified)" \
   || fail "expected TICK_RESULT=clarified, got: $(echo "$OUT1" | grep '^TICK_RESULT=')"
 
@@ -87,7 +87,7 @@ fi
 # falls through (nothing else ready/in_review/draft) to no_work.
 echo "7" > "$GAFFER_DATA/.clarified-tickets"
 OUT2="$(run_tick)"
-echo "$OUT2" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT2" \
   && ok "already-clarified draft is skipped (per-run clarified-once)" \
   || fail "expected TICK_RESULT=no_work when draft already clarified, got: $(echo "$OUT2" | grep '^TICK_RESULT=')"
 

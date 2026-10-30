@@ -92,10 +92,10 @@ for prov in codex local made-up-provider; do
     || fail "provider=$prov should exit non-zero (got 0)"
   [ ! -f "$MARKER" ] && ok "provider=$prov did NOT spawn a worker (no marker)" \
     || fail "provider=$prov spawned a worker — must fail closed BEFORE any execution"
-  printf '%s' "$DELIVER_ERR" | grep -qE "$EXPECT_MSG_RE" \
+  grep -qE "$EXPECT_MSG_RE" <<<"$DELIVER_ERR" \
     && ok "provider=$prov emits the honest containment message" \
     || fail "provider=$prov did not emit the fail-closed message (got: $DELIVER_ERR)"
-  printf '%s' "$DELIVER_ERR" | grep -qF "$prov" \
+  grep -qF "$prov" <<<"$DELIVER_ERR" \
     && ok "provider=$prov names itself in the message" || fail "provider=$prov not named in message"
   [ ! -s "$DELIVER_OUT" ] && ok "provider=$prov wrote NO envelope (empty capture → parseResult=unknown)" \
     || fail "provider=$prov wrote a capture — a stub must not fabricate an envelope"

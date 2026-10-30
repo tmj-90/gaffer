@@ -35,6 +35,13 @@ try {
 }
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "product-owner-run.mjs");
+// Private operator state, set BEFORE the import: the helper resolves GAFFER_DATA /
+// MEMORY_DB at load time, and run directly (no run.sh) its context primer created
+// the checkout's .gaffer/memory.sqlite. The --dry-run children inherit these.
+const WORKDIR = mkdtempSync(resolve(tmpdir(), "po-run-test-"));
+process.env.GAFFER_DATA = resolve(WORKDIR, ".gaffer");
+process.env.MEMORY_DB = resolve(WORKDIR, ".gaffer", "memory.sqlite");
+process.env.DISPATCH_AUDIT = resolve(WORKDIR, ".gaffer", "audit.jsonl");
 const {
   resolveRepo,
   buildPrompt,
@@ -68,7 +75,6 @@ function eq(label, got, want) {
 // --- Build a throwaway dispatch sqlite with the one table resolveRepo reads. ----
 // Mirrors dispatch's repositories schema (name UNIQUE, local_path) — just enough to
 // exercise name→path resolution offline, with no dispatch build.
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "po-run-test-"));
 const DB_PATH = resolve(WORKDIR, "dispatch.sqlite");
 const REPO_PATH = resolve(WORKDIR, "demo-repo");
 {

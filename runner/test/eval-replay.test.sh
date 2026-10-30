@@ -40,7 +40,7 @@ n="$(jq_ "$R" fixtures)"; [ "${n:-0}" -ge 10 ] && ok "$n fixtures replayed" || n
 rows="$(jq_ "$R" "results.find(f=>f.name==='clean-feature').gate_rows.length")"; [ "${rows:-0}" -ge 3 ] && ok "gate rows recorded per fixture ($rows for clean-feature)" || no "gate rows missing"
 grep -q 'ac check-result ac-1 --ticket 1 --exit 1' "$WORK/run1/ac-check-fails/wg-calls.log" 2>/dev/null \
   && ok "the failing acceptance check was recorded through the wg check-result path" || no "wg check-result record missing"
-printf '%s\n' "$out" | grep -q "PASS: $n/$n fixtures" && ok "human summary line printed" || no "summary line missing: $(printf '%s\n' "$out" | tail -1)"
+grep -q "PASS: $n/$n fixtures" <<<"$out" && ok "human summary line printed" || no "summary line missing: $(printf '%s\n' "$out" | tail -1)"
 
 echo "== 3: expectation drift is caught =="
 cp -R "$RUNNER_DIR/eval/fixtures" "$WORK/fx-drift"
@@ -50,15 +50,15 @@ node -e '
 ' "$WORK/fx-drift/breaks-tests/fixture.json"
 out="$(bash "$REPLAY" --fixtures "$WORK/fx-drift" --out "$WORK/run-drift" 2>&1)"; rc=$?
 [ "$rc" = 1 ] && ok "edited expectation → rc 1" || no "expected rc 1, got $rc"
-printf '%s\n' "$out" | grep -q 'FAIL breaks-tests' && ok "the drifted fixture is named" || no "drifted fixture not named: $out"
-printf '%s\n' "$out" | grep -q 'outcome: expected "submit", got "rework:definition-of-done"' && ok "the mismatch names expected vs actual" || no "mismatch detail missing"
+grep -q 'FAIL breaks-tests' <<<"$out" && ok "the drifted fixture is named" || no "drifted fixture not named: $out"
+grep -q 'outcome: expected "submit", got "rework:definition-of-done"' <<<"$out" && ok "the mismatch names expected vs actual" || no "mismatch detail missing"
 [ "$(jq_ "$WORK/run-drift/results.json" mismatched)" = "1" ] && ok "results.json counts one mismatch" || no "mismatched count wrong"
 
 echo "== 4: a gate regression is caught =="
 # Simulate hygiene losing its node_modules rule: the leak fixture would now submit.
 out="$(HYGIENE_FORBIDDEN_PATHS='.crew-never-matches-anything' bash "$REPLAY" --only leaks-node-modules --out "$WORK/run-regress" 2>&1)"; rc=$?
 [ "$rc" = 1 ] && ok "weakened hygiene gate → rc 1" || no "expected rc 1 with a weakened gate, got $rc: $out"
-printf '%s\n' "$out" | grep -q 'hygiene: expected "violation", got "ok"' && ok "the regression is reported as a hygiene verdict flip" || no "regression detail missing: $out"
+grep -q 'hygiene: expected "violation", got "ok"' <<<"$out" && ok "the regression is reported as a hygiene verdict flip" || no "regression detail missing: $out"
 
 echo "== 5: --only and harness errors =="
 out="$(bash "$REPLAY" --only clean-feature --out "$WORK/run-only" 2>&1)"; rc=$?
@@ -73,7 +73,7 @@ cp -R "$RUNNER_DIR/eval/fixtures" "$WORK/fx-broken"
 printf 'diff --git a/nope.js b/nope.js\n--- a/nope.js\n+++ b/nope.js\n@@ -1 +1 @@\n-x\n+y\n' > "$WORK/fx-broken/clean-feature/delivery.patch"
 out="$(bash "$REPLAY" --fixtures "$WORK/fx-broken" --only clean-feature --out "$WORK/run-broken" 2>&1)"; rc=$?
 [ "$rc" = 1 ] && ok "unapplicable patch fails the run" || no "expected rc 1, got $rc"
-printf '%s\n' "$out" | grep -q 'delivery patch does not apply' && ok "the error names the patch" || no "patch error not named: $out"
+grep -q 'delivery patch does not apply' <<<"$out" && ok "the error names the patch" || no "patch error not named: $out"
 
 echo; echo "passed $P, failed $F"
 [ "$F" -eq 0 ]

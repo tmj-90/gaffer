@@ -51,6 +51,8 @@
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/db-forensics.sh
+. "$HERE/lib/db-forensics.sh"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 CLI_JS="$ROOT/packages/dispatch/dist/cli/index.js"
@@ -105,7 +107,7 @@ PY
 wg init >/dev/null 2>&1
 A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$A1" ] && [ -n "$A2" ] || { echo "SKIP: could not register agents"; exit 0; }
+[ -n "$A1" ] && [ -n "$A2" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 
 # The EXACT candidate-loop claim step from tick.sh: claim; capture the token; an
 # empty token ⇒ the tick would `continue` (skip this candidate). Byte-identical to
@@ -302,6 +304,12 @@ fi
       echo "  --- events #$n"
       wg ticket show "$n" 2>/dev/null | jget '(d.events||[]).map(e=>`${e.created_at} ${e.event_type} ${JSON.stringify(e.payload??"")}`).join("\n")' 2>/dev/null | sed 's/^/    /'
     done
+    # The discriminating rows, read straight from SQLite (not via the CLI under
+    # suspicion), and a consistent DB snapshot + both logs kept past the EXIT trap
+    # (CI uploads $GAFFER_TEST_ARTIFACTS on failure) — see lib/db-forensics.sh.
+    echo "  --- raw rows (tickets / ticket_claims / work_events)"
+    gaffer_test_db_rows "$DB" "$NE" "$NF"
+    gaffer_test_db_snapshot "$DB" concurrency-bookkeeping-D3 "$WORK/log.E" "$WORK/log.F"
   }
 
 echo

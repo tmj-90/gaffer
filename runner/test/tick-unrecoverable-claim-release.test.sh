@@ -110,7 +110,7 @@ declare -F gaffer_release_delivery >/dev/null && declare -F gaffer_skip_ticket >
 
 # One ready, claimable ticket → returns its number with the runner holding a token.
 AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
+[ -n "$AGENT" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 make_claimed_ticket() {  # echoes "<num> <token>"
   local title="$1" num tok
   num="$(wg ticket create -t "$title" --risk low 2>/dev/null | jget 'd.ticket.number')"

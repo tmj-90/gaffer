@@ -1450,7 +1450,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   #   • markers ABSENT    → json parse failure; warn so a multi-repo ticket's
   #                         incomplete delivery is visible (not silent single-repo).
   _WG_MARKERS=1
-  if ! printf '%s\n' "$WG_PARTITION" | grep -qF '@@WRITE_PATHS@@'; then
+  if ! grep -qF '@@WRITE_PATHS@@' <<<"$WG_PARTITION"; then   # here-string: a pipe can SIGPIPE-miss under pipefail
     _WG_MARKERS=0
     # Parse failure (markers absent = json parse crash). If the ticket actually links
     # MORE THAN ONE repo, the single-repo fallback would silently deliver incomplete work
@@ -2933,7 +2933,7 @@ $_trail_q
     # silently treated as "no commands" (which would fail the gate OPEN).
     # parse failure → no sentinel, non-zero (exit 3)
     DOD_CMD_MAP="$(echo "$SHOW" | gaffer_json dod-cmd-map 2>/dev/null || true)"
-    if ! printf '%s\n' "$DOD_CMD_MAP" | grep -q '^@@DOD_PARSE_OK@@$'; then
+    if ! grep -q '^@@DOD_PARSE_OK@@$' <<<"$DOD_CMD_MAP"; then   # here-string: a pipe can SIGPIPE-miss under pipefail
       # Could not parse the dispatch payload. Do NOT
       # fail the gate OPEN by pretending no commands are configured: surface it as a
       # visible WARNING and FAIL the delivery closed so a human looks, rather than

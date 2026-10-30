@@ -94,7 +94,7 @@ DRY_RUN=0
 
 # One ready, claimable bootstrap-shaped ticket → echoes its number.
 AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
+[ -n "$AGENT" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 make_claimed_ticket() {  # $1 = title → sets NUM + CLAIM_TOKEN
   NUM="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget 'd.ticket.number')"
   wg ac add "$NUM" -t "AC" >/dev/null 2>&1
@@ -111,7 +111,7 @@ gaffer_release_delivery blocked "bootstrap failed (rc=1) — scaffold left at /t
 [ "$(status_of "$NUM")" = "blocked" ] \
   && ok "AC1: bootstrap failure park landed #$NUM in blocked (was refining — invisible)" \
   || fail "AC1: #$NUM is '$(status_of "$NUM")' (want blocked)"
-printf '%s' "$(feedback_of "$NUM")" | grep -q 'bootstrap_failed' \
+grep -q 'bootstrap_failed' <<<"$(feedback_of "$NUM")" \
   && ok "AC2: last_review_feedback carries code=bootstrap_failed (card shows WHY)" \
   || fail "AC2: last_review_feedback lacks bootstrap_failed (got '$(feedback_of "$NUM")')"
 [ "$(blocked_events "$NUM" bootstrap_failed)" -ge 1 ] 2>/dev/null \
@@ -149,7 +149,7 @@ if grep -q 'gaffer_release_delivery refining "bootstrap' "$TICK"; then
 else
   ok "no bootstrap failure park targets refining any more"
 fi
-grep -c 'bootstrap_failed' "$TICK" | grep -q '^5$' \
+[ "$(grep -c 'bootstrap_failed' "$TICK")" = 5 ] \
   && ok "each bootstrap park carries the structured bootstrap_failed reason code" \
   || fail "expected the bootstrap_failed reason code on all 5 parks (found $(grep -c 'bootstrap_failed' "$TICK"))"
 # The minimalism lens must stay a FLAG (needs_human_review), not a park — lock that in so a

@@ -38,8 +38,7 @@ grep -q 'lib/eval-judge.sh' "$RUNNER_DIR/factory.config.sh" \
 grep -q 'gaffer_eval_judge_delivery "\$NUM"' "$RUNNER_DIR/tick.sh" \
   && ok "tick.sh invokes the judge for the submitted ticket" || no "tick.sh missing the judge call"
 # The call must live INSIDE the submit-success branch (after gaffer_submit_delivery).
-awk '/if gaffer_submit_delivery "delivered on branch/,/^  else$/' "$RUNNER_DIR/tick.sh" \
-  | grep -q 'gaffer_eval_judge_delivery' \
+grep -q 'gaffer_eval_judge_delivery' <<<"$(awk '/if gaffer_submit_delivery "delivered on branch/,/^  else$/' "$RUNNER_DIR/tick.sh")" \
   && ok "judge call is inside the submit-success branch (post-submit telemetry)" \
   || no "judge call is not in the submit-success branch"
 bash -n "$RUNNER_DIR/lib/eval-judge.sh" && ok "eval-judge.sh parses (bash -n)" || no "eval-judge.sh syntax error"

@@ -54,9 +54,9 @@ roll_doctor() {
   local -a dc; read -ra dc <<<"$cmd"
   out="$("${dc[@]}" 2>&1)"; rc=$?
   summary="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
-  if [ "$rc" -ne 0 ] || printf '%s' "$out" | grep -qiE 'unhealthy|✗|\[fail\]|failed'; then
+  if [ "$rc" -ne 0 ] || grep -qiE 'unhealthy|✗|\[fail\]|failed' <<<"$out"; then
     bad "$(printf '%-11s %s' "$name" "${summary:-failed (rc=$rc)}")"
-  elif printf '%s' "$out" | grep -qiE 'with warnings|⚠|\[ ! \]|^!'; then
+  elif grep -qiE 'with warnings|⚠|\[ ! \]|^!' <<<"$out"; then
     first="$(printf '%s\n' "$out" | grep -E '^[[:space:]]*(!|⚠|\[ ! \])' | head -1 \
       | sed -E 's/^[[:space:]]*(!|⚠|\[ ! \])[[:space:]]*//' | cut -c1-100)"
     [ -n "$first" ] && [ "$first" != "$summary" ] && summary="${summary%.}: $first"

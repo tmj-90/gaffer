@@ -71,7 +71,7 @@ wg ac add "$N" -t "helper added" >/dev/null 2>&1
 wg ticket repo-access set "$N" repo --access write --relation confirmed >/dev/null 2>&1
 wg ticket ready "$N" >/dev/null 2>&1
 OUT="$( ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' )"
-echo "$OUT" | grep -q '^TICK_RESULT=worked$' && ok "delivery tick → worked" || fail "tick result: $OUT ($(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|'))"
+grep -q '^TICK_RESULT=worked$' <<<"$OUT" && ok "delivery tick → worked" || fail "tick result: $OUT ($(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|'))"
 SHOW="$(wg ticket show "$N" 2>/dev/null)"
 [ "$(echo "$SHOW" | jget 'd.ticket.status')" = "in_review" ] && ok "#$N in_review" || fail "#$N status $(echo "$SHOW" | jget 'd.ticket.status')"
 grep -q "H4: created PR for #$N" "$GAFFER_DATA/factory.log" && ok "PR creation ran against the REAL repo (remote found after worktree teardown)" || fail "PR creation did not run: $(grep 'H4' "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|')"

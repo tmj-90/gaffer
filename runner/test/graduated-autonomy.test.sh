@@ -89,6 +89,39 @@ eq "approve + DENIED approve → hold (stays in_review)"     "$(plan approve den
 eq "changes + earned approve → rework"                     "$(plan changes allow allow)" rework
 eq "changes + DENIED approve → hold (human handles)"       "$(plan changes deny deny)"   hold
 eq "approve + both denied → hold"                          "$(plan approve deny deny)"   hold
+# REVIEW_MODE=both: "an agent screens first, then a human confirms" — the agent's
+# APPROVE never becomes an approval, even with both gates earned (it used to ship).
+plan4() { env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" bash -c '
+  source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1
+  gaffer_afk_ship_plan "$1" "$2" "$3" "$4"' _ "$1" "$2" "$3" "$4"; }
+eq "both: approve + earned approve + earned merge → hold (human confirms)" "$(plan4 approve allow allow both)" hold
+eq "both: approve + earned approve + held merge → hold (human confirms)"   "$(plan4 approve allow deny both)"  hold
+eq "both: changes + earned approve → rework (the screen bounces it)"       "$(plan4 changes allow allow both)" rework
+eq "both: changes + DENIED approve → hold"                                 "$(plan4 changes deny deny both)"   hold
+eq "agent: approve + earned approve + earned merge → ship (unchanged)"     "$(plan4 approve allow allow agent)" ship
+grep -qF 'gaffer_afk_ship_plan "$R_VERDICT" "$_SHIP_APPROVE" "$_SHIP_MERGE" "$REVIEW_MODE"' "$RUNNER_DIR/lib/review.sh" \
+  && ok "review.sh passes REVIEW_MODE into the ship plan" || fail "review.sh does not pass REVIEW_MODE to gaffer_afk_ship_plan"
+
+echo "== 1b: gaffer_half_merge_config_check — MERGE_ON_AGENT_REVIEW alone merges nothing; say so once =="
+# "Auto-merge on agent review" only EXTENDS "Auto-merge on approval": the merge gate is
+# AUTO_MERGE AND MERGE_ON_AGENT_REVIEW. Flipping only the former used to give a silent
+# approve-and-hold. The runner now warns ONCE per run (marker file), never implies AUTO_MERGE.
+half() { env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/half" "$@" bash -c '
+  source "'"$RUNNER_DIR"'/factory.config.sh" >/dev/null 2>&1
+  log() { printf "LOG:%s\n" "$*" >&2; }
+  gaffer_half_merge_config_check'; }
+mkdir -p "$WORK/half"
+OUT="$(half MERGE_ON_AGENT_REVIEW=1 AUTO_MERGE=0 2>"$WORK/half.err")"
+eq "MERGE_ON_AGENT_REVIEW=1 + AUTO_MERGE=0 → warns (1)" "$OUT" 1
+grep -q "LOG:AUTONOMY: WARNING — MERGE_ON_AGENT_REVIEW=1 but AUTO_MERGE is off" "$WORK/half.err" && ok "the warning names both flags and the approve-and-hold outcome" || fail "no half-config warning: $(cat "$WORK/half.err")"
+OUT="$(half MERGE_ON_AGENT_REVIEW=1 AUTO_MERGE=0 2>"$WORK/half2.err")"
+[ "$OUT" = "1" ] && ! grep -q "LOG:" "$WORK/half2.err" && ok "a second check in the same run stays silent (marker)" || fail "second check logged again or returned '$OUT'"
+rm -f "$WORK/half/.merge-config-half-warned"
+eq "MERGE_ON_AGENT_REVIEW=1 + AUTO_MERGE=1 → no warning (0)" "$(half MERGE_ON_AGENT_REVIEW=1 AUTO_MERGE=1 2>/dev/null)" 0
+eq "both off → no warning (0)"                               "$(half MERGE_ON_AGENT_REVIEW=0 AUTO_MERGE=0 2>/dev/null)" 0
+eq "GAFFER_MODE=autonomous (both on) → no warning (0)"       "$(half GAFFER_MODE=autonomous 2>/dev/null)" 0
+grep -q 'gaffer_half_merge_config_check >/dev/null' "$RUNNER_DIR/tick.sh" && ok "tick.sh runs the half-config check once per tick" || fail "tick.sh does not run gaffer_half_merge_config_check"
+grep -q '.merge-config-half-warned' "$RUNNER_DIR/loop.sh" && grep -q '.merge-config-half-warned' "$RUNNER_DIR/bin/poll-once.sh" && ok "loop.sh + poll-once.sh reset the once-per-run marker" || fail "the half-config marker is not reset per run"
 
 echo "== 2: gaffer_auto_decision — parses the CLI + FAILS CLOSED on junk =="
 # A malformed / empty CLI response must never read as allow.

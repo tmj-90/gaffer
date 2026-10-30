@@ -102,7 +102,7 @@ gaffer_timeout_preflight || { echo "gaffer factory: aborting — no timeout prim
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_DATA/.clarified-tickets" \
       "$GAFFER_DATA/.merge-held-tickets" "$GAFFER_DATA/.tested-tickets" \
       "$GAFFER_DATA/.backpressure-repos" "$GAFFER_DATA/.ci-gate-needs-pr-warned" \
-      "$GAFFER_DATA/.autonomy-policy-inert-warned" "$GAFFER_DATA/.setup-error" \
+      "$GAFFER_DATA/.autonomy-policy-inert-warned" "$GAFFER_DATA/.merge-config-half-warned" "$GAFFER_DATA/.setup-error" \
   || echo "gaffer factory: WARNING — could not clear stale run markers in $GAFFER_DATA; this run may wrongly skip work." >&2
 
 echo "gaffer factory: starting (DRY_RUN=$DRY_RUN, max_ticks=$MAX_TICKS, stop_after_empty=$EMPTY_POLL_LIMIT, max_ticks_per_day=$MAX_TICKS_PER_DAY)"

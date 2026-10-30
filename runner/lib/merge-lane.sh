@@ -10,7 +10,11 @@
 # bootstrap, and with GAFFER_TESTING on EVERY ticket would have stopped there. This lane
 # asks the same merge policy the review pass asks (`wg ticket auto-decision --gate merge`:
 # the env floor OR an earned per-repo/risk `auto` row — it adds no policy of its own) and
-# lands through the same gaffer_land_delivery. A ticket the policy holds is logged ONCE
+# lands through the same gaffer_land_delivery. A ticket a HUMAN approved also lands when
+# AUTO_MERGE ("Auto-merge on approval") is on: that switch is the operator's standing
+# instruction to land what a person approved. It is NOT the agent ship floor — an
+# agent-approved ticket still needs the merge gate (AUTO_MERGE AND MERGE_ON_AGENT_REVIEW,
+# or an earned `auto` merge row). A ticket the policy holds is logged ONCE
 # per run and left for a human ("ship what you've earned, hold the rest"); one whose
 # landing fails (conflict, dirty checkout) is logged and skipped for the rest of the run.
 # Never exits the tick: merging is bookkeeping, the tick goes on to deliver.
@@ -20,7 +24,7 @@ _gaffer_merge_lane() {
   case "$(printf '%s' "${GAFFER_MERGE_LANE:-1}" | tr '[:upper:]' '[:lower:]')" in 0|false|no|off) return 0 ;; esac
   declare -F gaffer_land_delivery >/dev/null 2>&1 || return 0
   local _HELD_FILE="$GAFFER_DATA/.merge-held-tickets"; touch "$_HELD_FILE"
-  local _MJSON _MNUMS _n _show _repo _branch _def _dec _rc
+  local _MJSON _MNUMS _n _show _repo _branch _def _dec _rc _via
   _MJSON="$(wg ticket list -s ready_for_merge 2>/dev/null || echo '[]')"
   _MNUMS="$(printf '%s' "$_MJSON" | jget '(d.tickets || d || []).map(t => t.number).filter(Boolean).join(" ")' 2>/dev/null || echo '')"
   [ -n "${_MNUMS// /}" ] || return 0
@@ -37,11 +41,20 @@ _gaffer_merge_lane() {
     fi
     if [ "${DRY_RUN:-0}" = "1" ]; then log "DRY_RUN: MERGE would ask the merge gate for #$_n and land $_branch → $_def in $_repo"; continue; fi
     _dec="$(gaffer_auto_decision "$_n" merge)"
+    _via="merge gate earned"
+    if [ "$_dec" != "allow" ] && _gaffer_flag_on "${AUTO_MERGE:-0}"; then
+      # AUTO_MERGE on its own lands HUMAN approvals (the dashboard Approve does the same
+      # through the merge runner). The approver is read from the dispatch event log
+      # (approval-actor), never from anything an agent writes.
+      case "$(printf '%s' "$_show" | gaffer_json approval-actor 2>/dev/null)" in
+        human|admin) _dec=allow; _via="human-approved + AUTO_MERGE on" ;;
+      esac
+    fi
     if [ "$_dec" != "allow" ]; then
       log "MERGE: #$_n approved but auto-merge NOT permitted by policy (merge gate held) — left in ready_for_merge for a human"
       _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"; continue
     fi
-    log "MERGE: #$_n ready_for_merge + merge gate earned → landing $_branch → $_def in $_repo"
+    log "MERGE: #$_n ready_for_merge + $_via → landing $_branch → $_def in $_repo"
     gaffer_land_delivery "$_n" "$_repo" "$_branch" "$_def" "$_show" MERGE; _rc=$?
     # rc 5 = a conflict the resolver just fixed ON the branch; the ticket is back in
     # review and returns to ready_for_merge in THIS run once re-approved (and tested).

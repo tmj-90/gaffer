@@ -219,13 +219,46 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
     await h.close();
   });
 
-  it("POST /tickets/:id/review/approve fires the configured merge command with the ticket number", async () => {
-    const { ticketId, number } = inReviewViaWg(h.wg);
-    const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
-    expect(res.status).toBe(200);
-    expect(h.merges).toEqual([{ ticketNumber: number }]);
-    expect((res.body.merge as { triggered: boolean }).triggered).toBe(true);
+  it("POST /tickets/:id/review/approve fires the configured merge command with the ticket number (AUTO_MERGE on)", async () => {
+    const prev = process.env.AUTO_MERGE;
+    process.env.AUTO_MERGE = "1";
+    try {
+      const { ticketId, number } = inReviewViaWg(h.wg);
+      const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+      expect(res.status).toBe(200);
+      expect(h.merges).toEqual([{ ticketNumber: number }]);
+      expect((res.body.merge as { triggered: boolean }).triggered).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.AUTO_MERGE;
+      else process.env.AUTO_MERGE = prev;
+    }
   });
+
+  // "Auto-merge on approval" OFF (the default) promises "approved tickets wait at
+  // ready-for-merge for a human" — the dashboard Approve used to merge anyway.
+  it.each([undefined, "0", "off"])(
+    "POST /tickets/:id/review/approve does NOT merge when AUTO_MERGE is %s — the ticket waits at ready_for_merge",
+    async (value) => {
+      const prev = process.env.AUTO_MERGE;
+      if (value === undefined) delete process.env.AUTO_MERGE;
+      else process.env.AUTO_MERGE = value;
+      try {
+        const { ticketId } = inReviewViaWg(h.wg);
+        const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+        expect(res.status).toBe(200);
+        expect(h.merges).toEqual([]);
+        expect(res.body.merge).toEqual({ triggered: false, pid: null, skipped: "auto_merge_off" });
+        expect(h.wg.view(ticketId).ticket.status).toBe("ready_for_merge");
+        // The explicit Merge still lands it.
+        const m = await call(h.baseUrl, "POST", `/tickets/${ticketId}/merge`);
+        expect(m.status).toBe(202);
+        expect(h.merges.length).toBe(1);
+      } finally {
+        if (prev === undefined) delete process.env.AUTO_MERGE;
+        else process.env.AUTO_MERGE = prev;
+      }
+    },
+  );
 
   it("POST /tickets/:id/reopen-for-review re-opens a merging ticket and is re-reviewable", async () => {
     const { ticketId } = inReviewViaWg(h.wg);

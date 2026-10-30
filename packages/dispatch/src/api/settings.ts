@@ -132,7 +132,12 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "autonomy",
     label: "Auto-merge on agent review",
-    help: "Fire the merge command when an agent (not just a human) approves.",
+    help:
+      "Extend Auto-merge on approval to approvals the runner makes on an agent reviewer's " +
+      "verdict. Needs Auto-merge on approval ON as well: on its own this merges nothing " +
+      "(agent-approved tickets wait at ready-for-merge and the run logs a warning). With " +
+      "both on, an agent-approved ticket lands with no human in the loop — an OS sandbox is " +
+      "then required (GAFFER_STRICT_REQUIRE).",
   },
   {
     key: "MEMORY_AUTO_APPROVE",
@@ -345,10 +350,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "autonomy",
     label: "Review mode",
     help:
-      "Who reviews a delivery before merge: human · agent · both (an agent screens first, " +
-      "then a human confirms). Agent reviews are ADVISORY — a human (or the AFK " +
-      "auto-approve chain) still owns the merge. Per-repo autonomy grants act only under " +
-      "agent or both; under human no reviewer agent runs, so they are inert.",
+      "Who reviews a delivery before merge: human · agent · both. Under agent the runner " +
+      "may act on the reviewer's verdict where the autonomy floor or an earned per-repo " +
+      "grant allows (approve, merge, or send CHANGES back to rework); otherwise the review " +
+      "is advisory and a human approves. Under both the agent screens first — a CHANGES " +
+      "verdict can still bounce the delivery to rework — but its APPROVE never approves: " +
+      "the ticket waits in review for a human to confirm, in every autonomy mode. Per-repo " +
+      "autonomy grants act only under agent or both; under human no reviewer agent runs, " +
+      "so they are inert.",
   },
 
   // --- Delivery: what the factory does once a ticket is approved ---
@@ -357,7 +366,13 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "delivery",
     label: "Auto-merge on approval",
-    help: "Safe-merge into the default branch on approval. Off → approved tickets wait at ready-for-merge for a human.",
+    help:
+      "Safe-merge a HUMAN-approved ticket into the default branch on approval (the dashboard " +
+      "Approve fires the merge runner; the runner's merge lane lands human approvals made by " +
+      "any route). Off → approved tickets wait at ready-for-merge until a human presses Merge. " +
+      "An agent approval never lands on this alone: it also needs Auto-merge on agent review " +
+      "(or an earned per-repo merge grant). A conflict spawns the resolver agent, re-gates its " +
+      "resolution (conflict markers + the DoD gates) and reopens the ticket for re-review.",
   },
   {
     key: "GAFFER_AUTO_PUSH",

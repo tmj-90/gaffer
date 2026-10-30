@@ -7582,8 +7582,18 @@ async function renderReview() {
           toast(`Can't approve — ${diffState.reason}`, {});
           return;
         }
-        await api("POST", `/tickets/${t.id}/review/approve`);
-        toast("Approved — merging", { ok: true });
+        const resp = await api("POST", `/tickets/${t.id}/review/approve`);
+        // AUTO_MERGE off (the default): the approval does not merge — the ticket waits at
+        // Ready for merge until someone presses "Merge now".
+        const merge = resp && resp.merge;
+        toast(
+          merge && merge.skipped === "auto_merge_off"
+            ? "Approved — waiting in Ready for merge (Auto-merge on approval is off): press Merge now to land it"
+            : merge && merge.triggered
+              ? "Approved — merging"
+              : "Approved",
+          { ok: true },
+        );
         router();
       });
     // Reject offers a choice: send back for rework (-> refining, a human triages

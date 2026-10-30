@@ -317,6 +317,10 @@
     flex: none;
     color: var(--ink);
   }
+  /* The agent shirt never shrinks inside a nowrap .agent row (it vanished at 320). */
+  .shirt {
+    flex: none;
+  }
   .shirt-no {
     font: 900 15px / 1 var(--f-stencil);
     fill: var(--sky);
@@ -1458,6 +1462,17 @@
     border-radius: var(--r);
     padding: 4px;
     display: grid;
+  }
+  /* Anchored at its Move button: no dimming, the armed card stays readable. */
+  .movemenu-scrim.is-anchored {
+    display: block;
+    background: transparent;
+    padding: 0;
+  }
+  .movemenu-scrim.is-anchored .movemenu {
+    position: fixed;
+    width: min(280px, calc(100vw - 16px));
+    box-shadow: 0 4px 0 var(--ink);
   }
   .movemenu-head {
     padding: 8px 10px 6px;

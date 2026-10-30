@@ -868,6 +868,8 @@ try {
   //     controls (Search, New, Logout) stay inside the viewport;
   //   mobile-overview-overflow: no view is wider than the viewport, down to 320px;
   //   settings-access-giant-icon: no 24-grid icon renders wider than 48px;
+  //   squashed-shirt: no sized svg (agent shirt, repo kit, card) is squeezed below
+  //     its drawn aspect ratio by a flex row (the shirt was 0px wide at 320);
   //   hero-banners-below-fold: the first board card / the team sheet are on screen;
   //   axe-gate-blind-contrast: the WCAG audit also runs at 390px.
   {
@@ -915,6 +917,19 @@ try {
           const wide = [...document.querySelectorAll('#app svg[viewBox="0 0 24 24"]')]
             .map((s) => s.getBoundingClientRect().width)
             .filter((x) => x > 48);
+          // A shown svg with a width/height attribute keeps its shape.
+          const squashed = [...document.querySelectorAll("#app svg[width][height]")]
+            .filter((s) => {
+              const r = s.getBoundingClientRect();
+              const aw = +s.getAttribute("width");
+              const ah = +s.getAttribute("height");
+              if (!r.height || !aw || !ah) return false;
+              return r.width / r.height < (aw / ah) * 0.75;
+            })
+            .map(
+              (s) =>
+                `${s.getAttribute("class") || "svg"} ${s.getBoundingClientRect().width.toFixed(1)}px`,
+            );
           const pipe = document.querySelector(".pipeline-panel .pipeline");
           const card = document.querySelector(".board-card");
           const sheet = document.getElementById("what-i-own");
@@ -926,6 +941,7 @@ try {
             newBtn: inView(".btn-new"),
             logout: inView(".logout-btn"),
             wide,
+            squashed,
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
@@ -936,6 +952,10 @@ try {
         for (const k of ["search", "newBtn", "logout"])
           if (m[k] === false) problems.push(`${tag} header ${k} outside the viewport`);
         if (m.wide.length) problems.push(`${tag} ${m.wide.length} icon(s) wider than 48px`);
+        if (m.squashed.length)
+          problems.push(
+            `${tag} ${m.squashed.length} icon(s) squashed: ${m.squashed.slice(0, 3).join(", ")}`,
+          );
         if (m.pipeDisplay && m.pipeDisplay !== "flex")
           problems.push(`${tag} dev-flow strip is display:${m.pipeDisplay}`);
         if (v === "work" && m.card) {
@@ -1008,6 +1028,51 @@ try {
     ? ok("SSE: the board refreshed itself within ~2s of an out-of-band ticket creation")
     : bad("SSE: board did not refresh within 8s (interval fallback is 3s+)");
   await shot(page, "work-live-refresh");
+
+  // ── 9. A board move through the Move menu (Ready → Draft → Ready): the lane counts
+  // follow and the glide's View Transition, skipped by the refresh that follows the
+  // move, leaves no uncaught rejection in the console.
+  {
+    // A ticket of its own, made Ready through the API (the seed has no idle Ready one).
+    const made = await api("POST", "/tickets", {
+      title: "Board move smoke ticket",
+      description: "moved Ready → Draft → Ready through the Move menu",
+    });
+    const mover = made.json.ticket || made.json;
+    if (mover && mover.id)
+      await api("POST", `/tickets/${mover.id}/acceptance-criteria`, {
+        text: "The card moves and comes back",
+      });
+    const readied =
+      mover && mover.id ? await api("POST", `/tickets/${mover.id}/move`, { to: "ready" }) : null;
+    if (!readied || readied.status !== 200) {
+      note(`board move: could not make a Ready ticket (HTTP ${readied && readied.status})`);
+    } else {
+      const num = `#${mover.number}`;
+      const errsBefore = consoleErrors.length;
+      const laneCount = (col) =>
+        page.textContent(`.board-col[data-column="${col}"] .board-col-count`);
+      const moveTo = async (lane) => {
+        const cardLoc = page.locator(`.board-card:has(.num:text-is("${num}"))`).first();
+        await cardLoc.locator("button.card-move-btn").click();
+        await page.locator(".movemenu-item", { hasText: lane }).click();
+        await sleep(2500);
+      };
+      await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+      await sleep(1500);
+      const draft0 = Number(await laneCount("draft"));
+      await moveTo("Draft");
+      const draft1 = Number(await laneCount("draft"));
+      await moveTo("Ready");
+      const draft2 = Number(await laneCount("draft"));
+      const newErrs = consoleErrors.slice(errsBefore);
+      draft1 === draft0 + 1 && draft2 === draft0 && newErrs.length === 0
+        ? ok(`board move: ${num} went to Draft and back, lane counts followed, no console errors`)
+        : bad(
+            `board move: draft ${draft0}→${draft1}→${draft2}, console errors: ${newErrs.join(" | ")}`,
+          );
+    }
+  }
 } catch (err) {
   bad("harness error: " + (err?.stack || err));
   await shot(page, "error").catch(() => {});

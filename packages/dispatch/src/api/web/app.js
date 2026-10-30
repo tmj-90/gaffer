@@ -6098,12 +6098,13 @@ const BOARD_COLUMN_LABELS = {
   blocked: "Blocked",
   in_review: "In review",
   in_testing: "In testing",
-  ready_for_merge: "Approved · merging",
+  // The comp's lane head; one line at 1440, and the header line's own words.
+  ready_for_merge: "Ready for merge",
   done: "Done",
 };
 
 // Work-view state, seeded from the URL query so filters/mode are shareable.
-const workState = { mode: "board", status: "", repo: "", risk: "" };
+const workState = { mode: "board", status: "", repo: "", risk: "", q: "" };
 
 function readWorkStateFromUrl() {
   const { query } = parseHash();
@@ -6111,15 +6112,21 @@ function readWorkStateFromUrl() {
   workState.status = query.get("status") || "";
   workState.repo = query.get("repo") || "";
   workState.risk = query.get("risk") || "";
+  workState.q = query.get("q") || "";
 }
-function writeWorkStateToUrl() {
+/** The Work address for the current mode and filters (the number-or-title filter too). */
+function workUrl() {
   const qs = new URLSearchParams();
   if (workState.mode === "list") qs.set("mode", "list");
   if (workState.status) qs.set("status", workState.status);
   if (workState.repo) qs.set("repo", workState.repo);
   if (workState.risk) qs.set("risk", workState.risk);
+  if (workState.q.trim()) qs.set("q", workState.q.trim());
   const q = qs.toString();
-  navigate(`#/work${q ? `?${q}` : ""}`);
+  return `#/work${q ? `?${q}` : ""}`;
+}
+function writeWorkStateToUrl() {
+  navigate(workUrl());
 }
 
 /**
@@ -6151,9 +6158,10 @@ function pollWorkButton() {
   const btn = el(
     "button",
     {
-      class: "btn",
+      class: "btn primary",
       type: "button",
-      title: "Trigger one factory tick now so claimable work gets picked up",
+      title:
+        "Run one factory tick now, so ready work is picked up without waiting for the next cycle",
       onclick: () =>
         runAsyncAction(btn, "Polling…", async () => {
           const res = await api("POST", "/poll-work");
@@ -6170,7 +6178,7 @@ function pollWorkButton() {
           router();
         }),
     },
-    [icon("activity"), el("span", {}, "Poll for work")],
+    [el("span", {}, "Poll for work")],
   );
   return btn;
 }
@@ -6190,7 +6198,7 @@ function openSuggestWorkPicker(repos, nodes) {
 
   const repoBlock = el("div", { class: "where-block" }, [field("Repository", repoSel)]);
   const nodeBlock = el("div", { class: "where-block" }, [
-    field("Scope node", nodeSel),
+    field("Ground (scope node)", nodeSel),
     el(
       "p",
       { class: "mode-note dim" },
@@ -6270,19 +6278,24 @@ function openSuggestWorkPicker(repos, nodes) {
       },
     },
     [
-      el("div", { class: "mode-toggle" }, [
+      el(
+        "p",
+        { class: "suggest-intro" },
+        "The product owner reads the code and proposes new tickets. They arrive in the Draft lane for you to read before anything is readied.",
+      ),
+      el("div", { class: "mode-toggle", role: "radiogroup", "aria-label": "What to scout" }, [
         el("label", { class: "mode-option" }, [
           repoMode,
           el("span", {}, [
-            el("strong", {}, "Repo-level"),
-            el("span", { class: "dim" }, " — one repo"),
+            el("strong", {}, "One repo"),
+            el("span", { class: "dim" }, "Scout a single repository"),
           ]),
         ]),
         el("label", { class: "mode-option" }, [
           nodeMode,
           el("span", {}, [
-            el("strong", {}, "Node-level"),
-            el("span", { class: "dim" }, " — a scope's repos"),
+            el("strong", {}, "A ground"),
+            el("span", { class: "dim" }, "Every repo on one Map node"),
           ]),
         ]),
       ]),
@@ -6292,6 +6305,7 @@ function openSuggestWorkPicker(repos, nodes) {
     ],
   );
 
+  form.classList.add("suggest-form");
   openSheet("Suggest work", form);
 }
 
@@ -6695,81 +6709,190 @@ async function workReference() {
   return workRefCache;
 }
 
+// --- View: Work (the board on mown lanes, and the list as a league table) ----
+//
+// The comp's Work board: scoreboard-black lane heads with their true counts over
+// mown-grass lanes, paper cards with a hard counter shadow, a yellow card on what
+// waits on you and a red frame on what is blocked. A card is an <article>: its
+// title is the link (stretched over the card), so Move, the repo and the by-hand
+// actions are real buttons beside it, never inside a link. On a phone the lanes
+// stack in urgency order and fold, and the fold a viewer chose survives the 9s
+// refresh. The list is a league table, most urgent first.
+
+/** Urgency, the list's sort (the phone's lane order is the same, in CSS): paused with blocked, refining with draft … */
+const STATUS_URGENCY = {
+  blocked: 0,
+  paused: 0,
+  failed: 0,
+  in_review: 1,
+  claimed: 2,
+  in_progress: 2,
+  ready_for_merge: 3,
+  in_testing: 4,
+  ready: 5,
+  draft: 6,
+  refining: 6,
+  done: 7,
+  cancelled: 8,
+};
+/** True at phone width (≤760px); false where matchMedia is absent (tests). */
+function isPhoneWidth() {
+  return typeof window.matchMedia === "function" && window.matchMedia("(max-width: 760px)").matches;
+}
+// Phone lanes fold. What the viewer opened or closed is kept for the session, so
+// the 9s refresh never re-folds a lane they are reading.
+const laneOpenState = new Map();
+function laneStartsOpen(column, count) {
+  if (laneOpenState.has(column)) return laneOpenState.get(column);
+  return count > 0 && column !== "draft" && column !== "done";
+}
+
+/**
+ * Who waits on you, by ticket id: the server's human queue (the Overview's team
+ * sheet reads the same list). Without it, the statuses that always wait on a
+ * person stand in: a review, an approved merge, a blocked ticket.
+ */
+function workNeeds(queue) {
+  const items = queue && Array.isArray(queue.items) ? queue.items : null;
+  const map = new Map();
+  if (!items) return { map, fallback: true };
+  for (const it of items) if (it && it.ticket && it.ticket.id) map.set(it.ticket.id, it.label);
+  return { map, fallback: false };
+}
+function needsLabel(t, needs) {
+  if (!needs || needs.fallback) {
+    if (t.status === "in_review") return "Review sign-off";
+    if (t.status === "ready_for_merge") return "Approved, not merged";
+    if (t.status === "blocked") return "Blocked";
+    return null;
+  }
+  return needs.map.get(t.id) || null;
+}
+
+/** A card or row matches the filters (repo is filtered by the server). */
+function workMatches(t) {
+  if (workState.status && t.status !== workState.status) return false;
+  if (workState.risk && t.risk_level !== workState.risk) return false;
+  // "#6" is that ticket and no other; a bare "6" is ticket 6 or a title with a 6
+  // in it (never #16 or #26); anything else is a title search.
+  const q = workState.q.trim().toLowerCase();
+  if (q) {
+    const title = (t.title || "").toLowerCase();
+    const num = /^#?(\d+)$/.exec(q);
+    if (num) {
+      const exact = String(t.number) === String(Number(num[1]));
+      if (q.startsWith("#") ? !exact : !exact && !title.includes(num[1])) return false;
+    } else if (!title.includes(q.replace(/^#/, ""))) return false;
+  }
+  return true;
+}
+function workFiltered() {
+  return Boolean(workState.status || workState.risk || workState.q.trim() || workState.repo);
+}
+
 async function renderWork() {
   readWorkStateFromUrl();
+  const signal = routeSignal();
+  const get = (p) => api("GET", p, undefined, { signal });
 
-  // Board endpoint powers the board; the filtered /tickets list powers list mode
-  // (list mode does not fetch the board at all). Repos + scope nodes feed the
-  // "Suggest work" target picker (Feature B) and the repo filter.
+  // The board endpoint powers the board; the filtered /tickets list powers list
+  // mode (list mode does not fetch the board at all). Repos + scope nodes feed the
+  // "Suggest work" target picker (Feature B) and the repo filter. The human queue
+  // says which cards wait on you; the claims say who is on the pitch.
   const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
-  const [board, ref] = await Promise.all([
-    workState.mode === "list" ? null : api("GET", `/api/board${boardQs}`),
+  const listQs = new URLSearchParams();
+  if (workState.status) listQs.set("status", workState.status);
+  if (workState.repo) listQs.set("repo", workState.repo);
+  if (workState.risk) listQs.set("risk", workState.risk);
+  const list = workState.mode === "list";
+  const [board, listRes, ref, claimsRes, queue] = await Promise.all([
+    list ? null : get(`/api/board${boardQs}`),
+    list ? get("/tickets" + (listQs.toString() ? `?${listQs}` : "")) : null,
     workReference(),
+    get("/claims"),
+    get("/api/human-queue").catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return null;
+    }),
   ]);
   const { repos, nodes } = ref;
   const columns = (board && board.columns) || [];
   const closed = (board && board.closed) || [];
   const wontDo = (board && board.wontDo) || [];
-  const counts = boardCounts(columns, closed, wontDo);
+  const tickets = (listRes && listRes.tickets) || [];
+  const claims = (claimsRes && claimsRes.claims) || [];
+  learnAgents(claims);
+  const needs = workNeeds(queue);
+  const readAt = Date.now();
 
-  const wrap = el("div", { class: "view view-work" });
+  const wrap = el("div", { class: `view view-work is-${workState.mode}` });
 
-  const modeToggle = el("div", { class: "segmented", role: "tablist", "aria-label": "View mode" }, [
-    el(
-      "button",
-      {
-        class: workState.mode === "board" ? "active" : "",
-        type: "button",
-        role: "tab",
-        "aria-selected": String(workState.mode === "board"),
-        onclick: () => {
-          workState.mode = "board";
-          writeWorkStateToUrl();
-        },
-      },
-      "Board",
-    ),
-    el(
-      "button",
-      {
-        class: workState.mode === "list" ? "active" : "",
-        type: "button",
-        role: "tab",
-        "aria-selected": String(workState.mode === "list"),
-        onclick: () => {
-          workState.mode = "list";
-          writeWorkStateToUrl();
-        },
-      },
-      "List",
-    ),
+  // The line under the title and the flow bar count what the lanes show: with a
+  // filter on they count the matching cards (BRIEF §2: header counts equal lane
+  // counts), and they are redrawn as the viewer types.
+  const subText = () =>
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+  const head = viewHead("Work board", subText(), [
+    pollWorkButton(),
+    suggestWorkButton(repos, nodes),
   ]);
+  let flow = list ? null : workFlowHeader(columns, closed);
+  if (flow) head.querySelector(".view-head-main").appendChild(flow);
+  const refreshHead = () => {
+    const sub = head.querySelector(".view-sub");
+    if (sub) sub.textContent = subText();
+    if (!flow) return;
+    const next = workFlowHeader(columns, closed);
+    flow.replaceWith(next);
+    flow = next;
+  };
+  wrap.appendChild(head);
 
-  wrap.appendChild(
-    viewHead(
-      "Work board",
-      board ? workSummaryLine(columns, counts) : "Every ticket, one row each.",
-      [pollWorkButton(), suggestWorkButton(repos, nodes)],
-    ),
-  );
-  wrap.appendChild(el("div", { class: "view-toolbar" }, [renderWorkFilters(repos), modeToggle]));
-  if (workState.mode === "board")
-    wrap.appendChild(workFlowHeader(columns, { failed: closed.length }));
+  // The board or the list, rebuilt in place (no fetch) as the viewer types.
+  const build = () =>
+    list ? renderWorkList(tickets, needs, claims) : renderBoard(columns, closed, wontDo, needs);
+  let main = build();
+  const toolbar = renderWorkToolbar(repos, () => {
+    const next = build();
+    main.replaceWith(next);
+    main = next;
+    refreshHead();
+  });
+  wrap.appendChild(toolbar);
+  wrap.appendChild(main);
 
-  if (workState.mode === "list") {
-    wrap.appendChild(await renderWorkList());
-  } else {
-    wrap.appendChild(renderBoard(columns, closed, wontDo));
-  }
+  wrap.appendChild(renderClaimsPanel(claims, readAt));
 
-  // Active claims — folded in as a collapsible panel (replaces the Claims tab).
-  const claimsPanel = await renderClaimsPanel();
-  wrap.appendChild(claimsPanel);
+  // "/" puts the cursor in the filter, as in most boards; the phone/desktop lane
+  // heads swap when the width crosses 760px.
+  const onKey = (e) => {
+    if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (!wrap.isConnected || isModalOpen() || busyEditing()) return;
+    const input = wrap.querySelector(".work-q");
+    if (!input) return;
+    e.preventDefault();
+    input.focus();
+    input.select();
+  };
+  document.addEventListener("keydown", onKey);
+  const mq =
+    typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 760px)") : null;
+  const onWidth = () => {
+    if (list || !wrap.isConnected) return;
+    const next = build();
+    main.replaceWith(next);
+    main = next;
+  };
+  if (mq && mq.addEventListener) mq.addEventListener("change", onWidth);
+  wrap._dispose = () => {
+    document.removeEventListener("keydown", onKey);
+    if (mq && mq.removeEventListener) mq.removeEventListener("change", onWidth);
+  };
 
   // Change signature: an unchanged board (same payload, same filters) is not
   // re-rendered by the background refresh, so nothing on it moves.
-  if (board)
-    wrap.dataset.sig = `${hashText(JSON.stringify(board))}:${location.hash}:${claimsPanel.dataset.sig || ""}`;
+  const needSig = [...needs.map.entries()].map(([k, v]) => `${k}:${v}`).join(",");
+  wrap.dataset.sig = `${hashText(JSON.stringify(board || tickets))}:${location.hash}:${hashText(JSON.stringify(claims))}:${hashText(needSig)}`;
 
   return wrap;
 }
@@ -6798,20 +6921,80 @@ function boardCounts(columns, closed = [], wontDo = []) {
   return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
 }
 
-/** "25 tickets in lanes: 6 draft · 4 ready … 6 done. 2 failed, listed under Done." */
-function workSummaryLine(columns, counts) {
+/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+function workVisible(columns, closed = [], wontDo = []) {
+  return {
+    columns: columns.map((c) => {
+      const cards = (c.cards || []).filter(workMatches);
+      return { ...c, cards, total: cards.length };
+    }),
+    closed: closed.filter(workMatches),
+    wontDo: wontDo.filter(workMatches),
+  };
+}
+/** The client-side filters in words: “refund”, status blocked, high risk. */
+function workFilterWords() {
+  const words = [];
+  const q = workState.q.trim();
+  if (q) words.push(`\u201c${q}\u201d`);
+  if (workState.status) words.push(`status ${statusLabel(workState.status).toLowerCase()}`);
+  if (workState.risk) words.push(`${workState.risk} risk`);
+  return words;
+}
+
+/**
+ * "25 tickets in lanes: 6 draft · 4 ready … 6 done. 2 failed, listed under the board."
+ * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
+ * the line always equals the lane heads below it.
+ */
+function workSummaryLine(columns, closed = [], wontDo = []) {
+  const all = boardCounts(columns, closed, wontDo);
+  const vis = workVisible(columns, closed, wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
-    .map(
-      (c) => `${counts.by[c.column]} ${(BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase()}`,
-    );
-  const inLanes = counts.live + counts.shipped;
+    // A count never wraps away from its lane name ("1 / done").
+    .map((c) => {
+      const word = (BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase();
+      return `${counts.by[c.column]}\u00a0${word}`;
+    });
   const extra = [];
   if (counts.failed) extra.push(`${counts.failed} failed`);
   if (counts.wontDo) extra.push(`${counts.wontDo} won't do`);
+  const tail = extra.length ? ` ${extra.join(", ")}, listed under the board.` : "";
+  const inLanes = counts.live + counts.shipped;
+  const words = workFilterWords();
+  const scope = workState.repo ? ` in ${workState.repo}` : "";
+  if (!words.length)
+    return (
+      `${plural(inLanes, "ticket")}${scope ? `${scope}'s` : " in"} lanes${parts.length ? ": " + parts.join(" · ") : ""}.` +
+      tail
+    );
+  const allInLanes = all.live + all.shipped;
+  const what = words.join(", ");
+  if (!inLanes && !extra.length)
+    return `None of the ${plural(allInLanes, "ticket")}${scope} match ${what}.`;
   return (
-    `${inLanes} ${inLanes === 1 ? "ticket" : "tickets"} in lanes${parts.length ? ": " + parts.join(" · ") : ""}.` +
-    (extra.length ? ` ${extra.join(", ")}, listed under the board.` : "")
+    `${inLanes} of ${plural(allInLanes, "ticket")}${scope} ${inLanes === 1 ? "matches" : "match"} ${what}` +
+    `${parts.length ? ": " + parts.join(" · ") : ""}.` +
+    tail
+  );
+}
+
+/** List mode's line: how many, in what order, and how many wait on you. */
+function workListSummary(all, needs) {
+  const tickets = all.filter(workMatches);
+  const waiting = tickets.filter((t) => needsLabel(t, needs)).length;
+  if (!tickets.length)
+    return workFiltered() ? "No ticket matches these filters." : "No tickets yet.";
+  const words = workFilterWords();
+  const scope = workState.repo ? ` in ${workState.repo}` : "";
+  const match = words.length
+    ? ` ${tickets.length === 1 ? "matches" : "match"} ${words.join(", ")}`
+    : "";
+  return (
+    `${plural(tickets.length, "ticket")}${scope}${match}, most urgent first.` +
+    (waiting ? ` ${waiting} ${waiting === 1 ? "waits" : "wait"} on you.` : "")
   );
 }
 
@@ -6819,7 +7002,10 @@ function workSummaryLine(columns, counts) {
  *  board's own columns, so none is ever left out) plus Failed, and a single
  *  distribution bar so the shape of the board reads before you scan the lanes.
  *  Shipped is the Done lane; failed tickets are counted as failed, never shipped. */
-function workFlowHeader(columns, { failed = 0 } = {}) {
+function workFlowHeader(allColumns, allClosed = []) {
+  const vis = workVisible(allColumns, allClosed);
+  const columns = vis.columns;
+  const failed = vis.closed.length;
   const { by } = boardCounts(columns);
   const cells = columns.map((c) => ({
     key: c.column,
@@ -6845,77 +7031,144 @@ function workFlowHeader(columns, { failed = 0 } = {}) {
   const label = cells.map((c) => `${c.label} ${c.v}`).join(", ");
   return el(
     "div",
-    { class: "work-flow", role: "img", "aria-label": `Tickets per lane: ${label}` },
+    {
+      class: "work-flow",
+      role: "img",
+      "aria-label": `Tickets per lane: ${label}`,
+      hidden: seg.length ? null : "",
+    },
     [el("div", { class: "wf-bar" }, seg)],
   );
 }
 
-function renderWorkFilters(repos) {
-  const statusSel = el(
-    "select",
-    {
-      "aria-label": "Filter by status",
-      onchange: (e) => {
-        workState.status = e.target.value;
-        writeWorkStateToUrl();
-      },
-    },
-    [
-      el("option", { value: "" }, "All statuses"),
-      ...TICKET_STATUSES.map((s) =>
-        el("option", { value: s, selected: workState.status === s }, statusLabel(s)),
-      ),
-    ],
-  );
-  const repoSel = el(
-    "select",
-    {
-      "aria-label": "Filter by repo",
-      onchange: (e) => {
-        workState.repo = e.target.value;
-        writeWorkStateToUrl();
-      },
-    },
-    [
-      el("option", { value: "" }, "All repos"),
-      ...repos.map((r) =>
-        el("option", { value: r.name, selected: workState.repo === r.name }, r.name),
-      ),
-    ],
-  );
-  const riskSel = el(
-    "select",
-    {
-      "aria-label": "Filter by risk",
-      onchange: (e) => {
-        workState.risk = e.target.value;
-        writeWorkStateToUrl();
-      },
-    },
-    [
-      el("option", { value: "" }, "All risk"),
-      ...RISK_LEVELS.map((r) => el("option", { value: r, selected: workState.risk === r }, r)),
-    ],
-  );
+/**
+ * The filter line: number-or-title (client-side, as you type), status, repo and
+ * risk (in the address, so a filtered board can be shared), Reset when any is on,
+ * and Board | List. `onQuery` rebuilds the board from the data already read.
+ */
+function renderWorkToolbar(repos, onQuery) {
   const reset = el(
     "button",
     {
-      class: "btn small",
+      class: "btn small work-reset",
       type: "button",
+      hidden: workFiltered() ? null : "",
       onclick: () => {
         workState.status = "";
         workState.repo = "";
         workState.risk = "";
+        workState.q = "";
         writeWorkStateToUrl();
       },
     },
     "Reset",
   );
-  return el("div", { class: "filters" }, [
-    field("Status", statusSel),
-    field("Repo", repoSel),
-    field("Risk", riskSel),
-    el("div", { class: "field", style: "flex:0 0 auto" }, [el("label", { html: "&nbsp;" }), reset]),
+  let pending = 0;
+  const q = el("input", {
+    type: "search",
+    class: "work-q",
+    value: workState.q,
+    placeholder: "Filter by number or title",
+    "aria-label": "Filter tickets by number or title",
+    "aria-keyshortcuts": "/",
+    autocomplete: "off",
+    spellcheck: "false",
+  });
+  q.addEventListener("input", () => {
+    workState.q = q.value;
+    reset.hidden = !workFiltered();
+    // Into the address without a navigation, so a refresh (or a shared link)
+    // keeps the filter; the board itself is rebuilt from what is already read.
+    try {
+      history.replaceState(null, "", workUrl());
+    } catch {
+      /* no history in this context */
+    }
+    if (pending) return;
+    const tick = typeof requestAnimationFrame === "function" ? requestAnimationFrame : setTimeout;
+    pending = tick(() => {
+      pending = 0;
+      onQuery();
+    });
+  });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && q.value) {
+      e.stopPropagation();
+      q.value = "";
+      q.dispatchEvent(new Event("input"));
+    }
+  });
+  const select = (label, key, all, options) =>
+    el(
+      "select",
+      {
+        class: `work-sel work-sel-${key}`,
+        "aria-label": label,
+        onchange: (e) => {
+          workState[key] = e.target.value;
+          writeWorkStateToUrl();
+        },
+      },
+      [el("option", { value: "" }, all), ...options],
+    );
+  const statusSel = select(
+    "Filter by status",
+    "status",
+    "All statuses",
+    TICKET_STATUSES.map((s) =>
+      el("option", { value: s, selected: workState.status === s }, statusLabel(s)),
+    ),
+  );
+  const repoSel = select(
+    "Filter by repo",
+    "repo",
+    "All repos",
+    repos.map((r) => el("option", { value: r.name, selected: workState.repo === r.name }, r.name)),
+  );
+  const riskSel = select(
+    "Filter by risk",
+    "risk",
+    "All risk",
+    RISK_LEVELS.map((r) =>
+      el(
+        "option",
+        { value: r, selected: workState.risk === r },
+        `${r[0].toUpperCase()}${r.slice(1)} risk`,
+      ),
+    ),
+  );
+  const modeBtn = (mode, label) =>
+    el(
+      "button",
+      {
+        class: workState.mode === mode ? "active" : "",
+        type: "button",
+        "aria-pressed": String(workState.mode === mode),
+        onclick: () => {
+          if (workState.mode === mode) return;
+          workState.mode = mode;
+          writeWorkStateToUrl();
+        },
+      },
+      label,
+    );
+  const modeToggle = el(
+    "div",
+    { class: "segmented work-mode", role: "group", "aria-label": "View" },
+    [modeBtn("board", "Board"), modeBtn("list", "List")],
+  );
+  return el("div", { class: "view-toolbar work-toolbar" }, [
+    el("div", { class: "filters work-filters" }, [
+      el("span", { class: "work-q-wrap" }, [
+        q,
+        el("kbd", { class: "kbd", "aria-hidden": "true" }, "/"),
+      ]),
+      statusSel,
+      repoSel,
+      riskSel,
+      reset,
+    ]),
+    modeToggle,
   ]);
 }
 
@@ -6997,10 +7250,10 @@ function hasTicketAction(status, key) {
 
 /**
  * Move a card to a target column with an optimistic UI update + rollback. The
- * DOM card is moved into the destination column immediately; on a backend
- * rejection (illegal transition, policy, concurrency) it snaps back and an error
- * toast surfaces the API code. On success the board re-renders so counts, claim
- * state and pipeline dots stay truthful.
+ * DOM card glides into the destination lane at once (a View Transition, off under
+ * reduced motion); on a backend rejection (illegal transition, policy,
+ * concurrency) it snaps back and an error toast surfaces the API code. On success
+ * the board re-renders so counts and claim state stay truthful.
  */
 async function performBoardMove(cardEl, card, toColumn) {
   if (card.status === toColumn) return; // dropped on its own column — no-op.
@@ -7008,16 +7261,41 @@ async function performBoardMove(cardEl, card, toColumn) {
   const placeholder = document.createComment("wg-move");
   fromBody.insertBefore(placeholder, cardEl);
   const destBody = document.querySelector(`.board-col.col-${toColumn} .board-col-body`);
+  const glide = (fn) => {
+    if (typeof document.startViewTransition !== "function" || prefersReducedMotion()) return fn();
+    cardEl.style.viewTransitionName = "wk-moving-card";
+    let t;
+    try {
+      t = document.startViewTransition(fn);
+    } catch {
+      cardEl.style.viewTransitionName = "";
+      return fn();
+    }
+    // The refresh after the move starts its own transition, which skips this one
+    // and rejects its promises with InvalidStateError: swallow those (the DOM
+    // update still ran), as router() does.
+    const clear = () => (cardEl.style.viewTransitionName = "");
+    t.ready?.catch(() => {});
+    t.updateCallbackDone?.catch(() => {});
+    t.finished?.then(clear, clear);
+  };
   if (destBody) {
-    const dash = destBody.querySelector(".board-empty");
-    if (dash) dash.remove();
-    destBody.appendChild(cardEl);
+    glide(() => {
+      const dash = destBody.querySelector(".board-empty");
+      if (dash) dash.remove();
+      destBody.prepend(cardEl);
+      const fold = destBody.closest("details");
+      if (fold) fold.open = true;
+    });
   }
   cardEl.classList.add("is-moving");
+  const label = BOARD_COLUMN_LABELS[toColumn] || toColumn;
   try {
     await api("POST", `/tickets/${card.id}/move`, { to: toColumn });
-    toast(`Moved to ${BOARD_COLUMN_LABELS[toColumn] || toColumn}`, { ok: true });
-    router(); // refresh truthfully (counts/claim/dots) once the move landed.
+    toast(`Moved ${card.number != null ? `#${card.number}` : "the ticket"} to ${label}`, {
+      ok: true,
+    });
+    router(); // refresh truthfully (counts/claim) once the move landed.
   } catch (e) {
     // Rollback: restore the card to where the drag started.
     if (placeholder.parentElement) placeholder.parentElement.insertBefore(cardEl, placeholder);
@@ -7028,10 +7306,17 @@ async function performBoardMove(cardEl, card, toColumn) {
   }
 }
 
-/** Open the touch/keyboard status menu for a card (drag-free fallback). */
+/**
+ * The move menu (touch and keyboard; the same moves as a drag): the card is
+ * armed while it is open, focus goes to the first lane, arrows walk the list and
+ * Escape puts focus back on the card's Move button.
+ */
 function openMoveMenu(card, anchorEl) {
   const targets = legalTargetColumns(card.status);
   if (!targets.length) return;
+  closeMoveMenu();
+  const cardNode = anchorEl.closest(".board-card");
+  const name = card.number != null ? `#${card.number}` : "this ticket";
   const items = targets.map((col) =>
     el(
       "button",
@@ -7040,33 +7325,88 @@ function openMoveMenu(card, anchorEl) {
         type: "button",
         role: "menuitem",
         onclick: () => {
-          closeMoveMenu();
-          const node = anchorEl.closest(".board-card");
-          if (node) guard(() => performBoardMove(node, card, col));
+          closeMoveMenu({ restore: false });
+          if (cardNode) guard(() => performBoardMove(cardNode, card, col));
         },
       },
-      [
-        el("span", { class: `movemenu-dot col-${col}` }),
-        `Move to ${BOARD_COLUMN_LABELS[col] || col}`,
-      ],
+      [glyph(col, 18), el("span", {}, BOARD_COLUMN_LABELS[col] || col)],
     ),
   );
-  const menu = el("div", { class: "movemenu", role: "menu", "aria-label": "Move ticket to" }, [
-    el("div", { class: "movemenu-head" }, card.number != null ? `#${card.number}` : "Move ticket"),
+  const menu = el("div", { class: "movemenu", role: "menu", "aria-label": `Move ${name} to` }, [
+    el("div", { class: "movemenu-head", "aria-hidden": "true" }, `Move ${name} to`),
     ...items,
   ]);
-  const scrim = el("div", { class: "movemenu-scrim", onclick: closeMoveMenu });
+  menu.addEventListener("keydown", (e) => {
+    const i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = items.length;
+      items[(i + (e.key === "ArrowDown" ? 1 : n - 1) + n) % n].focus();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      items[e.key === "Home" ? 0 : items.length - 1].focus();
+    } else if (e.key === "Tab") {
+      e.preventDefault(); // the menu keeps focus until a lane is picked or it closes
+    }
+  });
+  const scrim = el("div", { class: "movemenu-scrim", onclick: () => closeMoveMenu() });
   scrim.appendChild(menu);
   menu.addEventListener("click", (e) => e.stopPropagation());
   document.body.appendChild(scrim);
   moveMenuScrim = scrim;
+  moveMenuReturn = anchorEl;
+  if (cardNode) cardNode.classList.add("card-armed");
+  anchorEl.setAttribute("aria-expanded", "true");
   document.addEventListener("keydown", moveMenuKeydown);
+  // The menu opens at its Move button (below it, or above when the screen ends),
+  // so the armed card stays in view beside the lanes it can go to.
+  const r = anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : null;
+  if (r && r.width) {
+    scrim.classList.add("is-anchored");
+    const place = () => {
+      const a = anchorEl.getBoundingClientRect();
+      const nav = document.getElementById("bottomnav");
+      const navTop = nav && nav.offsetHeight ? nav.getBoundingClientRect().top : window.innerHeight;
+      const floor = Math.min(window.innerHeight, navTop) - 8;
+      // The Move button scrolled out of view: the menu has nothing to sit by.
+      if (!anchorEl.isConnected || a.bottom < 0 || a.top > floor) return false;
+      const mw = menu.offsetWidth;
+      const mh = menu.offsetHeight;
+      let top = a.bottom + 6;
+      if (top + mh > floor) top = Math.max(8, a.top - 6 - mh);
+      menu.style.left = `${Math.max(8, Math.min(a.left, window.innerWidth - mw - 8))}px`;
+      menu.style.top = `${top}px`;
+      return true;
+    };
+    place();
+    moveMenuPlace = place;
+    window.addEventListener("scroll", onMoveMenuScroll, { passive: true });
+  }
+  items[0].focus();
 }
 let moveMenuScrim = null;
-function closeMoveMenu() {
+let moveMenuReturn = null;
+let moveMenuPlace = null;
+// The page scrolls under an anchored menu: it follows its Move button (a momentum
+// scroll no longer closes it under a tap), and closes once the button leaves view.
+function onMoveMenuScroll() {
+  if (!moveMenuPlace || !moveMenuPlace()) closeMoveMenu();
+}
+function closeMoveMenu({ restore = true } = {}) {
+  window.removeEventListener("scroll", onMoveMenuScroll);
+  moveMenuPlace = null;
   if (moveMenuScrim) {
     moveMenuScrim.remove();
     moveMenuScrim = null;
+  }
+  document
+    .querySelectorAll(".board-card.card-armed")
+    .forEach((n) => n.classList.remove("card-armed"));
+  if (moveMenuReturn) {
+    moveMenuReturn.setAttribute("aria-expanded", "false");
+    // preventScroll: a menu closed by scrolling away never yanks the page back.
+    if (restore && moveMenuReturn.isConnected) moveMenuReturn.focus({ preventScroll: true });
+    moveMenuReturn = null;
   }
   document.removeEventListener("keydown", moveMenuKeydown);
 }
@@ -7102,44 +7442,125 @@ function laneMoreLink(column, shown, total) {
   );
 }
 
-/** Board (kanban) — columns by status; filters dim non-matching cards client-side. */
-function renderBoard(columns, closed, wontDo = []) {
-  const wrap = el("div", { class: "board-wrap" });
-  // repo is filtered server-side via ?repo= on /api/board; only status and
-  // risk need client-side filtering here (no repo field on BoardCard).
-  const matches = (card) =>
-    (!workState.status || card.status === workState.status) &&
-    (!workState.risk || card.risk_level === workState.risk);
+/** Phone lane order: most urgent first; lanes with no (matching) card sink last. */
+const PHONE_LANE_URGENCY = [
+  "blocked",
+  "in_review",
+  "in_progress",
+  "ready_for_merge",
+  "in_testing",
+  "ready",
+  "draft",
+  "done",
+];
+function phoneLaneOrder(columns) {
+  const rank = (c) => {
+    const i = PHONE_LANE_URGENCY.indexOf(c.column);
+    const empty = !(c.cards || []).some(workMatches);
+    return (empty ? 100 : 0) + (i < 0 ? 50 : i);
+  };
+  return [...columns].sort((a, b) => rank(a) - rank(b));
+}
 
+/** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
+function renderBoard(columns, closed, wontDo = [], needs = null) {
+  const wrap = el("div", { class: "board-wrap" });
+  const phone = isPhoneWidth();
+  const total = columns.reduce((n, c) => n + (c.cards || []).length, 0);
+  const shown = columns.reduce((n, c) => n + (c.cards || []).filter(workMatches).length, 0);
+  if (!total && !closed.length && !wontDo.length && !workFiltered()) {
+    wrap.appendChild(
+      emptyState(
+        "No tickets yet. Create one, or let the product owner suggest work.",
+        null,
+        null,
+        el("a", { class: "btn", href: "#/create" }, "Create a ticket"),
+      ),
+    );
+  } else if (!shown && workFiltered()) {
+    wrap.appendChild(
+      el("p", { class: "work-nomatch", role: "status" }, "No ticket matches these filters."),
+    );
+  }
+
+  const closedAll = [...closed, ...wontDo].filter(workMatches);
+  // On a phone the lanes stack in urgency order (Blocked, In review, In progress
+  // first; empty lanes last) IN THE DOM, so tab and screen-reader order match what
+  // is on screen (WCAG 2.4.3). The board re-renders when the width crosses 760px.
+  const laneCols = phone ? phoneLaneOrder(columns) : columns;
   const cols = el(
     "div",
     { class: "board" },
-    columns.map((c, laneIdx) => {
-      const all = (c.cards || []).filter(matches);
+    laneCols.map((c, laneIdx) => {
+      // repo is filtered server-side via ?repo= on /api/board; status, risk and the
+      // number-or-title filter narrow the cards here.
+      const all = (c.cards || []).filter(workMatches);
       const cards = capLane(c.column, all);
+      const label = BOARD_COLUMN_LABELS[c.column] || c.column;
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
-          ? [...cards.map(renderBoardCard), laneMoreLink(c.column, cards.length, all.length)]
-          : el("div", { class: "board-empty" }, "Nothing here."),
+          ? [
+              ...cards.map((card) => renderBoardCard(card, c.column, needs)),
+              laneMoreLink(c.column, cards.length, all.length),
+            ]
+          : el("p", { class: "board-empty" }, "Nothing here."),
       );
-      const label = BOARD_COLUMN_LABELS[c.column] || c.column;
+      // Done carries the tickets that left without merging, as the comp's foot line.
+      const foot =
+        c.column === "done" && closedAll.length
+          ? el("p", { class: "lane-foot" }, [
+              "Closed without merging: ",
+              ...closedAll
+                .slice(0, 6)
+                .flatMap((t, j) => [
+                  j ? ", " : "",
+                  el(
+                    "a",
+                    { href: `#/ticket/${t.id}` },
+                    t.number != null ? `#${t.number}` : t.id.slice(0, 8),
+                  ),
+                  ` ${t.status === "cancelled" ? "won't do" : statusLabel(t.status).toLowerCase()}`,
+                ]),
+              closedAll.length > 6 ? `, and ${closedAll.length - 6} more` : "",
+              ".",
+            ])
+          : null;
+      const headBits = [
+        glyph(c.column, 18),
+        el("h2", { class: "board-col-title" }, label),
+        el("span", { class: "board-col-count tabnum" }, String(all.length)),
+      ];
+      let inner;
+      if (phone && all.length) {
+        const open = laneStartsOpen(c.column, all.length);
+        const toggleWord = el(
+          "span",
+          { class: "lane-toggle", "aria-hidden": "true" },
+          open ? "Hide" : "Show",
+        );
+        const details = el("details", { class: "lane-d", open: open ? "" : null }, [
+          el("summary", { class: "board-col-head" }, [...headBits, toggleWord]),
+          body,
+          foot,
+        ]);
+        details.addEventListener("toggle", () => {
+          laneOpenState.set(c.column, details.open);
+          toggleWord.textContent = details.open ? "Hide" : "Show";
+        });
+        inner = [details];
+      } else {
+        inner = [el("div", { class: "board-col-head" }, headBits), body, foot];
+      }
       const section = el(
         "section",
         {
           class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
-          dataset: { column: c.column },
+          dataset: { column: c.column, status: c.column },
           "aria-label": `${label}: ${all.length}`,
         },
-        [
-          el("div", { class: "board-col-head" }, [
-            glyph(c.column === "ready_for_merge" ? "ready_for_merge" : c.column, 16),
-            el("h2", { class: "board-col-title" }, label),
-            el("span", { class: "board-col-count tabnum" }, String(all.length)),
-          ]),
-          body,
-        ],
+        inner,
       );
       wireColumnDropZone(section, c.column);
       return section;
@@ -7147,75 +7568,80 @@ function renderBoard(columns, closed, wontDo = []) {
   );
   wrap.appendChild(cols);
 
-  // Won't-do bucket: terminal "will NOT be built" tickets, distinct from rework
-  // and from the failed/closed area. Each card carries a discreet "Reopen" action
-  // (-> refining) so an abandoned ticket is reversible. Cards are built only when
-  // the disclosure is opened.
-  const lazyArea = (cls, summary, list, renderOne, open = false) => {
-    const details = el("details", { class: cls, open: open ? "" : null });
-    details.appendChild(el("summary", {}, summary));
-    const body = el("div", { class: "closed-cards" });
-    details.appendChild(body);
-    const fill = () => {
-      if (body.childElementCount) return;
-      const shown = list.slice(0, BOARD_CLOSED_CAP);
-      shown.forEach((c) => body.appendChild(renderOne(c)));
-      if (list.length > shown.length)
-        body.appendChild(
-          el("p", { class: "section-note" }, `Showing ${shown.length} of ${list.length}.`),
-        );
-    };
-    if (open) fill();
-    details.addEventListener("toggle", () => details.open && fill());
-    return details;
-  };
-  const wontDoVisible = wontDo.filter(matches);
-  if (wontDoVisible.length) {
+  // Closed without merging: won't do (reversible: Reopen → refining) and failed.
+  const wontDoVisible = wontDo.filter(workMatches);
+  const failedVisible = closed.filter(workMatches);
+  if (wontDoVisible.length || failedVisible.length) {
+    const group = (cls, title, list, action) =>
+      el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${list.length}` }, [
+        el("h3", { class: "closed-head" }, [
+          glyph(list[0].status, 16),
+          el("span", {}, title),
+          el("span", { class: "closed-count tabnum" }, String(list.length)),
+        ]),
+        el("ul", { class: "closed-cards" }, [
+          ...list.slice(0, BOARD_CLOSED_CAP).map((t) => closedRow(t, action)),
+        ]),
+        list.length > BOARD_CLOSED_CAP
+          ? el("p", { class: "section-note" }, `Showing ${BOARD_CLOSED_CAP} of ${list.length}.`)
+          : null,
+      ]);
     wrap.appendChild(
-      lazyArea(
-        "closed-area wont-do-area",
-        `Won't do (${wontDoVisible.length})`,
-        wontDoVisible,
-        renderWontDoCard,
-        true,
+      progPage(
+        "work-closed",
+        null,
+        "Closed without merging",
+        plural(wontDoVisible.length + failedVisible.length, "ticket"),
+        el("div", { class: "closed-groups" }, [
+          wontDoVisible.length
+            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen)
+            : null,
+          failedVisible.length ? group("failed-area", "Failed", failedVisible, null) : null,
+        ]),
       ),
     );
-  }
-  if (closed.length) {
-    wrap.appendChild(lazyArea("closed-area", `Failed (${closed.length})`, closed, renderBoardCard));
   }
   return wrap;
 }
 
-/** A won't-do bucket card: the board card plus a discreet reopen-to-refining action. */
-function renderWontDoCard(card) {
-  const reopen = el(
+/** One closed ticket: number, title (the link), risk, repo, and its one action. */
+function closedRow(t, action) {
+  const repo = (t.repos || [])[0];
+  return el("li", { class: `closed-row bc-${t.status}` }, [
+    el("span", { class: "closed-num tabnum" }, t.number != null ? `#${t.number}` : "—"),
+    el("a", { class: "closed-title", href: `#/ticket/${t.id}` }, t.title),
+    el("span", { class: "closed-meta" }, [
+      riskBadge(t.risk_level),
+      repo ? repoTag(repo.name, 16) : null,
+      el("span", { class: "dim tabnum" }, fmtTime(t.updated_at)),
+    ]),
+    action ? action(t) : null,
+  ]);
+}
+
+/** Won't do is reversible: Reopen sends the ticket back to refining. */
+function wontDoReopen(card) {
+  return el(
     "button",
     {
       class: "btn small",
       type: "button",
       title: "Reopen this ticket into refining",
-      onclick: (e) => {
-        e.stopPropagation();
+      "aria-label": `Reopen ${card.number != null ? `#${card.number}` : "this ticket"} into refining`,
+      onclick: () =>
         guard(async () => {
           await api("POST", `/tickets/${card.id}/reopen`, { to: "refining" });
           toast("Reopened to refining", { ok: true });
           router();
-        });
-      },
+        }),
     },
     "Reopen",
   );
-  const wrap = el("div", { class: "wont-do-card" }, [
-    renderBoardCard(card),
-    el("div", { class: "btn-row" }, [reopen]),
-  ]);
-  return wrap;
 }
 
 /**
  * Make a column a HTML5 drop target. While a movable card is dragging, columns
- * that can legally accept it light up (cyan accent); columns that can't show a
+ * that can legally accept it light up (sky edge); columns that can't show a
  * not-allowed cursor and never accept the drop.
  */
 function wireColumnDropZone(section, column) {
@@ -7252,7 +7678,6 @@ function wireColumnDropZone(section, column) {
 let draggingCard = null;
 let draggingEl = null;
 
-/** A keyboard-reachable kanban card → ticket detail; carries pipeline-dots. */
 /**
  * TRACK-2b: the human WIP lane's per-card action. A `ready` card gets an "I'll do
  * this by hand" button (human-claim → in_progress owned by you, so the agent loop
@@ -7277,11 +7702,7 @@ function humanLaneAction(card) {
         class: "card-human-btn hand-back",
         type: "button",
         title: "Hand this ticket back to the queue so an agent can pick it up",
-        onclick: (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          guard(() => post("human-release", "Handed back to the queue"));
-        },
+        onclick: () => guard(() => post("human-release", "Handed back to the queue")),
       },
       "Hand back",
     );
@@ -7294,11 +7715,7 @@ function humanLaneAction(card) {
         class: "card-human-btn take-myself",
         type: "button",
         title: "Take this ticket by hand — the agent will stay out of it",
-        onclick: (e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          guard(() => post("human-claim", "You're on it — taken by hand"));
-        },
+        onclick: () => guard(() => post("human-claim", "You're on it — taken by hand")),
       },
       "I'll do this by hand",
     );
@@ -7306,102 +7723,98 @@ function humanLaneAction(card) {
   return null;
 }
 
-function renderBoardCard(card) {
-  const chips = el("div", { class: "card-chips" }, [
-    riskBadge(card.risk_level),
-    el("span", { class: "tabnum dim", title: "priority" }, `P${card.priority}`),
-    card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
+/** A status word with its glyph, at card size (for a card whose status is not its lane's). */
+function cardStatus(status) {
+  return el("span", { class: `card-status st-${status}` }, [
+    glyph(status, 14),
+    el("span", {}, statusLabel(status)),
+  ]);
+}
+
+/**
+ * A board card: an <article> whose title is the link (stretched over the card).
+ * `laneKey` is the lane it sits in, so a refining, claimed or paused card says so.
+ */
+function renderBoardCard(card, laneKey, needs) {
+  const numText = card.number != null ? `#${card.number}` : card.id.slice(0, 8);
+  const need = needsLabel(card, needs);
+  const href = card.status === "in_review" ? `#/review/${card.id}` : `#/ticket/${card.id}`;
+
+  const top = el("div", { class: "card-top" }, [
+    el("span", { class: "num" }, numText),
+    laneKey && card.status !== laneKey && card.status !== "done" ? cardStatus(card.status) : null,
+    el("span", { class: "card-tags" }, [
+      card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
+      el(
+        "span",
+        { class: "card-pri tabnum", title: `Priority ${card.priority}` },
+        `P${card.priority}`,
+      ),
+      riskBadge(card.risk_level),
+    ]),
   ]);
 
   let acText = null;
-  if (card.acEvidenceRequired > 0)
-    acText = `${card.acEvidenced}/${card.acEvidenceRequired} evidenced`;
-  else if (card.acTotal > 0) acText = `${card.acSatisfied}/${card.acTotal} satisfied`;
+  let acTitle = null;
+  if (card.acEvidenceRequired > 0) {
+    acText = `Evidence ${card.acEvidenced}/${card.acEvidenceRequired}`;
+    acTitle = `${card.acEvidenced} of ${card.acEvidenceRequired} criteria evidenced`;
+  } else if (card.acTotal > 0) {
+    acText = `AC ${card.acSatisfied}/${card.acTotal}`;
+    acTitle = `${card.acSatisfied} of ${card.acTotal} acceptance criteria satisfied`;
+  }
+
+  // Repo cross-link (audit: "no path from a card to its repo"): the repo is a
+  // button beside the title link, one hop to #/repo/:id.
+  const cardRepos = card.repos || [];
+  const meta = el("div", { class: "card-meta" }, [
+    cardRepos.length
+      ? el("span", { class: "card-repos" }, [
+          ...cardRepos.slice(0, 2).map((r) =>
+            el(
+              "button",
+              {
+                class: "card-repo-chip",
+                type: "button",
+                title: `Open ${r.name}`,
+                onclick: () => navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`),
+              },
+              [kitShirt(r.name, 16), el("span", {}, r.name)],
+            ),
+          ),
+          cardRepos.length > 2
+            ? el("span", { class: "card-repo-more dim" }, `+${cardRepos.length - 2}`)
+            : null,
+        ])
+      : el("span", { class: "dim" }, "No repo yet"),
+    el("span", { class: "ac-progress tabnum", title: acTitle }, acText || "No AC"),
+  ]);
 
   // TRACK-2b: a ticket the operator took "by hand" is THEIR in-flight work, not the
   // agent's. Render it distinctly (a "By hand" marker with the human-owner) so the
   // human WIP lane reads apart from an agent claim. This branch wins over the agent
-  // claim/pipeline-dots — a human-owned ticket never carries an agent claim.
-  const ownerMarker = card.humanOwner
+  // claim — a human-owned ticket never carries an agent claim.
+  const owner = card.humanOwner
     ? el(
-        "span",
+        "p",
         { class: "card-human-owned", title: `You're working this by hand (${card.humanOwner})` },
         [el("span", { class: "human-dot" }), "By hand", ` · ${card.humanOwner}`],
       )
     : card.claim
       ? el(
-          "span",
+          "p",
           {
             class: `card-claim${card.claim.stale ? " stale" : ""}`,
-            title: card.claim.stale ? "Lease past expiry" : "Lease active",
+            title: card.claim.stale
+              ? `Lease ended ${fmtTime(card.claim.expiresAt)}`
+              : `Lease to ${fmtTime(card.claim.expiresAt)}`,
           },
           [
-            agentTag(card.claim.agentDisplayName || card.claim.agentId.slice(0, 8), 20),
-            card.claim.stale ? " · stale" : "",
+            agentTag(card.claim.agentDisplayName || card.claim.agentId.slice(0, 8), 22),
+            card.claim.stale ? el("span", { class: "card-stale" }, "lease ended") : null,
           ],
         )
-      : pipelineDots(card.status);
-
-  const meta = el("div", { class: "card-meta" }, [
-    acText ? el("span", { class: "ac-progress" }, acText) : el("span", { class: "dim" }, "no AC"),
-    ownerMarker,
-  ]);
-
-  // Repo cross-link (audit: "no path from a card to its repo"). A card is an
-  // <a> to its ticket, so the repo chips are buttons that stopPropagation and
-  // navigate to #/repo/:id — one hop to the repo, no ticket-open side effect.
-  const cardRepos = card.repos || [];
-  const repoChips = cardRepos.length
-    ? el("div", { class: "card-repos" }, [
-        ...cardRepos.slice(0, 2).map((r) =>
-          el(
-            "button",
-            {
-              class: "card-repo-chip",
-              type: "button",
-              title: `Open ${r.name}`,
-              onclick: (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                navigate(`#/repo/${encodeURIComponent(r.id || r.name)}`);
-              },
-            },
-            [kitShirt(r.name, 16), el("span", {}, r.name)],
-          ),
-        ),
-        cardRepos.length > 2
-          ? el("span", { class: "card-repo-more dim" }, `+${cardRepos.length - 2}`)
-          : null,
-      ])
-    : null;
-
-  const go = () => navigate(`#/ticket/${card.id}`);
-  const movable = cardIsMovable(card);
-
-  // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
-  // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
-  // Both POST the dedicated endpoints and re-render the board on success.
-  const humanLaneBtn = humanLaneAction(card);
-
-  // Touch/keyboard fallback: a small "move" affordance opens a status menu, so
-  // the same moves work one-handed on phones where drag is unreliable.
-  const moveBtn = movable
-    ? el(
-        "button",
-        {
-          class: "card-move-btn",
-          type: "button",
-          "aria-label": "Move ticket to another status",
-          title: "Move to another status",
-          onclick: (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            openMoveMenu(card, e.currentTarget);
-          },
-        },
-        el("span", { class: "card-move-grip", "aria-hidden": "true" }, "⋮⋮"),
-      )
-    : null;
+      : null;
 
   // WG-049 + rework loop: a ticket bounced back from review OR being reworked in
   // place carries a reason, so a human triaging the board sees WHAT is happening
@@ -7430,47 +7843,74 @@ function renderBoardCard(card) {
       cls = "card-reject card-rework-exhausted";
       title = "Rework loop hit its attempt/cost ceiling — needs a human";
     }
-    return el("div", { class: cls, title }, [
+    return el("p", { class: cls, title }, [
       el("span", { class: "card-reject-label" }, label),
       " ",
       fb.reason,
     ]);
   })();
 
+  const movable = cardIsMovable(card);
+  // Touch/keyboard fallback: "Move" opens the lane menu, so the same moves work
+  // one-handed on phones where drag is unreliable.
+  const moveBtn = movable
+    ? el(
+        "button",
+        {
+          class: "card-move-btn",
+          type: "button",
+          "aria-label": `Move ${numText} to another lane`,
+          "aria-haspopup": "menu",
+          "aria-expanded": "false",
+          onclick: (e) => openMoveMenu(card, e.currentTarget),
+        },
+        [el("span", {}, "Move"), icon("chevdown", "", 14)],
+      )
+    : null;
+  // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
+  // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
+  const humanLaneBtn = humanLaneAction(card);
+
   const node = el(
-    "a",
+    "article",
     {
-      class: `board-card bc-${card.status}${movable ? " is-movable" : ""}`,
-      href: `#/ticket/${card.id}`,
+      class: `board-card bc-${card.status}${need ? " needs" : ""}${movable ? " is-movable" : ""}`,
+      dataset: { id: card.id },
       draggable: movable ? "true" : null,
-      onkeydown: (e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          go();
-        }
-      },
     },
     [
-      el("div", { class: "card-top" }, [
-        el("span", { class: "num" }, card.number != null ? `#${card.number}` : card.id.slice(0, 8)),
-        // A yellow card: this one waits on you (sign-off, or an approved merge).
-        card.status === "in_review" ||
-        card.status === "ready_for_merge" ||
-        card.status === "blocked"
-          ? el(
-              "span",
-              { class: "card-needs", title: "Needs you", role: "img", "aria-label": "Needs you" },
-              ycard(16),
-            )
-          : null,
-      ]),
-      el("div", { class: "card-title" }, card.title),
-      chips,
-      repoChips,
-      reject,
+      // A yellow card: this one waits on you (the human queue's own word for why).
+      need
+        ? el(
+            "span",
+            {
+              class: "card-needs",
+              role: "img",
+              "aria-label": `Needs you: ${need}`,
+              title: `Needs you: ${need}`,
+            },
+            ycard(20),
+          )
+        : null,
+      top,
+      el(
+        "h3",
+        { class: "card-title" },
+        el(
+          "a",
+          {
+            class: "card-link",
+            href,
+            draggable: "false",
+            "aria-label": `${numText} ${card.title}`,
+          },
+          card.title,
+        ),
+      ),
       meta,
-      humanLaneBtn,
-      moveBtn,
+      owner,
+      reject,
+      moveBtn || humanLaneBtn ? el("div", { class: "card-foot" }, [moveBtn, humanLaneBtn]) : null,
     ],
   );
 
@@ -7501,144 +7941,231 @@ function renderBoardCard(card) {
   return node;
 }
 
-/** List mode — full-width ticket-rows from the filtered /tickets endpoint. */
-async function renderWorkList() {
-  const qs = new URLSearchParams();
-  if (workState.status) qs.set("status", workState.status);
-  if (workState.repo) qs.set("repo", workState.repo);
-  if (workState.risk) qs.set("risk", workState.risk);
-  const path = "/tickets" + (qs.toString() ? `?${qs}` : "");
-  const tickets = (await api("GET", path)).tickets || [];
-
+/**
+ * List mode — the league table: every ticket from the filtered /tickets read, most
+ * urgent first (then by number, so a refresh never reorders rows whose data did not
+ * change). What waits on you carries its yellow card; who holds it comes from the
+ * claims.
+ */
+function renderWorkList(allTickets, needs, claims = []) {
+  const tickets = allTickets.filter(workMatches);
   if (tickets.length === 0) {
     // A day-one empty factory must not be told its (nonexistent) filter is hiding
     // work. Only show "No tickets match" when a filter is actually active.
-    const filtered = Boolean(workState.status || workState.repo || workState.risk);
-    if (filtered) {
+    if (workFiltered()) {
       return emptyState(
         "No tickets match",
         "Adjust the filters above, or suggest fresh work.",
         "work",
       );
     }
-    const panel = emptyState(
+    return emptyState(
       "No tickets yet",
       "Create your first ticket, or let the product-owner suggest work.",
       "work",
-    );
-    panel.appendChild(
       el(
         "button",
-        { class: "btn primary", type: "button", onclick: () => navigate("#/create") },
+        { class: "btn", type: "button", onclick: () => navigate("#/create") },
         "Create a ticket",
       ),
     );
-    return panel;
   }
-  return el(
-    "div",
-    { class: "ticket-list" },
-    tickets.map((t) => {
-      const go = () => navigate(`#/ticket/${t.id}`);
-      return el(
-        "a",
-        {
-          class: "ticket-row",
-          href: `#/ticket/${t.id}`,
-          onkeydown: (e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              go();
-            }
-          },
-        },
-        [
-          el("span", { class: "tr-num" }, t.number != null ? `#${t.number}` : "—"),
-          el("span", { class: "tr-main" }, [
-            el("div", { class: "tr-title" }, t.title),
-            el("div", { class: "tr-chips" }, [
-              statusBadge(t.status),
-              riskBadge(t.risk_level),
-              el("span", { class: "dim tabnum" }, `P${t.priority}`),
-            ]),
-          ]),
-          pipelineDots(t.status),
-          el("span", { class: "tr-time tabnum" }, fmtTime(t.updated_at)),
-        ],
-      );
-    }),
-  );
+  const holder = new Map(claims.map((c) => [c.ticket_id, c]));
+  const rank = (t) => STATUS_URGENCY[t.status] ?? 9;
+  const sorted = tickets
+    .slice()
+    .sort((a, b) => rank(a) - rank(b) || (a.number ?? 1e9) - (b.number ?? 1e9));
+  const th = (label, cls) => el("th", { scope: "col", class: cls }, label);
+  return el("div", { class: "card prog work-table" }, [
+    el("table", { class: "wl-table", "aria-label": "Tickets, most urgent first" }, [
+      el("thead", {}, [
+        el("tr", {}, [
+          th("No.", "c-num"),
+          th("Ticket", "c-title"),
+          th("Status", "c-status"),
+          th("On it", "c-agent"),
+          th("Risk", "c-risk"),
+          th("P", "c-pri"),
+          th("Stage", "c-stage"),
+          th("Updated", "c-time"),
+        ]),
+      ]),
+      el(
+        "tbody",
+        {},
+        sorted.map((t) => {
+          const need = needsLabel(t, needs);
+          const c = holder.get(t.id);
+          const who = t.human_owner
+            ? el("span", { class: "card-human-owned" }, [
+                el("span", { class: "human-dot" }),
+                `By hand · ${t.human_owner}`,
+              ])
+            : c
+              ? agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26)
+              : el("span", { class: "dim" }, "—");
+          return el(
+            "tr",
+            { class: `wl-row st-${t.status}${need ? " needs" : ""}`, dataset: { id: t.id } },
+            [
+              el("td", { class: "c-num wl-num tabnum" }, t.number != null ? `#${t.number}` : "—"),
+              el("th", { scope: "row", class: "c-title wl-title" }, [
+                need
+                  ? el(
+                      "span",
+                      {
+                        class: "wl-needs",
+                        role: "img",
+                        "aria-label": `Needs you: ${need}`,
+                        title: `Needs you: ${need}`,
+                      },
+                      ycard(16),
+                    )
+                  : null,
+                el(
+                  "a",
+                  { href: t.status === "in_review" ? `#/review/${t.id}` : `#/ticket/${t.id}` },
+                  t.title,
+                ),
+              ]),
+              el("td", { class: "c-status" }, statusBadge(t.status)),
+              el("td", { class: "c-agent" }, who),
+              el("td", { class: "c-risk" }, riskBadge(t.risk_level)),
+              el("td", { class: "c-pri tabnum" }, `P${t.priority}`),
+              el("td", { class: "c-stage" }, pipelineDots(t.status)),
+              el("td", { class: "c-time wl-time tabnum" }, fmtTime(t.updated_at)),
+            ],
+          );
+        }),
+      ),
+    ]),
+  ]);
 }
 
-/** Active claims, folded into Work as a collapsible panel (was the Claims tab). */
-async function renderClaimsPanel() {
-  const claims = (await api("GET", "/claims")).claims || [];
-  const details = el("details", { class: "card claims-panel" });
-  details.dataset.sig = hashText(JSON.stringify(claims));
-  details.appendChild(
-    el("summary", { style: "cursor:pointer;font-weight:650" }, `Active claims (${claims.length})`),
+/**
+ * On the pitch: the active claims (who holds what, lease and heartbeat, branch),
+ * each with Revoke set apart. Was the Claims tab; read with the board.
+ */
+function renderClaimsPanel(claims, readAt = Date.now()) {
+  const now = Date.now();
+  const page = progPage(
+    "claims-panel",
+    "ink",
+    "On the pitch",
+    [
+      `${plural(claims.length, "agent")} holding tickets · as of `,
+      el("time", { datetime: new Date(readAt).toISOString() }, clockTime(readAt)),
+    ],
+    [],
   );
+  page.dataset.sig = hashText(JSON.stringify(claims));
   if (claims.length === 0) {
-    details.appendChild(
-      el("p", { class: "dim", style: "margin-top:12px" }, "No agents are working right now."),
-    );
-    return details;
+    page.appendChild(el("p", { class: "quiet claims-empty" }, "No agents are working right now."));
+    return page;
   }
-  const rows = claims.map((c) =>
-    el("tr", {}, [
+  const rows = claims.map((c) => {
+    const ended = Date.parse(c.expires_at) < now;
+    const num = c.ticket_number != null ? `#${c.ticket_number}` : c.ticket_id.slice(0, 8);
+    return el("tr", { class: ended ? "is-stale" : "" }, [
       el(
-        "td",
-        { class: "num clickable", onclick: () => navigate(`#/ticket/${c.ticket_id}`) },
-        c.ticket_number != null ? `#${c.ticket_number}` : c.ticket_id.slice(0, 8),
+        "th",
+        { scope: "row", class: "cl-agent" },
+        agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26),
       ),
-      el("td", { class: "title-cell" }, c.ticket_title),
-      el("td", {}, statusBadge(c.ticket_status)),
-      el("td", {}, c.agent_display_name || c.agent_id.slice(0, 8)),
-      el("td", { class: "dim tabnum" }, fmtTime(c.expires_at)),
-      el("td", { class: "dim tabnum" }, fmtTime(c.heartbeat_at)),
+      el("td", { class: "cl-ticket" }, [
+        el("a", { href: `#/ticket/${c.ticket_id}` }, [
+          el("span", { class: "cl-num tabnum" }, num),
+          " ",
+          c.ticket_title,
+        ]),
+        ended ? el("span", { class: "cl-stale cl-stale-inline" }, " · lease ended") : null,
+      ]),
+      el("td", { class: "cl-status" }, statusBadge(c.ticket_status)),
+      el("td", { class: "cl-lease tabnum" }, [
+        fmtTime(c.expires_at),
+        ended ? el("span", { class: "cl-stale" }, " · ended") : null,
+      ]),
+      el("td", { class: "cl-beat tabnum dim" }, fmtTime(c.heartbeat_at)),
       el(
         "td",
-        {},
+        { class: "cl-branch" },
         c.branch_name
           ? el("code", { class: "mono" }, c.branch_name)
           : el("span", { class: "dim" }, "—"),
       ),
       el(
         "td",
-        {},
+        { class: "cl-act" },
         el(
           "button",
           {
             class: "btn danger small",
             type: "button",
-            onclick: () =>
+            "aria-label": `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
+            // Revoking stops an agent's work, so it takes two presses: the first
+            // arms the button ("Stop the work?") for five seconds.
+            onclick: (e) => {
+              const btn = e.currentTarget;
+              if (btn.dataset.armed !== "1") {
+                btn.dataset.armed = "1";
+                btn.textContent = "Stop the work?";
+                btn.setAttribute(
+                  "aria-label",
+                  `Press again to stop ${c.agent_display_name || "the agent"}'s work on ${num}`,
+                );
+                announce(`Press Revoke again to stop the work on ${num}`);
+                setTimeout(() => {
+                  if (!btn.isConnected || btn.dataset.armed !== "1") return;
+                  delete btn.dataset.armed;
+                  btn.textContent = "Revoke";
+                  btn.setAttribute(
+                    "aria-label",
+                    `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
+                  );
+                }, 5000);
+                return;
+              }
+              delete btn.dataset.armed;
               guard(async () => {
                 await api("POST", `/claims/${c.claim_id}/revoke`);
                 toast("Claim revoked", { ok: true });
                 router();
-              }),
+              });
+            },
           },
           "Revoke",
         ),
       ),
-    ]),
-  );
-  const table = el("table", {}, [
+    ]);
+  });
+  const table = el("table", { class: "claims-table" }, [
     el(
       "thead",
       {},
       el(
         "tr",
         {},
-        ["Ticket", "Title", "Status", "Agent", "Lease expiry", "Heartbeat", "Branch", ""].map((h) =>
-          el("th", {}, h),
+        [
+          ["Agent", "cl-agent"],
+          ["Ticket", "cl-ticket"],
+          ["Status", "cl-status"],
+          ["Lease ends", "cl-lease"],
+          ["Heartbeat", "cl-beat"],
+          ["Branch", "cl-branch"],
+          ["", "cl-act"],
+        ].map(([h, cls]) =>
+          el(
+            "th",
+            { scope: "col", class: cls },
+            h ? h : el("span", { class: "sr-only" }, "Action"),
+          ),
         ),
       ),
     ),
     el("tbody", {}, rows),
   ]);
-  details.appendChild(el("div", { class: "table-wrap", style: "margin-top:12px" }, table));
-  return details;
+  page.appendChild(table);
+  return page;
 }
 
 // ===========================================================================

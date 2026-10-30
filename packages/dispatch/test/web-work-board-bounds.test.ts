@@ -112,9 +112,10 @@ describe("web: Work board counts and bounds", () => {
     const bar = document.querySelector(".work-flow");
     expect(bar).not.toBeNull();
     const label = bar!.getAttribute("aria-label") || "";
-    // Every lane is in the bar — including in testing and approved/merging.
+    // Every lane is in the bar — including in testing and ready for merge (the
+    // board's lane name for ready_for_merge, as comp E's lane head reads).
     expect(label).toContain("In testing 1");
-    expect(label).toContain("Approved · merging 1");
+    expect(label).toContain("Ready for merge 1");
     // Shipped is the Done lane (2), never the failed ticket; Failed is its own count.
     expect(label).toContain("Shipped 2");
     expect(label).toContain("Failed 1");
@@ -125,8 +126,12 @@ describe("web: Work board counts and bounds", () => {
     expect(segs).toContain("Failed: 1");
     expect(segs).not.toContain("Shipped: 1");
 
-    // The header line agrees: 7 tickets in lanes (5 live + 2 done), 1 failed.
-    const sub = document.querySelector(".view-head .view-sub")?.textContent || "";
+    // The header line agrees: 7 tickets in lanes (5 live + 2 done), 1 failed. (A
+    // count is tied to its lane name with a no-break space, so it never wraps alone.)
+    const sub = (document.querySelector(".view-head .view-sub")?.textContent || "").replace(
+      /\u00a0/g,
+      " ",
+    );
     expect(sub).toMatch(/^7 tickets in lanes:/);
     expect(sub).toContain("2 done");
     expect(sub).toContain("1 failed");
@@ -151,11 +156,52 @@ describe("web: Work board counts and bounds", () => {
     expect(more?.textContent).toContain("200");
   });
 
-  it("draws lifecycle marks as .pdots (no .pipeline collision) and no hero band", async () => {
+  it("never draws the Overview's .pipeline class on Work, and no hero band", async () => {
     board = { columns: columns({ ready: [card(1, "ready")] }), closed: [], wontDo: [] };
     await loadApp();
     expect(document.querySelector("#app .view-hero")).toBeNull();
     expect(document.querySelector("#app .pipeline")).toBeNull();
-    expect(document.querySelector("#app .board-card .pdots")).not.toBeNull();
+    // Board cards no longer carry lifecycle marks: the lane a card sits in is its
+    // stage (the comp's card drops them). The list keeps them as .pdots.
+    expect(document.querySelector("#app .board-card")).not.toBeNull();
+    expect(document.querySelector("#app .board-card .pdots")).toBeNull();
+  });
+
+  it("stacks the phone lanes in urgency order in the DOM, so tab order matches the screen", async () => {
+    // WCAG 2.4.3: the phone board used CSS `order`, so Tab and a screen reader met
+    // Draft first while Blocked sat on top. The lanes are now rendered in that order.
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      matches: q.includes("max-width: 760px"),
+      media: q,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    board = {
+      columns: columns({
+        draft: [card(1, "draft")],
+        ready: [card(2, "ready")],
+        in_progress: [card(3, "in_progress")],
+        blocked: [card(4, "blocked")],
+        in_review: [card(5, "in_review")],
+        done: [card(6, "done")],
+      }),
+      closed: [],
+      wontDo: [],
+    };
+    await loadApp();
+    const order = [...document.querySelectorAll<HTMLElement>("#app .board-col")].map(
+      (n) => n.dataset.column,
+    );
+    // Lanes with work first, most urgent first; the empty lanes sink last.
+    expect(order).toEqual([
+      "blocked",
+      "in_review",
+      "in_progress",
+      "ready",
+      "draft",
+      "done",
+      "ready_for_merge",
+      "in_testing",
+    ]);
   });
 });

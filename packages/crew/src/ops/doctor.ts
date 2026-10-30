@@ -165,21 +165,35 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
   return { ok: !failed, checks };
 }
 
+/** The branch prefix the runner gives every delivery branch (gaffer/ticket-<N>-<slug>). */
+export const RUNNER_BRANCH_PREFIX = "gaffer/";
+
 function safetyPolicyCheck(ctx: FactoryContext): DoctorCheck {
+  // safety_policy.yaml is ADVISORY: crew's classifier + the mock `crew run` loop
+  // read it; the live PreToolUse hook (runner/safety-hook.mjs) does not. Say so,
+  // so a "sane" here is never read as "the factory enforces this".
+  const label = "Safety policy (advisory) sane";
+  const scope = "advisory only — the live hook (runner/safety-hook.mjs) does not read it";
   const { git, secrets } = ctx.policy;
   const concerns: string[] = [];
   if (!git.deny_force_push) concerns.push("force-push not denied");
   if (!git.deny_push_to_protected_branches) concerns.push("push to protected branches not denied");
   if (!secrets.redact_in_context) concerns.push("secret redaction in context is OFF");
   if (git.protected_branches.length === 0) concerns.push("no protected branches");
+  if (!RUNNER_BRANCH_PREFIX.startsWith(git.require_branch_prefix)) {
+    concerns.push(
+      `require_branch_prefix '${git.require_branch_prefix}' does not match the runner's ` +
+        `'${RUNNER_BRANCH_PREFIX}ticket-<N>-<slug>' branches, so every real delivery branch reads as denied`,
+    );
+  }
   if (concerns.length === 0) {
-    return ok("Safety policy sane", "force-push denied, protected branches set, secrets redacted");
+    return ok(label, `force-push denied, protected branches set, secrets redacted (${scope})`);
   }
   return {
-    label: "Safety policy sane",
+    label,
     level: "warn",
-    detail: concerns.join("; "),
-    fix: "Review safety_policy.yaml — these relaxed settings weaken the factory's guardrails.",
+    detail: `${concerns.join("; ")} (${scope})`,
+    fix: `Review safety_policy.yaml (set git.require_branch_prefix: ${RUNNER_BRANCH_PREFIX}). It shapes crew's advisory answers; the live factory's boundary is runner/safety-hook.mjs.`,
   };
 }
 

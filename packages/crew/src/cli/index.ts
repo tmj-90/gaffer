@@ -34,6 +34,7 @@ import { loadFactory, openDispatch } from "../runtime/wiring.js";
 import { checkBranchPolicy } from "../safety/branchPolicy.js";
 import { classifyCommand } from "../safety/commandGuard.js";
 import { checkFileWrite } from "../safety/fsGuard.js";
+import { checkWithLiveHook, compareVerdicts } from "../safety/liveHook.js";
 import { scanRepo } from "../scan/repoScan.js";
 import { RepoContextStore } from "../onboarding/contextStore.js";
 import {
@@ -499,27 +500,64 @@ program
     else process.stdout.write(`${renderStats(stats)}\n`);
   });
 
-const safety = program.command("safety").description("Safety policy tools");
+/** Shown on every `crew safety check`: which verdict is the boundary. */
+const ADVISORY_NOTE =
+  "safety_policy.yaml is ADVISORY (crew's classifier and the mock `crew run` loop). " +
+  "The live factory's boundary is runner/safety-hook.mjs, which does not read it: " +
+  "see the *Enforced fields for what an agent would actually be allowed to do.";
+
+const safety = program
+  .command("safety")
+  .description(
+    "Safety policy tools (safety_policy.yaml is ADVISORY; runner/safety-hook.mjs enforces)",
+  );
 safety
   .command("check")
-  .description("Explain a command or path safety decision")
+  .description(
+    "Explain a command / path / branch decision: the ADVISORY safety_policy.yaml verdict, plus " +
+      "the ENFORCED verdict of the live PreToolUse hook (runner/safety-hook.mjs) for commands " +
+      "and paths — the hook does not read safety_policy.yaml",
+  )
   .option("--command <cmd>", "classify a shell command")
   .option("--path <path>", "classify a filesystem write")
   .option("--branch <branch>", "classify a branch name")
   .option("--repo <ref>", "repo context for a path/branch check")
   .action((opts, cmd) => {
     const { policy, repoRegistry } = loadEverything(cmd.optsWithGlobals());
-    const out: Record<string, unknown> = { ok: true };
+    const out: Record<string, unknown> = {
+      ok: true,
+      note: ADVISORY_NOTE,
+    };
     if (opts.command) {
-      out.command = classifyCommand(opts.command, { commands: policy.commands, git: policy.git });
+      // `command` keeps the advisory decision (unchanged shape); `commandEnforced`
+      // is what the live hook would actually do with it.
+      const advisory = classifyCommand(opts.command, {
+        commands: policy.commands,
+        git: policy.git,
+      });
+      const enforced = checkWithLiveHook({ tool: "Bash", command: opts.command });
+      out.command = advisory;
+      out.commandEnforced = enforced;
+      const mismatch = compareVerdicts(advisory, enforced);
+      if (mismatch) out.commandMismatch = mismatch;
     }
     if (opts.branch) {
+      // No live hook check for branch names: the runner names every branch
+      // gaffer/ticket-<N>-<slug> itself.
       out.branch = checkBranchPolicy(opts.branch, policy.git);
     }
     if (opts.path) {
       const repo = opts.repo ? repoRegistry.get(opts.repo) : repoRegistry.list()[0];
       const repoRoot = repo ? repoRegistry.absolutePath(repo) : process.cwd();
-      out.path = checkFileWrite(opts.path, { repoRoot, policy: policy.filesystem });
+      const advisory = checkFileWrite(opts.path, { repoRoot, policy: policy.filesystem });
+      out.path = advisory;
+      const enforced = checkWithLiveHook(
+        { tool: "Write", filePath: opts.path, writeRoots: [repoRoot] },
+        { cwd: repoRoot },
+      );
+      out.pathEnforced = enforced;
+      const mismatch = compareVerdicts(advisory, enforced);
+      if (mismatch) out.pathMismatch = mismatch;
     }
     if (!opts.command && !opts.path && !opts.branch) {
       throw new CrewError("BAD_USAGE", "Provide --command, --path or --branch.");

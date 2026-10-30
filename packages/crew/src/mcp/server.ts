@@ -96,39 +96,41 @@ const TOOL_DESCRIPTIONS: Record<ToolName, string> = {
     "Return the loaded safety policy in full: git rules (branch prefix, " +
     "protected branches, force-push / delete / rebase bans), filesystem rules " +
     "(allowed roots, denied and approval-gated write paths), command rules " +
-    "(denied, approval-gated, allowed), and secret handling. **Read this before " +
-    "planning any mutation so you know the boundary you're operating inside.** " +
-    "The policy is enforced deterministically by a PreToolUse hook regardless of " +
-    "what you do — these are the rules you'll be held to, not suggestions. Use " +
-    "it to choose a compliant approach up front (e.g. a correctly-prefixed " +
-    "branch) instead of getting denied mid-task. For a yes/no on one specific " +
-    "command or path, call `check_command_allowed` / `check_path_write_allowed` " +
-    "instead — they're cheaper than reasoning over the whole policy. Read-only.",
+    "(denied, approval-gated, allowed), and secret handling. **This policy is " +
+    "ADVISORY.** It drives crew's own classifier and the mock `crew run` loop; " +
+    "the live factory's boundary is the PreToolUse hook runner/safety-hook.mjs, " +
+    "which does NOT read this file. The two mostly agree, but not always: the " +
+    "hook blocks some things the policy allows (e.g. raw writes to the factory " +
+    "databases), and the policy's `needs_approval` / custom `deny` entries are " +
+    "not enforced at runtime. Use it to plan a conservative approach; for a " +
+    "yes/no on one command or path, call `check_command_allowed` / " +
+    "`check_path_write_allowed`, which also report the hook's actual verdict. " +
+    "Read-only.",
 
   check_command_allowed:
     "**Call this BEFORE running any shell command whose safety you're unsure of " +
     "— the check is far cheaper than a denied or destructive action.** It " +
-    "classifies the command against the git + command policy and returns a " +
-    "three-valued decision: `allowed` (proceed), `needs_approval` (a human must " +
-    "sign off — stop and request it; do not try to route around it), or `denied` " +
-    "(never run this; find another way). The `reason` explains which rule " +
-    "matched. Destructive git (force-push, branch/tag deletion, rebase of shared " +
-    "branches) and risky installs are the usual `needs_approval`/`denied` hits. " +
-    "When in doubt, check — a false 'allowed' assumption is the expensive " +
-    "mistake, an extra check costs one cheap call. Read-only; classifying a " +
-    "command never runs it.",
+    "returns two verdicts. `decision` is the ADVISORY safety_policy.yaml " +
+    "classification: `allowed`, `needs_approval` (a human must sign off — stop " +
+    "and request it; do not try to route around it), or `denied` (never run " +
+    "this; find another way), with a `reason`. `enforced` is what the live " +
+    "PreToolUse hook (runner/safety-hook.mjs) would do: `blocked: true` means " +
+    "the call will be refused. `mismatch` explains any disagreement. Treat the " +
+    "STRICTER of the two as binding. Destructive git (force-push, branch/tag " +
+    "deletion, rebase of shared branches), raw database writes and risky " +
+    "installs are the usual hits. Read-only; checking a command never runs it.",
 
   check_path_write_allowed:
     "**Call this before writing to any path you're not certain is in-bounds.** " +
-    "It classifies a filesystem write against the policy and returns the same " +
-    "three-valued decision as `check_command_allowed`: `allowed`, " +
-    "`needs_approval`, or `denied`. Pass the target `path` and optionally a " +
-    "`repo` to anchor relative paths to that repo's root (otherwise the first " +
-    "configured repo, else the process cwd, is used). Writes outside the " +
-    "allowed roots, and to secret files like `.env`, are denied or gated — this " +
-    "is the boundary that keeps agents from exfiltrating or corrupting files " +
-    "outside the sanctioned work area. Prefer one cheap check over a denied " +
-    "write that wastes a whole turn. Read-only; checking a path never writes it.",
+    "Like `check_command_allowed`, it returns the ADVISORY safety_policy.yaml " +
+    "`decision` (`allowed`, `needs_approval`, or `denied`) and the live hook's " +
+    "`enforced` verdict (with the repo root as the only write root), plus a " +
+    "`mismatch` note when they disagree; treat the stricter as binding. Pass " +
+    "the target `path` and optionally a `repo` to anchor relative paths to that " +
+    "repo's root (otherwise the first repo, else the process cwd, is used). " +
+    "Writes outside the write roots, and to secret files like `.env`, are " +
+    "refused. Prefer one cheap check over a denied write that wastes a whole " +
+    "turn. Read-only; checking a path never writes it.",
 };
 
 export interface ServerOptions {

@@ -12,7 +12,8 @@ export const gitPolicySchema = z
     deny_delete_branch: z.boolean().default(true),
     deny_tag_mutation: z.boolean().default(true),
     deny_rebase_shared_branch: z.boolean().default(true),
-    require_branch_prefix: z.string().default("dispatch/"),
+    // The runner names every delivery branch gaffer/ticket-<N>-<slug>.
+    require_branch_prefix: z.string().default("gaffer/"),
     protected_branches: z
       .array(z.string())
       .default(["main", "master", "develop", "production", "release/*", "hotfix/*"]),

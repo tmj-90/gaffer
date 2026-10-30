@@ -48,7 +48,7 @@ crew run -a <agentId> --dry-run # one implementation-loop tick
 crew idle                       # run every enabled idle loop (drafts only)
 crew maintain                   # idle MAINTENANCE LANE: ONE scheduler-chosen loop (priority+rotation)
 crew skills --capability tests  # list skills by stack/capability
-crew safety check --command "git push --force"   # explain a safety decision
+crew safety check --command "git push --force"   # advisory policy verdict + the live hook's enforced one
 ```
 
 `doctor` and `stats` render human-readable output by default; pass `--json` for
@@ -115,16 +115,16 @@ crew-mcp -c /path/to/crew.yaml   # or set CREW_CONFIG
 
 The tools:
 
-| Tool                       | What it does                                                                |
-| -------------------------- | --------------------------------------------------------------------------- |
-| `get_factory_status`       | Factory mode, repo/agent/skill counts, subsystem reachability.              |
-| `list_agents`              | Configured agents with capabilities, risk ceiling and status.               |
-| `list_repos`               | Configured repos; optionally `scan` for live branch + stack.                |
-| `get_context_packet`       | The full context packet for a ticket (AC, paths, policy, lore).             |
-| `run_idle_loop`            | The one mutating tool — one `crew idle` tick (ingest + every enabled loop). |
-| `explain_safety_policy`    | The effective git/fs/command/secret guardrails.                             |
-| `check_command_allowed`    | Classify a command: `allowed` / `needs_approval` / `denied`.                |
-| `check_path_write_allowed` | Whether a path is writable under the repo's fs guard.                       |
+| Tool                       | What it does                                                                    |
+| -------------------------- | ------------------------------------------------------------------------------- |
+| `get_factory_status`       | Factory mode, repo/agent/skill counts, subsystem reachability.                  |
+| `list_agents`              | Configured agents with capabilities, risk ceiling and status.                   |
+| `list_repos`               | Configured repos; optionally `scan` for live branch + stack.                    |
+| `get_context_packet`       | The full context packet for a ticket (AC, paths, policy, lore).                 |
+| `run_idle_loop`            | The one mutating tool — one `crew idle` tick (ingest + every enabled loop).     |
+| `explain_safety_policy`    | The ADVISORY safety_policy.yaml rules (the live hook does not read them).       |
+| `check_command_allowed`    | Advisory `allowed` / `needs_approval` / `denied`, plus the live hook's verdict. |
+| `check_path_write_allowed` | Whether a path is writable: advisory fs guard plus the live hook's verdict.     |
 
 If the server can't start, it writes a code-specific, multi-line diagnostic to
 stderr (which MCP clients surface on a launch failure) and exits cleanly — e.g. a

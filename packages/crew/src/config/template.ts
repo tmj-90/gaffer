@@ -268,9 +268,14 @@ logging:
 }
 
 export function defaultSafetyPolicyYaml(): string {
-  return `# Crew safety policy.
+  return `# Crew safety policy — ADVISORY.
+# This file drives crew's own safety classifier (\`crew safety check\`, the crew-mcp
+# check tools) and the mock \`crew run\` loop. The live factory's boundary is the
+# PreToolUse hook runner/safety-hook.mjs, which does NOT read this file: editing
+# it does not change what factory agents may do (e.g. needs_approval entries are
+# not enforced at runtime). \`crew safety check\` reports both verdicts.
 # Safe-by-default: destructive Git ops denied, secrets denied, dependency
-# changes approval-gated. Tighten or loosen per your factory's risk appetite.
+# changes approval-gated.
 
 git:
   deny_force_push: true
@@ -278,7 +283,7 @@ git:
   deny_delete_branch: true
   deny_tag_mutation: true
   deny_rebase_shared_branch: true
-  require_branch_prefix: dispatch/
+  require_branch_prefix: gaffer/ # the runner's delivery branches: gaffer/ticket-<N>-<slug>
   protected_branches:
     - main
     - master

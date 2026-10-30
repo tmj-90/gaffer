@@ -40,7 +40,7 @@ describe("git command classifier", () => {
   });
 
   it("allows push to a prefixed feature branch", () => {
-    expect(classifyGitCommand("git push origin dispatch/ticket-1", policy.git).outcome).toBe(
+    expect(classifyGitCommand("git push origin gaffer/ticket-1", policy.git).outcome).toBe(
       "allowed",
     );
   });
@@ -136,13 +136,11 @@ describe("branch policy", () => {
   });
 
   it("allows a prefixed branch", () => {
-    expect(checkBranchPolicy("dispatch/ticket-1-x", policy.git).outcome).toBe("allowed");
+    expect(checkBranchPolicy("gaffer/ticket-1-x", policy.git).outcome).toBe("allowed");
   });
 
   it("builds a prefixed branch name from a slug", () => {
-    expect(buildBranchName("Ticket 12: Add Reset!", policy.git)).toBe(
-      "dispatch/ticket-12-add-reset",
-    );
+    expect(buildBranchName("Ticket 12: Add Reset!", policy.git)).toBe("gaffer/ticket-12-add-reset");
   });
 });
 

@@ -13,6 +13,7 @@ import { systemCommandRunner } from "../adapters/commandRunner.js";
 import type { FactoryContext } from "../runtime/wiring.js";
 import { classifyCommand } from "../safety/commandGuard.js";
 import { checkFileWrite } from "../safety/fsGuard.js";
+import { checkWithLiveHook, compareVerdicts } from "../safety/liveHook.js";
 import { scanRepo } from "../scan/repoScan.js";
 import { loadSkillRegistry } from "../skills/loader.js";
 import { systemGitAdapter } from "../adapters/gitAdapter.js";
@@ -400,6 +401,13 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
       guard(async () => {
         const { git, filesystem, commands, secrets } = ctx.policy;
         return {
+          advisory: true,
+          note:
+            "safety_policy.yaml is ADVISORY: it drives crew's classifier and the mock `crew run` " +
+            "loop. The live factory boundary is runner/safety-hook.mjs (+ lib/dangerous-commands.mjs), " +
+            "which does NOT read this file — its needs_approval and custom deny entries are not " +
+            "enforced at runtime. check_command_allowed / check_path_write_allowed report the " +
+            "hook's verdict as `enforced`.",
           git: {
             requireBranchPrefix: git.require_branch_prefix,
             protectedBranches: git.protected_branches,
@@ -431,11 +439,15 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
     check_command_allowed: (rawArgs) =>
       guard(async () => {
         const args = parseArgs("check_command_allowed", rawArgs);
+        // `decision` is the ADVISORY safety_policy.yaml verdict; `enforced` is what
+        // the live PreToolUse hook (which never reads that file) would do.
         const decision = classifyCommand(args.command, {
           commands: ctx.policy.commands,
           git: ctx.policy.git,
         });
-        return { command: args.command, decision };
+        const enforced = checkWithLiveHook({ tool: "Bash", command: args.command });
+        const mismatch = compareVerdicts(decision, enforced);
+        return { command: args.command, decision, enforced, ...(mismatch ? { mismatch } : {}) };
       }),
 
     check_path_write_allowed: (rawArgs) =>
@@ -447,7 +459,19 @@ export function makeHandlers(deps: HandlerDeps): Record<ToolName, ToolHandler> {
         const repo = args.repo ? registry.get(args.repo) : registry.list()[0];
         const repoRoot = repo ? registry.absolutePath(repo) : process.cwd();
         const decision = checkFileWrite(args.path, { repoRoot, policy: ctx.policy.filesystem });
-        return { path: args.path, repo: repo?.id ?? null, repoRoot, decision };
+        const enforced = checkWithLiveHook(
+          { tool: "Write", filePath: args.path, writeRoots: [repoRoot] },
+          { cwd: repoRoot },
+        );
+        const mismatch = compareVerdicts(decision, enforced);
+        return {
+          path: args.path,
+          repo: repo?.id ?? null,
+          repoRoot,
+          decision,
+          enforced,
+          ...(mismatch ? { mismatch } : {}),
+        };
       }),
   };
 

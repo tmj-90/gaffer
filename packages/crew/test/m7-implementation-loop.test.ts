@@ -62,7 +62,7 @@ describe("implementation loop", () => {
     if (outcome.status === "no_ticket" || outcome.status === "claim_vetoed") {
       throw new Error("unreachable");
     }
-    expect(outcome.branch.startsWith("dispatch/")).toBe(true);
+    expect(outcome.branch.startsWith("gaffer/")).toBe(true);
     expect(outcome.evidenceIds).toHaveLength(2);
 
     // Evidence recorded in Dispatch, ticket moved to review.

@@ -8,19 +8,33 @@ is gated by deterministic, agent-independent controls.
 ## The boundary: a deterministic PreToolUse hook
 
 The enforcement point is a **deterministic safety decision** computed _before_
-any mutating action runs — the PreToolUse boundary. Given a command, a file
-write, or a branch operation, the policy returns one of three values:
+any mutating action runs — the PreToolUse boundary. In the live factory that is
+`runner/safety-hook.mjs` (with its deny list in `runner/lib/dangerous-commands.mjs`):
+Claude Code runs it before every tool call of every factory agent, and it either
+allows the call (exit 0) or blocks it (exit 2). It scopes writes to the ticket's
+worktrees, blocks secret reads, denies the control-plane CLI and raw writes to
+the factory databases, and fails closed. It does **not** consult the agent, the
+model, or any prompt, and the same input always yields the same decision.
+
+**The hook does not read `safety_policy.yaml`.** That file drives crew's own
+TypeScript classifier (`src/safety/`: `commandGuard`, `fsGuard`, `branchPolicy`,
+`gitGuard`), which returns one of three values:
 
 - `allowed` — proceed.
-- `needs_approval` — a human must sign off; the action does not run until then.
-- `denied` — the action never runs.
+- `needs_approval` — a human should sign off.
+- `denied` — the action should never run.
 
-The decision is a pure function of the command/path/branch and the loaded
-`safety_policy.yaml`. It does **not** consult the agent, the model, or any
-prompt. The same input always yields the same decision. See
-`src/safety/` (`commandGuard`, `fsGuard`, `branchPolicy`, `gitGuard`) and
-`explain_safety_policy` / `check_command_allowed` / `check_path_write_allowed`
-in the MCP surface.
+That classifier is **advisory**. It is enforced only inside the mock `crew run`
+loop; in the live factory it answers questions (`crew safety check`,
+`explain_safety_policy`, `check_command_allowed`, `check_path_write_allowed`).
+The two mostly agree, but not always. The hook blocks things the policy allows
+(e.g. `sqlite3 dispatch.sqlite 'delete …'`), and the policy's `needs_approval`
+tier and any custom `deny` entry you add to `safety_policy.yaml` are **not**
+enforced at runtime. So `crew safety check --command` / `--path` and the two MCP
+check tools also run the live hook on the same input and report its verdict as
+`enforced` (`commandEnforced` / `pathEnforced` in the CLI), with a `mismatch`
+note whenever the two disagree. Editing `safety_policy.yaml` does not tighten the
+live factory; changing what agents may do means changing the hook.
 
 ## Agents cannot self-approve
 

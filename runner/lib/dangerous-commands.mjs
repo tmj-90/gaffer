@@ -52,15 +52,18 @@
 // and may take a valued option (`timeout -s KILL 5`, `nice -n 5`). Text that only
 // MENTIONS a command (a commit message, a grep pattern, an echo argument) is not in
 // command position and is not blocked. Tokens never span ; | & ( ) < > so matching
-// stays linear; an option's value never starts with `-` or a digit and holds no `=`,
-// so each wrapper word parses one way only. `cmdAt(name)` builds a rule regex for a
-// command name (or alternation) at that position.
+// stays linear; an option's value never starts with `-` or a digit, holds no `=` and
+// is never itself a wrapper name, so each wrapper word parses one way only. Without
+// that last exclusion `nice -n nice -n …` read every `-n nice` both as option+value
+// and as flag+next wrapper: 2^N backtracking on a failed match, and ~25 pairs ran
+// the hook past its timeout (safety-hook-redos.test.mjs pins this). `cmdAt(name)`
+// builds a rule regex for a command name (or alternation) at that position.
 const TOK = String.raw`[^\s;&|()<>\`"'\\]+`;
 const PATH_QUAL = String.raw`(?:[^\s;&|()<>\`"'\\]*\/)?`;
 const WRAPPERS =
   "env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval";
 const cmdPos = (wrappers = WRAPPERS) =>
-  String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|${PATH_QUAL}(?:${wrappers}))[ \t]+(?:-[A-Za-z][ \t]+(?![-0-9])[^\s;&|()<>\`"'\\=]+[ \t]+|-${TOK}[ \t]+|[0-9]+(?:\.[0-9]+)?[smhd]?[ \t]+)*)*${PATH_QUAL}`;
+  String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|${PATH_QUAL}(?:${wrappers}))[ \t]+(?:-[A-Za-z][ \t]+(?![-0-9])(?!${PATH_QUAL}(?:${wrappers})[ \t])[^\s;&|()<>\`"'\\=]+[ \t]+|-${TOK}[ \t]+|[0-9]+(?:\.[0-9]+)?[smhd]?[ \t]+)*)*${PATH_QUAL}`;
 const CMD_POS = cmdPos();
 // End of a command word: whitespace, a separator, a closing quote/paren, or EOL.
 const WORD_END = String.raw`(?=$|[\s;&|)\`"'<>])`;
@@ -74,8 +77,24 @@ const mgrArgs = (valueFlags) =>
   String.raw`(?:@${TOK})?(?:[ \t]+(?:(?:${valueFlags})[ \t]+${TOK}|(?!(?:${valueFlags})(?=[ \t]|$))-${TOK}|workspace[ \t]+${TOK}))*`;
 const NPM_ARGS = mgrArgs("--prefix|-C|-w|--workspace");
 const PNPM_ARGS = mgrArgs("--prefix|-C|--dir|--filter|-F|--cwd");
+// yarn classic's global options that take a value (`<x>`), and the optional-value
+// ones (`[x]`), which yarn binds to the next word when it is not a flag. Read as a
+// bare flag, the value became the "command": `yarn --cwd sub` or `yarn
+// --network-timeout 100000` looked like a script run, yet yarn runs its default
+// command (install, lifecycle scripts included) there, and `yarn --modules-folder nm
+// add x` hid the `add`. An optional-value flag is read both ways (a bare `yarn
+// --production` is an install too); its value never starts with `-` and is never
+// `workspace`, so each word still parses one way at a time and matching stays linear.
+const YARN_VALUE_FLAGS =
+  "--cwd|--modules-folder|--global-folder|--link-folder|--cache-folder|--preferred-cache-folder|--network-timeout|--network-concurrency|--mutex|--registry|--proxy|--https-proxy|--use-yarnrc|--otp";
+const YARN_OPTIONAL_FLAGS = "--prod|--production|--emoji|--scripts-prepend-node-path";
+const YARN_OPT = String.raw`(?:${YARN_VALUE_FLAGS})[ \t]+${TOK}|(?:${YARN_OPTIONAL_FLAGS})[ \t]+(?!-|workspace${WORD_END})${TOK}|(?!(?:${YARN_VALUE_FLAGS})(?=[ \t]|$))-${TOK}`;
+const YARN_ARGS = String.raw`(?:@${TOK})?(?:[ \t]+(?:${YARN_OPT}|workspace[ \t]+${TOK}))*`;
 // `npm|pnpm|yarn` plus its own arguments, up to (not including) the verb.
-const MGR_HEAD = String.raw`(?:npm${WORD_END}${NPM_ARGS}|(?:pnpm|yarn)${WORD_END}${PNPM_ARGS})`;
+const MGR_HEAD = String.raw`(?:npm${WORD_END}${NPM_ARGS}|pnpm${WORD_END}${PNPM_ARGS}|yarn${WORD_END}${YARN_ARGS})`;
+// The package-manager guards the agent env sets (see the re-enable rule below).
+const GUARD_ENV =
+  "npm_config_ignore_scripts|yarn_ignore_scripts|yarn_enable_scripts|npm_config_yes";
 // A redirection after a bare command (`yarn 2>&1`, `yarn > log`, `yarn </dev/null`).
 const REDIR = String.raw`[0-9]*(?:&>>?|>>?|<)(?:&[0-9-]|[ \t]*${TOK})`;
 
@@ -173,13 +192,15 @@ export const DANGEROUS_COMMANDS = [
     // The install-shaped verbs the two rules above miss: lifecycle-script runners
     // (`rebuild`, `install-test`, `it` — `i\b` never matched `it`), linkers that
     // rewrite node_modules (`link`), bare `yarn` (yarn's default command IS install),
-    // and bun's installer. Tagged install so a bootstrap tick can still run them
-    // with --ignore-scripts inside the fresh repo. `yarn build` / `yarn test` /
+    // and bun's installer. Bare yarn consumes its value-taking options WITH their
+    // value (`yarn --cwd sub`, `yarn --network-timeout 100000` are installs).
+    // Tagged install so a bootstrap tick can still run them with --ignore-scripts
+    // inside the fresh repo. `yarn build` / `yarn test` / `yarn --cwd sub build` /
     // `bun run x` / `bun test` (script runs) stay allowed.
     re: new RegExp(
       [
         String.raw`${CMD_POS}${MGR_HEAD}[ \t]+(?:rebuild|rb|it|install-test|install-ci-test|link|ln)${WORD_END}`,
-        String.raw`${CMD_POS}yarn${WORD_END}(?![ \t]+(?:--version|-v|--help|-h)\b)(?:[ \t]+(?:-${TOK}|${REDIR}))*[ \t]*(?=$|[\n;&|)\`"'])`,
+        String.raw`${CMD_POS}yarn${WORD_END}(?![ \t]+(?:--version|-v|--help|-h)\b)(?:[ \t]+(?:${YARN_OPT}|${REDIR}))*[ \t]*(?=$|[\n;&|)\`"'])`,
         String.raw`${CMD_POS}bun${WORD_END}${PNPM_ARGS}[ \t]+(?:install|i|add|a|update|remove|rm|link|pm)${WORD_END}`,
       ].join("|"),
     ),
@@ -201,7 +222,7 @@ export const DANGEROUS_COMMANDS = [
         String.raw`${CMD_POS}npx${WORD_END}(?=[^\n;&|]*[ \t](?:-y|--yes)\b)`,
         String.raw`${CMD_POS}npm${WORD_END}(?=[^\n;&|]*[ \t](?:exec|x)\b)(?=[^\n;&|]*[ \t](?:-y|--yes)\b)`,
         String.raw`${CMD_POS}npm${WORD_END}${NPM_ARGS}[ \t]+(?:init|innit|create)(?:[ \t]+-${TOK})*[ \t]+[^-\s;&|()<>]`,
-        String.raw`${CMD_POS}(?:pnpm|yarn|bun)${WORD_END}${PNPM_ARGS}[ \t]+(?:dlx|create|x)${WORD_END}`,
+        String.raw`${CMD_POS}(?:(?:pnpm|bun)${WORD_END}${PNPM_ARGS}|yarn${WORD_END}${YARN_ARGS})[ \t]+(?:dlx|create|x)${WORD_END}`,
         String.raw`${CMD_POS}pipx${WORD_END}[ \t]+(?:run|install|inject|upgrade)\b`,
         String.raw`${CMD_POS}uv${WORD_END}[ \t]+tool[ \t]+(?:run|install)\b`,
         String.raw`${CMD_POS}corepack${WORD_END}[ \t]+(?:enable|prepare|install|use|up|pack)\b`,
@@ -230,12 +251,26 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
-    // Switching dependency lifecycle scripts back ON: the bootstrap tick exports
-    // npm_config_ignore_scripts=true as the env-level kill switch, so an assignment,
-    // `env -u`/`unset` of it, or `--no-ignore-scripts` on any later call would turn a
-    // separate `npm rebuild` / `npm run` into the postinstall ACE the switch exists for.
-    re: /\b(?:npm_config_ignore_scripts|yarn_ignore_scripts|yarn_enable_scripts)[ \t]*=|\b(?:unset|-u)[ \t]+(?:npm_config_ignore_scripts|yarn_ignore_scripts|yarn_enable_scripts)\b|\s--(?:no-ignore-scripts|ignore-scripts[= ](?:false|0|no))\b/i,
-    why: "re-enabling dependency lifecycle scripts (ignore-scripts override)",
+    // Switching off the env-level guards the agent env sets: the bootstrap tick
+    // exports npm_config_ignore_scripts=true as the lifecycle-script kill switch, and
+    // every agent runs with npm_config_yes=false so `npx x` / `npm exec x` of a
+    // package that is not installed is refused instead of fetched (npm assumes --yes
+    // when stdin is not a TTY). An assignment (`npm_config_yes=true npx evil`,
+    // `export …=`, `env …=`; the names are case-insensitive to npm), `env -u` /
+    // `unset` / `export -n` / `declare +x` of either, `env -i` (clears both) before a
+    // package manager, or `--no-ignore-scripts` would turn a later `npm rebuild` into
+    // the postinstall ACE, or `npx evil` into the denied `npx -y evil`.
+    re: new RegExp(
+      [
+        String.raw`\b(?:${GUARD_ENV})[ \t]*=`,
+        String.raw`(?:\s-u[ \t]*|\s--unset[= ][ \t]*)(?:${GUARD_ENV})\b`,
+        String.raw`\b(?:unset|export[ \t]+-n|declare|typeset|local)\b[^\n;&|]*\b(?:${GUARD_ENV})\b`,
+        String.raw`(?:^|[\s;&|(\`/])env(?:[ \t]+-${TOK})*?[ \t]+(?:-[A-Za-z]*i[A-Za-z]*|--ignore-environment|-)(?=[ \t])[^\n;&|]*\b(?:npx|npm|pnpm|pnpx|yarn|bunx?|corepack)\b`,
+        String.raw`\s--(?:no-ignore-scripts|ignore-scripts[= ](?:false|0|no))\b`,
+      ].join("|"),
+      "i",
+    ),
+    why: "switching off an agent-env package-manager guard (ignore-scripts / npm_config_yes override, or env -i)",
     example: "npm_config_ignore_scripts=false npm rebuild",
     crewFlags: false,
   },

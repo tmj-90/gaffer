@@ -4,6 +4,7 @@
 // all. Grep and Glob were allowed but unmatched, so they read nested `.env` files and
 // the factory's token files with no check. This pins:
 //   • every file-touching tool the template allows has a PreToolUse matcher;
+//   • every safety-hook entry fails closed (onFailure: block) with a timeout;
 //   • the Read deny rules are recursive/absolute, not cwd-root-only `./` forms (Claude
 //     Code turns them into ripgrep excludes for Grep/Glob), and never `~/**`;
 //   • spawns without project settings (onboard-analyze) carry the same Read rules.
@@ -35,6 +36,20 @@ for (const name of FILE_TOOLS) {
 for (const name of allowed) {
   if (FILE_TOOLS.includes(name)) {
     check(`allowed file tool ${name} is routed to the hook`, routed(name));
+  }
+}
+
+// Claude Code's default for a hook that times out, crashes or exits other than 0/2 is
+// to report it and RUN the tool: every safety-hook entry must fail closed instead,
+// with a bounded timeout (a pathological command must not outlast the hook).
+for (const m of matchers) {
+  for (const h of m.hooks ?? []) {
+    if (!String(h.command).includes("${RUNNER_DIR}/safety-hook.mjs")) continue;
+    check(`safety-hook entry for ${m.matcher} sets onFailure: block`, h.onFailure === "block");
+    check(
+      `safety-hook entry for ${m.matcher} sets an explicit timeout (seconds)`,
+      Number.isInteger(h.timeout) && h.timeout > 0 && h.timeout <= 120,
+    );
   }
 }
 

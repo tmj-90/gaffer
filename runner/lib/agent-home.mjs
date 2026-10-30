@@ -132,7 +132,9 @@ function hookCovers(entries, tool) {
  * resolved for THIS checkout, and VERIFY the safety-hook wiring by parsing the JSON
  * (a "PreToolUse" string inside a _comment does not count): hooks.PreToolUse must
  * hold entries whose command runs `${RUNNER_DIR}/safety-hook.mjs`, covering Bash,
- * the write tools and Read. The file is read back and compared. On any failure the
+ * the write tools and Read, and each such hook must carry `"onFailure": "block"` and a
+ * timeout (a hook that times out otherwise lets the tool run). The file is read back
+ * and compared. On any failure the
  * file is removed and an Error starting "SAFETY:" is thrown (fail closed).
  */
 export function writeAgentSettings(
@@ -169,6 +171,18 @@ export function writeAgentSettings(
           m.hooks.some((h) => typeof h?.command === "string" && h.command.includes(hookPath)),
       )
     : [];
+  // Claude Code RUNS the tool when a hook times out or crashes unless the entry says
+  // onFailure: block, so every safety-hook entry must say it, with a bounded timeout.
+  for (const m of wired) {
+    for (const h of m.hooks) {
+      if (typeof h?.command !== "string" || !h.command.includes(hookPath)) continue;
+      if (h.onFailure !== "block" || !(typeof h.timeout === "number" && h.timeout > 0)) {
+        return refuse(
+          `${settingsPath} safety-hook entry for ${m.matcher} lacks "onFailure": "block" and a timeout (a timed-out hook would let the tool run)`,
+        );
+      }
+    }
+  }
   for (const tool of ["Bash", "Write", "Edit", "Read"]) {
     if (!hookCovers(wired, tool)) {
       return refuse(

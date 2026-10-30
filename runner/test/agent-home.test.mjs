@@ -82,6 +82,19 @@ console.log("== FAIL CLOSED: an unwired / missing settings template refuses the 
       JSON.stringify({ _comment: `PreToolUse ${hook}`, permissions: {} }),
     ],
     "invalid JSON": [resolve(T, "bad.json"), `{"hooks": {"PreToolUse": [ ${hook}`],
+    "every tool wired, but the hook fails open on a timeout (no onFailure: block)": [
+      resolve(T, "failopen.json"),
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob",
+              hooks: [{ type: "command", command: hook, timeout: 60 }],
+            },
+          ],
+        },
+      }),
+    ],
     "hook wired for Bash only (no Read / write tools)": [
       resolve(T, "bashonly.json"),
       JSON.stringify({

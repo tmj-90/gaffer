@@ -48,8 +48,8 @@ CWT_EXPECTED="$GAFFER_DATA/worktrees/clarify-wt-42"
 FAKE_RUNNER="$WORK/runner"; mkdir -p "$FAKE_RUNNER/claude"
 : > "$FAKE_RUNNER/safety-hook.mjs"
 # Wired like the real template: the shared writer (lib/agent-env.sh) VERIFIES the
-# PreToolUse safety-hook wiring and fails closed without it.
-printf '{"hooks":{"PreToolUse":[{"command":"node ${RUNNER_DIR}/safety-hook.mjs"}]}}\n' > "$FAKE_RUNNER/settings.tmpl.json"
+# PreToolUse safety-hook wiring and fails closed without it (and without "onFailure": "block" + a timeout).
+printf '{"hooks":{"PreToolUse":[{"command":"node ${RUNNER_DIR}/safety-hook.mjs","timeout":60,"onFailure":"block"}]}}\n' > "$FAKE_RUNNER/settings.tmpl.json"
 printf '{"mcp":"${DISPATCH_DB}"}\n'      > "$FAKE_RUNNER/mcp.tmpl.json"
 printf '# brief\n'                        > "$FAKE_RUNNER/claude/CLAUDE.md"
 

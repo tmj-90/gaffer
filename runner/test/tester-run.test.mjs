@@ -532,6 +532,34 @@ console.log("== AC17: an ACCEPTANCE ticket's PASS without a replay that ran HOLD
     .run();
   db2.close();
 }
+console.log("== ledger: a spawn that never started books no kill estimate; a timeout does ==");
+{
+  const ledger = resolve(LIVE.data, "usage-ledger.jsonl");
+  const lastRow = () => {
+    const lines = readFileSync(ledger, "utf8").trim().split("\n");
+    return JSON.parse(lines[lines.length - 1]);
+  };
+  // ENOENT: no claude process ran, so no paid work happened — an "unknown" row, not $0.05.
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  runLive("PASS", { CLAUDE_BIN: resolve(WORKDIR, "no-such-claude") });
+  const missing = lastRow();
+  missing.kind === "tester" &&
+  missing.estimated !== true &&
+  /spawn error/.test(missing.unknown_reason)
+    ? ok("spawn error (no process) → unknown row, no kill estimate")
+    : fail(`spawn-error row: ${JSON.stringify(missing)}`);
+  // ETIMEDOUT: the call ran and was killed — the labelled estimate, never a silent $0.
+  const sleeper = resolve(WORKDIR, "sleep-claude.sh");
+  writeFileSync(sleeper, "#!/bin/bash\nexec sleep 5\n");
+  chmodSync(sleeper, 0o755);
+  LIVE.g("branch", "-D", "gaffer/ticket-1-tests");
+  runLive("PASS", { CLAUDE_BIN: sleeper, GAFFER_TESTER_TIMEOUT_MS: "500" });
+  const killed = lastRow();
+  killed.kind === "tester" && killed.estimated === true && killed.estimated_cost_usd > 0
+    ? ok("timed-out tester → estimated kill row")
+    : fail(`timeout row: ${JSON.stringify(killed)}`);
+  LIVE.g("worktree", "prune");
+}
 
 rmSync(WORKDIR, { recursive: true, force: true });
 

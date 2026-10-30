@@ -1022,7 +1022,8 @@ console.log("== analysisCaps: synthesis model is the mid tier unless an operator
 console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny turn cap ==");
 {
   // A stub claude records its cwd + argv (one per line, "" kept visible) and replies
-  // with a JSON envelope — the shape of the audit's reproduction (no live model).
+  // with a JSON envelope — the shape of the audit's reproduction (no live model). Args
+  // are recorded whole (newlines flattened), so path asserts hold under a long TMPDIR.
   const dir = mkdtempSync(join(tmpdir(), "onb-textonly-"));
   const rec = join(dir, "rec.txt");
   const stub = join(dir, "claude.sh");
@@ -1030,7 +1031,7 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
     stub,
     [
       "#!/bin/bash",
-      `{ echo "CWD=$PWD"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a:0:60}"; done; } > "${rec}"`,
+      `{ echo "CWD=$PWD"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a//$'\\n'/ }"; done; } > "${rec}"`,
       `echo '{"type":"result","result":"\`\`\`json\\n{\\"cards\\":[]}\\n\`\`\`","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}'`,
       "",
     ].join("\n"),

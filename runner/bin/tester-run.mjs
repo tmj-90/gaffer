@@ -83,7 +83,12 @@ import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
 import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
-import { appendUsageRecord, buildUsageRecord, recordKilledCall } from "../lib/usage-ledger.mjs";
+import {
+  appendUsageRecord,
+  buildUsageRecord,
+  recordKilledCall,
+  unknownRecord,
+} from "../lib/usage-ledger.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -831,15 +836,16 @@ function runLiveTester(context) {
   let text = "";
   const elapsedMs = Date.now() - t0;
   if (res.error) {
-    // A timed-out / failed spawn did (or may have done) paid work: book the labelled
-    // estimate, never a silent $0.
-    recordKilledCall({
-      ticket: n,
-      kind: "tester",
-      reason:
-        res.error.code === "ETIMEDOUT" ? "tester timed out" : `spawn error: ${res.error.message}`,
-      elapsedMs,
-    });
+    // A timed-out call did paid work: book the labelled estimate, never a silent $0.
+    // Any other error (ENOENT, Worker.deliver failing closed) never ran claude, so it
+    // is an "unknown" row, not an estimate — the same split decompose/spec-author use.
+    if (res.error.code === "ETIMEDOUT") {
+      recordKilledCall({ ticket: n, kind: "tester", reason: "tester timed out", elapsedMs });
+    } else {
+      appendUsageRecord(
+        unknownRecord({ ticket: n, kind: "tester", reason: `spawn error: ${res.error.message}` }),
+      );
+    }
     log(`tester did not complete (${res.error.code ?? res.error.message})`);
   } else {
     const json = parseClaudeJson(res.stdout || "");

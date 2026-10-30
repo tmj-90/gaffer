@@ -28,7 +28,6 @@ CLI_JS="$ROOT/packages/dispatch/dist/cli/index.js"
 TICK="$RUNNER_DIR/tick.sh"
 
 command -v node    >/dev/null 2>&1 || { echo "SKIP: node required";    exit 0; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
 [ -f "$CLI_JS" ] || { echo "SKIP: dispatch CLI not built ($CLI_JS) — run pnpm -C packages/dispatch build"; exit 0; }
 
 PASS=0

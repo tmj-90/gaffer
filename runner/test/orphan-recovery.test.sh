@@ -24,7 +24,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 
 command -v git     >/dev/null 2>&1 || { echo "SKIP: git required";     exit 0; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required"; exit 0; }
 
 PASS=0
 FAILURES=()

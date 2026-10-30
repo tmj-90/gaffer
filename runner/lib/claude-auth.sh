@@ -38,14 +38,23 @@ gaffer_claude_auth_probe() {
 #   → 0 claude answered · 1 it failed (GAFFER_CLAUDE_LIVE_ERROR = its first error line)
 #   · 2 skipped (claude not on PATH).
 gaffer_claude_live_probe() {
-  local secs="${1:-$GAFFER_PREFLIGHT_LIVE_TIMEOUT}" bin="${CLAUDE_BIN:-claude}" out rc
+  local secs="${1:-$GAFFER_PREFLIGHT_LIVE_TIMEOUT}" bin="${CLAUDE_BIN:-claude}" out rc scratch
   GAFFER_CLAUDE_LIVE_ERROR=""
   command -v "$bin" >/dev/null 2>&1 || return 2
+  # The probe only asks whether claude can answer at all. It gets NO tools, no MCP
+  # servers and no slash commands, and runs from an empty scratch directory, never from
+  # the caller's cwd (under loop.sh that is the runner checkout). A stub that treated
+  # the probe as a delivery once committed into the checkout from there.
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-live-probe.XXXXXX")" || return 1
+  printf '{"mcpServers":{}}' >"$scratch/mcp.json"
   if command -v timeout >/dev/null 2>&1; then
-    out="$(timeout "$secs" "$bin" -p ok --max-turns 1 --output-format json 2>&1)"; rc=$?
+    out="$(cd "$scratch" && GAFFER_WRITE_ROOTS="$scratch" timeout "$secs" "$bin" -p ok --max-turns 1 --output-format json \
+      --tools "" --mcp-config "$scratch/mcp.json" --strict-mcp-config --disable-slash-commands 2>&1)"; rc=$?
   else
-    out="$("$bin" -p ok --max-turns 1 --output-format json 2>&1)"; rc=$?
+    out="$(cd "$scratch" && GAFFER_WRITE_ROOTS="$scratch" "$bin" -p ok --max-turns 1 --output-format json \
+      --tools "" --mcp-config "$scratch/mcp.json" --strict-mcp-config --disable-slash-commands 2>&1)"; rc=$?
   fi
+  rm -rf "$scratch"
   if [ "$rc" -eq 0 ] && ! grep -Eq '"is_error"[[:space:]]*:[[:space:]]*true' <<<"$out"; then return 0; fi
   # The error line: claude's JSON .result when it parses, else the first output line.
   GAFFER_CLAUDE_LIVE_ERROR="$(printf '%s' "$out" | node -e '

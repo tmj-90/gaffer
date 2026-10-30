@@ -68,6 +68,19 @@ for b in claude-401 claude-iserr; do
 done
 CLAUDE_BIN="$WORK/claude-good" gaffer_claude_live_probe 10; rc=$?
 [ "$rc" = 0 ] && ok "a working claude → rc 0" || fail "good claude: rc=$rc"
+# The probe is a liveness question, not a session: no tools, no MCP, no slash commands,
+# and never from the caller's cwd (a write-capable stub once committed into the checkout
+# from there, because loop.sh runs with the runner dir as cwd).
+last="$(tail -n 1 "$CALLS")"
+[[ "$last" == *"--tools  --mcp-config "* && "$last" == *"--strict-mcp-config"* && "$last" == *"--disable-slash-commands"* ]] \
+  && ok "the live probe passes --tools \"\" --mcp-config <empty> --strict-mcp-config --disable-slash-commands" \
+  || fail "live probe argv lacks the no-tools flags: $last"
+mkclaude claude-pwd "pwd > '$WORK/probe.cwd'; printf '%s\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\"}'; exit 0"
+( cd "$RUNNER_DIR" && CLAUDE_BIN="$WORK/claude-pwd" gaffer_claude_live_probe 10 ) >/dev/null 2>&1
+pcwd="$(cat "$WORK/probe.cwd" 2>/dev/null)"
+[ -n "$pcwd" ] && [ "$pcwd" != "$RUNNER_DIR" ] && [[ "$pcwd" != "$RUNNER_DIR"/* ]] && [[ "$pcwd" != "$(cd "$RUNNER_DIR/.." && pwd)"* ]] \
+  && ok "the live probe runs from a scratch dir, not the caller's cwd ($pcwd)" || fail "live probe cwd: '$pcwd' (caller: $RUNNER_DIR)"
+[ ! -d "$pcwd" ] && ok "the scratch dir is removed afterwards" || fail "scratch dir left behind: $pcwd"
 CLAUDE_BIN="$WORK/absent" gaffer_claude_live_probe 10; rc=$?
 [ "$rc" = 2 ] && ok "no claude on PATH → skipped (rc 2)" || fail "absent claude: rc=$rc"
 

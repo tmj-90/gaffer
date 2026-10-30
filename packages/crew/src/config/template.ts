@@ -210,7 +210,9 @@ loops:
 # reported on the 'context_packet_built' event.
 context:
   lore_limit: 8 # max ratified lore records pulled into a packet
-  max_skills: 12 # max skills selected after stack filtering
+  # max_skills — crew run (MOCK runtime) + crew MCP packet only, not read by the live
+  # runner: the live agents mount skills by role profile, uncapped (docs/skill-selection-and-stacks.md)
+  max_skills: 12
   product_context_limit: 6 # max product-intent lore (decisions/requirements/non-goals) in the productContext section
 
 # GitHub issue ingest: the on-ramp so teammates can file Dispatch work by

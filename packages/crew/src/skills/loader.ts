@@ -71,8 +71,8 @@ export function loadSkillsFromDir(dir: string): Skill[] {
 // ── The SKILL.md library (B30) ───────────────────────────────────────────────
 // The registry used to load only the 14 descriptive built-ins and never read the
 // `runner/skills/*/SKILL.md` library the live agents are mounted — so the runner's
-// `fg skills --stack X` fallback (tick.sh) returned generic placeholders and never a
-// real skill. The library is now a first-class source: each SKILL.md's frontmatter
+// `fg skills --stack X` (then tick.sh's fallback; it no longer is) returned generic
+// placeholders and never a real skill. The library is now a first-class source: each SKILL.md's frontmatter
 // (`name` / `description` / `stack` / `area`) becomes a registry skill whose id is the
 // directory name, whose `applies_to.stacks` are the frontmatter stack tags and whose
 // `applies_to.capabilities` carry the area bucket; its numbered "## Steps" become the

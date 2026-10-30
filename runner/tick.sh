@@ -1090,8 +1090,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
     fi
     log "ready=$READY_COUNT → BOOTSTRAP #$NUM ('$TITLE') → create new repo '$B_NAME' at $B_DIR [stack=$STACK]"
 
-    # Recommended skills for the bootstrap: prefer plan-build's sibling builders,
-    # but always include the scaffolder hint. (Same selector as normal delivery.)
+    # Recommended skills for the bootstrap: the BOOTSTRAP ROLE profile (`--role
+    # bootstrap`) — the normal delivery selection plus the scaffold packs a fresh repo
+    # needs (ci-cd-pipeline, docker-development, shell-scripting, the quality lens). A
+    # greenfield agent used to get the plain delivery selection, so CI / Docker guidance
+    # only reached it when the brief happened to name them.
     # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
     # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
     # B30: hand the selector the ticket's title + description head too (`--text`),
@@ -1101,7 +1104,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # An argv, never a shell string: the untrusted text cannot inject flags.
     B_AREA="$(gaffer_area_for_stack "$STACK")"
     _B_SKILL_TEXT="$(printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "").slice(0, 600)' 2>/dev/null || true)")"
-    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --text "$_B_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+    B_SKILLS="$(node "$HERE/bin/select-skills.mjs" --role bootstrap --stack "$STACK" ${B_AREA:+--area "$B_AREA"} --text "$_B_SKILL_TEXT" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
     [ -n "$B_SKILLS" ] || B_SKILLS="(scaffold the stack from the ticket's ACs)"
 
     if [ "$DRY_RUN" = "1" ]; then
@@ -1247,9 +1250,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
       "npm_config_ignore_scripts=true"
       "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
     )
+    _B_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
     brc=$?
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    gaffer_record_skill_usage "$NUM" bootstrap "$STACK" "$B_SKILLS" "$B_USAGE_JSON" \
+      "bootstrap-$NUM" "$B_DIR" "$_B_SKILL_SINCE"
     rm -f "$B_USAGE_JSON"
     log "bootstrap delivery for #$NUM finished (rc=$brc)"
     if [ "$brc" -ne 0 ]; then
@@ -1513,10 +1519,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
   fi
 
   # Recommended skills for this ticket's stack (best-effort; never fatal).
-  # Primary: select from the factory's stack/area-tagged SKILL.md library (the
-  # one actually mounted into the repo). Fall back to the Crew registry,
-  # then to a generic instruction. Both selectors share the same matching rule:
-  # an empty stack/area constraint means "no constraint".
+  # Select from the factory's stack/area-tagged SKILL.md library (the one actually
+  # mounted into the repo). If the selector prints nothing, fall back to the universal
+  # delivery mechanics (GAFFER_UNIVERSAL_SKILLS, skills-mount.sh) — the same set the
+  # mount always unions in. The crew registry (`fg skills`) used to be the fallback; it
+  # lists role-only skills (create-branch, submit-review…) and names the library does
+  # not carry, which the prompt then recommended and the mount silently dropped.
   # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
   # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
   SKILL_AREA="$(gaffer_area_for_stack "$STACK")"
@@ -1535,7 +1543,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     > "$_SKILL_PATHS" 2>/dev/null || : > "$_SKILL_PATHS"
   SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --paths-file "$_SKILL_PATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
   rm -f "$_SKILL_PATHS"
-  [ -n "$SKILLS" ] || SKILLS="$(fg skills --stack "$STACK" 2>/dev/null | jget '(Array.isArray(d) ? d : d.skills || []).map((s) => s.id ?? s.name ?? "").join(", ")' 2>/dev/null || true)"
+  [ -n "$SKILLS" ] || SKILLS="$(printf '%s' "${GAFFER_UNIVERSAL_SKILLS:-}" | tr -s ' ' '\n' | grep . | paste -sd, - | sed 's/,/, /g')"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
 
   # Always-on QUALITY LENSES (frontmatter `area: quality`) — applied to EVERY delivery,
@@ -2492,16 +2500,18 @@ $_trail_q
   # adopts commits the agent made and only deletes a branch the agent created.
   _PRESPAWN_REFS="$(gaffer_snapshot_refs "$WT_ROWS")"
   GAFFER_TICK_TIMEOUT="$_AGENT_TIMEOUT"  # the deadline guard's clamp (attempt 1 only)
+  _SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"  # skill telemetry: tool-ledger rows from here on
   worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
     "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
   GAFFER_TICK_TIMEOUT="$_TICK_TIMEOUT_CFG"
   _T_AGENT_DONE="$(date +%s)"
-  # SKILL TELEMETRY: record which skills were SELECTED for this delivery (and,
-  # best-effort, which were APPLIED — detected from the agent's output JSON) so a
-  # LATER data-driven prune of the generic skills isn't blind. Fail-soft; captured
-  # here before the ledger removes $USAGE_JSON on either the pause or normal path.
-  gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON"
+  # SKILL TELEMETRY: record which skills were MOUNTED for this delivery (the mount dir:
+  # selection + lenses + universal set) and, best-effort, which were APPLIED — named in
+  # the agent's output JSON or opened (tool ledger). Fail-soft; captured here before the
+  # ledger removes $USAGE_JSON on either the pause or normal path.
+  gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON" \
+    "delivery-$NUM" "$PRIMARY_REPO" "$_SKILL_SINCE"
   # RESUME REPORT: the resume prompt tells the agent to END its message with the AC ->
   # test lines and the smallest-change note (written for the tokenless resume, whose
   # record_ac_evidence calls are refused; a leased resume's evidence writes now land

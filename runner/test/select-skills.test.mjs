@@ -17,6 +17,7 @@ import {
   ROLE_PROFILES,
   ROLE_NAMES,
   TEXT_GATED_SKILL_NAMES,
+  USER_ONLY_SKILL_NAMES,
   DEFAULT_SKILLS_DIR,
 } from "../bin/select-skills.mjs";
 
@@ -924,12 +925,7 @@ check("delivery never mounts the runner's / another role's jobs (listing paid ev
     const names = selectSkills({ stacks, text: "Add a REST endpoint for tasks" }).map(
       (s) => s.name,
     );
-    for (const n of [
-      "create-branch",
-      "submit-review",
-      "resolve-merge-conflict",
-      "dependency-upgrade",
-    ])
+    for (const n of ["create-branch", "resolve-merge-conflict", "dependency-upgrade", "caveman"])
       assert(
         !names.includes(n),
         `delivery (${stacks.join(",") || "no stack"}) must NOT mount ${n}`,
@@ -937,8 +933,11 @@ check("delivery never mounts the runner's / another role's jobs (listing paid ev
     const role = selectForRole("delivery", { stacks, text: "Add a REST endpoint" }).map(
       (s) => s.name,
     );
-    for (const n of ["create-branch", "submit-review", "resolve-merge-conflict"])
+    for (const n of ["create-branch", "resolve-merge-conflict"])
       assert(!role.includes(n), `delivery profile must NOT mount ${n}`);
+    // submit-review is the BUILDER's handoff reference (commit + evidence, then stop).
+    assert(names.includes("submit-review"), `delivery (${stacks}) must mount submit-review`);
+    assert(role.includes("submit-review"), `delivery profile (${stacks}) must mount submit-review`);
   }
 });
 check("no skill body points the agent at a skill delivery may not have mounted", () => {
@@ -949,7 +948,7 @@ check("no skill body points the agent at a skill delivery may not have mounted",
   // skill)" dangles exactly when the agent finds mid-delivery that it needs one. Only
   // those skills' own SKILL.md may name them. The bare name is matched, so a pointer
   // that wraps across a line ("the\n`x` skill") or drops the word "skill" still fails.
-  const absent = ["create-branch", "submit-review", "resolve-merge-conflict"];
+  const absent = ["create-branch", "resolve-merge-conflict", "caveman"];
   absent.push(...TEXT_GATED_SKILL_NAMES);
   assert(TEXT_GATED_SKILL_NAMES.includes("dependency-upgrade"), "text-gated list lost a name");
   const re = new RegExp("(?<![\\w-])(" + absent.join("|") + ")(?![\\w-])");
@@ -972,16 +971,148 @@ check("dependency-upgrade is pulled in only when the ticket text names a depende
   }
 });
 check("the role that owns each still mounts it", () => {
-  assert(selectForRole("review", { stacks: ["go"] }).some((s) => s.name === "submit-review"));
   assert(
     selectForRole("merge", { stacks: ["go"] }).some((s) => s.name === "resolve-merge-conflict"),
   );
-  // create-branch has no live consumer: the bootstrap profile lists it, but tick.sh's
-  // bootstrap runs the plain delivery selection (no --role) and the runner creates the
-  // bootstrap branch itself. Pin that the live path really goes without it.
-  const live = selectSkills({ stacks: ["go"], text: "Scaffold a Go CLI" });
-  assert(!live.some((s) => s.name === "create-branch"), "live bootstrap mounted create-branch");
+  // The reviewer must not commit or edit: the builder's handoff / self-review skills are
+  // not review lenses.
+  const review = selectForRole("review", { stacks: ["go"] }).map((s) => s.name);
+  for (const n of ["submit-review", "self-review"])
+    assert(!review.includes(n), `review must NOT mount the builder skill ${n}`);
 });
+
+check("user-only skills (caveman, create-branch) reach no factory agent", () => {
+  eq([...USER_ONLY_SKILL_NAMES].sort(), ["caveman", "create-branch"], "user-only set");
+  for (const name of USER_ONLY_SKILL_NAMES) assert(libNames.has(name), `${name} still ships`);
+  const text = "caveman mode please, create branch, scaffold CI and Docker";
+  for (const stacks of [["go"], [], ["typescript-react"]]) {
+    for (const r of ROLE_NAMES) {
+      const names = selectForRole(r, { stacks, text }).map((s) => s.name);
+      for (const n of USER_ONLY_SKILL_NAMES) assert(!names.includes(n), `${r} mounted ${n}`);
+    }
+    const plain = selectSkills({ stacks, text, area: "workflow" }).map((s) => s.name);
+    assert(!plain.includes("create-branch"), "--area workflow mounted create-branch");
+    const meta = selectSkills({ stacks, text, area: "meta" }).map((s) => s.name);
+    assert(!meta.includes("caveman"), "--area meta mounted caveman");
+  }
+});
+
+check("bootstrap profile: scaffold packs, no branching skill", () => {
+  const names = selectForRole("bootstrap", { stacks: ["go"], text: "Scaffold a Go CLI" }).map(
+    (s) => s.name,
+  );
+  for (const n of ["ci-cd-pipeline", "docker-development", "shell-scripting", "go-conventions"])
+    assert(names.includes(n), `bootstrap must mount ${n}`);
+  assert(!names.includes("create-branch"), "bootstrap must not mount create-branch");
+});
+
+// --- TypeScript-labelled repos get the node-tagged backend / data / security packs ---
+const BACKEND_ON_TS = [
+  "add-api-endpoint",
+  "error-handling",
+  "backend-service",
+  "add-db-migration",
+  "structured-logging-and-tracing",
+  "auth-session-and-oauth",
+  "data-privacy",
+  "contract-test",
+  "property-based-test",
+];
+check("a typescript / javascript / typescript-react stack gets the node-tagged packs", () => {
+  for (const [label, paths] of [
+    ["typescript", ["src/api/routes.ts"]],
+    ["javascript", []],
+    ["typescript-react", ["src/server/api.ts"]],
+    ["typescript", []],
+  ]) {
+    const stacks = paths.length ? narrowStacks([label], paths) : [label];
+    const names = selectSkills({ stacks }).map((s) => s.name);
+    for (const n of BACKEND_ON_TS) assert(names.includes(n), `${label} ${paths} → ${n}`);
+  }
+  const review = selectForRole("review", { stacks: ["typescript"] }).map((s) => s.name);
+  for (const n of ["auth-session-and-oauth", "data-privacy"])
+    assert(review.includes(n), `review of a typescript repo → the ${n} lens`);
+  // …and still never onto a known non-JS stack.
+  const go = selectSkills({ stacks: ["swift"] }).map((s) => s.name);
+  assert(!go.includes("add-api-endpoint"), "swift (not node-family) → no node-tagged pack");
+});
+
+check("an EMPTY / unknown stack does not fail open onto the stack-tagged infra packs", () => {
+  for (const stacks of [[], ["cobol"]]) {
+    const names = selectSkills({ stacks }).map((s) => s.name);
+    for (const n of ["docker-development", "kubernetes-operator", "terraform-patterns"])
+      assert(!names.includes(n), `${JSON.stringify(stacks)} must not mount ${n}`);
+  }
+  // The ticket text still pulls them in; an explicit --area still lists them.
+  const tf = selectSkills({ stacks: [], text: "Add a Terraform module for the bucket" });
+  assert(
+    tf.some((s) => s.name === "terraform-patterns"),
+    "text → terraform-patterns",
+  );
+  const infra = selectSkills({ area: "infra" }).map((s) => s.name);
+  assert(infra.includes("docker-development"), "--area infra → docker-development");
+});
+
+check(
+  "text triggers: runbook / postmortem / Dockerfile reach their packs; no SEO on health checks",
+  () => {
+    const pulled = (text) => selectSkills({ stacks: ["node"], text }).map((s) => s.name);
+    for (const [text, want] of [
+      ["Write a runbook for rotating the database password", "runbook-generator"],
+      ["Write a runbook for the deploy", "runbook-generator"],
+      ["Write the postmortem for last night's outage", "incident-response"],
+      ["Write a post-mortem for the outage", "incident-response"],
+      ["Optimise the Dockerfile build cache", "docker-development"],
+      ["Fix the SEO meta tags on the pricing page", "seo-audit"],
+    ])
+      assert(pulled(text).includes(want), `"${text}" → ${want}`);
+    assert(
+      !pulled("Add a health check endpoint that returns build info").includes("seo-audit"),
+      "a health-check endpoint is not an SEO audit",
+    );
+    // There is no generic k8s pack; the Operator pack must not pose as one.
+    assert(
+      !pulled("Write the Kubernetes deployment manifests").includes("kubernetes-operator"),
+      "plain manifests are not the Operator pattern",
+    );
+    assert(
+      pulled("Add a CRD and its reconcile loop").includes("kubernetes-operator"),
+      "a CRD ticket → kubernetes-operator",
+    );
+  },
+);
+
+check("product role: the marketing packs are a lens (the PO run has no ticket text)", () => {
+  const names = selectForRole("product", { stacks: ["typescript"] }).map((s) => s.name);
+  for (const n of ["copywriting", "seo-audit", "aeo", "landing-page-generator"])
+    assert(names.includes(n), `product → ${n}`);
+});
+
+check("every skill the delivery brief names is in every delivery mount", () => {
+  // The brief (runner/claude/CLAUDE.md, installed for every delivery) once told the agent
+  // to "use the `clarify` skill" — a role-only skill no delivery mounts.
+  const brief = readFileSync(join(DEFAULT_SKILLS_DIR, "..", "claude", "CLAUDE.md"), "utf8");
+  const named = [...brief.matchAll(/`([a-z0-9-]+)` skill/g)].map((m) => m[1]);
+  assert(named.length >= 3, `expected the brief to name skills, got ${named}`);
+  for (const stacks of [["typescript"], ["python"], [], ["csharp-typescript-react"]]) {
+    const mount = new Set([
+      ...selectSkills({ stacks }).map((s) => s.name),
+      ...ROLE_PROFILES.delivery.core,
+    ]);
+    for (const n of named)
+      assert(mount.has(n), `brief names the \`${n}\` skill; the ${stacks} delivery lacks it`);
+  }
+});
+
+check(
+  "delivery core == skills-mount.sh GAFFER_UNIVERSAL_SKILLS (the select-skills fallback)",
+  () => {
+    const sh = readFileSync(join(DEFAULT_SKILLS_DIR, "..", "lib", "skills-mount.sh"), "utf8");
+    const m = /GAFFER_UNIVERSAL_SKILLS:=([^}"]+)\}/.exec(sh);
+    assert(m, "GAFFER_UNIVERSAL_SKILLS default not found in skills-mount.sh");
+    eq(m[1].trim().split(/\s+/).sort(), [...ROLE_PROFILES.delivery.core].sort(), "universal set");
+  },
+);
 
 // Report once, AFTER every check: this block used to sit above the ROLE-profile
 // checks, so a failing role check was never reported.

@@ -119,6 +119,7 @@ import {
 import { filterMeasured, parseLedger, summarise } from "../lib/estimate.mjs";
 import { primeContextBlock } from "../lib/context-primer.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
+import { recordSkillUsage } from "./record-skill-usage.mjs";
 import { Worker, roleTurnCap } from "../lib/worker.mjs";
 import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
@@ -542,17 +543,57 @@ const QUARANTINE_NOTICE =
  * null as "path unknown — skip card injection".
  */
 function resolveRepoPath(name) {
+  return resolveRepoRow(name)?.local_path ?? null;
+}
+
+/**
+ * The registered repo row ({ local_path, stack }) for a NAME, or null. A schema without
+ * `repositories.stack` still resolves the path (stack ""). FAIL-SOFT like
+ * resolveRepoPath.
+ */
+export function resolveRepoRow(name) {
   if (!name) return null;
+  let db;
   try {
     const { DatabaseSync } = _require("node:sqlite");
     const dbPath = process.env.DISPATCH_DB || resolve(_GAFFER_HOME, ".gaffer", "dispatch.sqlite");
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    const row = db.prepare("SELECT local_path FROM repositories WHERE name = ? LIMIT 1").get(name);
-    db.close();
-    return row?.local_path ?? null;
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    let row;
+    try {
+      row = db
+        .prepare("SELECT local_path, stack FROM repositories WHERE name = ? LIMIT 1")
+        .get(name);
+    } catch {
+      row = db.prepare("SELECT local_path FROM repositories WHERE name = ? LIMIT 1").get(name);
+    }
+    return row ? { local_path: row.local_path ?? null, stack: String(row.stack ?? "") } : null;
   } catch {
     return null; /* node:sqlite unavailable, DB missing, or repo not found */
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
   }
+}
+
+/**
+ * What the PLAN agent's skill mount is selected from: the brownfield target repo's
+ * registered STACK (so a Python API's plan is not handed swift-conventions, mobile-ui
+ * and the React state pack — the empty stack fails open onto every stack pack), and the
+ * BRIEF head as text (so the plan profile's text packs — a Terraform module, an SEO
+ * audit, a runbook the brief asks for — actually fire). Greenfield: no stack (the brief
+ * text still pulls a named language's pack in).
+ */
+export function planSkillContext(req, targetRepo = String(req?.repo ?? "").trim()) {
+  const stack = targetRepo ? (resolveRepoRow(targetRepo)?.stack ?? "") : "";
+  return {
+    stacks: stack ? [stack] : [],
+    text: String(req?.brief ?? "")
+      .trim()
+      .slice(0, 600),
+  };
 }
 
 /**
@@ -1102,9 +1143,11 @@ function runClaudeTurn(prompt, opts, model) {
   // SEE, not what it can write.
   // makeAgentHome throws (fail closed) when the safety-hook settings cannot be
   // rendered and verified; refuse the spawn through the normal error path.
+  // The plan role's mount follows the target repo's stack + the brief (planSkillContext).
+  const skillContext = opts.skillContext ?? { stacks: [], text: "" };
   let home;
   try {
-    home = makeAgentHome("decompose-", { role: "plan" });
+    home = makeAgentHome("decompose-", { role: "plan", ...skillContext });
   } catch (err) {
     return fail(err?.message ?? String(err));
   }
@@ -1122,6 +1165,15 @@ function runClaudeTurn(prompt, opts, model) {
   } finally {
     home.remove();
   }
+  // SKILL TELEMETRY (fail-soft): what the plan agent had mounted and, best-effort, used.
+  recordSkillUsage({
+    role: "plan",
+    stack: skillContext.stacks.join(","),
+    selected: home.skills,
+    output: res?.stdout || "",
+    agentDir: home.dir,
+    since: new Date(t0).toISOString(),
+  });
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
       // Ledger the unmeasurable call as a labelled ESTIMATE (never $0, never "measured").
@@ -1167,6 +1219,8 @@ function main() {
       "target repo is empty — omit --repo/repo for a greenfield build, or pass a non-empty existing repo name",
     );
   const history = Array.isArray(req.history) ? req.history : [];
+  // The plan agent's skill mount follows the target repo's stack + the brief text.
+  opts.skillContext = planSkillContext(req, targetRepo);
 
   // ADVISORY turn cap: a long conversation is NOT a dead-end. When history reaches
   // the (now generous) ceiling we DON'T reject — we force the model to emit its

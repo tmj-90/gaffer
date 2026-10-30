@@ -166,7 +166,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       git -C "$RREPO" diff --name-only "$RDEFAULT...$RBRANCH" -- > "$_RPATHS" 2>/dev/null || : > "$_RPATHS"
       RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --paths-file "$_RPATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       rm -f "$_RPATHS"
-      [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, submit-review, record-evidence"
+      [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, record-evidence"
       if ! GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM"; then
         log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"
         _review_hold_ticket "the reviewer agent env could not be installed into its worktree"; return 0
@@ -176,7 +176,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       _RTRACKED0="$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null || true)"
       # The lenses the reviewer must apply, named in the prompt (everything mounted that
       # is not the core procedure): the stack pack + the review/security lenses.
-      _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|submit-review|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
+      _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -285,10 +285,13 @@ EOF
       # Role turn cap (GAFFER_REVIEW_MAX_TURNS, clamped to GAFFER_MAX_TURNS) — not the
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
+      _R_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+      gaffer_record_skill_usage "$RNUM" review "$RSTACK" "$RSKILLS" "$R_USAGE_JSON" \
+        "review-$RNUM" "$WT" "$_R_SKILL_SINCE"
       # Capture the reviewer's advisory verdict (its final RECOMMEND line) from the result
       # JSON BEFORE deleting it — the signal the runner acts on in AFK mode. Default to
       # "changes": an ambiguous or empty verdict must NEVER auto-approve. Read the file BY
@@ -371,10 +374,14 @@ EOF
         [ -n "$SEC_MODEL" ] && SEC_MODEL_FLAG="--model $SEC_MODEL"
         # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
         # clamped to GAFFER_MAX_TURNS.
+        _S_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
           "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
         gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+        # Same worktree + mount as the first reviewer (review-$RNUM).
+        gaffer_record_skill_usage "$RNUM" security-review "$RSTACK" "$RSKILLS" "$S_USAGE_JSON" \
+          "review-$RNUM" "$WT" "$_S_SKILL_SINCE"
         S_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$S_USAGE_JSON" 2>/dev/null || echo '')"
         rm -f "$S_USAGE_JSON"
         if [ "$src" -ne 0 ] || [ -z "${S_RESULT// /}" ]; then

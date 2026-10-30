@@ -87,6 +87,28 @@ gaffer_skills_mount "$DEST3" "(scaffold the stack from the ticket)" "bootstrap-9
   && ok "universal set mounted even when selection matches nothing" \
   || fail "universal set missing on empty selection"
 
+echo "== AC8: telemetry records the MOUNT (universal set too) and the skills the agent OPENED =="
+DEST4="$WORK/repoD"; mkdir -p "$DEST4"
+gaffer_skills_mount "$DEST4" "add-api-endpoint" "review-77"
+SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# The safety hook's tool ledger: this agent (no ticket) Read one mounted skill in ITS
+# worktree; another agent's worktree read must not count.
+printf '%s\n' \
+  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.500Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$DEST4/.claude/skills/add-api-endpoint/SKILL.md\"}" \
+  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.600Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$WORK/other/.claude/skills/run-tests/SKILL.md\"}" \
+  >> "$GAFFER_DATA/tool-metrics.jsonl"
+gaffer_record_skill_usage 77 review python "add-api-endpoint" "" "review-77" "$DEST4" "$SINCE"
+ROW="$(tail -1 "$GAFFER_DATA/skills-telemetry.jsonl" 2>/dev/null)"
+grep -q '"role":"review"' <<<"$ROW" && ok "a review row was written" || fail "no review row: $ROW"
+grep -q '"plan-change"' <<<"$ROW" && ok "selected lists the mounted universal set (plan-change)" || fail "universal set missing from selected: $ROW"
+grep -q '"opened":\["add-api-endpoint"\]' <<<"$ROW" && ok "opened = the skill read in this agent's worktree only" || fail "opened wrong: $ROW"
+# Every agent site records its run.
+for site in "tick.sh:delivery" "tick.sh:bootstrap" "lib/review.sh:review" "lib/review.sh:security-review" "lib/clarify.sh:clarify"; do
+  f="${site%%:*}"; role="${site#*:}"
+  grep -qE "gaffer_record_skill_usage \"\\\$[A-Z]*NUM\" $role " "$RUNNER_DIR/$f" \
+    && ok "$f records $role skill telemetry" || fail "$f does not record $role skill telemetry"
+done
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0
 else echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1; fi

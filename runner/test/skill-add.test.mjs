@@ -7,6 +7,9 @@
 //   • a lone SKILL.md file path installs via its parent dir;
 //   • malformed skills (no frontmatter / no name / no description /
 //     unsafe name) are REJECTED with a reason and install NOTHING;
+//   • the library LINT contract (lib/skill-lint.mjs) is enforced before install:
+//     no / unknown area, a short or trigger-less description, no procedure, a fake
+//     MCP tool, a dangling skill cross-reference, a duplicate description → rejected;
 //   • an existing skill is not overwritten without --force;
 //   • a git url (exercised via a local file:// repo — hermetic) clones,
 //     installs, and does NOT carry a nested .git into the library.
@@ -65,16 +68,37 @@ function makeSkillDir(name, frontmatter) {
   return dir;
 }
 
-const VALID = `---
-name: greeter
-description: Greets the user warmly and specifically.
-stack: [node]
-area: workflow
----
+/** A SKILL.md that passes the library lint contract (lib/skill-lint.mjs). */
+function skillMd(name, { area = "workflow", stack = "[node]", description, body = "" } = {}) {
+  const desc =
+    description ??
+    `Use when the ticket asks for the ${name} procedure; walks the steps and records evidence.`;
+  const filler = Array.from(
+    { length: 24 },
+    (_, i) => `Step detail ${i} keeps the change small, tested and evidenced for review.`,
+  ).join(" ");
+  return `---
+name: ${name}
+description: ${desc}
+stack: ${stack}
+${area === null ? "" : `area: ${area}\n`}---
 
-# Greet
-Say hello.
+# ${name}
+
+## Steps
+
+1. Read the ticket and its acceptance criteria.
+2. Make the smallest change that satisfies them.
+3. Run the tests and record the evidence.
+
+${body}
+
+## Rules
+
+${filler}
 `;
+}
+const VALID = skillMd("greeter");
 
 console.log("== valid local skill dir installs + is selectable by name ==");
 {
@@ -90,10 +114,7 @@ console.log("== a lone SKILL.md file path installs via its parent dir ==");
   const dir = join(WORK, "lone");
   mkdirSync(dir, { recursive: true });
   const md = join(dir, "SKILL.md");
-  writeFileSync(
-    md,
-    `---\nname: lonely\ndescription: A skill given as a bare SKILL.md path.\nstack: []\n---\nBody.\n`,
-  );
+  writeFileSync(md, skillMd("lonely", { stack: "[]" }));
   const res = addSkill({ source: md, skillsDir: SKILLS });
   assert("installs from a SKILL.md file path", res.ok === true && res.name === "lonely");
   assert("landed in the library", existsSync(join(SKILLS, "lonely", "SKILL.md")));
@@ -118,6 +139,85 @@ console.log("== malformed skills are REJECTED and install nothing ==");
   res = addSkill({ source: noDesc, skillsDir: SKILLS });
   assert("missing description → rejected", res.ok === false);
   assert("missing description → not installed", !existsSync(join(SKILLS, "nodesc")));
+}
+
+console.log("== the library LINT contract is enforced before install (nothing written) ==");
+{
+  // The auditor's exercise: no area, a 10-char description, no structure, a fake MCP
+  // tool. Every one of these used to install (rc 0) and then fail skills-lint.
+  const weak = makeSkillDir(
+    "weak",
+    `---\nname: weak\ndescription: Does stuff\nstack: []\n---\n# Weak\nCall \`attach_delivery_evidence\` then npm install.\n`,
+  );
+  const res = addSkill({ source: weak, skillsDir: SKILLS });
+  assert("weak skill → rejected", res.ok === false);
+  assert("weak skill → nothing installed", !existsSync(join(SKILLS, "weak")));
+  for (const [what, re] of [
+    ["missing area", /area/],
+    ["short description", /60–1500/],
+    ["no trigger phrasing", /trigger/],
+    ["no procedure", /procedure/],
+    ["too short", /220 words/],
+    ["fake MCP tool", /attach_delivery_evidence/],
+  ])
+    assert(
+      `weak skill → reason: ${what}`,
+      res.errors.some((e) => re.test(e)),
+    );
+
+  const fakeTool = makeSkillDir(
+    "faketool",
+    skillMd("faketool", { body: "Finish with `attach_delivery_evidence` on every AC." }),
+  );
+  const r2 = addSkill({ source: fakeTool, skillsDir: SKILLS });
+  assert("an otherwise-valid skill naming a fake MCP tool → rejected", r2.ok === false);
+  assert(
+    "…naming the tool",
+    r2.errors.some((e) => /attach_delivery_evidence/.test(e)),
+  );
+
+  const realTool = makeSkillDir(
+    "realtool",
+    skillMd("realtool", { body: "Finish with `record_ac_evidence` on every AC." }),
+  );
+  assert(
+    "a real MCP tool name passes",
+    addSkill({ source: realTool, skillsDir: SKILLS }).ok === true,
+  );
+
+  const noArea = makeSkillDir("noarea", skillMd("noarea", { area: null }));
+  const r3 = addSkill({ source: noArea, skillsDir: SKILLS });
+  assert("no area (would mount on every delivery) → rejected", r3.ok === false);
+  const badArea = makeSkillDir("badarea", skillMd("badarea", { area: "misc" }));
+  assert("unknown area → rejected", addSkill({ source: badArea, skillsDir: SKILLS }).ok === false);
+
+  const xref = makeSkillDir(
+    "xref",
+    skillMd("xref", { body: "Then follow the `no-such-thing` skill." }),
+  );
+  assert(
+    "a cross-reference to a skill that is not installed → rejected",
+    addSkill({ source: xref, skillsDir: SKILLS }).ok === false,
+  );
+
+  const dupDesc = makeSkillDir(
+    "dupdesc",
+    skillMd("dupdesc", {
+      description: `Use when the ticket asks for the greeter procedure; walks the steps and records evidence.`,
+    }),
+  );
+  const r4 = addSkill({ source: dupDesc, skillsDir: SKILLS });
+  assert("a description duplicating an installed skill's → rejected", r4.ok === false);
+  assert(
+    "…naming the skill it duplicates",
+    r4.errors.some((e) => /greeter/.test(e)),
+  );
+
+  const v = validateSkillDir(realTool, { skillsDir: SKILLS, toolNames: null });
+  assert(
+    "unreadable MCP tool sources → a tool-naming skill fails CLOSED",
+    v.ok === false && v.errors.some((e) => /cannot verify/.test(e)),
+  );
 }
 
 console.log("== an unsafe skill name cannot escape the library root ==");
@@ -154,10 +254,7 @@ console.log("== a git url (local file:// repo — hermetic) clones + installs, n
 {
   const repo = join(WORK, "remote-skill");
   mkdirSync(repo, { recursive: true });
-  writeFileSync(
-    join(repo, "SKILL.md"),
-    `---\nname: fromgit\ndescription: A skill fetched from a git remote.\nstack: [node]\narea: workflow\n---\nBody.\n`,
-  );
+  writeFileSync(join(repo, "SKILL.md"), skillMd("fromgit"));
   const git = (...args) =>
     spawnSync("git", ["-C", repo, ...args], { stdio: "ignore", encoding: "utf8" });
   git("init", "-q", "-b", "main");
@@ -189,10 +286,7 @@ console.log("== a bare scalar `stack` is coerced to a one-element list + accepte
   // validateSkillDir's Array.isArray guard is a defensive belt-and-braces check and a
   // scalar stack installs fine. Assert the REAL behaviour rather than a rejection the
   // parser makes impossible.
-  const scalarStack = makeSkillDir(
-    "scalarstack",
-    `---\nname: scalarstack\ndescription: stack given as a bare string.\nstack: node\n---\nBody.\n`,
-  );
+  const scalarStack = makeSkillDir("scalarstack", skillMd("scalarstack", { stack: "node" }));
   const v = validateSkillDir(scalarStack);
   assert("scalar stack → validates ok", v.ok === true);
   const res = addSkill({ source: scalarStack, skillsDir: SKILLS });
@@ -207,10 +301,7 @@ console.log("== a symlink inside the skill is NOT carried into the library (drop
 {
   const secret = join(WORK, "pretend-secret.txt");
   writeFileSync(secret, "PRETEND SECRET\n");
-  const src = makeSkillDir(
-    "symlinky",
-    `---\nname: symlinky\ndescription: Ships a symlink alongside a valid SKILL.md.\nstack: [node]\n---\nBody.\n`,
-  );
+  const src = makeSkillDir("symlinky", skillMd("symlinky"));
   symlinkSync(secret, join(src, "leak.txt")); // absolute symlink to a host path
   const res = addSkill({ source: src, skillsDir: SKILLS });
   assert("symlink skill still installs (valid SKILL.md)", res.ok === true);

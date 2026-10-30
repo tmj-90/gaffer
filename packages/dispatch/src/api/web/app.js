@@ -5411,7 +5411,7 @@ async function renderHealth() {
   const skillPanel = el("div", { class: "card panel" }, [
     panelHead(
       "Skill hit-rate",
-      skills.total_records ? `${skills.total_records} deliveries` : "no telemetry",
+      skills.total_records ? `${skills.total_records} agent runs` : "no telemetry",
     ),
     skillList.length
       ? el(
@@ -5429,7 +5429,7 @@ async function renderHealth() {
       : el(
           "p",
           { class: "section-note dim" },
-          "No skill telemetry yet — selected-vs-applied hit-rate appears once deliveries mount skills.",
+          "No skill telemetry yet — selected-vs-applied hit-rate appears once agents mount skills.",
         ),
   ]);
 

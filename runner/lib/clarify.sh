@@ -158,10 +158,13 @@ EOF
       CLARIFY_MODEL="$(gaffer_route_model clarify "$CRISK" "${CAC:-0}" "" 1 "$CNUM" 2>/dev/null || true)"
       CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
       [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"
+      _C_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       worker_deliver "$CWT" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_CLARIFY_MAX_TURNS:-40}")"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+      gaffer_record_skill_usage "$CNUM" clarify "$CSTACK" "$CSKILLS" "$C_USAGE_JSON" \
+        "clarify-$CNUM" "$CWT" "$_C_SKILL_SINCE"
       rm -f "$C_USAGE_JSON"
       _gaffer_locked .skip.lock _gaffer_append_line "$CLARIFIED_FILE" "$CNUM"
       log "clarify pass for draft #$CNUM finished (rc=$crc)"

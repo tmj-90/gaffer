@@ -88,7 +88,7 @@ the Claude CLI; that's only for live runs.
 | Command | What it does |
 | --- | --- |
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
-| `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the skill-driven `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
+| `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). |
 | `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |
@@ -161,34 +161,21 @@ write is **idempotent** (re-running re-stamps the same `source` / re-asserts `sh
 See `lib/feature-digest.mjs` for the pure builders/parser and the full design note.
 
 ## Selection: how the *right* skill gets used
-The library ships **31 skills** under `skills/<name>/SKILL.md` — generic delivery
-(plan/clarify/branch/evidence/self-review/submit/refactor/docs), testing,
-frontend, backend, security, language conventions, and review/admin.
-
-- Each skill has a sharp **"Use when…" description**;
-  Claude selects by matching the ticket's intent + acceptance criteria.
-- Each skill is also **tagged in its frontmatter** by `stack` (a list of languages /
-  runtimes; empty = any) and `area` (its domain pack — `frontend`, `backend`,
-  `security`, `language`, `testing`, `review`, `docs`, `workflow`, …).
-- The tick injects **stack/area-recommended skills** for the ticket's stack via
-  `bin/select-skills.mjs` (zero-dependency), so selection is steered, not just
-  guessed. A skill matches when its `stack` is empty *or* intersects the ticket's
-  stack, **and** its `area` is empty *or* equals the requested area — the same rule
-  the Crew registry uses, so local and registry selection agree. If the local
-  library is unavailable the tick falls back to the Crew skills registry.
-
-### Domain skill packs
-Beyond the generic delivery skills, the library ships domain packs the agent selects
-by stack/area:
-- **frontend** — `frontend-component`, `frontend-a11y`, `frontend-responsive` (+ `brand`)
-- **backend** — `add-api-endpoint`, `add-db-migration`, `backend-service`
-- **security** — `security-authz`, `security-input-validation`, `security-secret-handling`
-- **language** — `typescript-conventions` (`stack: [typescript, javascript, node]`)
+The library ships **118 skills** under `skills/<name>/SKILL.md`, each tagged in its
+frontmatter by `stack` (languages / runtimes; empty = any) and `area` (its bucket:
+universal delivery mechanics, task packs, stack packs, off-domain packs). Every agent
+role gets its own mount from `bin/select-skills.mjs --role <role>` (delivery, review,
+clarify, test, plan, spec, product, merge, bootstrap): task packs are broad-inclusion,
+language and surface packs follow the stack (fail-open on an unknown stack),
+off-domain packs are opt-in by tag, `--area` or the ticket text, and role-only /
+user-only skills stay with their role. The full model, the per-role table and who
+mounts what: [docs/skill-selection-and-stacks.md](../docs/skill-selection-and-stacks.md).
 
 ```bash
-node bin/select-skills.mjs --stack node --area security   # → the security pack
-node bin/select-skills.mjs --list-areas                   # → all area packs
-node test/select-skills.test.mjs                          # → selector tests
+node bin/select-skills.mjs --stack typescript --text "Add an orders endpoint"   # delivery
+node bin/select-skills.mjs --role review --stack python                          # a role
+node bin/select-skills.mjs --list-areas                                           # buckets
+node test/select-skills.test.mjs                                                  # tests
 ```
 
 ## Security model (deterministic, not trust-based)

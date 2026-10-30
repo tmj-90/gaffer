@@ -2,10 +2,11 @@
 // Gaffer factory — stack/area skill selector.
 //
 // Selects skills from the factory's live SKILL.md library by *stack* (language /
-// runtime) and *area* (domain pack: frontend, backend, security, language, …).
-// Mirrors the Crew registry's matching semantics so local selection and
-// registry selection agree: an empty constraint on either side means "no
-// constraint"; otherwise the sets must intersect (stack) or be equal (area).
+// runtime), *area* (domain pack: frontend, backend, security, language, …), the
+// ticket *text* and the agent *role*. This is the LIVE selector: every factory agent's
+// skill mount comes from it (docs/skill-selection-and-stacks.md has the model and the
+// per-role table). The crew registry (`fg skills`) shares the stack expansion but not
+// the bucket rules; nothing on the live path consults it.
 //
 // Zero runtime dependencies — parses the simple SKILL.md frontmatter by hand so
 // the factory never needs an install to recommend skills.
@@ -237,6 +238,25 @@ const TOKEN_ECOSYSTEM = new Map(
   Object.entries(ECOSYSTEMS).flatMap(([eco, tokens]) => tokens.map((t) => [t, eco])),
 );
 
+/**
+ * RUNTIME ALIASES for stack TAGS. A skill tagged `node` is written for the JS/TS server
+ * runtime, and the onboarding scanner labels most Node services by their language
+ * (`typescript`, `typescript-react`, `javascript`), never `node`. An exact-token compare
+ * therefore kept ~25 backend / data / security packs (tagged `[node, python, go, …]`)
+ * off every TypeScript backend, contradicting the broad-inclusion rule. A `node` tag is
+ * satisfied by a `typescript` or `javascript` stack token too. One direction only: a
+ * `typescript`-tagged pack is not implied by a bare `node` label beyond what its own tag
+ * list already says.
+ */
+const TAG_ALIASES = new Map([["node", ["typescript", "javascript"]]]);
+
+/** Does any of the skill's stack tags name (or alias) a token of the wanted stack? */
+export function stackTagged(skill, stacks = []) {
+  return skill.stack.some(
+    (t) => stacks.includes(t) || (TAG_ALIASES.get(t) ?? []).some((a) => stacks.includes(a)),
+  );
+}
+
 /** File path → the stack tokens it implies (extension and a few manifest names). */
 const PATH_STACK_RULES = [
   [/\.(cs|csproj|fsproj|vbproj|sln|slnx|razor|cshtml)$/i, ["csharp"]],
@@ -318,7 +338,7 @@ export function stackIsKnown(stacks = [], library = []) {
 export function stackPackFits(skill, stacks = [], { stackKnown } = {}) {
   const known = stackKnown ?? stackIsKnown(stacks);
   if (!known) return true;
-  const tagged = skill.stack.some((t) => stacks.includes(t));
+  const tagged = stackTagged(skill, stacks);
   if (skill.area === "language") return tagged;
   if (skill.area === "frontend") return tagged || stacks.some((t) => WEB_STACKS.has(t));
   if (skill.area === "mobile") return tagged || stacks.some((t) => MOBILE_STACKS.has(t));
@@ -340,8 +360,9 @@ export function stackPackFits(skill, stacks = [], { stackKnown } = {}) {
  *     `frontend` from a web stack label).
  *   - OFF-DOMAIN area (marketing/product/planning/devops/infra/meta/security-ops) +
  *     explicit `area` query → must equal the requested area.
- *   - OFF-DOMAIN area + stack-only query → opt-in: included only if ALSO stack-tagged, so
- *     these packs don't leak onto a normal feature delivery.
+ *   - OFF-DOMAIN area + stack-only query → opt-in: included only if stack-tagged AND the
+ *     tag matches the stack (an empty / unknown stack is no match), so these packs don't
+ *     leak onto a normal feature delivery.
  */
 /**
  * ROLE PROCEDURES: the skill that IS another agent's job. They live in universal areas
@@ -359,15 +380,30 @@ const ROLE_ONLY_SKILLS = new Set([
   "product-owner",
   // The merge role's procedure (bin/merge-ticket.mjs mounts it via the merge profile).
   "resolve-merge-conflict",
-  // The RUNNER's own jobs: it creates + checks out the delivery branch and submits the
-  // finished delivery for review. A delivery agent mounting these paid their listing
-  // on every turn for a step it must not take (the brief verifies the branch inline).
-  // Still mounted where a role needs them: review (submit-review). The bootstrap profile
-  // lists create-branch, but the live bootstrap (tick.sh) runs the plain delivery
-  // selection and the runner creates that branch itself, so no live path mounts it.
-  "create-branch",
-  "submit-review",
 ]);
+
+/**
+ * BUILDER skills: written TO the implementing agent ("fix it and re-test", "commit on
+ * the ticket branch"). They ride every delivery (area `review` is universal) but are
+ * kept out of the other roles' LENS areas: the reviewer must leave its worktree
+ * untouched and never commits, so handing it `submit-review` / `self-review` as review
+ * lenses gave it a builder's instructions.
+ */
+const BUILDER_ONLY_SKILLS = new Set(["self-review", "submit-review"]);
+
+/**
+ * USER-ONLY skills: shipped in the library for a human's own Claude Code
+ * (`gaffer skills install`), never mounted on a factory agent by any selection, area,
+ * text or role.
+ *   - `caveman` is a chat-style mode a USER switches on ("caveman mode", `/caveman`); a
+ *     headless agent has no user to ask for it.
+ *   - `create-branch` creates / verifies a `gaffer/` branch by hand. In the factory the
+ *     runner creates and checks out every delivery and bootstrap branch, and the
+ *     delivery brief (`runner/claude/CLAUDE.md` step 5) carries the verification.
+ */
+const USER_ONLY_SKILLS = new Set(["caveman", "create-branch"]);
+/** The user-only names, for the guards that no factory selection returns them. */
+export const USER_ONLY_SKILL_NAMES = Object.freeze([...USER_ONLY_SKILLS]);
 
 /**
  * TEXT-GATED skills: useful on the ticket that calls for them, dead weight on every
@@ -400,14 +436,46 @@ const TEXT_GATED_SKILLS = new Map([
 /** The text-gated names, for the guard that no always-mounted skill points at them. */
 export const TEXT_GATED_SKILL_NAMES = Object.freeze([...TEXT_GATED_SKILLS.keys()]);
 
+/**
+ * TEXT TRIGGERS for off-domain packs whose name / description words do not match how a
+ * ticket asks for them. The generic rule (every part of the name, or two description
+ * words) missed "Write a runbook for the deploy" (`write` is a stop word and
+ * `generator` is in the name) and "Write the postmortem for last night's outage", and
+ * misfired on "health check endpoint" (`seo-audit`'s description says "SEO health
+ * check"). A skill listed here is pulled in by ANY of its trigger words and NOT by the
+ * two-description-words rule (its list is the authoritative recall set). The name /
+ * phrase match still applies. A trigger with a space or hyphen matches as a phrase.
+ * There is no generic Kubernetes-manifests pack: `kubernetes-operator` is the
+ * Operator pattern only and says so, so plain "kubernetes" / "helm" do not pull it.
+ */
+const TEXT_TRIGGERS = new Map([
+  ["runbook-generator", ["runbook", "runbooks", "playbook", "playbooks", "on-call", "oncall"]],
+  [
+    "incident-response",
+    ["postmortem", "postmortems", "post-mortem", "outage", "outages", "incident", "incidents"],
+  ],
+  [
+    "docker-development",
+    ["docker", "dockerfile", "dockerfiles", "docker-compose", "containerise", "containerize"],
+  ],
+  ["terraform-patterns", ["terraform", "opentofu", "tfstate"]],
+  [
+    "kubernetes-operator",
+    ["crd", "crds", "kubebuilder", "operator-sdk", "controller-runtime", "custom resource"],
+  ],
+  ["seo-audit", ["seo", "serp", "meta tags", "search ranking"]],
+]);
+
 export function skillMatches(skill, { stacks = [], area = "", stackKnown } = {}) {
+  // A user-only skill is never a factory agent's, whatever the query.
+  if (USER_ONLY_SKILLS.has(skill.name)) return false;
   // A role procedure is reachable only through its role profile or an explicit --area.
   if (ROLE_ONLY_SKILLS.has(skill.name) && !(area && skill.area === area)) return false;
   // A text-gated skill comes in through textMatches (or an explicit --area) only.
   if (TEXT_GATED_SKILLS.has(skill.name) && !(area && skill.area === area)) return false;
   const known = stackKnown ?? stackIsKnown(stacks);
   const hasStackTag = skill.stack.length > 0;
-  const tagged = skill.stack.some((s) => stacks.includes(s));
+  const tagged = stackTagged(skill, stacks);
   const alwaysEligible =
     !skill.area || UNIVERSAL_AREAS.has(skill.area) || DELIVERY_AREAS.has(skill.area);
   if (alwaysEligible) {
@@ -419,16 +487,14 @@ export function skillMatches(skill, { stacks = [], area = "", stackKnown } = {})
     if (area && skill.area === area) return true;
     return stackPackFits(skill, stacks, { stackKnown: known });
   }
-  const stackOk = !hasStackTag || stacks.length === 0 || tagged;
-  let areaOk;
-  if (area) {
-    // Explicit area query: an off-domain skill must match the requested area.
-    areaOk = skill.area === area;
-  } else {
-    // Stack-only query: an off-domain skill is opt-in unless stack-tagged.
-    areaOk = hasStackTag;
-  }
-  return stackOk && areaOk;
+  // OFF-DOMAIN. An explicit `--area` naming the pack mounts it (its own stack tag still
+  // has to fit a non-empty stack). Without one the pack is opt-in: only a real tag match
+  // brings it in. An EMPTY stack is not a match here — the stack packs fail open on an
+  // unknown stack, but failing open on Terraform / Kubernetes-operator / Docker handed
+  // every unregistered repo's tickets the infra packs. The ticket text (textMatches)
+  // still pulls them in when it names them.
+  if (area) return skill.area === area && (!hasStackTag || stacks.length === 0 || tagged);
+  return hasStackTag && tagged;
 }
 
 /** Words too generic to signal relevance on their own. */
@@ -468,10 +534,16 @@ export function relevanceTokens(text = "") {
  */
 export function textMatches(skill, text = "") {
   if (!text) return false;
+  if (USER_ONLY_SKILLS.has(skill.name)) return false;
   const words = relevanceTokens(text);
   if (words.size === 0) return false;
   const gate = TEXT_GATED_SKILLS.get(skill.name);
   if (gate) return gate.some((w) => words.has(w));
+  const triggers = TEXT_TRIGGERS.get(skill.name);
+  if (triggers) {
+    const lower = String(text).toLowerCase();
+    if (triggers.some((w) => (/[\s-]/.test(w) ? lower.includes(w) : words.has(w)))) return true;
+  }
   const nameParts = [...relevanceTokens(skill.name.replace(/[-_]/g, " "))];
   if (nameParts.length > 0 && nameParts.every((p) => words.has(p))) return true;
   const phrase = skill.name.replace(/[-_]/g, " ").toLowerCase();
@@ -491,6 +563,7 @@ export function textMatches(skill, text = "") {
   if (STACK_PACK_AREAS.has(skill.area) || ROLE_ONLY_SKILLS.has(skill.name)) return false;
   if (!skill.area || UNIVERSAL_AREAS.has(skill.area) || DELIVERY_AREAS.has(skill.area))
     return false;
+  if (triggers) return false;
   const descHits = [...relevanceTokens(skill.description)].filter((t) => words.has(t));
   return descHits.length >= 2;
 }
@@ -560,7 +633,6 @@ export const ROLE_PROFILES = Object.freeze({
     core: [
       "review-ticket",
       "adversarial-reviewer",
-      "submit-review",
       "record-evidence",
       "engineering-craft",
       "minimalism",
@@ -629,11 +701,14 @@ export const ROLE_PROFILES = Object.freeze({
     deliverySelection: false,
   },
   product: {
+    // The PO proposes product AND growth work, so the marketing packs (copywriting,
+    // seo-audit, aeo, landing pages…) are a lens, not a text pull: its run has no ticket
+    // text to pull them with.
     core: ["product-owner", "prd", "rice", "user-story", "product-discovery", "brand", "page-cro"],
-    lensAreas: ["product"],
+    lensAreas: ["product", "marketing"],
     languagePacks: false,
     surfacePacks: false,
-    textPacks: true,
+    textPacks: false,
     deliverySelection: false,
   },
   merge: {
@@ -645,8 +720,10 @@ export const ROLE_PROFILES = Object.freeze({
     deliverySelection: false,
   },
   bootstrap: {
+    // tick.sh's greenfield bootstrap mounts this profile (`--role bootstrap`): the
+    // delivery selection plus the scaffold packs (CI, Docker, shell). The runner creates
+    // the bootstrap branch itself, so no branching skill.
     core: [
-      "create-branch",
       "record-evidence",
       "minimalism",
       "run-tests",
@@ -682,7 +759,7 @@ export function selectForRole(
   const out = [];
   const seen = new Set();
   const push = (skill) => {
-    if (!skill || seen.has(skill.name)) return;
+    if (!skill || seen.has(skill.name) || USER_ONLY_SKILLS.has(skill.name)) return;
     seen.add(skill.name);
     out.push(skill);
   };
@@ -690,9 +767,11 @@ export function selectForRole(
   for (const skill of library) {
     // A whole LENS area, minus the lenses whose own stack tag rules the stack out
     // (`accessibility-review` is a web/mobile lens; a known backend stack skips it).
+    // A builder skill is never another role's lens (see BUILDER_ONLY_SKILLS).
     if (
       profile.lensAreas.includes(skill.area) &&
-      (skill.stack.length === 0 || !stackKnown || skill.stack.some((t) => expanded.includes(t)))
+      !BUILDER_ONLY_SKILLS.has(skill.name) &&
+      (skill.stack.length === 0 || !stackKnown || stackTagged(skill, expanded))
     )
       push(skill);
   }

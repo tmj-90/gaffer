@@ -12,7 +12,8 @@
 #   1. DELIVERY  (alpha, Node)   — TS conventions + the packs the ticket text calls for;
 #                                  no C#/Python/mobile packs; brief + settings installed.
 #   2. REVIEW    (primary)       — review role: lenses + TS pack; NO create-branch /
-#                                  run-coverage / add-api-endpoint; GAFFER_REVIEW_TICKET
+#                                  run-coverage / add-api-endpoint / the builder's
+#                                  submit-review + self-review; GAFFER_REVIEW_TICKET
 #                                  bound into its MCP runtime.
 #      SECURITY  (second pass)   — high-risk ticket → the security reviewer runs, with
 #                                  the security-review lens mounted.
@@ -21,8 +22,8 @@
 #   4. DELIVERY  (beta, Python)  — python-conventions, fix-bug; NO typescript pack.
 #   5. CLARIFY   (draft intake)  — clarify role: clarify/prd/user-story + TS pack; no
 #                                  delivery mechanics.
-#   6. PRODUCT OWNER (headless)  — product role only (product-owner/rice/prd…), not the
-#                                  whole library.
+#   6. PRODUCT OWNER (headless)  — product role only (product-owner/rice/prd… + the
+#                                  marketing lens), not the whole library.
 #
 # Run: bash runner/test/e2e-agent-skill-routing.test.sh
 # =====================================================================
@@ -172,8 +173,8 @@ D1="$(last_call delivery)"
 if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
   ok "1: the delivery agent ran (cwd $(cat "$D1/cwd" | sed "s|$WORK/||"))"
   assert_skills "1: delivery/alpha" "$D1" \
-    "typescript-conventions,add-api-endpoint,pagination-and-filtering,run-tests,run-lint,minimalism,engineering-craft,self-review,record-evidence" \
-    "csharp-conventions,python-conventions,rust-conventions,kotlin-conventions,swift-conventions,mobile-ui,frontend-design,react-patterns,seo-audit,terraform-patterns,kubernetes-operator,review-ticket,create-branch,submit-review,resolve-merge-conflict,dependency-upgrade"
+    "typescript-conventions,add-api-endpoint,pagination-and-filtering,run-tests,run-lint,minimalism,engineering-craft,self-review,submit-review,plan-change,record-evidence" \
+    "csharp-conventions,python-conventions,rust-conventions,kotlin-conventions,swift-conventions,mobile-ui,frontend-design,react-patterns,seo-audit,terraform-patterns,kubernetes-operator,docker-development,review-ticket,create-branch,caveman,resolve-merge-conflict,dependency-upgrade"
   n1="$(wc -l < "$D1/skills" | tr -d ' ')"
   { [ "$n1" -ge 20 ] && [ "$n1" -le 80 ]; } && ok "1: a scoped mount ($n1 skills, not the whole library)" || fail "1: mount size $n1"
   grep -qx "GAFFER_TICKET=$A1" "$D1/env" && ok "1: GAFFER_TICKET=$A1 in the agent env" || fail "1: GAFFER_TICKET missing: $(grep GAFFER_TICKET= "$D1/env")"
@@ -196,8 +197,8 @@ R1="$(last_call review)"; S1="$(last_call security)"
 if [ -z "$R1" ]; then fail "2: no primary reviewer spawn"; else
   ok "2: the primary reviewer ran"
   assert_skills "2: reviewer/alpha" "$R1" \
-    "review-ticket,adversarial-reviewer,submit-review,record-evidence,security-review,performance-review,test-quality-review,typescript-conventions,minimalism,engineering-craft" \
-    "create-branch,run-coverage,prepare-digest-delta,add-api-endpoint,pagination-and-filtering,csharp-conventions,accessibility-review,black-box-test,clarify"
+    "review-ticket,adversarial-reviewer,record-evidence,security-review,performance-review,test-quality-review,typescript-conventions,minimalism,engineering-craft" \
+    "create-branch,submit-review,self-review,run-coverage,prepare-digest-delta,add-api-endpoint,pagination-and-filtering,csharp-conventions,accessibility-review,black-box-test,clarify"
   n2="$(wc -l < "$R1/skills" | tr -d ' ')"
   [ "$n2" -lt "${n1:-999}" ] && ok "2: the reviewer's mount is smaller than the builder's ($n2 < ${n1:-?})" || fail "2: reviewer mount $n2 vs delivery ${n1:-?}"
   if [ -f "$R1/mcp.json" ]; then
@@ -315,8 +316,8 @@ P1="$(last_call po)"
 if [ -z "$P1" ]; then fail "6: the product-owner agent did not run: $(tail -2 "$GAFFER_DATA/po.log" | tr '\n' '|' | cut -c1-300)"; else
   ok "6: the product-owner agent ran"
   assert_skills "6: product-owner/alpha" "$P1" \
-    "product-owner,product-discovery,rice,user-story,prd" \
-    "create-branch,run-tests,add-api-endpoint,review-ticket,black-box-test,csharp-conventions,seo-audit,terraform-patterns"
+    "product-owner,product-discovery,rice,user-story,prd,copywriting,seo-audit" \
+    "create-branch,run-tests,add-api-endpoint,review-ticket,black-box-test,csharp-conventions,terraform-patterns"
   n6="$(wc -l < "$P1/skills" | tr -d ' ')"
   [ "$n6" -le 15 ] && ok "6: a small product mount ($n6 skills)" || fail "6: product mount has $n6 skills"
   [ "$(cat "$P1/settings")" = yes ] && ok "6: safety-hook settings installed in the PO agent home" || fail "6: PO agent home has no settings.json"

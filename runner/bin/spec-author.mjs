@@ -99,6 +99,7 @@ import {
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
+import { recordSkillUsage } from "./record-skill-usage.mjs";
 import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
 import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
@@ -504,6 +505,14 @@ function runClaudeTurn(prompt, opts) {
   } finally {
     home.remove();
   }
+  // SKILL TELEMETRY (fail-soft): what the spec agent had mounted and, best-effort, used.
+  recordSkillUsage({
+    role: "spec",
+    selected: home.skills,
+    output: res?.stdout || "",
+    agentDir: home.dir,
+    since: new Date(t0).toISOString(),
+  });
   if (res.error) {
     if (res.error.code === "ETIMEDOUT") {
       recordKilledCall({

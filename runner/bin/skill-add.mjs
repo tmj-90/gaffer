@@ -26,6 +26,7 @@ import {
   existsSync,
   lstatSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   statSync,
   readFileSync,
@@ -37,6 +38,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { parseFrontmatter, DEFAULT_SKILLS_DIR } from "./select-skills.mjs";
+import { lintErrors, lintSkill, realToolNames } from "../lib/skill-lint.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -59,13 +61,38 @@ export function looksLikeGitUrl(source) {
   );
 }
 
+/** The installed library's skill names and descriptions (name → description). */
+function libraryDescriptions(skillsDir) {
+  const out = new Map();
+  let entries;
+  try {
+    entries = readdirSync(skillsDir);
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    try {
+      const text = readFileSync(join(skillsDir, entry, "SKILL.md"), "utf8");
+      out.set(entry, parseFrontmatter(text, entry).description);
+    } catch {
+      /* not a skill dir */
+    }
+  }
+  return out;
+}
+
 /**
- * Validate a candidate skill DIRECTORY against the runner SKILL.md contract.
+ * Validate a candidate skill DIRECTORY against the runner SKILL.md contract — the SAME
+ * per-skill checks the library lint gate runs (lib/skill-lint.mjs: trigger-phrased
+ * one-line description, a known `area`, a stack list, an H1 + sections + a procedure +
+ * >= 220 words, every MCP-tool-shaped token a real tool, every skill cross-reference
+ * installed), plus: its description must not duplicate another installed skill's. A
+ * skill with no `area` used to pass and then mount on every delivery for every stack.
  * Returns { ok, name, errors }. `errors` is a list of human-readable reasons;
  * on ok the resolved install `name` (from frontmatter, validated) is returned.
  * Pure + filesystem-read-only — no install side effects.
  */
-export function validateSkillDir(dir) {
+export function validateSkillDir(dir, { skillsDir = DEFAULT_SKILLS_DIR, toolNames } = {}) {
   const errors = [];
   if (!dir || !existsSync(dir) || !statSync(dir).isDirectory()) {
     return { ok: false, name: "", errors: [`not a directory: ${dir}`] };
@@ -90,6 +117,22 @@ export function validateSkillDir(dir) {
   }
   if (!Array.isArray(meta.stack))
     errors.push("`stack` must be an inline list (e.g. [react, node])");
+  // The library lint contract. Tool names fail CLOSED when the MCP sources are
+  // unreadable (lintSkill reports each tool-shaped token as unverifiable).
+  const library = libraryDescriptions(skillsDir);
+  const lint = lintSkill({
+    text,
+    dirName: null,
+    skillNames: [...library.keys(), meta.name].filter(Boolean),
+    toolNames: toolNames === undefined ? realToolNames() : toolNames,
+    tag: "SKILL.md",
+  });
+  for (const e of lintErrors(lint)) if (!errors.includes(e)) errors.push(e);
+  const dkey = (meta.description || "").toLowerCase().slice(0, 120);
+  for (const [other, desc] of library) {
+    if (other !== meta.name && dkey && desc.toLowerCase().slice(0, 120) === dkey)
+      errors.push(`description duplicates the installed "${other}" skill's`);
+  }
   return { ok: errors.length === 0, name: meta.name, errors };
 }
 
@@ -138,7 +181,7 @@ export function addSkill({ source, skillsDir = DEFAULT_SKILLS_DIR, force = false
     return { ok: false, name: "", errors: [String(err.message || err)], installedTo: null };
   }
   try {
-    const v = validateSkillDir(fetched.dir);
+    const v = validateSkillDir(fetched.dir, { skillsDir });
     if (!v.ok) return { ok: false, name: v.name, errors: v.errors, installedTo: null };
 
     const dest = join(skillsDir, v.name);

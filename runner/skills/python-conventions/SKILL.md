@@ -36,8 +36,8 @@ live in `with` blocks and shared state is guarded. For the builder and the revie
 
 - Env: use the existing environment — `uv run --no-sync …` (plain `uv run` syncs, i.e.
   installs), `poetry run …`, or `.venv/bin/…`. Never install: the hook blocks
-  `pip install`, and `uv sync`/`poetry install`/`uv add` are forbidden too though the hook
-  does not catch them. A missing tool goes in the evidence.
+  `pip install` and `uv add`, and `uv sync`/`poetry install` are forbidden too though the
+  hook does not catch them. A missing tool goes in the evidence.
 - Lint and format: `ruff check .` and `ruff format --check .` (or `black --check .` and
   `isort --check` where the repo still uses them).
 - Types: `mypy .` (or the configured paths/`--strict`) or `pyright`, per the repo.

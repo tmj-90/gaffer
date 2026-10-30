@@ -29,9 +29,10 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER_DIR = resolve(HERE, "..");
 const ROOT = resolve(RUNNER_DIR, "..");
 const SKILLS_DIR = process.env.SKILLS_DIR || resolve(RUNNER_DIR, "skills");
-const { parseFrontmatter, ROLE_PROFILES } = await import(
-  resolve(RUNNER_DIR, "bin", "select-skills.mjs")
-);
+const { ROLE_PROFILES } = await import(resolve(RUNNER_DIR, "bin", "select-skills.mjs"));
+// The per-skill checks live in lib/skill-lint.mjs so `gaffer skills add` (bin/skill-add.mjs)
+// accepts exactly what this gate accepts.
+const { lintSkill, realToolNames } = await import(resolve(RUNNER_DIR, "lib", "skill-lint.mjs"));
 
 let passed = 0;
 const failures = [];
@@ -43,51 +44,8 @@ const fail = (l) => {
 };
 const assert = (l, c) => (c ? ok(l) : fail(l));
 
-// The selector's area buckets — see docs/skill-selection-and-stacks.md.
-const KNOWN_AREAS = new Set([
-  "quality",
-  "testing",
-  "review",
-  "workflow",
-  "security",
-  "language",
-  "frontend",
-  "mobile",
-  "backend",
-  "data",
-  "refactor",
-  "docs",
-  "marketing",
-  "product",
-  "planning",
-  "devops",
-  "infra",
-  "meta",
-  "security-ops",
-]);
-
-/** Real MCP tool names, read from the servers' source so the list cannot drift. */
-function realToolNames() {
-  const names = new Set();
-  const dispatch = readFileSync(resolve(ROOT, "packages/dispatch/src/mcp/tools.ts"), "utf8");
-  for (const m of dispatch.matchAll(/^ {2}([a-z_]+): \{$/gm)) names.add(m[1]);
-  const memDir = resolve(ROOT, "packages/memory/src/mcp/tools");
-  for (const f of readdirSync(memDir)) {
-    const src = readFileSync(join(memDir, f), "utf8");
-    for (const m of src.matchAll(/"([a-z]+_[a-z_]+)"/g)) names.add(m[1]);
-  }
-  return names;
-}
-const TOOLS = realToolNames();
-// Tokens that LOOK like a tool call (verb_noun) and must therefore be real tools.
-const TOOL_VERBS =
-  /^(create|add|mark|claim|get|heartbeat|record|submit|release|request|set|freeze|search|suggest|update|advance|list|attach|declare|report|find|cards|delete|remove|approve|reject|move|run)_[a-z_]+$/;
-// Backticked snake_case that is NOT a tool: field names, statuses, evidence types
-// (`run_command`, `claim_token`, `test_output`, `changed_surfaces`…). A token that
-// matches TOOL_VERBS but ends in a FIELD suffix is a field, not a call.
-const FIELD_SUFFIX =
-  /_(command|token|id|at|url|name|type|ready|deps|vars|surfaces?|log|only|required|review|testing|merge|output|report|summary|contract|node|indexes|branch|tested|level|count|status|key|path|mode|flag|limit|window|size|by|to|from)$/;
-const looksLikeToolCall = (tok) => TOOL_VERBS.test(tok) && !FIELD_SUFFIX.test(tok);
+const TOOLS = realToolNames(ROOT);
+assert("the MCP tool sources are readable", TOOLS !== null);
 
 const dirs = readdirSync(SKILLS_DIR)
   .filter((d) => {
@@ -109,68 +67,22 @@ for (const dir of dirs) {
     fail(`${tag}: no SKILL.md`);
     continue;
   }
-  const text = readFileSync(file, "utf8");
-  const fmMatch = /^---\s*\n([\s\S]*?)\n---\s*\n/.exec(text);
-  if (!fmMatch) {
-    fail(`${tag}: no frontmatter block`);
-    continue;
-  }
-  const fm = parseFrontmatter(text, "");
-  const body = text.slice(fmMatch[0].length);
+  const res = lintSkill({
+    text: readFileSync(file, "utf8"),
+    dirName: dir,
+    skillNames: dirs,
+    toolNames: TOOLS,
+  });
+  for (const c of res.checks) assert(c.label, c.ok);
+  if (!res.name) continue;
 
-  // 1. frontmatter
-  assert(`${tag}: name matches directory`, fm.name === dir);
-  assert(`${tag}: name is a safe slug`, /^[a-z0-9][a-z0-9._-]*$/.test(fm.name));
-  const descLine = fmMatch[1].split("\n").find((l) => l.startsWith("description:")) || "";
-  assert(
-    `${tag}: description is a single frontmatter line`,
-    descLine.length > 0 && !/^\s*[|>-]?\s*$/.test(descLine.slice(12)),
-  );
-  assert(
-    `${tag}: description is 60–1500 chars`,
-    fm.description.length >= 60 && fm.description.length <= 1500,
-  );
-  assert(
-    `${tag}: description has trigger phrasing (Use when/to/as/on… or Invoke…)`,
-    /\b(Use (when|to|as|on|for|right|after|before|at|during|whenever|in|instead)|Invoke|Reference for)\b/.test(
-      fm.description,
-    ),
-  );
-  assert(`${tag}: stack is a list`, Array.isArray(fm.stack));
-  assert(`${tag}: area "${fm.area}" is a known bucket`, KNOWN_AREAS.has(fm.area));
-  if (seenNames.has(fm.name)) fail(`${tag}: duplicate name (also ${seenNames.get(fm.name)})`);
-  else seenNames.set(fm.name, tag);
-  const dkey = fm.description.toLowerCase().slice(0, 120);
+  // 4. no duplicates across the library
+  if (seenNames.has(res.name)) fail(`${tag}: duplicate name (also ${seenNames.get(res.name)})`);
+  else seenNames.set(res.name, tag);
+  const dkey = res.description.toLowerCase().slice(0, 120);
   if (seenDescs.has(dkey))
     fail(`${tag}: duplicate description opening (also ${seenDescs.get(dkey)})`);
   else seenDescs.set(dkey, tag);
-
-  // 2. body shape
-  assert(`${tag}: has an H1 title`, /^# .+/m.test(body));
-  const h2s = [...body.matchAll(/^## .+/gm)].length;
-  assert(`${tag}: has >= 2 H2 sections`, h2s >= 2);
-  const bullets = [...body.matchAll(/^\s*[-*] /gm)].length;
-  assert(
-    `${tag}: has a numbered procedure or a checklist (>= 3 bullets)`,
-    /^\s*(1\.|- \[ \]|\d+\))\s/m.test(body) || bullets >= 3,
-  );
-  const words = body.split(/\s+/).filter(Boolean).length;
-  assert(`${tag}: body >= 220 words (${words})`, words >= 220);
-  // Placeholder text: a skill may legitimately SAY "no lorem ipsum"; flag only a block
-  // of actual filler (the classic opening) left in the body.
-  assert(`${tag}: no leftover filler text`, !/lorem ipsum dolor/i.test(body));
-
-  // 3. tool + skill references
-  for (const m of body.matchAll(/`([a-z]+_[a-z_]+)`/g)) {
-    const tok = m[1];
-    if (looksLikeToolCall(tok)) assert(`${tag}: \`${tok}\` is a real MCP tool`, TOOLS.has(tok));
-  }
-  for (const m of body.matchAll(/`([a-z0-9-]+)` skill/g)) {
-    assert(`${tag}: cross-ref \`${m[1]}\` skill exists`, dirs.includes(m[1]));
-  }
-  for (const m of body.matchAll(/\bthe ([a-z0-9]+(?:-[a-z0-9]+)+) skill\b/g)) {
-    if (!dirs.includes(m[1])) fail(`${tag}: refers to "the ${m[1]} skill" which does not exist`);
-  }
 }
 
 // 5. role profiles

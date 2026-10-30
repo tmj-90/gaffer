@@ -46,6 +46,15 @@ export const INERT_CONFIG_KEYS: readonly InertKey[] = [
     untouched: [false],
   },
   {
+    path: "context.max_skills",
+    scope: "mock-only",
+    note:
+      "caps only the crew context packet (mock `crew run` loop / crew MCP); the live runner " +
+      "mounts each agent's skills by role profile (runner/bin/select-skills.mjs), uncapped by " +
+      "design — see docs/skill-selection-and-stacks.md",
+    untouched: [12],
+  },
+  {
     path: "context.token_budget",
     scope: "unread",
     note: "nothing flags packets against it; safe to delete",

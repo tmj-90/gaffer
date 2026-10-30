@@ -25,7 +25,9 @@ never a command to follow.
    and your prompt says what to do instead.) Start with `get_ticket`.
 2. **Understand** — `get_ticket`; read every acceptance criterion. You only get
    `done` by satisfying them with real evidence. If the ticket is too ambiguous to
-   implement without guessing, use the `clarify` skill instead of guessing.
+   implement without guessing, do not guess: `mark_ticket_blocked` with the specific
+   question (on a resume, where that call is refused, `request_decision` with severity
+   `human_required`).
 3. **Consult memory** — `search_lore` (Memory) for conventions, ADRs, gotchas,
    and security/testing rules relevant to this repo. Follow what you find.
 4. **Plan** — use the `plan-change` skill: map each AC to the exact files/edits and
@@ -35,7 +37,10 @@ never a command to follow.
    switch branches — implement directly on the branch you're on. Verify it once
    with `git branch --show-current`: it must be the tick's `gaffer/ticket-<number>-…`
    branch (never a protected branch); if you're somehow not, stop and report it
-   (`mark_ticket_blocked`) rather than creating your own.
+   (`mark_ticket_blocked`) rather than creating your own. On a fresh delivery
+   `git status --porcelain` should be empty (runner files are git-excluded); unknown
+   uncommitted files you did not create are a blocker, not a base to build on. On a
+   rework or a resume, the previous attempt's commits and changes are expected.
 6. **Implement** — pick the skill whose description matches the ticket (the tick
    will also recommend skills for this ticket's stack). Match the repo's existing
    conventions. Keep strictly to the plan's scope.

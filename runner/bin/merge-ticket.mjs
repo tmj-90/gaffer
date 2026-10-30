@@ -108,7 +108,7 @@
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -121,7 +121,8 @@ import {
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
 import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
-import { writeAgentSettings } from "../lib/agent-home.mjs";
+import { mountRoleSkills, writeAgentSettings } from "../lib/agent-home.mjs";
+import { mountedNames, recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -616,22 +617,31 @@ export function mergeTicketMcpRuntimePath(n) {
 }
 
 /**
- * Install the project-local .claude wiring (settings + safety hook, skills symlink)
- * and the MCP runtime config into the resolver's WORKTREE — exactly as tick.sh /
- * product-owner-run.mjs do — so the headless run gets the same safety boundary and the
- * dispatch/memory MCP servers. Returns the runtime MCP config path.
+ * Install the project-local .claude wiring (settings + safety hook, the MERGE role's
+ * skill mount) and the MCP runtime config into the resolver's WORKTREE — exactly as
+ * tick.sh / product-owner-run.mjs do — so the headless run gets the same safety boundary
+ * and the dispatch/memory MCP servers. Returns the runtime MCP config path.
+ *
+ * Skills: the merge profile (select-skills --role merge: resolve-merge-conflict, the
+ * test / lint mechanics, record-evidence, minimalism and the repo stack's conventions
+ * pack), not a symlink to the whole library — the resolver used to see every skill in
+ * the library, marketing and Terraform included. `stack` is the repo's registered stack
+ * label. Falls back to the whole library only when nothing resolves (mountRoleSkills).
  */
-export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) {
+export function installProjectLocalWiring(
+  worktreePath,
+  ticketNumber,
+  repoName,
+  { stack = "" } = {},
+) {
   const claudeDir = resolve(worktreePath, ".claude");
   mkdirSync(claudeDir, { recursive: true });
 
-  const skillsLink = resolve(claudeDir, "skills");
-  try {
-    rmSync(skillsLink, { force: true });
-  } catch {
-    /* nothing to remove */
-  }
-  symlinkSync(CONFIG.skillsDir, skillsLink, "dir");
+  mountRoleSkills(claudeDir, {
+    role: "merge",
+    stacks: stack ? [stack] : [],
+    skillsDir: CONFIG.skillsDir,
+  });
 
   // Render AND verify the safety-hook wiring: an unwired or unreadable template
   // throws "SAFETY: …" and the caller refuses the resolver spawn (fail closed).
@@ -1332,7 +1342,9 @@ function main() {
 
   let mcpRuntime;
   try {
-    mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name);
+    mcpRuntime = installProjectLocalWiring(worktree, resolved.number, repo.name, {
+      stack: repo.stack,
+    });
   } catch (e) {
     rmSync(mergeTicketMcpRuntimePath(resolved.number), { force: true });
     removeWorktree(repo.localPath, worktree);
@@ -1370,6 +1382,16 @@ function main() {
   // The rendered runtime served this one spawn: drop it whatever the outcome, so
   // GAFFER_DATA does not collect one mcp-merge-ticket-<n>-runtime.json per ticket.
   rmSync(mcpRuntime, { force: true });
+  // SKILL TELEMETRY (fail-soft): the merge role's mount and, best-effort, what was used.
+  recordSkillUsage({
+    ticket: resolved.number,
+    role: "merge",
+    stack: repo.stack,
+    selected: mountedNames(resolve(worktree, ".claude", "skills-mount")),
+    output: res.stdout || "",
+    agentDir: worktree,
+    since: new Date(t0).toISOString(),
+  });
 
   if (res.error) {
     removeWorktree(repo.localPath, worktree);

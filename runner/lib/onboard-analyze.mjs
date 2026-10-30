@@ -107,6 +107,28 @@ function _skillHash(text) {
 const CARD_GENERATION_SKILL = _loadSkillContent("card-generation");
 const CARD_REVIEW_SKILL = _loadSkillContent("card-review");
 
+/** One `## <heading>` section of a skill body (up to the next `## `), or null. */
+function _skillSection(skillName, heading) {
+  const body = _loadSkillContent(skillName);
+  if (!body) return null;
+  const start = body.search(new RegExp(`^## ${heading}\\s*$`, "m"));
+  if (start === -1) return null;
+  const rest = body.slice(start);
+  const next = rest.slice(3).search(/^## /m);
+  return (next === -1 ? rest : rest.slice(0, next + 3)).trim();
+}
+
+// The memory-onboard SKILL is an INTERACTIVE interview ("confirm with the user"), so the
+// one-shot onboarding pass cannot inline it whole the way it inlines the card skills.
+// MEMORY_ONBOARD_RULE (below) is a non-interactive distillation of the skill's
+// "## Hard rules". MEMORY_ONBOARD_RULES_SYNCED_SHA pins the version of that section it
+// was distilled from: test/onboard-memory-rules-sync.test.mjs fails when the skill's
+// hard rules change, so an edit to the skill cannot silently miss the agent — the
+// distillation is re-synced and the pin bumped in the same change.
+export const MEMORY_ONBOARD_HARD_RULES = _skillSection("memory-onboard", "Hard rules");
+export const MEMORY_ONBOARD_RULES_HASH = _skillHash(MEMORY_ONBOARD_HARD_RULES);
+export const MEMORY_ONBOARD_RULES_SYNCED_SHA = "dc559fa5";
+
 // ── Material-gathering bounds (keep the prompt bounded + cheap) ───────────────
 const README_MAX_CHARS = 6000;
 const TREE_MAX_ENTRIES = 120;

@@ -82,6 +82,7 @@ import { fileURLToPath } from "node:url";
 import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
+import { recordSkillUsage } from "./record-skill-usage.mjs";
 import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
 import {
   appendUsageRecord,
@@ -831,6 +832,16 @@ function runLiveTester(context) {
       GAFFER_WRITE_ROOTS: worktree,
       GAFFER_READ_ROOTS: repo.localPath,
     },
+  });
+  // SKILL TELEMETRY (fail-soft): the test role's mount and, best-effort, what was used.
+  recordSkillUsage({
+    ticket: n,
+    role: "test",
+    stack: repo.stack || "",
+    selected: skills,
+    output: res.stdout || "",
+    agentDir: worktree,
+    since: new Date(t0).toISOString(),
   });
   try {
     rmSync(mcpRuntime, { force: true });

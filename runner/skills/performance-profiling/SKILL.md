@@ -28,10 +28,11 @@ documentation on repeated runs and variance.
    open-model / constant-arrival-rate generator (`k6` `constant-arrival-rate`, `wrk2
    -R`): closed-loop tools that wait for each response under-report tail latency
    (coordinated omission). Record the exact command and machine. Use only tools already
-   installed; never install one (npm/pip installs are hook-blocked; `go install`,
-   `cargo install`, `uv`/`pipx` and a fetching `npx` are not blocked but are equally
-   forbidden; `node_modules` is shared). If a needed tool is missing, say so in the
-   evidence and use what exists.
+   installed; never install one (the hook blocks npm/pip installs, `go install`,
+   `cargo install`, `uv add`, `pipx run` and `npx -y`; a plain fetching `npx <tool>`
+   and `uv sync` are not blocked but are equally forbidden — run `npx --no -- <tool>`;
+   `node_modules` is shared). If a needed tool is missing, say so in the evidence and
+   use what exists.
 3. **Find the bottleneck resource first.** For each resource (CPU, memory, disk,
    network, connection pools, locks) check utilisation, saturation and errors (USE). A
    request waiting on a pool or a lock is not a CPU problem.

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
-# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|no_work|error` line.
+# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|no_work|error|setup_error`
+# line (setup_error: a fail-closed setup check refused before any agent launched).
 #
 # DRY_RUN=1 (default) prints the plan and never invokes Claude or mutates a repo.
 set -uo pipefail
@@ -344,6 +345,33 @@ _gaffer_append_line() { echo "$2" >> "$1"; }
 # Locked backpressure-report append: _gaffer_bp_record <file> <repo> <triple> <reason>.
 _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 result() { echo "TICK_RESULT=$1"; }
+# SETUP ERROR: one exit for every fail-closed SETUP failure (no agent launched: the
+# dispatch CLI unbuilt, no timeout primitive, an unregistrable agent, the safety hook /
+# agent env / DB vars / MCP or prompt render refusing). These used to `exit 1` with
+# `error`: the crash trap then released the claim as "runner killed mid-delivery" (no
+# kill happened), the ticket was re-claimed on the very next tick, and one broken
+# install burned the whole MAX_TICKS_PER_DAY on claim/teardown churn. Now the claim is
+# released (or a resume re-paused) with the REAL reason, the ticket is skipped for the
+# run, the cause is written to $GAFFER_DATA/.setup-error for the loop / daemon, and the
+# tick reports `setup_error` — which loop.sh / worker.sh treat as "stop this run" and
+# the daemon backs off on (lib/daemon.sh). $1 = tag (SAFETY, MCP-RENDER, …), $2 = msg.
+gaffer_abort_setup() {
+  local tag="$1" msg="$2"
+  log "$tag: $msg"
+  _GAFFER_EXIT_CAUSE="setup error: $tag"
+  ( umask 077; printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tag" "$msg" > "$GAFFER_DATA/.setup-error" ) 2>/dev/null || true
+  if [ -n "${NUM:-}" ]; then
+    if [ "${_RESUMING:-0}" = "1" ] && declare -F gaffer_resume_abort >/dev/null 2>&1; then
+      gaffer_resume_abort "setup error: $tag — $msg"
+    elif [ -n "${CLAIM_TOKEN:-}" ] && [ "${GAFFER_CLAIM_RESOLVED:-0}" != "1" ] \
+         && declare -F gaffer_release_delivery >/dev/null 2>&1; then
+      gaffer_release_delivery ready "setup error: $tag — $msg (no agent was launched)"
+    fi
+    [ -n "${SKIP_FILE:-}" ] && gaffer_skip_ticket "$NUM"
+  fi
+  result setup_error
+  exit 1
+}
 # Derive an opt-in `--area` from the repo stack label where it is UNAMBIGUOUS, so
 # the area-only packs that select-skills now gates (FIX-2) still fire when the
 # stack clearly implies a domain. Today only the web/front-end family is safe to
@@ -364,14 +392,14 @@ gaffer_area_for_stack() {
 # via factory.config.sh) — they wrap UNTRUSTED ticket-derived fields (title,
 # review feedback) in a delimited envelope before they reach the agent prompt.
 
-[ -f "$DISPATCH_DIR/dist/cli/index.js" ] || { log "dispatch not built — run: pnpm -C $DISPATCH_DIR build"; result error; exit 1; }
+[ -f "$DISPATCH_DIR/dist/cli/index.js" ] || gaffer_abort_setup SETUP "dispatch not built — run: pnpm -C $DISPATCH_DIR build"
 
 # R-10: fail closed on a missing timeout primitive. Every live `claude -p` call
 # below runs under gaffer_timeout, which now REFUSES to run unbounded when no
 # perl/timeout/gtimeout exists. Assert one is present up front and abort the tick
 # as a setup error rather than discovering it mid-delivery (a runaway agent must
 # never even be launched).
-gaffer_timeout_preflight || { log "no timeout primitive — aborting tick (setup error)"; result error; exit 1; }
+gaffer_timeout_preflight || gaffer_abort_setup SETUP "no timeout primitive — aborting tick (setup error)"
 
 # Part B (defense-in-depth): before this tick can claim work and spawn ANY paid
 # `claude -p`, consult the per-UTC-day USD cap. If the day's ledger spend is already
@@ -389,7 +417,7 @@ fi
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true
   if ! wg agent register -n "$GAFFER_AGENT_NAME" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_AGENT_ID_FILE" 2>/dev/null; then
-    log "could not register factory agent"; result error; exit 1
+    gaffer_abort_setup SETUP "could not register factory agent"
   fi
 fi
 AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
@@ -398,7 +426,7 @@ AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 if [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
   if ! wg agent register -n "${GAFFER_AGENT_NAME}-reviewer" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_REVIEWER_ID_FILE" 2>/dev/null \
      || [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
-    rm -f "$GAFFER_REVIEWER_ID_FILE"; log "could not register the reviewer principal"; result error; exit 1
+    rm -f "$GAFFER_REVIEWER_ID_FILE"; gaffer_abort_setup SETUP "could not register the reviewer principal"
   fi
 fi
 REVIEWER_AGENT="$(cat "$GAFFER_REVIEWER_ID_FILE")"
@@ -1031,7 +1059,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     fi
 
     # Fail closed: never run a live agent without the deterministic safety hook.
-    gaffer_assert_safety_hook || { log "SAFETY: refusing live bootstrap (fail closed)"; result error; exit 1; }
+    gaffer_assert_safety_hook || gaffer_abort_setup SAFETY "refusing live bootstrap (fail closed)"
 
     # EXECUTION PREFLIGHT (lib/registry-probe.sh): the bootstrap's one permitted
     # install needs the package registry from INSIDE the agent's allowlisted env.
@@ -1111,13 +1139,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # boundary. FAIL CLOSED: release the claim back to ready (the scaffold resumes on
     # the next attempt), skip the ticket this run, and never spawn.
     if ! gaffer_install_agent_dir "$B_DIR" "$B_SKILLS" "bootstrap-$NUM"; then
-      log "SAFETY: agent-env install failed for bootstrap #$NUM (settings/hook wiring unverified) — refusing live bootstrap (fail closed)"
-      gaffer_release_delivery ready "bootstrap: agent-env install failed (safety-hook wiring unverified) — refusing live bootstrap (fail closed)"
-      gaffer_skip_ticket "$NUM"
-      result error; exit 1
+      gaffer_abort_setup SAFETY "agent-env install failed for bootstrap #$NUM (settings/hook wiring unverified) — refusing live bootstrap (fail closed)"
     fi
     MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
-    gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"; result error; exit 1; }
+    gaffer_assert_db_vars || gaffer_abort_setup DB-VARS "DISPATCH_DB/MEMORY_DB empty — refusing live bootstrap (fail closed)"
     # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
     # MCP server env so the agent's evidence writes resolve it without ever handling
     # the token string. Substituted alongside the DB/bin placeholders.
@@ -1136,13 +1161,13 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
     # must abort the bootstrap before the agent launch — the bare sed never did.
     gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "" \
-      || { log "MCP-RENDER: failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"; result error; exit 1; }
+      || gaffer_abort_setup MCP-RENDER "failed to render bootstrap runtime .mcp.json — refusing live bootstrap (fail closed)"
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
     B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
     B_PROMPT="$(gaffer_render_delivery_prompt bootstrap)" \
-      || { log "PROMPT-RENDER: failed to render bootstrap prompt for #$NUM — refusing live bootstrap (fail closed)"; result error; exit 1; }
+      || gaffer_abort_setup PROMPT-RENDER "failed to render bootstrap prompt for #$NUM — refusing live bootstrap (fail closed)"
 
     RUN_LOG_MARK="$(wc -l < "$GAFFER_LOG" 2>/dev/null || echo 0)"
     # The scoped install allowance: GAFFER_BOOTSTRAP_INSTALL=1 + GAFFER_BOOTSTRAP_DIR
@@ -1656,10 +1681,10 @@ EOF
     # fresh turn allowance. No re-claim, no re-scaffold; the ticket is already
     # in_progress and the branch already carries the partial work.
     PROMPT="$(gaffer_render_delivery_prompt resume)" \
-      || { log "PROMPT-RENDER: failed to render resume prompt for #$NUM — aborting delivery (fail closed)"; result error; exit 1; }
+      || gaffer_abort_setup PROMPT-RENDER "failed to render resume prompt for #$NUM — aborting delivery (fail closed)"
   else
   PROMPT="$(gaffer_render_delivery_prompt fresh)" \
-    || { log "PROMPT-RENDER: failed to render delivery prompt for #$NUM — aborting delivery (fail closed)"; result error; exit 1; }
+    || gaffer_abort_setup PROMPT-RENDER "failed to render delivery prompt for #$NUM — aborting delivery (fail closed)"
   fi
 
   if [ "$_RESUMING" = "1" ]; then
@@ -1932,7 +1957,7 @@ EOF
   # PreToolUse hook is the safety boundary; env carries the two server DB paths.
   # Fail CLOSED: the safety hook is THE deterministic boundary. If it's missing,
   # never run a live agent — Claude Code would otherwise run with no boundary.
-  gaffer_assert_safety_hook || { log "SAFETY: refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_assert_safety_hook || gaffer_abort_setup SAFETY "refusing live run (fail closed)"
 
   # ── Agent-environment install (runs before EVERY attempt's launch) ──────────
   # Installs the project-local agent environment into the PRIMARY write worktree
@@ -1964,12 +1989,12 @@ EOF
     return 0
   }
   # Attempt 1's install (the retry loop re-runs it for every later attempt).
-  gaffer_install_agent_env || { log "SAFETY: agent-env install failed for #$NUM — refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_install_agent_env || gaffer_abort_setup SAFETY "agent-env install failed for #$NUM — refusing live run (fail closed)"
   # Substitute the real DB paths into a RUNTIME copy OUTSIDE the repo. Writing into
   # $PRIMARY_REPO/.mcp.json breaks when the target repo IS the runner itself (source
   # == destination → the redirect truncates the file → "Invalid MCP configuration").
   MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
-  gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"; result error; exit 1; }
+  gaffer_assert_db_vars || gaffer_abort_setup DB-VARS "DISPATCH_DB/MEMORY_DB empty — refusing live run (fail closed)"
   # RUNNER-OWNED-BOOKKEEPING: inject the runner-held claim token into the dispatch
   # MCP server env (GAFFER_CLAIM_TOKEN) so the agent's token-gated evidence writes
   # resolve it from the server env — the agent never handles the token. Empty for a
@@ -1994,7 +2019,7 @@ EOF
   # Fail-closed: a render error (ts renderer rejects a broken/drifted template)
   # must abort the delivery before the agent launch — the bare sed never did.
   gaffer_render_mcp_runtime "$MCP_CONFIG" "$MCP_RUNTIME" "$NUM" \
-    || { log "MCP-RENDER: failed to render delivery runtime .mcp.json — refusing live run (fail closed)"; result error; exit 1; }
+    || gaffer_abort_setup MCP-RENDER "failed to render delivery runtime .mcp.json — refusing live run (fail closed)"
   chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
   # ── P1b GOLDEN CAPTURE (docs/tick-sh-runtime-migration.md) ──────────────────
   # Default-OFF dump of the assembled context (the delivery PROMPT + the rendered

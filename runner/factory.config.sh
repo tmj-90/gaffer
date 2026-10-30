@@ -430,6 +430,7 @@ export GAFFER_MCP_BRIDGE
 : "${GAFFER_SANDBOX_PIDS:=512}"
 : "${GAFFER_DAEMON_INTERVAL:=30}"    # seconds between `gaffer run --daemon` cycles
 : "${GAFFER_DAEMON_MAX_CYCLES:=0}"   # 0 = unbounded
+: "${GAFFER_DAEMON_SETUP_BACKOFF_MAX:=1800}"   # ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3)
 GAFFER_MAX_TURNS_FLAG=""; [ -n "${GAFFER_MAX_TURNS:-}" ] && GAFFER_MAX_TURNS_FLAG="--max-turns $GAFFER_MAX_TURNS"
 export GAFFER_TICK_TIMEOUT GAFFER_MAX_TURNS
 

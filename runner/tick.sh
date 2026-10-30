@@ -782,7 +782,9 @@ gaffer_distill_ticket_intent() {
   # active), there is nothing new to harvest. Fail-soft: an unreadable lookup drafts
   # as before rather than silently skipping.
   local _existing
-  _existing="$(lg search --repo "$RECALL_REPO_NAME" --tag "ticket-$NUM" --include-drafts --json 2>/dev/null \
+  # --no-record-reads: a bookkeeping lookup, not an agent retrieval — it must not
+  # count as a read in `memory stats` (top-cited / retirement candidates).
+  _existing="$(lg search --repo "$RECALL_REPO_NAME" --tag "ticket-$NUM" --include-drafts --no-record-reads --json 2>/dev/null \
     | jget 'Array.isArray(d) ? d.length : 0' 2>/dev/null || echo 0)"
   if [ "${_existing:-0}" != "0" ]; then
     log "memory: requirement for #$NUM already distilled (${_existing} record(s) tagged ticket-$NUM) — not drafting again"

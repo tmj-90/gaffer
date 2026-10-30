@@ -25,6 +25,11 @@
  * that list is refused, FAIL CLOSED — the same posture as the safety hook
  * and the dispatch gate.
  *
+ * The same binding applies to the repo TAGS on lore writes (`suggest_lore`,
+ * `report_conflict`): those land as drafts by default, but under
+ * MEMORY_AUTO_APPROVE a suggestion is active at once, and either way a
+ * repo-tagged record is what that repo's PRODUCT CONTEXT primer serves.
+ *
  * Standalone `memory-mcp` never sets `GAFFER_FACTORY`, so the guard is
  * INERT there and standalone behaviour is UNCHANGED.
  *
@@ -54,6 +59,20 @@ export function parseTicketRepos(value: string | undefined): string[] {
     .split(/[\n:]+/)
     .map((r) => r.trim())
     .filter(Boolean);
+}
+
+/**
+ * The first entry of `repos` outside the ticket's scope, or undefined when
+ * every entry is in scope. Used for lore writes that carry a repo LIST
+ * (suggest_lore, report_conflict): the whole write is refused on any bad
+ * entry rather than silently intersected, so the attempt is visible and a
+ * record never lands with fewer repo tags than the agent asked for.
+ */
+export function firstRepoOutOfScope(
+  repos: ReadonlyArray<string>,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  return repos.find((r) => !repoInScope(r, env));
 }
 
 /**
@@ -93,8 +112,9 @@ export function repoOutOfScopeRefusal(repo: string): RepoOutOfScopeRefusal {
     repo,
     hint:
       "This memory write targets a repo outside the current ticket's scope. " +
-      "A delivery agent may only write direct-apply memory (digest / feature) " +
-      "for the repo(s) its ticket is scoped to. If this repo genuinely belongs " +
-      "to the ticket, the operator must add it to the ticket's repo scope.",
+      "A delivery agent may only write memory (digest / feature, or lore " +
+      "suggestions and conflict reports tagged to a repo) for the repo(s) its " +
+      "ticket is scoped to. If this repo genuinely belongs to the ticket, the " +
+      "operator must add it to the ticket's repo scope.",
   };
 }

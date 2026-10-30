@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
+import { defaultAuditPath } from "../core/audit.js";
 import { openDb, defaultDbPath } from "../db/index.js";
 import { VERSION } from "../version.js";
 
@@ -14,7 +14,7 @@ interface Check {
 }
 
 function auditPath(): string {
-  return process.env["MEMORY_AUDIT_LOG"] ?? join(homedir(), ".memory", "audit.jsonl");
+  return defaultAuditPath();
 }
 
 function checkFileMode(path: string, required: number): Check["level"] {

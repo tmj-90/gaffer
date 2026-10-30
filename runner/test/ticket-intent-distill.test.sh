@@ -103,6 +103,20 @@ else
     gaffer_distill_ticket_intent
     DN2="$(lg search --repo app --kind requirement --include-drafts --json 2>/dev/null | jget 'd.length' 2>/dev/null || echo 0)"
     if [ "$DN2" = "1" ]; then ok "re-submitting #42 (rework) does not draft a duplicate requirement (still 1)"; else fail "duplicate drafts per rework cycle (got $DN2)"; fi
+    # The dedupe lookup is bookkeeping, not an agent retrieval: it must not add
+    # 'read' events (they drive memory stats top-cited / retirement candidates).
+    read_events() {
+      MEMORY_DB="$MEMORY_DB" node -e '
+        const D = require(process.argv[1]);
+        const db = new D(process.env.MEMORY_DB, { readonly: true });
+        console.log(db.prepare("SELECT COUNT(*) AS n FROM events WHERE kind = '"'"'read'"'"'").get().n);
+      ' "$GAFFER_HOME/packages/memory/node_modules/better-sqlite3" 2>/dev/null || echo "?"
+    }
+    R0="$(read_events)"
+    unset MEMORY_AUDIT_OFF MEMORY_NO_TELEMETRY
+    gaffer_distill_ticket_intent
+    R1="$(read_events)"
+    if [ "$R0" != "?" ] && [ "$R0" = "$R1" ]; then ok "the ticket-<n> dedupe lookup records no read events"; else fail "dedupe lookup recorded reads ($R0 -> $R1)"; fi
     AT="$(printf '%s' "$DRAFTS" | jget 'd[0]?.title ?? ""' 2>/dev/null || echo '')"
     case "$AT" in
       "Requirement from #42:"*) ok "record title carries the ticket provenance ($AT)" ;;

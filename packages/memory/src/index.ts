@@ -19,6 +19,7 @@ export {
   getLore,
   getRejectionReason,
   listDrafts,
+  listLoreVersions,
   listRecent,
   listRepos,
   listTags,
@@ -27,12 +28,14 @@ export {
   searchLore,
   searchLoreCount,
   supersedeLore,
+  supersedeRefusal,
   suggestLore,
   updateLore,
   verifyLore,
   ensureLoreEmbeddings,
   fuseHybrid,
 } from "./core/lore.js";
+export type { GetLoreOptions, LoreVersion, SupersedeRefusal } from "./core/lore.js";
 export {
   HashedNgramEmbedder,
   HASHED_NGRAM_DIM,

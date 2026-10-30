@@ -131,3 +131,20 @@ describe("audit log boundary", () => {
     expect("body" in row.request).toBe(false);
   });
 });
+
+describe("defaultAuditPath — the one resolver every reader shares", () => {
+  it("honours MEMORY_AUDIT_LOG, else stays per-user ~/.memory/audit.jsonl (never beside a shared DB)", async () => {
+    const { homedir } = await import("node:os");
+    const prevDb = process.env["MEMORY_DB"];
+    process.env["MEMORY_DB"] = join(tmpdir(), "shared-volume", "lore.db");
+    try {
+      const { defaultAuditPath } = await freshAudit();
+      expect(defaultAuditPath()).toBe(tmpPath);
+      delete process.env["MEMORY_AUDIT_LOG"];
+      expect(defaultAuditPath()).toBe(join(homedir(), ".memory", "audit.jsonl"));
+    } finally {
+      if (prevDb === undefined) delete process.env["MEMORY_DB"];
+      else process.env["MEMORY_DB"] = prevDb;
+    }
+  });
+});

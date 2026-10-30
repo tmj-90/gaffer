@@ -7,8 +7,6 @@
  * (pruning, absence markers, demo data).
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 
 import {
   findActiveAbsence,
@@ -22,6 +20,7 @@ import { getBool, getString } from "../args.js";
 import type { parseArgs } from "../args.js";
 import { cleanDemo, countLore, seedDemo } from "../demo.js";
 import { renderDoctor, runDoctor } from "../doctor.js";
+import { defaultAuditPath } from "../../core/audit.js";
 import { formatAuditLine } from "../helpers/audit.js";
 import {
   addMcpServer,
@@ -223,7 +222,7 @@ export async function cmdDoctor(): Promise<number> {
  * opts back into full JSON for power users who explicitly want it.
  */
 export async function cmdAudit(args: ReturnType<typeof parseArgs>): Promise<number> {
-  const path = process.env["MEMORY_AUDIT_LOG"] ?? join(homedir(), ".memory", "audit.jsonl");
+  const path = defaultAuditPath();
   if (!existsSync(path)) {
     process.stdout.write("memory: no audit log yet\n");
     return 0;
@@ -478,8 +477,7 @@ export async function cmdStats(args: ReturnType<typeof parseArgs>): Promise<numb
       truncated: number;
     }> = [];
     if (wantsEvidence) {
-      const auditPath =
-        process.env["MEMORY_AUDIT_LOG"] ?? join(homedir(), ".memory", "audit.jsonl");
+      const auditPath = defaultAuditPath();
       for (const c of cited) {
         const { rows, truncated } = await evidenceForRecord(auditPath, c.id, {
           sinceDays,

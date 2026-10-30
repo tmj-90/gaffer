@@ -23,6 +23,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { endianness } from "node:os";
 
 /** A text → fixed-dimension unit vector function. Must be pure and deterministic. */
 export interface Embedder {
@@ -125,6 +126,17 @@ export function cosine(a: Float32Array, b: Float32Array): number {
   return dot / Math.sqrt(na * nb);
 }
 
+/**
+ * Dot product of two UNIT vectors (every stored and query vector is
+ * L2-normalised by the embedder, so this equals their cosine) — about half
+ * the cost of {@link cosine}, which matters when scoring the whole corpus.
+ */
+export function dotUnit(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i]! * b[i]!;
+  return dot;
+}
+
 /** Little-endian float32 bytes for storage in a BLOB column. */
 export function serialiseVector(v: Float32Array): Buffer {
   const buf = Buffer.alloc(v.length * 4);
@@ -132,10 +144,19 @@ export function serialiseVector(v: Float32Array): Buffer {
   return buf;
 }
 
+const LITTLE_ENDIAN = endianness() === "LE";
+
 /** Inverse of {@link serialiseVector}. Alignment-safe (a SQLite BLOB may be unaligned). */
 export function deserialiseVector(buf: Buffer, dim: number): Float32Array {
   if (buf.byteLength !== dim * 4) {
     throw new Error(`stored vector has ${buf.byteLength} bytes, expected ${dim * 4}`);
+  }
+  // Fast path: on a little-endian host with a 4-byte-aligned BLOB, copy the
+  // bytes through a Float32Array view (an order of magnitude faster than
+  // readFloatLE per component). Copied, not aliased, so the result never pins
+  // Node's shared Buffer pool.
+  if (LITTLE_ENDIAN && buf.byteOffset % 4 === 0) {
+    return new Float32Array(buf.buffer, buf.byteOffset, dim).slice();
   }
   const v = new Float32Array(dim);
   for (let i = 0; i < dim; i++) v[i] = buf.readFloatLE(i * 4);

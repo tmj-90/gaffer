@@ -140,8 +140,9 @@ grep -qE '^gaffer_assert_safety_hook\(\)' "$TICK" \
   && ok "gaffer_assert_safety_hook() centralises the fail-closed hook precondition" \
   || fail "the centralised safety-hook precondition is gone — containment gate lost"
 # 2) …and it HARD-GATES the live path at >=3 call sites (bootstrap / live run / agent-env prep),
-#    each refusing to proceed (exit/return) when the assertion fails.
-GATES="$(grep -cE 'gaffer_assert_safety_hook \|\| \{' "$TICK" || true)"
+#    each refusing to proceed (exit/return) when the assertion fails — inline, or through
+#    gaffer_abort_setup (which always exits the tick as setup_error).
+GATES="$(grep -cE 'gaffer_assert_safety_hook \|\| (\{|gaffer_abort_setup )' "$TICK" || true)"
 [ "$GATES" -ge 3 ] && ok "tick.sh fail-closes on a missing safety hook at $GATES live gate sites (>=3)" \
   || fail "safety-hook hard-gate weakened: expected >=3 gaffer_assert_safety_hook call sites (got $GATES)"
 # And worker_deliver's Claude branch STILL runs under the env -i allowlist scrub +

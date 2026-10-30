@@ -12,7 +12,7 @@
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
-<!-- screenshot: overview -->
+![The Match Day overview: the scoreboard, the Team Sheet of things that need you, and the Tactics Board](docs/img/match-day-overview.png)
 
 Gaffer is a software factory I run on my own machine. I give it tickets, or a one-line idea that it breaks into tickets, and it works through them in throwaway git worktrees while I get on with something else. When I come back there's a short list of diffs waiting for me, each with evidence that the tests really ran. Nothing merges until I've read the diff and approved it.
 
@@ -105,11 +105,11 @@ To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OA
 
 ## The dashboard
 
-<!-- screenshot: tactics-board -->
+![The Tactics Board: the ticket lifecycle drawn as a pitch, one channel per repo, each agent a numbered shirt on the ticket it holds](docs/img/match-day-tactics-board.png)
 
 A gaffer is the manager, so the dashboard is match day. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today and the wage bill against the daily budget. Beside it is the Team Sheet, a numbered list of everything waiting on you with one action on each row. The Tactics Board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The Gaffer's Sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen.
 
-<!-- screenshot: review -->
+![The Gaffer's Sign-off: flags, gates, acceptance criteria and the diff on one screen](docs/img/match-day-review.png)
 
 You can name the club and the squad. With the full token, click the crest at the top left to open Name your club: the club name, the crest's short name (up to four characters) and the two kit colours, with a preview of the crest and a shirt. The kit colours dress the header, the crest and every agent's shirt, and a kit too light for white text gets dark text on it instead. The Squad page (after Memory in the nav, or under More when the header is full) lists every agent with its shirt number, name, role, the name it registered with, status and when it was last seen. Rename on a row sets a display name of up to 40 characters and a shirt number from 1 to 99, and a number another agent wears is refused with that agent's name. Until you rename one, an agent goes by a default such as "Delivery 1" or "Reviewer". The Tactics Board, the Team Sheet, the work board, Review, a ticket's timeline, Squad & form and Health all show an agent by that name and number. From a terminal, `runner/gaffer wg club set --name "…" --short ABC --kit-primary "#7a1f3d" --kit-secondary "#8ec5e8"` does what the crest does, `runner/gaffer wg agent list` shows each agent's id, and `runner/gaffer wg agent rename <id> --name "…" --number 9` does what Rename does. The same data is served at `/api/club` and `/api/squad`. A read-only token sees the names and the crest but gets no editors. Names are only for show. An agent's id, which is what claims and the event log record, never changes, and agents can't rename themselves or the club. A live view of the factory floor is on the way as well.
 

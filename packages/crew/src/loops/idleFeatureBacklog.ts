@@ -24,11 +24,16 @@
  *  - if decompose or create_epic fails, the claim is RELEASED back to `backlog`
  *    through memory's `release_feature` (never stranded in `building`; memory's
  *    `advance_feature` is forward-only and refuses building → backlog);
+ *  - a feature whose plan has failed `max_plan_failures` times in a row is no longer
+ *    claimed (featureBacklogFailures.ts): a release puts it back in `backlog`, and
+ *    without this a feature the planner can never plan would buy one planner call
+ *    on every idle tick, up to the day cap; it waits in `backlog` for a human;
  *  - a stable finding key makes the epic idempotent across ticks;
  *  - any failure is caught and reported — a bad tick never crashes the runtime.
  */
 import { dateStamp } from "../util/clock.js";
 import { findingKey } from "./idleScans.js";
+import { resolveFeatureFailureStore, type FeatureFailureStore } from "./featureBacklogFailures.js";
 import type { Clock } from "../util/clock.js";
 import type { Decomposer, EpicPlan } from "../adapters/decomposer.js";
 import type { IdleLoopDeps } from "./idleLoop.js";
@@ -53,6 +58,11 @@ export type IdleFeatureBacklogOutcome =
 export interface IdleFeatureBacklogDeps extends IdleLoopDeps {
   memory: AsyncMemoryClient;
   decomposer: Decomposer;
+  /**
+   * Consecutive plan failures per feature. Defaults to the file under
+   * `$GAFFER_DATA` (see {@link resolveFeatureFailureStore}).
+   */
+  failures?: FeatureFailureStore;
 }
 
 /**
@@ -90,6 +100,7 @@ function scopedRepos(deps: IdleFeatureBacklogDeps, allow: readonly string[]): Re
 async function chooseFeature(
   deps: IdleFeatureBacklogDeps,
   repos: readonly RepoConfig[],
+  failures: FeatureFailureStore,
 ): Promise<BacklogFeature | undefined> {
   const all: BacklogFeature[] = [];
   for (const repo of repos) {
@@ -104,7 +115,18 @@ async function chooseFeature(
       });
     }
   }
-  return pickBacklogFeature(all);
+  // A feature whose plan kept failing is left in the backlog for a human: claiming
+  // it again would only buy another planner call that fails the same way.
+  const max = deps.config.loops.idle_feature_backlog.max_plan_failures;
+  const parked = all.filter((f) => failures.failures(f.id) >= max);
+  if (parked.length > 0) {
+    deps.events.record("feature_backlog_skipped_failing", {
+      loop: LOOP,
+      maxPlanFailures: max,
+      features: parked.map((f) => ({ repo: f.repo, id: f.id, name: f.name })),
+    });
+  }
+  return pickBacklogFeature(all.filter((f) => !parked.includes(f)));
 }
 
 /**
@@ -129,7 +151,9 @@ export async function runIdleFeatureBacklogLoop(
     return { status: "no_repos" };
   }
 
-  const feature = await chooseFeature(deps, repos);
+  const failures =
+    deps.failures ?? resolveFeatureFailureStore(deps.config, deps.env ?? process.env);
+  const feature = await chooseFeature(deps, repos, failures);
   if (!feature) {
     deps.events.record("loop_finished", { loop: LOOP, result: "no_findings" });
     return { status: "no_findings" };
@@ -144,7 +168,7 @@ export async function runIdleFeatureBacklogLoop(
     return { status: "observed", feature: ident };
   }
 
-  return processFeature(deps, feature, cfg.mode);
+  return processFeature(deps, feature, cfg.mode, failures);
 }
 
 /**
@@ -156,6 +180,7 @@ async function processFeature(
   deps: IdleFeatureBacklogDeps,
   feature: BacklogFeature,
   mode: IdleLoopMode,
+  failures: FeatureFailureStore,
 ): Promise<IdleFeatureBacklogOutcome> {
   const ident = { repo: feature.repo, id: feature.id, name: feature.name };
   const cfg = deps.config.loops.idle_feature_backlog;
@@ -224,14 +249,70 @@ async function processFeature(
       });
     }
 
+    forgetFailures(deps, failures, feature);
     // What actually happened, not what was asked for.
     const status = result.ready ? "ready_created" : "draft_created";
     deps.events.record("loop_finished", { loop: LOOP, result: status });
     return { status, feature: ident, epicId: result.epicId, ticketCount: result.ticketIds.length };
   } catch (err) {
     await rollback(deps, feature, err);
+    countFailure(deps, failures, feature, err);
     deps.events.record("loop_finished", { loop: LOOP, result: "no_findings" });
     return { status: "no_findings" };
+  }
+}
+
+/** Count one more failed plan; at the cap, say the feature is parked in the backlog. */
+function countFailure(
+  deps: IdleFeatureBacklogDeps,
+  failures: FeatureFailureStore,
+  feature: BacklogFeature,
+  cause: unknown,
+): void {
+  const ident = { repo: feature.repo, id: feature.id, name: feature.name };
+  const max = deps.config.loops.idle_feature_backlog.max_plan_failures;
+  try {
+    const count = failures.recordFailure(
+      feature.id,
+      cause instanceof Error ? cause.message : String(cause),
+      deps.clock.now(),
+    );
+    if (count >= max) {
+      deps.events.record("feature_backlog_parked", {
+        loop: LOOP,
+        ...ident,
+        failures: count,
+        reason:
+          "the plan failed on every attempt; the feature stays in backlog and is no longer " +
+          "claimed by idle ticks (plan it by hand, or clear its entry in the plan-failure ledger)",
+      });
+    }
+  } catch (err) {
+    // A ledger that cannot be written must not crash the tick; it is logged.
+    deps.events.record("feature_backlog_failure_ledger_failed", {
+      loop: LOOP,
+      ...ident,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** The epic was filed: forget the feature's earlier failed plans. */
+function forgetFailures(
+  deps: IdleFeatureBacklogDeps,
+  failures: FeatureFailureStore,
+  feature: BacklogFeature,
+): void {
+  try {
+    failures.clear(feature.id);
+  } catch (err) {
+    deps.events.record("feature_backlog_failure_ledger_failed", {
+      loop: LOOP,
+      repo: feature.repo,
+      id: feature.id,
+      name: feature.name,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

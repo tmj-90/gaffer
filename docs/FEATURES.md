@@ -219,7 +219,8 @@ command as its check, so the runner verifies the fix mechanically. The same tick
 ingests labelled GitHub/Jira issues and runs the lore-gap and feature-backlog
 loops when those are on. The scans cost nothing, so a tick that finds nothing
 new is an empty poll (it drains the run and stays off the day cap); only the
-feature backlog spends a model call. The **Idle loops** panel holds the master
+feature backlog spends a model call, and it stops claiming a feature whose plan
+failed twice in a row (`max_plan_failures`). The **Idle loops** panel holds the master
 switch, the lane toggles, a recommended set, the dependency lane's audit
 command, and the **self-improve** gate: opted-in repos, a risk ceiling and a
 per-tick cap under which the tick promotes its own drafts to ready so the

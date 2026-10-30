@@ -163,8 +163,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Feature-backlog idle loop",
     help:
       "When idle, pull one `backlog` feature from the factory's memory ledger and plan it " +
-      "as a draft epic (the runner's own planner — one model call per feature, counted " +
-      "against the day cap; a failed plan releases the feature). Runs alongside the " +
+      "as a draft epic (the runner's own planner, run unattended so it plans without " +
+      "asking questions — one model call per feature, counted against the day cap; a " +
+      "failed plan releases the feature, and after `loops.idle_feature_backlog." +
+      "max_plan_failures` (default 2) failed plans in a row idle ticks stop claiming it). " +
+      "Runs alongside the " +
       "maintenance lane on every idle tick. Overrides the crew.yaml " +
       "`loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog " +
       "row in the Idle loops panel) for every crew run the runner spawns; empty = " +

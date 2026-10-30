@@ -132,6 +132,45 @@ describe("web: Idle loops status line reflects the runner's effective behaviour"
     expect(text).toMatch(/skip maintenance/);
   });
 
+  it("GAFFER_MAINTENANCE=0 with IDLE_DRAFT_WHEN_IDLE=1 says the legacy scan still runs every lane", async () => {
+    // tick.sh skips the lane under GAFFER_MAINTENANCE=0 but still falls through to the
+    // legacy `fg idle` scan over every enabled lane (live: TICK_RESULT=idle_drafted).
+    const text = await render({
+      maintenance: true,
+      loops: [
+        lane("idle_security_hotspot", "Security hotspots", true),
+        lane("idle_documentation", "Documentation", true),
+      ],
+      settings: { GAFFER_MAINTENANCE: "0", IDLE_DRAFT_WHEN_IDLE: "1" },
+    });
+    expect(text).toMatch(/GAFFER_MAINTENANCE=0 skips the maintenance lane/);
+    expect(text).toMatch(/IDLE_DRAFT_WHEN_IDLE=1/);
+    expect(text).toMatch(/runs ALL 2 enabled lanes in one pass/);
+    expect(text).toMatch(/filed as drafts/);
+    expect(text).not.toMatch(/skip maintenance entirely/);
+  });
+
+  it("maintenance on with only the feature backlog says only the backlog runs", async () => {
+    const text = await render({
+      maintenance: true,
+      loops: [
+        lane("idle_security_hotspot", "Security hotspots", false),
+        {
+          key: "idle_feature_backlog",
+          label: "Feature backlog",
+          enabled: true,
+          repos: [],
+          maintenanceLane: false,
+        },
+      ],
+    });
+    expect(text).toMatch(
+      /No scan lane is enabled, so each idle tick runs only the feature backlog/,
+    );
+    expect(text).not.toMatch(/ONE of the 0 enabled lanes/);
+    expect(text).not.toMatch(/do nothing/);
+  });
+
   it("GAFFER_MAINTENANCE=1 with no lane enabled says the tick does nothing", async () => {
     const text = await render({
       maintenance: false,

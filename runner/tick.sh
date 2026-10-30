@@ -3491,6 +3491,11 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
     elif [ "$MCHOSEN" = "coverage" ] && [ "$MSTATUS" = "no_repos" ]; then
       log "maintenance lane: the coverage lane needs a repo coverage_command — set one with \`wg repo set-commands <repo> --coverage '<cmd>'\` (or in the dashboard's repo settings)"
     fi
+    # A backlog feature whose plan failed max_plan_failures times is no longer claimed
+    # (each try is a paid planner call); say so once, when it is parked.
+    if [ "$(echo "$MOUT" | jget '(d.events || []).includes("feature_backlog_parked") ? 1 : 0' 2>/dev/null || echo 0)" = 1 ]; then
+      log "feature backlog: a feature's plan failed on every attempt — it stays in backlog and idle ticks stop claiming it (plan it by hand, or delete its entry in $GAFFER_DATA/feature-backlog-failures.json to let idle ticks retry)"
+    fi
     [ "$MDRAFTS" -gt 0 ] && { result maintenance_drafted; exit 0; }
     # Filed nothing. A deterministic scan (or a deduped re-find) calls no model and
     # costs nothing, so it is an EMPTY poll — no_work keeps EMPTY_POLL_LIMIT draining

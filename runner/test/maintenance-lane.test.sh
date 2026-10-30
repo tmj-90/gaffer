@@ -98,7 +98,7 @@ if (a.includes("maintain")) {
       report: { chosen, reason: "r", outcome: { status: process.env.MAINT_STATUS } },
       filed: filed(0),
       spent,
-      events: [],
+      events: (process.env.MAINT_EVENTS || "").split(",").filter(Boolean),
     });
     process.exit(0);
   }
@@ -151,6 +151,7 @@ run_tick() {
   CREW_CALLS="$CREW_CALLS" MAINT_ENABLED="${MAINT_ENABLED:-1}" \
   MAINT_FAIL="${MAINT_FAIL:-0}" MAINT_STATUS="${MAINT_STATUS:-}" \
   MAINT_CHOSEN="${MAINT_CHOSEN:-}" MAINT_FILED="${MAINT_FILED:-}" MAINT_SPENT="${MAINT_SPENT:-0}" \
+  MAINT_EVENTS="${MAINT_EVENTS:-}" \
   IDLE_TOTAL="${IDLE_TOTAL:-0}" IDLE_OLD_SHAPE="${IDLE_OLD_SHAPE:-0}" \
   MEMORY_DB="$GAFFER_DATA/memory.sqlite" MEMORY_MCP_BIN="$WORK/memory-mcp.js" CLAUDE_BIN="$WORK/stub-claude" \
   GAFFER_STRICT_REQUIRE="${GAFFER_STRICT_REQUIRE:-0}" GAFFER_IDLE_HOST_EXEC="${GAFFER_IDLE_HOST_EXEC:-0}" \
@@ -340,7 +341,18 @@ grep -q '^TICK_RESULT=no_work$' <<<"$OUT17" \
 
 # ── 13. the idle crew calls carry the memory + planner wiring ─────────────────
 reset_log
-MAINT_ENABLED=1 run_tick >/dev/null
+MAINT_ENABLED=1 run_tick >/dev/nullreset_log
+MAINT_STATUS=no_findings MAINT_SPENT=1 MAINT_EVENTS=feature_backlog_failed,feature_backlog_parked run_tick >/dev/null
+grep -q "feature backlog: a feature's plan failed on every attempt" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && grep -q "feature-backlog-failures.json" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && ok "a feature parked after failed plans → the log says idle ticks stop claiming it and where to retry" \
+  || fail "missing the parked-feature hint"
+reset_log
+MAINT_STATUS=no_findings MAINT_SPENT=1 MAINT_EVENTS=feature_backlog_failed run_tick >/dev/null
+grep -q "feature backlog: a feature's plan failed" "$GAFFER_DATA/factory.log" 2>/dev/null \
+  && fail "the parked hint fired for a failure that did not park the feature" \
+  || ok "…and stays quiet for a failure under the cap"
+
 ENVLINE="$(head -1 "$CREW_CALLS.env")"
 grep -q "MEMORY_DB=$GAFFER_DATA/memory.sqlite" <<<"$ENVLINE" \
   && grep -q "MEMORY_MCP_BIN=$WORK/memory-mcp.js" <<<"$ENVLINE" \

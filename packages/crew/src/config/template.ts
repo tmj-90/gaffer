@@ -193,10 +193,15 @@ loops:
     # as an epic of DRAFT tickets (a human readies them; observe_only files nothing
     # and leaves the feature in the backlog). Runs alongside the maintenance
     # lane. Unlike the scans, each run SPENDS a planning model call (the runner's
-    # bin/decompose.mjs, wired automatically; decompose_script overrides it).
+    # bin/decompose.mjs, wired automatically; decompose_script overrides it). The
+    # planner runs unattended, so it plans straight away (never asks questions).
+    # A failed plan releases the feature to backlog; after max_plan_failures failed
+    # plans in a row idle ticks stop claiming it (counts live in
+    # <GAFFER_DATA>/feature-backlog-failures.json; delete an entry to retry).
     enabled: false
     mode: create_draft_tickets
     repos: []
+    max_plan_failures: 2
   # ── Idle MAINTENANCE LANE (audit item A4) ──────────────────────────────────
   # OFF by default. When ON, a quiet idle tick runs ONE maintenance loop chosen
   # by a DETERMINISTIC priority +

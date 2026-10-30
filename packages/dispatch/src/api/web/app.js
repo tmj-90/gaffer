@@ -6388,7 +6388,12 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
     const notes = [];
     let tone = "ok";
     let text;
-    if (envMaint === "0") {
+    // What the legacy every-loop scan (tick.sh's `fg idle`) runs in one pass.
+    const legacyPass =
+      lanesOn === 0
+        ? "runs no scan lane (none is enabled), only ingest and the memory loops"
+        : `runs ALL ${lanesOn} enabled lane${lanesOn === 1 ? "" : "s"} in one pass (plus ingest and the memory loops)`;
+    if (envMaint === "0" && !legacyScan) {
       text =
         "GAFFER_MAINTENANCE=0 in the runner's settings is the kill switch: idle ticks skip maintenance " +
         "entirely, whatever this panel says.";
@@ -6398,10 +6403,20 @@ function renderIdleLoopsPanel(view, repos, nodes, envSettings = []) {
         "Idle ticks poll and stop. Turn on maintenance and at least one lane to work the backlog while idle.";
       tone = "dim";
     } else if (!maintOn && legacyScan) {
+      // GAFFER_MAINTENANCE=0 only skips the maintenance lane: tick.sh still falls
+      // through to the legacy scan when IDLE_DRAFT_WHEN_IDLE=1.
       text =
-        `IDLE_DRAFT_WHEN_IDLE=1 (legacy): with maintenance off, each idle tick runs ALL ${lanesOn} enabled ` +
-        `lane${lanesOn === 1 ? "" : "s"} in one pass (plus ingest and the memory loops); ${filing}.`;
+        (envMaint === "0"
+          ? "GAFFER_MAINTENANCE=0 skips the maintenance lane, but IDLE_DRAFT_WHEN_IDLE=1 (legacy) is on: each idle tick "
+          : "IDLE_DRAFT_WHEN_IDLE=1 (legacy): with maintenance off, each idle tick ") +
+        `${legacyPass}; ${filing}.`;
       tone = "warn";
+    } else if (maintOn && lanesOn === 0 && backlogOn) {
+      text =
+        "No scan lane is enabled, so each idle tick runs only the feature backlog (plus ingest and the lore-gap loop when on)" +
+        (envMaint === "1" ? " (forced on by GAFFER_MAINTENANCE=1)" : "") +
+        `; ${filing}.`;
+      if (idleMode === "create_ready_tickets") tone = "warn";
     } else if (maintOn && lanesOn === 0 && !backlogOn) {
       text =
         (envMaint === "1"

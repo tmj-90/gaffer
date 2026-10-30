@@ -64,7 +64,14 @@ switch decides.
   factory's own memory server and planner — no `memory.mcp` or
   `decompose_script` hand-wiring. The feature backlog is the one idle step that
   spends a model call (one planning call per feature, counted against
-  `MAX_TICKS_PER_DAY`); a failed plan releases the feature back to `backlog`.
+  `MAX_TICKS_PER_DAY`). The planner runs unattended, so it is told to plan now
+  (`--force-plan`) rather than ask clarifying questions nobody would answer. A
+  failed plan releases the feature back to `backlog`; after
+  `loops.idle_feature_backlog.max_plan_failures` (default 2) failed plans in a row
+  idle ticks stop claiming it, so a feature the planner cannot plan does not buy a
+  planner call on every tick. The counts live in
+  `$GAFFER_DATA/feature-backlog-failures.json` (a filed epic clears them; delete an
+  entry to let idle ticks retry), and the tick log says when a feature is parked.
 - **Observation only:** like every idle loop, the chosen lane drafts tickets and
   never edits code. The deepened `security_hotspot` lane runs three distinct
   lenses (`security-secret-handling`, `security-input-validation`,

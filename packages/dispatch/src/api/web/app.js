@@ -872,8 +872,13 @@ function statusBadge(status) {
   ]);
 }
 /** Risk: outlined condensed caps ("HIGH RISK" reads on its own, not by hue). */
-function riskBadge(risk) {
-  return el("span", { class: `badge risk-${risk}`, title: `${risk} risk` }, risk);
+/** Risk chip. `long` says "high risk" (a page's meta line, where "high" alone is ambiguous). */
+function riskBadge(risk, { long = false } = {}) {
+  return el(
+    "span",
+    { class: `badge risk-${risk}`, title: `${risk} risk` },
+    long ? `${risk} risk` : risk,
+  );
 }
 function accessBadge(access) {
   return badge(access, `access-${access}`);
@@ -942,6 +947,15 @@ function pipelineDots(status) {
     wrap.appendChild(el("span", { class: cls }));
   }
   return wrap;
+}
+
+/** The pips said in words: "stage 3 of 5 · on the pitch". */
+const STAGE_WORDS = ["drafting", "in the fixtures", "on the pitch", "the sign-off", "full time"];
+function stageCaption(status) {
+  const stage = STAGE_FOR_STATUS[status] ?? 0;
+  const word =
+    status === "failed" ? "sent off" : status === "cancelled" ? "won't do" : STAGE_WORDS[stage];
+  return `Stage ${stage + 1} of ${LIFECYCLE.length} · ${word}`;
 }
 
 // --- View scaffolding -------------------------------------------------------
@@ -1030,9 +1044,10 @@ function focusableIn(root) {
     ),
   ].filter((e) => e.offsetParent !== null || e === document.activeElement);
 }
-function openSheet(title, contentNode) {
+function openSheet(title, contentNode, { focus } = {}) {
   const { scrim, sheet, head, body } = ensureSheet();
-  sheetReturnFocus = document.activeElement; // so focus returns here on close
+  // A sheet opened from inside an open sheet keeps the ORIGINAL trigger to return to.
+  if (!sheet.classList.contains("open")) sheetReturnFocus = document.activeElement;
   clear(head);
   clear(body);
   head.appendChild(el("h2", { id: "sheet-title" }, title));
@@ -1047,20 +1062,57 @@ function openSheet(title, contentNode) {
   scrim.classList.add("open");
   sheet.classList.add("open");
   document.addEventListener("keydown", sheetKeydown);
-  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it.
-  const first = focusableIn(sheet)[0];
+  trackKeyboardInset(true);
+  // Move focus INTO the dialog so keyboard/AT users aren't stranded behind it:
+  // to the field the sheet is for when it names one, else its first control.
+  const first = focus || focusableIn(sheet)[0];
   (first || sheet).focus();
 }
-function closeSheet() {
+/**
+ * Close the sheet. Focus goes back to the control that opened it; `restore: false`
+ * (a route change) leaves focus to the new page. A click handler passes its event
+ * here, which has no `restore`, so a Close or Cancel button restores focus.
+ */
+function closeSheet({ restore = true } = {}) {
   if (!sheetEls) return;
+  const wasOpen = sheetEls.sheet.classList.contains("open");
   sheetEls.scrim.classList.remove("open");
   sheetEls.sheet.classList.remove("open");
   document.removeEventListener("keydown", sheetKeydown);
+  trackKeyboardInset(false);
   // Restore focus to whatever opened the sheet (the trigger), not the body.
-  if (sheetReturnFocus && typeof sheetReturnFocus.focus === "function") {
-    sheetReturnFocus.focus();
-  }
+  const back = sheetReturnFocus;
   sheetReturnFocus = null;
+  if (!restore || !wasOpen) return;
+  if (back && back.isConnected && typeof back.focus === "function") back.focus();
+}
+/**
+ * While a sheet is open on a phone, keep it above the soft keyboard: the
+ * keyboard's height (layout viewport minus the visual one) goes into --kb,
+ * which the phone sheet sits on, so its sticky confirm row stays in view.
+ */
+function onViewportInset() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const kb = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+  document.documentElement.style.setProperty("--kb", `${kb}px`);
+}
+function trackKeyboardInset(on) {
+  const vv = typeof window !== "undefined" ? window.visualViewport : null;
+  if (!vv) return;
+  if (on) {
+    vv.addEventListener("resize", onViewportInset);
+    vv.addEventListener("scroll", onViewportInset);
+    onViewportInset();
+  } else {
+    vv.removeEventListener("resize", onViewportInset);
+    vv.removeEventListener("scroll", onViewportInset);
+    document.documentElement.style.removeProperty("--kb");
+  }
+}
+/** Is the shared sheet showing? */
+function sheetOpen() {
+  return Boolean(sheetEls && sheetEls.sheet.classList.contains("open"));
 }
 function sheetKeydown(e) {
   if (e.key === "Escape") {
@@ -1924,9 +1976,24 @@ document.addEventListener("visibilitychange", () => {
 const VIEW_SIGNATURES = {
   review: async () => {
     const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
-    return reviewSignature(tickets);
+    if (tickets.length) return reviewSignature(tickets);
+    // The clear desk shows what moved on and who is still playing: watch those.
+    const all = (await api("GET", "/tickets")).tickets || [];
+    return clearDeskSignature(all);
   },
 };
+/** What the clear Review desk draws from: the tickets past and before the sign-off. */
+const CLEAR_DESK_STATUSES = new Set([
+  "claimed",
+  "in_progress",
+  "in_testing",
+  "ready_for_merge",
+  "done",
+  "cancelled",
+]);
+function clearDeskSignature(all) {
+  return `clear:${reviewSignature(all.filter((t) => CLEAR_DESK_STATUSES.has(t.status)))}`;
+}
 function reviewSignature(tickets) {
   return tickets.map((t) => `${t.id}@${t.updated_at || ""}`).join("|");
 }
@@ -3101,7 +3168,7 @@ function renderOwnedItem(it, i = 0, f = null) {
 }
 
 /** A bottom sheet / side panel with a short intro, a form and its actions. */
-function actionSheet(title, { intro, body, actions }) {
+function actionSheet(title, { intro, body, actions, focus }) {
   openSheet(
     title,
     el("div", { class: "act-sheet" }, [
@@ -3109,7 +3176,186 @@ function actionSheet(title, { intro, body, actions }) {
       body || null,
       el("div", { class: "btn-row act-actions" }, actions),
     ]),
+    { focus },
   );
+}
+
+/** The ticket a sheet acts on, named at its top: glyph, number and title. */
+function sheetTicket(t) {
+  if (!t) return null;
+  return el("p", { class: "rs-ticket" }, [
+    t.status ? glyph(t.status, 16, statusLabel(t.status)) : null,
+    t.number != null ? el("b", { class: "rs-num tabnum" }, `#${t.number}`) : null,
+    t.title ? el("span", { class: "rs-title" }, t.title) : null,
+  ]);
+}
+
+/**
+ * The one place a reason is collected: Send back, Won't do, a tester's verdict, Stop,
+ * a repo ruled off the boundary. It opens in the shared sheet (side panel at desktop,
+ * bottom sheet on a phone), so it wears the kit in both themes, traps focus, gives
+ * focus back to its trigger on Cancel or Esc, and closes when the route changes.
+ *
+ *   title    names the act and the ticket ("Send #15 back")
+ *   ticket   the ticket it acts on (shown under the title), or null
+ *   intro    what happens when you confirm, from what the server does
+ *   presets  quick reasons: a tap fills the box (one-handed on a phone)
+ *   required when true the confirm stays disabled until there is a reason, and
+ *            the submit re-checks (a reason is REQUIRED for these endpoints)
+ *   confirm  the button word, the same verb as the button that opened it
+ *   tone     "primary" or "danger"
+ *   capture  offer "also capture as a lore draft" (Review's send back / won't do)
+ *   onConfirm(reason, captureLore) does the work; the sheet closes when it
+ *            resolves and stays open (reason kept) when it throws.
+ *
+ * Hooks: `.reject-dialog` (the form), `.reject-chip`, `.reject-reason-input`,
+ * `.reject-dialog-actions .reject-submit`, `.reject-capture-cb`.
+ */
+function reasonSheet({
+  title,
+  ticket = null,
+  intro,
+  label = "Reason",
+  hint,
+  presets = [],
+  placeholder,
+  required = true,
+  confirm,
+  tone = "primary",
+  capture = false,
+  onConfirm,
+}) {
+  const hintId = `rs-hint-${++fieldSeq}`;
+  const input = el("textarea", {
+    class: "reject-reason-input",
+    name: "reason",
+    rows: 4,
+    maxlength: "20000",
+    placeholder: placeholder || null,
+    required: required ? "" : null,
+    "aria-describedby": hintId,
+  });
+  const chips = presets.length
+    ? el(
+        "div",
+        { class: "reject-chips", role: "group", "aria-label": "Quick reasons" },
+        presets.map((text) =>
+          el(
+            "button",
+            {
+              class: "chip reject-chip",
+              type: "button",
+              "aria-pressed": "false",
+              onclick: () => {
+                input.value = text;
+                sync();
+                input.focus();
+              },
+            },
+            text,
+          ),
+        ),
+      )
+    : null;
+  const submit = el(
+    "button",
+    {
+      class: `btn ${tone === "danger" ? "danger" : "primary"} reject-submit`,
+      type: "submit",
+      // aria-disabled, not disabled: the confirm stays focusable and, pressed with an
+      // empty box, says why instead of doing nothing silently.
+      "aria-disabled": required ? "true" : null,
+    },
+    confirm,
+  );
+  const captureBox = capture
+    ? el("input", { type: "checkbox", class: "reject-capture-cb", name: "capture" })
+    : null;
+  const hintText =
+    hint ||
+    (required
+      ? "Required. It is kept on the ticket."
+      : "Optional. It is kept on the ticket if you write one.");
+  const hintEl = el("p", { class: "act-hint", id: hintId }, hintText);
+  const form = el(
+    "form",
+    {
+      class: "act-sheet reject-dialog",
+      novalidate: "",
+      onsubmit: (e) => {
+        e.preventDefault();
+        void send();
+      },
+    },
+    [
+      sheetTicket(ticket),
+      intro ? el("p", { class: "act-intro" }, intro) : null,
+      chips,
+      field(label, input),
+      hintEl,
+      captureBox
+        ? el("label", { class: "reject-capture" }, [
+            captureBox,
+            el("span", {}, [
+              el("b", {}, "Also file it as a lore draft. "),
+              "It waits in the memory review queue for you; it is never approved on its own.",
+            ]),
+          ])
+        : null,
+      el("div", { class: "btn-row act-actions reject-dialog-actions" }, [
+        submit,
+        el("button", { class: "btn", type: "button", onclick: () => closeSheet() }, "Cancel"),
+      ]),
+    ],
+  );
+  function sync() {
+    const v = input.value.trim();
+    if (required) submit.setAttribute("aria-disabled", String(!v));
+    input.removeAttribute("aria-invalid");
+    hintEl.classList.remove("is-error");
+    hintEl.textContent = hintText;
+    if (chips)
+      for (const c of chips.children)
+        c.setAttribute("aria-pressed", String(c.textContent === input.value));
+  }
+  let busy = false;
+  async function send() {
+    if (busy) return;
+    const reason = input.value.trim();
+    // Backstop the invariant even if the disabled state were bypassed.
+    if (required && !reason) {
+      input.setAttribute("aria-invalid", "true");
+      hintEl.classList.add("is-error");
+      hintEl.textContent = `Write a reason first: ${confirm} needs one.`;
+      input.focus();
+      return;
+    }
+    busy = true;
+    submit.setAttribute("aria-disabled", "true");
+    submit.setAttribute("aria-busy", "true");
+    try {
+      await onConfirm(reason, captureBox ? captureBox.checked : false);
+      // Close only if this form is still what the sheet shows.
+      if (form.isConnected && sheetOpen()) closeSheet();
+    } catch (e) {
+      if (!e || e.code !== "ABORTED")
+        toast((e && e.message) || "That did not go through.", { code: e && e.code });
+      submit.setAttribute("aria-disabled", String(required && !input.value.trim()));
+    } finally {
+      busy = false;
+      submit.removeAttribute("aria-busy");
+    }
+  }
+  input.addEventListener("input", sync);
+  // Ctrl/Cmd+Enter sends from the box (Enter alone is a new line).
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      void send();
+    }
+  });
+  openSheet(title, form, { focus: input });
+  return form;
 }
 
 /** Unblock: move a blocked ticket back to Ready (another go) or Refining (rewrite first). */
@@ -6345,9 +6591,9 @@ function runDuration(run) {
 }
 
 /** Open the captured log for a finished run in a sheet (best-effort fetch). */
-async function viewRunLog(run) {
+async function viewRunLog(run, title) {
   const body = el("div", { class: "run-log" }, [el("p", { class: "dim" }, "Loading log…")]);
-  openSheet(`${runKindLabel(run.kind)} log`, body);
+  openSheet(title || `${runKindLabel(run.kind)} log`, body);
   try {
     const tok = authToken();
     const res = await fetch(`/api/runs/${encodeURIComponent(run.id)}/log`, {
@@ -6366,7 +6612,12 @@ async function viewRunLog(run) {
     }
     const text = await res.text();
     body.appendChild(
-      el("pre", { class: "run-log-pre" }, text && text.trim() ? text : "(log is empty)"),
+      // A long log scrolls inside its <pre>: focusable and named (axe scrollable-region-focusable).
+      el(
+        "pre",
+        { class: "run-log-pre", tabindex: "0", role: "region", "aria-label": "Run log" },
+        text && text.trim() ? text : "(log is empty)",
+      ),
     );
   } catch {
     clear(body);
@@ -6471,7 +6722,16 @@ function viewRunDetail(runId, kindLabel) {
 
     if (detail.log_tail) {
       logSection.appendChild(
-        el("pre", { class: "run-log-pre run-detail-log-pre" }, detail.log_tail),
+        el(
+          "pre",
+          {
+            class: "run-log-pre run-detail-log-pre",
+            tabindex: "0",
+            role: "region",
+            "aria-label": "Run log, latest lines",
+          },
+          detail.log_tail,
+        ),
       );
     } else if (detail.run.status !== "running") {
       logSection.appendChild(el("p", { class: "dim" }, "No log captured for this run."));
@@ -8208,7 +8468,7 @@ function parseFailure(text) {
 }
 
 /** The referee's card at the head of a ticket that is out: red (blocked/failed) or yellow (needs you). */
-function refCard(kind) {
+function refCard(kind, status) {
   return svgEl(
     "svg",
     {
@@ -8222,15 +8482,18 @@ function refCard(kind) {
     [
       svgEl("rect", { x: 10, y: 8, width: 100, height: 134, rx: 6, class: "ref-card-shadow" }),
       svgEl("rect", { x: 4, y: 2, width: 100, height: 134, rx: 6, class: "ref-card-face" }),
-      kind === "red"
-        ? svgEl("rect", { x: 40, y: 55, width: 28, height: 28, rx: 2, class: "ref-card-glyph" })
-        : null,
+      // The card carries the status glyph's shape: blocked is a square, failed a triangle.
+      kind === "red" && status === "failed"
+        ? svgEl("path", { d: "M54 50 L72 84 H36 Z", class: "ref-card-glyph" })
+        : kind === "red"
+          ? svgEl("rect", { x: 40, y: 55, width: 28, height: 28, rx: 2, class: "ref-card-glyph" })
+          : null,
     ],
   );
 }
 
 /** The sentence under a ticket's title: where it stands, in plain words, from its data. */
-function ticketLede(t, trail, events) {
+function ticketLede(t, trail, events, doneAt, evidence = []) {
   const last = trail[trail.length - 1];
   const f = last ? parseFailure(last.distilled_failure) : null;
   const max = last && last.max_attempts ? last.max_attempts : null;
@@ -8250,8 +8513,16 @@ function ticketLede(t, trail, events) {
     case "failed":
       return [
         el("b", { class: "is-red" }, "Failed. "),
-        last ? `It failed the ${last.gate} gate.` : "It failed its gates.",
-        " Send it back, or mark it won't do.",
+        (() => {
+          if (last) return `It failed the ${last.gate} gate.`;
+          // No rework trail: name the gate from the runner's Definition-of-Done report.
+          const dod = parseDodEvidence(evidence);
+          const bad = dod ? dod.gates.filter((g) => g.status === "FAIL") : [];
+          if (!bad.length) return "It failed its gates.";
+          const g = bad[0];
+          return `It failed the ${g.gate} gate${g.repo ? ` in ${g.repo}` : ""}${g.note ? ` (${g.note})` : ""}.`;
+        })(),
+        " It needs you.",
       ];
     case "paused": {
       const p = pausedInfo(events);
@@ -8266,9 +8537,27 @@ function ticketLede(t, trail, events) {
     case "in_review":
       return [el("b", {}, "In review. "), "It waits for your sign-off."];
     case "ready_for_merge":
-      return [el("b", {}, "Approved. "), "It waits for the merge."];
+      return [el("b", {}, "Approved. "), "It is with the merge runner now."];
     case "done":
-      return [el("b", {}, "Done. "), "Merged and delivered."];
+      return [
+        el("b", {}, "Done. "),
+        `Merged${doneAt ? ` ${fmtTime(doneAt)}` : ""}, ${
+          trail.length ? `after ${plural(trail.length, "rework")}.` : "first time, with no rework."
+        }`,
+      ];
+    case "in_testing":
+      return [
+        el("b", {}, "In testing. "),
+        "An independent tester is checking it against its test contract before it can merge.",
+      ];
+    case "claimed":
+    case "in_progress": {
+      const by = deliveredBy(events);
+      return [
+        el("b", {}, `${statusLabel(t.status)}. `),
+        by ? `${by} is on it.` : "An agent is on it.",
+      ];
+    }
     case "ready":
       return [el("b", {}, "Ready. "), "The next free agent can claim it."];
     case "draft":
@@ -8282,6 +8571,19 @@ function ticketLede(t, trail, events) {
     default:
       return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
   }
+}
+
+/** A policy pack said as house rules ("Solo · loose rules"), the raw key in the title. */
+const POLICY_WORDS = {
+  solo_loose: "Solo · loose rules",
+  team_light: "Team · light rules",
+  factory_strict: "Factory · strict rules",
+  regulated: "Regulated rules",
+};
+function policyChip(pack) {
+  const b = badge(POLICY_WORDS[pack] || String(pack).replace(/_/g, " "), "no-dot");
+  b.title = `Policy pack: ${pack}`;
+  return b;
 }
 
 /** The failing test as a scoreline: Expected v Received, and where it broke. */
@@ -8360,10 +8662,15 @@ function renderFailureHistory(trail) {
   if (!Array.isArray(trail) || trail.length === 0) return null;
   const max = trail[trail.length - 1].max_attempts;
   const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
-  const goal = (i) =>
+  const goal = (i, taken = true) =>
     svgEl(
       "svg",
-      { viewBox: "0 0 180 100", class: "shoot", "aria-hidden": "true", focusable: "false" },
+      {
+        viewBox: "0 0 180 100",
+        class: taken ? "shoot" : "shoot is-untaken",
+        "aria-hidden": "true",
+        focusable: "false",
+      },
       [
         svgEl("rect", { x: 0, y: 0, width: 180, height: 100, class: "shoot-grass" }),
         svgEl("path", { d: "M20 100 V20 H160 V100", class: "shoot-post" }),
@@ -8373,11 +8680,18 @@ function renderFailureHistory(trail) {
         ...Array.from({ length: 4 }, (_, k) =>
           svgEl("line", { x1: 20, y1: 36 + k * 16, x2: 160, y2: 36 + k * 16, class: "shoot-net" }),
         ),
-        // A miss: the ball off the frame, a cross beside it (position varies by attempt).
-        svgEl("g", { transform: `translate(${[150, 30, 160][i % 3]} ${[16, 14, 70][i % 3]})` }, [
-          svgEl("circle", { r: 11, class: "shoot-ball" }),
-          svgEl("path", { d: "M-9 -9 L9 9 M9 -9 L-9 9", class: "shoot-x" }),
-        ]),
+        taken
+          ? // A miss: the ball off the frame, a cross beside it (position varies by attempt).
+            svgEl(
+              "g",
+              { transform: `translate(${[150, 30, 160][i % 3]} ${[16, 14, 70][i % 3]})` },
+              [
+                svgEl("circle", { r: 11, class: "shoot-ball" }),
+                svgEl("path", { d: "M-9 -9 L9 9 M9 -9 L-9 9", class: "shoot-x" }),
+              ],
+            )
+          : // Not taken: the ball still on the spot.
+            svgEl("circle", { cx: 90, cy: 86, r: 9, class: "shoot-ball is-spot" }),
       ],
     );
   return el("section", { class: "card failure-history" }, [
@@ -8421,6 +8735,16 @@ function renderFailureHistory(trail) {
           ]),
         ]);
       }),
+      // The kicks still to come (or never taken, once the runner parked it).
+      ...Array.from({ length: Math.max(0, (Number(max) || 0) - trail.length) }, (_, k) =>
+        el("li", { class: "failure-kick-none" }, [
+          goal(trail.length + k, false),
+          el("div", { class: "failure-attempt-head" }, [
+            el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
+            el("span", { class: "failure-attempt-time" }, "not taken"),
+          ]),
+        ]),
+      ),
     ),
   ]);
 }
@@ -8525,6 +8849,7 @@ async function renderTicket(id) {
   }
   await ensureAgents();
   const t = view.ticket;
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
   const acList = view.acceptance_criteria || [];
   const blockers = view.blocking_decisions || [];
   const events = view.events || [];
@@ -8537,55 +8862,6 @@ async function renderTicket(id) {
       detailBackHash === "#/review" ? "← Back to Review" : "← Back to Work",
     ),
   );
-
-  // Live-delivery log surface: when the factory is actively delivering this
-  // ticket, link straight to the streaming run log so a stuck/hung agent is never
-  // invisible (exactly what was missing when #88 deadlocked on a permission
-  // prompt). Best-effort — never blocks the ticket render.
-  const DELIVERING_STATUSES = new Set(["in_progress", "claimed", "in_testing"]);
-  if (DELIVERING_STATUSES.has(t.status)) {
-    const deliveringBanner = el("div", { class: "delivering-banner" }, [
-      el("span", { class: "delivering-dot" }),
-      el("span", {}, "Delivering…"),
-    ]);
-    wrap.appendChild(deliveringBanner);
-    (async () => {
-      try {
-        const runs = await api("GET", "/api/runs?active=1");
-        const run = (runs.active || []).find((r) => r.ticket_number === t.number);
-        clear(deliveringBanner);
-        if (run) {
-          deliveringBanner.append(
-            el("span", { class: "delivering-dot" }),
-            el("span", {}, `Delivering — ${runKindLabel(run.kind)}`),
-            el(
-              "button",
-              {
-                class: "btn small run-viewlog",
-                type: "button",
-                onclick: () => viewRunDetail(run.id, runKindLabel(run.kind)),
-              },
-              "View live log →",
-            ),
-          );
-        } else {
-          // Marked delivering but no live run attached ⇒ likely a hung/orphaned
-          // claim (the #88 case). Say so plainly instead of a silent "in progress".
-          deliveringBanner.classList.add("is-warn");
-          deliveringBanner.append(
-            el("span", { class: "delivering-dot is-warn" }),
-            el(
-              "span",
-              {},
-              "Marked delivering, but no live run is attached — it may be stuck or already ended.",
-            ),
-          );
-        }
-      } catch {
-        clear(deliveringBanner);
-      }
-    })();
-  }
 
   const policyBox = el("div");
 
@@ -8649,18 +8925,21 @@ async function renderTicket(id) {
           type: "button",
           title: "Send this ticket back for rework",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for sending back to rework?");
-              if (reason == null || reason.trim() === "") {
-                toast("Rework cancelled — a reason is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/review/reject`, {
-                to: "refining",
-                reason: reason.trim(),
-              });
-              toast("Sent back to rework", { ok: true });
-              router();
+            reasonSheet({
+              title: `Send ${ref} back`,
+              ticket: t,
+              intro:
+                t.status === "ready_for_merge"
+                  ? `${ref} is approved but has not merged. This pulls it back to Refining with your reason, and its acceptance criteria reset to not met.`
+                  : `${ref} goes back to Refining with your reason, and its acceptance criteria reset to not met.`,
+              label: "What should change?",
+              presets: REJECT_REASON_PRESETS,
+              confirm: "Send back",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/review/reject`, { to: "refining", reason });
+                toast(`${ref} sent back to Refining.`, { ok: true });
+                router();
+              },
             }),
         },
         "Send back to rework",
@@ -8677,21 +8956,22 @@ async function renderTicket(id) {
           title:
             "Record a tester PASS for this in_testing ticket (→ ready_for_merge). Use when you verified the acceptance criteria yourself or the tester lane is held.",
           onclick: () =>
-            guard(async () => {
-              const summary = window.prompt(
-                "Tester PASS — what was verified? (recorded as test evidence)",
-                "Verified by hand against the acceptance criteria",
-              );
-              if (summary == null || summary.trim() === "") {
-                toast("Tester verdict cancelled — a summary is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/tester`, {
-                verdict: "pass",
-                summary: summary.trim(),
-              });
-              toast("Tester PASS recorded — ready to merge", { ok: true });
-              router();
+            reasonSheet({
+              title: `Tester pass ${ref}`,
+              ticket: t,
+              intro: `Records an independent tester PASS for ${ref}. It moves to Ready for merge, and what you checked is kept as test evidence.`,
+              label: "What did you check?",
+              presets: [
+                "Checked every acceptance criterion by hand",
+                "Ran the black-box checks against a running build",
+              ],
+              hint: "Required. It is kept as the test evidence.",
+              confirm: "Record PASS",
+              onConfirm: async (summary) => {
+                await api("POST", `/tickets/${t.id}/tester`, { verdict: "pass", summary });
+                toast(`Tester PASS recorded: ${ref} is ready to merge.`, { ok: true });
+                router();
+              },
             }),
         },
         "Record tester PASS",
@@ -8705,17 +8985,24 @@ async function renderTicket(id) {
           title:
             "Record a tester FAIL for this in_testing ticket (→ refining; the failing observation becomes the rework feedback)",
           onclick: () =>
-            openRejectDialog({
-              verb: "recording a tester FAIL",
-              onConfirm: (reason) =>
-                guard(async () => {
-                  await api("POST", `/tickets/${t.id}/tester`, {
-                    verdict: "fail",
-                    summary: reason,
-                  });
-                  toast("Tester FAIL recorded — sent back for rework", { ok: true });
-                  router();
-                }),
+            reasonSheet({
+              title: `Tester fail ${ref}`,
+              ticket: t,
+              intro: `Records an independent tester FAIL for ${ref}. It goes back to Refining, and what you saw becomes the rework feedback.`,
+              label: "What failed?",
+              presets: [
+                "An acceptance criterion does not hold",
+                "Breaks a flow that worked before",
+                "Errors on empty or unusual input",
+              ],
+              hint: "Required. The next attempt reads it.",
+              confirm: "Record FAIL",
+              tone: "danger",
+              onConfirm: async (summary) => {
+                await api("POST", `/tickets/${t.id}/tester`, { verdict: "fail", summary });
+                toast(`Tester FAIL recorded: ${ref} is back in Refining.`, { ok: true });
+                router();
+              },
             }),
         },
         "Record tester FAIL",
@@ -8761,15 +9048,19 @@ async function renderTicket(id) {
           type: "button",
           title: "Mark this ticket won't do (won't be built)",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for marking won't do?");
-              if (reason == null || reason.trim() === "") {
-                toast("Won't do cancelled — a reason is required", {});
-                return;
-              }
-              await api("POST", `/tickets/${t.id}/wont-do`, { reason: reason.trim() });
-              toast("Marked won't do", { ok: true });
-              router();
+            reasonSheet({
+              title: `Won't do ${ref}`,
+              ticket: t,
+              intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
+              label: "Why not?",
+              presets: WONT_DO_PRESETS,
+              confirm: "Won't do",
+              tone: "danger",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/wont-do`, { reason });
+                toast(`${ref} closed as won't do.`, { ok: true });
+                router();
+              },
             }),
         },
         "Won't do",
@@ -8817,32 +9108,28 @@ async function renderTicket(id) {
           type: "button",
           title: "Stop this paused delivery — abandon it and tear down its worktree",
           onclick: () =>
-            guard(async () => {
-              const reason = window.prompt("Reason for stopping this paused delivery? (optional)");
-              if (reason === null) return; // cancelled the prompt
-              const body = reason.trim() === "" ? {} : { reason: reason.trim() };
-              await api("POST", `/tickets/${t.id}/stop`, body);
-              toast("Stopped — paused delivery abandoned", { ok: true });
-              router();
+            reasonSheet({
+              title: `Stop ${ref}`,
+              ticket: t,
+              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled and its resume point is dropped, so it cannot carry on. Continue resumes it where it stopped instead.`,
+              label: "Why stop it?",
+              required: false,
+              confirm: "Stop",
+              tone: "danger",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/stop`, reason ? { reason } : {});
+                toast(`Stopped ${ref}: the paused delivery is abandoned.`, { ok: true });
+                router();
+              },
             }),
         },
         "Stop",
       ),
   };
 
-  // "Merging…" — a passive indicator on the approved-and-merging state, shown
-  // alongside the admin/rework actions so the human sees the runner is working.
-  const mergingPill =
-    t.status === "ready_for_merge"
-      ? el(
-          "span",
-          { class: "badge no-dot", title: "The merge runner is merging the delivery branch" },
-          "merging…",
-        )
-      : null;
-
+  // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
+  // runner may be held. The status ("Approved · merging") and the lede say where it is.
   const headActions = [
-    mergingPill,
     ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
   ].filter(Boolean);
 
@@ -8880,32 +9167,51 @@ async function renderTicket(id) {
     (view.repositories || []).find((r) => r.access === "write") || view.repositories?.[0];
   const epicScope = (view.scopes || []).find((s) => s.type === "epic");
   const out = t.status === "blocked" || t.status === "failed";
-  const head = el("header", { class: `card tk-head tk-${t.status}${out ? " is-out" : ""}` }, [
-    out ? refCard("red") : null,
-    el("div", { class: "tk-head-main" }, [
-      el("p", { class: "tk-meta" }, [
-        statusBadge(t.status),
-        repoW ? repoTag(repoW.name, 20) : null,
-        riskBadge(t.risk_level),
-        epicScope
-          ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
-          : null,
-        badge(t.policy_pack, "no-dot"),
-        badge(`priority ${t.priority}`, "no-dot"),
-        // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
-        t.delivery_budget_usd != null
-          ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
-          : null,
+  // Yellow: it waits on you (a sign-off, a merge, a capped delivery).
+  const needsYou = ["in_review", "ready_for_merge", "paused"].includes(t.status);
+  const doneAt = t.status === "done" ? sinceStatus(events, "done") || t.updated_at : null;
+  const mark = out
+    ? refCard("red", t.status)
+    : needsYou
+      ? refCard("yellow")
+      : t.status === "done"
+        ? fullTimePlaque(doneAt)
+        : null;
+  const head = el(
+    "header",
+    {
+      class: `card tk-head tk-${t.status}${out ? " is-out" : ""}${mark ? " has-mark" : ""}`,
+    },
+    [
+      mark,
+      el("div", { class: "tk-head-main" }, [
+        el("p", { class: "tk-meta" }, [
+          statusBadge(t.status),
+          repoW ? repoTag(repoW.name, 20) : null,
+          riskBadge(t.risk_level, { long: true }),
+          epicScope
+            ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
+            : null,
+          t.policy_pack ? policyChip(t.policy_pack) : null,
+          badge(`priority ${t.priority}`, "no-dot"),
+          // TRACK-3a: the per-ticket delivery-budget ceiling, when set.
+          t.delivery_budget_usd != null
+            ? badge(`budget ${money(Number(t.delivery_budget_usd))}`, "no-dot")
+            : null,
+        ]),
+        el("h1", { class: "detail-title" }, [
+          el("span", { class: "tk-no" }, t.number != null ? `#${t.number}` : ""),
+          t.number != null ? " " : "",
+          t.title,
+        ]),
+        el("p", { class: "tk-lede" }, ticketLede(t, trail, events, doneAt, view.evidence || [])),
+        el("div", { class: "tk-dots" }, [
+          pipelineDots(t.status),
+          el("span", { class: "tk-stage", "aria-hidden": "true" }, stageCaption(t.status)),
+        ]),
       ]),
-      el("h1", { class: "detail-title" }, [
-        el("span", { class: "tk-no" }, t.number != null ? `#${t.number}` : ""),
-        t.number != null ? " " : "",
-        t.title,
-      ]),
-      el("p", { class: "tk-lede" }, ticketLede(t, trail, events)),
-      el("div", { class: "tk-dots" }, pipelineDots(t.status)),
-    ]),
-  ]);
+    ],
+  );
 
   // Claimability only means something before a claim: never "Ready to claim" on a
   // blocked, done or in-flight ticket (the endpoint answers for the dependency gate).
@@ -8915,14 +9221,17 @@ async function renderTicket(id) {
 
   // Your move: what the gaffer can do with this ticket now, in words, then the buttons.
   const moveWords = {
-    blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion below.`,
+    blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion.`,
     failed: `Send #${t.number} back to Ready for another go, or to Refining to rewrite it first.`,
     paused: "Continue resumes the delivery in its worktree; Stop abandons it.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
-    ready_for_merge: "Merge runs the merge runner on the approved branch.",
+    ready_for_merge:
+      "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",
     in_testing: "The tester owns the verdict. Record it by hand only if you tested it yourself.",
     draft: "Mark it ready when its acceptance criteria say what done means.",
     refining: "Mark it ready when its acceptance criteria say what done means.",
+    ready:
+      "It waits in the fixtures for the next free agent. Nothing to do unless the plan changed.",
     cancelled: "Reopen it to bring it back to Refining.",
   };
   const moveActions = [
@@ -8932,25 +9241,27 @@ async function renderTicket(id) {
     ...headActions,
   ].filter(Boolean);
   const yourMove =
-    moveActions.length || moveWords[t.status]
-      ? el("section", { class: "card panel tk-move" }, [
-          panelHead("Your move", null, null, {
-            kit: out || t.status === "paused" ? "claret" : "ink",
-          }),
-          moveWords[t.status] ? el("p", { class: "tk-move-t" }, moveWords[t.status]) : null,
-          pausedBanner,
-          moveActions.length
-            ? el("div", { class: "btn-row" }, [
-                ...moveActions,
-                el("a", { class: "btn", href: `#/work?status=${t.status}` }, "See it on the board"),
-              ])
-            : null,
-          policyBox,
-          claimBox,
-        ])
-      : el("div", {}, [policyBox, claimBox]);
+    t.status === "done"
+      ? fullTimeCard(t, { trail, events, acList, doneAt })
+      : moveActions.length || moveWords[t.status]
+        ? el("section", { class: "card panel tk-move", "aria-label": "Your move" }, [
+            panelHead("Your move", null, null, {
+              kit: out || needsYou ? "claret" : "ink",
+            }),
+            moveWords[t.status] ? el("p", { class: "tk-move-t" }, moveWords[t.status]) : null,
+            pausedBanner,
+            el("div", { class: "btn-row" }, [
+              ...moveActions,
+              el("a", { class: "btn", href: `#/work?status=${t.status}` }, "See it on the board"),
+            ]),
+            policyBox,
+            claimBox,
+          ])
+        : claimable
+          ? el("div", { class: "tk-claim" }, [policyBox, claimBox])
+          : null;
 
-  const acCard = el("div", { class: "card tk-ac" }, [
+  const acCard = el("section", { class: "card panel tk-ac", "aria-label": "Acceptance criteria" }, [
     panelHead(
       "Acceptance criteria",
       `${acList.filter((a) => a.status === "satisfied").length} of ${acList.length} satisfied`,
@@ -8958,12 +9269,16 @@ async function renderTicket(id) {
     acList.length
       ? el(
           "ul",
-          { class: "clean" },
+          { class: "clean tk-ac-list" },
           acList.map((ac) =>
             el(
               "li",
-              {},
+              { class: `ac-${ac.status}` },
               el("div", { class: "ac-item" }, [
+                glyph(
+                  ac.status === "satisfied" ? "done" : ac.status === "failed" ? "failed" : "draft",
+                  16,
+                ),
                 el("div", { class: "ac-text" }, [
                   el("div", {}, ac.text),
                   el(
@@ -8982,59 +9297,83 @@ async function renderTicket(id) {
                     ].join(""),
                   ),
                 ]),
-                badge(ac.status, `ac-${ac.status}`),
+                el("span", { class: "ac-state" }, String(ac.status || "").replace(/_/g, " ")),
               ]),
             ),
           ),
         )
-      : el("p", { class: "dim" }, "No acceptance criteria yet."),
-    renderAddAcForm(t.id),
+      : el("p", { class: "dim" }, "No acceptance criteria yet. Add the first below."),
+    // A shipped or abandoned ticket's criteria are its record, not a to-do list.
+    t.status === "done" || t.status === "cancelled"
+      ? null
+      : el("details", { class: "tk-add-ac", open: acList.length ? null : "" }, [
+          el("summary", {}, "Add a criterion"),
+          renderAddAcForm(t.id),
+        ]),
   ]);
 
-  const sideRepos = renderRepoPanel(t.id, claimBox);
+  // The boundary: which repos this ticket may write, read or test. Read-only once merged.
+  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done", ticket: t });
 
-  // Diff-in-review: show the real per-repo git diff inline for tickets that are
-  // in review (incl. a reopened-for-review re-approval). Hidden for early-lifecycle
-  // tickets with nothing delivered yet.
-  const showDiff =
+  // The diff: the delivery once it is in review (or shipped), and the work in
+  // progress of a parked or capped delivery when it left a branch. Files fold
+  // here (the file list is the way in); the Review page reads them open.
+  const delivered =
     t.status === "in_review" ||
     t.status === "ready_for_merge" ||
     t.status === "done" ||
     reopenedForReview(events);
-  const diffCard = showDiff
-    ? el("div", { class: "card" }, [
-        el("h2", {}, "Delivery diff"),
-        reopenedForReview(events)
-          ? el("div", { class: "reopen-banner" }, [
-              icon("alert"),
-              "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
-            ])
-          : null,
-        renderTicketDiff(t.id),
+  const wip =
+    !delivered &&
+    Boolean(t.branch_name) &&
+    ["blocked", "failed", "paused", "in_testing", "refining"].includes(t.status);
+  const diffCard =
+    delivered || wip
+      ? el("section", { class: "tk-diff", "aria-label": "Diff" }, [
+          el("h2", { class: "tk-h2" }, [
+            t.status === "done" ? "What shipped" : wip ? "Work in progress" : "The delivery",
+            el(
+              "span",
+              { class: "panel-aux" },
+              t.status === "done" ? "merged" : wip ? "on its branch, not merged" : "on its branch",
+            ),
+          ]),
+          reopenedForReview(events)
+            ? el("div", { class: "reopen-banner" }, [
+                icon("alert"),
+                "Merge conflict resolved on the branch — re-review the resolved diff before re-approving.",
+              ])
+            : null,
+          (t.status === "done" && shippedFiles(view.evidence || [])) ||
+            renderTicketDiff(t.id, null, { collapsed: true }),
+        ])
+      : null;
+
+  const sideBlockers = blockers.length
+    ? el("section", { class: "card panel tk-blockers", "aria-label": "Blocking decisions" }, [
+        panelHead("Blocking decisions", String(blockers.length), null, { kit: "claret" }),
+        el(
+          "ul",
+          { class: "clean tk-blocker-list" },
+          blockers.map((d) =>
+            el("li", {}, [
+              ycard(18),
+              el("div", {}, [
+                el("strong", {}, d.title),
+                el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
+              ]),
+            ]),
+          ),
+        ),
+        el("a", { class: "panel-link", href: "#/overview" }, "Answer them on the team sheet"),
       ])
     : null;
 
-  const sideBlockers = el("div", { class: "card" }, [
-    el("h2", {}, `Blocking decisions (${blockers.length})`),
-    blockers.length
-      ? el(
-          "ul",
-          { class: "clean" },
-          blockers.map((d) =>
-            el("li", {}, [
-              el("div", {}, el("strong", {}, d.title)),
-              el("div", { class: "ac-meta" }, `${d.severity} · ${d.status}`),
-            ]),
-          ),
-        )
-      : el("p", { class: "dim" }, "Nothing blocking."),
-  ]);
-
-  const sideFields = el("div", { class: "card" }, [
-    el("h2", {}, "Fields"),
+  const sideFields = el("section", { class: "card panel tk-record", "aria-label": "The record" }, [
+    panelHead("The record"),
     el("dl", { class: "kv" }, [
       el("dt", {}, "Branch"),
-      el("dd", {}, t.branch_name || "—"),
+      el("dd", {}, t.branch_name ? el("code", { class: "mono" }, t.branch_name) : "—"),
       el("dt", {}, "PR"),
       el(
         "dd",
@@ -9047,50 +9386,48 @@ async function renderTicket(id) {
             )
           : "—",
       ),
-      el("dt", {}, "Attempts"),
-      // The rework trail is the record of delivery attempts; attempt_count only
-      // counts claims, so a parked ticket read "0" beside "3 attempts".
-      el("dd", {}, String(Math.max(trail.length, t.attempt_count || 0))),
+      el("dt", {}, "Deliveries"),
+      // Same count as Full time's: each failed go on the rework trail, plus the
+      // delivery that got through once it is past the pitch (attempt_count only
+      // counts claims, so a parked ticket read "0" beside "3 attempts").
+      el("dd", {}, String(Math.max(deliveryCount(t, trail), t.attempt_count || 0))),
       el("dt", {}, "Source"),
       el("dd", {}, t.source || "—"),
       el("dt", {}, "Created"),
-      el("dd", {}, fmtTime(t.created_at)),
+      el("dd", {}, [fmtTime(t.created_at), t.created_by ? ` by ${t.created_by}` : ""]),
       el("dt", {}, "Updated"),
       el("dd", {}, fmtTime(t.updated_at)),
     ]),
   ]);
 
-  const timeline = el("div", { class: "card" }, [
-    el("h2", {}, ["Match report ", el("span", { class: "count" }, `${events.length} events`)]),
-    events.length
+  // The brief: what the ticket asks for, and what it waits on.
+  const deps = view.dependencies || [];
+  const brief = el("section", { class: "card panel tk-brief", "aria-label": "The brief" }, [
+    panelHead("The brief"),
+    t.description
+      ? el("p", { class: "desc" }, t.description)
+      : el("p", { class: "desc dim" }, "No description."),
+    el("h3", { class: "tk-h3" }, "Depends on"),
+    deps.length
       ? el(
           "ul",
-          { class: "timeline" },
-          events.map((ev) =>
-            el("li", {}, [
-              el("div", { class: "ev-type" }, humanizeEvent(ev.event_type)),
-              el("div", { class: "ev-time" }, fmtTime(ev.created_at)),
-              el("div", { class: "ev-actor" }, actorName(ev.actor_type, ev.actor_id)),
-              // TRACE: the runner tick that wrote this event (work_events.correlation_id).
-              // Every event one tick produced — the runner's own calls and the agent's
-              // MCP writes — carries the same id, so the chip shows which events belong
-              // together; `dispatch events list --correlation <id>` prints the whole trail.
-              ev.correlation_id
-                ? el(
-                    "div",
-                    {
-                      class: "ev-tick mono",
-                      title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
-                    },
-                    `tick ${ev.correlation_id}`,
-                  )
-                : null,
-              ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
+          { class: "clean tk-deps" },
+          deps.map((d) =>
+            el("li", { class: `st-${d.status}` }, [
+              glyph(d.status, 16),
+              el("a", { href: `#/ticket/${d.depends_on_ticket_id}` }, [
+                el("b", {}, `#${d.number}`),
+                " ",
+                d.title,
+              ]),
+              el("span", { class: "ac-state" }, statusLabel(d.status)),
             ]),
           ),
         )
-      : el("p", { class: "dim" }, "No events recorded."),
+      : el("p", { class: "dim" }, "Nothing. It can start on its own."),
   ]);
+
+  const timeline = ticketMatchReport(events, view.repositories || []);
 
   // BBT-001: the independent black-box testing card — the testability toggle, the
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
@@ -9100,8 +9437,6 @@ async function renderTicket(id) {
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
-  // Distinct from the board's latest-only rework chip: this is the trail an
-  // operator returns to when triaging why a ticket kept bouncing.
   const failureHistory = renderFailureHistory(trail);
   const failingTest =
     OFF_PITCH.has(t.status) || t.status === "refining" ? failingTestCard(trail) : null;
@@ -9111,27 +9446,416 @@ async function renderTicket(id) {
     .catch(() => {});
 
   // PO-r2 #2: per-delivery memory attribution — what memory was primed into the agent
-  // for this delivery, paired with the outcome (shipped clean vs needed rework), so the
-  // learn-loop is visible. Distinct "no memory primed" state vs "primed" (AC3).
+  // for this delivery, paired with the outcome (shipped clean vs needed rework).
   const memoryPrimed = memoryPrimedPanel(t, view.evidence || [], view.rework_trail || []);
+
+  // The runner's logs for this ticket: live while it is on the pitch, else the record.
+  const runs = ticketRunsPanel(t, events);
+
+  const live = ["claimed", "in_progress"].includes(t.status);
+  const main =
+    t.status === "in_testing"
+      ? [
+          yourMove,
+          testingCard,
+          runs,
+          failingTest,
+          failureHistory,
+          diffCard,
+          sideRepos,
+          memoryPrimed,
+        ]
+      : live
+        ? [runs, yourMove, failureHistory, sideRepos, testingCard, memoryPrimed]
+        : [
+            yourMove,
+            failingTest,
+            failureHistory,
+            diffCard,
+            runs,
+            sideRepos,
+            memoryPrimed,
+            testingCard,
+          ];
 
   wrap.appendChild(head);
   wrap.appendChild(
-    el("div", { class: "detail-grid" }, [
-      el("div", {}, [
-        yourMove,
-        failingTest,
-        failureHistory,
-        diffCard,
-        sideRepos,
-        memoryPrimed,
-        testingCard,
+    el("div", { class: "detail-grid tk-grid" }, [
+      el("div", { class: "tk-main" }, main),
+      el("div", { class: "tk-side" }, [
+        epicCard,
+        sideBlockers,
+        brief,
+        acCard,
         timeline,
+        sideFields,
       ]),
-      el("div", {}, [epicCard, acCard, sideFields, sideBlockers]),
     ]),
   );
   return wrap;
+}
+
+/**
+ * What shipped, from the delivery's own diff stat (the diff_summary evidence the
+ * runner recorded): after the merge the branch and main agree, so a live diff is
+ * empty. Each file with its goal-difference bar. Null when there is no stat.
+ */
+function shippedFiles(evidence) {
+  const ev = (evidence || []).filter((e) => e.evidence_type === "diff_summary").pop();
+  if (!ev) return null;
+  const rows = [];
+  let total = null;
+  for (const line of String(ev.summary || "").split("\n")) {
+    const m = line.match(/^\s*(\S.*?)\s*\|\s*(\d+)\s*([+-]*)\s*$/);
+    if (m) rows.push({ path: m[1], n: Number(m[2]), marks: m[3] });
+    else if (/files? changed/.test(line)) total = line.trim();
+  }
+  if (!rows.length) return null;
+  const max = Math.max(1, ...rows.map((r) => r.n));
+  return el("div", { class: "diff-box" }, [
+    el("div", { class: "diff-section" }, [
+      el("div", { class: "diff-head" }, [
+        el("span", {}, `From the delivery's diff stat, recorded ${fmtTime(ev.created_at)}`),
+        total ? el("span", { class: "diff-stats" }, total) : null,
+      ]),
+      el(
+        "ul",
+        { class: "diff-filestrip clean", "aria-label": "Files that shipped" },
+        rows.map((r) => {
+          const plus = (r.marks.match(/\+/g) || []).length;
+          const minus = (r.marks.match(/-/g) || []).length;
+          const blocks = Math.max(1, Math.round((r.n / max) * 16));
+          const add = plus + minus ? Math.round((plus / (plus + minus)) * blocks) : blocks;
+          return el("li", { class: "diff-filejump is-static" }, [
+            el("span", { class: "dfj-flag" }),
+            el("code", { class: "mono diff-filejump-path" }, r.path),
+            el("span", { class: "diff-filejump-stat" }, plural(r.n, "line")),
+            el(
+              "span",
+              { class: "gd", "aria-hidden": "true" },
+              Array.from({ length: blocks }, (_, i) =>
+                el("i", { class: i < add ? "gd-a" : "gd-d" }),
+              ),
+            ),
+          ]);
+        }),
+      ),
+    ]),
+  ]);
+}
+
+/** Deliveries made: the failed goes on the rework trail, plus the one that got through. */
+const PAST_THE_PITCH = new Set(["in_review", "in_testing", "ready_for_merge", "done"]);
+function deliveryCount(t, trail) {
+  return trail.length + (PAST_THE_PITCH.has(t.status) ? 1 : 0);
+}
+
+/** Full time: a done ticket's result in place of a next move — when, how many goes, the criteria. */
+function fullTimeCard(t, { trail, events, acList, doneAt }) {
+  const claimAt = (events || []).find((e) => e.event_type === "claim.created")?.created_at;
+  const sat = acList.filter((a) => a.status === "satisfied").length;
+  const goes = deliveryCount(t, trail);
+  const took = claimAt && doneAt ? Date.parse(doneAt) - Date.parse(claimAt) : null;
+  return el("section", { class: "card panel tk-ft", "aria-label": "Full time" }, [
+    panelHead("Full time", doneAt ? fmtTime(doneAt) : null, null, { kit: "ink" }),
+    el("p", { class: "tk-move-t" }, [
+      trail.length
+        ? `Merged after ${plural(trail.length, "rework")}: it went through the gates ${plural(goes, "time")}.`
+        : "Merged first time: it passed the gates on its first delivery.",
+      t.branch_name ? [" Branch ", el("code", { class: "mono" }, t.branch_name), "."] : null,
+    ]),
+    el("div", { class: "kpi-row tk-ft-row" }, [
+      statCell({ label: "Deliveries", value: String(goes) }),
+      statCell({ label: "Reworks", value: String(trail.length) }),
+      statCell({
+        label: "Criteria met",
+        value: acList.length ? `${sat}/${acList.length}` : "—",
+      }),
+      took != null && took >= 0
+        ? statCell({ label: "Claim to merge", value: fmtDuration(took) })
+        : null,
+    ]),
+    el("div", { class: "btn-row" }, [
+      t.pr_url && safeHttpUrl(t.pr_url)
+        ? el(
+            "a",
+            { class: "btn", href: safeHttpUrl(t.pr_url), target: "_blank", rel: "noopener" },
+            "Open the PR",
+          )
+        : null,
+      el("a", { class: "btn", href: "#/work?status=done" }, "See it on the board"),
+    ]),
+  ]);
+}
+
+/** The full-time plaque in a done ticket's head: scoreboard black, the merge date. */
+function fullTimePlaque(at) {
+  return el("div", { class: "ft-plaque", "aria-hidden": "true" }, [
+    el("span", { class: "ft-l" }, "Full time"),
+    el("b", { class: "ft-v" }, at ? fmtDay(at, { weekday: false }) : "Done"),
+    at ? el("span", { class: "ft-t tabnum" }, clockTime(Date.parse(at))) : null,
+  ]);
+}
+
+/** One event as a sentence a manager reads ("Ready → Claimed"), and the glyph it carries. */
+function eventSentence(ev, repos) {
+  const p = parseJsonSafe(ev.payload_json) || {};
+  const who = actorName(ev.actor_type, ev.actor_id);
+  const repoName = (id) => (repos || []).find((r) => r.id === id)?.name || "a repo";
+  const reason = typeof p.reason === "string" && /\s/.test(p.reason) ? p.reason : null;
+  switch (ev.event_type) {
+    case "ticket.created":
+      return { text: `Created by ${who}`, st: "draft" };
+    case "ticket.transitioned":
+      return {
+        text: `${statusLabel(p.from || "?")} → ${statusLabel(p.to || "?")}`,
+        note: reason,
+        st: p.to || null,
+      };
+    case "claim.created":
+      return { text: `Claimed by ${who}`, st: "claimed" };
+    case "claim.released":
+      return { text: "Claim released" };
+    case "ticket.reworking":
+      return {
+        text: `Rework ${p.attempt ?? "?"}${p.max_attempts ? `/${p.max_attempts}` : ""}${p.gate ? `: the ${p.gate} gate failed` : ""}`,
+        note: p.reason || null,
+        st: "failed",
+      };
+    case "ticket.blocked":
+      return { text: "Parked: it needs you", note: p.reason || null, st: "blocked" };
+    case "ticket.delivery_recorded":
+      return { text: p.branch_name ? `Delivered on ${p.branch_name}` : "Delivery recorded" };
+    case "ticket.repo_delivery_recorded":
+      return {
+        text: `${repoName(p.repo_id)}: ${String(p.status || "delivery").replace(/_/g, " ")}`,
+      };
+    case "ticket.repo_access_set":
+      return { text: `Boundary: ${repoName(p.repo_id)} set to ${p.access || "?"}` };
+    case "evidence.recorded":
+      return { text: `Evidence: ${evidenceKind(p.evidence_type)}` };
+    case "ac.added":
+      return { text: "Criterion added", note: p.text || null };
+    case "ticket.dependency_added":
+      return { text: `Now depends on #${p.depends_on_number ?? "?"}` };
+    case "ticket.paused":
+      return { text: "Paused at a cap", note: p.reason || null, st: "paused" };
+    default:
+      return { text: humanizeEvent(ev.event_type), note: reason };
+  }
+}
+
+/**
+ * The match report: every event, minute by minute, grouped by day — a sentence,
+ * who did it, and the tick it was written in. The raw payload is one switch away.
+ */
+function ticketMatchReport(events, repos) {
+  // Creating a ticket writes its criteria and repo links in the same instant, some a
+  // few ms before the ticket.created row itself; the report opens on the kick-off.
+  const created = events.findIndex((e) => e.event_type === "ticket.created");
+  if (
+    created > 0 &&
+    Date.parse(events[created].created_at) - Date.parse(events[0].created_at) < 1000
+  )
+    events = [events[created], ...events.slice(0, created), ...events.slice(created + 1)];
+  let day = "";
+  const list = el(
+    "ol",
+    { class: "timeline clean tk-report-list" },
+    events.map((ev) => {
+      const s = eventSentence(ev, repos);
+      const d = fmtDay(ev.created_at);
+      const dayHead = d !== day ? (day = d) : null;
+      return el("li", { class: s.st ? `rp-${s.st}` : null }, [
+        dayHead ? el("span", { class: "rp-day" }, dayHead) : null,
+        el(
+          "time",
+          { class: "ev-time tabnum", datetime: ev.created_at, title: fmtTime(ev.created_at) },
+          clockTime(Date.parse(ev.created_at)),
+        ),
+        s.st ? glyph(s.st, 14) : el("span", { class: "rp-dot", "aria-hidden": "true" }),
+        el("div", { class: "rp-body" }, [
+          el("div", { class: "ev-type" }, s.text),
+          s.note ? el("div", { class: "rp-note" }, s.note) : null,
+          el("div", { class: "ev-actor" }, [
+            actorName(ev.actor_type, ev.actor_id),
+            // TRACE: the runner tick that wrote this event (work_events.correlation_id).
+            // Every event one tick produced carries the same id, so the chip shows which
+            // events belong together; `dispatch events list --correlation <id>` prints the trail.
+            ev.correlation_id
+              ? el(
+                  "span",
+                  {
+                    class: "ev-tick mono",
+                    title: `Written during tick ${ev.correlation_id} — dispatch events list --correlation ${ev.correlation_id}`,
+                  },
+                  `tick ${ev.correlation_id}`,
+                )
+              : null,
+          ]),
+          ev.payload_json && ev.payload_json !== "{}" ? formatPayload(ev.payload_json) : null,
+        ]),
+      ]);
+    }),
+  );
+  const raw = el(
+    "button",
+    {
+      class: "btn quiet small tk-raw",
+      type: "button",
+      "aria-pressed": "false",
+      onclick: () => {
+        const on = !list.classList.contains("show-raw");
+        list.classList.toggle("show-raw", on);
+        raw.setAttribute("aria-pressed", String(on));
+      },
+    },
+    "Show the raw data",
+  );
+  return el("section", { class: "card panel tk-report", "aria-label": "Match report" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Match report",
+        el("span", { class: "panel-aux" }, plural(events.length, "event")),
+      ]),
+      events.length ? raw : null,
+    ]),
+    events.length ? list : el("p", { class: "dim" }, "No events recorded."),
+  ]);
+}
+
+/**
+ * The runner's logs for a ticket. Delivery runs are matched by the claim they
+ * started with (a run row carries no ticket; its log's ROUTE line does, and the
+ * run detail reads it), so a live delivery links straight to its streaming log
+ * and a finished one keeps its record. A ticket marked delivering with no live
+ * run says so plainly (the #88 hung-claim case).
+ */
+function ticketRunsPanel(t, events) {
+  // In testing is not delivering: the tester lane runs outside the delivery runs read here,
+  // so "no live run" would wrongly say a ticket under test may be stuck.
+  const delivering = ["in_progress", "claimed"].includes(t.status);
+  const panel = el("section", { class: "card panel tk-runs", "aria-label": "Runs" });
+  const body = el("div", { class: "tk-runs-body" }, [
+    el("p", { class: "dim" }, delivering ? "Finding the live run…" : "Reading the runner's logs…"),
+  ]);
+  panel.append(
+    panelHead(
+      delivering ? "On the pitch" : "Match footage",
+      delivering ? "the live run" : "the runner's log of each delivery",
+      null,
+      delivering ? { kit: "ink" } : {},
+    ),
+    body,
+  );
+  const claims = (events || [])
+    .filter((e) => e.event_type === "claim.created")
+    .map((e) => Date.parse(e.created_at))
+    .filter(Number.isFinite);
+  const near = (run) => claims.some((c) => Math.abs(Date.parse(run.started_at) - c) <= 5 * 60_000);
+  const signal = routeSignal();
+  (async () => {
+    let found;
+    try {
+      const res = await api("GET", "/api/runs?active=1&limit=50", undefined, { signal });
+      const pool = [...(res.active || []), ...(res.recent || [])].filter(
+        (r) => r.kind === "poll_work" || r.kind === "other",
+      );
+      // Live runs always (there are a handful); finished ones only near this ticket's claims.
+      const cand = pool.filter((r) => r.status === "running" || near(r)).slice(0, 8);
+      const details = await Promise.all(
+        cand.map((r) =>
+          api("GET", `/api/runs/${encodeURIComponent(r.id)}`, undefined, { signal })
+            .then((x) => x.detail || null)
+            .catch(() => null),
+        ),
+      );
+      found = cand
+        .map((r, i) => ({ run: r, d: details[i] }))
+        .filter((x) => x.d && x.d.ticket_number === t.number);
+    } catch (e) {
+      if (e && e.code === "ABORTED") return;
+      clear(body);
+      body.appendChild(el("p", { class: "dim" }, "The runner's logs could not be read."));
+      return;
+    }
+    clear(body);
+    const liveRun = found.find((x) => x.run.status === "running");
+    if (delivering && !liveRun) {
+      // Marked delivering but no live run attached ⇒ likely a hung/orphaned claim.
+      body.appendChild(
+        el("div", { class: "delivering-banner is-warn" }, [
+          el("span", { class: "delivering-dot is-warn" }),
+          el(
+            "span",
+            {},
+            "Marked delivering, but no live run is attached — it may be stuck or already ended.",
+          ),
+        ]),
+      );
+    }
+    if (!found.length) {
+      if (!delivering) panel.remove();
+      return;
+    }
+    body.appendChild(
+      el(
+        "ul",
+        { class: "clean tk-run-list" },
+        found.map(({ run, d }) => {
+          const on = run.status === "running";
+          const chips = [
+            d.phase ? el("span", { class: "run-detail-chip" }, d.phase) : null,
+            d.num_turns > 0
+              ? el("span", { class: "run-detail-chip" }, plural(d.num_turns, "turn"))
+              : null,
+            d.cost_usd > 0
+              ? el("span", { class: "run-detail-chip tabnum" }, money(d.cost_usd))
+              : null,
+            d.outcome
+              ? el(
+                  "span",
+                  { class: "run-detail-chip" },
+                  `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
+                )
+              : null,
+          ];
+          return el("li", { class: `tk-run${on ? " is-live" : ""}` }, [
+            on
+              ? el("span", { class: "run-spinner", "aria-hidden": "true" })
+              : glyph(run.status === "failed" ? "failed" : "done", 16),
+            el("div", { class: "tk-run-main" }, [
+              el("p", { class: "tk-run-h" }, [
+                el("b", {}, on ? `Delivering #${t.number}` : `Delivery of #${t.number}`),
+                " ",
+                el(
+                  "span",
+                  { class: "dim" },
+                  on
+                    ? `since ${clockTime(Date.parse(run.started_at))} · ${runDuration(run)}`
+                    : `${fmtTime(run.started_at)} · ${runDuration(run)} · ${run.status}`,
+                ),
+              ]),
+              el("div", { class: "run-detail-chips" }, chips),
+            ]),
+            el(
+              "button",
+              {
+                class: "btn small run-viewlog",
+                type: "button",
+                onclick: () =>
+                  on
+                    ? viewRunDetail(run.id, `Delivery of #${t.number}`)
+                    : viewRunLog(run, `Delivery of #${t.number} · log`),
+              },
+              on ? "View live log →" : "View log",
+            ),
+          ]);
+        }),
+      ),
+    );
+  })();
+  return panel;
 }
 
 /**
@@ -9157,19 +9881,26 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         : { txt: "shipped clean — no rework", cls: "ok" }
       : reworks > 0
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
-        : { txt: "in review", cls: "dim" };
+        : { txt: statusLabel(t.status).toLowerCase(), cls: "dim" };
 
-  const head = el("div", { class: "mem-primed-head" }, [
-    el("span", { class: "mem-primed-title" }, "Memory primed for this delivery"),
-    el("span", { class: "mem-primed-outcome " + outcome.cls }, outcome.txt),
+  const head = el("div", { class: "panel-head mem-primed-head" }, [
+    el("h2", { class: "panel-title" }, "The scouting report"),
+    el("span", { class: "panel-aux mem-primed-outcome " + outcome.cls }, outcome.txt),
   ]);
+  const sub = primed.length
+    ? el(
+        "p",
+        { class: "mem-primed-title" },
+        "Memory primed for this delivery: what the club's memory briefed the agent with.",
+      )
+    : null;
 
   let bodyNode;
   if (primed.length === 0) {
     bodyNode = el(
       "div",
       { class: "mem-primed-none" },
-      "No memory primed for this delivery — the agent ran without a lore/file-card context packet.",
+      "The club's memory briefed the agent with nothing for this delivery: no lore or file cards were primed, so it went out without a scouting report.",
     );
   } else {
     bodyNode = el(
@@ -9185,7 +9916,11 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
       ),
     );
   }
-  return el("div", { class: "card mem-primed-card" }, [head, bodyNode]);
+  return el(
+    "section",
+    { class: "card panel mem-primed-card", "aria-label": "The scouting report" },
+    [head, sub, bodyNode],
+  );
 }
 
 /**
@@ -9204,7 +9939,14 @@ function renderTestingCard(t, evidence) {
   const contract = parseTicketTestContract(t.test_contract);
   const testable = t.can_be_tested === 1;
 
-  const toggle = el("input", { type: "checkbox", role: "switch", "aria-label": "Testable" });
+  // A merged or closed ticket's testing route is its record: it can no longer change.
+  const closed = t.status === "done" || t.status === "cancelled";
+  const toggle = el("input", {
+    type: "checkbox",
+    role: "switch",
+    "aria-label": "Testable",
+    disabled: closed ? "" : null,
+  });
   toggle.checked = testable;
   toggle.addEventListener("change", () =>
     guard(async () => {
@@ -9231,11 +9973,11 @@ function renderTestingCard(t, evidence) {
           contract.harness_ready ? "ready (black-box mode)" : "not ready (harness mode)",
         ),
       ])
-    : el(
-        "p",
-        { class: "dim" },
-        "No test contract recorded. Add one with `wg ticket test-contract` or the Dispatch MCP.",
-      );
+    : el("p", { class: "dim" }, [
+        "No test contract recorded. Add one with ",
+        el("code", { class: "mono" }, "wg ticket test-contract"),
+        " or the Dispatch MCP.",
+      ]);
 
   // The tester's verdict evidence: ONLY test_output rows whose payload carries a BBT
   // tester verdict (pass/fail). Plain implementation / AC test_output must NOT show
@@ -9249,7 +9991,9 @@ function renderTestingCard(t, evidence) {
         { class: "clean" },
         testerEvidence.map((e) => {
           const prov = parseTesterProvenance(e.payload_json);
-          return el("li", {}, [
+          const verdict = parseTesterVerdict(e.payload_json);
+          return el("li", { class: `tt-row tt-${verdict}` }, [
+            glyph(verdict === "pass" ? "done" : "failed", 16, verdict === "pass" ? "Pass" : "Fail"),
             el("div", {}, [
               e.summary,
               // BBT-001 provenance badge: who produced this verdict (derived from the
@@ -9258,15 +10002,15 @@ function renderTestingCard(t, evidence) {
                 ? el("span", { class: "badge no-dot", style: "margin-left:8px" }, `by ${prov}`)
                 : null,
             ]),
-            el("div", { class: "ac-meta" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
+            el("div", { class: "ac-meta tt-who" }, `${e.created_by} · ${fmtTime(e.created_at)}`),
           ]);
         }),
       )
     : el("p", { class: "dim" }, "No tester results recorded yet.");
 
-  return el("div", { class: "card" }, [
-    el("h2", {}, "Independent testing"),
-    el("div", { class: "setting-row" }, [
+  return el("section", { class: "card panel tk-testing", "aria-label": "Independent testing" }, [
+    panelHead("Independent testing", testable ? "black-box tester on" : "off", null, {}),
+    el("div", { class: "setting-row tk-testable" }, [
       el("div", { class: "setting-meta" }, [
         el("div", { class: "setting-label" }, [
           el("span", {}, "Eligible for black-box testing"),
@@ -9275,7 +10019,9 @@ function renderTestingCard(t, evidence) {
         el(
           "p",
           { class: "setting-help dim" },
-          "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
+          closed
+            ? `${t.status === "done" ? "Merged" : "Closed"}: this records whether it went through the independent tester. It can no longer change.`
+            : "When on (and GAFFER_TESTING is enabled), review approval routes this ticket through an independent tester before merge.",
         ),
       ]),
       el("label", { class: "switch" }, [
@@ -9283,9 +10029,9 @@ function renderTestingCard(t, evidence) {
         el("span", { class: "switch-track" }, el("span", { class: "switch-thumb" })),
       ]),
     ]),
-    el("h3", { style: "margin-top:14px" }, "Test contract"),
+    el("h3", { class: "tk-h3" }, "Test contract"),
     contractRows,
-    el("h3", { style: "margin-top:14px" }, "Tester results"),
+    el("h3", { class: "tk-h3" }, "Tester results"),
     evidenceList,
   ]);
 }
@@ -9403,27 +10149,48 @@ const REPO_GROUPS = [
   { key: "rejectedRepos", title: "Rejected", note: "retained for audit", tone: "rejected" },
 ];
 
-function renderRepoPanel(ticketId, claimBox) {
+/**
+ * The boundary editor: the grounds this ticket may play on — which repos it may
+ * write, read or test. Suggestions are not a boundary until confirmed. Once the
+ * ticket is merged the boundary is its record and reads only (no controls).
+ */
+// The ticket each boundary editor belongs to, so its sheets can name it.
+const boundaryTickets = new Map();
+function boundaryRef(ticketId) {
+  const t = boundaryTickets.get(ticketId);
+  return t && t.number != null ? `#${t.number}` : "this ticket";
+}
+function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null } = {}) {
+  if (ticket) boundaryTickets.set(ticketId, ticket);
   const body = el("div", { class: "repo-panel-body" }, el("p", { class: "dim" }, "Loading repos…"));
-  const card = el("div", { class: "card repo-panel" }, [
-    el("h2", {}, "Execution boundary"),
-    el(
-      "p",
-      { class: "section-note dim" },
-      "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
-    ),
-    body,
-  ]);
+  const card = el(
+    "section",
+    {
+      class: `card panel repo-panel${readOnly ? " is-readonly" : ""}`,
+      "aria-label": "The boundary",
+    },
+    [
+      panelHead("The boundary", readOnly ? "read-only: merged" : "where agents may play"),
+      el(
+        "p",
+        { class: "section-note dim" },
+        readOnly
+          ? "Merged. The boundary stays as the record of where this ticket played; it can no longer change."
+          : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
+      ),
+      body,
+    ],
+  );
   const reload = () =>
     guard(async () => {
-      await refreshRepoPanel(ticketId, body, claimBox, reload);
+      await refreshRepoPanel(ticketId, body, claimBox, reload, readOnly);
       if (claimBox) loadClaimability(ticketId, claimBox);
     });
   reload();
   return card;
 }
 
-async function refreshRepoPanel(ticketId, body, claimBox, reload) {
+async function refreshRepoPanel(ticketId, body, claimBox, reload, readOnly = false) {
   const work = (await api("GET", `/tickets/${ticketId}/work-repos`)).work_repos || {};
   let suggestions = null;
   let suggestionsError = false;
@@ -9462,7 +10229,9 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
     const links = work[group.key] || [];
     if (!links.length) continue;
     anyRepo = true;
-    body.appendChild(renderRepoGroup(ticketId, group, links, suggMeta, reload));
+    body.appendChild(
+      renderRepoGroup(ticketId, group, links, suggMeta, reload, readOnly, write.length),
+    );
   }
   const denied = work.deniedRepos || [];
   if (denied.length) {
@@ -9474,6 +10243,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
         denied,
         suggMeta,
         reload,
+        readOnly,
       ),
     );
   }
@@ -9485,7 +10255,7 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
   const freshSuggestions = (suggestions || []).filter(
     (s) => !linkedIds.has(s.repoId || s.repo_id || s.id),
   );
-  if (freshSuggestions.length) {
+  if (freshSuggestions.length && !readOnly) {
     anyRepo = true;
     body.appendChild(renderSuggestionGroup(ticketId, freshSuggestions, reload));
   }
@@ -9495,11 +10265,13 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
       el(
         "p",
         { class: "dim" },
-        "No repos on this ticket yet. Link a scope or repo on the create flow, or add one below.",
+        readOnly
+          ? "No repos were recorded on this ticket."
+          : "No repos on this ticket yet. Link a scope or repo on the create flow, or add one below.",
       ),
     );
   }
-  if (suggestionsError) {
+  if (suggestionsError && !readOnly) {
     body.appendChild(
       el(
         "p",
@@ -9508,10 +10280,21 @@ async function refreshRepoPanel(ticketId, body, claimBox, reload) {
       ),
     );
   }
-  body.appendChild(renderAddRepoForm(ticketId, reload));
+  if (!readOnly)
+    body.appendChild(
+      renderAddRepoForm(ticketId, reload, { linked: linkedIds, hasWrite: write.length > 0 }),
+    );
 }
 
-function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
+function renderRepoGroup(
+  ticketId,
+  group,
+  links,
+  suggMeta,
+  reload,
+  readOnly = false,
+  writeCount = 0,
+) {
   const isRejected = group.tone === "rejected";
   const isSuggested = group.tone === "suggested";
   const rows = links.map((r) => {
@@ -9519,8 +10302,10 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
     const reasons = parseReasons(r.reasons_json) ?? (meta ? meta.reasons : null);
     const confidence = r.confidence ?? (meta ? meta.confidence : null);
     const controls = [];
-    if (!isRejected) {
-      controls.push(renderAccessControl(ticketId, r, reload));
+    if (readOnly) {
+      controls.push(accessBadge(r.access || "none"));
+    } else if (!isRejected) {
+      controls.push(renderAccessControl(ticketId, r, reload, writeCount));
       controls.push(
         el(
           "button",
@@ -9539,7 +10324,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
           {
             class: "btn small",
             type: "button",
-            onclick: () => setRepoAccess(ticketId, r.id, "write", "confirmed", reload),
+            onclick: () => setRepoAccess(ticketId, r.id, "write", "confirmed", reload, r.name),
           },
           "Restore → write",
         ),
@@ -9551,6 +10336,7 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
+            kitShirt(r.name || r.id, 22),
             repoLink(r, { className: "assoc-name" }),
             isSuggested
               ? badge("suggested", "relation-suggested")
@@ -9571,7 +10357,10 @@ function renderRepoGroup(ticketId, group, links, suggMeta, reload) {
   });
   return el("div", { class: `repo-group repo-group-${group.tone}` }, [
     el("div", { class: "repo-group-head" }, [
-      el("span", { class: "repo-group-title" }, `${group.title} (${links.length})`),
+      el("span", { class: "repo-group-title" }, [
+        group.title,
+        el("span", { class: "repo-group-n" }, String(links.length)),
+      ]),
       el("span", { class: "repo-group-note dim" }, group.note),
     ]),
     el("ul", { class: "clean" }, rows),
@@ -9590,6 +10379,7 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
       el("div", { class: "repo-row" }, [
         el("div", { class: "repo-row-main" }, [
           el("div", { class: "repo-row-head" }, [
+            kitShirt(name, 22),
             el("span", { class: "assoc-name plain" }, name),
             badge("suggested", "relation-suggested"),
             accessBadge(access),
@@ -9637,22 +10427,57 @@ function renderSuggestionGroup(ticketId, suggestions, reload) {
   });
   return el("div", { class: "repo-group repo-group-suggested" }, [
     el("div", { class: "repo-group-head" }, [
-      el("span", { class: "repo-group-title" }, `Suggested by engine (${suggestions.length})`),
+      el("span", { class: "repo-group-title" }, [
+        "Suggested",
+        el("span", { class: "repo-group-n" }, String(suggestions.length)),
+      ]),
       el("span", { class: "repo-group-note dim" }, "confirm to make a boundary"),
     ]),
     el("ul", { class: "clean" }, rows),
   ]);
 }
 
-function renderAccessControl(ticketId, repo, reload) {
+function renderAccessControl(ticketId, repo, reload, writeCount = 0) {
+  const name = repo.name || repo.id;
   const sel = el(
     "select",
-    { class: "access-select", "aria-label": `Access for ${repo.name || repo.id}` },
+    { class: "access-select", "aria-label": `Access for ${name}` },
     TICKET_REPO_ACCESS.map((a) => el("option", { value: a, selected: repo.access === a }, a)),
   );
-  sel.addEventListener("change", () =>
-    setRepoAccess(ticketId, repo.id, sel.value, "confirmed", reload),
-  );
+  sel.addEventListener("change", () => {
+    const to = sel.value;
+    // Taking away the ticket's only write repo leaves nowhere to deliver code: ask first.
+    if (repo.access === "write" && to !== "write" && writeCount <= 1) {
+      sel.value = repo.access; // nothing changes unless the sheet confirms it
+      const ref = boundaryRef(ticketId);
+      const keep = el(
+        "button",
+        { class: "btn", type: "button", onclick: () => closeSheet() },
+        "Keep write",
+      );
+      actionSheet(`Take ${name} off write?`, {
+        focus: keep, // the safe choice has focus: Enter keeps the boundary as it is
+        intro: `${name} is the only repo ${ref} may write. Set it to ${to} and no agent can deliver code for ${ref} until you give it a write repo again.`,
+        actions: [
+          keep,
+          el(
+            "button",
+            {
+              class: "btn danger",
+              type: "button",
+              onclick: () => {
+                closeSheet();
+                setRepoAccess(ticketId, repo.id, to, "confirmed", reload, name);
+              },
+            },
+            `Set to ${to}`,
+          ),
+        ],
+      });
+      return;
+    }
+    setRepoAccess(ticketId, repo.id, to, "confirmed", reload, name);
+  });
   return sel;
 }
 
@@ -9665,65 +10490,97 @@ function confidenceMeter(value) {
   ]);
 }
 
-function setRepoAccess(ticketId, repoId, access, relation, reload) {
+function setRepoAccess(ticketId, repoId, access, relation, reload, name) {
   guard(async () => {
     await api("PUT", `/tickets/${ticketId}/repo-access`, { repo_id: repoId, access, relation });
-    toast(`Repo set to ${access}`, { ok: true });
+    toast(`${name || "Repo"}: ${access} on ${boundaryRef(ticketId)}.`, { ok: true });
     reload();
   });
 }
 
 function rejectRepo(ticketId, repo, reload) {
-  guard(async () => {
-    const reason = window.prompt(`Reason for rejecting ${repo.name || repo.id}?`);
-    if (reason == null || reason.trim() === "") {
-      toast("Reject cancelled — a reason is required");
-      return;
-    }
-    await api("PUT", `/tickets/${ticketId}/repo-access`, {
-      repo_id: repo.id,
-      access: "none",
-      relation: "rejected",
-      reasons: [reason.trim()],
-    });
-    toast("Repo rejected", { ok: true });
-    reload();
+  const name = repo.name || repo.id;
+  const ref = boundaryRef(ticketId);
+  reasonSheet({
+    title: `Reject ${name}`,
+    ticket: boundaryTickets.get(ticketId) || null,
+    intro: `${name} comes off the boundary of ${ref}: agents on this ticket may not write, read or test it. Restore it to write later if you change your mind.`,
+    label: `Why is ${name} out of bounds?`,
+    presets: [
+      "This change does not touch it",
+      "Wrong repo suggested",
+      "Another ticket owns this work",
+    ],
+    hint: "Required. It is kept with the boundary.",
+    confirm: "Reject repo",
+    tone: "danger",
+    onConfirm: async (reason) => {
+      await api("PUT", `/tickets/${ticketId}/repo-access`, {
+        repo_id: repo.id,
+        access: "none",
+        relation: "rejected",
+        reasons: [reason],
+      });
+      toast(`${name} is off the boundary of ${ref}.`, { ok: true });
+      reload();
+    },
   });
 }
 
-function renderAddRepoForm(ticketId, reload) {
+/**
+ * Add a repo to the boundary. It offers only repos NOT already on it (written, read,
+ * tested or rejected): changing a listed repo's access is its own row's control, so
+ * this form can never quietly turn a confirmed write into a read. With no write repo
+ * yet, write is the default; otherwise read.
+ */
+function renderAddRepoForm(ticketId, reload, { linked = new Set(), hasWrite = false } = {}) {
   const repoSel = el("select", { required: "" }, [el("option", { value: "" }, "Loading repos…")]);
-  guard(async () => {
-    const repos = (await api("GET", "/repositories")).repositories || [];
-    clear(repoSel);
-    repoSel.appendChild(el("option", { value: "" }, "Add a repo…"));
-    repos.forEach((r) => repoSel.appendChild(el("option", { value: r.id }, r.name)));
-  });
   const access = el(
     "select",
     {},
-    TICKET_REPO_ACCESS.map((a) => el("option", { value: a, selected: a === "read" }, a)),
+    TICKET_REPO_ACCESS.map((a) =>
+      el("option", { value: a, selected: a === (hasWrite ? "read" : "write") }, a),
+    ),
   );
-  return el(
+  const submit = el("button", { class: "btn", type: "submit" }, "Add repo");
+  const form = el(
     "form",
     {
-      class: "inline-form",
+      class: "inline-form add-repo-form",
       onsubmit: (e) => {
         e.preventDefault();
         if (!repoSel.value) {
           toast("Pick a repo first");
           return;
         }
-        setRepoAccess(ticketId, repoSel.value, access.value, "confirmed", reload);
+        if (linked.has(repoSel.value)) return; // listed above: change it there
+        const name = repoSel.selectedOptions?.[0]?.textContent || null;
+        setRepoAccess(ticketId, repoSel.value, access.value, "confirmed", reload, name);
         repoSel.value = "";
       },
     },
-    [
-      field("Repo", repoSel),
-      field("Access", access),
-      el("button", { class: "btn", type: "submit" }, "Add repo"),
-    ],
+    [field("Repo", repoSel), field("Access", access), submit],
   );
+  guard(async () => {
+    const repos = (await api("GET", "/repositories")).repositories || [];
+    const free = repos.filter((r) => !linked.has(r.id));
+    clear(repoSel);
+    if (!free.length) {
+      form.replaceChildren(
+        el(
+          "p",
+          { class: "dim add-repo-none" },
+          repos.length
+            ? "Every repo the factory knows is already on this boundary. Change one above."
+            : "The factory has no repos yet.",
+        ),
+      );
+      return;
+    }
+    repoSel.appendChild(el("option", { value: "" }, "Add a repo…"));
+    free.forEach((r) => repoSel.appendChild(el("option", { value: r.id }, r.name)));
+  });
+  return form;
 }
 
 function loadClaimability(ticketId, box) {
@@ -11805,10 +12662,16 @@ function splitDiffFiles(diffText) {
   return files;
 }
 
+/** A file path with a break chance after each "/": a narrow head wraps at a folder, not mid-name. */
+function pathBreaks(p) {
+  const parts = String(p).split("/");
+  return parts.flatMap((part, i) => (i < parts.length - 1 ? [`${part}/`, el("wbr")] : [part]));
+}
+
 /** A single repo's diff section: header (repo/branch/stats) + per-file file
  *  strip (jumper) + one collapsible `<details>` per file. `repoIdx` scopes the
  *  DOM ids to indices — a path is NEVER used to build an id or selector. */
-function repoDiffSection(rd, repoIdx = 0) {
+function repoDiffSection(rd, repoIdx = 0, { collapsed = false } = {}) {
   const statBits = [];
   if (rd.unavailable) {
     statBits.push(el("span", { class: "diff-stat dim" }, rd.message || rd.unavailable));
@@ -11832,7 +12695,7 @@ function repoDiffSection(rd, repoIdx = 0) {
   const risk = rd.unavailable ? null : riskOverlay(rd.riskAnnotations || []);
 
   if (rd.unavailable) {
-    return el("div", { class: "diff-section" }, [header, risk]);
+    return el("div", { class: "diff-section is-unavailable" }, [header, risk]);
   }
 
   // Set of risk paths, so a file can carry an ADVISORY marker when its path
@@ -11852,7 +12715,7 @@ function repoDiffSection(rd, repoIdx = 0) {
   if (files.length === 0) {
     // No parseable `diff --git` chunk (e.g. a plain textual diff): fall back to
     // the single-pre rendering so nothing is lost.
-    return el("div", { class: "diff-section" }, [header, risk, diffBody(rd.diff)]);
+    return el("div", { class: "diff-section is-plain" }, [header, risk, diffBody(rd.diff)]);
   }
 
   // The file list: one row per file, flagged files carry a yellow card, and a
@@ -11895,7 +12758,7 @@ function repoDiffSection(rd, repoIdx = 0) {
       },
       [
         el("span", { class: "dfj-flag" }, ann ? ycard(14, "diff-file-risk") : null),
-        el("code", { class: "mono diff-filejump-path" }, f.path),
+        el("code", { class: "mono diff-filejump-path" }, pathBreaks(f.path)),
         el("span", { class: "diff-filejump-stat" }, [
           el("span", { class: "diff-add-stat" }, `+${f.additions}`),
           el("span", { class: "diff-del-stat" }, `−${f.deletions}`),
@@ -11909,7 +12772,7 @@ function repoDiffSection(rd, repoIdx = 0) {
     // file's lines. The id is index-scoped, never derived from the path.
     const summaryChildren = [
       icon("chevron", "diff-file-chev"),
-      el("code", { class: "mono diff-file-path" }, f.path),
+      el("code", { class: "mono diff-file-path" }, pathBreaks(f.path)),
       isNew ? el("span", { class: "diff-file-tag" }, "new file") : null,
       isGone ? el("span", { class: "diff-file-tag" }, "deleted") : null,
       el("span", { class: "diff-filejump-stat" }, [
@@ -11926,7 +12789,12 @@ function repoDiffSection(rd, repoIdx = 0) {
     filesBox.appendChild(
       el(
         "details",
-        { class: `diff-file-block${ann ? " is-flagged" : ""}`, open: "", id: targetId },
+        {
+          class: `diff-file-block${ann ? " is-flagged" : ""}`,
+          // Folded (the ticket page) the file list is the way in; open (Review) it reads top to bottom.
+          open: collapsed ? null : "",
+          id: targetId,
+        },
         [
           el("summary", { class: "diff-file-summary" }, summaryChildren),
           ann
@@ -11943,7 +12811,12 @@ function repoDiffSection(rd, repoIdx = 0) {
     );
   });
 
-  return el("div", { class: "diff-section" }, [header, risk, strip, filesBox]);
+  return el("div", { class: `diff-section${rd.truncated ? " is-truncated" : ""}` }, [
+    header,
+    risk,
+    strip,
+    filesBox,
+  ]);
 }
 
 /**
@@ -12015,7 +12888,7 @@ function diffApprovability(repos) {
  * Approve button on a diff the human could actually see. Until it fires, callers
  * should treat the ticket as NOT approvable (fail-closed).
  */
-function renderTicketDiff(ticketId, onState) {
+function renderTicketDiff(ticketId, onState, opts = {}) {
   const box = el("div", { class: "diff-box" }, [el("div", { class: "ac-meta" }, "Loading diff…")]);
   const report = (state, repos = []) => {
     if (typeof onState === "function") onState(state, repos);
@@ -12031,9 +12904,11 @@ function renderTicketDiff(ticketId, onState) {
         report(diffApprovability(repos));
         return;
       }
-      if (repos.length > 1)
+      if (repos.length > 1) {
+        box.classList.add("is-multi");
         box.appendChild(el("div", { class: "ac-meta" }, `Diff (${repos.length} repos)`));
-      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i)));
+      }
+      repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i, opts)));
       report(diffApprovability(repos), repos);
     })
     .catch((e) => {
@@ -12116,18 +12991,25 @@ function dodChecklist(evidence) {
     const status = g.status === "PASS" ? "pass" : g.status === "FAIL" ? "fail" : "skip";
     const mark = status === "pass" ? "✓" : status === "fail" ? "✗" : "–";
     const children = [
-      el("span", { class: `dod-mark dod-${status}` }, mark),
+      el("span", { class: `dod-mark dod-${status}`, "aria-hidden": "true" }, mark),
       el("span", { class: "dod-gate" }, String(g.gate || "gate")),
       el("span", { class: "dod-repo ac-meta" }, String(g.repo || "")),
+      el(
+        "span",
+        { class: `dod-word dod-w-${status}` },
+        status === "pass" ? "passed" : status === "fail" ? "failed" : "skipped",
+      ),
     ];
-    // Only surface the note on a failing gate (it carries the captured tail/why).
+    // A passing gate names the command it ran; a failing one surfaces its captured note.
     if (status === "fail" && g.note) {
       children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
+    } else if (g.note) {
+      children.push(el("code", { class: "dod-cmd mono" }, String(g.note)));
     }
-    return el("li", { class: "dod-item" }, children);
+    return el("li", { class: `dod-item dod-i-${status}` }, children);
   });
   return el("div", { class: `review-dod dod-${overall === "PASS" ? "ok" : "bad"}` }, [
-    el("div", { class: "ac-meta" }, [
+    el("div", { class: "ac-meta dod-cap" }, [
       "Definition of Done ",
       badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
     ]),
@@ -12135,39 +13017,104 @@ function dodChecklist(evidence) {
   ]);
 }
 
-function reviewEvidenceList(evidence, acList) {
+/** Acceptance criteria as a checklist: glyph · the criterion · its state. */
+function acChecklist(acList) {
+  return el(
+    "ul",
+    { class: "ac-list" },
+    acList.map((a) =>
+      el("li", { class: `ac-row ac-${a.status}` }, [
+        glyph(a.status === "satisfied" ? "done" : a.status === "failed" ? "failed" : "draft", 16),
+        el("span", { class: "ac-row-t" }, a.text),
+        el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+      ]),
+    ),
+  );
+}
+
+/** The evidence label a reviewer reads ("test output", "diff summary"). */
+function evidenceKind(type) {
+  return String(type || "note").replace(/_/g, " ");
+}
+
+/**
+ * The evidence, oldest first, as a minute list: when · who (named, with the
+ * agent-reported chip) · what kind · the first line of what it says. Longer
+ * captures (a DoD report, a diff stat) fold their remaining lines.
+ */
+function reviewEvidenceList(evidence, acList, { repos } = {}) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
-  const rows = evidence.map((ev) => {
-    const link = safeHttpUrl(ev.uri);
-    const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
-    // Provenance line — who recorded this evidence and when, plus an explicit flag
-    // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
-    // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
-    // actor is a KNOWN registered agent (a reliable positive signal — agent ids are
-    // distinct and never collide with a human/system principal); it is never inferred
-    // from an absence. We therefore surface the amber "agent-reported" chip only on a
-    // confident match and otherwise show who/when WITHOUT asserting a trust class —
-    // no fabricated "trusted" label. `created_by` renders through el() as a text node,
-    // so it can never inject markup regardless of its content.
-    const who = ev.created_by ? String(ev.created_by) : "—";
-    const provBadge =
-      ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
-    return el("li", { class: "review-evi" }, [
-      badge(ev.evidence_type, "no-dot"),
-      el("span", { class: "evi-summary" }, ev.summary),
-      link ? el("a", { href: link, target: "_blank", rel: "noopener" }, "open") : null,
-      acLabel ? el("span", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
-      el("div", { class: "ac-meta evi-prov" }, [
-        provBadge,
-        el("span", { class: "evi-who" }, `${who} · ${fmtTime(ev.created_at)}`),
-      ]),
-    ]);
-  });
-  return el("div", { class: "review-evidence" }, [
-    el("div", { class: "ac-meta" }, `Evidence (${evidence.length})`),
-    el("ul", { class: "clean" }, rows),
-  ]);
+  const rows = evidence
+    .slice()
+    .sort((x, y) => String(x.created_at || "").localeCompare(String(y.created_at || "")))
+    .map((ev) => {
+      const link = safeHttpUrl(ev.uri);
+      const acLabel = ev.ac_id && acText.has(ev.ac_id) ? acText.get(ev.ac_id) : null;
+      // Provenance — who recorded this evidence and when, plus an explicit flag
+      // when it was SELF-REPORTED by a delivery agent so the reviewer weighs it with
+      // due skepticism. `recorded_by_agent` is set server-side ONLY when the recording
+      // actor is a KNOWN registered agent (a reliable positive signal); it is never
+      // inferred from an absence, and no "trusted" label is fabricated. `created_by`
+      // renders through el() as a text node, so it can never inject markup.
+      const raw = ev.created_by ? String(ev.created_by) : "—";
+      const who = agentNames.get(raw) || (raw === "system" ? "the runner" : raw);
+      const provBadge =
+        ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
+      const lines = String(ev.summary || "").split("\n");
+      // A blocked-write note and absolute paths read as repo-relative paths.
+      const say = (l) =>
+        l
+          .replace(/(\/[^\s\][,]+)/g, (m) => (m.split("/").length > 4 ? repoPath(m, repos) : m))
+          .replace(
+            /^FG-007 boundary violation\(s\) blocked by the safety hook during delivery:$/,
+            "FG-007: the safety hook blocked a write outside the write roots",
+          );
+      const first = say(lines[0] || "");
+      const rest = lines
+        .slice(1)
+        .filter((l) => l.trim())
+        .map(say);
+      return el("li", { class: "review-evi" }, [
+        el(
+          "time",
+          {
+            class: "evi-time tabnum",
+            datetime: ev.created_at || "",
+            title: ev.created_at ? fmtTime(ev.created_at) : null,
+          },
+          ev.created_at ? clockTime(Date.parse(ev.created_at)) : "—",
+        ),
+        el("div", { class: "evi-main" }, [
+          el("div", { class: "ac-meta evi-prov" }, [
+            el("span", { class: "evi-who" }, who),
+            badge(evidenceKind(ev.evidence_type), "no-dot evi-kind"),
+            provBadge,
+          ]),
+          el("p", { class: "evi-summary" }, first),
+          rest.length
+            ? el("details", { class: "evi-more" }, [
+                el("summary", {}, `${plural(rest.length, "more line")}`),
+                el(
+                  "pre",
+                  {
+                    class: "evi-pre",
+                    tabindex: "0",
+                    role: "region",
+                    "aria-label": `${evidenceKind(ev.evidence_type)}, in full`,
+                  },
+                  rest.join("\n"),
+                ),
+              ])
+            : null,
+          acLabel ? el("p", { class: "ac-meta evi-ac" }, `for AC: ${acLabel}`) : null,
+          link
+            ? el("a", { class: "evi-link", href: link, target: "_blank", rel: "noopener" }, "open")
+            : null,
+        ]),
+      ]);
+    });
+  return el("div", { class: "review-evidence" }, [el("ol", { class: "clean evi-list" }, rows)]);
 }
 
 // Preset quick-reject reasons. Tapping a chip fills the reason so an operator
@@ -12180,129 +13127,12 @@ const REJECT_REASON_PRESETS = [
   "Scope creep",
   "Needs cleanup first",
 ];
-
-/**
- * Modal reject-reason picker that replaces `window.prompt` (a blocking dialog
- * footgun in automation, and a keyboard-only flow on mobile). Presents preset
- * reason chips + a free-text fallback and resolves the trimmed reason via
- * `onConfirm`. The submit control is HELD DISABLED until a reason exists (chip
- * tapped or text typed) and the confirm handler re-checks — preserving the
- * invariant that a reject reason is REQUIRED. Resolves nothing (dialog just
- * closes) on cancel/escape/scrim.
- */
-function openRejectDialog({ verb, onConfirm }) {
-  const input = el("input", {
-    class: "reject-reason-input",
-    type: "text",
-    placeholder: "Reason…",
-    "aria-label": "Reject reason",
-  });
-
-  const chipRow = el(
-    "div",
-    { class: "reject-chips" },
-    REJECT_REASON_PRESETS.map((reason) =>
-      el(
-        "button",
-        {
-          class: "chip reject-chip",
-          type: "button",
-          onclick: () => selectChip(reason),
-        },
-        reason,
-      ),
-    ),
-  );
-
-  const submitBtn = el(
-    "button",
-    { class: "btn danger", type: "button", disabled: "", onclick: confirm },
-    "Reject",
-  );
-
-  // Opt-in: capture this rejection reason as a lore DRAFT — the highest-signal human
-  // correction the factory ever gets. Human-gated (lands in the memory review queue,
-  // never auto-approved). Off by default.
-  const captureCheckbox = el("input", {
-    type: "checkbox",
-    class: "reject-capture-cb",
-    id: "reject-capture-lore",
-  });
-  const captureRow = el(
-    "label",
-    {
-      class: "reject-capture",
-      for: "reject-capture-lore",
-      title:
-        "Files your reason as a DRAFT lore record in the memory review queue — human-gated, never auto-approved. Compounds your correction into the factory's memory.",
-    },
-    [captureCheckbox, el("span", {}, "Also capture as a lore draft for the team")],
-  );
-
-  const dialog = el(
-    "div",
-    { class: "reject-dialog", role: "dialog", "aria-modal": "true", "aria-label": "Reject reason" },
-    [
-      el("h2", { class: "reject-dialog-title" }, `Reason for ${verb}`),
-      el("p", { class: "reject-dialog-hint" }, "Tap a reason or type your own."),
-      chipRow,
-      input,
-      captureRow,
-      el("div", { class: "reject-dialog-actions btn-row" }, [
-        el("button", { class: "btn", type: "button", onclick: close }, "Cancel"),
-        submitBtn,
-      ]),
-    ],
-  );
-
-  const scrim = el("div", { class: "reject-scrim open" }, [dialog]);
-  dialog.addEventListener("click", (e) => e.stopPropagation());
-  scrim.addEventListener("click", close);
-
-  function reason() {
-    return input.value.trim();
-  }
-  function syncSubmit() {
-    if (reason()) submitBtn.removeAttribute("disabled");
-    else submitBtn.setAttribute("disabled", "");
-  }
-  function selectChip(text) {
-    input.value = text;
-    chipRow.querySelectorAll(".reject-chip").forEach((c) => {
-      c.classList.toggle("chip-active", c.textContent === text);
-    });
-    syncSubmit();
-  }
-  function close() {
-    document.removeEventListener("keydown", onKey);
-    scrim.remove();
-  }
-  function confirm() {
-    const value = reason();
-    // Backstop the invariant even if the disabled state were bypassed.
-    if (!value) {
-      toast("A reason is required", {});
-      return;
-    }
-    const captureLore = captureCheckbox.checked;
-    close();
-    onConfirm(value, captureLore);
-  }
-  function onKey(e) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      close();
-    } else if (e.key === "Enter" && document.activeElement === input) {
-      e.preventDefault();
-      confirm();
-    }
-  }
-
-  input.addEventListener("input", syncSubmit);
-  document.addEventListener("keydown", onKey);
-  document.body.appendChild(scrim);
-  input.focus();
-}
+const WONT_DO_PRESETS = [
+  "No longer needed",
+  "Covered by another ticket",
+  "Not worth the risk",
+  "Out of scope for this campaign",
+];
 
 /**
  * Single source of truth for "is a blocking modal open right now?".
@@ -12359,9 +13189,19 @@ function blockedWrites(evidence) {
     const s = String(ev.summary || "");
     if (!/^FG-007/.test(s)) continue;
     for (const line of s.split("\n").slice(1)) {
-      const m = line.match(/^BLOCKED[^:]*:\s*(.*):\s*(\/\S+)\s*$/);
-      if (m) out.push({ why: m[1].trim(), path: m[2] });
-      else if (line.trim()) out.push({ why: line.trim(), path: null });
+      // The hook writes "<why (…)>: <target> [write-roots: a, b]" or
+      // "<why (…)>: <target> — "<cmd>"". The target is the first path after the
+      // reason; the roots in brackets are where the ticket may write (the old
+      // greedy match took the last root for the target).
+      const m = line.match(/^BLOCKED[^:]*:\s*(.*?\)):\s*(\/[^\s\]]+)(.*)$/);
+      if (m) {
+        const roots = (m[3].match(/\[write-roots:\s*([^\]]*)\]/) || [])[1];
+        out.push({
+          why: m[1].trim(),
+          path: m[2],
+          roots: roots ? roots.split(/,\s*/).filter(Boolean) : [],
+        });
+      } else if (line.trim()) out.push({ why: line.trim(), path: null, roots: [] });
     }
   }
   return out;
@@ -12373,6 +13213,70 @@ function shortPath(p) {
     .filter(Boolean);
   return parts.length > 3 ? `…/${parts.slice(-3).join("/")}` : String(p || "");
 }
+/**
+ * Files the diff changes that the delivering agent's smallest-change note does not
+ * name. Gaffer has no out-of-scope field: this compares the note (manual_note
+ * evidence "Smallest-change note: …") with the diff's own paths, and says so.
+ * No note → no derivation (an empty answer, never a guess).
+ */
+function outsideStatedChange(evidence, repos) {
+  const note = (evidence || [])
+    .filter((e) => /^Smallest-change note:/i.test(String(e.summary || "")))
+    .pop();
+  if (!note) return [];
+  const said = (String(note.summary).match(/[\w.-]+(?:\/[\w.-]+)+|[\w-]+\.\w{1,6}/g) || []).map(
+    (x) => x.replace(/\.+$/, ""),
+  );
+  if (!said.length) return [];
+  const out = [];
+  for (const rd of repos || []) {
+    for (const f of splitDiffFiles(rd.diff)) {
+      const p = f.path;
+      if (!said.some((x) => x === p || p.endsWith("/" + x) || x.endsWith("/" + p)))
+        out.push({ path: p, noteId: note.id });
+    }
+  }
+  return out;
+}
+/** Card the diff's files that sit outside the stated change (file list + file block). */
+function markOutsideFiles(box, outside) {
+  if (!box || !outside.length) return;
+  const set = new Set(outside.map((o) => o.path));
+  for (const jump of box.querySelectorAll(".diff-filejump")) {
+    const p = jump.querySelector(".diff-filejump-path")?.textContent;
+    if (!set.has(p) || jump.classList.contains("has-risk")) continue;
+    jump.classList.add("has-risk");
+    const flag = jump.querySelector(".dfj-flag");
+    if (flag && !flag.firstChild) flag.appendChild(ycard(14, "diff-file-risk"));
+    jump.setAttribute(
+      "aria-label",
+      `${jump.getAttribute("aria-label")}, flagged (outside the stated change)`,
+    );
+    const block = box.querySelector(`[id="${jump.dataset.fileTarget}"]`);
+    if (block && !block.classList.contains("is-flagged")) {
+      block.classList.add("is-flagged");
+      block
+        .querySelector(".diff-file-summary")
+        ?.after(
+          el("p", { class: "diff-file-flag" }, [
+            ycard(14),
+            "Not in the agent's smallest-change note (derived; see the flag on the left).",
+          ]),
+        );
+    }
+  }
+}
+/** An absolute path inside a known repo, said as "repo/rel/path" (else shortened). */
+function repoPath(p, repos) {
+  const s = String(p || "");
+  for (const r of repos || []) {
+    const root = String(r.local_path || "").replace(/\/+$/, "");
+    if (!root || !r.name) continue;
+    if (s === root) return r.name;
+    if (s.startsWith(root + "/")) return `${r.name}/${s.slice(root.length + 1)}`;
+  }
+  return shortPath(s);
+}
 /** One flag: a yellow card, a caps title, what it means, who raised it. */
 function reviewFlag(title, body, source) {
   return el("li", { class: "flag" }, [
@@ -12383,6 +13287,177 @@ function reviewFlag(title, body, source) {
       source ? el("p", { class: "flag-src" }, source) : null,
     ]),
   ]);
+}
+
+/** The change last signed off in this tab, so the clear desk can say where it went. */
+let lastSignedOff = null;
+
+/**
+ * The Review page with nothing waiting: the desk is clear, said on the stadium
+ * board, with where the signed work is now (testing, to merge, full time) and
+ * who is still on the pitch, so the next stop is one click away.
+ */
+async function renderClearDesk(wrap) {
+  const signal = routeSignal();
+  const [all, claims, dash] = await Promise.all([
+    api("GET", "/tickets", undefined, { signal }).then((r) => r.tickets || []),
+    api("GET", "/claims", undefined, { signal })
+      .then((r) => r.claims || [])
+      .catch(() => []),
+    api("GET", "/api/dashboard", undefined, { signal })
+      .then((r) => r.summary || null)
+      .catch(() => null),
+  ]);
+  wrap.dataset.sig = clearDeskSignature(all);
+  const by = (st) => all.filter((t) => t.status === st);
+  const testing = by("in_testing");
+  const toMerge = by("ready_for_merge");
+  const playing = all.filter((t) => t.status === "claimed" || t.status === "in_progress");
+  const readyN = by("ready").length;
+  const medianReview = (dash?.cycleTimeByState || []).find((c) => c.status === "in_review");
+  const delivered = dash?.deliveredToday;
+
+  const signed =
+    lastSignedOff && all.find((t) => t.id === lastSignedOff.id && t.status !== "in_review");
+  // The line under the headline: where the work is, each part a way to get there.
+  const others = [
+    dash?.blocked ? plural(dash.blocked, "blocked ticket") : null,
+    dash?.openDecisions ? plural(dash.openDecisions, "decision") : null,
+  ].filter(Boolean);
+  const bits = [
+    signed
+      ? [
+          "you signed ",
+          el("a", { href: `#/ticket/${signed.id}` }, `#${signed.number}`),
+          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status).toLowerCase()} now`,
+        ]
+      : null,
+    playing.length
+      ? el(
+          "a",
+          { href: "#/work?status=in_progress" },
+          `${plural(playing.length, "change")} on the pitch`,
+        )
+      : "no one on the pitch",
+    others.length
+      ? el("a", { href: "#/overview" }, `${others.join(" and ")} on your team sheet`)
+      : null,
+    delivered != null ? `${plural(delivered, "delivery", "deliveries")} today` : null,
+    medianReview && medianReview.samples
+      ? `a change waits ${fmtDuration(medianReview.medianMs)} for you, on the median`
+      : null,
+  ].filter(Boolean);
+  const sub = el("p", { class: "hl-sub" });
+  bits.forEach((b, i) => {
+    if (i) sub.appendChild(el("span", { class: "sep", "aria-hidden": "true" }, "\u00a0· "));
+    sub.append(...[].concat(b));
+  });
+  if (sub.firstChild && sub.firstChild.nodeType === 3)
+    sub.firstChild.textContent = sub.firstChild.textContent.replace(/^./, (c) => c.toUpperCase());
+  wrap.appendChild(
+    el("section", { class: "scoreboard bleed rv-clear-board", "aria-label": "Review" }, [
+      el("div", { class: "scoreboard-in" }, [
+        el("div", { class: "sb-main" }, [
+          el("h1", { class: "hl" }, "Desk clear. Nothing waits for your sign-off."),
+          sub,
+        ]),
+        el(
+          "div",
+          { class: "sb-cells kpi-row", role: "group", "aria-label": "Around the sign-off" },
+          [
+            statCell({ label: "Waiting", value: "00", flip: "rv-wait", title: "0 in review" }),
+            statCell({
+              label: "In testing",
+              value: String(testing.length).padStart(2, "0"),
+              href: "#/work?status=in_testing",
+              flip: "rv-test",
+              title: `${testing.length} with the tester`,
+            }),
+            statCell({
+              label: "To merge",
+              value: String(toMerge.length).padStart(2, "0"),
+              href: "#/work?status=ready_for_merge",
+              flip: "rv-merge",
+              title: `${toMerge.length} approved, with the merge runner`,
+            }),
+            statCell({
+              label: "On the pitch",
+              value: String(playing.length).padStart(2, "0"),
+              href: "#/work",
+              flip: "rv-pitch",
+              title: `${playing.length} being delivered`,
+            }),
+          ],
+        ),
+      ]),
+    ]),
+  );
+
+  // Since the whistle: the latest changes past the sign-off, newest first.
+  const past = all
+    .filter((t) => ["in_testing", "ready_for_merge", "done", "cancelled"].includes(t.status))
+    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))
+    .slice(0, 6);
+  const resultRow = (t) =>
+    el("li", { class: `rv-res${signed && t.id === signed.id ? " is-yours" : ""}` }, [
+      el("span", { class: "rv-res-no" }, `#${t.number}`),
+      el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
+      el("span", { class: "rv-res-st" }, [
+        statusBadge(t.status),
+        signed && t.id === signed.id ? el("small", { class: "rv-res-you" }, "you signed it") : null,
+      ]),
+      el(
+        "time",
+        { class: "rv-res-when tabnum", datetime: t.updated_at, title: fmtTime(t.updated_at) },
+        fmtRelative(t.updated_at),
+      ),
+    ]);
+  const results = el(
+    "section",
+    { class: "card panel rv-results", "aria-label": "Latest results" },
+    [
+      panelHead("Latest results", null, { href: "#/work", text: "The board" }, { kit: "ink" }),
+      past.length
+        ? el("ol", { class: "rv-res-list" }, past.map(resultRow))
+        : el("p", { class: "dim" }, "Nothing has come through the sign-off yet."),
+    ],
+  );
+
+  // Still playing: who is delivering what, so you know what lands here next.
+  const claimFor = new Map(claims.map((c) => [c.ticket_id, c]));
+  const playRow = (t) => {
+    const c = claimFor.get(t.id);
+    return el("li", { class: "rv-res" }, [
+      el("span", { class: "rv-res-no" }, `#${t.number}`),
+      el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
+      el("span", { class: "rv-res-st" }, [
+        c && c.agent_display_name ? agentTag(c.agent_display_name, 22) : statusBadge(t.status),
+      ]),
+      el(
+        "span",
+        { class: "rv-res-when tabnum" },
+        c && c.created_at ? `on for ${fmtDuration(Date.now() - Date.parse(c.created_at))}` : "",
+      ),
+    ]);
+  };
+  const coming = el(
+    "section",
+    { class: "card panel rv-coming", "aria-label": "Coming off the pitch" },
+    [
+      panelHead("Coming your way", playing.length ? String(playing.length) : null, null, {
+        kit: "claret",
+      }),
+      playing.length
+        ? el("ol", { class: "rv-res-list" }, playing.map(playRow))
+        : el("p", { class: "dim" }, [
+            readyN
+              ? `${plural(readyN, "ticket")} ${readyN === 1 ? "waits" : "wait"} in the fixtures for a free agent. `
+              : "The fixtures are empty too. ",
+            el("a", { href: "#/work?status=ready" }, "See the fixtures"),
+          ]),
+    ],
+  );
+  wrap.appendChild(el("div", { class: "rv-clear-grid" }, [coming, results]));
 }
 
 /**
@@ -12403,13 +13478,8 @@ async function renderReview(param) {
   const gone = param && !tickets.some((t) => t.id === param);
 
   if (tickets.length === 0 && !gone) {
-    wrap.appendChild(viewHead("The gaffer's sign-off", null));
-    wrap.appendChild(
-      emptyState(
-        "Nothing waits for your sign-off.",
-        "When an agent delivers, its diff lands here for you to approve or send back.",
-      ),
-    );
+    wrap.classList.add("rv-clear");
+    await renderClearDesk(wrap);
     return wrap;
   }
 
@@ -12488,29 +13558,64 @@ async function renderReview(param) {
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
   // DISABLED and only enables once the diff loads with a real, non-empty change.
   let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // The sign-off's status line: hidden until Approve lands, then it says where the
+  // change went and offers the next one as its own link (never auto-advanced).
   const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
   const approve = () =>
     guard(async () => {
+      // Signed once: a second press (click or key) on a signed change does nothing.
+      if (approveBtn && approveBtn.classList.contains("is-approved")) return;
       if (!diffState.approvable) {
         toast(`Can't approve — ${diffState.reason}`, {});
         return;
       }
       const r = await api("POST", `/tickets/${t.id}/review/approve`);
       const to = r && r.ticket && r.ticket.status;
+      lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
       // Stay on the diff: the button says it is done, and moving on is its own link.
       if (approveBtn) {
         approveBtn.setAttribute("disabled", "");
+        approveBtn.classList.add("is-approved");
         approveLabel.textContent = "Approved";
+        approveBtn.prepend(icon("check", "", 20));
       }
+      // The yellow card is withdrawn from the title; the queue tab shows the move.
+      const card = wrap.querySelector(".rv-title .rv-card");
+      if (card && !prefersReducedMotion() && typeof card.animate === "function")
+        card
+          .animate(
+            [
+              { transform: "rotate(-8deg)", opacity: 1 },
+              { transform: "rotate(-30deg) translate(-6px, 30px)", opacity: 0 },
+            ],
+            { duration: 300, easing: "cubic-bezier(.5,0,.75,0)", fill: "forwards" },
+          )
+          .finished.then(() => card.remove())
+          .catch(() => card.remove());
+      else if (card) card.remove();
+      const tab = wrap.querySelector('.rv-tab[aria-current="page"]');
+      if (tab) {
+        tab.querySelector(".glyph")?.replaceWith(glyph(to || "ready_for_merge", 16));
+        tab.appendChild(el("small", { class: "rv-tab-done" }, "approved"));
+      }
+      const meta = wrap.querySelector(".rv-meta .badge.st");
+      if (meta && to) meta.replaceWith(statusBadge(to));
       clear(doneLine);
       doneLine.append(
-        `Approved #${t.number}. ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+        el("span", { class: "rv-done-t" }, [
+          el("b", {}, `Approved #${t.number}.`),
+          ` ${to === "in_testing" ? "It goes to the tester next." : "It is with the merge runner now."} `,
+        ]),
         next
-          ? el("a", { href: `#/review/${next.id}` }, `Next in review: #${next.number}`)
+          ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
+              `Next in review: #${next.number}`,
+              icon("chevron", "", 16),
+            ])
           : "Nothing else waits for your sign-off.",
       );
+      wrap.querySelector(".rv-keys")?.remove();
       doneLine.hidden = false;
-      doneLine.focus();
+      doneLine.focus({ preventScroll: true });
       // Pin the address to this change, so a later refresh says where it went
       // instead of silently swapping the next change in under the reader.
       if (!param && typeof history !== "undefined" && history.replaceState)
@@ -12519,32 +13624,41 @@ async function renderReview(param) {
       updateNavBadges();
     });
   const reject = (to) => {
-    const verb = to === "cancelled" ? "abandoning (won't do)" : `rejecting to ${to}`;
-    openRejectDialog({
-      verb,
-      onConfirm: (reason, captureLore) =>
-        guard(async () => {
-          const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
-            to,
-            reason,
-            captureLore,
-          });
-          toast(to === "cancelled" ? "Marked won't do" : `Rejected to ${to}`, { ok: true });
-          if (captureLore) {
-            const cap = resp && resp.lore_capture;
-            if (cap && cap.captured)
-              toast("Captured as a lore draft — approve it in memory review", { ok: true });
-            else if (cap)
-              toast("Rejected, but the lore draft could not be filed (memory unavailable)", {});
-          }
-          router();
-        }),
+    const ref = `#${t.number}`;
+    const wont = to === "cancelled";
+    reasonSheet({
+      title: wont ? `Won't do ${ref}` : `Send ${ref} back`,
+      ticket: t,
+      intro: wont
+        ? `${ref} closes without merging and goes to Won't do. Its acceptance criteria reset to not met. You can reopen it into Refining later.`
+        : `${ref} goes back to Refining with your reason, and its acceptance criteria reset to not met. You look at it there before an agent delivers it again.`,
+      label: wont ? "Why not?" : "What should change?",
+      presets: wont ? WONT_DO_PRESETS : REJECT_REASON_PRESETS,
+      confirm: wont ? "Won't do" : "Send back",
+      tone: wont ? "danger" : "primary",
+      capture: true,
+      onConfirm: async (reason, captureLore) => {
+        const resp = await api("POST", `/tickets/${t.id}/review/reject`, {
+          to,
+          reason,
+          captureLore,
+        });
+        toast(wont ? `${ref} closed as won't do.` : `${ref} sent back to Refining.`, { ok: true });
+        if (captureLore) {
+          const cap = resp && resp.lore_capture;
+          if (cap && cap.captured)
+            toast("Filed as a lore draft — approve it in Memory's review queue.", { ok: true });
+          else if (cap)
+            toast("Sent back, but the lore draft could not be filed (memory is unavailable).", {});
+        }
+        router();
+      },
     });
   };
 
   const canApprove = hasTicketAction(t.status, "approve");
-  // Mouse Approve is a two-step arm→confirm, matching the keyboard path.
-  const BTN_ARM_MS = 3000;
+  // Approve is a two-step arm→confirm, by click or by key.
+  const ARM_WINDOW_MS = 3000;
   const approveLabel = el("span", {}, "Approve");
   const approveBtn = canApprove
     ? el(
@@ -12558,35 +13672,73 @@ async function renderReview(param) {
         [approveLabel],
       )
     : null;
-  let btnArmed = false;
-  let btnArmTimer = null;
-  const disarmApproveBtn = () => {
-    btnArmed = false;
-    if (btnArmTimer) {
-      clearTimeout(btnArmTimer);
-      btnArmTimer = null;
+  // One arm for both paths: the first `a` or click raises the yellow card on the
+  // button ("Confirm merge"), rings the sign-off block and shows the 3s window
+  // draining under the buttons; a second press inside it approves. Esc, j/k,
+  // leaving the button or the window running out all put it down again.
+  let armed = false;
+  let armedVia = null;
+  let armTimer = null;
+  const armHint = el("p", { class: "rv-arm", role: "status", hidden: "" });
+  const disarm = () => {
+    if (armTimer) {
+      clearTimeout(armTimer);
+      armTimer = null;
     }
-    if (approveBtn) approveBtn.classList.remove("btn-armed");
-    if (approveLabel.textContent !== "Approved") approveLabel.textContent = "Approve";
+    armed = false;
+    armedVia = null;
+    signoff?.classList.remove("card-armed");
+    armHint.hidden = true;
+    clear(armHint);
+    if (!approveBtn) return;
+    approveBtn.classList.remove("btn-armed");
+    if (approveLabel.textContent !== "Approved") {
+      approveLabel.textContent = "Approve";
+      approveBtn.setAttribute("aria-label", "Approve and merge");
+    }
   };
+  const arm = (via) => {
+    disarm();
+    armed = true;
+    armedVia = via;
+    signoff?.classList.add("card-armed");
+    if (approveBtn && !approveBtn.disabled) {
+      approveBtn.classList.add("btn-armed");
+      approveLabel.textContent = "Confirm merge";
+      approveBtn.setAttribute("aria-label", `Confirm merge: approve #${t.number}`);
+    }
+    armHint.append(
+      el("span", { class: "rv-arm-t" }, [
+        el("b", {}, "Armed. "),
+        via === "key"
+          ? [el("span", { class: "kbd" }, "a"), " again to approve"]
+          : "Click Confirm merge to approve",
+        " · ",
+        el("span", { class: "kbd" }, "Esc"),
+        " puts it down",
+      ]),
+      el("span", { class: "rv-arm-clock", "aria-hidden": "true" }, [el("span", {})]),
+    );
+    armHint.hidden = false;
+    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
+  };
+  let signoff = null;
   const onApproveClick = () => {
     if (!diffState.approvable) {
       toast(`Can't approve — ${diffState.reason}`, {});
       return;
     }
-    if (btnArmed) {
-      disarmApproveBtn();
+    if (armed) {
+      disarm();
       approve();
       return;
     }
-    btnArmed = true;
-    if (approveBtn) approveBtn.classList.add("btn-armed");
-    approveLabel.textContent = "Confirm merge";
-    btnArmTimer = setTimeout(disarmApproveBtn, BTN_ARM_MS);
+    arm("click");
   };
   if (approveBtn) {
     approveBtn.addEventListener("click", onApproveClick);
-    approveBtn.addEventListener("blur", disarmApproveBtn);
+    // A click-arm is put down when the pointer/focus leaves the button.
+    approveBtn.addEventListener("blur", () => armedVia === "click" && disarm());
   }
   const diffBlockBanner = el(
     "div",
@@ -12610,7 +13762,11 @@ async function renderReview(param) {
     flagsNow.push([
       "Blocked write",
       w.path
-        ? `The safety hook stopped a write to ${shortPath(w.path)} (${w.why}). Check the change does not depend on it.`
+        ? `The safety hook stopped a write to ${repoPath(w.path, detail.repositories)}: ${w.why.replace(/^write /, "a write ")}${
+            w.roots.length
+              ? `. This ticket may write only to ${w.roots.map((r) => repoPath(r, detail.repositories)).join(", ")}`
+              : ""
+          }. Nothing landed there; check the change does not depend on it.`
         : w.why,
       "Raised by the safety hook (FG-007)",
     ]);
@@ -12629,7 +13785,7 @@ async function renderReview(param) {
       `${ac.length - satisfied} of ${ac.length} acceptance criteria are not satisfied yet.`,
       "From the ticket's criteria",
     ]);
-  const paintFlags = (riskAnns) => {
+  const paintFlags = (riskAnns, outside = []) => {
     const all = [
       ...riskAnns.map((a) => [
         String(a.kind)
@@ -12640,6 +13796,11 @@ async function renderReview(param) {
             ? ". Check it is safe to ship, and that a migration has a way back."
             : "."),
         "Raised by the server's risk check",
+      ]),
+      ...outside.map((o) => [
+        "Edit outside the stated change",
+        `${o.path} is changed, but the agent's smallest-change note does not list it. Check it belongs in this ticket.`,
+        `Derived from the diff's paths and the agent's smallest-change note (evidence ${String(o.noteId || "").slice(0, 8)})`,
       ]),
       ...flagsNow,
     ];
@@ -12687,7 +13848,12 @@ async function renderReview(param) {
       if (approveBtn) approveBtn.setAttribute("disabled", "");
     }
     const live = repos.filter((r) => !r.unavailable);
-    paintFlags(live.flatMap((r) => r.riskAnnotations || []));
+    const outside = outsideStatedChange(evidence, live);
+    paintFlags(
+      live.flatMap((r) => r.riskAnnotations || []),
+      outside,
+    );
+    markOutsideFiles(diffBox, outside);
     if (live.length) {
       const files = live.reduce((n, r) => n + (r.files || 0), 0);
       const add = live.reduce((n, r) => n + (r.additions || 0), 0);
@@ -12719,7 +13885,7 @@ async function renderReview(param) {
       el("p", { class: "rv-meta" }, [
         statusBadge(t.status),
         repo ? repoTag(repo.name, 20) : null,
-        riskBadge(t.risk_level),
+        riskBadge(t.risk_level, { long: true }),
         by ? el("span", { class: "rv-by" }, ["delivered by ", agentTag(by, 22)]) : null,
         since
           ? el(
@@ -12733,7 +13899,7 @@ async function renderReview(param) {
     ]),
   );
 
-  const signoff = el(
+  signoff = el(
     "section",
     {
       class: "card signoff",
@@ -12766,18 +13932,7 @@ async function renderReview(param) {
             : null,
         ].filter(Boolean),
       ),
-      doneLine,
-      next
-        ? el(
-            "p",
-            { class: "rv-next" },
-            el(
-              "a",
-              { href: `#/review/${next.id}` },
-              `Next in review: #${next.number} ${next.title}`,
-            ),
-          )
-        : null,
+      armHint,
       el("p", { class: "rv-keys" }, [
         el("span", { class: "kbd" }, "a"),
         " twice to approve · ",
@@ -12787,29 +13942,38 @@ async function renderReview(param) {
         el("span", { class: "kbd" }, "k"),
         " next / previous",
       ]),
+      // Last, so once Approve lands it is the block's foot (the key line goes).
+      doneLine,
     ],
   );
   signoff._actions = { approve, reject };
 
-  const acCard = ac.length
-    ? el("section", { class: "card panel rv-ac" }, [
-        panelHead("Acceptance criteria", `${satisfied} of ${ac.length}`),
-        el(
-          "ul",
-          { class: "ac-list" },
-          ac.map((a) =>
-            el("li", { class: `ac-row ac-${a.status}` }, [
-              glyph(
-                a.status === "satisfied" ? "done" : a.status === "failed" ? "failed" : "draft",
-                16,
-              ),
-              el("span", { class: "ac-row-t" }, a.text),
-              el("span", { class: "ac-state" }, a.status.replace(/_/g, " ")),
-            ]),
-          ),
-        ),
-      ])
-    : null;
+  const diffSection = el("section", { class: "rv-diff", "aria-label": "The diff" }, [
+    el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
+    diffBox,
+  ]);
+
+  // The referee's checks: the Definition-of-Done gates, then the criteria, in one page.
+  const dodBox = dodChecklist(evidence);
+  const checks = el("section", { class: "card panel rv-checks", "aria-label": "Gates" }, [
+    panelHead(
+      "The gates",
+      !dod ? "no gate report yet" : dod.dod === "PASS" ? "all passed" : "a gate failed",
+    ),
+    dodBox ||
+      el(
+        "p",
+        { class: "dim" },
+        "The runner has not recorded a Definition-of-Done report for this delivery.",
+      ),
+    ac.length
+      ? el("h3", { class: "rv-h3" }, [
+          "Acceptance criteria ",
+          el("span", { class: "count" }, `${satisfied} of ${ac.length}`),
+        ])
+      : null,
+    ac.length ? acChecklist(ac) : null,
+  ]);
 
   wrap.appendChild(
     el("div", { class: "rv-grid" }, [
@@ -12819,39 +13983,35 @@ async function renderReview(param) {
           el("h2", { class: "rv-h2" }, ["Flags ", flagCount]),
           flagList,
         ]),
-        dodChecklist(evidence),
-        acCard,
-        el("details", { class: "card rv-evidence" }, [
-          el("summary", {}, `The evidence (${evidence.length})`),
-          reviewEvidenceList(evidence, ac) || el("p", { class: "dim" }, "No evidence recorded."),
+        checks,
+        el("section", { class: "rv-evid", "aria-label": "Evidence" }, [
+          el("h2", { class: "rv-h2" }, [
+            "Evidence ",
+            el("span", { class: "panel-aux" }, String(evidence.length)),
+          ]),
+          reviewEvidenceList(evidence, ac, { repos: detail.repositories }) ||
+            el("p", { class: "dim" }, "No evidence recorded."),
         ]),
       ]),
-      el("div", { class: "rv-right" }, [
-        el("h2", { class: "rv-h2" }, ["The diff ", diffAux]),
-        diffBox,
-      ]),
+      el("div", { class: "rv-right" }, [diffSection]),
     ]),
   );
+  // One column (≤1180px): the diff moves up under the flags, ahead of the gates
+  // and the evidence; two columns put it back beside the sign-off.
+  const oneCol =
+    typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 1180px)") : null;
+  const placeDiff = () => {
+    const left = wrap.querySelector(".rv-left");
+    const right = wrap.querySelector(".rv-right");
+    if (!left || !right) return;
+    if (oneCol && oneCol.matches) left.querySelector(".rv-flags")?.after(diffSection);
+    else if (diffSection.parentNode !== right) right.appendChild(diffSection);
+  };
+  placeDiff();
+  oneCol?.addEventListener?.("change", placeDiff);
 
   // Keys: j/k move along the queue, a arms → a approves, r sends back, Esc disarms.
   const cards = [signoff];
-  const ARM_WINDOW_MS = 3000;
-  let armed = false;
-  let armTimer = null;
-  const disarm = () => {
-    if (armTimer) {
-      clearTimeout(armTimer);
-      armTimer = null;
-    }
-    armed = false;
-    signoff.classList.remove("card-armed");
-  };
-  const arm = () => {
-    disarm();
-    armed = true;
-    signoff.classList.add("card-armed");
-    armTimer = setTimeout(disarm, ARM_WINDOW_MS);
-  };
   // The one change on screen carries the queue cursor.
   signoff.classList.add("card-accent");
   const onKey = (e) => {
@@ -12866,10 +14026,11 @@ async function renderReview(param) {
       if (to) navigate(`#/review/${to.id}`);
     } else if (e.key === "a") {
       e.preventDefault();
+      if (approveBtn && approveBtn.classList.contains("is-approved")) return;
       if (armed) {
         disarm();
         cards[0]._actions.approve();
-      } else arm();
+      } else arm("key");
     } else if (e.key === "Escape") {
       disarm();
     } else if (e.key === "r") {
@@ -12882,7 +14043,7 @@ async function renderReview(param) {
   const teardown = () => {
     document.removeEventListener("keydown", onKey);
     if (armTimer) clearTimeout(armTimer);
-    if (btnArmTimer) clearTimeout(btnArmTimer);
+    oneCol?.removeEventListener?.("change", placeDiff);
     if (observer) observer.disconnect();
   };
   wrap._dispose = teardown;
@@ -17641,6 +18802,10 @@ window.addEventListener("hashchange", () => {
   // A bare fragment that names a section on this page is a jump, not a route.
   const h = location.hash || "";
   if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
+  // A sheet belongs to the page that opened it: a reason being written for #15 must
+  // never stay over #20 (Back, a link, a typed address), where confirming it would
+  // act on a ticket the reader is no longer looking at.
+  if (sheetOpen()) closeSheet({ restore: false });
   router();
 });
 router();

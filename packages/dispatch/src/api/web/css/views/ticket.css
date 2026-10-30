@@ -1,6 +1,10 @@
-/* Ticket — one object page: the state and its one next action lead (a red
-   card when blocked), then boundary, diff, failure history ("attempts"),
-   acceptance criteria, testing and the minute-by-minute match report. */
+/* Ticket — one object page. The head says where it stands: a red card when it
+   is out (blocked/failed), a yellow card when it waits on you (review, merge, a
+   capped delivery), a full-time plaque when it is done. Then the one next move
+   (or the full-time result), the failing test as a scoreline, the attempts as a
+   penalty shootout, the diff, the runner's logs, the boundary, testing and the
+   scouting report. The side column holds the cup run, the brief, the criteria,
+   the minute-by-minute match report and the record. */
 
 @layer views {
   .view > .back-link {
@@ -19,9 +23,44 @@
     background: none;
     padding: 0;
   }
-  .card.tk-head.is-out {
+  .card.tk-head.has-mark {
     grid-template-columns: 120px minmax(0, 1fr);
     align-items: start;
+  }
+  .ref-yellow .ref-card-face {
+    fill: var(--yellow);
+    stroke: var(--ycard-edge);
+    stroke-width: 2;
+  }
+  /* Full time: a scoreboard-black plaque with a yellow rule (never yellow on grass). */
+  .ft-plaque {
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 4px;
+    width: 116px;
+    padding: 12px 8px 14px;
+    margin-top: 6px;
+    background: var(--board);
+    color: var(--board-ink);
+    border-top: 6px solid var(--yellow);
+    border-radius: var(--r);
+    box-shadow: var(--counter-shadow);
+    text-align: center;
+  }
+  .ft-l {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--yellow);
+  }
+  .ft-v {
+    font: 800 var(--t34) / 1 var(--f-display);
+    color: #fff;
+  }
+  .ft-t {
+    font: 600 var(--t14) / 1 var(--f-cond);
+    color: var(--board-ink-2);
   }
   .ref-card {
     transform: rotate(-6deg);
@@ -70,11 +109,140 @@
   .tk-lede .is-red {
     color: var(--red);
   }
+  .tk-dots {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+  }
+  .tk-stage {
+    font: 600 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink-2);
+  }
   .tk-move-t {
     max-width: 70ch;
   }
+  .tk-main,
+  .tk-side {
+    display: grid;
+    gap: var(--s5);
+    align-content: start;
+    min-width: 0;
+  }
+  .tk-main > *,
+  .tk-side > * {
+    min-width: 0;
+  }
+  .tk-side {
+    gap: var(--s4);
+  }
+  .tk-h2 {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    font: 800 var(--t34) / 1 var(--f-display);
+    text-transform: uppercase;
+  }
+  .tk-h3 {
+    font: 800 var(--t20) / 1.1 var(--f-display);
+    text-transform: uppercase;
+    margin-top: var(--s2);
+  }
+  .tk-diff {
+    display: grid;
+    gap: var(--s3);
+  }
+  .tk-diff .diff-head {
+    padding-bottom: 2px;
+  }
+
+  /* Full time: the result in words, then the numbers as league-table cells. */
+  .tk-ft .kpi-row {
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  }
+
+  /* The brief: the ask, then what it waits on. */
+  .tk-brief .desc {
+    font-size: var(--t16);
+    line-height: 1.5;
+  }
+  .tk-deps li {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: baseline;
+    padding: 6px 0;
+    border-top: var(--hair);
+    font-size: var(--t14);
+  }
+  .tk-deps li:first-child {
+    border-top: 0;
+  }
+  .tk-deps .glyph {
+    align-self: center;
+  }
+  .tk-deps a {
+    text-decoration: none;
+    overflow-wrap: anywhere;
+  }
+  .tk-deps a:hover {
+    text-decoration: underline;
+  }
+  .tk-deps b {
+    font: 800 var(--t16) / 1 var(--f-display);
+    color: var(--claret-ink);
+  }
+  .tk-blocker-list li {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 10px;
+    padding: 6px 0;
+    border-top: var(--hair);
+  }
+  .tk-blocker-list li:first-child {
+    border-top: 0;
+  }
+  .tk-blocker-list .ycard {
+    transform: rotate(-8deg);
+    margin-top: 2px;
+  }
+  .tk-record .kv code {
+    font-size: var(--t12);
+  }
+
+  /* The runner's logs: live run (spinner) or a finished one (glyph), and its log. */
+  .tk-run-list li {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 6px 12px;
+    align-items: center;
+    padding: 8px 0;
+    border-top: var(--hair);
+  }
+  .tk-run-list li:first-child {
+    border-top: 0;
+  }
+  .tk-run-main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+  .tk-run-h {
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  .tk-run .g-done {
+    color: var(--ok);
+  }
+  .tk-run .g-failed {
+    color: var(--red);
+  }
   .card.tk-move {
     border-color: var(--claret);
+  }
+  .tk-move > div:empty {
+    display: none;
   }
   .card.tk-move:has(> .block-ink) {
     border-color: var(--ink);
@@ -202,12 +370,53 @@
 
   /* Acceptance criteria: glyph · text · state, one rule between. */
   .ac-item {
+    display: grid;
+    grid-template-columns: 16px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 10px;
+    padding: 9px 0;
+    border-top: var(--hair);
+    font-size: var(--t14);
+  }
+  .tk-ac-list > li:first-child .ac-item {
+    border-top: 0;
+  }
+  .ac-item .glyph {
+    margin-top: 2px;
+  }
+  .ac-satisfied .ac-item .glyph {
+    color: var(--ok);
+  }
+  .ac-failed .ac-item .glyph,
+  .ac-failed .ac-item .ac-state {
+    color: var(--red);
+  }
+  .ac-text .ac-meta {
+    font-size: var(--t12);
+    margin-top: 2px;
+  }
+  .tk-add-ac {
+    border-top: var(--frame);
+    padding-top: var(--s3);
+  }
+  .tk-add-ac > summary {
+    font: 700 var(--t14) var(--f-text);
+    cursor: pointer;
+    min-height: 32px;
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 8px 0;
-    border-bottom: var(--hair);
+    align-items: center;
+  }
+  .tk-add-ac[open] > summary {
+    margin-bottom: var(--s2);
+  }
+  .tk-add-ac .inline-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 10px 12px;
+    align-items: end;
+  }
+  .tk-add-ac .inline-form > .field:first-child {
+    grid-column: 1 / -1;
   }
   .ac-text {
     min-width: 0;
@@ -228,12 +437,37 @@
     font-size: var(--t14);
   }
 
-  /* Execution boundary (repo panel). */
-  .repo-panel,
+  /* The boundary (repo panel): grouped by access, each repo in its kit. */
   .repo-panel-body,
   .repo-group {
     display: grid;
-    gap: var(--s3);
+    gap: var(--s2);
+  }
+  .repo-panel-body {
+    gap: var(--s4);
+  }
+  .repo-group > ul > li {
+    border-top: var(--hair);
+  }
+  .repo-group > ul > li:first-child {
+    border-top: 0;
+  }
+  .repo-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 16px;
+    padding: 8px 0;
+  }
+  .repo-group-n {
+    margin-left: 8px;
+    font: 600 var(--t16) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .repo-panel .inline-form {
+    border-top: var(--frame);
+    padding-top: var(--s3);
   }
   .repo-group-head {
     display: flex;
@@ -347,6 +581,19 @@
     font-weight: 700;
     font-size: var(--t14);
   }
+  .failure-kick-none {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+    min-width: 0;
+    color: var(--ink-2);
+  }
+  .shoot.is-untaken {
+    opacity: 0.45;
+  }
+  .shoot-ball.is-spot {
+    stroke-dasharray: 3 2;
+  }
   .failure-more > summary {
     font: 700 var(--t14) var(--f-text);
   }
@@ -365,12 +612,7 @@
     outline: 3px solid var(--focus);
   }
 
-  /* Memory primed for this delivery. */
-  .mem-primed-card {
-    display: grid;
-    gap: var(--s3);
-  }
-  .mem-primed-head,
+  /* The scouting report: memory primed for this delivery. */
   .mem-primed-item {
     display: flex;
     align-items: baseline;
@@ -386,7 +628,10 @@
     font-size: var(--t14);
   }
   .mem-primed-title {
-    font-weight: 700;
+    font-size: var(--t14);
+  }
+  .mem-primed-outcome.warn {
+    color: var(--ink);
   }
   .mem-primed-at {
     white-space: nowrap;
@@ -400,19 +645,153 @@
     color: var(--ink-2);
   }
 
-  /* Timeline (match report). */
+  /* The match report: minute · mark · what happened (who, tick), grouped by day. */
+  .tk-report .panel-head {
+    align-items: center;
+  }
+  .tk-report .timeline li {
+    grid-template-columns: 44px 16px minmax(0, 1fr);
+    gap: 0 8px;
+    align-items: start;
+    padding: 6px 0;
+  }
+  .tk-report .timeline li > * {
+    grid-column: auto;
+    grid-row: auto;
+  }
+  .tk-report .timeline li > .rp-day {
+    grid-column: 1 / -1;
+    padding: 10px 0 4px;
+    font: 800 var(--t16) / 1 var(--f-display);
+    text-transform: uppercase;
+    color: var(--ink-2);
+  }
+  .tk-report .timeline li:first-child > .rp-day {
+    padding-top: 0;
+  }
+  .tk-report .timeline li > .ev-time {
+    grid-column: 1;
+    font: 700 var(--t14) / 1.4 var(--f-cond);
+  }
+  .tk-report .timeline li > .glyph,
+  .tk-report .timeline li > .rp-dot {
+    grid-column: 2;
+    margin-top: 3px;
+  }
+  .rp-dot {
+    width: 6px;
+    height: 6px;
+    margin: 7px auto 0;
+    border-radius: var(--r-round);
+    background: var(--ink-2);
+  }
+  .tk-report .timeline li > .rp-body {
+    grid-column: 3;
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
   .ev-type {
     font-weight: 700;
+    overflow-wrap: anywhere;
+  }
+  .rp-note {
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .rp-failed .ev-type,
+  .rp-blocked .ev-type,
+  .rp-failed > .glyph,
+  .rp-blocked > .glyph {
+    color: var(--red);
   }
   .ev-actor {
     font: 600 var(--t12) var(--f-cond);
     color: var(--ink-2);
   }
+  .tk-report .ev-tick {
+    margin-left: 6px;
+  }
+  .tk-report .ev-payload {
+    display: none;
+  }
+  .tk-report .show-raw .ev-payload {
+    display: flex;
+  }
+
+  /* Independent testing: the switch, the contract, then each verdict with its mark. */
+  .tk-testable {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+  }
+  .tk-testing .setting-help {
+    font-size: var(--t14);
+    max-width: 60ch;
+  }
+  .tt-row {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    gap: 2px 10px;
+    padding: 6px 0;
+    border-top: var(--hair);
+    font-size: var(--t14);
+  }
+  .tt-row > .tt-who {
+    grid-column: 2;
+  }
+  .tt-pass > .glyph {
+    color: var(--ok);
+  }
+  .tt-fail > .glyph {
+    color: var(--red);
+  }
 
   @media (max-width: 760px) {
-    .card.tk-head.is-out {
+    .ft-plaque {
+      width: 64px;
+      padding: 8px 4px 10px;
+      border-top-width: 4px;
+    }
+    .ft-v {
+      font-size: var(--t20);
+    }
+    .tk-h2 {
+      font-size: var(--t26);
+    }
+    .tk-add-ac .inline-form {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .tk-ft .kpi-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .tk-ft .kpi-row .kpi:nth-child(odd) {
+      border-left: 0;
+      padding-left: 0;
+    }
+    /* Phone: the card (or plaque) sits beside the meta line only; the headline,
+       the lede and the pips run the full width under it. */
+    .card.tk-head.has-mark {
       grid-template-columns: 64px minmax(0, 1fr);
-      gap: var(--s3);
+      gap: 10px var(--s3);
+    }
+    .card.tk-head.has-mark .tk-head-main {
+      display: contents;
+    }
+    .card.tk-head.has-mark > :first-child {
+      grid-row: 1;
+      grid-column: 1;
+    }
+    .card.tk-head.has-mark .tk-meta {
+      grid-row: 1;
+      grid-column: 2;
+      align-self: center;
+    }
+    .card.tk-head.has-mark .detail-title,
+    .card.tk-head.has-mark .tk-lede,
+    .card.tk-head.has-mark .tk-dots {
+      grid-column: 1 / -1;
     }
     .ref-card {
       width: 60px;

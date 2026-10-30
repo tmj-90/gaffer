@@ -2,13 +2,15 @@
  * Ticket → lore distillation at close (Track 1c).
  *
  * A closed ticket's title / AC / decisions / reject-reasons carry the product
- * intent that otherwise evaporates. distillTicketIntent harvests it into DRAFT
- * lore (decision / requirement) — never auto-promoted.
+ * intent that otherwise evaporates. distillTicketIntent harvests it into lore
+ * suggestions (decision / requirement); promotion is the caller's policy.
  *
  * Asserts:
  *   - a ticket with AC distills a REQUIREMENT draft carrying the AC + kind;
  *   - decisions / reject-reasons distill a DECISION draft;
  *   - a ticket with neither yields nothing (no noise);
+ *   - blank / whitespace-only AC texts are dropped (all blank → nothing), and the
+ *     summary wording matches the live close path (runner distill-intent golden);
  *   - drafts stay under Memory's title/summary caps.
  */
 import { describe, expect, it } from "vitest";
@@ -80,5 +82,34 @@ describe("distillTicketIntent", () => {
       expect(d.title.length).toBeLessThanOrEqual(200);
       expect(d.summary.length).toBeLessThanOrEqual(800);
     }
+  });
+
+  it("drops blank / whitespace-only AC texts and trims the rest", () => {
+    const [requirement] = distillTicketIntent("app", {
+      number: 7,
+      title: "Add login",
+      acceptanceCriteria: [
+        { text: "  Login works  ", status: "pending" },
+        { text: "   ", status: "pending" },
+        { text: "", status: "pending" },
+      ],
+    });
+    expect(requirement?.summary).toBe(
+      `Why 'app' ticket #7 ("Add login") was built — the requirement it served ` +
+        `(distilled at close from the delivered work):\n- Login works`,
+    );
+  });
+
+  it("harvests nothing when every AC is blank", () => {
+    expect(
+      distillTicketIntent("app", {
+        number: 7,
+        title: "Add login",
+        acceptanceCriteria: [
+          { text: " ", status: "pending" },
+          { text: "", status: "pending" },
+        ],
+      }),
+    ).toEqual([]);
   });
 });

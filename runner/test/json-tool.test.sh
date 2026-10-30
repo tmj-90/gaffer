@@ -10,7 +10,8 @@
 #   5  smallest-change-note, review-feedback, worktree-rows-json, bootstrap-repo-name;
 #   6  quarantine neutralises a smuggled closing tag and collapses `single`;
 #   7  dod-evidence-summary's first line is the verdict, second a parseable JSON line;
-#   8  ac-check-rows / distill-intent / prompt-inputs shapes; realpath resolves a link;
+#   8  ac-check-rows / prompt-inputs shapes; realpath resolves a link (distill-intent
+#      moved to crew's distillIntentCli — distill-intent-golden.test.sh);
 #   9  factory.config.sh's jget is node-backed and no runner script still calls python3.
 # Run: bash runner/test/json-tool.test.sh
 # =====================================================================
@@ -114,16 +115,12 @@ printf '%s\n' "$SUMM" | sed -n 2p | node -e 'const j=JSON.parse(require("fs").re
 printf '%s\n' "$SUMM" | grep -q "^  \[FAIL\] lint (repo) — exited 1: npm run lint$" && ok "summary transcript line" || no "transcript"
 printf '%s\n' "$SUMM" | grep -q "^boom$" && ok "summary keeps the failing output block" || no "tail block"
 
-echo "== 8: ac-check-rows / distill-intent / prompt-inputs / realpath =="
+echo "== 8: ac-check-rows / prompt-inputs / realpath =="
 ROWS="$(printf '%s' "$SHOW" | jt ac-check-rows)"
 [ "$(printf '%s\n' "$ROWS" | wc -l | tr -d ' ')" = "2" ] && ok "ac-check-rows: two checked ACs (prose skipped)" || no "ac rows count: $ROWS"
 printf '%s\n' "$ROWS" | sed -n 1p | grep -q "^a1	npm test	AC1: first AC text that is quite long and will be cut at sixty ch$" && ok "ac-check-rows: label numbered by position, text cut at 60" || no "ac row 1: $(printf '%s\n' "$ROWS" | sed -n 1p)"
 printf '%s\n' "$ROWS" | sed -n 2p | grep -q "^a3	grep -q x y	AC3: third$" && ok "ac-check-rows: command trimmed, newline collapsed" || no "ac row 2"
 printf 'junk' | jt ac-check-rows >/dev/null 2>&1; [ $? -eq 3 ] && ok "ac-check-rows junk → exit 3" || no "ac rows junk"
-D="$(SHOW="$SHOW" DTITLE="Add thing" DREPO=app DNUM=7 jt distill-intent)"
-[ "$(printf '%s' "$D" | jt expr 'd.title')" = "Requirement from #7: Add thing" ] && ok "distill-intent title" || no "distill title: $D"
-printf '%s' "$D" | jt expr 'd.summary' | grep -q "^- prose$" && ok "distill-intent lists AC text" || no "distill summary"
-[ -z "$(SHOW='{"acceptanceCriteria":[]}' DTITLE=t DREPO=r DNUM=1 jt distill-intent)" ] && ok "distill-intent: no AC → nothing" || no "distill none"
 PI="$(GF_NUM=3 GF_TITLE=T GF_RF="$(printf '  - one\ncont\n  - two')" GF_WT_ROWS="$(printf 'id\tapp\t/r\tmain\t/wt')" GF_READ_ROOTS="$(printf '/a\n/b')" jt prompt-inputs delivery)"
 [ "$(printf '%s' "$PI" | jt expr 'd.reviewFeedbackReasons.join("|")')" = "$(printf 'one\ncont|two')" ] && ok "prompt-inputs groups multi-line reasons" || no "prompt-inputs reasons"
 [ "$(printf '%s' "$PI" | jt expr 'd.writeRepos[0].worktreePath + ":" + d.readRoots.length')" = "/wt:2" ] && ok "prompt-inputs write repos + read roots" || no "prompt-inputs repos"

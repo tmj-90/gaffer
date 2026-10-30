@@ -39,7 +39,7 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/mcp-render-seam-rc.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 # The seam + its _gaffer_sed_repl helper live in factory.config.sh. Source it
 # with the DB vars set so its top-level defaults resolve without side effects
-# (mirrors mcp-render-parity.test.sh).
+# (mirrors mcp-render-golden.test.sh).
 export GAFFER_DATA="$WORK/data" DISPATCH_DB="$WORK/data/dispatch.sqlite" MEMORY_DB="$WORK/data/memory.sqlite"
 mkdir -p "$GAFFER_DATA"
 # shellcheck source=../factory.config.sh

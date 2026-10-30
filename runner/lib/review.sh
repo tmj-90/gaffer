@@ -547,7 +547,8 @@ EOF
           ;;
         rework)
           # CHANGES verdict on an EARNED ticket → reject to rework with the reviewer's reason.
-          # The feedback loop (REVIEW_FEEDBACK_BLOCK) + rework budget/escalation take it from here.
+          # The feedback loop (the delivery prompt's review-feedback block, rendered by crew's
+          # runtime/context/deliveryPrompt.ts) + rework budget/escalation take it from here.
           # The concrete ask from the reviewer's RECOMMEND CHANGES line, verdict token
           # stripped, front-capped (gaffer_review_reason) — not a mid-word tail.
           _rreason="$(gaffer_review_reason "$R_RESULT")"

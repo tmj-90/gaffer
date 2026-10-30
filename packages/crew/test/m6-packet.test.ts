@@ -52,8 +52,8 @@ describe("context packet", () => {
     const repo = packet.repositories[0]!;
     expect(repo.path).toContain("test-web-app");
     expect(repo.testCommand).toBe("pnpm test");
-    expect(repo.branchPolicy.requiredPrefix).toBe("dispatch/");
-    expect(repo.branchPolicy.suggestedBranch.startsWith("dispatch/")).toBe(true);
+    expect(repo.branchPolicy.requiredPrefix).toBe("gaffer/");
+    expect(repo.branchPolicy.suggestedBranch.startsWith("gaffer/")).toBe(true);
     expect(repo.branchPolicy.suggestedBranchAllowed).toBe(true);
     expect(packet.verification.testCommands).toContain("pnpm test");
   });

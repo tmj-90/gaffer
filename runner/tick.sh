@@ -747,17 +747,18 @@ gaffer_recall_feedback() {
 # TICKET → LORE DISTILLATION AT CLOSE (Track 1c, live-path backport).
 # A ticket's title + acceptance criteria carry the REAL product intent — WHY the
 # work exists. At close that intent evaporates: the ticket is marked done and
-# nothing durable captures it. This harvests it into a REQUIREMENT DRAFT lore
-# record so the "why" survives the ticket. DRAFT ONLY (human-gated via the
-# memory suggest boundary) — never auto-promoted. Conservative like the crew
-# mirror (packages/crew/src/context/ticketIntent.ts::distillTicketIntent): a
-# ticket with NO acceptance criteria has nothing durable to harvest, so it is a
-# no-op rather than drafting noise. (The optional DECISION draft the mirror can
-# emit needs recorded decisions/reject-reasons, which the live close path does
-# not carry — matching crew's own live call, which passes only title + AC.)
+# nothing durable captures it. This harvests it into a REQUIREMENT lore record
+# so the "why" survives the ticket: a human-gated DRAFT by default, promoted ACTIVE
+# only under MEMORY_AUTO_APPROVE=1 / GAFFER_MEMORY_AUTO_PROMOTE=1 (below). The text
+# is rendered by crew — packages/crew/src/context/ticketIntent.ts::distillTicketIntent
+# via runtime/context/distillIntentCli.js, the single source (edit it there). A
+# ticket with NO non-blank acceptance criteria has nothing durable to harvest, so
+# it is a no-op rather than drafting noise. (The optional DECISION draft the
+# distiller can emit needs recorded decisions/reject-reasons, which the live close
+# path does not carry, so the CLI emits only the requirement.)
 # Best-effort + logged: a distill error NEVER affects delivery (already
-# submitted). No-op under DRY_RUN, without the memory CLI, or with no ticket/repo
-# in scope.
+# submitted). No-op under DRY_RUN, without the memory CLI or the crew build, or
+# with no ticket/repo in scope.
 gaffer_distill_ticket_intent() {
   [ "${DRY_RUN:-0}" = "1" ] && return 0
   [ -n "${NUM:-}" ] && [ -n "${RECALL_REPO_NAME:-}" ] || return 0
@@ -765,9 +766,13 @@ gaffer_distill_ticket_intent() {
   [ -n "${SHOW:-}" ] || return 0
 
   # Build the requirement draft's {title, summary} from the ticket's title + AC.
-  # json-tool emits ONE JSON line (or nothing when there is no AC). Fail-soft.
-  local _distill
-  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" gaffer_json distill-intent 2>/dev/null || true)"
+  # The crew CLI emits ONE JSON line (or nothing when there is no AC). Fail-soft.
+  local _distill _distill_cli="${CREW_DIR:-}/dist/runtime/context/distillIntentCli.js"
+  if [ ! -f "$_distill_cli" ]; then
+    log "memory: crew not built ($_distill_cli missing) — skipping the ticket-intent distillation for #$NUM"
+    return 0
+  fi
+  _distill="$(SHOW="$SHOW" DTITLE="${TITLE:-}" DREPO="$RECALL_REPO_NAME" DNUM="$NUM" node "$_distill_cli" 2>/dev/null || true)"
   [ -n "$_distill" ] || return 0
 
   local _dt _ds
@@ -1198,7 +1203,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
     chmod 600 "$MCP_RUNTIME" 2>/dev/null || true  # carries the live claim token — owner-only
     gaffer_exclude_runner_config "$B_DIR"   # keep runner config out of `git add -A`
 
-    B_TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
+    # The prompt text (and the title's quarantine envelope) is rendered by crew:
+    # packages/crew/src/runtime/context/deliveryPrompt.ts via renderPromptCli.js.
     B_PROMPT="$(gaffer_render_delivery_prompt bootstrap)" \
       || gaffer_abort_setup PROMPT-RENDER "failed to render bootstrap prompt for #$NUM — refusing live bootstrap (fail closed)"
 
@@ -1610,33 +1616,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$WORKTREES_BASE/primary"
 
-  # Human-readable WRITE / READ repo lists for the prompt + plan logging. The
-  # agent is told which (worktree) repos are WRITABLE (it is already on the gaffer/
-  # branch in each) and which are READ-ONLY context (never branch or write them).
-  WRITE_LIST="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{printf "  - %s (%s) [WRITABLE worktree, on branch '"$WORK_BRANCH"']\n", $5, ($2==""?"repo":$2)}')"
-  READ_LIST="$(printf '%s\n' "$READ_ROOTS" | grep . | awk '{printf "  - %s [READ-ONLY context — do NOT write or branch]\n", $0}')"
-  [ -n "$READ_LIST" ] || READ_LIST="  (none)"
-
-  # Prior review feedback: if this ticket was sent back before, surface the reviewer's
-  # reasons so the agent ADDRESSES them this time (closes the learning loop instead of
-  # repeating the mistake). Pulled from ticket.transitioned events whose payload reason
-  # records a rejection (to refining/ready/cancelled), newest few, deduped.
-  REVIEW_FEEDBACK_BLOCK=""
+  # Prior review feedback: if this ticket was sent back before, the reviewer's
+  # reasons ride into the prompt so the agent ADDRESSES them this time. Pulled from
+  # ticket.transitioned events whose payload reason records a rejection, newest
+  # few, deduped. Only the RAW reasons are captured here: the write/read repo
+  # lists, the review-feedback framing and the quarantine envelope around
+  # the (untrusted) reasons are all rendered by crew's deliveryPrompt.ts, which
+  # reads _RF through _gaffer_prompt_inputs_json (factory.config.sh).
   _RF="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json review-feedback 2>/dev/null || true)"
-  # The reviewer feedback is UNTRUSTED (a rejection reason is free text that may
-  # itself carry injected instructions) — quarantine the body inside an envelope.
-  if [ -n "$_RF" ]; then
-    _RF_Q="$(gaffer_quarantine review-feedback "$_RF")"
-    REVIEW_FEEDBACK_BLOCK="
-PRIOR REVIEW FEEDBACK — this ticket was sent back before. Each line inside the
-envelope below is why a previous attempt was rejected; you MUST address every one
-before re-delivering, and must NOT repeat them. The previous attempt's commits are
-ALREADY on this branch: fix them in place rather than re-implementing from scratch
-(run \`git log --oneline\` first; reset to the base deliberately only if the approach
-itself was wrong).
-$_RF_Q
-"
-  fi
 
   # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the
@@ -1700,21 +1687,10 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "ACCEPTANCE: #$NUM is the epic's acceptance ticket — brief-level acceptance suite against the integrated build; the independent tester decides"
   fi
 
-  # ── LORE-REFLECTION NUDGE (Track 1c) — appended to the delivery brief ─────────
-  # The live-agent counterpart of crew's CaptureLoreReflectionHook: prompt the
-  # agent, before it stops, to capture any durable INTENT (decision / requirement
-  # / non-goal) this ticket established via the gated `suggest_lore` boundary —
-  # not per-ticket trivia. Advisory only; it records nothing itself.
-  read -r -d '' LORE_REFLECTION_NUDGE <<'EOF' || true
-BEFORE STOPPING, reflect on WHY this was built this way. If this ticket established a
-durable DECISION (why this approach over the alternatives), a REQUIREMENT (what it
-needed), or a NON-GOAL (what it deliberately did NOT do), call the Memory `suggest_lore`
-tool ONCE with an explicit `kind` (decision / requirement / non-goal). Capture only
-intent the NEXT agent should start from — skip per-ticket trivia. This lands a gated
-DRAFT a human approves; nothing is auto-applied.
-EOF
-
-  TITLE_Q="$(gaffer_quarantine ticket-title "$TITLE" single)"
+  # The prompt TEXT — the quarantined title, the lore-reflection nudge, the
+  # review-feedback block, the repo lists — is LIVE in
+  # packages/crew/src/runtime/context/deliveryPrompt.ts; edit it there (and
+  # rebuild crew), not here. This file only gathers the raw inputs.
   if [ "$_RESUMING" = "1" ]; then
     # PAUSE-ON-CAP continuation prompt: the prior progress is ALREADY in this worktree
     # (committed and/or working changes) — the agent CONTINUES and FINISHES it with a
@@ -2049,6 +2025,7 @@ EOF
   # a single-line, valid JSON string; empty names are skipped (an unnamed repo is
   # not a memory-write target). Paired with GAFFER_FACTORY=1 (a literal in the
   # template) which arms the guard — standalone memory-mcp never sets it.
+  # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
   GAFFER_TICKET_REPOS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '$2!=""{print $2}' | paste -sd: -)"
   # MEMORY ROI: the delivery ticket ref is injected as ${GAFFER_RECALL_TICKET} so
   # the memory MCP server's READ path can attribute a retrieval to this ticket
@@ -2476,6 +2453,7 @@ $_trail_q
   # C1/M2: scrub ambient credentials via an allowlist (env -i) inside worker_deliver.
   # The scrub sits INSIDE the optional OS-sandbox $WRAP so the sandbox still wraps the
   # whole agent; the per-call boundary vars in WORKER_CALL_ENV are layered on top.
+  # shellcheck disable=SC2034  # read by worker_deliver (lib/worker.sh)
   WORKER_CALL_ENV=(
     "GAFFER_WRITE_ROOTS=$WRITE_ROOTS" "GAFFER_READ_ROOTS=$READ_ROOTS"
     "GAFFER_DATA=$GAFFER_DATA" "GAFFER_TICKET=$NUM"
@@ -2933,8 +2911,9 @@ $_trail_q
   # verified); set GAFFER_ALLOW_NO_DOD=1 to waive this for repos with no runnable
   # gates (see factory.config.sh). GAFFER_DOD=0 turns enforcement off entirely.
   # Per-gate toggles
-  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) carry the resolved
-  # `definition_of_done` config; commands come from each repo's dispatch
+  # (GAFFER_DOD_TESTS/TYPECHECK/LINT, default on) are env-only: crew.yaml's
+  # `definition_of_done` block is NOT read here (crew doctor warns when it is
+  # changed). Commands come from each repo's dispatch
   # test_command/lint_command (+ GAFFER_DOD_TYPECHECK_CMD for typecheck, which has
   # no dispatch field). DoD is best-effort RESILIENT: a gate command that itself
   # errors to spawn is treated as a FAIL with a clear message, never a crash.
@@ -3223,7 +3202,6 @@ $_trail_q
     git -C "$rwt" rev-parse --git-dir >/dev/null 2>&1 || continue
     R_CUR="$(git -C "$rwt" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '')"
     [ -n "$R_CUR" ] && [ "$R_CUR" != "$rbase" ] || continue
-    R_DIFFSTAT="$(git -C "$rwt" diff "$rbase"...HEAD --stat 2>/dev/null | tail -15)"
     # GRADUATED AUTONOMY: record the delivery HEAD sha so the review-approve path can
     # compute an honest `approved_unchanged` (delivery sha vs the branch head at approval).
     # Without it the signal was permanently null and the auto-merge half never fired.
@@ -3415,23 +3393,44 @@ if [ "${GAFFER_MAINTENANCE:-}" != "0" ] && [ -f "$CREW_DIR/dist/cli/index.js" ] 
   _MAINT_ARGS=()
   [ "${GAFFER_MAINTENANCE:-}" = "1" ] && _MAINT_ARGS=(--force)
   log "no ready tickets → maintenance lane (crew.yaml decides; deterministic scheduler picks one loop)"
+  if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}" && ! _gaffer_flag_on "${GAFFER_IDLE_HOST_EXEC:-0}"; then
+    log "maintenance lane: GAFFER_STRICT_REQUIRE is on — idle loops will NOT run repo commands (coverage_command) unsandboxed on the host (GAFFER_IDLE_HOST_EXEC=1 to allow)"
+  fi
   if [ "$DRY_RUN" = "1" ]; then
     log "DRY_RUN: would run: fg maintain${_MAINT_ARGS[0]:+ --force} (scheduler-chosen maintenance loop)"; result no_work; exit 0
   fi
-  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>>"$GAFFER_LOG")"
+  # Capture crew's rc + stderr: a failed `crew maintain` (invalid crew.yaml, crash,
+  # locked DB) prints nothing on stdout, and parsing that empty output as "chose
+  # none, no_op" used to report a healthy `maintenance_ran` on every idle tick.
+  _merr="$(mktemp "${TMPDIR:-/tmp}/gaffer-maint.XXXXXX" 2>/dev/null || echo "/tmp/gaffer-maint.$$")"
+  MOUT="$(GAFFER_DATA="$GAFFER_DATA" fg maintain ${_MAINT_ARGS[@]+"${_MAINT_ARGS[@]}"} 2>"$_merr")"
+  _mrc=$?
+  cat "$_merr" >> "$GAFFER_LOG" 2>/dev/null || true
+  # MSTATUS is "invalid" unless MOUT is crew's `{ok:true, report}` with either no
+  # outcome (nothing was due: no_op) or a status from the registry's outcome enum
+  # (IdleLoopRunOutcome in packages/crew/src/loops/idleRegistry.ts).
+  MSTATUS="$(echo "$MOUT" | jget '(() => { const r = d && d.ok === true ? d.report : null; if (!r || typeof r !== "object") return "invalid"; const o = r.outcome; if (o == null) return "no_op"; return ["skipped_tickets_ready", "no_repos", "no_findings", "draft_created", "ready_created", "observed", "suggested", "disabled"].includes(o.status) ? o.status : "invalid"; })()' 2>/dev/null || echo invalid)"
+  [ "$_mrc" -eq 0 ] || MSTATUS=invalid
   MCHOSEN="$(echo "$MOUT" | jget '(d.report || {}).chosen || "none"' 2>/dev/null || echo none)"
   MREASON="$(echo "$MOUT" | jget '(d.report || {}).reason ?? ""' 2>/dev/null || echo '')"
-  MSTATUS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).status || "no_op"' 2>/dev/null || echo no_op)"
   MDRAFTS="$(echo "$MOUT" | jget '((d.report || {}).outcome || {}).draftCount ?? 0' 2>/dev/null || echo 0)"
-  if [ "$MSTATUS" = "disabled" ]; then
+  case "$MDRAFTS" in ''|*[!0-9]*) MDRAFTS=0 ;; esac
+  if [ "$MSTATUS" = "invalid" ]; then
+    # FAILED, not ran: log it loudly and fall through to the legacy scan + the final
+    # `no_work`, so workers still drain on EMPTY_POLL_LIMIT and the tick does not
+    # count against the day cap (a productive result here made the pool spin).
+    log "maintenance lane FAILED (rc=$_mrc): $(grep . "$_merr" 2>/dev/null | head -1 | cut -c1-300) — check $CREW_CONFIG (\`gaffer status\` runs crew doctor)"
+  elif [ "$MSTATUS" = "disabled" ]; then
     # The switch is off: say so once per idle tick (it is the most common reason an
     # operator sees "no_work" with lanes enabled) and fall through to the legacy scan.
     log "maintenance lane is OFF in crew.yaml (loops.maintenance.enabled=false) — turn it on in Settings → Idle loops, or GAFFER_MAINTENANCE=1 to force"
   else
     log "maintenance lane chose '$MCHOSEN' ($MREASON) → status=$MSTATUS, drafts=$MDRAFTS"
+    rm -f "$_merr"
     [ "${MDRAFTS:-0}" -gt 0 ] && { result maintenance_drafted; exit 0; }
     result maintenance_ran; exit 0
   fi
+  rm -f "$_merr"
 fi
 
 # Nothing ready → idle scan to draft new work (crew). OFF by default: an idle

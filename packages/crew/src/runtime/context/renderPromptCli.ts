@@ -3,14 +3,13 @@
 // Node entrypoint for the tick.sh delivery/bootstrap PROMPT render
 // (P1b context assembly, docs/tick-sh-runtime-migration.md).
 // ---------------------------------------------------------------------
-// The live delivery prompt is assembled today as bash heredocs in
-// runner/tick.sh (fresh at :1516, resume at :1485, bootstrap at :919). This
-// is the typed render seam for that text: it routes the render through the
+// LIVE: this is how runner/tick.sh gets every delivery prompt. The fresh,
+// resume and bootstrap paths all call gaffer_render_delivery_prompt
+// (runner/factory.config.sh), which pipes the raw tick inputs as JSON
+// (_gaffer_prompt_inputs_json) into this CLI. It routes the render through the
 // golden-tested pure renderers (renderDeliveryPrompt / renderBootstrapPrompt,
-// ./deliveryPrompt.ts) so the crew golden test IS the live behaviour once
-// tick.sh routes its $PROMPT through this CLI (a later, flag-gated slice —
-// this entrypoint lands first, proven byte-identical to the captured bash
-// golden, exactly as renderMcpCli.ts did before the MCP seam was wired).
+// ./deliveryPrompt.ts), so the crew golden test IS the live behaviour. A
+// missing dist or a render error fails the tick closed (no agent launch).
 //
 // Dependency surface is kept as tiny as renderMcpCli.ts: this imports ONLY
 // ./deliveryPrompt.js + ./ticketSlug.js + ../../util/errors.js — NOT the crew

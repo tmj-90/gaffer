@@ -14,6 +14,11 @@ _GAFFER_ENV_AT_SOURCE=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 : "${RUNNER_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 : "${GAFFER_HOME:=$(cd "$RUNNER_DIR/.." && pwd)}"
 : "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"                       # factory state (dbs, logs, agent id)
+# ONE canonical crew events log for everything that sources this file (tick.sh,
+# the gaffer CLI, fg, the dashboard it launches, onboard-run): $GAFFER_DATA, never a
+# repo checkout. crew itself resolves a relative crew.yaml event_log_path against
+# the factory root; this keeps runner-spawned crew calls on the one log tick reads.
+export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 
 # UI-editable settings. The dashboard Settings panel persists a flat {"KEY":"value"}
 # map to $GAFFER_DATA/settings.json. Apply them as defaults HERE — before the config
@@ -861,9 +866,8 @@ gaffer_render_delivery_prompt() {
 # ── Typed branch input assembly: build the renderPromptCli JSON document from the
 #    ambient RAW inputs (mirrors runner/test/capture-context-golden.sh's inputs.json
 #    emitter). reviewFeedbackReasons is recovered from the pre-block "  - " lines in
-#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS —
-#    the same grep/awk partition the bash WRITE_LIST/READ_LIST use. json-tool.mjs
-#    (node) json-encodes arbitrary title/path bytes safely. ─────────────────────
+#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS.
+#    json-tool.mjs (node) json-encodes arbitrary title/path bytes safely. ───────
 _gaffer_prompt_inputs_json() {
   local variant="$1"
   if [ "$variant" = "bootstrap" ]; then
@@ -1537,6 +1541,14 @@ if _gaffer_autonomy_on; then
   fi
 fi
 
+# Idle-loop host exec under strict containment. The idle COVERAGE loop runs each
+# repo's coverage_command (its own test suite, i.e. code agents wrote) directly on
+# the host, in the real checkout, outside any sandbox. When GAFFER_STRICT_REQUIRE is
+# on (autonomy mode turns it on) crew REFUSES that and records coverage_scan_refused;
+# set this to 1 only if you contain the whole runner out-of-band (VM/container).
+: "${GAFFER_IDLE_HOST_EXEC:=0}"   # 1 = allow idle repo commands on the host under GAFFER_STRICT_REQUIRE
+export GAFFER_IDLE_HOST_EXEC
+
 # Who reviews in_review tickets before they can be approved to done:
 #   human → only a person approves (dispatch review approve, or the board)
 #   agent → a reviewer AGENT (≠ the implementer) reviews via the review-ticket skill
@@ -1711,7 +1723,9 @@ gaffer_assert_db_vars() {
 }
 
 wg() { gaffer_assert_db_vars || return 1; node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"; }
-fg() { node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
+# fg pins crew to the factory's $DISPATCH_DB (CREW_DISPATCH_DB beats crew.yaml's
+# sqlite_path), so a drifted crew.yaml can't send drafts to a DB nobody reads.
+fg() { CREW_DISPATCH_DB="${DISPATCH_DB:-}" node "$CREW_DIR/dist/cli/index.js" -c "$CREW_CONFIG" "$@"; }
 lg() { gaffer_assert_db_vars || return 1; MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI_BIN" "$@"; }
 
 # The runner's JSON helpers (node — lib/json-tool.mjs replaces the former inline

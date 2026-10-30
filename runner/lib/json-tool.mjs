@@ -311,31 +311,8 @@ switch (cmd) {
   }
 
   // ── ticket-derived blocks (tick.sh) ─────────────────────────────────────────
-  // distill-intent: env SHOW, DTITLE, DREPO, DNUM → one JSON line {title, summary}, or
-  // nothing when the ticket has no acceptance criteria / unparseable SHOW.
-  case "distill-intent": {
-    const MAX_TITLE = 190;
-    const MAX_SUMMARY = 780;
-    const p = tryParse(process.env.SHOW || "{}");
-    if (!p.ok) process.exit(0);
-    const d = p.value || {};
-    const acs = d.acceptanceCriteria || [];
-    const lines = acs
-      .map((a) => ((a && a.text) || "").trim())
-      .filter((t) => t.length > 0)
-      .map((t) => `- ${t}`);
-    if (lines.length === 0) process.exit(0);
-    const repo = process.env.DREPO || "";
-    const num = process.env.DNUM || "";
-    const title = process.env.DTITLE || "";
-    const t = `Requirement from #${num}: ${title}`.slice(0, MAX_TITLE);
-    let body =
-      `Why '${repo}' ticket #${num} ("${title}") was built — the requirement it served ` +
-      `(distilled at close from the delivered work):\n${lines.join("\n")}`;
-    if (body.length > MAX_SUMMARY) body = `${body.slice(0, MAX_SUMMARY - 1)}…`;
-    println(JSON.stringify({ title: t, summary: body }));
-    break;
-  }
+  // (distill-intent moved to crew: packages/crew/src/runtime/context/distillIntentCli.ts,
+  // the single source of the ticket → lore distillation text.)
   // partition: stdin = ticket show → the three @@-marked sections tick.sh slices.
   case "partition": {
     const d = parseStdin();

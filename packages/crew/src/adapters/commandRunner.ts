@@ -1,9 +1,60 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 export interface CommandResult {
   stdout: string;
   exitCode: number;
+  /** `run` only: the command overran its wall-clock cap and was killed. */
+  timedOut?: boolean;
+  /** `run` only: output exceeded the byte cap; the command was killed, output cut. */
+  truncated?: boolean;
 }
+
+/**
+ * Bounds for a shell `run` invocation (operator / repo commands such as
+ * coverage_command). Every run is bounded: `timeoutMs` defaults to
+ * $GAFFER_DOD_TIMEOUT seconds (else 900s) and `maxBuffer` to 32 MiB. On either
+ * limit the WHOLE process group is killed (a `pnpm` → `vitest` grandchild
+ * cannot outlive the shell) and the result says so, so a caller never parses
+ * partial output as a finding.
+ */
+export interface RunOptions {
+  timeoutMs?: number;
+  maxBuffer?: number;
+}
+
+/** Default wall-clock cap for `run`: $GAFFER_DOD_TIMEOUT seconds, else 900s. */
+export function defaultRunTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const secs = Number(env.GAFFER_DOD_TIMEOUT);
+  return Number.isFinite(secs) && secs > 0 ? secs * 1000 : 900_000;
+}
+
+export const DEFAULT_RUN_MAX_BUFFER = 32 * 1024 * 1024;
+
+// Runs `/bin/sh -c <cmd>` in its OWN process group and kills the group on timeout
+// or overflow. A tiny node supervisor does it because the sync child_process API
+// has no process-group kill: the parent waits on the supervisor synchronously.
+const SUPERVISOR = `
+const { spawn } = require("node:child_process");
+const [cmd, timeoutMs, maxBuffer] = [process.argv[1], Number(process.argv[2]), Number(process.argv[3])];
+const child = spawn("/bin/sh", ["-c", cmd], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+const out = [], err = [];
+let size = 0, timedOut = false, truncated = false;
+const killGroup = () => { try { process.kill(-child.pid, "SIGKILL"); } catch {} };
+const take = (bucket) => (b) => {
+  if (truncated) return;
+  if (size + b.length > maxBuffer) { truncated = true; bucket.push(b.subarray(0, maxBuffer - size)); size = maxBuffer; killGroup(); return; }
+  size += b.length; bucket.push(b);
+};
+child.stdout.on("data", take(out));
+child.stderr.on("data", take(err));
+const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
+child.on("error", (e) => { clearTimeout(timer); process.stdout.write(JSON.stringify({ stdout: "", stderr: String(e && e.message), code: 127, timedOut, truncated })); });
+child.on("close", (code) => {
+  clearTimeout(timer);
+  killGroup();
+  process.stdout.write(JSON.stringify({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), code: code ?? 1, timedOut, truncated }));
+});
+`;
 
 /**
  * Bounds for a no-shell `runArgs` invocation. Used by the tool oracles so a scan
@@ -32,7 +83,7 @@ export interface RunArgsOptions {
  *    otherwise untrusted data.
  */
 export interface CommandRunner {
-  run(command: string, cwd: string): CommandResult;
+  run(command: string, cwd: string, options?: RunOptions): CommandResult;
   /**
    * Run `file` with `args` directly (no shell). Arguments are never re-parsed by a
    * shell, so untrusted values (filenames, paths) cannot inject commands. The
@@ -48,18 +99,45 @@ export interface CommandRunner {
 }
 
 export const systemCommandRunner: CommandRunner = {
-  run(command: string, cwd: string): CommandResult {
-    try {
-      const stdout = execSync(command, {
+  run(command: string, cwd: string, options?: RunOptions): CommandResult {
+    const timeoutMs = options?.timeoutMs ?? defaultRunTimeoutMs();
+    const maxBuffer = options?.maxBuffer ?? DEFAULT_RUN_MAX_BUFFER;
+    const res = spawnSync(
+      process.execPath,
+      ["-e", SUPERVISOR, command, String(timeoutMs), String(maxBuffer)],
+      // The supervisor's JSON carries at most maxBuffer bytes of output (plus
+      // JSON escaping); a backstop timeout covers a wedged supervisor.
+      {
         cwd,
         encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      return { stdout, exitCode: 0 };
-    } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; status?: number };
-      return { stdout: `${e.stdout ?? ""}${e.stderr ?? ""}`, exitCode: e.status ?? 1 };
+        maxBuffer: maxBuffer * 6 + 1024 * 1024,
+        timeout: timeoutMs + 30_000,
+      },
+    );
+    let parsed: {
+      stdout: string;
+      stderr: string;
+      code: number;
+      timedOut: boolean;
+      truncated: boolean;
+    };
+    try {
+      parsed = JSON.parse(res.stdout) as typeof parsed;
+    } catch {
+      return {
+        stdout: res.stderr ?? "",
+        exitCode: res.status ?? 1,
+        timedOut: res.error !== undefined,
+      };
     }
+    // Matches the old execSync contract: stdout alone on success, stdout+stderr on failure.
+    const failed = parsed.code !== 0 || parsed.timedOut || parsed.truncated;
+    return {
+      stdout: failed ? `${parsed.stdout}${parsed.stderr}` : parsed.stdout,
+      exitCode: parsed.code !== 0 ? parsed.code : failed ? 1 : 0,
+      ...(parsed.timedOut ? { timedOut: true } : {}),
+      ...(parsed.truncated ? { truncated: true } : {}),
+    };
   },
 
   runArgs(

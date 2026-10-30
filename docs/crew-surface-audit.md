@@ -28,7 +28,7 @@ switches them on.
 
 | Reached only via | Files | Lines |
 | --- | --- | --- |
-| `crew run` (the mock implementation loop) | `loops/implementationLoop.ts`, `safety/postconditions.ts`, `hooks/*` (engine, builtins, types), `context/ticketIntent.ts`, `runtime/agentRuntime.ts` | ~1,500 |
+| `crew run` (the mock implementation loop) | `loops/implementationLoop.ts`, `safety/postconditions.ts`, `hooks/*` (engine, builtins, types), `runtime/agentRuntime.ts` | ~1,500 |
 | `crew stats` | `ops/stats.ts` | 148 |
 | `crew-mcp` (the package's own MCP server; the delivery agent's `.mcp.json` never lists it) | `mcp/*`, `context/packet.ts`, `context/tokens.ts`, `memory/scopeLore.ts` | ~1,600 |
 | `crew safety check` / `crew-mcp` | the TypeScript safety classifier (`commandGuard`, `gitGuard`, `fsGuard`, `rootAccess`, `branchPolicy`, `decision`, `forbiddenActions`) | ~490 |
@@ -42,13 +42,15 @@ README documents `scan`, `run`, `stats`, `safety check` as user-facing.
 ## Decision
 
 1. **Keep, as specification and seam:** `runtime/agentRuntime.ts`,
-   `runtime/claudeAgentRuntime.ts`, `runtime/wiring.ts`, `context/ticketIntent.ts`,
-   `context/packet.ts`. `docs/tick-sh-runtime-migration.md` names them as the P0
-   seam for the single-runtime collapse (the typed spawn replacing `worker.sh`),
-   and `tick.sh` / `lib/context-primer.sh` cite two of them as the source their
-   bash mirrors. They are dead at runtime today and that is stated here; deleting
-   them would abandon the documented end state rather than finish it. The collapse
-   itself needs a live model credential to trial and is out of scope for this pass.
+   `runtime/claudeAgentRuntime.ts`, `runtime/wiring.ts`, `context/packet.ts`.
+   `docs/tick-sh-runtime-migration.md` names them as the P0 seam for the
+   single-runtime collapse (the typed spawn replacing `worker.sh`). They are dead
+   at runtime today and that is stated here; deleting them would abandon the
+   documented end state rather than finish it. The collapse itself needs a live
+   model credential to trial and is out of scope for this pass.
+   `context/ticketIntent.ts`, once on this list, is now LIVE: tick.sh's close path
+   renders the requirement draft through `runtime/context/distillIntentCli.ts`,
+   and the json-tool.mjs twin it had drifted from was removed.
 2. **Keep, as the parity oracle:** the TypeScript safety classifier. The live guard
    is `runner/safety-hook.mjs` + `lib/dangerous-commands.mjs`; the TS port exists so
    `safety-hook-parity.test.ts` and `root-access-parity.test.ts` can prove the two
@@ -57,6 +59,14 @@ README documents `scan`, `run`, `stats`, `safety check` as user-facing.
 3. **Keep, opt-in and documented as such:** `loops/*`, `ingest/*`, `crew-mcp`. They
    are advertised product surface (README, ARCHITECTURE) reachable from the
    dashboard's idle-loop toggle or by running the MCP server; dormant is not dead.
+   The tool-backed scan oracles (`loops/oracles/*`, ~650 lines) used to be
+   unreachable (no production caller set `IdleLoopDeps.oracles`). They are now
+   wired through `buildOracleSet` behind `loops.oracles.enabled` (default **off**,
+   so default behaviour is unchanged): tsc and semgrep only, resolved from PATH,
+   never the repo's `node_modules/.bin`. The eslint and knip oracles stay
+   test-only: they load the repo's own JS config, so they would run repo code on
+   the host until idle commands run inside a sandbox. Deleting them instead is the
+   remaining product call.
 4. **Candidates to delete — a product call, not made here:** `crew run` (mock-only
    demo; `runner/CLAUDE.md` already calls it that) with `implementationLoop.ts`,
    `hooks/*` and `postconditions.ts`; `crew stats`; `repo rescan` /

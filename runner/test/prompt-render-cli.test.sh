@@ -5,13 +5,11 @@
 # (packages/crew/src/runtime/context/renderPromptCli.ts) renders BYTE-IDENTICALLY
 # to the REAL bash heredoc, via the captured golden.
 # ---------------------------------------------------------------------
-# This is the prompt analogue of runner/test/mcp-render-parity.test.sh, at the
-# stage BEFORE the live tick.sh seam is wired: the CLI exists and is proven
-# equal to the captured bash prompt (packages/crew/test/fixtures/tick-context/
-# prompt.fresh.golden.txt, captured from a REAL tick by capture-context-golden.sh)
-# so a later, flag-gated slice can route tick.sh's $PROMPT through it with the
-# byte-identity contract already green — exactly how renderMcpCli.js landed
-# before gaffer_render_mcp_runtime was wired.
+# This is the prompt analogue of runner/test/mcp-render-golden.test.sh. The CLI
+# is the LIVE seam (tick.sh → gaffer_render_delivery_prompt → this CLI) and is
+# proven equal to the captured bash prompt (packages/crew/test/fixtures/
+# tick-context/prompt.fresh.golden.txt, captured from a REAL tick by
+# capture-context-golden.sh) from the heredoc era it replaced.
 #
 # Covers: fresh-delivery byte-identity (--out AND stdout, no trailing-newline
 # drift), workBranch DERIVATION parity (the golden encodes the derived branch),

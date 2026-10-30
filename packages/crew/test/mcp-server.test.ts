@@ -18,7 +18,7 @@ import { Dispatch } from "dispatch";
 
 import { initFactory } from "../src/config/init.js";
 import { EventLog } from "../src/events/eventLog.js";
-import { runIdleLoops } from "../src/loops/idleRegistry.js";
+import { runIdleTick } from "../src/loops/idleTick.js";
 import { createCrewServer } from "../src/mcp/server.js";
 import { makeHandlers, toolSchemas, type ToolResult } from "../src/mcp/tools.js";
 import { systemCommandRunner } from "../src/adapters/commandRunner.js";
@@ -137,10 +137,10 @@ describe("MCP server: factory tools", () => {
     };
     const mcpLoopIds = mcp.loops.map((l) => l.id).sort();
 
-    // The CLI idle path runs runIdleLoops with the same deps; the enabled loop
-    // set MUST match so the two surfaces can't drift.
+    // The CLI idle path runs the same shared tick (loops/idleTick.ts); the
+    // enabled loop set MUST match so the two surfaces can't drift.
     const events = new EventLog(systemClock);
-    const cli = runIdleLoops({
+    const cli = await runIdleTick({
       config: ctx.loaded.config,
       repoRegistry: ctx.repoRegistry,
       dispatch,
@@ -148,7 +148,7 @@ describe("MCP server: factory tools", () => {
       events,
       clock: systemClock,
     });
-    const cliLoopIds = cli.loops.map((l) => l.id).sort();
+    const cliLoopIds = cli.report.loops.map((l) => l.id).sort();
 
     expect(mcpLoopIds).toEqual(cliLoopIds);
     expect(mcpLoopIds.length).toBeGreaterThan(0);

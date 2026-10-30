@@ -20,6 +20,8 @@ import {
   memoryLoreQuery,
   rejectLoreBody,
   settingsBody,
+  updateClubBody,
+  updateSquadAgentBody,
 } from "../schemas.js";
 import { listSettings, writeSettings } from "../settings.js";
 import { apiActor } from "./context.js";
@@ -131,6 +133,43 @@ export async function routeApi(
     if (refuseIfPrincipal(req, res)) return;
     const principal = wg.revokePrincipal(segments[2] ?? "", apiActor());
     sendJson(res, 200, { principal });
+    return;
+  }
+  // SQUAD — the operator's team identity for the dashboard's Match Day view.
+  //   GET   /api/club                — the club (name / short name / kit; "Gaffer" default).
+  //   PATCH /api/club                — partial update; null or "" clears a field.
+  //   GET   /api/squad               — the club + every agent's display name, shirt
+  //                                    number, role and derived default name.
+  //   PATCH /api/squad/agents/:id    — set an agent's display name / shirt number.
+  // Presentation only: the agent id claims/events/audit record never changes.
+  // Writes need the full capability (the non-GET gate upstream) and are recorded in
+  // the tamper-evident event log (club.updated / agent.display_updated) as the
+  // request's actor. No MCP tool writes these — an agent cannot rename itself.
+  if (segments.length === 2 && segments[1] === "club") {
+    if (method === "GET") {
+      sendJson(res, 200, { club: wg.getClub() });
+      return;
+    }
+    if (method === "PATCH") {
+      const body = updateClubBody.parse(await readJsonBody(req));
+      sendJson(res, 200, wg.updateClub(body, apiActor()));
+      return;
+    }
+    return methodNotAllowed(res);
+  }
+  if (segments.length === 2 && segments[1] === "squad") {
+    if (method !== "GET") return methodNotAllowed(res);
+    sendJson(res, 200, { club: wg.getClub(), agents: wg.listSquad() });
+    return;
+  }
+  if (segments.length === 4 && segments[1] === "squad" && segments[2] === "agents") {
+    if (method !== "PATCH") return methodNotAllowed(res);
+    const ref = safeDecode(segments[3] as string);
+    if (ref === null) {
+      return sendJson(res, 422, errorBody("VALIDATION_ERROR", "Malformed agent id."));
+    }
+    const body = updateSquadAgentBody.parse(await readJsonBody(req));
+    sendJson(res, 200, wg.updateAgentDisplay(ref, body, apiActor()));
     return;
   }
   // GET/PUT /api/idle-loops — dashboard control for the crew idle scan loops.

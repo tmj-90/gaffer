@@ -48,6 +48,14 @@ export {
 } from "./services/claimService.js";
 export { AgentRepository } from "./repositories/agentRepository.js";
 export {
+  DEFAULT_CLUB_NAME,
+  deriveSquadRole,
+  type AgentDisplay,
+  type ClubView,
+  type SquadAgentView,
+  type SquadRole,
+} from "./services/squadService.js";
+export {
   RunRepository,
   defaultPidLiveness,
   type PidLivenessProbe,

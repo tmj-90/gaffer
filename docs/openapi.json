@@ -563,6 +563,267 @@
         "x-capability": "full"
       }
     },
+    "/api/club": {
+      "get": {
+        "operationId": "getApiClub",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Read the club identity",
+        "description": "The operator's team for the Match Day dashboard (`ClubView`): `name`, `short_name`, `kit_primary`, `kit_secondary` (null when unset) plus `name_effective` (\"Gaffer\" when unset) and `short_name_effective`.",
+        "responses": {
+          "200": {
+            "description": "`{ club: ClubView }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
+      "patch": {
+        "operationId": "patchApiClub",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Update the club identity",
+        "description": "Partial: an omitted field is unchanged, `null` or \"\" clears it. Name ≤ 60 chars; short name 1–4 letters/digits; kit colours `#rgb`/`#rrggbb` (stored lowercase `#rrggbb`). A change is recorded as a `club.updated` event.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/updateClubBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ club: ClubView, changed: string[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/squad": {
+      "get": {
+        "operationId": "getApiSquad",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "The squad: club + agents with display names",
+        "description": "The club plus every registered agent in registration order (`SquadAgentView`): `agent_id`, `display_name` (operator-set or null), `display_name_effective`, `default_display_name` (derived from role + index, e.g. \"Delivery 1\", \"Reviewer\"), `shirt_number`, `role`, `registered_name` and registration facts. Presentation only.",
+        "responses": {
+          "200": {
+            "description": "`{ club: ClubView, agents: SquadAgentView[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
+    "/api/squad/agents/{id}": {
+      "patch": {
+        "operationId": "patchApiSquadAgentsById",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Set an agent's display name / shirt number",
+        "description": "Partial: omitted ⇒ unchanged, `null` (or \"\" for the name) clears. Display name ≤ 40 chars (trimmed); shirt number 1–99, unique among agents. `:id` is the agent id (or its unique registered name). The agent id itself never changes. Recorded as an `agent.display_updated` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/updateSquadAgentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ agent: SquadAgentView, changed: string[] }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The shirt number is worn by another agent (`DUPLICATE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
     "/api/idle-loops": {
       "get": {
         "operationId": "getApiIdleLoops",
@@ -1385,7 +1646,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`BoardView`: the columns plus the closed area.",
+            "description": "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1552,7 +1813,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Newest-first `ActivityItem[]` (metadata only).",
+            "description": "Newest-first `ActivityItem[]` (metadata only); an event whose actor is a registered agent carries `agent_display`, else `null`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2252,7 +2513,7 @@
           "Tickets"
         ],
         "summary": "Ticket detail",
-        "description": "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail. `:id` accepts the ticket id or number.",
+        "description": "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. `:id` accepts the ticket id or number.",
         "parameters": [
           {
             "name": "id",
@@ -5925,7 +6186,7 @@
         "summary": "List active claims",
         "responses": {
           "200": {
-            "description": "`Claim[]`.",
+            "description": "`{ claims: ActiveClaimView[] }` — each row carries `agent_display` (the claiming agent's display name, shirt number and role).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8066,7 +8327,7 @@
         "summary": "List agents",
         "responses": {
           "200": {
-            "description": "`Agent[]`.",
+            "description": "`{ agents: Agent[] }`, each with `agent_display`. `display_name` here is the label the agent registered with; the operator-chosen name is `agent_display.display_name`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -12611,6 +12872,55 @@
         ],
         "additionalProperties": false
       },
+      "updateClubBody": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "short_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 4
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kit_primary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kit_secondary": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "updateScopeNodeBody": {
         "type": "object",
         "properties": {
@@ -12748,6 +13058,34 @@
         "required": [
           "clauses"
         ]
+      },
+      "updateSquadAgentBody": {
+        "type": "object",
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shirt_number": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 99
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
       },
       "Whoami": {
         "type": "object",

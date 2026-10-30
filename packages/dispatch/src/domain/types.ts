@@ -599,6 +599,13 @@ export interface Agent {
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
+  /**
+   * SQUAD (v27): the operator-chosen presentation name (NULL ⇒ derived default).
+   * Presentation only — `id` stays the identity claims/events/audit record.
+   */
+  squad_name: string | null;
+  /** SQUAD (v27): the 1–99 squad number, unique among agents when set. */
+  shirt_number: number | null;
 }
 
 export interface TicketClaim {

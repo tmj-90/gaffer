@@ -888,3 +888,37 @@ export const createPrincipalBody = z.object({
   actor_id: z.string().trim().min(1).max(200).optional(),
 });
 export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
+
+// --- Squad (club identity + agent display names; presentation only) --------
+
+/** A kit colour: `#rgb` or `#rrggbb` (stored as lowercase `#rrggbb`); "" clears. */
+const kitColourField = z
+  .string()
+  .trim()
+  .regex(/^(#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}))?$/, "a hex colour like #1d4ed8 or #fff")
+  .nullable()
+  .optional();
+
+/**
+ * Body for PATCH /api/club. Partial: an omitted field is unchanged; `null` or ""
+ * clears it back to the default (the dashboard falls back to "Gaffer").
+ */
+export const updateClubBody = z.object({
+  name: z.string().trim().max(60).nullable().optional(),
+  /** The crest short name: 1–4 letters/digits ('&' and '.' allowed). */
+  short_name: z.string().trim().max(4).nullable().optional(),
+  kit_primary: kitColourField,
+  kit_secondary: kitColourField,
+});
+export type UpdateClubBody = z.infer<typeof updateClubBody>;
+
+/**
+ * Body for PATCH /api/squad/agents/:id. Partial: omitted ⇒ unchanged; `null`
+ * (or "" for the name) clears. A shirt number already worn by another agent is
+ * refused (409 DUPLICATE). Presentation only — the agent id never changes.
+ */
+export const updateSquadAgentBody = z.object({
+  display_name: z.string().trim().max(40).nullable().optional(),
+  shirt_number: z.number().int().min(1).max(99).nullable().optional(),
+});
+export type UpdateSquadAgentBody = z.infer<typeof updateSquadAgentBody>;

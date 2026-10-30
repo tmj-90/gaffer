@@ -229,6 +229,57 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
   },
   {
     method: "GET",
+    path: "/api/club",
+    tag: T.config,
+    summary: "Read the club identity",
+    description:
+      'The operator\'s team for the Match Day dashboard (`ClubView`): `name`, `short_name`, `kit_primary`, `kit_secondary` (null when unset) plus `name_effective` ("Gaffer" when unset) and `short_name_effective`.',
+    capability: "read",
+    responses: [ok("`{ club: ClubView }`.")],
+  },
+  {
+    method: "PATCH",
+    path: "/api/club",
+    tag: T.config,
+    summary: "Update the club identity",
+    description:
+      'Partial: an omitted field is unchanged, `null` or "" clears it. Name ≤ 60 chars; short name 1–4 letters/digits; kit colours `#rgb`/`#rrggbb` (stored lowercase `#rrggbb`). A change is recorded as a `club.updated` event.',
+    capability: "full",
+    body: "updateClubBody",
+    responses: [ok("`{ club: ClubView, changed: string[] }`."), invalid],
+  },
+  {
+    method: "GET",
+    path: "/api/squad",
+    tag: T.config,
+    summary: "The squad: club + agents with display names",
+    description:
+      'The club plus every registered agent in registration order (`SquadAgentView`): `agent_id`, `display_name` (operator-set or null), `display_name_effective`, `default_display_name` (derived from role + index, e.g. "Delivery 1", "Reviewer"), `shirt_number`, `role`, `registered_name` and registration facts. Presentation only.',
+    capability: "read",
+    responses: [ok("`{ club: ClubView, agents: SquadAgentView[] }`.")],
+  },
+  {
+    method: "PATCH",
+    path: "/api/squad/agents/:id",
+    tag: T.config,
+    summary: "Set an agent's display name / shirt number",
+    description:
+      'Partial: omitted ⇒ unchanged, `null` (or "" for the name) clears. Display name ≤ 40 chars (trimmed); shirt number 1–99, unique among agents. `:id` is the agent id (or its unique registered name). The agent id itself never changes. Recorded as an `agent.display_updated` event.',
+    capability: "full",
+    body: "updateSquadAgentBody",
+    responses: [
+      ok("`{ agent: SquadAgentView, changed: string[] }`."),
+      notFound,
+      {
+        status: 409,
+        description: "The shirt number is worn by another agent (`DUPLICATE`).",
+        content: "json",
+      },
+      invalid,
+    ],
+  },
+  {
+    method: "GET",
     path: "/api/idle-loops",
     tag: T.config,
     summary: "Read the crew idle-loop configuration",
@@ -373,7 +424,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Kanban board",
     capability: "read",
     query: { repo: { description: "Limit to one repository (name or id)." } },
-    responses: [ok("`BoardView`: the columns plus the closed area.")],
+    responses: [
+      ok(
+        "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+      ),
+    ],
   },
   {
     method: "GET",
@@ -400,7 +455,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Cross-ticket event feed",
     capability: "read",
     query: "activityQuery",
-    responses: [ok("Newest-first `ActivityItem[]` (metadata only).")],
+    responses: [
+      ok(
+        "Newest-first `ActivityItem[]` (metadata only); an event whose actor is a registered agent carries `agent_display`, else `null`.",
+      ),
+    ],
   },
   {
     method: "GET",
@@ -518,7 +577,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Ticket detail",
     description:
-      "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail. `:id` accepts the ticket id or number.",
+      "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. `:id` accepts the ticket id or number.",
     capability: "read",
     responses: [
       ok(
@@ -986,7 +1045,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.claims,
     summary: "List active claims",
     capability: "read",
-    responses: [ok("`Claim[]`.")],
+    responses: [
+      ok(
+        "`{ claims: ActiveClaimView[] }` — each row carries `agent_display` (the claiming agent's display name, shirt number and role).",
+      ),
+    ],
   },
   {
     method: "POST",
@@ -1277,7 +1340,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.repos,
     summary: "List agents",
     capability: "read",
-    responses: [ok("`Agent[]`.")],
+    responses: [
+      ok(
+        "`{ agents: Agent[] }`, each with `agent_display`. `display_name` here is the label the agent registered with; the operator-chosen name is `agent_display.display_name`.",
+      ),
+    ],
   },
   {
     method: "GET",

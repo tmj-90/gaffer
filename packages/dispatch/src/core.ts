@@ -41,9 +41,18 @@ import {
   type ChainVerification,
 } from "./events/eventChain.js";
 import { listEvents, writeEvent } from "./events/eventWriter.js";
+import {
+  SquadService,
+  type AgentDisplay,
+  type AgentDisplayUpdate,
+  type ClubUpdate,
+  type ClubView,
+  type SquadAgentView,
+} from "./services/squadService.js";
 import { AcRepository } from "./repositories/acRepository.js";
 import { AgentRepository } from "./repositories/agentRepository.js";
 import { ClaimRepository, type ActiveClaimView } from "./repositories/claimRepository.js";
+import { ClubRepository } from "./repositories/clubRepository.js";
 import { DecisionRepository } from "./repositories/decisionRepository.js";
 import {
   EventRepository,
@@ -319,6 +328,8 @@ export class Dispatch {
   /** GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) enablement store. */
   readonly autonomyPolicy: AutonomyPolicyRepository;
   readonly principals: PrincipalRepository;
+  /** SQUAD (v27): the club identity row. */
+  readonly clubRepo: ClubRepository;
   readonly transitions: TransitionService;
   readonly claims: ClaimService;
   readonly suggestions: SuggestionService;
@@ -335,6 +346,8 @@ export class Dispatch {
   readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
   readonly humanQueueSvc: HumanQueueService;
+  /** SQUAD: club identity + agent display names / shirt numbers (presentation only). */
+  readonly squadSvc: SquadService;
   /**
    * Git runner used to compute diff-in-review. Injectable so tests can drive the
    * diff endpoint without a real repo on disk; defaults to the real `git` spawn.
@@ -414,6 +427,13 @@ export class Dispatch {
     this.specCoverageRepo = new SpecCoverageRepository(db);
     this.autonomyPolicy = new AutonomyPolicyRepository(db);
     this.principals = new PrincipalRepository(db);
+    this.clubRepo = new ClubRepository(db);
+    this.squadSvc = new SquadService({
+      db,
+      clock: this.clock,
+      agents: this.agents,
+      club: this.clubRepo,
+    });
     this.transitions = new TransitionService(db, clock, gitRunner, this.pausedDeliveries);
     this.claims = new ClaimService(db, clock, this.transitions);
     this.suggestions = new SuggestionService({
@@ -496,6 +516,7 @@ export class Dispatch {
       claimsRepo: this.claimsRepo,
       events: this.events,
       repos: this.repos,
+      agentDisplays: () => this.squadSvc.displayMap(),
     });
     this.dossierSvc = new DossierService({
       db,
@@ -1938,14 +1959,65 @@ export class Dispatch {
     return listEvents(this.db, "ticket", ticket.id);
   }
 
-  /** Active claims joined to their ticket + agent (human "active factory" view). */
-  listActiveClaims(): ActiveClaimView[] {
-    return this.claimsRepo.listActive();
+  /**
+   * Active claims joined to their ticket + agent (human "active factory" view).
+   * SQUAD: each row also carries the agent's presentation (`agent_display`).
+   */
+  listActiveClaims(): Array<ActiveClaimView & { agent_display: AgentDisplay | null }> {
+    const displays = this.squadSvc.displayMap();
+    return this.claimsRepo
+      .listActive()
+      .map((c) => ({ ...c, agent_display: displays.get(c.agent_id) ?? null }));
   }
 
-  /** All registered agents, newest first. */
-  listAgents(): Agent[] {
-    return this.agents.list();
+  /** All registered agents, newest first, each with its presentation (`agent_display`). */
+  listAgents(): Array<Agent & { agent_display: AgentDisplay | null }> {
+    const displays = this.squadSvc.displayMap();
+    return this.agents.list().map((a) => ({ ...a, agent_display: displays.get(a.id) ?? null }));
+  }
+
+  // --- Squad (club identity + agent display names; presentation only) ---------
+
+  /** The club identity (name falls back to "Gaffer" in `name_effective`). */
+  getClub(): ClubView {
+    return this.squadSvc.getClub();
+  }
+
+  /** Update the club identity (validated; recorded as `club.updated` when changed). */
+  updateClub(input: ClubUpdate, actor: Actor): { club: ClubView; changed: string[] } {
+    return this.squadSvc.updateClub(input, actor);
+  }
+
+  /** Every agent with its display name, shirt number, role and derived default. */
+  listSquad(): SquadAgentView[] {
+    return this.squadSvc.listSquad();
+  }
+
+  /**
+   * Rename an agent / set its shirt number (validated; shirt numbers unique;
+   * recorded as `agent.display_updated`). NEVER changes the agent id.
+   */
+  updateAgentDisplay(
+    ref: string,
+    input: AgentDisplayUpdate,
+    actor: Actor,
+  ): { agent: SquadAgentView; changed: string[] } {
+    return this.squadSvc.updateAgentDisplay(ref, input, actor);
+  }
+
+  /**
+   * The presentation of each REGISTERED agent among `ids`, keyed by id. Ids that
+   * are not registered agents (a human actor, "mcp-agent", …) are left out.
+   */
+  agentDisplayFor(ids: Iterable<string | null | undefined>): Record<string, AgentDisplay> {
+    const displays = this.squadSvc.displayMap();
+    const out: Record<string, AgentDisplay> = {};
+    for (const id of ids) {
+      if (!id) continue;
+      const d = displays.get(id);
+      if (d) out[id] = d;
+    }
+    return out;
   }
 
   /**
@@ -2133,8 +2205,23 @@ export class Dispatch {
     return this.autonomyRecommendations.recommend();
   }
 
-  activity(query: ActivityQuery): { events: ActivityEvent[]; total: number } {
-    return this.boardSvc.activity(query);
+  /**
+   * Cross-ticket activity feed. SQUAD: an event whose actor is a registered agent
+   * carries that agent's presentation as `agent_display` (null otherwise).
+   */
+  activity(query: ActivityQuery): {
+    events: Array<ActivityEvent & { agent_display: AgentDisplay | null }>;
+    total: number;
+  } {
+    const page = this.boardSvc.activity(query);
+    const displays = this.squadSvc.displayMap();
+    return {
+      total: page.total,
+      events: page.events.map((e) => ({
+        ...e,
+        agent_display: (e.actor_id !== null && displays.get(e.actor_id)) || null,
+      })),
+    };
   }
 
   dashboard(): DashboardSummary {

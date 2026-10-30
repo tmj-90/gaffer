@@ -168,6 +168,19 @@ export async function routeTickets(
         events: view.events,
         // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
         rework_trail: view.reworkTrail,
+        // SQUAD: the presentation (display name, shirt number, role) of every
+        // REGISTERED agent this ticket names — event actors, the reviewer, the
+        // creator and any active claim holder — keyed by agent id. Additive: the
+        // ids above are unchanged.
+        agent_display: wg.agentDisplayFor([
+          ...view.events.map((e) => e.actor_id),
+          view.ticket.reviewer,
+          view.ticket.created_by,
+          ...wg.claimsRepo
+            .listActive()
+            .filter((c) => c.ticket_id === view.ticket.id)
+            .map((c) => c.agent_id),
+        ]),
       });
       return;
     }

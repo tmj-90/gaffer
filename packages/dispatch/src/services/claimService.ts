@@ -184,6 +184,8 @@ export class ClaimService {
         last_seen_at: null,
         created_at: now,
         updated_at: now,
+        squad_name: null,
+        shirt_number: null,
       };
       this.agents.insert(agent);
       for (const capability of input.capabilities) {

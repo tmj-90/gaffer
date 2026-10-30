@@ -276,6 +276,10 @@ export const toolSchemas = {
     claimToken: z.string().min(1).optional(),
   },
   list_scopes: {},
+  // SQUAD: READ-ONLY. Agents may see who is who on the team; there is deliberately
+  // NO tool that sets a club name, display name or shirt number — names are the
+  // operator's to give (REST full capability / CLI), never an agent's to take.
+  get_squad: {},
 } as const;
 
 // --- Handlers -------------------------------------------------------------
@@ -861,6 +865,23 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
           })),
         }));
         return { scopes, unmapped_repos: wg.listUnmappedRepos().map((r) => r.name) };
+      }),
+
+    get_squad: (_args: Args): ToolResult =>
+      guard(() => {
+        // Read-only presentation: the club's name and each agent's display name,
+        // shirt number and role. Ids are what every other tool takes; names are
+        // labels only.
+        const club = wg.getClub();
+        return {
+          club: { name: club.name_effective, short_name: club.short_name_effective },
+          agents: wg.listSquad().map((a) => ({
+            agent_id: a.agent_id,
+            display_name: a.display_name_effective,
+            shirt_number: a.shirt_number,
+            role: a.role,
+          })),
+        };
       }),
   };
 

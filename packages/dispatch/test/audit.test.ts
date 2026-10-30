@@ -149,6 +149,7 @@ describe("audit redaction (pure)", () => {
     request_decision: { title: "tt", question: SECRET_BODY, severity: "human_required" },
     release_claim: { claimToken: SECRET_TOKEN },
     list_scopes: {},
+    get_squad: {},
   };
 
   it("redacts every tool: no token value or body text survives sanitisation", () => {

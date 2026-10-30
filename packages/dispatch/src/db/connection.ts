@@ -297,6 +297,12 @@ function migrateLocked(db: Db): void {
   // tickets table — a plain additive ALTER (0/1, default 0, no CHECK to widen), so no
   // rebuild. No-op on a fresh DB (SCHEMA_SQL creates it) and idempotent afterwards.
   alterTicketsAddAcceptance(db);
+  // SQUAD (v26→v27): add the presentation-only `squad_name` + `shirt_number` columns
+  // to an EXISTING agents table — plain additive ALTERs (NULL backfill ⇒ unnamed,
+  // no number), so no rebuild. Must run BEFORE SCHEMA_SQL, whose partial unique
+  // index on shirt_number needs the column. The new `club` table is created by
+  // SCHEMA_SQL's CREATE TABLE IF NOT EXISTS. No-op on a fresh DB; idempotent.
+  alterAgentsAddSquadColumns(db);
   // Spec-Driven Development (v16→v17): the `specs` table. A brand-new standalone
   // table (no FKs — a spec outlives the repo/scope it references) created
   // idempotently by SCHEMA_SQL's CREATE TABLE IF NOT EXISTS (like runs /
@@ -448,6 +454,25 @@ function alterTicketsAddAcceptance(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("acceptance")) {
     db.exec("ALTER TABLE tickets ADD COLUMN acceptance INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+/**
+ * SQUAD additive migration (v26→v27): the operator-chosen presentation name and
+ * squad number on an EXISTING agents table. The CHECK mirrors SCHEMA_SQL (SQLite
+ * accepts a CHECK on ADD COLUMN; every existing row is NULL so it holds). The
+ * uniqueness of a set shirt number is the partial index SCHEMA_SQL creates after.
+ */
+function alterAgentsAddSquadColumns(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the columns.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("squad_name")) db.exec("ALTER TABLE agents ADD COLUMN squad_name TEXT");
+  if (!cols.has("shirt_number")) {
+    db.exec(
+      "ALTER TABLE agents ADD COLUMN shirt_number INTEGER " +
+        "CHECK (shirt_number IS NULL OR (shirt_number BETWEEN 1 AND 99))",
+    );
   }
 }
 

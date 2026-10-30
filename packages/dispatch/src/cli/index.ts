@@ -9,6 +9,7 @@ import { VERSION } from "../version.js";
 import { registerAc } from "./commands/ac.js";
 import { registerAgent, registerAgentSystem } from "./commands/agent.js";
 import { registerAutonomy } from "./commands/autonomy.js";
+import { registerClub } from "./commands/club.js";
 import { registerDecisions } from "./commands/decisions.js";
 import { registerDiagnostics } from "./commands/diagnostics.js";
 import { registerEpic } from "./commands/epic.js";
@@ -58,6 +59,7 @@ registerPortability(program);
 registerPrincipal(program);
 registerNotify(program);
 registerAutonomy(program);
+registerClub(program);
 
 async function main(): Promise<void> {
   try {

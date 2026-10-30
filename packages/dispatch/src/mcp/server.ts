@@ -244,6 +244,11 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "`spec_id`. Only a `draft` spec can be frozen (draft→frozen); a frozen spec is " +
     "IMMUTABLE — freezing or editing a spec that is already frozen or superseded is " +
     "rejected. Freeze when the clauses are settled and ready to drive delivery.",
+  get_squad:
+    "**Read the squad: the club name and each registered agent's display name, " +
+    "shirt number and role.** Read-only and presentation only — every other tool " +
+    "takes the agent ID, never a display name. Names are set by the operator; there " +
+    "is no tool to rename yourself or anyone else.",
   list_scopes:
     "**Read the Factory Map: the product/system scope nodes and which repos sit " +
     "in each, with the default access (write/read/test/none) that scope grants.** " +

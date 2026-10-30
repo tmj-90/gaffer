@@ -47,6 +47,9 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   OBSERVED_RISK_ESCALATED: 409,
   FACTORY_RUNNER_OWNED: 409,
   DB_NOT_EMPTY: 409,
+  // CLI-only today: an implicit DB path with no database, an id prefix matching several.
+  DB_NOT_FOUND: 404,
+  AMBIGUOUS_REF: 409,
   INCOMPATIBLE_BUNDLE: 409,
   INCONSISTENT_BUNDLE: 409,
   ACTOR_NOT_PERMITTED: 403,

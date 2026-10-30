@@ -41,6 +41,44 @@ export class AgentRepository {
     return rows.map((r) => r.capability);
   }
 
+  /**
+   * SQUAD: every agent in REGISTRATION order (oldest first, rowid as the tie-break
+   * for a same-millisecond pair) — the order the derived default names
+   * ("Delivery 1", "Delivery 2", …) are numbered in, so they are deterministic.
+   */
+  listInRegistrationOrder(): Agent[] {
+    return this.db
+      .prepare(`SELECT * FROM agents ORDER BY created_at ASC, rowid ASC`)
+      .all() as Agent[];
+  }
+
+  /** Agents whose REGISTERED label (the `display_name` column) equals `name`. */
+  findByRegisteredName(name: string): Agent[] {
+    return this.db
+      .prepare(`SELECT * FROM agents WHERE display_name = ? ORDER BY created_at ASC, rowid ASC`)
+      .all(name) as Agent[];
+  }
+
+  /** The agent currently wearing `shirtNumber`, if any. */
+  findByShirtNumber(shirtNumber: number): Agent | undefined {
+    return this.db.prepare(`SELECT * FROM agents WHERE shirt_number = ?`).get(shirtNumber) as
+      Agent | undefined;
+  }
+
+  /** SQUAD: set the presentation-only name + squad number (never the id). */
+  setSquadProfile(
+    id: string,
+    profile: { squad_name: string | null; shirt_number: number | null },
+    nowIso: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE agents SET squad_name = @squad_name, shirt_number = @shirt_number, updated_at = @now
+         WHERE id = @id`,
+      )
+      .run({ id, ...profile, now: nowIso });
+  }
+
   touchLastSeen(id: string, nowIso: string): void {
     this.db
       .prepare(`UPDATE agents SET last_seen_at = @now, updated_at = @now WHERE id = @id`)

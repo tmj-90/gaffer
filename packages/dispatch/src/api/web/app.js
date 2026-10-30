@@ -1133,7 +1133,7 @@ const AREA_FOR_VIEW = {
   ticket: "work",
   node: "factory",
   repo: "factory",
-  create: "work",
+  create: "epics",
   hidden: "factory",
 };
 
@@ -7887,6 +7887,8 @@ async function renderTicket(id) {
         statusBadge(t.status),
         repoW ? repoTag(repoW.name, 20) : null,
         riskBadge(t.risk_level),
+        // The acceptance ticket is its campaign's Final: say so where it is named.
+        epicScope && isAcceptanceTicket(t) ? el("span", { class: "tk-final" }, "Final") : null,
         epicScope
           ? el("a", { class: "tk-epic-link", href: `#/epics/${epicScope.id}` }, epicScope.name)
           : null,
@@ -8759,15 +8761,25 @@ function loadClaimability(ticketId, box) {
         el(
           "ul",
           { class: "claim-blockers" },
-          blockers.map((b) =>
-            el(
+          blockers.map((b) => {
+            // Unmet dependencies mean the ticket waits its turn, not that it is
+            // blocked: say "waits on", without the red-card mark.
+            if (b && b.code === "DEPENDENCY_BLOCKED") {
+              const m = /^Blocked by (.+?) \(must be done first\)\.?$/.exec(b.message || "");
+              return el(
+                "li",
+                { class: "is-wait" },
+                m ? `Waits on ${m[1]}: they must be done first.` : b.message,
+              );
+            }
+            return el(
               "li",
               {},
               typeof b === "string"
                 ? b
                 : b.message || b.reason || b.label || "Blocked by an unmet condition",
-            ),
-          ),
+            );
+          }),
         ),
       );
     } else if (!ready) {
@@ -10522,7 +10534,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
       );
     }
     if (!scopeNodeIds.size)
-      scopeList.appendChild(el("span", { class: "dim" }, "No scope linked — optional."));
+      scopeList.appendChild(el("span", { class: "dim" }, "No scope linked (optional)."));
   }
 
   // --- manual repo picker --------------------------------------------------
@@ -13572,6 +13584,7 @@ async function renderEpics(param) {
     [...specByEpic.values()].map((v) =>
       extra(`/specs/${encodeURIComponent(v.spec.id)}/coverage`, null).then((r) => {
         v.rollup = specCoverageRollup(r && r.coverage);
+        v.gaps = specGapCount(r && r.coverage, v.spec.status);
       }),
     ),
   );
@@ -13592,7 +13605,7 @@ async function renderEpics(param) {
           (depViewById.get(m.id) || []).map((d) => `${d.depends_on_ticket_id}:${d.satisfied}`),
         ]),
       ),
-      [...specByEpic.entries()].map(([k, v]) => [k, v.spec.id, v.spec.status, v.rollup]),
+      [...specByEpic.entries()].map(([k, v]) => [k, v.spec.id, v.spec.status, v.rollup, v.gaps]),
     ]),
   );
 
@@ -13650,7 +13663,11 @@ function campaignFacts(epic, members, ctx) {
     (m) => m.status !== "done" && (ctx.depsById.get(m.id) || []).some((d) => heldIds.has(d)),
   );
   const needs = members.filter((m) => NEEDS_SIGN_OFF.has(m.status));
-  const nextUp = members.filter((m) => m.status === "ready");
+  // Next fixture: a ready ticket that can actually be claimed, i.e. every ticket
+  // it waits on is done (the server refuses a claim with DEPENDENCY_BLOCKED otherwise).
+  const nextUp = members.filter(
+    (m) => m.status === "ready" && (ctx.depViewById.get(m.id) || []).every((d) => d.satisfied),
+  );
   const liveIdx = phases.findIndex((p) => (byPhase.get(p) || []).some((t) => t.status !== "done"));
   const won = members.length > 0 && done === members.length;
   return {
@@ -13882,14 +13899,14 @@ function renderEpicCard(s, ctx, specLink, focused) {
   card.appendChild(lede);
   if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
   if (specLink) {
-    const { spec, rollup } = specLink;
+    const { spec, rollup, gaps } = specLink;
     card.appendChild(
       el("p", { class: "ep-spec" }, [
         "Played to the spec ",
         el("a", { href: `#/specs/${encodeURIComponent(spec.id)}` }, `“${spec.title}”`),
         ` (${(SPEC_STATUS_LABEL[spec.status] || spec.status || "").toLowerCase()})`,
         rollup && rollup.total
-          ? `: ${rollup.covered} of ${plural(rollup.total, "clause")} covered${rollup.orphans ? `, ${plural(rollup.orphans, "gap")}` : ""}.`
+          ? `: ${rollup.covered} of ${plural(rollup.total, "clause")} covered${gaps ? `, ${plural(gaps, "gap")}` : ""}.`
           : ".",
       ]),
     );
@@ -13907,7 +13924,13 @@ function renderEpicCard(s, ctx, specLink, focused) {
         ? "nothing can be claimed until the hold is cleared."
         : won
           ? "none: the campaign is won."
-          : "nothing is ready to claim.",
+          : (() => {
+              // Ready, but waiting on unfinished work: say who, not "nothing is ready".
+              const waiting = members.filter((m) => m.status === "ready");
+              return waiting.length
+                ? `nothing can be claimed yet: ${ticketList(waiting)} ${waiting.length === 1 ? "waits" : "wait"} on unfinished work.`
+                : "nothing is ready to claim.";
+            })(),
   ]);
   if (won) {
     // A won campaign keeps its page short: the draw folds away.
@@ -15010,7 +15033,13 @@ function renderPlanProposal(plan) {
     const acText = (ac) => (typeof ac === "string" ? ac : (ac && ac.text) || "");
     return el("li", { class: "pb-ticket" }, [
       el("div", { class: "pb-ticket-top" }, [
-        el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
+        // A proposal index, never a ticket number: the server numbers the tickets
+        // only when you confirm, so "#1" here would name a ticket that exists.
+        el(
+          "span",
+          { class: "pb-ticket-idx tabnum", title: `Proposed ticket ${i + 1}: not created yet` },
+          `T${i + 1}`,
+        ),
         el("span", { class: "pb-ticket-title" }, t.title),
       ]),
       el("div", { class: "pb-ticket-meta" }, [
@@ -15027,7 +15056,7 @@ function renderPlanProposal(plan) {
           ? el(
               "span",
               { class: "pb-ticket-deps" },
-              `after ${deps.map((d) => `#${d + 1}`).join(", ")}`,
+              `after ${deps.map((d) => `T${d + 1}`).join(", ")}`,
             )
           : null,
       ]),
@@ -15521,7 +15550,7 @@ function renderSpecBuildLog() {
   if (specBuildState.history.length === 0 && !specBuildState.draft) {
     log.appendChild(
       el("div", { class: "pb-intro" }, [
-        el("p", {}, "Describe the product in one line and I'll draft a spec — for example:"),
+        el("p", {}, "Describe the product in one line and I'll draft a spec. For example:"),
         el(
           "ul",
           { class: "pb-examples" },
@@ -15732,7 +15761,7 @@ function renderSpecDraft(draft) {
       el(
         "p",
         { class: "pb-confirm-note dim" },
-        `${clauses.length} clause${clauses.length === 1 ? "" : "s"} — created as a draft spec you can freeze when ready.`,
+        `${clauses.length} clause${clauses.length === 1 ? "" : "s"}, created as a draft spec you can freeze when ready.`,
       ),
     );
     confirmRow.appendChild(createBtn);
@@ -15756,7 +15785,7 @@ function renderSpecDraft(draft) {
       el(
         "p",
         { class: "pb-confirm-note dim" },
-        "Spec frozen — clauses are immutable. Build the tickets from it to carry clause provenance into the plan.",
+        "Spec frozen: its clauses can no longer change. Plan a build from it, and each ticket carries the clauses it proves.",
       ),
     );
     confirmRow.appendChild(
@@ -15815,7 +15844,7 @@ function renderSpecClauseRow(clause, i, locked) {
   });
 
   const top = el("div", { class: "pb-ticket-top sb-clause-top" }, [
-    el("span", { class: "pb-ticket-idx tabnum" }, `#${i + 1}`),
+    el("span", { class: "sb-clause-no tabnum", "aria-hidden": "true" }, String(i + 1)),
     kindSel,
     !locked
       ? el(
@@ -15976,7 +16005,7 @@ async function createSpecFromDraft() {
         })),
       };
     }
-    toast("Spec created as draft — freeze it when ready.", { ok: true });
+    toast("Spec created as a draft. Freeze it when it is ready.", { ok: true });
   } catch (e) {
     // Persistent error (rendered in the draft card), plus a toast for immediacy.
     specBuildState.actionError = e && e.message ? e.message : "Could not create the spec.";
@@ -15997,7 +16026,7 @@ async function freezeCreatedSpec() {
   try {
     const res = await api("POST", `/specs/${id}/freeze`);
     specBuildState.createdSpec = res.spec || specBuildState.createdSpec;
-    toast("Spec frozen — clauses are now immutable.", { ok: true });
+    toast("Spec frozen: its clauses can no longer change.", { ok: true });
   } catch (e) {
     specBuildState.actionError = e && e.message ? e.message : "Could not freeze the spec.";
     toast(specBuildState.actionError, { code: e && e.code });
@@ -16226,41 +16255,66 @@ function specStatusMark(status) {
   return el("span", { class: `spec-card-status status-${status}` }, [mark, el("span", {}, word)]);
 }
 
-/** One clause's coverage state, from the coverage read model. */
+/** One clause's coverage state, from the coverage read model (the data-state hook). */
 function clauseState(c) {
   return c.orphan ? "orphan" : c.satisfied ? "satisfied" : "open";
 }
 
+/** Clause kinds that record intent rather than behaviour: no criterion is not a gap. */
+const INTENT_KINDS = new Set(["non-goal", "decision"]);
+
+/**
+ * A gap is a clause that should be proven and is not: a requirement of a spec
+ * that is frozen (so its build is under way) with no criterion covering it. A
+ * draft's clauses are not covered yet by design, and a non-goal or a decision
+ * with no criterion is not a failure; those read quietly, never red.
+ */
+function clauseIsGap(c, status) {
+  return !!c.orphan && status !== "draft" && !INTENT_KINDS.has(c.kind);
+}
+
+/** How many of a coverage payload's clauses are gaps (see clauseIsGap). */
+function specGapCount(coverage, status) {
+  const clauses = coverage && Array.isArray(coverage.clauses) ? coverage.clauses : null;
+  if (clauses) return clauses.filter((c) => clauseIsGap(c, status)).length;
+  const r = specCoverageRollup(coverage);
+  return r && status !== "draft" ? r.orphans : 0;
+}
+
 /**
  * The form guide: one square per clause, in the order written — filled when
- * satisfied, outlined when covered but not yet satisfied, red when no criterion
- * covers it. Decorative next to the sentence that states the same counts.
+ * satisfied, outlined when covered but not yet satisfied, red when it is a gap,
+ * dashed when it has no criterion and is not a gap (a draft's, a non-goal's).
+ * Decorative next to the sentence that states the same counts.
  */
-function specFormGuide(clauses) {
+function specFormGuide(clauses, status) {
   return el(
     "span",
     { class: "spec-form", "aria-hidden": "true" },
-    clauses.map((c, i) =>
-      el(
+    clauses.map((c, i) => {
+      const state = clauseState(c);
+      const cls = state === "orphan" ? (clauseIsGap(c, status) ? "orphan" : "none") : state;
+      return el(
         "i",
         {
-          class: `fg fg-${clauseState(c)}`,
+          class: `fg fg-${cls}`,
           title: `Clause ${i + 1} (${CLAUSE_KIND_LABEL[c.kind] || c.kind}): ${c.text}`,
         },
         String(i + 1),
-      ),
-    ),
+      );
+    }),
   );
 }
 
-/** "6 of 8 covered · 2 satisfied · 2 gaps" — the counts the form guide draws. */
-function specCoverageWords(r) {
+/** "6 of 8 covered · 2 satisfied · 1 gap" — the counts the form guide draws. */
+function specCoverageWords(r, gaps) {
   if (!r) return "Coverage unavailable";
   if (!r.total) return "No clauses yet";
+  if (!r.covered) return `Not covered yet: no criterion names ${r.total === 1 ? "it" : "them"}`;
   return [
     `${r.covered} of ${r.total} covered`,
     r.satisfied != null ? `${r.satisfied} satisfied` : null,
-    r.orphans ? plural(r.orphans, "gap") : "no gaps",
+    gaps ? plural(gaps, "gap") : "no gaps",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -16359,12 +16413,10 @@ async function renderSpecList() {
   const covById = new Map(specs.map((s, i) => [s.id, coverages[i]]));
   const nodeName = new Map(((nodesRes && nodesRes.nodes) || []).map((n) => [n.id, n.name]));
 
-  wrap.appendChild(specStatsRow(specs, coverages));
-
-  // The newest spec (by updated_at) is marked: it is the one most likely in play.
-  const newestId = specs
-    .slice()
-    .sort((a, b) => Date.parse(b.updated_at || 0) - Date.parse(a.updated_at || 0))[0]?.id;
+  // The newest spec (by when it was written, the order the server lists them in)
+  // is marked: it is the one most likely in play.
+  const stamp = (x) => Date.parse(x.created_at || x.updated_at || 0) || 0;
+  const newestId = specs.slice().sort((a, b) => stamp(b) - stamp(a))[0]?.id;
 
   const list = el("div", { class: "spec-list", role: "list" });
   for (const spec of specs)
@@ -16390,18 +16442,20 @@ async function renderSpecList() {
       })(),
       list,
       el("p", { class: "spec-key" }, [
-        el("span", { class: "spec-form", "aria-hidden": "true" }, [
-          el("i", { class: "fg fg-satisfied" }, "1"),
-        ]),
-        " satisfied ",
-        el("span", { class: "spec-form", "aria-hidden": "true" }, [
-          el("i", { class: "fg fg-open" }, "2"),
-        ]),
-        " covered, not yet satisfied ",
-        el("span", { class: "spec-form", "aria-hidden": "true" }, [
-          el("i", { class: "fg fg-orphan" }, "3"),
-        ]),
-        " a gap: no acceptance criterion covers it. Each square is a clause, in the order written.",
+        ...[
+          ["satisfied", "1", "satisfied"],
+          ["open", "2", "covered, not yet satisfied"],
+          ["orphan", "3", "a gap: a requirement nothing covers"],
+          ["none", "4", "no criterion, not a gap (a draft's clause, a non-goal, a decision)"],
+        ].map(([cls, n, words]) =>
+          el("span", { class: "spec-key-item" }, [
+            el("span", { class: "spec-form", "aria-hidden": "true" }, [
+              el("i", { class: `fg fg-${cls}` }, n),
+            ]),
+            el("span", {}, words),
+          ]),
+        ),
+        el("span", {}, "Each square is a clause, in the order written."),
       ]),
     ]),
   );
@@ -16420,57 +16474,18 @@ function specCoverageRollup(coverage) {
   return { total, covered, satisfied, orphans };
 }
 
-/** The playbook's numbers: total specs · average coverage · gaps · last updated. */
-function specStatsRow(specs, coverages) {
-  const rollups = coverages.map(specCoverageRollup).filter(Boolean);
-  const withClauses = rollups.filter((r) => r.total > 0);
-  const covPcts = withClauses.map((r) => Math.round((r.covered / r.total) * 100));
-  const avgCoverage = covPcts.length
-    ? Math.round(covPcts.reduce((a, b) => a + b, 0) / covPcts.length)
-    : null;
-  const gaps = rollups.length ? rollups.reduce((a, r) => a + r.orphans, 0) : null;
-  const newest = specs
-    .slice()
-    .filter((s) => s.updated_at)
-    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))[0];
-
-  return el("div", { class: "kpi-row spec-stats" }, [
-    statCell({ label: "Total specs", value: String(specs.length), sub: "in the playbook" }),
-    statCell({
-      label: "Coverage",
-      value: avgCoverage == null ? "—" : String(avgCoverage),
-      unit: avgCoverage == null ? null : "%",
-      sub: avgCoverage == null ? "no coverage read" : "of clauses covered, on average",
-    }),
-    statCell({
-      label: "Gaps",
-      value: gaps == null ? "—" : String(gaps),
-      sub:
-        gaps == null
-          ? "no coverage read"
-          : gaps
-            ? "clauses no criterion covers"
-            : "every clause is covered",
-    }),
-    statCell({
-      label: "Last updated",
-      value: newest ? fmtRelative(newest.updated_at) : "—",
-      sub: newest ? newest.title : null,
-    }),
-  ]);
-}
-
 /** One spec = one line of the playbook, linking to its clause-by-clause trace. */
 function renderSpecCard(spec, { coverage, isPrimary = false, campaign = null } = {}) {
   const count = specClauseCount(spec);
   const rollup = specCoverageRollup(coverage);
   const clauses = coverage && Array.isArray(coverage.clauses) ? coverage.clauses : [];
   const statusLabel = SPEC_STATUS_LABEL[spec.status] || spec.status;
-  const words = specCoverageWords(rollup);
+  const gaps = coverage ? specGapCount(coverage, spec.status) : 0;
+  const words = specCoverageWords(rollup, gaps);
   return el(
     "a",
     {
-      class: `spec-card${isPrimary ? " spec-card--primary" : ""}${rollup && rollup.orphans ? " has-gaps" : ""}`,
+      class: `spec-card${isPrimary ? " spec-card--primary" : ""}${gaps ? " has-gaps" : ""}`,
       href: `#/specs/${encodeURIComponent(spec.id)}`,
       dataset: { specId: spec.id, status: spec.status },
       "aria-label": `${spec.title}: ${statusLabel}, ${plural(count, "clause")}, ${words}${campaign ? `, played in ${campaign}` : ""}`,
@@ -16491,8 +16506,8 @@ function renderSpecCard(spec, { coverage, isPrimary = false, campaign = null } =
         ]),
       ]),
       el("span", { class: "spec-card-cov" }, [
-        clauses.length ? specFormGuide(clauses) : null,
-        el("span", { class: `spec-card-words${rollup && rollup.orphans ? " is-red" : ""}` }, words),
+        clauses.length ? specFormGuide(clauses, spec.status) : null,
+        el("span", { class: `spec-card-words${gaps ? " is-red" : ""}` }, words),
       ]),
     ],
   );
@@ -16550,29 +16565,59 @@ async function renderSpecDetail(specId) {
     : null;
   const brief = (spec && spec.brief) || cov.brief || null;
 
-  // The lede: where the spec stands, from its coverage.
-  const gapsN = r.orphans.length;
-  const lede = [
-    el("b", {}, `${SPEC_STATUS_LABEL[status] || status || "Spec"}. `),
-    r.total
-      ? `${r.covered} of its ${plural(r.total, "clause")} ${r.covered === 1 ? "is" : "are"} covered by acceptance criteria${r.satisfied ? `, ${r.satisfied} already satisfied` : ""}.`
-      : "It has no clauses yet.",
-    gapsN
-      ? [
-          " ",
-          el(
-            "span",
-            { class: "is-red" },
-            `${gapsN} ${gapsN === 1 ? "has" : "have"} no criterion, so nothing proves ${gapsN === 1 ? "it" : "them"} yet.`,
-          ),
-        ]
-      : r.total
-        ? " Every clause has a criterion."
+  // The lede: where the spec stands, from its coverage. A gap is a requirement
+  // nothing proves (clauseIsGap); a draft, or a spec nothing covers yet, reads as
+  // one calm "not covered yet", never as a page of red.
+  const gapClauses = clauses.filter((c) => clauseIsGap(c, status));
+  const gapsN = gapClauses.length;
+  const quietN = clauses.filter((c) => c.orphan && !clauseIsGap(c, status)).length;
+  const uncovered = r.total > 0 && r.covered === 0;
+  const quietOf = (k) => clauses.filter((c) => c.orphan && c.kind === k).length;
+  const quietWords = [
+    quietOf("non-goal") ? plural(quietOf("non-goal"), "non-goal") : null,
+    quietOf("decision") ? plural(quietOf("decision"), "decision") : null,
+  ]
+    .filter(Boolean)
+    .join(" and ");
+  const total = plural(r.total, "clause");
+  let lede;
+  if (!r.total)
+    lede = [el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `), "It has no clauses yet."];
+  else if (uncovered)
+    lede = [
+      el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `),
+      // The board says "not covered yet" once; the lede says what comes next.
+      status === "draft"
+        ? `Freeze it to lock its ${total} and seed them as lore for the agents; the criteria that prove them come with the build you plan from it.`
+        : status === "frozen"
+          ? `Plan a build from it, and each ticket's criteria will name the ${r.total === 1 ? "clause it proves" : "clauses they prove"}.`
+          : `None of its ${total} is covered.`,
+    ];
+  else
+    lede = [
+      el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `),
+      `${r.covered} of its ${total} ${r.covered === 1 ? "is" : "are"} covered by acceptance criteria${r.satisfied ? `, ${r.satisfied} already satisfied` : ""}.`,
+      gapsN
+        ? [
+            " ",
+            el(
+              "span",
+              { class: "is-red" },
+              `${gapsN === 1 ? "1 requirement has" : `${gapsN} requirements have`} no criterion, so nothing proves ${gapsN === 1 ? "it" : "them"} yet.`,
+            ),
+          ]
         : "",
-    status === "draft"
-      ? " Freeze it to lock the clauses and seed them as lore for the agents."
-      : "",
-  ];
+      quietN
+        ? status === "draft"
+          ? ` ${quietN} ${quietN === 1 ? "is" : "are"} not covered yet.`
+          : ` ${quietWords} ${quietN === 1 ? "has" : "have"} none, which is not counted as a gap.`
+        : !gapsN
+          ? " Every clause has a criterion."
+          : "",
+      status === "draft"
+        ? " Freeze it to lock the clauses and seed them as lore for the agents."
+        : "",
+    ];
 
   const actions = [];
   if (cov.scope_node_id) {
@@ -16584,7 +16629,7 @@ async function renderSpecDetail(specId) {
           type: "button",
           onclick: () => navigate(`#/epics/${encodeURIComponent(cov.scope_node_id)}`),
         },
-        [icon("epics"), el("span", {}, "Open epic")],
+        [icon("epics"), el("span", {}, "Open campaign")],
       ),
     );
   }
@@ -16654,46 +16699,39 @@ async function renderSpecDetail(specId) {
     ]),
   );
 
-  // The numbers, league-table style.
-  wrap.appendChild(
-    el("div", { class: "kpi-row spec-rollup", dataset: { total: String(r.total) } }, [
-      statCell({ label: "Clauses", value: String(r.total), sub: "written" }),
-      statCell({ label: "Covered", value: `${r.covered}/${r.total}`, sub: "have a criterion" }),
-      statCell({ label: "Satisfied", value: `${r.satisfied}/${r.total}`, sub: "criteria met" }),
-      statCell({
-        label: "Gaps",
-        value: String(gapsN),
-        sub: gapsN ? "no criterion covers them" : "none",
-      }),
-    ]),
-  );
-
   const indexOf = new Map(clauses.map((c, i) => [c.clause_id, i + 1]));
-  // Coverage gaps: orphan clauses (no covering AC) called out first.
-  if (gapsN > 0) {
-    const orphanClauses = clauses.filter((c) => c.orphan);
+  // Coverage gaps: requirements nothing proves, called out first. Only when some
+  // clauses are covered: a spec nothing covers yet says so once, on the board.
+  if (gapsN > 0 && !uncovered) {
     wrap.appendChild(
       el(
         "section",
         {
           class: "card coverage-gaps",
-          dataset: { count: String(orphanClauses.length) },
+          dataset: { count: String(gapsN) },
           "aria-label": "Coverage gaps",
         },
         [
           panelHead(
-            `${orphanClauses.length} coverage gap${orphanClauses.length === 1 ? "" : "s"}`,
-            "clauses with no acceptance criterion covering them",
+            `${gapsN} coverage gap${gapsN === 1 ? "" : "s"}`,
+            `${gapsN === 1 ? "a requirement" : "requirements"} with no acceptance criterion covering ${gapsN === 1 ? "it" : "them"}`,
             null,
             { kit: "red" },
           ),
           el(
             "ul",
             { class: "coverage-gaps-list" },
-            orphanClauses.map((c) =>
+            gapClauses.map((c) =>
               el("li", { dataset: { clauseId: c.clause_id } }, [
-                el("span", { class: "sc-no" }, String(indexOf.get(c.clause_id) || "")),
-                badge(CLAUSE_KIND_LABEL[c.kind] || c.kind, `clause-kind kind-${c.kind}`),
+                el(
+                  "a",
+                  {
+                    class: "sc-no",
+                    href: `#clause-${indexOf.get(c.clause_id) || ""}`,
+                    "aria-label": `Clause ${indexOf.get(c.clause_id) || ""}, in the trace below`,
+                  },
+                  String(indexOf.get(c.clause_id) || ""),
+                ),
                 el("span", { class: "cg-text" }, c.text),
               ]),
             ),
@@ -16701,18 +16739,60 @@ async function renderSpecDetail(specId) {
           el(
             "p",
             { class: "cg-hint" },
-            "Cover a gap with an acceptance criterion, on the ticket that delivers it, that names the clause.",
+            "Cover a gap with an acceptance criterion that names the clause, on the ticket that delivers it.",
           ),
         ],
       ),
     );
   }
 
+  // Lore and bounces are said once for the spec when every clause shares them,
+  // and per clause only where they differ.
+  const loreSet = new Set(clauses.map((c) => c.lore_status || "unknown"));
+  const loreOnce = loreSet.size === 1 ? [...loreSet][0] : null;
+  const anyBounce = clauses.some((c) => c.bounce_count > 0);
+  const notes = [];
+  const uncoveredNote = !uncovered
+    ? null
+    : el("p", { class: "spec-board-note spec-uncovered" }, [
+        glyph("draft", 16),
+        el(
+          "span",
+          {},
+          `Not covered yet: none of the ${total} has an acceptance criterion naming it.`,
+        ),
+      ]);
+  if (loreOnce && loreOnce !== "unknown")
+    notes.push(
+      el(
+        "p",
+        { class: "spec-board-note" },
+        loreOnce === "active"
+          ? "Lore: every clause is seeded and reaching the agents."
+          : loreOnce === "draft"
+            ? [
+                "Lore: every clause is seeded as draft lore, unratified, so it is not reaching the agents yet. ",
+                el("a", { href: "#/memory" }, "Ratify it in Memory"),
+                ".",
+              ]
+            : `Lore: no clause is seeded yet.${status === "draft" ? " Freezing the spec seeds them." : ""}`,
+      ),
+    );
+  if (anyBounce)
+    notes.push(
+      el(
+        "p",
+        { class: "spec-board-note" },
+        "Bounced: how many times work on the tickets covering a clause was sent back.",
+      ),
+    );
+
   // The trace: one row per clause → its covering ACs → satisfied / open.
+  const opts = { status, uncovered, loreOnce };
   const trace = el(
     "ol",
     { class: "spec-trace" },
-    clauses.map((c, i) => el("li", {}, renderClauseTrace(c, i + 1))),
+    clauses.map((c, i) => el("li", { id: `clause-${i + 1}` }, renderClauseTrace(c, i + 1, opts))),
   );
   wrap.appendChild(
     progPage(
@@ -16720,7 +16800,12 @@ async function renderSpecDetail(specId) {
       "ink",
       "The clauses",
       `${plural(clauses.length, "clause")}, in the order written`,
-      [specFormGuide(clauses), trace],
+      [
+        specFormGuide(clauses, status),
+        uncoveredNote,
+        trace,
+        notes.length ? el("div", { class: "spec-board-notes" }, notes) : null,
+      ],
     ),
   );
 
@@ -16736,11 +16821,17 @@ async function renderSpecDetail(specId) {
   return wrap;
 }
 
-/** One clause's trace row: its number, kind and text, its state, and the criteria that prove it. */
-function renderClauseTrace(clause, n) {
+/**
+ * One clause's trace row: its number, kind and text, its state, and the criteria
+ * that prove it. A gap is red; a clause with no criterion that is not a gap is
+ * quiet; when nothing in the spec is covered yet the board says so once and the
+ * rows carry no state of their own.
+ */
+function renderClauseTrace(clause, n, { status, uncovered = false, loreOnce = null } = {}) {
   const state = clauseState(clause);
+  const isGap = clauseIsGap(clause, status);
   const block = el("div", {
-    class: "spec-clause",
+    class: `spec-clause${isGap ? " is-gap" : ""}`,
     dataset: {
       clauseId: clause.clause_id,
       state,
@@ -16749,21 +16840,39 @@ function renderClauseTrace(clause, n) {
       satisfied: String(clause.satisfied),
     },
   });
+  const acs = Array.isArray(clause.covering_acs) ? clause.covering_acs : [];
+  const met = acs.filter((ac) => ac.satisfied).length;
+  const ofMet = acs.length > 1 ? ` · ${met} of ${acs.length} met` : "";
   const stateMark =
     state === "orphan"
-      ? el("span", { class: "sc-state is-red" }, [
-          glyph("failed", 16),
-          el("span", {}, "Gap — no AC"),
-        ])
+      ? uncovered
+        ? null
+        : isGap
+          ? el("span", { class: "sc-state is-red" }, [
+              glyph("failed", 16),
+              el("span", {}, "Gap: nothing proves it"),
+            ])
+          : el("span", { class: "sc-state is-quiet" }, [
+              glyph("draft", 16),
+              el("span", {}, status === "draft" ? "Not covered yet" : "No criterion"),
+            ])
       : state === "satisfied"
-        ? el("span", { class: "sc-state is-ok" }, [glyph("done", 16), el("span", {}, "Satisfied")])
-        : el("span", { class: "sc-state" }, [glyph("in_progress", 16), el("span", {}, "Open")]);
+        ? el("span", { class: "sc-state is-ok" }, [
+            glyph("done", 16),
+            el("span", {}, `Satisfied${ofMet}`),
+          ])
+        : el("span", { class: "sc-state" }, [
+            glyph("in_progress", 16),
+            el("span", {}, `Open${ofMet}`),
+          ]);
 
   const tags = el("div", { class: "spec-clause-tags" }, [stateMark]);
   if (clause.bounce_count > 0) {
-    tags.appendChild(badge(`bounced ${clause.bounce_count}×`, "clause-bounce"));
+    const b = badge(`bounced ${clause.bounce_count}×`, "clause-bounce");
+    b.title = `Work covering this clause was sent back ${plural(clause.bounce_count, "time")}`;
+    tags.appendChild(b);
   }
-  if (clause.lore_status && clause.lore_status !== "unknown") {
+  if (!loreOnce && clause.lore_status && clause.lore_status !== "unknown") {
     const label = LORE_STATUS_LABEL[clause.lore_status] || clause.lore_status;
     tags.appendChild(
       badge(
@@ -16780,20 +16889,12 @@ function renderClauseTrace(clause, n) {
     ]),
     clause.rationale ? el("p", { class: "spec-clause-rationale" }, clause.rationale) : null,
   ]);
-  if (clause.orphan) {
-    main.appendChild(
-      el(
-        "p",
-        { class: "spec-clause-empty" },
-        "No acceptance criterion covers this clause — it is a coverage gap.",
-      ),
-    );
-  } else {
+  if (acs.length) {
     main.appendChild(
       el(
         "ul",
         { class: "spec-clause-acs" },
-        (Array.isArray(clause.covering_acs) ? clause.covering_acs : []).map((ac) =>
+        acs.map((ac) =>
           el("li", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
             glyph(ac.satisfied ? "done" : "ready", 14, ac.satisfied ? "satisfied" : ac.ac_status),
             el("span", { class: "spec-ac-text" }, ac.ac_text),

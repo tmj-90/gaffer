@@ -84,8 +84,10 @@ const COVERAGE = {
         lore_status: "draft",
       },
       {
+        // A requirement: a non-goal or decision with no criterion is not a gap
+        // (see "keeps non-goals, decisions and drafts quiet" below).
         clause_id: "C-gap",
-        kind: "non-goal",
+        kind: "requirement",
         text: "No crypto payments",
         rationale: "Out of scope for v1",
         covering_acs: [],
@@ -164,21 +166,16 @@ describe("web: Specs view", () => {
     expect(card).not.toBeNull();
   });
 
-  it("renders a stats row and a clause form guide for each spec", async () => {
+  it("renders a clause form guide for each spec, and no KPI tile row", async () => {
     stubFetch();
     mountShell("#/specs");
     await boot();
 
-    // Stats row reuses the stat cells: total specs + coverage + gaps + updated.
-    const stats = document.querySelector(".spec-stats");
-    expect(stats).not.toBeNull();
-    const statText = stats!.textContent || "";
-    expect(statText).toContain("Total specs");
-    expect(statText).toContain("Coverage");
-    expect(statText).toContain("Gaps");
-    // COVERAGE = covered(2)/total(3) ≈ 67%; GAPS = 1 orphan (from COVERAGE rollup).
-    expect(statText).toContain("67");
-    expect(statText).toContain("1");
+    // Match Day: the KPI tile row (TOTAL SPECS / COVERAGE / GAPS / LAST UPDATED) is
+    // gone. It repeated the head's counts in tracked-caps eyebrows (TOKENS §2) and
+    // its COVERAGE was a client-side mean the server never gave.
+    expect(document.querySelector(".spec-stats")).toBeNull();
+    expect(document.querySelector(".view-specs .kpi")).toBeNull();
 
     // Match Day: the scanner-frame thumbnail (an icon tile, BRIEF §5) and the status
     // dot are gone. Each row now leads with the status mark + word and carries a
@@ -247,21 +244,68 @@ describe("web: Specs view", () => {
     expect(text).toContain("lore: draft");
   });
 
-  it("links the spec to its epic via the scope-node id", async () => {
+  it("links the spec to its campaign via the scope-node id", async () => {
     stubFetch();
     mountShell("#/specs/spec-1");
     await boot();
-    const rollupText = document.body.textContent || "";
-    // Rollup surfaces covered/satisfied/gaps.
-    expect(document.querySelector(".spec-rollup")).not.toBeNull();
-    expect(rollupText).toContain("Open epic");
-    // The "Open epic" action targets the scope node.
+    // The lede states covered / satisfied / gaps once; the KPI tiles that repeated
+    // it are gone. The action says "campaign", as the page's meta line does.
+    expect(document.querySelector(".spec-rollup")).toBeNull();
+    expect(document.querySelector(".spec-lede")?.textContent || "").toContain(
+      "2 of its 3 clauses are covered by acceptance criteria, 1 already satisfied.",
+    );
     const openEpic = Array.from(document.querySelectorAll("button")).find((b) =>
-      (b.textContent || "").includes("Open epic"),
+      (b.textContent || "").includes("Open campaign"),
     );
     expect(openEpic).toBeTruthy();
     openEpic!.click();
     await tick();
     expect(location.hash).toBe("#/epics/epic-42");
+  });
+
+  it("keeps non-goals, decisions and drafts quiet: no gap, no red", async () => {
+    const quiet = JSON.parse(JSON.stringify(COVERAGE));
+    quiet.coverage.clauses[2].kind = "non-goal";
+    stubFetch({ coverage: quiet });
+    mountShell("#/specs/spec-1");
+    await boot();
+    // A non-goal with no criterion is not a gap: no red block, a dashed square.
+    expect(document.querySelector(".coverage-gaps")).toBeNull();
+    expect(document.querySelector(".spec-clause.is-gap")).toBeNull();
+    expect(document.querySelector(".spec-clauses .fg-none")).not.toBeNull();
+    expect(document.querySelector(".spec-lede .is-red")).toBeNull();
+
+    // A draft nothing covers yet says so once, calmly, and lists its clauses once.
+    const draft = JSON.parse(JSON.stringify(COVERAGE));
+    draft.coverage.status = "draft";
+    draft.coverage.rollup = {
+      total: 3,
+      covered: 0,
+      satisfied: 0,
+      orphans: ["C-green", "C-open", "C-gap"],
+    };
+    for (const c of draft.coverage.clauses) {
+      c.covering_acs = [];
+      c.covered = false;
+      c.satisfied = false;
+      c.orphan = true;
+      c.lore_status = "absent";
+      c.bounce_count = 0;
+    }
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    stubFetch({ coverage: draft });
+    mountShell("#/specs/spec-1");
+    await boot();
+    expect(document.querySelector(".coverage-gaps")).toBeNull();
+    expect(document.querySelectorAll(".spec-clause").length).toBe(3);
+    expect(document.querySelectorAll(".spec-clause .sc-state").length).toBe(0);
+    expect(document.querySelectorAll(".spec-clauses .fg-orphan").length).toBe(0);
+    const board = document.querySelector(".spec-clauses")?.textContent || "";
+    expect(document.querySelectorAll(".spec-uncovered").length).toBe(1);
+    expect(board).toContain("Not covered yet");
+    // Lore every clause shares is said once, not on every clause.
+    expect(board).toContain("Lore: no clause is seeded yet.");
+    expect(document.body.textContent || "").not.toContain("lore: absent");
   });
 });

@@ -265,9 +265,7 @@
   .pb-bot-label {
     display: block;
     margin-bottom: 4px;
-    font: 700 var(--t12) / 1.2 var(--f-cond);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
+    font: 700 var(--t14) / 1.2 var(--f-cond);
     color: var(--ink-2);
   }
   .pb-questions {
@@ -386,9 +384,22 @@
     align-items: baseline;
     gap: 10px;
   }
+  /* A proposal index (T1, T2…), not a ticket number: a dashed tag in ink, so it
+     can never be read as the claret stencil numbers real tickets wear. */
   .pb-ticket-idx {
     flex: none;
-    font: 900 var(--t20) / 1 var(--f-stencil);
+    align-self: center;
+    padding: 1px 6px;
+    border: 1.5px dashed var(--ink-2);
+    border-radius: var(--r);
+    font: 700 var(--t14) / 1.2 var(--f-cond);
+    color: var(--ink);
+  }
+  /* A clause's place in the spec, as the spec page numbers it. */
+  .sb-clause-no {
+    flex: none;
+    min-width: 24px;
+    font: 900 var(--t26) / 1 var(--f-stencil);
     color: var(--claret-ink);
   }
   .pb-ticket-title {

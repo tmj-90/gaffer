@@ -31,12 +31,16 @@ const TICKETS = [
   T(1, "done"),
   T(2, "blocked", { title: "Charge the saved card" }),
   T(3, "draft", { title: "Acceptance: Repeat orders", acceptance: 1 }),
+  // Two ready tickets: #4 waits on the held #2, #5 waits on nothing.
+  T(4, "ready", { title: "Reserve stock" }),
+  T(5, "ready", { title: "Remind the shopper" }),
 ];
 const DEPS: Record<string, { depends_on_ticket_id: string; number: number; satisfied: boolean }[]> =
   {
     "t-2": [{ depends_on_ticket_id: "t-1", number: 1, satisfied: true }],
     // Depth 1, the same round as #2 — but it is the acceptance ticket, so it is the Final.
     "t-3": [{ depends_on_ticket_id: "t-1", number: 1, satisfied: true }],
+    "t-4": [{ depends_on_ticket_id: "t-2", number: 2, satisfied: false }],
   };
 
 function stubFetch(): void {
@@ -112,7 +116,12 @@ describe("web: Match Day season and Plan-a-build page", () => {
     );
     expect(unblock).toBeTruthy();
     // One ticket card per ticket (the phone layout no longer duplicates them).
-    expect(document.querySelectorAll(".dag-node").length).toBe(3);
+    expect(document.querySelectorAll(".dag-node").length).toBe(5);
+    // Next fixture: only a ready ticket whose dependencies are all done. #4 is
+    // ready but waits on the held #2, so naming it would contradict its own card.
+    const next = document.querySelector(".epic-next")?.textContent || "";
+    expect(next).toContain("#5 Remind the shopper");
+    expect(next).not.toContain("#4");
   });
 
   it("hosts Plan a build inline on #/create and hands it back to the sheet on leaving", async () => {

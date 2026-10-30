@@ -28,6 +28,8 @@ command -v awk  >/dev/null 2>&1 || { echo "SKIP: awk required";  exit 0; }
 PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/day-usd-cap.XXXXXX")"
@@ -163,14 +165,14 @@ elif command -v setpriv >/dev/null 2>&1; then
     bash -c 'source "'"$RUNNER_DIR"'/lib/budget.sh"; s="$(gaffer_day_usd_spent)"; if gaffer_day_usd_cap_ok 2>/dev/null; then d=ALLOW; else d=HALT; fi; printf "%s %s" "$s" "$d"' 2>/dev/null)"
   [ "$_probe" = "unknown HALT" ] && ok "unprivileged reader: mode-000 ledger ⇒ 'unknown' ⇒ HALT" || fail "unprivileged probe should be 'unknown HALT' (got '$_probe')"
 else
-  ok "SKIP unreadable-ledger probe (running as root without setpriv)"
+  skip_part "unreadable-ledger probe (running as root without setpriv)"
 fi
 chmod 644 "$UNR" 2>/dev/null || true
 unset GAFFER_DAILY_BUDGET_USD
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "PASS: $PASS checks"
+  echo "PASS: $PASS checks, $SKIPPED skipped"
   exit 0
 else
   echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"

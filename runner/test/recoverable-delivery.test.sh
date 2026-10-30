@@ -40,6 +40,8 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 command -v git  >/dev/null 2>&1 || { echo "SKIP: git required";  exit 0; }
@@ -219,12 +221,12 @@ if [ -f "$TICK" ]; then
     fail "tick.sh success teardown changed unexpectedly"
   fi
 else
-  ok "SKIP static checks (tick.sh not found)"
+  skip_part "static checks (tick.sh not found)"
 fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "PASS: $PASS checks"
+  echo "PASS: $PASS checks, $SKIPPED skipped"
   exit 0
 else
   echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"

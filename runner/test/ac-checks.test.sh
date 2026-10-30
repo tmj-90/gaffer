@@ -43,9 +43,9 @@ source "$RUNNER_DIR/lib/dod.sh"
 source "$RUNNER_DIR/lib/ac-checks.sh"
 
 WT="$WORK/wt"; mkdir -p "$WT"
-T="$(wg ticket create --title "Checked delivery" --json 2>/dev/null || wg ticket create --title "Checked delivery")"
+T="$(wg ticket create --title "Checked delivery" 2>"$WORK/create.err")"
 NUM="$(printf '%s' "$T" | jget 'd.number ?? d.ticket?.number' 2>/dev/null)"
-[ -n "$NUM" ] && [ "$NUM" != "None" ] || { echo "SKIP: could not create a ticket via the CLI (got: ${T:0:120})"; exit 0; }
+[ -n "$NUM" ] && [ "$NUM" != "None" ] || { echo "FAIL: \`ticket create\` returned no ticket number — the dispatch CLI contract this test guards (got: ${T:0:200} $(head -c 200 "$WORK/create.err"))"; exit 1; }
 
 echo "== 1: passing + failing checks, prose AC untouched =="
 wg ac add "$NUM" -t "marker written" --check 'touch ran-here.marker && test -f ran-here.marker' >/dev/null

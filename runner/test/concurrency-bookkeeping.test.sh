@@ -105,7 +105,7 @@ PY
 wg init >/dev/null 2>&1
 A1="$(wg agent register -n w1 --max-risk high 2>/dev/null | jget 'd.agent.id')"
 A2="$(wg agent register -n w2 --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$A1" ] && [ -n "$A2" ] || { echo "SKIP: could not register agents"; exit 0; }
+[ -n "$A1" ] && [ -n "$A2" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 
 # The EXACT candidate-loop claim step from tick.sh: claim; capture the token; an
 # empty token ⇒ the tick would `continue` (skip this candidate). Byte-identical to

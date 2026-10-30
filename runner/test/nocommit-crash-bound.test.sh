@@ -140,7 +140,7 @@ source "$SRC"
 
 # One ready, claimable ticket → echoes its number.
 AGENT="$(wg init >/dev/null 2>&1; wg agent register -n fac --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
+[ -n "$AGENT" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 make_ready_ticket() {
   local num
   num="$(wg ticket create -t "$1" --risk low 2>/dev/null | jget 'd.ticket.number')"

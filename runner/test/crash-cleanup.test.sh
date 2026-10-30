@@ -68,6 +68,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PASS=0
 FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
+SKIPPED=0
+skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skipped section is NOT an ok
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 command -v git >/dev/null 2>&1 || { echo "SKIP: git required"; exit 0; }
@@ -290,7 +292,7 @@ if [ -f "$TICK" ]; then
     fail "GAFFER_DELIVERY_COMPLETE=1 is not strictly after the success-path teardown (set=$set_line teardown=$teardown_line)"
   fi
 else
-  ok "SKIP ordering check (tick.sh not found alongside the test)"
+  skip_part "ordering check (tick.sh not found alongside the test)"
 fi
 
 echo "== 7. (FIX-BRANCH) crash-cleanup with retention ON keeps the review-visible branch =="
@@ -321,12 +323,12 @@ if [ -f "$TICK" ]; then
     fail "retention flag not raised before delivery recording (keep=$keep_line rec=$rec_line)"
   fi
 else
-  ok "SKIP ordering check (tick.sh not found alongside the test)"
+  skip_part "ordering check (tick.sh not found alongside the test)"
 fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
-  echo "PASS: $PASS checks"
+  echo "PASS: $PASS checks, $SKIPPED skipped"
   exit 0
 else
   echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"

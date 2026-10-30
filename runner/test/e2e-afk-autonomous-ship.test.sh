@@ -114,7 +114,7 @@ chmod +x "$STUB"
 wg init >/dev/null 2>&1
 wg repo add -n demo --path "$REPO" --branch main --test "true" >/dev/null 2>&1
 AGENT="$(wg agent register -n gaffer-factory --max-risk high 2>/dev/null | jget 'd.agent.id')"
-[ -n "$AGENT" ] || { echo "SKIP: could not register agent"; exit 0; }
+[ -n "$AGENT" ] || { echo "FAIL: \`agent register\` returned no d.agent.id — the dispatch CLI contract this test guards (got: $(wg agent register -n probe --max-risk high 2>&1 | head -c 300))"; exit 1; }
 
 # Drive a ticket from create → in_review with a REAL delivered diff. Echoes "<num> <branch>".
 deliver_to_in_review() {  # $1 title, $2 marker (unique diff content)

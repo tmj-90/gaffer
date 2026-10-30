@@ -433,6 +433,28 @@
     min-height: 28px;
     display: flex;
     align-items: center;
+    gap: 8px;
+    list-style: none;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-underline-offset: 3px;
+  }
+  .pb-acs-fold > summary::-webkit-details-marker {
+    display: none;
+  }
+  /* The fold's marker: a chalk chevron that turns when the criteria are open. */
+  .pb-acs-fold > summary::before {
+    content: "";
+    flex: none;
+    width: 7px;
+    height: 7px;
+    margin: 0 2px;
+    border-right: 2.5px solid currentColor;
+    border-bottom: 2.5px solid currentColor;
+    transform: rotate(-45deg);
+  }
+  .pb-acs-fold[open] > summary::before {
+    transform: rotate(45deg);
   }
   .pb-acs {
     display: grid;
@@ -538,9 +560,13 @@
     align-items: center;
     flex-wrap: wrap;
   }
+  /* A clause grows to fit what is written: nothing is cut off mid-word. */
   .sb-clause-text {
     min-height: 40px;
+    max-height: none;
     width: 100%;
+    field-sizing: content;
+    resize: vertical;
   }
   .sb-clause-rationale,
   .sb-add {

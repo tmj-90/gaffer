@@ -116,6 +116,11 @@
     background: var(--ink);
     color: var(--paper);
   }
+  /* Partly met: some of the clause's criteria are met. The outlined square
+     filled from the bottom, like a half-full tally: between open and solid. */
+  .fg-partial {
+    border-bottom-width: 7px;
+  }
   .fg-orphan {
     border-color: var(--red);
     background: var(--red);
@@ -285,6 +290,9 @@
   .sc-state.is-ok {
     color: var(--ok);
   }
+  .sc-state.is-part {
+    color: var(--ink);
+  }
   .sc-state.is-quiet {
     color: var(--ink-2);
   }
@@ -335,18 +343,26 @@
     list-style: none;
   }
   .spec-ac {
-    display: flex;
+    display: grid;
+    grid-template-columns: 14px minmax(0, 1fr) auto;
     align-items: baseline;
-    flex-wrap: wrap;
-    gap: 4px 8px;
+    gap: 4px 10px;
     font-size: var(--t14);
   }
   .spec-ac > svg {
-    align-self: center;
+    align-self: start;
+    margin-top: 0.2em;
   }
   .spec-ac-text {
-    flex: 1 1 200px;
     min-width: 0;
+  }
+  /* The ticket and its status: one unit, never split by a wrapping criterion. */
+  .spec-ac-tk {
+    display: inline-flex;
+    align-items: baseline;
+    justify-self: end;
+    gap: 6px;
+    white-space: nowrap;
   }
   .spec-ac-ticket {
     font: 900 var(--t16) / 1 var(--f-stencil);

@@ -308,4 +308,90 @@ describe("web: Specs view", () => {
     expect(board).toContain("Lore: no clause is seeded yet.");
     expect(document.body.textContent || "").not.toContain("lore: absent");
   });
+  it("calls a clause with only some criteria met 'partly met', never satisfied", async () => {
+    // The server's clause.satisfied is true when ANY covering criterion is met; a
+    // clause is proven only when ALL are, so 1 of 2 met reads "Partly met".
+    const part = JSON.parse(JSON.stringify(COVERAGE));
+    part.coverage.clauses[0].covering_acs.push({
+      ac_id: "ac-3",
+      ac_text: "charged exactly once",
+      ac_status: "pending",
+      satisfied: false,
+      ticket_id: "t-3",
+      ticket_number: 9,
+      ticket_title: "Idempotent charge",
+      ticket_status: "blocked",
+    });
+    stubFetch({ coverage: part });
+    mountShell("#/specs/spec-1");
+    await boot();
+    const c = document.querySelector(".spec-clause[data-clause-id='C-green']")!;
+    expect(c.getAttribute("data-state")).toBe("partial");
+    expect(c.getAttribute("data-satisfied")).toBe("false");
+    expect(c.textContent || "").toContain("Partly met · 1 of 2");
+    expect(c.textContent || "").not.toContain("Satisfied");
+    expect(document.querySelector(".spec-clause[data-state='satisfied']")).toBeNull();
+    expect(document.querySelector(".spec-clauses .fg-partial")).not.toBeNull();
+    expect(document.querySelector(".spec-clauses .fg-satisfied")).toBeNull();
+    expect(document.querySelector(".spec-lede")?.textContent || "").toContain(
+      "none fully proven yet: 1 partly met",
+    );
+    // The ticket number and its status sit together in one unit.
+    const tk = c.querySelectorAll(".spec-ac-tk");
+    expect(tk.length).toBe(2);
+    expect(tk[1]!.querySelector(".spec-ac-ticket")?.textContent).toBe("#9");
+    expect(tk[1]!.querySelector(".spec-ac-st")?.textContent).toBe("Blocked");
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    stubFetch({ coverage: part });
+    mountShell("#/specs");
+    await boot();
+    const card = document.querySelector(".spec-card[data-spec-id='spec-1']")!;
+    expect(card.textContent || "").toContain("2 of 3 covered · 0 satisfied · 1 partly met · 1 gap");
+  });
+
+  it("reads a frozen spec not built yet as 'not covered yet' everywhere, never as gaps", async () => {
+    // Frozen, no campaign, nothing covering it: between "Freeze spec" and "Plan a
+    // build from it". The squares, the board line, the lede and the list agree.
+    const fresh = JSON.parse(JSON.stringify(COVERAGE));
+    fresh.coverage.scope_node_id = null;
+    fresh.coverage.rollup = {
+      total: 3,
+      covered: 0,
+      satisfied: 0,
+      orphans: ["C-green", "C-open", "C-gap"],
+    };
+    for (const c of fresh.coverage.clauses) {
+      c.covering_acs = [];
+      c.covered = false;
+      c.satisfied = false;
+      c.orphan = true;
+    }
+    const specs = JSON.parse(JSON.stringify(SPECS));
+    specs.specs[0].scope_node_id = null;
+    stubFetch({ coverage: fresh, specs });
+    mountShell("#/specs/spec-1");
+    await boot();
+    expect(document.querySelector(".coverage-gaps")).toBeNull();
+    expect(document.querySelectorAll(".spec-clauses .fg-orphan").length).toBe(0);
+    expect(document.querySelectorAll(".spec-clauses .fg-none").length).toBe(3);
+    expect(document.querySelectorAll(".spec-clause .sc-state").length).toBe(0);
+    expect(document.querySelector(".spec-uncovered")?.textContent || "").toContain(
+      "Not covered yet",
+    );
+    expect(document.querySelector(".spec-lede")?.textContent || "").toContain("Not covered yet");
+    expect(document.querySelector(".spec-lede .is-red")).toBeNull();
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+    stubFetch({ coverage: fresh, specs });
+    mountShell("#/specs");
+    await boot();
+    const card = document.querySelector(".spec-card[data-spec-id='spec-1']")!;
+    expect(card.classList.contains("has-gaps")).toBe(false);
+    expect(card.querySelector(".fg-orphan")).toBeNull();
+    expect(card.querySelector(".spec-card-words.is-red")).toBeNull();
+    expect(card.textContent || "").toContain("Not covered yet");
+  });
 });

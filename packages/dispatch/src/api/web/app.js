@@ -7455,7 +7455,7 @@ async function ticketEpicCard(t, scopes) {
     (m) => (deps.get(m.id) || []).includes(t.id) && m.status !== "done",
   );
   return el("section", { class: "card panel tk-epic" }, [
-    panelHead(epic.name, null, { text: "Epic", href: `#/epics/${epic.id}` }, { kit: "sky" }),
+    panelHead(epic.name, null, { text: "Campaign", href: `#/epics/${epic.id}` }, { kit: "sky" }),
     el(
       "ol",
       { class: "tk-rounds" },
@@ -10609,14 +10609,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
         ]),
       );
     }
-    if (!attached.size)
-      repoList.appendChild(
-        el(
-          "p",
-          { class: "dim" },
-          "No repos attached yet. Attach at least one write repo so the factory can deliver.",
-        ),
-      );
+    if (!attached.size) repoList.appendChild(el("p", { class: "dim" }, "No repos attached yet."));
     renderWriteHint();
   }
 
@@ -10625,7 +10618,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
     writeHint.className = `selector-hint ${hasWrite ? "ok" : "warn"}`;
     writeHint.textContent = hasWrite
       ? "✓ This ticket has a write target — it can be delivered."
-      : "Needs ≥1 write repo to be deliverable.";
+      : "Needs at least one write repo, so the factory has somewhere to deliver.";
   }
 
   // --- suggestion population ------------------------------------------------
@@ -10690,7 +10683,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
       el(
         "p",
         { class: "where-intro dim" },
-        "Attach the repos this ticket may write, read or test, and optionally the scope node it lives under. At least one write repo is required.",
+        "Attach the repos this ticket may write, read or test, and optionally the scope node it lives under.",
       ),
       field("Scope node", scopeSel),
       scopeList,
@@ -14124,25 +14117,61 @@ function drawEpicLines(draw) {
   const nodeOf = new Map([...draw.querySelectorAll(".dag-node")].map((n) => [n.dataset.id, n]));
   const roundOf = (n) => n.closest(".ep-round");
   const order = { sat: 0, pend: 1, held: 2 };
-  for (const e of (draw._edges || []).slice().sort((a, b) => order[a.cls] - order[b.cls])) {
+  const edges = (draw._edges || []).filter((e) => nodeOf.has(e.from) && nodeOf.has(e.to));
+  const midY = (n) => {
+    const r = n.getBoundingClientRect();
+    return r.top + Math.min(r.height / 2, 28) - box.top;
+  };
+  // Lines that leave one card, or enter one, fan out a few pixels apart (ordered
+  // by where the other end is), so two lines never share a segment: a met line
+  // under an unmet one would read as met.
+  const FAN = 6;
+  const fan = (key, other) => {
+    const groups = new Map();
+    for (const e of edges) {
+      const k = e[key];
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(e);
+    }
+    const off = new Map();
+    for (const list of groups.values()) {
+      list.sort((p, q) => midY(nodeOf.get(p[other])) - midY(nodeOf.get(q[other])));
+      list.forEach((e, i) => off.set(e, (i - (list.length - 1) / 2) * FAN));
+    }
+    return off;
+  };
+  const outOff = fan("from", "to");
+  const inOff = fan("to", "from");
+  // Each straight run is its own path whose dashes are phased to the page, not to
+  // the path, so where two dashed runs still overlap their dashes coincide.
+  const period = { pend: 8, held: 12 };
+  const seg = (cls, xa, ya, xb, yb) => {
+    const horiz = Math.abs(ya - yb) < 0.5;
+    const lo = horiz ? Math.min(xa, xb) : Math.min(ya, yb);
+    const hi = horiz ? Math.max(xa, xb) : Math.max(ya, yb);
+    if (hi - lo < 0.5) return;
+    const d = horiz
+      ? `M${lo.toFixed(1)} ${ya.toFixed(1)} H${hi.toFixed(1)}`
+      : `M${xa.toFixed(1)} ${lo.toFixed(1)} V${hi.toFixed(1)}`;
+    const attrs = { class: `edge ${cls}`, d };
+    if (period[cls]) attrs["stroke-dashoffset"] = (lo % period[cls]).toFixed(1);
+    svg.appendChild(svgEl("path", attrs));
+  };
+  for (const e of edges.slice().sort((a, b) => order[a.cls] - order[b.cls])) {
     const a = nodeOf.get(e.from),
       b = nodeOf.get(e.to);
-    if (!a || !b) continue;
     const ra = a.getBoundingClientRect(),
       rb = b.getBoundingClientRect(),
       lane = roundOf(b).getBoundingClientRect();
     const x1 = ra.right - box.left,
-      y1 = ra.top + Math.min(ra.height / 2, 28) - box.top,
+      y1 = midY(a) + (outOff.get(e) || 0),
       x2 = rb.left - box.left,
-      y2 = rb.top + Math.min(rb.height / 2, 28) - box.top;
+      y2 = midY(b) + (inOff.get(e) || 0);
     if (x2 <= x1) continue;
     const xm = Math.max(x1 + 6, Math.min(x2 - 6, lane.left - box.left));
-    svg.appendChild(
-      svgEl("path", {
-        class: `edge ${e.cls}`,
-        d: `M${x1.toFixed(1)} ${y1.toFixed(1)} H${xm.toFixed(1)} V${y2.toFixed(1)} H${x2.toFixed(1)}`,
-      }),
-    );
+    seg(e.cls, x1, y1, xm, y1);
+    seg(e.cls, xm, y1, xm, y2);
+    seg(e.cls, xm, y2, x2, y2);
   }
 }
 
@@ -14534,40 +14563,49 @@ function renderPlanBuildLog() {
               `Built to a frozen spec: its ${plural(planBuildState.spec.length, "clause")} ride along, so every criterion names the clause it proves.`,
             )
           : null,
-        planBuildState.mode === "extend"
+        planBuildState.spec
           ? el(
               "p",
               { class: "pb-ask" },
-              planBuildState.target
-                ? `Say what to add to “${planBuildState.target.name}” in a line or two. For example:`
-                : "Pick what to extend, then say what to add in a line or two. For example:",
+              "The spec's brief is in the box below. Edit it if you like, then send it to the planner.",
             )
-          : el("p", { class: "pb-ask" }, "Say what to build in a line or two. For example:"),
-        el(
-          "ul",
-          { class: "pb-examples" },
-          (planBuildState.mode === "extend"
-            ? ["add CSV export to the reports", "add a settings page with dark mode"]
-            : ["a web app that tracks gym workouts", "an API that summarises PDFs"]
-          ).map((ex) =>
-            el(
-              "li",
-              {},
-              el(
-                "button",
-                {
-                  class: "pb-example",
-                  type: "button",
-                  onclick: () => {
-                    planBuildEls.input.value = ex;
-                    planBuildEls.input.focus();
-                  },
-                },
-                ex,
+          : planBuildState.mode === "extend"
+            ? el(
+                "p",
+                { class: "pb-ask" },
+                planBuildState.target
+                  ? `Say what to add to “${planBuildState.target.name}” in a line or two. For example:`
+                  : "Pick what to extend, then say what to add in a line or two. For example:",
+              )
+            : el("p", { class: "pb-ask" }, "Say what to build in a line or two. For example:"),
+        // From a frozen spec the brief is already written: no stock examples then.
+        planBuildState.spec
+          ? null
+          : el(
+              "ul",
+              { class: "pb-examples" },
+              (planBuildState.mode === "extend"
+                ? ["add CSV export to the reports", "add a settings page with dark mode"]
+                : ["a web app that tracks gym workouts", "an API that summarises PDFs"]
+              ).map((ex) =>
+                el(
+                  "li",
+                  {},
+                  el(
+                    "button",
+                    {
+                      class: "pb-example",
+                      type: "button",
+                      onclick: () => {
+                        planBuildEls.input.value = ex;
+                        planBuildEls.input.focus();
+                      },
+                    },
+                    ex,
+                  ),
+                ),
               ),
             ),
-          ),
-        ),
       ]),
     );
   }
@@ -16255,45 +16293,76 @@ function specStatusMark(status) {
   return el("span", { class: `spec-card-status status-${status}` }, [mark, el("span", {}, word)]);
 }
 
-/** One clause's coverage state, from the coverage read model (the data-state hook). */
+/** How many of a clause's covering criteria are met, of how many. */
+function clauseMet(c) {
+  const acs = Array.isArray(c.covering_acs) ? c.covering_acs : [];
+  return { met: acs.filter((ac) => ac.satisfied).length, of: acs.length };
+}
+
+/**
+ * One clause's coverage state (the data-state hook). The server's `satisfied`
+ * flag is true when ANY covering criterion is met, so the state is read from the
+ * criteria themselves: satisfied only when every one is met, partly met when
+ * some are, open when none are. A clause is proven only when all of it is.
+ */
 function clauseState(c) {
-  return c.orphan ? "orphan" : c.satisfied ? "satisfied" : "open";
+  if (c.orphan) return "orphan";
+  const { met, of } = clauseMet(c);
+  if (!of) return c.satisfied ? "satisfied" : "open";
+  return met === of ? "satisfied" : met > 0 ? "partial" : "open";
 }
 
 /** Clause kinds that record intent rather than behaviour: no criterion is not a gap. */
 const INTENT_KINDS = new Set(["non-goal", "decision"]);
 
 /**
- * A gap is a clause that should be proven and is not: a requirement of a spec
- * that is frozen (so its build is under way) with no criterion covering it. A
- * draft's clauses are not covered yet by design, and a non-goal or a decision
- * with no criterion is not a failure; those read quietly, never red.
+ * A spec not built yet: a draft, or a frozen spec with no campaign playing it and
+ * no criterion naming any clause (the state between "Freeze spec" and "Plan a
+ * build from it"). Its clauses read "not covered yet" everywhere (the squares,
+ * the board line, the lede and the list), never as gaps: nothing has failed.
  */
-function clauseIsGap(c, status) {
-  return !!c.orphan && status !== "draft" && !INTENT_KINDS.has(c.kind);
+function specUnbuilt(status, clauses, scopeNodeId) {
+  if (status === "draft") return true;
+  return !scopeNodeId && !(clauses || []).some((c) => c.covered);
+}
+
+/**
+ * A gap is a clause that should be proven and is not: a requirement of a spec
+ * whose build is under way with no criterion covering it. A spec not built yet
+ * (specUnbuilt) has no gaps by design, and a non-goal or a decision with no
+ * criterion is not a failure; those read quietly, never red.
+ */
+function clauseIsGap(c, status, unbuilt = false) {
+  return !!c.orphan && !unbuilt && status !== "draft" && !INTENT_KINDS.has(c.kind);
 }
 
 /** How many of a coverage payload's clauses are gaps (see clauseIsGap). */
 function specGapCount(coverage, status) {
   const clauses = coverage && Array.isArray(coverage.clauses) ? coverage.clauses : null;
-  if (clauses) return clauses.filter((c) => clauseIsGap(c, status)).length;
+  if (clauses) {
+    const unbuilt = specUnbuilt(status, clauses, coverage.scope_node_id);
+    return clauses.filter((c) => clauseIsGap(c, status, unbuilt)).length;
+  }
   const r = specCoverageRollup(coverage);
-  return r && status !== "draft" ? r.orphans : 0;
+  return r && status !== "draft" && (r.covered || coverage.scope_node_id) ? r.orphans : 0;
 }
 
 /**
  * The form guide: one square per clause, in the order written — filled when
- * satisfied, outlined when covered but not yet satisfied, red when it is a gap,
- * dashed when it has no criterion and is not a gap (a draft's, a non-goal's).
+ * every criterion is met, outlined with a filled corner when some are, outlined
+ * when covered but none is met yet, red when it is a gap, dashed when it has no
+ * criterion and is not a gap (a spec not built yet, a non-goal, a decision).
  * Decorative next to the sentence that states the same counts.
  */
-function specFormGuide(clauses, status) {
+function specFormGuide(clauses, status, scopeNodeId) {
+  const unbuilt = specUnbuilt(status, clauses, scopeNodeId);
   return el(
     "span",
     { class: "spec-form", "aria-hidden": "true" },
     clauses.map((c, i) => {
       const state = clauseState(c);
-      const cls = state === "orphan" ? (clauseIsGap(c, status) ? "orphan" : "none") : state;
+      const cls =
+        state === "orphan" ? (clauseIsGap(c, status, unbuilt) ? "orphan" : "none") : state;
       return el(
         "i",
         {
@@ -16306,14 +16375,21 @@ function specFormGuide(clauses, status) {
   );
 }
 
-/** "6 of 8 covered · 2 satisfied · 1 gap" — the counts the form guide draws. */
+/**
+ * "6 of 8 covered · 1 satisfied · 2 partly met · 1 gap" — the counts the form
+ * guide draws. Satisfied means every criterion on the clause is met.
+ */
 function specCoverageWords(r, gaps) {
   if (!r) return "Coverage unavailable";
   if (!r.total) return "No clauses yet";
-  if (!r.covered) return `Not covered yet: no criterion names ${r.total === 1 ? "it" : "them"}`;
+  if (!r.covered)
+    return gaps
+      ? `Nothing covered: ${plural(gaps, "gap")}`
+      : `Not covered yet: no criterion names ${r.total === 1 ? "it" : "them"}`;
   return [
     `${r.covered} of ${r.total} covered`,
     r.satisfied != null ? `${r.satisfied} satisfied` : null,
+    r.partial ? `${r.partial} partly met` : null,
     gaps ? plural(gaps, "gap") : "no gaps",
   ]
     .filter(Boolean)
@@ -16443,10 +16519,15 @@ async function renderSpecList() {
       list,
       el("p", { class: "spec-key" }, [
         ...[
-          ["satisfied", "1", "satisfied"],
-          ["open", "2", "covered, not yet satisfied"],
-          ["orphan", "3", "a gap: a requirement nothing covers"],
-          ["none", "4", "no criterion, not a gap (a draft's clause, a non-goal, a decision)"],
+          ["satisfied", "1", "satisfied: every criterion met"],
+          ["partial", "2", "partly met: some criteria met"],
+          ["open", "3", "covered, none met yet"],
+          ["orphan", "4", "a gap: a requirement nothing covers while it is built"],
+          [
+            "none",
+            "5",
+            "no criterion yet, not a gap (a spec not built yet, a non-goal, a decision)",
+          ],
         ].map(([cls, n, words]) =>
           el("span", { class: "spec-key-item" }, [
             el("span", { class: "spec-form", "aria-hidden": "true" }, [
@@ -16462,16 +16543,27 @@ async function renderSpecList() {
   return wrap;
 }
 
-/** A rollup {total,covered,satisfied,orphans} from a coverage payload, defensively read. */
+/**
+ * A rollup {total,covered,satisfied,partial,orphans} from a coverage payload,
+ * defensively read. Satisfied and partly met are counted from the clauses when
+ * they are there (clauseState): the server's own `satisfied` counts a clause
+ * with any criterion met, which is not the same as proven.
+ */
 function specCoverageRollup(coverage) {
   const src =
     coverage && coverage.rollup && typeof coverage.rollup === "object" ? coverage.rollup : null;
   if (!src) return null;
   const total = Number(src.total) || 0;
   const covered = Number(src.covered) || 0;
-  const satisfied = src.satisfied != null ? Number(src.satisfied) || 0 : null;
   const orphans = Array.isArray(src.orphans) ? src.orphans.length : Number(src.orphans) || 0;
-  return { total, covered, satisfied, orphans };
+  const clauses = Array.isArray(coverage.clauses) ? coverage.clauses : null;
+  if (clauses && clauses.length) {
+    const states = clauses.map(clauseState);
+    const n = (st) => states.filter((x) => x === st).length;
+    return { total, covered, satisfied: n("satisfied"), partial: n("partial"), orphans };
+  }
+  const satisfied = src.satisfied != null ? Number(src.satisfied) || 0 : null;
+  return { total, covered, satisfied, partial: 0, orphans };
 }
 
 /** One spec = one line of the playbook, linking to its clause-by-clause trace. */
@@ -16506,7 +16598,7 @@ function renderSpecCard(spec, { coverage, isPrimary = false, campaign = null } =
         ]),
       ]),
       el("span", { class: "spec-card-cov" }, [
-        clauses.length ? specFormGuide(clauses, spec.status) : null,
+        clauses.length ? specFormGuide(clauses, spec.status, coverage.scope_node_id) : null,
         el("span", { class: `spec-card-words${gaps ? " is-red" : ""}` }, words),
       ]),
     ],
@@ -16549,15 +16641,9 @@ async function renderSpecDetail(specId) {
     return wrap;
   }
 
-  const rollupSrc = cov.rollup && typeof cov.rollup === "object" ? cov.rollup : {};
-  const orphans = Array.isArray(rollupSrc.orphans) ? rollupSrc.orphans : [];
-  const r = {
-    total: Number(rollupSrc.total) || 0,
-    covered: Number(rollupSrc.covered) || 0,
-    satisfied: Number(rollupSrc.satisfied) || 0,
-    orphans,
-  };
   const clauses = Array.isArray(cov.clauses) ? cov.clauses : [];
+  const r = specCoverageRollup(cov.rollup ? cov : { ...cov, rollup: {} });
+  r.satisfied = r.satisfied || 0;
   const status = cov.status || (spec && spec.status) || "";
   const targetRepo = (spec && spec.target_repo) || cov.target_repo || null;
   const campaign = cov.scope_node_id
@@ -16566,12 +16652,23 @@ async function renderSpecDetail(specId) {
   const brief = (spec && spec.brief) || cov.brief || null;
 
   // The lede: where the spec stands, from its coverage. A gap is a requirement
-  // nothing proves (clauseIsGap); a draft, or a spec nothing covers yet, reads as
-  // one calm "not covered yet", never as a page of red.
-  const gapClauses = clauses.filter((c) => clauseIsGap(c, status));
+  // nothing proves while it is built (clauseIsGap); a spec not built yet (a draft,
+  // or frozen with no campaign and nothing covering it) reads as one calm "not
+  // covered yet" in the squares, the board, the lede and the list, never as red.
+  const unbuilt = specUnbuilt(status, clauses, cov.scope_node_id);
+  const gapClauses = clauses.filter((c) => clauseIsGap(c, status, unbuilt));
   const gapsN = gapClauses.length;
-  const quietN = clauses.filter((c) => c.orphan && !clauseIsGap(c, status)).length;
-  const uncovered = r.total > 0 && r.covered === 0;
+  const quietN = clauses.filter((c) => c.orphan && !clauseIsGap(c, status, unbuilt)).length;
+  const uncovered = unbuilt && r.total > 0 && r.covered === 0;
+  // "1 already satisfied and 2 partly met": satisfied means every criterion is met.
+  const metWords =
+    r.satisfied && r.partial
+      ? `, ${r.satisfied} already satisfied and ${r.partial} partly met`
+      : r.satisfied
+        ? `, ${r.satisfied} already satisfied`
+        : r.partial
+          ? `, none fully proven yet: ${r.partial} partly met`
+          : "";
   const quietOf = (k) => clauses.filter((c) => c.orphan && c.kind === k).length;
   const quietWords = [
     quietOf("non-goal") ? plural(quietOf("non-goal"), "non-goal") : null,
@@ -16586,17 +16683,17 @@ async function renderSpecDetail(specId) {
   else if (uncovered)
     lede = [
       el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `),
-      // The board says "not covered yet" once; the lede says what comes next.
+      // Not built yet: said the same way here, on the board, and in the list.
       status === "draft"
-        ? `Freeze it to lock its ${total} and seed them as lore for the agents; the criteria that prove them come with the build you plan from it.`
+        ? `Not covered yet, and no gaps: freeze it to lock its ${total} and seed them as lore for the agents; the criteria that prove them come with the build you plan from it.`
         : status === "frozen"
-          ? `Plan a build from it, and each ticket's criteria will name the ${r.total === 1 ? "clause it proves" : "clauses they prove"}.`
+          ? `Not covered yet, and no gaps until it is built: plan a build from it, and each ticket's criteria will name the ${r.total === 1 ? "clause it proves" : "clauses they prove"}.`
           : `None of its ${total} is covered.`,
     ];
   else
     lede = [
       el("b", {}, `${SPEC_STATUS_LABEL[status] || "Spec"}. `),
-      `${r.covered} of its ${total} ${r.covered === 1 ? "is" : "are"} covered by acceptance criteria${r.satisfied ? `, ${r.satisfied} already satisfied` : ""}.`,
+      `${r.covered} of its ${total} ${r.covered === 1 ? "is" : "are"} covered by acceptance criteria${metWords}.`,
       gapsN
         ? [
             " ",
@@ -16759,7 +16856,7 @@ async function renderSpecDetail(specId) {
         el(
           "span",
           {},
-          `Not covered yet: none of the ${total} has an acceptance criterion naming it.`,
+          `Not covered yet: none of the ${total} has an acceptance criterion naming it. That is not a gap until a build is under way.`,
         ),
       ]);
   if (loreOnce && loreOnce !== "unknown")
@@ -16788,7 +16885,7 @@ async function renderSpecDetail(specId) {
     );
 
   // The trace: one row per clause → its covering ACs → satisfied / open.
-  const opts = { status, uncovered, loreOnce };
+  const opts = { status, uncovered, unbuilt, loreOnce };
   const trace = el(
     "ol",
     { class: "spec-trace" },
@@ -16801,7 +16898,7 @@ async function renderSpecDetail(specId) {
       "The clauses",
       `${plural(clauses.length, "clause")}, in the order written`,
       [
-        specFormGuide(clauses, status),
+        specFormGuide(clauses, status, cov.scope_node_id),
         uncoveredNote,
         trace,
         notes.length ? el("div", { class: "spec-board-notes" }, notes) : null,
@@ -16814,7 +16911,7 @@ async function renderSpecDetail(specId) {
       el(
         "p",
         { class: "section-note" },
-        "The spec-coverage gate is on (advisory): a clause with no satisfied criterion is flagged at the Definition of Done.",
+        "The spec-coverage gate is on (advisory): a clause with no met criterion is flagged at the Definition of Done.",
       ),
     );
   }
@@ -16827,9 +16924,15 @@ async function renderSpecDetail(specId) {
  * quiet; when nothing in the spec is covered yet the board says so once and the
  * rows carry no state of their own.
  */
-function renderClauseTrace(clause, n, { status, uncovered = false, loreOnce = null } = {}) {
+function renderClauseTrace(
+  clause,
+  n,
+  { status, uncovered = false, unbuilt = false, loreOnce = null } = {},
+) {
   const state = clauseState(clause);
-  const isGap = clauseIsGap(clause, status);
+  const isGap = clauseIsGap(clause, status, unbuilt);
+  const acs = Array.isArray(clause.covering_acs) ? clause.covering_acs : [];
+  const { met } = clauseMet(clause);
   const block = el("div", {
     class: `spec-clause${isGap ? " is-gap" : ""}`,
     dataset: {
@@ -16837,11 +16940,11 @@ function renderClauseTrace(clause, n, { status, uncovered = false, loreOnce = nu
       state,
       covered: String(clause.covered),
       orphan: String(clause.orphan),
-      satisfied: String(clause.satisfied),
+      // Proven: every covering criterion met (the server's flag means "any").
+      satisfied: String(state === "satisfied"),
+      met: String(met),
     },
   });
-  const acs = Array.isArray(clause.covering_acs) ? clause.covering_acs : [];
-  const met = acs.filter((ac) => ac.satisfied).length;
   const ofMet = acs.length > 1 ? ` · ${met} of ${acs.length} met` : "";
   const stateMark =
     state === "orphan"
@@ -16859,12 +16962,14 @@ function renderClauseTrace(clause, n, { status, uncovered = false, loreOnce = nu
       : state === "satisfied"
         ? el("span", { class: "sc-state is-ok" }, [
             glyph("done", 16),
-            el("span", {}, `Satisfied${ofMet}`),
+            el("span", {}, acs.length > 1 ? `Satisfied · all ${acs.length} met` : "Satisfied"),
           ])
-        : el("span", { class: "sc-state" }, [
-            glyph("in_progress", 16),
-            el("span", {}, `Open${ofMet}`),
-          ]);
+        : state === "partial"
+          ? el("span", { class: "sc-state is-part" }, [
+              glyph("in_progress", 16),
+              el("span", {}, `Partly met · ${met} of ${acs.length}`),
+            ])
+          : el("span", { class: "sc-state" }, [glyph("ready", 16), el("span", {}, `Open${ofMet}`)]);
 
   const tags = el("div", { class: "spec-clause-tags" }, [stateMark]);
   if (clause.bounce_count > 0) {
@@ -16898,18 +17003,21 @@ function renderClauseTrace(clause, n, { status, uncovered = false, loreOnce = nu
           el("li", { class: "spec-ac", dataset: { satisfied: String(ac.satisfied) } }, [
             glyph(ac.satisfied ? "done" : "ready", 14, ac.satisfied ? "satisfied" : ac.ac_status),
             el("span", { class: "spec-ac-text" }, ac.ac_text),
-            el(
-              "a",
-              {
-                class: "spec-ac-ticket",
-                href: `#/ticket/${encodeURIComponent(ac.ticket_id)}`,
-                title: ac.ticket_title || "",
-              },
-              ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
-            ),
-            ac.ticket_status
-              ? el("span", { class: "spec-ac-st" }, statusLabel(ac.ticket_status))
-              : null,
+            // The ticket and its status are one unit: they never wrap apart.
+            el("span", { class: "spec-ac-tk" }, [
+              el(
+                "a",
+                {
+                  class: "spec-ac-ticket",
+                  href: `#/ticket/${encodeURIComponent(ac.ticket_id)}`,
+                  title: ac.ticket_title || "",
+                },
+                ac.ticket_number != null ? `#${ac.ticket_number}` : ac.ticket_title,
+              ),
+              ac.ticket_status
+                ? el("span", { class: "spec-ac-st" }, statusLabel(ac.ticket_status))
+                : null,
+            ]),
           ]),
         ),
       ),

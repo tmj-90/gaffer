@@ -350,6 +350,7 @@
   }
   .ep-lines .edge.sat {
     stroke: var(--ink);
+    stroke-linecap: square;
   }
   .ep-lines .edge.pend {
     stroke: var(--ink-2);

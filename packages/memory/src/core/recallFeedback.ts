@@ -7,7 +7,10 @@
  * The loop, in three moves:
  *   1. RECALL LOG (`logRecall`)  — when the runner primes a ticket's context,
  *      memory records which items it SERVED, keyed by (repo, ticket). This is
- *      the read-event EDGE (migration 008 `recall_event`).
+ *      the read-event EDGE (migration 008 `recall_event`). Lore credit also
+ *      comes from the MCP read path: a `get_lore` the delivery agent made for
+ *      the ticket (migration 011 `retrieval_event`) — the record it actually
+ *      pulled into its context, not merely something a search offered.
  *   2. OUTCOME FEEDBACK (`recallFeedback`) — when the runner learns the ticket
  *      outcome, it PASSES it back. Memory looks up what it served for that
  *      ticket (its OWN read-event log) and adjusts its OWN items:
@@ -135,7 +138,7 @@ export interface RecallFeedbackResult {
   readonly loreAdjusted: ReadonlyArray<string>;
   /** File-card ids whose flag was adjusted on this call. */
   readonly cardsAdjusted: ReadonlyArray<string>;
-  /** Total served items considered (from the recall log). */
+  /** Distinct served items considered (recall log + lore fetched over MCP for the ticket). */
   readonly served: number;
 }
 
@@ -187,7 +190,25 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
     )
     .all(repo, ticket) as Array<{ item_type: RecallItemType; item_id: string }>;
 
-  const loreIds = served.filter((r) => r.item_type === "lore").map((r) => r.item_id);
+  // Lore the agent FETCHED for this ticket over MCP (get_lore). Search hits and
+  // the unconditional product-context block are deliberately NOT credited: they
+  // are offered, not used, and crediting them is outcome noise on records that
+  // had nothing to do with the delivery. `repo` on retrieval_event is
+  // best-effort ("" when the server had no ticket repo), so accept that too.
+  const fetched = db
+    .prepare(
+      `SELECT DISTINCT item_id FROM retrieval_event
+        WHERE ticket = ? AND item_type = 'lore' AND tool = 'get_lore' AND (repo = ? OR repo = '')
+        ORDER BY item_id`,
+    )
+    .all(ticket, repo) as Array<{ item_id: string }>;
+
+  const loreIds = [
+    ...new Set([
+      ...served.filter((r) => r.item_type === "lore").map((r) => r.item_id),
+      ...fetched.map((r) => r.item_id),
+    ]),
+  ];
   const cardIds = served.filter((r) => r.item_type === "card").map((r) => r.item_id);
 
   const ts = nowIso();
@@ -263,7 +284,7 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
         repo,
         ticket,
         outcome,
-        served: served.length,
+        served: loreIds.length + cardIds.length,
         loreAdjusted: loreAdjusted.length,
         cardsAdjusted: cardsAdjusted.length,
       }),
@@ -273,7 +294,7 @@ export function recallFeedback(db: Database, input: RecallFeedbackInput): Recall
 
   return {
     ...base,
-    served: served.length,
+    served: loreIds.length + cardIds.length,
     alreadyApplied: false,
     loreAdjusted,
     cardsAdjusted,

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli/index.js";
 import { openDb } from "../src/db/index.js";
 import { newLoreId } from "../src/core/ids.js";
+import { logRetrieval } from "../src/core/retrievalRoi.js";
 import { VERSION } from "../src/version.js";
 
 let dir: string;
@@ -1026,10 +1027,23 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
     return firstId(out);
   }
 
-  it("logs served items via cards-for-scope --ticket, then clean bumps confidence", async () => {
-    const id = await seedLore();
+  /** What the agent's memory MCP logs when it calls get_lore under GAFFER_RECALL_TICKET. */
+  function agentFetched(loreId: string, ticket: string): void {
+    const db = openDb();
+    try {
+      logRetrieval(db, {
+        repo: REPO,
+        ticket,
+        tool: "get_lore",
+        items: [{ type: "lore", id: loreId }],
+      });
+    } finally {
+      db.close();
+    }
+  }
+
+  async function primeTicket(ticket: string): Promise<{ lore: Array<{ id: string }> }> {
     out = "";
-    // Serve the lore into ticket 42's context (recall edge logged).
     expect(
       await run(
         "cards-for-scope",
@@ -1040,13 +1054,14 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
         "--query",
         "zorptastic",
         "--ticket",
-        "42",
+        ticket,
         "--json",
       ),
     ).toBe(0);
-    const packet = JSON.parse(out);
-    expect(packet.lore.some((l: { id: string }) => l.id === id)).toBe(true);
+    return JSON.parse(out) as { lore: Array<{ id: string }> };
+  }
 
+  async function feedback(ticket: string, outcome: string): Promise<{ loreAdjusted: string[] }> {
     out = "";
     expect(
       await run(
@@ -1054,50 +1069,44 @@ describe("CLI — memory feedback loop (recall-feedback + flagged)", () => {
         "--repo",
         REPO,
         "--ticket",
-        "42",
+        ticket,
         "--outcome",
-        "clean",
+        outcome,
         "--json",
       ),
     ).toBe(0);
-    const res = JSON.parse(out);
-    expect(res.alreadyApplied).toBe(false);
-    expect(res.loreAdjusted).toContain(id);
+    return JSON.parse(out) as { loreAdjusted: string[] };
+  }
 
-    // Confidence bumped low → medium; shows in `show`.
+  it("packet lore the primer never renders gets no outcome credit (audit: recall-feedback-wrong-items)", async () => {
+    const id = await seedLore();
+    const packet = await primeTicket("42");
+    // The packet carries the lore, but the runner's primer renders only cards
+    // and the digest — the agent never saw it, so it must not be adjusted.
+    expect(packet.lore.some((l) => l.id === id)).toBe(true);
+    expect((await feedback("42", "reworked")).loreAdjusted).toEqual([]);
+    out = "";
+    await run("show", id);
+    expect(out).toMatch(/conf=low/);
+    expect(out).not.toMatch(/flagged/);
+  });
+
+  it("lore the agent fetched for the ticket is credited: clean bumps confidence", async () => {
+    const id = await seedLore();
+    await primeTicket("43");
+    agentFetched(id, "43");
+    const res = await feedback("43", "clean");
+    expect(res.loreAdjusted).toEqual([id]);
     out = "";
     await run("show", id);
     expect(out).toMatch(/conf=medium/);
   });
 
-  it("blocked flags the served lore and surfaces it via `flagged`", async () => {
+  it("blocked flags the fetched lore and surfaces it via `flagged`", async () => {
     const id = await seedLore();
-    out = "";
-    await run(
-      "cards-for-scope",
-      "--canonical",
-      CANONICAL,
-      "--repo",
-      REPO,
-      "--query",
-      "zorptastic",
-      "--ticket",
-      "7",
-      "--json",
-    );
-    out = "";
-    expect(
-      await run(
-        "recall-feedback",
-        "--repo",
-        REPO,
-        "--ticket",
-        "7",
-        "--outcome",
-        "blocked",
-        "--json",
-      ),
-    ).toBe(0);
+    await primeTicket("7");
+    agentFetched(id, "7");
+    await feedback("7", "blocked");
 
     out = "";
     expect(await run("flagged", "--repo", REPO, "--json")).toBe(0);

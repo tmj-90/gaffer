@@ -21,7 +21,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 
 import { addBoundary } from "../src/core/boundaries.js";
-import { addLore } from "../src/core/lore.js";
+import { addLore, getLore } from "../src/core/lore.js";
+import { recallFeedback } from "../src/core/recallFeedback.js";
 import { recordAbsence } from "../src/core/absence.js";
 import { repoKey, upsertFileCard } from "../src/core/fileCards.js";
 import { addFeature, upsertDigest } from "../src/core/repoUnderstanding.js";
@@ -1029,6 +1030,31 @@ describe("MCP — retrieval-ROI logging on the read path (migration 011)", () =>
     expect(scope).toContainEqual({ item_type: "card", item_id: cardId });
     expect(scope).toContainEqual({ item_type: "digest", item_id: REPO });
     expect(scope).toContainEqual({ item_type: "lore", item_id: loreId });
+  });
+
+  it("recall-feedback credits exactly the lore the agent FETCHED, not what a search offered", async () => {
+    // Regression (audit: recall-feedback-wrong-items): outcome credit went to the
+    // packet lore cards-for-scope never rendered. Now it follows get_lore.
+    const { loreId } = seedAll();
+    const offered = addLore(db, {
+      title: "Webhook signing secret rotation",
+      summary: "s",
+      body: "b",
+      repos: [REPO],
+      source: "https://example.com/adr/2",
+      confidence: "medium",
+    });
+    process.env["GAFFER_RECALL_TICKET"] = "42";
+    process.env["GAFFER_TICKET_REPOS"] = REPO;
+    client = await connectClient(db);
+    const search = await callJson(client, "search_lore", { query: "webhook" });
+    expect(search.json.results.map((r: { id: string }) => r.id)).toContain(offered.id);
+    await callJson(client, "get_lore", { id: loreId });
+
+    const res = recallFeedback(db, { repo: REPO, ticket: "42", outcome: "reworked" });
+    expect(res.loreAdjusted).toEqual([loreId]);
+    expect(getLore(db, offered.id)!.confidence).toBe("medium"); // only offered → untouched
+    expect(getLore(db, loreId)!.confidence).toBe("low");
   });
 
   it("writes NOTHING when GAFFER_RECALL_TICKET is unset (standalone inert)", async () => {

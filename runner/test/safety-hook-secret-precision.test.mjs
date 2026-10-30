@@ -67,6 +67,18 @@ for (const cmd of [
 t.allow("Read tracked .env.example", read(".env.example"), opts);
 t.allow("Edit tracked .env.example", tool("Edit", { file_path: ".env.example" }), opts);
 t.allow("Write a new .env.template (agent supplies the content)", write(".env.template"), opts);
+// Wrapper contract: these few go through the real `node safety-hook.mjs` process; the
+// rest are decided in-process (see lib/hook-harness.mjs).
+t.allow("contract (spawned): Read tracked .env.example", read(".env.example"), {
+  ...opts,
+  spawn: true,
+});
+t.deny("contract (spawned): Read .env", read(".env"), { ...opts, spawn: true });
+t.allow(
+  'contract (spawned): grep -rn "process.env.PORT" src',
+  bash('grep -rn "process.env.PORT" src'),
+  { ...opts, spawn: true },
+);
 
 // Real secrets — still DENIED.
 for (const cmd of [

@@ -244,4 +244,17 @@ for (const cmd of [
   t.allow(`bootstrap: ${cmd}`, bash(cmd), boot);
 }
 
+// Wrapper contract: these few go through the real `node safety-hook.mjs` process; the
+// cases above are decided in-process (see lib/hook-harness.mjs).
+t.deny("contract (spawned): normal tick npm install", bash("npm install"), {
+  ...normal,
+  spawn: true,
+});
+t.allow("contract (spawned): normal tick pnpm test", bash("pnpm test"), { ...normal, spawn: true });
+t.allow(
+  "contract (spawned): bootstrap npm install --ignore-scripts",
+  bash("npm install --ignore-scripts"),
+  { ...boot, spawn: true },
+);
+
 t.done();

@@ -1,36 +1,39 @@
 #!/usr/bin/env node
 // Zero-dependency tests for the PreToolUse safety hook (the deterministic
-// bouncer). Each case pipes a Claude Code tool-call JSON payload through a real
-// `node safety-hook.mjs` subprocess and asserts the exit code:
+// bouncer). Each rule check hands a Claude Code tool-call payload to the hook's
+// decision, decide() from safety-hook-core.mjs, IN-PROCESS, with the cwd and env a
+// hook process would get, and asserts the exit code the hook would exit with:
 //   exit 0 = ALLOW, exit 2 = BLOCK (deny).
+// The SUBPROCESS CONTRACT section at the end spawns the real `node safety-hook.mjs`
+// wrapper: those cases prove the process plumbing (stdin, exit code, stderr,
+// stdout, the fail-closed guards); the in-process checks prove the rules.
 // Run: node test/safety-hook.test.mjs    (or: node --test test/)
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
+import { decide, decideRaw } from "../safety-hook-core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOOK = resolve(HERE, "..", "safety-hook.mjs");
+const RUNNER = resolve(HERE, "..");
 
-/** Run the hook with a Bash command; return its exit code. */
-function runBash(command) {
-  const payload = JSON.stringify({ tool_name: "Bash", tool_input: { command } });
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: payload,
-    cwd: resolve(HERE, ".."),
-    encoding: "utf8",
-  });
-  return res.status;
+/**
+ * The exit code the hook would exit with for `payload`, decided in-process. `env`
+ * is the COMPLETE environment (as a spawn's env); omitted, the decision sees this
+ * process's env, as a spawn without `env` would.
+ */
+function hookExit(payload, { env, cwd = RUNNER } = {}) {
+  return decide(payload, { env, cwd }).exitCode;
 }
 
-/** Run the hook for a Read/Write/Edit tool; return its exit code. */
+/** Decide a Bash command; return the hook's exit code. */
+function runBash(command) {
+  return hookExit({ tool_name: "Bash", tool_input: { command } });
+}
+
+/** Decide a Read/Write/Edit tool call; return the hook's exit code. */
 function runFileTool(tool, filePath) {
-  const payload = JSON.stringify({ tool_name: tool, tool_input: { file_path: filePath } });
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: payload,
-    cwd: resolve(HERE, ".."),
-    encoding: "utf8",
-  });
-  return res.status;
+  return hookExit({ tool_name: tool, tool_input: { file_path: filePath } });
 }
 
 let passed = 0;
@@ -391,7 +394,15 @@ allowed("pure content search names no secret path (documented gap)", "grep -R TO
 // temp directories to act as a write-root and a read-root, and run the hook
 // with GAFFER_WRITE_ROOTS / GAFFER_READ_ROOTS set, asserting allow/deny.
 // =====================================================================
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 
 // --- Deterministic replacement for the stale `git add .` allow ---------------
@@ -412,16 +423,12 @@ import { tmpdir } from "node:os";
       "-e",
       `require('fs').writeFileSync(${JSON.stringify(resolve(repo, "README.md"))}, "hi")`,
     ]);
-    const inside = spawnSync(process.execPath, [HOOK], {
-      input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "git add ." } }),
-      cwd: repo,
-      encoding: "utf8",
-    });
-    if (inside.status === 0) passed += 1;
-    else
-      failures.push(
-        `ALLOW expected (git add . inside secret-free repo) but got exit ${inside.status}`,
-      );
+    const inside = hookExit(
+      { tool_name: "Bash", tool_input: { command: "git add ." } },
+      { cwd: repo },
+    );
+    if (inside === 0) passed += 1;
+    else failures.push(`ALLOW expected (git add . inside secret-free repo) but got exit ${inside}`);
   } else {
     // No git binary in this environment — skip the inside-repo assertion rather
     // than fail spuriously, but still assert the outside-repo deny below.
@@ -429,16 +436,13 @@ import { tmpdir } from "node:os";
   }
   // Outside any git repo, `git add .` cannot be proven secret-free → fail-closed.
   const noRepo = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-norepo-")));
-  const outside = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "git add ." } }),
-    cwd: noRepo,
-    encoding: "utf8",
-  });
-  if (outside.status === 2) passed += 1;
+  const outside = hookExit(
+    { tool_name: "Bash", tool_input: { command: "git add ." } },
+    { cwd: noRepo },
+  );
+  if (outside === 2) passed += 1;
   else
-    failures.push(
-      `DENY expected (git add . outside a repo, fail-closed) but got exit ${outside.status}`,
-    );
+    failures.push(`DENY expected (git add . outside a repo, fail-closed) but got exit ${outside}`);
   rmSync(repo, { recursive: true, force: true });
   rmSync(noRepo, { recursive: true, force: true });
 }
@@ -448,15 +452,9 @@ const READ_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-read-")));
 const OUTSIDE = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-outside-")));
 const ROOT_ENV = { GAFFER_WRITE_ROOTS: WRITE_ROOT, GAFFER_READ_ROOTS: READ_ROOT };
 
-/** Run a tool payload with explicit env + cwd; return the exit code. */
+/** Decide a tool payload with explicit env + cwd; return the exit code. */
 function runWithEnv(payload, env, cwd) {
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: JSON.stringify(payload),
-    cwd,
-    env: { ...process.env, ...env },
-    encoding: "utf8",
-  });
-  return res.status;
+  return hookExit(payload, { env: { ...process.env, ...env }, cwd });
 }
 function rootCase(label, payload, env, cwd, expect) {
   const code = runWithEnv(payload, env, cwd);
@@ -1441,15 +1439,12 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
 // unaffected by the logging. ---
 {
   const ledgerDir = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-ledger-")));
-  const payload = JSON.stringify({ tool_name: "Bash", tool_input: { command: "cat .env" } });
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: payload,
-    cwd: resolve(HERE, ".."),
-    encoding: "utf8",
+  const payload = { tool_name: "Bash", tool_input: { command: "cat .env" } };
+  const res = hookExit(payload, {
     env: { ...process.env, GAFFER_DATA: ledgerDir, GAFFER_TICKET: "99" },
   });
-  if (res.status === 2) passed += 1;
-  else failures.push(`block-ledger: expected deny exit 2, got ${res.status}`);
+  if (res === 2) passed += 1;
+  else failures.push(`block-ledger: expected deny exit 2, got ${res}`);
   let entry = null;
   try {
     entry = JSON.parse(readFileSync(resolve(ledgerDir, "safety-blocks.jsonl"), "utf8").trim());
@@ -1459,15 +1454,9 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
   if (entry && entry.category === "secret-read" && entry.tool === "Bash" && entry.ticket === "99")
     passed += 1;
   else failures.push(`block-ledger: expected a secret-read entry, got ${JSON.stringify(entry)}`);
-  const res2 = spawnSync(process.execPath, [HOOK], {
-    input: payload,
-    cwd: resolve(HERE, ".."),
-    encoding: "utf8",
-    env: { ...process.env, GAFFER_DATA: "" },
-  });
-  if (res2.status === 2) passed += 1;
-  else
-    failures.push(`block-ledger: deny must still exit 2 without GAFFER_DATA, got ${res2.status}`);
+  const res2 = hookExit(payload, { env: { ...process.env, GAFFER_DATA: "" } });
+  if (res2 === 2) passed += 1;
+  else failures.push(`block-ledger: deny must still exit 2 without GAFFER_DATA, got ${res2}`);
   rmSync(ledgerDir, { recursive: true, force: true });
 }
 
@@ -1779,14 +1768,10 @@ allowed("rm .env (still a governed op)", "rm .env");
 // throws we cannot identify the tool/target, so we cannot prove the call is safe —
 // this now matches every other error path in the hook. An EMPTY / whitespace-only
 // payload is distinct: it parses as {} (identifies no mutating tool) and stays an
-// ALLOW. Feed raw stdin directly (bypassing the JSON.stringify helpers).
+// ALLOW. Feed the raw stdin text directly (bypassing the JSON.stringify helpers);
+// the SUBPROCESS CONTRACT section below pipes the same inputs into the real wrapper.
 function runRawStdin(raw) {
-  const res = spawnSync(process.execPath, [HOOK], {
-    input: raw,
-    cwd: resolve(HERE, ".."),
-    encoding: "utf8",
-  });
-  return res.status;
+  return decideRaw(raw, { cwd: RUNNER }).exitCode;
 }
 if (runRawStdin("not json {") === 2) passed += 1;
 else failures.push("DENY expected: unparseable JSON payload must fail closed (exit 2)");
@@ -1796,6 +1781,199 @@ if (runRawStdin("") === 0) passed += 1;
 else failures.push("ALLOW expected: empty stdin parses as {} and stays allowed");
 if (runRawStdin("   \n  ") === 0) passed += 1;
 else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays allowed");
+
+// =====================================================================
+// SUBPROCESS CONTRACT — the real wrapper, spawned the way Claude Code runs it
+// ---------------------------------------------------------------------
+// Everything above decides in-process (the rules). These cases spawn
+// `node safety-hook.mjs` and pin what only the process shows: exit 0 / 2 per tool
+// kind with the reason on stderr, an allowed Grep's rewritten input on stdout,
+// malformed / empty stdin, a crash while deciding, the block ledger the process
+// writes, both guarded imports failing closed, and a relative invocation from the
+// agent's worktree.
+// =====================================================================
+{
+  const BLOCKED = "BLOCKED by gaffer safety hook: ";
+  const CT_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-contract-")));
+  const CT_ENV = { ...process.env, GAFFER_WRITE_ROOTS: CT_ROOT, GAFFER_READ_ROOTS: "" };
+  const inRoot = { env: CT_ENV, cwd: CT_ROOT };
+  /** Spawn the wrapper with raw stdin; return { status, stdout, stderr }. */
+  const spawnHook = (input, { env = process.env, cwd = RUNNER, hook = HOOK } = {}) => {
+    const res = spawnSync(process.execPath, [hook], { input, cwd, env, encoding: "utf8" });
+    return { status: res.status, stdout: res.stdout || "", stderr: res.stderr || "" };
+  };
+  /** One contract case: exit code, and stderr carrying `reason` (a block) or empty. */
+  const contract = (label, input, opts, want, reason) => {
+    const res = spawnHook(typeof input === "string" ? input : JSON.stringify(input), opts);
+    const stderrOk =
+      want === 0
+        ? res.stderr === ""
+        : res.stderr.startsWith(BLOCKED) && res.stderr.includes(reason);
+    if (res.status === want && stderrOk) passed += 1;
+    else
+      failures.push(
+        `CONTRACT ${label}: expected exit ${want}${reason ? ` + stderr "${reason}"` : ""}, got exit ${res.status} stderr ${JSON.stringify(res.stderr.slice(0, 200))}`,
+      );
+    return res;
+  };
+  const call = (tool_name, tool_input) => ({ tool_name, tool_input });
+
+  contract("Bash allow", call("Bash", { command: "ls" }), {}, 0);
+  contract("Bash block (secret read)", call("Bash", { command: "cat .env" }), {}, 2, "secret path");
+  contract(
+    "Bash block (deny-list)",
+    call("Bash", { command: "git push --force origin main" }),
+    {},
+    2,
+    "force push",
+  );
+  contract("Read allow", call("Read", { file_path: "safety-hook.mjs" }), {}, 0);
+  contract("Read block", call("Read", { file_path: ".env" }), {}, 2, "read of a secret file");
+  contract("Write allow", call("Write", { file_path: "new.txt" }), inRoot, 0);
+  contract(
+    "Write block",
+    call("Write", { file_path: "/etc/gaffer-contract" }),
+    inRoot,
+    2,
+    "write outside write-roots",
+  );
+  contract("Edit allow", call("Edit", { file_path: "a.txt" }), inRoot, 0);
+  contract(
+    "Edit block",
+    call("Edit", { file_path: ".git/config" }),
+    inRoot,
+    2,
+    "write inside .git",
+  );
+  contract(
+    "MultiEdit block",
+    call("MultiEdit", { file_path: ".env" }),
+    inRoot,
+    2,
+    "write to a secret file",
+  );
+  contract("NotebookEdit allow", call("NotebookEdit", { notebook_path: "a.ipynb" }), inRoot, 0);
+  // An allowed Grep answers on stdout with its input rewritten to exclude secret files.
+  const grep = contract("Grep allow", call("Grep", { pattern: "x", glob: "*.mjs" }), {}, 0);
+  let rewritten = null;
+  try {
+    rewritten = JSON.parse(grep.stdout).hookSpecificOutput;
+  } catch {
+    /* asserted below */
+  }
+  if (
+    rewritten &&
+    rewritten.permissionDecision === "allow" &&
+    rewritten.updatedInput.pattern === "x" &&
+    rewritten.updatedInput.glob.startsWith("*.mjs ") &&
+    rewritten.updatedInput.glob.includes("!**/.env")
+  )
+    passed += 1;
+  else failures.push(`CONTRACT Grep allow: stdout lacks the rewritten input: ${grep.stdout}`);
+  contract(
+    "Grep block",
+    call("Grep", { pattern: "x", glob: ".env*" }),
+    {},
+    2,
+    "glob selects a secret-file family",
+  );
+  const glob = contract("Glob allow", call("Glob", { pattern: "**/*.mjs" }), {}, 0);
+  if (glob.stdout === "") passed += 1;
+  else failures.push(`CONTRACT Glob allow: expected no stdout, got ${glob.stdout}`);
+  contract("Glob block", call("Glob", { pattern: "**/.env" }), {}, 2, "secret-file family");
+  // WebFetch has no allow path: if a broader matcher ever routes it here, it is refused.
+  contract(
+    "WebFetch block",
+    call("WebFetch", { url: "https://example.com" }),
+    {},
+    2,
+    "not on its allowlist",
+  );
+  contract("MCP allow (dispatch)", call("mcp__dispatch__get_ticket", {}), {}, 0);
+  contract(
+    "MCP block (other server)",
+    call("mcp__github__create_issue", {}),
+    {},
+    2,
+    "not on its allowlist",
+  );
+  contract("non-file tool allow", call("TodoWrite", { todos: [] }), {}, 0);
+  contract("unknown tool block", call("Frobnicate", {}), {}, 2, "not on its allowlist");
+  contract("malformed JSON", "not json {", {}, 2, "unparseable hook payload");
+  contract("truncated JSON", "{ broken: ", {}, 2, "unparseable hook payload");
+  contract("empty stdin (parses as {})", "", {}, 0);
+  contract("whitespace stdin (parses as {})", "   \n  ", {}, 0);
+  contract("payload that throws (null)", "null", {}, 2, "safety hook crashed while deciding");
+  contract(
+    "path that throws (canonicalize bound)",
+    call("Read", { file_path: "a/".repeat(3000) }),
+    {},
+    2,
+    "canonicalize: path too long",
+  );
+
+  // The ledger is written by the hook process itself.
+  const ledgerDir = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-contract-ledger-")));
+  contract(
+    "block ledger",
+    call("Bash", { command: "cat .env" }),
+    { env: { ...process.env, GAFFER_DATA: ledgerDir, GAFFER_TICKET: "7" } },
+    2,
+    "secret path",
+  );
+  let ledgerEntry = null;
+  try {
+    ledgerEntry = JSON.parse(readFileSync(resolve(ledgerDir, "safety-blocks.jsonl"), "utf8"));
+  } catch {
+    /* asserted below */
+  }
+  if (ledgerEntry && ledgerEntry.ticket === "7" && ledgerEntry.category === "secret-read")
+    passed += 1;
+  else
+    failures.push(
+      `CONTRACT block ledger: no entry from the process: ${JSON.stringify(ledgerEntry)}`,
+    );
+
+  // As Claude Code runs it: `node <path>` with cwd = the agent's worktree, here a
+  // relative path from a directory outside runner/.
+  const relHook = relative(CT_ROOT, HOOK);
+  contract(
+    "relative invocation allow",
+    call("Bash", { command: "ls" }),
+    { ...inRoot, hook: relHook },
+    0,
+  );
+  contract(
+    "relative invocation block",
+    call("Bash", { command: "cat .env" }),
+    { ...inRoot, hook: relHook },
+    2,
+    "secret path",
+  );
+
+  // Both guarded imports fail CLOSED (exit 2), never exit 1 (= ALLOW): the wrapper
+  // without its core, and wrapper + core without the deny-list.
+  const lone = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-contract-lone-")));
+  copyFileSync(HOOK, resolve(lone, "safety-hook.mjs"));
+  const noCore = spawnHook(JSON.stringify(call("Bash", { command: "ls" })), {
+    hook: resolve(lone, "safety-hook.mjs"),
+  });
+  if (noCore.status === 2 && noCore.stderr.includes("cannot load the decision core")) passed += 1;
+  else failures.push(`CONTRACT missing core: expected fail-closed exit 2, got ${noCore.status}`);
+  copyFileSync(resolve(RUNNER, "safety-hook-core.mjs"), resolve(lone, "safety-hook-core.mjs"));
+  const noRules = spawnHook(JSON.stringify(call("Bash", { command: "ls" })), {
+    hook: resolve(lone, "safety-hook.mjs"),
+  });
+  if (
+    noRules.status === 2 &&
+    noRules.stderr.includes("cannot load the dangerous-command deny-list")
+  )
+    passed += 1;
+  else
+    failures.push(`CONTRACT missing deny-list: expected fail-closed exit 2, got ${noRules.status}`);
+
+  for (const d of [CT_ROOT, ledgerDir, lone]) rmSync(d, { recursive: true, force: true });
+}
 
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);

@@ -1,16 +1,26 @@
 // Shared harness for the focused safety-hook test files (safety-hook-*.test.mjs).
-// Each case pipes a Claude Code PreToolUse payload through a real
-// `node safety-hook.mjs` subprocess with an explicit env + cwd and asserts the
-// exit code (0 = ALLOW, 2 = BLOCK). Zero dependencies, like safety-hook.test.mjs.
+// Each case hands a Claude Code PreToolUse payload, with an explicit env + cwd, to
+// the hook and asserts the exit code (0 = ALLOW, 2 = BLOCK). Zero dependencies,
+// like safety-hook.test.mjs.
+//
+// A case is decided IN-PROCESS by decide() from safety-hook-core.mjs, with the
+// complete env and cwd a spawned hook would get, unless it cannot be: the core
+// fixes its factory-code paths (FACTORY_CODE_TEXT) from os.homedir() when it
+// loads, so a case whose HOME differs from this process's runs the real
+// `node safety-hook.mjs` subprocess instead, as does any case passed
+// `{ spawn: true }` (the wrapper's contract cases).
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { decide } from "../../safety-hook-core.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const RUNNER_DIR = resolve(HERE, "..", "..");
 export const HOOK = resolve(RUNNER_DIR, "safety-hook.mjs");
+// The HOME the core loaded under (it is imported before this module body runs).
+const LOAD_HOME = process.env.HOME;
 
 export const bash = (command) => ({ tool_name: "Bash", tool_input: { command } });
 export const write = (file) => ({ tool_name: "Write", tool_input: { file_path: file } });
@@ -22,15 +32,28 @@ export function scratchDir(prefix) {
   return realpathSync(mkdtempSync(resolve(tmpdir(), prefix)));
 }
 
-/** Run the hook; return { status, stdout, stderr }. */
-export function runHook(payload, { env = {}, cwd = RUNNER_DIR } = {}) {
+/**
+ * Decide `payload` (in-process, or by spawning the hook — see the header); return
+ * { status, stdout, stderr, spawned }. `env` is merged over this process's env.
+ */
+export function runHook(payload, { env = {}, cwd = RUNNER_DIR, spawn = false } = {}) {
+  const fullEnv = { ...process.env, ...env };
+  if (!spawn && fullEnv.HOME === LOAD_HOME) {
+    const r = decide(payload, { env: fullEnv, cwd });
+    return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr, spawned: false };
+  }
   const res = spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify(payload),
     cwd,
-    env: { ...process.env, ...env },
+    env: fullEnv,
     encoding: "utf8",
   });
-  return { status: res.status, stdout: res.stdout || "", stderr: res.stderr || "" };
+  return {
+    status: res.status,
+    stdout: res.stdout || "",
+    stderr: res.stderr || "",
+    spawned: true,
+  };
 }
 
 /** A tiny pass/fail recorder; `done()` prints the summary and sets the exit code. */

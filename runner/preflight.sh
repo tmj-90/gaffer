@@ -68,6 +68,7 @@ done
 [ -f "$MCP_CONFIG" ] && ok ".mcp.json (both servers)" || no ".mcp.json missing"
 [ -f "$CLAUDE_SETTINGS" ] && ok "claude settings (hook + permissions)" || no "settings.json missing"
 node --check "$HERE/safety-hook.mjs" 2>/dev/null && ok "safety hook parses" || no "safety hook broken"
+node --check "$HERE/safety-hook-core.mjs" 2>/dev/null && ok "safety hook core parses" || no "safety hook core broken"
 SK=$(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
 [ "${SK:-0}" -gt 0 ] && ok "$SK skills installed" || no "no skills found in $SKILLS_DIR"
 

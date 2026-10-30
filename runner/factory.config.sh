@@ -1853,6 +1853,17 @@ gaffer_afk_ship_plan() {
   fi
 }
 
+# The default SECURITY-SENSITIVE PATH regex, shared by the lite trivial classifier and
+# the security second-review lane (one definition, so the two cannot drift). The
+# `auth` stem is bounded: author/authors/authoring used to trip it (an extra security
+# reviewer per approve, and a lite trivial change held as "sensitive"). It still
+# matches auth, authn, authz, oauth/OAuth2, authentication, authorization, authorize*,
+# authenticat*, and the camelCase / separator forms (authService, AuthGuard,
+# auth-service, auth_utils, auth.ts, auth/). Every other stem stays a PREFIX match on
+# purpose — this is a security gate, so .env* (incl. .envrc), secrets*, security*,
+# migrations* keep matching. `[[:upper:]]` (not A-Z) so the class holds in any locale.
+_GAFFER_SENSITIVE_PATH_RE='(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|[Oo]?[Aa]uth([nz]|[0-9]+|entic[a-z]*|ori[sz][a-z]*)?([[:upper:]]|[/._-]|$)|[Ss]ecurity|[Ss]ecrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)'
+
 # LITE MODE trivial classifier — PURE core. Decides whether a ticket is trivial enough
 # to auto-approve WITHOUT a human reviewer. This is an ADDITIONAL narrowing that only
 # applies in GAFFER_MODE=lite: a trivial ticket has already passed the DoD (tests/lint/
@@ -1869,7 +1880,7 @@ gaffer_afk_ship_plan() {
 gaffer_lite_trivial_reason() {
   local _risk="$1" _lines="$2" _files="$3" _paths="$4"
   local _maxl="${GAFFER_LITE_MAX_LINES:-60}" _maxf="${GAFFER_LITE_MAX_FILES:-4}"
-  local _re="${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}"
+  local _re="${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}"
   [ "$_risk" = "low" ] || { printf 'nontrivial:risk=%s\n' "$_risk"; return 0; }
   case "$_lines" in '' | *[!0-9]*) _lines=999999 ;; esac
   case "$_files" in '' | *[!0-9]*) _files=999999 ;; esac
@@ -1925,7 +1936,7 @@ gaffer_needs_security_review() {
   case "${GAFFER_SECURITY_REVIEW:-1}" in 0|false|no|off) return 1 ;; esac
   _risk="$(wg ticket show "$_num" 2>/dev/null | jget 'd.ticket.risk_level || "medium"' 2>/dev/null || echo medium)"
   if [ "$_risk" = "high" ]; then GAFFER_SECURITY_REVIEW_REASON="risk=high"; return 0; fi
-  _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-(^|/)([Mm]igrations?|\.github/|[Dd]ockerfile|auth|security|secrets?|\.env|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|\.gaffer|safety-hook)}}"
+  _re="${GAFFER_SECURITY_REVIEW_RE:-${GAFFER_LITE_SENSITIVE_RE:-$_GAFFER_SENSITIVE_PATH_RE}}"
   _paths="$(git -C "$_repo" diff "$_base"..."$_branch" --name-only 2>/dev/null)"
   if printf '%s\n' "$_paths" | grep -qE "$_re"; then
     GAFFER_SECURITY_REVIEW_REASON="sensitive-path: $(printf '%s\n' "$_paths" | grep -E "$_re" | head -3 | paste -sd, -)"

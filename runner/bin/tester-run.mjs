@@ -89,6 +89,7 @@ import {
   recordKilledCall,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
+import { writeAgentSettings } from "../lib/agent-home.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -683,7 +684,7 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
 }
 
 /** Install the tester's agent wiring into the worktree: role-selected skills, settings, brief. */
-function installTesterAgentDir(worktree, ticketNumber, stack) {
+export function installTesterAgentDir(worktree, ticketNumber, stack) {
   const claudeDir = resolve(worktree, ".claude");
   mkdirSync(claudeDir, { recursive: true });
   const mountRoot = resolve(GAFFER_DATA, "skills-mounts");
@@ -708,10 +709,9 @@ function installTesterAgentDir(worktree, ticketNumber, stack) {
   }
   rmSync(resolve(claudeDir, "skills"), { recursive: true, force: true });
   symlinkSync(linked > 0 ? mount : CONFIG.skillsDir, resolve(claudeDir, "skills"), "dir");
-  const settings = readFileSync(CONFIG.claudeSettings, "utf8")
-    .split("${RUNNER_DIR}")
-    .join(RUNNER_DIR);
-  writeFileSync(resolve(claudeDir, "settings.json"), settings);
+  // Render AND verify the safety-hook wiring (throws "SAFETY: …" on an unwired or
+  // unreadable template; the caller's fail() then refuses the spawn — fail closed).
+  writeAgentSettings(claudeDir, CONFIG.claudeSettings);
   copyFileSync(resolve(RUNNER_DIR, "claude", "CLAUDE.md"), resolve(worktree, "CLAUDE.factory.md"));
   return names;
 }

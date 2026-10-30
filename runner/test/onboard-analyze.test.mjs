@@ -1093,7 +1093,7 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
     stub,
     [
       "#!/bin/bash",
-      `{ echo "CWD=$PWD"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a//$'\\n'/ }"; done; } > "${rec}"`,
+      `{ echo "CWD=$PWD"; grep -qF "${RUNNER_DIR}/safety-hook.mjs" .claude/settings.json 2>/dev/null && echo "SETTINGS=verified"; for a in "$@"; do printf 'ARG<%s>\\n' "\${a//$'\\n'/ }"; done; } > "${rec}"`,
       `echo '{"type":"result","result":"\`\`\`json\\n{\\"cards\\":[]}\\n\`\`\`","usage":{"input_tokens":1,"output_tokens":1},"total_cost_usd":0}'`,
       "",
     ].join("\n"),
@@ -1134,6 +1134,10 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
     const cwd = (lines.find((l) => l.startsWith("CWD=")) || "").slice(4);
     assert(`${label}: cwd is NOT runner/ (runner/CLAUDE.md no longer loads)`, cwd !== RUNNER_DIR);
     assert(`${label}: cwd is an empty scratch dir`, /gaffer-onboard-text-/.test(cwd));
+    assert(
+      `${label}: the scratch cwd carries the verified safety-hook settings`,
+      lines.includes("SETTINGS=verified"),
+    );
     assert(`${label}: built-in tools disabled (--tools "")`, after(a, "--tools") === "");
     assert(`${label}: --strict-mcp-config`, a.includes("--strict-mcp-config"));
     assert(
@@ -1155,6 +1159,23 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
   );
   assert("synthesis turn is not tool-less", !a.includes("--tools"));
   assert("synthesis turn: GAFFER_ONBOARD_MAX_TURNS default 60", after(a, "--max-turns") === "60");
+  // A settings template without the safety-hook wiring refuses the text-only turn
+  // (a failed call, never a hook-less spawn) and leaves no scratch dir behind.
+  const unwired = join(dir, "unwired.json");
+  writeFileSync(unwired, '{"hooks":{}}');
+  writeFileSync(rec, "");
+  const refused = runCardReviewTurn(
+    buildCardReviewPrompt("a.js", "js", { imports: [], symbols: [] }, "f(){}", { tldr: "x" }),
+    { ...env, CLAUDE_SETTINGS: unwired },
+  );
+  assert(
+    "unwired settings: the text-only turn is refused (claude never spawned)",
+    readFileSync(rec, "utf8") === "",
+  );
+  assert(
+    "unwired settings: reported as a failed SAFETY call",
+    JSON.stringify(refused ?? null).includes("SAFETY"),
+  );
   rmSync(dir, { recursive: true, force: true });
 }
 

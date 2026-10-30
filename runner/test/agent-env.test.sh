@@ -28,6 +28,18 @@ WT2="$WORK/wt2"; mkdir -p "$WT2/.claude"
 if gaffer_write_agent_settings "$WT2" 2>/dev/null; then fail "unwired template accepted"; else ok "returns 1 for a template without PreToolUse wiring"; fi
 [ ! -e "$WT2/.claude/settings.json" ] && ok "unwired settings.json removed (agent cannot load it)" || fail "unwired file survived"
 
+echo "== 2b: a wired template whose hook fails OPEN on a timeout is refused =="
+# Claude Code runs the tool when a hook times out unless the entry says onFailure: block.
+CLAUDE_SETTINGS="$WORK/failopen.json"
+sed -e '/"onFailure": "block"/d' -e 's#"timeout": 60,#"timeout": 60#' "$RUNNER_DIR/claude/settings.json" > "$CLAUDE_SETTINGS"
+WT2B="$WORK/wt2b"
+if gaffer_write_agent_settings "$WT2B" 2>/dev/null; then fail "fail-open template accepted"; else ok "returns 1 for a hook entry without onFailure: block"; fi
+[ ! -e "$WT2B/.claude/settings.json" ] && ok "fail-open settings.json removed" || fail "fail-open file survived"
+# One line, two entries, only the first fails closed: counted per occurrence, refused.
+CLAUDE_SETTINGS="$WORK/partial.json"
+printf '{"hooks":{"PreToolUse":[{"command":"node %s/safety-hook.mjs","timeout":60,"onFailure":"block"},{"command":"node %s/safety-hook.mjs"}]}}\n' "$RUNNER_DIR" "$RUNNER_DIR" > "$CLAUDE_SETTINGS"
+if gaffer_write_agent_settings "$WORK/wt2c" 2>/dev/null; then fail "one-line template with a fail-open entry accepted"; else ok "returns 1 when any one entry lacks onFailure: block"; fi
+
 echo "== 3: a MISSING template fails closed =="
 CLAUDE_SETTINGS="$WORK/does-not-exist.json"
 if gaffer_write_agent_settings "$WORK/wt3" 2>/dev/null; then fail "missing template accepted"; else ok "returns 1 when the template is unreadable"; fi

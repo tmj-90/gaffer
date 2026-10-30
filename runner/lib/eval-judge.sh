@@ -27,6 +27,8 @@
 # acceptEdits, from an EMPTY scratch cwd that is also its only write root (never the
 # delivery worktree: the target repo's CLAUDE.md / skills / settings never load, and
 # none of the delivery's DB/ticket env reaches it), under GAFFER_JUDGE_MAX_TURNS (2).
+# The scratch cwd carries only the factory's verified safety-hook settings
+# (gaffer_write_agent_settings); a judge whose settings cannot be verified is skipped.
 # It used to inherit the delivery's acceptEdits, the 200-turn delivery cap and the
 # worktree as cwd + write root — so a diff carrying a prompt injection could make a
 # "one-shot" judge edit the just-submitted delivery.
@@ -46,6 +48,9 @@ gaffer_eval_judge_delivery() (
   [ -n "$num" ] && [ -d "$repo_dir" ] || return 0
   command -v node >/dev/null 2>&1 || return 0
   type worker_deliver >/dev/null 2>&1 || return 0
+  # The judge's scratch cwd gets the verified safety-hook settings (lib/agent-env.sh),
+  # like every other spawn site; without the writer the judge is not launched.
+  type gaffer_write_agent_settings >/dev/null 2>&1 || return 0
 
   crew_dir="${CREW_DIR:-$RUNNER_DIR/../packages/crew}"
   judge_cli="$crew_dir/dist/eval/deliveryJudgeCli.js"
@@ -83,6 +88,14 @@ gaffer_eval_judge_delivery() (
   [ -n "$prompt" ] || return 0
   printf '{"mcpServers":{}}' > "$tmp/mcp.json"
   mkdir -p "$tmp/cwd" || return 0
+  # Render AND verify the safety-hook settings into the scratch cwd. The judge is
+  # text-only, so the hook is defence in depth; the delivery worktree it used to run
+  # in carried them. A template that cannot be rendered or verified skips judging
+  # (fail closed for the spawn, fail soft for the delivery).
+  if ! gaffer_write_agent_settings "$tmp/cwd"; then
+    type log >/dev/null 2>&1 && log "EVAL: judge #$num skipped — its safety-hook settings could not be rendered and verified" || true
+    return 0
+  fi
   # The judge's own boundary: its scratch cwd is the only write root (the sandbox
   # wrap, when on, is derived from these), never the caller's delivery roots.
   WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$tmp/cwd" "GAFFER_READ_ROOTS=")

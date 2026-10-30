@@ -121,6 +121,7 @@ import {
 } from "../lib/feature-digest.mjs";
 import { refreshFileCards, repoCanonical } from "../lib/onboard-analyze.mjs";
 import { maxTurnsArgv, roleTurnCap, Worker } from "../lib/worker.mjs";
+import { writeAgentSettings } from "../lib/agent-home.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -632,10 +633,9 @@ export function installProjectLocalWiring(worktreePath, ticketNumber, repoName) 
   }
   symlinkSync(CONFIG.skillsDir, skillsLink, "dir");
 
-  const settings = readFileSync(CONFIG.claudeSettings, "utf8")
-    .split("${RUNNER_DIR}")
-    .join(RUNNER_DIR);
-  writeFileSync(resolve(claudeDir, "settings.json"), settings);
+  // Render AND verify the safety-hook wiring: an unwired or unreadable template
+  // throws "SAFETY: …" and the caller refuses the resolver spawn (fail closed).
+  writeAgentSettings(claudeDir, CONFIG.claudeSettings);
 
   mkdirSync(GAFFER_DATA, { recursive: true });
   // One runtime file PER TICKET: two concurrent resolvers used to share (and rewrite)

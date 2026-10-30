@@ -67,8 +67,18 @@ export function repoCanonical(repoPath) {
  * @param {string[]} [opts.paths]       — optional path hints to narrow selection
  * @param {NodeJS.ProcessEnv} [opts.env] — environment (defaults to process.env)
  */
+// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
+// any tag, any case, padded with whitespace / zero-width characters, terminated or
+// not. Deleting a delimiter in one pass let a nested token reassemble itself:
+// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
+// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
+// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
+const UNTRUSTED_DELIMITER_RE =
+  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
+  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
+
 /**
- * Strip any embedded `<untrusted-*>` / `</untrusted-*>` delimiter tokens from a
+ * Neutralise any embedded `<untrusted-*>` / `</untrusted-*>` delimiter in a
  * card field value (tldr, overview, path, symbol names).  Card content is
  * model-derived from repo source, so comments or docs may smuggle delimiter
  * strings that would close the outer <untrusted-file-cards> envelope early and
@@ -77,7 +87,7 @@ export function repoCanonical(repoPath) {
  * specific `file-cards` tag in case of double-encoding.
  */
 function sanitizeCardField(s) {
-  return String(s ?? "").replace(/<\/?untrusted-[^>]*>/gi, "");
+  return String(s ?? "").replace(UNTRUSTED_DELIMITER_RE, "&lt;");
 }
 
 export function primeContextBlock({ realRepoPath, repo, query, paths = [], env = process.env }) {

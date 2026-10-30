@@ -74,8 +74,18 @@ const READ_COPY_TOOLS =
 const MCP_RUNTIME_FILE = String.raw`mcp-runtime(?:\.\w+)*\.json`;
 const TOKEN_CODE_EXT = String.raw`tsx|ts|jsx|js|mjs|cjs|css|scss|sass|less|vue|svelte`;
 const TOKEN_SOURCE_EXT_GUARD = String.raw`(?!(?:\.(?:${TOKEN_CODE_EXT})|(?<=design[._-]tokens?)(?:\.[\w-]+)?|(?<=\.tokens)(?:\.json)?)(?![\w.]))`;
+// CLI credential stores (gh hosts.yml, docker config.json, kubeconfig, gcloud, az,
+// .pypirc, .pgpass, .claude.json) — ported from CLI_CREDENTIAL_FRAGMENT in the hook.
+// ENV_FILE_FRAGMENT / CRED_NAME_FRAGMENT: path-shaped `.env` / `credentials` /
+// `secret(s).<ext>` mentions only, including prefixed data files
+// (`gcp-credentials.json`, `app-secrets.yaml`, `client_secret.json`) and `.env-local`
+// — `process.env.PORT`, `getSecret`, `secrets.test.ts` are not secret paths (ported
+// verbatim from the hook).
+const ENV_FILE_FRAGMENT = String.raw`(?<![\w$])\.env(?:[._-][\w-]+)?(?![\w-])|(?<![\w$.])(?!(?:process|import\.meta|Deno|Bun)\.env(?![\w.-]))[\w-]+(?:\.[\w-]+)*\.env(?:\.(?:bak|backup|old|orig|save|local))?(?![\w.-])`;
+const CRED_NAME_FRAGMENT = String.raw`(?<![\w$.-])(?:\w[\w-]*[_-]|\.)?credentials(?:\.(?:json|toml|ya?ml|ini|txt))?(?![\w.-])|(?<![\w$.-])(?:\w[\w-]*[_-])?secrets?\.(?:json|ya?ml|txt|env|toml|ini)(?![\w.-])|(?<![\w$.-])client_secret[\w.-]*\.json(?![\w.-])|(?<![\w$.-])secrets?\/`;
+const CLI_CREDENTIAL_FRAGMENT = String.raw`credentials\.tfrc\.json|\.config\/gh\/|\.config\/gcloud\/|\.docker\/config\.json\b|\.kube\/|\.azure\/|\.pypirc\b|\.pgpass\b|\.claude\.json\b`;
 const SECRET_PATH_FRAGMENT = new RegExp(
-  String.raw`(\.env\b|\.env\.[\w-]+|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|credentials\b|secrets?\b|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
+  String.raw`(${ENV_FILE_FRAGMENT}|[\w./-]*\.pem\b|[\w./-]*\.key\b|[\w./-]*\.p12\b|id_rsa\b|id_ed25519\b|id_[a-z0-9]+\b|\.ssh\/|\.aws\/|\.npmrc\b|\.git-credentials\b|\.netrc\b|\.gnupg\/|${CLI_CREDENTIAL_FRAGMENT}|${CRED_NAME_FRAGMENT}|${MCP_RUNTIME_FILE}\b|dashboard-token\b|[\w./-]*[._-]tokens?${TOKEN_SOURCE_EXT_GUARD}\b)`,
   "i",
 );
 

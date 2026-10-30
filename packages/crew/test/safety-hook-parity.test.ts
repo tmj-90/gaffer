@@ -136,11 +136,57 @@ describe("safety classifier parity with runner/safety-hook.mjs", () => {
       "base64 .gaffer/mcp-runtime.json", // newly covered
       "cat api.token", // newly covered: *-token file family
       "cp service_token /tmp/x", // newly covered
+      "cat ~/.config/gh/hosts.yml", // CLI credential stores (ambient-credential boundary)
+      "cat ~/.docker/config.json",
+      "cat ~/.kube/config",
+      "cat ~/.pypirc",
+      "cat ~/.claude.json",
     ] as const;
     for (const command of SECRET_READS) {
       it(`denies secret read/copy: ${command}`, () => {
         const decision = classifyCommand(command, ctx);
         expect(decision.outcome).toBe("denied");
+      });
+    }
+
+    // Real env / credential files stay denied after the false-positive fix.
+    for (const command of [
+      "cat ./.env",
+      "cat $HOME/.env",
+      "cat .env.local",
+      "cat .env.test",
+      "cat secrets.json",
+      "cat .credentials.json",
+      "cat prod.env",
+      // Prefixed / suffixed secret files (the bare-name boundary used to drop them).
+      "cat client_secret.json",
+      "cat gcp-credentials.json",
+      "cat service_account_credentials.json",
+      "cat app-secrets.yaml",
+      "cat config/prod-secrets.json",
+      "cat aws_credentials",
+      "cat .env-local",
+      "cat .env_prod",
+    ] as const) {
+      it(`still denies: ${command}`, () => {
+        expect(classifyCommand(command, ctx).outcome).toBe("denied");
+      });
+    }
+
+    // …while `process.env` code, `getSecret` and a secrets TEST file are not secret
+    // paths (they used to match the bare `.env\b` / `secrets?\b` fragments).
+    for (const command of [
+      'grep -rn "process.env.PORT" src',
+      "rg process.env src",
+      "sed -i 's/process.env.A/process.env.B/' src/x.ts",
+      "grep -rn getSecret src",
+      "cat test/secrets.test.ts",
+      "cat src/credentials.ts",
+      "cat src/aws-credentials.ts",
+      "cat src/app-secrets.test.ts",
+    ] as const) {
+      it(`no longer flags as a secret read: ${command}`, () => {
+        expect(classifyCommand(command, ctx).outcome).toBe("allowed");
       });
     }
 

@@ -1057,11 +1057,11 @@ function runClaudeTurn(prompt, opts, model) {
     .filter(Boolean);
   // CONTAINMENT (audit blocker): decomposition PROPOSES a plan and returns it as TEXT
   // (--output-format json → .result); it reasons from the prompt and never edits files or
-  // runs commands. This spawn runs with cwd = RUNNER_DIR (the factory's own source),
-  // acceptEdits auto-accepts edits, and the project hook does not load in an untrusted dir
-  // — so without this a prompt injection in the (untrusted) brief could write into
-  // safety-hook.mjs / tick.sh (verified: denying only the edit tools is defeated by a Bash
-  // `>` fallback). Run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY
+  // runs commands. This spawn runs with cwd = a throwaway agent home (makeAgentHome below,
+  // with the safety-hook settings rendered and verified; whether Claude Code loads project
+  // hooks there is not pinned by a test) and acceptEdits auto-accepts edits — so without
+  // this a prompt injection in the (untrusted) brief could write anywhere the hook does not
+  // catch (verified: denying only the edit tools is defeated by a Bash `>` fallback). Run the agent READ-ONLY: deny every write/exec tool UNCONDITIONALLY
   // (even under a CLAUDE_FLAGS override). Read/Grep/Glob + MCP stay available.
   // NOTE: this MUST enumerate the COMPLETE write/exec tool set — MultiEdit is a write tool
   // too, and a denylist silently permits any write tool it omits. (An allowlist of
@@ -1100,7 +1100,14 @@ function runClaudeTurn(prompt, opts, model) {
   // project settings (same wiring as product-owner-run.mjs); it is removed after the
   // turn. The read-only denylist above is unchanged — this widens what the agent can
   // SEE, not what it can write.
-  const home = makeAgentHome("decompose-", { role: "plan" });
+  // makeAgentHome throws (fail closed) when the safety-hook settings cannot be
+  // rendered and verified; refuse the spawn through the normal error path.
+  let home;
+  try {
+    home = makeAgentHome("decompose-", { role: "plan" });
+  } catch (err) {
+    return fail(err?.message ?? String(err));
+  }
   let res;
   const t0 = Date.now();
   try {

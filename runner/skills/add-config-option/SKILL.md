@@ -42,10 +42,10 @@ process" or "in seconds, not milliseconds".
 7. **Document from the source.** Regenerate the reference doc if the repo generates one;
    otherwise add a row to the config table in README/docs: name, type, default, unit,
    effect, since-version. If the dashboard or an admin UI lists settings, add it through
-   that existing settings definition, not a parallel form. The safety hook blocks every
-   `.env*` file, including
-   `.env.example`: if the repo keeps one, say in your evidence that it needs the new key
-   added by a human.
+   that existing settings definition, not a parallel form. If the repo keeps a COMMITTED
+   `.env.example` (or `.sample` / `.template`), add the new key there with a placeholder
+   value; the safety hook allows a tracked template and blocks every other `.env*` file.
+   Do not create a new template — say in your evidence that a human needs to add one.
 8. **Test it:** default applied when unset; override honoured; each invalid form rejected
    with the named message; precedence (flag beats env) when the repo has layers; the child
    process sees it when step 6 applies. Evidence via the `record-evidence` skill (on a
@@ -77,7 +77,7 @@ override and invalid; docs name the option, type, default and unit.
 ## Capture lore
 
 This skill is one of the places durable, reusable knowledge naturally surfaces:
-**While threading the option to every process you learn the repo's real config precedence and which processes read which values.** That kind of fact is *lore*. Capture it via the **lore-capture
+**While threading the option to every process you learn the repo's real config precedence and which processes read which values.** That kind of fact is _lore_. Capture it via the **lore-capture
 protocol in your brief** (`CLAUDE.factory.md`, step 11 "Memory contribution"):
 call the Memory MCP `suggest_lore` once at the close of your work — reusable
 conventions, gotchas, decisions, and boundaries only, never per-ticket trivia.

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
  * `checkBranchPolicy`) evaluate `safety_policy.yaml`, which the live hook never
  * reads. They are ADVISORY. The two disagree in both directions — a raw
  * `sqlite3 dispatch.sqlite 'delete …'` is allowed by the policy yet blocked by
- * the hook, while a policy `needs_approval` (e.g. `terraform apply`) or a custom
+ * the hook, while a policy `needs_approval` (e.g. `docker compose down -v`) or a custom
  * `deny` entry is NOT enforced at runtime. Every `crew safety check` / MCP check
  * therefore reports the enforced verdict next to the advisory one.
  *

@@ -57,6 +57,8 @@ AGENT_ENV="$(
     HTTPS_PROXY="http://proxy.corp:3128" HTTP_PROXY="http://proxy.corp:3128" NO_PROXY="localhost,127.0.0.1" \
     https_proxy="http://proxy.corp:3128" no_proxy="localhost" \
     NODE_TLS_REJECT_UNAUTHORIZED="0" \
+    SSH_AUTH_SOCK="/tmp/ssh-agent.sock" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/1/bus" \
+    DOCKER_HOST="unix:///var/run/docker.sock" KUBECONFIG="/home/agent/.kube/config" \
     RUNNER_DIR="$RUNNER_DIR" \
     bash -c '
       source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
@@ -72,6 +74,14 @@ for danger in GITHUB_TOKEN GH_TOKEN AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY \
               AWS_SESSION_TOKEN DISPATCH_API_TOKEN DB_PASSWORD SOME_API_KEY SOME_SECRET; do
   if has "$danger"; then fail "$danger leaked into the agent env"; else ok "$danger is stripped"; fi
 done
+
+echo "== agent / keyring / daemon sockets are DROPPED (ambient-credential residual) =="
+for sock in SSH_AUTH_SOCK DBUS_SESSION_BUS_ADDRESS DOCKER_HOST KUBECONFIG; do
+  if has "$sock"; then fail "$sock leaked into the agent env"; else ok "$sock is stripped"; fi
+done
+
+echo "== npx auto-download guard is SET (npm assumes --yes without a TTY) =="
+if has npm_config_yes; then ok "npm_config_yes is set for the agent"; else fail "npm_config_yes missing (npx would fetch and run unknown packages)"; fi
 
 echo "== outbound endpoint / notify config is STRIPPED (FIX #1 — exfiltration channel) =="
 for endpoint in GAFFER_NOTIFY_WEBHOOK_URL GAFFER_NOTIFY_SLACK_URL \

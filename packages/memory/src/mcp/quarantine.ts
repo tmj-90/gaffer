@@ -20,10 +20,10 @@
  * content the model must treat as data.
  *
  * TWO GUARANTEES:
- *   1. `stripEnvelopeTokens` removes any embedded `<untrusted-*>` /
- *      `</untrusted-*>` delimiter the untrusted text itself may contain, so a
- *      payload cannot close the envelope early and break out into the
- *      surrounding instruction context.
+ *   1. `stripEnvelopeTokens` neutralises (escapes the `<` of) any embedded
+ *      `<untrusted-*>` / `</untrusted-*>` delimiter the untrusted text itself
+ *      may contain — nested, split or padded — so a payload cannot close the
+ *      envelope early and break out into the surrounding instruction context.
  *   2. The wrapped value is still a plain JSON string, so the MCP response
  *      stays valid JSON (`content[].text` parses; `structuredContent`
  *      deep-equals it) — the envelope lives inside the field values, not
@@ -51,7 +51,7 @@ export const QUARANTINE_NOTICE =
 
 /**
  * Wrap an untrusted string value in an `<untrusted-tag>…</untrusted-tag>`
- * envelope, stripping any embedded delimiter tokens first. Returns the
+ * envelope, neutralising any embedded delimiter tokens first. Returns the
  * wrapped string.
  */
 export function quarantine(tag: string, value: string | null | undefined): string {

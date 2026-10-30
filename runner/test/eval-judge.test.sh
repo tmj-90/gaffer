@@ -62,7 +62,9 @@ worker_deliver() { # cwd prompt model_flag mcp out_json [wrap] [max_turns] [extr
   printf '%s\n' "CALLED" >> "$WORKER_CALLS"
   printf '%s' "$2" > "$WORK/last-prompt.txt"
   # Record the spawn shape: cwd, turn cap, extra flags (one per line, "" kept visible).
-  ( printf 'cwd=%s\n' "$1"; printf 'turns=%s\n' "${7:-}"; shift 7 2>/dev/null && printf 'x<%s>\n' "$@" ) > "$WORK/last-spawn.txt"
+  ( printf 'cwd=%s\n' "$1"; printf 'turns=%s\n' "${7:-}"
+    grep -qF "$RUNNER_DIR/safety-hook.mjs" "$1/.claude/settings.json" 2>/dev/null && printf 'settings=verified\n'
+    shift 7 2>/dev/null && printf 'x<%s>\n' "$@" ) > "$WORK/last-spawn.txt"
   REPLY_OUT="$5" python3 - <<'PY'
 import json, os
 reply = "```json\n" + json.dumps({
@@ -80,6 +82,11 @@ log() { :; }
 
 # shellcheck source=../lib/eval-judge.sh
 source "$RUNNER_DIR/lib/eval-judge.sh"
+# The verified settings writer (sourced by factory.config.sh at runtime).
+_gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
+export CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"
+# shellcheck source=../lib/agent-env.sh
+source "$RUNNER_DIR/lib/agent-env.sh"
 
 echo "== B. default OFF → no-op =="
 unset GAFFER_EVAL_JUDGE
@@ -140,6 +147,9 @@ grep -qx "cwd=$REPO" "$WORK/last-spawn.txt" \
   || ok "judge does not spawn in the target repo"
 _jcwd="$(sed -n 's/^cwd=//p' "$WORK/last-spawn.txt")"
 case "$_jcwd" in */eval-judge.*/cwd) ok "judge cwd is its own scratch dir" ;; *) no "judge cwd is not the scratch dir ($_jcwd)" ;; esac
+grep -qx 'settings=verified' "$WORK/last-spawn.txt" \
+  && ok "judge scratch cwd carries the verified safety-hook settings" \
+  || no "judge spawned without the rendered safety-hook settings"
 grep -qx 'turns=2' "$WORK/last-spawn.txt" && ok "judge runs under GAFFER_JUDGE_MAX_TURNS (default 2), not the 200 delivery cap" \
   || no "judge turn cap wrong ($(grep turns= "$WORK/last-spawn.txt"))"
 [ "$(sed -n '/^x</p' "$WORK/last-spawn.txt" | tr '\n' ' ')" = "x<--tools> x<> x<--strict-mcp-config> x<--disable-slash-commands> " ] \
@@ -173,6 +183,14 @@ worker_deliver() { printf 'CALLED\n' >> "$WORKER_CALLS"; }
 gaffer_eval_judge_delivery 9 "$REPO" main main 0 ''; rc=$?
 [ "$rc" -eq 0 ] && [ ! -s "$WORKER_CALLS" ] \
   && ok "no diff: exit 0 and the worker is never spawned" || no "empty diff should skip the spawn (rc=$rc)"
+
+echo "== F2. unwired settings template → the judge is NOT spawned (fail closed, fail soft) =="
+: > "$WORKER_CALLS"
+printf '{"hooks":{}}\n' > "$WORK/unwired.json"
+CLAUDE_SETTINGS="$WORK/unwired.json" gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 ''; rc=$?
+[ "$rc" -eq 0 ] && [ ! -s "$WORKER_CALLS" ] \
+  && ok "unverifiable settings: exit 0 and the worker is never spawned" \
+  || no "an unwired template should skip the judge spawn (rc=$rc)"
 
 echo "== G. test evidence + judge model flow into the record =="
 rm -f "$LEDGER"
@@ -208,6 +226,7 @@ CAP="$WORK/judge-cap"; mkdir -p "$CAP"
 cat > "$WORK/claude-stub" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$CAP/argv"; pwd -P > "$CAP/cwd"; env > "$CAP/env"
+grep -qF "$RUNNER_DIR/safety-hook.mjs" .claude/settings.json 2>/dev/null && echo verified > "$CAP/settings"
 printf '%s\n' '{"type":"result","subtype":"success","result":"no grading","num_turns":1}'
 STUB
 chmod +x "$WORK/claude-stub"
@@ -232,6 +251,9 @@ if [ -s "$CAP/argv" ]; then
     && grep -q 'Bash,Edit,Write.*Read,Grep,Glob' <<<"$(grep -A1 -x -- '--disallowedTools' "$CAP/argv" | tail -1)" \
     && ok "--strict-mcp-config + every built-in tool denied" || no "tools not disabled: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
   [ "$(cat "$CAP/cwd")" != "$(cd "$REPO" && pwd -P)" ] && ok "cwd is the judge's temp dir, not the delivery repo" || no "judge ran in the delivery repo"
+  [ "$(cat "$CAP/settings" 2>/dev/null)" = "verified" ] \
+    && ok "the real seam spawns the judge with the verified safety-hook settings in its cwd" \
+    || no "the judge's cwd lacks the rendered safety-hook settings"
   grep -q "^GAFFER_WRITE_ROOTS=$REPO\$" "$CAP/env" && no "the delivery repo is still the judge's write root" || ok "the delivery repo is not a write root"
   grep -qE '^(DISPATCH_DB|MEMORY_DB|GAFFER_TICKET)=' "$CAP/env" && no "delivery DB/ticket vars leaked into the judge env" || ok "no DISPATCH_DB / MEMORY_DB / GAFFER_TICKET in the judge env"
 else

@@ -20,15 +20,18 @@ Secrets Management Cheat Sheet; ASVS 5.0 V13.3 and 14.2.1).
    Kubernetes Secrets, CI secrets), and how local development gets values. Follow it.
    Never read `.env*`, key or credential files: the safety hook blocks them, and their
    values must never enter your context. The hook also blocks any Bash command that
-   mentions `secret`, `secrets`, `credentials` or `.env` (including `process.env`), even
-   as a search pattern, so search code for those words with the Grep tool and never
-   point it at a secret file.
+   names a secret FILE (`.env`, `.env.local`, `*.pem`, `*.key`, `credentials`,
+   `secrets.json`, a `secrets/` dir, …). Searching code for `process.env` or for the
+   word `credentials` is fine — a search pattern is not a file — but never point a
+   search at a secret file.
 2. **Reference by name only.** Read the value from the env var or secret manager
    through the existing config module. Document the name with a placeholder such as
    `STRIPE_API_KEY=changeme` in the repo's config schema, README or non-`.env` example
    file, and add it to the deployment manifest or IaC as a secret reference (never as a
-   literal). The hook also blocks writing `.env.example`; if the repo keeps one, say in
-   evidence that a human must add the placeholder line.
+   literal). A COMMITTED `.env.example` / `.env.sample` / `.env.template` is ordinary
+   content: add the placeholder line there. An untracked one counts as a secret (it
+   could be a renamed `.env`), so do not create a new template; if the repo has none,
+   say in evidence that a human must add it.
 3. **Validate at startup.** Missing or malformed required secrets make the process fail
    fast, and the message names the missing **variable**, never a value. Add a test that
    boots the config with the variable unset and asserts that clear failure.

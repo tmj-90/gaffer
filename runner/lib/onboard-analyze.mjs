@@ -50,6 +50,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -68,6 +69,7 @@ import {
   parseClaudeJson,
   recordKilledCall,
 } from "./usage-ledger.mjs";
+import { secretReadDenyRules, writeAgentSettings } from "./agent-home.mjs";
 import { Worker, roleTurnCap } from "./worker.mjs";
 import { loadRegistry, routeModel } from "../bin/route-model.mjs";
 import {
@@ -1225,7 +1227,18 @@ export function runAnalysisTurn(
   // (below). The denylist stays on those too, as defence in depth.
   // MUST enumerate the COMPLETE write/exec set — MultiEdit is a write tool too; a denylist
   // silently permits any write tool it omits.
-  flags.push("--disallowedTools", "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash");
+  // The template's recursive Read deny rules ride along too: with no project settings
+  // in RUNNER_DIR, they are what makes Claude Code exclude nested `.env`, key and
+  // token files from this agent's Grep/Glob (ripgrep runs with --hidden).
+  flags.push(
+    "--disallowedTools",
+    "Write",
+    "Edit",
+    "MultiEdit",
+    "NotebookEdit",
+    "Bash",
+    ...secretReadDenyRules(),
+  );
   if (caps.model) flags.unshift("--model", caps.model);
   const args = ["-p", prompt, "--output-format", "json", ...flags];
   let cwd = RUNNER_DIR;
@@ -1235,6 +1248,19 @@ export function runAnalysisTurn(
     // inline JSON string: the docker seam reads --mcp-config as a path to bridge it).
     scratch = mkdtempSync(join(tmpdir(), "gaffer-onboard-text-"));
     cwd = scratch;
+    // The scratch cwd carries the verified safety-hook settings like every other agent
+    // home (defence in depth: the turn has no tools). writeAgentSettings throws
+    // "SAFETY: …" when the template cannot be rendered and verified — refuse the turn
+    // as a failed call (fail closed; the onboard's claude-failure breaker sees it).
+    try {
+      const claudeDir = join(scratch, ".claude");
+      mkdirSync(claudeDir, { recursive: true });
+      writeAgentSettings(claudeDir, env.CLAUDE_SETTINGS || undefined);
+    } catch (err) {
+      rmSync(scratch, { recursive: true, force: true });
+      const errorText = String(err?.message ?? err);
+      return { timedOut: false, stdout: "", status: null, failed: true, errorText };
+    }
     const emptyMcp = join(scratch, "mcp.json");
     writeFileSync(emptyMcp, '{"mcpServers":{}}');
     args.push("--max-turns", String(roleTurnCap(TEXT_ONLY_MAX_TURNS, env)));

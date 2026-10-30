@@ -94,16 +94,27 @@ export function extractLastJsonBlock(text, isEnvelope = null) {
   return parsed[parsed.length - 1];
 }
 
+// Escape (never delete) the `<` of every untrusted-* delimiter — opening or closing,
+// any tag, any case, padded with whitespace / zero-width characters, terminated or
+// not. Deleting a delimiter in one pass let a nested token reassemble itself:
+// `</untrus</untrusted-a>ted-x>` minus the inner token IS `</untrusted-x>`, which
+// closed the envelope early. Escaping removes no text, so nothing can rejoin and one
+// pass is safe (and idempotent). Same rule as crew's deliveryJudge.
+const UNTRUSTED_DELIMITER_RE =
+  // eslint-disable-next-line no-control-regex -- the C0 separators are whitespace to python and to a model reading the prompt
+  /<(?=[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*\/?[\s\x1c-\x1f\x85\u200b-\u200d\u2060]*untrusted)/gi;
+
 /**
  * Wrap an UNTRUSTED field in a delimited envelope (P1 prompt-injection): an embedded
  * "SYSTEM:" / "ignore previous instructions" line must land as DATA, not as a fresh
- * instruction line. Any literal <untrusted-…> / </untrusted-…> delimiter the data
+ * instruction line. Every literal <untrusted-…> / </untrusted-…> delimiter the data
  * carries — of ANY tag, so it can neither close its own envelope nor fake another — is
- * stripped. `singleLine` collapses whitespace runs (an injected newline cannot open a
- * new instruction line); `block` puts the data on its own lines between the tags.
+ * escaped (its `<` becomes `&lt;`; see UNTRUSTED_DELIMITER_RE). `singleLine` collapses
+ * whitespace runs (an injected newline cannot open a new instruction line); `block`
+ * puts the data on its own lines between the tags.
  */
 export function quarantine(tag, value, { singleLine = false, block = false } = {}) {
-  let data = String(value ?? "").replace(/<\/?\s*untrusted-[A-Za-z0-9_-]*\s*>/gi, "");
+  let data = String(value ?? "").replace(UNTRUSTED_DELIMITER_RE, "&lt;");
   if (singleLine) data = data.replace(/\s+/g, " ").trim();
   return block
     ? `<untrusted-${tag}>\n${data}\n</untrusted-${tag}>`

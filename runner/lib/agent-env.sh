@@ -9,7 +9,8 @@
 #   gaffer_write_agent_settings <dir>
 #       Render runner/claude/settings.json into <dir>/.claude/settings.json and
 #       VERIFY the wiring: the file must name "PreToolUse" and the resolved
-#       runner/safety-hook.mjs path. A half-written or unwired file is removed
+#       runner/safety-hook.mjs path, and carry "onFailure": "block" and a timeout
+#       for every hook entry (Claude Code otherwise runs the tool on a hook timeout). A half-written or unwired file is removed
 #       and the function returns 1 — callers fail CLOSED (never launch an agent
 #       whose deterministic containment boundary is not wired). Previously only
 #       the delivery site verified; the reviewer and clarify sites wrote the file
@@ -39,6 +40,18 @@ gaffer_write_agent_settings() {
      || ! grep -qF "$RUNNER_DIR/safety-hook.mjs" "$target" 2>/dev/null; then
     rm -f "$target"   # an unwired settings file must not survive
     _agent_env_log "SAFETY: $target lacks the PreToolUse safety-hook wiring (fail closed)"
+    return 1
+  fi
+  # Claude Code RUNS the tool when a hook times out or crashes unless the entry says
+  # "onFailure": "block": every safety-hook entry needs one (and a timeout beside it).
+  local _hooks _blocks _timeouts
+  # Counted per occurrence (grep -o), not per line, so a one-line template counts too.
+  _hooks="$(grep -oF "$RUNNER_DIR/safety-hook.mjs" "$target" 2>/dev/null | wc -l)"
+  _blocks="$(grep -oE '"onFailure"[[:space:]]*:[[:space:]]*"block"' "$target" 2>/dev/null | wc -l)"
+  _timeouts="$(grep -oE '"timeout"[[:space:]]*:[[:space:]]*[1-9]' "$target" 2>/dev/null | wc -l)"
+  if [ "$_blocks" -lt "$_hooks" ] || [ "$_timeouts" -lt "$_hooks" ]; then
+    rm -f "$target"
+    _agent_env_log "SAFETY: $target has a safety-hook entry without \"onFailure\": \"block\" and a timeout (a timed-out hook would let the tool run; fail closed)"
     return 1
   fi
   return 0

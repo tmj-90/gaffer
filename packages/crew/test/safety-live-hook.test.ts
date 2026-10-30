@@ -5,7 +5,7 @@
  * tools explained safety_policy.yaml as if it were the boundary, but the live
  * PreToolUse hook (runner/safety-hook.mjs) never reads that file. So a raw
  * `sqlite3 dispatch.sqlite 'delete …'` was reported "allowed" while the hook
- * blocks it, a policy `needs_approval` (terraform apply) was not gated at
+ * blocks it, a policy `needs_approval` (docker compose down -v) was not gated at
  * runtime, and the runner's own gaffer/ticket-N-slug branches were reported
  * "denied" under the old `dispatch/` default prefix.
  */
@@ -47,12 +47,14 @@ describe("checkWithLiveHook asks runner/safety-hook.mjs", () => {
   });
 
   it("reports an advisory needs_approval the hook does not gate", () => {
-    const advisory = classifyCommand("terraform apply", {
+    // (Not `terraform apply`: the hook refuses that one now, as a credential-using CLI
+    // against real state.)
+    const advisory = classifyCommand("docker compose down -v", {
       commands: policy.commands,
       git: policy.git,
     });
     expect(advisory.outcome).toBe("needs_approval");
-    const enforced = checkWithLiveHook({ tool: "Bash", command: "terraform apply" });
+    const enforced = checkWithLiveHook({ tool: "Bash", command: "docker compose down -v" });
     expect(enforced.blocked).toBe(false);
     expect(compareVerdicts(advisory, enforced)).toMatch(/nothing gates this at runtime/);
   });

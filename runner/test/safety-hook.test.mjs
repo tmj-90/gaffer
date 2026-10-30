@@ -1328,6 +1328,12 @@ const VERB_BYPASS_POCS = [
   ["VAR=1 mv dest outside root", "VAR=1 mv out.txt /home/operator/evil.txt"],
   ["VAR=1 mkdir outside root", "VAR=1 mkdir /home/operator/evildir"],
   ["FOO=x sed -i outside root", "FOO=x sed -i s/a/b/ /home/operator/.zshrc"],
+  // 1b. Path-qualified verbs and wrappers, and a wrapper option's value.
+  ["/bin/cp dest outside root", "/bin/cp out.txt /home/operator/evil.txt"],
+  ["/usr/bin/env tee outside root", "/usr/bin/env tee /home/operator/.zshrc <<< pwned"],
+  ["env -u X cp outside root", "env -u HOME cp out.txt /home/operator/evil.txt"],
+  ["timeout -s KILL 5 mv outside root", "timeout -s KILL 5 mv out.txt /home/operator/x"],
+  ["/bin/cat outside root", "/bin/cat /home/operator/Documents/notes.txt"],
   // 2. Recursion into sh/bash -c WRITE bodies.
   ["bash -c tee outside root", "bash -c 'tee /home/operator/evil.txt'"],
   ["sh -c cp outside root", "sh -c 'cp out.txt /home/operator/evil.txt'"],
@@ -1407,6 +1413,8 @@ const PB_ALLOW = [
   // Wrapped legitimate ops must resolve to the in-root verb and stay allowed.
   ["command cat inside root", `command cat "${PB_WRITE_ROOT}/in.txt"`],
   ["env wrapped tee inside root", `env tee "${PB_WRITE_ROOT}/a.txt"`],
+  ["/bin/cp inside root", `/bin/cp "${PB_WRITE_ROOT}/a" "${PB_WRITE_ROOT}/b"`],
+  ["/usr/bin/env tee inside root", `/usr/bin/env tee "${PB_WRITE_ROOT}/a.txt"`],
 ];
 for (const [label, cmd] of PB_ALLOW) {
   const code = runWithEnv(bash(cmd), PB_ENV, PB_WRITE_ROOT);

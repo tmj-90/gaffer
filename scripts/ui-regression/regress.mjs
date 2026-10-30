@@ -877,6 +877,42 @@ try {
     }
   }
 
+  // ── 6e. the Floor: one parcel per open ticket, each a link read as a sentence,
+  //        and focusing one shows its number and title in the floor's card.
+  {
+    const all = (await api("GET", "/tickets")).json.tickets || [];
+    const open = all.filter((t) => !["done", "cancelled"].includes(t.status)).length;
+    await page.goto(`${BASE}/#/floor`, { waitUntil: "load" });
+    await sleep(1200);
+    const fl = await page.evaluate(() => {
+      const ps = [...document.querySelectorAll("svg.fl-svg a.fl-parcel:not([data-status='done'])")];
+      return {
+        svg: Boolean(document.querySelector("svg.fl-svg")),
+        parcels: new Set(ps.map((a) => a.getAttribute("data-id"))).size,
+        unlabelled: ps.filter((a) => !/^#\d+ .+, /.test(a.getAttribute("aria-label") || "")).length,
+        // a station past its last slot says "+n" instead of drawing the rest
+        more: [...document.querySelectorAll("svg.fl-svg .fl-tag-text")]
+          .map((t) => /^\+(\d+)$/.exec(t.textContent || ""))
+          .filter(Boolean)
+          .reduce((n, m) => n + Number(m[1]), 0),
+      };
+    });
+    fl.svg && fl.unlabelled === 0 && fl.parcels + fl.more === open
+      ? ok(`floor: ${fl.parcels} parcels for ${open} open tickets, each a link read as a sentence`)
+      : bad(`floor: svg=${fl.svg} parcels=${fl.parcels} open=${open} unlabelled=${fl.unlabelled}`);
+    const first = page.locator("svg.fl-svg a.fl-parcel").first();
+    if (await first.count()) {
+      await first.focus();
+      await sleep(150);
+      const tipTxt = ((await page.textContent(".fl-tip").catch(() => "")) || "").trim();
+      const n = await first.getAttribute("data-n");
+      tipTxt.startsWith(`#${n}`)
+        ? ok(`floor: focusing parcel #${n} shows its card ("${tipTxt.slice(0, 60)}")`)
+        : bad(`floor: focus card for #${n} reads '${tipTxt}'`);
+    } else note("floor: no parcel to focus (an empty floor)");
+    await shot(page, "floor");
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [
@@ -891,6 +927,7 @@ try {
     "hidden",
     "memory",
     "squad",
+    "floor",
     `ticket/${ticket.id}`,
     `repo/${encodeURIComponent(repo.id)}`,
   ]) {
@@ -928,6 +965,7 @@ try {
       "settings",
       "memory",
       "squad",
+      "floor",
       `ticket/${ticket.id}`,
       `repo/${encodeURIComponent(repo.id)}`,
     ];
@@ -937,8 +975,8 @@ try {
       { w: 1024, h: 768, views },
       { w: 1280, h: 800, views },
       { w: 1440, h: 900, views },
-      { w: 360, h: 780, views: ["overview", "work", "review"] },
-      { w: 320, h: 640, views: ["overview", "work"] },
+      { w: 360, h: 780, views: ["overview", "work", "review", "floor"] },
+      { w: 320, h: 640, views: ["overview", "work", "floor"] },
     ];
     for (const { w, h, views: vs, axe: runAxe } of sweep) {
       const c2 = await browser.newContext({ viewport: { width: w, height: h } });

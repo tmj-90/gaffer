@@ -329,7 +329,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_LITE_SENSITIVE_RE` | `(^\|/)([Mm]igrations?\|\.github/\|[Dd]ockerfile\|auth\|security\|secrets?\|\.env\|package-lock\.json\|pnpm-lock\.yaml\|yarn\.lock\|\.gaffer\|safety-hook)` | `runner/factory.config.sh` |
 | `GAFFER_MERGE_TIMEOUT_MS` | `600000` | `runner/lib/land.sh` |
 | `GAFFER_ONBOARD_MAX_TURNS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
-| `GAFFER_ONBOARD_SYNTH_MODEL` |  | `runner/lib/onboard-analyze.mjs` |
+| `GAFFER_ONBOARD_SYNTH_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_ONBOARD_TIMEOUT` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_PLAN_BUILD_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |
 | `GAFFER_REVIEW_TICKET` |  | `packages/dispatch/src/mcp/tools.ts` |

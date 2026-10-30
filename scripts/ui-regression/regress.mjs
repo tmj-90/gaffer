@@ -1008,6 +1008,51 @@ try {
     ? ok("SSE: the board refreshed itself within ~2s of an out-of-band ticket creation")
     : bad("SSE: board did not refresh within 8s (interval fallback is 3s+)");
   await shot(page, "work-live-refresh");
+
+  // ── 9. A board move through the Move menu (Ready → Draft → Ready): the lane counts
+  // follow and the glide's View Transition, skipped by the refresh that follows the
+  // move, leaves no uncaught rejection in the console.
+  {
+    // A ticket of its own, made Ready through the API (the seed has no idle Ready one).
+    const made = await api("POST", "/tickets", {
+      title: "Board move smoke ticket",
+      description: "moved Ready → Draft → Ready through the Move menu",
+    });
+    const mover = made.json.ticket || made.json;
+    if (mover && mover.id)
+      await api("POST", `/tickets/${mover.id}/acceptance-criteria`, {
+        text: "The card moves and comes back",
+      });
+    const readied =
+      mover && mover.id ? await api("POST", `/tickets/${mover.id}/move`, { to: "ready" }) : null;
+    if (!readied || readied.status !== 200) {
+      note(`board move: could not make a Ready ticket (HTTP ${readied && readied.status})`);
+    } else {
+      const num = `#${mover.number}`;
+      const errsBefore = consoleErrors.length;
+      const laneCount = (col) =>
+        page.textContent(`.board-col[data-column="${col}"] .board-col-count`);
+      const moveTo = async (lane) => {
+        const cardLoc = page.locator(`.board-card:has(.num:text-is("${num}"))`).first();
+        await cardLoc.locator("button.card-move-btn").click();
+        await page.locator(".movemenu-item", { hasText: lane }).click();
+        await sleep(2500);
+      };
+      await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+      await sleep(1500);
+      const draft0 = Number(await laneCount("draft"));
+      await moveTo("Draft");
+      const draft1 = Number(await laneCount("draft"));
+      await moveTo("Ready");
+      const draft2 = Number(await laneCount("draft"));
+      const newErrs = consoleErrors.slice(errsBefore);
+      draft1 === draft0 + 1 && draft2 === draft0 && newErrs.length === 0
+        ? ok(`board move: ${num} went to Draft and back, lane counts followed, no console errors`)
+        : bad(
+            `board move: draft ${draft0}→${draft1}→${draft2}, console errors: ${newErrs.join(" | ")}`,
+          );
+    }
+  }
 } catch (err) {
   bad("harness error: " + (err?.stack || err));
   await shot(page, "error").catch(() => {});

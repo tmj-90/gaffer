@@ -160,11 +160,27 @@ describe("web: the Match Day Work view", () => {
     expect(document.querySelectorAll("#app .board-card").length).toBe(2);
     expect(document.querySelector('[data-column="ready"] .board-col-count')?.textContent).toBe("1");
     expect(location.hash).toBe("#/work?q=refund");
+    // The header line and the flow bar count what the lanes show (BRIEF §2).
+    expect(document.querySelector("#app .view-sub")?.textContent).toBe(
+      "2 of 3 tickets match \u201crefund\u201d: 1\u00a0ready · 1\u00a0done.",
+    );
+    const flow = document.querySelector("#app .work-flow")!.getAttribute("aria-label")!;
+    expect(flow).toContain("Ready 1");
+    expect(flow).toContain("Shipped 1");
     input.value = "#11";
     input.dispatchEvent(new Event("input"));
     await new Promise((r) => setTimeout(r, 40));
     const nums = [...document.querySelectorAll("#app .board-card .num")].map((n) => n.textContent);
     expect(nums).toEqual(["#11"]);
+    // "#1" is ticket 1 exactly, never #10, #11 or #12.
+    input.value = "#1";
+    input.dispatchEvent(new Event("input"));
+    await new Promise((r) => setTimeout(r, 40));
+    expect(document.querySelectorAll("#app .board-card").length).toBe(0);
+    expect(document.querySelector("#app .view-sub")?.textContent).toBe(
+      "None of the 3 tickets match \u201c#1\u201d.",
+    );
+    expect(document.querySelector<HTMLElement>("#app .work-flow")?.hidden).toBe(true);
   });
 
   it("lists every ticket as a league table, most urgent first", async () => {

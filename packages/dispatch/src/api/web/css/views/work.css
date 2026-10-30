@@ -14,10 +14,10 @@
     gap: 6px;
   }
   .view-work .view-sub {
-    max-width: 680px;
+    max-width: 880px;
   }
   .work-flow {
-    max-width: 680px;
+    max-width: 880px;
     margin-top: 2px;
   }
   .wf-bar {
@@ -661,6 +661,11 @@
   }
   .wl-table .c-agent .agent {
     font-size: var(--t14);
+  }
+  /* On the floodlit kit the shirt's dark edge vanishes into the row: outline it
+     in claret-as-ink (claret by day, a light claret at night). */
+  .wl-table .c-agent .shirt {
+    --shirt-edge: var(--claret-ink);
   }
   .wl-table td.c-pri {
     font: 700 var(--t14) / 1 var(--f-cond);

@@ -6299,11 +6299,16 @@ function needsLabel(t, needs) {
 function workMatches(t) {
   if (workState.status && t.status !== workState.status) return false;
   if (workState.risk && t.risk_level !== workState.risk) return false;
-  const q = workState.q.trim().toLowerCase().replace(/^#/, "");
+  // "#6" is that ticket and no other; a bare "6" is ticket 6 or a title with a 6
+  // in it (never #16 or #26); anything else is a title search.
+  const q = workState.q.trim().toLowerCase();
   if (q) {
-    const hay = `${t.number != null ? t.number : ""} ${t.title || ""}`.toLowerCase();
-    if (/^\d+$/.test(q) ? String(t.number) !== q && !hay.includes(q) : !hay.includes(q))
-      return false;
+    const title = (t.title || "").toLowerCase();
+    const num = /^#?(\d+)$/.exec(q);
+    if (num) {
+      const exact = String(t.number) === String(Number(num[1]));
+      if (q.startsWith("#") ? !exact : !exact && !title.includes(num[1])) return false;
+    } else if (!title.includes(q.replace(/^#/, ""))) return false;
   }
   return true;
 }
@@ -6344,20 +6349,29 @@ async function renderWork() {
   const claims = (claimsRes && claimsRes.claims) || [];
   learnAgents(claims);
   const needs = workNeeds(queue);
-  const counts = boardCounts(columns, closed, wontDo);
   const readAt = Date.now();
 
   const wrap = el("div", { class: `view view-work is-${workState.mode}` });
 
-  const head = viewHead(
-    "Work board",
-    list ? workListSummary(tickets, needs) : workSummaryLine(columns, counts),
-    [pollWorkButton(), suggestWorkButton(repos, nodes)],
-  );
-  if (!list)
-    head
-      .querySelector(".view-head-main")
-      .appendChild(workFlowHeader(columns, { failed: closed.length }));
+  // The line under the title and the flow bar count what the lanes show: with a
+  // filter on they count the matching cards (BRIEF §2: header counts equal lane
+  // counts), and they are redrawn as the viewer types.
+  const subText = () =>
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+  const head = viewHead("Work board", subText(), [
+    pollWorkButton(),
+    suggestWorkButton(repos, nodes),
+  ]);
+  let flow = list ? null : workFlowHeader(columns, closed);
+  if (flow) head.querySelector(".view-head-main").appendChild(flow);
+  const refreshHead = () => {
+    const sub = head.querySelector(".view-sub");
+    if (sub) sub.textContent = subText();
+    if (!flow) return;
+    const next = workFlowHeader(columns, closed);
+    flow.replaceWith(next);
+    flow = next;
+  };
   wrap.appendChild(head);
 
   // The board or the list, rebuilt in place (no fetch) as the viewer types.
@@ -6368,8 +6382,7 @@ async function renderWork() {
     const next = build();
     main.replaceWith(next);
     main = next;
-    const sub = list && head.querySelector(".view-sub");
-    if (sub) sub.textContent = workListSummary(tickets, needs);
+    refreshHead();
   });
   wrap.appendChild(toolbar);
   wrap.appendChild(main);
@@ -6434,20 +6447,67 @@ function boardCounts(columns, closed = [], wontDo = []) {
   return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
 }
 
-/** "25 tickets in lanes: 6 draft · 4 ready … 6 done. 2 failed, listed under the board." */
-function workSummaryLine(columns, counts) {
+/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+function workVisible(columns, closed = [], wontDo = []) {
+  return {
+    columns: columns.map((c) => {
+      const cards = (c.cards || []).filter(workMatches);
+      return { ...c, cards, total: cards.length };
+    }),
+    closed: closed.filter(workMatches),
+    wontDo: wontDo.filter(workMatches),
+  };
+}
+/** The client-side filters in words: “refund”, status blocked, high risk. */
+function workFilterWords() {
+  const words = [];
+  const q = workState.q.trim();
+  if (q) words.push(`\u201c${q}\u201d`);
+  if (workState.status) words.push(`status ${statusLabel(workState.status).toLowerCase()}`);
+  if (workState.risk) words.push(`${workState.risk} risk`);
+  return words;
+}
+
+/**
+ * "25 tickets in lanes: 6 draft · 4 ready … 6 done. 2 failed, listed under the board."
+ * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
+ * the line always equals the lane heads below it.
+ */
+function workSummaryLine(columns, closed = [], wontDo = []) {
+  const all = boardCounts(columns, closed, wontDo);
+  const vis = workVisible(columns, closed, wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
-    .map(
-      (c) => `${counts.by[c.column]} ${(BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase()}`,
-    );
-  const inLanes = counts.live + counts.shipped;
+    // A count never wraps away from its lane name ("1 / done"), and no lane name
+    // carries the line's own "·" ("1 approved · merging" reads as two lanes).
+    .map((c) => {
+      const word =
+        c.column === "ready_for_merge"
+          ? "ready for merge"
+          : (BOARD_COLUMN_LABELS[c.column] || c.column).toLowerCase();
+      return `${counts.by[c.column]}\u00a0${word}`;
+    });
   const extra = [];
   if (counts.failed) extra.push(`${counts.failed} failed`);
   if (counts.wontDo) extra.push(`${counts.wontDo} won't do`);
+  const tail = extra.length ? ` ${extra.join(", ")}, listed under the board.` : "";
+  const inLanes = counts.live + counts.shipped;
+  const words = workFilterWords();
+  const scope = workState.repo ? ` in ${workState.repo}` : "";
+  if (!words.length)
+    return (
+      `${plural(inLanes, "ticket")}${scope ? `${scope}'s` : " in"} lanes${parts.length ? ": " + parts.join(" · ") : ""}.` +
+      tail
+    );
+  const allInLanes = all.live + all.shipped;
+  const what = words.join(", ");
+  if (!inLanes && !extra.length)
+    return `None of the ${plural(allInLanes, "ticket")}${scope} match ${what}.`;
   return (
-    `${inLanes} ${inLanes === 1 ? "ticket" : "tickets"} in lanes${parts.length ? ": " + parts.join(" · ") : ""}.` +
-    (extra.length ? ` ${extra.join(", ")}, listed under the board.` : "")
+    `${inLanes} of ${plural(allInLanes, "ticket")}${scope} ${inLanes === 1 ? "matches" : "match"} ${what}` +
+    `${parts.length ? ": " + parts.join(" · ") : ""}.` +
+    tail
   );
 }
 
@@ -6457,8 +6517,13 @@ function workListSummary(all, needs) {
   const waiting = tickets.filter((t) => needsLabel(t, needs)).length;
   if (!tickets.length)
     return workFiltered() ? "No ticket matches these filters." : "No tickets yet.";
+  const words = workFilterWords();
+  const scope = workState.repo ? ` in ${workState.repo}` : "";
+  const match = words.length
+    ? ` ${tickets.length === 1 ? "matches" : "match"} ${words.join(", ")}`
+    : "";
   return (
-    `${plural(tickets.length, "ticket")}${workFiltered() ? " match" : ""}, most urgent first.` +
+    `${plural(tickets.length, "ticket")}${scope}${match}, most urgent first.` +
     (waiting ? ` ${waiting} ${waiting === 1 ? "waits" : "wait"} on you.` : "")
   );
 }
@@ -6467,7 +6532,10 @@ function workListSummary(all, needs) {
  *  board's own columns, so none is ever left out) plus Failed, and a single
  *  distribution bar so the shape of the board reads before you scan the lanes.
  *  Shipped is the Done lane; failed tickets are counted as failed, never shipped. */
-function workFlowHeader(columns, { failed = 0 } = {}) {
+function workFlowHeader(allColumns, allClosed = []) {
+  const vis = workVisible(allColumns, allClosed);
+  const columns = vis.columns;
+  const failed = vis.closed.length;
   const { by } = boardCounts(columns);
   const cells = columns.map((c) => ({
     key: c.column,
@@ -6493,7 +6561,12 @@ function workFlowHeader(columns, { failed = 0 } = {}) {
   const label = cells.map((c) => `${c.label} ${c.v}`).join(", ");
   return el(
     "div",
-    { class: "work-flow", role: "img", "aria-label": `Tickets per lane: ${label}` },
+    {
+      class: "work-flow",
+      role: "img",
+      "aria-label": `Tickets per lane: ${label}`,
+      hidden: seg.length ? null : "",
+    },
     [el("div", { class: "wf-bar" }, seg)],
   );
 }
@@ -6721,9 +6794,20 @@ async function performBoardMove(cardEl, card, toColumn) {
   const glide = (fn) => {
     if (typeof document.startViewTransition !== "function" || prefersReducedMotion()) return fn();
     cardEl.style.viewTransitionName = "wk-moving-card";
-    const t = document.startViewTransition(fn);
+    let t;
+    try {
+      t = document.startViewTransition(fn);
+    } catch {
+      cardEl.style.viewTransitionName = "";
+      return fn();
+    }
+    // The refresh after the move starts its own transition, which skips this one
+    // and rejects its promises with InvalidStateError: swallow those (the DOM
+    // update still ran), as router() does.
     const clear = () => (cardEl.style.viewTransitionName = "");
-    t.finished.then(clear, clear);
+    t.ready?.catch(() => {});
+    t.updateCallbackDone?.catch(() => {});
+    t.finished?.then(clear, clear);
   };
   if (destBody) {
     glide(() => {
@@ -6804,11 +6888,32 @@ function openMoveMenu(card, anchorEl) {
   if (cardNode) cardNode.classList.add("card-armed");
   anchorEl.setAttribute("aria-expanded", "true");
   document.addEventListener("keydown", moveMenuKeydown);
+  // The menu opens at its Move button (below it, or above when the screen ends),
+  // so the armed card stays in view beside the lanes it can go to.
+  const r = anchorEl.getBoundingClientRect ? anchorEl.getBoundingClientRect() : null;
+  if (r && r.width) {
+    scrim.classList.add("is-anchored");
+    const nav = document.getElementById("bottomnav");
+    const navTop = nav && nav.offsetHeight ? nav.getBoundingClientRect().top : window.innerHeight;
+    const floor = Math.min(window.innerHeight, navTop) - 8;
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    let top = r.bottom + 6;
+    if (top + mh > floor) top = Math.max(8, r.top - 6 - mh);
+    menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - mw - 8))}px`;
+    menu.style.top = `${top}px`;
+    window.addEventListener("scroll", onMoveMenuScroll, { passive: true });
+  }
   items[0].focus();
 }
 let moveMenuScrim = null;
 let moveMenuReturn = null;
+// The page scrolls under an anchored menu: it closes rather than drift off its card.
+function onMoveMenuScroll() {
+  closeMoveMenu();
+}
 function closeMoveMenu({ restore = true } = {}) {
+  window.removeEventListener("scroll", onMoveMenuScroll);
   if (moveMenuScrim) {
     moveMenuScrim.remove();
     moveMenuScrim = null;
@@ -6918,7 +7023,8 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
           : null;
       const headBits = [
         glyph(c.column, 18),
-        el("h2", { class: "board-col-title" }, label),
+        // A two-word label may wrap, but never with the separator leading the line.
+        el("h2", { class: "board-col-title" }, label.replace(" · ", "\u00a0· ")),
         el("span", { class: "board-col-count tabnum" }, String(all.length)),
       ];
       let inner;
@@ -7391,7 +7497,7 @@ function renderWorkList(allTickets, needs, claims = []) {
                 `By hand · ${t.human_owner}`,
               ])
             : c
-              ? agentTag(c.agent_display_name || actorName("agent", c.agent_id), 20)
+              ? agentTag(c.agent_display_name || actorName("agent", c.agent_id), 26)
               : el("span", { class: "dim" }, "—");
           return el(
             "tr",
@@ -7491,12 +7597,36 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
             class: "btn danger small",
             type: "button",
             "aria-label": `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
-            onclick: () =>
+            // Revoking stops an agent's work, so it takes two presses: the first
+            // arms the button ("Stop the work?") for five seconds.
+            onclick: (e) => {
+              const btn = e.currentTarget;
+              if (btn.dataset.armed !== "1") {
+                btn.dataset.armed = "1";
+                btn.textContent = "Stop the work?";
+                btn.setAttribute(
+                  "aria-label",
+                  `Press again to stop ${c.agent_display_name || "the agent"}'s work on ${num}`,
+                );
+                announce(`Press Revoke again to stop the work on ${num}`);
+                setTimeout(() => {
+                  if (!btn.isConnected || btn.dataset.armed !== "1") return;
+                  delete btn.dataset.armed;
+                  btn.textContent = "Revoke";
+                  btn.setAttribute(
+                    "aria-label",
+                    `Revoke ${c.agent_display_name || "the agent"}'s claim on ${num}`,
+                  );
+                }, 5000);
+                return;
+              }
+              delete btn.dataset.armed;
               guard(async () => {
                 await api("POST", `/claims/${c.claim_id}/revoke`);
                 toast("Claim revoked", { ok: true });
                 router();
-              }),
+              });
+            },
           },
           "Revoke",
         ),

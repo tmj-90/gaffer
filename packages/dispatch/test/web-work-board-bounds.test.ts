@@ -125,8 +125,12 @@ describe("web: Work board counts and bounds", () => {
     expect(segs).toContain("Failed: 1");
     expect(segs).not.toContain("Shipped: 1");
 
-    // The header line agrees: 7 tickets in lanes (5 live + 2 done), 1 failed.
-    const sub = document.querySelector(".view-head .view-sub")?.textContent || "";
+    // The header line agrees: 7 tickets in lanes (5 live + 2 done), 1 failed. (A
+    // count is tied to its lane name with a no-break space, so it never wraps alone.)
+    const sub = (document.querySelector(".view-head .view-sub")?.textContent || "").replace(
+      /\u00a0/g,
+      " ",
+    );
     expect(sub).toMatch(/^7 tickets in lanes:/);
     expect(sub).toContain("2 done");
     expect(sub).toContain("1 failed");

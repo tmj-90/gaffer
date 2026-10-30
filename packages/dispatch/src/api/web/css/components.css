@@ -1459,6 +1459,17 @@
     padding: 4px;
     display: grid;
   }
+  /* Anchored at its Move button: no dimming, the armed card stays readable. */
+  .movemenu-scrim.is-anchored {
+    display: block;
+    background: transparent;
+    padding: 0;
+  }
+  .movemenu-scrim.is-anchored .movemenu {
+    position: fixed;
+    width: min(280px, calc(100vw - 16px));
+    box-shadow: 0 4px 0 var(--ink);
+  }
   .movemenu-head {
     padding: 8px 10px 6px;
     font: 800 var(--t26) / 1 var(--f-display);

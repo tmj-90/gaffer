@@ -1349,9 +1349,16 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # Best-effort/non-fatal + idempotent (re-running never double-links).
       gaffer_inherit_repo "$NUM" || true
     else
-      log "BOOTSTRAP: dispatch registration of '$B_NAME' FAILED — the dependent tickets would not unblock; flagging #$NUM"
-      wg attach-evidence "$NUM" --type manual_note \
-        --summary "needs_human_review: bootstrap scaffold succeeded but dispatch repo registration of '$B_NAME' failed — onboard manually so dependents unblock" >/dev/null 2>&1 || true
+      # Registration failed, so there is no repo to link, no branch_name and no per-repo
+      # delivery row: submitting would strand the ticket in in_review (the reviewer has
+      # nothing to diff, the done-gate cannot resolve it) with every dependent blocked
+      # behind it. Park VISIBLY instead, with the cause, keeping the scaffold + branch;
+      # a retry resumes the scaffold and counts a now-registered repo as success.
+      log "BOOTSTRAP: dispatch registration of '$B_NAME' FAILED (${GAFFER_ONBOARD_ERR:-unknown}) — parking #$NUM → blocked (NOT submitting)"
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_release_delivery blocked "bootstrap repo registration of '$B_NAME' failed: ${GAFFER_ONBOARD_ERR:-unknown} — register it with 'wg repo add' (scaffold kept at $B_DIR, branch $B_WORK_BRANCH), then unblock" bootstrap_failed
+      gaffer_skip_ticket "$NUM"
+      result error; exit 0
     fi
 
     # RUNNER-OWNED-BOOKKEEPING: the runner (holding the claim) submits the bootstrap

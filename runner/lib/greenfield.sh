@@ -327,7 +327,10 @@ gaffer_ensure_node_modules() {
 gaffer_bootstrap_onboard() {
   # shellcheck disable=SC2034  # num is part of the call contract (logged by callers / future use)
   local num="$1" name="$2" dir="$3" stack="${4:-}" remote="${5:-}" branch="${6:-main}"
-  [ -n "$name" ] && [ -n "$dir" ] || return 1
+  # GAFFER_ONBOARD_ERR: the trimmed `repo add` error when registration fails, so the
+  # caller's park reason can say WHY (empty on success).
+  GAFFER_ONBOARD_ERR=""
+  [ -n "$name" ] && [ -n "$dir" ] || { GAFFER_ONBOARD_ERR="no repo name/dir"; return 1; }
   local wg_ok=1
 
   # 1) Register in dispatch (the link target for the dependent feature tickets).
@@ -364,8 +367,9 @@ gaffer_bootstrap_onboard() {
       # caller suppresses this with >/dev/null 2>&1, so without this the whole
       # greenfield epic sinks with only a generic "FAILED" and no cause (e.g. a
       # malformed --branch value failing git-ref validation).
+      GAFFER_ONBOARD_ERR="$(printf '%s' "$add_out" | head -c 200 | tr '\n' ' ')"
       type log >/dev/null 2>&1 \
-        && log "onboard: 'repo add $name' failed (rc=$add_rc): $(printf '%s' "$add_out" | head -c 200 | tr '\n' ' ')"
+        && log "onboard: 'repo add $name' failed (rc=$add_rc): $GAFFER_ONBOARD_ERR"
       wg_ok=1
     fi
   fi

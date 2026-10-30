@@ -167,6 +167,7 @@ describe("MCP — tool registration", () => {
         "get_repo_digest",
         "list_features",
         "record_absence",
+        "release_feature",
         "report_conflict",
         "search_file_cards",
         "search_lore",

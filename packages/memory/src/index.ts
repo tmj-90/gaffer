@@ -87,6 +87,7 @@ export {
   addFeature,
   advanceFeature,
   AdvanceFeatureError,
+  releaseFeature,
   getDigest,
   getFeature,
   isLegalFeatureTransition,

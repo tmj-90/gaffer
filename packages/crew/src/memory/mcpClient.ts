@@ -17,7 +17,10 @@
  * (`MEMORY_UNAVAILABLE`); callers degrade to the Null client rather than crash.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+  getDefaultEnvironment,
+  StdioClientTransport,
+} from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 
@@ -68,7 +71,58 @@ export interface AsyncMemoryClient {
    * picked twice) and to roll it back on a downstream failure.
    */
   advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult>;
+  /**
+   * Hand a claimed feature back (`building → backlog`) via Memory's
+   * `release_feature`. The lifecycle is forward-only for `advanceFeature`, so the
+   * idle feature-backlog loop uses this to undo its claim when planning fails —
+   * otherwise the feature is stranded in `building` with no epic behind it.
+   */
+  releaseFeature(id: string): Promise<AdvanceFeatureResult>;
   close(): Promise<void>;
+}
+
+/**
+ * The environment variables the Memory MCP server reads that the SDK's stdio
+ * transport would otherwise DROP: it passes the child only a short allow-list
+ * (HOME, PATH, …), so without these memory-mcp opens the per-user default store
+ * (~/.memory) instead of the factory's `$GAFFER_DATA/memory.sqlite`, and writes
+ * its audit trail somewhere the dashboard never reads.
+ */
+export const MEMORY_SERVER_ENV_KEYS = ["MEMORY_DB", "MEMORY_AUDIT_LOG"] as const;
+
+/**
+ * Build the spawned Memory server's environment: the SDK's safe default set,
+ * plus the {@link MEMORY_SERVER_ENV_KEYS} present in `env`, plus any explicit
+ * `extra` (which wins). Nothing else from the parent leaks through — in
+ * particular not GAFFER_FACTORY / ticket scope, which would arm memory's
+ * delivery-scope guard on an idle tick that has no ticket.
+ */
+export function memoryServerEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const out: Record<string, string> = { ...getDefaultEnvironment() };
+  for (const key of MEMORY_SERVER_ENV_KEYS) {
+    const value = env[key];
+    if (typeof value === "string" && value.trim() !== "") out[key] = value;
+  }
+  return { ...out, ...extra };
+}
+
+/**
+ * Memory serves agent-derived feature text inside an `<untrusted-feature>…`
+ * quarantine envelope (memory/src/mcp/quarantine.ts) so it reaches an AGENT as
+ * data. Crew is not an agent: it files that text into ticket titles and epic
+ * descriptions a human reads, so it unwraps the outer envelope. The envelope's
+ * inner text already had any embedded delimiter neutralised by memory, and the
+ * idle loop re-wraps it before the text goes anywhere a model reads it.
+ */
+export function unwrapEnvelope(tag: string, value: string): string {
+  const open = `<untrusted-${tag}>`;
+  const close = `</untrusted-${tag}>`;
+  return value.startsWith(open) && value.endsWith(close)
+    ? value.slice(open.length, value.length - close.length)
+    : value;
 }
 
 export interface McpMemoryConfig {
@@ -249,7 +303,9 @@ export class McpMemoryClient implements AsyncMemoryClient {
       command: config.command,
       ...(config.args ? { args: config.args } : {}),
       ...(config.cwd ? { cwd: config.cwd } : {}),
-      ...(config.env ? { env: config.env } : {}),
+      // Always pass an explicit env: the SDK's default drops MEMORY_DB, so the
+      // server would silently read and write the per-user ~/.memory store.
+      env: memoryServerEnv(process.env, config.env ?? {}),
     });
     return McpMemoryClient.connectTransport(transport, {
       command: config.command,
@@ -282,6 +338,7 @@ export class McpMemoryClient implements AsyncMemoryClient {
     if (query.text) args.query = query.text;
     if (query.repoName) args.repo = query.repoName;
     if (typeof query.limit === "number") args.limit = query.limit;
+    if (query.includeDrafts === true) args.includeDrafts = true;
 
     const raw = await this.callTool("search_lore", args);
     const parsed = searchResultSchema.safeParse(payloadFrom(raw));
@@ -345,7 +402,7 @@ export class McpMemoryClient implements AsyncMemoryClient {
     const features = parsed.data.features ?? parsed.data.results ?? [];
     return features
       .filter((f): f is { repo?: string; name: string } => typeof f.name === "string")
-      .map((f) => ({ repo: f.repo ?? repo, name: f.name }));
+      .map((f) => ({ repo: f.repo ?? repo, name: unwrapEnvelope("feature", f.name) }));
   }
 
   async listBacklogFeatures(repo: string, status: FeatureStatus): Promise<BacklogFeature[]> {
@@ -364,8 +421,8 @@ export class McpMemoryClient implements AsyncMemoryClient {
         const feature: BacklogFeature = {
           id,
           repo: f.repo ?? repo,
-          name: f.name,
-          summary: f.summary ?? "",
+          name: unwrapEnvelope("feature", f.name),
+          summary: unwrapEnvelope("feature", f.summary ?? ""),
           status: rowStatus,
         };
         if (typeof f.priority === "number") feature.priority = f.priority;
@@ -377,7 +434,9 @@ export class McpMemoryClient implements AsyncMemoryClient {
   }
 
   async advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult> {
-    const raw = await this.callTool("advance_feature", { id, toStatus });
+    // memory-mcp's advance_feature takes `to_status` (snake_case); `toStatus` is
+    // rejected by its closed input schema, so every claim used to fail.
+    const raw = await this.callTool("advance_feature", { id, to_status: toStatus });
     const parsed = advanceFeatureResultSchema.safeParse(payloadFrom(raw));
     const status = parsed.success
       ? coerceFeatureStatus(
@@ -385,6 +444,13 @@ export class McpMemoryClient implements AsyncMemoryClient {
           toStatus,
         )
       : toStatus;
+    return { id, status };
+  }
+
+  async releaseFeature(id: string): Promise<AdvanceFeatureResult> {
+    const raw = await this.callTool("release_feature", { id });
+    const parsed = advanceFeatureResultSchema.safeParse(payloadFrom(raw));
+    const status = parsed.success ? coerceFeatureStatus(parsed.data.status, "backlog") : "backlog";
     return { id, status };
   }
 
@@ -436,7 +502,8 @@ export class McpMemoryClient implements AsyncMemoryClient {
     const parsed = callToolResultSchema.safeParse(raw);
     if (parsed.success && parsed.data.isError === true) {
       const text = parsed.data.content?.find((c) => c.type === "text")?.text;
-      throw new CrewError("MEMORY_UNAVAILABLE", `Memory tool '${name}' reported an error.`, {
+      const why = text ? `: ${text.slice(0, 200)}` : ".";
+      throw new CrewError("MEMORY_UNAVAILABLE", `Memory tool '${name}' reported an error${why}`, {
         tool: name,
         ...(text ? { detail: text } : {}),
       });

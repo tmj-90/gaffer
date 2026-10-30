@@ -222,6 +222,10 @@ export class CliMemoryClient implements AsyncMemoryClient {
     throw this.unsupported("advanceFeature");
   }
 
+  async releaseFeature(_id: string): Promise<AdvanceFeatureResult> {
+    throw this.unsupported("releaseFeature");
+  }
+
   async close(): Promise<void> {
     // Nothing to close — every verb is a one-shot spawn.
   }

@@ -101,7 +101,12 @@ export function detectConventions(
   return candidates;
 }
 
-/** True when Memory already has a record covering this convention. */
+/**
+ * True when Memory already has a record covering this convention — an approved
+ * record OR a draft still waiting for a human. Drafts count: search_lore hides
+ * them by default, so without `includeDrafts` every idle tick re-suggested the
+ * same convention and stacked identical drafts in the review queue.
+ */
 async function loreCovers(
   client: AsyncMemoryClient,
   candidate: ConventionCandidate,
@@ -110,6 +115,7 @@ async function loreCovers(
     tags: [candidate.tag],
     text: candidate.title,
     limit: 5,
+    includeDrafts: true,
   });
   return records.length > 0;
 }

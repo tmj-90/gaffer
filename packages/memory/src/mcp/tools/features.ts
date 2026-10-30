@@ -11,6 +11,7 @@ import {
   AdvanceFeatureError,
   getFeature,
   listFeatures,
+  releaseFeature,
 } from "../../core/repoUnderstanding.js";
 import type { Feature } from "../../db/types.js";
 import { checkMaxLen, FEATURE_CAPS } from "../validation.js";
@@ -49,6 +50,7 @@ function featureForMcp(f: Feature): Record<string, unknown> {
  *   - add_feature     — add a feature (defaults to backlog); applies directly
  *                       as a proposal.
  *   - advance_feature — move a feature forward through its lifecycle.
+ *   - release_feature — hand a claimed (`building`) feature back to `backlog`.
  */
 export function registerFeatureTools(server: McpServer, db: Database): void {
   // ---- list_features ---------------------------------------------------
@@ -332,6 +334,74 @@ export function registerFeatureTools(server: McpServer, db: Database): void {
         return {
           isError: true,
           content: [{ type: "text", text: `advance_feature failed: ${msg}` }],
+        };
+      }
+    },
+  );
+
+  // ---- release_feature -------------------------------------------------
+  server.registerTool(
+    "release_feature",
+    {
+      title: "Release a claimed feature back to the backlog",
+      description:
+        "Hand a CLAIMED feature back: move it from `building` to `backlog`. " +
+        "Use it only when you moved a feature to `building` and then could not " +
+        "plan or file the work for it (the claim failed), so the feature is not " +
+        "stranded in `building` with nothing behind it. Only a `building` " +
+        "feature can be released; `advance_feature` stays forward-only. Applies " +
+        "directly and is recorded in the audit trail.",
+      inputSchema: mcpToolInput({
+        id: z.string().min(1).describe("The feature id to release."),
+      }),
+    },
+    async (args) => {
+      try {
+        if (scopeEnforcementActive(process.env)) {
+          const existing = getFeature(db, args.id);
+          if (existing && !repoInScope(existing.repo, process.env)) {
+            audit({
+              tool: "release_feature",
+              request: args as Record<string, unknown>,
+              blocked: "repo_out_of_scope",
+            });
+            return {
+              isError: true,
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(repoOutOfScopeRefusal(existing.repo), null, 2),
+                },
+              ],
+            };
+          }
+        }
+        const feature = releaseFeature(db, args.id);
+        audit({
+          tool: "release_feature",
+          request: args as Record<string, unknown>,
+          resultCount: 1,
+          resultIds: [feature.id],
+        });
+        const out = {
+          ...featureForMcp(feature),
+          message: "Feature released back to 'backlog' (applied directly).",
+        };
+        return {
+          content: [{ type: "text", text: JSON.stringify(out, null, 2) }],
+          structuredContent: out,
+        };
+      } catch (err) {
+        const reason = err instanceof AdvanceFeatureError ? err.reason : undefined;
+        const msg = err instanceof Error ? err.message : String(err);
+        audit({
+          tool: "release_feature",
+          request: args as Record<string, unknown>,
+          error: reason ? `${reason}: ${msg}` : msg,
+        });
+        return {
+          isError: true,
+          content: [{ type: "text", text: `release_feature failed: ${msg}` }],
         };
       }
     },

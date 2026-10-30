@@ -146,6 +146,11 @@ export interface DispatchFacade {
     input: unknown,
     actor?: unknown,
   ): {
+    /** What Dispatch's EpicsService.createEpic returns. */
+    epicNodeId?: string;
+    ticketNumbers?: number[];
+    acceptanceTicketNumber?: number | null;
+    // Older / alternative facade shapes, still accepted.
     epicId?: string;
     id?: string;
     epic?: { id?: string };
@@ -759,6 +764,10 @@ export class RealDispatchClient implements DispatchClient {
     policyPack?: string;
   }): CreateEpicResult {
     const create = required(this.facade.createEpic, "createEpic");
+    // Dispatch's createEpicInput (camelCase per ticket; unknown keys are stripped):
+    // `acceptanceCriteria` + `dependsOn` (plan indexes) + `policy_pack`. This used to
+    // send `acceptance_criteria` / `depends_on`, which Dispatch silently dropped, so
+    // every idle-filed epic lost its criteria and its ordering.
     const tickets = p.tickets.map((t, index) => ({
       title: t.title,
       // Stamp the de-dup marker on the first ticket so a re-run maps to this epic.
@@ -766,28 +775,33 @@ export class RealDispatchClient implements DispatchClient {
         index === 0 && p.findingKey
           ? `${t.description ?? ""}\n\nFinding-Key: ${p.findingKey}`
           : (t.description ?? ""),
-      acceptance_criteria: t.acceptanceCriteria ?? [],
+      acceptanceCriteria: t.acceptanceCriteria ?? [],
       ...(t.priority !== undefined ? { priority: t.priority } : {}),
       ...(t.repoName ? { repo: t.repoName } : {}),
-      depends_on: t.dependsOn ?? [],
+      ...(p.policyPack ? { policy_pack: p.policyPack } : {}),
+      dependsOn: t.dependsOn ?? [],
     }));
+    // Dispatch files every epic ticket as a DRAFT (createEpic has no ready flag), so
+    // a requested `ready` is NOT applied here: a human readies an idle-planned epic.
+    // The result reports what actually happened (ready: false).
     const res = create.call(
       this.facade,
-      {
-        epic: { name: p.name, description: p.description ?? "" },
-        tickets,
-        ready: p.ready,
-        policy_pack: p.policyPack ?? "solo_loose",
-      },
+      { epic: { name: p.name, description: p.description ?? "" }, tickets },
       GAFFER_ACTOR,
     );
-    const epicId = res.epicId ?? res.id ?? res.epic?.id;
+    // The epic is committed by now (Dispatch creates it in one transaction), so a
+    // result shape we do not recognise must not throw: the caller would release the
+    // feature and re-plan it next tick, filing a DUPLICATE epic and paying for a
+    // second planning call. Fall back to an empty id instead.
+    const epicId = res.epicNodeId ?? res.epicId ?? res.id ?? res.epic?.id ?? "";
     const ticketIds =
-      res.ticketIds ?? (res.tickets ?? []).map((t) => String(t.id ?? t.ticketId ?? ""));
+      res.ticketNumbers?.map((n) => String(n)) ??
+      res.ticketIds ??
+      (res.tickets ?? []).map((t) => String(t.id ?? t.ticketId ?? ""));
     return {
-      epicId: String(required(epicId, "createEpic.epicId")),
+      epicId: String(epicId),
       ticketIds: ticketIds.filter((id) => id !== ""),
-      ready: p.ready,
+      ready: false,
     };
   }
 

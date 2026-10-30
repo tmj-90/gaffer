@@ -348,6 +348,48 @@ describe("RealDispatchClient (parallel-build guard)", () => {
   });
 });
 
+describe("RealDispatchClient.createEpic against the real package", () => {
+  // The idle feature-backlog loop files its plan through this adapter. It used to
+  // send `acceptance_criteria` / `depends_on` (Dispatch reads camelCase and strips
+  // the rest, so criteria + ordering were lost) and to read `epicId` from a result
+  // that carries `epicNodeId` — so it THREW after Dispatch had committed the epic,
+  // the loop released the feature, and the next idle tick paid to re-plan it and
+  // filed a duplicate epic.
+  it("files criteria + dependencies and returns the committed epic without throwing", () => {
+    const wg = Dispatch.open(":memory:");
+    const client = RealDispatchClient.fromFacade(
+      wg as unknown as Parameters<typeof RealDispatchClient.fromFacade>[0],
+    );
+    const res = client.createEpic({
+      name: "CSV export",
+      description: "planned from the backlog",
+      tickets: [
+        { title: "Add export", description: "d", acceptanceCriteria: ["has a header row"] },
+        { title: "Document export", acceptanceCriteria: ["README names it"], dependsOn: [0] },
+      ],
+      ready: true,
+      findingKey: "feature_backlog:app:f1",
+      policyPack: "solo_loose",
+    });
+    expect(res.epicId).not.toBe("");
+    // Two plan tickets + the epic's acceptance ticket.
+    expect(res.ticketIds).toHaveLength(3);
+    // Dispatch has no ready flag on createEpic: the tickets are drafts and the
+    // result says so (a human readies an idle-planned epic).
+    expect(res.ready).toBe(false);
+    const first = wg.view(res.ticketIds[0]!);
+    expect(first.ticket.status).toBe("draft");
+    expect(first.acceptanceCriteria.map((ac: { text: string }) => ac.text)).toEqual([
+      "has a header row",
+    ]);
+    expect(String(first.ticket.description)).toContain("Finding-Key: feature_backlog:app:f1");
+    const second = wg.view(res.ticketIds[1]!);
+    expect(second.dependencies.map((d: { number: number | null }) => d.number)).toEqual([
+      Number(res.ticketIds[0]),
+    ]);
+  });
+});
+
 describe("FakeDispatchClient", () => {
   it("enforces single claim and rejects invalid tokens", () => {
     const wg = new FakeDispatchClient();

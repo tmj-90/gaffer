@@ -94,6 +94,9 @@ class FakeAsyncMemory implements AsyncMemoryClient {
   async advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult> {
     return { id, status: toStatus };
   }
+  async releaseFeature(id: string): Promise<AdvanceFeatureResult> {
+    return { id, status: "backlog" };
+  }
 
   async close(): Promise<void> {}
 }

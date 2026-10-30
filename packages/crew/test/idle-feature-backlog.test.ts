@@ -71,8 +71,22 @@ class FakeMemory implements AsyncMemoryClient {
     );
   }
   async advanceFeature(id: string, toStatus: FeatureStatus): Promise<AdvanceFeatureResult> {
+    // Mirror memory's forward-only lifecycle: building → backlog is refused there
+    // (an earlier fake accepted it, which hid the stranded-in-building bug).
+    const from = this.statusOf(id);
+    const legal =
+      (from === "backlog" && (toStatus === "building" || toStatus === "shipped")) ||
+      (from === "building" && toStatus === "shipped");
+    if (!legal) throw new CrewError("MEMORY_UNAVAILABLE", `illegal ${from} -> ${toStatus}`);
     this.advances.push({ id, toStatus });
     return { id, status: toStatus };
+  }
+  readonly releases: string[] = [];
+  async releaseFeature(id: string): Promise<AdvanceFeatureResult> {
+    if (this.statusOf(id) !== "building") throw new CrewError("MEMORY_UNAVAILABLE", "not building");
+    this.releases.push(id);
+    this.advances.push({ id, toStatus: "backlog" });
+    return { id, status: "backlog" };
   }
   async addFeature(_input: FeatureInput): Promise<FeatureResult> {
     return { featureId: "f", status: "added" };
@@ -290,11 +304,13 @@ describe("idle feature-backlog loop", () => {
     const outcome = await runIdleFeatureBacklogLoop(d);
 
     expect(outcome.status).toBe("no_findings");
-    // Advanced to building, then rolled back to backlog — not stranded.
+    // Advanced to building, then RELEASED back to backlog (memory's release_feature,
+    // not a backward advance_feature, which memory refuses) — not stranded.
     expect(memory.advances).toEqual([
       { id: "feat-1", toStatus: "building" },
       { id: "feat-1", toStatus: "backlog" },
     ]);
+    expect(memory.releases).toEqual(["feat-1"]);
     expect(memory.statusOf("feat-1")).toBe("backlog");
     expect(wg.epics).toHaveLength(0); // nothing filed
     expect(d.events.types()).toContain("feature_backlog_rolled_back");
@@ -314,6 +330,33 @@ describe("idle feature-backlog loop", () => {
 
     expect(outcome.status).toBe("no_findings");
     expect(memory.statusOf("feat-1")).toBe("backlog");
+  });
+
+  it("files the epic with a single-line name + description (Dispatch scope nodes refuse newlines)", async () => {
+    const memory = new FakeMemory([feature()]);
+    const multiLine = plan("demo");
+    multiLine.epic = { name: "Add\nexport", description: "Line one.\n\nLine two.\tTabbed." };
+    const decomposer = new FakeDecomposer({ kind: "ok", plan: multiLine });
+    const wg = new FakeDispatchClient();
+    const seen: Array<{ name: string; description?: string }> = [];
+    const original = wg.createEpic.bind(wg);
+    wg.createEpic = (p) => {
+      seen.push({
+        name: p.name,
+        ...(p.description !== undefined ? { description: p.description } : {}),
+      });
+      return original(p);
+    };
+    const d = deps(config("create_draft_tickets"), memory, decomposer, wg);
+
+    const outcome = await runIdleFeatureBacklogLoop(d);
+
+    expect(outcome.status).toBe("draft_created");
+    // eslint-disable-next-line no-control-regex -- asserting no control bytes reach Dispatch.
+    const control = /[\x00-\x1f]/;
+    expect(seen[0]!.name).toBe("Add export");
+    expect(control.test(seen[0]!.description ?? "")).toBe(false);
+    expect(seen[0]!.description).toContain("Line one. Line two. Tabbed.");
   });
 
   it("no-ops when there are no backlog features", async () => {

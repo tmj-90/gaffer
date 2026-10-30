@@ -22,14 +22,11 @@ import {
 } from "../memory/prefetch.js";
 import { ingestGithubIssues } from "../ingest/githubIssues.js";
 import { ingestJiraIssues } from "../ingest/jiraIssues.js";
-import { runMaintenanceLane } from "../loops/idleRegistry.js";
-import { runIdleTick } from "../loops/idleTick.js";
-import { buildOracleSet } from "../loops/oracles/build.js";
+import { runIdleTick, runMaintenanceTick } from "../loops/idleTick.js";
 import { runImplementationLoop } from "../loops/implementationLoop.js";
 import { MockAgentRuntime } from "../runtime/agentRuntime.js";
 import { loadSkillRegistry } from "../skills/loader.js";
 import { expandStackLabels } from "../skills/registry.js";
-import { withDispatchRepos } from "../registry/dispatchRepos.js";
 import { buildStats, renderDoctor, renderStats, runDoctor } from "../ops/index.js";
 import { loadFactory, openDispatch } from "../runtime/wiring.js";
 import { checkBranchPolicy } from "../safety/branchPolicy.js";
@@ -405,6 +402,10 @@ program
       report: tick.report,
       ...(tick.loreGap ? { loreGap: tick.loreGap } : {}),
       ...(tick.featureBacklog ? { featureBacklog: tick.featureBacklog } : {}),
+      // What runner/tick.sh reads: how much the tick filed, and whether it ran a
+      // model-backed step (counts against the day cap even when it filed nothing).
+      filed: tick.filed,
+      spent: tick.spent,
       events: events.types(),
     });
   });
@@ -427,20 +428,6 @@ program
       redact: loaded.config.logging.redact,
     });
     const dispatch = await openDispatch(ctx, { mustExist: true });
-    // Dispatch's registry (what onboarding writes) merged into crew.yaml's repos, so a
-    // dashboard-onboarded repo is scanned without hand-editing crew.yaml.
-    const repoRegistry = withDispatchRepos(ctx.repoRegistry, dispatch, events);
-    // Tool-backed oracles only when `loops.oracles.enabled` (default off).
-    const oracles = buildOracleSet(systemCommandRunner, loaded.config);
-    const baseDeps = {
-      config: loaded.config,
-      repoRegistry,
-      dispatch,
-      runner: systemCommandRunner,
-      events,
-      clock: systemClock,
-      ...(oracles ? { oracles } : {}),
-    };
 
     // Cursor path precedence: explicit config override → $GAFFER_DATA →
     // factory root. Persisting the cursor keeps the rotation cadence across ticks.
@@ -451,8 +438,32 @@ program
     const cursorPath =
       loaded.config.loops.maintenance.cursor_path ?? join(dataDir, "maintenance-cursor.json");
 
-    const report = runMaintenanceLane(baseDeps, cursorPath, { force: opts.force === true });
-    printJson({ ok: true, report, events: events.types() });
+    // The shared maintenance tick (loops/idleTick.ts): Dispatch repos merged into
+    // crew.yaml's (so a dashboard-onboarded repo is scanned), GitHub/Jira ingest,
+    // ONE scheduler-chosen lane, then the async lore-gap + feature-backlog loops.
+    const tick = await runMaintenanceTick(
+      {
+        config: loaded.config,
+        repoRegistry: ctx.repoRegistry,
+        dispatch,
+        runner: systemCommandRunner,
+        events,
+        clock: systemClock,
+      },
+      cursorPath,
+      { force: opts.force === true },
+    );
+    printJson({
+      ok: true,
+      report: tick.report,
+      ...(tick.ingest ? { ingest: tick.ingest } : {}),
+      ...(tick.jira ? { jira: tick.jira } : {}),
+      ...(tick.loreGap ? { loreGap: tick.loreGap } : {}),
+      ...(tick.featureBacklog ? { featureBacklog: tick.featureBacklog } : {}),
+      filed: tick.filed,
+      spent: tick.spent,
+      events: events.types(),
+    });
   });
 
 program

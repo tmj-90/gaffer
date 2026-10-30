@@ -31,19 +31,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Worker processes: the exact `bash <runner>/worker.sh` command line (fields, not a
-# substring — the awk below would otherwise match its own argv). Counts the workers'
-# own $(...) subshells too, which is fine: the assertion is that none are left.
-workers() { ps -axo pid=,command= 2>/dev/null | awk -v w="$RUNNER_DIR/worker.sh" '$2 == "bash" && $3 == w {print $1}'; }
+# THIS pool's worker processes: the exact `bash <runner>/worker.sh` command line
+# (fields, not a substring, so the awk never matches its own argv) AND the loop's
+# process group. The group is what scopes it: the CI harness runs other tests that
+# start their own loop.sh / worker.sh from the same runner dir in parallel, and
+# matching the command line alone counted (and the cleanup KILLed) their workers too.
+# Counts the workers' own $(...) subshells as well, which is fine: the assertion is
+# that none are left.
+workers() {
+  [ -n "$LP" ] || return 0
+  ps -axo pid=,pgid=,command= 2>/dev/null \
+    | awk -v w="$RUNNER_DIR/worker.sh" -v g="$LP" '$2 == g && $3 == "bash" && $4 == w {print $1}'
+}
 ticks_in() { [ -f "$1/factory.log" ] || { echo 0; return; }; wc -l < "$1/factory.log" | tr -d ' '; }
 
 # The loop starts the way a terminal starts it: in its own process group with SIGINT at
 # its default. A background job of this non-interactive script starts with SIGINT
 # ignored, and a signal ignored on entry cannot be trapped (POSIX; bash 3.2 on macOS
 # enforces it), so without the reset P1 tested a launch no user ever makes.
-# LP is read from the pid the launcher itself records just before it execs loop.sh, not
-# from $!: macOS bash 3.2 can fork once more inside `( ... exec perl ... ) &`, so $! is
-# then the loop's PARENT, and P1's INT went to a process group the pool is not in.
+# LP is the pid the launcher records just before it execs loop.sh, which is also the
+# pool's process group id (setpgrp): every signal and the workers() scope use it, and
+# it does not depend on how the shell forks the `( ... ) &` around the launcher.
 start_pool() {  # <case> → sets LP (the loop pid == its own process group id), D
   D="$WORK/$1"; mkdir -p "$D/data"
   ( export GAFFER_DATA="$D/data"; cd "$RUNNER_DIR" && source ./factory.config.sh >/dev/null 2>&1 && wg init >/dev/null 2>&1 )
@@ -71,9 +79,9 @@ gone_within() {  # <secs> → 0 once the loop and every worker have exited
 # command line, plus the loop's and every worker's log tail. A platform-only failure
 # (macOS bash 3.2) is then diagnosable from the CI log alone.
 dump_survivors() {  # <case-label>
-  echo "  -- $1 survivors (pid ppid pgid stat etime command) --"
+  echo "  -- $1 survivors in the pool's process group $LP (pid ppid pgid stat etime command) --"
   ps -axo pid=,ppid=,pgid=,stat=,etime=,command= 2>/dev/null \
-    | awk '($6 ~ /(^|\/)bash$/ && $7 ~ /(worker|tick|loop)\.sh$/) || ($6 ~ /(^|\/)perl$/ && index($0, "alarm"))' \
+    | awk -v g="$LP" '$3 == g && (($6 ~ /(^|\/)bash$/ && $7 ~ /(worker|tick|loop)\.sh$/) || ($6 ~ /(^|\/)perl$/ && index($0, "alarm")))' \
     | sed 's/^/     /'
   echo "  -- loop.out (tail) --"; tail -n 15 "$D/loop.out" 2>/dev/null | sed 's/^/     /'
   local f; for f in "$D/data/.workers"/*; do [ -f "$f" ] || continue

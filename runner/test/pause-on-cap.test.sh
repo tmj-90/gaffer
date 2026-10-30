@@ -139,7 +139,15 @@ RB_JSON="$(wg ticket resume-begin "$NUM" --agent "$RUNNER_AGENT" --ttl 600 2>/de
 RB_WT="$(printf '%s' "$RB_JSON" | jget 'd.context.worktree_path')"
 RB_TOK="$(printf '%s' "$RB_JSON" | jget 'd.claim_token ?? ""')"
 [ -n "$RB_TOK" ] && ok "resume-begin --agent leased the resumed delivery (claim token printed)" || fail "resume-begin --agent printed no claim token"
-wg heartbeat "$RB_TOK" >/dev/null 2>&1 && ok "the resumed delivery's lease heartbeats with that token" || fail "heartbeat on the resume lease failed"
+# On a failure, print why: the heartbeat's own error, what resume-begin returned, and
+# the ticket's claims (an intermittent failure, seen once in CI, not reproduced locally).
+if HB_OUT="$(wg heartbeat "$RB_TOK" 2>&1)"; then
+  ok "the resumed delivery's lease heartbeats with that token"
+else
+  fail "heartbeat on the resume lease failed: $HB_OUT"
+  printf '    resume-begin: %s\n' "$RB_JSON"
+  wg ticket show "$NUM" 2>&1 | jget 'JSON.stringify({status: d.ticket?.status, claims: d.claims ?? d.active_claim ?? null})' 2>/dev/null | sed 's/^/    ticket: /'
+fi
 [ "$(status_of "$NUM")" = "in_progress" ] && ok "resume-begin moved #$NUM paused -> in_progress" || fail "resume-begin did not reach in_progress (got '$(status_of "$NUM")')"
 [ "$RB_WT" = "$WT" ] && ok "INVARIANT: resume re-enters the SAME worktree path" || fail "resume worktree path changed ($RB_WT)"
 [ -d "$WT" ] && ok "the worktree is still present for the resumed delivery" || fail "worktree vanished before resume"

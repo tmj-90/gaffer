@@ -425,11 +425,11 @@ grep -q $'^GATE\ttests\trepo2\tFAIL' "$RESF" && ok "F1 repo2's failing test gate
 RESF2="$WORK/f2.results"
 printf 'repo\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'echo "AssertionError: expected 2 got 3 in test_widget"; exit 1' \
   | CREW_DIR="$WORK/no-crew" gaffer_run_dod_gates "$RESF2"
-awk '/^---DOD-OUTPUT tests@repo---/{k=1;next} /^---END-DOD-OUTPUT---/{k=0} k' "$RESF2" | grep -q 'AssertionError: expected 2 got 3' \
+grep -q 'AssertionError: expected 2 got 3' <<<"$(awk '/^---DOD-OUTPUT tests@repo---/{k=1;next} /^---END-DOD-OUTPUT---/{k=0} k' "$RESF2")" \
   && ok "F2 no crew dist → the failing output still lands in the framed DOD-OUTPUT block (tail fallback runs)" \
   || fail "F2 framed block is empty without the crew dist: $(tr '\n' '|' < "$RESF2")"
 F2_EX="$(CREW_DIR="$WORK/no-crew" gaffer_dod_extract_failure "$RESF2")"
-printf '%s\n' "$F2_EX" | grep -q '^failing gate: tests@repo$' && printf '%s\n' "$F2_EX" | grep -q '^  AssertionError: expected 2 got 3' \
+grep -q '^failing gate: tests@repo$' <<<"$F2_EX" && grep -q '^  AssertionError: expected 2 got 3' <<<"$F2_EX" \
   && ok "F2 no crew dist → gaffer_dod_extract_failure still feeds the failure back (awk fallback)" \
   || fail "F2 extract without the crew dist is empty/wrong: '$F2_EX'"
 # F3: a distiller that ERRORS (a crash on unusual output) is treated like a missing one.
@@ -441,7 +441,7 @@ printf 'repo\t%s\t1\t0\t0\t%s\t-\t-\n' "$WT" 'echo "AssertionError: crash-case";
 grep -q 'AssertionError: crash-case' "$RESF3" && ! grep -q '^half' "$RESF3" \
   && ok "F3 a crashing distiller → the raw tail is used, no half-distilled text leaks" \
   || fail "F3 crashing distiller output wrong: $(tr '\n' '|' < "$RESF3")"
-CREW_DIR="$FAKECREW" gaffer_dod_extract_failure "$RESF3" | grep -q '^  AssertionError: crash-case' \
+grep -q '^  AssertionError: crash-case' <<<"$(CREW_DIR="$FAKECREW" gaffer_dod_extract_failure "$RESF3")" \
   && ok "F3 a crashing extractor CLI → the awk fallback extracts the failure" \
   || fail "F3 extract with a crashing CLI lost the failure"
 # F4: the install enabler runs with stdin closed too (its caller loops rows on stdin).

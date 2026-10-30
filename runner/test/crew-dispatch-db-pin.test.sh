@@ -70,12 +70,12 @@ node "$DISPATCH_CLI" --db "$FAC2/dispatch.sqlite" init >/dev/null 2>&1
 node "$CREW_CLI" init -d "$FAC2" >/dev/null 2>&1
 node "$DISPATCH_CLI" --db "$FAC2/dispatch.sqlite" repo add -n repo1 --path "$WORK/repo1" >/dev/null 2>&1
 DOC="$(node "$CREW_CLI" -c "$FAC2/crew.yaml" doctor 2>&1)"
-if printf '%s\n' "$DOC" | grep -qE '^!|with warnings'; then
+if grep -qE '^!|with warnings' <<<"$DOC"; then
   fail "crew doctor warns on a healthy Dispatch-only factory: $(printf '%s\n' "$DOC" | grep -A1 '^!' | tr '\n' ' ')"
 else
   ok "crew doctor prints no warning (repos counted from Dispatch, agents informational)"
 fi
-printf '%s' "$DOC" | grep -q '1 repo(s) present on disk' \
+grep -q '1 repo(s) present on disk' <<<"$DOC" \
   && ok "doctor counts the Dispatch-registered repo" \
   || fail "doctor did not count the Dispatch repo"
 

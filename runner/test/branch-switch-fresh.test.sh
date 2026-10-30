@@ -71,7 +71,7 @@ U2="$(new_ready "User branch idle" "deliver a helper")"
 R2="$(run_tick)"
 BU2="$(branch_of "$U2")"
 [ "$R2" != "TICK_RESULT=worked" ] && [ "$(st "$U2")" = "ready" ] && ok "U2: not delivered ($R2), #$U2 back to ready" || fail "U2: $R2 status=$(st "$U2")"
-{ [ -z "$BU2" ] || ! git -C "$R" log --format=%s "main..$BU2" | grep -q "user: my own work"; } && ok "U2: the user's commit is not on a ticket branch" || fail "U2: the user's commit was absorbed into $BU2"
+{ [ -z "$BU2" ] || ! grep -q "user: my own work" <<<"$(git -C "$R" log --format=%s "main..$BU2")"; } && ok "U2: the user's commit is not on a ticket branch" || fail "U2: the user's commit was absorbed into $BU2"
 [ "$(git -C "$R" rev-parse --verify --quiet refs/heads/user-feature2)" = "$UF2" ] && ok "U2: user-feature2 kept at its own sha" || fail "U2: user-feature2 is $(git -C "$R" rev-parse --verify --quiet refs/heads/user-feature2 || echo DELETED) (was $UF2)"
 
 echo

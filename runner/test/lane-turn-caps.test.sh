@@ -40,9 +40,9 @@ DEFS="$(cfg bash -c 'source "$0" >/dev/null 2>&1; printf "%s|%s|%s|%s|%s|%s" "$G
 [ "$DEFS" = "|||||2" ] && ok "defaults: every lane cap empty (behaviour unchanged); judge 2" || fail "defaults: '$DEFS'"
 
 echo "== B. both reviewer spawns carry their lane cap =="
-grep -A1 'GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag "${GAFFER_REVIEW_MAX_TURNS:-}")"' "$RUNNER_DIR/lib/review.sh" | grep -q 'worker_deliver "$WT" "$RPROMPT"' \
+grep -q 'worker_deliver "$WT" "$RPROMPT"' <<<"$(grep -A1 'GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag "${GAFFER_REVIEW_MAX_TURNS:-}")"' "$RUNNER_DIR/lib/review.sh")" \
   && ok "reviewer: GAFFER_REVIEW_MAX_TURNS → per-call GAFFER_MAX_TURNS_FLAG" || fail "reviewer spawn does not pass its cap"
-grep -A1 'GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-}" "${GAFFER_REVIEW_MAX_TURNS:-}")"' "$RUNNER_DIR/lib/review.sh" | grep -q 'worker_deliver "$WT" "$SPROMPT"' \
+grep -q 'worker_deliver "$WT" "$SPROMPT"' <<<"$(grep -A1 'GAFFER_MAX_TURNS_FLAG="$(gaffer_lane_turns_flag "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-}" "${GAFFER_REVIEW_MAX_TURNS:-}")"' "$RUNNER_DIR/lib/review.sh")" \
   && ok "security reviewer: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap" || fail "security reviewer spawn does not pass its cap"
 
 echo "== C. the mjs lanes =="
@@ -61,7 +61,7 @@ OUT="$(cd "$RUNNER_DIR" && node --input-type=module -e '
   process.stdout.write(JSON.stringify(r));
 ' 2>&1)"
 for k in unset set poUnset poSet mtUnset mtSet; do
-  printf '%s' "$OUT" | grep -q "\"$k\":true" && ok "argv builder: $k" || fail "argv builder $k: $OUT"
+  grep -q "\"$k\":true" <<<"$OUT" && ok "argv builder: $k" || fail "argv builder $k: $OUT"
 done
 grep -q 'maxTurns: process.env.GAFFER_TESTER_MAX_TURNS' "$RUNNER_DIR/bin/tester-run.mjs" && ok "tester passes GAFFER_TESTER_MAX_TURNS" || fail "tester does not pass its cap"
 [ "$(grep -c 'maxTurns: process.env.GAFFER_PO_MAX_TURNS' "$RUNNER_DIR/bin/product-owner-run.mjs")" = "2" ] && ok "PO passes GAFFER_PO_MAX_TURNS (live + dry-run)" || fail "PO does not pass its cap"

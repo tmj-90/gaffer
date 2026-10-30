@@ -214,7 +214,7 @@ if [ -s "$CAP/argv" ]; then
     && ok "exactly one --max-turns, and it is the judge's 2 (not the 200-turn delivery cap)" || no "turn cap wrong: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
   grep -qx 'acceptEdits' "$CAP/argv" && no "the judge still runs under acceptEdits" || ok "no acceptEdits"
   grep -qx -- '--strict-mcp-config' "$CAP/argv" && grep -qx -- '--disallowedTools' "$CAP/argv" \
-    && grep -A1 -x -- '--disallowedTools' "$CAP/argv" | tail -1 | grep -q 'Bash,Edit,Write.*Read,Grep,Glob' \
+    && grep -q 'Bash,Edit,Write.*Read,Grep,Glob' <<<"$(grep -A1 -x -- '--disallowedTools' "$CAP/argv" | tail -1)" \
     && ok "--strict-mcp-config + every built-in tool denied" || no "tools not disabled: $(tr '\n' ' ' < "$CAP/argv" | tail -c 300)"
   [ "$(cat "$CAP/cwd")" != "$(cd "$REPO" && pwd -P)" ] && ok "cwd is the judge's temp dir, not the delivery repo" || no "judge ran in the delivery repo"
   grep -q "^GAFFER_WRITE_ROOTS=$REPO\$" "$CAP/env" && no "the delivery repo is still the judge's write root" || ok "the delivery repo is not a write root"

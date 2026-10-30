@@ -46,7 +46,7 @@ gaffer_claude_live_probe() {
   else
     out="$("$bin" -p ok --max-turns 1 --output-format json 2>&1)"; rc=$?
   fi
-  if [ "$rc" -eq 0 ] && ! printf '%s' "$out" | grep -Eq '"is_error"[[:space:]]*:[[:space:]]*true'; then return 0; fi
+  if [ "$rc" -eq 0 ] && ! grep -Eq '"is_error"[[:space:]]*:[[:space:]]*true' <<<"$out"; then return 0; fi
   # The error line: claude's JSON .result when it parses, else the first output line.
   GAFFER_CLAUDE_LIVE_ERROR="$(printf '%s' "$out" | node -e '
     let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {

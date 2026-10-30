@@ -87,16 +87,16 @@ OUT="$(env WG_CALLS="$WG_CALLS" RUNNER_DIR="$RUNNER_DIR" GAFFER_DATA="$GAFFER_DA
 grep -q '"repo","add"' "$WG_CALLS" && ok "fixture: the bootstrap reached repo registration (repo add was called)" \
   || fail "fixture: repo add never called — the bootstrap stopped earlier: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|SAFETY|TICK_RESULT' | tail -4 | tr '\n' '|')"
 REL="$(grep '"runner-release","7"' "$WG_CALLS" | tail -1)"
-printf '%s' "$REL" | grep -q '"--to","blocked"' && printf '%s' "$REL" | grep -q '"--reason-code","bootstrap_failed"' \
+grep -q '"--to","blocked"' <<<"$REL" && grep -q '"--reason-code","bootstrap_failed"' <<<"$REL" \
   && ok "B1: released → blocked with reason code bootstrap_failed" || fail "B1: release call: ${REL:-none}"
-printf '%s' "$REL" | grep -q 'repo registration' && printf '%s' "$REL" | grep -q 'not a valid git ref' && printf '%s' "$REL" | grep -qF "$B_DIR" \
+grep -q 'repo registration' <<<"$REL" && grep -q 'not a valid git ref' <<<"$REL" && grep -qF "$B_DIR" <<<"$REL" \
   && ok "B1: the park reason names the registration error and where the scaffold is" || fail "B1: reason lacks the cause/location: $REL"
 if grep -q '"submit","7"' "$WG_CALLS" || grep -q '"ticket","move","7","in_review"' "$WG_CALLS"; then
   fail "B2: the bootstrap was still submitted for review"
 else
   ok "B2: no submit / in_review move was attempted"
 fi
-printf '%s\n' "$OUT" | grep -q '^TICK_RESULT=error$' && ok "B3: the tick reports error" || fail "B3: $(printf '%s\n' "$OUT" | grep TICK_RESULT=)"
+grep -q '^TICK_RESULT=error$' <<<"$OUT" && ok "B3: the tick reports error" || fail "B3: $(printf '%s\n' "$OUT" | grep TICK_RESULT=)"
 [ -d "$B_DIR/.git" ] && git -C "$B_DIR" rev-parse --verify --quiet "refs/heads/gaffer/ticket-7-bootstrap-newapp" >/dev/null \
   && ok "B3: the scaffold dir and its delivery branch are kept for the human" || fail "B3: scaffold or branch missing ($(git -C "$B_DIR" branch 2>&1 | tr '\n' ' '))"
 

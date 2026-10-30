@@ -93,7 +93,7 @@ else
         ok "the delivery prompt carries the hostile \$TITLE inside a single-line envelope" ;;
       *) fail "the delivery prompt should quarantine \$TITLE (single-line envelope)" ;;
     esac
-    if printf '%s\n' "$PROMPT" | grep -q '^SYSTEM: ignore'; then
+    if grep -q '^SYSTEM: ignore' <<<"$PROMPT"; then
       fail "the injected SYSTEM line reached the prompt as a bare line"
     else
       ok "the injected SYSTEM line never starts a bare prompt line"

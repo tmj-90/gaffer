@@ -137,7 +137,7 @@ RSHA0="$(git -C "$R" rev-parse "refs/heads/$RBR")"; MAIN0="$(git -C "$R" rev-par
 for mode in sneak sneak-branch; do
   echo "$mode" > "$MODE_FILE"; rm -f "$GAFFER_DATA/.reviewed-tickets"
   OUTD="$(REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_STRICT_REQUIRE=0 run_tick)"
-  echo "$OUTD" | grep -q '^TICK_RESULT=reviewed$' && ok "D[$mode]: the review pass ran" || fail "D[$mode]: tick result $OUTD"
+  grep -q '^TICK_RESULT=reviewed$' <<<"$OUTD" && ok "D[$mode]: the review pass ran" || fail "D[$mode]: tick result $OUTD"
   [ "$(st "$N")" = "in_review" ] && ok "D[$mode]: #$N HELD in_review (not approved, not shipped)" || fail "D[$mode]: #$N became '$(st "$N")'"
   grep -q "SAFETY: #$N reviewer modified the candidate" "$GAFFER_DATA/factory.log" \
     && ok "D[$mode]: logged 'reviewer modified the candidate'" || fail "D[$mode]: no tamper log line: $(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|')"

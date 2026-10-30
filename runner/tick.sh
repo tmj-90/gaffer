@@ -1805,7 +1805,7 @@ $PRODUCT_CONTEXT_BLOCK}"
   # multi-repo setup rollback, or a failure path. Those used to delete reviewed,
   # paid-for commits. A kept branch with commits is logged.
   _BRANCH_CREATED_THIS_TICK=""
-  _gaffer_branch_created_here() { printf '%s\n' "$_BRANCH_CREATED_THIS_TICK" | grep -qxF -- "$1"; }
+  _gaffer_branch_created_here() { grep -qxF -- "$1" <<<"$_BRANCH_CREATED_THIS_TICK"; }
   gaffer_cleanup_worktrees() {
     # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
     # tick created it (see BRANCH RETENTION above).
@@ -2678,7 +2678,7 @@ $_trail_q
                    && log "RECOVERED branch switch for #$NUM: deleted the agent's stray branch '$HEAD_BRANCH' (fully contained in $WORK_BRANCH)"
                fi
              elif [ "$_bs_pre" != "$_bs_head" ] \
-                  && ! git -C "$rpath" worktree list --porcelain 2>/dev/null | grep -qxF "branch refs/heads/$HEAD_BRANCH"; then
+                  && ! grep -qxF "branch refs/heads/$HEAD_BRANCH" <<<"$(git -C "$rpath" worktree list --porcelain 2>/dev/null)"; then
                # A pre-existing branch the agent committed on: put it back (compare-and-
                # swap, so a concurrent move by its owner wins) — the commits are on $WORK_BRANCH.
                git -C "$rpath" update-ref "refs/heads/$HEAD_BRANCH" "$_bs_pre" "$_bs_head" >/dev/null 2>&1 \

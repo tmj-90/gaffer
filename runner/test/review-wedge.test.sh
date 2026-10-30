@@ -99,7 +99,7 @@ OUT1="$(REVIEW_MODE=agent run_tick)"
 grep -qx "$N1" "$GAFFER_DATA/.reviewed-tickets" 2>/dev/null && ok "A: #$N1 skipped for the rest of the run" || fail "A: #$N1 not in .reviewed-tickets"
 grep -q "REVIEW-HELD: #$N1 cannot be agent-reviewed — delivery branch" "$GAFFER_DATA/factory.log" \
   && ok "A: logged REVIEW-HELD with the reason" || fail "A: no REVIEW-HELD line: $(tail -3 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
-wg ticket show "$N1" 2>/dev/null | grep -q "agent review could not run" && ok "A: a note on the ticket says why" || fail "A: no manual note on #$N1"
+grep -q "agent review could not run" <<<"$(wg ticket show "$N1" 2>/dev/null)" && ok "A: a note on the ticket says why" || fail "A: no manual note on #$N1"
 [ "$(st "$N1")" = "in_review" ] && ok "A: #$N1 stays in_review for a human" || fail "A: #$N1 became '$(st "$N1")'"
 
 echo "== B. a registered stale review worktree is swept; the review proceeds first time =="

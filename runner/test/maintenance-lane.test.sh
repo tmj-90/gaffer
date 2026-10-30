@@ -192,7 +192,7 @@ fi
 # idle tick: hidden, and a productive result kept workers from ever draining.
 reset_log
 OUT7="$(MAINT_FAIL=1 IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
-echo "$OUT7" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT7" \
   && ok "a failed crew maintain → TICK_RESULT=no_work (not maintenance_ran)" \
   || fail "expected no_work when crew maintain fails, got: $(echo "$OUT7" | grep '^TICK_RESULT=')"
 grep -q 'maintenance lane FAILED (rc=1): {"ok":false,"code":"INVALID_CONFIG"' "$GAFFER_DATA/factory.log" 2>/dev/null \
@@ -210,21 +210,21 @@ OUT8="$(MAINT_FAIL=1 IDLE_DRAFT_WHEN_IDLE=1 run_tick)"
 grep -qw 'idle' "$CREW_CALLS" \
   && ok "IDLE_DRAFT_WHEN_IDLE=1 still runs the legacy idle scan after a failed lane" \
   || fail "the legacy idle scan did not run after a failed lane (calls: $(tr '\n' '|' < "$CREW_CALLS"))"
-echo "$OUT8" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT8" \
   && ok "…and the tick still ends no_work when the scan drafts nothing" \
   || fail "expected no_work after the fall-through, got: $(echo "$OUT8" | grep '^TICK_RESULT=')"
 
 # ── 9. an unknown outcome status is a failure, not a run ─────────────────────
 reset_log
 OUT9="$(MAINT_STATUS=exploded IDLE_DRAFT_WHEN_IDLE=0 run_tick)"
-echo "$OUT9" | grep -q '^TICK_RESULT=no_work$' \
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT9" \
   && grep -q 'maintenance lane FAILED (rc=0)' "$GAFFER_DATA/factory.log" 2>/dev/null \
   && ok "an unknown outcome status → FAILED + no_work" \
   || fail "expected FAILED + no_work for an unknown status, got: $(echo "$OUT9" | grep '^TICK_RESULT=')"
 # A known non-drafting status still reports a run.
 reset_log
 OUT10="$(MAINT_STATUS=no_findings run_tick)"
-echo "$OUT10" | grep -q '^TICK_RESULT=maintenance_ran$' \
+grep -q '^TICK_RESULT=maintenance_ran$' <<<"$OUT10" \
   && ok "a known status (no_findings) still reports maintenance_ran" \
   || fail "expected maintenance_ran for no_findings, got: $(echo "$OUT10" | grep '^TICK_RESULT=')"
 

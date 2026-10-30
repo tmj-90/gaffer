@@ -1936,9 +1936,9 @@ gaffer_review_verdict() {
     | sed -E 's/^[[:space:]]*`?//; s/`?[[:space:]]*$//')"
   # Braces are matched via [{]/[}] so the ERE is portable across BSD (macOS
   # /usr/bin/grep) and GNU grep (CI) — `\{` is an interval metacharacter to GNU grep.
-  if printf '%s' "$_last" | grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"APPROVE"[[:space:]]*[}]'; then
+  if grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"APPROVE"[[:space:]]*[}]' <<<"$_last"; then
     printf 'approve\n'
-  elif printf '%s' "$_last" | grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"CHANGES"[[:space:]]*[}]'; then
+  elif grep -qixE '[{][[:space:]]*"verdict"[[:space:]]*:[[:space:]]*"CHANGES"[[:space:]]*[}]' <<<"$_last"; then
     printf 'changes\n'
   else
     printf 'held\n'

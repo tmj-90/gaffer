@@ -60,6 +60,7 @@ const {
   emitFileCards,
   refreshFileCards,
   runCardReviewSample,
+  buildRollupDigest,
   INFRA_NOT_FEATURES_RULE,
   MEMORY_ONBOARD_RULE,
   INDUCTION_TAG,
@@ -1375,6 +1376,112 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
     assert("B>1 null result: files still carded mechanically", s.carded === 3);
     assert("B>1 null result: zero model summaries (fail-safe)", s.modelCarded === 0);
   }
+}
+
+console.log(
+  "== emitFileCards: only cards the memory gate stored ACTIVE count + reach the rollup ==",
+);
+{
+  const { execSync } = await import("node:child_process");
+  const repoDir = mkdtempSync(resolve(tmpdir(), "emit-gate-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
+  writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
+  writeFileSync(join(repoDir, "src", "c.ts"), "export const c = 3;\n");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  // Fake memory CLI: the card gate rejects src/b.ts's summary (out-of-taxonomy
+  // role → failed_validation), as the real `memory card upsert` does.
+  const dir = mkdtempSync(resolve(tmpdir(), "emit-gate-cli-"));
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "const a = process.argv;",
+      "if (a[2] === 'card' && a[3] === 'upsert') {",
+      "  const rel = a[a.indexOf('--path') + 1];",
+      "  const st = a.includes('--tldr') ? (rel === 'src/b.ts' ? 'failed_validation' : 'active') : 'absent';",
+      "  process.stdout.write(JSON.stringify({ modelStatus: st }) + '\\n');",
+      "}",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const logs = [];
+  const s = emitFileCards(
+    repoDir,
+    { repoId: "demo", name: "demo" },
+    {
+      cfg,
+      env: { ...BASE_ENV, GAFFER_CARD_BATCH: "1", GAFFER_CARD_REVIEW_SAMPLE: "0" },
+      log: (m) => logs.push(m),
+      runTurn: () => ({ tldr: "REJECTABLE summary", rolePrimary: "domain", roleTags: [] }),
+    },
+  );
+  eq("gate: every file still carded (mechanical half)", s.carded, 3);
+  eq("gate: the rejected summary is NOT counted model-summarised", s.modelCarded, 2);
+  eq("gate: model-rejected counted", s.modelRejected, 1);
+  eq(
+    "gate: the rejected card does not feed the rollup digest",
+    s.collectedCards.map((c) => c.rel).sort(),
+    ["src/a.ts", "src/c.ts"],
+  );
+  assert(
+    "gate: the rejection is logged",
+    logs.some((l) => /src\/b\.ts.*failed_validation/.test(l)),
+  );
+
+  // A card the semantic review strips leaves the rollup + the count too.
+  const s2 = emitFileCards(
+    repoDir,
+    { repoId: "demo", name: "demo" },
+    {
+      cfg,
+      env: { ...BASE_ENV, GAFFER_CARD_BATCH: "1", GAFFER_CARD_REVIEW_SAMPLE: "1" },
+      runTurn: () => ({ tldr: "Summary", rolePrimary: "util", roleTags: [] }),
+      runReviewTurn: () => ({ verdict: "reject", reason: "wrong" }),
+    },
+  );
+  eq("review: one stripped card", s2.reviewStats?.downgraded, 1);
+  eq("review: stripped card leaves the model-summarised count", s2.modelCarded, 1);
+  eq("review: stripped card leaves the rollup input", s2.collectedCards.length, 1);
+}
+
+console.log("== buildRollupDigest keeps the model's overview (and appends capabilities) ==");
+{
+  const cards = [
+    { rel: "src/invoice.js", role: "service", tldr: "STUB tldr for invoice" },
+    { rel: "test/invoice.test.js", role: "test", tldr: "tests" },
+  ];
+  const model = {
+    digest: { overview: "billing is an invoice service.", conventions: "ESM." },
+    features: [{ name: "Invoice totals" }, { name: "Refunds" }],
+  };
+  const d = buildRollupDigest(cards, model, { name: "billing" });
+  eq(
+    "overview = model overview + capability list",
+    d.overview,
+    "billing is an invoice service. Capabilities: Invoice totals, Refunds.",
+  );
+  eq(
+    "no features → the model overview as-is",
+    buildRollupDigest(
+      cards,
+      { digest: { overview: "billing is an invoice service." } },
+      {
+        name: "billing",
+      },
+    ).overview,
+    "billing is an invoice service.",
+  );
+  eq(
+    "no model overview → features + service tldr (prior fallback)",
+    buildRollupDigest(cards, { features: [{ name: "Invoice totals" }] }, { name: "billing" })
+      .overview,
+    "billing: Invoice totals. STUB tldr for invoice",
+  );
 }
 
 console.log("== batch-shortfall retry: missing batch slots trigger per-file runTurn ==");

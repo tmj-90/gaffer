@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
+import { isMemoryRefusal } from "../src/api/routes/api.js";
 import {
   createMemoryReader,
   parseDigest,
@@ -216,7 +217,8 @@ const LORE_JSON_OUT = JSON.stringify({
  * invocation's argv is appended (one JSON line) to the sibling `calls.jsonl`, so a
  * test can assert exactly which flags dispatch forwarded. `list --json` answers the
  * JSON page; bare `list` the legacy text. `approve`/`reject` succeed for any id
- * except `zzzzzzzz`, which the real CLI refuses ("unknown id or not a draft").
+ * except `zzzzzzzz`, which they refuse with the REAL CLI's wording for that verb
+ * (approve: "is not a pending draft …", reject: "cannot reject … not a draft").
  */
 function writeStubCli(): string {
   const dir = mkdtempSync(join(tmpdir(), "wg-mem-"));
@@ -238,7 +240,9 @@ else if (verb === "recall-stats") process.stdout.write(recall);
 else if (verb === "approve" || verb === "reject") {
   const id = process.argv[3];
   if (id === "zzzzzzzz") {
-    process.stderr.write("memory: cannot " + verb + " zzzzzzzz (unknown id or not a draft; use \`memory deprecate\` for active records)\\n");
+    process.stderr.write(verb === "approve"
+      ? "memory: zzzzzzzz is not a pending draft (already active, deprecated, or unknown)\\n"
+      : "memory: cannot reject zzzzzzzz (unknown id or not a draft; use \`memory deprecate\` for active records)\\n");
     process.exit(1);
   }
   process.stdout.write("memory: " + (verb === "approve" ? "approved " : "rejected ") + id + "\\n");
@@ -478,11 +482,15 @@ describe("API: /api/memory/* read surfaces", () => {
     });
 
     it("a refused decision (unknown id / not a draft) is a 409 CONFLICT with the CLI's reason", async () => {
-      const res = await fetch(`${h.baseUrl}/api/memory/lore/zzzzzzzz/approve`, { method: "POST" });
-      expect(res.status).toBe(409);
-      const body = (await res.json()) as { error: { code: string; message: string } };
-      expect(body.error.code).toBe("CONFLICT");
-      expect(body.error.message).toMatch(/not a draft/);
+      for (const verb of ["approve", "reject"]) {
+        const res = await fetch(`${h.baseUrl}/api/memory/lore/zzzzzzzz/${verb}`, {
+          method: "POST",
+        });
+        expect(res.status).toBe(409);
+        const body = (await res.json()) as { error: { code: string; message: string } };
+        expect(body.error.code).toBe("CONFLICT");
+        expect(body.error.message).toMatch(/not a (pending )?draft/);
+      }
     });
 
     it("a malformed id is a 422 and never reaches the CLI; GET on the action is 405", async () => {
@@ -548,3 +556,52 @@ describe("API: /api/memory/* read surfaces", () => {
     });
   });
 });
+
+// --- The REAL memory CLI's refusal wording maps to 409, not 503 -------------
+// Audit (memory: dashboard approve/reject): the route matched only the stub's
+// "not a draft" wording, so the real `memory approve` refusal ("is not a pending
+// draft") came back 503 MEMORY_UNAVAILABLE. Drive the built memory CLI when present.
+const REAL_MEMORY_CLI = join(
+  dirname(new URL(import.meta.url).pathname),
+  "..",
+  "..",
+  "memory",
+  "dist",
+  "bin",
+  "memory.js",
+);
+
+describe.skipIf(!existsSync(REAL_MEMORY_CLI))(
+  "API: lore approve/reject vs the real memory CLI",
+  () => {
+    it("approving or rejecting a record that is not a pending draft is a 409 CONFLICT", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "wg-mem-real-"));
+      const env = { MEMORY_CLI_BIN: REAL_MEMORY_CLI, MEMORY_DB: join(dir, "memory.sqlite") };
+      const { spawnSync } = await import("node:child_process");
+      const add = spawnSync(
+        process.execPath,
+        [REAL_MEMORY_CLI, "add", "--title", "Active rule", "--summary", "s", "--body", "b"],
+        { env: { ...process.env, ...env, MEMORY_AUDIT_OFF: "1" }, encoding: "utf8" },
+      );
+      expect(add.status).toBe(0);
+      const id = /\b([a-z2-9]{8})\b/.exec(add.stdout)?.[1];
+      expect(id).toBeTruthy();
+      const h = await startHarness(createMemoryReader(env));
+      try {
+        for (const verb of ["approve", "reject"]) {
+          const res = await fetch(`${h.baseUrl}/api/memory/lore/${id}/${verb}`, { method: "POST" });
+          const body = (await res.json()) as { error: { code: string; message: string } };
+          expect({ verb, status: res.status, code: body.error.code }).toEqual({
+            verb,
+            status: 409,
+            code: "CONFLICT",
+          });
+        }
+        expect(isMemoryRefusal("memory: x is not a pending draft (already active)")).toBe(true);
+        expect(isMemoryRefusal("Memory CLI exited 1: database is locked")).toBe(false);
+      } finally {
+        await h.close();
+      }
+    });
+  },
+);

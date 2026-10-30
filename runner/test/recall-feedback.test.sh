@@ -98,17 +98,30 @@ else
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   export MEMORY_DB="$TMP/memory.sqlite" MEMORY_AUDIT_LOG="$TMP/audit.jsonl"
+  # A DECISION: product intent rides in its own PRODUCT CONTEXT block, never from the
+  # scope packet, so the packet hit alone must earn it no credit.
   node "$MEMORY_CLI" add --title "Frobnicate rule" --summary "frobnicate policy" \
-    --body "always frobnicate" --repo app --confidence low >/dev/null 2>&1
+    --body "always frobnicate" --repo app --kind decision --confidence low >/dev/null 2>&1
   LORE_ID="$(node "$MEMORY_CLI" search frobnicate --json 2>/dev/null \
     | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{process.stdout.write(JSON.parse(s)[0].id)}catch{}})')"
-  # Packed into the scope packet, never rendered → no credit, no flag.
+  # Packed into the scope packet but rendered elsewhere (product intent) → no credit, no flag.
   node "$MEMORY_CLI" cards-for-scope --canonical /repos/app --repo app \
     --query frobnicate --ticket 554 --json >/dev/null 2>&1
   FB0="$(node "$MEMORY_CLI" recall-feedback --repo app --ticket 554 --outcome blocked 2>&1)"
   case "$FB0" in
     *"adjusted: 0"*) ok "packet lore the primer never renders is not adjusted" ;;
     *) fail "recall-feedback adjusted lore the agent never saw (got: ${FB0:0:120})" ;;
+  esac
+  # A CONVENTION in the packet IS rendered into the delivery's PRIOR CONTEXT block, so
+  # the primer's own --ticket log credits it with no MCP fetch.
+  node "$MEMORY_CLI" add --title "Quuxify convention" --summary "quuxify policy" \
+    --body "always quuxify" --repo app --kind convention --confidence low >/dev/null 2>&1
+  node "$MEMORY_CLI" cards-for-scope --canonical /repos/app --repo app \
+    --query quuxify --ticket 556 --json >/dev/null 2>&1
+  FBC="$(node "$MEMORY_CLI" recall-feedback --repo app --ticket 556 --outcome clean 2>&1)"
+  case "$FBC" in
+    *"adjusted: 1"*) ok "a convention the primer rendered is credited by the outcome" ;;
+    *) fail "the rendered convention got no outcome credit (got: ${FBC:0:120})" ;;
   esac
   node "$MEMORY_CLI" cards-for-scope --canonical /repos/app --repo app \
     --query frobnicate --ticket 555 --json >/dev/null 2>&1

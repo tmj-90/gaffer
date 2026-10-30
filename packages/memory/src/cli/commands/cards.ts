@@ -36,7 +36,7 @@ import {
   validateMechanical,
   validateModel,
 } from "../../core/cardValidation.js";
-import { cardsForScope } from "../../core/scopePacket.js";
+import { cardsForScope, primerLore } from "../../core/scopePacket.js";
 import { logRecall } from "../../core/recallFeedback.js";
 import { openDb } from "../../db/index.js";
 import type { ModelStatus } from "../../db/types.js";
@@ -281,10 +281,11 @@ export async function cmdCardsForScope(args: ReturnType<typeof parseArgs>): Prom
     // MEMORY FEEDBACK LOOP — when a ticket id is supplied, record the read-event
     // edge: which items memory SERVED into this ticket's context. The later
     // `recall-feedback` verb reads this log to adjust confidence by outcome.
-    // CARDS ONLY: the primer renders the packet's cards (and digest), never
-    // `packet.lore`, so logging lore here credited / blamed records the agent
-    // never saw. Lore outcome credit comes from what the agent actually FETCHED
-    // (MCP get_lore, logged to retrieval_event under GAFFER_RECALL_TICKET).
+    // The delivery primer renders the packet's cards, its digest and the
+    // conventions / gotchas in `packet.lore` (primerLore — product intent has its
+    // own block), so exactly those cards and lore ids are logged: credit or blame
+    // only lands on records the agent was actually shown. Lore the agent pulls
+    // itself is credited via MCP get_lore (retrieval_event).
     // FAIL-SOFT: logging must NEVER break the packet the caller depends on.
     const ticket = getString(args.flags, "ticket");
     if (ticket && ticket.trim()) {
@@ -293,6 +294,7 @@ export async function cmdCardsForScope(args: ReturnType<typeof parseArgs>): Prom
           repo: resolved.repo,
           ticket: ticket.trim(),
           cardIds: packet.cards.map((c) => c.id),
+          loreIds: primerLore(packet.lore).map((l) => l.id),
         });
       } catch (err) {
         process.stderr.write(

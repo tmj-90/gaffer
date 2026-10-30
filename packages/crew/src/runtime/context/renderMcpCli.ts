@@ -78,6 +78,7 @@ function main(): void {
     ticketRepos: env.GAFFER_MCP_TICKET_REPOS ?? "",
     recallTicket: env.GAFFER_MCP_RECALL_TICKET ?? "",
     scopeTicket: env.GAFFER_MCP_SCOPE_TICKET ?? "",
+    repoCanonicals: env.GAFFER_MCP_REPO_CANONICALS ?? "",
   });
 
   // writeFileSync — NOT console.log / stdout + "\n": the render must land

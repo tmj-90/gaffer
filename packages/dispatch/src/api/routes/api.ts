@@ -304,9 +304,11 @@ export async function routeApi(
       sendJson(res, 200, { id: result.id, status: result.status });
       return;
     }
-    // The CLI names a refused decision ("cannot approve … unknown id or not a
-    // draft"); anything else is Memory being unreachable / misconfigured.
-    const refused = /cannot (approve|reject)|unknown id|not a draft/i.test(result.reason);
+    // The CLI names a refused decision — `reject`: "cannot reject <id> (unknown id
+    // or not a draft …)", `approve`: "<id> is not a pending draft (already active,
+    // deprecated, or unknown)"; anything else is Memory being unreachable /
+    // misconfigured.
+    const refused = isMemoryRefusal(result.reason);
     sendJson(
       res,
       refused ? 409 : 503,
@@ -316,6 +318,16 @@ export async function routeApi(
   }
 
   routeReadModels(wg, memoryReader, method, segments, url, res);
+}
+
+/**
+ * Whether a memory CLI failure reason is a REFUSED approve/reject (the record is not
+ * a pending draft, or the id is unknown) — a 409 CONFLICT — rather than Memory
+ * being unavailable (503). Matches the real CLI wording of both verbs
+ * (packages/memory/src/cli/commands/lifecycle.ts cmdApprove / cmdReject).
+ */
+export function isMemoryRefusal(reason: string): boolean {
+  return /cannot (approve|reject)|unknown id|not a (pending )?draft/i.test(reason);
 }
 
 /** The serialised OpenAPI document, built on first request. */

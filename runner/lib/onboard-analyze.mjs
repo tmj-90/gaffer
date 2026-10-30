@@ -1130,6 +1130,10 @@ export function agentChildEnv(base = process.env) {
   // Likewise the dispatch server's "${GAFFER_SCOPE_TICKET}": onboarding is bound to no
   // ticket, so pin it EMPTY rather than let an inherited value widen the agent's scope.
   env["GAFFER_SCOPE_TICKET"] = "";
+  // And the memory server's "${GAFFER_REPO_CANONICALS}" (the card-tool canonical
+  // binding): onboarding binds none, so pin it EMPTY rather than forward an
+  // inherited value or the literal placeholder.
+  env["GAFFER_REPO_CANONICALS"] = "";
   return env;
 }
 
@@ -1750,8 +1754,11 @@ function rollupRoleRank(role) {
 
 /**
  * Build a rollup digest from the model-carded files collected by emitFileCards.
- * Groups cards by top-level area; derives `structure` from per-area card tldrs
- * and `overview` from the model's extracted features + top service/entrypoint tldrs.
+ * Groups cards by top-level area; derives `structure` from per-area card tldrs.
+ * `overview` keeps the analysis model's own overview (with the extracted feature
+ * names appended) and falls back to features + the top service/entrypoint tldr
+ * only when the model wrote none. `collectedCards` holds only cards the memory
+ * gate stored as model-active (and the review gate did not strip).
  * Returns null when collectedCards is empty — caller keeps the existing digest.
  *
  * This is the "apex of the DAG": the digest is the last thing written, after the
@@ -1792,16 +1799,23 @@ export function buildRollupDigest(collectedCards, modelUnderstanding, material) 
 
   let overview;
   const repoName = String(material?.name ?? "this repo");
-  if (features.length > 0) {
-    const capList = features.map((f) => f.name).join(", ");
+  const capList = features
+    .map((f) => f?.name)
+    .filter(Boolean)
+    .join(", ");
+  const modelOverview = String(modelUnderstanding?.digest?.overview ?? "").trim();
+  if (modelOverview) {
+    // The analysis model's prose overview is the best one-line description of the
+    // repo — and the only digest line the delivery primer carries — so it is kept,
+    // with the extracted capabilities appended rather than replacing it.
+    overview = capList ? `${modelOverview} Capabilities: ${capList}.` : modelOverview;
+  } else if (capList) {
     const anchor = serviceCards.length > 0 ? ` ${serviceCards[0]}` : "";
     overview = `${repoName}: ${capList}.${anchor}`;
   } else if (serviceCards.length > 0) {
     overview = `${repoName}: ${serviceCards[0]}`;
   } else {
-    overview =
-      modelUnderstanding?.digest?.overview ??
-      `'${repoName}' repository (rollup from ${collectedCards.length} model-carded files).`;
+    overview = `'${repoName}' repository (rollup from ${collectedCards.length} model-carded files).`;
   }
 
   const conventions =
@@ -2372,7 +2386,7 @@ function markFailedCli(cfg, { canonical, repo, rel, reason }, env = process.env)
  * Set to 0 to disable. The sample is taken from the front of the list (the
  * first model-carded files in enumeration order).
  *
- * Returns { reviewed, downgraded } for the log.
+ * Returns { reviewed, downgraded, downgradedRels } (the paths it stripped).
  */
 export function runCardReviewSample(
   candidates,
@@ -2392,12 +2406,14 @@ export function runCardReviewSample(
   const maxReviews = Number.isFinite(rawCap) && rawCap >= 0 ? rawCap : CARD_REVIEW_SAMPLE_DEFAULT;
   if (maxReviews === 0 || candidates.length === 0) {
     if (maxReviews === 0) log("review gate disabled (GAFFER_CARD_REVIEW_SAMPLE=0)");
-    return { reviewed: 0, downgraded: 0 };
+    return { reviewed: 0, downgraded: 0, downgradedRels: [] };
   }
 
   const sample = candidates.slice(0, maxReviews);
   let reviewed = 0;
   let downgraded = 0;
+  /** Paths whose model fields the gate stripped — the caller drops them from the rollup. */
+  const downgradedRels = [];
 
   // Downgrade one card's model fields to mechanical-only. Returns true when the
   // card ended up mechanical-only.
@@ -2460,6 +2476,7 @@ export function runCardReviewSample(
           )
         ) {
           downgraded += 1;
+          downgradedRels.push(c.rel);
           log(`review: ${c.rel} → unverified verdict — downgraded (fail-closed)`);
         }
         continue;
@@ -2473,6 +2490,7 @@ export function runCardReviewSample(
       // Explicit revise/reject → downgrade the card.
       if (downgrade(c.rel, `semantic-review(${verdict}): ${reason}`)) {
         downgraded += 1;
+        downgradedRels.push(c.rel);
         log(`review: ${c.rel} → ${verdict} (downgraded): ${reason}`);
       }
     } catch (err) {
@@ -2486,13 +2504,14 @@ export function runCardReviewSample(
         )
       ) {
         downgraded += 1;
+        downgradedRels.push(c.rel);
         log(`review: turn failed for ${c.rel} (${err?.message ?? err}) — downgraded (fail-closed)`);
       }
     }
   }
 
   log(`review gate done: ${reviewed}/${sample.length} reviewed, ${downgraded} downgraded`);
-  return { reviewed, downgraded };
+  return { reviewed, downgraded, downgradedRels };
 }
 
 /**
@@ -2531,6 +2550,9 @@ export function emitFileCards(
     // what it always counted: card upserts the memory store refused.
     modelFailed: 0,
     modelSkipped: 0,
+    // Model summaries the memory card gate refused to store as active (e.g. an
+    // out-of-taxonomy role) — carded mechanical-only, not model-summarised.
+    modelRejected: 0,
     capsHit: [],
     coverageNote: null,
     watermark: null,
@@ -2608,18 +2630,32 @@ export function emitFileCards(
     }
     stats.carded += 1;
     if (fields) {
-      stats.modelCarded += 1;
-      // Collect for rollup digest (area + role + tldr grouped by area).
-      stats.collectedCards.push({ rel: entry.rel, role: fields.rolePrimary, tldr: fields.tldr });
-      // Collect for semantic review if the deterministic gate passed (modelStatus=active).
       let upsertOut = null;
       try {
         upsertOut = JSON.parse(res.stdout ?? "");
       } catch {
         /* ignore */
       }
+      // TRUST-SPLIT: the memory CLI owns the deterministic card gate. Only a summary
+      // it stored as model_status=active counts as model-summarised and feeds the
+      // rollup digest + the semantic review; one it rejected (failed_validation,
+      // e.g. a role outside the taxonomy) or whose status is unknown is a
+      // mechanical-only card, so its tldr must not resurface in the digest.
       if (upsertOut?.modelStatus === "active") {
+        stats.modelCarded += 1;
+        // Collect for rollup digest (area + role + tldr grouped by area).
+        stats.collectedCards.push({
+          rel: entry.rel,
+          role: fields.rolePrimary,
+          tldr: fields.tldr,
+        });
         reviewCandidates.push({ ...entry, fields });
+      } else {
+        stats.modelRejected += 1;
+        log(
+          `card "${entry.rel}": model summary not stored as active ` +
+            `(model_status=${upsertOut?.modelStatus ?? "unknown"}) — mechanical-only`,
+        );
       }
     }
   };
@@ -2794,6 +2830,7 @@ export function emitFileCards(
       `file-card coverage: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded} skipped=${stats.skipped} ` +
       `failed=${stats.failed} model-failed=${stats.modelFailed} ` +
+      `model-rejected=${stats.modelRejected} ` +
       `model-skipped=${stats.modelSkipped} caps-hit=[${capsHit.join(", ")}]`;
     stats.coverageNote = note;
     log(`COVERAGE NOTE — ${note}`);
@@ -2802,8 +2839,8 @@ export function emitFileCards(
   log(
     `file cards: enumerated=${stats.enumerated} carded=${stats.carded} ` +
       `model-summarised=${stats.modelCarded} skipped=${stats.skipped} failed=${stats.failed} ` +
-      `model-failed=${stats.modelFailed} model-skipped=${stats.modelSkipped} ` +
-      `cardModel=${cardModel(env)} batch=${batch} snippet=${snippetChars} ` +
+      `model-failed=${stats.modelFailed} model-rejected=${stats.modelRejected} ` +
+      `model-skipped=${stats.modelSkipped} cardModel=${cardModel(env)} batch=${batch} snippet=${snippetChars} ` +
       `watermark=${stats.watermark ?? "none"}`,
   );
 
@@ -2825,6 +2862,13 @@ export function emitFileCards(
         breaker,
       });
       stats.reviewStats = reviewStats;
+      // A card the gate stripped is mechanical-only now: it is no longer
+      // model-summarised and its rejected tldr must not reach the rollup digest.
+      const stripped = new Set(reviewStats.downgradedRels ?? []);
+      if (stripped.size > 0) {
+        stats.collectedCards = stats.collectedCards.filter((c) => !stripped.has(c.rel));
+        stats.modelCarded = Math.max(0, stats.modelCarded - stripped.size);
+      }
     } catch (err) {
       log(`review: gate failed (${err?.message ?? err}) — cards remain as-is`);
     }

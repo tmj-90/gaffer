@@ -51,17 +51,30 @@ pnpm --filter memory-mcp test
 
 ## Autonomous mode
 
-For a fully hands-off factory, set:
+**Default is governed** (draft-then-approve): every new lore record is a `draft`
+until a human approves it with the `memory` CLI or the dashboard. The operator can
+opt out of that review step with:
 
 ```bash
 MEMORY_AUTO_APPROVE=1
 ```
 
-…and `suggest_lore` lands `active` immediately — the operator opting into trusting
-agent writes (their machine, their call). **Default is governed** (draft-then-approve) — in the Gaffer factory too: the runner's ticket-close distiller lands a DRAFT unless memory auto-approve is on (`MEMORY_AUTO_APPROVE=1`, or `GAFFER_MEMORY_AUTO_PROMOTE=1` explicitly),
-so the standalone product is unchanged. This re-opens cross-ticket memory poisoning
-(fine for trusted input, not for untrusted issues); pair it deliberately and see the
-package [`docs/SECURITY.md`](docs/SECURITY.md) and the root
+What the flag covers depends on how memory-mcp is running:
+
+- **Standalone memory-mcp** (wired into your own Claude Code / MCP client): an
+  agent's `suggest_lore` lands `active` immediately — the operator opting into
+  trusting agent writes (their machine, their call).
+- **In the Gaffer factory** the flag covers only the memory the runner itself
+  files: the requirement the ticket-close distiller derives from each delivered
+  ticket (`GAFFER_MEMORY_AUTO_PROMOTE=1|0` overrides the flag for this one), onboarding induction lore,
+  and CLI `memory suggest`. Lore a delivery agent suggests over MCP **always stays
+  a draft**: the runner pins `MEMORY_AUTO_APPROVE=0` in the environment of the
+  agent-mounted memory server (`runner/.mcp.json`), whatever the operator's
+  setting.
+
+Auto-approve re-opens cross-ticket memory poisoning (fine for trusted input, not
+for untrusted issues); turn it on deliberately and see the package
+[`docs/SECURITY.md`](docs/SECURITY.md) and the root
 [`SECURITY.md`](../../SECURITY.md) for the trade-off.
 
 ## How it fits — and standalone use

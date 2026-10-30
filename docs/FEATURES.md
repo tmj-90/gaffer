@@ -242,7 +242,7 @@ on**:
 |---|---|
 | `DISPATCH_ALLOW_AGENT_APPROVE` | An agent actor may approve a ticket's review (otherwise human-only). |
 | `MERGE_ON_AGENT_REVIEW` | Fire the merge when an agent — not just a human — approves. |
-| `MEMORY_AUTO_APPROVE` | Accept memory draft records without a human review step. |
+| `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft. |
 
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Every knob the factory

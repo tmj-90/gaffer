@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 27;
+export const SCHEMA_VERSION = 28;
 
 // No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
 // them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.
@@ -288,7 +288,8 @@ CREATE TABLE IF NOT EXISTS evidence (
   decision_id  TEXT REFERENCES decisions(id) ON DELETE SET NULL,
   evidence_type TEXT NOT NULL CHECK (evidence_type IN (
     'test_output','coverage_report','commit','branch','pull_request','diff_summary',
-    'screenshot','log','manual_note','ci_run','static_analysis','lore_record'
+    'screenshot','log','manual_note','ci_run','static_analysis','lore_record',
+    'memory_primed'
   )),
   summary      TEXT NOT NULL,
   uri          TEXT,

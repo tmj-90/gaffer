@@ -117,6 +117,13 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # set -u safety at this no-work juncture, and rendered through the single
       # gaffer_render_mcp_runtime seam (factory.config.sh) shared with delivery.
       GAFFER_TICKET_REPOS=""
+      # CARD-CANONICAL BINDING: the repo this pass reads (its registered name and the
+      # basename the PRIOR CONTEXT primer below uses) → the canonical its file cards
+      # are keyed under, so the agent's memory card tools need no repoCanonical guess.
+      # Read-only retrieval binding; fail-soft (empty ⇒ unbound).
+      _BIND_NAME="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || ""' 2>/dev/null || echo '')"
+      # shellcheck disable=SC2034  # read by gaffer_render_mcp_runtime (factory.config.sh)
+      GAFFER_REPO_CANONICALS="$(printf '%s\t%s\n%s\t%s\n' "$(basename "$CREPO")" "$CREPO" "$_BIND_NAME" "$CREPO" | gaffer_repo_canonicals_json)"
       # FACTORY TICKET SCOPE: the scope ticket ($CNUM → GAFFER_SCOPE_TICKET) means the
       # clarify agent files ACs and decisions on THIS draft only; the dispatch server
       # refuses its writes on any other ticket.

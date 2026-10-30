@@ -96,6 +96,7 @@ gaffer_render_mcp_runtime() {
       -e "s#\${GAFFER_TICKET_REPOS}#$(_gaffer_sed_repl "${GAFFER_TICKET_REPOS:-}")#g" \
       -e "s#\${GAFFER_RECALL_TICKET}#$(_gaffer_sed_repl "$recall")#g" \
       -e "s#\${GAFFER_SCOPE_TICKET}#$(_gaffer_sed_repl "$scope")#g" \
+      -e "s#\${GAFFER_REPO_CANONICALS}##g" \
       "$tmpl" > "$out" || return 1
 }
 gaffer_trust_workspace() { :; }

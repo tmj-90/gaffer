@@ -17,6 +17,14 @@
 #      delivery on alpha — and only alpha.
 #   4. DELIVERY on beta is primed with beta's lore, not alpha's.
 #   5. The REVIEWER on alpha is oriented with alpha's file cards and sees no beta lore.
+#   6. The delivery's MEMORY ATTRIBUTION (memory_primed evidence) lands on the real
+#      dispatch DB, and the agent-mounted memory MCP server — spawned exactly from the
+#      rendered runtime config — serves alpha's cards from the worktree with no
+#      repoCanonical guess and keeps agent-suggested lore a DRAFT even when
+#      MEMORY_AUTO_APPROVE=1 leaks into its env.
+#
+# Step 1 also asserts that alpha's ACTIVE conventions / gotchas recalled for the
+# ticket ride in the PRIOR CONTEXT block (beta's never do).
 #
 # Run: bash runner/test/e2e-memory-routing.test.sh
 # =====================================================================
@@ -83,12 +91,13 @@ cat > "$WORK/bin/claude" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 CALLS="__CALLS__"; ANALYSIS="__ANALYSIS__"
-prompt=""; prev=""
-for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; prev="$a"; done
+prompt=""; prev=""; mcp=""
+for a in "$@"; do [ "$prev" = "-p" ] && prompt="$a"; [ "$prev" = "--mcp-config" ] && mcp="$a"; prev="$a"; done
 n="$(ls -1 "$CALLS" 2>/dev/null | wc -l | tr -d ' ')"; n=$((n + 1))
 D="$CALLS/$(printf '%03d' "$n")"; mkdir -p "$D"
 printf '%s' "$prompt" > "$D/prompt"; pwd -P > "$D/cwd"
 env | grep -E '^(GAFFER_|DISPATCH_|MEMORY_)' | sort > "$D/env"
+[ -n "$mcp" ] && [ -f "$mcp" ] && cp "$mcp" "$D/mcp.json"
 case "$prompt" in
   *"memory-onboard methodology"*)
     echo onboard > "$D/kind"
@@ -161,6 +170,13 @@ INDUCTION="Alpha induction: tasks are soft-deleted"
 lg add --title "$ALPHA_DECISION" --summary "Every error body is application/problem+json with a stable type URI." --body "Decided in ADR-3." --kind decision --repo alpha --tag api </dev/null >/dev/null 2>&1
 lg add --title "$BETA_DECISION" --summary "Never store a reversible or unsalted password hash." --body "Decided in beta ADR-1." --kind decision --repo beta --tag auth </dev/null >/dev/null 2>&1
 lg suggest --title "$ALPHA_DRAFT" --summary "An agent proposed this; a human has not reviewed it." --body "pending" --kind requirement --repo alpha </dev/null >/dev/null 2>&1
+# Conventions / gotchas (not product intent): recalled per ticket into PRIOR CONTEXT.
+ALPHA_CONVENTION="Alpha convention: task listings paginate with an opaque cursor"
+ALPHA_GOTCHA="Alpha gotcha: soft-deleted tasks must be filtered from every listing page"
+BETA_CONVENTION="Beta convention: login helpers return booleans"
+lg add --title "$ALPHA_CONVENTION" --summary "Task list pagination uses an opaque cursor, never page offsets." --body "convention" --kind convention --repo alpha --tag tasks </dev/null >/dev/null 2>&1
+lg add --title "$ALPHA_GOTCHA" --summary "A listing page that forgets the deleted_at filter leaks soft-deleted tasks." --body "gotcha" --kind gotcha --repo alpha --tag tasks </dev/null >/dev/null 2>&1
+lg add --title "$BETA_CONVENTION" --summary "Task pagination cursor listing helpers in beta return booleans." --body "convention" --kind convention --repo beta --tag auth </dev/null >/dev/null 2>&1
 
 echo "== 0. ONBOARDING alpha: digest + file cards written, induction lore filed as a DRAFT =="
 ( cd "$RUNNER_DIR" && DISPATCH_ONBOARD_REPO="$A" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" GAFFER_CREW_EVENTS="$GAFFER_DATA/events.jsonl" \
@@ -183,8 +199,14 @@ run_tick >/dev/null
 D1="$(last_call delivery)"
 if [ -z "$D1" ]; then fail "1: no delivery spawn"; else
   assert_prompt "1: delivery/alpha" "$D1" \
-    "PRODUCT CONTEXT|$ALPHA_DECISION|PRIOR CONTEXT|src/tasks.js" \
-    "$BETA_DECISION|$ALPHA_DRAFT|$INDUCTION"
+    "PRODUCT CONTEXT|$ALPHA_DECISION|PRIOR CONTEXT|src/tasks.js|$ALPHA_CONVENTION|$ALPHA_GOTCHA" \
+    "$BETA_DECISION|$ALPHA_DRAFT|$INDUCTION|$BETA_CONVENTION"
+  # The recalled lore rides INSIDE the file-cards envelope (retrieval data).
+  grep -qF "[convention] $ALPHA_CONVENTION" <<<"$(awk '/<untrusted-file-cards>/,/<\/untrusted-file-cards>/' "$D1/prompt")" \
+    && ok "1: the convention is quarantined inside <untrusted-file-cards>" || fail "1: convention not inside the file-cards envelope"
+  _NCARDS="$(awk '/<untrusted-file-cards>/,/Recalled lore for this scope/' "$D1/prompt" | grep -c '^  - \[' || true)"
+  grep -q "cards: primed delivery #$A1 with $_NCARDS file card" "$GAFFER_DATA/factory.log" \
+    && ok "1: the cards count ($_NCARDS) excludes the recalled-lore lines" || fail "1: cards count (want $_NCARDS): $(grep "cards: primed delivery #$A1" "$GAFFER_DATA/factory.log" | tail -1)"
   grep -q "product-context: primed delivery #$A1" "$GAFFER_DATA/factory.log" && ok "1: runner logged the product-context prime" || fail "1: no product-context log line"
   grep -q "cards: primed delivery #$A1 with [1-9]" "$GAFFER_DATA/factory.log" && ok "1: runner logged the file-card prime" || fail "1: cards log: $(grep "cards:" "$GAFFER_DATA/factory.log" | tail -1)"
   grep -q '"GAFFER_TICKET_REPOS": *"alpha"' "$D1/env" 2>/dev/null || true
@@ -223,6 +245,61 @@ if [ -z "$R1" ]; then fail "5: no reviewer spawn"; else
   REVIEWED="$(grep -o '#[0-9]*' "$R1/prompt" | head -1)"
   ok "5: the reviewer ran (${REVIEWED:-?})"
   assert_prompt "5: reviewer/alpha" "$R1" "REVIEWER agent|PRIOR CONTEXT" "$BETA_DECISION|$ALPHA_DRAFT"
+fi
+
+echo "== 6. Attribution evidence + the agent-mounted memory MCP server (rendered config) =="
+EVID="$(wg ticket show "$A1" 2>/dev/null | jget '(d.evidence||[]).filter(e => e.evidence_type === "memory_primed").map(e => e.summary).join("\n")')"
+case "$EVID" in
+  *"src/tasks.js"*) ok "6: memory_primed evidence recorded on #$A1 in the real dispatch DB" ;;
+  *) fail "6: no memory_primed evidence on #$A1: $(wg ticket show "$A1" 2>/dev/null | jget '(d.evidence||[]).map(e => e.evidence_type).join(",")')" ;;
+esac
+case "$EVID" in *"lore:"*) ok "6: the evidence names the recalled lore" ;; *) fail "6: evidence lacks the lore: $EVID" ;; esac
+if [ -n "${D1:-}" ] && [ -f "$D1/mcp.json" ]; then
+  MENV="$(jget 'JSON.stringify(d.mcpServers.memory.env)' < "$D1/mcp.json")"
+  grep -qF '"MEMORY_AUTO_APPROVE":"0"' <<<"$MENV" && ok "6: rendered memory server pins MEMORY_AUTO_APPROVE=0" || fail "6: memory env: $MENV"
+  [ "$(jget 'JSON.parse(d.mcpServers.memory.env.GAFFER_REPO_CANONICALS || "{}").alpha || ""' < "$D1/mcp.json")" = "$(lg repo-canonical --repo-root "$A")" ] \
+    && ok "6: rendered memory server binds alpha's canonical (the REAL repo's key)" || fail "6: GAFFER_REPO_CANONICALS: $MENV"
+  cat > "$WORK/mcpclient.mjs" <<'MJS'
+// node mcpclient.mjs <mcp.json> <calls.json>: spawn the memory server EXACTLY as the
+// rendered config says, with the runner env underneath (MEMORY_AUTO_APPROVE=1 leaked
+// in), run the calls, print one JSON line per call.
+import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+const [cfgPath, callsPath] = process.argv.slice(2);
+const cfg = JSON.parse(readFileSync(cfgPath, "utf8")).mcpServers.memory;
+const env = { ...process.env, MEMORY_AUTO_APPROVE: "1", MEMORY_AUDIT_OFF: "1", ...cfg.env };
+const p = spawn(cfg.command, cfg.args, { env, stdio: ["pipe", "pipe", "ignore"] });
+let buf = ""; const waiters = new Map(); let id = 0;
+p.stdout.on("data", (d) => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); try { const m = JSON.parse(l); waiters.get(m.id)?.(m); } catch {} } });
+const rpc = (method, params) => new Promise((res) => { const n = ++id; waiters.set(n, res); p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n"); });
+await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } });
+p.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+for (const c of JSON.parse(readFileSync(callsPath, "utf8"))) {
+  const r = await rpc("tools/call", { name: c.name, arguments: c.args });
+  const text = (r.result?.content ?? []).map((x) => x.text).join("");
+  let j = null; try { j = JSON.parse(text); } catch {}
+  console.log(JSON.stringify({ name: c.name, isError: Boolean(r.result?.isError), cards: j?.cards?.length ?? j?.count ?? null, status: j?.status ?? null }));
+}
+p.kill();
+MJS
+  WTCWD="$(cat "$D1/cwd")"
+  node -e 'const [wt]=process.argv.slice(1);process.stdout.write(JSON.stringify([
+    {name:"cards_for_scope",args:{repo:"alpha",query:"tasks soft delete"}},
+    {name:"cards_for_scope",args:{repoCanonical:wt,repo:"alpha",query:"tasks soft delete"}},
+    {name:"search_file_cards",args:{repo:"alpha",query:"tasks"}},
+    {name:"suggest_lore",args:{title:"E2E agent suggestion over MCP",summary:"s",body:"b",kind:"convention"}}]))' "$WTCWD" > "$WORK/calls.json"
+  # (The worktree itself is gone after the tick; its path is still the agent's guess.)
+  MCPOUT="$(timeout 60 node "$WORK/mcpclient.mjs" "$D1/mcp.json" "$WORK/calls.json" 2>&1)"
+  [ "$(printf '%s\n' "$MCPOUT" | sed -n 1p | jget 'd.cards')" -ge 1 ] 2>/dev/null \
+    && ok "6: MCP cards_for_scope with NO repoCanonical serves alpha's cards" || fail "6: cards_for_scope (no canonical): $(printf '%s\n' "$MCPOUT" | sed -n 1p)"
+  [ "$(printf '%s\n' "$MCPOUT" | sed -n 2p | jget 'd.cards')" -ge 1 ] 2>/dev/null \
+    && ok "6: MCP cards_for_scope with the worktree path as canonical still serves them" || fail "6: cards_for_scope (worktree canonical): $(printf '%s\n' "$MCPOUT" | sed -n 2p)"
+  [ "$(printf '%s\n' "$MCPOUT" | sed -n 3p | jget 'd.cards')" -ge 1 ] 2>/dev/null \
+    && ok "6: MCP search_file_cards with NO repoCanonical finds alpha's cards" || fail "6: search_file_cards: $(printf '%s\n' "$MCPOUT" | sed -n 3p)"
+  [ "$(printf '%s\n' "$MCPOUT" | sed -n 4p | jget 'd.status')" = "draft" ] \
+    && ok "6: agent suggest_lore lands as a DRAFT despite MEMORY_AUTO_APPROVE=1 in the env" || fail "6: suggest_lore: $(printf '%s\n' "$MCPOUT" | sed -n 4p)"
+else
+  fail "6: the delivery's runtime MCP config was not captured"
 fi
 
 echo

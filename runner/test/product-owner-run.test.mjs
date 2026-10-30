@@ -593,6 +593,9 @@ console.log("== B8: renderPoMcpRuntime substitutes EVERY placeholder + binds the
     GAFFER_FACTORY: "1",
     GAFFER_TICKET_REPOS: "demo",
     GAFFER_RECALL_TICKET: "",
+    // No card-canonical binding for a PO run; agent-suggested lore pinned to drafts.
+    GAFFER_REPO_CANONICALS: "",
+    MEMORY_AUTO_APPROVE: "0",
   });
   eq(
     "server bins substituted",

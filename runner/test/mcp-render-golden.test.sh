@@ -54,6 +54,17 @@ gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/scope.json" "77" "77" \
 gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/noscope.json" "77" && grep -q '"GAFFER_SCOPE_TICKET": ""' "$WORK/noscope.json" \
   && ok "omitted scope ticket renders empty (binds nothing — fail closed)" || no "omitted scope ticket did not render empty"
 
+# The card-canonical binding (GAFFER_REPO_CANONICALS, a JSON object) is JSON-escaped
+# into the memory env, so a canonical with quotes / backslashes / # & round-trips.
+DISPATCH_DB="$DB" MEMORY_DB="$MDB" DISPATCH_MCP_BIN="$DBIN" MEMORY_MCP_BIN="$MBIN" CLAIM_TOKEN="$TOK" GAFFER_TICKET_REPOS="fixture-app"
+_CANON_MAP='{"fixture-app":"/repos/fi\\x \"q\" #&$1","b":"github.com/acme/b"}'
+GAFFER_REPO_CANONICALS="$_CANON_MAP" gaffer_render_mcp_runtime "$TEMPLATE" "$WORK/canon.json" "77" "77" \
+  && [ "$(node -e 'const f=require("node:fs");const e=JSON.parse(f.readFileSync(process.argv[1],"utf8")).mcpServers.memory.env;process.stdout.write(String(JSON.stringify(JSON.parse(e.GAFFER_REPO_CANONICALS))===JSON.stringify(JSON.parse(process.argv[2]))&&e.MEMORY_AUTO_APPROVE==="0"))' "$WORK/canon.json" "$_CANON_MAP")" = "true" ] \
+  && ok "repo-canonical map round-trips into the memory env; MEMORY_AUTO_APPROVE pinned 0" || no "repo-canonical map / auto-approve pin wrong in the memory env"
+# The delivery + bootstrap sites set the binding before their render.
+[ "$(grep -c 'GAFFER_REPO_CANONICALS="$(.*gaffer_repo_canonicals_json)"' "$RUNNER_DIR/tick.sh")" -eq 2 ] \
+  && ok "delivery + bootstrap bind the repo-canonical map" || no "tick.sh does not bind GAFFER_REPO_CANONICALS at both render sites"
+
 # Call sites: bootstrap + delivery (tick.sh) and clarify bind their ticket through the
 # render's scope argument, and nothing re-edits the rendered JSON to add it (a
 # post-render edit re-serialises the file, drifting the bash render from the TS golden).

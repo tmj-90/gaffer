@@ -94,6 +94,26 @@ describe("golden: MCP runtime config (bash sed parity)", () => {
     expect(env["GAFFER_RECALL_TICKET"]).toBe("77");
   });
 
+  it("binds the repo-canonical map JSON-escaped into the memory server env", () => {
+    const map = { billing: '/repos/bill "ing"', api: "github.com/acme/api" };
+    const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), {
+      ...captured.mcp,
+      repoCanonicals: JSON.stringify(map),
+    });
+    const env = (
+      JSON.parse(rendered) as { mcpServers: { memory: { env: Record<string, string> } } }
+    ).mcpServers.memory.env;
+    expect(JSON.parse(env["GAFFER_REPO_CANONICALS"]!)).toEqual(map);
+  });
+
+  it("pins MEMORY_AUTO_APPROVE=0 on the agent-mounted memory server (agent lore stays a draft)", () => {
+    const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), captured.mcp);
+    const env = (
+      JSON.parse(rendered) as { mcpServers: { memory: { env: Record<string, string> } } }
+    ).mcpServers.memory.env;
+    expect(env["MEMORY_AUTO_APPROVE"]).toBe("0");
+  });
+
   it('an empty recall ticket renders as "" (bootstrap / no delivery ticket → inert)', () => {
     const rendered = renderMcpRuntimeConfig(runnerFile(".mcp.json"), {
       ...captured.mcp,

@@ -3,7 +3,7 @@ import type { ZodType } from "zod";
 import { VERSION } from "../../version.js";
 import * as S from "../schemas.js";
 import * as R from "./responses.js";
-import { type JsonSchema, zodToJsonSchema } from "./zodJsonSchema.js";
+import { type JsonSchema, zodToJsonSchema, zodToJsonSchemaWithRefs } from "./zodJsonSchema.js";
 
 /**
  * The REST surface as data: one {@link EndpointSpec} per method + path the
@@ -739,7 +739,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     summary: "Delivery diff",
     description: "`git diff <default branch>...<delivery branch>` per write repository.",
     capability: "read",
-    responses: [ok("`{ repos: RepoDiff[] }`."), notFound],
+    responses: [ok("`{ ticketId, repos: RepoDiff[] }`.", "TicketDiff"), notFound],
   },
   {
     method: "GET",
@@ -1556,11 +1556,20 @@ export function buildOpenApiDocument(): Record<string, unknown> {
     if (!schemas[name as string]) schemas[name as string] = zodToJsonSchema(z, String(name));
     return name as string;
   };
+  // Response schemas nested inside others that are components in their own right
+  // (rendered as `$ref`s wherever they appear).
+  const sharedRefs = new Map<ZodType, string>(
+    R.SHARED_RESPONSE_COMPONENTS.map((n) => [R[n] as ZodType, n]),
+  );
   const useResponseSchema = (name: keyof typeof R): string => {
     const z = R[name];
     if (!isZod(z))
       throw new Error(`openapi: ${String(name)} is not a zod schema export of responses.ts`);
-    if (!schemas[name]) schemas[name] = zodToJsonSchema(z, String(name));
+    if (!schemas[name]) {
+      const { schema, used } = zodToJsonSchemaWithRefs(z, String(name), sharedRefs);
+      schemas[name] = schema;
+      for (const u of used) useResponseSchema(u as keyof typeof R);
+    }
     return name;
   };
   schemas[ERROR_SCHEMA_NAME] = {

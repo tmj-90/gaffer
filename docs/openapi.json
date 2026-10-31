@@ -3688,11 +3688,11 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ repos: RepoDiff[] }`.",
+            "description": "`{ ticketId, repos: RepoDiff[] }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketDiff"
                 }
               }
             }
@@ -10911,6 +10911,78 @@
           }
         }
       },
+      "RepoDiff": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved delivery branch, or null."
+          },
+          "baseBranch": {
+            "type": "string",
+            "description": "The default branch the delivery branch is diffed against."
+          },
+          "diff": {
+            "type": "string",
+            "description": "Raw unified diff text (possibly truncated); empty when unavailable."
+          },
+          "files": {
+            "type": "integer"
+          },
+          "additions": {
+            "type": "integer"
+          },
+          "deletions": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "unavailable": {
+            "type": "string",
+            "enum": [
+              "no_branch",
+              "repo_not_on_disk",
+              "no_local_path",
+              "empty",
+              "git_error"
+            ],
+            "description": "Why no diff text is available."
+          },
+          "message": {
+            "type": "string"
+          },
+          "riskAnnotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RiskAnnotation"
+            }
+          }
+        },
+        "required": [
+          "repo",
+          "branch",
+          "baseBranch",
+          "diff",
+          "files",
+          "additions",
+          "deletions",
+          "truncated",
+          "riskAnnotations"
+        ],
+        "additionalProperties": false,
+        "description": "The delivery diff for one write repository."
+      },
       "resolveDecisionBody": {
         "type": "object",
         "properties": {
@@ -11214,6 +11286,60 @@
           "event_id"
         ],
         "additionalProperties": false
+      },
+      "RiskAnnotation": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RiskKind"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "description": "Short human summary."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The concrete paths that triggered it."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`test-modified` only: one human line per finding, for the Review banner."
+          },
+          "allowed": {
+            "type": "boolean",
+            "description": "`test-modified` only: a human allowed test changes on this ticket; the annotation drops to medium and no longer holds an approve on its own."
+          }
+        },
+        "required": [
+          "kind",
+          "severity",
+          "detail"
+        ],
+        "additionalProperties": false,
+        "description": "An advisory risk flag on a repo's delivery diff."
+      },
+      "RiskKind": {
+        "type": "string",
+        "enum": [
+          "sensitive-path",
+          "dependency-change",
+          "large-deletion",
+          "test-modified"
+        ],
+        "description": "What a risk annotation flags. `sensitive-path`: secret/auth/infra paths; `dependency-change`: a manifest or lockfile; `large-deletion`: many deleted lines; `test-modified`: the delivery changed the tests that gate it (deleted/renamed a test file, added a skip/only marker, changed a gate script, touched test or package-manager config). Unallowed, `test-modified` raises observed risk to high and holds an agent approve for a person."
       },
       "runProductOwnerBody": {
         "type": "object",
@@ -12294,6 +12420,25 @@
           "events",
           "rework_trail",
           "agent_display"
+        ],
+        "additionalProperties": false
+      },
+      "TicketDiff": {
+        "type": "object",
+        "properties": {
+          "ticketId": {
+            "type": "string"
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoDiff"
+            }
+          }
+        },
+        "required": [
+          "ticketId",
+          "repos"
         ],
         "additionalProperties": false
       },

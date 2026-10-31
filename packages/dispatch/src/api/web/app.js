@@ -7350,6 +7350,8 @@ function pollWorkButton() {
             toast("Running the reviewer agent on a ticket in Review…", { ok: true });
           } else if (p.testing > 0) {
             toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else if (p.merge > 0) {
+            toast("Landing the approved work (merge lane)…", { ok: true });
           } else toast("Clarifying a draft (intake pass)…", { ok: true });
           router();
           // The tick runs detached, so a poll the runner REFUSES (a per-day tick or

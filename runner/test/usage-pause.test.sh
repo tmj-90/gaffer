@@ -157,6 +157,26 @@ _stop_now() { return 0; }
 GAFFER_USAGE_PAUSE_POLL_SECS=1 gaffer_usage_pause_wait _stop_now; [ "$?" = 1 ] && ok "a stop predicate ends the wait at once (rc 1)" || fail "stop predicate ignored"
 node "$MJS" clear
 
+# GAFFER_DATA as factory.config.sh leaves it: a plain shell variable, NOT exported
+# (`: "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"`). The helpers must hand it to node
+# themselves; reading it from the environment only, a live run with the default data
+# dir never wrote a pause (rc 2: refusal skip-listed, nothing paused) and never read one.
+UNEXP="$WORK/unexported-data"; mkdir -p "$UNEXP"
+(
+  unset GAFFER_DATA; GAFFER_DATA="$UNEXP"   # assigned after unset: not exported
+  gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; echo "rec=$?"
+  [ -s "$UNEXP/usage-pause.json" ] && echo "file=yes" || echo "file=no"
+  gaffer_usage_pause_active >/dev/null; echo "active=$?"
+  gaffer_usage_pause_until >/dev/null; echo "until=$?"
+) > "$WORK/unexp.out" 2>&1
+grep -qx 'rec=0' "$WORK/unexp.out" && grep -qx 'file=yes' "$WORK/unexp.out" \
+  && ok "an UNEXPORTED GAFFER_DATA (the factory.config.sh default) still records the pause there" \
+  || fail "unexported GAFFER_DATA: $(tr '\n' ' ' < "$WORK/unexp.out")"
+grep -qx 'active=0' "$WORK/unexp.out" && grep -qx 'until=0' "$WORK/unexp.out" \
+  && ok "an UNEXPORTED GAFFER_DATA: _active / _until read that pause" \
+  || fail "unexported GAFFER_DATA read: $(tr '\n' ' ' < "$WORK/unexp.out")"
+rm -rf "$UNEXP"
+
 # A symlinked lib dir (a packaged install, a test's fake runner): the CLI must still
 # run — it used to compare import.meta.url (resolved) with argv[1] (the link), exit 0
 # with no output, and read as "paused" forever.

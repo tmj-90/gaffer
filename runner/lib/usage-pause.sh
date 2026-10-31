@@ -20,6 +20,17 @@ _GAFFER_UP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # so a test that points the pause store elsewhere still classifies with the real table.
 : "${GAFFER_USAGE_WORKER_MJS:=$_GAFFER_UP_LIB/worker.mjs}"
 
+# Run usage-pause.mjs with the pause store's settings handed over EXPLICITLY.
+# factory.config.sh leaves GAFFER_DATA a plain, unexported shell variable
+# (`: "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"`), so a node child that only read its
+# environment saw no data dir: an operator's `gaffer run` from a plain shell recorded
+# no pause (every refusal fell to the fail-closed skip) and read none. The same rule
+# as every other runner node child: GAFFER_DATA="$GAFFER_DATA" on the command.
+_gaffer_up_node() {
+  env GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_USAGE_PAUSE_FILE="${GAFFER_USAGE_PAUSE_FILE:-}" \
+    GAFFER_USAGE_PAUSE_DEFAULT_MIN="${GAFFER_USAGE_PAUSE_DEFAULT_MIN:-}" node "$@"
+}
+
 # gaffer_usage_pause_record <json-file> <ticket> <lane>
 # Exit 0 and echo the TSV record line (<until s>\t<ISO>\t<kind>\t<basis>\t<message>)
 # when the captured envelope is a usage/rate-limit refusal and the pause was written;
@@ -46,9 +57,9 @@ gaffer_usage_pause_record() {
   # `record` exits 10 for "not a refusal"; any other non-zero (a write failure, a
   # lock that could not be taken) is a refusal whose pause was NOT recorded.
   if declare -F gaffer_with_lock >/dev/null 2>&1 && [ -n "${GAFFER_DATA:-}" ]; then
-    out="$(gaffer_with_lock "$GAFFER_DATA/.usage-pause.lock" node "$GAFFER_USAGE_PAUSE_MJS" record --json-file "$jf" ${num:+--ticket "$num"} --lane "$lane" 2>/dev/null)"; rc=$?
+    out="$(gaffer_with_lock "$GAFFER_DATA/.usage-pause.lock" _gaffer_up_node "$GAFFER_USAGE_PAUSE_MJS" record --json-file "$jf" ${num:+--ticket "$num"} --lane "$lane" 2>/dev/null)"; rc=$?
   else
-    out="$(node "$GAFFER_USAGE_PAUSE_MJS" record --json-file "$jf" ${num:+--ticket "$num"} --lane "$lane" 2>/dev/null)"; rc=$?
+    out="$(_gaffer_up_node "$GAFFER_USAGE_PAUSE_MJS" record --json-file "$jf" ${num:+--ticket "$num"} --lane "$lane" 2>/dev/null)"; rc=$?
   fi
   [ "$rc" -eq 10 ] && return 1
   [ "$rc" -eq 0 ] || return 2
@@ -60,7 +71,7 @@ gaffer_usage_pause_record() {
 gaffer_usage_pause_active() {
   local line
   command -v node >/dev/null 2>&1 || return 1
-  line="$(node "$GAFFER_USAGE_PAUSE_MJS" status 2>/dev/null)" || return 1
+  line="$(_gaffer_up_node "$GAFFER_USAGE_PAUSE_MJS" status 2>/dev/null)" || return 1
   case "$line" in "paused until "*) printf '%s\n' "$line" ;; *) return 1 ;; esac
 }
 
@@ -68,7 +79,7 @@ gaffer_usage_pause_active() {
 gaffer_usage_pause_until() {
   local s
   command -v node >/dev/null 2>&1 || return 1
-  s="$(node "$GAFFER_USAGE_PAUSE_MJS" until 2>/dev/null)" || return 1
+  s="$(_gaffer_up_node "$GAFFER_USAGE_PAUSE_MJS" until 2>/dev/null)" || return 1
   case "$s" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s\n' "$s"
 }

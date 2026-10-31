@@ -155,7 +155,10 @@ a pause: they need a person to raise the cap, so they stay ordinary failures.
   reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
   (default 60) when none was printed; never sooner than 10 minutes, never later than
   8 days, never shortened by a later refusal. A pause file that does not parse is
-  read as active for the default wait (fail closed).
+  read as active for the default wait (fail closed). The bash helpers hand node the
+  config's `GAFFER_DATA` explicitly (`factory.config.sh` does not export it), and
+  with no `GAFFER_DATA` at all the CLI uses the same default data dir as the runner,
+  so `status` / `clear` typed in a plain shell act on the pause the runner wrote.
 - While it holds, `tick.sh` claims and spawns nothing (`no_work`), `loop.sh` and
   `gaffer run --daemon` sleep until it ends instead of spinning (re-reading the file
   every `GAFFER_USAGE_PAUSE_POLL_SECS`, default 60, so an early clear is honoured), a

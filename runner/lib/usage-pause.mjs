@@ -7,7 +7,10 @@
 // ticks that each burn an attempt and eventually park good tickets.
 //
 // STATE: one small JSON file, $GAFFER_DATA/usage-pause.json (override the path with
-// GAFFER_USAGE_PAUSE_FILE), in the same durability domain as the usage ledger:
+// GAFFER_USAGE_PAUSE_FILE), in the same durability domain as the usage ledger. With
+// GAFFER_DATA unset (an operator's plain shell running the printed `status` /
+// `clear`) the data dir is factory.config.sh's default, $GAFFER_HOME/.gaffer with
+// GAFFER_HOME defaulting to the checkout root, so the CLI and the runner agree:
 //   { "paused_until": "<ISO>", "until_ms": <epoch ms>, "kind": "usage_limit"|"rate_limit",
 //     "basis": "reset"|"default", "message": "<what the CLI said>", "ticket": <n>|null,
 //     "lane": "delivery"|…, "recorded_at": "<ISO>" }
@@ -52,7 +55,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseResult } from "./worker.mjs";
@@ -69,12 +72,22 @@ export const RESET_GRACE_MS = 60_000;
 
 const KIND_LABEL = { usage_limit: "usage limit", rate_limit: "rate limit" };
 
-/** The pause file path: GAFFER_USAGE_PAUSE_FILE, else $GAFFER_DATA/usage-pause.json; null without either. */
+/** factory.config.sh's GAFFER_HOME default: the checkout root (runner/lib/../..). */
+const DEFAULT_GAFFER_HOME = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * The pause file path: GAFFER_USAGE_PAUSE_FILE, else $GAFFER_DATA/usage-pause.json,
+ * else factory.config.sh's default data dir ($GAFFER_HOME/.gaffer, GAFFER_HOME
+ * defaulting to the checkout root). The runner leaves GAFFER_DATA unexported, so a
+ * reader that gave up without it would see no pause where the runner keeps one.
+ */
 export function pauseFile(env = process.env) {
   const explicit = String(env.GAFFER_USAGE_PAUSE_FILE ?? "").trim();
   if (explicit) return explicit;
   const dir = String(env.GAFFER_DATA ?? "").trim();
-  return dir ? join(dir, PAUSE_FILENAME) : null;
+  if (dir) return join(dir, PAUSE_FILENAME);
+  const home = String(env.GAFFER_HOME ?? "").trim() || DEFAULT_GAFFER_HOME;
+  return join(home, ".gaffer", PAUSE_FILENAME);
 }
 
 /**

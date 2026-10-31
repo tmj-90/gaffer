@@ -12,6 +12,10 @@
 #      --paused-until, NOT blocked, NOT skip-listed, and the scaffold dir kept as a
 #      resumable bootstrap target. Control G2: the same words in a SUCCESS envelope
 #      (the agent's own reply) take the ordinary bootstrap path, with no pause.
+#   H. DEFAULT DATA DIR: GAFFER_DATA not in the environment (an operator's plain
+#      shell; factory.config.sh derives it unexported). The pause is still written
+#      under it and honoured by the next tick, and the printed
+#      `node runner/lib/usage-pause.mjs status|clear` works from a plain shell.
 # Drives the REAL tick.sh against a STUB dispatch CLI (records every call) and a
 # stub `claude`. Portable to macOS bash 3.2 (perl alarm, no GNU timeout).
 # Run: bash runner/test/usage-limit-lanes.test.sh
@@ -116,6 +120,44 @@ grep -q '^TICK_RESULT=usage_paused$' <<<"$OUT" && fail "G2: an agent's own reply
 [ ! -e "$DATA/usage-pause.json" ] && ok "G2: no pause file" || fail "G2: a pause was written: $(cat "$DATA/usage-pause.json")"
 grep -q '"--reason-code","usage_limit"' "$CALLS" && fail "G2: the ticket was released as a usage limit" \
   || ok "G2: no usage_limit release (the scaffold goes down the ordinary bootstrap path)"
+
+echo "== H. the DEFAULT data dir (GAFFER_DATA not in the environment) still pauses =="
+# An operator who runs \`gaffer run\` from a plain shell has no GAFFER_DATA exported:
+# factory.config.sh derives it (\$GAFFER_HOME/.gaffer) as a plain shell variable. A
+# GAFFER_HOME of symlinks to the real runner and packages reproduces that layout.
+HOMEDIR="$WORK/h/home"; mkdir -p "$HOMEDIR"
+ln -s "$RUNNER_DIR" "$HOMEDIR/runner"; ln -s "$ROOT/packages" "$HOMEDIR/packages"
+CALLS="$WORK/h/wg-calls.log"; : > "$CALLS"; DATA="$HOMEDIR/.gaffer"; B_DIR="$WORK/h/git/newapp"
+cp "$REFUSED" "$WORK/envelope"; echo 1 > "$WORK/rc"
+run_home_tick() {
+  env -u GAFFER_DATA -u DISPATCH_DB -u MEMORY_DB -u GAFFER_HOME -u RUNNER_DIR \
+      WG_CALLS="$CALLS" DISPATCH_DIR="$DISPATCH_DIR" \
+      GAFFER_BOOTSTRAP_ROOT="$WORK/h/git" CLAUDE_BIN="$STUB" CLAUDE_FLAGS="" \
+      DRY_RUN=0 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=0 GAFFER_TESTING=0 GAFFER_MAINTENANCE=0 \
+      STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_TICK_TIMEOUT=120 GAFFER_GREENFIELD_INSTALL=0 \
+      perl -e 'alarm shift; exec @ARGV' 300 bash "$HOMEDIR/runner/tick.sh" 2>&1
+}
+OUT="$(run_home_tick)"
+grep -q '^TICK_RESULT=usage_paused$' <<<"$OUT" && ok "H: tick → usage_paused" || fail "H: tick result $(printf '%s\n' "$OUT" | grep TICK_RESULT=)"
+[ -s "$DATA/usage-pause.json" ] && ok "H: the pause was written to the default data dir ($DATA)" \
+  || fail "H: no pause file under the default data dir: $(grep 'USAGE' "$DATA/factory.log" 2>/dev/null | tail -2 | tr '\n' '|')"
+grep -qx 7 "$DATA/.failed-tickets" 2>/dev/null && fail "H: the refusal was skip-listed (the pause could not be written)" \
+  || ok "H: not skip-listed"
+: > "$CALLS"; rm -f "$DATA/.failed-tickets"   # a new run: only the pause can hold it back
+OUT="$(run_home_tick)"
+grep -q '^TICK_RESULT=no_work$' <<<"$OUT" && ! grep -q '"claim-ticket"' "$CALLS" \
+  && ok "H: the next tick honours the pause (no_work, no claim)" || fail "H: next tick $(printf '%s\n' "$OUT" | grep TICK_RESULT=) claims=$(grep -c claim-ticket "$CALLS")"
+# The operator's own commands, from a plain shell (no GAFFER_DATA / GAFFER_HOME): a
+# checkout whose runner/lib holds the real files (node resolves symlinks, so a copy).
+PLAIN="$WORK/plain"; mkdir -p "$PLAIN/runner/lib" "$PLAIN/.gaffer"
+cp "$RUNNER_DIR/lib/usage-pause.mjs" "$RUNNER_DIR/lib/worker.mjs" "$PLAIN/runner/lib/"
+node -e 'const ms=Date.now()+3600e3;require("fs").writeFileSync(process.argv[1],JSON.stringify({paused_until:new Date(ms).toISOString(),until_ms:ms,kind:"usage_limit",basis:"reset",message:"t",ticket:7,lane:"bootstrap",recorded_at:new Date().toISOString()}))' "$PLAIN/.gaffer/usage-pause.json"
+SOUT="$(cd "$WORK" && env -u GAFFER_DATA -u GAFFER_HOME -u GAFFER_USAGE_PAUSE_FILE node "$PLAIN/runner/lib/usage-pause.mjs" status 2>&1)"; src=$?
+[ "$src" = 0 ] && case "$SOUT" in "paused until "*) true ;; *) false ;; esac \
+  && ok "H: 'node runner/lib/usage-pause.mjs status' from a plain shell sees the pause ($SOUT)" || fail "H: status from a plain shell: rc=$src '$SOUT'"
+( cd "$WORK" && env -u GAFFER_DATA -u GAFFER_HOME -u GAFFER_USAGE_PAUSE_FILE node "$PLAIN/runner/lib/usage-pause.mjs" clear )
+[ ! -e "$PLAIN/.gaffer/usage-pause.json" ] && ok "H: the printed 'usage-pause.mjs clear' from a plain shell lifts it" \
+  || fail "H: 'clear' from a plain shell left the pause in place"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "usage-limit-lanes: ALL $PASS checks passed"; exit 0; fi

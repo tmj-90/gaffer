@@ -171,7 +171,8 @@ printf "\n  ${c_dim}work${c_off}\n"
 # USAGE WINDOW (lib/usage-pause.mjs): a model call was refused by the plan's usage
 # window / a rate limit, and the factory admits no work until the pause ends. Shown
 # first, because it is why nothing moves. It lifts on its own; not a human's job.
-if _usage_line="$(node "$HERE/lib/usage-pause.mjs" status 2>/dev/null)"; then
+# (Through lib/usage-pause.sh, which hands node this config's GAFFER_DATA explicitly.)
+if declare -F gaffer_usage_pause_active >/dev/null 2>&1 && _usage_line="$(gaffer_usage_pause_active)"; then
   warn "$_usage_line  (no new work starts until then; it lifts on its own — early: node $HERE/lib/usage-pause.mjs clear)"
 fi
 printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$review" "$blocked" "$ready" "$paused"

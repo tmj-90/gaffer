@@ -198,6 +198,24 @@ describe("web: the attempt history names the model and the CLI", () => {
     expect(card.querySelectorAll(".failure-kick-none")).toHaveLength(0);
   });
 
+  it("names no model for a failed attempt whose agent never ran", async () => {
+    // Run 1 fails the tests gate (trail attempt 2). Attempt 2 fails before the agent is
+    // launched (agent-env-install, trail attempt 3), so no agent-run row exists for it.
+    // Run 1 is the latest run before that failure, but it is not attempt 2's run.
+    stubFetch(
+      [run(1, "2026-01-02T00:00:00Z")],
+      [failure(2, "2026-01-02T00:05:00Z"), failure(3, "2026-01-02T00:07:00Z", "agent-env-install")],
+    );
+    await boot();
+    const attempts = [...document.querySelectorAll(".failure-history .failure-attempt")];
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]!.querySelector(".attempt-run")?.textContent).toBe(
+      "Model stub-served-1 · CLI 4.1.0 (Claude Code)",
+    );
+    expect(attempts[1]!.textContent).toContain("agent-env-install failed");
+    expect(attempts[1]!.querySelector(".attempt-run")).toBeNull();
+  });
+
   it("lists every recorded run of a parked ticket, one line each", async () => {
     // Two runs, one failure on the trail (the last go parked the ticket): 2 lines.
     stubFetch(

@@ -9820,17 +9820,21 @@ function agentRuns(evidence) {
   return runs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }
 /**
- * The run behind a failure: the latest agent run recorded at or before the failure.
- * The attempt numbers are not compared. The runner files a retry's trail entry under
- * the NEXT attempt's number (tick.sh `runner-rework --attempt $_next`), so trail
- * attempt N is the failure of run N-1; time order holds whatever the numbering. A
- * failure with no timestamp, or with no run before it, names no model rather than a
+ * The run behind a failure: the latest agent run recorded at or before the failure
+ * whose attempt is the one that failed (trail attempt N → run N-1). Time order alone is
+ * not enough: an attempt can fail before its agent is launched (agent-env-install), and
+ * the run before that failure is then the PREVIOUS attempt's, not this one's. A failure
+ * with no timestamp, or with no matching run before it, names no model rather than a
  * guessed one.
  */
 function runForAttempt(runs, a) {
   if (!a || !a.created_at) return null;
   const at = String(a.created_at);
-  const before = runs.filter((r) => r.created_at && String(r.created_at) <= at);
+  const n = Number(a.attempt);
+  const want = Number.isInteger(n) && n >= 2 ? n - 1 : null;
+  const before = runs.filter(
+    (r) => r.created_at && String(r.created_at) <= at && (want === null || r.attempt === want),
+  );
   return before.length ? before[before.length - 1] : null;
 }
 /** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */

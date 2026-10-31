@@ -69,7 +69,7 @@ if [ -e .git ]; then
         commit retry
       fi
       done_json; exit 0 ;;
-    # GATE INTEGRITY modes (gate-integrity-e2e.test.sh): break a() and weaken the gate.
+    # GATE INTEGRITY modes (gate-integrity-e2e*.test.sh): break a() and weaken the gate.
     redirect-tests)  # point scripts.test at a no-op
       printf 'export function a() { return 2; }\n' > src/a.js
       sed -i.bak 's/"test": "node --test"/"test": "node -e 0"/' package.json && rm -f package.json.bak

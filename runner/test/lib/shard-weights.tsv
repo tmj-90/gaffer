@@ -10,6 +10,8 @@
 # the shards, it never drops or duplicates a test.
 171	merge-lane.test.sh
 161	direct-run-isolation.test.sh
+150	gate-integrity-e2e.test.sh
+150	gate-integrity-e2e-retry.test.sh
 149	waste-controls.test.sh
 132	e2e-agent-skill-routing.test.sh
 86	delivery-lifecycle.test.sh

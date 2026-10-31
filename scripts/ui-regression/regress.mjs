@@ -524,7 +524,7 @@ try {
   // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
   //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
   //          Sign-off shows no "tests changed" banner. A delivery that weakened its
-  //          tests is covered by runner/test/gate-integrity-e2e.test.sh + the JSDOM test.
+  //          tests is covered by runner/test/gate-integrity-e2e*.test.sh + the JSDOM test.
   const giRow = await waitFor(
     async () => {
       const rows = await page.$$eval(".dod-item", (els) =>

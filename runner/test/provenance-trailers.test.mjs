@@ -6,7 +6,8 @@
 // ---------------------------------------------------------------------
 // Proves, against a REAL dispatch schema (`dispatch init`) and real git repos:
 //   T1 the trailer block: ticket, the approving actor (human or agent), the gate
-//      verdicts (DoD per gate — a FAIL anywhere wins — the AC count, the tester);
+//      verdicts (DoD per gate — a FAIL anywhere wins — the AC count, the tester's own
+//      verdict transition since the latest approval, never an agent-recorded row);
 //      "none recorded" when nothing approved it; no model name anywhere
 //   T2 GAFFER_PROVENANCE_TRAILERS=0 (or off/false/no) → no trailers; unknown ticket → none
 //   T3 a newline smuggled into an actor id cannot add a trailer line
@@ -78,6 +79,25 @@ function approve(tid, type, actor, reason = "review_approved") {
     at(),
   );
 }
+// The tester's own verdict transition (reviewGateService testerPass / testerFail).
+function testerVerdict(tid, type, actor, reason) {
+  db.prepare(
+    "INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, created_at) VALUES (?,?,?,?,?,?,?,?)",
+  ).run(
+    `e-${++seq}`,
+    "ticket",
+    tid,
+    type,
+    actor,
+    "ticket.transitioned",
+    JSON.stringify({
+      from: "in_testing",
+      to: reason === "tester_passed" ? "ready_for_merge" : "refining",
+      reason,
+    }),
+    at(),
+  );
+}
 function evidence(tid, summary, payload = null, by = "system") {
   db.prepare(
     "INSERT INTO evidence (id, ticket_id, evidence_type, summary, payload_json, created_by, recorded_by_actor_type, created_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -112,6 +132,7 @@ evidence(
   JSON.stringify({ verdict: "pass", tested_commit: "a".repeat(40) }),
   "agent",
 );
+testerVerdict(t1, "agent", "tester", "tester_passed");
 let tr = provenanceTrailers({ dbPath: DB, ticketNumber: 12, env: {} });
 assert("three trailers", tr.length === 3, JSON.stringify(tr));
 assert("Gaffer-Ticket: #12", tr[0] === "Gaffer-Ticket: #12");
@@ -154,6 +175,50 @@ tr = provenanceTrailers({ dbPath: DB, ticketNumber: 15, env: {} });
 assert(
   "an agent-recorded 'DoD' summary is not the runner's verdict",
   tr[2] === "Gaffer-Gates: none recorded",
+  tr[2],
+);
+// A delivery agent can record any evidence through record_ac_evidence. A verdict row
+// with no tester transition behind it is not a tester verdict, human or otherwise.
+const t5 = ticket(17);
+approve(t5, "human", "tom");
+evidence(
+  t5,
+  "tester verdict",
+  JSON.stringify({ verdict: "pass", provenance: "human", tested_commit: "b".repeat(40) }),
+  "agent",
+);
+tr = provenanceTrailers({ dbPath: DB, ticketNumber: 17, env: {} });
+assert(
+  "an agent-recorded verdict row with no tester transition gives no tester part",
+  tr[2] === "Gaffer-Gates: none recorded",
+  tr[2],
+);
+const t6 = ticket(18);
+approve(t6, "agent", "reviewer-7", "review_approved_to_testing");
+testerVerdict(t6, "human", "tom", "tester_failed:the widget 500s");
+tr = provenanceTrailers({ dbPath: DB, ticketNumber: 18, env: {} });
+assert(
+  "a human tester FAIL transition reads 'tester FAIL (human)'",
+  tr[2] === "Gaffer-Gates: tester FAIL (human)",
+  tr[2],
+);
+const t7 = ticket(19);
+approve(t7, "agent", "reviewer-7", "review_approved_to_testing");
+testerVerdict(t7, "agent", "tester", "tester_passed");
+approve(t7, "human", "tom");
+tr = provenanceTrailers({ dbPath: DB, ticketNumber: 19, env: {} });
+assert(
+  "a tester verdict from before the latest approval is not claimed",
+  tr[2] === "Gaffer-Gates: none recorded",
+  tr[2],
+);
+const t8 = ticket(20);
+approve(t8, "agent", "reviewer-7", "review_approved_to_testing");
+testerVerdict(t8, "agent", "tester", "retry_cap_reached:tester_failed:still broken");
+tr = provenanceTrailers({ dbPath: DB, ticketNumber: 20, env: {} });
+assert(
+  "a tester FAIL that hit the retry cap reads FAIL",
+  tr[2] === "Gaffer-Gates: tester FAIL",
   tr[2],
 );
 assert("dodLine ignores a non-DoD summary", dodLine("tester verdict") === null);

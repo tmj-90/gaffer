@@ -11,8 +11,9 @@
 // Read from the dispatch DB, never from agent text: the reviewer is the actor of the
 // ticket's latest approval (`ticket.transitioned` with reason review_approved /
 // review_approved_to_testing), the gates are the latest runner DoD checklist evidence,
-// the acceptance criteria and the latest tester verdict. No model name is written here:
-// the usage ledger is where a call's model is recorded.
+// the acceptance criteria and the tester's own transition (tester_passed /
+// tester_failed) since that approval, never an evidence row an agent could write. No
+// model name is written here: the usage ledger is where a call's model is recorded.
 //
 // Both landing paths use it: lib/land.sh (the merge lane and the AFK review pass, via
 // gaffer_auto_merge / gaffer_pr_merge) and bin/merge-ticket.mjs (the dashboard's Merge
@@ -94,7 +95,7 @@ function readFacts(dbPath, ticketNumber) {
       }
     };
     const rev = one(
-      "SELECT actor_type, actor_id FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
+      "SELECT actor_type, actor_id, created_at FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
         "AND event_type = 'ticket.transitioned' " +
         "AND json_extract(payload_json, '$.reason') IN ('review_approved', 'review_approved_to_testing') " +
         "ORDER BY created_at DESC, rowid DESC LIMIT 1",
@@ -114,20 +115,27 @@ function readFacts(dbPath, ticketNumber) {
       t.id,
     );
     if (ac && Number(ac.n) > 0) facts.ac = `AC ${Number(ac.ok) || 0}/${Number(ac.n)} satisfied`;
+    // The tester verdict is the ticket's tester TRANSITION (reviewGateService testerPass /
+    // testerFail), never a test_output evidence row: a delivery agent can record any
+    // evidence type with any payload through record_ac_evidence, so a row saying
+    // {verdict:"pass", provenance:"human"} proves nothing. "(human)" comes from the
+    // transition's own actor. Only a verdict on or after the latest approval counts, so
+    // a tester run from an earlier delivery cycle is not claimed for this merge.
     const tv = one(
-      "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' " +
-        "AND payload_json LIKE '%\"verdict\":%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      "SELECT actor_type, json_extract(payload_json, '$.reason') AS reason FROM work_events " +
+        "WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned' " +
+        "AND (json_extract(payload_json, '$.reason') = 'tester_passed' " +
+        "OR json_extract(payload_json, '$.reason') LIKE 'tester_failed%' " +
+        "OR json_extract(payload_json, '$.reason') LIKE 'retry_cap_reached:tester_failed%') " +
+        "AND created_at >= COALESCE(?, '') " +
+        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
       t.id,
+      rev ? rev.created_at : null,
     );
-    if (tv) {
-      try {
-        const p = JSON.parse(tv.payload_json);
-        const v = clean(p && p.verdict, 10).toUpperCase();
-        if (v === "PASS" || v === "FAIL")
-          facts.tester = `tester ${v}${p.provenance === "human" ? " (human)" : ""}`;
-      } catch {
-        /* no readable tester verdict */
-      }
+    if (tv && typeof tv.reason === "string") {
+      const v = tv.reason === "tester_passed" ? "PASS" : "FAIL";
+      const human = tv.actor_type === "human" || tv.actor_type === "admin";
+      facts.tester = `tester ${v}${human ? " (human)" : ""}`;
     }
   } catch {
     /* fail-soft: the ticket line alone */

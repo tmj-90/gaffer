@@ -144,6 +144,56 @@ describe("addedSkipMarkers: every marker class", () => {
     expect(found).toEqual([{ path, marker, line: 7 }]);
   });
 
+  // Other spellings of the same markers: bracket access, a chained `.skip` on its own
+  // line, destructuring, module-level pytest marks, raised skips, a Go build constraint
+  // that drops the whole test file.
+  it.each([
+    ["test/a.test.js", 'test["skip"]("a", () => {});', "test.skip"],
+    ["test/a.test.js", "it['only']('a', () => {});", "it.only"],
+    ["test/a.test.js", "describe.concurrent[`skip`]('s', () => {", "describe.concurrent.skip"],
+    ["test/a.test.js", "  .skip('a', () => {", ".skip (chained)"],
+    ["test/a.test.js", "  ?.only('a', () => {", ".only (chained)"],
+    ["test/a.test.js", "const { skip } = test;", "{ skip } = test"],
+    ["test/a.test.js", "const { only: o } = it;", "{ only } = it"],
+    ["tests/test_x.py", "pytestmark = pytest.mark.skip(reason='later')", "pytest.mark.skip"],
+    ["tests/test_x.py", "pytestmark = [pytest.mark.xfail]", "pytest.mark.xfail"],
+    ["tests/test_x.py", "@mark.skip", "pytest.mark.skip"],
+    ["tests/test_x.py", "skip_all = unittest.skip('later')", "unittest.skip"],
+    ["tests/test_x.py", "    raise unittest.SkipTest('later')", "SkipTest"],
+    ["tests/test_x.py", "    raise SkipTest('later')", "SkipTest"],
+    ["tests/test_x.py", "np = pytest.importorskip('not_installed')", "pytest.importorskip()"],
+    ["tests/test_x.py", "__test__ = False", "__test__ = False"],
+    ["pkg/x_test.go", "//go:build ignore", "go build constraint"],
+    ["pkg/x_test.go", "// +build ignore", "go build constraint"],
+  ])("another spelling — %s: %s → %s", (path, line, marker) => {
+    const found = addedSkipMarkers(patchAdding(path, [line], 7));
+    expect(found).toEqual([{ path, marker, line: 7 }]);
+  });
+
+  it("the new spellings still ignore comments, app code and look-alikes", () => {
+    expect(
+      addedSkipMarkers(
+        patchAdding("tests/test_x.py", [
+          "# pytestmark = pytest.mark.skip",
+          "remark.skip = 1",
+          "x = SkipTestsConfig()",
+        ]),
+      ),
+    ).toEqual([]);
+    expect(
+      addedSkipMarkers(
+        patchAdding("test/a.test.js", [
+          "// test['skip']('a')",
+          "const { skip } = options;",
+          "rows.skip(2)",
+          "const o = { only: 1 };",
+        ]),
+      ),
+    ).toEqual([]);
+    // A build constraint in app code is not a test marker.
+    expect(addedSkipMarkers(patchAdding("pkg/x.go", ["//go:build linux"]))).toEqual([]);
+  });
+
   it("ignores REMOVED lines (deleting a .skip re-enables a test)", () => {
     const patch = [
       "diff --git a/src/a.test.ts b/src/a.test.ts",
@@ -635,6 +685,28 @@ describe("collectTestIntegrity against a real git repo", () => {
     expect(f.deleted).toEqual(["shop/tests.py"]);
     expect(f.markers).toEqual([{ path: "blog/tests.py", marker: "@pytest.mark.skip", line: 4 }]);
     expect(f.configs).toEqual([{ path: ".npmrc", change: "added" }]);
+  });
+
+  it("a .gitattributes that marks the tests binary or -diff cannot hide a skip", () => {
+    dir = mkdtempSync(join(tmpdir(), "gi-"));
+    sh(["init", "-q", "-b", "main"]);
+    mkdirSync(join(dir, "test"));
+    writeFileSync(join(dir, "test/a.test.js"), 'test("a", () => {});\n');
+    writeFileSync(join(dir, "test/b.test.js"), 'test("b", () => {});\n');
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "base"]);
+    const base = sh(["rev-parse", "HEAD"]).trim();
+    sh(["checkout", "-qb", "feat"]);
+    writeFileSync(join(dir, ".gitattributes"), "test/a.test.js -diff\n*.js binary\n");
+    writeFileSync(join(dir, "test/a.test.js"), 'test.skip("a", () => {});\n');
+    writeFileSync(join(dir, "test/b.test.js"), 'it.only("b", () => {});\n');
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "hide them"]);
+    const f = collectTestIntegrity(git, base, "feat");
+    expect(f.markers.map((m) => `${m.marker}@${m.path}:${m.line}`)).toEqual([
+      "test.skip@test/a.test.js:1",
+      "it.only@test/b.test.js:1",
+    ]);
   });
 
   it("finds node:test option skips, runtime skips and a skip behind a comment", () => {

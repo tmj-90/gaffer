@@ -148,6 +148,11 @@ interface MarkerRule {
   readonly re: RegExp;
   /** Canonical name from the match. */
   readonly name: (m: RegExpExecArray) => string;
+  /**
+   * Match the RAW added line, comments included: for markers that ARE comments (a Go
+   * `//go:build ignore` constraint drops the whole test file from `go test`).
+   */
+  readonly raw?: boolean;
 }
 
 const MARKER_RULES: readonly MarkerRule[] = [
@@ -157,6 +162,24 @@ const MARKER_RULES: readonly MarkerRule[] = [
     applies: JS_TEST,
     re: /\b(describe|it|test|context|suite|specify|bench)((?:\s*\.\s*\w+)*?)\s*\.\s*(skip|only|todo|fixme|skipIf|runIf)\b/,
     name: (m) => `${m[1]}${(m[2] ?? "").replace(/\s+/g, "")}.${m[3]}`,
+  },
+  {
+    // The same markers through bracket access: test["skip"](…), it['only'](…).
+    applies: JS_TEST,
+    re: /\b(describe|it|test|context|suite|specify|bench)((?:\s*\.\s*\w+)*?)\s*\[\s*(['"`])(skip|only|todo|fixme|skipIf|runIf)\3\s*\]/,
+    name: (m) => `${m[1]}${(m[2] ?? "").replace(/\s+/g, "")}.${m[4]}`,
+  },
+  {
+    // A chained marker on its own line: `test\n  .skip("a", …)`.
+    applies: JS_TEST,
+    re: /^\s*\??\.\s*(skip|only|todo|fixme|skipIf|runIf)\s*[(`]/,
+    name: (m) => `.${m[1]} (chained)`,
+  },
+  {
+    // Destructured out of the test API: `const { skip } = test; skip("a", …)`.
+    applies: JS_TEST,
+    re: /\{[^}]*?\b(skip|only|todo)\b[^}]*\}\s*=\s*(describe|it|test|context|suite|specify)\b(?!\s*\()/,
+    name: (m) => `{ ${m[1]} } = ${m[2]}`,
   },
   {
     // node:test / vitest options: test("a", { skip: true }, …), { todo: "later" },
@@ -183,14 +206,39 @@ const MARKER_RULES: readonly MarkerRule[] = [
     re: /@pytest\.mark\.(skip|skipif|xfail)\b/,
     name: (m) => `@pytest.mark.${m[1]}`,
   },
-  { applies: PY_TEST, re: /\bpytest\.(skip|xfail)\s*\(/, name: (m) => `pytest.${m[1]}()` },
+  {
+    // Module/class-level marks (`pytestmark = pytest.mark.skip`) and `from pytest import mark`.
+    applies: PY_TEST,
+    re: /\b(?:pytest\.)?mark\.(skip|skipif|xfail)\b/,
+    name: (m) => `pytest.mark.${m[1]}`,
+  },
+  {
+    applies: PY_TEST,
+    re: /\bpytest\.(skip|xfail|importorskip)\s*\(/,
+    name: (m) => `pytest.${m[1]}()`,
+  },
   {
     applies: PY_TEST,
     re: /@unittest\.(skip|skipIf|skipUnless|expectedFailure)\b/,
     name: (m) => `@unittest.${m[1]}`,
   },
+  {
+    applies: PY_TEST,
+    re: /\bunittest\.(skip|skipIf|skipUnless|expectedFailure)\b/,
+    name: (m) => `unittest.${m[1]}`,
+  },
   { applies: PY_TEST, re: /\.skipTest\s*\(/, name: () => "skipTest()" },
+  { applies: PY_TEST, re: /\bSkipTest\b/, name: () => "SkipTest" },
+  // pytest (and nose) do not collect a module or class that sets `__test__ = False`.
+  { applies: PY_TEST, re: /^\s*__test__\s*=\s*False\b/, name: () => "__test__ = False" },
   { applies: GO_TEST, re: /\b[tb]\.(Skip|Skipf|SkipNow)\s*\(/, name: (m) => `t.${m[1]}` },
+  {
+    // A build constraint drops the whole _test.go file (`//go:build ignore`).
+    applies: GO_TEST,
+    re: /^\s*\/\/\s*(?:go:build|\+build)\s/,
+    name: () => "go build constraint",
+    raw: true,
+  },
   { applies: RUST_ANY, re: /#\[\s*ignore\b/, name: () => "#[ignore]" },
   { applies: JVM_TEST, re: /@(Disabled|Ignore)\b/, name: (m) => `@${m[1]}` },
   { applies: CS_TEST, re: /\[\s*(?:Ignore|Skip)\b|\bSkip\s*=\s*"/, name: () => "Skip" },
@@ -342,14 +390,15 @@ export function addedSkipMarkers(patch: string, extra?: RegExp | null): SkipMark
     }
     if (!path) continue;
     if (raw.startsWith("+")) {
-      const code = rules.length > 0 ? codeOf(raw.slice(1), style) : "";
-      if (code.trim() !== "") {
-        for (const rule of rules) {
-          const m = rule.re.exec(code);
-          if (m) {
-            out.push({ path, marker: rule.name(m), line: lineNo });
-            break;
-          }
+      const line = raw.slice(1);
+      const code = rules.length > 0 ? codeOf(line, style) : "";
+      for (const rule of rules) {
+        const target = rule.raw ? line : code;
+        if (target.trim() === "") continue;
+        const m = rule.re.exec(target);
+        if (m) {
+          out.push({ path, marker: rule.name(m), line: lineNo });
+          break;
         }
       }
       if (lineNo !== null) lineNo += 1;
@@ -780,7 +829,15 @@ export type IntegrityGit = (
 ) => { status: number | null; stdout: string; truncated?: boolean };
 
 /** Never run a repo-configured diff driver/textconv: the scan reads raw bytes only. */
-const SAFE = ["--no-ext-diff", "--no-textconv", "--no-color"] as const;
+const SAFE = [
+  "--no-ext-diff",
+  "--no-textconv",
+  "--no-color",
+  // Fixed prefixes: repo config (diff.noprefix / mnemonicPrefix / srcPrefix / dstPrefix)
+  // must not change the `+++ b/<path>` lines the marker scan parses.
+  "--src-prefix=a/",
+  "--dst-prefix=b/",
+] as const;
 /** Generous caps: the scan reads only names and the marker candidates' hunks. */
 const NAMES_MAX = 16 * 1024 * 1024;
 const PATCH_MAX = 8 * 1024 * 1024;
@@ -828,7 +885,9 @@ export function collectTestIntegrity(
   if (candidates.length > 0) {
     const spec =
       candidates.length <= MAX_PATHSPECS ? ["--", ...candidates.map((p) => `:(literal)${p}`)] : [];
-    const patch = git(["diff", "-U0", "-M", ...SAFE, base, head, ...spec], {
+    // --text: a `.gitattributes` that marks the tests `binary` / `-diff` would otherwise
+    // print "Binary files differ" and hide every added line from the marker scan.
+    const patch = git(["diff", "-U0", "-M", "--text", ...SAFE, base, head, ...spec], {
       maxBuffer: PATCH_MAX,
     });
     if (patch.status !== 0) {

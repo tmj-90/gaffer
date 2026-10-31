@@ -10,6 +10,9 @@
 #      record nothing.
 #   3. merge-ticket's resolver gets the MERGE role's mount, not a symlink to the whole
 #      library (marketing, slides, Terraform…).
+#   4. every mount lands at .claude/skills/<name>/SKILL.md — beside a repo's OWN
+#      .claude/skills, never clobbering a repo skill of the same name (the repo's wins
+#      and the prompt says so) — and teardown removes only Gaffer's (shell + JS).
 # No model calls: CLAUDE_BIN is a stub. Run: bash test/role-skill-mounts.test.sh
 # =====================================================================
 set -uo pipefail
@@ -78,13 +81,14 @@ WT="$WORK/merge-wt"; mkdir -p "$WT"
 TOTAL="$(ls -1d "$RUNNER_DIR"/skills/*/ | wc -l | tr -d ' ')"
 OUT="$(cd "$WORK" && bound 60 node --input-type=module -e "
 import { installProjectLocalWiring } from '$RUNNER_DIR/bin/merge-ticket.mjs';
-import { readdirSync, readlinkSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 installProjectLocalWiring('$WT', 4242, 'pyapi', { stack: 'go' });
-const names = readdirSync('$WT/.claude/skills');
-console.log(readlinkSync('$WT/.claude/skills') + '|' + names.join(','));
+const names = readdirSync('$WT/.claude/skills').filter((n) => !n.startsWith('.'));
+const real = lstatSync('$WT/.claude/skills').isDirectory() && !lstatSync('$WT/.claude/skills/go-conventions').isSymbolicLink();
+console.log((real ? 'copies' : 'link') + '|' + names.join(','));
 " 2>&1)"
 LINK="${OUT%%|*}"; NAMES="${OUT#*|}"
-[ "$LINK" != "$RUNNER_DIR/skills" ] && ok "the resolver's .claude/skills is not the whole library" || fail "resolver still symlinks the library ($OUT)"
+[ "$LINK" = copies ] && ok "the resolver's .claude/skills holds real copies (no link into the library)" || fail "resolver mount is not copies ($OUT)"
 for want in resolve-merge-conflict run-tests go-conventions; do
   grep -q "\(^\|,\)$want\(,\|$\)" <<<"$NAMES" && ok "merge mount has $want" || fail "merge mount lacks $want ($NAMES)"
 done
@@ -93,6 +97,184 @@ for bad in seo-audit slides-deck terraform-patterns python-conventions; do
 done
 N="$(tr ',' '\n' <<<"$NAMES" | grep -c .)"
 [ "$N" -lt "$TOTAL" ] && ok "merge mount is a subset ($N of $TOTAL skills)" || fail "merge mount has $N of $TOTAL"
+
+echo "== 4: mounts land at .claude/skills/<name>/SKILL.md, beside a repo's OWN skills =="
+# The reviewer's case: a repo that ships .claude/skills/<its-own>/SKILL.md got Gaffer's
+# set one directory too deep (.claude/skills/<mount-key>/<name>/), where Claude Code
+# never looks. Real git, the REAL skills-mount lib (delivery / review / clarify /
+# bootstrap) and the JS installer (tester / merge / planning homes).
+export SKILLS_DIR="$RUNNER_DIR/skills"
+# shellcheck source=../lib/skills-mount.sh
+source "$RUNNER_DIR/lib/skills-mount.sh"
+# shellcheck source=../lib/hygiene.sh
+source "$RUNNER_DIR/lib/hygiene.sh"
+OWN="$WORK/own-skills-repo"; mkdir -p "$OWN/.claude/skills/house-style" "$OWN/.claude/skills/record-evidence"
+printf -- '---\nname: house-style\ndescription: the repo house style\n---\nHOUSE\n' > "$OWN/.claude/skills/house-style/SKILL.md"
+printf -- '---\nname: record-evidence\ndescription: the repo own evidence rules\n---\nREPO-EVIDENCE\n' > "$OWN/.claude/skills/record-evidence/SKILL.md"
+printf 'x\n' > "$OWN/README.md"
+( cd "$OWN" && git init -q -b main && git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+OWT="$WORK/own-wt"; git -C "$OWN" worktree add -q --detach "$OWT" HEAD
+gaffer_exclude_runner_config "$OWT"
+gaffer_skills_mount "$OWT" "java-conventions, record-evidence" "delivery-9"
+SK="$OWT/.claude/skills"
+[ -f "$SK/java-conventions/SKILL.md" ] && ok "4: java-conventions/SKILL.md is at .claude/skills/java-conventions/" || fail "4: java-conventions not at .claude/skills/java-conventions/SKILL.md ($(ls -A "$SK" | paste -sd, -))"
+[ -f "$SK/minimalism/SKILL.md" ] && ok "4: the universal set is at .claude/skills/<name>/ too" || fail "4: minimalism missing from .claude/skills/"
+[ ! -e "$SK/delivery-9" ] && ok "4: nothing is mounted one level too deep" || fail "4: a .claude/skills/delivery-9 entry exists"
+[ -z "$(ls -d "$SK"/*/*/SKILL.md 2>/dev/null)" ] && ok "4: every SKILL.md is exactly .claude/skills/<name>/SKILL.md" || fail "4: a SKILL.md sits deeper than .claude/skills/<name>/"
+grep -qx HOUSE "$SK/house-style/SKILL.md" && ok "4: the repo's own skill is untouched" || fail "4: the repo's house-style skill changed"
+grep -qx REPO-EVIDENCE "$SK/record-evidence/SKILL.md" && ok "4: name collision: the repo's record-evidence wins (not clobbered)" || fail "4: Gaffer overwrote the repo's record-evidence"
+[ ! -e "$GAFFER_DATA/skills-mounts/delivery-9/record-evidence" ] && [ -e "$GAFFER_DATA/skills-mounts/delivery-9/java-conventions" ] \
+  && ok "4: the manifest (telemetry's mount) lists what Gaffer installed, not the repo's skill" || fail "4: manifest wrong: $(ls "$GAFFER_DATA/skills-mounts/delivery-9" | paste -sd, -)"
+NOTE="$(gaffer_skills_note "$OWT" "java-conventions, record-evidence")"
+case "$NOTE" in *"take precedence over Gaffer's pack: record-evidence"*) ok "4: the prompt note names the shadowed skill" ;; *) fail "4: prompt note: '$NOTE'" ;; esac
+# record-evidence is in the universal set, so it is shadowed even when not selected;
+# the repo's house-style is not a library name, so it is never called shadowed.
+[ "$(gaffer_skills_shadowed "$OWT" "java-conventions")" = record-evidence ] \
+  && ok "4: only a same-name repo skill is called shadowed" || fail "4: shadowed: $(gaffer_skills_shadowed "$OWT" "java-conventions")"
+[ -z "$(git -C "$OWT" status --porcelain 2>/dev/null)" ] && ok "4: git sees no change (tracked skills intact, copies excluded)" || fail "4: git status: $(git -C "$OWT" status --porcelain | paste -sd'|' -)"
+gaffer_skills_mount "$OWT" "python-conventions" "delivery-9"
+[ -f "$SK/python-conventions/SKILL.md" ] && [ ! -e "$SK/java-conventions" ] && grep -qx HOUSE "$SK/house-style/SKILL.md" \
+  && ok "4: a re-mount swaps Gaffer's copies only" || fail "4: re-mount: $(ls -A "$SK" | paste -sd, -)"
+for t in tick.sh lib/review.sh; do
+  grep -q 'gaffer_skills_note' "$RUNNER_DIR/$t" && ok "4: $t puts the shadow note in its prompt" || fail "4: $t does not use gaffer_skills_note"
+done
+grep -q 'shadowNote(shadowedSkills' "$RUNNER_DIR/bin/tester-run.mjs" && ok "4: the tester prompt carries the shadow note" || fail "4: tester-run lacks the shadow note"
+
+# …and the RENDERED delivery prompt (the real seam tick.sh calls) carries that note on
+# its recommended-skills line.
+if [ -f "$RUNNER_DIR/../packages/crew/dist/runtime/context/renderPromptCli.js" ]; then
+  RENDERED="$(
+    export DISPATCH_DB="$WORK/d.sqlite" MEMORY_DB="$WORK/m.sqlite"
+    # shellcheck source=../factory.config.sh
+    source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+    NUM=9; TITLE="Round totals"; SKILLS="java-conventions, record-evidence"; LENSES="minimalism"
+    FILE_CARDS_BLOCK=""; PRODUCT_CONTEXT_BLOCK=""; _RF=""; _RD=""; READ_ROOTS=""
+    WORK_BRANCH="gaffer/ticket-9-round"; PRIMARY_REPO="$OWT"
+    WT_ROWS="$(printf 'id\town\t%s\tmain\t%s' "$OWN" "$OWT")"
+    SKILLS_NOTE="$(gaffer_skills_note "$PRIMARY_REPO" "$SKILLS, $LENSES")"
+    gaffer_render_delivery_prompt fresh 2>&1
+  )"
+  grep -q "Recommended skills.*java-conventions, record-evidence (this repo has its own .claude/skills of the same name, which take precedence over Gaffer's pack: record-evidence" <<<"$RENDERED" \
+    && ok "4: the rendered delivery prompt says the repo's record-evidence wins" || fail "4: rendered prompt lacks the note: $(grep 'Recommended skills' <<<"$RENDERED" | cut -c1-300)"
+else
+  ok "4: (crew not built — rendered-prompt check skipped)"
+fi
+
+echo "== 4b: teardown removes Gaffer's skills and never the repo's =="
+gaffer_skills_mount_cleanup "delivery-9" "$OWT"
+[ ! -e "$SK/python-conventions" ] && [ ! -e "$SK/minimalism" ] && ok "4b: Gaffer's copies are gone" || fail "4b: copies survived: $(ls -A "$SK" | paste -sd, -)"
+grep -qx HOUSE "$SK/house-style/SKILL.md" && grep -qx REPO-EVIDENCE "$SK/record-evidence/SKILL.md" \
+  && ok "4b: the repo's own skills are intact" || fail "4b: teardown touched the repo's skills"
+[ -z "$(git -C "$OWT" status --porcelain 2>/dev/null)" ] && ok "4b: git status clean after teardown" || fail "4b: git status: $(git -C "$OWT" status --porcelain | paste -sd'|' -)"
+
+echo "== 4c: a repo WITHOUT its own skills dir — Gaffer makes it, and removes it =="
+PLAIN="$WORK/plain-repo"; mkdir -p "$PLAIN"
+gaffer_skills_mount "$PLAIN" "java-conventions" "delivery-10"
+[ -f "$PLAIN/.claude/skills/java-conventions/SKILL.md" ] && ok "4c: java-conventions/SKILL.md at .claude/skills/java-conventions/" || fail "4c: not mounted where Claude Code looks"
+gaffer_skills_mount_cleanup "delivery-10" "$PLAIN"
+[ ! -e "$PLAIN/.claude" ] && ok "4c: teardown leaves no .claude behind" || fail "4c: residue: $(find "$PLAIN/.claude" | paste -sd, -)"
+
+echo "== 4d: a repo's .claude/skills SYMLINK is left alone (nothing copied through it) =="
+LNK="$WORK/link-repo"; mkdir -p "$LNK/my-skills/own" "$LNK/.claude"; printf 'OWN\n' > "$LNK/my-skills/own/SKILL.md"
+ln -s ../my-skills "$LNK/.claude/skills"
+gaffer_skills_mount "$LNK" "java-conventions" "delivery-11" 2>/dev/null
+[ "$(readlink "$LNK/.claude/skills")" = ../my-skills ] && [ ! -e "$LNK/my-skills/java-conventions" ] \
+  && ok "4d: the repo link is intact and nothing landed outside .claude/" || fail "4d: $(ls -A "$LNK/my-skills" | paste -sd, -)"
+
+echo "== 4e: the JS installer (tester / merge / planning homes) — same layout, same precedence =="
+JWT="$WORK/own-wt-js"; git -C "$OWN" worktree add -q --detach "$JWT" HEAD
+JOUT="$(cd "$WORK" && bound 60 node --input-type=module -e "
+import { installSkillCopies, removeSkillCopies, shadowedSkills, shadowNote } from '$RUNNER_DIR/lib/agent-home.mjs';
+import { existsSync, readFileSync } from 'node:fs';
+const c = '$JWT/.claude', sk = c + '/skills';
+const got = installSkillCopies(c, ['java-conventions', 'record-evidence', 'run-tests'], { skillsDir: '$RUNNER_DIR/skills', key: 'tester-9' });
+const out = [];
+out.push(existsSync(sk + '/java-conventions/SKILL.md') ? 'at-name' : 'missing');
+out.push(readFileSync(sk + '/record-evidence/SKILL.md', 'utf8').includes('REPO-EVIDENCE') ? 'repo-wins' : 'clobbered');
+out.push(readFileSync(sk + '/house-style/SKILL.md', 'utf8').includes('HOUSE') ? 'own-kept' : 'own-lost');
+out.push('installed=' + got.join('+'));
+out.push(shadowNote(shadowedSkills(c, ['java-conventions', 'record-evidence'])).includes('pack: record-evidence') ? 'note' : 'no-note');
+removeSkillCopies(sk);
+out.push(!existsSync(sk + '/java-conventions') && existsSync(sk + '/house-style/SKILL.md') && existsSync(sk + '/record-evidence/SKILL.md') ? 'teardown-ok' : 'teardown-bad');
+console.log(out.join(' '));
+" 2>&1)"
+for w in at-name repo-wins own-kept installed=java-conventions+run-tests note teardown-ok; do
+  case " $JOUT " in *" $w "*) ok "4e: $w" ;; *) fail "4e: expected $w ($JOUT)" ;; esac
+done
+[ -z "$(git -C "$JWT" status --porcelain --untracked-files=no 2>/dev/null)" ] && ok "4e: no tracked change in the repo" || fail "4e: git status: $(git -C "$JWT" status --porcelain | paste -sd'|' -)"
+
+echo "== 4f: a hostile repo / library cannot steer the copy step or the teardown =="
+# A repo that COMMITS Gaffer's copy marker inside its own skill, a repo whose skill entry
+# is a dangling symlink out of the worktree, a skill name that is not one path component,
+# and a library skill holding a symlink out of the library.
+HOS="$WORK/hostile-repo"; mkdir -p "$HOS/.claude/skills/run-tests" "$HOS/.claude/skills/minimalism"
+printf -- '---\nname: run-tests\ndescription: the repo own test rules\n---\nREPO-RUN-TESTS\n' > "$HOS/.claude/skills/run-tests/SKILL.md"
+printf 'delivery-12\n' > "$HOS/.claude/skills/run-tests/.gaffer-mount"     # a spoofed marker
+printf -- '---\nname: minimalism\ndescription: repo\n---\nREPO-MIN\n' > "$HOS/.claude/skills/minimalism/SKILL.md"
+printf '\n' > "$HOS/.claude/skills/minimalism/.gaffer-mount"
+ln -s "$WORK/outside-target/java-conventions" "$HOS/.claude/skills/java-conventions"   # dangling, out of the repo
+( cd "$HOS" && git init -q -b main && git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+HWT="$WORK/hostile-wt"; git -C "$HOS" worktree add -q --detach "$HWT" HEAD
+gaffer_exclude_runner_config "$HWT"
+HSK="$HWT/.claude/skills"
+gaffer_skills_mount "$HWT" "java-conventions, run-tests" "delivery-12"
+grep -qx REPO-RUN-TESTS "$HSK/run-tests/SKILL.md" && grep -qx REPO-MIN "$HSK/minimalism/SKILL.md" \
+  && ok "4f: a repo skill carrying a copied marker is not replaced at mount" || fail "4f: the repo's marked skill was replaced ($(head -3 "$HSK/run-tests/SKILL.md" 2>/dev/null | paste -sd'|' -))"
+[ -L "$HSK/java-conventions" ] && [ ! -e "$WORK/outside-target" ] \
+  && ok "4f: a repo's dangling skill link is left as it is, nothing written through it" || fail "4f: dangling link: $(ls -la "$HSK" | paste -sd'|' -); outside: $(find "$WORK/outside-target" 2>/dev/null | paste -sd, -)"
+case "$(gaffer_skills_shadowed "$HWT" "java-conventions, run-tests")" in
+  *run-tests*) ok "4f: the marked repo skill is reported as the repo's (the prompt says it wins)" ;;
+  *) fail "4f: shadowed: '$(gaffer_skills_shadowed "$HWT" "java-conventions, run-tests")'" ;;
+esac
+gaffer_skills_mount_cleanup "delivery-12" "$HWT"
+grep -qx REPO-RUN-TESTS "$HSK/run-tests/SKILL.md" 2>/dev/null && grep -qx REPO-MIN "$HSK/minimalism/SKILL.md" 2>/dev/null && [ -L "$HSK/java-conventions" ] \
+  && ok "4f: teardown never deletes a repo's skill, marker or not" || fail "4f: teardown removed repo skills: $(ls -A "$HSK" 2>/dev/null | paste -sd, -)"
+[ -z "$(git -C "$HWT" status --porcelain 2>/dev/null)" ] && ok "4f: git status clean after mount + teardown" || fail "4f: git status: $(git -C "$HWT" status --porcelain | paste -sd'|' -)"
+# a name that is not one path component never reaches cp
+mkdir -p "$WORK/lib2/skills/run-tests" "$WORK/escape"; printf -- '---\nname: x\n---\n' > "$WORK/lib2/skills/run-tests/SKILL.md"
+printf -- '---\nname: escape\n---\nESCAPE\n' > "$WORK/escape/SKILL.md"
+ESC="$WORK/esc-repo"; mkdir -p "$ESC"
+SKILLS_DIR="$WORK/lib2/skills" GAFFER_UNIVERSAL_SKILLS="" gaffer_skills_mount "$ESC" "../../escape, run-tests" "delivery-13"
+[ ! -e "$ESC/escape" ] && [ ! -e "$GAFFER_DATA/escape" ] && [ -f "$ESC/.claude/skills/run-tests/SKILL.md" ] \
+  && ok "4f: a '../' skill name is never installed (nothing lands outside .claude/skills)" || fail "4f: escape: $(find "$ESC" "$GAFFER_DATA/escape" 2>/dev/null | paste -sd, -)"
+# a library skill with a link OUT of the library: the linked content is not copied in
+mkdir -p "$WORK/lib3/skills/leaky" "$WORK/secret-place"; printf 'TOP-SECRET\n' > "$WORK/secret-place/notes.txt"
+printf -- '---\nname: leaky\n---\nLEAKY\n' > "$WORK/lib3/skills/leaky/SKILL.md"
+ln -s "$WORK/secret-place/notes.txt" "$WORK/lib3/skills/leaky/reference.md"
+mkdir -p "$WORK/lib3/skills/linked"; ln -s "$WORK/secret-place/notes.txt" "$WORK/lib3/skills/linked/SKILL.md"
+LK="$WORK/leak-repo"; mkdir -p "$LK"
+SKILLS_DIR="$WORK/lib3/skills" GAFFER_UNIVERSAL_SKILLS="" gaffer_skills_mount "$LK" "leaky, linked" "delivery-14"
+[ -f "$LK/.claude/skills/leaky/SKILL.md" ] && ! grep -rqs TOP-SECRET "$LK/.claude/skills" \
+  && ok "4f: a library link out of the library is not copied (reads stay as narrow as before)" || fail "4f: leaked: $(grep -rls TOP-SECRET "$LK/.claude/skills" | paste -sd, -)"
+[ ! -e "$LK/.claude/skills/linked" ] && ok "4f: a skill whose SKILL.md links out of the library is not installed" || fail "4f: linked skill installed"
+
+echo "== 4g: the JS installer under the same hostile repo =="
+JHW="$WORK/hostile-wt-js"; git -C "$HOS" worktree add -q --detach "$JHW" HEAD
+mkdir -p "$WORK/lib4/skills"; cp -R "$RUNNER_DIR/skills/run-tests" "$RUNNER_DIR/skills/java-conventions" "$WORK/lib4/skills/"
+cp -R "$WORK/lib3/skills/leaky" "$WORK/lib3/skills/linked" "$WORK/lib4/skills/"
+JHOUT="$(cd "$WORK" && bound 60 node --input-type=module -e "
+import { installSkillCopies, removeSkillCopies, shadowedSkills } from '$RUNNER_DIR/lib/agent-home.mjs';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+const c = '$JHW/.claude', sk = c + '/skills';
+const got = installSkillCopies(c, ['java-conventions', 'run-tests', 'leaky', 'linked', '../../escape'], { skillsDir: '$WORK/lib4/skills', key: 'tester-12' });
+const out = [];
+const rd = (p) => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
+const isLink = (p) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+out.push(isLink(sk + '/java-conventions') && !existsSync('$WORK/outside-target') ? 'dangling-kept' : 'dangling-lost');
+out.push(rd(sk + '/run-tests/SKILL.md').includes('REPO-RUN-TESTS') ? 'marked-kept' : 'marked-replaced');
+out.push(shadowedSkills(c, ['java-conventions', 'run-tests']).join('+') === 'java-conventions+run-tests' ? 'shadowed-ok' : 'shadowed=' + shadowedSkills(c, ['java-conventions', 'run-tests']).join('+'));
+out.push(existsSync(sk + '/leaky/SKILL.md') && !existsSync(sk + '/leaky/reference.md') ? 'leak-dropped' : 'leak-copied');
+out.push(!existsSync(sk + '/linked') ? 'linked-skipped' : 'linked-installed');
+out.push(!existsSync('$JHW/escape') ? 'no-escape' : 'escaped');
+out.push('installed=' + got.join('+'));
+removeSkillCopies(sk);
+out.push(rd(sk + '/run-tests/SKILL.md').includes('REPO-RUN-TESTS') && rd(sk + '/minimalism/SKILL.md').includes('REPO-MIN') && isLink(sk + '/java-conventions') ? 'teardown-kept' : 'teardown-deleted');
+console.log(out.join(' '));
+" 2>&1)"
+for w in dangling-kept marked-kept shadowed-ok leak-dropped linked-skipped no-escape installed=leaky teardown-kept; do
+  case " $JHOUT " in *" $w "*) ok "4g: $w" ;; *) fail "4g: expected $w ($JHOUT)" ;; esac
+done
+[ -z "$(git -C "$JHW" status --porcelain --untracked-files=no 2>/dev/null)" ] && ok "4g: no tracked change in the repo" || fail "4g: git status: $(git -C "$JHW" status --porcelain | paste -sd'|' -)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

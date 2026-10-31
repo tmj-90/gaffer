@@ -127,7 +127,9 @@ merge`) builds the merge of the approved commit onto the CURRENT default branch 
 scratch worktree, runs the repo's DoD gates on that merge through `bin/dod-regate.sh` (the
 delivery gate's gates: `test_command`, `lint_command` and the typecheck command
 `gaffer_dod_typecheck_cmd` resolves — `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
-typecheck script, detected from the gated target head first), and
+typecheck script, detected from the gated target head first; gate integrity: each gate's
+package.json script is read from that target head and an `integrity` row — PASS/FLAG, never
+FAIL, with the ticket's human `allow_test_changes` — compares it with the merged tree), and
 lands exactly the gated merge commit only while the default branch is still the commit it
 gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
 target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
@@ -431,6 +433,28 @@ node bin/select-skills.mjs --list-areas                                         
 node test/select-skills.test.mjs                                                  # tests
 ```
 
+A ticket spanning several write repos is selected for the **union** of their registered
+stacks (`--ticket-stacks`), and when the stacks differ each prompt names every repo's
+conventions pack. The selected skills are installed as **real copies** at
+`<worktree>/.claude/skills/<name>/SKILL.md` (never a link into this library, which the
+safety hook would refuse to read), beside a repo's own `.claude/skills`; a repo skill
+of the same name wins and the prompt says so. The skill telemetry
+(`$GAFFER_DATA/skills-telemetry.jsonl`) records each run's `selected`, `applied` (named
+in the output), `opened` (a read the hook **allowed**) and `refused` (a read it blocked);
+an open is never counted as an application.
+
+**Did Claude actually use the skill?** One opt-in live test answers it with the real CLI
+through the real tick on a tiny fixture repo: each role's intended skill
+(`prepare-digest-delta` for delivery, `review-ticket` for the reviewer, `black-box-test`
+for the tester) carries one harmless instruction to include `GAFFER-SKILL-<role>-<nonce>`
+in the final message, and the test checks that token in the recorded result plus the
+role's telemetry row. It spends real money, so it skips (exit 0, printing what it needs)
+unless enabled, and skips when the CLI or its credentials are unusable:
+
+```bash
+GAFFER_LIVE_SKILL_TEST=1 GAFFER_LIVE_SKILL_MODEL=<your cheapest model> bash runner/test/live-skill-use.test.sh
+```
+
 ## Security model (deterministic, not trust-based)
 The boundary is `safety-hook.mjs`, a self-contained, zero-dependency Claude Code
 **PreToolUse hook** that runs before *every* tool and **blocks** (exit 2). It is
@@ -524,7 +548,7 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `test/intake-gate.test.sh` — clarify intake-gate wiring (`bash test/intake-gate.test.sh`)
 - `lib/hygiene.sh` — delivery-hygiene assertions: hard-fail guard against the leaks an unattended run produced (copied src tree, leaked `.crew/events.jsonl`, self-referential/broken symlinks, `node_modules` added/deleted)
 - `lib/minimalism.sh` — minimalism post-condition (a missing smallest-change note is flagged `needs_human_review`, or sent back to rework under `MINIMALISM_REQUIRE_NOTE=1`; an oversized diff is flagged `needs_human_review: oversized_diff` whatever the note verdict, never failed)
-- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured or detected command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` ; typecheck (no dispatch field) runs `GAFFER_DOD_TYPECHECK_CMD`, else the repo's package.json typecheck script (`typecheck` / `type-check` / `check-types` / `types:check`, or a bare `tsc --noEmit` script), auto-detected from the base branch first by `gaffer_dod_typecheck_cmd`. A repo's `coverage_command` is not a DoD gate (it feeds the idle coverage loop). **Ships:** tests · typecheck · lint. **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
+- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured or detected command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` ; typecheck (no dispatch field) runs `GAFFER_DOD_TYPECHECK_CMD`, else the repo's package.json typecheck script (`typecheck` / `type-check` / `check-types` / `types:check`, or a bare `tsc --noEmit` script), auto-detected from the base branch first by `gaffer_dod_typecheck_cmd`. A repo's `coverage_command` is not a DoD gate (it feeds the idle coverage loop). **Gate integrity:** each row also carries the base COMMIT the delivery was cut from (tick.sh captures the commit at the moment `worktree add -B` cuts the branch — `_BRANCH_CUT_SHAS`, also on a retry that re-cuts — resolves it with `gaffer_delivery_base_sha`, and records it on the repo delivery with `wg ticket repo-delivery record --base-sha`, adding `--base-recut` only for a fresh cut; a kept or resumed branch and an in-tick retry that builds on the previous attempt keep the commit already known, never the branch tip; dispatch refuses to replace a stored base without `--base-recut`; a branch name, the older contract, is resolved by merge-base) and the human's `allow_test_changes`; with them, `gaffer_dod_resolve_cmd` reads a package-script gate command's body from the **base commit** (a delivery that rewrote `scripts.test`, added or changed a `pre`/`post` hook, or changed a script reached through `test: npm run unit` runs the base expansion: source `base-pinned`), each GATE row gains a 7th `source` column, and `gaffer_dod_integrity_row` appends one `integrity` row per repo — PASS, or FLAG for deleted/renamed test files, added skip/focus markers (including node:test `{ skip: true }` options, `t.skip()` / `this.skip()` / `ctx.skip()`, `it.concurrent.skip`, and a marker after a comment on the same line), any change/removal/addition among the scripts the gate scripts reach (hooks, `npm run X`, `run-s` words), touched test config (an added one too, once the base has tests; package.json `jest`/`mocha`/… keys), a tracked file hidden from git (skip-worktree / assume-unchanged), a test file that lost test cases or every assertion (counted per language family, so moved tests do not count), or a package-manager rc file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) added, changed, deleted or renamed — read from git and from the worktree on disk, so a git-ignored `.npmrc` counts (the typed seam is `packages/crew` `runtime/dod/gateIntegrityCli.js`, running dispatch's `testIntegrity` classifier, the same one behind the server's `test-modified` risk flag). A FLAG never fails the run and the integrity row never counts as an executed gate; `allow=1` turns it into PASS with a note; no base or no crew dist FLAGs (never a silent pass). `GAFFER_TEST_PATH_RE` adds test paths. **Ships:** tests · typecheck · lint · integrity (flag only). **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
 - `lib/tester.sh` — the independent black-box tester pass (in_testing → `bin/tester-run.mjs --live`). A ticket the tester cannot decide (no verdict token, the tester changed implementation files, a PASS that failed its clean replay) is HELD in_testing: the tester-run's own reason is logged and attached as a `tester held: <reason>` manual_note, and the hold is remembered in `$GAFFER_DATA/.tester-held` for that stay in_testing so later runs do not pay to re-test it (`test/tester-held.test.sh`)
 - `lib/backpressure.sh` — per-repo backpressure (unmerged `gaffer/*` branches + in_review tickets + active claims vs cap)
 - `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state); printed by `loop.sh`

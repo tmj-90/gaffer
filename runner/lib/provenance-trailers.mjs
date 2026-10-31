@@ -62,8 +62,9 @@ export function dodLine(summary) {
   } catch {
     gates = [];
   }
-  // One verdict per gate across repos: a FAIL anywhere wins, then PASS, then SKIP.
-  const rank = { FAIL: 3, PASS: 2, SKIP: 1 };
+  // One verdict per gate across repos: a FAIL anywhere wins, then FLAG (the advisory
+  // gate-integrity row: a human must look), then PASS, then SKIP.
+  const rank = { FAIL: 4, FLAG: 3, PASS: 2, SKIP: 1 };
   const byGate = new Map();
   for (const g of gates) {
     const name = clean(g && g.gate, 30);

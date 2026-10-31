@@ -205,6 +205,15 @@ export interface Ticket {
    */
   acceptance: number;
   /**
+   * GATE INTEGRITY: 1 ⇒ a human allowed this ticket to change its tests (delete or
+   * rename a test file, add a skip marker, rewrite a gate script). The runner's
+   * integrity gate row reads PASS-with-note instead of FLAG, and the `test-modified`
+   * risk annotation drops to medium so it no longer holds an auto-approve by itself.
+   * Human/admin only; every change is a `ticket.test_changes_allowed` event.
+   * Persisted as INTEGER (0/1). Default 0.
+   */
+  allow_test_changes: number;
+  /**
    * TRACK-2b: the HUMAN-CLAIM marker. `null` ⇒ agent-shaped work the factory may
    * claim as normal. A non-null value (the human actor's id/name) ⇒ a human took the
    * ticket "by hand": it sits `in_progress` OWNED BY THE HUMAN, the agent selection
@@ -846,6 +855,12 @@ export interface TicketRepoDelivery {
   repo_id: string;
   branch_name: string | null;
   commit_sha: string | null;
+  /**
+   * GATE INTEGRITY: the commit the delivery branch was cut from (recorded by the
+   * runner at worktree creation; null on rows recorded before v30). The integrity
+   * scan diffs from it rather than from the movable base branch name.
+   */
+  base_sha: string | null;
   pr_url: string | null;
   status: TicketRepoDeliveryStatus;
   evidence_ref: string | null;

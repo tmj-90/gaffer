@@ -13,6 +13,9 @@
 #   U6 the serial lock held by a live process → no rerun, run 1 stands (fail closed)
 #   U7 the rerun waits for another worker's in-flight gate run; a dead marker is ignored
 #   U8 the evidence summary carries `flaky: true` and both runs
+#   U9 with gate integrity (a base commit): column 7 is the command's `source`, the
+#      flaky mark is column 8, and the rerun runs the SAME base-pinned command (the
+#      delivery's rewritten `scripts.test` never runs); the JSON carries both
 #   E2E one real tick.sh delivery under GAFFER_CONCURRENCY=2 whose repo's tests fail
 #      once: the ticket reaches in_review WITHOUT a rework attempt, the DoD evidence
 #      says flaky suspected and a needs_human_review note is filed
@@ -55,6 +58,9 @@ L="$(gate_line tests "$RES")"
 [ "$rc" = 0 ] && ok "U1 the gate passes" || fail "U1 rc=$rc"
 [ "$(runs)" = 2 ] && ok "U1 exactly one rerun" || fail "U1 runs=$(runs)"
 case "$L" in *"	PASS	0	pass-on-retry (flaky suspected): run 1 exited 1 under a pool of 3; run 2 at concurrency 1 passed: "*"	flaky-suspected") ok "U1 PASS, both runs named, marked flaky-suspected" ;; *) fail "U1 line: $L" ;; esac
+# Column 7 is gate integrity's `source` (empty without a base), column 8 the mark.
+COLS="$(printf '%s\n' "$L" | awk -F'\t' '{print NF "|" $7 "|" $8}')"
+[ "$COLS" = "8||flaky-suspected" ] && ok "U1 the mark is column 8, after an empty source column 7" || fail "U1 columns: $COLS"
 grep -q '^---DOD-RERUN tests@repo (run 1, exit 1, pool of 3)---$' "$RES" && grep -q 'FAIL flaky.test > race' "$RES" \
   && ok "U1 run 1's output is kept in a DOD-RERUN block" || fail "U1 no DOD-RERUN block: $(cat "$RES")"
 grep -q '^---DOD-OUTPUT ' "$RES" && fail "U1 a passing gate left a failure block" || ok "U1 no failure block (nothing for the rework feedback)"
@@ -128,6 +134,33 @@ R2="$(sed -n 2p "$WORK/started" 2>/dev/null)"; DONE="$(cat "$WORK/other-done" 2>
 [ "$rc" = 0 ] && [ -n "$R2" ] && [ -n "$DONE" ] && [ "$R2" -ge "$DONE" ] \
   && ok "U7 the rerun started after the other in-flight gate run finished" || fail "U7 rc=$rc rerun=$R2 other=$DONE"
 [ ! -e "$GAFFER_DATA/.dod-serial/running/999999" ] && ok "U7 a dead worker's marker is cleared" || fail "U7 stale marker kept"
+
+echo "== U9: gate integrity: source in column 7, the mark in 8, the rerun base-pinned =="
+CREW_DIR="$ROOT/packages/crew"; export CREW_DIR
+if [ -f "$CREW_DIR/dist/runtime/dod/gateIntegrityCli.js" ]; then
+  reset; RES="$WORK/u9"; R9="$WORK/r9"; mkdir -p "$R9"
+  # The base's `test` script fails on its first run, then passes; the delivery rewrites
+  # it to always fail. Base-pinned, both runs execute the base body.
+  printf '%s\n' "$(flaky_cmd 1)" > "$WORK/flaky.sh"
+  git -C "$R9" init -q -b main
+  printf '{"name":"r9","scripts":{"test":"sh %s"}}\n' "$WORK/flaky.sh" > "$R9/package.json"
+  git -C "$R9" add -A && git -C "$R9" -c user.email=t@t -c user.name=t commit -qm base
+  BASE9="$(git -C "$R9" rev-parse HEAD)"
+  printf '{"name":"r9","scripts":{"test":"exit 1"}}\n' > "$R9/package.json"
+  git -C "$R9" -c user.email=t@t -c user.name=t commit -qam "rewrite the test script"
+  printf 'repo\t%s\t1\t0\t0\tnpm test\t-\t-\t%s\t0\n' "$R9" "$BASE9" | GAFFER_CONCURRENCY=3 gaffer_run_dod_gates "$RES"; rc=$?
+  L="$(gate_line tests "$RES")"
+  COLS="$(printf '%s\n' "$L" | awk -F'\t' '{print NF "|" $4 "|" $8}')"
+  SRC="$(printf '%s\n' "$L" | awk -F'\t' '{print $7}')"
+  [ "$rc" = 0 ] && [ "$(runs)" = 2 ] && ok "U9 the base-pinned script ran twice and passed on the rerun" || fail "U9 rc=$rc runs=$(runs): $(cat "$RES")"
+  [ "$COLS" = "8|PASS|flaky-suspected" ] && ok "U9 the PASS row carries the mark in column 8" || fail "U9 columns: $COLS"
+  case "$SRC" in base-pinned*) ok "U9 column 7 is the source (base-pinned)" ;; *) fail "U9 source: $SRC" ;; esac
+  EV="$(gaffer_dod_evidence_summary "$RES" PASS)"
+  node -e 'const j=JSON.parse(process.argv[1].split("\n")[1]);const g=j.gates.find(x=>x.gate==="tests");process.exit(g&&g.flaky===true&&/^base-pinned/.test(g.source||"")?0:1)' "$EV" \
+    && ok "U9 the JSON gate carries source and flaky:true" || fail "U9 json: $(printf '%s' "$EV" | sed -n 2p)"
+else
+  fail "U9 crew dist not built (pnpm -r build)"
+fi
 
 echo "## UNIT $PASS ${#FAILURES[@]}"
 for f in "${FAILURES[@]}"; do echo "## FAIL $f"; done

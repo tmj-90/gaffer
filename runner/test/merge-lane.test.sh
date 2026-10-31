@@ -123,7 +123,7 @@ _AMSG="$(git -C "$R" log -1 --format=%B main)"
 [[ "$_AMSG" == *"Gaffer-Ticket: #$A"* ]] && ok "A: the merge commit carries Gaffer-Ticket: #$A" || fail "A: no ticket trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
 [[ "$_AMSG" == *"Gaffer-Reviewed-By: human:human1"* ]] && ok "A: …and the approving human (Gaffer-Reviewed-By: human:human1)" || fail "A: reviewer trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
 # (the stub records no AC evidence, so the honest count is 0 of 1)
-[[ "$_AMSG" == *"Gaffer-Gates: DoD PASS (tests pass, typecheck skip, lint pass); AC 0/1 satisfied"* ]] && ok "A: …and the gate verdicts (DoD per gate, the AC count)" || fail "A: gates trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
+[[ "$_AMSG" == *"Gaffer-Gates: DoD PASS (tests pass, typecheck skip, lint pass, integrity pass); AC 0/1 satisfied"* ]] && ok "A: …and the gate verdicts (DoD per gate, the AC count)" || fail "A: gates trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
 _ATR="$(git -C "$R" log -1 --format='%(trailers:key=Gaffer-Ticket,valueonly)' main | tr -d '[:space:]')"
 [ "$_ATR" = "#$A" ] && ok "A: git reads them as trailers (%(trailers))" || fail "A: git trailer parse gave '$_ATR'"
 [ "$(git -C "$R" rev-list --parents -n 1 main | wc -w | tr -d ' ')" = 3 ] && ok "A: a real merge commit carries them (--no-ff)" || fail "A: main HEAD is not a merge commit"

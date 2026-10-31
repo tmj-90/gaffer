@@ -1,8 +1,7 @@
 // S3 blocked / unblock, the Team Sheet's one-action rows, the human lane, revoking
 // a live claim, and the command palette. A delivery that exhausts its rework budget
 // parks to blocked and is unblocked from the Team Sheet (to Refining, then Ready); an
-// approved-but-unmerged ticket is closed with "I merged it by hand" once its branch is
-// merged by hand (pressed before the merge it is refused: not landed); a ready ticket is
+// approved-but-unmerged ticket is closed with "I merged it by hand"; a ready ticket is
 // taken by hand and handed back from its Work card; a live agent claim is revoked with
 // the two-press button; the palette finds a ticket by number.
 export default async function s3(t, L) {
@@ -117,33 +116,39 @@ export default async function s3(t, L) {
       `no Merge… row for #${appr.number} on the Team Sheet`,
     );
     if (seen) {
+      // "Done" means landed: a by-hand claim is checked against the default branch. The
+      // approved commit is NOT on main yet, so the first click is refused and the status
+      // does not move; after a real merge the same button closes the ticket.
       await mbtn.click();
-      const byHand = p.locator('.sheet.open button:has-text("I merged it by hand")');
-      // `done` means the approved revision landed: pressed before the merge, it is
-      // refused (the ticket stays ready_for_merge and the toast says what has not landed).
-      await L.clearToast(p);
-      await byHand.click();
-      const early = await L.waitToast(p, /not landed/, 5000);
+      await p.locator('.sheet.open button:has-text("I merged it by hand")').click();
+      const refused = await L.waitToast(p, /not landed/, 10000);
+      await L.sleep(500);
+      const still = (await L.ticketOf(appr.id)).status;
       t.check(
-        early && (await L.ticketOf(appr.id)).status === "ready_for_merge",
-        `"I merged it by hand" before the merge is refused: #${appr.number} stays ready_for_merge (toast "${early}")`,
-        `early mark-merged: status=${(await L.ticketOf(appr.id)).status} toast=${early}`,
+        refused && still === "ready_for_merge",
+        `"I merged it by hand" before the merge is refused: #${appr.number} stays Approved, not merged (toast "${refused}")`,
+        `mark-merged without a landing: status=${still} toast=${refused}`,
       );
-      // The operator merges the delivery branch by hand, then says so.
-      const branch = (await L.ticketOf(appr.id)).branch_name;
-      L.git(L.REPO_PATH, "merge", "--no-ff", "-q", "-m", `Merge ${branch} (by hand)`, branch);
-      await L.clearToast(p);
-      if (!(await byHand.isVisible().catch(() => false))) {
-        await mbtn.click();
-      }
-      await byHand.click();
-      const done = await L.waitStatus(appr.id, ["done"], 15000, 500);
-      const tst = await L.waitToast(p, /marked merged/, 5000);
-      t.check(
-        done && tst,
-        `"I merged it by hand" closed #${appr.number} as done (toast "${tst}")`,
-        `mark-merged: status=${(await L.ticketOf(appr.id)).status} toast=${tst}`,
-      );
+      await p
+        .locator('.sheet.open button:has-text("Cancel")')
+        .click()
+        .catch(() => {});
+      const branch = (await L.ticketView(appr.id)).ticket?.branch_name || "";
+      if (L.REPO_PATH && branch) {
+        L.git(L.REPO_PATH, "merge", "--no-ff", "--no-edit", "-q", branch);
+        await t.visit("overview");
+        const mbtn2 = p.locator(`#what-i-own button[aria-label="Merge #${appr.number}"]`);
+        await mbtn2.waitFor({ timeout: 15000 }).catch(() => {});
+        await mbtn2.click();
+        await p.locator('.sheet.open button:has-text("I merged it by hand")').click();
+        const done = await L.waitStatus(appr.id, ["done"], 15000, 500);
+        const tst = await L.waitToast(p, /marked merged/, 5000);
+        t.check(
+          done && tst,
+          `after a real merge of ${branch} into main, "I merged it by hand" closed #${appr.number} as done (toast "${tst}")`,
+          `mark-merged after the merge: status=${(await L.ticketOf(appr.id)).status} toast=${tst}`,
+        );
+      } else t.bad(`no REPO_PATH/branch to merge #${appr.number} by hand (branch='${branch}')`);
     }
   }
 

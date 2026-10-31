@@ -25,6 +25,7 @@ function runner(headSha: string | null): GitRunner {
       if (headSha === null) return { status: 128, stdout: "", stderr: "unknown revision" };
       return { status: 0, stdout: `${headSha}\n`, stderr: "" };
     }
+    if (args[0] === "merge-base") return { status: 0, stdout: `${"b".repeat(40)}\n`, stderr: "" };
     if (joined.startsWith("diff --numstat"))
       return { status: 0, stdout: "5\t1\tsrc/x.ts\n", stderr: "" };
     if (joined.startsWith("diff")) {

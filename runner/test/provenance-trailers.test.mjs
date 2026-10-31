@@ -226,6 +226,19 @@ assert(
   tr[2],
 );
 assert("dodLine ignores a non-DoD summary", dodLine("tester verdict") === null);
+{
+  // Gate integrity's advisory row: a FLAG in any repo is named (it outranks a PASS), never dropped.
+  const g = (repo, status) => ({ gate: "integrity", repo, status, rc: "0", note: "n" });
+  const sum = (gates) => `DoD: PASS\n${JSON.stringify({ dod: "PASS", gates })}`;
+  assert(
+    "dodLine names an integrity FLAG over another repo's PASS",
+    dodLine(sum([g("a", "PASS"), g("b", "FLAG")])) === "DoD PASS (integrity flag)",
+  );
+  assert(
+    "dodLine names an integrity PASS",
+    dodLine(sum([g("a", "PASS")])) === "DoD PASS (integrity pass)",
+  );
+}
 assert(
   "mergeMessage without trailers is the subject alone",
   mergeMessage("Merge x", []) === "Merge x",

@@ -632,6 +632,31 @@ try {
     }
   }
 
+  // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
+  //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
+  //          Sign-off shows no "tests changed" banner. A delivery that weakened its
+  //          tests is covered by runner/test/gate-integrity-e2e*.test.sh + the JSDOM test.
+  const giRow = await waitFor(
+    async () => {
+      const rows = await page.$$eval(".dod-item", (els) =>
+        els.map((e) => ({
+          cls: e.className,
+          gate: (e.querySelector(".dod-gate") || {}).textContent || "",
+        })),
+      );
+      return rows.find((r) => r.gate === "integrity") || null;
+    },
+    "integrity row in the gates checklist",
+    15000,
+    500,
+  ).catch(() => null);
+  giRow && /dod-i-pass/.test(giRow.cls)
+    ? ok("Review gates checklist carries the gate-integrity row, passed for a clean delivery")
+    : bad(`no passing integrity row in the gates checklist (${giRow ? giRow.cls : "absent"})`);
+  (await page.locator(".integrity-banner").count()) === 0
+    ? ok("no tests-changed banner on a clean delivery's Sign-off")
+    : bad("a tests-changed banner showed on a clean delivery");
+
   // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
   //        reader back to the top of the diff they are reading. On a short
   //        viewport, scroll to the bottom of the queue, then make the factory emit

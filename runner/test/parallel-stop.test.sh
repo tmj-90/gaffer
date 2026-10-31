@@ -62,9 +62,11 @@ start_pool() {  # <case> → sets LP (the loop pid == its own process group id),
         exec @ARGV' "$D/loop.pid" bash ./loop.sh > "$D/loop.out" 2>&1 ) &
   LP=""
   local _
-  for _ in $(seq 1 100); do [ -s "$D/loop.pid" ] && { LP="$(cat "$D/loop.pid")"; break; }; sleep 0.1; done
+  # Bounded waits sized for a loaded CI runner (macOS shards start a pool slowly): the
+  # stop assertions below are what the test is about, not how fast the pool comes up.
+  for _ in $(seq 1 300); do [ -s "$D/loop.pid" ] && { LP="$(cat "$D/loop.pid")"; break; }; sleep 0.1; done
   [ -n "$LP" ] || return 1
-  for _ in $(seq 1 100); do [ "$(workers | wc -l | tr -d ' ')" -ge 2 ] && [ "$(ticks_in "$D/data")" -ge 2 ] && return 0; sleep 0.2; done
+  for _ in $(seq 1 300); do [ "$(workers | wc -l | tr -d ' ')" -ge 2 ] && [ "$(ticks_in "$D/data")" -ge 2 ] && return 0; sleep 0.2; done
   return 1
 }
 gone_within() {  # <secs> → 0 once the loop and every worker have exited

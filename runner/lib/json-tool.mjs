@@ -773,15 +773,18 @@ switch (cmd) {
       if (inFrame) continue;
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
-        const [, gate, repo, status, rc, note, mark] = parts;
-        // A 7th field `flaky-suspected`: a tests gate that went red under a parallel
-        // pool and passed when rerun at concurrency 1 (lib/dod.sh).
-        gates.push(
-          mark === "flaky-suspected"
-            ? { gate, repo, status, rc, note, flaky: true }
-            : { gate, repo, status, rc, note },
-        );
-        lines.push(`  [${status}] ${gate} (${repo}) — ${note}`);
+        const [, gate, repo, status, rc, note, source, mark] = parts;
+        // GATE INTEGRITY: the optional 7th column says where the command's behaviour was
+        // read from (base / base-pinned / head / registered / unresolved); absent (or
+        // empty) on rows that predate it, so their JSON stays byte-identical. The
+        // optional 8th column `flaky-suspected`: a tests gate that went red under a
+        // parallel pool and passed when rerun at concurrency 1 (lib/dod.sh).
+        const row = source
+          ? { gate, repo, status, rc, note, source }
+          : { gate, repo, status, rc, note };
+        if (mark === "flaky-suspected") row.flaky = true;
+        gates.push(row);
+        lines.push(`  [${status}] ${gate} (${repo}) — ${note}${source ? ` [${source}]` : ""}`);
       }
     }
     const tail = [];

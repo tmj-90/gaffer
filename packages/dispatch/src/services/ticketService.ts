@@ -159,6 +159,7 @@ export class TicketService {
         can_be_tested: 0,
         test_contract: null,
         acceptance: input.acceptance ? 1 : 0,
+        allow_test_changes: 0,
         human_owner: null,
         human_delivered: null,
         delivery_budget_usd: input.delivery_budget_usd ?? null,
@@ -403,6 +404,50 @@ export class TicketService {
     });
   }
 
+  // --- Gate integrity -------------------------------------------------------
+
+  /**
+   * GATE INTEGRITY: a HUMAN allows (or withdraws the allowance for) this ticket to
+   * change its tests. With it set, the runner's integrity gate row reads PASS-with-note
+   * instead of FLAG and the `test-modified` risk annotation no longer holds an
+   * auto-approve. Only a human or admin may set it — an agent cannot excuse its own
+   * test edits, and the runner (system) has no business deciding it either — so both
+   * are refused here, server-side, whatever surface they came through. Every change is
+   * a `ticket.test_changes_allowed` event naming who set it and the optional reason.
+   */
+  setAllowTestChanges(
+    ticketRef: string,
+    allowed: boolean,
+    actor: Actor,
+    reason?: string,
+  ): { ticketId: string; allowTestChanges: boolean; eventId: string } {
+    if (actor.type !== "human" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only a human or admin may allow test changes on a ticket; an agent cannot excuse its own test edits.",
+        { actor_type: actor.type },
+      );
+    }
+    const note = (reason ?? "").trim();
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      const now = this.clock.now();
+      this.tickets.setAllowTestChanges(ticket.id, allowed, now);
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.test_changes_allowed",
+        payload: {
+          allow_test_changes: allowed,
+          previous: ticket.allow_test_changes === 1,
+          ...(note ? { reason: note.slice(0, 500) } : {}),
+        },
+      });
+      return { ticketId: ticket.id, allowTestChanges: allowed, eventId };
+    });
+  }
+
   setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
     const input = setTestContractInput.parse(raw);
     const contract = validateTestContract({
@@ -579,6 +624,18 @@ export class TicketService {
 
   recordRepoDelivery(raw: unknown, actor: Actor): RepoDeliveryResult {
     const input = recordRepoDeliveryInput.parse(raw);
+    // GATE INTEGRITY: the base commit is the runner's record of where the delivery was
+    // cut; the delivering agent never sets it (its MCP tool does not pass it either).
+    if (
+      (input.base_sha !== undefined || input.base_recut !== undefined) &&
+      actor.type === "agent"
+    ) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "An agent cannot record a delivery's base commit; the runner records it.",
+        { ticket_id: input.ticket_id, actor_type: actor.type },
+      );
+    }
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(input.ticket_id);
@@ -593,12 +650,30 @@ export class TicketService {
         );
       }
       const existing = this.repoDeliveries.find(ticket.id, repo.id);
+      // GATE INTEGRITY: the base commit is write-once. Replacing a stored one needs the
+      // runner's word that it cut the branch again (`base_recut`); anything else (a retry
+      // re-recording after the agent ran, whose branch tip holds the agent's commits)
+      // is refused, so the scan and the gates keep diffing from where the work started.
+      const replaceBase =
+        input.base_sha !== undefined &&
+        existing?.base_sha != null &&
+        existing.base_sha !== input.base_sha;
+      if (replaceBase && input.base_recut !== true) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Delivery for repo '${repo.name}' already records base ${existing.base_sha!.slice(0, 12)}; ` +
+            "a different base commit replaces it only when the runner cut the branch again (base_recut).",
+          { ticket_id: ticket.id, repo_id: repo.id },
+        );
+      }
       this.repoDeliveries.upsert(
         {
           ticketId: ticket.id,
           repoId: repo.id,
           branchName: input.branch_name ?? null,
           commitSha: input.commit_sha ?? null,
+          baseSha: input.base_sha ?? null,
+          replaceBaseSha: replaceBase,
           prUrl: input.pr_url ?? null,
           status: input.status ?? existing?.status ?? "not_started",
           evidenceRef: input.evidence_ref ?? null,

@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 28;
+export const SCHEMA_VERSION = 30;
 
 // No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
 // them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.
@@ -66,6 +66,15 @@ CREATE TABLE IF NOT EXISTS tickets (
   -- Added by an idempotent ALTER in connection.ts for an existing DB; the default
   -- below (0) mirrors the migration backfill — pre-v26 tickets are all work tickets.
   acceptance    INTEGER NOT NULL DEFAULT 0,
+  -- GATE INTEGRITY (schema_version 29). 0/1; 1 ⇒ a HUMAN has said this ticket may
+  -- change its tests (delete/rename a test, add a skip marker, rewrite a gate
+  -- script). The runner's integrity gate row then reads PASS-with-note instead of
+  -- FLAG, and the test-modified risk annotation drops to medium (no hard hold on
+  -- the auto-ship path). Set only by a human/admin (ticketService refuses agent and
+  -- system actors; the safety hook denies the CLI verb); every change is a
+  -- ticket.test_changes_allowed event. Added by an idempotent ALTER in
+  -- connection.ts for an existing DB; the default (0) mirrors the backfill.
+  allow_test_changes INTEGER NOT NULL DEFAULT 0,
   -- TRACK-2b (schema_version 14): the HUMAN-CLAIM marker. NULL ⇒ agent-shaped work
   -- (claimable by the factory as normal). NON-NULL ⇒ a human took this ticket "by
   -- hand" (the actor id/name); it moves to in_progress OWNED BY THE HUMAN and the
@@ -427,6 +436,10 @@ CREATE TABLE IF NOT EXISTS ticket_repo_delivery (
   repo_id      TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
   branch_name  TEXT,
   commit_sha   TEXT,
+  -- GATE INTEGRITY (v29→v30): the commit the delivery branch was cut from, recorded
+  -- by the runner when it creates the worktree. The integrity scan diffs from it
+  -- (never from the base branch NAME, which an agent could move).
+  base_sha     TEXT,
   pr_url       TEXT,
   status       TEXT NOT NULL DEFAULT 'not_started' CHECK (status IN (
     'not_started','branch_created','changes_made','tests_failed',

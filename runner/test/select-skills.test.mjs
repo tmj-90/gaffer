@@ -19,7 +19,11 @@ import {
   TEXT_GATED_SKILL_NAMES,
   USER_ONLY_SKILL_NAMES,
   DEFAULT_SKILLS_DIR,
+  ticketWriteRepos,
+  ticketStacks,
+  stackPackNote,
 } from "../bin/select-skills.mjs";
+import { spawnSync } from "node:child_process";
 
 let passed = 0;
 const failures = [];
@@ -1111,6 +1115,176 @@ check(
     const m = /GAFFER_UNIVERSAL_SKILLS:=([^}"]+)\}/.exec(sh);
     assert(m, "GAFFER_UNIVERSAL_SKILLS default not found in skills-mount.sh");
     eq(m[1].trim().split(/\s+/).sort(), [...ROLE_PROFILES.delivery.core].sort(), "universal set");
+  },
+);
+
+// --- A TICKET SPANNING TWO REPOS gets every write repo's stack --------------------
+// The reviewer's case: a TypeScript frontend + a Java service on one ticket ("round
+// totals consistently in both the client and the service" — no filename, no language
+// hint). The runner used the FIRST write repo's stack, so delivery got frontend skills
+// and no Java pack; review and the tester likewise.
+const TWO_REPOS = [
+  {
+    name: "web",
+    access: "write",
+    relation: "confirmed",
+    stack: "typescript-react",
+    local_path: "/r/web",
+  },
+  { name: "svc", access: "write", relation: "confirmed", stack: "java", local_path: "/r/svc" },
+  { name: "docs", access: "read", relation: "confirmed", stack: "python", local_path: "/r/docs" },
+  { name: "maybe", access: "write", relation: "suggested", stack: "go", local_path: "/r/maybe" },
+];
+check("ticketWriteRepos: only active write links (read / suggested are not write repos)", () => {
+  eq(
+    ticketWriteRepos(TWO_REPOS).map((r) => r.name),
+    ["web", "svc"],
+    "write repos",
+  );
+  eq(
+    ticketWriteRepos([{ name: "old", access: "write", stack: "go" }]).map((r) => r.name),
+    ["old"],
+    "no relation recorded",
+  );
+});
+check("ticketStacks: the UNION of the write repos' stacks, else the first linked repo's", () => {
+  eq(ticketStacks(TWO_REPOS), ["typescript-react", "java"], "union");
+  eq(ticketStacks([TWO_REPOS[1], { ...TWO_REPOS[1], name: "svc2" }]), ["java"], "de-duped");
+  eq(
+    ticketStacks([{ name: "r", access: "read", stack: "rust", local_path: "/r" }]),
+    ["rust"],
+    "no write repo → legacy",
+  );
+  eq(ticketStacks([]), [], "nothing linked");
+});
+// REVIEW (skill-routing): a READ-ONLY repo never contributes a stack — not even through
+// the legacy fallback, which applies only when the ticket has no write repo at all.
+check("ticketStacks: three write repos union; a read-only / context-only repo never counts", () => {
+  const RO = { name: "docs", access: "read", relation: "confirmed", stack: "go", local_path: "/d" };
+  const CTX = {
+    name: "ctx",
+    access: "write",
+    relation: "context_only",
+    stack: "rust",
+    local_path: "/e",
+  };
+  const PY = {
+    name: "py",
+    access: "write",
+    relation: "confirmed",
+    stack: "python",
+    local_path: "/p",
+  };
+  eq(ticketStacks([RO, ...TWO_REPOS, CTX, PY]), ["typescript-react", "java", "python"], "three");
+  const UNSTACKED = {
+    name: "w",
+    access: "write",
+    relation: "confirmed",
+    stack: "",
+    local_path: "/w",
+  };
+  eq(
+    ticketStacks([RO, UNSTACKED]),
+    [],
+    "a write repo with no stack → no stack, not the read repo's",
+  );
+  const sel = selectSkills({
+    stacks: ticketStacks([RO, ...TWO_REPOS, PY]),
+    text: "round totals",
+  }).map((s) => s.name);
+  const note = stackPackNote([RO, ...TWO_REPOS, PY], sel);
+  for (const pack of ["typescript-conventions", "java-conventions", "python-conventions"])
+    eq(note.split(pack).length - 1, 1, `the note names ${pack} exactly once (${note})`);
+  assert(!/docs|go-conventions/.test(note), `the read-only repo is not in the note: ${note}`);
+});
+const TEXT = "Round totals consistently in both the client and the service";
+for (const role of ["delivery", "review", "test"]) {
+  check(`two-repo ticket, ${role}: the TypeScript AND the Java pack, no foreign pack`, () => {
+    const names = (
+      role === "delivery"
+        ? selectSkills({ stacks: ticketStacks(TWO_REPOS), area: "frontend", text: TEXT })
+        : selectForRole(role, { stacks: ticketStacks(TWO_REPOS), text: TEXT })
+    ).map((s) => s.name);
+    for (const want of ["typescript-conventions", "java-conventions"])
+      assert(names.includes(want), `${role} lacks ${want}: ${names.join(",")}`);
+    for (const bad of [
+      "python-conventions",
+      "go-conventions",
+      "csharp-conventions",
+      "kotlin-conventions",
+    ])
+      assert(!names.includes(bad), `${role} carries ${bad}`);
+  });
+}
+check("per-path routing over the union keeps EVERY touched path's stack", () => {
+  const both = narrowStacks(ticketStacks(TWO_REPOS), [
+    "web/src/totals.ts",
+    "svc/src/main/java/Totals.java",
+  ]);
+  const names = selectForRole("review", { stacks: both }).map((s) => s.name);
+  assert(
+    names.includes("typescript-conventions") && names.includes("java-conventions"),
+    `both: ${names}`,
+  );
+  const javaOnly = narrowStacks(ticketStacks(TWO_REPOS), ["svc/src/main/java/Totals.java"]);
+  const j = selectForRole("review", { stacks: javaOnly }).map((s) => s.name);
+  assert(
+    j.includes("java-conventions") && !j.includes("typescript-conventions"),
+    `java-only diff: ${j}`,
+  );
+});
+check(
+  "stackPackNote names each write repo's conventions pack (only when the stacks differ)",
+  () => {
+    const sel = selectSkills({ stacks: ticketStacks(TWO_REPOS), text: TEXT }).map((s) => s.name);
+    const note = stackPackNote(TWO_REPOS, sel);
+    assert(/web \(typescript-react\): typescript-conventions/.test(note), `note: ${note}`);
+    assert(/svc \(java\): java-conventions/.test(note), `note: ${note}`);
+    eq(stackPackNote([TWO_REPOS[1]], sel), "", "single stack → no note");
+    eq(
+      stackPackNote(TWO_REPOS, ["typescript-conventions"]),
+      "",
+      "a narrowed-out pack is not named",
+    );
+  },
+);
+check("CLI: --ticket-stacks / --ticket-pack-note read a `wg ticket show` payload", () => {
+  const cli = (args) =>
+    spawnSync(
+      process.execPath,
+      [join(DEFAULT_SKILLS_DIR, "..", "bin", "select-skills.mjs"), ...args],
+      {
+        input: JSON.stringify({ repositories: TWO_REPOS }),
+        encoding: "utf8",
+      },
+    ).stdout;
+  eq(cli(["--ticket-stacks", "-"]).trim(), "typescript-react,java", "stacks");
+  const sel = cli(["--stack", "typescript-react,java", "--text", TEXT]).trim();
+  assert(
+    sel.includes("java-conventions") && sel.includes("typescript-conventions"),
+    `selection: ${sel}`,
+  );
+  const note = cli(["--ticket-pack-note", "-", "--selected", sel]);
+  assert(
+    note.includes("java-conventions") && note.includes("typescript-conventions"),
+    `note: ${note}`,
+  );
+});
+check(
+  "every spawn site selects from the ticket's stack union (tick / review / clarify / tester)",
+  () => {
+    const runner = join(DEFAULT_SKILLS_DIR, "..");
+    for (const f of ["tick.sh", "lib/review.sh", "lib/clarify.sh"])
+      assert(
+        readFileSync(join(runner, f), "utf8").includes("--ticket-stacks -"),
+        `${f} does not use --ticket-stacks`,
+      );
+    assert(
+      readFileSync(join(runner, "bin", "tester-run.mjs"), "utf8").includes(
+        "installTesterAgentDir(worktree, n, testerStacks(resolved))",
+      ),
+      "tester-run does not mount the stack union",
+    );
   },
 );
 

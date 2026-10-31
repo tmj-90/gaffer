@@ -8,8 +8,8 @@
 // `gaffer skills install --user` (labelled optional; never done in Docker).
 //
 // makeAgentHome() creates an ephemeral directory carrying the SAME wiring
-// product-owner-run.mjs installs: a `.claude/skills` symlink to the factory's
-// skills dir and the project settings with the safety-hook path resolved for
+// product-owner-run.mjs installs: the role's skills copied into `.claude/skills`
+// and the project settings with the safety-hook path resolved for
 // THIS checkout. The caller spawns with cwd = home.dir and removes it after
 // the turn (a failed rm is swallowed — a stale temp dir is not a failure).
 //
@@ -23,14 +23,21 @@
 // gaffer_write_agent_settings (lib/agent-env.sh).
 // =====================================================================
 import {
+  cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
+  realpathSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,20 +53,222 @@ const GAFFER_HOME = resolve(RUNNER_DIR, "..");
  * Lives under GAFFER_DATA (the factory's trusted workspace root) when set, else the OS
  * temp dir. Returns `{ dir, remove }`.
  */
+/** Marker file inside every skill copy Gaffer installs (holds its mount key). */
+export const SKILL_COPY_MARK = ".gaffer-mount";
+/** Marker file inside a `.claude/skills` dir Gaffer itself created. */
+export const SKILL_ROOT_MARK = ".gaffer-skills-root";
+
+function isDir(p) {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Does `p` exist as a directory entry at all (a dangling symlink included)? */
+function lexists(p) {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A skill name is ONE plain path component: never empty, a dotfile, `..`, or a path. */
+function validSkillName(name) {
+  return typeof name === "string" && name !== "" && !name.startsWith(".") && !/[/\\]/.test(name);
+}
+
 /**
- * Mount an agent ROLE's skill set under `<claudeDir>/skills`: a per-home mount dir of
- * symlinks to the selected `runner/skills/<name>` packs (select-skills --role), so the
- * agent's progressive-disclosure list carries only the skills its job calls for. With
- * no role, or when nothing resolves, `.claude/skills` points at the whole library (the
- * pre-role behaviour — never an empty mount). Returns the mounted skill names.
+ * The top-level entries of `skillsPath` that git TRACKS. A tracked entry is the repo's
+ * own whatever it holds: Gaffer's copies are never committed (the worktree's git exclude
+ * covers `.claude/`), so a repo that commits Gaffer's marker cannot make Gaffer replace
+ * or delete its skill. Empty outside a git repo.
+ */
+function trackedEntries(skillsPath) {
+  const r = spawnSync("git", ["-C", skillsPath, "ls-files"], { encoding: "utf8" });
+  if (r.status !== 0 || r.error) return new Set();
+  return new Set(
+    String(r.stdout || "")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => l.split("/")[0]),
+  );
+}
+
+/** Is `<skillsPath>/<name>` a copy Gaffer installed (marked real dir, not tracked)? */
+function isOurCopy(skillsPath, name, tracked) {
+  const d = resolve(skillsPath, name);
+  if (!isDir(d) || tracked.has(name)) return false;
+  try {
+    return lstatSync(resolve(d, SKILL_COPY_MARK)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy library skill `name` to `dest` as real files, leaving out every path that resolves
+ * OUTSIDE the library (or nowhere): a dereferenced link out of the library would carry a
+ * host file into the agent's worktree, where the hook's read check no longer sees it
+ * leave (skill-add drops a fetched skill's links for the same reason). Throws when the
+ * copy holds no regular SKILL.md.
+ */
+function copySkill(skillsDir, name, dest) {
+  const lib = realpathSync(skillsDir);
+  const inside = (p) => p === lib || p.startsWith(lib + "/");
+  const src = realpathSync(resolve(skillsDir, name));
+  if (!inside(src) || src === lib) throw new Error(`skill ${name} resolves outside the library`);
+  cpSync(src, dest, {
+    recursive: true,
+    dereference: true,
+    filter: (p) => {
+      try {
+        return inside(realpathSync(p));
+      } catch {
+        return false; // dangling
+      }
+    },
+  });
+  if (!lstatSync(resolve(dest, "SKILL.md")).isFile()) throw new Error(`skill ${name}: no SKILL.md`);
+}
+
+/** Remove the Gaffer-installed copies from `skillsPath` (see isOurCopy; never a repo skill). */
+export function removeSkillCopies(skillsPath) {
+  if (!isDir(skillsPath)) return;
+  const tracked = trackedEntries(skillsPath);
+  for (const name of readdirSync(skillsPath)) {
+    if (isOurCopy(skillsPath, name, tracked)) {
+      rmSync(resolve(skillsPath, name), { recursive: true, force: true });
+    }
+  }
+  if (existsSync(resolve(skillsPath, SKILL_ROOT_MARK))) {
+    rmSync(resolve(skillsPath, SKILL_ROOT_MARK), { force: true });
+    try {
+      rmdirSync(skillsPath);
+    } catch {
+      /* not empty — something else lives here */
+    }
+  }
+}
+
+/**
+ * Install `names` from `skillsDir` into `<claudeDir>/skills/<name>/` as REAL COPIES (each
+ * marked with SKILL_COPY_MARK), and record them as links in `manifestDir` when given (the
+ * telemetry's view of the mount). Returns the names installed.
+ *
+ * WHY COPIES: the safety hook canonicalises a Read and refuses one that resolves outside
+ * the agent's roots; a `.claude/skills` symlink into runner/skills made every explicit
+ * Read of a mounted skill a refusal. A copy resolves inside the agent's own directory.
+ */
+export function installSkillCopies(
+  claudeDir,
+  names,
+  { skillsDir, key = "mount", manifestDir = "" },
+) {
+  const link = resolve(claudeDir, "skills");
+  let st;
+  try {
+    st = lstatSync(link);
+  } catch {
+    st = null;
+  }
+  if (st?.isSymbolicLink()) {
+    // An older Gaffer mount (a link into the library or a manifest) is replaced; any
+    // other link is the repo's, and is left alone with nothing installed through it.
+    let target;
+    try {
+      target = resolve(dirname(link), readlinkSync(link));
+    } catch {
+      target = "";
+    }
+    // Gaffer's links pointed at the library, at a home's own manifest
+    // (`<claudeDir>/skills-mount`) or at a factory manifest (`…/skills-mounts/<key>`).
+    const ours =
+      target === resolve(skillsDir) ||
+      target.startsWith(resolve(skillsDir) + "/") ||
+      target === resolve(claudeDir, "skills-mount") ||
+      /\/skills-mounts\/[^/]+$/.test(target);
+    if (!ours) return [];
+    rmSync(link, { force: true });
+  } else if (st && !st.isDirectory()) {
+    return []; // a file the repo owns: never replaced
+  } else if (st) {
+    // Gaffer's previous copies go; the repo's OWN skills (no marker) stay, and Gaffer's
+    // are installed beside them at `.claude/skills/<name>/` (never a level deeper).
+    removeSkillCopies(link);
+  }
+  if (!isDir(link)) {
+    mkdirSync(link, { recursive: true });
+    writeFileSync(resolve(link, SKILL_ROOT_MARK), "");
+  }
+  if (manifestDir) {
+    rmSync(manifestDir, { recursive: true, force: true });
+    mkdirSync(manifestDir, { recursive: true });
+  }
+  const installed = [];
+  for (const name of names) {
+    if (!validSkillName(name)) continue;
+    const dest = resolve(link, name);
+    // A repo skill of the same name WINS (see shadowedSkills); never overwritten — nor a
+    // dangling link the repo keeps there (existsSync would follow it and call it absent).
+    if (lexists(dest) || installed.includes(name)) continue;
+    try {
+      copySkill(skillsDir, name, dest);
+      writeFileSync(resolve(dest, SKILL_COPY_MARK), `${key}\n`);
+      if (manifestDir) symlinkSync(resolve(skillsDir, name), resolve(manifestDir, name), "dir");
+      installed.push(name);
+    } catch {
+      rmSync(dest, { recursive: true, force: true });
+    }
+  }
+  return installed;
+}
+
+/**
+ * The names whose `<claudeDir>/skills/<name>` is the REPO'S own skill (present, no Gaffer
+ * marker): the repo's version wins over Gaffer's pack of that name. Sorted.
+ */
+export function shadowedSkills(claudeDir, names) {
+  const link = resolve(claudeDir, "skills");
+  if (!isDir(link)) return [];
+  const tracked = trackedEntries(link);
+  return [...new Set(names)]
+    .filter((n) => validSkillName(n) && lexists(resolve(link, n)) && !isOurCopy(link, n, tracked))
+    .sort();
+}
+
+/** The prompt sentence naming the repo skills that shadow Gaffer's packs ("" when none). */
+export function shadowNote(shadowed) {
+  return shadowed.length
+    ? ` (this repo has its own .claude/skills of the same name, which take precedence over Gaffer's pack: ${shadowed.join(", ")} — follow the repo's version)`
+    : "";
+}
+
+/** Every skill directory in the library that carries a SKILL.md. */
+function libraryNames(skillsDir) {
+  try {
+    return readdirSync(skillsDir).filter((n) => existsSync(resolve(skillsDir, n, "SKILL.md")));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Mount an agent ROLE's skill set under `<claudeDir>/skills`: copies of the selected
+ * `runner/skills/<name>` packs (select-skills --role), with a manifest of links at
+ * `<claudeDir>/skills-mount`, so the agent's progressive-disclosure list carries only the
+ * skills its job calls for. With no role, or when nothing resolves, the whole library is
+ * installed (the pre-role behaviour — never an empty mount). Returns the mounted skill
+ * names ([] for the whole-library fallback).
  */
 export function mountRoleSkills(
   claudeDir,
   { role = "", stacks = [], text = "", skillsDir = process.env.SKILLS_DIR || "" } = {},
 ) {
   skillsDir = skillsDir || resolve(RUNNER_DIR, "skills");
-  const link = resolve(claudeDir, "skills");
-  rmSync(link, { recursive: true, force: true });
   let names = [];
   if (role) {
     try {
@@ -70,32 +279,18 @@ export function mountRoleSkills(
       names = [];
     }
   }
-  if (names.length === 0) {
-    try {
-      symlinkSync(skillsDir, link, "dir");
-    } catch {
-      /* skills stay invisible for this turn; the prompt still carries the contract */
+  const manifestDir = resolve(claudeDir, "skills-mount");
+  try {
+    if (names.length === 0) {
+      rmSync(manifestDir, { recursive: true, force: true });
+      installSkillCopies(claudeDir, libraryNames(skillsDir), { skillsDir, key: role || "library" });
+      return [];
     }
+    return installSkillCopies(claudeDir, names, { skillsDir, key: role, manifestDir });
+  } catch {
+    /* skills stay invisible for this turn; the prompt still carries the contract */
     return [];
   }
-  const mount = resolve(claudeDir, "skills-mount");
-  rmSync(mount, { recursive: true, force: true });
-  mkdirSync(mount, { recursive: true });
-  const mounted = [];
-  for (const name of names) {
-    try {
-      symlinkSync(resolve(skillsDir, name), resolve(mount, name), "dir");
-      mounted.push(name);
-    } catch {
-      /* duplicate or unlinkable — skip */
-    }
-  }
-  try {
-    symlinkSync(mount, link, "dir");
-  } catch {
-    /* as above */
-  }
-  return mounted;
 }
 
 /**

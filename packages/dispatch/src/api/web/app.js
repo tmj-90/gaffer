@@ -16048,12 +16048,60 @@ const HUMAN_ASK_RULES = [
   [/^agent review could not run:\s*/i, "Agent review could not run", "Raised by the runner"],
   [/^PARKED\b[^:]*:\s*/i, "Parked for a human", "Raised by the runner"],
 ];
+/**
+ * ONE ROUND: where the ticket's CURRENT delivery attempt begins in its event log (the
+ * latest claim, or a human taking it straight from Ready) and where it last entered
+ * review, as event-log positions (-1: none on record). A request for a human recorded
+ * before the attempt began was about an earlier attempt's code: that round's verdicts are
+ * in the rework history, not asks of this sign-off. Each evidence row is placed by its
+ * own `evidence.recorded` event, so the order is the log's, never a clock comparison
+ * across tables (a row with no such event falls back to its timestamp).
+ */
+function roundMarks(events) {
+  const list = events || [];
+  const payload = (e) => {
+    try {
+      return JSON.parse(e.payload_json || "{}") || {};
+    } catch {
+      return {};
+    }
+  };
+  let attempt = -1;
+  let review = -1;
+  const recordedAt = new Map();
+  list.forEach((e, i) => {
+    if (e.event_type === "evidence.recorded") {
+      const id = payload(e).evidence_id;
+      if (id) recordedAt.set(String(id), i);
+      return;
+    }
+    if (e.event_type !== "ticket.transitioned") return;
+    const p = payload(e);
+    if (p.to === "claimed" || (p.to === "in_progress" && p.from !== "claimed")) attempt = i;
+    if (p.to === "in_review") review = i;
+  });
+  /** Was evidence row `ev` recorded before the mark at log position `at`? */
+  const before = (ev, at) => {
+    if (at < 0) return false;
+    const pos = recordedAt.get(String(ev.id));
+    if (pos !== undefined) return pos < at;
+    return Boolean(ev.created_at && ev.created_at < list[at].created_at);
+  };
+  return { attempt, review, before };
+}
 function humanAsks(evidence, events, dod) {
   const out = [];
+  // ONE ROUND: only this attempt's requests ask anything of this sign-off. A reviewer
+  // agent's advisory CHANGES is a verdict on what it reviewed, so it counts only since
+  // the ticket last entered review (the Work card's rule, boardService.advisoryReview).
+  const round = roundMarks(events);
   for (const ev of evidence || []) {
     const s = String(ev.summary || "");
     const first = s.split("\n")[0];
     const rule = HUMAN_ASK_RULES.find(([re]) => re.test(first));
+    if (round.before(ev, round.attempt)) continue;
+    if (rule && rule[1] === "Reviewer asked for changes" && round.before(ev, round.review))
+      continue;
     let payload;
     try {
       payload = ev.payload_json ? JSON.parse(ev.payload_json) : null;
@@ -16092,8 +16140,9 @@ function humanAsks(evidence, events, dod) {
       ...(integrity ? { topic: "tests" } : {}),
     });
   }
-  for (const e of events || []) {
-    if (e.event_type !== "ticket.autoship_escalated") continue;
+  (events || []).forEach((e, i) => {
+    if (e.event_type !== "ticket.autoship_escalated") return;
+    if (i < round.attempt) return;
     let p;
     try {
       p = JSON.parse(e.payload_json || "{}") || {};
@@ -16111,7 +16160,7 @@ function humanAsks(evidence, events, dod) {
           source: "Raised by the gate-integrity check",
           topic: "tests",
         });
-      continue;
+      return;
     }
     out.push({
       id: null,
@@ -16121,7 +16170,7 @@ function humanAsks(evidence, events, dod) {
       }. Auto-approve was held for a human.`,
       source: "Raised by the observed-risk check",
     });
-  }
+  });
   return out;
 }
 

@@ -26,6 +26,12 @@ R="$WORK/repo"; mkrepo "$R"
 # The stub agent's MODE file decides what a delivery turn does (see the cases below).
 # Every spawn records the worktree's branch + commit count AT SPAWN.
 MODE="$WORK/mode"; echo deliver > "$MODE"
+# The `script-shell` the npmrc-* modes point npm at: a no-op that exists on every host.
+# NOT /bin/true — macOS has only /usr/bin/true, so there npm failed to spawn the
+# shell (ENOENT, exit 254), the gates went red and the delivery ended `blocked`
+# instead of passing vacuously into review where the integrity FLAG must hold it.
+NOOP_SHELL="$WORK/bin/noop-shell"
+printf '#!/bin/sh\nexit 0\n' > "$NOOP_SHELL"; chmod +x "$NOOP_SHELL"
 REVIEW="$WORK/review"; echo approve > "$REVIEW"
 cat > "$WORK/bin/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -91,12 +97,12 @@ if [ -e .git ]; then
     npmrc-hide)      # leave package.json + tests alone; ADD a project .npmrc that makes
                      # every npm script a no-op (the name split so a hook's .npmrc rule misses it)
       printf 'export function a() { return 2; }\n' > src/a.js
-      node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell=/bin/true\n")'
+      node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell="+process.argv[1]+"\n")' "__NOOP_SHELL__"
       git add -A >/dev/null 2>&1
       git -c user.email=s@s -c user.name=s commit -qm "feat: npmrc" >/dev/null 2>&1; done_json; exit 0 ;;
     npmrc-ignored)   # the same .npmrc, but git-ignored (info/exclude) so it is never committed
       printf 'export function a() { return 2; }\n' > src/a.js
-      node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell=/bin/true\n")'
+      node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell="+process.argv[1]+"\n")' "__NOOP_SHELL__"
       printf '.npmrc\n' >> "$(git rev-parse --git-path info/exclude)"
       git -c user.email=s@s -c user.name=s commit -qam "feat: ignored npmrc" >/dev/null 2>&1; done_json; exit 0 ;;
     skipworktree-hide)  # commit the broken a(); then hide a skipped test from git: the
@@ -146,7 +152,7 @@ if [ -e .git ]; then
 fi
 echo other > "$D/kind"; printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
-sed -i.bak "s|__CALLS__|$CALLS|; s|__MODE__|$MODE|; s|__REVIEW__|$REVIEW|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
+sed -i.bak "s|__CALLS__|$CALLS|; s|__MODE__|$MODE|; s|__REVIEW__|$REVIEW|; s|__NOOP_SHELL__|$NOOP_SHELL|g" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_MAX_TURNS=3 GAFFER_TICK_TIMEOUT=90 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \

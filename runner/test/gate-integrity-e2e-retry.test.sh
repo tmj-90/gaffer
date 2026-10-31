@@ -11,7 +11,7 @@
 #   7. retry-delete (2 attempts): attempt 1 deletes the test and fails; attempt 2 passes.
 #      The integrity row and dispatch still flag the deletion from the original base.
 #   8. npmrc-hide: leaves package.json and the tests alone but ADDS a project `.npmrc`
-#      with `script-shell=/bin/true`, so `npm test` runs nothing. The integrity row
+#      whose `script-shell` is a no-op, so `npm test` runs nothing. The integrity row
 #      FLAGs the added package-manager config, dispatch carries test-modified (high)
 #      and the agent reviewer's approve is HELD.
 #   9. npmrc-ignored: the same `.npmrc`, git-ignored through info/exclude so it is never
@@ -90,6 +90,19 @@ fi
 retire "$T7"
 
 echo "== 8. an ADDED project .npmrc that no-ops npm scripts is flagged and held =="
+# Host precondition: the .npmrc the stub's npmrc-* modes write must really turn
+# `npm test` into a no-op HERE, in the gate's stripped env. A script-shell the host lacks
+# (it was /bin/true, absent on macOS) makes npm fail to spawn it (ENOENT, exit 254), so
+# cases 8/9 would see a red gate and end `blocked` instead of testing a hidden one.
+P8="$WORK/npmrc-precondition"; mkrepo "$P8"
+_calls_before="$(ls -1 "$CALLS")"
+echo npmrc-hide > "$MODE"; (cd "$P8" && "$CLAUDE_BIN" -p "deliver" >/dev/null 2>&1)
+for _c in "$CALLS"/*; do grep -qxF "${_c##*/}" <<< "$_calls_before" || rm -rf "$_c"; done
+if [ -f "$P8/.npmrc" ] && (cd "$P8" && env -i PATH="$PATH" HOME="$WORK" TMPDIR="${TMPDIR:-/tmp}" bash -c 'npm test') >"$WORK/npmrc-precondition.out" 2>&1; then
+  ok "8: (the stub's .npmrc no-ops npm test on this host: $(cat "$P8/.npmrc"))"
+else
+  fail "8: the stub's .npmrc does not no-op npm test on this host ($(cat "$P8/.npmrc" 2>/dev/null)): $(grep -m3 -iE 'error|enoent' "$WORK/npmrc-precondition.out" | tr '\n' ' ')"
+fi
 T8="$(new_ready "Quiet the scripts" "deliver a helper")"
 echo npmrc-hide > "$MODE"; run_tick >/dev/null
 J8="$(dod_json "$T8")"
@@ -104,7 +117,7 @@ ANN8="$(cd "$ROOT/packages/dispatch" && node --input-type=module -e '
   d.db.close();
 ' "$DISPATCH_DB" "$T8" 2>/dev/null)"
 [[ "$ANN8" == "high|"*"added package-manager config .npmrc"* ]] && ok "8: dispatch's diff carries test-modified (high) naming .npmrc" \
-  || fail "8: test-modified annotation: $ANN8"
+  || { fail "8: test-modified annotation: $ANN8 (status $(st "$T8"))"; dod_explain "$T8"; }
 if [ "$(st "$T8")" = "in_review" ]; then
   review_tick >/dev/null
   [ "$(st "$T8")" = "in_review" ] && ok "8: the agent reviewer's approve was HELD — still in_review" \
@@ -129,7 +142,7 @@ if [ "$(st "$T9")" = "in_review" ]; then
   [[ "$(ticket_events "$T9")" == *"runner integrity gate"* ]] && ok "9: the autoship_escalated event names the runner's integrity gate" \
     || fail "9: events lack the runner hold"
 else
-  fail "9: expected the delivery in review (status $(st "$T9"))"
+  fail "9: expected the delivery in review (status $(st "$T9"))"; dod_explain "$T9"
 fi
 retire "$T9"
 

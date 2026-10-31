@@ -29,3 +29,17 @@ gate_field() {  # <json> <gate> <field>
   node -e 'const j=JSON.parse(process.argv[1]||"{}");const g=(j.gates||[]).find(x=>x.gate===process.argv[2]);process.stdout.write(g?String(g[process.argv[3]]??""):"")' "$1" "$2" "$3"
 }
 ticket_events() { wg ticket show "$1" 2>/dev/null | jget 'JSON.stringify(d.events || [])'; }
+# WHY a case's ticket ended where it did, for a failure message: the whole last DoD
+# evidence (verdict, gate JSON, and each failing gate's captured output tail) and the
+# factory-log lines naming the ticket, indented under the FAIL line. Without it a CI
+# log only says "status blocked" and the cause (a gate that went red on that host) is
+# invisible.
+dod_explain() {  # <ticket-number>
+  wg ticket show "$1" 2>/dev/null | jget '(() => {
+    const ev = (d.evidence || []).filter((e) => e.evidence_type === "test_output" && /^DoD: /.test(e.summary || ""));
+    const last = ev[ev.length - 1];
+    return last ? last.summary : "(no DoD evidence recorded on the ticket)";
+  })()' | head -n 80 | sed 's/^/        | /'
+  grep -F "#$1 " "$GAFFER_DATA/factory.log" 2>/dev/null | tail -n 20 | sed 's/^/        log: /'
+  return 0
+}

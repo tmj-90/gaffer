@@ -16,10 +16,12 @@
 #   AC4  a real git worktree is detached cleanly (the real repo loses the linked
 #        worktree, not just the directory).
 #   AC5  sweeping an empty/absent worktrees root is a no-op (never fatal).
-#   AC6  (external review #4) POSITIVE EVIDENCE ONLY: a worktree whose ticket status is
-#        UNKNOWN (dispatch error, missing DB, unknown ticket) is KEPT and named; a
-#        non-terminal ticket's worktree with UNCOMMITTED changes is kept; a clean one
-#        is swept; DRY_RUN removes nothing; and the live loop (loop.sh) with Dispatch
+#   AC6  (external review #4) POSITIVE EVIDENCE ONLY: a worktree is removed only on a
+#        definite TERMINAL status (done/failed/cancelled). A worktree whose ticket status
+#        is UNKNOWN (dispatch error, missing DB, unknown ticket) is KEPT and named; every
+#        non-terminal ticket's worktree is kept and named, whether it looks clean, holds
+#        uncommitted work, or holds only gitignored files (which `git status` cannot
+#        see); DRY_RUN removes nothing; and the live loop (loop.sh) with Dispatch
 #        unavailable leaves a worktree holding uncommitted work intact and says so.
 #
 # Run: bash test/orphan-recovery.test.sh
@@ -50,10 +52,18 @@ cat > "$WORK/wg_show.sh" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   10) echo '{"ticket":{"status":"done"}}' ;;        # terminal → sweep
+  11) echo '{"ticket":{"status":"failed"}}' ;;      # terminal → sweep
+  12) echo '{"ticket":{"status":"cancelled"}}' ;;   # terminal → sweep
   20) echo '{"ticket":{"status":"in_progress"}}' ;; # LIVE worker → keep
   30) echo '{"ticket":{"status":"claimed"}}' ;;     # claimed → keep
-  50) echo '{"ticket":{"status":"ready"}}' ;;       # ready + CLEAN worktree → sweep
+  50) echo '{"ticket":{"status":"ready"}}' ;;       # ready + CLEAN worktree → keep (not terminal)
+  55) echo '{"ticket":{"status":"ready"}}' ;;       # ready + only an IGNORED .env.local → keep
   60) echo '{"ticket":{"status":"ready"}}' ;;       # ready + UNCOMMITTED work → keep
+  61) echo '{"ticket":{"status":"draft"}}' ;;       # non-terminal, clean → keep
+  62) echo '{"ticket":{"status":"blocked"}}' ;;
+  63) echo '{"ticket":{"status":"in_review"}}' ;;
+  64) echo '{"ticket":{"status":"in_testing"}}' ;;
+  65) echo '{"ticket":{"status":"ready_for_merge"}}' ;;
   70) echo 'dispatch: database not found' >&2; exit 1 ;; # a failed read → UNKNOWN → keep
   *)  echo '' ;;                                     # no answer → UNKNOWN → keep
 esac
@@ -65,7 +75,8 @@ export GAFFER_WG_SHOW_CMD="$WORK/wg_show.sh"
 REPO="$WORK/repo"; mkdir -p "$REPO"
 git -C "$REPO" init -q
 git -C "$REPO" config user.email t@e; git -C "$REPO" config user.name t
-echo seed > "$REPO/s.txt"; git -C "$REPO" add -A; git -C "$REPO" commit -qm seed
+echo seed > "$REPO/s.txt"; printf '.env.local\n' > "$REPO/.gitignore"
+git -C "$REPO" add -A; git -C "$REPO" commit -qm seed
 BASE="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
 
 mk_real_wt() { # <ticket-num> : a real linked worktree leaf under ticket-<num>/repo
@@ -77,16 +88,24 @@ mk_plain_wt() { # <ticket-num> : a non-git stale dir (rm -rf fallback path)
   mkdir -p "$GAFFER_DATA/worktrees/ticket-$1/repo"; echo x > "$GAFFER_DATA/worktrees/ticket-$1/repo/f"
 }
 
-# Ticket 10 (done) → real worktree, must be swept + detached.
+# Ticket 10 (done) → real worktree, must be swept + detached. 11 failed, 12 cancelled
+# (the latter holding uncommitted work: a terminal ticket's worktree is disposable).
 mk_real_wt 10
+mk_real_wt 11
+mk_real_wt 12; echo "abandoned" > "$GAFFER_DATA/worktrees/ticket-12/repo/wip.txt"
 # Ticket 20 (in_progress) → live worker, must be kept.
 mk_plain_wt 20
 # Ticket 30 (claimed) → must be kept.
 mk_plain_wt 30
 # Ticket 40 (no answer) → UNKNOWN → must be KEPT (never delete on a failed read).
 mk_plain_wt 40
-# Ticket 50 (ready, clean real worktree) → swept (its commits live on the branch).
+# Ticket 50 (ready, clean real worktree) → KEPT: not terminal, it may be delivered again.
 mk_real_wt 50
+# Ticket 55 (ready, holding only a gitignored .env.local) → KEPT: `git status` shows
+# nothing, but the file exists nowhere else.
+mk_real_wt 55; echo "SECRET=local-only" > "$GAFFER_DATA/worktrees/ticket-55/repo/.env.local"
+# Tickets 61–65 (draft/blocked/in_review/in_testing/ready_for_merge, clean) → KEPT.
+for n in 61 62 63 64 65; do mk_real_wt "$n"; done
 # Ticket 60 (ready, real worktree with uncommitted work) → kept.
 mk_real_wt 60; echo "uncommitted" > "$GAFFER_DATA/worktrees/ticket-60/repo/wip.txt"
 # Ticket 70 (dispatch errors) → UNKNOWN → kept.
@@ -112,15 +131,25 @@ echo "== AC6: UNKNOWN status (#40 no answer, #70 dispatch error) is KEPT and nam
 [ -f "$GAFFER_DATA/worktrees/ticket-70/repo/wip.txt" ] && ok "#70 (dispatch error) kept, uncommitted work intact" || fail "#70 deleted on a failed dispatch read"
 grep -q '#70 ticket status is UNKNOWN' "$WORK/kept.log" && ok "the kept worktree is named with the reason" || fail "no 'UNKNOWN — kept' note: $(cat "$WORK/kept.log")"
 
-echo "== AC6: non-terminal ticket — clean worktree swept (#50), uncommitted work kept (#60) =="
-[ ! -e "$GAFFER_DATA/worktrees/ticket-50" ] && ok "#50 (ready, clean) swept" || fail "#50 clean worktree not swept"
+echo "== AC1: every terminal status is swept (#11 failed, #12 cancelled with leftover work) =="
+[ ! -e "$GAFFER_DATA/worktrees/ticket-11" ] && ok "#11 (failed) swept" || fail "#11 (failed) not swept"
+[ ! -e "$GAFFER_DATA/worktrees/ticket-12" ] && ok "#12 (cancelled) swept" || fail "#12 (cancelled) not swept"
+
+echo "== AC6: a non-terminal ticket's worktree is KEPT, clean or not (#50 #55 #60 #61-65) =="
+[ -d "$GAFFER_DATA/worktrees/ticket-50/repo" ] && ok "#50 (ready, clean) kept" || fail "#50 (ready, clean) was removed"
+[ -f "$GAFFER_DATA/worktrees/ticket-55/repo/.env.local" ] && ok "#55 (ready, only a gitignored .env.local) kept, the file intact" || fail "#55 deleted a worktree holding an ignored file"
 [ -f "$GAFFER_DATA/worktrees/ticket-60/repo/wip.txt" ] && ok "#60 (ready, uncommitted work) kept" || fail "#60 uncommitted work deleted"
-grep -q '#60 ticket is ready and the worktree has UNCOMMITTED changes' "$WORK/kept.log" && ok "#60 kept with the reason" || fail "no uncommitted note for #60"
+for n in 61 62 63 64 65; do
+  [ -d "$GAFFER_DATA/worktrees/ticket-$n/repo" ] && ok "#$n ($("$WORK/wg_show.sh" "$n" | sed -E 's/.*"status":"([^"]+)".*/\1/'), clean) kept" || fail "#$n non-terminal worktree removed"
+done
+grep -q '#55 ticket is ready, not terminal — kept' "$WORK/kept.log" && ok "#55 kept with the reason on stderr" || fail "no not-terminal note for #55: $(cat "$WORK/kept.log")"
+grep -q '#63 ticket is in_review, not terminal — kept' "$WORK/kept.log" && ok "#63 kept with its status named" || fail "no not-terminal note for #63"
 
 echo "== echoed removals =="
 case " $REMOVED " in *" 10 "*) ok "echoed #10";; *) fail "did not echo #10";; esac
-case " $REMOVED " in *" 50 "*) ok "echoed #50";; *) fail "did not echo #50";; esac
-case " $REMOVED " in *" 40 "*|*" 60 "*|*" 70 "*) fail "echoed a kept worktree ($REMOVED)";; *) ok "kept worktrees not echoed";; esac
+case " $REMOVED " in *" 11 "*) ok "echoed #11";; *) fail "did not echo #11";; esac
+case " $REMOVED " in *" 12 "*) ok "echoed #12";; *) fail "did not echo #12";; esac
+[ "$REMOVED" = "10 11 12 " ] && ok "only the terminal tickets were removed ($REMOVED)" || fail "removed set is '$REMOVED', expected '10 11 12 '"
 case " $REMOVED " in *" 20 "*) fail "wrongly echoed #20";; *) ok "did not echo #20";; esac
 
 echo "== AC6: DRY_RUN removes nothing =="

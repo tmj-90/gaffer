@@ -152,10 +152,13 @@ trust-based.
 run `loop.sh` sweeps worktrees a killed worker left behind (`lib/orphan-recovery.sh`).
 A worktree whose ticket status cannot be read (Dispatch down, a missing database, a
 timeout, an unknown ticket) is **kept** and named ("worktree preserved: … status is
-UNKNOWN"); a claimed, in-progress or paused ticket's worktree is kept; a non-terminal
-ticket's worktree with uncommitted changes is kept; only a definite terminal status
-(`done` / `failed` / `cancelled`), or a clean worktree whose commits are already on the
-branch, is removed. `--dry-run` removes nothing and says what it would remove.
+UNKNOWN"); a claimed, in-progress or paused ticket's worktree is kept; every other
+non-terminal ticket's worktree (draft, ready, blocked, in review, in testing, ready for
+merge) is kept and named too, even when `git status` shows it clean, because that check
+cannot see gitignored files such as a local `.env`. Only a definite terminal status
+(`done` / `failed` / `cancelled`) from a successful read removes a worktree; a ticket
+delivered again clears its own stale worktree first. `--dry-run` removes nothing and
+says what it would remove.
 
 **A dry run changes nothing, on the resume path too.** A `--dry-run` tick that finds a
 paused ticket whose Continue was pressed logs "DRY_RUN: would resume paused #N …" and

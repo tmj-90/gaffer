@@ -124,8 +124,9 @@ wg expire-claims >/dev/null 2>&1 \
 # clean data dir has none — and it NEVER touches a worktree whose ticket is still
 # claimed/in_progress (a live worker's), so it's safe to run before the pool spins.
 # POSITIVE EVIDENCE ONLY (external review #4): a worktree whose ticket status cannot be
-# read (Dispatch down, a missing DB) is KEPT and named, never treated as abandoned; one
-# with uncommitted work is kept unless its ticket is terminal; DRY_RUN removes nothing.
+# read (Dispatch down, a missing DB) is KEPT and named, never treated as abandoned; only
+# a done, failed or cancelled ticket's worktree is removed (every other status is kept
+# and named: a clean `git status` cannot see gitignored files); DRY_RUN removes nothing.
 if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
   _reclaim_err="$(mktemp "${TMPDIR:-/tmp}/gaffer-reclaim.XXXXXX" 2>/dev/null || echo /dev/null)"
   _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>"$_reclaim_err" | tr '\n' ' ')"

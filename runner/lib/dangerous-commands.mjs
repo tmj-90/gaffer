@@ -127,6 +127,20 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: true,
   },
   {
+    // GATE INTEGRITY: moving or rewriting a branch ref from the agent's worktree. The
+    // worktree shares refs with the real repo, so `git branch -f main HEAD` or
+    // `git update-ref refs/heads/main …` moves the operator's base branch onto the
+    // agent's own commits (landing them unreviewed, and hiding them from any check that
+    // diffs from the branch name). The agent commits on its ticket branch and never
+    // moves, renames or force-resets any OTHER branch (a force-reset of a runner-owned
+    // `gaffer/` branch stays allowed, as before); the runner records the base commit
+    // before the agent runs regardless. Local `push`/`fetch` into `.` is the same move.
+    re: /\bgit\b[^\n|;&]*?\s(?:update-ref|symbolic-ref)\b|\bgit\s+(?:branch\b[^\n|;&]*\s(?:-f|--force|-[mMcC]|--move|--copy)|checkout\b[^\n|;&]*\s-B|switch\b[^\n|;&]*\s(?:-C|--force-create))[ \t]+(?!gaffer\/)[^\s;&|-]|\bgit\s+(?:push|fetch)\s+(?:-[^\s]+\s+)*\.(?=\s)/,
+    why: "branch ref rewrite (git branch -f/-m, update-ref, checkout -B, push/fetch into .) of a non-gaffer branch — the agent commits on its ticket branch and never moves the base branch",
+    example: "git branch -f main HEAD",
+    crewFlags: false,
+  },
+  {
     re: /git\s+reset\s+--hard\b/,
     why: "hard reset",
     example: "git reset --hard",

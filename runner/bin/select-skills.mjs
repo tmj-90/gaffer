@@ -806,6 +806,59 @@ export function selectForRole(
   return out;
 }
 
+/**
+ * A ticket's WRITE repos from a `wg ticket show` payload's `repositories` (the same
+ * partition the runner's access boundary uses: access `write` on an active relation —
+ * confirmed / implicit_single_repo — or no relation recorded, as older payloads carry).
+ * Returns [{ name, stack }] in payload order.
+ */
+export function ticketWriteRepos(repositories = []) {
+  const active = new Set(["confirmed", "implicit_single_repo"]);
+  return (Array.isArray(repositories) ? repositories : [])
+    .filter((r) => r && r.access === "write" && (!r.relation || active.has(r.relation)))
+    .map((r) => ({ name: String(r.name ?? ""), stack: String(r.stack ?? "").trim() }));
+}
+
+/**
+ * The stack(s) a ticket's skills are selected for: the UNION of every write repo's
+ * registered stack (distinct, payload order). A ticket spanning a TypeScript frontend
+ * and a Java service gets both — the first write repo's stack alone left the second
+ * language out of delivery, review and the tester. No write repo → the first linked
+ * repo with a local path (then any repo), as the runner resolved it before.
+ */
+export function ticketStacks(repositories = []) {
+  const out = [];
+  for (const { stack } of ticketWriteRepos(repositories)) if (stack && !out.includes(stack)) out.push(stack);
+  if (out.length) return out;
+  const list = Array.isArray(repositories) ? repositories : [];
+  const first = list.find((r) => r?.local_path) ?? list[0];
+  const legacy = String(first?.stack ?? "").trim();
+  return legacy ? [legacy] : [];
+}
+
+/**
+ * The prompt sentence that names each write repo's LANGUAGE pack(s) when a ticket spans
+ * repos on different stacks, limited to the packs actually `selected` (per-path routing
+ * may have narrowed one out). "" for a single-stack ticket.
+ */
+export function stackPackNote(repositories = [], selected = [], { skillsDir = DEFAULT_SKILLS_DIR } = {}) {
+  const repos = ticketWriteRepos(repositories).filter((r) => r.stack);
+  if (new Set(repos.map((r) => r.stack)).size < 2) return "";
+  const chosen = new Set(selected);
+  const library = loadSkills(skillsDir).filter((s) => s.area === "language");
+  const parts = repos
+    .map(({ name, stack }) => {
+      const expanded = expandStacks([stack]);
+      const packs = library
+        .filter((s) => chosen.has(s.name) && stackTagged(s, expanded))
+        .map((s) => s.name);
+      return packs.length ? `${name || "repo"} (${stack}): ${packs.join(", ")}` : "";
+    })
+    .filter(Boolean);
+  if (parts.length < 2) return "";
+  return ` — this ticket spans ${repos.length} write repos on different stacks; apply each repo's conventions pack in that repo: ${parts.join("; ")}`;
+}
+
 /** Distinct area packs present in the library, sorted. */
 export function listAreas(skillsDir = DEFAULT_SKILLS_DIR) {
   const areas = new Set();
@@ -825,6 +878,9 @@ function parseArgs(argv) {
     listAreas: false,
     role: "",
     paths: [],
+    ticketStacks: "",
+    ticketPackNote: "",
+    selected: "",
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -856,6 +912,18 @@ function parseArgs(argv) {
       case "--path":
         opts.paths.push(...parseInlineList(next() ?? ""));
         break;
+      // TICKET STACKS: a `wg ticket show` JSON (a file, or - for stdin) → print the union of
+      // its write repos' stacks (comma-joined) and exit.
+      case "--ticket-stacks":
+        opts.ticketStacks = next() ?? "";
+        break;
+      // …or print the per-repo conventions-pack sentence for the `--selected` skills.
+      case "--ticket-pack-note":
+        opts.ticketPackNote = next() ?? "";
+        break;
+      case "--selected":
+        opts.selected = next() ?? "";
+        break;
       case "--paths-file": {
         const file = next() ?? "";
         try {
@@ -883,7 +951,22 @@ function parseArgs(argv) {
 // bootstrap) to mount the role's skill set instead of a hard-coded list.
 if (import.meta.url === `file://${process.argv[1]}`) {
   const opts = parseArgs(process.argv.slice(2));
-  if (opts.listAreas) {
+  const ticketJson = (src) => {
+    try {
+      return JSON.parse(readFileSync(src === "-" ? 0 : src, "utf8"))?.repositories ?? [];
+    } catch {
+      return [];
+    }
+  };
+  if (opts.ticketStacks) {
+    process.stdout.write(ticketStacks(ticketJson(opts.ticketStacks)).join(",") + "\n");
+  } else if (opts.ticketPackNote) {
+    process.stdout.write(
+      stackPackNote(ticketJson(opts.ticketPackNote), parseInlineList(opts.selected).map((n) => n.trim()), {
+        skillsDir: opts.skillsDir,
+      }),
+    );
+  } else if (opts.listAreas) {
     process.stdout.write(listAreas(opts.skillsDir).join("\n") + "\n");
   } else {
     if (opts.paths.length > 0) {

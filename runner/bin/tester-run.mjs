@@ -89,7 +89,7 @@ import { fileURLToPath } from "node:url";
 
 import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
-import { selectForRole } from "./select-skills.mjs";
+import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   detectUsageLimit,
@@ -747,7 +747,7 @@ export function replayTesterTests({
 // that cap means a validated description — the whole brief — always reaches the tester.
 const MAX_BRIEF_CHARS = 20000;
 
-export function buildTesterPrompt({ context, worktree, repoName, skillsNote = "" }) {
+export function buildTesterPrompt({ context, worktree, repoName, skills = [], skillsNote = "" }) {
   const acs = context.acceptanceCriteria
     .map((a, i) => `  ${i + 1}. [ac_id ${a.id}] ${a.text}`)
     .join("\n");
@@ -787,7 +787,11 @@ export function buildTesterPrompt({ context, worktree, repoName, skillsNote = ""
     requirements,
     "REQUIREMENTS>>>",
     "",
-    ...(skillsNote ? [`Skills: the runner mounted yours in .claude/skills${skillsNote}.`] : []),
+    ...(skills.length || skillsNote
+      ? [
+          `Skills mounted for you in .claude/skills (open the ones that apply): ${skills.join(", ") || "see .claude/skills"}${skillsNote}.`,
+        ]
+      : []),
     `Work ONLY in this worktree (your single write root): ${worktree}`,
     "You test the implementation; you never change it. Do not edit, add or delete any file",
     "outside test directories: a run that modifies the implementation is HELD, not passed.",
@@ -812,14 +816,29 @@ export function buildTesterPrompt({ context, worktree, repoName, skillsNote = ""
   ].join("\n");
 }
 
+/**
+ * The stacks the tester's skills are selected for: the union of every write repo's
+ * registered stack (resolveTicket's writeRepos), else the delivered repo's. The first
+ * write repo's stack alone left a two-repo ticket's second language unmounted.
+ */
+export function testerStacks(resolved) {
+  const stacks = ticketStacks(
+    (resolved?.writeRepos ?? []).map((r) => ({ ...r, access: "write" })),
+  );
+  return stacks.length ? stacks : [resolved?.repo?.stack || ""].filter(Boolean);
+}
+
 /** Install the tester's agent wiring into the worktree: role-selected skills, settings, brief. */
 export function installTesterAgentDir(worktree, ticketNumber, stack) {
+  // `stack` is one label or a list: a ticket spanning repos on different stacks mounts
+  // every write repo's packs (see testerStacks).
+  const stacks = (Array.isArray(stack) ? stack : [stack]).filter(Boolean);
   const claudeDir = resolve(worktree, ".claude");
   mkdirSync(claudeDir, { recursive: true });
   const mount = resolve(GAFFER_DATA, "skills-mounts", `tester-${ticketNumber}`);
   const names = selectForRole("test", {
     skillsDir: CONFIG.skillsDir,
-    stacks: stack ? [stack] : [],
+    stacks,
   }).map((s) => s.name);
   // Real copies in the worktree (the hook refuses a Read that resolves into the library
   // through a symlink); the manifest at `mount` is the telemetry's view of the mount.
@@ -910,8 +929,7 @@ function runLiveTester(context) {
   let skills;
   let mcpRuntime;
   try {
-    const stack = repo.stack || "";
-    skills = installTesterAgentDir(worktree, n, stack);
+    skills = installTesterAgentDir(worktree, n, testerStacks(resolved));
     const rendered = renderPoMcpRuntime(readFileSync(CONFIG.mcpConfig, "utf8"), {
       dispatchDb: CONFIG.dispatchDb,
       memoryDb: CONFIG.memoryDb,
@@ -937,8 +955,13 @@ function runLiveTester(context) {
 
   // A repo skill of the same name as a mounted pack wins (installSkillCopies never
   // overwrites it); the prompt says so.
-  const skillsNote = shadowNote(shadowedSkills(resolve(worktree, ".claude"), skills));
-  const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name, skillsNote });
+  const skillsNote =
+    stackPackNote(
+      (resolved.writeRepos ?? []).map((r) => ({ ...r, access: "write" })),
+      skills,
+      { skillsDir: CONFIG.skillsDir },
+    ) + shadowNote(shadowedSkills(resolve(worktree, ".claude"), skills));
+  const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name, skills, skillsNote });
   const argv = buildClaudeArgv({
     prompt,
     mcpConfig: mcpRuntime,
@@ -966,7 +989,7 @@ function runLiveTester(context) {
   recordSkillUsage({
     ticket: n,
     role: "test",
-    stack: repo.stack || "",
+    stack: testerStacks(resolved).join(","),
     selected: skills,
     output: res.stdout || "",
     agentDir: worktree,

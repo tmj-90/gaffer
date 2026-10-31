@@ -158,14 +158,26 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Skills mount + verified settings.json + workspace trust + the brief, through the
       # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
       # refuses the live review (fail closed) — the same posture as the delivery site.
-      RSTACK="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
+      # MULTI-REPO STACKS: the union of every write repo's registered stack (a ticket
+      # spanning a TypeScript frontend and a Java service is reviewed with both packs),
+      # falling back to the first write repo's stack.
+      RSTACK="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/bin/select-skills.mjs" --ticket-stacks - 2>/dev/null || true)"
+      [ -n "$RSTACK" ] || RSTACK="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
       # PER-PATH ROUTING: the reviewer's stack is narrowed to the ecosystems the DIFF touches
       # (a .NET-only change on a .NET + React repo is reviewed with the C# pack, not the
-      # React design bar). No recognisable files → the repo's full stack, as before.
+      # React design bar). No recognisable files → the repo's full stack, as before. The
+      # paths are the delivery branch's diff in EVERY write repo that carries it, so a
+      # change touching .ts in one repo and .java in another keeps both packs.
       _RPATHS="$(mktemp "${TMPDIR:-/tmp}/review-paths.XXXXXX")"
       git -C "$RREPO" diff --name-only "$RDEFAULT...$RBRANCH" -- > "$_RPATHS" 2>/dev/null || : > "$_RPATHS"
+      while IFS="$(printf '\t')" read -r _rp _rd; do
+        [ -n "$_rp" ] && [ -d "$_rp" ] && [ "$_rp" != "$RREPO" ] || continue
+        git -C "$_rp" diff --name-only "${_rd:-main}...$RBRANCH" -- >> "$_RPATHS" 2>/dev/null || true
+      done <<<"$(echo "$RSHOW" | jget '(d.repositories||[]).filter(r => r && r.access === "write" && r.local_path).map(r => r.local_path + "\t" + (r.default_branch || "main")).join("\n")' 2>/dev/null || true)"
       RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --paths-file "$_RPATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       rm -f "$_RPATHS"
+      # Name each write repo's conventions pack when the stacks differ.
+      _RPACK_NOTE="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/bin/select-skills.mjs" --ticket-pack-note - --selected "$RSKILLS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, record-evidence"
       if ! GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM"; then
         log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"
@@ -178,7 +190,7 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # is not the core procedure): the stack pack + the review/security lenses.
       _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
       # A repo skill of the same name as a mounted pack wins (it is not mounted over).
-      _RSKILLS_NOTE="$(gaffer_skills_note "$WT" "$RSKILLS" 2>/dev/null || true)"
+      _RSKILLS_NOTE="${_RPACK_NOTE:-}$(gaffer_skills_note "$WT" "$RSKILLS" 2>/dev/null || true)"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is

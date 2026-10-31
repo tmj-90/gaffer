@@ -1632,7 +1632,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # not carry, which the prompt then recommended and the mount silently dropped.
   # Derive an area from the stack where unambiguous so area-gated packs (FIX-2)
   # still fire for a clearly-domained stack (e.g. a web stack → frontend pack).
-  SKILL_AREA="$(gaffer_area_for_stack "$STACK")"
+  # MULTI-REPO STACKS: the skills are selected for the UNION of every write repo's
+  # registered stack, not the first write repo's alone — a ticket spanning a TypeScript
+  # frontend and a Java service, with no filename or language hint, got frontend skills
+  # and no Java pack. Per-path routing below still narrows to the ecosystems a named
+  # path touches (every touched path's stack survives the narrowing).
+  SKILL_STACKS="$(printf '%s' "$SHOW" | node "$HERE/bin/select-skills.mjs" --ticket-stacks - 2>/dev/null || true)"
+  [ -n "$SKILL_STACKS" ] || SKILL_STACKS="$STACK"
+  SKILL_AREA="$(gaffer_area_for_stack "$SKILL_STACKS")"
   # TEXT RELEVANCE: hand the selector the ticket's title + description head so an
   # off-domain pack the ticket plainly calls for (a Terraform module, an SEO audit, a
   # runbook) is mounted too — those packs were otherwise unreachable from any runner
@@ -1646,7 +1653,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   printf '%s\n%s' "${TITLE:-}" "$(echo "$SHOW" | jget '(d.ticket.description || "")' 2>/dev/null || true)" \
     | grep -oE '[A-Za-z0-9_][A-Za-z0-9_./-]*\.(cs|csproj|sln|razor|cshtml|ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|go|rs|java|kt|kts|swift|rb|sh|bash|html|css|scss)\b' \
     > "$_SKILL_PATHS" 2>/dev/null || : > "$_SKILL_PATHS"
-  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$STACK" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --paths-file "$_SKILL_PATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  SKILLS="$(node "$HERE/bin/select-skills.mjs" --stack "$SKILL_STACKS" ${SKILL_AREA:+--area "$SKILL_AREA"} --text "$_SKILL_TEXT" --paths-file "$_SKILL_PATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
+  # Name each write repo's conventions pack in the prompt when the stacks differ.
+  SKILLS_PACK_NOTE="$(printf '%s' "$SHOW" | node "$HERE/bin/select-skills.mjs" --ticket-pack-note - --selected "$SKILLS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
   rm -f "$_SKILL_PATHS"
   [ -n "$SKILLS" ] || SKILLS="$(printf '%s' "${GAFFER_UNIVERSAL_SKILLS:-}" | tr -s ' ' '\n' | grep . | paste -sd, - | sed 's/,/, /g')"
   [ -n "$SKILLS" ] || SKILLS="(choose the skill whose description matches the ticket)"
@@ -1838,7 +1847,7 @@ $PRODUCT_CONTEXT_BLOCK}"
 
   # A repo that ships its OWN .claude/skills keeps them: a Gaffer pack of the same name is
   # not mounted over it, and the recommended-skills line says the repo's version wins.
-  SKILLS_NOTE="$(gaffer_skills_note "$PRIMARY_REPO" "$SKILLS, $LENSES" 2>/dev/null || true)"
+  SKILLS_NOTE="${SKILLS_PACK_NOTE:-}$(gaffer_skills_note "$PRIMARY_REPO" "$SKILLS, $LENSES" 2>/dev/null || true)"
 
   # The prompt TEXT — the quarantined title, the lore-reflection nudge, the
   # review-feedback block, the repo lists — is LIVE in
@@ -2644,7 +2653,7 @@ $_trail_q
   # selection + lenses + universal set) and, best-effort, which were APPLIED — named in
   # the agent's output JSON or opened (tool ledger). Fail-soft; captured here before the
   # ledger removes $USAGE_JSON on either the pause or normal path.
-  gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON" \
+  gaffer_record_skill_usage "$NUM" delivery "${SKILL_STACKS:-$STACK}" "$SKILLS, $LENSES" "$USAGE_JSON" \
     "delivery-$NUM" "$PRIMARY_REPO" "$_SKILL_SINCE"
   # RESUME REPORT: the resume prompt tells the agent to END its message with the AC ->
   # test lines and the smallest-change note (written for the tokenless resume, whose

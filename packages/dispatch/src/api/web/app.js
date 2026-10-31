@@ -2812,7 +2812,9 @@ async function openPalette() {
   input.value = "";
   input.focus();
   paletteAllItems = await buildPaletteSources();
-  renderPaletteList("");
+  // Filter by what is in the box NOW: someone who typed while the tickets loaded
+  // must not get the unfiltered list (Enter then opened Overview, not their ticket).
+  renderPaletteList(input.value);
 }
 function closePalette() {
   if (paletteEls) paletteEls.scrim.classList.remove("open");
@@ -2834,6 +2836,12 @@ function renderPaletteList(query) {
   paletteItems = paletteAllItems.filter((it) =>
     fuzzyMatch(query, it.label + " " + (it.hint || "")),
   );
+  // "#12" / "12" names a ticket: put that exact number first, ahead of fuzzy hits.
+  const num = /^\s*#?(\d+)\s*$/.exec(query);
+  if (num) {
+    const exact = paletteItems.findIndex((it) => it.label.startsWith(`#${num[1]} `));
+    if (exact > 0) paletteItems.unshift(...paletteItems.splice(exact, 1));
+  }
   paletteActive = 0;
   if (!paletteItems.length) {
     list.appendChild(el("div", { class: "palette-empty" }, "No matches."));

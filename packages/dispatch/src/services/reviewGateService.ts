@@ -317,7 +317,12 @@ export class ReviewGateService {
     // results for this ticket (GAFFER_REQUIRE_CI), approval needs a PASS for the
     // CANDIDATE commit — the head being approved. A CLI approve used to go through while
     // the CI poll was still open, and the late red result could no longer stop it.
-    this.assertCiPassed(ticket, this.resolveReviewedHead(ticket)?.sha ?? null);
+    this.assertCiPassed(
+      ticket,
+      this.ciStatus(ticket.id, null).required
+        ? (this.resolveReviewedHead(ticket)?.sha ?? null)
+        : null,
+    );
     // REVIEWER ≠ AUTHOR (server-side, not by convention). Even on an autonomy-permitted
     // agent approve, the approving principal must not be the agent that DELIVERED the
     // ticket: the id on the ticket's most recent claim. Before this the "agent cannot
@@ -646,6 +651,11 @@ export class ReviewGateService {
     const pre = this.ticketSvc.resolveTicket(ticketRef);
     const deliveryDiff =
       pre.status === "in_testing" ? this.transitions.deliveryDiffProof(pre.id) : undefined;
+    // REQUIRED CI's candidate: the tested commit, else the branch head — resolved (git)
+    // here, outside the write transaction, and only when CI results exist at all.
+    const ciCandidate =
+      input.tested_commit ??
+      (this.ciStatus(pre.id, null).required ? (this.resolveReviewedHead(pre)?.sha ?? null) : null);
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
@@ -661,10 +671,7 @@ export class ReviewGateService {
         verdict: "pass",
       });
       // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
-      this.assertCiPassed(
-        ticket,
-        input.tested_commit ?? this.resolveReviewedHead(ticket)?.sha ?? null,
-      );
+      this.assertCiPassed(ticket, ciCandidate);
       // Record the passing test result as evidence so it is visible in review.
       const evidenceId = newId();
       const now = this.clock.now();

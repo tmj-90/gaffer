@@ -30,7 +30,9 @@
 #   flock                             not shipped on macOS
 #   the shellcheck binary             installed only on the Linux CI jobs (ci.yml),
 #                                     which run every test that needs it
-GAFFER_SKIP_ALLOWLIST_RE='docker|sandbox-exec|macos-only|setpriv|running as root|flock|shellcheck'
+#   GAFFER_LIVE_ / real model calls   an opt-in live test (live-skill-use) that spends
+#                                     real credits; CI never sets the opt-in
+GAFFER_SKIP_ALLOWLIST_RE='docker|sandbox-exec|macos-only|setpriv|running as root|flock|shellcheck|GAFFER_LIVE_|real model calls'
 
 gaffer_skip_allowed() {
   # A here-string, not a pipe: under a caller's pipefail an early-exiting grep can

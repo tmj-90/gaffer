@@ -165,6 +165,11 @@ export function registerTicket(program: Command): void {
     .command("list")
     .description("List tickets")
     .option("-s, --status <status>", "filter by status")
+    .option(
+      "--claimable",
+      "only tickets whose dependencies are all done (what a claim can take); the runner's candidate scan applies its limit to this list",
+      false,
+    )
     .action((opts, cmd) => {
       if (opts.status !== undefined) {
         const statusResult = z.enum(TICKET_STATUSES).safeParse(opts.status);
@@ -177,7 +182,16 @@ export function registerTicket(program: Command): void {
         }
       }
       const wg = open(cmd.optsWithGlobals());
-      const rows = wg.list(opts.status);
+      // SCHEDULER: a dependant whose prerequisite is not done can never be claimed. The
+      // runner's scan used to walk them first (priority order) and hit its limit before
+      // reaching the low-priority prerequisite that would unblock them all — forever.
+      const rows = wg
+        .list(opts.status)
+        .filter(
+          (t) =>
+            opts.claimable !== true ||
+            wg.ticketDependencies.unsatisfiedDependencies(t.id).length === 0,
+        );
       printJson(
         // `acceptance` rides along so the runner's tester lane can pick an epic's
         // acceptance ticket out of in_testing even with GAFFER_TESTING off.

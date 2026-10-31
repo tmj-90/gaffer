@@ -706,7 +706,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Approve the review",
     description:
-      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on and the approval reached ready_for_merge (an approval routed to in_testing starts no merge and carries no `merge`); otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
     capability: "full",
     body: "approveReviewBody",
     responses: [

@@ -333,9 +333,15 @@ export async function routeTickets(
       // floor (envAllowsAuto('merge') = AUTO_MERGE AND MERGE_ON_AGENT_REVIEW) governs the
       // RUNNER's unattended merge of AGENT approvals, NOT this one: a human approval needs
       // only AUTO_MERGE. mergeRunner still enforces DISPATCH_MERGE_CMD.
+      //
+      // THE TESTER ROUTE starts no merge: an approval that sent the ticket to in_testing
+      // (GAFFER_TESTING on and testable, or an epic's acceptance ticket) has not reached
+      // ready_for_merge, so nothing may land it yet; the tester's PASS moves it on and the
+      // merge lane (or Merge now) lands it from there. Firing the merge runner here spawned
+      // a merge the landing refuses, under a button that said "not to merge".
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
-      if (number !== null) {
+      if (number !== null && result.ticket.status === "ready_for_merge") {
         merge = envFlagOn(process.env[AUTO_MERGE_ENV])
           ? mergeRunner.trigger({ ticketNumber: number })
           : { triggered: false, pid: null, skipped: "auto_merge_off" };

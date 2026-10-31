@@ -456,15 +456,19 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
   let baseUrl = "";
   let close: () => Promise<void> = async () => {};
   let configured = true;
+  let triggers: number[] = [];
   beforeEach(async () => {
     wg = freshWg();
     configured = true;
+    triggers = [];
     const mergeRunner: MergeRunner = {
       configured: () => configured,
-      trigger: () =>
-        configured
+      trigger: ({ ticketNumber }) => {
+        triggers.push(ticketNumber);
+        return configured
           ? { triggered: true, pid: 1 }
-          : { triggered: false, pid: null, skipped: "not_configured" },
+          : { triggered: false, pid: null, skipped: "not_configured" };
+      },
     };
     const server = createApiServer(wg, noopPo, noopPlan, mergeRunner);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -506,5 +510,43 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
     const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
     const body = (await res.json()) as { approve_outcome?: { kind: string } };
     expect(body.approve_outcome?.kind).toBe("land_next_tick");
+  });
+
+  it("'Approve and send to tester' starts no merge, even with AUTO_MERGE and a merge command", async () => {
+    // The button says "It moves to In testing, not to merge": the click must not spawn the
+    // merge runner for a ticket that is in_testing (merge-ticket refuses it, leaving a failed
+    // merge run behind and a merge_started note on a ticket nothing is landing).
+    process.env.AUTO_MERGE = "1";
+    process.env.GAFFER_TESTING = "1";
+    const { id, number } = inReview(wg);
+    wg.setTestable(id, true, human);
+    const diff = (await (await fetch(`${baseUrl}/tickets/${id}/diff`)).json()) as {
+      approve_outcome?: { kind: string };
+    };
+    expect(diff.approve_outcome?.kind).toBe("to_tester");
+    const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
+    const body = (await res.json()) as {
+      ticket: { status: string };
+      merge?: { triggered: boolean };
+      approve_outcome?: { kind: string; done_label: string };
+    };
+    expect(res.status).toBe(200);
+    expect(body.ticket.status).toBe("in_testing");
+    expect(body.approve_outcome?.kind).toBe("to_tester");
+    expect(triggers, `no merge triggered for #${number}`).toEqual([]);
+    expect(body.merge?.triggered ?? false).toBe(false);
+    const events = wg.listTicketEvents(id).map((e) => e.event_type);
+    expect(events).toContain("ticket.routed_to_testing");
+    expect(events).not.toContain("ticket.merge_started");
+  });
+
+  it("an epic's acceptance ticket goes to the tester and starts no merge either", async () => {
+    process.env.AUTO_MERGE = "1";
+    const { id } = inReview(wg);
+    wg.db.prepare("UPDATE tickets SET acceptance = 1 WHERE id = ?").run(id);
+    const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
+    const body = (await res.json()) as { ticket: { status: string } };
+    expect(body.ticket.status).toBe("in_testing");
+    expect(triggers).toEqual([]);
   });
 });

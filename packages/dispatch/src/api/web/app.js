@@ -11714,8 +11714,9 @@ function healthBarRow(name, valueText, ratio, tone) {
 /**
  * The Health banner for a usage-window pause (/api/health `usage_pause`, read from
  * the runner's $GAFFER_DATA/usage-pause.json): "Paused until <time>: usage limit",
- * what the model said, and that it lifts on its own. The ticket it hit went back to
- * Ready without counting an attempt.
+ * what the model said, and that it lifts on its own. The ticket a refused delivery
+ * hit went back to Ready without counting an attempt; a refused review or test
+ * leaves its ticket where it was.
  */
 function usagePauseNote(p) {
   const label = p.kind === "rate_limit" ? "rate limit" : "usage limit";
@@ -11738,9 +11739,11 @@ function usagePauseNote(p) {
       el("span", {}, [
         el("strong", {}, `Paused until ${when}: ${label}. `),
         "No new work starts until then, and it resumes on its own." +
-          (p.ticket != null
-            ? ` Ticket #${p.ticket} went back to Ready without counting an attempt.`
-            : "") +
+          (p.ticket == null
+            ? ""
+            : p.lane === "review" || p.lane === "tester"
+              ? ` Ticket #${p.ticket} stays where it was and is picked up again after the pause.`
+              : ` Ticket #${p.ticket} went back to Ready without counting an attempt.`) +
           said +
           why,
       ]),

@@ -30,6 +30,12 @@ export interface UsagePauseView {
   /** What the CLI said (≤300 chars). */
   message?: string;
   ticket?: number | null;
+  /**
+   * The lane whose call was refused ("delivery", "bootstrap", "review", "tester"),
+   * when the file names one. A refused delivery or bootstrap went back to Ready; a
+   * refused review or test leaves its ticket where it was.
+   */
+  lane?: string;
   unreadable?: boolean;
 }
 
@@ -79,6 +85,7 @@ export function readUsagePause(
         basis: j.basis === "reset" ? "reset" : "default",
         message: typeof j.message === "string" ? j.message.slice(0, 300) : "",
         ticket: Number.isInteger(j.ticket) ? (j.ticket as number) : null,
+        ...(typeof j.lane === "string" && j.lane ? { lane: j.lane.slice(0, 40) } : {}),
       };
     }
   } catch {

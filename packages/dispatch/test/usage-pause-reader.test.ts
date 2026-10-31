@@ -52,6 +52,22 @@ describe("readUsagePause", () => {
     });
   });
 
+  it("reports the lane that hit the limit when the file names one", () => {
+    write({
+      until_ms: Date.UTC(2026, 9, 31, 15, 1),
+      kind: "usage_limit",
+      basis: "reset",
+      message: "m",
+      ticket: 8,
+      lane: "tester",
+    });
+    expect(readUsagePause({ GAFFER_DATA: dir }, NOW)).toMatchObject({
+      active: true,
+      ticket: 8,
+      lane: "tester",
+    });
+  });
+
   it("a corrupt pause file fails closed: active for the default wait from its mtime", () => {
     writeFileSync(join(dir, "usage-pause.json"), "not json {");
     const v = readUsagePause({ GAFFER_DATA: dir }, Date.now());

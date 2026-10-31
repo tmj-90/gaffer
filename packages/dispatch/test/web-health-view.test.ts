@@ -227,6 +227,28 @@ describe("web: Health view", () => {
     expect(text).not.toContain("went back to Ready");
   });
 
+  it("does not claim the ticket went back to Ready when a reviewer or tester hit the limit", async () => {
+    for (const lane of ["review", "tester"]) {
+      healthPayload = {
+        ...(FULL_HEALTH as Record<string, unknown>),
+        usage_pause: {
+          active: true,
+          paused_until: "2026-11-01T00:00:00.000Z",
+          kind: "usage_limit",
+          basis: "reset",
+          message: "You've hit your 5-hour limit · resets 11:58pm (UTC)",
+          ticket: 8,
+          lane,
+        },
+      };
+      await loadApp();
+      const text = document.querySelector(".usage-pause-note")?.textContent ?? "";
+      expect(text).toMatch(/^Paused until .+: usage limit\./);
+      expect(text).not.toContain("went back to Ready");
+      expect(text).toContain("#8 stays where it was");
+    }
+  });
+
   it("shows no pause note when the runner is not paused", async () => {
     healthPayload = { ...(FULL_HEALTH as Record<string, unknown>), usage_pause: { active: false } };
     await loadApp();

@@ -162,6 +162,12 @@ runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge
 runner/gaffer merge 1                            # the same conflict-safe merge the dashboard's Merge button runs
 ```
 
+`approve` shows the commit of each repository it is about to approve, with a diffstat,
+and asks; the approval covers exactly those commits. If a branch moves before you
+confirm, the approval is refused and nothing is approved. Non-interactively, pass the
+commits you reviewed: `runner/gaffer approve 1 --commit <repo>=<sha>` (one per repo;
+`runner/gaffer wg ticket diff 1 --heads` prints them).
+
 `merge` fast-forwards your repo's default branch from the ticket branch, marks the
 ticket **done**, refreshes the repo's digest + feature ledger, and deletes the merged
 branch. A merge conflict is never forced: the ticket goes back for rework and re-approval.

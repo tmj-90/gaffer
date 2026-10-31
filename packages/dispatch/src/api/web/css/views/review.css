@@ -232,6 +232,13 @@
     gap: 2px;
     font-weight: 700;
   }
+  /* The button names the outcome ("Approve, waits for Merge now"): on a narrow
+     phone it wraps onto two lines rather than push the page sideways. */
+  .signoff-btn {
+    white-space: normal;
+    text-align: center;
+    text-wrap: balance;
+  }
   .signoff-btn.is-approved:disabled {
     opacity: 1;
     background: var(--paper);

@@ -345,6 +345,28 @@ node bin/select-skills.mjs --list-areas                                         
 node test/select-skills.test.mjs                                                  # tests
 ```
 
+A ticket spanning several write repos is selected for the **union** of their registered
+stacks (`--ticket-stacks`), and when the stacks differ each prompt names every repo's
+conventions pack. The selected skills are installed as **real copies** at
+`<worktree>/.claude/skills/<name>/SKILL.md` (never a link into this library, which the
+safety hook would refuse to read), beside a repo's own `.claude/skills`; a repo skill
+of the same name wins and the prompt says so. The skill telemetry
+(`$GAFFER_DATA/skills-telemetry.jsonl`) records each run's `selected`, `applied` (named
+in the output), `opened` (a read the hook **allowed**) and `refused` (a read it blocked);
+an open is never counted as an application.
+
+**Did Claude actually use the skill?** One opt-in live test answers it with the real CLI
+through the real tick on a tiny fixture repo: each role's intended skill
+(`prepare-digest-delta` for delivery, `review-ticket` for the reviewer, `black-box-test`
+for the tester) carries one harmless instruction to include `GAFFER-SKILL-<role>-<nonce>`
+in the final message, and the test checks that token in the recorded result plus the
+role's telemetry row. It spends real money, so it skips (exit 0, printing what it needs)
+unless enabled, and skips when the CLI or its credentials are unusable:
+
+```bash
+GAFFER_LIVE_SKILL_TEST=1 GAFFER_LIVE_SKILL_MODEL=<your cheapest model> bash runner/test/live-skill-use.test.sh
+```
+
 ## Security model (deterministic, not trust-based)
 The boundary is `safety-hook.mjs`, a self-contained, zero-dependency Claude Code
 **PreToolUse hook** that runs before *every* tool and **blocks** (exit 2). It is

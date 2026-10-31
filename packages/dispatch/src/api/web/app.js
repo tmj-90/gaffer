@@ -8492,7 +8492,7 @@ const TICKET_ACTION_KEYS = {
   failed: ["unblock"],
   cancelled: ["reopen"],
   // PAUSE-ON-CAP: a paused (cap-hit) delivery offers one-click Continue (re-enter
-  // the existing worktree) or Stop (tear down + abandon). The banner above the bar
+  // the existing worktree) or Stop (cancel; the next tick removes the worktree). The banner above the bar
   // surfaces the reason + spend-so-far.
   paused: ["pause_continue", "pause_stop"],
 };
@@ -10116,26 +10116,33 @@ async function renderTicket(id) {
         },
         "Continue",
       ),
-    // PAUSE-ON-CAP: abandon the paused delivery (tear down + cancel).
+    // PAUSE-ON-CAP: abandon the paused delivery (cancel; the next tick's sweep, or
+    // Poll's, removes its worktree).
     pause_stop: () =>
       el(
         "button",
         {
           class: "btn danger",
           type: "button",
-          title: "Stop this paused delivery — abandon it and tear down its worktree",
+          title:
+            "Stop this paused delivery: the ticket is cancelled and its worktree is removed on the next tick",
           onclick: () =>
             reasonSheet({
               title: `Stop ${ref}`,
               ticket: t,
-              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled and its resume point is dropped, so it cannot carry on. Continue resumes it where it stopped instead.`,
+              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled (Won't do) and its resume point is dropped, so it cannot carry on. Its worktree is removed on the next tick. Continue resumes it where it stopped instead.`,
               label: "Why stop it?",
               required: false,
               confirm: "Stop",
               tone: "danger",
               onConfirm: async (reason) => {
                 await api("POST", `/tickets/${t.id}/stop`, reason ? { reason } : {});
-                toast(`Stopped ${ref}: the paused delivery is abandoned.`, { ok: true });
+                toast(
+                  `Stopped ${ref}: it is cancelled; its worktree is removed on the next tick.`,
+                  {
+                    ok: true,
+                  },
+                );
                 router();
               },
             }),
@@ -10242,7 +10249,8 @@ async function renderTicket(id) {
   const moveWords = {
     blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion.`,
     failed: `Send #${t.number} back to Ready for another go, or to Refining to rewrite it first.`,
-    paused: "Continue resumes the delivery in its worktree; Stop abandons it.",
+    paused:
+      "Continue resumes the delivery in its worktree; Stop cancels it, and its worktree is removed on the next tick.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
     ready_for_merge:
       "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",

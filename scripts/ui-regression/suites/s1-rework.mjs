@@ -181,9 +181,17 @@ export default async function s1(t, L) {
     `supervised: the reviewer's CHANGES is advisory — #${tk.number} stays in Review for a human`,
     `after an advisory CHANGES #${tk.number} is '${advisory.status}'`,
   );
-  const ev = ((await L.ticketView(tk.id)).evidence || []).filter((e) => /docstring/.test(e.summary || ""));
-  t.check(ev.length >= 1, "the reviewer agent's CHANGES reasoning is recorded on the ticket as evidence (through its MCP record_ac_evidence)", "no reviewer evidence mentions the docstring");
-  t.skip("where Review shows the reviewer agent's advisory verdict (its evidence rows) is HELD until the review-packet change lands");
+  const ev = ((await L.ticketView(tk.id)).evidence || []).filter((e) =>
+    /docstring/.test(e.summary || ""),
+  );
+  t.check(
+    ev.length >= 1,
+    "the reviewer agent's CHANGES reasoning is recorded on the ticket as evidence (through its MCP record_ac_evidence)",
+    "no reviewer evidence mentions the docstring",
+  );
+  t.skip(
+    "where Review shows the reviewer agent's advisory verdict (its evidence rows) is HELD until the review-packet change lands",
+  );
 
   // ── agent approval needs containment: with DISPATCH_ALLOW_AGENT_APPROVE on and
   //    no OS sandbox, the runner refuses to launch an agent and says so ──

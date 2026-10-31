@@ -220,6 +220,17 @@ function makeContext(name, repo) {
   return t;
 }
 
+// A page wait a suite started but never awaited (it threw first) must not kill the
+// whole run: record it against the suite that was running and carry on.
+let currentSuite = "bootstrap";
+const strays = [];
+process.on("unhandledRejection", (e) => {
+  strays.push([
+    currentSuite,
+    "note",
+    `a background wait rejected after its step: ${String(e && e.message ? e.message : e).split("\n")[0]}`,
+  ]);
+});
 const all = [];
 const summary = [];
 const t0all = Date.now();
@@ -234,6 +245,7 @@ all.push(...boot.results.map((x) => ["bootstrap", ...x]));
 
 for (const name of names) {
   const t = makeContext(name, repo);
+  currentSuite = name;
   const started = Date.now();
   const settingsBefore = L.readSettingsFile();
   try {
@@ -272,6 +284,7 @@ for (const name of names) {
   all.push(...t.results.map((x) => [name, ...x]));
 }
 await browser.close();
+all.push(...strays);
 
 const n = (k) => all.filter((x) => x[1] === k).length;
 writeFileSync(

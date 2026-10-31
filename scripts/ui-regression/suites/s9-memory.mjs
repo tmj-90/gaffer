@@ -1,3 +1,4 @@
+/* global document */
 // S9 the memory ledger. The repo page shows its digest (or its honest empty state)
 // and the feature ledger by status; a Send back… from Review with "also capture as
 // a lore draft" files the reason as draft lore (reject-to-lore); the Memory view
@@ -19,6 +20,26 @@ export default async function s9(t, L) {
     });
   const lore = async (status) =>
     (await L.api("GET", `/api/memory/lore?repo=${repo}&status=${status}`)).json.lore || [];
+  // Show drafts only and wait for THAT page: the filter re-reads the lore card, and a
+  // row found before the read lands belongs to the card it is about to replace (a
+  // slow runner opened the reject on it). Rows are always located by lore id.
+  const showDrafts = async () => {
+    const sel = p.locator("select.lore-filter-status");
+    if ((await sel.inputValue()) === "draft") return;
+    const read = p
+      .waitForResponse(
+        (r) => /\/api\/memory\/lore\?/.test(r.url()) && /status=draft/.test(r.url()),
+        { timeout: 15000 },
+      )
+      .catch(() => null);
+    await sel.selectOption("draft");
+    await read;
+    await p.waitForFunction(
+      () => [...document.querySelectorAll(".lore-row")].every((r) => r.dataset.status === "draft"),
+      null,
+      { timeout: 15000 },
+    );
+  };
 
   // ── digest + feature ledger ───────────────────────────────────────────────
   const fname = `Clear completed tasks ${L.tag("s9")}`;
@@ -76,17 +97,30 @@ export default async function s9(t, L) {
   // ── reject that draft from the Memory view, with a reason ─────────────────
   if (drafted) {
     await t.visit(`memory/${repo}`, { label: "memory/:repo" });
-    await p.selectOption("select.lore-filter-status", "draft");
+    await showDrafts();
     const row = p.locator(`.lore-row[data-lore-id="${drafted.id}"]`);
     await row.waitFor({ timeout: 15000 });
     await row.locator("button.lore-reject").click();
     await row.locator("input.lore-reason").fill("too specific to one review");
-    const resP = p.waitForResponse(
-      (r) => r.url().includes(`/api/memory/lore/${drafted.id}/reject`),
-      { timeout: 15000 },
-    );
-    await row.locator("button.lore-reject-confirm").click();
-    const res = await resP.catch(() => null);
+    const resP = p
+      .waitForResponse((r) => r.url().includes(`/api/memory/lore/${drafted.id}/reject`), {
+        timeout: 15000,
+      })
+      .catch(() => null);
+    // `row` is re-resolved by lore id on every use, so a refresh that legitimately
+    // rebuilt the list still finds the draft; the open reject must have come along.
+    const clicked = await row
+      .locator("button.lore-reject-confirm")
+      .click({ timeout: 15000 })
+      .then(
+        () => true,
+        () => false,
+      );
+    if (!clicked)
+      t.bad(
+        `the open reject on draft ${drafted.id} lost its confirm before it was pressed (row now: '${((await row.textContent().catch(() => "")) || "gone").slice(0, 120)}')`,
+      );
+    const res = clicked ? await resP : null;
     const sent = res ? JSON.parse(res.request().postData() || "{}") : {};
     const gone = await L.maybe(
       async () => !(await lore("draft")).some((l) => l.id === drafted.id),
@@ -120,7 +154,7 @@ export default async function s9(t, L) {
     (/"id"\s*:\s*"([^"]+)"/.exec(stale) || [])[1] ||
     (await lore("draft")).find((l) => /Stale draft/.test(l.title))?.id;
   await t.visit(`memory/${repo}`, { label: "memory/:repo" });
-  await p.selectOption("select.lore-filter-status", "draft");
+  await showDrafts();
   const srow = p.locator(`.lore-row[data-lore-id="${staleId}"]`);
   if (
     !(await srow.waitFor({ timeout: 15000 }).then(

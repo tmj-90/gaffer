@@ -110,6 +110,58 @@ export const waitStatus = (id, statuses, ms = 240000, every = 2000) =>
     every,
   );
 
+/**
+ * Why a ticket a suite polled for never reached the status it waited on, from what
+ * the factory itself recorded: the ticket as GET /tickets/:id and the list (by number)
+ * report it, the other ready tickets a tick would pick first, the POST /poll-work
+ * answer (`poll`, t.lastPoll: polled, reason, pending, the run id), the tail of that
+ * run's log and the factory.log lines naming the ticket. One line, for a FAIL
+ * message, so a CI failure is diagnosable from the job log alone.
+ */
+export async function whyStuck(tk, poll) {
+  const parts = [];
+  const byId = await ticketOf(tk.id).catch(() => null);
+  const all = await listTickets().catch(() => []);
+  const byNum = all.find((x) => x.number === tk.number);
+  parts.push(
+    `ticket #${tk.number}: GET /tickets/:id → ${byId ? byId.status : "nothing"}, list by number → ${byNum ? byNum.status : "nothing"}`,
+  );
+  const others = all
+    .filter((x) => x.status === "ready" && x.id !== tk.id)
+    .map((x) => `#${x.number}`);
+  if (others.length) parts.push(`other ready tickets: ${others.join(" ")}`);
+  if (!poll) parts.push("poll: no POST /poll-work answer recorded");
+  else {
+    const b = poll.body || {};
+    parts.push(
+      `poll: ${poll.status} polled=${b.polled} ${b.reason ? `reason=${b.reason} ` : ""}readyCount=${b.readyCount} pending=${JSON.stringify(b.pending || {})}`,
+    );
+    const runId = b.run && b.run.runId;
+    if (runId) {
+      const r = await fetch(`${BASE}/api/runs/${runId}/log`, {
+        headers: { authorization: "Bearer " + TOKEN },
+      }).catch(() => null);
+      const text = r && r.ok ? await r.text() : "";
+      const tail = text
+        .split("\n")
+        .filter((l) => l.trim())
+        .slice(-6);
+      parts.push(`run ${runId} log tail: ${tail.length ? tail.join(" ⏎ ") : "(empty or missing)"}`);
+    }
+  }
+  try {
+    const re = new RegExp(`#${tk.number}\\b`);
+    const lines = readFileSync(path.join(GAFFER_DATA, "factory.log"), "utf8")
+      .split("\n")
+      .filter((l) => re.test(l))
+      .slice(-4);
+    parts.push(`factory.log on #${tk.number}: ${lines.length ? lines.join(" ⏎ ") : "(no line)"}`);
+  } catch {
+    parts.push("factory.log: unreadable");
+  }
+  return parts.join(" · ").replace(/\s+/g, " ").slice(0, 1800);
+}
+
 // ── seeding (REST; the UI flows themselves are what the suites drive) ───────
 let seq = 0;
 export const tag = (s) => `${s}-${Date.now().toString(36)}${(++seq).toString(36)}`;

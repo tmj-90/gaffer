@@ -224,17 +224,25 @@ gaffer_dod_run_one() {
 #
 # INPUT (stdin): one TAB-separated row per write repo —
 #   label <TAB> worktree <TAB> tests_on <TAB> typecheck_on <TAB> lint_on \
-#         <TAB> test_cmd <TAB> typecheck_cmd <TAB> lint_cmd
+#         <TAB> test_cmd <TAB> typecheck_cmd <TAB> lint_cmd [<TAB> base_ref <TAB> allow]
 #   *_on is "1" (gate enabled) or "0" (gate disabled for this repo). A *_cmd field
 #   that is empty OR the literal sentinel `-` means the gate is SKIPPED for that
 #   repo (no command configured). The sentinel is REQUIRED for any empty command
 #   field because TAB is IFS-whitespace: `read` collapses consecutive tabs, so an
 #   empty middle field would silently shift the columns. Callers MUST pass `-`.
+#   GATE INTEGRITY (optional trailing fields; absent ⇒ today's behaviour exactly):
+#   base_ref is the branch the delivery was cut from (`-` = none) and allow is "1"
+#   when a human set allow_test_changes on the ticket. With a base_ref, each gate's
+#   package.json script is read from the BASE commit (gaffer_dod_resolve_cmd), and an
+#   `integrity` row is appended per repo (gaffer_dod_integrity_row): PASS or FLAG,
+#   never FAIL.
 #
 # ARGS:
 #   $1 = a results file the caller reads back. Each gate writes ONE line:
-#          GATE<TAB>name<TAB>repo<TAB>PASS|FAIL|SKIP<TAB>rc<TAB>note
-#        and, for a FAIL, a captured output tail framed by:
+#          GATE<TAB>name<TAB>repo<TAB>PASS|FAIL|SKIP|FLAG<TAB>rc<TAB>note[<TAB>source]
+#        (source: where the command's behaviour was read from — see
+#        gaffer_dod_resolve_cmd; FLAG only on the integrity row) and, for a FAIL, a
+#        captured output tail framed by:
 #          ---DOD-OUTPUT name@repo---\n<tail>\n---END-DOD-OUTPUT---
 #
 # RETURNS: 0 when every gate passed or was skipped; 1 when ANY gate failed. Pure:
@@ -243,7 +251,7 @@ gaffer_run_dod_gates() {
   local results="$1"
   : > "$results"
   local any_fail=0
-  local label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd
+  local label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd base allow
   # Fail CLOSED if we can't even create a scratch file (e.g. disk full): record a
   # FAIL the caller will park on, rather than running gates against a bad outfile.
   local tmpout
@@ -253,9 +261,16 @@ gaffer_run_dod_gates() {
   fi
   # Iterate gate definitions in a stable order so the evidence/board read the same
   # every run: tests, then typecheck, then lint.
-  while IFS=$'\t' read -r label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd; do
+  while IFS=$'\t' read -r label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd base allow; do
     [ -n "$wt" ] || continue
-    local gate cmd on
+    local gate cmd on run_cmd src _mb=""
+    [ "$base" = "-" ] && base=""
+    # GATE INTEGRITY: the commit the delivery branched from. Empty when there is no
+    # base ref (callers that predate the check) or it cannot be resolved — then the
+    # commands run as registered and the integrity row FLAGs the unresolved base.
+    if [ -n "$base" ]; then
+      _mb="$(git -C "$wt" merge-base "$base" HEAD 2>/dev/null)" || _mb=""
+    fi
     for gate in tests typecheck lint; do
       case "$gate" in
         tests)     on="$tests_on"; cmd="$test_cmd" ;;
@@ -274,10 +289,18 @@ gaffer_run_dod_gates() {
         printf 'GATE\t%s\t%s\tSKIP\t0\tno command configured\n' "$gate" "$label" >> "$results"
         continue
       fi
-      gaffer_dod_run_one "$wt" "$tmpout" "$cmd"
+      # Read the command's package.json script from the BASE commit (never the
+      # worktree's head) when a base is known, so a delivery that rewrites
+      # `scripts.test` cannot redirect its own gate. Without a base: today's command.
+      run_cmd="$cmd"; src=""
+      if [ -n "$base" ]; then
+        gaffer_dod_resolve_cmd "$wt" "$_mb" "$cmd"
+        run_cmd="$_GAFFER_DOD_RUN_CMD"; src="$_GAFFER_DOD_SOURCE"
+      fi
+      gaffer_dod_run_one "$wt" "$tmpout" "$run_cmd"
       local rc=$?
       if [ "$rc" -eq 0 ]; then
-        printf 'GATE\t%s\t%s\tPASS\t0\t%s\n' "$gate" "$label" "$cmd" >> "$results"
+        printf 'GATE\t%s\t%s\tPASS\t0\t%s%s\n' "$gate" "$label" "$cmd" "${src:+$'\t'$src}" >> "$results"
       else
         any_fail=1
         local note
@@ -286,7 +309,7 @@ gaffer_run_dod_gates() {
           127) note="command could not be run (spawn/exit 127): $cmd" ;;
           *)   note="exited $rc: $cmd" ;;
         esac
-        printf 'GATE\t%s\t%s\tFAIL\t%s\t%s\n' "$gate" "$label" "$rc" "$note" >> "$results"
+        printf 'GATE\t%s\t%s\tFAIL\t%s\t%s%s\n' "$gate" "$label" "$rc" "$note" "${src:+$'\t'$src}" >> "$results"
         # Capture the DISTILLED real failure (bounded) for the evidence row AND the
         # next attempt's feedback — the failing test name(s) + the assertion/error/
         # stack, NOT a blind tail of the whole log. Falls back to a plain tail when
@@ -297,9 +320,86 @@ gaffer_run_dod_gates() {
         printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
       fi
     done
+    # GATE INTEGRITY row for this repo (PASS / FLAG — never FAIL, never any_fail).
+    if [ -n "$base" ]; then
+      gaffer_dod_integrity_row "$wt" "$_mb" "$label" "${allow:-0}" "$test_cmd" "$tc_cmd" "$lint_cmd" >> "$results"
+    fi
   done
   rm -f "$tmpout"
   [ "$any_fail" -eq 0 ]
+}
+
+# The typed gate-integrity seam (packages/crew runtime/dod/gateIntegrityCli.js), which
+# runs dispatch's one classifier — the same one behind the server-side `test-modified`
+# risk annotation.
+_gaffer_gate_integrity_cli() { printf '%s' "${CREW_DIR:-}/dist/runtime/dod/gateIntegrityCli.js"; }
+
+# GATE INTEGRITY, part 1: resolve a gate command against the BASE commit's package.json.
+# Sets two globals (a subshell would lose them):
+#   _GAFFER_DOD_RUN_CMD  the command to execute — the registered one, or, when the
+#                        delivery changed/removed the script it names, the base
+#                        commit's script body (so editing package.json cannot
+#                        redirect the gate)
+#   _GAFFER_DOD_SOURCE   "<source>: <note>" for the evidence — registered | base |
+#                        base-pinned | head | unresolved
+# Never fails: with no base commit or no crew dist the registered command runs
+# (today's behaviour) and the source says why; the integrity row flags the same.
+#   gaffer_dod_resolve_cmd <worktree> <base-commit> <command>
+gaffer_dod_resolve_cmd() {
+  local wt="$1" mb="$2" cmd="$3" cli _line _src _note _run
+  _GAFFER_DOD_RUN_CMD="$cmd"
+  cli="$(_gaffer_gate_integrity_cli)"
+  if [ -z "$mb" ]; then
+    _GAFFER_DOD_SOURCE="unresolved: no base commit found; ran the registered command against the delivery's scripts"
+    return 0
+  fi
+  if [ ! -f "$cli" ]; then
+    _GAFFER_DOD_SOURCE="unresolved: gate-integrity resolver unavailable (crew dist missing); ran the registered command"
+    return 0
+  fi
+  _line="$(node "$cli" resolve --worktree "$wt" --base "$mb" --cmd "$cmd" 2>/dev/null </dev/null | head -n 1)"
+  IFS=$'\t' read -r _src _note _run <<< "$_line"
+  if [ -z "$_src" ] || [ -z "${_run// /}" ]; then
+    _GAFFER_DOD_SOURCE="unresolved: gate-integrity resolver gave no answer; ran the registered command"
+    return 0
+  fi
+  _GAFFER_DOD_RUN_CMD="$_run"
+  _GAFFER_DOD_SOURCE="$_src: $_note"
+  return 0
+}
+
+# GATE INTEGRITY, part 2: print ONE results row for a repo:
+#   GATE<TAB>integrity<TAB>repo<TAB>PASS|FLAG<TAB>0<TAB>reason<TAB>source
+# FLAG when base..worktree deleted or renamed a test file, added a skip/only marker,
+# changed or removed a gate script, or touched test-runner config — or when the scan
+# could not run (no base, no crew dist): it fails toward a human, never toward a pass.
+# allow=1 (a human set allow_test_changes) turns a FLAG into PASS with a note. This
+# row never FAILs a delivery in this slice; dispatch's `test-modified` risk annotation
+# (same classifier, computed server-side) is what holds an auto-approve.
+#   gaffer_dod_integrity_row <worktree> <base-commit> <label> <allow> <cmd>...
+gaffer_dod_integrity_row() {
+  local wt="$1" mb="$2" label="$3" allow="$4" cli _row c
+  shift 4
+  local _args=()
+  for c in "$@"; do
+    [ -n "$c" ] && [ "$c" != "-" ] && _args+=(--cmd "$c")
+  done
+  cli="$(_gaffer_gate_integrity_cli)"
+  if [ -z "$mb" ]; then
+    printf 'GATE\tintegrity\t%s\tFLAG\t0\tcould not resolve the base commit, so test changes could not be checked\tunresolved\n' "$label"
+    return 0
+  fi
+  if [ ! -f "$cli" ]; then
+    printf 'GATE\tintegrity\t%s\tFLAG\t0\tthe integrity scan could not run (crew dist missing)\tunresolved\n' "$label"
+    return 0
+  fi
+  _row="$(node "$cli" scan --worktree "$wt" --base "$mb" --label "$label" --allow "$allow" \
+    ${_args[@]+"${_args[@]}"} 2>/dev/null </dev/null | head -n 1)"
+  case "$_row" in
+    "GATE	integrity	"*) printf '%s\n' "$_row" ;;
+    *) printf 'GATE\tintegrity\t%s\tFLAG\t0\tthe integrity scan gave no answer\tunresolved\n' "$label" ;;
+  esac
+  return 0
 }
 
 # Render a one-line human summary of a results file (for the factory log).
@@ -409,5 +509,23 @@ gaffer_dod_extract_failure() {
     /^---END-DOD-OUTPUT---/ { keep = 0; next }
     keep && !/^[ \t]*$/ { print "  " $0 }
   ' "$results" 2>/dev/null
+  return 0
+}
+
+# GATE INTEGRITY: log each integrity row of a results file — a FLAG as a WARNING the
+# operator sees in the factory log (the evidence row and the Review banner carry it
+# too). Uses tick.sh's `log` when defined, else stderr. Never fails.
+#   gaffer_dod_log_integrity <results-file>
+gaffer_dod_log_integrity() {
+  local results="$1" _g _name _repo _st _rc _note _src _msg
+  [ -f "$results" ] || return 0
+  while IFS=$'\t' read -r _g _name _repo _st _rc _note _src; do
+    [ "$_g" = "GATE" ] && [ "$_name" = "integrity" ] || continue
+    case "$_st" in
+      FLAG) _msg="DoD: integrity FLAG for ${NUM:+#$NUM }($_repo) — $_note; a human must look before this ships (dispatch holds auto-approve; \`wg ticket allow-test-changes\` if intended)" ;;
+      *)    _msg="DoD: integrity $_st for ${NUM:+#$NUM }($_repo) — $_note" ;;
+    esac
+    if declare -F log >/dev/null 2>&1; then log "$_msg"; else printf '%s\n' "$_msg" >&2; fi
+  done < "$results"
   return 0
 }

@@ -26,7 +26,9 @@ export function summarizeGates(text: string): string {
   let pass = 0;
   let skip = 0;
   let fail = 0;
+  let flag = 0;
   const failed: string[] = [];
+  const flagged: string[] = [];
   for (const line of text.split("\n")) {
     const p = line.split("\t");
     if (p[0] !== "GATE") continue;
@@ -37,25 +39,35 @@ export function summarizeGates(text: string): string {
     } else if (status === "FAIL") {
       fail += 1;
       failed.push(`${p[1]}@${p[2]}`);
+    } else if (status === "FLAG") {
+      // GATE INTEGRITY: a FLAG is advisory (never a fail); named so the log shows it.
+      flag += 1;
+      flagged.push(`${p[1]}@${p[2]}`);
     } else {
       skip += 1;
     }
   }
   let out = `${total} gate(s): ${pass} pass, ${skip} skip, ${fail} fail`;
+  // Only when present, so every pre-integrity summary stays byte-identical.
+  if (flag > 0) out += `, ${flag} flag`;
   if (fail > 0) out += ` (failed: ${failed.join(", ")})`;
+  if (flag > 0) out += ` (flagged: ${flagged.join(", ")})`;
   return out;
 }
 
 /**
- * Count the gates that actually EXECUTED (status PASS or FAIL), excluding SKIP —
- * matches gaffer_dod_executed_count's awk. Returned as a number; the CLI renders
+ * Count the gates that actually EXECUTED (status PASS or FAIL), excluding SKIP and
+ * the GATE INTEGRITY row (it checks the gates; it verifies nothing itself) — matches
+ * gaffer_dod_executed_count's awk. Returned as a number; the CLI renders
  * it as `<n>\n` to mirror the awk `print n+0` (which appends the ORS newline).
  */
 export function executedCount(text: string): number {
   let n = 0;
   for (const line of text.split("\n")) {
     const p = line.split("\t");
-    if (p[0] === "GATE" && (p[3] === "PASS" || p[3] === "FAIL")) n += 1;
+    // The `integrity` row is a check ON the gates, not a gate that verified the work:
+    // a delivery whose only row is integrity PASS still executed zero gates.
+    if (p[0] === "GATE" && p[1] !== "integrity" && (p[3] === "PASS" || p[3] === "FAIL")) n += 1;
   }
   return n;
 }

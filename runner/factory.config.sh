@@ -552,6 +552,11 @@ export GAFFER_PLAN_DEBATE GAFFER_PLAN_DEBATE_MODELS GAFFER_PLAN_DEBATE_MAX_ROUND
 : "${GAFFER_DOD_TYPECHECK:=1}"       # 1 = run the typecheck gate (auto-detected command)
 : "${GAFFER_DOD_TYPECHECK_CMD:=}"    # override the auto-detected typecheck command
 : "${GAFFER_DOD_TIMEOUT:=900}"       # wall-clock cap (seconds) per gate and per AC check command
+# GATE INTEGRITY: an extra regex of repo-relative paths that count as test files, on top
+# of the conventional ones (*.test.*, *_test.go, test_*.py, tests/, __tests__/, spec/ …).
+# It can only WIDEN what the integrity check flags (a malformed pattern is ignored).
+# Read by the runner's integrity row and by dispatch's test-modified risk annotation.
+: "${GAFFER_TEST_PATH_RE:=}"         # extra test-path regex for the gate-integrity check (additive)
 # Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent
 # (they execute agent-modified code). 0 opts out (a gate that cannot run inside the
 # image) and is logged; the verdict is always recorded by the runner outside the gate.

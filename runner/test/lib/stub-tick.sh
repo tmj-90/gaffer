@@ -69,6 +69,21 @@ if [ -e .git ]; then
         commit retry
       fi
       done_json; exit 0 ;;
+    # GATE INTEGRITY modes (gate-integrity-e2e.test.sh): break a() and weaken the gate.
+    redirect-tests)  # point scripts.test at a no-op
+      printf 'export function a() { return 2; }\n' > src/a.js
+      sed -i.bak 's/"test": "node --test"/"test": "node -e 0"/' package.json && rm -f package.json.bak
+      git -c user.email=s@s -c user.name=s commit -qam "feat: redirect" >/dev/null 2>&1; done_json; exit 0 ;;
+    skip-test)       # mark the failing test skipped
+      printf 'export function a() { return 2; }\n' > src/a.js
+      sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak
+      git -c user.email=s@s -c user.name=s commit -qam "feat: skip" >/dev/null 2>&1; done_json; exit 0 ;;
+    delete-test)     # delete the test file, keep one trivial test so the runner has work
+      printf 'export function a() { return 2; }\n' > src/a.js
+      git rm -q test/a.test.js >/dev/null 2>&1
+      printf 'import test from "node:test";\ntest("smoke", () => {});\n' > test/smoke.test.js
+      git add -A >/dev/null 2>&1
+      git -c user.email=s@s -c user.name=s commit -qm "feat: delete" >/dev/null 2>&1; done_json; exit 0 ;;
     *) commit "$MODE"; done_json; exit 0 ;;
   esac
 fi

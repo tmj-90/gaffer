@@ -3102,6 +3102,12 @@ $_trail_q
     _DOD_TESTS_ON="${GAFFER_DOD_TESTS:-1}"
     _DOD_TC_ON="${GAFFER_DOD_TYPECHECK:-1}"
     _DOD_LINT_ON="${GAFFER_DOD_LINT:-1}"
+    # GATE INTEGRITY: has a HUMAN allowed this ticket to change its tests? Read FRESH
+    # (not from the tick-start SHOW) so an allowance set while the agent worked counts.
+    # Fails closed: an unreadable ticket means no allowance (the row FLAGs, never FAILs).
+    _DOD_ALLOW_TESTS="$(wg ticket show "$NUM" 2>/dev/null \
+      | jget '(d.ticket && d.ticket.allow_test_changes === 1) ? 1 : 0' 2>/dev/null || echo 0)"
+    [ "$_DOD_ALLOW_TESTS" = "1" ] || _DOD_ALLOW_TESTS=0
     # Build the gate-runner input: one row per write repo with its resolved commands.
     DOD_ROWS=""
     while IFS=$'\t' read -r rid rname rpath rbase rwt; do
@@ -3124,9 +3130,12 @@ $_trail_q
       [ -n "${_dtest// /}" ] || _dtest="-"
       [ -n "${_dtc// /}" ]   || _dtc="-"
       [ -n "${_dlint// /}" ] || _dlint="-"
-      DOD_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+      # GATE INTEGRITY: the base ref the delivery was cut from (the gate reads each
+      # command's package.json script from that commit and appends an integrity row)
+      # plus the human's allowance. `-` when unknown: integrity then FLAGs the gap.
+      DOD_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$_dlabel" "$rwt" "$_DOD_TESTS_ON" "$_DOD_TC_ON" "$_DOD_LINT_ON" \
-        "$_dtest" "$_dtc" "$_dlint")"$'\n'
+        "$_dtest" "$_dtc" "$_dlint" "${rbase:--}" "$_DOD_ALLOW_TESTS")"$'\n'
     done <<< "$WT_ROWS"
     DOD_ROWS="${DOD_ROWS%$'\n'}"
 
@@ -3154,6 +3163,7 @@ $_trail_q
       DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
       if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
         log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
+        gaffer_dod_log_integrity "$DOD_RESULTS"
         # Zero executed gates means no gate commands are configured (all skipped):
         # the delivery was never actually verified. FAIL by default so a
         # misconfigured repo cannot silently ship unverified work. Opt out with
@@ -3183,6 +3193,7 @@ $_trail_q
         # ── A gate FAILED → auto-reject back to rework (never a human's time) ──
         _DOD_SUM="$(gaffer_dod_summary_line "$DOD_RESULTS")"
         log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to rework (not submitting for review)"
+        gaffer_dod_log_integrity "$DOD_RESULTS"
         _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" FAIL)"
         # THE CRUX of (b): distil the ACTUAL failure (failing test name + assertion/
         # error), not the gate-name summary, so the next attempt can self-correct.

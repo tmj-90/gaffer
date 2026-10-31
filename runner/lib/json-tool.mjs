@@ -708,9 +708,14 @@ switch (cmd) {
     for (const ln of splitLines) {
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
-        const [, gate, repo, status, rc, note] = parts;
-        gates.push({ gate, repo, status, rc, note });
-        lines.push(`  [${status}] ${gate} (${repo}) — ${note}`);
+        const [, gate, repo, status, rc, note, source] = parts;
+        // GATE INTEGRITY: the optional 7th column says where the command's behaviour was
+        // read from (base / base-pinned / head / registered / unresolved); absent on rows
+        // that predate it, so their JSON stays byte-identical.
+        gates.push(
+          source ? { gate, repo, status, rc, note, source } : { gate, repo, status, rc, note },
+        );
+        lines.push(`  [${status}] ${gate} (${repo}) — ${note}${source ? ` [${source}]` : ""}`);
       }
     }
     const tail = [];

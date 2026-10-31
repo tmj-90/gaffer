@@ -395,6 +395,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [ok("One page of lore records, or `{ available: false }`."), invalid],
   },
   {
+    method: "GET",
+    path: "/api/memory/lore/:id/history",
+    tag: T.memory,
+    summary: "A lore record's version history",
+    description:
+      "Read server-side through `memory history <id> --json`: the current head and every earlier version (each update snapshots the previous row), newest first. Answers `{ available, id, current, versions }`, or `{ available: false, reason }` with 200 when the record is unknown or the memory product is unavailable.",
+    capability: "read",
+    responses: [ok("The history, or `{ available: false }`."), invalid],
+  },
+  {
     method: "POST",
     path: "/api/memory/lore/:id/approve",
     tag: T.memory,

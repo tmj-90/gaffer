@@ -457,6 +457,26 @@ describe("P1 fix 3: max-attempts config", () => {
     expect(resolveMaxAttempts({ DISPATCH_MAX_ATTEMPTS: "7" })).toBe(7);
   });
 
+  it("is read per reject, so a cap saved from Settings applies without a restart", () => {
+    const prev = process.env.DISPATCH_MAX_ATTEMPTS;
+    delete process.env.DISPATCH_MAX_ATTEMPTS;
+    try {
+      // No constructor override: the instance follows the env, as the dashboard does.
+      const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner);
+      expect(wg.maxAttempts).toBe(DEFAULT_MAX_ATTEMPTS);
+      const ticketId = inReviewWithWriteRepo(wg);
+      // The operator saves DISPATCH_MAX_ATTEMPTS=1 (writeSettings sets process.env).
+      process.env.DISPATCH_MAX_ATTEMPTS = "1";
+      expect(wg.maxAttempts).toBe(1);
+      wg.rejectReview(ticketId, "refining", reviewer, "nope");
+      expect(wg.view(ticketId).ticket.status).toBe("blocked");
+      wg.db.close();
+    } finally {
+      if (prev === undefined) delete process.env.DISPATCH_MAX_ATTEMPTS;
+      else process.env.DISPATCH_MAX_ATTEMPTS = prev;
+    }
+  });
+
   it("falls back to the default on a non-positive / unparseable value (fail-safe)", () => {
     expect(resolveMaxAttempts({ DISPATCH_MAX_ATTEMPTS: "0" })).toBe(DEFAULT_MAX_ATTEMPTS);
     expect(resolveMaxAttempts({ DISPATCH_MAX_ATTEMPTS: "-3" })).toBe(DEFAULT_MAX_ATTEMPTS);

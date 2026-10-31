@@ -357,6 +357,23 @@ describe("CLI — update flag-conflict refusals", () => {
     expect(out.indexOf("v2")).toBeLessThan(out.indexOf("v1")); // newest first
   });
 
+  it("history --json gives the head and every earlier version, newest first", async () => {
+    expect(await run("update", id, "--summary", "second summary")).toBe(0);
+    expect(await run("update", id, "--summary", "third summary")).toBe(0);
+    out = "";
+    expect(await run("history", id, "--json")).toBe(0);
+    const h = JSON.parse(out) as {
+      id: string;
+      current: { version: number; summary: string };
+      versions: Array<{ version: number; summary: string; at: string }>;
+    };
+    expect(h.id).toBe(id);
+    expect(h.current).toMatchObject({ version: 3, summary: "third summary" });
+    expect(h.versions.map((v) => v.version)).toEqual([2, 1]);
+    expect(h.versions[0]!.summary).toBe("second summary");
+    expect(typeof h.versions[0]!.at).toBe("string");
+  });
+
   it("history with an unknown id exits 1 and with no id exits 2", async () => {
     expect(await run("history", "zzzzzzzz")).toBe(1);
     expect(await run("history")).toBe(2);

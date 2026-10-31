@@ -249,6 +249,8 @@ export class HumanQueueService {
       for (const t of this.tickets.list(status)) {
         const park = this.events.latestParkEvent(t.id);
         if (status === "refining" && (park === null || park.reasonCode === null)) continue;
+        // A human already unblocked it into refining (to rewrite it): no longer parked.
+        if (status === "refining" && this.events.unblockedToRefiningSinceLastPark(t.id)) continue;
         const reasonCode = park?.reasonCode ?? null;
         const since = park?.at ?? t.updated_at;
         const reason =

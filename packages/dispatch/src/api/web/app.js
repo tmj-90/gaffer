@@ -749,9 +749,14 @@ function ensureSquad() {
       api("GET", "/api/squad").catch(() => null),
       squad.capability ? null : api("GET", "/api/whoami").catch(() => null),
     ]).then(([sq, who]) => {
+      const was = squad.capability;
       if (who && typeof who === "object") squad.capability = who.capability || "full";
       if (sq) applySquad(sq);
       else squad.loaded = null; // try again on the next view
+      paintReadOnly();
+      // Learned only now that this token is read-only: redraw the view, so it shows
+      // its switched-off controls rather than the editors it painted first.
+      if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
     });
   }
   return squad.loaded;
@@ -778,6 +783,51 @@ function refreshSquad() {
 /** May this operator change names (a full token)? Unknown counts as no: no 403 surprises. */
 function canEditSquad() {
   return squad.capability === "full";
+}
+
+// --- Read-only access ---------------------------------------------------------
+// A read token (GET /api/whoami capability "read") may look at everything and
+// change nothing: the server refuses every write. So the dashboard does not offer
+// one: every control that would change something is switched off with a title that
+// says why, and one strip under the header says so once. Unknown counts as full
+// here (the server still refuses), so a slow whoami never greys out a full token.
+const READ_ONLY_TITLE = "Read-only access: this token can look, not change anything.";
+function readOnly() {
+  return squad.capability === "read";
+}
+/** Switch one control off for a read token (disabled + a title saying why). */
+function roLock(node) {
+  if (!node || !readOnly()) return node;
+  if ("disabled" in node && node.tagName !== "A") node.disabled = true;
+  node.setAttribute("aria-disabled", "true");
+  node.classList.add("is-read-only");
+  node.title = READ_ONLY_TITLE;
+  return node;
+}
+/** Switch off every form control and button inside `root` (a whole editor). */
+function roLockAll(root) {
+  if (!root || !readOnly()) return root;
+  for (const n of root.querySelectorAll("button, input, select, textarea"))
+    if (!n.closest("[data-ro-ok]")) roLock(n);
+  return root;
+}
+/** The one read-only strip under the header. */
+function paintReadOnly() {
+  let strip = document.getElementById("ro-strip");
+  if (!strip && readOnly() && appbar) {
+    strip = el("div", { class: "ro-strip", id: "ro-strip", role: "status" }, [
+      el("div", {}, [
+        icon("lock", "", 16),
+        el("span", {}, [
+          el("b", {}, "Read-only access. "),
+          "This token can look at everything and change nothing, so the buttons that would change something are switched off. Sign in with a full token to act.",
+        ]),
+      ]),
+    ]);
+    appbar.after(strip);
+  }
+  if (strip) strip.hidden = !readOnly();
+  document.body.classList.toggle("is-read-only", readOnly());
 }
 /**
  * An agent as the squad knows it: { id, name, no, reg, role }. `name` is the
@@ -949,19 +999,38 @@ function applyClub(club) {
 // --- Toast ------------------------------------------------------------------
 
 let toastTimer;
-function toast(message, { ok = false, code } = {}) {
+/**
+ * One short sentence on the scoreboard black. `link` ({ href, text }) adds the one
+ * place to go next ("Approve it in Memory"); a toast with a link stays up longer, so
+ * it can be reached, and following it puts the toast away.
+ */
+function toast(message, { ok = false, code, link } = {}) {
   const node = document.getElementById("toast");
   clear(node);
   node.className = `toast${ok ? " ok" : ""}`;
   if (code) node.appendChild(el("span", { class: "toast-code" }, code));
-  node.appendChild(document.createTextNode(message));
+  node.appendChild(el("span", { class: "toast-msg" }, message));
+  if (link)
+    node.appendChild(
+      el(
+        "a",
+        {
+          class: "toast-link",
+          href: link.href,
+          onclick: () => {
+            node.hidden = true;
+          },
+        },
+        link.text,
+      ),
+    );
   node.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(
     () => {
       node.hidden = true;
     },
-    ok ? 2600 : 5200,
+    link ? 9000 : ok ? 2600 : 5200,
   );
 }
 
@@ -1585,6 +1654,54 @@ function mountView(content) {
       /* a drawing that cannot measure keeps its first draw */
     }
   }
+}
+
+/**
+ * An inline form the operator has open survives a re-render. A control that opens
+ * a form in place (a lore draft's Reject → reason + confirm) marks its container
+ * `data-keep-key` (a key stable across renders: the record's id) and, while the form
+ * is open, `data-keep-open`. This moves each open container of the outgoing tree
+ * into the incoming one, in place of its fresh twin with the same key, so a refresh
+ * that changed OTHER rows (or the lore filter's own re-fetch landing late) leaves
+ * the half-typed reason, and the handlers bound to it, where they were. A form whose
+ * record is gone from the new data has no twin and goes with the old tree. Answers
+ * a restore() to call once the incoming tree is in the document: it puts the focus
+ * (and the text selection) back when it was inside a carried form, and answers
+ * whether it did.
+ */
+function carryOpenForms(from, to) {
+  let refocus = null;
+  if (from && to && from.querySelectorAll) {
+    const active = document.activeElement;
+    for (const open of from.querySelectorAll("[data-keep-key][data-keep-open]")) {
+      const key = open.dataset.keepKey;
+      const twin = [...to.querySelectorAll("[data-keep-key]")].find(
+        (n) => n.dataset.keepKey === key,
+      );
+      if (!twin) continue;
+      if (active && open.contains(active))
+        refocus = {
+          node: active,
+          sel:
+            typeof active.selectionStart === "number"
+              ? [active.selectionStart, active.selectionEnd]
+              : null,
+        };
+      twin.replaceWith(open);
+    }
+  }
+  return () => {
+    if (!refocus || !refocus.node.isConnected) return false;
+    refocus.node.focus({ preventScroll: true });
+    if (refocus.sel) {
+      try {
+        refocus.node.setSelectionRange(refocus.sel[0], refocus.sel[1]);
+      } catch {
+        /* not a text control */
+      }
+    }
+    return true;
+  };
 }
 
 /**
@@ -2486,8 +2603,10 @@ function refreshCurrentView() {
       // Hold the old height across the swap: async parts of the new view (diffs)
       // mount as short placeholders, and a shorter page would clamp scroll to 0.
       app.style.minHeight = `${app.offsetHeight}px`;
+      const restoreForms = carryOpenForms(current, content);
       mountView(content);
       se.scrollTop = y;
+      restoreForms();
       flipDigits(content, prevDigits);
       const release = () => {
         if (app.firstElementChild === content) app.style.minHeight = "";
@@ -2767,11 +2886,14 @@ async function buildPaletteSources() {
   } catch {
     // Palette still works for navigation if the list call fails.
   }
-  const ticketItems = tickets.slice(0, 60).map((t) => ({
+  // Every ticket is a "#N" lookup target; only the first 60 join the fuzzy list.
+  const ticketItems = tickets.map((t, i) => ({
     group: "Tickets",
     label: `${t.number != null ? `#${t.number} ` : ""}${t.title}`,
     hint: statusLabel(t.status),
     icon: "ticket",
+    number: t.number != null ? String(t.number) : null,
+    lookupOnly: i >= 60,
     run: () => navigate(`#/ticket/${t.id}`),
   }));
   return [...base, ...ticketItems];
@@ -2812,7 +2934,9 @@ async function openPalette() {
   input.value = "";
   input.focus();
   paletteAllItems = await buildPaletteSources();
-  renderPaletteList("");
+  // Filter by what is in the box NOW: someone who typed while the tickets loaded
+  // must not get the unfiltered list (Enter then opened Overview, not their ticket).
+  renderPaletteList(input.value);
 }
 function closePalette() {
   if (paletteEls) paletteEls.scrim.classList.remove("open");
@@ -2828,12 +2952,43 @@ function fuzzyMatch(query, text) {
   }
   return t.includes(q);
 }
+/**
+ * The palette's matches for a query. A leading "#" is a ticket lookup, not a fuzzy
+ * search: "#7" lists ticket #7 and then the numbers that start with 7 (#70, #71…),
+ * never #17 or a label that merely holds a 7; "#login" searches ticket titles only.
+ * Anything else is the loose subsequence match, with a bare "12" still ranking
+ * ticket #12 first.
+ */
+function paletteMatches(items, query) {
+  const hash = /^\s*#\s*(.*?)\s*$/.exec(query);
+  if (hash) {
+    const rest = hash[1];
+    const tickets = items.filter((it) => it.group === "Tickets");
+    if (/^\d+$/.test(rest)) {
+      const hits = tickets.filter((it) => it.number != null && it.number.startsWith(rest));
+      return hits.sort(
+        (a, b) =>
+          Number(b.number === rest) - Number(a.number === rest) ||
+          Number(a.number) - Number(b.number),
+      );
+    }
+    return tickets.filter((it) => !it.lookupOnly && fuzzyMatch(rest, it.label));
+  }
+  const out = items.filter(
+    (it) => !it.lookupOnly && fuzzyMatch(query, it.label + " " + (it.hint || "")),
+  );
+  // "12" names a ticket: put that exact number first, ahead of fuzzy hits.
+  const num = /^\s*(\d+)\s*$/.exec(query);
+  if (num) {
+    const exact = out.findIndex((it) => it.number === num[1]);
+    if (exact > 0) out.unshift(...out.splice(exact, 1));
+  }
+  return out;
+}
 function renderPaletteList(query) {
   const { list } = ensurePalette();
   clear(list);
-  paletteItems = paletteAllItems.filter((it) =>
-    fuzzyMatch(query, it.label + " " + (it.hint || "")),
-  );
+  paletteItems = paletteMatches(paletteAllItems, query);
   paletteActive = 0;
   if (!paletteItems.length) {
     list.appendChild(el("div", { class: "palette-empty" }, "No matches."));
@@ -3505,6 +3660,11 @@ function whatIOwnPanel(queue, f) {
 
 /** The one action a row offers: a real button (a sheet that acts) or a real link. */
 function ownAction(it, primary, f) {
+  const act = ownActionControl(it, primary, f);
+  // A link only opens a page; a button would change something, so a read token's is off.
+  return act && act.tagName === "BUTTON" ? roLock(act) : act;
+}
+function ownActionControl(it, primary, f) {
   const t = it.ticket;
   const cls = `btn own-act${primary ? " primary" : ""}`;
   const verb = OWN_VERB[it.kind] || "Open";
@@ -3712,6 +3872,127 @@ function actionSheet(title, { intro, body, actions, focus }) {
   );
 }
 
+/**
+ * Ask before an act, in the shared sheet (never window.confirm: unstyled, it blocks
+ * the page and ignores the kit). `onConfirm` does the work; the sheet closes when it
+ * resolves and stays open, with the error toasted, when it throws. A danger sheet
+ * starts on Cancel, so Enter never destroys anything by accident.
+ */
+function confirmSheet({ title, intro, confirm, tone = "primary", onConfirm }) {
+  let busy = false;
+  const go = el(
+    "button",
+    {
+      class: `btn ${tone === "danger" ? "danger" : "primary"} confirm-submit`,
+      type: "button",
+      onclick: async () => {
+        if (busy) return;
+        busy = true;
+        go.setAttribute("aria-busy", "true");
+        try {
+          await onConfirm();
+          if (go.isConnected && sheetOpen()) closeSheet();
+        } catch (e) {
+          toast((e && e.message) || "That did not go through.", { code: e && e.code });
+        } finally {
+          busy = false;
+          go.removeAttribute("aria-busy");
+        }
+      },
+    },
+    confirm,
+  );
+  const cancel = el(
+    "button",
+    { class: "btn", type: "button", onclick: () => closeSheet() },
+    "Cancel",
+  );
+  actionSheet(title, { intro, actions: [go, cancel], focus: tone === "danger" ? cancel : go });
+}
+
+/**
+ * One value, edited in the shared sheet (the inline-form twin of confirmSheet, for
+ * what was a window.prompt). An empty value is refused in place; an unchanged one
+ * just closes. `onSave(value)` does the work and may throw to keep the sheet open.
+ */
+function valueSheet({ title, intro, label, value = "", hint, confirm = "Save", onSave }) {
+  const hintId = `vs-hint-${++fieldSeq}`;
+  const input = el("input", {
+    type: "text",
+    class: "value-sheet-input",
+    value,
+    required: "",
+    autocomplete: "off",
+    spellcheck: "false",
+    "aria-describedby": hintId,
+  });
+  const hintEl = el("p", { class: "act-hint", id: hintId }, hint || "");
+  let busy = false;
+  const form = el(
+    "form",
+    {
+      class: "act-sheet value-sheet",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (busy) return;
+        const next = input.value.trim();
+        if (!next) {
+          input.setAttribute("aria-invalid", "true");
+          hintEl.classList.add("is-error");
+          hintEl.textContent = `${label} cannot be empty.`;
+          input.focus();
+          return;
+        }
+        if (next === value) {
+          closeSheet();
+          return;
+        }
+        busy = true;
+        try {
+          await onSave(next);
+          if (form.isConnected && sheetOpen()) closeSheet();
+        } catch (err) {
+          toast((err && err.message) || "That did not go through.", { code: err && err.code });
+        } finally {
+          busy = false;
+        }
+      },
+    },
+    [
+      intro ? el("p", { class: "act-intro" }, intro) : null,
+      field(label, input),
+      hintEl,
+      el("div", { class: "btn-row act-actions" }, [
+        el("button", { class: "btn primary", type: "submit" }, confirm),
+        el("button", { class: "btn", type: "button", onclick: () => closeSheet() }, "Cancel"),
+      ]),
+    ],
+  );
+  input.addEventListener("input", () => {
+    input.removeAttribute("aria-invalid");
+    hintEl.classList.remove("is-error");
+    hintEl.textContent = hint || "";
+  });
+  openSheet(title, form, { focus: input });
+  input.select();
+  return form;
+}
+
+/** Hide a repo from the dashboard (reversible), asked in the shared sheet. */
+function hideRepoSheet(repo, after) {
+  confirmSheet({
+    title: `Hide ${repo.name}`,
+    intro: `${repo.name} leaves the Map and the lists. It stays registered, its tickets are unaffected, and you can unhide it from the Hidden repos page.`,
+    confirm: "Hide repo",
+    onConfirm: async () => {
+      await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
+      toast(`${repo.name} hidden`, { ok: true });
+      after();
+    },
+  });
+}
+
 /** The ticket a sheet acts on, named at its top: glyph, number and title. */
 function sheetTicket(t) {
   if (!t) return null;
@@ -3890,6 +4171,29 @@ function reasonSheet({
   return form;
 }
 
+/**
+ * Won't do: close a ticket without building it (-> cancelled, with a reason). The
+ * ticket page's button and a Work card's Move menu both open this one sheet; the
+ * server's guarded won't-do path decides whether the move is legal.
+ */
+function wontDoSheet(t) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  return reasonSheet({
+    title: `Won't do ${ref}`,
+    ticket: t,
+    intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
+    label: "Why not?",
+    presets: WONT_DO_PRESETS,
+    confirm: "Won't do",
+    tone: "danger",
+    onConfirm: async (reason) => {
+      await api("POST", `/tickets/${t.id}/wont-do`, { reason });
+      toast(`${ref} closed as won't do.`, { ok: true });
+      router();
+    },
+  });
+}
+
 /** Unblock: move a blocked ticket back to Ready (another go) or Refining (rewrite first). */
 function unblockSheet(t, it = {}) {
   const ref = t.number != null ? `#${t.number}` : "this ticket";
@@ -3959,11 +4263,18 @@ function answerSheet(it, f) {
       if (answer.value.trim()) body.answer = answer.value.trim();
       if (rationale.value.trim()) body.rationale = rationale.value.trim();
       await api("POST", `/decisions/${it.decisionId}/resolve`, body);
+      // The agent that asked parked its ticket: answering does not move it back, so
+      // offer the Unblock here instead of leaving the human to find the Blocked row.
+      const parked = it.ticket && it.ticket.id ? await stillParked(it.ticket.id) : null;
+      router();
+      if (parked) {
+        answeredUnblockSheet(parked.ticket, parked.waiting, status);
+        return;
+      }
       closeSheet();
       toast(status === "accepted" ? "Answered. Agents read it next time." : "Question rejected.", {
         ok: true,
       });
-      router();
     });
   actionSheet(d.title || "Answer the decision", {
     intro: d.question || it.reason,
@@ -3984,6 +4295,67 @@ function answerSheet(it, f) {
         "Reject the question",
       ),
     ],
+  });
+}
+
+/**
+ * The ticket a just-answered decision belongs to, when it is still Blocked: its row
+ * and how many other decisions it still waits on. null when it is not blocked (or
+ * the read fails: the plain "Answered" toast is then the honest fallback).
+ */
+async function stillParked(ticketId) {
+  try {
+    const v = await api("GET", `/tickets/${ticketId}`);
+    if (!v || !v.ticket || v.ticket.status !== "blocked") return null;
+    return { ticket: v.ticket, waiting: (v.blocking_decisions || []).length };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After an answer (or a rejected question) on a ticket the agent parked: the same
+ * sheet says the ticket is still Blocked and offers Unblock → Ready, the move the
+ * human would otherwise make from the Blocked row. A human presses it; nothing
+ * moves on its own. While other decisions still hold the ticket, it says so instead.
+ */
+function answeredUnblockSheet(t, waiting, status) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  const done = status === "accepted" ? "Your answer is recorded." : "The question is rejected.";
+  const close = el("button", { class: "btn", type: "button", onclick: closeSheet }, "Not now");
+  if (waiting > 0) {
+    actionSheet(`${ref} is still blocked`, {
+      intro: `${done} ${ref} still waits on ${plural(waiting, "more decision")}: answer ${waiting === 1 ? "it" : "them"} before you unblock it.`,
+      actions: [
+        el("a", { class: "btn", href: `#/ticket/${t.id}`, onclick: closeSheet }, "Open the ticket"),
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Done"),
+      ],
+    });
+    return;
+  }
+  const go = el(
+    "button",
+    {
+      class: "btn primary answered-unblock",
+      type: "button",
+      onclick: () =>
+        guard(async () => {
+          await api("POST", `/tickets/${t.id}/move`, { to: "ready" });
+          closeSheet();
+          toast(
+            `Unblocked ${ref}: it is Ready now${status === "accepted" ? ", with your answer in its next brief" : ""}.`,
+            { ok: true },
+          );
+          router();
+        }),
+    },
+    `Unblock ${ref} → Ready`,
+  );
+  actionSheet(`Unblock ${ref}?`, {
+    intro: `${done} ${ref} is still Blocked: the agent parked it on this question, and answering does not move it back. Unblock it to Ready and an agent delivers it again${status === "accepted" ? ", reading your answer" : ""}.`,
+    body: sheetTicket(t),
+    actions: [go, close],
+    focus: go,
   });
 }
 
@@ -5153,7 +5525,7 @@ function injuryWhy(f, t) {
   if (trail.length) {
     const last = trail[trail.length - 1];
     const first =
-      String(last.distilled_failure || "")
+      repoRelative(last.distilled_failure)
         .split("\n")
         .find((l) => l.trim()) || "";
     return `Failed the ${last.gate} gate${first ? `: ${first.slice(0, 140)}` : "."}`;
@@ -7294,15 +7666,17 @@ function writeWorkStateToUrl() {
  * to the node's repos), then kicks off the headless product-owner run.
  */
 function suggestWorkButton(repos, nodes) {
-  return el(
-    "button",
-    {
-      class: "btn",
-      type: "button",
-      title: "Run the product-owner skill to propose new draft tickets",
-      onclick: () => openSuggestWorkPicker(repos, nodes),
-    },
-    "Suggest work",
+  return roLock(
+    el(
+      "button",
+      {
+        class: "btn",
+        type: "button",
+        title: "Run the product-owner skill to propose new draft tickets",
+        onclick: () => openSuggestWorkPicker(repos, nodes),
+      },
+      "Suggest work",
+    ),
   );
 }
 
@@ -7340,7 +7714,9 @@ function pollWorkButton() {
             toast("Continuing the paused delivery…", { ok: true });
           } else if (p.review > 0) {
             toast("Running the reviewer agent on a ticket in Review…", { ok: true });
-          } else toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else if (p.testing > 0) {
+            toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else toast("Clarifying a draft (intake pass)…", { ok: true });
           router();
           // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
           // USD cap already reached) would otherwise read as "fired". Watch the run
@@ -7351,7 +7727,7 @@ function pollWorkButton() {
     },
     [el("span", {}, "Poll for work")],
   );
-  return btn;
+  return roLock(btn);
 }
 
 /**
@@ -8418,7 +8794,14 @@ function legalTargetColumns(status) {
   return MOVE_TARGETS_BY_STATUS[status] || [];
 }
 function cardIsMovable(card) {
-  return legalTargetColumns(card.status).length > 0 && !card.claim;
+  return legalTargetColumns(card.status).length > 0 && !card.claim && !readOnly();
+}
+/** The card's Move menu: its legal lanes, plus Won't do… where that move is legal. */
+function cardHasMoveMenu(card) {
+  return (
+    !card.claim &&
+    (legalTargetColumns(card.status).length > 0 || hasTicketAction(card.status, "wont_do"))
+  );
 }
 
 // --- State-aware action sets (single source of truth) -----------------------
@@ -8435,8 +8818,9 @@ function cardIsMovable(card) {
 const TICKET_ACTION_KEYS = {
   draft: ["mark_ready", "wont_do"],
   refining: ["mark_ready", "wont_do"],
-  // Live/claimed states have no human button here — work is owned by an agent.
-  ready: [],
+  // A queued ticket nobody has claimed yet can still be closed (ready -> cancelled).
+  // Claimed/live states have no human button here — work is owned by an agent.
+  ready: ["wont_do"],
   claimed: [],
   in_progress: [],
   blocked: ["unblock", "wont_do"],
@@ -8451,10 +8835,12 @@ const TICKET_ACTION_KEYS = {
   ready_for_merge: ["merge_now", "mark_merged", "rework"],
   // Terminal: reopen only where allowed (cancelled is reopenable; done is not).
   done: [],
-  failed: ["unblock"],
+  // in_testing / ready_for_merge -> cancelled are legal too, but the Review view reads
+  // this map for its sign-off buttons, so they are offered there, not added here.
+  failed: ["unblock", "wont_do"],
   cancelled: ["reopen"],
   // PAUSE-ON-CAP: a paused (cap-hit) delivery offers one-click Continue (re-enter
-  // the existing worktree) or Stop (tear down + abandon). The banner above the bar
+  // the existing worktree) or Stop (cancel; the next tick removes the worktree). The banner above the bar
   // surfaces the reason + spend-so-far.
   paused: ["pause_continue", "pause_stop"],
 };
@@ -8529,8 +8915,9 @@ async function performBoardMove(cardEl, card, toColumn) {
  * Escape puts focus back on the card's Move button.
  */
 function openMoveMenu(card, anchorEl) {
-  const targets = legalTargetColumns(card.status);
-  if (!targets.length) return;
+  const targets = card.claim ? [] : legalTargetColumns(card.status);
+  const wontDo = !card.claim && hasTicketAction(card.status, "wont_do");
+  if (!targets.length && !wontDo) return;
   closeMoveMenu();
   const cardNode = anchorEl.closest(".board-card");
   const name = card.number != null ? `#${card.number}` : "this ticket";
@@ -8549,6 +8936,24 @@ function openMoveMenu(card, anchorEl) {
       [glyph(col, 18), el("span", {}, BOARD_COLUMN_LABELS[col] || col)],
     ),
   );
+  // Won't do is not a lane you drop on: it asks for a reason in the shared sheet,
+  // which hands focus back to the card's Move button when it closes.
+  if (wontDo)
+    items.push(
+      el(
+        "button",
+        {
+          class: "movemenu-item movemenu-wontdo",
+          type: "button",
+          role: "menuitem",
+          onclick: () => {
+            closeMoveMenu();
+            wontDoSheet(card);
+          },
+        },
+        [glyph("cancelled", 18), el("span", {}, "Won't do…")],
+      ),
+    );
   const menu = el("div", { class: "movemenu", role: "menu", "aria-label": `Move ${name} to` }, [
     el("div", { class: "movemenu-head", "aria-hidden": "true" }, `Move ${name} to`),
     ...items,
@@ -9067,10 +9472,27 @@ function renderBoardCard(card, laneKey, needs) {
     ]);
   })();
 
+  // In Review, the reviewer agent's ADVISORY verdict: it asked for changes, the
+  // runner may not act on it, so the human sees it here before opening the diff.
+  const advisory = card.advisoryReview
+    ? el(
+        "p",
+        {
+          class: "card-reject card-advisory",
+          title: "The reviewer agent's verdict is advisory: you sign off on Review.",
+        },
+        [
+          el("span", { class: "card-reject-label" }, "Reviewer agent: changes requested —"),
+          " ",
+          card.advisoryReview.reason,
+        ],
+      )
+    : null;
+
   const movable = cardIsMovable(card);
   // Touch/keyboard fallback: "Move" opens the lane menu, so the same moves work
-  // one-handed on phones where drag is unreliable.
-  const moveBtn = movable
+  // one-handed on phones where drag is unreliable. It also carries Won't do….
+  const moveBtn = cardHasMoveMenu(card)
     ? el(
         "button",
         {
@@ -9084,9 +9506,10 @@ function renderBoardCard(card, laneKey, needs) {
         [el("span", {}, "Move"), icon("chevdown", "", 14)],
       )
     : null;
+  roLock(moveBtn);
   // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
   // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
-  const humanLaneBtn = humanLaneAction(card);
+  const humanLaneBtn = roLock(humanLaneAction(card));
 
   const node = el(
     "article",
@@ -9127,6 +9550,7 @@ function renderBoardCard(card, laneKey, needs) {
       meta,
       owner,
       reject,
+      advisory,
       moveBtn || humanLaneBtn ? el("div", { class: "card-foot" }, [moveBtn, humanLaneBtn]) : null,
     ],
   );
@@ -9392,8 +9816,21 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
  * the parts the page draws: file, test name, expected, received, where, counts.
  * Anything it cannot read stays null and the raw text is shown instead.
  */
+/**
+ * A captured failure with its worktree paths made repo-relative. The runner checks
+ * each repo out at $GAFFER_DATA/worktrees/ticket-<N>/<repo key>/ (review and
+ * clarify worktrees at worktrees/review-wt-<N>/, clarify-wt-<N>/), so a stack reads
+ * "/…/data/worktrees/ticket-1/<uuid>/test/tasks.test.js:7:1"; the reviewer wants
+ * "test/tasks.test.js:7:1". Paths outside a worktree are left alone.
+ */
+const WORKTREE_PREFIX_RE =
+  /(?:file:\/\/)?(?:\/[^\s/:"'()<>]+)*\/worktrees\/(?:ticket-\d+\/[^\s/:"'()<>]+|(?:review|clarify)-wt-\d+)\//g;
+function repoRelative(text) {
+  return String(text || "").replace(WORKTREE_PREFIX_RE, "");
+}
+
 function parseFailure(text) {
-  const s = String(text || "");
+  const s = repoRelative(text);
   const out = { file: null, name: null, expected: null, received: null, at: null, counts: null };
   const fail = s.match(/^\s*(?:FAIL|✗|×|FAILED)\s+(\S+?)\s+(?:>|›|::)\s+(.+)$/m);
   if (fail) {
@@ -9415,7 +9852,8 @@ function parseFailure(text) {
       out.expected = unq(m[2]);
     }
   }
-  const at = s.match(/(?:❯|at)\s+((?:[\w./-]+\/)?[\w.-]+\.\w+:\d+(?::\d+)?)/);
+  // The location line names file:line; the column is noise to a reviewer.
+  const at = s.match(/(?:❯|at)\s+((?:[\w./-]+\/)?[\w.-]+\.\w+:\d+)(?::\d+)?/);
   if (at) out.at = at[1];
   const counts = s.match(/^\s*Tests\s+(.+?)(?:\s+\[attempt[^\]]*\])?\s*$/m);
   if (counts) out.counts = counts[1].replace(/\s{2,}/g, " ").trim();
@@ -9521,8 +9959,22 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
         el("b", {}, `${statusLabel(t.status)}. `),
         "Mark it ready when its criteria are right.",
       ];
-    case "cancelled":
-      return [el("b", {}, "Won't do. "), "It will not be built."];
+    case "cancelled": {
+      // Say WHY it will not be built: the reason the closer gave (the latest move into
+      // Won't do carries it), not only that it closed.
+      const closed = events
+        .filter((e) => e.event_type === "ticket.transitioned")
+        .map((e) => parseJsonSafe(e.payload_json) || {})
+        .filter((pl) => pl.to === "cancelled")
+        .pop();
+      const why = closed && typeof closed.reason === "string" ? closed.reason.trim() : "";
+      return [
+        el("b", {}, "Won't do. "),
+        why
+          ? [`It will not be built: `, el("q", { class: "lede-why" }, why), "."]
+          : "It will not be built.",
+      ];
+    }
     default:
       return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
   }
@@ -9602,7 +10054,7 @@ function failingTestCard(trail) {
           role: "region",
           "aria-label": "The failure, as captured",
         },
-        last.distilled_failure,
+        repoRelative(last.distilled_failure),
       ),
     );
   return el("section", { class: "card panel failing-test" }, [head, ...body]);
@@ -9685,7 +10137,7 @@ function renderFailureHistory(trail) {
                 role: "region",
                 "aria-label": `Attempt ${a.attempt} failure output`,
               },
-              a.distilled_failure || "(no detail captured)",
+              repoRelative(a.distilled_failure) || "(no detail captured)",
             ),
           ]),
         ]);
@@ -9858,6 +10310,21 @@ async function renderTicket(id) {
                 const box = el("div", { class: "policy-result fail" }, [
                   `Mark-ready failed: ${e.message}`,
                 ]);
+                // A policy refusal names its failed checks: say WHICH, not just "denied".
+                const failed = e.details?.policy?.failures;
+                if (Array.isArray(failed) && failed.length)
+                  box.appendChild(
+                    el(
+                      "ul",
+                      { class: "policy-failures" },
+                      failed.map((f) =>
+                        el("li", {}, [
+                          f.message || f.code,
+                          f.code ? el("span", { class: "toast-code" }, ` ${f.code}`) : null,
+                        ]),
+                      ),
+                    ),
+                  );
                 if (e.code) box.appendChild(el("div", { class: "toast-code" }, e.code));
                 policyBox.appendChild(box);
                 throw e;
@@ -9997,21 +10464,7 @@ async function renderTicket(id) {
           class: "btn danger",
           type: "button",
           title: "Mark this ticket won't do (won't be built)",
-          onclick: () =>
-            reasonSheet({
-              title: `Won't do ${ref}`,
-              ticket: t,
-              intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
-              label: "Why not?",
-              presets: WONT_DO_PRESETS,
-              confirm: "Won't do",
-              tone: "danger",
-              onConfirm: async (reason) => {
-                await api("POST", `/tickets/${t.id}/wont-do`, { reason });
-                toast(`${ref} closed as won't do.`, { ok: true });
-                router();
-              },
-            }),
+          onclick: () => wontDoSheet(t),
         },
         "Won't do",
       ),
@@ -10049,26 +10502,33 @@ async function renderTicket(id) {
         },
         "Continue",
       ),
-    // PAUSE-ON-CAP: abandon the paused delivery (tear down + cancel).
+    // PAUSE-ON-CAP: abandon the paused delivery (cancel; the next tick's sweep, or
+    // Poll's, removes its worktree).
     pause_stop: () =>
       el(
         "button",
         {
           class: "btn danger",
           type: "button",
-          title: "Stop this paused delivery — abandon it and tear down its worktree",
+          title:
+            "Stop this paused delivery: the ticket is cancelled and its worktree is removed on the next tick",
           onclick: () =>
             reasonSheet({
               title: `Stop ${ref}`,
               ticket: t,
-              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled and its resume point is dropped, so it cannot carry on. Continue resumes it where it stopped instead.`,
+              intro: `Abandons the paused delivery of ${ref}: the ticket is cancelled (Won't do) and its resume point is dropped, so it cannot carry on. Its worktree is removed on the next tick. Continue resumes it where it stopped instead.`,
               label: "Why stop it?",
               required: false,
               confirm: "Stop",
               tone: "danger",
               onConfirm: async (reason) => {
                 await api("POST", `/tickets/${t.id}/stop`, reason ? { reason } : {});
-                toast(`Stopped ${ref}: the paused delivery is abandoned.`, { ok: true });
+                toast(
+                  `Stopped ${ref}: it is cancelled; its worktree is removed on the next tick.`,
+                  {
+                    ok: true,
+                  },
+                );
                 router();
               },
             }),
@@ -10080,7 +10540,9 @@ async function renderTicket(id) {
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
   // runner may be held. The status ("Approved · merging") and the lede say where it is.
   const headActions = [
-    ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
+    ...ticketActionKeys(t.status).map((key) =>
+      actionButtons[key] ? roLock(actionButtons[key]()) : null,
+    ),
   ].filter(Boolean);
 
   // PAUSE-ON-CAP banner: when a delivery is paused on a turn/budget cap, surface WHY
@@ -10175,7 +10637,8 @@ async function renderTicket(id) {
   const moveWords = {
     blocked: `Unblock sends #${t.number} back to Ready so an agent can try again, or to Refining so you can rewrite it first. To brief the next attempt, sharpen an acceptance criterion.`,
     failed: `Send #${t.number} back to Ready for another go, or to Refining to rewrite it first.`,
-    paused: "Continue resumes the delivery in its worktree; Stop abandons it.",
+    paused:
+      "Continue resumes the delivery in its worktree; Stop cancels it, and its worktree is removed on the next tick.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
     ready_for_merge:
       "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",
@@ -10271,7 +10734,7 @@ async function renderTicket(id) {
         )
       : el("p", { class: "dim" }, "No acceptance criteria yet. Add the first below."),
     // A shipped or abandoned ticket's criteria are its record, not a to-do list.
-    t.status === "done" || t.status === "cancelled"
+    t.status === "done" || t.status === "cancelled" || readOnly()
       ? null
       : el("details", { class: "tk-add-ac", open: acList.length ? null : "" }, [
           el("summary", {}, "Add a criterion"),
@@ -10280,7 +10743,10 @@ async function renderTicket(id) {
   ]);
 
   // The boundary: which repos this ticket may write, read or test. Read-only once merged.
-  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done", ticket: t });
+  const sideRepos = renderRepoPanel(t.id, claimBox, {
+    readOnly: t.status === "done" || readOnly(),
+    ticket: t,
+  });
 
   // The diff: the delivery once it is in review (or shipped), and the work in
   // progress of a parked or capped delivery when it left a branch. Files fold
@@ -10400,7 +10866,7 @@ async function renderTicket(id) {
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
   // evidence. Rendered on every ticket so a PO can mark it testable + fill the
   // contract ahead of time; the contract surfaces/render the same way in_testing.
-  const testingCard = renderTestingCard(t, view.evidence || []);
+  const testingCard = roLockAll(renderTestingCard(t, view.evidence || []));
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
@@ -10419,6 +10885,10 @@ async function renderTicket(id) {
   // The runner's logs for this ticket: live while it is on the pitch, else the record.
   const runs = ticketRunsPanel(t, events);
 
+  // The evidence trail (reviewer-agent notes, the DoD checklist, AC check output…)
+  // by who recorded it, so a ticket that left Review keeps it in view.
+  const evidenceCard = ticketEvidenceCard(view.evidence || [], acList, view.repositories || []);
+
   const live = ["claimed", "in_progress"].includes(t.status);
   const main =
     t.status === "in_testing"
@@ -10429,16 +10899,18 @@ async function renderTicket(id) {
           failingTest,
           failureHistory,
           diffCard,
+          evidenceCard,
           sideRepos,
           memoryPrimed,
         ]
       : live
-        ? [runs, yourMove, failureHistory, sideRepos, testingCard, memoryPrimed]
+        ? [runs, yourMove, failureHistory, evidenceCard, sideRepos, testingCard, memoryPrimed]
         : [
             yourMove,
             failingTest,
             failureHistory,
             diffCard,
+            evidenceCard,
             runs,
             sideRepos,
             memoryPrimed,
@@ -10460,6 +10932,55 @@ async function renderTicket(id) {
     ]),
   );
   return wrap;
+}
+
+/** Who recorded an evidence row, as the ticket page groups the trail. */
+const EVIDENCE_PROVENANCE = [
+  { id: "agent", label: "Reported by agents", note: "self-reported: weigh it against the diff" },
+  { id: "system", label: "Recorded by the runner", note: "gates, checks and verdicts" },
+  { id: "human", label: "Recorded by people", note: null },
+  { id: "unknown", label: "Recorder not recorded", note: "older rows" },
+];
+function evidenceProvenance(ev) {
+  if (ev.recorded_by_agent === true || ev.recorded_by_actor_type === "agent") return "agent";
+  if (ev.recorded_by_actor_type === "system") return "system";
+  if (ev.recorded_by_actor_type === "human" || ev.recorded_by_actor_type === "admin")
+    return "human";
+  return "unknown";
+}
+
+/**
+ * The ticket page's Evidence: every recorded row (reviewer-agent notes, the DoD
+ * checklist, AC check output, test output…), grouped by who recorded it, oldest
+ * first in each group. Folded by default: it is the record, not the next move. Only
+ * Review showed it before, so a ticket that left Review lost the visible trail.
+ */
+function ticketEvidenceCard(evidence, acList, repos) {
+  if (!evidence.length) return null;
+  const groups = EVIDENCE_PROVENANCE.map((g) => ({
+    ...g,
+    rows: evidence.filter((ev) => evidenceProvenance(ev) === g.id),
+  })).filter((g) => g.rows.length);
+  return el("details", { class: "card panel tk-evidence" }, [
+    el("summary", { class: "tk-evidence-sum" }, [
+      el("span", { class: "panel-title" }, "Evidence"),
+      el(
+        "span",
+        { class: "panel-aux" },
+        `${plural(evidence.length, "row")} · ${groups.map((g) => `${g.rows.length} ${g.id === "unknown" ? "unattributed" : g.id === "system" ? "runner" : g.id}`).join(" · ")}`,
+      ),
+    ]),
+    ...groups.map((g) =>
+      el("section", { class: "tk-evidence-group", dataset: { provenance: g.id } }, [
+        el("h3", { class: "tk-evidence-h" }, [
+          g.label,
+          el("span", { class: "count" }, String(g.rows.length)),
+          g.note ? el("span", { class: "dim tk-evidence-note" }, g.note) : null,
+        ]),
+        reviewEvidenceList(g.rows, acList, { repos }),
+      ]),
+    ),
+  ]);
 }
 
 /**
@@ -11130,6 +11651,8 @@ function boundaryRef(ticketId) {
 function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null } = {}) {
   if (ticket) boundaryTickets.set(ticketId, ticket);
   const body = el("div", { class: "repo-panel-body" }, el("p", { class: "dim" }, "Loading repos…"));
+  // Read-only for two reasons: the ticket merged, or this token cannot change anything.
+  const merged = !ticket || ticket.status === "done";
   const card = el(
     "section",
     {
@@ -11137,13 +11660,18 @@ function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null }
       "aria-label": "The boundary",
     },
     [
-      panelHead("The boundary", readOnly ? "read-only: merged" : "where agents may play"),
+      panelHead(
+        "The boundary",
+        readOnly ? (merged ? "read-only: merged" : "read-only access") : "where agents may play",
+      ),
       el(
         "p",
         { class: "section-note dim" },
-        readOnly
+        readOnly && merged
           ? "Merged. The boundary stays as the record of where this ticket played; it can no longer change."
-          : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
+          : readOnly
+            ? "Where this ticket may write, read or test. This token can look, not change it."
+            : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
       ),
       body,
     ],
@@ -12375,6 +12903,9 @@ async function renderSettings() {
     el("p", { class: "boot-unsaved" }, ["Unsaved changes: ", idxDirty]),
   );
   instructions.sync();
+  // A read token sees the room, not its switches: every editor and button in it is
+  // off (the index's search still works). The strip under the header says why.
+  roLockAll(main);
   return wrap;
 }
 
@@ -13917,18 +14448,37 @@ async function renderCreate(param) {
     ...RISK_LEVELS.map((r) => el("option", { value: r }, r)),
   ]);
 
+  const validationMsg = el("p", { class: "form-error", role: "alert", hidden: "" });
+  // Create waits for a write repo: aria-disabled (not disabled) keeps it focusable,
+  // and the line under it says what is missing before anyone presses it.
+  const createHintId = `create-hint-${++fieldSeq}`;
+  const createHint = el("p", { class: "act-hint create-hint", id: createHintId });
+  const createBtn = el(
+    "button",
+    { class: "btn", type: "submit", "aria-describedby": createHintId },
+    "Create ticket",
+  );
+  roLock(createBtn);
+  const syncCreate = ({ hasWrite }) => {
+    createBtn.setAttribute("aria-disabled", String(!hasWrite));
+    createHint.hidden = hasWrite;
+    createHint.textContent = hasWrite
+      ? ""
+      : "Attach a write repo first: Create needs somewhere to deliver.";
+    if (hasWrite) validationMsg.hidden = true;
+  };
+
   // Feature A: the shared repo + scope selector. Suggestions re-populate when the
   // title/description/scope change (debounced), so the picker reflects the draft.
   const selector = renderRepoScopeSelector({
     nodes,
     allRepos,
     getDraft: () => ({ title: title.value.trim(), description: desc.value.trim() }),
+    onChange: (state) => syncCreate(state),
   });
   const debouncedSuggest = debounce(() => selector.refreshSuggestions(), 500);
   title.addEventListener("input", debouncedSuggest);
   desc.addEventListener("input", debouncedSuggest);
-
-  const validationMsg = el("p", { class: "form-error", role: "alert", hidden: "" });
 
   const form = el(
     "form",
@@ -13972,9 +14522,8 @@ async function renderCreate(param) {
       ]),
       selector.node,
       validationMsg,
-      el("div", { class: "btn-row" }, [
-        el("button", { class: "btn", type: "submit" }, "Create ticket"),
-      ]),
+      el("div", { class: "btn-row" }, [createBtn]),
+      createHint,
     ],
   );
 
@@ -14023,8 +14572,11 @@ async function renderCreate(param) {
  *   getSelection()      — { repoIds: [{repo_id, access}], scopeNodeIds: [] }
  *   hasWriteRepo()      — true iff ≥1 attached repo has write access
  *   refreshSuggestions()— re-query suggestions from the current draft + scopes
+ *
+ * `onChange({ hasWrite })` runs after every change to the attached repos (and once
+ * on the first render), so a form can hold its submit until there is a write repo.
  */
-function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
+function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
   // repo id → access ("write"|"read"|"test"). Insertion order is render order.
   const attached = new Map();
   const scopeNodeIds = new Set();
@@ -14160,6 +14712,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
     writeHint.textContent = hasWrite
       ? "✓ This ticket has a write target — it can be delivered."
       : "Needs at least one write repo, so the factory has somewhere to deliver.";
+    if (onChange) onChange({ hasWrite });
   }
 
   // --- suggestion population ------------------------------------------------
@@ -15419,14 +15972,22 @@ async function renderReview(param) {
           reason,
           captureLore,
         });
-        toast(wont ? `${ref} closed as won't do.` : `${ref} sent back to Refining.`, { ok: true });
-        if (captureLore) {
-          const cap = resp && resp.lore_capture;
-          if (cap && cap.captured)
-            toast("Filed as a lore draft — approve it in Memory's review queue.", { ok: true });
-          else if (cap)
-            toast("Sent back, but the lore draft could not be filed (memory is unavailable).", {});
-        }
+        // One toast for the act and the capture: two fired back to back, and the
+        // second replaced the first before it could be read.
+        const done = wont ? `${ref} closed as won't do` : `${ref} sent back`;
+        const cap = captureLore ? resp && resp.lore_capture : null;
+        // The draft waits for a human in Memory: say where, and link there.
+        if (cap && cap.captured)
+          toast(`${done} · reason filed as draft lore${cap.repo ? ` for ${cap.repo}` : ""}.`, {
+            ok: true,
+            link: {
+              href: cap.repo ? `#/memory/${encodeURIComponent(cap.repo)}` : "#/memory",
+              text: "Approve it in Memory",
+            },
+          });
+        else if (cap)
+          toast(`${done}, but the lore draft could not be filed (memory is unavailable).`);
+        else toast(wont ? `${done}.` : `${done} to Refining.`, { ok: true });
         router();
       },
     });
@@ -16953,9 +17514,12 @@ function renderRepoCommandsEditor(repo) {
 }
 
 // A discreet "Hide" button for a repo row (WG-006). Stops the row's navigate
-// click, confirms, then hides the repo and refreshes — it drops off the list and
+// click, asks in the shared sheet, then hides the repo and refreshes — it drops off the list and
 // reappears on the "Hidden repos" page.
 function hideRepoBtn(repo) {
+  return roLock(hideRepoBtnControl(repo));
+}
+function hideRepoBtnControl(repo) {
   return el(
     "button",
     {
@@ -16965,17 +17529,7 @@ function hideRepoBtn(repo) {
       title: "Hide this repo from the dashboard (reversible)",
       onclick: (e) => {
         e.stopPropagation();
-        guard(async () => {
-          if (
-            !window.confirm(
-              `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
-            )
-          )
-            return;
-          await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
-          toast(`${repo.name} hidden`, { ok: true });
-          router();
-        });
+        hideRepoSheet(repo, () => router());
       },
     },
     "Hide",
@@ -17252,11 +17806,16 @@ async function renderNode(id) {
       class: "btn danger small",
       type: "button",
       onclick: () =>
-        guard(async () => {
-          if (!window.confirm(`Delete the ground “${node.name}”? This cannot be undone.`)) return;
-          await api("DELETE", `/scope/nodes/${node.id}`);
-          toast("Ground deleted", { ok: true });
-          navigate("#/factory");
+        confirmSheet({
+          title: `Delete ${node.name}`,
+          intro: `The ground “${node.name}” is deleted from the Map. This cannot be undone.`,
+          confirm: "Delete ground",
+          tone: "danger",
+          onConfirm: async () => {
+            await api("DELETE", `/scope/nodes/${node.id}`);
+            toast("Ground deleted", { ok: true });
+            navigate("#/factory");
+          },
         }),
     },
     "Delete ground",
@@ -17770,21 +18329,11 @@ async function renderRepo(id) {
           type: "button",
           "aria-label": `Hide ${repo.name} from the dashboard`,
           title: "Hide this repo from the dashboard (reversible)",
-          onclick: () =>
-            guard(async () => {
-              if (
-                !window.confirm(
-                  `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
-                )
-              )
-                return;
-              await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
-              toast(`${repo.name} hidden`, { ok: true });
-              navigate("#/factory");
-            }),
+          onclick: () => hideRepoSheet(repo, () => navigate("#/factory")),
         },
         "Hide repo",
       );
+  roLock(hideBtn);
 
   const lede = t ? groundCountLine(t, { where: "in this repo" }) : null;
 
@@ -17824,21 +18373,23 @@ async function renderRepo(id) {
       title:
         "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
       onclick: () =>
-        guard(async () => {
-          const next = window.prompt(
-            `Default branch for “${repo.name}” — the base every delivery branches off:`,
-            repo.default_branch || "main",
-          );
-          if (next == null) return;
-          const branch = next.trim();
-          if (!branch || branch === repo.default_branch) return;
-          await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
-          toast(`${repo.name} default branch → ${branch}`, { ok: true });
-          router();
+        valueSheet({
+          title: `Default branch for ${repo.name}`,
+          intro:
+            "The base every delivery worktree branches off. A branch that does not exist fails delivery at worktree setup.",
+          label: "Default branch",
+          value: repo.default_branch || "main",
+          hint: "The branch name as git knows it, such as main or develop.",
+          onSave: async (branch) => {
+            await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
+            toast(`${repo.name} default branch → ${branch}`, { ok: true });
+            router();
+          },
         }),
     },
     "Edit",
   );
+  roLock(branchBtn);
   const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
   const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
     panelHead("The ground", "where the work is done", null, { kit: "claret" }),
@@ -17984,16 +18535,16 @@ function renderRepoScopeRow(repo, s) {
             type: "button",
             "aria-label": `Unlink from ${s.name}`,
             onclick: () =>
-              guard(async () => {
-                if (
-                  !window.confirm(
-                    `Unlink ${repo.name} from “${s.name}”? Existing tickets are unaffected.`,
-                  )
-                )
-                  return;
-                await api("DELETE", `/scope/repos/${s.association_id}`);
-                toast("Association removed", { ok: true });
-                router();
+              confirmSheet({
+                title: `Unlink ${repo.name}`,
+                intro: `${repo.name} is no longer mapped into “${s.name}”. Existing tickets are unaffected.`,
+                confirm: "Unlink",
+                tone: "danger",
+                onConfirm: async () => {
+                  await api("DELETE", `/scope/repos/${s.association_id}`);
+                  toast("Association removed", { ok: true });
+                  router();
+                },
               }),
           },
           "Unlink",
@@ -19823,6 +20374,115 @@ function renderPlanBuildModeToggle() {
  * round (a ticket's round is its dependency depth in the plan), then the Final
  * the factory adds on confirm, then the two ways to confirm.
  */
+// ---- Requirements agreed during clarification -----------------------------------
+// The planner asks questions; the human's answers are requirements ("links expire after
+// 30 minutes"). A proposal that dropped one used to be confirmed with only the brief, so
+// the acceptance ticket never carried it and the independent tester never checked it.
+// The proposal now lists every agreed answer, marks the ones no proposed criterion
+// covers, and confirming carries the kept ones into the acceptance ticket's criteria
+// (server: epic.agreed_requirements). Mirrors util/planClarifications.ts.
+const PB_STOPWORDS = new Set(
+  (
+    "the a an and or but of to in on at for with from by as is are be been it its this that " +
+    "these those should must will would can could may might shall do does did not no yes " +
+    "after before when then than so if we our you your they them their there here also " +
+    "just only all any each every some such very want need needs please"
+  ).split(" "),
+);
+function pbTokens(text) {
+  const words = new Set();
+  const numbers = new Set();
+  for (const tok of String(text || "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)) {
+    if (!tok) continue;
+    if (/^\p{N}+$/u.test(tok)) numbers.add(tok);
+    else if (tok.length >= 3 && !PB_STOPWORDS.has(tok)) words.add(tok);
+  }
+  return { words, numbers };
+}
+function pbCriterionCovers(criterion, answer) {
+  const a = pbTokens(answer);
+  if (!a.words.size && !a.numbers.size) return false;
+  const c = pbTokens(criterion);
+  for (const n of a.numbers) if (!c.numbers.has(n)) return false;
+  if (!a.words.size) return true;
+  let hit = 0;
+  for (const w of a.words) if (c.words.has(w)) hit++;
+  return hit * 2 >= a.words.size;
+}
+/** The answers given to the planner's questions in this chat (the brief is not one). */
+function planAgreedRequirements() {
+  const out = [];
+  let pending = null;
+  for (const h of (planBuildState && planBuildState.history) || []) {
+    if (!h) continue;
+    if (h.role === "assistant") {
+      pending = Array.isArray(h.questions)
+        ? h.questions.filter((q) => q && String(q).trim())
+        : null;
+      continue;
+    }
+    const answer = typeof h.answer === "string" ? h.answer.trim() : "";
+    if (pending && answer) {
+      out.push({
+        ...(pending.length ? { question: pending.join(" ").slice(0, 4000) } : {}),
+        answer: answer.slice(0, 4000),
+      });
+    }
+    pending = null;
+  }
+  return out.slice(0, 50);
+}
+
+function renderPlanAgreed(plan, agreed, withFinal) {
+  if (!agreed.length) return null;
+  const tickets = plan.tickets || [];
+  const acText = (ac) => (typeof ac === "string" ? ac : (ac && ac.text) || "");
+  const keep = (planBuildState.agreedKeep = planBuildState.agreedKeep || {});
+  const items = agreed.map((r, i) => {
+    const coveredBy = [];
+    tickets.forEach((t, ti) => {
+      const acs = Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria : [];
+      if (acs.some((ac) => pbCriterionCovers(acText(ac), r.answer))) coveredBy.push(`T${ti + 1}`);
+    });
+    if (keep[i] === undefined) keep[i] = true;
+    const box = el("input", {
+      type: "checkbox",
+      class: "pb-agreed-keep",
+      "aria-label": `Add “${r.answer.slice(0, 80)}” to the acceptance criteria`,
+      ...(withFinal ? {} : { disabled: "" }),
+      onchange: (e) => {
+        keep[i] = e.target.checked;
+      },
+    });
+    box.checked = withFinal && keep[i];
+    return el("li", { class: `pb-agreed-item${coveredBy.length ? "" : " is-uncovered"}` }, [
+      el("label", { class: "pb-agreed-label" }, [box, el("span", {}, r.answer)]),
+      r.question ? el("p", { class: "pb-agreed-q" }, `Asked: ${r.question}`) : null,
+      el(
+        "p",
+        { class: "pb-agreed-cover" },
+        coveredBy.length
+          ? `Covered by ${coveredBy.join(", ")}'s criteria`
+          : "No proposed ticket's criteria cover this",
+      ),
+    ]);
+  });
+  const uncovered = items.filter((li) => li.classList.contains("is-uncovered")).length;
+  return el("section", { class: "pb-agreed", "aria-label": "Requirements agreed while planning" }, [
+    el("h4", { class: "pb-agreed-title" }, "Agreed while planning"),
+    el(
+      "p",
+      { class: "pb-agreed-note" },
+      withFinal
+        ? `Each one you keep becomes a criterion of the Final, so the independent tester checks it.${uncovered ? ` ${plural(uncovered, "requirement")} ${uncovered === 1 ? "is" : "are"} in no ticket's criteria.` : ""}`
+        : "This epic has no Final (acceptance is off), so nothing carries these into a criterion: add them to a ticket before you confirm.",
+    ),
+    el("ul", { class: "pb-agreed-list" }, items),
+  ]);
+}
+
 function renderPlanProposal(plan) {
   const epic = plan.epic || {};
   const tickets = plan.tickets || [];
@@ -19935,6 +20595,9 @@ function renderPlanProposal(plan) {
       ]),
     ],
   );
+
+  const agreedSection = renderPlanAgreed(plan, planAgreedRequirements(), withFinal);
+  if (agreedSection) wrap.appendChild(agreedSection);
 
   wrap.appendChild(
     el("div", { class: "pb-confirm-row" }, [
@@ -20140,8 +20803,20 @@ async function confirmPlanBuild(plan, opts = {}) {
     );
     const brief =
       (planBuildState && planBuildState.brief) || (firstTurn ? firstTurn.brief : null) || null;
-    const epic = brief ? { ...plan.epic, brief: String(brief).slice(0, 20000) } : plan.epic;
-    const res = await api("POST", "/epics", { epic, tickets });
+    const withBrief = brief ? { ...plan.epic, brief: String(brief).slice(0, 20000) } : plan.epic;
+    // The answers given while the planner asked its questions ride on the epic as its
+    // agreed requirements (the ones the human kept in the proposal), so the acceptance
+    // ticket carries each as a criterion. Explicit even when empty: the server then
+    // never re-derives what the human chose to drop.
+    const keep = (planBuildState && planBuildState.agreedKeep) || {};
+    const agreed = planAgreedRequirements().filter((_, i) => keep[i] !== false);
+    const epic = { ...withBrief, agreed_requirements: agreed };
+    const sessionId = planBuildState && planBuildState.sessionId;
+    const res = await api("POST", "/epics", {
+      epic,
+      tickets,
+      ...(sessionId ? { plan_session_id: sessionId } : {}),
+    });
     // Archive the session as confirmed now that the epic has been created.
     await archivePlanBuildSession("confirmed");
     const numbers = res.ticket_numbers || [];
@@ -20868,7 +21543,18 @@ async function freezeCreatedSpec() {
 function buildFromFrozenSpec() {
   const spec = specBuildState && specBuildState.createdSpec;
   if (!spec || spec.status !== "frozen") return;
-  const clauses = (Array.isArray(spec.clauses) ? spec.clauses : [])
+  // The server's spec row carries its clauses as `clauses_json` (a string); only a
+  // locally built object has a `clauses` array. Reading only the array made this
+  // button do nothing at all on a real spec.
+  let raw = spec.clauses;
+  if (!Array.isArray(raw)) {
+    try {
+      raw = JSON.parse(spec.clauses_json || "[]");
+    } catch {
+      raw = [];
+    }
+  }
+  const clauses = (Array.isArray(raw) ? raw : [])
     .filter((c) => c && c.clause_id && c.kind && c.text)
     .map((c) => ({
       clause_id: c.clause_id,
@@ -21958,19 +22644,19 @@ async function renderMemory(param) {
   await mountLoreCard(loreSlot, repos, reload);
 
   // Refresh without moving anything: an unchanged read keeps the DOM (and the
-  // open folds, the focus and the scroll) as it is.
-  wrap.dataset.sig = hashText(
-    JSON.stringify([
-      repos.map((r) => r.name),
-      allDrafts,
-      digestRes,
-      featuresRes,
-      loreSlot._res || null,
-      { ...loreFilter, foldOpen: undefined },
-      memoryState,
-    ]),
-  );
+  // open folds, the focus and the scroll) as it is. The lore card re-reads on its
+  // own (a filter or a page change) and then re-signs the view (mountLoreCard),
+  // so the next refresh compares against what is on screen, not the first read.
+  wrap._memSigBase = [repos.map((r) => r.name), allDrafts, digestRes, featuresRes];
+  wrap.dataset.sig = memorySignature(wrap._memSigBase, loreSlot._res);
   return wrap;
+}
+
+/** The Memory view's data signature: the view's reads, the lore page and its filters. */
+function memorySignature(base, loreRes) {
+  return hashText(
+    JSON.stringify([...base, loreRes || null, { ...loreFilter, foldOpen: undefined }, memoryState]),
+  );
 }
 
 /**
@@ -22048,8 +22734,11 @@ async function remountMemory(param) {
   }
   const se = document.scrollingElement || document.documentElement;
   const y = se.scrollTop;
+  const restoreForms = carryOpenForms(app.firstElementChild, content);
   mountView(content);
   se.scrollTop = y;
+  // A form still open (a reject the server refused keeps its reason) keeps the focus.
+  if (restoreForms()) return;
   // Triage keeps its place: focus goes to the next draft's Approve (or the card).
   if (focusIdx >= 0) {
     const next = [...content.querySelectorAll(".lore-row[data-status='draft'] .lore-approve")];
@@ -22072,6 +22761,7 @@ const loreFilter = {
   status: "",
   kind: "",
   repo: "",
+  q: "", // the search box over the page shown (kept across a refresh)
   pageRepo: null,
   offset: 0,
   limit: 50,
@@ -22096,6 +22786,9 @@ async function mountLoreCard(slot, repos, reload) {
     loreFilter.repo = memoryState.repo;
     loreFilter.offset = 0;
   }
+  // Only the newest read lands: two quick filter changes must not let the older
+  // answer paint over the newer one.
+  const seq = (slot._seq = (slot._seq || 0) + 1);
   let res;
   try {
     res = await api("GET", loreQueryPath(), undefined, { signal: routeSignal() });
@@ -22103,16 +22796,23 @@ async function mountLoreCard(slot, repos, reload) {
     if (e && e.code === "ABORTED") throw e;
     res = { available: false, reason: e && e.message ? e.message : "The lore request failed." };
   }
+  if (seq !== slot._seq) return;
   if (!slot.isConnected && slot.childNodes.length) return; // view was torn down mid-fetch
   slot._res = res;
+  const card = renderLoreList(res, loreFilter.repo, {
+    repos,
+    refresh: () => mountLoreCard(slot, repos, reload),
+    reload: reload || (() => mountLoreCard(slot, repos, reload)),
+  });
+  // The read can land after the operator opened a reject on the card it replaces
+  // (a slow server): the open form moves over to its row in the new page.
+  const restoreForms = carryOpenForms(slot.firstElementChild, card);
   clear(slot);
-  slot.appendChild(
-    renderLoreList(res, loreFilter.repo, {
-      repos,
-      refresh: () => mountLoreCard(slot, repos, reload),
-      reload: reload || (() => mountLoreCard(slot, repos, reload)),
-    }),
-  );
+  slot.appendChild(card);
+  restoreForms();
+  // Re-sign the view: what is on screen is now this page under these filters.
+  const view = slot.closest(".view-memory");
+  if (view && view._memSigBase) view.dataset.sig = memorySignature(view._memSigBase, res);
 }
 
 /**
@@ -22522,7 +23222,14 @@ function renderLoreList(res, repo, opts = {}) {
             { class: "btn small lore-reject", type: "button", "aria-label": `Reject “${l.title}”` },
             "Reject",
           );
-          const actionsEl = el("div", { class: "lore-actions" }, [approve, reject]);
+          roLock(approve);
+          roLock(reject);
+          // Keyed by the draft's id, so an open reject survives a re-render (carryOpenForms).
+          const actionsEl = el(
+            "div",
+            { class: "lore-actions", dataset: { keepKey: `lore:${l.id}` } },
+            [approve, reject],
+          );
           // Reject asks for an optional reason in place (the memory CLI recommends
           // one: the agent that filed the draft reads it). Enter rejects, with or
           // without words; Escape puts the buttons back.
@@ -22545,6 +23252,7 @@ function renderLoreList(res, repo, opts = {}) {
               el("div", { class: "lore-reject-btns" }, [confirm, cancel]),
             ]);
             const close = () => {
+              delete actionsEl.dataset.keepOpen;
               actionsEl.replaceChildren(approve, reject);
               reject.focus();
             };
@@ -22566,6 +23274,7 @@ function renderLoreList(res, repo, opts = {}) {
               });
             });
             actionsEl.replaceChildren(form);
+            actionsEl.dataset.keepOpen = "1";
             why.focus();
           });
           return actionsEl;
@@ -22609,6 +23318,7 @@ function renderLoreList(res, repo, opts = {}) {
                 "Served into a ticket that was then reworked or blocked — curate it with `memory review`.",
               )
             : null,
+          l.id ? loreHistory(l) : null,
         ]),
         // Ratification: only a DRAFT can be approved or rejected (an active record is
         // deprecated/superseded through the CLI's lifecycle verbs, not from here).
@@ -22617,6 +23327,20 @@ function renderLoreList(res, repo, opts = {}) {
     );
   };
   const list = el("div", { class: "lore-list" });
+  // The search box narrows the rows shown in place (what each row says: title,
+  // summary, kind, repos, tags, source); every word must match.
+  const searchText = new Map();
+  const rowOf = (l) => {
+    const node = row(l);
+    searchText.set(
+      node,
+      [l.title, l.summary, l.kind, l.source, ...(l.repos || []), ...(l.tags || [])]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase(),
+    );
+    return node;
+  };
   for (const g of LORE_GROUPS) {
     const items = lore.filter((l) => g.statuses.includes(l.status));
     if (!items.length) continue;
@@ -22626,7 +23350,7 @@ function renderLoreList(res, repo, opts = {}) {
         el("span", { class: "count" }, String(items.length)),
       ]),
     );
-    for (const l of items) list.appendChild(row(l));
+    for (const l of items) list.appendChild(rowOf(l));
   }
   const other = lore.filter((l) => !LORE_GROUPS.some((g) => g.statuses.includes(l.status)));
   if (other.length) {
@@ -22636,8 +23360,9 @@ function renderLoreList(res, repo, opts = {}) {
         el("span", { class: "count" }, String(other.length)),
       ]),
     );
-    for (const l of other) list.appendChild(row(l));
+    for (const l of other) list.appendChild(rowOf(l));
   }
+  card.appendChild(loreSearch(list, searchText, lore.length, total));
   card.appendChild(list);
   card.appendChild(loreNote);
 
@@ -22676,6 +23401,119 @@ function renderLoreList(res, repo, opts = {}) {
     );
   }
   return card;
+}
+
+/**
+ * The search box over the lore rows shown: every word must appear in a row (title,
+ * summary, kind, repos, tags, source). It narrows in place, hides a group heading
+ * left with no row, and says how many match; when the store holds more than this
+ * page it says the search covers this page, which the filters above narrow.
+ */
+function loreSearch(list, searchText, shown, total) {
+  const input = el("input", {
+    type: "search",
+    class: "lore-search-input",
+    value: loreFilter.q,
+    autocomplete: "off",
+    placeholder: "Words in a title, summary, tag or repo",
+  });
+  const count = el("p", { class: "lore-search-count dim", role: "status" });
+  const apply = () => {
+    loreFilter.q = input.value;
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    let hits = 0;
+    let heading = null;
+    let headingHits = 0;
+    const closeHeading = () => {
+      if (heading) heading.hidden = words.length > 0 && headingHits === 0;
+    };
+    for (const node of list.children) {
+      if (node.tagName === "H3") {
+        closeHeading();
+        heading = node;
+        headingHits = 0;
+        continue;
+      }
+      const text = searchText.get(node) || "";
+      const match = words.every((w) => text.includes(w));
+      node.hidden = !match;
+      if (match) {
+        hits += 1;
+        headingHits += 1;
+      }
+    }
+    closeHeading();
+    count.textContent = words.length
+      ? `${hits} of the ${plural(shown, "record")} shown ${hits === 1 ? "matches" : "match"}${total > shown ? ` (the store holds ${total}: the filters above reach the rest)` : ""}.`
+      : "";
+    count.hidden = !words.length;
+  };
+  input.addEventListener("input", apply);
+  apply();
+  return el("div", { class: "lore-search" }, [field("Search lore", input), count]);
+}
+
+/**
+ * A lore row's History: every earlier version of the record (each update snapshots
+ * the one before), newest first, read on first open from
+ * GET /api/memory/lore/:id/history. Read-only: it changes nothing. Which rows are
+ * open, and what they read, outlive a live refresh of the Memory view: an open
+ * History is never folded away (or read again) under the reader.
+ */
+const loreHistoryOpen = new Set();
+const loreHistoryRead = new Map(); // lore id → the pending or settled read
+function loreHistory(l) {
+  const body = el("div", { class: "lore-history-body" });
+  const box = el("details", { class: "lore-history" }, [el("summary", {}, "History"), body]);
+  const line = (v, current) =>
+    el("li", { class: `lore-version${current ? " is-current" : ""}` }, [
+      el("p", { class: "lv-head" }, [
+        el("b", { class: "tabnum" }, `v${v.version}`),
+        ` · ${current ? "current" : v.status} · `,
+        el("time", { datetime: v.at }, v.at ? fmtDay(v.at) : "undated"),
+      ]),
+      v.title && v.title !== l.title ? el("p", { class: "lv-title" }, v.title) : null,
+      v.summary ? el("p", { class: "lv-summary" }, v.summary) : null,
+    ]);
+  const load = async () => {
+    let read = loreHistoryRead.get(l.id);
+    if (!read) {
+      body.replaceChildren(el("p", { class: "dim" }, "Reading the history…"));
+      read = api("GET", `/api/memory/lore/${encodeURIComponent(l.id)}/history`).catch((e) => ({
+        available: false,
+        reason: (e && e.message) || "the request failed",
+      }));
+      loreHistoryRead.set(l.id, read);
+    }
+    const h = await read;
+    if (!h || !h.available) {
+      loreHistoryRead.delete(l.id); // let a later open try again
+      body.replaceChildren(
+        el("p", { class: "dim" }, `History unavailable: ${(h && h.reason) || "no answer"}.`),
+      );
+      return;
+    }
+    body.replaceChildren(
+      h.versions.length
+        ? el(
+            "ol",
+            { class: "lore-versions", "aria-label": `Versions of “${l.title}”, newest first` },
+            [line(h.current, true), ...h.versions.map((v) => line(v, false))],
+          )
+        : el("p", { class: "dim" }, "No earlier versions: this record has not been edited."),
+    );
+  };
+  box.addEventListener("toggle", () => {
+    if (box.open) {
+      loreHistoryOpen.add(l.id);
+      void load();
+    } else loreHistoryOpen.delete(l.id);
+  });
+  if (loreHistoryOpen.has(l.id)) {
+    box.open = true;
+    void load();
+  }
+  return box;
 }
 
 // ===========================================================================
@@ -24484,14 +25322,26 @@ async function renderFloor() {
   const streamTimer = setTimeout(paintStream, 6500);
   wrap.appendChild(streamP);
 
-  if (!m.open.length && !m.despatched.length)
+  // Quiet whenever no parcel is in play, not only before the first despatch: after
+  // the day's last merge the floor is just as empty, so say so, with the day's count.
+  if (!m.open.length)
     wrap.appendChild(
       el("div", { class: "empty-state fl-quiet" }, [
-        el("p", { class: "es-title" }, [
-          "The floor is quiet: no tickets in play. ",
-          el("a", { href: "#/create" }, "Plan a build"),
-          " to start the shift.",
-        ]),
+        el(
+          "p",
+          { class: "es-title" },
+          m.despatched.length
+            ? [
+                `The floor is quiet: no tickets in play, ${m.despatched.length} despatched today. `,
+                el("a", { href: "#/create" }, "Plan a build"),
+                " to start the next one.",
+              ]
+            : [
+                "The floor is quiet: no tickets in play. ",
+                el("a", { href: "#/create" }, "Plan a build"),
+                " to start the shift.",
+              ],
+        ),
       ]),
     );
 

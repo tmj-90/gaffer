@@ -1021,7 +1021,7 @@ gaffer_mcp_runtime_set_env() {
 # golden (packages/crew/test/fixtures/tick-context/prompt.fresh.golden.txt).
 #
 # Usage: gaffer_render_delivery_prompt <fresh|resume|bootstrap>   → prompt on STDOUT
-#   The RAW inputs (TITLE, _RF, WT_ROWS, READ_ROOTS, SKILLS, LENSES, the context
+#   The RAW inputs (TITLE, _RF, _RD, WT_ROWS, READ_ROOTS, SKILLS, LENSES, the context
 #   blocks, WORK_BRANCH, PRIMARY_REPO; B_SKILLS/B_DIR for bootstrap) are read from
 #   the ambient tick.sh scope and assembled into the renderer's JSON document by
 #   _gaffer_prompt_inputs_json below. The render carries no trailing newline.
@@ -1045,7 +1045,8 @@ gaffer_render_delivery_prompt() {
 # ── Typed branch input assembly: build the renderPromptCli JSON document from the
 #    ambient RAW inputs (mirrors runner/test/capture-context-golden.sh's inputs.json
 #    emitter). reviewFeedbackReasons is recovered from the pre-block "  - " lines in
-#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS.
+#    $_RF; resolvedDecisions from the JSON in $_RD; writeRepos from WT_ROWS ($5 path,
+#    $2 name); readRoots from READ_ROOTS.
 #    json-tool.mjs (node) json-encodes arbitrary title/path bytes safely. ───────
 _gaffer_prompt_inputs_json() {
   local variant="$1"
@@ -1056,7 +1057,7 @@ _gaffer_prompt_inputs_json() {
   local resuming=false
   [ "$variant" = "resume" ] && resuming=true
   GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_RESUMING="$resuming" GF_SKILLS="${SKILLS:-}" \
-  GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
+  GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_RD="${_RD:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
   GF_PCB="${PRODUCT_CONTEXT_BLOCK:-}" GF_WORK_BRANCH="${WORK_BRANCH:-}" \
   GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" gaffer_json prompt-inputs "$variant"
 }
@@ -2169,6 +2170,16 @@ gaffer_ticket_is_trivial() {
 # resolved diff (never a silent landing). 0 = off (a conflict holds the ticket at
 # ready_for_merge for a human, and its dependents wait). Bounded by GAFFER_MERGE_TIMEOUT_MS.
 : "${GAFFER_CONFLICT_RESOLVER:=1}"
+# MERGE GATE (lib/land.sh, bin/merge-ticket.mjs): every landing first builds the merge of
+# the approved commit onto the CURRENT target in a scratch worktree and runs the repo's
+# DoD gates on that merge (bin/dod-regate.sh: test, lint and the same typecheck command
+# as the delivery gate, gaffer_dod_typecheck_cmd); a red combination is held for a human
+# (blocked, merge_gate_red) and the target is not touched. The gated merge commit lands
+# only while the target still is the gated head; a target that moved meanwhile is
+# re-gated up to this many times, then the ticket waits for the next run. Always on
+# (GAFFER_DOD=0, which turns every gate off, is the only way to land ungated).
+: "${GAFFER_MERGE_GATE_RETRIES:=2}"
+export GAFFER_MERGE_GATE_RETRIES   # read by bin/merge-ticket.mjs (a child process)
 gaffer_needs_security_review() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _paths _re
   GAFFER_SECURITY_REVIEW_REASON=""

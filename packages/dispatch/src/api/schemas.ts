@@ -4,6 +4,8 @@ import { z } from "zod";
 import "../util/zod3Compat.js";
 
 import {
+  agreedRequirementInput,
+  checkCommandText,
   GIT_REF_SAFE,
   GIT_REF_SAFE_MESSAGE,
   PR_URL_SAFE,
@@ -132,7 +134,7 @@ export const addAcBody = z.object({
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().optional(),
   /** MACHINE-CHECKABLE AC: shell command the runner executes to verify this AC. */
-  check_command: z.string().trim().min(1).max(2_000).optional(),
+  check_command: checkCommandText.optional(),
 });
 export type AddAcBody = z.infer<typeof addAcBody>;
 
@@ -568,7 +570,11 @@ export const createEpicBody = z.object({
     // and the opt-out for epics that need no build-level acceptance.
     brief: z.string().max(20_000).optional(),
     acceptance: z.boolean().optional(),
+    // The requirements agreed during planning clarification (each becomes an acceptance
+    // criterion); when absent they are read from `plan_session_id`.
+    agreed_requirements: z.array(agreedRequirementInput).max(50).optional(),
   }),
+  plan_session_id: z.string().trim().min(1).max(200).optional(),
   tickets: z.array(epicTicketBody).min(1).max(100),
 });
 export type CreateEpicBody = z.infer<typeof createEpicBody>;

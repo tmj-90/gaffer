@@ -42,6 +42,13 @@ done
 grep -q "^DISPATCH_TESTER_CMD=" "$CAP" && fail "the dead DISPATCH_TESTER_CMD is still exported to the server" \
   || ok "no dead DISPATCH_TESTER_CMD in the server env (the tick runs bin/tester-run.mjs itself)"
 grep -q "^GAFFER_TICK_TIMEOUT=" "$CAP" && fail "runner-only knob leaked into the server env" || ok "runner-only knobs are unset for the server (same scrub as the detached path)"
+# …and so are the bounds the config derived from them (else a dashboard tick kept a
+# 77s-derived outer bound under the default 1800s per-call cap).
+for k in GAFFER_TICK_OUTER_TIMEOUT GAFFER_CLAIM_TTL; do
+  grep -q "^$k=" "$CAP" && fail "$k (derived from the dropped GAFFER_TICK_TIMEOUT) leaked into the server env" || ok "$k derived from a tick-only knob is not in the server env"
+done
+GAFFER_TICK_OUTER_TIMEOUT=999 run_fg "$WORK/d1b" >/dev/null
+grep -q "^GAFFER_TICK_OUTER_TIMEOUT=999$" "$CAP" && ok "an operator-set GAFFER_TICK_OUTER_TIMEOUT stays" || fail "the operator's GAFFER_TICK_OUTER_TIMEOUT was scrubbed"
 [ -f "$WORK/d1/dashboard.pid" ] && fail "foreground must not write a pid file" || ok "no pid file (the supervisor owns the process)"
 
 echo "== config-derived settings never reach the server as env (else the UI shows them env-locked) =="

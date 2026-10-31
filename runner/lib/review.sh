@@ -594,6 +594,18 @@ EOF
           [ "$NEWSTATUS" = "in_review" ] && _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
           [ "$REVIEW_MODE" = "both" ] && [ "$R_VERDICT" = "approve" ] && [ -z "$R_HELD_REASON" ] \
             && R_HELD_REASON="REVIEW_MODE=both: the agent screened it; a human confirms"
+          # An ADVISORY CHANGES (a real verdict the runner may not act on here) is recorded
+          # as SYSTEM evidence under a fixed prefix (ADVISORY_REVIEW_PREFIX in dispatch's
+          # boardService.ts), so the Work card tells the human the reviewer agent asked for
+          # changes before they open the diff. It is a note: it moves nothing.
+          if [ "$R_VERDICT" = "changes" ] && [ -z "$R_HELD_REASON" ] && [ "$NEWSTATUS" = "in_review" ]; then
+            _radv="$(gaffer_review_reason "$R_RESULT" \
+              | sed -E 's/^[Rr][Ee][Cc][Oo][Mm][Mm][Ee][Nn][Dd][ _-]*[Cc][Hh][Aa][Nn][Gg][Ee][Ss][[:space:]:-]*//' \
+              | cut -c1-500)"
+            wg attach-evidence "$RNUM" --type manual_note \
+              --summary "Reviewer agent (advisory): changes requested — ${_radv:-see its notes on the ticket}" \
+              >/dev/null 2>&1 || true
+          fi
           log "agent review of #$RNUM finished (rc=$rrc, status=$NEWSTATUS, verdict=$R_VERDICT${R_SECURITY:+, security=$R_SECURITY}, approve_gate=$_SHIP_APPROVE) — ADVISORY/HELD; awaiting HUMAN approval${R_HELD_REASON:+ [$R_HELD_REASON]}"
           ;;
       esac

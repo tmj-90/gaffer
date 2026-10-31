@@ -85,7 +85,8 @@
     .appbar,
     .bottomnav,
     .toast,
-    .offline-strip {
+    .offline-strip,
+    .ro-strip {
       display: none !important;
     }
     body {

@@ -45,6 +45,9 @@ This scans + registers the repo **and** runs a `claude -p` analysis that writes 
 **Repo Digest** (what the codebase is + how it's structured), a **Feature ledger** (the
 product capabilities it ships — not infrastructure), and grounded, cited **lore drafts**
 into the memory store. Re-running it is idempotent — it refreshes rather than duplicating.
+A different repository with the same directory name (two unrelated `api` checkouts) is
+refused rather than merged into the first one's record; onboard it under its own name with
+`runner/gaffer onboard /path/to/other/api --name other-api`.
 
 > Lore lands as **drafts** (gated). Approve what's worth keeping with the memory CLI;
 > nothing is auto-promoted.
@@ -168,9 +171,15 @@ confirm, the approval is refused and nothing is approved. Non-interactively, pas
 commits you reviewed: `runner/gaffer approve 1 --commit <repo>=<sha>` (one per repo;
 `runner/gaffer wg ticket diff 1 --heads` prints them).
 
-`merge` fast-forwards your repo's default branch from the ticket branch, marks the
-ticket **done**, refreshes the repo's digest + feature ledger, and deletes the merged
-branch. A merge conflict is never forced: the ticket goes back for rework and re-approval.
+`merge` first builds the merge of the approved commit onto your current default branch in
+a scratch worktree and runs your repo's test/lint gates on **that** merge (the merge gate):
+only if the combination passes does it land that exact merge commit on the default branch,
+mark the ticket **done**, refresh the repo's digest + feature ledger and delete the merged
+branch. A ticket that spans several repositories lands one such gated merge per
+repository and is done only when all of them landed. A combination that fails (each side
+passed alone) never lands: the ticket is held for you (*blocked*, with the failing output
+on it) and your default branch is untouched.
+A merge conflict is never forced: the ticket goes back for rework and re-approval.
 Run your repo's tests afterwards; the change is on your default branch, in your checkout.
 
 For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy

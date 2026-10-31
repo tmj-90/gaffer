@@ -2,7 +2,7 @@
 # gaffer — friendly front door to the factory.
 #
 #   gaffer setup                      nothing → running: build + init + open the UI
-#   gaffer onboard <path> [--standalone]   scan + register a repo (standalone scope — the default; map to a
+#   gaffer onboard <path> [--standalone] [--name <alias>]   scan + register a repo (standalone scope — the default; map to a
 #                                     wider scope in the Factory Map UI)
 #   gaffer dashboard [--restart|--lan|--foreground]
 #                                     start the web dashboard (--lan = token-protected, on your LAN;
@@ -50,7 +50,7 @@ err() { printf "  ${c_red}✗${c_off} %s\n" "$*" >&2; }
 # argument is pointed at. Kept next to the header block above, which is `gaffer help`.
 usage() {
   case "$1" in
-    onboard)   echo "usage: gaffer onboard <path> [--standalone]   (standalone scope is the default; map it to a wider scope in the Factory Map UI)" ;;
+    onboard)   echo "usage: gaffer onboard <path> [--standalone] [--name <alias>]   (standalone scope is the default; map it to a wider scope in the Factory Map UI; --name registers it under an alias when another repository already has its directory name)" ;;
     dashboard) echo "usage: gaffer dashboard [--restart] [--lan] [--foreground]" ;;
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
@@ -109,11 +109,16 @@ esac
 case "$cmd" in
 
 onboard)
-  # --standalone is the default scope (accepted, a no-op); any other option is refused.
-  path=""
-  for a in "$@"; do
+  # --standalone is the default scope (accepted, a no-op); --name <alias> registers the
+  # repo under an alias (needed when a DIFFERENT repository already has its directory
+  # name); any other option is refused.
+  path=""; alias=""
+  while [ "$#" -gt 0 ]; do
+    a="$1"; shift
     case "$a" in
       --standalone) ;;
+      --name) [ "$#" -gt 0 ] || bad_arg onboard "--name needs an alias"; alias="$1"; shift ;;
+      --name=*) alias="${a#--name=}" ;;
       -*) bad_arg onboard "unknown option '$a'" ;;
       *) [ -z "$path" ] || bad_arg onboard "one path only (got '$path' and '$a')"; path="$a" ;;
     esac
@@ -129,7 +134,7 @@ onboard)
   GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" \
     MEMORY_DB="$MEMORY_DB" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" \
     GAFFER_PLAN_MODEL="${GAFFER_PLAN_MODEL:-}" GAFFER_TICK_TIMEOUT="${GAFFER_TICK_TIMEOUT:-}" GAFFER_MAX_TURNS="${GAFFER_MAX_TURNS:-}" \
-    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" --summary 2>&1 >/dev/null \
+    DISPATCH_ONBOARD_REPO="$abs" node "$RUNNER_DIR/bin/onboard-run.mjs" --repo "$abs" ${alias:+--name "$alias"} --summary 2>&1 >/dev/null \
     | sed 's/^/  /'
   # --summary: a few lines here (registered name, stack/test, model analysis yes/no and
   # why not, the intake decision, the next step); the full log (crew's scan JSON, every

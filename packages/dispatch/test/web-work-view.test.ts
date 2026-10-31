@@ -122,6 +122,33 @@ describe("web: the Match Day Work view", () => {
     expect(ready.querySelector(".ac-progress")?.textContent).toBe("AC 1/2");
   });
 
+  it("an in_review card says when the reviewer agent asked for changes (advisory)", async () => {
+    board = {
+      columns: columns({
+        in_review: [
+          card(5, "in_review", {
+            advisoryReview: {
+              verdict: "changes",
+              reason: "add a docstring to addTask",
+              at: "2026-10-01T00:00:00Z",
+            },
+          }),
+          card(6, "in_review"),
+        ],
+      }),
+      closed: [],
+      wontDo: [],
+    };
+    mountShell("#/work");
+    await loadApp();
+    const five = document.querySelector('.board-card[data-id="t-5"] .card-advisory');
+    expect(five?.textContent).toBe(
+      "Reviewer agent: changes requested — add a docstring to addTask",
+    );
+    expect(five?.getAttribute("title")).toContain("advisory");
+    expect(document.querySelector('.board-card[data-id="t-6"] .card-advisory')).toBeNull();
+  });
+
   it("shows the yellow card for what the human queue lists, not for every status", async () => {
     board = {
       columns: columns({ in_review: [card(3, "in_review")], blocked: [card(4, "blocked")] }),

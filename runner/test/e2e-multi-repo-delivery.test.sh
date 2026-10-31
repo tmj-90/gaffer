@@ -226,6 +226,9 @@ git -C "$REPO_B" merge-base --is-ancestor "$HB" main && ok "repoB's main now car
 git -C "$REPO_A" merge-base --is-ancestor "$HA" main && ok "repoA's main still carries its change" || fail "repoA main lost $HA"
 [ "$(git -C "$REPO_A" rev-list --merges --count main)" = "$A_MERGES" ] && ok "repoA was NOT merged a second time" || fail "repoA re-merged on the retry"
 [ "$(status_of "$NUM")" = "done" ] && ok "with BOTH repos landed the ticket is done" || fail "ticket after full landing: $(status_of "$NUM")"
+grep -q "MERGE GATE PASS .* in repoB passes the gates" "$WORK/merge.log" \
+  && ok "repoB's landing went through the merge gate on its current main (dashboard path)" \
+  || fail "no merge-gate pass for repoB in merge.log: $(tr '\n' '|' < "$WORK/merge.log" | cut -c1-400)"
 
 echo "== LAND (merge lane path, lib/land.sh): a second two-repo ticket lands in both repos =="
 N2="$(wg ticket create -t "second spanning ticket" --description "lane path" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
@@ -261,6 +264,59 @@ LANE_LOG="$WORK/lane.log"
 git -C "$REPO_A" merge-base --is-ancestor "$H2A" main && git -C "$REPO_B" merge-base --is-ancestor "$H2B" main \
   && ok "the merge lane landed the change on BOTH repos' default branches" || fail "lane landing missed a repo: $(tr '\n' '|' < "$LANE_LOG")"
 [ "$(status_of "$N2")" = "done" ] && ok "the lane marked the two-repo ticket done only after both landed" || fail "lane ticket status: $(status_of "$N2")"
+[ "$(grep -c "MERGE GATE PASS" "$LANE_LOG")" = "2" ] \
+  && ok "the lane gated EACH repo's merge on its current main (two merge-gate passes)" \
+  || fail "expected two merge-gate passes in the lane log: $(tr '\n' '|' < "$LANE_LOG")"
+
+echo "== MERGE GATE on a SECONDARY repo (lane path): repoB's combination is red → held =="
+# Each side passes alone; the combination fails repoB's gate: the branch adds combo-a, and
+# after the approval main gains combo-b. repoA (primary) lands and is recorded; repoB's
+# main is untouched and the ticket is held for a human (blocked, merge_gate_red).
+N3="$(wg ticket create -t "third spanning ticket" --description "secondary gate red" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+AC3="$(wg ac add "$N3" -t "both" 2>/dev/null | jget 'd.ac_id')"
+wg ticket repo-access set "$N3" repoA --access write --relation confirmed >/dev/null 2>&1
+wg ticket repo-access set "$N3" repoB --access write --relation confirmed >/dev/null 2>&1
+wg ticket ready "$N3" >/dev/null 2>&1
+TOK3="$(wg claim-ticket "$N3" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
+BR3="gaffer/t$N3"
+git -C "$REPO_A" worktree add -q -b "$BR3" "$WORK/wt3A" main; git -C "$REPO_B" worktree add -q -b "$BR3" "$WORK/wt3B" main
+( export WT="$WORK/wt3A" TICKET="$N3" AC_ID="$AC3" CLI_JS DB GAFFER_CLAIM_TOKEN="$TOK3" MARK="gateA"; "$STUB" -p x >/dev/null 2>&1 )
+( export WT="$WORK/wt3B" TICKET="$N3" AC_ID="$AC3" CLI_JS DB GAFFER_CLAIM_TOKEN="$TOK3" MARK="gateB"; "$STUB" -p x >/dev/null 2>&1 )
+( cd "$WORK/wt3B" && : > combo-a && git add combo-a && git commit -qm "branch side of the combination" )
+git -C "$REPO_A" worktree remove --force "$WORK/wt3A" >/dev/null 2>&1; git -C "$REPO_B" worktree remove --force "$WORK/wt3B" >/dev/null 2>&1
+wg ticket repo-delivery record "$N3" repoA --branch "$BR3" >/dev/null 2>&1
+wg ticket repo-delivery record "$N3" repoB --branch "$BR3" >/dev/null 2>&1
+wg submit "$N3" --token "$TOK3" --reason "both" >/dev/null 2>&1
+H3A="$(git -C "$REPO_A" rev-parse "$BR3")"; H3B="$(git -C "$REPO_B" rev-parse "$BR3")"
+# shellcheck disable=SC2046
+wg review approve "$N3" --reviewer human1 $(wg ticket diff "$N3" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
+[ "$(status_of "$N3")" = "ready_for_merge" ] && ok "#$N3 approved in both repos" || fail "#$N3 approve failed (status $(status_of "$N3"))"
+( cd "$REPO_B" && : > combo-b && git add combo-b && git commit -qm "main side of the combination" )
+wg repo set-commands repoB --test "test ! -f combo-a -o ! -f combo-b" >/dev/null 2>&1
+B_MAIN="$(git -C "$REPO_B" rev-parse main)"
+LANE3_LOG="$WORK/lane3.log"
+(
+  log() { printf '%s\n' "$*" >> "$LANE3_LOG"; }
+  gaffer_refresh_cards() { :; }
+  _gaffer_flag_on() { case "${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+  export DISPATCH_DB="$DB" GAFFER_DIGEST_DISABLE=1 RUNNER_DIR
+  # shellcheck source=../lib/automerge.sh
+  source "$RUNNER_DIR/lib/automerge.sh"
+  # shellcheck source=../lib/land.sh
+  source "$RUNNER_DIR/lib/land.sh"
+  gaffer_land_delivery "$N3" "$REPO_A" "$BR3" main "$(wg ticket show "$N3" 2>/dev/null)" MERGE
+) ; L3RC=$?
+[ "$L3RC" -eq 4 ] && ok "the lane HELD the ticket (rc 4): repoB's merge gate is red" || fail "lane rc=$L3RC: $(tr '\n' '|' < "$LANE3_LOG")"
+git -C "$REPO_A" merge-base --is-ancestor "$H3A" main && ok "the primary repo (repoA) landed first" || fail "repoA main lacks $H3A"
+[ "$(git -C "$REPO_B" rev-parse main)" = "$B_MAIN" ] && ! git -C "$REPO_B" merge-base --is-ancestor "$H3B" main \
+  && ok "repoB's main is untouched by the red combination" || fail "repoB main moved: $(git -C "$REPO_B" log --oneline -3 main | tr '\n' '|')"
+[ "$(status_of "$N3")" = "blocked" ] && ok "the ticket is held for a human (blocked), never done" || fail "#$N3 status: $(status_of "$N3")"
+[ "$(wg ticket landing "$N3" 2>/dev/null | jget 'd.partial ? "partial" : "not-partial"')" = "partial" ] \
+  && ok "the landing status records repoA landed, repoB pending" || fail "landing status for #$N3: $(wg ticket landing "$N3" 2>/dev/null)"
+SHOW3="$(wg ticket show "$N3" 2>/dev/null)"
+case "$SHOW3" in *merge_gate_red*) ok "the hold names merge_gate_red" ;; *) fail "no merge_gate_red on #$N3" ;; esac
+MM3_ERR="$(wg ticket mark-merged "$N3" --as system 2>&1 >/dev/null)"
+[ "$(status_of "$N3")" != "done" ] && ok "mark-merged cannot finish a ticket whose secondary repo never landed" || fail "mark-merged finished #$N3: $MM3_ERR"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

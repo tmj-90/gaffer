@@ -4,7 +4,10 @@
 // tab-separated checks table into ONE verdict string the CI gate acts on. The
 // actual CI poll (gh/API call) stays in bash; this only decides.
 //
-// Rows are `<name>\t<status>\t<conclusion>\t<url>`. Byte-identical to the awk:
+// Rows are `<name>\t<state>\t<bucket>\t<url>` — the REAL `gh pr checks --json` fields
+// (state: SUCCESS/FAILURE/PENDING/…; bucket: pass|fail|pending|skipping|cancel), built
+// by runner/lib/json-tool.mjs ci-check-rows. The older `<status>\t<conclusion>` rows
+// classify the same way. Byte-identical to the awk for every pre-existing case:
 //   • empty input                                   → "unknown"
 //   • FIRST row whose status OR conclusion (lower-cased) matches /fail|error/
 //                                                    → "fail:<name|unknown>|<url>"
@@ -20,8 +23,9 @@ function asciiLower(s: string): string {
   return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
 }
 
-const RED = /fail|error/;
-const RUNNING = /pending|queue|in_progress|waiting/;
+// A `cancel` bucket (gh: CANCELLED) is not a pass: red, like a failure.
+const RED = /fail|error|cancel/;
+const RUNNING = /pending|queue|in_progress|waiting|requested|expected/;
 
 /** Map a `gh`-style checks table to the CI gate verdict (see header). */
 export function parseChecks(checksOutput: string): string {

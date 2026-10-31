@@ -193,12 +193,21 @@ describe("web: reasons are asked in the club's sheet, not window.prompt", () => 
     await boot();
     button("Stop")!.click();
     expect(openSheet()?.querySelector("#sheet-title")?.textContent).toBe("Stop #6");
+    // It says what actually happens: cancelled now, the worktree reaped next tick.
+    expect(button("Stop")!.title).toContain("its worktree is removed on the next tick");
+    expect(button("Stop")!.title).not.toMatch(/tear/i);
+    expect(openSheet()!.querySelector(".act-intro")?.textContent).toContain(
+      "Its worktree is removed on the next tick.",
+    );
     const submit = openSheet()!.querySelector<HTMLButtonElement>(".reject-submit")!;
     expect(submit.getAttribute("aria-disabled")).toBeNull();
     submit.click();
     for (let i = 0; i < 4; i++) await tick();
     expect(posts("/stop")).toHaveLength(1);
     expect(posts("/stop")[0]!.body).toEqual({});
+    expect(document.getElementById("toast")?.textContent).toContain(
+      "its worktree is removed on the next tick",
+    );
   });
 
   it("Add a repo offers only repos not already on the boundary", async () => {

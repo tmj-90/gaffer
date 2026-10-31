@@ -78,6 +78,16 @@ export const setTicketBudgetInput = z.object({
 });
 export type SetTicketBudgetInput = z.infer<typeof setTicketBudgetInput>;
 
+/**
+ * A machine-checkable AC's shell command, kept exactly as authored (never trimmed or
+ * normalised — see addAcInput.check_command).
+ */
+export const checkCommandText = z
+  .string()
+  .max(2_000)
+  .refine((v) => v.trim().length > 0, "check_command must not be blank")
+  .refine((v) => !v.includes("\0"), "check_command must not contain a NUL byte");
+
 export const addAcInput = z.object({
   ticket_id: z.string().min(1),
   text: z.string().trim().min(1, "AC text is required").max(2_000),
@@ -91,19 +101,13 @@ export const addAcInput = z.object({
   spec_clause_id: z.string().trim().min(1).max(100).optional(),
   /**
    * MACHINE-CHECKABLE AC: an OPTIONAL shell command the runner executes in the
-   * delivery worktree to verify this AC (exit 0 ⇒ satisfied). Bounded; a single
-   * command line (no NUL / newlines — the runner passes it to `bash -c` as one gate).
+   * delivery worktree to verify this AC (exit 0 ⇒ satisfied). Stored BYTE FOR BYTE
+   * (no trim, no rewriting): the runner hands exactly these bytes to `bash -c`, so a
+   * quoted TAB, a multiline script, `$`, backslashes and non-ASCII mean what they mean
+   * in a shell. A TAB→space rewrite once recorded a failing criterion as satisfied.
+   * Bounded, not blank, no NUL (a shell argument cannot carry one).
    */
-  check_command: z
-    .string()
-    .trim()
-    .min(1)
-    .max(2_000)
-    .refine(
-      (v) => !v.includes("\n") && !v.includes("\r") && !v.includes("\0"),
-      "check_command must be a single command line",
-    )
-    .optional(),
+  check_command: checkCommandText.optional(),
 });
 export type AddAcInput = z.infer<typeof addAcInput>;
 
@@ -115,7 +119,8 @@ export const recordAcCheckInput = z.object({
   ticket_id: z.string().min(1),
   ac_id: z.string().min(1),
   exit_code: z.number().int().min(0).max(255),
-  command: z.string().trim().min(1).max(2_000),
+  /** The command that ran — must equal the AC's stored check_command byte for byte. */
+  command: checkCommandText,
   /** Bounded output tail (stdout+stderr) for the evidence row / rework feedback. */
   output_tail: z.string().max(8_000).optional(),
   /** Seconds the check ran (informational). */
@@ -483,6 +488,12 @@ export type EpicTicketInput = z.infer<typeof epicTicketInput>;
  * plus the dependency edges declared by index. Returns the epic node id and the
  * created ticket numbers (in plan order).
  */
+/** One requirement agreed during planning clarification (see createEpicInput). */
+export const agreedRequirementInput = z.object({
+  question: z.string().max(4_000).optional(),
+  answer: z.string().trim().min(1).max(4_000),
+});
+
 export const createEpicInput = z.object({
   epic: z.object({
     name: z.string().trim().min(1, "epic name is required").max(200),
@@ -506,7 +517,20 @@ export const createEpicInput = z.object({
      * the build cannot be reported as accepted because a planner forgot a flag.
      */
     acceptance: z.boolean().optional(),
+    /**
+     * ACCEPTANCE GATE: the requirements the human AGREED during planning clarification
+     * (the planner's question + the human's answer). Each becomes a criterion of the
+     * acceptance ticket, so the independent tester checks it even when the planner's
+     * proposed tickets left it out. Absent: derived from `plan_session_id` when given.
+     */
+    agreed_requirements: z.array(agreedRequirementInput).max(50).optional(),
   }),
+  /**
+   * The plan session the plan came from. When the epic carries no explicit
+   * `agreed_requirements`, the clarification answers recorded in that session are
+   * carried into the acceptance contract.
+   */
+  plan_session_id: z.string().trim().min(1).max(200).optional(),
   tickets: z
     .array(epicTicketInput)
     .min(1, "an epic needs at least one ticket")

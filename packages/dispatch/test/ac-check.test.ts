@@ -159,6 +159,55 @@ describe("recordAcCheck — runner-owned verification of a checked AC", () => {
   });
 });
 
+describe("check_command bytes are kept exactly (no trim, TAB/newline allowed)", () => {
+  let d: Dispatch;
+  afterEach(() => d.db.close());
+
+  it("stores a quoted TAB, a multiline script and surrounding blanks byte for byte", () => {
+    d = Dispatch.open(":memory:");
+    const t = d.createTicket({ title: "Bytes" }, human);
+    const cmds = ['grep -q "a\tb" f.txt', 'x=1\nif [ "$x" = 1 ]; then\n  exit 0\nfi', "  true  "];
+    for (const c of cmds) {
+      const { ac } = d.addAcceptanceCriterion(
+        { ticket_id: t.id, text: `check ${c.length}`, check_command: c },
+        human,
+      );
+      expect(d.acs.findById(ac.id)!.check_command).toBe(c);
+    }
+    expect(() =>
+      d.addAcceptanceCriterion({ ticket_id: t.id, text: "blank", check_command: "  \t " }, human),
+    ).toThrow();
+    expect(() =>
+      d.addAcceptanceCriterion({ ticket_id: t.id, text: "nul", check_command: "a\0b" }, human),
+    ).toThrow();
+  });
+
+  it("refuses a check result whose command is not the stored one (a TAB rewritten to a space)", () => {
+    d = Dispatch.open(":memory:");
+    const t = d.createTicket({ title: "Bytes" }, human);
+    const { ac } = d.addAcceptanceCriterion(
+      { ticket_id: t.id, text: "tab", check_command: 'grep -q "a\tb" f.txt' },
+      human,
+    );
+    let code = "";
+    try {
+      d.recordAcCheck(
+        { ticket_id: t.id, ac_id: ac.id, exit_code: 0, command: 'grep -q "a b" f.txt' },
+        runner,
+      );
+    } catch (e) {
+      code = (e as DispatchError).code;
+    }
+    expect(code).toBe("VALIDATION_ERROR");
+    expect(d.acs.findById(ac.id)!.status).toBe("pending");
+    const ok = d.recordAcCheck(
+      { ticket_id: t.id, ac_id: ac.id, exit_code: 1, command: 'grep -q "a\tb" f.txt' },
+      runner,
+    );
+    expect(ok.status).toBe("failed");
+  });
+});
+
 describe("done gate (fires at approval) — a checked AC must be runner-verified", () => {
   let d: Dispatch;
   afterEach(() => d.db.close());

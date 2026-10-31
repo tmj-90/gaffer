@@ -57,6 +57,21 @@ make_repo() {
 REPO_GH="$WORK/repo-gh"
 make_repo "$REPO_GH"
 git -C "$REPO_GH" remote add origin "https://github.com/org/repo.git"
+# The delivery branches the gate binds CI results to (the candidate commit).
+for _b in 2 3 4 12 13 14; do git -C "$REPO_GH" branch "gaffer/ticket-$_b"; done
+
+# A stub gh in the REAL CLI's output shape: `pr checks <b> --json …` prints the JSON
+# array in $1 (a file; empty file = no checks), `pr view <b> --json headRefOid` prints
+# the branch head (the PR is at the candidate commit).
+mk_gh() { # <stub-path> <checks-json-or-empty>
+  printf '%s' "$2" > "$1.json"
+  cat > "$1" <<STUB
+#!/bin/sh
+if [ "\$1 \$2" = "pr view" ]; then printf '{"headRefOid":"%s"}\n' "\$(git rev-parse "refs/heads/\$3" 2>/dev/null)"; exit 0; fi
+cat "$1.json"
+STUB
+  chmod +x "$1"
+}
 
 REPO_NORG="$WORK/repo-norg"
 make_repo "$REPO_NORG"
@@ -129,8 +144,7 @@ echo "== gaffer_ci_gate injectable gh =="
 
 # T8: injectable gh returning green → rc=0.
 GH_GREEN="$WORK/gh-green.sh"
-printf '#!/bin/sh\nprintf "build\tcompleted\tsuccess\thttps://x/1\n"\n' > "$GH_GREEN"
-chmod +x "$GH_GREEN"
+mk_gh "$GH_GREEN" '[{"name":"build","state":"SUCCESS","bucket":"pass","link":"https://x/1"}]'
 GAFFER_REQUIRE_CI=1
 GAFFER_GH_BIN="$GH_GREEN"
 GAFFER_CI_POLL_ATTEMPTS=1
@@ -144,8 +158,7 @@ gaffer_ci_gate "2" "$REPO_GH" "gaffer/ticket-2" ""
 
 # T9: injectable gh returning red → rc=2 + evidence attached.
 GH_RED="$WORK/gh-red.sh"
-printf '#!/bin/sh\nprintf "build\tcompleted\tfailure\thttps://github.com/org/repo/actions/runs/99\n"\n' > "$GH_RED"
-chmod +x "$GH_RED"
+mk_gh "$GH_RED" '[{"name":"build","state":"FAILURE","bucket":"fail","link":"https://github.com/org/repo/actions/runs/99"}]'
 GAFFER_GH_BIN="$GH_RED"
 : > "$WG_CALLS"
 
@@ -167,8 +180,7 @@ echo "== gaffer_ci_gate timeout strict mode (default) =="
 
 # T10: poll timeout under strict default → rc=2 (fail closed).
 GH_PENDING="$WORK/gh-pending.sh"
-printf '#!/bin/sh\nprintf "build\tin_progress\t\thttps://x/1\n"\n' > "$GH_PENDING"
-chmod +x "$GH_PENDING"
+mk_gh "$GH_PENDING" '[{"name":"build","state":"IN_PROGRESS","bucket":"pending","link":"https://x/1"}]'
 GAFFER_GH_BIN="$GH_PENDING"
 GAFFER_CI_POLL_ATTEMPTS=2
 GAFFER_CI_POLL_INTERVAL_SECS=0
@@ -212,8 +224,7 @@ echo "== gaffer_ci_gate no-PR / no-checks strict mode =="
 
 # T13: all polls return empty (no PR exists yet) → rc=2 under strict.
 GH_EMPTY="$WORK/gh-empty.sh"
-printf '#!/bin/sh\n# prints nothing — simulates no PR or no checks\n' > "$GH_EMPTY"
-chmod +x "$GH_EMPTY"
+mk_gh "$GH_EMPTY" ""   # prints nothing — simulates no PR or no checks
 GAFFER_GH_BIN="$GH_EMPTY"
 GAFFER_CI_POLL_ATTEMPTS=2
 GAFFER_CI_POLL_INTERVAL_SECS=0

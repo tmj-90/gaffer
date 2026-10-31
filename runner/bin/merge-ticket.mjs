@@ -772,7 +772,7 @@ export function introducedConflictMarkers(worktree, parents) {
  * show`. A schema without the columns resolves to no commands (the zero-gates rule then
  * applies); an unreadable DB returns null (the caller fails closed).
  */
-export function resolveGateCommands(dbPath, number) {
+export function resolveGateCommands(dbPath, number, repoId = null) {
   const num = parseInt(String(number ?? "").trim(), 10);
   if (!Number.isInteger(num) || num <= 0 || !existsSync(dbPath)) return null;
   let db;
@@ -781,17 +781,25 @@ export function resolveGateCommands(dbPath, number) {
     db = new DatabaseSync(dbPath, { readOnly: true });
     let row;
     try {
+      // PER-REPOSITORY: with a repo id, THAT repo's commands (a multi-repo ticket gates
+      // each repo's merge with its own gates); otherwise the ticket's primary write repo.
       row = db
         .prepare(
           "SELECT r.test_command AS test, r.lint_command AS lint FROM tickets t " +
             "JOIN ticket_repos tr ON tr.ticket_id = t.id JOIN repositories r ON r.id = tr.repo_id " +
-            "WHERE t.number = ? ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC LIMIT 1",
+            "WHERE t.number = ? " +
+            (repoId ? "AND r.id = ? " : "") +
+            "ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC LIMIT 1",
         )
-        .get(num);
+        .get(...(repoId ? [num, String(repoId)] : [num]));
     } catch (e) {
-      if (/no such column/i.test(String(e?.message ?? e))) return { test: "", lint: "" };
+      // An older / minimal schema without the columns (or tables) carries no commands;
+      // the zero-gates rule then decides (fail closed unless GAFFER_ALLOW_NO_DOD=1).
+      if (/no such (column|table)/i.test(String(e?.message ?? e))) return { test: "", lint: "" };
       throw e;
     }
+    // A named repo that is not on the ticket: nothing says what its gates are — fail closed.
+    if (repoId && !row) return null;
     return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim() };
   } catch {
     return null;
@@ -823,6 +831,8 @@ export function resolveGateCommands(dbPath, number) {
  * which is discarded. Returns
  *   { ok, markers, dod: "PASS"|"FAIL"|"OFF"|"NOT_RUN", commit, evidence, reason }
  * evidence = the summary to record on the ticket. Fail CLOSED on anything unrunnable.
+ * `base` (the default branch's tip) is the ref the typecheck script is auto-detected
+ * from first, as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd).
  */
 export function regateResolution({
   repoPath,
@@ -832,6 +842,7 @@ export function regateResolution({
   label,
   commands,
   gateDir,
+  base,
   env = process.env,
 }) {
   const failed = (reason, gate = "config", extra = {}) => ({
@@ -915,7 +926,7 @@ export function regateResolution({
         "config",
         { dod: "NOT_RUN" },
       );
-    const r = gateCheckout({ gateWt, parents, label, commands, env, failed });
+    const r = gateCheckout({ gateWt, parents, label, commands, env, failed, base });
     if (residueNote) r.evidence = (r.evidence || "") + residueNote;
     return { ...r, commit, residue };
   } finally {
@@ -923,8 +934,169 @@ export function regateResolution({
   }
 }
 
+/**
+ * MERGE GATE — the combined code is what lands, so the combined code is what is gated.
+ * A branch that passed its gates and a target that passed its gates merged cleanly and
+ * the result failed the same test (a field rename: one side changed which field is read,
+ * the other removed it). Build the proposed merge of `pin` onto the CURRENT `targetRef` in
+ * a scratch worktree detached at the target head, and run the repo's DoD gates on that
+ * merge result through bin/dod-regate.sh (the conflict re-gate's runner, toggles, install
+ * step, sandbox and zero-gates rule). Mirrors lib/land.sh _gaffer_merge_gate.
+ *   → { kind: "pass" | "off" | "conflict" | "red" | "error", target, merge, evidence, reason }
+ * `target` is the gated target head and `merge` the gated merge commit, which is exactly
+ * what landGatedMerge may land (and only while the target is still `target`).
+ */
+export function gateProposedMerge({
+  repoPath,
+  branch,
+  pin,
+  targetRef,
+  label,
+  commands,
+  gateDir,
+  env = process.env,
+}) {
+  const out = (kind, extra = {}) => ({
+    kind,
+    target: "",
+    merge: "",
+    evidence: "",
+    reason: "",
+    ...extra,
+  });
+  if (!pin) return out("error", { reason: "no pinned commit to gate" });
+  const t = git(repoPath, "rev-parse", "--verify", "--quiet", `${targetRef}^{commit}`);
+  const target = (t.stdout || "").trim();
+  if (t.status !== 0 || !target)
+    return out("error", { reason: `the target ${targetRef} cannot be resolved` });
+  if (commands === null)
+    return out("error", {
+      target,
+      reason: "the repo's gate commands could not be read from the dispatch DB",
+    });
+  const wt =
+    gateDir || resolve(GAFFER_DATA, "worktrees", `merge-gate-${process.pid}-${Date.now()}`);
+  mkdirSync(dirname(wt), { recursive: true });
+  git(repoPath, "worktree", "remove", "--force", wt);
+  rmSync(wt, { recursive: true, force: true });
+  const cleanup = () => {
+    git(repoPath, "worktree", "remove", "--force", wt);
+    rmSync(wt, { recursive: true, force: true });
+    git(repoPath, "worktree", "prune");
+  };
+  const add = git(repoPath, "worktree", "add", "--quiet", "--detach", "--force", wt, target);
+  if (add.status !== 0) {
+    cleanup();
+    return out("error", {
+      target,
+      reason: `a scratch checkout of the target could not be created (${(add.stderr || "").trim().slice(0, 200)})`,
+    });
+  }
+  try {
+    const hasIdentity = git(repoPath, "config", "user.email").status === 0;
+    const ids = hasIdentity ? [] : ["-c", "user.name=gaffer", "-c", "user.email=gaffer@localhost"];
+    const m = spawnSync(
+      "git",
+      ["-C", wt, ...ids, "merge", "--quiet", "--no-edit", "-m", `Merge branch '${branch}'`, pin],
+      { encoding: "utf8" },
+    );
+    if (m.status !== 0) {
+      git(wt, "merge", "--abort");
+      return out("conflict", {
+        target,
+        reason: `the merge onto ${target.slice(0, 12)} conflicts`,
+      });
+    }
+    const merge = git(wt, "rev-parse", "HEAD").stdout.trim();
+    const perGate = Math.max(1, parseInt(env.GAFFER_DOD_TIMEOUT ?? "", 10) || 900);
+    const r = spawnSync(
+      "bash",
+      [
+        resolve(RUNNER_DIR, "bin", "dod-regate.sh"),
+        wt,
+        label,
+        commands.test || "-",
+        commands.lint || "-",
+        // The gated target head: the typecheck script is auto-detected from it first,
+        // exactly as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd).
+        target,
+      ],
+      { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
+    );
+    const evidence = (r.stdout || "").trim();
+    if (!r.error && r.status === 0) return out("pass", { target, merge, evidence });
+    if (!r.error && r.status === 3)
+      return out("off", { target, merge, reason: "DoD is off (GAFFER_DOD=0)" });
+    return out(r.error ? "error" : "red", {
+      target,
+      merge,
+      evidence,
+      reason: r.error
+        ? `the merge gate could not run (${r.error.code === "ETIMEDOUT" ? "timed out" : (r.error.message ?? r.error)})`
+        : `the merge of ${pin.slice(0, 12)} onto ${target.slice(0, 12)} fails the Definition-of-Done gates`,
+    });
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * COMPARE-AND-LAND the gated merge commit: only while the target still IS the gated
+ * target head, and only as that exact commit. Mirrors lib/land.sh _gaffer_land_gated.
+ *   → { ok: true } | { ok: false, code: "moved-target" | "moved-branch" | "refused", reason }
+ * Never a checkout of the live repo: a checked-out target is fast-forwarded (clean tracked
+ * tree only); a target checked out in another worktree is refused; otherwise the ref is
+ * swapped atomically (`update-ref <ref> <merge> <target>`).
+ */
+export function landGatedMerge({ repoPath, defaultBranch, target, merge, branch, pin }) {
+  const now = (ref) =>
+    git(repoPath, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).stdout.trim();
+  if (pin && now(`refs/heads/${branch}`) !== pin)
+    return { ok: false, code: "moved-branch", reason: `${branch} moved off the approved commit` };
+  const head = git(repoPath, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim();
+  if (head === defaultBranch) {
+    const tree = inspectWorkingTree(repoPath);
+    if (tree.dirty)
+      return {
+        ok: false,
+        code: "refused",
+        reason: `${defaultBranch} is checked out with uncommitted changes (${tree.summary})`,
+      };
+    if (now("HEAD") !== target)
+      return { ok: false, code: "moved-target", reason: `${defaultBranch} moved` };
+    if (git(repoPath, "merge", "--quiet", "--ff-only", merge).status === 0) return { ok: true };
+    if (now("HEAD") !== target)
+      return { ok: false, code: "moved-target", reason: `${defaultBranch} moved` };
+    return {
+      ok: false,
+      code: "refused",
+      reason: `an untracked file in the ${defaultBranch} checkout is in the merge's way`,
+    };
+  }
+  const wtl = git(repoPath, "worktree", "list", "--porcelain").stdout || "";
+  if (wtl.split("\n").includes(`branch refs/heads/${defaultBranch}`))
+    return {
+      ok: false,
+      code: "refused",
+      reason: `${defaultBranch} is checked out in another worktree`,
+    };
+  const u = git(
+    repoPath,
+    "update-ref",
+    "-m",
+    `gaffer: land the gated merge of ${branch}`,
+    `refs/heads/${defaultBranch}`,
+    merge,
+    target,
+  );
+  if (u.status === 0) return { ok: true };
+  return now(`refs/heads/${defaultBranch}`) === target
+    ? { ok: false, code: "refused", reason: (u.stderr || "update-ref failed").trim().slice(0, 200) }
+    : { ok: false, code: "moved-target", reason: `${defaultBranch} moved` };
+}
+
 /** The marker check + DoD gates on the clean gate checkout (regateResolution). */
-function gateCheckout({ gateWt, parents, label, commands, env, failed }) {
+function gateCheckout({ gateWt, parents, label, commands, env, failed, base }) {
   const mk = introducedConflictMarkers(gateWt, parents);
   if (!mk.ok || mk.markers.length > 0) {
     const reason = mk.ok
@@ -947,6 +1119,9 @@ function gateCheckout({ gateWt, parents, label, commands, env, failed }) {
       label,
       commands.test || "-",
       commands.lint || "-",
+      // The default branch's tip: the typecheck script is auto-detected from it first
+      // (gaffer_dod_typecheck_cmd), so a resolution cannot drop that gate.
+      base || "",
     ],
     { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
   );
@@ -1313,6 +1488,92 @@ function signalReapproval(ticketNumber, resolution) {
   return { ok, command, args, attempts: n };
 }
 
+/**
+ * LOCAL LANDING through the MERGE GATE, compare-and-land — the one loop every local
+ * landing runs (the primary repo and each secondary repo of a multi-repo ticket): gate the
+ * merge of `pin` onto the CURRENT target (gateProposedMerge), then land exactly the gated
+ * merge commit while the target still is the gated head (landGatedMerge); a moved target
+ * is re-gated (GAFFER_MERGE_GATE_RETRIES, default 2).
+ *   → { kind: "landed", gate } | { kind: "conflict" | "red" | "error", gate }
+ *     | { kind: "refused", code, reason }  (never lands on anything but "landed")
+ */
+function landThroughMergeGate({
+  ticketNumber,
+  repoPath,
+  repoName,
+  branch,
+  defaultBranch,
+  pin,
+  commands,
+  gateDir,
+  secondary = false,
+}) {
+  const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
+  const where = secondary && repoName ? ` in ${repoName}` : "";
+  for (let attempt = 0; ; attempt++) {
+    const gate = gateProposedMerge({
+      repoPath,
+      branch,
+      pin,
+      targetRef: `refs/heads/${defaultBranch}`,
+      label: repoName,
+      commands,
+      gateDir,
+    });
+    if (gate.kind === "conflict" || gate.kind === "red" || gate.kind === "error")
+      return { kind: gate.kind, gate };
+    log(
+      gate.kind === "off"
+        ? `#${ticketNumber}: MERGE GATE OFF (GAFFER_DOD=0) — the combination was not gated`
+        : `#${ticketNumber}: MERGE GATE PASS — the merge of ${pin.slice(0, 12)} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} passes the gates`,
+    );
+    const l = landGatedMerge({
+      repoPath,
+      defaultBranch,
+      target: gate.target,
+      merge: gate.merge,
+      branch,
+      pin,
+    });
+    if (l.ok) return { kind: "landed", gate };
+    if (l.code === "moved-target" && attempt < maxTries) {
+      log(
+        `#${ticketNumber}: ${defaultBranch} moved after the merge gate${where} — re-gating (${attempt + 1}/${maxTries})`,
+      );
+      continue;
+    }
+    return { kind: "refused", code: l.code, reason: l.reason };
+  }
+}
+
+/**
+ * The red merge gate's HOLD: the gate output becomes evidence on the ticket and the ticket
+ * leaves the merge lane for the human queue (`wg ticket hold` → blocked, merge_gate_red).
+ * The target was never touched. → { held, recorded }.
+ */
+function holdMergeGateRed(ticketNumber, gate, { branch, defaultBranch, repoName = "" }) {
+  const where = repoName ? ` in ${repoName}` : "";
+  const recorded = recordEvidence(
+    ticketNumber,
+    "test_output",
+    `MERGE GATE FAILED${where}: ${gate.reason}\n\n${gate.evidence || "DoD: FAIL"}`,
+  );
+  const r = runDispatch([
+    "ticket",
+    "hold",
+    String(ticketNumber),
+    "--reason-code",
+    "merge_gate_red",
+    "--reason",
+    `The merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} fails its gates ` +
+      `(each side passed alone); ${defaultBranch} was not touched — see the merge-gate evidence. ` +
+      `Rework the branch on the current ${defaultBranch}, then re-approve.`,
+    "--as",
+    "system",
+  ]);
+  return { held: !r.error && r.status === 0, recorded };
+}
+
 /** PER-REPOSITORY LANDING: the ticket's approved revisions (`wg ticket landing`). */
 export function readLandingPlan(ticketNumber) {
   const r = runDispatch(["ticket", "landing", String(ticketNumber)]);
@@ -1351,9 +1612,12 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
 /**
  * Land every write repo OTHER than the primary: each lands only its pinned (approved)
  * commit, through the same landing check (`--secondary`: the tester verdict describes the
- * primary) and the same conflict-safe local merge. A conflict, a dirty checkout or a held
- * check stops here — the ticket stays ready_for_merge, partly merged, for a human (no
- * resolver is spawned for a secondary repo). Returns { ok, merged, landed, pending, reason }.
+ * primary) and the same MERGE GATE + compare-and-land as the primary (landThroughMergeGate:
+ * that repo's own gates on the merge onto its current target). A conflict, a dirty
+ * checkout, a held check or a gate that could not run stops here — the ticket stays
+ * ready_for_merge, partly merged, for a human (no resolver is spawned for a secondary
+ * repo); a RED merge gate also holds the ticket (blocked, merge_gate_red) with the gate
+ * output as evidence. Returns { ok, merged, landed, pending, reason }.
  */
 function landSecondaryRepos(ticketNumber, primaryRepoId) {
   const plan = readLandingPlan(ticketNumber);
@@ -1403,17 +1667,57 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
       out.landed.push(r.repo);
       continue;
     }
-    const m = attemptMerge(r.localPath, r.branch, r.defaultBranch || "main", d.pin);
-    if (!m.clean) {
-      why(m.reason || "merge conflict");
+    const defaultBranch = r.defaultBranch || "main";
+    const res = landThroughMergeGate({
+      ticketNumber,
+      repoPath: r.localPath,
+      repoName: r.repo,
+      branch: r.branch,
+      defaultBranch,
+      pin: d.pin,
+      commands: resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId),
+      gateDir: resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`),
+      secondary: true,
+    });
+    if (res.kind === "conflict") {
+      why(`${res.gate.reason} (merge conflict)`);
+      continue;
+    }
+    if (res.kind === "red") {
+      const h = holdMergeGateRed(ticketNumber, res.gate, {
+        branch: r.branch,
+        defaultBranch,
+        repoName: r.repo,
+      });
+      why(
+        `MERGE GATE FAILED — ${res.gate.reason}; ${defaultBranch} untouched; ` +
+          (h.held
+            ? "ticket held for a human (blocked, merge_gate_red)"
+            : "ticket left ready_for_merge (the hold could not be recorded)") +
+          (h.recorded ? "; the gate output is on the ticket as evidence" : ""),
+      );
+      continue;
+    }
+    if (res.kind === "error") {
+      why(`the merge gate could not run (${res.gate.reason}); nothing merged`);
+      continue;
+    }
+    if (res.kind !== "landed") {
+      why(`${res.reason}${res.code === "moved-target" ? " (kept moving while gated)" : ""}`);
       continue;
     }
     log(
-      `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${r.defaultBranch || "main"}) cleanly`,
+      `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
     );
     recordLandingCli(ticketNumber, r.repoId, d.pin, "local");
     out.landed.push(r.repo);
-    out.merged.push({ repo: r.repo, localPath: r.localPath, branch: r.branch });
+    out.merged.push({
+      repo: r.repo,
+      localPath: r.localPath,
+      branch: r.branch,
+      defaultBranch,
+      pin: d.pin,
+    });
   }
   return out;
 }
@@ -1581,7 +1885,53 @@ function main() {
   // GAFFER_PR_LOCAL_FALLBACK=1: the operator's explicit choice to land a PR-mode ticket
   // LOCALLY when the PR merge cannot run. Off by default — a failed PR merge holds.
   const prLocalFallback = /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
+  // MERGE GATE (every landing route): the combination of the pin and the CURRENT target
+  // is what lands, so it is what is gated; a red combination is held for a human.
+  let conflict = false;
+  const gateCommands = resolveGateCommands(CONFIG.dispatchDb, resolved.number, repo.id || null);
+  const gateDir = resolve(GAFFER_DATA, "worktrees", `merge-gate-${resolved.number}`);
+  const holdRed = (gate) => {
+    const h = holdMergeGateRed(resolved.number, gate, {
+      branch,
+      defaultBranch: repo.defaultBranch,
+    });
+    fail(
+      `refusing to merge #${resolved.number}: MERGE GATE FAILED — ${gate.reason}; ` +
+        `${repo.defaultBranch} untouched; ` +
+        (h.held
+          ? "ticket held for a human (blocked, merge_gate_red)"
+          : "ticket left ready_for_merge (the hold could not be recorded)") +
+        (h.recorded ? "; the gate output is on the ticket as evidence" : ""),
+      4,
+    );
+  };
   if (!landed && resolved.prUrl) {
+    if (ghAvailable(ghBin)) {
+      // PR MODE: gate against the remote target as just fetched (the local default when
+      // the fetch fails). GitHub merges the PR; its branch protection ("require branches
+      // to be up to date" + required checks) is the compare-and-land upstream.
+      const remote = String(process.env.GAFFER_PR_REMOTE || "origin");
+      const fetched = git(repo.localPath, "fetch", "--quiet", remote, repo.defaultBranch);
+      const gate = gateProposedMerge({
+        repoPath: repo.localPath,
+        branch,
+        pin,
+        targetRef: fetched.status === 0 ? "FETCH_HEAD" : `refs/heads/${repo.defaultBranch}`,
+        label: repo.name,
+        commands: gateCommands,
+        gateDir,
+      });
+      if (gate.kind === "red") return holdRed(gate);
+      if (gate.kind === "error") {
+        fail(
+          `refusing to merge #${resolved.number}: the merge gate could not run (${gate.reason}); nothing merged, ticket stays ready_for_merge`,
+        );
+        return;
+      }
+      if (gate.kind === "conflict") conflict = true;
+    }
+  }
+  if (!landed && resolved.prUrl && !conflict) {
     if (ghAvailable(ghBin)) {
       const pr = mergeViaPr({
         repoPath: repo.localPath,
@@ -1635,17 +1985,40 @@ function main() {
       return;
     }
   }
-  if (!landed) {
-    const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch, pin);
-    if (merge.clean) {
-      landed = { via: "local" };
-      log(`merged #${resolved.number} (${branch} → ${repo.defaultBranch}) cleanly`);
-    } else if (merge.checkoutFailed) {
+  if (!landed && !conflict) {
+    // LOCAL LANDING through the merge gate, compare-and-land: the gated merge commit
+    // lands only while the target still is the gated target head; a moved target is
+    // re-gated (GAFFER_MERGE_GATE_RETRIES, default 2), then left for the next run.
+    const res = landThroughMergeGate({
+      ticketNumber: resolved.number,
+      repoPath: repo.localPath,
+      repoName: repo.name,
+      branch,
+      defaultBranch: repo.defaultBranch,
+      pin,
+      commands: gateCommands,
+      gateDir,
+    });
+    // A conflict falls through to the resolver below (landed stays null).
+    if (res.kind === "red") return holdRed(res.gate);
+    if (res.kind === "error") {
+      fail(
+        `refusing to merge #${resolved.number}: the merge gate could not run (${res.gate.reason}); nothing merged, ticket stays ready_for_merge`,
+      );
+      return;
+    }
+    if (res.kind === "landed") {
+      landed = { via: "local", gatedMerge: res.gate.merge, gatedTarget: res.gate.target };
+      log(
+        `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
+      );
+    } else if (res.kind === "refused") {
       // Not a conflict — nothing on the branch to resolve. Refuse, leave the ticket at
       // ready_for_merge and the live checkout as it was (never spawn the resolver).
       fail(
-        `refusing to merge #${resolved.number}: ${merge.reason} — live checkout left untouched; ` +
-          `ticket stays ready_for_merge for a human`,
+        `refusing to merge #${resolved.number}: ${res.reason}${res.code === "moved-target" ? " (kept moving while gated)" : ""} — ` +
+          `live checkout left untouched; ticket stays ready_for_merge for a human`,
+        res.code === "moved-branch" ? 4 : 1,
       );
       return;
     }
@@ -1693,10 +2066,23 @@ function main() {
     // Clean up the now-merged delivery branch so they don't pile up. `-d` is safe:
     // it only deletes a branch fully merged into the current HEAD (the default branch
     // we just merged into), so an unmerged branch is never lost.
-    const del = git(repo.localPath, "branch", "-d", branch);
+    // `branch -d` checks "merged into HEAD"; with the target not checked out the gated
+    // landing moved only its ref — then delete the branch only while it still points at
+    // the landed pin, which is in the target's history now (nothing can be lost).
+    let del = git(repo.localPath, "branch", "-d", branch);
+    if (
+      del.status !== 0 &&
+      git(repo.localPath, "merge-base", "--is-ancestor", pin, repo.defaultBranch).status === 0
+    )
+      del = git(repo.localPath, "update-ref", "-d", `refs/heads/${branch}`, pin);
     if (del.status === 0) log(`deleted merged branch ${branch}`);
     for (const o of others.merged) {
-      const d2 = git(o.localPath, "branch", "-d", o.branch);
+      let d2 = git(o.localPath, "branch", "-d", o.branch);
+      if (
+        d2.status !== 0 &&
+        git(o.localPath, "merge-base", "--is-ancestor", o.pin, o.defaultBranch).status === 0
+      )
+        d2 = git(o.localPath, "update-ref", "-d", `refs/heads/${o.branch}`, o.pin);
       if (d2.status === 0) log(`deleted merged branch ${o.branch} in ${o.repo}`);
     }
     // Self-hosting seam: if we just merged into the repo that RUNS the dashboard
@@ -1953,6 +2339,7 @@ function main() {
     worktree,
     gateDir: resolve(GAFFER_DATA, "worktrees", `merge-ticket-${resolved.number}-regate`),
     parents: [preResolution, defaultTip],
+    base: defaultTip || `refs/heads/${repo.defaultBranch}`,
     label: repo.name || "repo",
     commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number),
   });

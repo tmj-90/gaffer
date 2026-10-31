@@ -176,6 +176,31 @@ export async function cmdHistory(args: ReturnType<typeof parseArgs>): Promise<nu
     }
     const versions = listLoreVersions(db, id);
     const head = versions.length + 1;
+    // --json: the dashboard's History disclosure. The current head, then every
+    // earlier snapshot newest first; `at` is when that version was written.
+    if (getBool(args.flags, "json")) {
+      process.stdout.write(
+        JSON.stringify({
+          id,
+          current: {
+            version: head,
+            status: lore.status,
+            at: lore.updatedAt,
+            title: lore.title,
+            summary: lore.summary,
+          },
+          versions: versions.map((v) => ({
+            version: v.version,
+            status: v.status,
+            at: v.snapshotOf,
+            replacedAt: v.replacedAt,
+            title: v.title,
+            summary: v.summary,
+          })),
+        }) + "\n",
+      );
+      return 0;
+    }
     process.stdout.write(
       `${id}  ${versions.length} earlier version${versions.length === 1 ? "" : "s"}\n`,
     );

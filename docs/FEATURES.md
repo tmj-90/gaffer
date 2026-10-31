@@ -192,7 +192,10 @@ structural barrier the whole design hangs on.
   `xit`, `it.todo`, `it.concurrent.skip`, node:test's `{ skip: true }`,
   `t.skip()`/`this.skip()`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
   `@Disabled`, …), a changed gate script (or an added `pretest`/`posttest`, or a
-  changed script it runs) or a touched test-runner config. It compares against
+  changed script it runs), a touched test-runner config, or a package-manager rc
+  file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) the delivery added or
+  changed, which can make `npm test` run nothing (an ignored one on disk too; the
+  runner's FLAG holds the approve even when the committed diff is clean). It compares against
   the commit the runner recorded when it cut the branch (kept across retries,
   never replaced by a later branch tip), so moving the base branch from the
   worktree, or a second attempt building on the first, cannot hide a change. The

@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
-let mode: "up" | "down" | "html" = "up";
+let mode: "up" | "down" | "html" | "body-abort" = "up";
 
 function json(obj: unknown): Response {
   return new Response(JSON.stringify(obj), {
@@ -36,6 +36,16 @@ function stubFetch(): void {
           status: 502,
           headers: { "content-type": "text/html" },
         });
+      if (mode === "body-abort") {
+        // The headers arrived, then the body read was aborted: Chromium rejects
+        // res.text() with a raw DOMException (AbortError, numeric code 20).
+        const res = json({});
+        Object.defineProperty(res, "text", {
+          value: () =>
+            Promise.reject(new DOMException("The user aborted a request.", "AbortError")),
+        });
+        return res;
+      }
       if (url.includes("/specs")) return json({ specs: [] });
       if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
       return json({});
@@ -89,6 +99,17 @@ describe("web: header data freshness comes from real responses", () => {
     // The failure is one plain sentence, never the browser's raw message.
     expect(document.body.textContent).not.toContain("Failed to fetch");
     expect(document.getElementById("app")!.textContent).toContain("Can't reach the factory");
+  });
+
+  it("turns a body read aborted after the headers into a plain sentence, not the raw AbortError", async () => {
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
+    await settle();
+    mode = "body-abort";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await settle();
+    expect(document.body.textContent).not.toContain("aborted a request");
+    expect(document.getElementById("app")!.textContent).toContain("Can't reach the factory");
+    expect(lamp()!.dataset.state).toBe("offline");
   });
 
   it("turns a non-JSON proxy page into a coded, readable error", async () => {

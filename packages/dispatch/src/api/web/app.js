@@ -53,9 +53,23 @@ function adoptTokenFromUrl() {
  * body (a proxy's HTML error page) becomes BAD_GATEWAY instead of a SyntaxError.
  * Every outcome is reported to the freshness tracker that drives the header's
  * "Data as of" line. `opts.signal` lets the router abort a superseded view's
- * reads; an aborted call rejects with code ABORTED and is never toasted.
+ * reads; an aborted call (in the fetch or while its body is read) rejects with
+ * code ABORTED and is never toasted.
  */
 const API_GET_TIMEOUT_MS = 15000;
+/** A fetch or body read that failed: ABORTED when the caller's signal superseded it, else NETWORK. */
+function unreachable(cause, signal) {
+  if (signal && signal.aborted) {
+    const e = new Error("Superseded");
+    e.code = "ABORTED";
+    return e;
+  }
+  freshness.fail("network");
+  const e = new Error("Can't reach the factory — retrying.");
+  e.code = "NETWORK";
+  e.cause = cause;
+  return e;
+}
 async function api(method, path, body, opts = {}) {
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
@@ -79,16 +93,7 @@ async function api(method, path, body, opts = {}) {
       signal,
     });
   } catch (cause) {
-    if (opts.signal && opts.signal.aborted) {
-      const e = new Error("Superseded");
-      e.code = "ABORTED";
-      throw e;
-    }
-    freshness.fail("network");
-    const e = new Error("Can't reach the factory — retrying.");
-    e.code = "NETWORK";
-    e.cause = cause;
-    throw e;
+    throw unreachable(cause, opts.signal);
   }
   if (res.status === 401) {
     freshness.fail("auth");
@@ -97,7 +102,16 @@ async function api(method, path, body, opts = {}) {
     e.code = "UNAUTHORIZED";
     throw e;
   }
-  const text = await res.text();
+  // The body can still be aborted after the headers arrive (the router superseding
+  // the view, or the read timing out): Chromium then rejects res.text() with a raw
+  // DOMException (AbortError, numeric code 20), which slipped past every ABORTED
+  // check and was toasted as "20 The user aborted a request.".
+  let text;
+  try {
+    text = await res.text();
+  } catch (cause) {
+    throw unreachable(cause, opts.signal);
+  }
   let data = {};
   if (text) {
     try {

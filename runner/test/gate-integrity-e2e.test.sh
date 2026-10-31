@@ -24,6 +24,13 @@
 #      base-pinned) — the retry never re-records the base from attempt 1's tip.
 #   7. retry-delete (2 attempts): attempt 1 deletes the test and fails; attempt 2 passes.
 #      The integrity row and dispatch still flag the deletion from the original base.
+#   8. npmrc-hide: leaves package.json and the tests alone but ADDS a project `.npmrc`
+#      with `script-shell=/bin/true`, so `npm test` runs nothing. The integrity row
+#      FLAGs the added package-manager config, dispatch carries test-modified (high)
+#      and the agent reviewer's approve is HELD.
+#   9. npmrc-ignored: the same `.npmrc`, git-ignored through info/exclude so it is never
+#      committed. The on-disk check still FLAGs it, and dispatch holds the agent approve
+#      on the runner's FLAG (the committed diff alone is clean).
 #
 # Requires node, git, perl and the built dispatch / memory / crew dists; SKIPs otherwise.
 # Run: bash runner/test/gate-integrity-e2e.test.sh   (KEEP=1 keeps the temp dir)
@@ -213,6 +220,50 @@ else
   fail "7: a later base was recorded: $(grep -E "GATE INTEGRITY: #$T7 " "$GAFFER_DATA/factory.log")"
 fi
 retire "$T7"
+
+echo "== 8. an ADDED project .npmrc that no-ops npm scripts is flagged and held =="
+T8="$(new_ready "Quiet the scripts" "deliver a helper")"
+echo npmrc-hide > "$MODE"; run_tick >/dev/null
+J8="$(dod_json "$T8")"
+[ "$(gate_field "$J8" integrity status)" = FLAG ] && [[ "$(gate_field "$J8" integrity note)" == *"touched package-manager config (.npmrc added)"* ]] \
+  && ok "8: the integrity row FLAGs the added .npmrc" || fail "8: evidence: $J8"
+ANN8="$(cd "$ROOT/packages/dispatch" && node --input-type=module -e '
+  const { Dispatch } = await import("./dist/index.js");
+  const d = Dispatch.open(process.argv[1]);
+  const t = d.resolveTicket(process.argv[2]);
+  const a = d.ticketDiff(t.id).repos.flatMap((r) => r.riskAnnotations).find((x) => x.kind === "test-modified");
+  process.stdout.write(a ? `${a.severity}|${(a.items || []).join(";")}` : "none");
+  d.db.close();
+' "$DISPATCH_DB" "$T8" 2>/dev/null)"
+[[ "$ANN8" == "high|"*"added package-manager config .npmrc"* ]] && ok "8: dispatch's diff carries test-modified (high) naming .npmrc" \
+  || fail "8: test-modified annotation: $ANN8"
+if [ "$(st "$T8")" = "in_review" ]; then
+  review_tick >/dev/null
+  [ "$(st "$T8")" = "in_review" ] && ok "8: the agent reviewer's approve was HELD — still in_review" \
+    || fail "8: status after the agent review: $(st "$T8")"
+  [[ "$(ticket_events "$T8")" == *"ticket.autoship_escalated"* ]] && ok "8: an autoship_escalated event records the hold" \
+    || fail "8: events lack the hold"
+else
+  ok "8: the delivery did not reach review (status $(st "$T8")), so nothing could ship"
+fi
+retire "$T8"
+
+echo "== 9. a git-ignored .npmrc the diff cannot see is still flagged =="
+T9="$(new_ready "Quiet the scripts quietly" "deliver a helper")"
+echo npmrc-ignored > "$MODE"; run_tick >/dev/null
+J9="$(dod_json "$T9")"
+[ "$(gate_field "$J9" integrity status)" = FLAG ] && [[ "$(gate_field "$J9" integrity note)" == *"touched package-manager config (.npmrc added)"* ]] \
+  && ok "9: the integrity row FLAGs the ignored .npmrc found on disk" || fail "9: evidence: $J9"
+if [ "$(st "$T9")" = "in_review" ]; then
+  review_tick >/dev/null
+  [ "$(st "$T9")" = "in_review" ] && ok "9: the runner's FLAG holds the agent approve (the committed diff alone is clean)" \
+    || fail "9: status after the agent review: $(st "$T9")"
+  [[ "$(ticket_events "$T9")" == *"runner integrity gate"* ]] && ok "9: the autoship_escalated event names the runner's integrity gate" \
+    || fail "9: events lack the runner hold"
+else
+  fail "9: expected the delivery in review (status $(st "$T9"))"
+fi
+retire "$T9"
 
 echo
 echo "gate-integrity-e2e: $PASS passed, ${#FAILURES[@]} failed"

@@ -120,11 +120,11 @@ wg ticket ready "$IMPL" >/dev/null 2>&1; wg ticket ready "$ACC" >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null
 approve "$IMPL"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
-[ "$(st "$IMPL")" = done ] && ok "#$IMPL delivered, approved and landed" || fail "#$IMPL status=$(st "$IMPL")"
+[ "$(st "$IMPL")" = "done" ] && ok "#$IMPL delivered, approved and landed" || fail "#$IMPL status=$(st "$IMPL")"
 [ "$(st "$ACC")" = in_review ] || AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$ACC")" = in_review ] && ok "acceptance #$ACC delivered through its gates" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
 BR="$(branch_of "$ACC")"
-git -C "$R" show "refs/heads/$BR:src/label.js" 2>/dev/null | grep -q 'profile().displayName;' && ok "the delivery changes the label to read displayName" || fail "fixture: the delivery's label: $(git -C "$R" show "refs/heads/$BR:src/label.js" 2>/dev/null | tr '\n' ' ')"
+grep -q 'profile().displayName;' <<<"$(git -C "$R" show "refs/heads/$BR:src/label.js" 2>/dev/null)" && ok "the delivery changes the label to read displayName" || fail "fixture: the delivery's label: $(git -C "$R" show "refs/heads/$BR:src/label.js" 2>/dev/null | tr '\n' ' ')"
 approve "$ACC"
 [ "$(st "$ACC")" = in_testing ] && ok "approved acceptance → in_testing" || fail "acceptance after approve: $(st "$ACC")"
 AUTO_MERGE=0 run_tick >/dev/null
@@ -150,8 +150,8 @@ echo "== 3: the landing replays the assertion on the exact candidate — held, m
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(git -C "$R" rev-parse main)" = "$MAIN0" ] && ok "main's head is untouched" || fail "main moved: the broken combination landed ($(git -C "$R" log --oneline -3 main | tr '\n' '|'))"
 [ "$(tree_of main)" = "$TREE0" ] && ok "main's tree is untouched" || fail "main's tree changed"
-git -C "$R" show main:src/label.js | grep -q 'profile().name;' && ok "main's label still reads name (the delivery did not land)" || fail "main's label: $(git -C "$R" show main:src/label.js | tr '\n' ' ')"
-[ "$(st "$ACC")" = blocked ] && ok "acceptance #$ACC held for a human (blocked), not done" || fail "acceptance status=$(st "$ACC")"
+grep -q 'profile().name;' <<<"$(git -C "$R" show main:src/label.js 2>/dev/null)" && ok "main's label still reads name (the delivery did not land)" || fail "main's label: $(git -C "$R" show main:src/label.js | tr '\n' ' ')"
+[ "$(st "$ACC")" = "blocked" ] && ok "acceptance #$ACC held for a human (blocked), not done" || fail "acceptance status=$(st "$ACC")"
 HOLD="$(node -e '
   const { Dispatch } = await import(process.argv[1]);
   const d = Dispatch.open(process.argv[2]);
@@ -178,7 +178,7 @@ AUTO_MERGE=0 run_tick >/dev/null
 # A new run: loop.sh clears the per-run list of tickets the merge lane held this run.
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
-[ "$(st "$ACC")" = done ] && ok "the repaired candidate landed (done)" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"
+[ "$(st "$ACC")" = "done" ] && ok "the repaired candidate landed (done)" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"
 git -C "$R" merge-base --is-ancestor "$REPAIRED" main && ok "main contains the repair" || fail "main lacks the repair"
 grep -q "MERGE: #$ACC TESTER REPLAY PASS" "$LOGF" && ok "the tester's assertion ran and passed on the landed candidate" || fail "no replay PASS line"
 LANDED="$(git -C "$R" rev-parse main)"

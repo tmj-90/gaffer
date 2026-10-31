@@ -48,7 +48,7 @@ gitc() { git -c user.email=t@t -c user.name=t "$@"; }
   # The registered smoke suite: green at every step of this test.
   printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { profile } from "../src/profile.js";\nimport { label } from "../src/label.js";\ntest("smoke", () => { assert.equal(profile().name, "Ada"); assert.equal(typeof label, "function"); });\n' > test/smoke.test.js
   gitc add -A && gitc commit -qm init )
-git init -q --bare "$WORK/origin.git"; git -C "$R" remote add origin "$WORK/origin.git"; git -C "$R" push -q origin main 2>/dev/null 2>/dev/null
+git init -q --bare "$WORK/origin.git"; git -C "$R" remote add origin "$WORK/origin.git"; git -C "$R" push -q origin main 2>/dev/null
 
 cat > "$WORK/bin/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -137,15 +137,15 @@ main_tests "$(branch_of "$T1")" && ok "the delivery branch passes the smoke suit
 
 echo "== main moves: displayName removed — a clean merge, the smoke suite stays green =="
 sed -i.bak 's/, displayName: "Ada"//' "$R/src/profile.js" && rm -f "$R/src/profile.js.bak"
-gitc -C "$R" commit -qam "refactor: drop the unused displayName"; git -C "$R" push -q origin main 2>/dev/null 2>/dev/null
+gitc -C "$R" commit -qam "refactor: drop the unused displayName"; git -C "$R" push -q origin main 2>/dev/null
 main_tests && ok "main still passes the smoke suite" || fail "fixture: main red"
-MAIN0="$(git -C "$R" rev-parse main)"; TREE0="$(tree_of main)"
 
 echo "== A: the merge lane replays the tester's assertion on the candidate and holds =="
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
-[ "$(st "$T1")" = blocked ] && ok "A: #$T1 held for a human (blocked), not done" || fail "A: #$T1 status=$(st "$T1") $(grep "#$T1" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"
+[ "$(st "$T1")" = "blocked" ] && ok "A: #$T1 held for a human (blocked), not done" || fail "A: #$T1 status=$(st "$T1") $(grep "#$T1" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"
 B1="$(git -C "$R" rev-parse "refs/heads/$(branch_of "$T1")")"
 if git -C "$R" merge-base --is-ancestor "$B1" main; then fail "A: main contains #$T1 — the broken combination landed"; else ok "A: main does not contain #$T1"; fi
+grep -q 'profile().name;' <<<"$(git -C "$R" show main:src/label.js 2>/dev/null)" && ok "A: main's label still reads name" || fail "A: main's label changed"
 H1="$(hold_of "$T1")"
 case "$H1" in *tester_replay_red*) case "$H1" in *test/bb-label.test.js*) ok "A: the hold is tester_replay_red and names the tester's file" ;; *) fail "A: the hold does not name the file: ${H1:0:400}" ;; esac ;; *) fail "A: hold payload: ${H1:0:400}" ;; esac
 case "$H1" in *settings.json*|*CLAUDE.factory.md*) fail "A: the tester's wiring was replayed as a test" ;; *) ok "A: only the tester's test file is replayed (its .claude/ wiring is not)" ;; esac
@@ -155,11 +155,11 @@ grep -q "MERGE: #$T1 TESTER REPLAY — running the tester's 1 test file(s) (test
 grep -q "MERGE: #$T1 MERGE GATE PASS" "$LOGF" && ok "A: the repo's own gates PASSED on the candidate (only the tester's assertion catches it)" || fail "A: the merge gate did not pass first"
 
 echo "== E: what else the lane landed in that tick =="
-[ "$(st "$T5")" = done ] && ok "E: a bound PASS with no tests on record lands (nothing extra runs)" || fail "E: #$T5 status=$(st "$T5")"
+[ "$(st "$T5")" = "done" ] && ok "E: a bound PASS with no tests on record lands (nothing extra runs)" || fail "E: #$T5 status=$(st "$T5")"
 grep -q "MERGE: #$T5 TESTER REPLAY — no tester test files to replay" "$LOGF" && ok "E: …logged as nothing to replay" || fail "E: no no-tests line for #$T5"
-[ "$(st "$T6")" = done ] && ok "E: a tester assertion that passes on the candidate lands" || fail "E: #$T6 status=$(st "$T6")"
+[ "$(st "$T6")" = "done" ] && ok "E: a tester assertion that passes on the candidate lands" || fail "E: #$T6 status=$(st "$T6")"
 grep -q "MERGE: #$T6 TESTER REPLAY PASS" "$LOGF" && ok "E: …after the replay passed" || fail "E: no replay PASS line for #$T6"
-[ "$(st "$T7")" = done ] && grep -q "MERGE: #$T7 TESTER REPLAY — nothing to replay" "$LOGF" && ok "E: a ticket outside the testing lane lands, nothing replayed" || fail "E: #$T7 status=$(st "$T7")"
+[ "$(st "$T7")" = "done" ] && grep -q "MERGE: #$T7 TESTER REPLAY — nothing to replay" "$LOGF" && ok "E: a ticket outside the testing lane lands, nothing replayed" || fail "E: #$T7 status=$(st "$T7")"
 git -C "$R" show "main:test/bb-label.test.js" >/dev/null 2>&1 && fail "E: a tester's file landed on main" || ok "E: the tester's files ran on the candidate but never landed"
 main_tests && ok "E: main is green" || fail "E: main red"
 # TESTER REPLAY RECORD: which tester assertions passed on which landed revision.
@@ -183,11 +183,11 @@ merge_now "$T2"; rc=$?
 [ "$rc" -eq 4 ] && ok "B: Merge now refuses #$T2 (exit 4)" || fail "B: rc=$rc $(tail -c 400 "$WORK/mn.out")"
 grep -q "TESTER REPLAY FAILED" "$WORK/mn.out" && grep -q "test/bb-label.test.js" "$WORK/mn.out" && ok "B: …saying the tester's replay failed, naming the file" || fail "B: output: $(tail -c 400 "$WORK/mn.out")"
 [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && [ "$(tree_of main)" = "$TREE1" ] && ok "B: main untouched (head and tree)" || fail "B: main moved"
-[ "$(st "$T2")" = blocked ] && case "$(hold_of "$T2")" in *tester_replay_red*) true ;; *) false ;; esac && ok "B: #$T2 held (blocked, tester_replay_red)" || fail "B: #$T2 status=$(st "$T2") hold=$(hold_of "$T2" | cut -c1-200)"
+[ "$(st "$T2")" = "blocked" ] && case "$(hold_of "$T2")" in *tester_replay_red*) true ;; *) false ;; esac && ok "B: #$T2 held (blocked, tester_replay_red)" || fail "B: #$T2 status=$(st "$T2") hold=$(hold_of "$T2" | cut -c1-200)"
 [ -z "$(replay_rec "$T2")" ] && ok "B: a held replay records nothing" || fail "B: #$T2 has a replay record"
 approve "$T8"; tester_pass "$T8" "$NAME_TEST"
 merge_now "$T8"; rc=$?
-[ "$rc" -eq 0 ] && [ "$(st "$T8")" = done ] && ok "B: Merge now lands #$T8 once the tester's assertion passes on the candidate" || fail "B: #$T8 rc=$rc status=$(st "$T8") $(tail -c 300 "$WORK/mn.out")"
+[ "$rc" -eq 0 ] && [ "$(st "$T8")" = "done" ] && ok "B: Merge now lands #$T8 once the tester's assertion passes on the candidate" || fail "B: #$T8 rc=$rc status=$(st "$T8") $(tail -c 300 "$WORK/mn.out")"
 R8="$(replay_rec "$T8")"; S8="${R8%% *}"
 [ -n "$S8" ] && [ "$S8" = "$(git -C "$R" rev-parse main)" ] && case "$R8" in *'["test/bb-label.test.js"]'*) true ;; *) false ;; esac \
   && ok "B: Merge now's replay record names the landed revision (main) and the tester's file" || fail "B: #$T8 record: '$R8' main=$(git -C "$R" rev-parse main)"
@@ -208,7 +208,7 @@ grep -q '^rc=4$' "$WORK/c.rc" 2>/dev/null && ok "C: PR-mode landing held (rc 4)"
 [ -s "$WORK/pr-calls" ] && fail "C: gh pr merge was asked to merge a red replay" || ok "C: the PR merge was never asked for"
 grep -q "MERGE: #$T3 TESTER REPLAY — running the tester's 1 test file(s)" "$LOGF" && ok "C: the replay ran on the PR-mode candidate" || fail "C: no PR-mode replay line"
 [ "$(git -C "$WORK/origin.git" rev-parse main)" = "$MAIN1" ] && [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && ok "C: the remote and local default untouched" || fail "C: a default branch moved"
-[ "$(st "$T3")" = blocked ] && ok "C: #$T3 held (blocked)" || fail "C: #$T3 status=$(st "$T3")"
+[ "$(st "$T3")" = "blocked" ] && ok "C: #$T3 held (blocked)" || fail "C: #$T3 status=$(st "$T3")"
 
 echo "== D: PR mode (bin/merge-ticket.mjs) — the same, with a gh that would merge =="
 approve "$T4"; tester_pass "$T4" "$LABEL_TEST"
@@ -223,7 +223,7 @@ chmod +x "$WORK/bin/gh"
 [ "$rc" -eq 4 ] && grep -q "TESTER REPLAY FAILED" "$WORK/d.out" && ok "D: PR-mode Merge now refuses (exit 4, tester replay failed)" || fail "D: rc=$rc $(tail -c 400 "$WORK/d.out")"
 grep -q "pr merge" "$WORK/gh-calls" 2>/dev/null && fail "D: gh pr merge ran on a red replay" || ok "D: gh pr merge never ran"
 [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && ok "D: main untouched" || fail "D: main moved"
-[ "$(st "$T4")" = blocked ] && ok "D: #$T4 held (blocked)" || fail "D: #$T4 status=$(st "$T4")"
+[ "$(st "$T4")" = "blocked" ] && ok "D: #$T4 held (blocked)" || fail "D: #$T4 status=$(st "$T4")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "land-tester-replay: ALL $PASS checks passed"; exit 0; fi

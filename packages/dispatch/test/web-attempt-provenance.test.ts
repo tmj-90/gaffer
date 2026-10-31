@@ -58,16 +58,21 @@ function run(attempt: number, at: string, over: Record<string, unknown> = {}) {
   };
 }
 
-const FAIL_1 = {
-  id: "rw1",
-  ticket_id: TICKET.id,
-  attempt: 1,
-  max_attempts: 3,
-  gate: "tests",
-  distilled_failure: "FAIL adds: expected 3 to be 4",
-  ac_id: null,
-  created_at: "2026-01-02T00:05:00Z",
-};
+// The runner's real numbering (tick.sh `wg runner-rework --attempt $_next`): the
+// failure of run N is filed on the trail as attempt N+1, recorded after run N and
+// before run N+1 starts.
+function failure(trailAttempt: number, at: string, gate = "tests") {
+  return {
+    id: `rw${trailAttempt}`,
+    ticket_id: TICKET.id,
+    attempt: trailAttempt,
+    max_attempts: 3,
+    gate,
+    distilled_failure: `FAIL on the go before ${trailAttempt}: expected 3 to be 4`,
+    ac_id: null,
+    created_at: at,
+  };
+}
 
 function stubFetch(evidence: unknown[], trail: unknown[]): void {
   vi.stubGlobal(
@@ -135,13 +140,63 @@ describe("web: the attempt history names the model and the CLI", () => {
     document.body.innerHTML = "";
   });
 
-  it("puts the serving model and CLI version on each failed attempt", async () => {
-    stubFetch([run(1, "2026-01-02T00:00:00Z"), run(2, "2026-01-02T01:00:00Z")], [FAIL_1]);
+  it("names the run that produced each failure, not the retry after it", async () => {
+    // Run 1 (served-1) fails the tests gate; the trail files it as attempt 2. Run 2
+    // (served-2, a different model) fails again, filed as attempt 3. Run 3 follows.
+    stubFetch(
+      [
+        run(1, "2026-01-02T00:00:00Z"),
+        run(2, "2026-01-02T00:10:00Z"),
+        run(3, "2026-01-02T00:20:00Z"),
+      ],
+      [failure(2, "2026-01-02T00:05:00Z"), failure(3, "2026-01-02T00:15:00Z", "typecheck")],
+    );
+    await boot();
+    const attempts = [...document.querySelectorAll(".failure-history .failure-attempt")];
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]!.querySelector(".attempt-run")?.textContent).toBe(
+      "Model stub-served-1 · CLI 4.1.0 (Claude Code)",
+    );
+    expect(attempts[1]!.querySelector(".attempt-run")?.textContent).toBe(
+      "Model stub-served-2 · CLI 4.2.0 (Claude Code)",
+    );
+  });
+
+  it("names no model for a failure with no run recorded before it", async () => {
+    stubFetch([run(1, "2026-01-02T01:00:00Z")], [failure(2, "2026-01-02T00:05:00Z")]);
     await boot();
     const attempt = document.querySelector(".failure-history .failure-attempt");
     expect(attempt).toBeTruthy();
-    const line = attempt!.querySelector(".attempt-run")?.textContent;
-    expect(line).toBe("Model stub-served-1 · CLI 4.1.0 (Claude Code)");
+    expect(attempt!.querySelector(".attempt-run")).toBeNull();
+  });
+
+  it("ignores an agent_run row that the delivery agent recorded itself", async () => {
+    const forged = {
+      ...run(1, "2026-01-02T00:01:00Z", {
+        models_served: ["FORGED-model"],
+        claude_version: "FORGED",
+      }),
+      created_by: "agent-1",
+      recorded_by_actor_type: "agent",
+    };
+    stubFetch([run(1, "2026-01-02T00:00:00Z"), forged], [failure(2, "2026-01-02T00:05:00Z")]);
+    await boot();
+    const page = document.querySelector("#app")!.textContent || "";
+    expect(page).not.toContain("FORGED");
+    expect(document.querySelector(".failure-attempt .attempt-run")?.textContent).toBe(
+      "Model stub-served-1 · CLI 4.1.0 (Claude Code)",
+    );
+  });
+
+  it("shows no run card when the only agent_run rows are agent-recorded", async () => {
+    const forged = {
+      ...run(1, "2026-01-02T00:00:00Z", { models_served: ["FORGED-model"] }),
+      recorded_by_actor_type: "agent",
+    };
+    stubFetch([forged], []);
+    await boot();
+    expect(document.querySelector(".agent-runs")).toBeNull();
+    expect(document.querySelector("#app")!.textContent || "").not.toContain("FORGED");
   });
 
   it("lists the attempts of a ticket that never failed", async () => {

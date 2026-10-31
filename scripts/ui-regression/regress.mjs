@@ -527,6 +527,11 @@ try {
   runEv
     ? ok(`agent-run evidence recorded: ${runEv.summary}`)
     : bad("no agent-run evidence (model + CLI version) recorded for the delivery");
+  // Only a runner-recorded row is provenance (the page ignores an agent's own claim).
+  if (runEv)
+    runEv.recorded_by_actor_type === "system"
+      ? ok("agent-run evidence is recorded by the runner (system actor)")
+      : bad(`agent-run evidence recorded by '${runEv.recorded_by_actor_type}', not the runner`);
   await page.goto(`${BASE}/#/ticket/${ticket.id}`, { waitUntil: "load" });
   const runLine = await page
     .waitForSelector(".attempt-run", { timeout: 15000 })

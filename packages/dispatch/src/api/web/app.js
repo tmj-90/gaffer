@@ -9730,22 +9730,34 @@ function failingTestCard(trail) {
 /**
  * The runner's per-attempt AGENT-RUN evidence (tick.sh gaffer_record_agent_run): which
  * model served each delivery attempt and which Claude Code CLI ran it. Oldest first.
+ * Only rows the runner itself recorded (actor type system) count: a delivery agent can
+ * write a `log` row with any payload through record_ac_evidence, and its own claim
+ * about which model ran is not provenance.
  */
 function agentRuns(evidence) {
   const runs = [];
   for (const e of evidence || []) {
     if (e.evidence_type !== "log" || !e.payload_json) continue;
+    if (e.recorded_by_actor_type !== "system") continue;
     const p = parseJsonSafe(e.payload_json);
     if (!p || p.kind !== "agent_run") continue;
     runs.push({ ...p, created_at: e.created_at });
   }
   return runs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }
-/** The run behind a failed attempt: same number, recorded at or before the failure. */
+/**
+ * The run behind a failure: the latest agent run recorded at or before the failure.
+ * The attempt numbers are not compared. The runner files a retry's trail entry under
+ * the NEXT attempt's number (tick.sh `runner-rework --attempt $_next`), so trail
+ * attempt N is the failure of run N-1; time order holds whatever the numbering. A
+ * failure with no timestamp, or with no run before it, names no model rather than a
+ * guessed one.
+ */
 function runForAttempt(runs, a) {
-  const same = runs.filter((r) => r.attempt === a.attempt);
-  const before = same.filter((r) => !a.created_at || String(r.created_at) <= String(a.created_at));
-  return (before.length ? before : same).pop() || null;
+  if (!a || !a.created_at) return null;
+  const at = String(a.created_at);
+  const before = runs.filter((r) => r.created_at && String(r.created_at) <= at);
+  return before.length ? before[before.length - 1] : null;
 }
 /** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */
 function runLine(r) {

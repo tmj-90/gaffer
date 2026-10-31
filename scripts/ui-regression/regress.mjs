@@ -1200,6 +1200,79 @@ try {
           );
     }
   }
+  // ── 10. Plan a build: an answer given while the planner asks its questions reaches the
+  // Final. The planner (POST /plan-build, answered here by the page's network layer — the
+  // stub worker does not plan) asks how long a link lives, the answer is "30 minutes",
+  // the proposal omits it: the proposal must flag it, and confirming must create the
+  // acceptance ticket WITH that criterion (real server, real POST /epics).
+  {
+    let turns = 0;
+    await page.route("**/plan-build", async (route) => {
+      turns++;
+      const body =
+        turns === 1
+          ? { phase: "clarify", questions: ["How long should a short link stay valid?"] }
+          : {
+              phase: "plan",
+              plan: {
+                epic: { name: `Shortener ${RUN_TAG}`, description: "A link shortener" },
+                tickets: [
+                  {
+                    title: `Shorten a URL (${RUN_TAG})`,
+                    description: "POST /links returns a short code",
+                    acceptanceCriteria: ["POST /links returns a short code"],
+                    dependsOn: [],
+                  },
+                ],
+              },
+            };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+    await page.goto(`${BASE}/#/create`, { waitUntil: "load" });
+    const say = async (text) => {
+      await page.fill(".pb-composer .pb-input", text);
+      await page.click('.pb-composer button[aria-label="Send"]');
+      await sleep(1200);
+    };
+    await say("a link shortener");
+    await say("Links expire after 30 minutes");
+    const flagged = await page
+      .locator(
+        'section[aria-label="Requirements agreed while planning"] .pb-agreed-item.is-uncovered',
+      )
+      .count();
+    flagged === 1
+      ? ok("Plan a build: the 30-minute answer is listed and flagged as in no ticket's criteria")
+      : bad(
+          `Plan a build: agreed-requirement section shows ${flagged} uncovered item(s), expected 1`,
+        );
+    await shot(page, "plan-agreed-requirements");
+    await page.click('button:has-text("Create as draft")');
+    const acc = await waitFor(
+      async () => {
+        const list = (await api("GET", "/tickets")).json.tickets || [];
+        return list.find((t) => t.title === `Acceptance: Shortener ${RUN_TAG}`) || null;
+      },
+      "acceptance ticket created",
+      15000,
+      500,
+    ).catch(() => null);
+    const view = acc ? (await api("GET", `/tickets/${acc.id}`)).json : null;
+    const acs = (view && (view.acceptanceCriteria || view.acceptance_criteria)) || [];
+    acs.some((a) => /Agreed during planning: Links expire after 30 minutes/.test(a.text))
+      ? ok("Plan a build: the acceptance ticket carries the agreed 30-minute requirement")
+      : bad(
+          `Plan a build: acceptance criteria lack the agreed requirement (${acs
+            .map((a) => a.text)
+            .join(" | ")
+            .slice(0, 300)})`,
+        );
+    await page.unroute("**/plan-build");
+  }
 } catch (err) {
   bad("harness error: " + (err?.stack || err));
   await shot(page, "error").catch(() => {});

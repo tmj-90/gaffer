@@ -19701,6 +19701,115 @@ function renderPlanBuildModeToggle() {
  * round (a ticket's round is its dependency depth in the plan), then the Final
  * the factory adds on confirm, then the two ways to confirm.
  */
+// ---- Requirements agreed during clarification -----------------------------------
+// The planner asks questions; the human's answers are requirements ("links expire after
+// 30 minutes"). A proposal that dropped one used to be confirmed with only the brief, so
+// the acceptance ticket never carried it and the independent tester never checked it.
+// The proposal now lists every agreed answer, marks the ones no proposed criterion
+// covers, and confirming carries the kept ones into the acceptance ticket's criteria
+// (server: epic.agreed_requirements). Mirrors util/planClarifications.ts.
+const PB_STOPWORDS = new Set(
+  (
+    "the a an and or but of to in on at for with from by as is are be been it its this that " +
+    "these those should must will would can could may might shall do does did not no yes " +
+    "after before when then than so if we our you your they them their there here also " +
+    "just only all any each every some such very want need needs please"
+  ).split(" "),
+);
+function pbTokens(text) {
+  const words = new Set();
+  const numbers = new Set();
+  for (const tok of String(text || "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)) {
+    if (!tok) continue;
+    if (/^\p{N}+$/u.test(tok)) numbers.add(tok);
+    else if (tok.length >= 3 && !PB_STOPWORDS.has(tok)) words.add(tok);
+  }
+  return { words, numbers };
+}
+function pbCriterionCovers(criterion, answer) {
+  const a = pbTokens(answer);
+  if (!a.words.size && !a.numbers.size) return false;
+  const c = pbTokens(criterion);
+  for (const n of a.numbers) if (!c.numbers.has(n)) return false;
+  if (!a.words.size) return true;
+  let hit = 0;
+  for (const w of a.words) if (c.words.has(w)) hit++;
+  return hit * 2 >= a.words.size;
+}
+/** The answers given to the planner's questions in this chat (the brief is not one). */
+function planAgreedRequirements() {
+  const out = [];
+  let pending = null;
+  for (const h of (planBuildState && planBuildState.history) || []) {
+    if (!h) continue;
+    if (h.role === "assistant") {
+      pending = Array.isArray(h.questions)
+        ? h.questions.filter((q) => q && String(q).trim())
+        : null;
+      continue;
+    }
+    const answer = typeof h.answer === "string" ? h.answer.trim() : "";
+    if (pending && answer) {
+      out.push({
+        ...(pending.length ? { question: pending.join(" ").slice(0, 4000) } : {}),
+        answer: answer.slice(0, 4000),
+      });
+    }
+    pending = null;
+  }
+  return out.slice(0, 50);
+}
+
+function renderPlanAgreed(plan, agreed, withFinal) {
+  if (!agreed.length) return null;
+  const tickets = plan.tickets || [];
+  const acText = (ac) => (typeof ac === "string" ? ac : (ac && ac.text) || "");
+  const keep = (planBuildState.agreedKeep = planBuildState.agreedKeep || {});
+  const items = agreed.map((r, i) => {
+    const coveredBy = [];
+    tickets.forEach((t, ti) => {
+      const acs = Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria : [];
+      if (acs.some((ac) => pbCriterionCovers(acText(ac), r.answer))) coveredBy.push(`T${ti + 1}`);
+    });
+    if (keep[i] === undefined) keep[i] = true;
+    const box = el("input", {
+      type: "checkbox",
+      class: "pb-agreed-keep",
+      "aria-label": `Add “${r.answer.slice(0, 80)}” to the acceptance criteria`,
+      ...(withFinal ? {} : { disabled: "" }),
+      onchange: (e) => {
+        keep[i] = e.target.checked;
+      },
+    });
+    box.checked = withFinal && keep[i];
+    return el("li", { class: `pb-agreed-item${coveredBy.length ? "" : " is-uncovered"}` }, [
+      el("label", { class: "pb-agreed-label" }, [box, el("span", {}, r.answer)]),
+      r.question ? el("p", { class: "pb-agreed-q" }, `Asked: ${r.question}`) : null,
+      el(
+        "p",
+        { class: "pb-agreed-cover" },
+        coveredBy.length
+          ? `Covered by ${coveredBy.join(", ")}'s criteria`
+          : "No proposed ticket's criteria cover this",
+      ),
+    ]);
+  });
+  const uncovered = items.filter((li) => li.classList.contains("is-uncovered")).length;
+  return el("section", { class: "pb-agreed", "aria-label": "Requirements agreed while planning" }, [
+    el("h4", { class: "pb-agreed-title" }, "Agreed while planning"),
+    el(
+      "p",
+      { class: "pb-agreed-note" },
+      withFinal
+        ? `Each one you keep becomes a criterion of the Final, so the independent tester checks it.${uncovered ? ` ${plural(uncovered, "requirement")} ${uncovered === 1 ? "is" : "are"} in no ticket's criteria.` : ""}`
+        : "This epic has no Final (acceptance is off), so nothing carries these into a criterion: add them to a ticket before you confirm.",
+    ),
+    el("ul", { class: "pb-agreed-list" }, items),
+  ]);
+}
+
 function renderPlanProposal(plan) {
   const epic = plan.epic || {};
   const tickets = plan.tickets || [];
@@ -19813,6 +19922,9 @@ function renderPlanProposal(plan) {
       ]),
     ],
   );
+
+  const agreedSection = renderPlanAgreed(plan, planAgreedRequirements(), withFinal);
+  if (agreedSection) wrap.appendChild(agreedSection);
 
   wrap.appendChild(
     el("div", { class: "pb-confirm-row" }, [
@@ -20018,8 +20130,20 @@ async function confirmPlanBuild(plan, opts = {}) {
     );
     const brief =
       (planBuildState && planBuildState.brief) || (firstTurn ? firstTurn.brief : null) || null;
-    const epic = brief ? { ...plan.epic, brief: String(brief).slice(0, 20000) } : plan.epic;
-    const res = await api("POST", "/epics", { epic, tickets });
+    const withBrief = brief ? { ...plan.epic, brief: String(brief).slice(0, 20000) } : plan.epic;
+    // The answers given while the planner asked its questions ride on the epic as its
+    // agreed requirements (the ones the human kept in the proposal), so the acceptance
+    // ticket carries each as a criterion. Explicit even when empty: the server then
+    // never re-derives what the human chose to drop.
+    const keep = (planBuildState && planBuildState.agreedKeep) || {};
+    const agreed = planAgreedRequirements().filter((_, i) => keep[i] !== false);
+    const epic = { ...withBrief, agreed_requirements: agreed };
+    const sessionId = planBuildState && planBuildState.sessionId;
+    const res = await api("POST", "/epics", {
+      epic,
+      tickets,
+      ...(sessionId ? { plan_session_id: sessionId } : {}),
+    });
     // Archive the session as confirmed now that the epic has been created.
     await archivePlanBuildSession("confirmed");
     const numbers = res.ticket_numbers || [];

@@ -488,6 +488,12 @@ export type EpicTicketInput = z.infer<typeof epicTicketInput>;
  * plus the dependency edges declared by index. Returns the epic node id and the
  * created ticket numbers (in plan order).
  */
+/** One requirement agreed during planning clarification (see createEpicInput). */
+export const agreedRequirementInput = z.object({
+  question: z.string().max(4_000).optional(),
+  answer: z.string().trim().min(1).max(4_000),
+});
+
 export const createEpicInput = z.object({
   epic: z.object({
     name: z.string().trim().min(1, "epic name is required").max(200),
@@ -511,7 +517,20 @@ export const createEpicInput = z.object({
      * the build cannot be reported as accepted because a planner forgot a flag.
      */
     acceptance: z.boolean().optional(),
+    /**
+     * ACCEPTANCE GATE: the requirements the human AGREED during planning clarification
+     * (the planner's question + the human's answer). Each becomes a criterion of the
+     * acceptance ticket, so the independent tester checks it even when the planner's
+     * proposed tickets left it out. Absent: derived from `plan_session_id` when given.
+     */
+    agreed_requirements: z.array(agreedRequirementInput).max(50).optional(),
   }),
+  /**
+   * The plan session the plan came from. When the epic carries no explicit
+   * `agreed_requirements`, the clarification answers recorded in that session are
+   * carried into the acceptance contract.
+   */
+  plan_session_id: z.string().trim().min(1).max(200).optional(),
   tickets: z
     .array(epicTicketInput)
     .min(1, "an epic needs at least one ticket")

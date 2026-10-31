@@ -55,6 +55,9 @@ export async function routeEpics(
     // Greenfield: tickets naming a repo that is not registered yet carry the name on
     // `source`; the link is deferred to the bootstrap onboard. Count of such tickets.
     deferred_repo_links: result.deferredRepoLinks,
+    acceptance_ticket_number: result.acceptanceTicketNumber,
+    // Requirements agreed during planning, now criteria of the acceptance ticket.
+    agreed_requirements: result.agreedRequirements,
   });
   return true;
 }

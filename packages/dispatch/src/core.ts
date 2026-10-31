@@ -171,6 +171,7 @@ import type { NotifyEvent, NotifyKind, Notifier } from "./notify/types.js";
 import { type Clock, systemClock } from "./util/clock.js";
 import { DispatchError, notFound } from "./util/errors.js";
 import { newId } from "./util/id.js";
+import { agreedRequirementsFromTurns } from "./util/planClarifications.js";
 
 /**
  * Default cap on how many times a delivery may be rejected back into the queue
@@ -1034,6 +1035,34 @@ export class Dispatch {
    * the node, the tickets and the edges.
    */
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
+    // PLANNING CLARIFICATIONS: a plan confirmed from a plan session carries the answers
+    // the human gave during clarification into the acceptance contract, unless the
+    // caller sent its own (reviewed) list. An unknown session id is refused — the
+    // caller asked for answers that cannot be found.
+    const body = raw as { plan_session_id?: unknown; epic?: { agreed_requirements?: unknown } };
+    if (
+      body &&
+      typeof body === "object" &&
+      typeof body.plan_session_id === "string" &&
+      body.plan_session_id.trim() !== "" &&
+      body.epic &&
+      typeof body.epic === "object" &&
+      body.epic.agreed_requirements === undefined
+    ) {
+      const session = this.getPlanSession(body.plan_session_id.trim());
+      if (!session) throw notFound("plan_session", body.plan_session_id);
+      let turns: Array<{ role: "user" | "assistant"; content: string }> = [];
+      try {
+        const parsed = JSON.parse(session.messages_json) as unknown;
+        if (Array.isArray(parsed)) turns = parsed as typeof turns;
+      } catch {
+        turns = [];
+      }
+      raw = {
+        ...body,
+        epic: { ...body.epic, agreed_requirements: agreedRequirementsFromTurns(turns) },
+      };
+    }
     return this.epicsSvc.createEpic(raw, actor);
   }
 

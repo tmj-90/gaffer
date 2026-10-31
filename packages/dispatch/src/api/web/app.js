@@ -3748,6 +3748,127 @@ function actionSheet(title, { intro, body, actions, focus }) {
   );
 }
 
+/**
+ * Ask before an act, in the shared sheet (never window.confirm: unstyled, it blocks
+ * the page and ignores the kit). `onConfirm` does the work; the sheet closes when it
+ * resolves and stays open, with the error toasted, when it throws. A danger sheet
+ * starts on Cancel, so Enter never destroys anything by accident.
+ */
+function confirmSheet({ title, intro, confirm, tone = "primary", onConfirm }) {
+  let busy = false;
+  const go = el(
+    "button",
+    {
+      class: `btn ${tone === "danger" ? "danger" : "primary"} confirm-submit`,
+      type: "button",
+      onclick: async () => {
+        if (busy) return;
+        busy = true;
+        go.setAttribute("aria-busy", "true");
+        try {
+          await onConfirm();
+          if (go.isConnected && sheetOpen()) closeSheet();
+        } catch (e) {
+          toast((e && e.message) || "That did not go through.", { code: e && e.code });
+        } finally {
+          busy = false;
+          go.removeAttribute("aria-busy");
+        }
+      },
+    },
+    confirm,
+  );
+  const cancel = el(
+    "button",
+    { class: "btn", type: "button", onclick: () => closeSheet() },
+    "Cancel",
+  );
+  actionSheet(title, { intro, actions: [go, cancel], focus: tone === "danger" ? cancel : go });
+}
+
+/**
+ * One value, edited in the shared sheet (the inline-form twin of confirmSheet, for
+ * what was a window.prompt). An empty value is refused in place; an unchanged one
+ * just closes. `onSave(value)` does the work and may throw to keep the sheet open.
+ */
+function valueSheet({ title, intro, label, value = "", hint, confirm = "Save", onSave }) {
+  const hintId = `vs-hint-${++fieldSeq}`;
+  const input = el("input", {
+    type: "text",
+    class: "value-sheet-input",
+    value,
+    required: "",
+    autocomplete: "off",
+    spellcheck: "false",
+    "aria-describedby": hintId,
+  });
+  const hintEl = el("p", { class: "act-hint", id: hintId }, hint || "");
+  let busy = false;
+  const form = el(
+    "form",
+    {
+      class: "act-sheet value-sheet",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        if (busy) return;
+        const next = input.value.trim();
+        if (!next) {
+          input.setAttribute("aria-invalid", "true");
+          hintEl.classList.add("is-error");
+          hintEl.textContent = `${label} cannot be empty.`;
+          input.focus();
+          return;
+        }
+        if (next === value) {
+          closeSheet();
+          return;
+        }
+        busy = true;
+        try {
+          await onSave(next);
+          if (form.isConnected && sheetOpen()) closeSheet();
+        } catch (err) {
+          toast((err && err.message) || "That did not go through.", { code: err && err.code });
+        } finally {
+          busy = false;
+        }
+      },
+    },
+    [
+      intro ? el("p", { class: "act-intro" }, intro) : null,
+      field(label, input),
+      hintEl,
+      el("div", { class: "btn-row act-actions" }, [
+        el("button", { class: "btn primary", type: "submit" }, confirm),
+        el("button", { class: "btn", type: "button", onclick: () => closeSheet() }, "Cancel"),
+      ]),
+    ],
+  );
+  input.addEventListener("input", () => {
+    input.removeAttribute("aria-invalid");
+    hintEl.classList.remove("is-error");
+    hintEl.textContent = hint || "";
+  });
+  openSheet(title, form, { focus: input });
+  input.select();
+  return form;
+}
+
+/** Hide a repo from the dashboard (reversible), asked in the shared sheet. */
+function hideRepoSheet(repo, after) {
+  confirmSheet({
+    title: `Hide ${repo.name}`,
+    intro: `${repo.name} leaves the Map and the lists. It stays registered, its tickets are unaffected, and you can unhide it from the Hidden repos page.`,
+    confirm: "Hide repo",
+    onConfirm: async () => {
+      await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
+      toast(`${repo.name} hidden`, { ok: true });
+      after();
+    },
+  });
+}
+
 /** The ticket a sheet acts on, named at its top: glyph, number and title. */
 function sheetTicket(t) {
   if (!t) return null;
@@ -16941,7 +17062,7 @@ function renderRepoCommandsEditor(repo) {
 }
 
 // A discreet "Hide" button for a repo row (WG-006). Stops the row's navigate
-// click, confirms, then hides the repo and refreshes — it drops off the list and
+// click, asks in the shared sheet, then hides the repo and refreshes — it drops off the list and
 // reappears on the "Hidden repos" page.
 function hideRepoBtn(repo) {
   return el(
@@ -16953,17 +17074,7 @@ function hideRepoBtn(repo) {
       title: "Hide this repo from the dashboard (reversible)",
       onclick: (e) => {
         e.stopPropagation();
-        guard(async () => {
-          if (
-            !window.confirm(
-              `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
-            )
-          )
-            return;
-          await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
-          toast(`${repo.name} hidden`, { ok: true });
-          router();
-        });
+        hideRepoSheet(repo, () => router());
       },
     },
     "Hide",
@@ -17240,11 +17351,16 @@ async function renderNode(id) {
       class: "btn danger small",
       type: "button",
       onclick: () =>
-        guard(async () => {
-          if (!window.confirm(`Delete the ground “${node.name}”? This cannot be undone.`)) return;
-          await api("DELETE", `/scope/nodes/${node.id}`);
-          toast("Ground deleted", { ok: true });
-          navigate("#/factory");
+        confirmSheet({
+          title: `Delete ${node.name}`,
+          intro: `The ground “${node.name}” is deleted from the Map. This cannot be undone.`,
+          confirm: "Delete ground",
+          tone: "danger",
+          onConfirm: async () => {
+            await api("DELETE", `/scope/nodes/${node.id}`);
+            toast("Ground deleted", { ok: true });
+            navigate("#/factory");
+          },
         }),
     },
     "Delete ground",
@@ -17758,18 +17874,7 @@ async function renderRepo(id) {
           type: "button",
           "aria-label": `Hide ${repo.name} from the dashboard`,
           title: "Hide this repo from the dashboard (reversible)",
-          onclick: () =>
-            guard(async () => {
-              if (
-                !window.confirm(
-                  `Hide “${repo.name}” from the dashboard? It stays registered and can be un-hidden from the Hidden repos page.`,
-                )
-              )
-                return;
-              await api("POST", `/repos/${repo.id}/hidden`, { hidden: true });
-              toast(`${repo.name} hidden`, { ok: true });
-              navigate("#/factory");
-            }),
+          onclick: () => hideRepoSheet(repo, () => navigate("#/factory")),
         },
         "Hide repo",
       );
@@ -17812,17 +17917,18 @@ async function renderRepo(id) {
       title:
         "The base branch every delivery worktree branches off. A wrong value fails delivery at worktree setup.",
       onclick: () =>
-        guard(async () => {
-          const next = window.prompt(
-            `Default branch for “${repo.name}” — the base every delivery branches off:`,
-            repo.default_branch || "main",
-          );
-          if (next == null) return;
-          const branch = next.trim();
-          if (!branch || branch === repo.default_branch) return;
-          await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
-          toast(`${repo.name} default branch → ${branch}`, { ok: true });
-          router();
+        valueSheet({
+          title: `Default branch for ${repo.name}`,
+          intro:
+            "The base every delivery worktree branches off. A branch that does not exist fails delivery at worktree setup.",
+          label: "Default branch",
+          value: repo.default_branch || "main",
+          hint: "The branch name as git knows it, such as main or develop.",
+          onSave: async (branch) => {
+            await api("POST", `/repos/${repo.id}/default-branch`, { default_branch: branch });
+            toast(`${repo.name} default branch → ${branch}`, { ok: true });
+            router();
+          },
         }),
     },
     "Edit",
@@ -17972,16 +18078,16 @@ function renderRepoScopeRow(repo, s) {
             type: "button",
             "aria-label": `Unlink from ${s.name}`,
             onclick: () =>
-              guard(async () => {
-                if (
-                  !window.confirm(
-                    `Unlink ${repo.name} from “${s.name}”? Existing tickets are unaffected.`,
-                  )
-                )
-                  return;
-                await api("DELETE", `/scope/repos/${s.association_id}`);
-                toast("Association removed", { ok: true });
-                router();
+              confirmSheet({
+                title: `Unlink ${repo.name}`,
+                intro: `${repo.name} is no longer mapped into “${s.name}”. Existing tickets are unaffected.`,
+                confirm: "Unlink",
+                tone: "danger",
+                onConfirm: async () => {
+                  await api("DELETE", `/scope/repos/${s.association_id}`);
+                  toast("Association removed", { ok: true });
+                  router();
+                },
               }),
           },
           "Unlink",

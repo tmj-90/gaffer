@@ -108,10 +108,16 @@ export default async function s14(t, L) {
     ],
     { timeout: 60000 },
   );
+  // Hide and Edit ask in the club's sheet; a native dialog is a regression.
+  const native = [];
+  const onDialog = (d) => {
+    native.push(`${d.type()}: ${d.message()}`);
+    void d.dismiss();
+  };
+  p.on("dialog", onDialog);
   await t.visit("factory");
-  // Hide asks window.confirm first; accept it as an operator would.
-  p.once("dialog", (d) => d.accept());
   await p.locator(`button[aria-label="Hide ${r2name} from the dashboard"]`).first().click();
+  await p.locator(".sheet.open .confirm-submit", { hasText: "Hide repo" }).click();
   const hidden = await L.maybe(
     async () =>
       ((await L.api("GET", "/repositories?hidden=1")).json.repositories || []).find(
@@ -156,13 +162,14 @@ export default async function s14(t, L) {
   // ── repo page: default branch edit and back ───────────────────────────────
   L.git(L.REPO_PATH, "branch", "-f", "trunk", "main");
   await t.visit(`repo/${encodeURIComponent(t.repo.id)}`, { label: "repo/:id" });
-  // Edit asks with window.prompt; answer it.
+  // Edit asks in the shared sheet: type the branch and save.
   const setBranch = async (b) => {
-    p.once("dialog", (d) => d.accept(b));
     const rp = p.waitForResponse((r) => r.url().endsWith(`/repos/${t.repo.id}/default-branch`), {
       timeout: 10000,
     });
     await p.locator(`button[aria-label="Edit default branch for ${t.repo.name}"]`).click();
+    await p.locator(".sheet.open .value-sheet-input").fill(b);
+    await p.locator('.sheet.open .value-sheet button[type="submit"]').click();
     return rp.catch(() => null);
   };
   const br = await setBranch("trunk");
@@ -177,6 +184,12 @@ export default async function s14(t, L) {
   await t.visit(`repo/${encodeURIComponent(t.repo.id)}`, { label: "repo/:id" });
   await setBranch("main");
   await L.api("POST", `/repos/${t.repo.id}/default-branch`, { default_branch: "main" });
+  p.off("dialog", onDialog);
+  t.check(
+    native.length === 0,
+    "Hide and the default-branch Edit asked in the shared sheet, never a native dialog",
+    `native dialogs opened: ${native.join(" | ")}`,
+  );
 
   // ── a ticket scoped only to the ground: refused until a repo is confirmed ─
   const tk = (

@@ -1660,6 +1660,10 @@
     border-color: var(--ink);
     background: var(--sky-wash);
   }
+  .value-sheet-input {
+    width: 100%;
+    font-family: var(--f-mono);
+  }
   .reject-reason-input {
     width: 100%;
     min-height: 6.5em;
@@ -1668,7 +1672,8 @@
   .reject-dialog .act-hint {
     margin-top: calc(-1 * var(--s3));
   }
-  .reject-dialog .act-hint.is-error {
+  .reject-dialog .act-hint.is-error,
+  .value-sheet .act-hint.is-error {
     color: var(--red);
     font-weight: 700;
   }

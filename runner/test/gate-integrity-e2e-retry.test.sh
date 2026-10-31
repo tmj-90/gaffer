@@ -104,7 +104,7 @@ ANN8="$(cd "$ROOT/packages/dispatch" && node --input-type=module -e '
   d.db.close();
 ' "$DISPATCH_DB" "$T8" 2>/dev/null)"
 [[ "$ANN8" == "high|"*"added package-manager config .npmrc"* ]] && ok "8: dispatch's diff carries test-modified (high) naming .npmrc" \
-  || fail "8: test-modified annotation: $ANN8"
+  || { fail "8: test-modified annotation: $ANN8 (status $(st "$T8"))"; dod_explain "$T8"; }
 if [ "$(st "$T8")" = "in_review" ]; then
   review_tick >/dev/null
   [ "$(st "$T8")" = "in_review" ] && ok "8: the agent reviewer's approve was HELD — still in_review" \
@@ -129,7 +129,7 @@ if [ "$(st "$T9")" = "in_review" ]; then
   [[ "$(ticket_events "$T9")" == *"runner integrity gate"* ]] && ok "9: the autoship_escalated event names the runner's integrity gate" \
     || fail "9: events lack the runner hold"
 else
-  fail "9: expected the delivery in review (status $(st "$T9"))"
+  fail "9: expected the delivery in review (status $(st "$T9"))"; dod_explain "$T9"
 fi
 retire "$T9"
 

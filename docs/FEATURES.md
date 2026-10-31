@@ -172,8 +172,10 @@ structural barrier the whole design hangs on.
   **no machine evidence** on a yellow card when only the agent's word (or
   nothing) backs it. When the agent's evidence claims a test count or "all tests
   pass" that the runner's output contradicts, a flag says so: "the summary says
-  42, the runner saw 40". Only rows the runner recorded as the system count as
-  its word; an agent-recorded row that looks like a gate report is ignored. It is
+  42, the runner saw 40". Gate results, the test count and criterion exit codes
+  come only from rows the runner recorded as the system, and the tester's verdict
+  only from the row a tester pass or fail recorded; an agent-recorded row that
+  looks like a gate report or a tester verdict is ignored. It is
   one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
   is what the test runner printed, and the tests run the delivered code, so treat
   a match as consistency, not proof.

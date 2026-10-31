@@ -206,32 +206,59 @@ function readGates(rows: Evidence[]): PacketGates | null {
 }
 
 /**
- * The runner-captured test output inside a DoD row: the `---DOD-TALLY tests@…---`
- * blocks (summary lines of a test gate that ran) and the `---DOD-OUTPUT tests@…---`
- * failure blocks. Only the tests gate's blocks: a lint run's "3 passed" is not a test count.
+ * The runner-captured test output inside a DoD row, one block per `tests@<repo>`:
+ * the `---DOD-TALLY tests@…---` block (the summary lines of a test gate that ran) when
+ * the row has one, else the `---DOD-OUTPUT tests@…---` failure tail (older rows written
+ * before the TALLY block existed). Never both: on a failing gate dod.sh writes the
+ * summary line into each, and reading the two would count every test twice. Only the
+ * tests gate's blocks: a lint run's "3 passed" is not a test count.
  */
 function testOutputBlocks(summary: string): string {
-  const out: string[] = [];
-  let keep = false;
+  const tally = new Map<string, string[]>();
+  const output = new Map<string, string[]>();
+  const order: string[] = [];
+  let into: string[] | null = null;
   for (const line of summary.split("\n")) {
-    const open = line.match(/^---DOD-(TALLY|OUTPUT) ([^@]+)@/);
+    const open = line.match(/^---DOD-(TALLY|OUTPUT) ([^@]+)@(.*?)---\s*$/);
     if (open) {
-      keep = open[2] === "tests";
+      into = null;
+      if (open[2] !== "tests") continue;
+      const key = `${open[2]}@${open[3]}`;
+      if (!order.includes(key)) order.push(key);
+      const bucket = open[1] === "TALLY" ? tally : output;
+      const lines = bucket.get(key) ?? [];
+      bucket.set(key, lines);
+      into = lines;
       continue;
     }
     if (/^---END-DOD-(TALLY|OUTPUT)---/.test(line)) {
-      keep = false;
+      into = null;
       continue;
     }
-    if (keep) out.push(line);
+    if (into) into.push(line);
   }
+  const out: string[] = [];
+  for (const key of order) out.push(...(tally.get(key) ?? output.get(key) ?? []));
   return out.join("\n");
 }
 
-function readTester(rows: Evidence[]): PacketTester | null {
+/**
+ * The tester's verdict: the latest `test_output` row whose id a `ticket.tester_passed`
+ * or `ticket.tester_failed` event on this ticket names. Only reviewGateService's
+ * testerPass/testerFail write those events, beside the row they record; a verdict-shaped
+ * payload anyone else recorded (an agent's record_ac_evidence, say) is not the tester's.
+ */
+function readTester(rows: Evidence[], events: WorkEvent[]): PacketTester | null {
+  const verdictIds = new Set<string>();
+  for (const ev of events) {
+    if (ev.event_type !== "ticket.tester_passed" && ev.event_type !== "ticket.tester_failed")
+      continue;
+    const id = str(payloadOf(ev).evidence_id);
+    if (id) verdictIds.add(id);
+  }
   for (let i = rows.length - 1; i >= 0; i--) {
     const e = rows[i]!;
-    if (e.evidence_type !== "test_output") continue;
+    if (e.evidence_type !== "test_output" || !verdictIds.has(e.id)) continue;
     const p = payloadOf(e);
     if (p.verdict !== "pass" && p.verdict !== "fail") continue;
     return {
@@ -380,7 +407,7 @@ export class ReviewPacketService {
 
     return {
       gates,
-      tester: readTester(rows),
+      tester: readTester(rows, events),
       tester_expected: safeBool(() => this.deps.testerExpected(ticket)),
       cost: { ...cost, budget_usd: ticket.delivery_budget_usd },
       attempts: {

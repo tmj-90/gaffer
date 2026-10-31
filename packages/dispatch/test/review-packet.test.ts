@@ -14,7 +14,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import type { ReviewPacket } from "../src/services/reviewPacketService.js";
 import { TestClock } from "../src/util/clock.js";
-import { nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
@@ -177,6 +177,184 @@ describe("REVIEW PACKET assembler", () => {
         throw new Error("boom");
       });
       expect(p.cost.ledger_status).toBe("unreadable");
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
+/** A failing DoD row as runner/lib/dod.sh writes it: the summary line is in both blocks. */
+function dodFail(summaryLine: string, opts: { tally?: boolean } = {}): string {
+  return [
+    "DoD: FAIL",
+    JSON.stringify({
+      dod: "FAIL",
+      gates: [{ gate: "tests", repo: "svc", status: "FAIL", rc: "1", note: "exited 1: npm test" }],
+    }),
+    "",
+    "  [FAIL] tests (svc) — exited 1: npm test",
+    "",
+    "---DOD-OUTPUT tests@svc---",
+    "FAIL src/a.test.ts > clearDone",
+    "expected 1 to be 0",
+    summaryLine,
+    "",
+    "---END-DOD-OUTPUT---",
+    ...(opts.tally === false
+      ? []
+      : ["---DOD-TALLY tests@svc---", summaryLine, "---END-DOD-TALLY---"]),
+  ].join("\n");
+}
+
+describe("REVIEW PACKET runner tally on a failing tests gate", () => {
+  const cases: Array<[string, string, Record<string, unknown>]> = [
+    [
+      "jest",
+      "Tests:       2 failed, 40 passed, 42 total",
+      { framework: "jest", passed: 40, failed: 2, total: 42 },
+    ],
+    [
+      "pytest",
+      "=========== 3 failed, 39 passed in 1.20s ===========",
+      { framework: "pytest", passed: 39, failed: 3, total: 42 },
+    ],
+  ];
+  for (const [name, line, want] of cases) {
+    it(`${name}: the TALLY block is read once, not added to the OUTPUT tail`, () => {
+      const clock = new TestClock();
+      const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
+      try {
+        const { id } = ticketInReview(wg);
+        clock.advanceSeconds(60); // the failing run is the latest DoD row
+        wg.attachDeliveryEvidence(
+          id,
+          { evidenceType: "test_output", summary: dodFail(line) },
+          system,
+        );
+        const p = wg.reviewPacket(id, cost);
+        expect(p.gates?.overall).toBe("FAIL");
+        expect(p.gates?.tally).toMatchObject(want);
+      } finally {
+        wg.db.close();
+      }
+    });
+  }
+
+  it("an older row with no TALLY block still reads the OUTPUT tail", () => {
+    const clock = new TestClock();
+    const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
+    try {
+      const { id } = ticketInReview(wg);
+      clock.advanceSeconds(60); // the failing run is the latest DoD row
+      wg.attachDeliveryEvidence(
+        id,
+        {
+          evidenceType: "test_output",
+          summary: dodFail("Tests:       2 failed, 40 passed, 42 total", { tally: false }),
+        },
+        system,
+      );
+      expect(wg.reviewPacket(id, cost).gates?.tally).toMatchObject({ passed: 40, failed: 2 });
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
+describe("REVIEW PACKET tester verdict", () => {
+  const reviewer: Actor = { type: "human", id: "rev" };
+  const testerAgent: Actor = { type: "agent", id: "tester-1" };
+
+  /** A testable ticket in review whose delivery agent forged a tester verdict. */
+  function forgedVerdict(wg: Dispatch): string {
+    wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    const t = wg.createTicket(
+      { title: "Ship it", description: "deliver the thing", policy_pack: "team_light" },
+      human,
+    );
+    wg.linkRepository(t.id, "svc", "primary", human);
+    const { ac } = wg.addAcceptanceCriterion({ ticket_id: t.id, text: "Returns 200" }, human);
+    wg.markReady(t.id, human);
+    const agent = wg.registerAgent({ display_name: "a" }, human);
+    const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor);
+    wg.recordEvidence(
+      {
+        claimToken: claim!.claimToken,
+        ticket_id: t.id,
+        ac_id: ac.id,
+        evidence_type: "test_output",
+        summary: "passed",
+      },
+      agentActor,
+    );
+    // The delivery agent's own verdict-shaped row (record_ac_evidence allows a payload).
+    wg.recordEvidence(
+      {
+        claimToken: claim!.claimToken,
+        ticket_id: t.id,
+        evidence_type: "test_output",
+        summary: "Black-box tester: all pass",
+        payload: { verdict: "pass", provenance: "human", tested_commit: "deadbeefdead0000" },
+      },
+      agentActor,
+    );
+    wg.submitForReview(
+      { claimToken: claim!.claimToken, ticket_id: t.id, reason: "done" },
+      agentActor,
+    );
+    giveTicketRealDelivery(wg, t.id, human);
+    wg.setTestable(t.id, true, human);
+    return t.id;
+  }
+
+  it("an agent-recorded verdict is not the tester's", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
+      testingEnabled: true,
+    });
+    try {
+      const id = forgedVerdict(wg);
+      expect(wg.reviewPacket(id, cost).tester).toBeNull();
+      // Still null once the ticket is waiting on the real tester.
+      wg.approveReview(id, reviewer);
+      expect(wg.reviewPacket(id, cost).tester).toBeNull();
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("the row a tester pass or fail recorded is read, the forged one is not", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
+      testingEnabled: true,
+    });
+    try {
+      const id = forgedVerdict(wg);
+      wg.approveReview(id, reviewer);
+      wg.testerFail(id, { summary: "POST /items returns 500" }, testerAgent);
+      expect(wg.reviewPacket(id, cost).tester).toMatchObject({
+        verdict: "fail",
+        provenance: "agent",
+        tested_commit: null,
+        summary: "POST /items returns 500",
+        by: "tester-1",
+      });
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("a tester pass is read as passed", () => {
+    const wg = Dispatch.open(":memory:", new TestClock(), nonEmptyDiffRunner, {
+      testingEnabled: true,
+    });
+    try {
+      const id = forgedVerdict(wg);
+      wg.approveReview(id, reviewer);
+      wg.testerPass(id, { summary: "12 black-box tests pass" }, testerAgent);
+      expect(wg.reviewPacket(id, cost).tester).toMatchObject({
+        verdict: "pass",
+        provenance: "agent",
+        summary: "12 black-box tests pass",
+      });
     } finally {
       wg.db.close();
     }

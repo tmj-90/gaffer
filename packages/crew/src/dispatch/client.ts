@@ -184,7 +184,10 @@ export interface DispatchRepository {
   id: string;
   name: string;
   localPath: string | null;
-  /** The registered remote (identity check on re-onboarding); absent on older facades. */
+  /**
+   * The registered remote (onboarding stores origin's URL): the identity check on
+   * re-onboarding and what GitHub ingest reaches the repo by; absent on older facades.
+   */
   remoteUrl?: string | null;
   defaultBranch: string;
   stack: string | null;

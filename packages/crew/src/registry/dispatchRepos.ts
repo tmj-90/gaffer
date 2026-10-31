@@ -51,6 +51,9 @@ export function withDispatchRepos(
       test_command: r.testCommand,
       lint_command: r.lintCommand,
       coverage_command: r.coverageCommand,
+      // GitHub ingest resolves owner/repo from this; without it every dashboard-onboarded
+      // repo was skipped as "no_github_remote" although Dispatch recorded the remote.
+      remote_url: r.remoteUrl ?? null,
     });
     if (!parsed.success) {
       events?.record("dispatch_repo_skipped", {

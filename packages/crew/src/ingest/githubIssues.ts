@@ -30,12 +30,18 @@ export type { IngestDeps, IngestSummary, IngestedIssue, IngestError } from "./co
  * exec, so tests inject a fake runner and no real `gh` or network is used.
  */
 
-/** Schema for a single `gh issue list --json number,title,body,url` row. */
+/** Schema for a single `gh issue list --json number,title,body,url,labels` row. */
 const ghIssueSchema = z.object({
   number: z.number().int(),
   title: z.string(),
   body: z.string().nullable().default(""),
   url: z.string(),
+  // gh answers `labels` as [{id, name, description, color}]; only the name is kept.
+  labels: z
+    .array(z.object({ name: z.string() }).passthrough())
+    .nullable()
+    .optional()
+    .transform((ls) => (ls ?? []).map((l) => l.name)),
 });
 
 const ghIssueListSchema = z.array(ghIssueSchema);
@@ -119,7 +125,7 @@ export function ingestGithubIssues(deps: IngestDeps): IngestSummary {
     try {
       const listCommand =
         `gh issue list --repo ${shellQuote(slug)} --label ${shellQuote(cfg.label)} ` +
-        `--state open --json number,title,body,url`;
+        `--state open --json number,title,body,url,labels`;
       const listResult = deps.runner.run(listCommand, deps.repoRegistry.absolutePath(repo));
       if (listResult.exitCode !== 0) {
         throw new CrewError("INGEST_GH_FAILED", `'gh issue list' failed for ${slug}.`, {

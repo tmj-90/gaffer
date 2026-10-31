@@ -335,15 +335,16 @@ export class RealDispatchClient implements DispatchClient {
     return new RealDispatchClient(facade);
   }
 
-  listRepositories(): DispatchRepository[] {
+  listRepositories(includeHidden = false): DispatchRepository[] {
     // Older facades have no registry listing; the idle loops then fall back to
     // crew.yaml's own repos, exactly as before.
     if (!this.facade.listRepositories) return [];
-    const rows = this.facade.listRepositories.call(this.facade, false);
+    const rows = this.facade.listRepositories.call(this.facade, includeHidden);
     return rows.map((row) => ({
       id: String(row.id ?? ""),
       name: String(row.name ?? ""),
       localPath: typeof row.local_path === "string" ? row.local_path : null,
+      remoteUrl: typeof row.remote_url === "string" ? row.remote_url : null,
       defaultBranch: String(row.default_branch ?? "main"),
       stack: typeof row.stack === "string" ? row.stack : null,
       riskLevel: String(row.risk_level ?? "medium"),

@@ -35,6 +35,7 @@
 # Requires a built workspace + git. SKIPs otherwise.
 # Run: bash runner/test/usage-limit-tick.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -51,8 +52,10 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 node --input-type=commonjs -e "require('node:sqlite')" 2>/dev/null || { echo "SKIP: node:sqlite requires Node >= 22.5"; exit 0; }
 [ -f "$DISPATCH_CLI" ] || { echo "SKIP: dispatch not built ($DISPATCH_CLI) — run pnpm -r build"; exit 0; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/usage-limit-tick.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'pkill -f "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/usage-limit-tick.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'pkill -f "$WORK" 2>/dev/null; gaffer_test_rm_work "$WORK"' EXIT
 
 # --- fixture repo + factory state --------------------------------------------
 REPO="$WORK/widget"; mkdir -p "$REPO/test"

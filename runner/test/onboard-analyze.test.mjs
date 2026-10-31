@@ -29,7 +29,8 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -100,7 +101,7 @@ function eq(label, got, want) {
 // CLAUDE_BIN is a tripwire that logs its argv and exits 97 (the developer's CLAUDE_FLAGS
 // / MCP_CONFIG are dropped too), and every analyzeAndWrite call stubs all four turns
 // (noLive). The run fails at the end if the tripwire was ever hit.
-const TRIP_DIR = mkdtempSync(join(tmpdir(), "onboard-analyze-trip-"));
+const TRIP_DIR = gafferMkdtemp(join(tmpdir(), "onboard-analyze-trip-"));
 const TRIP_LOG = join(TRIP_DIR, "calls.log");
 const TRIPWIRE = join(TRIP_DIR, "claude");
 writeFileSync(
@@ -151,7 +152,7 @@ console.log("== B25(b): agentChildEnv keeps CLAUDE_CODE_OAUTH_TOKEN (and only th
 
 // --- A throwaway multi-module Maven repo on disk -----------------------------
 function mavenRepo() {
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-analyze-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-analyze-"));
   writeFileSync(
     join(dir, "pom.xml"),
     [
@@ -206,7 +207,7 @@ console.log("== AC2: detectModules enumerates a Maven multi-module repo ==");
     "services/universal-connector",
   ]);
   // Gradle / pnpm / npm / cargo single-module → null.
-  const single = mkdtempSync(resolve(tmpdir(), "onboard-single-"));
+  const single = gafferMkdtemp(resolve(tmpdir(), "onboard-single-"));
   writeFileSync(join(single, "package.json"), JSON.stringify({ name: "x" }));
   assert("single-module repo → null", detectModules(single) === null);
 }
@@ -352,7 +353,7 @@ console.log("== AC9: writeUnderstanding de-dupes features by name on re-onboard 
 {
   // A real tiny memory-CLI script on disk that records each invocation's argv and,
   // for `features <repo>`, prints a canned listing so de-dupe can be exercised.
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-memcli-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-memcli-"));
   const logFile = join(dir, "calls.jsonl");
   const featuresFile = join(dir, "features.txt");
   writeFileSync(featuresFile, ""); // start: nothing recorded
@@ -397,7 +398,7 @@ console.log("== AC9: writeUnderstanding de-dupes features by name on re-onboard 
 console.log("== AC10: analyzeAndWrite end-to-end (model JSON → memory writes) ==");
 {
   const repo = mavenRepo();
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-e2e-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-e2e-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -453,7 +454,7 @@ console.log("== AC10b: an example ```json block AFTER the analysis does not repl
   // The shared extractor (lib/agent-io.mjs) takes the last block with the expected shape
   // (a `digest`); this file's old copy took the LAST fence, so the analysis was lost.
   const repo = mavenRepo();
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-trail-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-trail-"));
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(cliBin, "process.exit(0);\n");
   // BASE_ENV, not process.env: the stubbed runTurn covers only the analysis turn, and
@@ -482,7 +483,7 @@ console.log(
 );
 {
   const repo = mavenRepo();
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-fb-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-fb-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -679,7 +680,7 @@ console.log("== AC15: empty / garbage lore stays EMPTY (zero drafts is correct) 
 
 console.log("== AC16/AC17: writeUnderstanding drafts lore via `suggest` (DRAFT) + dedupes ==");
 {
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-lore-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-lore-"));
   const logFile = join(dir, "calls.jsonl");
   const searchFile = join(dir, "search.txt");
   writeFileSync(searchFile, "memory: no matches\n"); // first onboard: nothing recorded
@@ -773,7 +774,7 @@ console.log("== parseLoreTitles recovers titles from a search listing ==");
 console.log("== AC18: analyzeAndWrite end-to-end drafts grounded+cited+induction lore ==");
 {
   const repo = mavenRepo();
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-lore-e2e-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-lore-e2e-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -880,7 +881,7 @@ console.log("== AC9b: feature dedup survives model REWORDING across re-onboards 
   // ("URL shortening" → "Shorten a URL"). With exact-lowercase dedup these
   // would NOT collide and a near-duplicate row would accumulate. The
   // normalised key must catch it → zero added on the second run.
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-dedup-rw-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-dedup-rw-"));
   const logFile = join(dir, "calls.jsonl");
   const featuresFile = join(dir, "features.txt");
   writeFileSync(featuresFile, ""); // first onboard: store empty
@@ -923,7 +924,7 @@ console.log("== AC9b: feature dedup survives model REWORDING across re-onboards 
 
 console.log("== AC17b: lore dedup survives model REWORDING across re-onboards ==");
 {
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-lore-rw-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-lore-rw-"));
   const logFile = join(dir, "calls.jsonl");
   const searchFile = join(dir, "search.txt");
   writeFileSync(searchFile, "memory: no matches\n"); // first onboard: nothing recorded
@@ -1003,7 +1004,7 @@ console.log("== cardModel: GAFFER_CARD_MODEL / registry onboarding tier (cheap p
   );
   // A registry edit reroutes cards (config-only), and an enabled localSeam pointing
   // at a provider id the CLI cannot run yet falls back to the cheap tier.
-  const regDir = mkdtempSync(join(tmpdir(), "onb-reg-"));
+  const regDir = gafferMkdtemp(join(tmpdir(), "onb-reg-"));
   const reg = (obj) => {
     const f = join(regDir, `r${Math.random().toString(36).slice(2)}.json`);
     writeFileSync(f, JSON.stringify(obj));
@@ -1071,7 +1072,7 @@ console.log("== analysisCaps: synthesis model is the mid tier unless an operator
       env: {
         PATH: process.env.PATH,
         HOME: process.env.HOME,
-        GAFFER_DATA: mkdtempSync(join(tmpdir(), "onb-cfg-")),
+        GAFFER_DATA: gafferMkdtemp(join(tmpdir(), "onb-cfg-")),
       },
     },
   );
@@ -1089,7 +1090,7 @@ console.log("== text-only card + review turns: no tools, no MCP, empty cwd, tiny
   // A stub claude records its cwd + argv (one per line, "" kept visible) and replies
   // with a JSON envelope — the shape of the audit's reproduction (no live model). Args
   // are recorded whole (newlines flattened), so path asserts hold under a long TMPDIR.
-  const dir = mkdtempSync(join(tmpdir(), "onb-textonly-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "onb-textonly-"));
   const rec = join(dir, "rec.txt");
   const stub = join(dir, "claude.sh");
   writeFileSync(
@@ -1272,7 +1273,7 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
 {
   const { execSync } = await import("node:child_process");
   const mkRepo = () => {
-    const repoDir = mkdtempSync(resolve(tmpdir(), "emit-batch-"));
+    const repoDir = gafferMkdtemp(resolve(tmpdir(), "emit-batch-"));
     mkdirSync(join(repoDir, "src"), { recursive: true });
     writeFileSync(join(repoDir, "src", "a.ts"), "export function add(a,b){return a+b;}\n");
     writeFileSync(join(repoDir, "src", "b.ts"), "export class Server{start(){return 'up';}}\n");
@@ -1287,7 +1288,7 @@ console.log("== emitFileCards: B=1 vs B>1 both card every file (trust-split pres
     return repoDir;
   };
   const mkCli = () => {
-    const dir = mkdtempSync(resolve(tmpdir(), "emit-batch-cli-"));
+    const dir = gafferMkdtemp(resolve(tmpdir(), "emit-batch-cli-"));
     const cliBin = join(dir, "fake-lg.mjs");
     writeFileSync(
       cliBin,
@@ -1383,7 +1384,7 @@ console.log(
 );
 {
   const { execSync } = await import("node:child_process");
-  const repoDir = mkdtempSync(resolve(tmpdir(), "emit-gate-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "emit-gate-"));
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
   writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
@@ -1394,7 +1395,7 @@ console.log(
   );
   // Fake memory CLI: the card gate rejects src/b.ts's summary (out-of-taxonomy
   // role → failed_validation), as the real `memory card upsert` does.
-  const dir = mkdtempSync(resolve(tmpdir(), "emit-gate-cli-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "emit-gate-cli-"));
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
     cliBin,
@@ -1488,7 +1489,7 @@ console.log("== batch-shortfall retry: missing batch slots trigger per-file runT
 {
   // A repo with 3 small source files.
   const { execSync: execSync2 } = await import("node:child_process");
-  const repoDir = mkdtempSync(resolve(tmpdir(), "shortfall-retry-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "shortfall-retry-"));
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
   writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
@@ -1497,7 +1498,7 @@ console.log("== batch-shortfall retry: missing batch slots trigger per-file runT
     "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
     { cwd: repoDir, stdio: "ignore" },
   );
-  const cliDir = mkdtempSync(resolve(tmpdir(), "shortfall-cli-"));
+  const cliDir = gafferMkdtemp(resolve(tmpdir(), "shortfall-cli-"));
   const cliBin = join(cliDir, "fake-lg.mjs");
   writeFileSync(
     cliBin,
@@ -1542,7 +1543,7 @@ console.log("== oversized isolation: large file routed solo, others batched norm
 {
   // A repo with 2 small files + 1 oversized file (> CARD_OVERSIZED_LOC lines).
   const { execSync: execSync3 } = await import("node:child_process");
-  const repoDir = mkdtempSync(resolve(tmpdir(), "oversized-iso-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "oversized-iso-"));
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
   writeFileSync(join(repoDir, "src", "b.ts"), "export const b = 2;\n");
@@ -1554,7 +1555,7 @@ console.log("== oversized isolation: large file routed solo, others batched norm
     "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
     { cwd: repoDir, stdio: "ignore" },
   );
-  const cliDir = mkdtempSync(resolve(tmpdir(), "oversized-iso-cli-"));
+  const cliDir = gafferMkdtemp(resolve(tmpdir(), "oversized-iso-cli-"));
   const cliBin = join(cliDir, "fake-lg.mjs");
   writeFileSync(
     cliBin,
@@ -1645,7 +1646,7 @@ console.log("== batch prompt: per-file symbol cap truncates large symbol lists =
 console.log("== refreshFileCards: changed file gets re-carded + watermark advances ==");
 {
   // Build a tiny git repo with one source file.
-  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-cards-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "refresh-cards-"));
   const srcFile = join(repoDir, "src", "util.ts");
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(srcFile, "export function greet(name: string) { return `Hi ${name}`; }\n");
@@ -1659,7 +1660,7 @@ console.log("== refreshFileCards: changed file gets re-carded + watermark advanc
   );
 
   // A fake memory CLI that records calls + returns success.
-  const dir = mkdtempSync(resolve(tmpdir(), "refresh-memcli-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "refresh-memcli-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -1772,7 +1773,7 @@ console.log("== refreshFileCards: deleted + renamed files tombstone their cards 
   const { readFileSync: readFS } = await import("node:fs");
 
   // A tiny git repo with two source files.
-  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-del-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "refresh-del-"));
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(join(repoDir, "src", "keep.ts"), "export const keep = 1;\n");
   // The renamed-to file exists on disk post-merge (a real rename leaves the new path).
@@ -1783,7 +1784,7 @@ console.log("== refreshFileCards: deleted + renamed files tombstone their cards 
   );
 
   // Fake memory CLI: logs argv, returns success. card upsert emits modelStatus.
-  const dir = mkdtempSync(resolve(tmpdir(), "refresh-del-cli-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "refresh-del-cli-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -1840,7 +1841,7 @@ console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails =="
   const { execSync } = await import("node:child_process");
   const { readFileSync: readFS } = await import("node:fs");
 
-  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-hold-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "refresh-hold-"));
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(join(repoDir, "src", "keep.ts"), "export const keep = 1;\n");
   execSync(
@@ -1850,7 +1851,7 @@ console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails =="
 
   // Fake CLI that HARD-FAILS the delete-file-card verb (exit 1) but succeeds
   // on card sync — proving the watermark guard, not a sync failure.
-  const dir = mkdtempSync(resolve(tmpdir(), "refresh-hold-cli-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "refresh-hold-cli-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -1900,7 +1901,7 @@ console.log(
   const { execSync } = await import("node:child_process");
   const { readFileSync: readFS } = await import("node:fs");
 
-  const repoDir = mkdtempSync(resolve(tmpdir(), "refresh-verify-"));
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "refresh-verify-"));
   mkdirSync(join(repoDir, "src"), { recursive: true });
   writeFileSync(join(repoDir, "src", "ledger.ts"), "export function settleWithFees() {}\n");
   execSync(
@@ -1909,7 +1910,7 @@ console.log(
   );
   // Fake CLI: upserts and deletes succeed; `card verify` reports a card still out of
   // step with the tree (exit 1) — e.g. a stale card its --fix could not re-read.
-  const dir = mkdtempSync(resolve(tmpdir(), "refresh-verify-cli-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "refresh-verify-cli-"));
   const logFile = join(dir, "calls.jsonl");
   const cliBin = join(dir, "fake-lg.mjs");
   writeFileSync(
@@ -1968,7 +1969,7 @@ console.log(
   // never left trusting its (possibly poisoned) model text just because the primary
   // downgrade verb was unavailable.
   const mkCli = (upsertOk) => {
-    const dir = mkdtempSync(resolve(tmpdir(), "card-review-failclosed-cli-"));
+    const dir = gafferMkdtemp(resolve(tmpdir(), "card-review-failclosed-cli-"));
     const cliBin = join(dir, "fake-lg.mjs");
     const logFile = join(dir, "calls.log");
     writeFileSync(
@@ -2107,7 +2108,7 @@ console.log("== agentChildEnv: credentials AND outbound-endpoint vars are stripp
 console.log("== broken claude: the cause is logged and the spawns stop (circuit breaker) ==");
 {
   const { execSync } = await import("node:child_process");
-  const dir = mkdtempSync(resolve(tmpdir(), "onboard-broken-claude-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "onboard-broken-claude-"));
   process.env.GAFFER_USAGE_LEDGER = join(dir, "usage.jsonl");
   const repoDir = join(dir, "repo");
   mkdirSync(join(repoDir, "src"), { recursive: true });

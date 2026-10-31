@@ -9,7 +9,8 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,7 +63,7 @@ test("version.mjs --check accepts the matching tag and refuses another", () => {
 });
 
 test("version.mjs <x.y.z> moves every package and cuts the changelog (temp copy)", async () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "gaffer-version-"));
+  const tmp = gafferMkdtemp(path.join(tmpdir(), "gaffer-version-"));
   try {
     mkdirSync(path.join(tmp, "packages", "a"), { recursive: true });
     mkdirSync(path.join(tmp, "packages", "b"), { recursive: true });
@@ -114,7 +115,7 @@ test("release-notes.mjs returns one version's section", async () => {
 });
 
 test("provenance.mjs writes an in-toto v1 statement with SLSA v1 predicate over the artifacts", () => {
-  const tmp = mkdtempSync(path.join(tmpdir(), "gaffer-prov-"));
+  const tmp = gafferMkdtemp(path.join(tmpdir(), "gaffer-prov-"));
   try {
     const a = path.join(tmp, "a.tgz");
     writeFileSync(a, "artifact-a");

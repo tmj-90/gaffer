@@ -18,6 +18,7 @@
 #      tick is wrapped in the same GAFFER_TICK_OUTER_TIMEOUT bound.
 # Zero deps beyond bash + a timeout primitive. Run: bash test/day-cap-no-work.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -28,8 +29,9 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/day-cap-no-work.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 echo "== 1: gaffer_tick_counts_toward_day_cap — only no_work is exempt =="
 # (tick.sh reports a zero-cost maintenance scan that filed nothing as no_work, so it is

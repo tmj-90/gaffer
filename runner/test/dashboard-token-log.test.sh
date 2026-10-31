@@ -15,6 +15,7 @@
 # Needs packages/dispatch built (dist/api/bin.js) and curl; skips cleanly otherwise.
 # Run: bash test/dashboard-token-log.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -28,13 +29,14 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dashboard-token-log.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 DATA="$WORK/data"
 PORT=$(( 20000 + RANDOM % 20000 ))
 stop_server() {
   local p; p="$(cat "$DATA/dashboard.pid" 2>/dev/null || true)"
   [ -n "$p" ] && kill "$p" 2>/dev/null; sleep 0.3; rm -f "$DATA/dashboard.pid"
 }
-trap 'stop_server; rm -rf "$WORK"' EXIT
+trap 'stop_server; gaffer_test_rm_work "$WORK"' EXIT
 dash() { env GAFFER_DATA="$DATA" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard "$@" 2>&1; }
 
 echo "== an older install: 0755 dir, 0644 log that leaked a token =="

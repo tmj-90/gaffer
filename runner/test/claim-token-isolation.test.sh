@@ -32,6 +32,7 @@
 #
 # Zero deps beyond bash + sed. Run: bash test/claim-token-isolation.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -45,7 +46,8 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 [ -f "$TEMPLATE" ] || { echo "SKIP: $TEMPLATE not found"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/claim-token.XXXXXX")"
-cleanup_tmp() { rm -rf "$WORK"; }
+gaffer_test_check_tmp "$WORK" || exit 70
+cleanup_tmp() { gaffer_test_rm_work "$WORK"; }
 trap cleanup_tmp EXIT
 
 # A single "tick" as its OWN process (so $$ is unique per invocation, exactly

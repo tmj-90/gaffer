@@ -6,14 +6,15 @@
 // cwd in the source, the matchers makeAgentHome really renders, and the doc text that
 // describes both — so a later change to either side shows up here.
 // Run: node test/security-md-planning-agents.test.mjs
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const RUNNER = resolve(HERE, "..");
-const DATA = mkdtempSync(resolve(tmpdir(), "security-md-"));
+const DATA = gafferMkdtemp(resolve(tmpdir(), "security-md-"));
 process.env.GAFFER_DATA = DATA;
 delete process.env.CLAUDE_SETTINGS;
 const { makeAgentHome } = await import(resolve(RUNNER, "lib", "agent-home.mjs"));

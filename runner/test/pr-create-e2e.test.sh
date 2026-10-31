@@ -10,6 +10,7 @@
 # a delivery pushes the branch, creates the PR and records `pr_url` on the ticket.
 # Run: bash runner/test/pr-create-e2e.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -24,8 +25,10 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/pr-create-e2e.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/pr-create-e2e.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data" "$WORK/bin"
 
 R="$WORK/repo"; mkdir -p "$R/src" "$R/test"

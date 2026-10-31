@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Validates `gaffer skills list` + `gaffer skills install` (symlink the bundled
 # skill library into a Claude Code .claude/skills dir; idempotent; --force).
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -12,7 +13,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/skills-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 # Private operator state: `gaffer` sources factory.config.sh, which would otherwise
 # read the checkout's .gaffer (settings.json APPLIED, dispatch.sqlite opened
 # read-write) when this runs directly — see lib/isolate.sh.

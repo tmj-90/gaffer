@@ -13,6 +13,7 @@
 #     security review) trips the ceiling at the TOTAL, not the delivery share.
 # Zero deps beyond node. Run: bash test/prespawn-budget-gate.test.sh  (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -27,6 +28,7 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # Extract the REAL gaffer_budget_exhausted from tick.sh and source it.
 FN="$(mktemp "${TMPDIR:-/tmp}/budget-fn.XXXXXX")"
+gaffer_test_check_tmp "$FN" file || exit 70
 trap 'rm -f "$FN"' EXIT
 awk '/^gaffer_budget_exhausted\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "$FN"
 grep -q 'gaffer_budget_exhausted()' "$FN" \
@@ -78,7 +80,9 @@ SPEND="0.25"; gate
 #    review $2.50 + $2.40, security-review $1.20 = $8.20 against a $5 ticket budget.
 #    Delivery alone ($2.10) is under it — that is what the gate used to see.
 SPENDFN="$(mktemp "${TMPDIR:-/tmp}/spend-fn.XXXXXX")"
+gaffer_test_check_tmp "$SPENDFN" file || exit 70
 LEDGER7="$(mktemp "${TMPDIR:-/tmp}/ledger7.XXXXXX")"
+gaffer_test_check_tmp "$LEDGER7" file || exit 70
 trap 'rm -f "$FN" "$SPENDFN" "$LEDGER7"' EXIT
 CFG="$RUNNER_DIR/factory.config.sh"
 awk '/^_gaffer_ticket_spend\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$CFG" > "$SPENDFN"

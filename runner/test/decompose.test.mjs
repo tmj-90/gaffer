@@ -23,7 +23,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { writeFileSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { buildPrompt as buildSpecPrompt } from "../bin/spec-author.mjs";
 
@@ -34,7 +35,7 @@ const HELPER = resolve(HERE, "..", "bin", "decompose.mjs");
 // scratch path for this process and the children it spawns: "no such repo" stays the
 // answer whatever the operator's DB holds. (FIX 4 swaps in its own path and restores.)
 process.env.DISPATCH_DB = resolve(
-  mkdtempSync(resolve(tmpdir(), "decompose-test-")),
+  gafferMkdtemp(resolve(tmpdir(), "decompose-test-")),
   "absent.sqlite",
 );
 const {
@@ -78,7 +79,7 @@ function runCli(request, extraArgs = []) {
 
 // Same, but with an explicit child env (used to flip the debate knobs on/off).
 function runCliEnv(request, extraArgs = [], env = undefined) {
-  const dir = mkdtempSync(resolve(tmpdir(), "decompose-test-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "decompose-test-"));
   const file = resolve(dir, "req.json");
   writeFileSync(file, JSON.stringify(request));
   const res = spawnSync(process.execPath, [HELPER, "--dry-run", "--input", file, ...extraArgs], {
@@ -669,7 +670,7 @@ console.log("== Prompt quarantine (P1 prompt-injection) ==");
 
 console.log("== FIX 4: read-only DB open — a missing DISPATCH_DB is never created ==");
 {
-  const tmpDir = mkdtempSync(resolve(tmpdir(), "decompose-ro-"));
+  const tmpDir = gafferMkdtemp(resolve(tmpdir(), "decompose-ro-"));
   const absentDb = resolve(tmpDir, "nonexistent-dispatch.sqlite");
   const prevDb = process.env.DISPATCH_DB;
   process.env.DISPATCH_DB = absentDb;
@@ -833,7 +834,7 @@ console.log("== SIZE GATE: fallback signal (no ledger) ==");
 console.log("== SIZE GATE: estimate signal (ledger reachable) ==");
 {
   // Write a ledger with >=5 measured `decompose` rows so the estimator kicks in.
-  const dir = mkdtempSync(resolve(tmpdir(), "debate-ledger-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "debate-ledger-"));
   const ledger = resolve(dir, "usage-ledger.jsonl");
   const rows = [];
   for (let i = 0; i < 6; i++) {

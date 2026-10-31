@@ -16,6 +16,7 @@
 # bootstrap render, and the fail-closed negative controls (empty write-repo set /
 # empty title / empty bootstrap dir → exit 1, nothing written).
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -31,7 +32,8 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$GOLDEN" ] && [ -f "$INPUTS" ] || { echo "SKIP: context goldens missing (run capture-context-golden.sh)"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/prompt-render-cli.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 pass=0
 fail=0

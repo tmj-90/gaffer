@@ -15,6 +15,7 @@
 #   5. decompose.mjs passes --max-turns to the spawned claude.
 # Zero deps. Run: bash test/resource-caps.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -26,7 +27,8 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # Source the config in a controlled GAFFER_DATA so we don't touch real state.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rescaps-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/.gaffer"
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh"

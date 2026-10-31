@@ -40,6 +40,7 @@
 # Requires the dispatch CLI to be built. SKIPs (exit 0) if it isn't.
 # Run: bash test/tick-unrecoverable-claim-release.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -57,7 +58,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/tick-unrec.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 export GAFFER_DATA="$WORK"          # gaffer_skip_ticket appends under $GAFFER_DATA/.skip.lock
 SKIP_FILE="$WORK/skip.txt"          # the per-run skip-file (tick.sh sets this globally)

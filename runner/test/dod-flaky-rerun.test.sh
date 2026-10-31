@@ -21,6 +21,7 @@
 #      says flaky suspected and a needs_human_review note is filed
 # Run: bash runner/test/dod-flaky-rerun.test.sh   (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,9 +34,11 @@ FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-flaky.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-flaky.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
 SLEEPER=""
-trap '[ -n "$SLEEPER" ] && kill "$SLEEPER" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap '[ -n "$SLEEPER" ] && kill "$SLEEPER" 2>/dev/null; gaffer_test_rm_work "$WORK"' EXIT
 
 (
 gaffer_timeout() { local s="$1"; shift; "$@"; return $?; }

@@ -15,6 +15,7 @@
 #      not true (an older helper), instead of trusting the phase name.
 # Run: bash runner/test/land-conflict-reapproval.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -23,7 +24,9 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 node -e 'require("node:sqlite")' 2>/dev/null || { echo "SKIP: node:sqlite unavailable"; exit 0; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/land-reapproval.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/land-reapproval.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 R="$WORK/repo"; g() { git -C "$R" -c user.email=t@t -c user.name=t "$@"; }
 git init -q -b main "$R"; echo base > "$R/f"; g add -A; g commit -qm base

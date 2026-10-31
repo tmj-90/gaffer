@@ -9,6 +9,7 @@
 # token tick.sh parks on — never a silent "ok".
 # Run: bash runner/test/minimalism-golden.test.sh   (SEAM_GOLDEN_CAPTURE=1 to re-pin)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 export LC_ALL=C LC_CTYPE=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,9 @@ export CREW_DIR
 pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/minimalism-golden.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/minimalism-golden.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # mcase <name> <label> <files> <lines> <note> <changed>: token / code / reason, one per line.
 # Called in the CURRENT shell (redirect only stdout) so the reason var propagates.

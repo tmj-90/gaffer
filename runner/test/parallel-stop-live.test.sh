@@ -31,7 +31,7 @@ LP=""
 cleanup() {
   [ -n "$LP" ] && kill -KILL -- "-$LP" 2>/dev/null
   pkill -KILL -f "$WORK" 2>/dev/null
-  [ "${KEEP:-0}" = 1 ] || rm -rf "$WORK"
+  [ "${KEEP:-0}" = 1 ] || gaffer_test_rm_work "$WORK"
 }
 trap cleanup EXIT
 echo hang > "$MODE"

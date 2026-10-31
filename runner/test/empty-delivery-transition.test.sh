@@ -15,6 +15,7 @@
 #
 # Zero deps. Run: bash test/empty-delivery-transition.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TICK="$HERE/../tick.sh"
@@ -30,6 +31,7 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 run_case() {
   local token="$1" outcome="$2"
   local wglog; wglog="$(mktemp)"
+  gaffer_test_check_tmp "$wglog" file || exit 70
   local logs
   logs="$(NUM=4242 _TOKEN="$token" _OUTCOME="$outcome" _WGLOG="$wglog" bash -c '
     set -uo pipefail

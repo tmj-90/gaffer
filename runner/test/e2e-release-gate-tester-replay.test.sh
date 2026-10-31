@@ -25,6 +25,7 @@
 # claude, a fixture repo.
 # Run: bash runner/test/e2e-release-gate-tester-replay.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -35,8 +36,10 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/rg-tester-replay.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-[ "${KEEP:-0}" = 1 ] || trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/rg-tester-replay.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+[ "${KEEP:-0}" = 1 ] || trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data" "$WORK/bin"
 R="$WORK/repo"; mkdir -p "$R/src" "$R/test"
 gitc() { git -c user.email=t@t -c user.name=t "$@"; }

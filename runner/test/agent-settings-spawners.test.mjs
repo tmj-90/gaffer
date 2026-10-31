@@ -11,7 +11,8 @@
 // Run: node test/agent-settings-spawners.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,7 @@ const assert = (label, ok) => {
   }
 };
 
-const T = mkdtempSync(resolve(tmpdir(), "agent-settings-spawners-"));
+const T = gafferMkdtemp(resolve(tmpdir(), "agent-settings-spawners-"));
 const hook = "node ${RUNNER_DIR}/safety-hook.mjs";
 const templates = {
   "no hooks": JSON.stringify({ permissions: {} }),

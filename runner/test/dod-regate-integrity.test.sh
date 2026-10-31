@@ -18,6 +18,7 @@
 # Requires git, node, npm and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash runner/test/dod-regate-integrity.test.sh      (bash 3.2-safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -32,8 +33,10 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-regate-gi.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-regate-gi.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"
 export GAFFER_DATA="$WORK/data" GAFFER_DOD_INSTALL=0 GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
 unset GAFFER_DOD_TYPECHECK_CMD GAFFER_ALLOW_NO_DOD GAFFER_DOD GAFFER_DOD_TYPECHECK GAFFER_DOD_TESTS GAFFER_DOD_LINT

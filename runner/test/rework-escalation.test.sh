@@ -13,6 +13,7 @@
 # copy), so a drift in tick.sh/factory.config.sh is caught. Zero external deps.
 # Run: bash runner/test/rework-escalation.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -103,7 +104,8 @@ eval "$WRAP_SRC"
 export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 LEDGER="$WORK/usage-ledger.jsonl"
 # Two measured delivery calls for ticket 88 (0.10 + 0.25), one for a different
 # ticket, one unmeasured (unknown → contributes 0). Only 88's measured spend counts.

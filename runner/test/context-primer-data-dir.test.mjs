@@ -6,7 +6,8 @@
 // and the memory CLI CREATED — <checkout>/.gaffer/memory.sqlite: the operator's live DB.
 // Run: node runner/test/context-primer-data-dir.test.mjs
 // =====================================================================
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +27,7 @@ function check(cond, label) {
   }
 }
 
-const work = mkdtempSync(join(tmpdir(), "primer-data-dir-"));
+const work = gafferMkdtemp(join(tmpdir(), "primer-data-dir-"));
 const repo = join(work, "repo");
 mkdirSync(repo);
 const seen = join(work, "seen-db");

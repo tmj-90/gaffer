@@ -11,6 +11,7 @@
 # LC_ALL=C pins byte semantics across the ubuntu + macOS matrix.
 # Run: bash runner/test/dod-distill-golden.test.sh   (SEAM_GOLDEN_CAPTURE=1 to re-pin)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 export LC_ALL=C LC_CTYPE=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,9 @@ source "$RUNNER_DIR/lib/dod.sh"
 # shellcheck source=lib/seam-golden.sh
 source "$HERE/lib/seam-golden.sh"
 export CREW_DIR
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-distill-golden.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-distill-golden.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 CORPUS="$WORK/corpus"; mkdir -p "$CORPUS"
 pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }

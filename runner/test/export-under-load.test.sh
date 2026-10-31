@@ -9,6 +9,7 @@
 #     makes export exit non-zero and write NO file — never a silent bad backup.
 # Third external review, HIGH recovery. Run: bash runner/test/export-under-load.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -21,8 +22,9 @@ ok(){ P=$((P + 1)); printf '  ok   %s\n' "$1"; }
 no(){ F=$((F + 1)); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/export-under-load.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WP=""
-cleanup(){ [ -n "$WP" ] && kill "$WP" 2>/dev/null; rm -rf "$WORK"; }
+cleanup(){ [ -n "$WP" ] && kill "$WP" 2>/dev/null; gaffer_test_rm_work "$WORK"; }
 trap cleanup EXIT
 SRC="$WORK/src.sqlite"
 node "$CLI" --db "$SRC" init >/dev/null

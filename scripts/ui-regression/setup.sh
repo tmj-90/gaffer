@@ -23,6 +23,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+# shellcheck source=../../runner/test/lib/tmpdir.sh
+. "$ROOT/runner/test/lib/tmpdir.sh"   # the wipe below refuses ".", "/", $HOME, the checkout
 OUT="${UI_REGRESS_OUT:-${UI_SETUP_DEFAULT_OUT:-/tmp/gaffer-ui-regression}}"
 PORT="${UI_REGRESS_PORT:-${UI_SETUP_DEFAULT_PORT:-8797}}"
 # A previous KEEP_DASHBOARD=1 run leaves its dashboard bound to $PORT; its pid
@@ -32,7 +34,8 @@ if [ -f "$OUT/data/dashboard.pid" ]; then
   _old="$(cat "$OUT/data/dashboard.pid" 2>/dev/null)"
   [ -n "$_old" ] && kill "$_old" 2>/dev/null && sleep 1
 fi
-rm -rf "$OUT"; mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
+gaffer_test_rm_work --anywhere "$OUT" || { echo "ui-regression: refusing to wipe UI_REGRESS_OUT=$OUT (see above)" >&2; exit 70; }
+mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
 
 # ── playwright-core (no browser download) + axe-core (a11y audit) into the out dir ──
 # UI_PW_CACHE (run-suites.sh sets it): install once into that dir, which the wipe above

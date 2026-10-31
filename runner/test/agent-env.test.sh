@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # lib/agent-env.sh — the ONE verified settings.json writer and the worktree
 # node_modules linker every spawn site uses (delivery, rework, reviewer, clarify).
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -12,7 +13,9 @@ _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 # shellcheck source=../lib/agent-env.sh
 source "$RUNNER_DIR/lib/agent-env.sh"
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-env.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-env.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 echo "== 1: settings.json is rendered from the real template and verified wired =="
 CLAUDE_SETTINGS="$RUNNER_DIR/claude/settings.json"

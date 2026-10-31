@@ -18,6 +18,7 @@
 #      and halt cleanly (break / idle / no_work exit 0).
 # Needs node + awk. Run: bash test/day-usd-cap.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,7 +34,8 @@ skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skip
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/day-usd-cap.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 LEDGER="$WORK/usage-ledger.jsonl"
 export GAFFER_USAGE_LEDGER="$LEDGER"
 export GAFFER_ESTIMATE_LIB="$RUNNER_DIR/lib/estimate.mjs"

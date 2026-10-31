@@ -22,6 +22,7 @@
 #
 # Zero deps beyond git + sed/awk. Run: bash runner/test/rework-env-reinstall.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 TEST_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$TEST_HERE/.." && pwd)"
@@ -69,8 +70,9 @@ source "$RUNNER_DIR/lib/agent-env.sh"
 _gaffer_sed_repl() { printf '%s' "$1" | sed -e 's/[\\&#]/\\&/g'; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-env.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ── Fixture: a real repo, ticket branch, single-row WT_ROWS (tick.sh shape) ──
 REPO="$WORK/repo"

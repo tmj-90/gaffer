@@ -29,6 +29,7 @@
 #      the marker (a BOM-prefixed file's values are applied).
 # Run: bash test/settings-resource.test.sh   (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 # macOS has no coreutils `timeout`; perl's alarm is the portable bound (a binary, so it
 # works inside `env -i …` too).
@@ -40,7 +41,9 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/settings-resource.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/settings-resource.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"
 CFG="$RUNNER_DIR/factory.config.sh"
 # probe.sh [times] — source the config (times, default 1) in THIS process, then print.

@@ -25,7 +25,6 @@
 // =====================================================================
 import { spawnSync } from "node:child_process";
 import {
-  mkdtempSync,
   mkdirSync,
   writeFileSync,
   readFileSync,
@@ -34,6 +33,7 @@ import {
   symlinkSync,
   rmSync,
 } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +53,7 @@ const bad = (m) => {
 };
 const assert = (m, cond) => (cond ? ok(m) : bad(m));
 
-const ROOT = mkdtempSync(join(tmpdir(), "trust-ws-"));
+const ROOT = gafferMkdtemp(join(tmpdir(), "trust-ws-"));
 process.on("exit", () => rmSync(ROOT, { recursive: true, force: true }));
 
 let homeSeq = 0;

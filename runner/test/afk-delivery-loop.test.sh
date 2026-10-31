@@ -26,6 +26,7 @@
 # Hermetic: uses a stub dispatch CLI + real git; never invokes `claude -p`.
 # Run: bash runner/test/afk-delivery-loop.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -39,8 +40,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 command -v node    >/dev/null 2>&1 || { echo "SKIP: node required";    exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/afk-delivery-loop.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 mk_repo() {
   local repo="$1"

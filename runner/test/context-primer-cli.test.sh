@@ -19,6 +19,7 @@
 # unknown --kind → EMPTY block, exit 0 — a primer error must never block a
 # delivery, unlike the fail-CLOSED prompt/mcp entrypoints).
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -38,7 +39,8 @@ for f in "$CARDS_PACKET" "$LORE_ROWS" "$FC_GOLDEN" "$PC_GOLDEN"; do
 done
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/context-primer-cli.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 pass=0
 fail=0

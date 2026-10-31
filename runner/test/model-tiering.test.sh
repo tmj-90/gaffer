@@ -12,6 +12,7 @@
 #
 # Zero deps; needs only bash + node. Run: bash test/model-tiering.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -19,7 +20,7 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 # .gaffer (the live factory's settings.json is APPLIED) — see lib/isolate.sh.
 # shellcheck source=lib/isolate.sh
 . "$HERE/lib/isolate.sh"
-gaffer_test_isolate; trap 'rm -rf "$GAFFER_TEST_ISO"' EXIT
+gaffer_test_isolate; trap 'gaffer_test_rm_work "$GAFFER_TEST_ISO"' EXIT
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }

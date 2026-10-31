@@ -17,7 +17,8 @@
 // Zero deps beyond node. Run: node test/estimate-usage.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { writeFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,7 +119,7 @@ function richLedger() {
 }
 
 function writeLedger(text) {
-  const dir = mkdtempSync(join(tmpdir(), "estimate-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "estimate-"));
   const path = join(dir, "usage-ledger.jsonl");
   writeFileSync(path, text);
   return { dir, path };

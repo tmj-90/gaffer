@@ -18,6 +18,7 @@
 #      agent-run evidence naming the model that served it; `--version` ran once.
 # Run: bash runner/test/attempt-provenance.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,8 +34,9 @@ ok() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILS+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/attempt-prov.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 echo "== 1: gaffer_model_from_flag =="
 # shellcheck source=../lib/worker.sh

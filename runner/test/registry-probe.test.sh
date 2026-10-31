@@ -16,6 +16,7 @@
 #      env_registry_unreachable BEFORE gaffer_bootstrap_init
 # Run: bash runner/test/registry-probe.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -25,7 +26,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 # shellcheck source=lib/skip.sh
 . "$HERE/lib/skip.sh"   # gaffer_skip_part: a skipped section is counted, never an ok
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/registry-probe.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/registry-probe.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/bin"
 # The stub: MODE file decides the answer; it dumps its env for check 6.
 cat > "$WORK/bin/npm" <<'STUB'

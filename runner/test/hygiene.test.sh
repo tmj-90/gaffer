@@ -16,6 +16,7 @@
 #
 # Zero deps; needs only git. Run: bash test/hygiene.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -31,7 +32,8 @@ export HYGIENE_FORBIDDEN_PATHS="node_modules .crew/ *.events.jsonl"
 source "$RUNNER_DIR/lib/hygiene.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/hygiene-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # A repo on main with a real src/ tree + one committed file, plus a delivery
 # branch the test mutates to plant a leak.

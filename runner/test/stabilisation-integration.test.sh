@@ -18,6 +18,7 @@
 #
 # Requires the built dispatch CLI. Run: bash test/stabilisation-integration.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -31,7 +32,8 @@ skip_all() { echo "SKIP: dispatch CLI not built at $WG_CLI — cannot run integr
 [ -f "$WG_CLI" ] || skip_all
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/stab-int.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 DB="$WORK/wg.sqlite"
 WG() { node "$WG_CLI" --db "$DB" "$@"; }
 

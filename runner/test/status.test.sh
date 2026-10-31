@@ -13,6 +13,7 @@
 #   6. Doctor health rolls up to warn / fail, not a blanket pass.
 # Run: bash test/status.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -23,8 +24,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 has()  { case "$1" in *"$2"*) return 0;; *) return 1;; esac; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/status-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 # Private operator state: status.sh sources factory.config.sh, which would otherwise
 # read the checkout's .gaffer (settings.json APPLIED, dispatch.sqlite opened
 # read-write) when this runs directly — see lib/isolate.sh.

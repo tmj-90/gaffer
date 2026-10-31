@@ -179,39 +179,23 @@ _GAFFER_HOME="${GAFFER_HOME:-$(cd "$_RUNNER_DIR/.." && pwd)}"
 for _d in "$_GAFFER_HOME/packages" "$_GAFFER_HOME/node_modules"; do
   [ -d "$_d" ] && ! _covered "$_d" && _add_mount "$_d" ro
 done
-# Each write root's node_modules are SYMLINKS into the real checkout (tick.sh links
-# them in because installs are hook-blocked in a worktree). Mounts are path-mirrored,
-# so the link resolves inside the container ONLY if its target is mounted too — bind
-# each resolved target ro (dedup'd, skipped when an existing mount already covers it).
-# Depth 4 mirrors tick.sh's workspace-package sweep (`find -maxdepth 3 -name node_modules`).
+# --- repo-controlled paths never choose a mount (external review #6) ---------------------
+# Everything under a write root is writable by the repository (its committed tree) and by
+# whatever runs inside the container (tests, the agent), so no path read from there may
+# decide WHAT host directory gets bind-mounted. Two such inputs feed the mounts below —
+# the worktree's `.git` file (which names the git metadata to mount) and the node_modules
+# symlinks (which name dependency trees to mount) — and both are checked against what
+# the RUNNER created, failing closed with a WARNING that names the path:
+#   • the `.git` file is honoured only when git's own registration agrees both ways: the
+#     private dir it names is <common>/worktrees/<name>, and that dir's `gitdir` file
+#     points back at THIS write root. A forged `.git` naming another repo is refused.
+#   • a node_modules symlink is mounted only when it resolves EXACTLY to the verified
+#     primary checkout's own node_modules at the same relative path — the one shape
+#     gaffer_link_node_modules (lib/agent-env.sh) creates. A link to $HOME, /etc, another
+#     repo, through a chain or a `..` escape, or a primary-side node_modules that is itself
+#     a symlink, is never mounted.
 _readlink_f() { readlink -f "$1" 2>/dev/null || node -e 'process.stdout.write(require("node:fs").realpathSync(process.argv[1]) + "\n")' "$1" 2>/dev/null; }
-for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-  while IFS= read -r _lnk; do
-    _tgt="$(_readlink_f "$_lnk")"
-    [ -n "$_tgt" ] && [ -d "$_tgt" ] || continue
-    # Mount the resolved host directory AT THE PATH THE LINK NAMES. Inside the
-    # container the symlink is followed literally, so a mount at the canonical path
-    # alone dangles wherever the two differ — on macOS every temp/worktree path under
-    # /var is really /private/var, which left the DoD gate without node_modules. An
-    # absolute link gets the mount at its own path; a relative link resolves inside
-    # the (already mounted) root or falls back to the canonical target.
-    _raw="$(readlink "$_lnk" 2>/dev/null || true)"
-    case "$_raw" in /*) _at="$_raw" ;; *) _at="$_tgt" ;; esac
-    _covered "$_at" && continue
-    _add_mount_at "$_tgt" "$_at" ro
-  done < <(find "$_wr" -maxdepth 4 -name node_modules -type l 2>/dev/null)
-done
-
-# --- the delivery worktree's git metadata (B25c) ---------------------------------------
-# A delivery worktree is a LINKED worktree: its `.git` is a FILE ("gitdir: …") pointing
-# into the real repo's `.git/worktrees/<name>`, and the objects/refs live in the repo's
-# `.git` (the common dir). Neither was mounted, so inside the container every git
-# command failed ("not a git repository") and the agent could not commit. Mount the
-# common dir READ-ONLY and only what a commit must write READ-WRITE: objects/ (new
-# blobs/trees/commits), refs/ + logs/ (the branch tip + its reflog) and the worktree's
-# own private dir (index, HEAD, COMMIT_EDITMSG). config, hooks, packed-refs, the main
-# checkout's HEAD and every OTHER worktree's private dir stay read-only. A write root
-# that is itself a full repo (`.git` is a directory) is already inside its rw mount.
+_warn() { printf 'sandbox-docker: WARNING — %s\n' "$1" >&2; }
 _under_write_root() {  # true when <path> is a write root or lives under one
   local p="$1" w
   for w in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
@@ -226,25 +210,135 @@ _git_path() {  # <worktree> <rev-parse flag> → absolute, symlink-resolved path
   case "$p" in /*) ;; *) p="$wt/$p" ;; esac
   _readlink_f "$p"
 }
-if command -v git >/dev/null 2>&1; then
-  for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-    [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
-    _common="$(_git_path "$_wr" --git-common-dir)"
-    _gitdir="$(_git_path "$_wr" --git-dir)"
-    [ -n "$_common" ] && [ -d "$_common" ] || continue
-    _under_write_root "$_common" && continue   # the repo itself is a write root: covered rw
-    _covered "$_common" || _add_mount "$_common" ro
-    # git creates logs/ lazily; make sure the reflog dir exists so its rw mount can land
-    # (an empty dir under .git is exactly what git itself would create on first commit).
-    mkdir -p "$_common/logs" 2>/dev/null || true
-    for _sub in objects refs logs; do
-      [ -d "$_common/$_sub" ] && _add_mount "$_common/$_sub" rw
-    done
-    if [ -n "$_gitdir" ] && [ -d "$_gitdir" ] && [ "$_gitdir" != "$_common" ]; then
-      _add_mount "$_gitdir" rw
-    fi
+# _verified_linked_worktree <write-root>: when <write-root> is a linked worktree whose
+# registration checks out, set _VW_COMMON / _VW_GITDIR (canonical) and return 0; else 1.
+_VW_COMMON=""; _VW_GITDIR=""
+_verified_linked_worktree() {
+  local wr="$1" back wrc
+  _VW_COMMON=""; _VW_GITDIR=""
+  # A `.git` SYMLINK (to a real, registered worktree's `.git` file — another repo's, or a
+  # sibling delivery's) would make the two-way check below agree with ITSELF: git follows
+  # the link and the registration points back at the link's target. git never creates one.
+  [ -L "$wr/.git" ] && return 1
+  [ -f "$wr/.git" ] || return 1
+  wrc="$(_readlink_f "$wr")"
+  [ -n "$wrc" ] || return 1
+  command -v git >/dev/null 2>&1 || return 1
+  _VW_COMMON="$(_git_path "$wr" --git-common-dir)"
+  _VW_GITDIR="$(_git_path "$wr" --git-dir)"
+  if [ -z "$_VW_COMMON" ] || [ ! -d "$_VW_COMMON" ] || [ -z "$_VW_GITDIR" ] || [ ! -d "$_VW_GITDIR" ] \
+     || [ "$(dirname "$_VW_GITDIR")" != "$_VW_COMMON/worktrees" ]; then
+    _VW_COMMON=""; _VW_GITDIR=""; return 1
+  fi
+  back="$(head -n 1 "$_VW_GITDIR/gitdir" 2>/dev/null || true)"
+  case "$back" in "") _VW_COMMON=""; _VW_GITDIR=""; return 1 ;; /*) ;; *) back="$_VW_GITDIR/$back" ;; esac
+  if [ "$(_readlink_f "$back")" != "$wrc/.git" ]; then
+    _VW_COMMON=""; _VW_GITDIR=""; return 1
+  fi
+  return 0
+}
+# _primary_checkout <write-root>: the canonical primary checkout a VERIFIED linked
+# worktree belongs to (the common dir's parent when it is `<checkout>/.git`), or nothing.
+_primary_checkout() {
+  _verified_linked_worktree "$1" || return 0
+  [ "$(basename "$_VW_COMMON")" = ".git" ] || return 0
+  dirname "$_VW_COMMON"
+}
+
+# _warn_skills_links: a write root's `.claude/skills` link is never followed. The runner
+# installs skills as REAL COPIES inside the worktree (lib/skills-mount.sh,
+# lib/agent-home.mjs), which the write root's own mount already carries, and replaces an
+# older runner's link before the agent starts; it creates no `.claude/skills` link. Such
+# a link lives in the writable worktree (the repository or the agent made it), so its
+# target is never mounted and, in the legacy layout, never unmasked — not even one that
+# names $GAFFER_DATA/skills-mounts/<key>, which now holds only the host-side telemetry
+# manifest. It is named in a WARNING instead.
+_warn_skills_links() {
+  local wr
+  for wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+    [ -L "$wr/.claude/skills" ] || continue
+    _warn "not mounting or unmasking the target of the symlink $wr/.claude/skills: skills are installed as copies inside the worktree, and a .claude/skills link is never followed"
   done
-fi
+  return 0
+}
+
+# Each write root's node_modules are SYMLINKS into the real checkout (tick.sh links
+# them in because installs are hook-blocked in a worktree). Mounts are path-mirrored,
+# so the link resolves inside the container ONLY if its target is mounted too — bind
+# each AUTHORISED target ro (dedup'd, skipped when an existing mount already covers it).
+# Depth 4 mirrors tick.sh's workspace-package sweep (`find -maxdepth 3 -name node_modules`).
+for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+  _prim="$(_primary_checkout "$_wr")"
+  while IFS= read -r -d '' _lnk; do
+    [ -n "$_lnk" ] || continue
+    # A `:` splits docker's -v spec and a newline cannot survive the argv/printf round
+    # trip: such a path is never runner-created, so skip it (WARNED) rather than let
+    # docker reject the whole run or mis-split the mount.
+    case "$_lnk" in *:* | *$'\n'*)
+      _warn "not mounting anything for the symlink $_lnk: its path contains ':' or a newline"
+      continue ;;
+    esac
+    _tgt="$(_readlink_f "$_lnk")"
+    [ -n "$_tgt" ] && [ -d "$_tgt" ] || continue      # dangling: nothing to mount
+    _covered "$_tgt" && continue                       # already inside a chosen mount: no new host path
+    _rel="${_lnk#"$_wr"/}"
+    if [ -z "$_prim" ]; then
+      _warn "not mounting $_tgt for the symlink $_lnk: $_wr is not a verified linked worktree of a primary checkout, so no dependency link in it is runner-created"
+      continue
+    fi
+    if [ "$_tgt" != "$_prim/$_rel" ]; then
+      _warn "not mounting $_tgt for the symlink $_lnk: only $_prim/$_rel (the primary checkout's own dependencies, linked by the runner) may be mounted there"
+      continue
+    fi
+    # Mount the resolved host directory AT THE PATH THE LINK NAMES. Inside the
+    # container the symlink is followed literally, so a mount at the canonical path
+    # alone dangles wherever the two differ — on macOS every temp/worktree path under
+    # /var is really /private/var, which left the DoD gate without node_modules. An
+    # absolute link gets the mount at its own path; a relative link resolves inside
+    # the (already mounted) root or falls back to the canonical target.
+    _raw="$(readlink "$_lnk" 2>/dev/null || true)"
+    case "$_raw" in /*) _at="$_raw" ;; *) _at="$_tgt" ;; esac
+    case "$_at" in *:* | *$'\n'*)
+      _warn "not mounting $_tgt for the symlink $_lnk: the path it names contains ':' or a newline"
+      continue ;;
+    esac
+    _covered "$_at" && continue
+    _add_mount_at "$_tgt" "$_at" ro
+  done < <(find "$_wr" -maxdepth 4 -name node_modules -type l -print0 2>/dev/null)
+done
+
+# --- the delivery worktree's git metadata (B25c) ---------------------------------------
+# A delivery worktree is a LINKED worktree: its `.git` is a FILE ("gitdir: …") pointing
+# into the real repo's `.git/worktrees/<name>`, and the objects/refs live in the repo's
+# `.git` (the common dir). Neither was mounted, so inside the container every git
+# command failed ("not a git repository") and the agent could not commit. Mount the
+# common dir READ-ONLY and only what a commit must write READ-WRITE: objects/ (new
+# blobs/trees/commits), refs/ + logs/ (the branch tip + its reflog) and the worktree's
+# own private dir (index, HEAD, COMMIT_EDITMSG). config, hooks, packed-refs, the main
+# checkout's HEAD and every OTHER worktree's private dir stay read-only. A write root
+# that is itself a full repo (`.git` is a directory) is already inside its rw mount.
+# The `.git` FILE lives in the writable worktree, so it is honoured only when git's
+# registration confirms it (_verified_linked_worktree above); otherwise nothing is
+# mounted for it and git simply does not work inside (fail closed, WARNED).
+for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+  [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
+  if ! _verified_linked_worktree "$_wr"; then
+    _warn "not mounting any git metadata for $_wr: its .git file does not match a worktree registered in the repository it names (a forged or stale .git is never mounted)"
+    continue
+  fi
+  _common="$_VW_COMMON"; _gitdir="$_VW_GITDIR"
+  _under_write_root "$_common" && continue   # the repo itself is a write root: covered rw
+  _covered "$_common" || _add_mount "$_common" ro
+  # git creates logs/ lazily; make sure the reflog dir exists so its rw mount can land
+  # (an empty dir under .git is exactly what git itself would create on first commit).
+  mkdir -p "$_common/logs" 2>/dev/null || true
+  for _sub in objects refs logs; do
+    [ -d "$_common/$_sub" ] && _add_mount "$_common/$_sub" rw
+  done
+  if [ "$_gitdir" != "$_common" ]; then
+    _add_mount "$_gitdir" rw
+  fi
+done
 
 # --- $GAFFER_DATA: the MCP data plane's DB directory, everything else MASKED (B25c) ------
 # See the header. The directory must be mounted (SQLite siblings), so mount it rw and
@@ -257,7 +351,7 @@ fi
 #               from $GAFFER_DATA and NO model credential — a gate needs neither.
 #   bridge      GAFFER_MCP_BRIDGE_SOCKET set: MCP servers on the host, only the socket.
 #   none        no --mcp-config in the argv, or GAFFER_SANDBOX_DATA_PLANE=none (an
-#               empty MCP config): no databases; the hook's ledgers + skills only.
+#               empty MCP config): no databases; the hook's ledgers only.
 #   legacy      --mcp-config present, no socket, GAFFER_MCP_BRIDGE OFF: the DB dir
 #               mounted rw + masked, servers inside (WARNED).
 #   refused     --mcp-config present, no socket, bridge ON: the caller wanted the data
@@ -289,7 +383,6 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
   #   • THIS call's bridged --mcp-config (ro; token-free: every server is `connect`);
   #   • the safety hook's two append-only ledgers (rw) — telemetry, not decision state;
   #   • the crew events log the hook appends to (rw), if it lives there;
-  #   • the agent's skills mount target (ro).
   # No database, usage ledger, settings.json, dashboard token or other worker's claim
   # token exists in the container's filesystem, and the write root (the worktree under
   # $GAFFER_DATA/worktrees/) is mounted on its own above.
@@ -311,10 +404,7 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
       "$GAFFER_DATA"/*) [ -e "$GAFFER_CREW_EVENTS" ] || : > "$GAFFER_CREW_EVENTS" 2>/dev/null || true
                         [ -f "$GAFFER_CREW_EVENTS" ] && ! _covered "$GAFFER_CREW_EVENTS" && _add_mount "$GAFFER_CREW_EVENTS" rw ;;
     esac
-    for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-      _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
-      [ -n "$_sk" ] && [ -d "$_sk" ] && ! _covered "$_sk" && _add_mount "$_sk" ro
-    done
+    _warn_skills_links
   fi
   _BRIDGED=1
 elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
@@ -340,12 +430,7 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
   # The crew events log the MCP servers append to, and the safety hook's own ledgers.
   case "${GAFFER_CREW_EVENTS:-}" in "$GAFFER_DATA"/*) _keep+=( "${GAFFER_CREW_EVENTS#"$GAFFER_DATA"/}" ) ;; esac
   _keep+=( safety-blocks.jsonl tool-metrics.jsonl )
-  # The agent's per-agent skills mount (its `.claude/skills` symlink target) — links
-  # into the read-only runner/skills library, nothing secret.
-  for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-    _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
-    case "$_sk" in "$GAFFER_DATA"/*) _keep+=( "${_sk#"$GAFFER_DATA"/}" ) ;; esac
-  done
+  _warn_skills_links
   _kept() {  # true when top-level entry <name> is (or contains) an allowlisted path
     local b="$1" k
     for k in ${_keep[@]+"${_keep[@]}"}; do

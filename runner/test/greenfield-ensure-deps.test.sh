@@ -20,6 +20,7 @@
 # no registry/network. Skips cleanly if node/npm are unavailable.
 # Run: bash runner/test/greenfield-ensure-deps.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -57,7 +58,8 @@ type gaffer_ensure_node_modules >/dev/null 2>&1 || {
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gf-ensure-deps.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # --- A tiny LOCAL dependency so the install needs no registry/network. -------
 mkdir -p "$WORK/localdep"
@@ -147,6 +149,11 @@ printf '{"name":"baddep","version":"1.0.0","dependencies":{"nonexistent-pkg-xyzz
   >"$BADDEP/package.json"
 printf '{"name":"baddep","version":"1.0.0","lockfileVersion":3,"packages":{}}\n' \
   >"$BADDEP/package-lock.json"
+# The prime runs npm in a STRIPPED environment (env -i, lib/greenfield.sh), so the
+# npm_config_* overrides below never reach it: without the project .npmrc, npm asks
+# the real registry, which hangs on a host with no direct egress (the test hit its
+# 120s cap). The repository's own .npmrc is read whatever the environment.
+printf 'registry=http://127.0.0.1:1/\nfetch-retries=0\n' >"$BADDEP/.npmrc"
 ERRLOG="$WORK/case6.err"
 OUT="$(npm_config_registry='http://127.0.0.1:1' npm_config_fetch_retries=0 \
   gaffer_ensure_node_modules "$BADDEP" 2>"$ERRLOG")"

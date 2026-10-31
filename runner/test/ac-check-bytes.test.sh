@@ -12,6 +12,7 @@
 # the recorded command equals the stored bytes.
 # Run: bash runner/test/ac-check-bytes.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -21,7 +22,9 @@ CLI="$ROOT/packages/dispatch/dist/cli/index.js"
 P=0; F=0
 ok(){ P=$((P + 1)); printf '  ok   %s\n' "$1"; }
 no(){ F=$((F + 1)); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ac-bytes.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/ac-bytes.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"
 export DISPATCH_DB="$WORK/dispatch.sqlite" GAFFER_DOD_TIMEOUT=30 GAFFER_DOD_OUTPUT_TAIL=40
 log(){ :; }

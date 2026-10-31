@@ -62,6 +62,7 @@
 #
 # Zero deps (git only). Run: bash test/crash-cleanup.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -75,8 +76,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 command -v git >/dev/null 2>&1 || { echo "SKIP: git required"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/crash-cleanup.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-cleanup_tmp() { rm -rf "$WORK"; }
+cleanup_tmp() { gaffer_test_rm_work "$WORK"; }
 trap cleanup_tmp EXIT
 
 # A real repo with one commit on its default branch.

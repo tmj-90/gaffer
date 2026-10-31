@@ -11,7 +11,8 @@
 // Run: node --test runner/test/docker-context.test.mjs
 // =====================================================================
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
@@ -35,7 +36,7 @@ test("the real .dockerignore excludes every hostile path and keeps every build i
 });
 
 function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), "docker-ctx-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "docker-ctx-"));
   const put = (rel, body = "x") => {
     mkdirSync(dirname(join(dir, rel)), { recursive: true });
     writeFileSync(join(dir, rel), body);

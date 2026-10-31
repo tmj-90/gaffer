@@ -21,6 +21,7 @@
 # Uses a real but minimal git repo + a stub dispatch CLI for evidence.
 # Run: bash test/h3-ci-gate.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -42,7 +43,8 @@ source "$RUNNER_DIR/lib/pr-create.sh"
 source "$RUNNER_DIR/lib/ci-gate.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/h3-ci-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 make_repo() {
   local dir="$1"

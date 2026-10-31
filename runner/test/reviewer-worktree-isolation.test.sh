@@ -28,6 +28,7 @@
 #
 # Zero deps beyond bash and git.  Run: bash runner/test/reviewer-worktree-isolation.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -39,8 +40,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 command -v git >/dev/null 2>&1 || { echo "SKIP: git required"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/review-wt-iso.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
 # Shared helpers

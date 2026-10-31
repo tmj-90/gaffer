@@ -22,6 +22,7 @@
 # Hermetic: stubs every collaborator; never invokes claude/git/wg for real.
 # Run: bash runner/test/clarify-int-cleanup.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_RUNNER="$(cd "$HERE/.." && pwd)"   # where the real lib/clarify.sh lives
@@ -33,8 +34,9 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/clarify-int.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 export GAFFER_DATA="$WORK/data";  mkdir -p "$GAFFER_DATA"

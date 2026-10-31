@@ -11,7 +11,8 @@
 // Run: node test/skills-hook-claims.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +29,7 @@ const check = (label, cond) => (cond ? (passed += 1) : failures.push(label));
 // Install-shaped commands only: the clauses also name files (`.env`) and paths.
 const TOOL = /^(npm|pnpm|yarn|pip|pip3|uv|pipx|npx|go|cargo|poetry|gem|bundle|dotnet|mvn|gradle)\b/;
 
-const WORK = mkdtempSync(join(tmpdir(), "skills-hook-claims-"));
+const WORK = gafferMkdtemp(join(tmpdir(), "skills-hook-claims-"));
 spawnSync("git", ["init", "-q", WORK]);
 const cache = new Map();
 function hookRc(command) {
@@ -99,8 +100,8 @@ check("found the install claims the skills make (the parser still sees them)", c
 // which resolves into the library and must stay refused. The decision-stamped ledger row
 // the hook writes is what the skill telemetry reads.
 const { installSkillCopies } = await import("../lib/agent-home.mjs");
-const WT = mkdtempSync(join(tmpdir(), "skills-hook-mounted-"));
-const DATA = mkdtempSync(join(tmpdir(), "skills-hook-data-"));
+const WT = gafferMkdtemp(join(tmpdir(), "skills-hook-mounted-"));
+const DATA = gafferMkdtemp(join(tmpdir(), "skills-hook-data-"));
 const names = readdirSync(SKILLS_DIR).filter((n) => {
   try {
     return readFileSync(join(SKILLS_DIR, n, "SKILL.md"), "utf8").length > 0;
@@ -137,7 +138,7 @@ check(
   `every mounted skill is readable through the hook (refused: ${unreadable.join(", ")})`,
   unreadable.length === 0,
 );
-const OLD = mkdtempSync(join(tmpdir(), "skills-hook-oldlayout-"));
+const OLD = gafferMkdtemp(join(tmpdir(), "skills-hook-oldlayout-"));
 mkdirSync(join(OLD, ".claude"));
 symlinkSync(SKILLS_DIR, join(OLD, ".claude", "skills"), "dir");
 check(

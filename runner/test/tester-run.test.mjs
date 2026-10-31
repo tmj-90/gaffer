@@ -25,7 +25,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { writeFileSync, chmodSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -79,7 +80,7 @@ const IMPL_SENTINEL = "feat/secret-impl-branch-MUST-NOT-LEAK";
 const PR_SENTINEL = "https://example.test/pr/SECRET";
 
 // --- Build a throwaway dispatch sqlite with the tables assembleContext reads. ---
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "tester-run-test-"));
+const WORKDIR = gafferMkdtemp(resolve(tmpdir(), "tester-run-test-"));
 const DB_PATH = resolve(WORKDIR, "dispatch.sqlite");
 const CONTRACT = {
   changed_surfaces: ["POST /api/widgets"],

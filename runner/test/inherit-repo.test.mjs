@@ -16,7 +16,8 @@
 
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,7 +57,7 @@ function eq(label, got, want) {
 }
 
 // --- Build a throwaway dispatch sqlite with ONLY the columns the planner reads.
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "inherit-repo-test-"));
+const WORKDIR = gafferMkdtemp(resolve(tmpdir(), "inherit-repo-test-"));
 
 function makeDb(name) {
   const { DatabaseSync } = require("node:sqlite");

@@ -3,7 +3,8 @@
 // it records which skills were SELECTED per delivery and, best-effort, which were
 // APPLIED (detected in the agent's output). Run: node test/skill-telemetry.test.mjs
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -89,7 +90,7 @@ check("buildRecord captures selected/applied/count and an ISO ts", () => {
 
 // --- recordFromOpts (with scan-file applied detection) ----------------------
 check("recordFromOpts reads --scan and unions explicit + scanned applied", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-"));
   try {
     const scan = join(dir, "out.json");
     writeFileSync(
@@ -120,7 +121,7 @@ check("recordFromOpts tolerates a missing scan file (fail-soft)", () => {
 
 // --- end-to-end CLI append --------------------------------------------------
 check("CLI appends one JSONL record per delivery to --out", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-cli-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-cli-"));
   try {
     const out = join(dir, "telemetry.jsonl");
     const bin = new URL("../bin/record-skill-usage.mjs", import.meta.url).pathname;
@@ -156,7 +157,7 @@ check("CLI appends one JSONL record per delivery to --out", () => {
 
 // --- what was MOUNTED, and what the agent OPENED -----------------------------
 check("recordFromOpts counts the mount's names as selected (universal set included)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-mount-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-mount-"));
   try {
     for (const n of ["run-tests", "plan-change", "add-api-endpoint"]) mkdirSync(join(dir, n));
     const rec = recordFromOpts({ selected: "add-api-endpoint", mount: dir });
@@ -303,7 +304,7 @@ check("detectOpened: a root matches on a path boundary, never as a bare prefix",
   );
 });
 check("recordFromOpts records an opened skill as OPENED, never as applied", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-ledger-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-ledger-"));
   try {
     const tl = join(dir, "tool-metrics.jsonl");
     writeFileSync(
@@ -334,7 +335,7 @@ check("recordFromOpts records an opened skill as OPENED, never as applied", () =
 // THE REVIEWER'S CASE: the hook refused the explicit Read of the mounted Java pack, and
 // the telemetry still said java-conventions was opened AND applied.
 check("a REFUSED read records refused — never opened, never applied", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-refused-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-refused-"));
   try {
     const tl = join(dir, "tool-metrics.jsonl");
     const ts = new Date().toISOString();
@@ -410,7 +411,7 @@ check(
   },
 );
 check("recordSkillUsage: a refused read in the hook ledger is refused, not applied", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-role-refused-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-role-refused-"));
   try {
     const wt = join(dir, "worktrees", "tester-9");
     writeFileSync(
@@ -449,7 +450,7 @@ check("recordSkillUsage: a refused read in the hook ledger is refused, not appli
   }
 });
 check("recordSkillUsage (the .mjs runners' seam) appends a role record; fail-soft", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-role-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-role-"));
   try {
     const rec = recordSkillUsage({
       ticket: "",
@@ -520,7 +521,7 @@ check("scanLedger: only an allowed READ of a file inside the skill is an open", 
   );
 });
 check("recordFromOpts: a repo skill that shadows a pack (not in the mount) is never opened", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-shadow-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-shadow-"));
   try {
     const mount = join(dir, "mount");
     mkdirSync(join(mount, "java-conventions"), { recursive: true });

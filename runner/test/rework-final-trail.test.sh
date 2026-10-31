@@ -16,6 +16,7 @@
 #      failure, and the agent ran once.
 # Run: bash runner/test/rework-final-trail.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_SRC="$(cd "$HERE/.." && pwd)"
@@ -35,8 +36,9 @@ node --input-type=commonjs -e "require('node:sqlite')" 2>/dev/null || gaffer_ski
 [ -f "$DISPATCH_CLI" ] || gaffer_skip "dispatch CLI not built ($DISPATCH_CLI)"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-final.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # A private copy of the runner (case 2's stub breaks its safety-hook deny-list), next
 # to links to the real packages so GAFFER_HOME resolves the built CLIs.

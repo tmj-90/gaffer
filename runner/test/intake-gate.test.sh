@@ -15,6 +15,7 @@
 # factory state is touched and Claude is never invoked (DRY_RUN=1). Zero deps.
 # Run: bash test/intake-gate.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -25,11 +26,12 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/intake-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
 # Only the MAIN shell cleans up. A $(run_tick) command-substitution runs in a subshell
 # that also fires this EXIT trap; without the guard it would rm -rf the fixtures out from
 # under the parent test mid-run (BASHPID != $$ inside a subshell).
-cleanup() { [ "${BASHPID:-}" = "$$" ] && rm -rf "$WORK"; }
+cleanup() { [ "${BASHPID:-}" = "$$" ] && gaffer_test_rm_work "$WORK"; }
 trap cleanup EXIT
 
 REPO="$WORK/repo"; mkdir -p "$REPO"          # the draft's repo (must exist on disk)

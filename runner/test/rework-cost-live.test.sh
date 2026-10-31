@@ -14,6 +14,7 @@
 #   • the referee's rework rate reads 1 of 1 merged tickets sent back.
 # Run: bash runner/test/rework-cost-live.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -28,9 +29,11 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-cost.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/rework-cost.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
 API_PID=""
-cleanup(){ [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null; [ "${KEEP:-0}" = 1 ] || rm -rf "$WORK"; }
+cleanup(){ [ -n "$API_PID" ] && kill "$API_PID" 2>/dev/null; [ "${KEEP:-0}" = 1 ] || gaffer_test_rm_work "$WORK"; }
 trap cleanup EXIT
 mkdir -p "$WORK/data" "$WORK/bin"
 

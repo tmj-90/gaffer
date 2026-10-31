@@ -15,6 +15,7 @@
 #          (SKIPPED with the reason when no daemon is reachable)
 # Run: bash test/docker-persistence.test.sh   (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -41,7 +42,9 @@ echo "== D1: a recreated container keeps the bootstrapped repo =="
 if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
   echo "  SKIP D1: no docker daemon reachable on this host — the recreate test needs one (the static checks above still hold)"
 else
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/docker-persist.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/docker-persist.XXXXXX")"
+  gaffer_test_check_tmp "$WORK" || exit 70
+  trap 'gaffer_test_rm_work "$WORK"' EXIT
   IMG="alpine:3.20"
   if ! docker pull -q "$IMG" >/dev/null 2>&1; then
     echo "  SKIP D1: could not pull $IMG (registry unavailable)"

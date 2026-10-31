@@ -17,6 +17,7 @@
 #
 # Zero non-dispatch deps. Run: bash test/dod-tally.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,7 +34,8 @@ gaffer_timeout() { local s="$1"; shift; "$@"; return $?; }
 source "$RUNNER_DIR/lib/dod.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-tally.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 WT="$WORK/wt"; mkdir -p "$WT"
 
 # A fake test command per framework: prints its summary, exits as given.

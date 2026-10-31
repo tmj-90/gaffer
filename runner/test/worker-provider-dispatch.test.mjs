@@ -16,7 +16,8 @@
 //
 // Zero deps beyond node. Run: node test/worker-provider-dispatch.test.mjs
 // =====================================================================
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,7 +47,7 @@ const bad = (m) => {
   console.log(`  FAIL ${m}`);
 };
 
-const WORK = mkdtempSync(join(tmpdir(), "worker-provider-mjs-"));
+const WORK = gafferMkdtemp(join(tmpdir(), "worker-provider-mjs-"));
 const MARKER = join(WORK, "spawned.marker");
 // A fake worker binary that PROVES a spawn by writing a marker. Path baked in so
 // it survives whatever env the caller passes.

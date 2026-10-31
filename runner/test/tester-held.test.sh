@@ -15,6 +15,7 @@
 # No model: bin/tester-run.mjs is a stub that answers with a canned envelope.
 # Run: bash runner/test/tester-held.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -22,7 +23,9 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/tester-held.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/tester-held.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # A fake RUNNER_DIR whose bin/tester-run.mjs logs the ticket it was asked to test
 # and answers with the envelope in $WORK/reply-<n>.json (exit code in rc-<n>).

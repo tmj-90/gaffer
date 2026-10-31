@@ -14,10 +14,14 @@
 #
 # exports GAFFER_DATA=<dir>/.gaffer, DISPATCH_DB / MEMORY_DB inside it and
 # DISPATCH_AUDIT beside them, overriding anything inherited.
+# A failed mktemp EXITS the test (70): returning would leave the inherited GAFFER_DATA
+# (the live factory's) in place for the rest of the test (lib/tmpdir.sh).
+. "$(dirname "${BASH_SOURCE[0]}")/tmpdir.sh"  # mktemp guard + safe temp removal
 gaffer_test_isolate() {
   local dir="${1:-}"
   if [ -z "$dir" ]; then
-    dir="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-test-iso.XXXXXX")" || return 1
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-test-iso.XXXXXX")"
+    gaffer_test_check_tmp "$dir" || exit 70
     # shellcheck disable=SC2034  # read by the caller (its EXIT trap removes it)
     GAFFER_TEST_ISO="$dir"
   fi

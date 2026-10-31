@@ -3,12 +3,15 @@
 # exec the SAME server with the SAME action-command env as the detached paths (so
 # every dashboard button works), always token-protected, binding loopback by
 # default and every interface with --lan, and print the login URL before exec.
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-fg.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-fg.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 BINDIR="$WORK/bin"; mkdir -p "$BINDIR"; CAP="$WORK/capture"
 # Fake node: when asked to run the dashboard bin, record argv + the env it received, then
 # exit. Every OTHER node call (factory.config.sh reading settings.json, the launcher

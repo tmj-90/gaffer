@@ -4,12 +4,15 @@
 # CLIs, the REAL tick.sh, and a stub `claude` whose MODE file decides what a delivery
 # turn does. Sourced AFTER the caller defined HERE/RUNNER_DIR/ROOT and checked deps;
 # set STUB_TICK_NAME to name the temp dir. KEEP=1 keeps the temp dir for debugging.
+. "$(dirname "${BASH_SOURCE[0]}")/tmpdir.sh"  # mktemp guard + safe temp removal
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/${STUB_TICK_NAME:-stub-tick}.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-[ "${KEEP:-0}" = 1 ] || trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/${STUB_TICK_NAME:-stub-tick}.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+[ "${KEEP:-0}" = 1 ] || trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data" "$WORK/bin" "$WORK/calls"
 CALLS="$WORK/calls"
 

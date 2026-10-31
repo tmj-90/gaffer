@@ -20,7 +20,8 @@
 // Run: node runner/test/provenance-trailers.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -54,7 +55,7 @@ const { gateProposedMerge, landGatedMerge, buildPrMergeArgv } = await import(
   resolve(RUNNER, "bin/merge-ticket.mjs")
 );
 
-const WORK = mkdtempSync(resolve(tmpdir(), "prov-trailers-"));
+const WORK = gafferMkdtemp(resolve(tmpdir(), "prov-trailers-"));
 process.on("exit", () => rmSync(WORK, { recursive: true, force: true }));
 const DB = resolve(WORK, "dispatch.sqlite");
 spawnSync("node", [CLI, "--db", DB, "init"], { encoding: "utf8" });

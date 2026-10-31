@@ -18,6 +18,7 @@
 #
 # Run: bash test/parallel-regression.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -70,7 +71,10 @@ else
 fi
 
 echo "== AC2/AC4: DRY_RUN concurrency=1 runs serial, spawns NO workers =="
-GD="$(mktemp -d "${TMPDIR:-/tmp}/par-reg.XXXXXX")/x"; mkdir -p "$GD"
+GD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/par-reg.XXXXXX")"
+gaffer_test_check_tmp "$GD_ROOT" || exit 70
+trap 'gaffer_test_rm_work "$GD_ROOT"' EXIT
+GD="$GD_ROOT/x"; mkdir -p "$GD"
 OUT="$(GAFFER_DATA="$GD" DISPATCH_DB="$GD/d.sqlite" MEMORY_DB="$GD/m.sqlite" \
        DRY_RUN=1 MAX_TICKS=2 EMPTY_POLL_LIMIT=1 TICK_SLEEP=0 GAFFER_CONCURRENCY=1 \
        perl -e 'alarm 90; exec @ARGV' bash "$RUNNER_DIR/loop.sh" 2>&1)" || true

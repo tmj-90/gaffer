@@ -15,6 +15,7 @@
 # LC_ALL=C pins the bash `case`-glob to byte semantics across the ubuntu+macOS
 # matrix (same rationale as dod-distill-parity).
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 export LC_ALL=C LC_CTYPE=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,7 +58,8 @@ scan_case() {
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/hygiene-forbidden-parity.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 CORPUS="$(printf '%s\n' \
   'src/index.ts' 'infra/.terraform/providers/aws' 'infra/.terraform.lock.hcl' 'node_modules/x/y.js' 'app/.crew/state' 'logs/run.events.jsonl' \

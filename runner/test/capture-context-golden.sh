@@ -33,6 +33,7 @@
 # The capture runs TWICE (independent temp environments) and byte-compares
 # the normalized outputs to prove the render is deterministic.
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -58,8 +59,9 @@ node --input-type=commonjs -e "require('node:sqlite')" 2>/dev/null || { echo "SK
 [ -d "$SKILLS_FIXTURE" ] || die "fixture skills dir missing: $SKILLS_FIXTURE"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/capture-context.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 # Where the goldens land: the fixtures dir, or (in --check) a scratch dir compared
 # against the fixtures at the end. Inputs (skills, packets) always come from FIXTURES.
 OUT_DIR="$FIXTURES"

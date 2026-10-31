@@ -26,6 +26,7 @@
 # real shim lives in factory.config.sh). Skips if node/npm are unavailable.
 # Run: bash runner/test/dod-install-deps.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -68,7 +69,8 @@ type gaffer_dod_install_deps >/dev/null 2>&1 || {
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-install-deps.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # --- A tiny LOCAL dependency so the install needs no registry/network. -------
 mkdir -p "$WORK/localdep"

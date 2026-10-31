@@ -15,10 +15,10 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  mkdtempSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +39,7 @@ const fail = (l) => {
 };
 const assert = (l, c) => (c ? ok(l) : fail(l));
 
-const DATA = mkdtempSync(resolve(tmpdir(), "agent-home-test-"));
+const DATA = gafferMkdtemp(resolve(tmpdir(), "agent-home-test-"));
 process.env.GAFFER_DATA = DATA;
 delete process.env.SKILLS_DIR;
 delete process.env.CLAUDE_SETTINGS;
@@ -74,7 +74,7 @@ console.log("== makeAgentHome: skill copies + resolved settings, under GAFFER_DA
 
 console.log("== FAIL CLOSED: an unwired / missing settings template refuses the home ==");
 {
-  const T = mkdtempSync(resolve(tmpdir(), "agent-home-tpl-"));
+  const T = gafferMkdtemp(resolve(tmpdir(), "agent-home-tpl-"));
   const hook = "node ${RUNNER_DIR}/safety-hook.mjs";
   const templates = {
     "missing file": resolve(T, "does-not-exist.json"),

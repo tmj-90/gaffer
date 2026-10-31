@@ -20,6 +20,7 @@
 #      the refusal says it has no local path (not "an unknown location").
 # Run: bash runner/test/onboard-identity.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -29,8 +30,10 @@ ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/onboard-identity.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-[ "${KEEP:-0}" = 1 ] || trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/onboard-identity.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+[ "${KEEP:-0}" = 1 ] || trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/one/api" "$WORK/two/api" "$WORK/data" "$WORK/bin"
 for d in one two; do
   ( cd "$WORK/$d/api" && git init -q -b main && printf '{"name":"%s","scripts":{"test":"node -e 0"}}\n' "$d" > package.json \

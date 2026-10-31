@@ -32,7 +32,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -52,7 +53,7 @@ const HELPER = resolve(RUNNER_DIR, "bin", "merge-ticket.mjs");
 // defaults them to the checkout's .gaffer — the operator's LIVE factory state. The
 // in-process cases (W's runtime render, R-3's digest apply) wrote and read there.
 // Pin all three to a private dir BEFORE the import, overriding the developer's shell.
-const PRIVATE_DATA = mkdtempSync(resolve(tmpdir(), "merge-ticket-data-"));
+const PRIVATE_DATA = gafferMkdtemp(resolve(tmpdir(), "merge-ticket-data-"));
 process.env.GAFFER_DATA = PRIVATE_DATA;
 process.env.DISPATCH_DB = resolve(PRIVATE_DATA, "dispatch.sqlite");
 process.env.MEMORY_DB = resolve(PRIVATE_DATA, "memory.sqlite");
@@ -94,7 +95,7 @@ function eq(label, got, want) {
   else fail(`${label} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
 }
 
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "merge-ticket-test-"));
+const WORKDIR = gafferMkdtemp(resolve(tmpdir(), "merge-ticket-test-"));
 
 // --- git helpers -----------------------------------------------------------------
 function git(repo, ...args) {
@@ -1931,7 +1932,7 @@ console.log("== W: the resolver's MCP runtime is fully rendered and scoped to th
   // "${DISPATCH_MCP_BIN}" → both servers died at start-up → the resolver could not
   // record its resolution), no claim token, evidence scoped to the ticket, memory
   // direct-apply scoped to the repo.
-  const wt = mkdtempSync(resolve(tmpdir(), "mt-wiring-"));
+  const wt = gafferMkdtemp(resolve(tmpdir(), "mt-wiring-"));
   try {
     const runtime = installProjectLocalWiring(wt, 42, "demo-repo");
     assert(

@@ -20,6 +20,7 @@
 # Zero deps; needs bash + node (+ the built dispatch CLI for AC10, else AC10 skips).
 # Run: bash test/model-routing.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -31,7 +32,8 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # Isolated data dir so the helper's log() writes don't touch a real factory log.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/model-routing.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # Source the real config in a subshell-free way: it defines gaffer_route_model +
 # log(). Point GAFFER_DATA at our temp dir so the log goes there.

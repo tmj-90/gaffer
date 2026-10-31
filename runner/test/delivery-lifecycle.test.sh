@@ -20,6 +20,7 @@
 # (packages/*/dist). Skips cleanly otherwise.
 # Run: bash runner/test/delivery-lifecycle.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -60,8 +61,9 @@ node --input-type=commonjs -e "require('node:sqlite')" 2>/dev/null || {
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/delivery-lifecycle.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'pkill -f "$WORK" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'pkill -f "$WORK" 2>/dev/null; gaffer_test_rm_work "$WORK"' EXIT
 
 # --- 1. A registered Node repo with a trivial, dependency-free passing test. ---
 REPO="$WORK/widget"

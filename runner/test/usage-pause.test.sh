@@ -20,6 +20,7 @@
 #   6. gaffer status prints "paused until <time>: usage limit".
 # Run: bash test/usage-pause.test.sh   (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -30,8 +31,10 @@ ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 has()  { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/usage-pause.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/usage-pause.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 # shellcheck source=lib/isolate.sh
 . "$HERE/lib/isolate.sh"; gaffer_test_isolate "$WORK"
 MJS="$RUNNER_DIR/lib/usage-pause.mjs"

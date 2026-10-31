@@ -15,7 +15,8 @@
 // Zero deps beyond node. Run: node test/usage-ledger.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, rmSync, readdirSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -255,7 +256,7 @@ console.log("== R-4b: the tick.sh ledger call site routes the module's stderr to
 
 console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GAFFER_DATA) ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "usage-cli-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-cli-"));
   try {
     const sampleFile = join(dir, "sample.json");
     writeFileSync(sampleFile, JSON.stringify(SAMPLE));
@@ -316,7 +317,7 @@ console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GA
 
 console.log("== REWORK COST: a delivery row carries its attempt id and spawn time ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "usage-attempt-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "usage-attempt-"));
   try {
     const sampleFile = join(dir, "sample.json");
     writeFileSync(sampleFile, JSON.stringify(SAMPLE));
@@ -511,7 +512,7 @@ console.log("== PART A: killEstimateFromHistory = P10 of measured same-kind cost
 
 console.log("== PART A CLI: rc=124/143/130 book an estimated record; rc=0 stays measured ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "kill-est-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "kill-est-"));
   try {
     const runKilled = (rc) =>
       spawnSync(
@@ -606,7 +607,7 @@ console.log("== PART A CLI: rc=124/143/130 book an estimated record; rc=0 stays 
       {
         env: {
           ...process.env,
-          GAFFER_DATA: mkdtempSync(join(tmpdir(), "optout-")),
+          GAFFER_DATA: gafferMkdtemp(join(tmpdir(), "optout-")),
           GAFFER_USAGE_LEDGER: "",
         },
         encoding: "utf8",
@@ -621,7 +622,7 @@ console.log("== PART A CLI: rc=124/143/130 book an estimated record; rc=0 stays 
 
 console.log("== PART A CLI: history-p10 basis fires once ≥5 measured same-kind rows exist ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "kill-hist-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "kill-hist-"));
   try {
     const ledgerPath = join(dir, LEDGER_FILENAME);
     // Seed 5 measured delivery rows (costs 0.10..0.50 → P10 ≈ 0.14).
@@ -669,7 +670,7 @@ console.log("== PART A CLI: history-p10 basis fires once ≥5 measured same-kind
 
 console.log("== PART A': the kill estimate scales with how long the killed call ran ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "kill-rate-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "kill-rate-"));
   try {
     const ledgerPath = join(dir, LEDGER_FILENAME);
     // 5 measured delivery rows, each $0.10 per 60 s (rate 0.10/60000 $/ms), costs
@@ -764,7 +765,7 @@ console.log("== PART A': the kill estimate scales with how long the killed call 
 
 console.log("== PART A'': recordKilledCall — the .mjs sites book the same labelled estimate ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "kill-mjs-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "kill-mjs-"));
   try {
     const ledgerPath = join(dir, LEDGER_FILENAME);
     const base = { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" };
@@ -809,7 +810,7 @@ console.log("== PART A'': recordKilledCall — the .mjs sites book the same labe
 
 // ── GAFFER_USAGE_LEDGER=0/off: the ledger is off, never a file named "0" ──
 {
-  const dir = mkdtempSync(join(tmpdir(), "ledger-off-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "ledger-off-"));
   const cwd = process.cwd();
   process.chdir(dir);
   try {

@@ -33,6 +33,7 @@
 #
 # Zero deps beyond git + node. Run: bash test/recoverable-delivery.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -51,8 +52,9 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 source "$RUNNER_DIR/lib/delivery-recovery.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/recover-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # A real repo: one commit on the default branch (the delivery base).
 REPO="$WORK/repo"

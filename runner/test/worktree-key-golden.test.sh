@@ -7,6 +7,7 @@
 # byte semantics across the ubuntu + macOS matrix.
 # Run: bash runner/test/worktree-key-golden.test.sh   (SEAM_GOLDEN_CAPTURE=1 to re-pin)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 export LC_ALL=C LC_CTYPE=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,7 +22,9 @@ source "$HERE/lib/seam-golden.sh"
 pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/worktree-key-golden.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/worktree-key-golden.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # The seam as tick.sh invokes it (CLI + the same backstop).
 key_case() {

@@ -20,7 +20,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import { rmSync, existsSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -38,7 +39,7 @@ const HELPER = resolve(HERE, "..", "bin", "product-owner-run.mjs");
 // Private operator state, set BEFORE the import: the helper resolves GAFFER_DATA /
 // MEMORY_DB at load time, and run directly (no run.sh) its context primer created
 // the checkout's .gaffer/memory.sqlite. The --dry-run children inherit these.
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "po-run-test-"));
+const WORKDIR = gafferMkdtemp(resolve(tmpdir(), "po-run-test-"));
 process.env.GAFFER_DATA = resolve(WORKDIR, ".gaffer");
 process.env.MEMORY_DB = resolve(WORKDIR, ".gaffer", "memory.sqlite");
 process.env.DISPATCH_AUDIT = resolve(WORKDIR, ".gaffer", "audit.jsonl");

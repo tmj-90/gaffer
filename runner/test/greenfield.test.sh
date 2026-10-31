@@ -14,6 +14,7 @@
 #
 # Zero deps; needs only git + python3. Run: bash test/greenfield.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,7 +34,8 @@ source "$RUNNER_DIR/lib/greenfield.sh"
 gaffer_timeout() { shift; "$@"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/greenfield-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 echo "== AC1: gaffer_bootstrap_repo_name derives a slug =="
 # From an explicitly-linked repo name (highest priority).
@@ -277,6 +279,7 @@ echo "== AC10: gaffer_inherit_repo applies the planner's links via the wg CLI ==
 # fixed plan: one deterministic link (#62→auto-trader) + one ambiguous sibling
 # (#30, candidate auto-trader). The stub `wg` records every invocation to a file.
 INH_WORK="$(mktemp -d "${TMPDIR:-/tmp}/inherit-test.XXXXXX")"
+gaffer_test_check_tmp "$INH_WORK" || exit 70
 BIN="$INH_WORK/bin"; mkdir -p "$BIN"
 WG_LOG="$INH_WORK/wg.log"; CLAUDE_LOG="$INH_WORK/claude.log"
 
@@ -385,7 +388,7 @@ grep -q -- '--max-turns 200' "$CLAUDE_LOG" \
   && fail "the global 200-turn flag is still appended to the classifier" \
   || ok "no global 200-turn flag appended (the argv carries its own text-only cap)"
 
-rm -rf "$INH_WORK"
+gaffer_test_rm_work "$INH_WORK"
 
 echo "== AC11: bootstrap teardown purges the skill mount from the PERSISTENT repo =="
 # A greenfield bootstrap runs the agent DIRECTLY in the new repo (no throwaway
@@ -401,6 +404,7 @@ source "$RUNNER_DIR/lib/skills-mount.sh"
 source "$RUNNER_DIR/lib/hygiene.sh"
 
 SM_WORK="$(mktemp -d "${TMPDIR:-/tmp}/skills-unmount-test.XXXXXX")"
+gaffer_test_check_tmp "$SM_WORK" || exit 70
 export GAFFER_DATA="$SM_WORK/data"; mkdir -p "$GAFFER_DATA"
 export SKILLS_DIR="$SM_WORK/skills"; mkdir -p "$SKILLS_DIR/demo-skill"
 printf '%s\n' '# demo' > "$SKILLS_DIR/demo-skill/SKILL.md"
@@ -476,7 +480,7 @@ gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"    # must be a no-op on rea
   || fail "teardown wrongly deleted agent-scaffolded .claude content"
 
 unset GAFFER_DATA SKILLS_DIR
-rm -rf "$SM_WORK"
+gaffer_test_rm_work "$SM_WORK"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

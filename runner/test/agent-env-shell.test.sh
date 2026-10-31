@@ -22,6 +22,7 @@
 # Run: bash runner/test/agent-env-shell.test.sh
 # =====================================================================
 # shellcheck shell=bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -29,7 +30,7 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 # .gaffer (the live factory's settings.json is APPLIED) — see lib/isolate.sh.
 # shellcheck source=lib/isolate.sh
 . "$HERE/lib/isolate.sh"
-gaffer_test_isolate; trap 'rm -rf "$GAFFER_TEST_ISO"' EXIT
+gaffer_test_isolate; trap 'gaffer_test_rm_work "$GAFFER_TEST_ISO"' EXIT
 
 PASS=0
 FAILURES=()

@@ -12,6 +12,7 @@
 #
 # Run: bash runner/test/distill-intent-golden.test.sh   (SKIPs without the crew build)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -20,7 +21,9 @@ ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 CLI="${DISTILL_CLI:-$ROOT/packages/crew/dist/runtime/context/distillIntentCli.js}"
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$CLI" ] || { echo "SKIP: crew not built ($CLI) — run pnpm -C packages/crew build"; exit 0; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/distill-intent-golden.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/distill-intent-golden.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }

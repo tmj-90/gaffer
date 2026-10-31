@@ -15,6 +15,7 @@
 # in-process safety hook can't see. Zero deps; macOS-only (sandbox-exec).
 # Run: bash test/strict-mode.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -32,6 +33,7 @@ fi
 # Isolated GAFFER_DATA so we never touch real factory state; the seam writes the
 # generated profile here. Real temp worktree stands in for a delivery worktree.
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/strict-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 # Canonicalise: macOS aliases /tmp → /private/tmp; the kernel enforces canonical.
 WORK="$(cd "$WORK" && pwd -P)"
 export GAFFER_DATA="$WORK/gaffer-data"
@@ -46,7 +48,7 @@ mkdir -p "$GAFFER_DATA" "$WORKTREE"
 OUTSIDE="$HOME/.gaffer-strict-escape-test.$$"
 mkdir -p "$OUTSIDE"
 
-cleanup() { rm -rf "$WORK" "$OUTSIDE"; }
+cleanup() { gaffer_test_rm_work "$WORK" "$OUTSIDE"; }
 trap cleanup EXIT
 
 # Minimal config the seam reads, then source ONLY the provider lib (no full

@@ -17,6 +17,7 @@
 #   E. a live review claim held by another lane is respected (no double review).
 # Real dispatch + real tick.sh with a stub `claude`. Run: bash runner/test/review-wedge.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -31,9 +32,11 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/review-wedge.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/review-wedge.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
 SLEEPER=""
-trap '[ -n "$SLEEPER" ] && kill "$SLEEPER" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap '[ -n "$SLEEPER" ] && kill "$SLEEPER" 2>/dev/null; gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data" "$WORK/bin"
 
 R="$WORK/repo"; mkdir -p "$R/src" "$R/test"

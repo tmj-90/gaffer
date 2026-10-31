@@ -190,6 +190,8 @@ export interface DispatchRepository {
   testCommand: string | null;
   lintCommand: string | null;
   coverageCommand: string | null;
+  /** The repo's recorded remote (onboarding stores origin's URL); GitHub ingest needs it. */
+  remoteUrl?: string | null;
 }
 
 export interface DispatchClient {

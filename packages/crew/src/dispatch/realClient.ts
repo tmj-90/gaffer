@@ -350,6 +350,7 @@ export class RealDispatchClient implements DispatchClient {
       testCommand: typeof row.test_command === "string" ? row.test_command : null,
       lintCommand: typeof row.lint_command === "string" ? row.lint_command : null,
       coverageCommand: typeof row.coverage_command === "string" ? row.coverage_command : null,
+      remoteUrl: typeof row.remote_url === "string" ? row.remote_url : null,
     }));
   }
 

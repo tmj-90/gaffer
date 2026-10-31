@@ -49,6 +49,7 @@ import {
   REVIEW_PIN_PREFIX,
 } from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
+import { readBoundTesterPass, TESTER_REPLAY_PREFIX } from "./testerReplay.js";
 import {
   contractHash,
   REPLAY_STATES,
@@ -707,6 +708,159 @@ export class ReviewGateService {
         recorded: true,
         status: computeLandingStatus(this.db, ticket.id),
       };
+    });
+  }
+
+  /**
+   * TESTER REPLAY ON THE LANDED REVISION (external review #4): record that the
+   * independent tester's test files passed on the exact revision that landed (see
+   * testerReplay.ts). SYSTEM only — the runner's landing path, after the merge gate
+   * replayed the tester's tests on the merge candidate and that candidate landed; not an
+   * admin, a human or an agent (the epic is counted as accepted on this record, so nobody
+   * but the landing path may assert it). Idempotent per landed revision. Refused unless:
+   * the ticket is approved (ready_for_merge — recorded before mark-merged, like a landing);
+   * its tester PASS (the row a `ticket.tester_passed` event names, from an agent/system
+   * tester) is bound to exactly `pin`; `pin` is the approved revision when the repo has a
+   * review pin; and, for a local landing, git shows `commit` on the repo's default branch.
+   */
+  recordTesterReplay(
+    ref: string,
+    input: {
+      commit: string;
+      pin: string;
+      files: readonly string[];
+      repo?: string | undefined;
+      via?: string | undefined;
+    },
+    actor: Actor,
+  ): { ticketId: string; commit: string; tested: string; files: string[]; recorded: boolean } {
+    if (actor.type !== "system") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner's landing path (the system actor) may record a tester replay.",
+        { actor_type: actor.type },
+      );
+    }
+    const sha = (v: string, what: string): string => {
+      const s = String(v ?? "")
+        .trim()
+        .toLowerCase();
+      if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(s)) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `${what} must be a full git commit id (40 or 64 hex characters).`,
+        );
+      }
+      return s;
+    };
+    const commit = sha(input.commit, "commit");
+    const pin = sha(input.pin, "pin");
+    const files = [...new Set((input.files ?? []).map((f) => String(f).trim()).filter(Boolean))];
+    if (files.length > 500 || files.some((f) => f.length > 1000 || /[\n\r\0]/.test(f))) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "files must be at most 500 single-line paths of at most 1000 characters.",
+      );
+    }
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.resolveTicket(ref);
+      if (ticket.status !== "ready_for_merge") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A tester replay can only be recorded for an approved ticket (ready_for_merge).",
+          { status: ticket.status },
+        );
+      }
+      const bound = readBoundTesterPass(this.db, ticket.id);
+      if (!bound || bound.provenance === "human" || bound.testedCommit !== pin) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `#${ticket.number} has no tester PASS bound to ${pin.slice(0, 12)}; a replay is recorded only for the tested commit that landed.`,
+          { reason: "not_tested_commit", tested: bound?.testedCommit ?? null },
+        );
+      }
+      // The repo: the one named, else the ticket's primary repo.
+      const landing = computeLandingStatus(this.db, ticket.id);
+      let repoId: string | null = null;
+      if (input.repo) {
+        const named = this.db
+          .prepare("SELECT id FROM repositories WHERE id = ? OR name = ? LIMIT 1")
+          .get(input.repo, input.repo) as { id: string } | undefined;
+        if (!named) throw notFound("repository", input.repo);
+        repoId = named.id;
+      } else {
+        const primary = this.db
+          .prepare(
+            "SELECT repo_id FROM ticket_repos WHERE ticket_id = ? ORDER BY role = 'primary' DESC LIMIT 1",
+          )
+          .get(ticket.id) as { repo_id: string } | undefined;
+        repoId = primary?.repo_id ?? null;
+      }
+      const approved = repoId ? landing.repos.find((r) => r.repoId === repoId) : undefined;
+      if (approved && approved.sha !== pin) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `${pin.slice(0, 12)} is not the approved revision of #${ticket.number} (approved ${approved.sha.slice(0, 12)}).`,
+          { reason: "not_approved_revision" },
+        );
+      }
+      const uri = `${TESTER_REPLAY_PREFIX}${commit}`;
+      const existing = this.db
+        .prepare(
+          "SELECT 1 FROM evidence WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system' AND uri = ? LIMIT 1",
+        )
+        .get(ticket.id, uri);
+      if (existing) return { ticketId: ticket.id, commit, tested: pin, files, recorded: false };
+      if (
+        repoId &&
+        this.landedOnDefaultResolver &&
+        !UNVERIFIABLE_LANDING_VIAS.has(input.via ?? "")
+      ) {
+        let onDefault: boolean;
+        try {
+          onDefault = this.landedOnDefaultResolver(repoId, commit);
+        } catch {
+          onDefault = false;
+        }
+        if (!onDefault) {
+          throw new DispatchError(
+            "STATE_CONFLICT",
+            `the default branch does not contain ${commit.slice(0, 12)}; a replay is recorded only for the revision that landed.`,
+            { reason: "not_on_default_branch", commit },
+          );
+        }
+      }
+      this.evidence.insert({
+        id: newId(),
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: repoId,
+        decision_id: null,
+        evidence_type: "commit",
+        summary:
+          `the independent tester's ${files.length ? `${files.length} test file(s) (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""})` : "verdict (no test files of its own; the repository's suite)"} ` +
+          `passed on the landed revision ${commit} (the merge of tested commit ${pin.slice(0, 12)})${input.via ? ` via ${input.via}` : ""}`,
+        uri,
+        payload_json: JSON.stringify({
+          kind: "tester_replay",
+          tested: pin,
+          pin,
+          files,
+          via: input.via ?? null,
+          tester_evidence_id: bound.evidenceId,
+        }),
+        created_by: "dispatch",
+        recorded_by_actor_type: "system",
+        created_at: this.clock.now(),
+      });
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.tester_replayed",
+        payload: { commit, tested: pin, files, via: input.via ?? null },
+      });
+      return { ticketId: ticket.id, commit, tested: pin, files, recorded: true };
     });
   }
 

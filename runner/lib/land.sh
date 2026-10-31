@@ -80,6 +80,26 @@ _gaffer_land_record() {
   fi
 }
 
+# TESTER REPLAY (external review #4): the merge gate replayed the independent tester's test
+# files on the exact merge candidate and that candidate landed — record WHICH assertions
+# passed on WHICH landed revision (system evidence, uri gaffer-tester-replayed:<sha>). The
+# epic is counted as accepted only on this record (`wg stats`), and `gaffer status` and the
+# dashboard ticket page read it. Only when the gate set _MG_REPLAY_RECORD (a bound tester
+# PASS is why this ticket lands). A failure is logged, never fatal: the merge has landed,
+# and the epic then reads "not replayed" — never accepted on a record that is missing.
+_gaffer_land_replay_record() {
+  local num="$1" repo_id="$2" merge="$3" pin="$4" via="$5" who="$6"
+  [ "${_MG_REPLAY_RECORD:-0}" = "1" ] && [ -n "$merge" ] && [ -n "$pin" ] || return 0
+  local -a _rr=()
+  [ -n "$repo_id" ] && _rr=(--repo "$repo_id")
+  if wg ticket record-tester-replay "$num" --commit "$merge" --pin "$pin" --files-json "${_MG_REPLAY_FILES:-[]}" \
+       --via "$via" ${_rr[@]+"${_rr[@]}"} --as system >/dev/null 2>&1; then
+    log "$who: #$num recorded the tester replay: ${_MG_REPLAY_COUNT:-0} tester test file(s) passed on the landed revision ${merge:0:12}"
+  else
+    log "$who: #$num could not record the tester replay on ${merge:0:12} — the epic is not counted as accepted until it is"
+  fi
+}
+
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
@@ -281,6 +301,8 @@ _gaffer_land_one() {
     0)
       log "$_WHO: #$RNUM merged $RBRANCH → $RDEFAULT in $RREPO (via $_MERGED_VIA)"
       _gaffer_land_record "$RNUM" "$_RID" "$_TB_PIN" "$_MERGED_VIA" "$_WHO"
+      # TESTER REPLAY: which tester assertions passed on which landed revision.
+      _gaffer_land_replay_record "$RNUM" "$_RID" "$_MG_MERGE" "$_TB_PIN" "$_MERGED_VIA" "$_WHO"
       # MEMORY FRESHNESS: write-through the delivered change into the file cards
       # (refresh changed, add new, drop deleted, advance the watermark) so priming
       # stays current instead of decaying. Fail-soft — never blocks the merge.

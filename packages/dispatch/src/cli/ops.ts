@@ -5,6 +5,7 @@ import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
 import { contractHash } from "../util/contractHash.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
+import { readTesterReplay } from "../services/testerReplay.js";
 import { VERSION } from "../version.js";
 
 /**
@@ -264,6 +265,13 @@ export interface EpicAcceptance {
   /** The contract hash the tester's PASS recorded, and whether the ticket's contract still matches it. */
   readonly accepted_contract_hash: string | null;
   readonly contract_changed: boolean;
+  /**
+   * TESTER REPLAY: the landed revision the tester's assertions passed on (the runner's
+   * system record for the accepted commit), and the tester test files that ran there —
+   * null / [] when no such record exists.
+   */
+  readonly replayed_commit: string | null;
+  readonly replayed_files: readonly string[];
   /** Where the build lives, so a status pane can tell whether the default branch has moved past accepted_commit. */
   readonly repo_path: string | null;
   readonly default_branch: string | null;
@@ -375,6 +383,8 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     const currentHash = contractHash(db, r.id);
     const contractChanged =
       acceptedHash !== null && currentHash !== null && acceptedHash !== currentHash;
+    // TESTER REPLAY: the record that the tester's assertions passed on the landed revision.
+    const replayed = readTesterReplay(db, r.id, acceptedCommit);
     let result: EpicAcceptance["result"];
     if (r.status === "done") {
       if (provenance === "human") result = "waived";
@@ -405,6 +415,8 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       accepted_commit: acceptedCommit,
       accepted_contract_hash: acceptedHash,
       contract_changed: contractChanged,
+      replayed_commit: replayed?.commit ?? null,
+      replayed_files: replayed?.files ?? [],
       repo_path: r.repo_path ?? null,
       default_branch: r.default_branch ?? null,
     };
@@ -471,7 +483,7 @@ export function renderStats(stats: StatsReport): string {
     );
     for (const e of a.epics) {
       lines.push(
-        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)}${e.replayed_files.length ? ` (${e.replayed_files.join(", ")})` : ""}` : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
       );
     }
   }

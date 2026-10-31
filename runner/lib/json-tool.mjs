@@ -1027,12 +1027,14 @@ switch (cmd) {
     break;
   }
   // status-acceptance-rows: one TSV row per epic from stats.acceptance.epics —
-  // name \t result \t acceptance ticket \t accepted commit \t repo path \t default branch.
+  // name \t result \t acceptance ticket \t accepted commit \t replayed (landed) commit \t
+  // replayed tester test files (comma-separated).
   case "status-acceptance-rows": {
     const p = tryParse(readStdin());
     if (!p.ok) process.exit(0);
     const epics = (((p.value || {}).acceptance || {}).epics || []).filter(Boolean);
-    const clean = (v) => String(v ?? "").replace(/[\t\n\r]/g, " ");
+    // `-` stands for an empty field: TAB is IFS whitespace, so `read` would collapse it.
+    const clean = (v) => String(v ?? "").replace(/[\t\n\r]/g, " ") || "-";
     for (const e of epics)
       println(
         [
@@ -1040,8 +1042,8 @@ switch (cmd) {
           e.result,
           e.acceptance_ticket ?? "?",
           e.accepted_commit ?? "",
-          e.repo_path ?? "",
-          e.default_branch ?? "",
+          e.replayed_commit ?? "",
+          (Array.isArray(e.replayed_files) ? e.replayed_files : []).join(", "),
         ]
           .map(clean)
           .join("\t"),

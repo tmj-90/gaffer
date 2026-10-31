@@ -102,14 +102,21 @@ out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"r
 case "$out$(cat "$SINK")" in *"1 build(s) not accepted"*) ok "reason names the unaccepted build" ;; *) fail "reason missing 'build(s) not accepted'" ;; esac
 has "$out" "builds NOT accepted: 1" && ok "pane shows the unaccepted-build line" || fail "pane missing the builds NOT accepted line"
 
-# --- 4d: per-epic acceptance lines; a moved default branch is called out ------
+# --- 4d: per-epic acceptance lines read the TESTER REPLAY record, not timestamps ------
+# The line names which tester assertions passed on which LANDED revision (the runner's
+# record); a default branch that moved since is no longer guessed at from git history.
 AREPO="$WORK/accrepo"; git init -q -b main "$AREPO" >/dev/null 2>&1; git -C "$AREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one; ACC_SHA="$(git -C "$AREPO" rev-parse HEAD)"
-git -C "$AREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+git -C "$AREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two; LANDED_SHA="$(git -C "$AREPO" rev-parse HEAD)"
+git -C "$AREPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m three
 : > "$SINK"
-out="$(trap - EXIT; run_status "{\"ticketsByStatus\":{\"in_review\":0,\"blocked\":0,\"ready\":0},\"acceptance\":{\"unaccepted\":0,\"testing\":0,\"accepted\":1,\"failed\":0,\"epics\":[{\"epic_name\":\"Bookmark Vault\",\"result\":\"accepted\",\"acceptance_ticket\":14,\"accepted_commit\":\"$ACC_SHA\",\"repo_path\":\"$AREPO\",\"default_branch\":\"main\"}]}}")"
+out="$(trap - EXIT; run_status "{\"ticketsByStatus\":{\"in_review\":0,\"blocked\":0,\"ready\":0},\"acceptance\":{\"unaccepted\":0,\"testing\":0,\"accepted\":1,\"failed\":0,\"epics\":[{\"epic_name\":\"Bookmark Vault\",\"result\":\"accepted\",\"acceptance_ticket\":14,\"accepted_commit\":\"$ACC_SHA\",\"replayed_commit\":\"$LANDED_SHA\",\"replayed_files\":[\"test/bb-label.test.js\"],\"repo_path\":\"$AREPO\",\"default_branch\":\"main\"}]}}")"
 has "$out" "Bookmark Vault: accepted (acceptance #14 @ ${ACC_SHA:0:12})" && ok "acceptance line names the epic, result and tested commit" || fail "acceptance line missing: $(printf '%s' "$out" | grep -i 'bookmark' | head -2)"
-has "$out" "default branch moved: 1 commit(s) since the tester's PASS" && ok "a default branch that moved past the accepted commit is called out as an earlier build" || fail "moved-branch note missing"
+has "$out" "tester assertions passed on the landed revision ${LANDED_SHA:0:12}: test/bb-label.test.js" && ok "the line names which tester assertions passed on which landed revision (the replay record)" || fail "replay record not shown: $(printf '%s' "$out" | grep -i 'bookmark' | head -2)"
+has "$out" "earlier build" && fail "status still warns from timestamps (earlier build)" || ok "no timestamp guess: a default branch that moved since is not called an earlier build"
 [ -s "$SINK" ] && fail "an accepted build notified" || ok "an accepted build alone does not notify"
+out="$(trap - EXIT; run_status "{\"ticketsByStatus\":{\"in_review\":0,\"blocked\":0,\"ready\":0},\"acceptance\":{\"unaccepted\":1,\"testing\":0,\"accepted\":0,\"failed\":0,\"epics\":[{\"epic_name\":\"Profile\",\"result\":\"unreplayed\",\"acceptance_ticket\":15,\"accepted_commit\":\"$ACC_SHA\",\"replayed_commit\":null,\"replayed_files\":[]}]}}")"
+has "$out" "Profile: unreplayed (acceptance #15 @ ${ACC_SHA:0:12})" && has "$out" "no record that the tester's assertions passed on the revision that landed" \
+  && ok "a done build with no replay record says the tester's assertions never ran on what landed" || fail "unreplayed line: $(printf '%s' "$out" | grep -i 'profile' | head -2)"
 
 # --- 5: no notification when nothing needs a human ------------------
 : > "$SINK"

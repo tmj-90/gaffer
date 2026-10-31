@@ -179,22 +179,22 @@ printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$revi
 [ "$paused_waiting" -gt 0 ] && printf "    ${c_yel}paused, waiting on you: %s${c_off}  (hit a cap with its work kept — Continue or Stop it on the board, or: gaffer wg ticket continue <n>)\n" "$paused_waiting"
 [ "$resume_req" -gt 0 ] && printf "    ${c_dim}paused, Continue pressed: %s (the next tick resumes it)${c_off}\n" "$resume_req"
 [ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
-# Per-epic acceptance: result, the commit the tester's PASS ran against, and whether the
-# repo's default branch has moved past it since (a historical acceptance, not the current build).
+# Per-epic acceptance: result, the commit the tester's PASS ran against, and — from the
+# runner's TESTER REPLAY record, not from timestamps — which tester assertions passed on
+# which LANDED revision. An epic is accepted only on that record (`wg stats`); a build whose
+# tester assertions never ran on what landed says so.
 acc_rows="$(printf '%s' "$STATS_JSON" | node "$HERE/lib/json-tool.mjs" status-acceptance-rows 2>/dev/null)"
 if [ -n "$acc_rows" ]; then
   printf "\n  ${c_dim}builds (acceptance)${c_off}\n"
-  while IFS=$'\t' read -r a_name a_result a_ticket a_commit a_repo a_def; do
+  # Empty fields arrive as `-` (json-tool): TAB is IFS whitespace, `read` would collapse them.
+  while IFS=$'\t' read -r a_name a_result a_ticket a_commit a_replayed a_files _; do
     [ -n "$a_name" ] || continue
+    [ "$a_commit" = "-" ] && a_commit=""; [ "$a_replayed" = "-" ] && a_replayed=""; [ "$a_files" = "-" ] && a_files=""
     a_note=""
-    if [ -n "$a_commit" ] && [ -n "$a_repo" ] && [ -d "$a_repo" ]; then
-      a_head="$(git -C "$a_repo" rev-parse "${a_def:-HEAD}" 2>/dev/null || echo '')"
-      if [ -n "$a_head" ]; then
-        case "$a_head" in "$a_commit"*) ;; *)
-          a_behind="$(git -C "$a_repo" rev-list --count "$a_commit..${a_def:-HEAD}" 2>/dev/null || echo '?')"
-          a_note="  ${c_yel}(default branch moved: $a_behind commit(s) since the tester's PASS — that acceptance describes an earlier build)${c_off}" ;;
-        esac
-      fi
+    if [ -n "$a_replayed" ]; then
+      a_note="  ${c_dim}(tester assertions passed on the landed revision ${a_replayed:0:12}${a_files:+: $a_files})${c_off}"
+    elif [ "$a_result" = "unreplayed" ]; then
+      a_note="  ${c_yel}(no record that the tester's assertions passed on the revision that landed — not accepted)${c_off}"
     fi
     printf "    %s: %s (acceptance #%s%s)%b\n" "$a_name" "$a_result" "$a_ticket" "${a_commit:+ @ ${a_commit:0:12}}" "$a_note"
   done <<<"$acc_rows"

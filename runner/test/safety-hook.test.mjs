@@ -1262,6 +1262,16 @@ for (const [label, cmd] of [
     "dispatch ticket record-landing --via local",
     "dispatch ticket record-landing 5 --repo repoB --commit abc1234 --via local",
   ],
+  // The tester-replay record is the landing path's to write: a forged row counts an epic
+  // as accepted on assertions that never ran on what landed.
+  [
+    "wg ticket record-tester-replay --as system",
+    "wg ticket record-tester-replay 5 --commit abc1234 --pin def5678 --as system",
+  ],
+  [
+    "dispatch ticket record-tester-replay --files-json",
+    "dispatch ticket record-tester-replay 5 --commit abc1234 --pin def5678 --files-json '[]'",
+  ],
   ["wg approve-ready", "wg approve-ready 5"],
   ["fg approve-ready", "fg approve-ready 5"],
   ["wg repo-access grant", "wg repo-access grant some/repo"],

@@ -11577,6 +11577,48 @@ function renderTestingCard(t, evidence) {
       )
     : el("p", { class: "dim" }, "No tester results recorded yet.");
 
+  // TESTER REPLAY: which of the tester's assertions passed on which LANDED revision — the
+  // runner's own record (a SYSTEM row, uri gaffer-tester-replayed:<sha>), written only when
+  // the merge gate replayed the tester's tests on the exact merge candidate and it landed.
+  // Read from the record, never guessed from timestamps; the epic is accepted only on it.
+  const replays = (evidence || []).filter(
+    (e) =>
+      e.recorded_by_actor_type === "system" &&
+      typeof e.uri === "string" &&
+      e.uri.startsWith("gaffer-tester-replayed:"),
+  );
+  const replayList = replays.length
+    ? el(
+        "ul",
+        { class: "clean" },
+        replays.map((e) => {
+          const sha = e.uri.slice("gaffer-tester-replayed:".length);
+          let files = [];
+          try {
+            const p = JSON.parse(e.payload_json || "{}");
+            if (Array.isArray(p.files)) files = p.files.filter((f) => typeof f === "string");
+          } catch {
+            files = [];
+          }
+          return el("li", { class: "tt-row tt-pass" }, [
+            glyph("done", 16, "Passed on the landed revision"),
+            el("div", {}, [
+              "Passed on the landed revision ",
+              el("code", { class: "mono" }, sha.slice(0, 12)),
+              files.length ? `: ${files.join(", ")}` : " (no test files of its own)",
+            ]),
+            el("div", { class: "ac-meta tt-who" }, `runner · ${fmtTime(e.created_at)}`),
+          ]);
+        }),
+      )
+    : el(
+        "p",
+        { class: "dim" },
+        t.status === "done"
+          ? "No record that the tester's assertions passed on the revision that landed."
+          : "Replayed on the merge candidate when it lands.",
+      );
+
   return el("section", { class: "card panel tk-testing", "aria-label": "Independent testing" }, [
     panelHead("Independent testing", testable ? "black-box tester on" : "off", null, {}),
     el("div", { class: "setting-row tk-testable" }, [
@@ -11602,6 +11644,8 @@ function renderTestingCard(t, evidence) {
     contractRows,
     el("h3", { class: "tk-h3" }, "Tester results"),
     evidenceList,
+    el("h3", { class: "tk-h3" }, "On the landed revision"),
+    replayList,
   ]);
 }
 

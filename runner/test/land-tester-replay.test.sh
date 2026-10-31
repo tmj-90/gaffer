@@ -21,6 +21,9 @@
 #   D  PR mode (bin/merge-ticket.mjs): the same, with a gh stub that would merge;
 #   E  a bound tester PASS with no tests on record lands (nothing extra runs); a passing
 #      replay lands; a ticket outside the testing lane lands with nothing replayed.
+#   R  the landing RECORDS which tester assertions passed on which landed revision
+#      (gaffer-tester-replayed:<sha>, system): the gated merge on main and the files that
+#      ran there; nothing for a held replay or a ticket outside the testing lane.
 # Run: bash runner/test/land-tester-replay.test.sh
 # =====================================================================
 set -uo pipefail
@@ -159,6 +162,17 @@ grep -q "MERGE: #$T6 TESTER REPLAY PASS" "$LOGF" && ok "E: …after the replay p
 [ "$(st "$T7")" = done ] && grep -q "MERGE: #$T7 TESTER REPLAY — nothing to replay" "$LOGF" && ok "E: a ticket outside the testing lane lands, nothing replayed" || fail "E: #$T7 status=$(st "$T7")"
 git -C "$R" show "main:test/bb-label.test.js" >/dev/null 2>&1 && fail "E: a tester's file landed on main" || ok "E: the tester's files ran on the candidate but never landed"
 main_tests && ok "E: main is green" || fail "E: main red"
+# TESTER REPLAY RECORD: which tester assertions passed on which landed revision.
+replay_rec() { wg ticket show "$1" | jget '((d.evidence || []).filter(e => e.recorded_by_actor_type === "system" && (e.uri || "").startsWith("gaffer-tester-replayed:")).map(e => e.uri.slice(23) + " " + JSON.stringify(JSON.parse(e.payload_json || "{}").files || [])).join("\n"))' 2>/dev/null; }
+R5="$(replay_rec "$T5")"; R6="$(replay_rec "$T6")"
+P6="$(wg ticket show "$T6" | jget '((d.landing && d.landing.repos) || [])[0].sha')"
+S6="${R6%% *}"
+[ -n "$S6" ] && [ "$(git -C "$R" rev-parse "$S6^2" 2>/dev/null)" = "$P6" ] && git -C "$R" merge-base --is-ancestor "$S6" main \
+  && ok "E: #$T6's replay record names the landed revision (the gated merge of its tested commit, on main)" || fail "E: #$T6 record: '$R6' (pin $P6)"
+case "$R6" in *'["test/bb-label.test.js"]'*) ok "E: …and the tester test file that passed there" ;; *) fail "E: #$T6 record files: $R6" ;; esac
+case "$R5" in *' []') ok "E: a bound PASS with no tests on record still records its landed revision (no files)" ;; *) fail "E: #$T5 record: '$R5'" ;; esac
+[ -z "$(replay_rec "$T7")" ] && ok "E: a ticket outside the testing lane has no replay record" || fail "E: #$T7 has a replay record"
+[ -z "$(replay_rec "$T1")" ] && ok "A: a held replay records nothing" || fail "A: #$T1 has a replay record"
 MAIN1="$(git -C "$R" rev-parse main)"; TREE1="$(tree_of main)"
 git -C "$R" push -q origin main 2>/dev/null
 
@@ -170,9 +184,13 @@ merge_now "$T2"; rc=$?
 grep -q "TESTER REPLAY FAILED" "$WORK/mn.out" && grep -q "test/bb-label.test.js" "$WORK/mn.out" && ok "B: …saying the tester's replay failed, naming the file" || fail "B: output: $(tail -c 400 "$WORK/mn.out")"
 [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && [ "$(tree_of main)" = "$TREE1" ] && ok "B: main untouched (head and tree)" || fail "B: main moved"
 [ "$(st "$T2")" = blocked ] && case "$(hold_of "$T2")" in *tester_replay_red*) true ;; *) false ;; esac && ok "B: #$T2 held (blocked, tester_replay_red)" || fail "B: #$T2 status=$(st "$T2") hold=$(hold_of "$T2" | cut -c1-200)"
+[ -z "$(replay_rec "$T2")" ] && ok "B: a held replay records nothing" || fail "B: #$T2 has a replay record"
 approve "$T8"; tester_pass "$T8" "$NAME_TEST"
 merge_now "$T8"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(st "$T8")" = done ] && ok "B: Merge now lands #$T8 once the tester's assertion passes on the candidate" || fail "B: #$T8 rc=$rc status=$(st "$T8") $(tail -c 300 "$WORK/mn.out")"
+R8="$(replay_rec "$T8")"; S8="${R8%% *}"
+[ -n "$S8" ] && [ "$S8" = "$(git -C "$R" rev-parse main)" ] && case "$R8" in *'["test/bb-label.test.js"]'*) true ;; *) false ;; esac \
+  && ok "B: Merge now's replay record names the landed revision (main) and the tester's file" || fail "B: #$T8 record: '$R8' main=$(git -C "$R" rev-parse main)"
 MAIN1="$(git -C "$R" rev-parse main)"; TREE1="$(tree_of main)"; git -C "$R" push -q origin main 2>/dev/null
 
 echo "== C: PR mode (lib/land.sh) gates the fetched remote default and never asks GitHub =="

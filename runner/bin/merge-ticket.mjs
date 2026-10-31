@@ -1185,6 +1185,35 @@ function replayOnMergeCandidate({
   };
 }
 
+/** TESTER REPLAY: record which tester assertions passed on which landed revision (system). */
+function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via) {
+  const r = runDispatch([
+    "ticket",
+    "record-tester-replay",
+    String(ticketNumber),
+    "--commit",
+    String(landedSha),
+    "--pin",
+    String(pin),
+    "--files-json",
+    JSON.stringify(files || []),
+    "--via",
+    String(via || "local"),
+    ...(repoId ? ["--repo", String(repoId)] : []),
+    "--as",
+    "system",
+  ]);
+  if (r.error || r.status !== 0)
+    log(
+      `WARNING: #${ticketNumber} could not record the tester replay on ${String(landedSha).slice(0, 12)} ` +
+        `(${(r.stderr || "").trim().slice(0, 160)}) — the epic is not counted as accepted until it is`,
+    );
+  else
+    log(
+      `#${ticketNumber}: recorded the tester replay — ${(files || []).length} tester test file(s) passed on the landed revision ${String(landedSha).slice(0, 12)}`,
+    );
+}
+
 /**
  * COMPARE-AND-LAND the gated merge commit: only while the target still IS the gated
  * target head, and only as that exact commit. Mirrors lib/land.sh _gaffer_land_gated.
@@ -2121,6 +2150,7 @@ function main() {
   const gateDir = resolve(GAFFER_DATA, "worktrees", `merge-gate-${resolved.number}`);
   // TESTER REPLAY: the primary repo's gate also replays the tester's tests on the candidate.
   const testerReplay = { dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number };
+  let replayed = null; // { merge, files } of the gate whose candidate lands
   const holdRed = (gate) => {
     const h = holdMergeGateRed(resolved.number, gate, {
       branch,
@@ -2154,6 +2184,7 @@ function main() {
         testerReplay,
       });
       if (gate.kind === "red") return holdRed(gate);
+      if (gate.replay?.record) replayed = { merge: gate.merge, files: gate.replay.files };
       if (gate.kind === "error") {
         fail(
           `refusing to merge #${resolved.number}: the merge gate could not run (${gate.reason}); nothing merged, ticket stays ready_for_merge`,
@@ -2242,6 +2273,9 @@ function main() {
     }
     if (res.kind === "landed") {
       landed = { via: "local", gatedMerge: res.gate.merge, gatedTarget: res.gate.target };
+      replayed = res.gate.replay?.record
+        ? { merge: res.gate.merge, files: res.gate.replay.files }
+        : null;
       log(
         `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
       );
@@ -2263,6 +2297,16 @@ function main() {
     // human queue) with what did land recorded, so a retry lands only the rest.
     if (landed.via !== "earlier" && repo.id)
       recordLandingCli(resolved.number, repo.id, pin, landed.via);
+    // TESTER REPLAY: which tester assertions passed on which landed revision.
+    if (landed.via !== "earlier" && replayed)
+      recordTesterReplayCli(
+        resolved.number,
+        repo.id || null,
+        replayed.merge,
+        pin,
+        replayed.files,
+        landed.via === "pr" && !landed.fastForwarded ? "pr-stale" : landed.via,
+      );
     const others = landSecondaryRepos(resolved.number, repo.id);
     if (!others.ok) {
       emit(

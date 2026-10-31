@@ -105,6 +105,7 @@ import {
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
 import { writeAgentSettings } from "../lib/agent-home.mjs";
+import { isTestPath, testerTestFiles } from "../lib/tester-replay.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -615,13 +616,9 @@ export function linkNodeModules(repoPath, checkout) {
   return linked;
 }
 
-/** Paths a tester may legitimately create or change: tests and its own installed wiring. */
-export function isTestPath(p) {
-  const n = String(p).replace(/\\/g, "/").replace(/^\.\//, "");
-  if (/^(\.claude\/|CLAUDE\.factory\.md$|\.mcp\.json$)/.test(n)) return true;
-  if (/(^|\/)(test|tests|__tests__|spec|specs|e2e|fixtures?)(\/|$)/i.test(n)) return true;
-  return /\.(test|spec)\.[cm]?[jt]sx?$/i.test(n) || /(^|\/)test[-_.][^/]*$/i.test(n);
-}
+// The tester's test-file rule lives in lib/tester-replay.mjs, shared with the landing
+// paths that replay those files on the merge candidate (re-exported here for callers).
+export { isTestPath };
 
 /**
  * What the tester changed relative to the tested commit, split into implementation and
@@ -652,9 +649,7 @@ export function inspectTesterChanges(worktree, baseCommit) {
   return {
     ok: true,
     implementation: all.filter((p) => !isTestPath(p)),
-    tests: all.filter(
-      (p) => isTestPath(p) && !/^(\.claude\/|CLAUDE\.factory\.md$|\.mcp\.json$)/.test(p),
-    ),
+    tests: testerTestFiles(all),
   };
 }
 

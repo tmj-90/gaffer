@@ -2812,7 +2812,9 @@ async function openPalette() {
   input.value = "";
   input.focus();
   paletteAllItems = await buildPaletteSources();
-  renderPaletteList("");
+  // Filter by what is in the box NOW: someone who typed while the tickets loaded
+  // must not get the unfiltered list (Enter then opened Overview, not their ticket).
+  renderPaletteList(input.value);
 }
 function closePalette() {
   if (paletteEls) paletteEls.scrim.classList.remove("open");
@@ -2834,6 +2836,12 @@ function renderPaletteList(query) {
   paletteItems = paletteAllItems.filter((it) =>
     fuzzyMatch(query, it.label + " " + (it.hint || "")),
   );
+  // "#12" / "12" names a ticket: put that exact number first, ahead of fuzzy hits.
+  const num = /^\s*#?(\d+)\s*$/.exec(query);
+  if (num) {
+    const exact = paletteItems.findIndex((it) => it.label.startsWith(`#${num[1]} `));
+    if (exact > 0) paletteItems.unshift(...paletteItems.splice(exact, 1));
+  }
   paletteActive = 0;
   if (!paletteItems.length) {
     list.appendChild(el("div", { class: "palette-empty" }, "No matches."));
@@ -7340,7 +7348,9 @@ function pollWorkButton() {
             toast("Continuing the paused delivery…", { ok: true });
           } else if (p.review > 0) {
             toast("Running the reviewer agent on a ticket in Review…", { ok: true });
-          } else toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else if (p.testing > 0) {
+            toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else toast("Clarifying a draft (intake pass)…", { ok: true });
           router();
           // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
           // USD cap already reached) would otherwise read as "fired". Watch the run
@@ -9521,8 +9531,22 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
         el("b", {}, `${statusLabel(t.status)}. `),
         "Mark it ready when its criteria are right.",
       ];
-    case "cancelled":
-      return [el("b", {}, "Won't do. "), "It will not be built."];
+    case "cancelled": {
+      // Say WHY it will not be built: the reason the closer gave (the latest move into
+      // Won't do carries it), not only that it closed.
+      const closed = events
+        .filter((e) => e.event_type === "ticket.transitioned")
+        .map((e) => parseJsonSafe(e.payload_json) || {})
+        .filter((pl) => pl.to === "cancelled")
+        .pop();
+      const why = closed && typeof closed.reason === "string" ? closed.reason.trim() : "";
+      return [
+        el("b", {}, "Won't do. "),
+        why
+          ? [`It will not be built: `, el("q", { class: "lede-why" }, why), "."]
+          : "It will not be built.",
+      ];
+    }
     default:
       return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
   }
@@ -9858,6 +9882,21 @@ async function renderTicket(id) {
                 const box = el("div", { class: "policy-result fail" }, [
                   `Mark-ready failed: ${e.message}`,
                 ]);
+                // A policy refusal names its failed checks: say WHICH, not just "denied".
+                const failed = e.details?.policy?.failures;
+                if (Array.isArray(failed) && failed.length)
+                  box.appendChild(
+                    el(
+                      "ul",
+                      { class: "policy-failures" },
+                      failed.map((f) =>
+                        el("li", {}, [
+                          f.message || f.code,
+                          f.code ? el("span", { class: "toast-code" }, ` ${f.code}`) : null,
+                        ]),
+                      ),
+                    ),
+                  );
                 if (e.code) box.appendChild(el("div", { class: "toast-code" }, e.code));
                 policyBox.appendChild(box);
                 throw e;
@@ -20746,7 +20785,18 @@ async function freezeCreatedSpec() {
 function buildFromFrozenSpec() {
   const spec = specBuildState && specBuildState.createdSpec;
   if (!spec || spec.status !== "frozen") return;
-  const clauses = (Array.isArray(spec.clauses) ? spec.clauses : [])
+  // The server's spec row carries its clauses as `clauses_json` (a string); only a
+  // locally built object has a `clauses` array. Reading only the array made this
+  // button do nothing at all on a real spec.
+  let raw = spec.clauses;
+  if (!Array.isArray(raw)) {
+    try {
+      raw = JSON.parse(spec.clauses_json || "[]");
+    } catch {
+      raw = [];
+    }
+  }
+  const clauses = (Array.isArray(raw) ? raw : [])
     .filter((c) => c && c.clause_id && c.kind && c.text)
     .map((c) => ({
       clause_id: c.clause_id,

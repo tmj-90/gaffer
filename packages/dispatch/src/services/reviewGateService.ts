@@ -112,7 +112,8 @@ export interface ReviewGateServiceDeps {
   readonly evidence: EvidenceRepository;
   readonly transitions: TransitionService;
   readonly ticketSvc: TicketService;
-  readonly maxAttempts: number;
+  /** The reject cap, or a function answering it now (read per reject, never cached). */
+  readonly maxAttempts: number | (() => number);
   /** Per-instance override for the GAFFER_TESTING toggle (undefined = read env). */
   readonly testingEnabledOverride?: boolean | undefined;
   /** The agents table — lets the approve path verify an agent approver is REGISTERED. */
@@ -238,7 +239,10 @@ export class ReviewGateService {
   private readonly evidence: EvidenceRepository;
   private readonly transitions: TransitionService;
   private readonly ticketSvc: TicketService;
-  private readonly maxAttempts: number;
+  private readonly maxAttemptsOf: () => number;
+  private get maxAttempts(): number {
+    return this.maxAttemptsOf();
+  }
   private readonly testingEnabledOverride: boolean | undefined;
   private readonly agents: AgentRepository | undefined;
   private readonly requireRegisteredAgentApprover: boolean;
@@ -258,7 +262,8 @@ export class ReviewGateService {
     this.evidence = deps.evidence;
     this.transitions = deps.transitions;
     this.ticketSvc = deps.ticketSvc;
-    this.maxAttempts = deps.maxAttempts;
+    const cap = deps.maxAttempts;
+    this.maxAttemptsOf = typeof cap === "function" ? cap : () => cap;
     this.testingEnabledOverride = deps.testingEnabledOverride;
     this.agents = deps.agents;
     this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;

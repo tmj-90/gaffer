@@ -65,6 +65,7 @@ function stubFetch(): void {
           },
         };
       } else if (path === "/specs/spec-1/freeze") {
+        // The real server's row shape: clauses as a JSON string (clauses_json).
         body = {
           spec: {
             id: "spec-1",
@@ -72,7 +73,7 @@ function stubFetch(): void {
             title: "Checkout redesign",
             target_repo:
               (posts.find((p) => p.path === "/specs")?.body.target_repo as string) ?? null,
-            clauses: AUTHORED.spec.clauses,
+            clauses_json: JSON.stringify(AUTHORED.spec.clauses),
           },
         };
       } else if (path.startsWith("/specs")) body = { specs: [] };

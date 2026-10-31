@@ -66,6 +66,13 @@ rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" \
       "$GAFFER_DATA/.ci-gate-needs-pr-warned" "$GAFFER_DATA/.autonomy-policy-inert-warned" \
       "$GAFFER_DATA/.merge-config-half-warned"
 wg expire-claims >/dev/null 2>&1 || true   # reap any stale claim before polling
+# Sweep worktrees no live or paused delivery owns (a Stopped pause, a killed worker),
+# as loop.sh does at the start of every run: a factory driven only by this button
+# otherwise never reaps them. Never touches a claimed/in_progress/paused ticket's.
+if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
+  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+  [ -n "${_reclaimed// /}" ] && echo "gaffer poll: reclaimed orphaned worktree(s) for ticket(s): ${_reclaimed% }"
+fi
 
 # Run the ONE tick under the same outer wall-clock cap as loop.sh / worker.sh (sized
 # for the whole rework ladder) so a wedged dashboard-spawned tick is reaped, not left

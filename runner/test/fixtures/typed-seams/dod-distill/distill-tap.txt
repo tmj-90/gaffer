@@ -1,0 +1,5 @@
+not ok 2 - drops completed
+  location: '/r/test/a.test.js:7:1'
+    Expected values to be strictly equal:
+  expected: 1
+  actual: 0

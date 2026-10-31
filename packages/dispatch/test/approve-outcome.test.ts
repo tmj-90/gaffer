@@ -383,6 +383,27 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
     wg.db.close();
   });
 
+  it("required CI pending is held like the server holds it; the PASS for the head releases both", () => {
+    // The CI gate records `pending` when it starts polling the candidate, then pass/fail.
+    // approveReview refuses every result but a PASS, so the sign-off must not offer an
+    // approval while CI is pending (the button would only earn a POLICY_DENIED toast).
+    const wg = freshWg();
+    const { id } = inReview(wg);
+    wg.recordCiResult(id, { commit: "abc1234", state: "pending" }, { type: "system" });
+    const held = wg.approveOutcome(id, { mergeCommand: true });
+    expect(held.kind).toBe("held_ci");
+    expect(held.approvable).toBe(false);
+    expect(held.sentence).toContain("(pending)");
+    expect(() => wg.approveReview(id, human)).toThrow(/Required CI has not passed.*pending/);
+    expect(wg.view(id).ticket.status).toBe("in_review");
+    wg.recordCiResult(id, { commit: "abc1234", state: "pass" }, { type: "system" });
+    const open = wg.approveOutcome(id, { mergeCommand: true });
+    expect(open.kind).toBe("waits_for_merge");
+    expect(open.approvable).toBe(true);
+    expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+
   it("a multi-repo ticket with both checkouts: every repo lands, the primary first", () => {
     process.env.AUTO_MERGE = "1";
     const wg = freshWg();

@@ -8,7 +8,9 @@
 //   2. Delivery of #A with CI PENDING: the branch is pushed and `gh pr create` opens the
 //      PR (its URL lands on the ticket, the ticket page links it); the CI gate polls the
 //      PR's checks — and asks gh only for fields gh has.
-//   3. While CI is pending, Approve in Review must not advance the ticket to merge.
+//   3. While CI is pending, Approve in Review must not advance the ticket to merge: the
+//      server refuses an approval until the candidate's result is a PASS, and the
+//      sign-off says so first (a disabled 'Approve held: CI not passed').
 //   4. CI turns green; the approval goes through; Merge now lands #A THROUGH the PR:
 //      `gh pr merge <url> --merge --delete-branch --match-head-commit <head>`, the
 //      remote main gets the merge, the local main is fast-forwarded to it, the ticket is
@@ -157,10 +159,44 @@ export default async function s4b(t, L) {
   if (!stillPolling)
     t.note(`the CI gate had stopped polling before the approval attempt on #${a.number}`);
   await L.clearToast(p);
-  const early = await t.approve(a);
+  // The server refuses an approval until the candidate's CI result is a PASS (the
+  // gate records `pending` when it starts polling), and the sign-off says so before
+  // the click: a disabled 'Approve held: CI not passed'. Read what it says, then
+  // prove the server holds it too (an approve POST is refused, POLICY_DENIED).
+  await t.visit(`review/${a.id}`, { label: "review/:id" });
+  const kind = await L.maybe(
+    async () =>
+      (await p
+        .locator(".signoff .signoff-next:not([hidden])")
+        .first()
+        .getAttribute("data-outcome")
+        .catch(() => null)) || null,
+    "the sign-off's outcome",
+    30000,
+    500,
+  );
+  const signoff = p.locator(".signoff button.signoff-btn").first();
+  if (kind === "held_ci") {
+    const label = (await signoff.getAttribute("aria-label").catch(() => "")) || "";
+    const disabled = await signoff.isDisabled().catch(() => false);
+    const refused = await L.api("POST", `/tickets/${a.id}/review/approve`, {});
+    const held = (await L.ticketOf(a.id)).status;
+    t.check(
+      disabled &&
+        /^Approve held: CI not passed$/.test(label) &&
+        refused.status >= 400 &&
+        refused.json?.error?.code === "POLICY_DENIED" &&
+        held === "in_review",
+      `with required CI pending, the sign-off reads '${label}' (disabled) and the server refuses the approval (${refused.status} ${refused.json?.error?.code}): #${a.number} stays in review`,
+      `CI pending on #${a.number}: button '${label}' disabled=${disabled}; approve POST ${refused.status} ${JSON.stringify(refused.json).slice(0, 200)}; status '${held}'`,
+    );
+  }
+  const early = kind === "held_ci" ? null : await t.approve(a);
   const afterEarly = (await L.ticketOf(a.id)).status;
   const earlyToast = await L.toasts(p);
-  if (afterEarly === "in_review")
+  if (kind === "held_ci") {
+    /* checked above */
+  } else if (afterEarly === "in_review")
     t.ok(
       `with required CI pending, Approve left #${a.number} in review (not ready_for_merge)${earlyToast ? ` — "${earlyToast.slice(0, 120)}"` : ""}`,
     );
@@ -182,7 +218,7 @@ export default async function s4b(t, L) {
     t.check(
       g?.status === "ready_for_merge",
       `with CI green, Approve moved #${a.number} on (ready_for_merge)`,
-      `approval after green CI: '${g?.status ?? (await L.ticketOf(a.id)).status}'`,
+      `approval after green CI: '${g?.status ?? (await L.ticketOf(a.id)).status}'${g?.held ? ` (the sign-off still reads '${g.held}')` : ""}`,
     );
   } else if (st === "refining")
     t.note(
@@ -270,7 +306,9 @@ export default async function s4b(t, L) {
     t.ok(`#${b.number} delivered on green CI and waits in review`);
     const bApproved = await t.approve(b);
     if (bApproved?.status !== "ready_for_merge")
-      t.bad(`approving #${b.number} on green CI: '${bApproved?.status}'`);
+      t.bad(
+        `approving #${b.number} on green CI: '${bApproved?.status}'${bApproved?.held ? ` (the sign-off reads '${bApproved.held}')` : ""}`,
+      );
     else {
       const bRow = await L.ticketOf(b.id);
       ci("fail");

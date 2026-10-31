@@ -2767,11 +2767,14 @@ async function buildPaletteSources() {
   } catch {
     // Palette still works for navigation if the list call fails.
   }
-  const ticketItems = tickets.slice(0, 60).map((t) => ({
+  // Every ticket is a "#N" lookup target; only the first 60 join the fuzzy list.
+  const ticketItems = tickets.map((t, i) => ({
     group: "Tickets",
     label: `${t.number != null ? `#${t.number} ` : ""}${t.title}`,
     hint: statusLabel(t.status),
     icon: "ticket",
+    number: t.number != null ? String(t.number) : null,
+    lookupOnly: i >= 60,
     run: () => navigate(`#/ticket/${t.id}`),
   }));
   return [...base, ...ticketItems];
@@ -2830,18 +2833,43 @@ function fuzzyMatch(query, text) {
   }
   return t.includes(q);
 }
+/**
+ * The palette's matches for a query. A leading "#" is a ticket lookup, not a fuzzy
+ * search: "#7" lists ticket #7 and then the numbers that start with 7 (#70, #71…),
+ * never #17 or a label that merely holds a 7; "#login" searches ticket titles only.
+ * Anything else is the loose subsequence match, with a bare "12" still ranking
+ * ticket #12 first.
+ */
+function paletteMatches(items, query) {
+  const hash = /^\s*#\s*(.*?)\s*$/.exec(query);
+  if (hash) {
+    const rest = hash[1];
+    const tickets = items.filter((it) => it.group === "Tickets");
+    if (/^\d+$/.test(rest)) {
+      const hits = tickets.filter((it) => it.number != null && it.number.startsWith(rest));
+      return hits.sort(
+        (a, b) =>
+          Number(b.number === rest) - Number(a.number === rest) ||
+          Number(a.number) - Number(b.number),
+      );
+    }
+    return tickets.filter((it) => !it.lookupOnly && fuzzyMatch(rest, it.label));
+  }
+  const out = items.filter(
+    (it) => !it.lookupOnly && fuzzyMatch(query, it.label + " " + (it.hint || "")),
+  );
+  // "12" names a ticket: put that exact number first, ahead of fuzzy hits.
+  const num = /^\s*(\d+)\s*$/.exec(query);
+  if (num) {
+    const exact = out.findIndex((it) => it.number === num[1]);
+    if (exact > 0) out.unshift(...out.splice(exact, 1));
+  }
+  return out;
+}
 function renderPaletteList(query) {
   const { list } = ensurePalette();
   clear(list);
-  paletteItems = paletteAllItems.filter((it) =>
-    fuzzyMatch(query, it.label + " " + (it.hint || "")),
-  );
-  // "#12" / "12" names a ticket: put that exact number first, ahead of fuzzy hits.
-  const num = /^\s*#?(\d+)\s*$/.exec(query);
-  if (num) {
-    const exact = paletteItems.findIndex((it) => it.label.startsWith(`#${num[1]} `));
-    if (exact > 0) paletteItems.unshift(...paletteItems.splice(exact, 1));
-  }
+  paletteItems = paletteMatches(paletteAllItems, query);
   paletteActive = 0;
   if (!paletteItems.length) {
     list.appendChild(el("div", { class: "palette-empty" }, "No matches."));

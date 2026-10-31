@@ -46,20 +46,91 @@ _gaffer_skills_mount_key() {
 _GSM_COPY_MARK=".gaffer-mount"
 _GSM_ROOT_MARK=".gaffer-skills-root"
 
-# Remove every Gaffer-installed skill copy from <skills_dir> (only dirs carrying the
-# copy marker; a repo's own skill never does) and, when Gaffer created the dir, the
+# A skill name is ONE plain path component (`java-conventions`): never empty, `.`/`..`,
+# a dotfile (the markers) or anything holding a slash — so `$SKILLS_DIR/<name>` and
+# `.claude/skills/<name>` can never point anywhere else.
+_gsm_valid_name() {
+  case "${1:-}" in ""|.*|*/*) return 1 ;; esac
+  return 0
+}
+
+# The top-level entries under <skills_dir> that git TRACKS (one per line). A tracked
+# entry is the repo's own, whatever it holds: Gaffer's copies are never committed (the
+# worktree's git exclude covers `.claude/`), so a repo that commits a dir carrying
+# Gaffer's marker cannot make Gaffer replace or delete it. Empty outside a git repo.
+_gsm_tracked_entries() {
+  git -C "$1" ls-files 2>/dev/null | sed 's#/.*##' | sort -u
+}
+
+# _gsm_is_our_copy <skills_dir> <name> <tracked-entries> — is <name> a copy Gaffer
+# installed: a real dir carrying the copy marker (a regular file), not tracked by git.
+_gsm_is_our_copy() {
+  local d="$1/$2"
+  [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/$_GSM_COPY_MARK" ] && [ ! -L "$d/$_GSM_COPY_MARK" ] || return 1
+  [ -n "${3:-}" ] && grep -qxF -- "$2" <<<"$3" && return 1
+  return 0
+}
+
+# Remove every Gaffer-installed skill copy from <skills_dir> (see _gsm_is_our_copy; a
+# repo's own skill never qualifies, marker or not) and, when Gaffer created the dir, the
 # dir itself once empty.
 _gsm_remove_copies() {
-  local skills="$1" d
+  local skills="$1" d tracked
   [ -d "$skills" ] && [ ! -L "$skills" ] || return 0
+  tracked="$(_gsm_tracked_entries "$skills")"
   for d in "$skills"/*; do
-    [ -d "$d" ] && [ ! -L "$d" ] && [ -f "$d/$_GSM_COPY_MARK" ] || continue
+    _gsm_is_our_copy "$skills" "$(basename "$d")" "$tracked" || continue
     rm -rf "${d:?}" 2>/dev/null || true
   done
   if [ -f "$skills/$_GSM_ROOT_MARK" ]; then
     rm -f "$skills/$_GSM_ROOT_MARK" 2>/dev/null || true
     rmdir "$skills" 2>/dev/null || true             # no-op while anything else is in it
   fi
+  return 0
+}
+
+# The paths (relative to <src>, one per line) inside library skill <src> that resolve
+# OUTSIDE the library <lib> or nowhere (dangling). A copy dereferences links, so a link
+# out of the library would carry a host file into the agent's worktree, where the hook's
+# read check (which refused it through the old symlink mount) no longer sees it leave:
+# such paths are dropped from the copy, as skill-add drops a fetched skill's links.
+# Only paths under a symlink can resolve out, so a skill with no link costs one `find`.
+_gsm_links_out() {
+  local src="$1" lib="$2"
+  [ -n "$(find "$src" -type l 2>/dev/null)" ] || return 0
+  find -L "$src" 2>/dev/null | node -e '
+    const { realpathSync } = require("fs");
+    const [src, lib] = process.argv.slice(1);
+    const inside = (p) => p === lib || p.startsWith(lib + "/");
+    let d = "";
+    process.stdin.on("data", (c) => (d += c)).on("end", () => {
+      for (const p of d.split("\n").filter(Boolean)) {
+        let real = "";
+        try { real = realpathSync(p); } catch { real = ""; }
+        if (!real || !inside(real)) process.stdout.write(p.slice(src.length + 1) + "\n");
+      }
+    });' "$src" "$lib" 2>/dev/null || printf '%s\n' "SKILL.md"   # cannot check: install nothing
+  # find -L reports a dangling link as itself; it is listed above (realpath fails).
+}
+
+# _gsm_copy_skill <name> <dest> — copy library skill <name> to <dest> as real files,
+# without any path that resolves outside the library; fails (nothing left at <dest>)
+# when the copy has no regular SKILL.md.
+_gsm_copy_skill() {
+  local name="$1" dest="$2" lib src out rel
+  lib="$(cd "$SKILLS_DIR" 2>/dev/null && pwd -P)" || return 1
+  src="$(cd "$SKILLS_DIR/$name" 2>/dev/null && pwd -P)" || return 1
+  case "$src" in "$lib"/*) ;; *) return 1 ;; esac      # a skill dir linked in from elsewhere
+  out="$(_gsm_links_out "$src" "$lib")"
+  if [ -z "$out" ]; then
+    cp -RL "$src" "$dest" 2>/dev/null || { rm -rf "$dest" 2>/dev/null; return 1; }
+  else
+    cp -RL "$src" "$dest" 2>/dev/null || true          # a dangling link fails cp; dropped below
+    while IFS= read -r rel; do
+      [ -n "$rel" ] && rm -rf "${dest:?}/$rel" 2>/dev/null
+    done <<<"$out"
+  fi
+  [ -f "$dest/SKILL.md" ] && [ ! -L "$dest/SKILL.md" ] || { rm -rf "$dest" 2>/dev/null; return 1; }
   return 0
 }
 
@@ -119,7 +190,7 @@ gaffer_skills_mount() {
   local names name list="" count=0
   names="$(printf '%s %s' "$(printf '%s' "$selected" | tr ',\n' '  ')" "$GAFFER_UNIVERSAL_SKILLS")"
   for name in $names; do
-    [ -n "$name" ] || continue
+    _gsm_valid_name "$name" || continue
     case " $list " in *" $name "*) continue ;; esac
     if [ -d "$SKILLS_DIR/$name" ] && [ -f "$SKILLS_DIR/$name/SKILL.md" ]; then
       list="$list $name"; count=$((count + 1))
@@ -129,7 +200,7 @@ gaffer_skills_mount() {
   if [ "$count" -eq 0 ]; then
     for name in "$SKILLS_DIR"/*/; do
       name="$(basename "$name")"
-      [ -f "$SKILLS_DIR/$name/SKILL.md" ] && list="$list $name"
+      _gsm_valid_name "$name" && [ -f "$SKILLS_DIR/$name/SKILL.md" ] && list="$list $name"
     done
   fi
 
@@ -153,7 +224,7 @@ gaffer_skills_mount() {
     # Never overwrite what is there: a repo skill of the same name WINS (the prompt says
     # so — gaffer_skills_note), and it is not in the manifest (Gaffer did not mount it).
     [ -e "$skills/$name" ] || [ -L "$skills/$name" ] && continue
-    cp -RL "$SKILLS_DIR/$name" "$skills/$name" 2>/dev/null || { rm -rf "${skills:?}/$name" 2>/dev/null; continue; }
+    _gsm_copy_skill "$name" "$skills/$name" || continue
     printf '%s\n' "$key" > "$skills/$name/$_GSM_COPY_MARK" 2>/dev/null || true
     [ -n "$mount" ] && ln -sfn "$SKILLS_DIR/$name" "$mount/$name" 2>/dev/null
   done
@@ -164,12 +235,13 @@ gaffer_skills_mount() {
 # skills the dest's OWN `.claude/skills` already holds (no Gaffer marker): the repo's
 # skill of that name wins over Gaffer's pack. Space-separated, sorted; empty when none.
 gaffer_skills_shadowed() {
-  local dest="${1:-}" selected="${2:-}" skills name out=""
+  local dest="${1:-}" selected="${2:-}" skills name out="" tracked
   skills="$dest/.claude/skills"
   [ -n "$dest" ] && [ -d "$skills" ] && [ -d "${SKILLS_DIR:-}" ] || return 0
+  tracked="$(_gsm_tracked_entries "$skills")"
   for name in $(printf '%s %s' "$(printf '%s' "$selected" | tr ',\n' '  ')" "$GAFFER_UNIVERSAL_SKILLS"); do
-    [ -f "$SKILLS_DIR/$name/SKILL.md" ] || continue
-    [ -e "$skills/$name" ] && [ ! -f "$skills/$name/$_GSM_COPY_MARK" ] || continue
+    _gsm_valid_name "$name" && [ -f "$SKILLS_DIR/$name/SKILL.md" ] || continue
+    { [ -e "$skills/$name" ] || [ -L "$skills/$name" ]; } && ! _gsm_is_our_copy "$skills" "$name" "$tracked" || continue
     case " $out " in *" $name "*) continue ;; esac
     out="$out $name"
   done
@@ -210,8 +282,9 @@ gaffer_skills_unmount() {
     rm -f "$link" 2>/dev/null || true
     ours=1
   elif [ -d "$link" ] && [ ! -L "$link" ]; then
-    local d
-    for d in "$link"/*; do [ -f "$d/$_GSM_COPY_MARK" ] && ours=1 && break; done
+    local d tracked
+    tracked="$(_gsm_tracked_entries "$link")"
+    for d in "$link"/*; do _gsm_is_our_copy "$link" "$(basename "$d")" "$tracked" && ours=1 && break; done
     [ -f "$link/$_GSM_ROOT_MARK" ] && ours=1
     _gsm_remove_copies "$link"
   fi

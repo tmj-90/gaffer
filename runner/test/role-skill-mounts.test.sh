@@ -203,6 +203,79 @@ for w in at-name repo-wins own-kept installed=java-conventions+run-tests note te
 done
 [ -z "$(git -C "$JWT" status --porcelain --untracked-files=no 2>/dev/null)" ] && ok "4e: no tracked change in the repo" || fail "4e: git status: $(git -C "$JWT" status --porcelain | paste -sd'|' -)"
 
+echo "== 4f: a hostile repo / library cannot steer the copy step or the teardown =="
+# A repo that COMMITS Gaffer's copy marker inside its own skill, a repo whose skill entry
+# is a dangling symlink out of the worktree, a skill name that is not one path component,
+# and a library skill holding a symlink out of the library.
+HOS="$WORK/hostile-repo"; mkdir -p "$HOS/.claude/skills/run-tests" "$HOS/.claude/skills/minimalism"
+printf -- '---\nname: run-tests\ndescription: the repo own test rules\n---\nREPO-RUN-TESTS\n' > "$HOS/.claude/skills/run-tests/SKILL.md"
+printf 'delivery-12\n' > "$HOS/.claude/skills/run-tests/.gaffer-mount"     # a spoofed marker
+printf -- '---\nname: minimalism\ndescription: repo\n---\nREPO-MIN\n' > "$HOS/.claude/skills/minimalism/SKILL.md"
+printf '\n' > "$HOS/.claude/skills/minimalism/.gaffer-mount"
+ln -s "$WORK/outside-target/java-conventions" "$HOS/.claude/skills/java-conventions"   # dangling, out of the repo
+( cd "$HOS" && git init -q -b main && git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+HWT="$WORK/hostile-wt"; git -C "$HOS" worktree add -q --detach "$HWT" HEAD
+gaffer_exclude_runner_config "$HWT"
+HSK="$HWT/.claude/skills"
+gaffer_skills_mount "$HWT" "java-conventions, run-tests" "delivery-12"
+grep -qx REPO-RUN-TESTS "$HSK/run-tests/SKILL.md" && grep -qx REPO-MIN "$HSK/minimalism/SKILL.md" \
+  && ok "4f: a repo skill carrying a copied marker is not replaced at mount" || fail "4f: the repo's marked skill was replaced ($(head -3 "$HSK/run-tests/SKILL.md" 2>/dev/null | paste -sd'|' -))"
+[ -L "$HSK/java-conventions" ] && [ ! -e "$WORK/outside-target" ] \
+  && ok "4f: a repo's dangling skill link is left as it is, nothing written through it" || fail "4f: dangling link: $(ls -la "$HSK" | paste -sd'|' -); outside: $(find "$WORK/outside-target" 2>/dev/null | paste -sd, -)"
+case "$(gaffer_skills_shadowed "$HWT" "java-conventions, run-tests")" in
+  *run-tests*) ok "4f: the marked repo skill is reported as the repo's (the prompt says it wins)" ;;
+  *) fail "4f: shadowed: '$(gaffer_skills_shadowed "$HWT" "java-conventions, run-tests")'" ;;
+esac
+gaffer_skills_mount_cleanup "delivery-12" "$HWT"
+grep -qx REPO-RUN-TESTS "$HSK/run-tests/SKILL.md" 2>/dev/null && grep -qx REPO-MIN "$HSK/minimalism/SKILL.md" 2>/dev/null && [ -L "$HSK/java-conventions" ] \
+  && ok "4f: teardown never deletes a repo's skill, marker or not" || fail "4f: teardown removed repo skills: $(ls -A "$HSK" 2>/dev/null | paste -sd, -)"
+[ -z "$(git -C "$HWT" status --porcelain 2>/dev/null)" ] && ok "4f: git status clean after mount + teardown" || fail "4f: git status: $(git -C "$HWT" status --porcelain | paste -sd'|' -)"
+# a name that is not one path component never reaches cp
+mkdir -p "$WORK/lib2/skills/run-tests" "$WORK/escape"; printf -- '---\nname: x\n---\n' > "$WORK/lib2/skills/run-tests/SKILL.md"
+printf -- '---\nname: escape\n---\nESCAPE\n' > "$WORK/escape/SKILL.md"
+ESC="$WORK/esc-repo"; mkdir -p "$ESC"
+SKILLS_DIR="$WORK/lib2/skills" GAFFER_UNIVERSAL_SKILLS="" gaffer_skills_mount "$ESC" "../../escape, run-tests" "delivery-13"
+[ ! -e "$ESC/escape" ] && [ ! -e "$GAFFER_DATA/escape" ] && [ -f "$ESC/.claude/skills/run-tests/SKILL.md" ] \
+  && ok "4f: a '../' skill name is never installed (nothing lands outside .claude/skills)" || fail "4f: escape: $(find "$ESC" "$GAFFER_DATA/escape" 2>/dev/null | paste -sd, -)"
+# a library skill with a link OUT of the library: the linked content is not copied in
+mkdir -p "$WORK/lib3/skills/leaky" "$WORK/secret-place"; printf 'TOP-SECRET\n' > "$WORK/secret-place/notes.txt"
+printf -- '---\nname: leaky\n---\nLEAKY\n' > "$WORK/lib3/skills/leaky/SKILL.md"
+ln -s "$WORK/secret-place/notes.txt" "$WORK/lib3/skills/leaky/reference.md"
+mkdir -p "$WORK/lib3/skills/linked"; ln -s "$WORK/secret-place/notes.txt" "$WORK/lib3/skills/linked/SKILL.md"
+LK="$WORK/leak-repo"; mkdir -p "$LK"
+SKILLS_DIR="$WORK/lib3/skills" GAFFER_UNIVERSAL_SKILLS="" gaffer_skills_mount "$LK" "leaky, linked" "delivery-14"
+[ -f "$LK/.claude/skills/leaky/SKILL.md" ] && ! grep -rqs TOP-SECRET "$LK/.claude/skills" \
+  && ok "4f: a library link out of the library is not copied (reads stay as narrow as before)" || fail "4f: leaked: $(grep -rls TOP-SECRET "$LK/.claude/skills" | paste -sd, -)"
+[ ! -e "$LK/.claude/skills/linked" ] && ok "4f: a skill whose SKILL.md links out of the library is not installed" || fail "4f: linked skill installed"
+
+echo "== 4g: the JS installer under the same hostile repo =="
+JHW="$WORK/hostile-wt-js"; git -C "$HOS" worktree add -q --detach "$JHW" HEAD
+mkdir -p "$WORK/lib4/skills"; cp -R "$RUNNER_DIR/skills/run-tests" "$RUNNER_DIR/skills/java-conventions" "$WORK/lib4/skills/"
+cp -R "$WORK/lib3/skills/leaky" "$WORK/lib3/skills/linked" "$WORK/lib4/skills/"
+JHOUT="$(cd "$WORK" && bound 60 node --input-type=module -e "
+import { installSkillCopies, removeSkillCopies, shadowedSkills } from '$RUNNER_DIR/lib/agent-home.mjs';
+import { existsSync, lstatSync, readFileSync, readdirSync } from 'node:fs';
+const c = '$JHW/.claude', sk = c + '/skills';
+const got = installSkillCopies(c, ['java-conventions', 'run-tests', 'leaky', 'linked', '../../escape'], { skillsDir: '$WORK/lib4/skills', key: 'tester-12' });
+const out = [];
+const rd = (p) => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
+const isLink = (p) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+out.push(isLink(sk + '/java-conventions') && !existsSync('$WORK/outside-target') ? 'dangling-kept' : 'dangling-lost');
+out.push(rd(sk + '/run-tests/SKILL.md').includes('REPO-RUN-TESTS') ? 'marked-kept' : 'marked-replaced');
+out.push(shadowedSkills(c, ['java-conventions', 'run-tests']).join('+') === 'java-conventions+run-tests' ? 'shadowed-ok' : 'shadowed=' + shadowedSkills(c, ['java-conventions', 'run-tests']).join('+'));
+out.push(existsSync(sk + '/leaky/SKILL.md') && !existsSync(sk + '/leaky/reference.md') ? 'leak-dropped' : 'leak-copied');
+out.push(!existsSync(sk + '/linked') ? 'linked-skipped' : 'linked-installed');
+out.push(!existsSync('$JHW/escape') ? 'no-escape' : 'escaped');
+out.push('installed=' + got.join('+'));
+removeSkillCopies(sk);
+out.push(rd(sk + '/run-tests/SKILL.md').includes('REPO-RUN-TESTS') && rd(sk + '/minimalism/SKILL.md').includes('REPO-MIN') && isLink(sk + '/java-conventions') ? 'teardown-kept' : 'teardown-deleted');
+console.log(out.join(' '));
+" 2>&1)"
+for w in dangling-kept marked-kept shadowed-ok leak-dropped linked-skipped no-escape installed=leaky teardown-kept; do
+  case " $JHOUT " in *" $w "*) ok "4g: $w" ;; *) fail "4g: expected $w ($JHOUT)" ;; esac
+done
+[ -z "$(git -C "$JHW" status --porcelain --untracked-files=no 2>/dev/null)" ] && ok "4g: no tracked change in the repo" || fail "4g: git status: $(git -C "$JHW" status --porcelain | paste -sd'|' -)"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

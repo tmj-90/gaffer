@@ -31,11 +31,13 @@ import {
   readdirSync,
   readFileSync,
   readlinkSync,
+  realpathSync,
   rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -64,13 +66,82 @@ function isDir(p) {
   }
 }
 
-/** Remove the Gaffer-installed copies from `skillsPath` (dirs carrying SKILL_COPY_MARK). */
+/** Does `p` exist as a directory entry at all (a dangling symlink included)? */
+function lexists(p) {
+  try {
+    lstatSync(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A skill name is ONE plain path component: never empty, a dotfile, `..`, or a path. */
+function validSkillName(name) {
+  return typeof name === "string" && name !== "" && !name.startsWith(".") && !/[/\\]/.test(name);
+}
+
+/**
+ * The top-level entries of `skillsPath` that git TRACKS. A tracked entry is the repo's
+ * own whatever it holds: Gaffer's copies are never committed (the worktree's git exclude
+ * covers `.claude/`), so a repo that commits Gaffer's marker cannot make Gaffer replace
+ * or delete its skill. Empty outside a git repo.
+ */
+function trackedEntries(skillsPath) {
+  const r = spawnSync("git", ["-C", skillsPath, "ls-files"], { encoding: "utf8" });
+  if (r.status !== 0 || r.error) return new Set();
+  return new Set(
+    String(r.stdout || "")
+      .split("\n")
+      .filter(Boolean)
+      .map((l) => l.split("/")[0]),
+  );
+}
+
+/** Is `<skillsPath>/<name>` a copy Gaffer installed (marked real dir, not tracked)? */
+function isOurCopy(skillsPath, name, tracked) {
+  const d = resolve(skillsPath, name);
+  if (!isDir(d) || tracked.has(name)) return false;
+  try {
+    return lstatSync(resolve(d, SKILL_COPY_MARK)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy library skill `name` to `dest` as real files, leaving out every path that resolves
+ * OUTSIDE the library (or nowhere): a dereferenced link out of the library would carry a
+ * host file into the agent's worktree, where the hook's read check no longer sees it
+ * leave (skill-add drops a fetched skill's links for the same reason). Throws when the
+ * copy holds no regular SKILL.md.
+ */
+function copySkill(skillsDir, name, dest) {
+  const lib = realpathSync(skillsDir);
+  const inside = (p) => p === lib || p.startsWith(lib + "/");
+  const src = realpathSync(resolve(skillsDir, name));
+  if (!inside(src) || src === lib) throw new Error(`skill ${name} resolves outside the library`);
+  cpSync(src, dest, {
+    recursive: true,
+    dereference: true,
+    filter: (p) => {
+      try {
+        return inside(realpathSync(p));
+      } catch {
+        return false; // dangling
+      }
+    },
+  });
+  if (!lstatSync(resolve(dest, "SKILL.md")).isFile()) throw new Error(`skill ${name}: no SKILL.md`);
+}
+
+/** Remove the Gaffer-installed copies from `skillsPath` (see isOurCopy; never a repo skill). */
 export function removeSkillCopies(skillsPath) {
   if (!isDir(skillsPath)) return;
+  const tracked = trackedEntries(skillsPath);
   for (const name of readdirSync(skillsPath)) {
-    const d = resolve(skillsPath, name);
-    if (isDir(d) && existsSync(resolve(d, SKILL_COPY_MARK))) {
-      rmSync(d, { recursive: true, force: true });
+    if (isOurCopy(skillsPath, name, tracked)) {
+      rmSync(resolve(skillsPath, name), { recursive: true, force: true });
     }
   }
   if (existsSync(resolve(skillsPath, SKILL_ROOT_MARK))) {
@@ -113,10 +184,13 @@ export function installSkillCopies(
     } catch {
       target = "";
     }
+    // Gaffer's links pointed at the library, at a home's own manifest
+    // (`<claudeDir>/skills-mount`) or at a factory manifest (`…/skills-mounts/<key>`).
     const ours =
       target === resolve(skillsDir) ||
       target.startsWith(resolve(skillsDir) + "/") ||
-      /\/skills-mounts?(\/|$)/.test(target);
+      target === resolve(claudeDir, "skills-mount") ||
+      /\/skills-mounts\/[^/]+$/.test(target);
     if (!ours) return [];
     rmSync(link, { force: true });
   } else if (st && !st.isDirectory()) {
@@ -136,11 +210,13 @@ export function installSkillCopies(
   }
   const installed = [];
   for (const name of names) {
+    if (!validSkillName(name)) continue;
     const dest = resolve(link, name);
-    // A repo skill of the same name WINS (see shadowedSkills); never overwritten.
-    if (existsSync(dest) || installed.includes(name)) continue;
+    // A repo skill of the same name WINS (see shadowedSkills); never overwritten — nor a
+    // dangling link the repo keeps there (existsSync would follow it and call it absent).
+    if (lexists(dest) || installed.includes(name)) continue;
     try {
-      cpSync(resolve(skillsDir, name), dest, { recursive: true, dereference: true });
+      copySkill(skillsDir, name, dest);
       writeFileSync(resolve(dest, SKILL_COPY_MARK), `${key}\n`);
       if (manifestDir) symlinkSync(resolve(skillsDir, name), resolve(manifestDir, name), "dir");
       installed.push(name);
@@ -157,8 +233,10 @@ export function installSkillCopies(
  */
 export function shadowedSkills(claudeDir, names) {
   const link = resolve(claudeDir, "skills");
+  if (!isDir(link)) return [];
+  const tracked = trackedEntries(link);
   return [...new Set(names)]
-    .filter((n) => existsSync(resolve(link, n)) && !existsSync(resolve(link, n, SKILL_COPY_MARK)))
+    .filter((n) => validSkillName(n) && lexists(resolve(link, n)) && !isOurCopy(link, n, tracked))
     .sort();
 }
 

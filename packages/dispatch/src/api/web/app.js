@@ -6116,7 +6116,8 @@ async function fitnessRoomPanels(healthRes) {
   const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
   // Flow efficiency is SERVER-ONLY: the median (time an agent worked the ticket /
   // lead time) over shipped tickets, from the transition log (src/health/deliveryFlow.ts).
-  // Review, testing, the merge queue and holds are waiting, served as `waiting`. There
+  // Review, testing, the merge queue, send-backs and holds are waiting, served as
+  // `waiting`; time before work began is the backlog. There
   // is no client fallback: the old one was a WIP ratio (done / done + in flight) that
   // read 100% for a single shipped ticket however long it had waited to merge.
   const flowEffServer = health.flow_efficiency || {};
@@ -6140,13 +6141,14 @@ async function fitnessRoomPanels(healthRes) {
               : null,
           ),
           waitRow("In review or testing", waiting.review_ms),
+          waitRow("Sent back, waiting for rework", waiting.requeued_ms),
           waitRow("Blocked or paused", waiting.held_ms),
           waitRow("Before work started", waiting.backlog_ms),
           el("div", {}, [
             el("dt", {}, "Queued after work began"),
             el("dd", { class: "tabnum" }, [
               waiting.queue_pct != null ? `${Math.round(waiting.queue_pct)}%` : "—",
-              el("small", {}, "of lead time: review, merge queue, holds"),
+              el("small", {}, "of lead time: review, merge queue, send-backs, holds"),
             ]),
           ]),
         ])

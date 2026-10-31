@@ -980,7 +980,10 @@ try {
     const waitRows = await page
       .$$eval(".form-guide .fg-wait dt", (els) => els.map((e) => e.textContent.trim()))
       .catch(() => []);
-    waitRows.includes("Waiting to merge") && waitRows.includes("In review or testing")
+    waitRows.includes("Waiting to merge") &&
+    waitRows.includes("In review or testing") &&
+    waitRows.includes("Sent back, waiting for rework") &&
+    waitRows.includes("Before work started")
       ? ok(`health: waiting is shown on its own (${waitRows.join(", ")})`)
       : bad(`health: no waiting breakdown (rows: ${waitRows.join(", ") || "none"})`);
     await shot(page, "health-flow");

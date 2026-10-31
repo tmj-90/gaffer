@@ -28,9 +28,20 @@
  *                       signal — never a fake 0.
  *   - waiting         = the rest of the lead time, split by what it was waiting on:
  *                       review (`in_review` / `in_testing`), the merge queue
- *                       (`ready_for_merge`), held (`blocked` / `paused`) and the
- *                       backlog before work started (draft / refining / ready). The
- *                       QUEUE share is review + merge + held over lead time.
+ *                       (`ready_for_merge`), held (`blocked` / `paused`), sent back
+ *                       (draft / refining / ready AFTER work began: a reviewer's or
+ *                       tester's send-back waiting for a human to refine it or the
+ *                       runner to re-claim it) and the backlog before work started
+ *                       (draft / refining / ready before work began). The QUEUE share
+ *                       is review + merge + held + sent back over lead time.
+ *
+ * "Work began" is the first transition into a working, review or merge state
+ * (`claimed`, `in_progress`, `in_review`, `in_testing`, `ready_for_merge`). All time
+ * before it is backlog, including a hold (a draft blocked on a dependency has not
+ * started). After it, draft / refining / ready mean the ticket was sent back and is
+ * queued for rework, so that time counts as queued after work began rather than as
+ * time "before work started". The four parts partition lead time: work, queued after
+ * work began, and backlog before it.
  *
  * Why review and the merge queue are WAITING, not work (third external review): a
  * ticket that took 11 minutes to reach merge-ready and then sat there for a week read
@@ -68,8 +79,13 @@ export interface FlowWaitMs {
   review: number;
   /** Approved and waiting to merge (`ready_for_merge`). */
   merge: number;
-  /** Blocked or paused. */
+  /** Blocked or paused after work began (a hold before it is backlog). */
   held: number;
+  /**
+   * Back in draft / refining / ready after work began: sent back by a reviewer or
+   * tester (or reset) and waiting for a human to refine it or the runner to re-claim it.
+   */
+  requeued: number;
 }
 
 /** The authoritative cycle-time + throughput + flow-efficiency read model. */
@@ -104,9 +120,12 @@ export interface DeliveryFlow {
    */
   waiting: {
     sample: number;
-    /** Median share of lead time queued after work began (review + merge + held), 0..100. */
+    /**
+     * Median share of lead time queued after work began (review + merge + held + sent
+     * back), 0..100.
+     */
     queue_pct: number | null;
-    /** Median queued time (review + merge + held), ms. */
+    /** Median queued time (review + merge + held + sent back), ms. */
     queue_ms: number | null;
     /** Median time in review or testing, ms. */
     review_ms: number | null;
@@ -114,9 +133,11 @@ export interface DeliveryFlow {
     merge_wait_ms: number | null;
     /** The longest merge wait among shipped tickets, ms. */
     merge_wait_max_ms: number | null;
-    /** Median time blocked or paused, ms. */
+    /** Median time blocked or paused after work began, ms. */
     held_ms: number | null;
-    /** Median time before work started (draft / refining / ready), ms. */
+    /** Median time sent back and waiting to be reworked (draft / refining / ready after work began), ms. */
+    requeued_ms: number | null;
+    /** Median time before work started (everything before the first claim / review / merge state), ms. */
     backlog_ms: number | null;
   };
 }
@@ -135,6 +156,18 @@ export const FLOW_WAIT_BUCKET: Readonly<Record<string, keyof FlowWaitMs>> = {
   blocked: "held",
   paused: "held",
 };
+
+/** Backlog states: before work began they are backlog, after it a send-back queue. */
+export const FLOW_BACKLOG_STATES: ReadonlySet<string> = new Set(["draft", "refining", "ready"]);
+
+/** Entering any of these means work on the ticket has begun. */
+const FLOW_WORK_BEGAN_STATES: ReadonlySet<string> = new Set([
+  "claimed",
+  "in_progress",
+  "in_review",
+  "in_testing",
+  "ready_for_merge",
+]);
 
 /** Median of a number array (mean of the two middles when even); 0 when empty. */
 function median(values: number[]): number {
@@ -185,6 +218,7 @@ export function deliveryFlow(
   const reviewMs: number[] = [];
   const mergeMs: number[] = [];
   const heldMs: number[] = [];
+  const requeuedMs: number[] = [];
   const backlogMs: number[] = [];
 
   for (const t of doneTickets) {
@@ -202,12 +236,15 @@ export function deliveryFlow(
       effVals.push(Math.min(100, (t.active_ms / leadMs) * 100));
       const w = t.wait_ms;
       if (w) {
-        const queued = w.review + w.merge + w.held;
+        // `requeued` may be absent on a signal built before the bucket existed.
+        const requeued = typeof w.requeued === "number" ? w.requeued : 0;
+        const queued = w.review + w.merge + w.held + requeued;
         queuePct.push(Math.min(100, (queued / leadMs) * 100));
         queueMs.push(queued);
         reviewMs.push(w.review);
         mergeMs.push(w.merge);
         heldMs.push(w.held);
+        requeuedMs.push(requeued);
         backlogMs.push(Math.max(0, leadMs - t.active_ms - queued));
       }
     }
@@ -251,6 +288,7 @@ export function deliveryFlow(
       merge_wait_ms: mergeMs.length === 0 ? null : Math.round(median(mergeMs)),
       merge_wait_max_ms: mergeMs.length === 0 ? null : Math.max(...mergeMs),
       held_ms: heldMs.length === 0 ? null : Math.round(median(heldMs)),
+      requeued_ms: requeuedMs.length === 0 ? null : Math.round(median(requeuedMs)),
       backlog_ms: backlogMs.length === 0 ? null : Math.round(median(backlogMs)),
     },
   };
@@ -276,11 +314,13 @@ export interface FlowSignals {
  * Reduce the ordered transition log (grouped by ticket, chronological within a
  * ticket) to the per-ticket signals the flow maths needs: when the ticket last
  * entered `done`, how long an agent worked it before that, and how long it waited in
- * review, the merge queue and on hold. Each interval between two transitions belongs
+ * review, the merge queue, on hold and sent back for rework. Each interval between two transitions belongs
  * to the state the earlier one entered; an interval still open at `done_at` is closed
  * there. Time after the last `done` (a later reopen) is ignored — the metric describes
  * the shipped delivery, not what happened to the ticket afterwards. Time before the
- * first transition is backlog (deliveryFlow derives it from the lead time).
+ * first transition is backlog (deliveryFlow derives it from the lead time), and so is
+ * draft / refining / ready time before work began; the same states after work began
+ * (a send-back) count as `requeued`.
  */
 export function flowSignalsFromTransitions(
   transitions: readonly FlowTransition[],
@@ -302,13 +342,18 @@ export function flowSignalsFromTransitions(
     }
     const doneMs = Date.parse(doneAt);
     let activeMs = 0;
-    const wait: FlowWaitMs = { review: 0, merge: 0, held: 0 };
+    const wait: FlowWaitMs = { review: 0, merge: 0, held: 0, requeued: 0 };
     let state: string | null = null;
     let since: number | null = null;
+    let workBegan = false;
     const close = (until: number): void => {
       if (state === null || since === null) return;
       const span = Math.max(0, Math.min(until, doneMs) - since);
+      // Everything before work began is backlog, left to deliveryFlow's remainder
+      // (a draft blocked on a dependency has not started; it is not queued work).
+      if (!workBegan) return;
       if (FLOW_ACTIVE_STATES.has(state)) activeMs += span;
+      else if (FLOW_BACKLOG_STATES.has(state)) wait.requeued += span;
       else {
         const bucket = FLOW_WAIT_BUCKET[state];
         if (bucket) wait[bucket] += span;
@@ -320,6 +365,7 @@ export function flowSignalsFromTransitions(
       close(at);
       state = tr.to_status;
       since = at;
+      if (state !== null && FLOW_WORK_BEGAN_STATES.has(state)) workBegan = true;
       if (at === doneMs && tr.to_status === "done") break;
     }
     close(doneMs);

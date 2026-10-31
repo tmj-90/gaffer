@@ -293,3 +293,93 @@ describe("flow efficiency: the merge queue is waiting, not work (third external 
     expect(flow.waiting.sample).toBe(1);
   });
 });
+
+describe("flow waiting: a send-back that waits in refining is queued after work began, not backlog", () => {
+  const HOUR = 3_600_000;
+  it("1h work, 1h review, rejected to refining, 72h there, 1h work, 1h review, 24h merge queue", () => {
+    const created = NOW - 101 * HOUR;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const step = (from: string | null, to: string, h: number): FlowTransition => ({
+      ticket_id: "s",
+      from_status: from,
+      to_status: to,
+      created_at: iso(created + h * HOUR),
+    });
+    const log: FlowTransition[] = [
+      step("draft", "ready", 0),
+      step("ready", "claimed", 0),
+      step("claimed", "in_progress", 0),
+      step("in_progress", "in_review", 1), // 1h work
+      step("in_review", "refining", 2), // 1h review, then the reviewer sends it back
+      step("refining", "ready", 74), // 72h waiting for a human to refine it
+      step("ready", "claimed", 74),
+      step("claimed", "in_progress", 74),
+      step("in_progress", "in_review", 75), // 1h work
+      step("in_review", "ready_for_merge", 76), // 1h review
+      step("ready_for_merge", "done", 100), // 24h merge queue
+    ];
+    const sig = flowSignalsFromTransitions(log).get("s")!;
+    expect(sig.active_ms).toBeCloseTo(2 * HOUR, -3);
+    expect(sig.wait_ms?.review).toBeCloseTo(2 * HOUR, -3);
+    expect(sig.wait_ms?.merge).toBeCloseTo(24 * HOUR, -3);
+    expect(sig.wait_ms?.requeued).toBeCloseTo(72 * HOUR, -3);
+    expect(sig.wait_ms?.held).toBe(0);
+    const flow = deliveryFlow(
+      [
+        {
+          status: "done",
+          created_at: iso(created),
+          updated_at: iso(created + 100 * HOUR),
+          done_at: sig.done_at,
+          active_ms: sig.active_ms,
+          wait_ms: sig.wait_ms,
+        },
+      ],
+      NOW,
+    );
+    // Nothing happened before work started; the 72h is a send-back queue.
+    expect(flow.waiting.backlog_ms).toBeCloseTo(0, -3);
+    expect(flow.waiting.requeued_ms).toBeCloseTo(72 * HOUR, -3);
+    expect(flow.waiting.queue_ms).toBeCloseTo(98 * HOUR, -3);
+    expect(flow.waiting.queue_pct).toBe(98);
+    expect(flow.flow_efficiency.median_pct).toBe(2);
+  });
+
+  it("time in draft / refining / ready (and a hold) before the first claim stays backlog", () => {
+    const created = NOW - 10 * HOUR;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const step = (from: string | null, to: string, h: number): FlowTransition => ({
+      ticket_id: "b",
+      from_status: from,
+      to_status: to,
+      created_at: iso(created + h * HOUR),
+    });
+    const log: FlowTransition[] = [
+      step("draft", "refining", 1),
+      step("refining", "blocked", 2), // blocked on a dependency before any work
+      step("blocked", "ready", 5),
+      step("ready", "claimed", 6),
+      step("claimed", "in_review", 8), // 2h work
+      step("in_review", "done", 10), // 2h review
+    ];
+    const sig = flowSignalsFromTransitions(log).get("b")!;
+    expect(sig.active_ms).toBeCloseTo(2 * HOUR, -3);
+    expect(sig.wait_ms).toEqual({ review: 2 * HOUR, merge: 0, held: 0, requeued: 0 });
+    const flow = deliveryFlow(
+      [
+        {
+          status: "done",
+          created_at: iso(created),
+          updated_at: iso(created + 10 * HOUR),
+          done_at: sig.done_at,
+          active_ms: sig.active_ms,
+          wait_ms: sig.wait_ms,
+        },
+      ],
+      NOW,
+    );
+    expect(flow.waiting.backlog_ms).toBeCloseTo(6 * HOUR, -3);
+    expect(flow.waiting.queue_pct).toBe(20);
+    expect(flow.waiting.requeued_ms).toBe(0);
+  });
+});

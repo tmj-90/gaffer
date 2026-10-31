@@ -52,6 +52,7 @@ const HEALTH = {
     merge_wait_ms: 7 * 86_400_000,
     merge_wait_max_ms: 7 * 86_400_000,
     held_ms: 0,
+    requeued_ms: 3 * 3_600_000,
     backlog_ms: 60_000,
   },
   governance: {
@@ -161,6 +162,9 @@ describe("web: Health — rework a reviewer caused", () => {
     expect(rows).toContainEqual(["Waiting to merge", "7d 0h"]);
     expect(rows).toContainEqual(["In review or testing", "3m"]);
     expect(rows).toContainEqual(["Queued after work began", "100%"]);
+    // A send-back waiting for rework is its own row, not "Before work started".
+    expect(rows).toContainEqual(["Sent back, waiting for rework", "3h 0m"]);
+    expect(rows).toContainEqual(["Before work started", "1m"]);
     expect(eff?.querySelector(".fg-wait")?.getAttribute("aria-label")).toBe(
       "Where shipped tickets waited, the median",
     );

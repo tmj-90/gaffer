@@ -389,6 +389,62 @@ describe("GET /api/health", () => {
     }
   });
 
+  it("a send-back that waits 72h in refining is queued after work began, not time before work started", async () => {
+    // Fix round of the third external review: 1h work, 1h review, rejected to
+    // refining, 72h waiting there, 1h work, 1h review, 24h merge queue read as 73h
+    // "before work started" and 25% queued after work began.
+    const h = await startHarness({ MEMORY_CLI_BIN: undefined, MEMORY_DB: undefined });
+    try {
+      const nowMs = Date.parse(h.clock.now());
+      const HOUR = 3_600_000;
+      const created = nowMs - 100 * HOUR;
+      const t = h.wg.createTicket({ title: "Sent back to refining" }, human);
+      h.wg.db
+        .prepare(`UPDATE tickets SET status='done', created_at=?, updated_at=? WHERE id=?`)
+        .run(new Date(created).toISOString(), new Date(nowMs).toISOString(), t.id);
+      let seq = 0;
+      const tx = (from: string, to: string, h0: number) =>
+        h.wg.db
+          .prepare(
+            `INSERT INTO work_events (id, entity_type, entity_id, actor_type, event_type, payload_json, created_at)
+             VALUES (@id, 'ticket', @tid, 'agent', 'ticket.transitioned', @p, @at)`,
+          )
+          .run({
+            id: `sb-${seq++}`,
+            tid: t.id,
+            p: JSON.stringify({ from, to, reason: null }),
+            at: new Date(created + h0 * HOUR).toISOString(),
+          });
+      tx("draft", "ready", 0);
+      tx("ready", "claimed", 0);
+      tx("claimed", "in_progress", 0);
+      tx("in_progress", "in_review", 1);
+      tx("in_review", "refining", 2);
+      tx("refining", "ready", 74);
+      tx("ready", "claimed", 74);
+      tx("claimed", "in_progress", 74);
+      tx("in_progress", "in_review", 75);
+      tx("in_review", "ready_for_merge", 76);
+      tx("ready_for_merge", "done", 100);
+
+      const { status, body } = await get(h.baseUrl, "/api/health");
+      expect(status).toBe(200);
+      const waiting = body.waiting as {
+        backlog_ms: number;
+        requeued_ms: number;
+        queue_pct: number;
+        merge_wait_ms: number;
+      };
+      expect(waiting.backlog_ms).toBe(0);
+      expect(waiting.requeued_ms).toBe(72 * HOUR);
+      expect(waiting.merge_wait_ms).toBe(24 * HOUR);
+      expect(waiting.queue_pct).toBe(98);
+      expect((body.flow_efficiency as { median_pct: number }).median_pct).toBe(2);
+    } finally {
+      await h.close();
+    }
+  });
+
   it("computes cost-per-shipped from the real done-ticket count and reports full coverage", async () => {
     const ledger = join(tmpDir, "usage-ledger.jsonl");
     const today = new Date().toISOString().slice(0, 10);

@@ -40,6 +40,7 @@ describe("brownfieldEpicRepo", () => {
       deferredRepoLinks: 0,
       ticketNumbers: [],
       acceptanceTicketNumber: null,
+      agreedRequirements: 0,
     };
     const repoId = wg.listRepositories(true).find((r) => r.name === "taskapi")!.id;
     expect(
@@ -61,6 +62,7 @@ describe("brownfieldEpicRepo", () => {
       deferredRepoLinks: 0,
       ticketNumbers: [],
       acceptanceTicketNumber: null,
+      agreedRequirements: 0,
     };
     expect(
       brownfieldEpicRepo(

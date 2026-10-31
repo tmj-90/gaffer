@@ -2169,6 +2169,16 @@ gaffer_ticket_is_trivial() {
 # resolved diff (never a silent landing). 0 = off (a conflict holds the ticket at
 # ready_for_merge for a human, and its dependents wait). Bounded by GAFFER_MERGE_TIMEOUT_MS.
 : "${GAFFER_CONFLICT_RESOLVER:=1}"
+# MERGE GATE (lib/land.sh, bin/merge-ticket.mjs): every landing first builds the merge of
+# the approved commit onto the CURRENT target in a scratch worktree and runs the repo's
+# DoD gates on that merge (bin/dod-regate.sh: test, lint and the same typecheck command
+# as the delivery gate, gaffer_dod_typecheck_cmd); a red combination is held for a human
+# (blocked, merge_gate_red) and the target is not touched. The gated merge commit lands
+# only while the target still is the gated head; a target that moved meanwhile is
+# re-gated up to this many times, then the ticket waits for the next run. Always on
+# (GAFFER_DOD=0, which turns every gate off, is the only way to land ungated).
+: "${GAFFER_MERGE_GATE_RETRIES:=2}"
+export GAFFER_MERGE_GATE_RETRIES   # read by bin/merge-ticket.mjs (a child process)
 gaffer_needs_security_review() {
   local _num="$1" _repo="$2" _base="$3" _branch="$4" _risk _paths _re
   GAFFER_SECURITY_REVIEW_REASON=""

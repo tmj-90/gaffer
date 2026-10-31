@@ -12,7 +12,10 @@
 161	direct-run-isolation.test.sh
 149	waste-controls.test.sh
 132	e2e-agent-skill-routing.test.sh
+100	e2e-release-gate-merge-combination.test.sh
 86	delivery-lifecycle.test.sh
+80	e2e-release-gate-ci-required.test.sh
+75	e2e-release-gate-epic-verdict.test.sh
 75	branch-retention.test.sh
 74	review-wedge.test.sh
 73	afk-review-hold.test.sh

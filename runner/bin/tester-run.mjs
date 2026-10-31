@@ -307,6 +307,114 @@ export function assembleContext(dbPath, number) {
 }
 
 /**
+ * CONTRACT-ONLY PACKET — the fields that may enter the tester's packet, and nothing
+ * else. The packet check used to regex the WHOLE serialised ticket for the word "diff",
+ * so the factory's own acceptance description ("…from this ticket's contract and
+ * criteria only, never from the diff…") refused every generated epic's acceptance
+ * ticket before the tester launched. The invariant is about POINTERS to the
+ * implementation (the delivery branch, its PR, its commit), not about a word in prose:
+ * validate the packet's shape field by field, and look for the ticket's real pointer
+ * values in it.
+ */
+export const TESTER_PACKET_KEYS = Object.freeze([
+  "ticketId",
+  "number",
+  "title",
+  "description",
+  "status",
+  "acceptance",
+  "testContractRaw",
+  "acceptanceCriteria",
+  "testContract",
+  "mode",
+]);
+const AC_KEYS = new Set(["id", "text", "status"]);
+const CONTRACT_KEYS = new Set([
+  "changed_surfaces",
+  "runtime_deps",
+  "env_vars",
+  "run_command",
+  "harness_ready",
+]);
+
+/**
+ * The ticket's implementation pointers as stored in dispatch: its top-level and per-repo
+ * delivery branches, PR URLs and delivered commits. → string[] (deduplicated, only values
+ * long enough to be specific), or null when the DB cannot be read (the caller fails closed).
+ */
+export function implementationPointers(dbPath, number) {
+  const num = parseInt(String(number ?? "").trim(), 10);
+  if (!Number.isInteger(num) || num <= 0 || !existsSync(dbPath)) return null;
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const t = db.prepare("SELECT id, branch_name, pr_url FROM tickets WHERE number = ?").get(num);
+    if (!t) return null;
+    const out = [t.branch_name, t.pr_url];
+    const optional = (sql) => {
+      try {
+        return db.prepare(sql).all(t.id);
+      } catch {
+        return []; // a minimal / older schema without the table
+      }
+    };
+    for (const r of optional("SELECT branch_name, pr_url FROM ticket_repos WHERE ticket_id = ?"))
+      out.push(r.branch_name, r.pr_url);
+    for (const r of optional(
+      "SELECT branch_name, pr_url, commit_sha FROM ticket_repo_delivery WHERE ticket_id = ?",
+    ))
+      out.push(r.branch_name, r.pr_url, r.commit_sha);
+    return [...new Set(out.map((v) => String(v ?? "").trim()).filter((v) => v.length >= 8))];
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
+ * Validate the assembled packet: exactly the allowed fields, each criterion and the test
+ * contract with exactly their own fields, and none of the ticket's implementation pointer
+ * VALUES anywhere in it. → { ok: true } | { ok: false, reason }. Pure; exported for tests.
+ */
+export function validateTesterPacket(context, pointers) {
+  if (!context || typeof context !== "object") return { ok: false, reason: "no packet" };
+  if (!Array.isArray(pointers))
+    return { ok: false, reason: "the ticket's implementation pointers could not be read" };
+  const extra = Object.keys(context).filter((k) => !TESTER_PACKET_KEYS.includes(k));
+  if (extra.length) return { ok: false, reason: `unexpected packet field(s): ${extra.join(", ")}` };
+  if (!Array.isArray(context.acceptanceCriteria))
+    return { ok: false, reason: "acceptanceCriteria is not a list" };
+  for (const ac of context.acceptanceCriteria) {
+    const bad = Object.keys(ac ?? {}).filter((k) => !AC_KEYS.has(k));
+    if (bad.length)
+      return { ok: false, reason: `unexpected criterion field(s): ${bad.join(", ")}` };
+  }
+  if (context.testContract !== null && context.testContract !== undefined) {
+    const bad = Object.keys(context.testContract).filter((k) => !CONTRACT_KEYS.has(k));
+    if (bad.length)
+      return { ok: false, reason: `unexpected test-contract field(s): ${bad.join(", ")}` };
+  }
+  const strings = [];
+  const walk = (v) => {
+    if (typeof v === "string") strings.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(context);
+  for (const p of pointers) {
+    if (strings.some((s) => s.includes(p)))
+      return { ok: false, reason: `the packet carries an implementation pointer (${p})` };
+  }
+  return { ok: true };
+}
+
+/**
  * Record a tester verdict back through dispatch. Uses DISPATCH_TESTER_VERDICT_CMD
  * (parsed into argv, no shell) when configured — the stub seam tests drive — invoked
  * as `<cmd...> <ticket> <verdict> <summary>`. The override is read as a JSON argv
@@ -1062,9 +1170,14 @@ function main() {
   // Defence-in-depth: assert the assembled context carries NO implementation
   // pointer. This is the centerpiece invariant — if it ever regresses, fail loudly
   // rather than silently leak the diff to the tester.
-  const serialised = JSON.stringify(context);
-  if (/branch_name|pr_url|\bdiff\b/i.test(serialised)) {
-    fail("assembled tester context unexpectedly contains an implementation pointer — refusing");
+  // The check is on the packet's FIELDS and the ticket's real pointer values (branch,
+  // PR, delivered commit) — never a word in the prose (see validateTesterPacket).
+  const packet = validateTesterPacket(
+    context,
+    implementationPointers(CONFIG.dispatchDb, context.number),
+  );
+  if (!packet.ok) {
+    fail(`assembled tester context failed the contract-only check (${packet.reason}) — refusing`);
     return;
   }
 

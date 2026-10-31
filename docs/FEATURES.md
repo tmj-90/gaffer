@@ -36,6 +36,13 @@ The "Plan a build" panel runs a real, multi-turn decomposer (the dashboard's
    **"Create as draft"** or **"Create & ready"**. Drafts never sneak work into the
    queue; "Create & ready" readies only the tickets that pass the `ready` gate
    (a criterion-less ticket stays draft).
+4. **What you agreed is checked.** Every answer you gave the planner is a
+   requirement. The proposal lists them under *Agreed while planning* and flags
+   any that no proposed ticket's criteria cover (a "30-minute expiry" with no
+   criterion mentioning 30 minutes). Each one you keep becomes a criterion of the
+   Final (the epic's acceptance ticket), so the independent tester checks it even
+   when the planner's tickets left it out. `POST /epics` takes them as
+   `epic.agreed_requirements`, or reads them from `plan_session_id`.
 
 You are never trapped in the clarify loop: **"Build the tickets"** forces the
 best plan from the brief and answers so far, and a long conversation
@@ -173,6 +180,29 @@ structural barrier the whole design hangs on.
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
   `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
+- **"Done" means the combined code passed the gates on the target.** A branch
+  that passed its gates and a default branch that passed its gates can still
+  merge cleanly into something that fails (one side renames the field the other
+  side starts reading). So before anything lands — the merge lane, **Merge now**,
+  `gaffer merge`, the agent review's ship — the factory builds the merge of the
+  approved commit onto the *current* default branch in a scratch worktree and
+  runs the repo's Definition-of-Done gates on **that** merge — the same gates the
+  delivery ran: its test and lint commands and the typecheck script detected from
+  its package.json (read from the default branch first). It lands exactly
+  the gated merge commit, and only while the default branch is still the commit
+  it gated (compare-and-land; a branch that moved meanwhile is gated again). A
+  red combination never lands: the default branch is untouched and the ticket
+  waits in your queue (*blocked*, `merge_gate_red`) with the failing gate output
+  as evidence. In PR mode the gate runs on the merge onto the freshly fetched
+  remote default branch before `gh pr merge` is asked; GitHub's branch
+  protection ("require branches to be up to date" plus required checks) is the
+  compare-and-land upstream.
+- **Required CI is required.** With *Require CI green before review* on, the
+  runner records the CI result for the exact commit under review; approval (and
+  a tester PASS) is refused until that commit's CI has passed, a red result for an
+  approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
+  CI again before landing. The CI gate asks `gh` only for the fields the real CLI
+  exposes (`gh pr checks --json name,state,bucket,link`).
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates

@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 import { CrewError } from "../util/errors.js";
@@ -123,6 +123,117 @@ function resolveRepoDir(dir: string): string {
   return abs;
 }
 
+/** A path's canonical form (symlinks resolved); the resolved path when it is gone. */
+function canonicalPath(p: string): string {
+  try {
+    return realpathSync(resolve(p));
+  } catch {
+    return resolve(p);
+  }
+}
+
+/** A remote URL reduced to what identifies the repository (scheme, `.git`, case, slash). */
+export function normalizeRemote(url: string | null | undefined): string {
+  return String(url ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z+]+:\/\//, "")
+    .replace(/^[^@/]+@/, "")
+    .replace(/:(?!\d)/, "/")
+    .replace(/\.git$/, "")
+    .replace(/\/+$/, "");
+}
+
+/** One stored record a repo NAME can collide with (dispatch's registry, crew's store). */
+export interface RepoIdentityRecord {
+  source: "dispatch" | "context store";
+  localPath: string | null;
+  remoteUrl: string | null;
+}
+
+/**
+ * ONBOARDING IDENTITY: is the checkout at `scan` the repository an existing record of
+ * the same name describes? A name match used to be treated as a refresh whatever it
+ * named: two unrelated repos both called "api" both "onboarded", the second's ticket
+ * setup selected the first checkout, and the stored profile combined the first's local
+ * path with the second's remote. The same repository is the same CANONICAL LOCAL PATH
+ * and nothing else (exported for tests).
+ *
+ * A refresh never relocates a record. A record whose checkout is gone (a moved or
+ * deleted clone) used to match on an identical remote; the refresh then could not move
+ * it (dispatch's registration is duplicate-tolerant and kept the old local_path, the
+ * context store's rescan kept the old localPath and took the new remote), so one record
+ * held the deleted checkout's path and the new checkout's remote and deliveries targeted
+ * a directory that no longer existed. A record with no local path is never adopted
+ * either: dispatch would keep its empty path while the store recorded this one. Both are
+ * refused with the --name guidance; a human decides which record is the repository.
+ */
+export function sameRepository(
+  record: RepoIdentityRecord,
+  scan: { path: string; remoteUrl: string | null },
+): boolean {
+  return !!record.localPath && canonicalPath(record.localPath) === canonicalPath(scan.path);
+}
+
+/** Why `record` is not the checkout being onboarded, in words for the refusal. */
+function identityConflict(
+  record: RepoIdentityRecord,
+  scan: { path: string; remoteUrl: string | null },
+  name: string,
+): string {
+  const remote = record.remoteUrl ? `, remote ${record.remoteUrl}` : "";
+  const r = normalizeRemote(record.remoteUrl);
+  const sameRemote = r !== "" && r === normalizeRemote(scan.remoteUrl);
+  if (!record.localPath)
+    return `${record.source}: registered with no local path${remote || ", no remote"}; onboarding does not adopt a path-less record`;
+  if (statSync(record.localPath, { throwIfNoEntry: false }) === undefined)
+    return (
+      `${record.source}: ${record.localPath}, which no longer exists${remote}; a refresh is only the ` +
+      `same checkout path and never moves a record` +
+      (sameRemote
+        ? `. It has the same remote, so this may be the same repository moved: onboard it under an ` +
+          `alias and hide the old record (wg repo hide ${name})`
+        : "")
+    );
+  return `${record.source}: ${record.localPath}${remote}`;
+}
+
+function assertSameRepository(
+  name: string,
+  repoId: string,
+  scan: { path: string; remoteUrl: string | null },
+  deps: OnboardDeps,
+): void {
+  const records: RepoIdentityRecord[] = [];
+  for (const r of deps.dispatch.listRepositories(true)) {
+    if (r.name === name || r.id === repoId || r.name === repoId)
+      records.push({ source: "dispatch", localPath: r.localPath, remoteUrl: r.remoteUrl ?? null });
+  }
+  const profile = deps.store.has(repoId) ? deps.store.readProfile(repoId) : null;
+  if (profile)
+    records.push({
+      source: "context store",
+      localPath: profile.localPath ?? null,
+      remoteUrl: profile.remoteUrl ?? null,
+    });
+  for (const rec of records) {
+    if (sameRepository(rec, scan)) continue;
+    throw new CrewError(
+      "NAME_TAKEN",
+      `a different repository is already onboarded as "${name}" (${identityConflict(rec, scan, name)}); ` +
+        `${scan.path} was NOT onboarded and neither record was changed. Onboard it under a ` +
+        `distinct alias (gaffer onboard ${scan.path} --name <alias>).`,
+      {
+        name,
+        repoId,
+        existing: rec.localPath ?? rec.remoteUrl,
+        source: rec.source,
+        path: scan.path,
+      },
+    );
+  }
+}
+
 /**
  * Onboard a repo at `dir`. Pure-ish: the only side effects are the context-store
  * write and the (optional) Dispatch registration; the repo itself is untouched.
@@ -140,6 +251,8 @@ export function onboardRepo(
 
   const scan = scanRepoForOnboarding(dir, git);
   const mapping = toMapping(opts.mapping);
+  // IDENTITY before any write: a name match is a REFRESH only for the same repository.
+  assertSameRepository(name, repoId, scan, deps);
 
   // Register in Dispatch so the repo surfaces in the Factory Map. Unmapped and
   // standalone repos are still registered (with no scope attachment) so they

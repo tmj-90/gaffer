@@ -7,7 +7,8 @@
 # button even in autonomous mode (a live run stalled with nine dependents starving
 # behind a human-approved bootstrap). Extracted verbatim from review.sh's ship branch.
 #   gaffer_land_delivery <num> <repo_dir> <branch> <default_branch> <ticket-show-json> [who]
-#     → 0 merged + marked done; non-zero: held (conflict / dirty checkout / could not run),
+#     → 0 merged + marked done; non-zero: held (conflict / dirty checkout / could not run
+#       / the MERGE GATE: the combined code failed the gates on the target),
 #       with the reason logged under the <who> prefix (AFK for the review pass, MERGE
 #       for the lane). Relies on tick.sh runtime globals (log, wg, jget, GAFFER_DATA,
 #       RUNNER_DIR, gaffer_auto_merge, gaffer_pr_merge, gaffer_refresh_cards, …).
@@ -42,7 +43,7 @@ _gaffer_land_tester_binding() {
 
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
-  local _CR_BASE _RPR _MERGED_VIA _mrc _prc
+  local _CR_BASE _RPR _MERGED_VIA _mrc _prc _mgrc
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
   # ACCEPTANCE GATE: never land code the tester did not run, and merge exactly the commit
   # the decision names (_TB_PIN) — see lib/tester-binding.mjs, shared with merge-ticket.mjs.
@@ -69,6 +70,22 @@ gaffer_land_delivery() {
   _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
   _MERGED_VIA="local"; _mrc=""
   if [ -n "$_RPR" ]; then
+    # MERGE GATE, PR MODE: gate the merge of the pin onto the remote target as just
+    # fetched (the local default when the fetch fails). GitHub merges the PR, so the
+    # compare-and-land upstream is the repo's branch protection ("require branches to
+    # be up to date" + required checks); gaffer's part is never to ask for a merge whose
+    # combination failed the gates.
+    local _pr_target="refs/heads/$RDEFAULT"
+    git -C "$RREPO" fetch --quiet "${GAFFER_PR_REMOTE:-origin}" "$RDEFAULT" >/dev/null 2>&1 && _pr_target="FETCH_HEAD"
+    _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "$_pr_target" "$_WHO"; _mgrc=$?
+    case "$_mgrc" in
+      0) ;;
+      1) _mrc=1 ;;   # the combination conflicts: the resolver path below, no PR merge
+      4) _gaffer_merge_gate_hold "$RNUM" "$RBRANCH" "$RDEFAULT" "$_WHO"; return 4 ;;
+      *) log "$_WHO: #$RNUM HELD — the merge gate could not run (${_MG_REASON:-unknown}); nothing merged"; return 2 ;;
+    esac
+  fi
+  if [ -n "$_RPR" ] && [ -z "$_mrc" ]; then
     gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN"; _prc=$?
     case "$_prc" in
       0) _mrc=0; _MERGED_VIA=pr
@@ -90,7 +107,35 @@ gaffer_land_delivery() {
         fi ;;
     esac
   fi
-  if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN"; _mrc=$?; fi
+  # LOCAL LANDING through the MERGE GATE: construct the merge of the pin onto the
+  # CURRENT target in a scratch worktree, run the repo's DoD gates on THAT result, and land
+  # exactly the gated merge commit only while the target still is the commit that was
+  # gated (compare-and-land); a target that moved is re-gated. A red combination is held
+  # for a human with the gate output as evidence; the target is never touched.
+  if [ -z "$_mrc" ]; then
+    local _mg_try=0 _mg_max="${GAFFER_MERGE_GATE_RETRIES:-2}" _lrc
+    while :; do
+      _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "refs/heads/$RDEFAULT" "$_WHO"; _mgrc=$?
+      case "$_mgrc" in
+        0) ;;
+        1) _mrc=1; break ;;
+        4) _gaffer_merge_gate_hold "$RNUM" "$RBRANCH" "$RDEFAULT" "$_WHO"; return 4 ;;
+        *) log "$_WHO: #$RNUM HELD — the merge gate could not run (${_MG_REASON:-unknown}); nothing merged"; return 2 ;;
+      esac
+      _gaffer_land_gated "$RREPO" "$RDEFAULT" "$_MG_TARGET" "$_MG_MERGE" "$RBRANCH" "$_TB_PIN"; _lrc=$?
+      case "$_lrc" in
+        7)
+          _mg_try=$((_mg_try + 1))
+          if [ "$_mg_try" -gt "$_mg_max" ]; then
+            log "$_WHO: #$RNUM HELD — $RDEFAULT kept moving while the merge was gated ($_mg_try attempts); nothing merged, tried again next run"
+            return 4
+          fi
+          log "$_WHO: #$RNUM $RDEFAULT moved after the merge gate (gated ${_MG_TARGET:0:12}) — re-gating on the new target ($_mg_try/$_mg_max)"
+          continue ;;
+        *) _mrc="$_lrc"; break ;;
+      esac
+    done
+  fi
   case "$_mrc" in
     0)
       wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
@@ -138,7 +183,12 @@ gaffer_land_delivery() {
       declare -F _review_cleanup >/dev/null 2>&1 && _review_cleanup
       if [ "$_MERGED_VIA" = "pr-stale" ]; then
         log "$_WHO: merged branch $RBRANCH left in place (local $RDEFAULT is stale — delete after pulling)"
-      elif git -C "$RREPO" branch -d "$RBRANCH" >/dev/null 2>&1; then
+      elif git -C "$RREPO" branch -d "$RBRANCH" >/dev/null 2>&1 \
+           || { git -C "$RREPO" merge-base --is-ancestor "$_TB_PIN" "$RDEFAULT" 2>/dev/null \
+                && git -C "$RREPO" update-ref -d "refs/heads/$RBRANCH" "$_TB_PIN" >/dev/null 2>&1; }; then
+        # (`branch -d` checks "merged into HEAD"; with the target not checked out the
+        # gated landing moved only its ref — delete the branch only if it still points at
+        # the landed pin, which is now in the target's history: nothing can be lost.)
         log "$_WHO: deleted merged branch $RBRANCH"
       else
         log "$_WHO: merged branch $RBRANCH left in place (not deletable right now)"
@@ -165,6 +215,102 @@ gaffer_land_delivery() {
     *) log "$_WHO: #$RNUM approved but merge could not run (rc=$_mrc) — left in ready_for_merge for a human" ;;
   esac
   return "${_mrc:-1}"
+}
+
+# ── MERGE GATE ────────────────────────────────────────────────────────────────────
+# The branch passed its gates and the target passed its gates, but nothing had ever run
+# the COMBINATION: a clean textual merge of a field rename (one side changed which field
+# is read, the other removed it) landed, the ticket went done, and the same test failed on
+# main. _gaffer_merge_gate builds the proposed merge of the PIN onto the CURRENT target in
+# a scratch worktree (detached at the target head, nothing of the live checkout) and runs
+# the repo's DoD gates on that merge result through bin/dod-regate.sh — the conflict
+# resolution's re-gate: same gate runner, toggles, install step, sandbox and zero-gates
+# rule as the delivery gate, and the same gates (test_command, lint_command and the
+# typecheck command gaffer_dod_typecheck_cmd resolves, detected from the target head).
+#   _gaffer_merge_gate <num> <repo> <branch> <default> <pin> <show-json> <target-ref> [who]
+#     → 0 the merge passed (or DoD is OFF — GAFFER_DOD=0, logged) · 1 the merge CONFLICTS
+#       · 4 the merge FAILS its gates · 2 the gate could not run (held, fail closed).
+#     Sets _MG_TARGET (the gated target head), _MG_MERGE (the gated merge commit),
+#     _MG_EVIDENCE (the gate's checklist) and _MG_REASON.
+_gaffer_merge_gate() {
+  local num="$1" repo="$2" branch="$3" def="$4" pin="$5" show="$6" target_ref="$7" who="${8:-MERGE}"
+  _MG_TARGET=""; _MG_MERGE=""; _MG_EVIDENCE=""; _MG_REASON=""
+  [ -n "$pin" ] || { _MG_REASON="no pinned commit to gate"; return 2; }
+  _MG_TARGET="$(git -C "$repo" rev-parse --verify --quiet "$target_ref^{commit}" 2>/dev/null)" \
+    || { _MG_TARGET=""; _MG_REASON="the target $target_ref cannot be resolved"; return 2; }
+  local wt="${GAFFER_DATA:-${TMPDIR:-/tmp}}/worktrees/merge-gate-$num-$$" ids=() rc out label tcmd lcmd
+  mkdir -p "$(dirname "$wt")" 2>/dev/null || true
+  git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"
+  if ! git -C "$repo" worktree add --quiet --detach --force "$wt" "$_MG_TARGET" >/dev/null 2>&1; then
+    _MG_REASON="a scratch checkout of the target could not be created"; return 2
+  fi
+  # The merge needs an identity; the repo's own when it has one.
+  git -C "$repo" config user.email >/dev/null 2>&1 || ids=(-c user.name=gaffer -c user.email=gaffer@localhost)
+  if ! git -C "$wt" ${ids[@]+"${ids[@]}"} merge --quiet --no-edit -m "Merge branch '$branch'" "$pin" >/dev/null 2>&1; then
+    git -C "$wt" merge --abort >/dev/null 2>&1 || true
+    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"; git -C "$repo" worktree prune >/dev/null 2>&1 || true
+    _MG_REASON="the merge onto ${_MG_TARGET:0:12} conflicts"; return 1
+  fi
+  _MG_MERGE="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"
+  # The repo's gate commands, from the ticket (the same fields the delivery gate reads).
+  label="$(basename "$repo")"
+  tcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).test_command || ""' 2>/dev/null || true)"
+  lcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).lint_command || ""' 2>/dev/null || true)"
+  log "$who: #$num MERGE GATE — gating the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (merge ${_MG_MERGE:0:12}) in a scratch worktree"
+  # The gated target head is the base the typecheck script is detected from (as the
+  # delivery gate reads its base branch first): the branch cannot drop that gate.
+  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET" 2>/dev/null)"; rc=$?
+  git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"; git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  _MG_EVIDENCE="$out"
+  case "$rc" in
+    0) log "$who: #$num MERGE GATE PASS — the combined code passes the gates on $def@${_MG_TARGET:0:12}"; return 0 ;;
+    3) log "$who: #$num MERGE GATE OFF (GAFFER_DOD=0) — the combination was NOT gated"; return 0 ;;
+    *) _MG_REASON="the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} fails the Definition-of-Done gates"; return 4 ;;
+  esac
+}
+
+# The red merge gate's HOLD: the gate output becomes evidence on the ticket and the
+# ticket leaves the merge lane for the human queue (ready_for_merge → blocked, reason
+# merge_gate_red). The target was never touched.
+_gaffer_merge_gate_hold() {
+  local num="$1" branch="$2" def="$3" who="${4:-MERGE}"
+  wg attach-evidence "$num" --type test_output \
+    --summary "MERGE GATE FAILED: $_MG_REASON"$'\n\n'"${_MG_EVIDENCE:-DoD: FAIL}" >/dev/null 2>&1 || true
+  if wg ticket hold "$num" --reason-code merge_gate_red --as system \
+       --reason "The merge of $branch onto $def@${_MG_TARGET:0:12} fails its gates (each side passed alone); $def was not touched — see the merge-gate evidence. Rework the branch on the current $def, then re-approve." >/dev/null 2>&1; then
+    log "$who: #$num HELD for a human — $_MG_REASON; $def untouched, gate output attached as evidence (blocked, merge_gate_red)"
+  else
+    log "$who: #$num HELD — $_MG_REASON; $def untouched (could not move it to the human queue: left in ready_for_merge)"
+  fi
+}
+
+# COMPARE-AND-LAND: put exactly the gated merge commit on the target, and only while the
+# target still IS the commit that was gated.
+#   _gaffer_land_gated <repo> <default> <gated-target> <gated-merge> <branch> <pin>
+#     → 0 landed · 3 refused (the target is checked out dirty, or in another worktree)
+#       · 6 the branch moved off the pin · 7 the target moved since it was gated (re-gate)
+_gaffer_land_gated() {
+  local repo="$1" def="$2" target="$3" merge="$4" branch="$5" pin="$6" head_branch now wtl
+  [ -n "$target" ] && [ -n "$merge" ] || return 2
+  [ "$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch^{commit}" 2>/dev/null)" = "$pin" ] || return 6
+  head_branch="$(git -C "$repo" symbolic-ref --quiet --short HEAD 2>/dev/null || echo '')"
+  if [ "$head_branch" = "$def" ]; then
+    # The target is the live checkout: only over a clean tracked tree (never over edits),
+    # and a fast-forward to the gated merge only (refuses whatever is not its ancestor).
+    [ -z "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 3
+    [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" = "$target" ] || return 7
+    git -C "$repo" merge --quiet --ff-only "$merge" >/dev/null 2>&1 && return 0
+    [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" = "$target" ] || return 7
+    return 3   # an untracked file in the way: a refusal, not a conflict
+  fi
+  # Checked out in ANOTHER worktree: moving the ref would desync that checkout — refuse.
+  wtl="$(git -C "$repo" worktree list --porcelain 2>/dev/null)"
+  if grep -qx "branch refs/heads/$def" <<<"$wtl"; then return 3; fi
+  # Not checked out: an atomic compare-and-swap of the ref (old value = the gated target).
+  git -C "$repo" update-ref -m "gaffer: land the gated merge of $branch" "refs/heads/$def" "$merge" "$target" >/dev/null 2>&1 && return 0
+  now="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$def" 2>/dev/null)"
+  [ "$now" = "$target" ] && return 3
+  return 7
 }
 
 # _gaffer_land_conflict_resolve <num> <repo_dir> <branch> <default_branch> [who]

@@ -1,0 +1,24 @@
+[
+  {
+    "bucket": "pass",
+    "completedAt": "2026-10-30T12:01:02Z",
+    "description": "",
+    "event": "pull_request",
+    "link": "https://github.com/acme/api/actions/runs/101/job/201",
+    "name": "test (ubuntu-latest)",
+    "startedAt": "2026-10-30T11:58:00Z",
+    "state": "SUCCESS",
+    "workflow": "CI"
+  },
+  {
+    "bucket": "skipping",
+    "completedAt": "2026-10-30T11:58:01Z",
+    "description": "",
+    "event": "pull_request",
+    "link": "https://github.com/acme/api/actions/runs/101/job/202",
+    "name": "deploy-preview",
+    "startedAt": "2026-10-30T11:58:01Z",
+    "state": "SKIPPED",
+    "workflow": "CI"
+  }
+]

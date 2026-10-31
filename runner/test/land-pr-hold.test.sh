@@ -32,6 +32,11 @@ source "$RUNNER_DIR/lib/land.sh"
 # The landing decision (lib/tester-binding.mjs) has its own suite (land-tester-binding);
 # this one is about the PR-merge hold, on a non-git scratch dir — stub the decision in.
 _gaffer_land_tester_binding() { _TB_PIN="0123456789abcdef0123456789abcdef01234567"; _TB_KIND="no-tester"; return 0; }
+# The merge gate (the combined code is gated on the target) has its own suites
+# (e2e-release-gate-merge-combination): here it passes, and the gated LOCAL landing is
+# recorded under the old marker so "no local merge ran" keeps its meaning.
+_gaffer_merge_gate() { _MG_TARGET="1111111111111111111111111111111111111111"; _MG_MERGE="2222222222222222222222222222222222222222"; return 0; }
+_gaffer_land_gated() { printf 'auto_merge\n' >> "$CALLS"; return 0; }
 
 echo "== 1: gh merge fails ⇒ HELD (rc 4), no local merge, no mark-merged =="
 : > "$CALLS"; : > "$LOGF"; unset GAFFER_PR_LOCAL_FALLBACK

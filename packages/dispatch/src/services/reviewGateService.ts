@@ -318,6 +318,16 @@ export class ReviewGateService {
       this.enforceObservedRiskCeiling(ticketRef, actor);
     }
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    // REQUIRED CI (server-side, like the other holds): when the runner has recorded CI
+    // results for this ticket (GAFFER_REQUIRE_CI), approval needs a PASS for the
+    // CANDIDATE commit — the head being approved. A CLI approve used to go through while
+    // the CI poll was still open, and the late red result could no longer stop it.
+    this.assertCiPassed(
+      ticket,
+      this.ciStatus(ticket.id, null).required
+        ? (this.resolveReviewedHead(ticket)?.sha ?? null)
+        : null,
+    );
     // REVIEWER ≠ AUTHOR (server-side, not by convention). Even on an autonomy-permitted
     // agent approve, the approving principal must not be the agent that DELIVERED the
     // ticket: the id on the ticket's most recent claim. Before this the "agent cannot
@@ -471,6 +481,16 @@ export class ReviewGateService {
         throw new DispatchError(
           "VALIDATION_ERROR",
           "This acceptance criterion has no check_command; a check result can only be recorded for a machine-checkable AC.",
+          { ac_id: ac.id },
+        );
+      }
+      // BYTE-EXACT: a result is evidence about the command that RAN. One that differs
+      // from the stored check (a TAB rewritten to a space, a trimmed line) is about a
+      // different criterion and is refused, never recorded against this one.
+      if (input.command !== ac.check_command) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "The executed command does not match this criterion's stored check_command byte for byte; the result was not recorded.",
           { ac_id: ac.id },
         );
       }
@@ -636,6 +656,11 @@ export class ReviewGateService {
     const pre = this.ticketSvc.resolveTicket(ticketRef);
     const deliveryDiff =
       pre.status === "in_testing" ? this.transitions.deliveryDiffProof(pre.id) : undefined;
+    // REQUIRED CI's candidate: the tested commit, else the branch head — resolved (git)
+    // here, outside the write transaction, and only when CI results exist at all.
+    const ciCandidate =
+      input.tested_commit ??
+      (this.ciStatus(pre.id, null).required ? (this.resolveReviewedHead(pre)?.sha ?? null) : null);
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
@@ -650,6 +675,8 @@ export class ReviewGateService {
         currentHash: contractHash(this.db, ticket.id),
         verdict: "pass",
       });
+      // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
+      this.assertCiPassed(ticket, ciCandidate);
       // Record the passing test result as evidence so it is visible in review.
       const evidenceId = newId();
       const now = this.clock.now();
@@ -903,6 +930,161 @@ export class ReviewGateService {
       });
       return { ticketId: ticket.id, status: result.ticket.status, eventId };
     });
+  }
+
+  /**
+   * HOLD FOR A HUMAN: park an approved ticket (`ready_for_merge | in_testing -> blocked`)
+   * with a structured reason code, so it leaves the merge lane and waits in the human
+   * queue (the `parked` kind) with the reason. SYSTEM/admin only — the runner's merge
+   * gate (the combined code failed the gates on the target) and a late red CI result
+   * use it; a board drag cannot (the `park` guard).
+   */
+  holdForHuman(
+    ticketRef: string,
+    input: { reasonCode: string; reason: string },
+    actor: Actor,
+  ): TransitionResult {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner (system) or an admin may hold an approved ticket for a human.",
+        { actor_type: actor.type },
+      );
+    }
+    const code = input.reasonCode.trim();
+    if (!/^[a-z][a-z0-9_]{0,63}$/.test(code)) {
+      throw new DispatchError("VALIDATION_ERROR", "reason code must be a snake_case word.", {
+        reason_code: input.reasonCode,
+      });
+    }
+    const reason = input.reason.trim().slice(0, 4_000) || code;
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.resolveTicket(ticketRef);
+      if (ticket.status !== "ready_for_merge" && ticket.status !== "in_testing") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "Only an approved ticket (ready_for_merge or in_testing) can be held for a human.",
+          { from: ticket.status, to: "blocked" },
+        );
+      }
+      const result = this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "blocked",
+        reason: `held:${code}`,
+        expectedFromStatus: ticket.status,
+        park: true,
+      });
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.blocked",
+        payload: { reason, reason_code: code },
+      });
+      return result;
+    });
+  }
+
+  /**
+   * REQUIRED CI: record a CI result for a ticket's candidate commit (SYSTEM/admin only —
+   * the runner's CI gate; an admin may record a human override, which is auditable).
+   * A FAIL on a ticket that is already approved (`ready_for_merge` / `in_testing`)
+   * HOLDS it for a human with the failing check as the reason: the rejection path only
+   * acted on `in_review`, so a late red result left an approved ticket landable.
+   */
+  recordCiResult(
+    ticketRef: string,
+    input: { commit: string; state: "pending" | "pass" | "fail"; detail?: string },
+    actor: Actor,
+  ): { state: string; held: boolean; status: string; eventId: string } {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner (system) or an admin may record a CI result.",
+        { actor_type: actor.type },
+      );
+    }
+    const commit = input.commit.trim().toLowerCase();
+    if (!/^[0-9a-f]{7,64}$/.test(commit)) {
+      throw new DispatchError("VALIDATION_ERROR", "commit must be a git commit id.", {
+        commit: input.commit,
+      });
+    }
+    if (!["pending", "pass", "fail"].includes(input.state)) {
+      throw new DispatchError("VALIDATION_ERROR", "state must be pending, pass or fail.", {
+        state: input.state,
+      });
+    }
+    const detail = (input.detail ?? "").trim().slice(0, 2_000);
+    const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    const eventId = writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.ci_result",
+      payload: { commit, state: input.state, ...(detail ? { detail } : {}) },
+    });
+    let held = false;
+    let status: string = ticket.status;
+    if (
+      input.state === "fail" &&
+      (ticket.status === "ready_for_merge" || ticket.status === "in_testing")
+    ) {
+      const r = this.holdForHuman(
+        ticket.id,
+        {
+          reasonCode: "ci_red",
+          reason: `Required CI failed for ${commit.slice(0, 12)}${detail ? `: ${detail}` : ""}`,
+        },
+        actor,
+      );
+      held = true;
+      status = r.ticket.status;
+    }
+    return { state: input.state, held, status, eventId };
+  }
+
+  /**
+   * The latest recorded CI state for `commit` (or, with no candidate commit known, the
+   * latest result overall), and whether any CI result was ever recorded for the ticket.
+   */
+  ciStatus(
+    ticketId: string,
+    commit: string | null,
+  ): { required: boolean; state: string | null; commit: string | null } {
+    const rows = this.db
+      .prepare(
+        `SELECT json_extract(payload_json, '$.commit') AS commit_sha,
+                json_extract(payload_json, '$.state')  AS state
+           FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.ci_result'
+          ORDER BY rowid DESC`,
+      )
+      .all(ticketId) as Array<{ commit_sha: string | null; state: string | null }>;
+    if (rows.length === 0) return { required: false, state: null, commit };
+    const c = commit ? commit.toLowerCase() : null;
+    const hit = c
+      ? rows.find((r) => {
+          const rc = String(r.commit_sha ?? "").toLowerCase();
+          return rc !== "" && (c.startsWith(rc) || rc.startsWith(c));
+        })
+      : rows[0];
+    return { required: true, state: hit?.state ?? null, commit: c ?? rows[0]?.commit_sha ?? null };
+  }
+
+  /** REQUIRED CI: refuse (POLICY_DENIED) unless the candidate commit's CI passed. */
+  private assertCiPassed(ticket: Ticket, candidate: string | null): void {
+    const ci = this.ciStatus(ticket.id, candidate);
+    if (!ci.required || ci.state === "pass") return;
+    const at = ci.commit ? ` for ${String(ci.commit).slice(0, 12)}` : "";
+    throw new DispatchError(
+      "POLICY_DENIED",
+      ci.state === "fail"
+        ? `Required CI failed${at}; the ticket cannot advance to merge.`
+        : `Required CI has not passed${at} (${ci.state ?? "no result for this commit"}); approval waits for a passing CI result for the candidate commit.`,
+      { ci_state: ci.state, commit: ci.commit },
+    );
   }
 
   /**

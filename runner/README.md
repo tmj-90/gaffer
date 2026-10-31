@@ -117,6 +117,33 @@ maintenance lane so it runs alongside delivery rather than only on idle ticks.
    and submits for review. It never marks its own work `done`.
 5. `loop.sh` repeats until the queue drains or the stop conditions hit.
 
+The candidate scan walks **claimable** work (`wg ticket list -s ready --claimable`: every
+dependency done), so `MAX_CANDIDATES` bounds tickets a claim can take — a low-priority
+prerequisite is never starved behind higher-priority dependants that cannot start.
+
+**Landing = the merge gate.** Every landing path (`lib/land.sh` for the merge lane and the
+agent review's ship, `bin/merge-ticket.mjs` for the dashboard's Merge now and `gaffer
+merge`) builds the merge of the approved commit onto the CURRENT default branch in a
+scratch worktree, runs the repo's DoD gates on that merge through `bin/dod-regate.sh` (the
+delivery gate's gates: `test_command`, `lint_command` and the typecheck command
+`gaffer_dod_typecheck_cmd` resolves — `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
+typecheck script, detected from the gated target head first), and
+lands exactly the gated merge commit only while the default branch is still the commit it
+gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
+target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
+combination is held for a human: the gate output is attached as evidence and the ticket
+goes `ready_for_merge → blocked` (`wg ticket hold … --reason-code merge_gate_red`), the
+default branch untouched. In PR mode the gate runs on the merge onto the freshly fetched
+remote default branch before `gh pr merge --match-head-commit <pin>`; the repo's branch
+protection is the compare-and-land upstream.
+
+**Required CI** (`GAFFER_REQUIRE_CI=1`, PR mode): `lib/ci-gate.sh` reads `gh pr checks
+--json name,state,bucket,link` (the real CLI fields; `fixtures/gh` holds the recorded field
+lists and output shapes the contract test enforces), checks the PR head is the candidate
+commit, and records each result with `wg ticket ci-result` (pending → pass/fail). Dispatch
+refuses approval and a tester PASS without a PASS for the candidate, a red result holds an
+approved ticket (`ci_red`), and the merge lane re-reads CI before landing.
+
 ## Setup & the `gaffer` CLI
 
 `setup.sh` builds the three TypeScript products and initialises factory state
@@ -129,7 +156,7 @@ the Claude CLI; that's only for live runs.
 | Command | What it does |
 | --- | --- |
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
-| `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
+| `gaffer onboard <path> [--standalone] [--name <alias>]` | Register + scan a repo (a name match is a refresh only for the same canonical local path; any other record of that name — another checkout, a record whose checkout is gone (a moved clone, even with the same remote), or a record with no local path — is refused and left unchanged; `--name` gives it its own record), run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). |
 | `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human (reviews, blocked, unmerged approvals, decisions, paused deliveries awaiting Continue/Stop). Finds a `--foreground` dashboard (no pid file) by probing its `/healthz`. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |

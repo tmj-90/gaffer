@@ -57,7 +57,11 @@ DIRTY="$(git -C "$REPO" status --porcelain)"
   || fail "no events log under the factory root"
 
 echo "== 2. crew repo onboard . from inside a repo (memory env set) =="
-( cd "$REPO" && MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$WORK/memory.sqlite" \
+# GAFFER_DATA_DIR isolates crew's repo context store in this test's tree (as `gaffer
+# onboard` does with the factory's data dir): the default is ~/.crew, where a record left
+# by an earlier run of this test names a deleted checkout of the same repo name, which
+# onboarding now refuses as a different repository (no remote to match on).
+( cd "$REPO" && MEMORY_CLI_BIN="$MEMORY_CLI" MEMORY_DB="$WORK/memory.sqlite" GAFFER_DATA_DIR="$WORK/crew-data" \
     node "$CREW_CLI" -c "$FAC/crew.yaml" repo onboard . --standalone >/dev/null 2>&1 )
 DIRTY="$(git -C "$REPO" status --porcelain)"
 [ -z "$DIRTY" ] && ok "crew repo onboard . leaves the onboarded repo clean" \

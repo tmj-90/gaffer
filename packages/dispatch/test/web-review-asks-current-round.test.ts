@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Dispatch } from "../src/core.js";
-import type { Actor } from "../src/domain/types.js";
+import type { Actor, EvidenceType } from "../src/domain/types.js";
 import { createApiServer } from "../src/api/server.js";
 import type { MergeRunner } from "../src/api/mergeRunner.js";
 import type { ProductOwnerRunner } from "../src/api/productOwner.js";
@@ -60,7 +60,7 @@ interface Fixture {
   /** One delivery attempt: claim, evidence, (`during` = the runner's gates), submit. */
   deliver: (during?: () => void) => void;
   /** A system row, as the runner records it (`wg attach-evidence`). */
-  runnerNote: (summary: string, type?: string) => void;
+  runnerNote: (summary: string, type?: EvidenceType) => void;
 }
 
 function fixture(): Fixture {
@@ -82,7 +82,7 @@ function fixture(): Fixture {
   const { ac } = d.addAcceptanceCriterion({ ticket_id: t.id, text: "events delivered" }, human);
   d.markReady(t.id, human);
   const agent = d.registerAgent({ display_name: "Kev" }, human);
-  const runnerNote = (summary: string, type = "manual_note") => {
+  const runnerNote = (summary: string, type: EvidenceType = "manual_note") => {
     d.attachDeliveryEvidence(t.id, { evidenceType: type, summary }, system);
     clock.advanceSeconds(1);
   };

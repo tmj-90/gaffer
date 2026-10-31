@@ -244,6 +244,11 @@ human-gated knowledge the factory works from:
   to *verify against the code* for high-stakes work, never a substitute for it.
 - **Feature ledger** — what's `backlog → building → shipped` per repo, so the
   factory knows what already exists before it proposes building it again.
+- **File cards** — one per source file (path, symbols, content hash, a short
+  summary), used to choose what to read before a ticket. After every merge they
+  are brought in line with the merged commit, renames included, and each card's
+  path and content hash is checked against that commit before memory records the
+  repo as indexed there.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
   MCP review gate, and a human approves it via the memory CLI — it is never

@@ -235,6 +235,22 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   is spawned in the merge hot path.** If no prepared delta is present it falls back to a
   minimal deterministic freshness stamp (+ feature → `shipped` when linked).
 
+- **File cards follow the merged commit, verified before they are marked current.**
+  After every landing (the merge lane and the review pass through `lib/land.sh` →
+  `gaffer_refresh_cards` in `lib/card-refresh.sh`; the dashboard Merge button through
+  `bin/merge-ticket.mjs`), the cards are brought in line with the default branch's NEW
+  TIP, never the delivery branch's own view of it: two tickets forked from one main can
+  overlap (A renames `archive.ts` → `ledger.ts`, B edits a function in `archive.ts`; git
+  lands B's edit in `ledger.ts`, while B's branch still has `archive.ts`). The refresh
+  diffs the card watermark (or the fork point) → the merged commit with rename detection,
+  reads files from a throwaway detached worktree of that commit (a rename carries the old
+  card's summary to the new path with `card upsert --carry-from`, then drops the old
+  card), and then runs `memory card verify --fix --commit <merged sha>`: every stored
+  card's path must exist in that tree and its content hash must match, a missing card is
+  removed and a stale one re-carded, and the watermark moves to the merged commit **only
+  when that check is clean**. A refresh that is not clean holds the watermark (logged),
+  so the next merge re-diffs from there.
+
 The whole path mirrors the ledger discipline: every memory write is **gated, try/caught,
 and fully swallowed** — a memory-write failure NEVER fails or blocks a merge — and every
 write is **idempotent** (re-running re-stamps the same `source` / re-asserts `shipped`).

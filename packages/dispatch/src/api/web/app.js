@@ -20785,7 +20785,18 @@ async function freezeCreatedSpec() {
 function buildFromFrozenSpec() {
   const spec = specBuildState && specBuildState.createdSpec;
   if (!spec || spec.status !== "frozen") return;
-  const clauses = (Array.isArray(spec.clauses) ? spec.clauses : [])
+  // The server's spec row carries its clauses as `clauses_json` (a string); only a
+  // locally built object has a `clauses` array. Reading only the array made this
+  // button do nothing at all on a real spec.
+  let raw = spec.clauses;
+  if (!Array.isArray(raw)) {
+    try {
+      raw = JSON.parse(spec.clauses_json || "[]");
+    } catch {
+      raw = [];
+    }
+  }
+  const clauses = (Array.isArray(raw) ? raw : [])
     .filter((c) => c && c.clause_id && c.kind && c.text)
     .map((c) => ({
       clause_id: c.clause_id,

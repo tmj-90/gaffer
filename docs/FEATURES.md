@@ -189,11 +189,13 @@ structural barrier the whole design hangs on.
 - **A delivery that changed its own tests is flagged, and never auto-approved.**
   The gates' **integrity** row compares the delivery with its base and FLAGs a
   deleted or renamed test file, a new skip/focus marker (`.skip`, `.only`,
-  `xit`, `it.todo`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
+  `xit`, `it.todo`, `it.concurrent.skip`, node:test's `{ skip: true }`,
+  `t.skip()`/`this.skip()`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
   `@Disabled`, …), a changed gate script (or an added `pretest`/`posttest`, or a
   changed script it runs) or a touched test-runner config. It compares against
-  the commit the runner recorded when it cut the branch, so moving the base
-  branch from the worktree cannot hide a change. The
+  the commit the runner recorded when it cut the branch (kept across retries,
+  never replaced by a later branch tip), so moving the base branch from the
+  worktree, or a second attempt building on the first, cannot hide a change. The
   server recomputes the same check from the real diff (risk flag *Test
   modified*), the Sign-off shows a banner naming each change, the Team Sheet
   row carries a *Tests changed* chip, and an agent approve is held for a person

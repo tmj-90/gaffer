@@ -772,8 +772,13 @@ try {
       back.status === 403
         ? ok("API: a read principal is refused the secret read-back (403)")
         : bad(`API: secret read-back answered ${back.status} to a read principal`);
-      await page.goto(`${BASE}/#/settings`, { waitUntil: "load" });
-      await sleep(900);
+      // The page is already on #/settings, so a goto to the same hash would not re-render
+      // it: reload to read the settings as saved by the POST above.
+      await page.reload({ waitUntil: "load" });
+      await page
+        .waitForSelector("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret", { timeout: 5000 })
+        .catch(() => {});
+      await sleep(400);
       const maskedTxt =
         (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
         "";

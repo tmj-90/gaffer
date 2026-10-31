@@ -202,7 +202,11 @@ lowering one stops a running loop at its next tick. **Every paid launch is admit
 its own, immediately before it spawns**: `lib/budget-admission.mjs` checks the daily
 (`GAFFER_DAILY_BUDGET_USD`) and lifetime (`GAFFER_BUDGET_USD`) caps against the usage
 ledger as it stands (env first, else `settings.json`; an unreadable ledger or
-settings file with a cap set refuses), and both worker seams ask it — `lib/worker.sh`
+settings file with a cap set refuses). It reads the ledger the writer appends to (one
+resolver, `lib/usage-ledger-path.mjs`: a relative `GAFFER_USAGE_LEDGER` lives under
+`GAFFER_DATA`), and with a cap set a ledger that is turned off
+(`GAFFER_USAGE_LEDGER=0`/`off`) or has no location refuses too: nothing would be booked
+against the cap. Both worker seams ask it — `lib/worker.sh`
 `worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
 `gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
 for Plan a build, product owner for Suggest work, onboarding analysis, the merge
@@ -248,7 +252,9 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   `bin/merge-ticket.mjs` (the dashboard's Merge, `gaffer merge`) walk the ticket's approved
   revisions (`wg ticket landing <n>`: one review pin per repo), land each pinned commit
   (`lib/tester-binding.mjs --repo-id`; a secondary repo lands only its pinned commit), and
-  record it (`wg ticket record-landing`). `mark-merged` is refused until every approved
+  record it (`wg ticket record-landing`, which refuses a local landing unless git shows
+  the pinned commit on the repo's default branch; the safety hook denies it to agents,
+  like `mark-merged`). `mark-merged` is refused until every approved
   revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
   in the human queue) with its branches kept, and a retry skips the repos that already
   landed (`already-landed`) instead of merging them again. A secondary repo that conflicts

@@ -160,6 +160,57 @@ describe("web: the attempt history names the model and the CLI", () => {
     expect(attempts[1]!.querySelector(".attempt-run")?.textContent).toBe(
       "Model stub-served-2 · CLI 4.2.0 (Claude Code)",
     );
+    // Run 3 came after the last failure: it is listed on its own row, not dropped.
+    const later = [...document.querySelectorAll(".failure-history .failure-run")];
+    expect(later).toHaveLength(1);
+    expect(later[0]!.textContent).toContain("Attempt 3/3");
+    expect(later[0]!.querySelector(".attempt-run")?.textContent).toBe(
+      "Model stub-served-3 · CLI 4.3.0 (Claude Code)",
+    );
+    expect(document.querySelectorAll(".failure-history .failure-kick-none")).toHaveLength(0);
+  });
+
+  it("shows the model of the attempt that passed after a failed one", async () => {
+    // Attempt 1 (weak model) fails lint, filed on the trail as attempt 2; attempt 2
+    // (the escalation model) is delivered. Both models must be on the page.
+    stubFetch(
+      [
+        run(1, "2026-01-02T00:00:00Z", { models_served: ["weak-m-served"], max_attempts: 2 }),
+        run(2, "2026-01-02T00:10:00Z", {
+          models_served: ["strong-m-served"],
+          model_requested: "strong-m",
+          max_attempts: 2,
+        }),
+      ],
+      [{ ...failure(2, "2026-01-02T00:05:00Z", "lint"), max_attempts: 2 }],
+    );
+    await boot();
+    const card = document.querySelector(".failure-history")!;
+    const lines = [...card.querySelectorAll(".attempt-run")].map((n) => n.textContent);
+    expect(lines).toEqual([
+      "Model weak-m-served · CLI 4.1.0 (Claude Code)",
+      "Model strong-m-served · CLI 4.2.0 (Claude Code)",
+    ]);
+    expect(card.querySelector(".failure-attempt")?.textContent).toContain("lint failed");
+    expect(card.querySelector(".failure-run")?.textContent).toContain("Attempt 2/2");
+    expect(card.querySelector("h2")?.textContent).toContain("2 of 2 used");
+    // Both goes were taken: no "not taken" kick is left on the sheet.
+    expect(card.querySelectorAll(".failure-kick-none")).toHaveLength(0);
+  });
+
+  it("lists every recorded run of a parked ticket, one line each", async () => {
+    // Two runs, one failure on the trail (the last go parked the ticket): 2 lines.
+    stubFetch(
+      [
+        run(1, "2026-01-02T00:00:00Z", { max_attempts: 2 }),
+        run(2, "2026-01-02T00:10:00Z", { max_attempts: 2, rc: 1 }),
+      ],
+      [{ ...failure(2, "2026-01-02T00:05:00Z"), max_attempts: 2 }],
+    );
+    await boot();
+    const card = document.querySelector(".failure-history")!;
+    expect(card.querySelectorAll(".attempt-run")).toHaveLength(2);
+    expect(card.querySelector(".failure-run")?.textContent).toContain("exit 1");
   });
 
   it("names no model for a failure with no run recorded before it", async () => {

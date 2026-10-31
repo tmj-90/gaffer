@@ -82,6 +82,15 @@ export default async function s1(t, L) {
     `the page's attempt rows match GET /tickets/:id/rework-trail (${rows.length})`,
     `rework-trail has ${Array.isArray(rows) ? rows.length : "?"} rows, page shows ${attempts}`,
   );
+  // Every attempt names its model and CLI, the one that passed included (it has no
+  // failure on the trail, so it is listed on its own row after the failures).
+  const runLines = await p.locator(".failure-history .attempt-run").count();
+  const passRow = (await p.textContent(".failure-history .failure-run").catch(() => "")) || "";
+  t.check(
+    runLines === calls.length && /Model .+ · CLI /.test(passRow),
+    `ticket page names the model and CLI of all ${calls.length} attempts, the passing one included`,
+    `ticket page: ${runLines} model line(s) for ${calls.length} attempts; passing row '${passRow.slice(0, 120)}'`,
+  );
   await L.shot(p, "s1-failure-history");
 
   // ── Review: Send back… with a quick-reason chip ────────────────────────────

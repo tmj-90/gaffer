@@ -9794,14 +9794,24 @@ function runLine(r) {
  * Attempts as a penalty shootout: one goal per attempt, the ball marked where the
  * delivery went wide, then the captured failure for each (collapsed: identical
  * failures are shown once above as the scoreline). Each attempt names the model and
- * the CLI version that ran it, from the agent-run evidence. A ticket with runs but no
- * failure gets the plain list of its attempts instead.
+ * the CLI version that ran it, from the agent-run evidence. Every run no failure is
+ * paired with (the attempt that passed after a failed one, or the last go of a parked
+ * ticket) follows the failures as its own row, so each run's model is on the page. A
+ * ticket with runs but no failure gets the plain list of its attempts instead.
  */
 function renderFailureHistory(trail, runs = []) {
   if ((!Array.isArray(trail) || trail.length === 0) && runs.length) return renderAgentRuns(runs);
   if (!Array.isArray(trail) || trail.length === 0) return null;
   const max = trail[trail.length - 1].max_attempts;
   const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
+  const paired = new Set();
+  for (const a of trail) {
+    const r = runForAttempt(runs, a);
+    if (r) paired.add(r);
+  }
+  // Oldest first (runs is sorted): the runs no failure accounts for.
+  const unpaired = runs.filter((r) => !paired.has(r));
+  const used = trail.length + unpaired.length;
   const goal = (i, taken = true) =>
     svgEl(
       "svg",
@@ -9838,7 +9848,15 @@ function renderFailureHistory(trail, runs = []) {
     el("div", { class: "panel-head" }, [
       el("h2", { class: "panel-title" }, [
         "Attempts",
-        el("span", { class: "panel-aux" }, max ? `${trail.length} of ${max} used` : attemptsLabel),
+        el(
+          "span",
+          { class: "panel-aux" },
+          max
+            ? `${Math.min(used, Number(max) || used)} of ${max} used`
+            : used === 1
+              ? "1 attempt"
+              : `${used} attempts`,
+        ),
       ]),
     ]),
     el(
@@ -9849,46 +9867,68 @@ function renderFailureHistory(trail, runs = []) {
     el(
       "ol",
       { class: "failure-trail" },
-      trail.map((a, i) => {
-        const mx =
-          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
-        return el("li", { class: "failure-attempt" }, [
-          goal(i),
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${mx}`),
-            a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
-            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+      // ONE children array: el() takes a single children argument, so rows passed as
+      // further arguments were dropped (the "not taken" kicks never showed).
+      [
+        ...trail.map((a, i) => {
+          const mx =
+            typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+          return el("li", { class: "failure-attempt" }, [
+            goal(i),
+            el("div", { class: "failure-attempt-head" }, [
+              el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${mx}`),
+              a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
+              el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+            ]),
+            (() => {
+              const r = runForAttempt(runs, a);
+              return r ? el("p", { class: "attempt-run mono" }, runLine(r)) : null;
+            })(),
+            el("details", { class: "failure-more" }, [
+              el("summary", {}, "What it said"),
+              // Untrusted captured tool output: a text node in a focusable, named <pre>.
+              el(
+                "pre",
+                {
+                  class: "failure-detail",
+                  tabindex: "0",
+                  role: "region",
+                  "aria-label": `Attempt ${a.attempt} failure output`,
+                },
+                a.distilled_failure || "(no detail captured)",
+              ),
+            ]),
+          ]);
+        }),
+        // The runs no failure was recorded for, each with its model and CLI.
+        ...unpaired.map((r) =>
+          el("li", { class: "failure-run" }, [
+            el("div", { class: "failure-attempt-head" }, [
+              el(
+                "span",
+                { class: "failure-attempt-num" },
+                r.attempt
+                  ? `Attempt ${r.attempt}${r.max_attempts ? `/${r.max_attempts}` : ""}`
+                  : "Run",
+              ),
+              r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+              el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
+            ]),
+            el("p", { class: "attempt-run mono" }, runLine(r)),
+            el("p", { class: "dim failure-run-note" }, "No failure recorded for this run."),
           ]),
-          (() => {
-            const r = runForAttempt(runs, a);
-            return r ? el("p", { class: "attempt-run mono" }, runLine(r)) : null;
-          })(),
-          el("details", { class: "failure-more" }, [
-            el("summary", {}, "What it said"),
-            // Untrusted captured tool output: a text node in a focusable, named <pre>.
-            el(
-              "pre",
-              {
-                class: "failure-detail",
-                tabindex: "0",
-                role: "region",
-                "aria-label": `Attempt ${a.attempt} failure output`,
-              },
-              a.distilled_failure || "(no detail captured)",
-            ),
+        ),
+        // The kicks still to come (or never taken, once the runner parked it).
+        ...Array.from({ length: Math.max(0, (Number(max) || 0) - used) }, (_, k) =>
+          el("li", { class: "failure-kick-none" }, [
+            goal(used + k, false),
+            el("div", { class: "failure-attempt-head" }, [
+              el("span", { class: "failure-attempt-num" }, `Attempt ${used + k + 1}/${max}`),
+              el("span", { class: "failure-attempt-time" }, "not taken"),
+            ]),
           ]),
-        ]);
-      }),
-      // The kicks still to come (or never taken, once the runner parked it).
-      ...Array.from({ length: Math.max(0, (Number(max) || 0) - trail.length) }, (_, k) =>
-        el("li", { class: "failure-kick-none" }, [
-          goal(trail.length + k, false),
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
-            el("span", { class: "failure-attempt-time" }, "not taken"),
-          ]),
-        ]),
-      ),
+        ),
+      ],
     ),
   ]);
 }

@@ -613,6 +613,20 @@
     padding: 6px 0;
     border-bottom: var(--hair);
   }
+  /* A run with no failure on record (the go that passed, or a parked ticket's last). */
+  .failure-run {
+    display: grid;
+    gap: 6px;
+    align-content: start;
+    min-width: 0;
+    padding: var(--s3);
+    border: var(--hair);
+    border-radius: var(--r);
+  }
+  .failure-run-note {
+    margin: 0;
+    font-size: var(--t12);
+  }
   .failure-kick-none {
     display: grid;
     gap: 6px;

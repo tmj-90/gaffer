@@ -249,8 +249,9 @@ structural barrier the whole design hangs on.
   Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,
   `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
   ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
-  failure names the run recorded just before it, and only the runner's own rows
-  count, so an agent cannot name its own model.
+  failure names the run recorded just before it, every other run (the attempt that
+  passed after a failure, a parked ticket's last go) follows the failures on its own
+  row, and only the runner's own rows count, so an agent cannot name its own model.
 
 ![The Gaffer's Sign-off](img/review.png)
 

@@ -145,17 +145,20 @@ export class RepoRepository {
   writeRefsForTickets(ticketIds: readonly string[]): Map<string, { id: string; name: string }[]> {
     const out = new Map<string, { id: string; name: string }[]>();
     if (ticketIds.length === 0) return out;
-    const placeholders = ticketIds.map(() => "?").join(",");
+    // ONE bound parameter whatever the ticket count: the ids travel as a JSON array
+    // and json_each expands it. One `?` per ticket hit SQLite's variable limit — the
+    // unfiltered board loaded 32,766 tickets and failed at 32,767 with "too many SQL
+    // variables" on the pinned build (third external review).
     const rows = this.db
       .prepare(
         `SELECT tr.ticket_id AS ticket_id, r.id AS id, r.name AS name
            FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
-          WHERE tr.ticket_id IN (${placeholders})
+          WHERE tr.ticket_id IN (SELECT value FROM json_each(?))
             AND tr.access = 'write'
             AND tr.relation IN ('confirmed', 'implicit_single_repo')
           ORDER BY r.name ASC`,
       )
-      .all(...ticketIds) as { ticket_id: string; id: string; name: string }[];
+      .all(JSON.stringify(ticketIds)) as { ticket_id: string; id: string; name: string }[];
     for (const row of rows) {
       const list = out.get(row.ticket_id) ?? [];
       list.push({ id: row.id, name: row.name });

@@ -127,6 +127,25 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: true,
   },
   {
+    // GATE INTEGRITY: moving or rewriting a branch ref from the agent's worktree. The
+    // worktree shares refs with the real repo, so `git branch -f main HEAD` or
+    // `git update-ref refs/heads/main …` moves the operator's base branch onto the
+    // agent's own commits (landing them unreviewed, and hiding them from any check that
+    // diffs from the branch name). The agent commits on its ticket branch and never
+    // moves, renames or force-resets any OTHER branch (a force-reset of a runner-owned
+    // `gaffer/` branch stays allowed, as before); the runner records the base commit
+    // when it cuts the branch regardless. Local `push`/`fetch` into `.` is the same move.
+    // This regex is the plain-spelling first line; safety-hook-core.mjs
+    // (refRewriteReason) reads the tokens and also catches `-fq`, a flag after the
+    // arguments, global options before the subcommand, `--`, abbreviated long options,
+    // aliases and `symbolic-ref` writes (a read such as `symbolic-ref --short HEAD`
+    // stays allowed there).
+    re: /\bgit\b[^\n|;&]*?\s(?:update-ref)\b|\bgit\s+(?:branch\b[^\n|;&]*\s(?:-f|--force|-[mMcC]|--move|--copy)|checkout\b[^\n|;&]*\s-B|switch\b[^\n|;&]*\s(?:-C|--force-create))[ \t]+(?!gaffer\/)[^\s;&|-]|\bgit\s+(?:push|fetch)\s+(?:-[^\s]+\s+)*\.(?=\s)/,
+    why: "branch ref rewrite (git branch -f/-m, update-ref, checkout -B, push/fetch into .) of a non-gaffer branch — the agent commits on its ticket branch and never moves the base branch",
+    example: "git branch -f main HEAD",
+    crewFlags: false,
+  },
+  {
     re: /git\s+reset\s+--hard\b/,
     why: "hard reset",
     example: "git reset --hard",
@@ -379,8 +398,14 @@ export const DANGEROUS_COMMANDS = [
     // (testing-lane flag, test contract, tester verdicts, per-repo delivery, required
     // capabilities, reviewer): via the CLI they would bypass that scope check. Also a
     // human's answer to a decision (`decisions resolve`), and the squad identity
-    // (`agent rename`, `club set`): an agent never names itself or the club.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|reject|repo-access|set-testable|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set)\b/,
+    // (`agent rename`, `club set`): an agent never names itself or the club. And the
+    // landing evidence (`record-landing`): only the merge lane records that a repo's
+    // revision reached its default branch; a forged row would let mark-merged close a
+    // ticket whose repo never landed.
+    // GATE INTEGRITY allowance (`ticket allow-test-changes`): only a human may excuse a
+    // delivery's test edits (dispatch also refuses an agent actor server-side), and the
+    // repo's registered DoD commands (`repo set-commands`): they ARE the gate.
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

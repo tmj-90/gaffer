@@ -477,6 +477,24 @@
   .dod-mark.dod-skip {
     color: var(--ink-2);
   }
+  /* Gate integrity: a FLAG is a yellow card, not a red one — it never fails a delivery. */
+  .dod-mark.dod-flag {
+    color: var(--on-yellow);
+    background: var(--yellow);
+    border-color: var(--ycard-edge);
+  }
+  .dod-w-flag {
+    color: var(--ink);
+  }
+  .dod-note-flag,
+  .dod-note-pass {
+    color: var(--ink);
+  }
+  .dod-src {
+    grid-column: 2 / -1;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
   .dod-gate {
     font-weight: 700;
     overflow-wrap: anywhere;
@@ -715,6 +733,44 @@
   .diff-block-banner {
     margin: 0;
   }
+
+  /* --- gate integrity: the delivery changed the tests that gate it --------- */
+  .integrity-slot:empty {
+    display: none;
+  }
+  .integrity-slot {
+    margin: var(--s2) 0;
+  }
+  .integrity-banner {
+    border-color: var(--ycard-edge);
+    background: var(--mark-wash);
+  }
+  .integrity-banner.is-allowed {
+    border-color: var(--rule-2);
+    background: var(--paper-2);
+  }
+  .integrity-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .integrity-h {
+    margin: 0;
+    font-weight: 800;
+  }
+  .integrity-items {
+    margin: 0;
+    padding-left: 18px;
+    font: 500 var(--t14) / 1.45 var(--f-mono);
+    overflow-wrap: anywhere;
+  }
+  .integrity-note {
+    margin: 0;
+    font-weight: 500;
+  }
+  .integrity-body .btn {
+    justify-self: start;
+  }
   .diff-pre {
     margin: 0;
     max-height: 560px;
@@ -783,6 +839,242 @@
   }
   .risk-lead {
     font-weight: 700;
+  }
+
+  /* --- the verdict strip: the runner's facts under the title ---------------
+     Gates · tester · cost · attempt · risk · pin, each a framed cell. A cell's
+     left edge says its verdict: ok green, bad red, warn yellow. */
+  .rv-verdict {
+    min-width: 0;
+  }
+  .vd-cells {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr));
+    gap: 0;
+    border: var(--frame);
+    background: var(--paper);
+  }
+  .vd-cell {
+    display: grid;
+    align-content: start;
+    gap: 6px;
+    min-width: 0;
+    padding: 12px 14px;
+    border-right: var(--hair);
+    border-bottom: var(--hair);
+    box-shadow: inset 6px 0 0 var(--rule);
+    padding-left: 20px;
+  }
+  .vd-cell.vd-ok {
+    box-shadow: inset 6px 0 0 var(--ok);
+  }
+  .vd-cell.vd-bad {
+    box-shadow: inset 6px 0 0 var(--red);
+    background: var(--red-wash);
+  }
+  .vd-cell.vd-warn {
+    box-shadow: inset 6px 0 0 var(--yellow);
+  }
+  .vd-k {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--ink-2);
+  }
+  .vd-v {
+    font: 800 var(--t26) / 1.05 var(--f-display);
+    color: var(--ink);
+    overflow-wrap: anywhere;
+  }
+  .vd-v .badge {
+    font-size: var(--t14);
+  }
+  .vd-v code {
+    font-size: var(--t20);
+  }
+  .vd-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    font-size: var(--t14);
+  }
+  .vd-sub {
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .vd-say {
+    color: var(--ink);
+    font-style: italic;
+    overflow-wrap: anywhere;
+  }
+  .vd-gate {
+    display: grid;
+    grid-template-columns: 22px auto auto minmax(0, 1fr);
+    gap: 2px 8px;
+    align-items: center;
+    padding: 3px 0;
+  }
+  .vd-word {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .vd-w-pass {
+    color: var(--ok);
+  }
+  .vd-w-fail {
+    color: var(--red);
+  }
+  .vd-w-flag {
+    color: var(--ink);
+  }
+  .vd-cmd,
+  .vd-note {
+    min-width: 0;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .vd-flag {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 6px 8px;
+    background: var(--mark-wash);
+    color: var(--ink);
+    font-weight: 700;
+  }
+  .vd-flag .ycard {
+    flex: none;
+  }
+  .vd-rework li,
+  .vd-reasons li {
+    padding: 2px 0;
+    overflow-wrap: anywhere;
+  }
+  .vd-when {
+    font: 600 var(--t12) / 1 var(--f-cond);
+    color: var(--ink-2);
+  }
+  .vd-why {
+    color: var(--ink-2);
+  }
+
+  /* --- the criteria as the runner sees them: a machine check or a yellow card */
+  .rv-ac-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: var(--t14);
+  }
+  .rv-ac-table th {
+    text-align: left;
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    padding: 6px 8px;
+    border-bottom: var(--hair);
+  }
+  .rv-ac-table td {
+    padding: 8px;
+    vertical-align: top;
+    border-top: var(--hair);
+    overflow-wrap: anywhere;
+  }
+  .ac-ev td:first-child {
+    box-shadow: inset 6px 0 0 var(--rule);
+    padding-left: 14px;
+  }
+  .ac-ev-ok td:first-child {
+    box-shadow: inset 6px 0 0 var(--ok);
+  }
+  .ac-ev-bad td:first-child {
+    box-shadow: inset 6px 0 0 var(--red);
+  }
+  .ac-ev-bad {
+    background: var(--red-wash);
+  }
+  /* No machine evidence: the row is a yellow card — washed, edged, said in words. */
+  .ac-ev-none {
+    background: var(--mark-wash);
+  }
+  .ac-ev-none td:first-child {
+    box-shadow: inset 6px 0 0 var(--yellow);
+  }
+  .ac-ev-t {
+    display: grid;
+    gap: 2px;
+  }
+  .ac-ev-t .ac-state {
+    font: 700 var(--t12) / 1 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+  }
+  .ac-ev-cmd {
+    width: 28%;
+  }
+  .ac-ev-cmd code {
+    color: var(--ink);
+  }
+  .ac-ev-what {
+    width: 34%;
+  }
+  .ac-ev-in {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .ac-ev-in > svg,
+  .ac-ev-in > .dod-mark {
+    flex: none;
+  }
+  .ac-ev-word {
+    display: grid;
+    gap: 2px;
+  }
+  .ac-ev-by {
+    color: var(--ink-2);
+    font-size: var(--t12);
+  }
+  @media (max-width: 760px) {
+    /* A phone reads each criterion as a block: text, then its check, then the card. */
+    .rv-ac-table thead {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+    .rv-ac-table,
+    .rv-ac-table tbody,
+    .rv-ac-table tr,
+    .rv-ac-table td {
+      display: block;
+    }
+    .rv-ac-table tr {
+      border-top: var(--hair);
+      box-shadow: inset 6px 0 0 var(--rule);
+      padding-left: 6px;
+    }
+    .rv-ac-table tr.ac-ev-ok {
+      box-shadow: inset 6px 0 0 var(--ok);
+    }
+    .rv-ac-table tr.ac-ev-bad {
+      box-shadow: inset 6px 0 0 var(--red);
+    }
+    .rv-ac-table tr.ac-ev-none {
+      box-shadow: inset 6px 0 0 var(--yellow);
+    }
+    .rv-ac-table td,
+    .ac-ev td:first-child {
+      border-top: 0;
+      box-shadow: none;
+      padding: 4px 8px;
+    }
+    .vd-v {
+      font-size: var(--t20);
+    }
   }
 
   .rv-diff {

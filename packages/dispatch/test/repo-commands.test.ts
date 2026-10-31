@@ -65,6 +65,36 @@ describe("setRepoCommands (facade)", () => {
   });
 });
 
+describe("setRepoCommands is never an agent's (GATE INTEGRITY)", () => {
+  it("refuses an agent actor: the registered DoD commands are the gate itself", () => {
+    const d = Dispatch.open(":memory:");
+    try {
+      const repo = d.registerRepository(
+        { name: "svc", default_branch: "main", test_command: "npm test" },
+        human,
+      );
+      const agent: Actor = { type: "agent", id: "gaffer-factory" };
+      let err: unknown;
+      try {
+        d.setRepoCommands(repo.id, { test_command: "true" }, agent);
+      } catch (e) {
+        err = e;
+      }
+      expect(err).toBeInstanceOf(DispatchError);
+      expect((err as DispatchError).code).toBe("ACTOR_NOT_PERMITTED");
+      expect(d.repos.findById(repo.id)?.test_command).toBe("npm test");
+      const events = d.db
+        .prepare(
+          "SELECT 1 FROM work_events WHERE entity_id = ? AND event_type = 'repository.commands_changed'",
+        )
+        .all(repo.id);
+      expect(events).toHaveLength(0);
+    } finally {
+      d.db.close();
+    }
+  });
+});
+
 describe("POST /repos/:id/commands", () => {
   let d: Dispatch;
   let baseUrl: string;

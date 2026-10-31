@@ -164,7 +164,8 @@ _gaffer_refund_run_tick_unlocked() {
 # until midnight. An idle maintenance tick whose deterministic scan filed nothing is
 # reported as `no_work` too (tick.sh): the scans call no model. Every OTHER result
 # counts: the productive ones (worked / reviewed / tested / clarified / idle_drafted /
-# maintenance_drafted / paused), `maintenance_ran` (an idle tick that ran the paid
+# maintenance_drafted / paused), `usage_paused` (the delivery call ran and was refused
+# by the usage window: a spawn, so it counts), `maintenance_ran` (an idle tick that ran the paid
 # feature-backlog planner but filed nothing), an `error` (the agent
 # may have run before a gate failed) and an EMPTY/unknown result (the outer timeout
 # reaped a tick mid-agent — real spend with no result line). Conservative by design:
@@ -339,4 +340,27 @@ gaffer_day_usd_cap_ok() {
     return 1
   fi
   awk -v s="$spent" -v c="$cap" 'BEGIN{exit !(s+0 < c+0)}' 2>/dev/null
+}
+
+# ── THE paid-launch admission check (external review #6) ─────────────────────
+# gaffer_paid_launch_admitted [kind] — 0 when a PAID worker launch may start NOW, 1 when
+# it may not (the reason on stderr). Called immediately before every paid spawn by the
+# shell worker seam (lib/worker.sh worker_deliver: delivery, bootstrap, review, clarify,
+# eval judge); the Node seam (lib/worker.mjs deliver: tester, decompose, product owner,
+# onboarding analysis, merge resolver) and spec-author ask the SAME module,
+# lib/budget-admission.mjs, so one rule governs every launcher: the daily
+# (GAFFER_DAILY_BUDGET_USD) and lifetime (GAFFER_BUDGET_USD) caps, read fresh from the
+# ledger at the moment of the launch, fail closed on an unknowable spend. Without node
+# the spend cannot be measured: refused when a cap is set, admitted when none is.
+gaffer_paid_launch_admitted() {
+  local kind="${1:-worker}" mod
+  mod="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/budget-admission.mjs"
+  if ! command -v node >/dev/null 2>&1 || [ ! -f "$mod" ]; then
+    if [ -n "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
+      echo "gaffer: budget: a budget cap is set but the admission check cannot run (node or lib/budget-admission.mjs missing) — refusing the paid $kind launch (fail closed)" >&2
+      return 1
+    fi
+    return 0
+  fi
+  node "$mod" check --kind "$kind" >/dev/null
 }

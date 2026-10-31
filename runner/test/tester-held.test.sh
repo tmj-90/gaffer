@@ -30,9 +30,12 @@ FAKE="$WORK/runner"; mkdir -p "$FAKE/bin" "$FAKE/lib"
 ln -s "$RUNNER_DIR/lib/json-tool.mjs" "$FAKE/lib/json-tool.mjs"
 SPAWNS="$WORK/spawns.log"; : > "$SPAWNS"
 cat > "$FAKE/bin/tester-run.mjs" <<JS
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, readFileSync } from "node:fs";
 const n = process.argv[process.argv.indexOf("--ticket") + 1];
 appendFileSync("$SPAWNS", n + "\n");
+// The raw claude envelope, as the real tester-run hands it to the runner.
+if (process.env.GAFFER_TESTER_ENVELOPE_OUT && existsSync("$WORK/envelope-" + n + ".json"))
+  copyFileSync("$WORK/envelope-" + n + ".json", process.env.GAFFER_TESTER_ENVELOPE_OUT);
 process.stdout.write(readFileSync("$WORK/reply-" + n + ".json", "utf8"));
 process.exit(Number(readFileSync("$WORK/rc-" + n, "utf8")));
 JS
@@ -61,6 +64,9 @@ wg() {
 }
 # shellcheck source=../lib/tester.sh
 source "$RUNNER_DIR/lib/tester.sh"
+# The real usage-window pause helpers (lib/usage-pause.sh), as factory.config.sh sources them.
+# shellcheck source=../lib/usage-pause.sh
+source "$RUNNER_DIR/lib/usage-pause.sh"
 run_lane() { ( RUNNER_DIR="$FAKE" GAFFER_TESTING=1 _gaffer_tester_pass ); }
 new_run() { rm -f "$GAFFER_DATA/.tested-tickets"; }   # what loop.sh does at every run start
 held() { # <n> <reason>
@@ -128,6 +134,40 @@ wg() { [ "$1 $2" = "ticket list" ] && return 1; echo '{}'; }
 run_lane
 grep -q '^5	' "$GAFFER_DATA/.tester-held" && ok "a failed listing keeps the holds" || fail "a failed listing pruned the holds"
 eval "$wg_real"
+
+echo "== 7: a tester REFUSED by the usage window is not held for a human; the factory pauses =="
+new_run; : > "$EVID"
+printf '[{"number":8,"status":"in_testing"}]' > "$LIST"
+echo "2026-02-05T09:00:00.000Z" > "$WORK/entered-8"
+printf '{"phase":"usage_limited","ticket":8,"kind":"usage_limit","reason":"You hit your 5-hour limit"}' > "$WORK/reply-8.json"; echo 3 > "$WORK/rc-8"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"You'"'"'ve hit your 5-hour limit · resets 11:58pm (UTC) · progress saved","total_cost_usd":0}' > "$WORK/envelope-8.json"
+RESULTS="$WORK/results"; : > "$RESULTS"
+result() { echo "$1" >> "$RESULTS"; }
+run_lane
+[ "$(spawns_of 8)" = 1 ] && ok "#8 was tested once" || fail "#8 spawns: $(spawns_of 8)"
+grep -q '^8	' "$GAFFER_DATA/.tester-held" 2>/dev/null && fail "#8 was remembered as HELD for a human (it would never be re-tested)" \
+  || ok "#8 is not remembered as held"
+grep -q '^8|manual_note|tester held' "$EVID" && fail "a 'tester held' note was attached to #8: $(cat "$EVID")" \
+  || ok "no 'tester held' note on #8"
+[ -s "$GAFFER_DATA/usage-pause.json" ] && grep -q '"lane":"tester"' "$GAFFER_DATA/usage-pause.json" && grep -q '"ticket":8' "$GAFFER_DATA/usage-pause.json" \
+  && ok "the pause was recorded (lane tester, ticket 8)" || fail "pause file: $(cat "$GAFFER_DATA/usage-pause.json" 2>/dev/null)"
+grep -q 'TESTER: #8 refused by the usage window' "$LOGF" && ok "the log names the usage-window refusal" || fail "no usage-window log line: $(grep 'TESTER: #8' "$LOGF")"
+grep -qx usage_paused "$RESULTS" && ok "the tick reports usage_paused" || fail "tick results: $(tr '\n' ' ' < "$RESULTS")"
+[ ! -e "$GAFFER_DATA/.usage-tester-8.json" ] && ok "the envelope copy was removed" || fail "the envelope copy was left behind"
+new_run; rm -f "$GAFFER_DATA/usage-pause.json"
+printf '{"phase":"verdict","verdict":"pass","ticket":8}' > "$WORK/reply-8.json"; echo 0 > "$WORK/rc-8"; rm -f "$WORK/envelope-8.json"
+run_lane
+[ "$(spawns_of 8)" = 2 ] && ok "#8 is tested again on the next run (after the window reset)" || fail "#8 not re-tested ($(spawns_of 8) spawns)"
+echo "== 7b: the same words in the agent's own reply (success envelope) are still a hold =="
+new_run; : > "$EVID"
+printf '[{"number":9,"status":"in_testing"}]' > "$LIST"
+echo "2026-02-05T10:00:00.000Z" > "$WORK/entered-9"
+held 9 "the tester produced no verdict token"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":4,"result":"You'"'"'ve hit your 5-hour limit · resets 11:58pm (UTC)","total_cost_usd":0.01}' > "$WORK/envelope-9.json"
+run_lane
+grep -q '^9	' "$GAFFER_DATA/.tester-held" && ok "#9 held as before" || fail "#9 not held"
+[ ! -e "$GAFFER_DATA/usage-pause.json" ] && ok "no pause from an agent's own reply" || fail "an agent's reply wrote a pause: $(cat "$GAFFER_DATA/usage-pause.json")"
+result() { :; }
 
 echo "== entered-status-at reads the LATEST transition into the status =="
 J='{"events":[{"event_type":"ticket.transitioned","created_at":"2026-01-02T00:00:00.000Z","payload_json":"{\"to\":\"in_testing\"}"},{"event_type":"ticket.transitioned","created_at":"2026-01-05T00:00:00.000Z","payload_json":"{\"to\":\"in_testing\"}"},{"event_type":"ticket.transitioned","created_at":"2026-01-09T00:00:00.000Z","payload_json":"{\"to\":\"refining\"}"}]}'

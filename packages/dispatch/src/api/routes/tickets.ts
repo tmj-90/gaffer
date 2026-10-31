@@ -4,12 +4,14 @@ import type { Dispatch } from "../../core.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
+import { ticketCostInfo } from "../runDetail.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
 import {
   addAcBody,
   addTicketDependencyBody,
+  approveReviewBody,
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
@@ -24,6 +26,7 @@ import {
   setPrimaryScopeBody,
   setRequiredCapabilitiesBody,
   setTestableBody,
+  allowTestChangesBody,
   setTestContractBody,
   setTicketRepoAccessBody,
   stopPausedBody,
@@ -72,6 +75,8 @@ const TICKET_SUB = {
   // BBT-001: independent black-box testing handover + tester verdict.
   TESTABLE: "testable",
   TEST_CONTRACT: "test-contract",
+  // GATE INTEGRITY: the human's per-ticket "this ticket may change its tests" flag.
+  ALLOW_TEST_CHANGES: "allow-test-changes",
   TESTER: "tester",
 } as const;
 
@@ -302,7 +307,14 @@ export async function routeTickets(
   if (segments.length === 4 && sub === TICKET_SUB.REVIEW && method === "POST") {
     const action = segments[3] as string;
     if (action === "approve") {
-      const result = wg.approveReview(id, apiActor());
+      // STALE REVISION (external review #2): the approval names the commit(s) the Review
+      // view rendered; the service refuses with 409 stale_revision when a branch moved
+      // since, and 409 revision_required when no commit was named.
+      const body = approveReviewBody.parse(await readJsonBody(req));
+      const result = wg.approveReview(id, apiActor(), {
+        commits: (body.commits ?? []).map((c) => ({ repo: c.repo ?? null, sha: c.sha })),
+        requireCommits: true,
+      });
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on
       // approval") is ON, fire the configured merge command (fire-and-forget; logged,
@@ -430,6 +442,20 @@ export async function routeTickets(
     return;
   }
 
+  // GATE INTEGRITY: /tickets/:id/allow-test-changes — a HUMAN allows (or withdraws the
+  // allowance for) this ticket to change its tests. The service refuses agent and
+  // system principals, so an agent token cannot excuse its own test edits.
+  if (segments.length === 3 && sub === TICKET_SUB.ALLOW_TEST_CHANGES && method === "POST") {
+    const body = allowTestChangesBody.parse(await readJsonBody(req));
+    const result = wg.setAllowTestChanges(id, body.allow_test_changes, apiActor(), body.reason);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      allow_test_changes: result.allowTestChanges,
+      event_id: result.eventId,
+    });
+    return;
+  }
+
   // BBT-001: /tickets/:id/testable — set the independent-testing eligibility flag.
   if (segments.length === 3 && sub === TICKET_SUB.TESTABLE && method === "POST") {
     const body = setTestableBody.parse(await readJsonBody(req));
@@ -513,6 +539,16 @@ export async function routeTickets(
     if (wantsMarkdown) {
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
       res.end(wg.dossierSvc.renderMarkdown(dossier));
+      return;
+    }
+    // REVIEW PACKET (opt-in, `?include=packet`): the Review view's verdict strip and
+    // criteria table, beside the dossier and OUTSIDE its hashed subject (the cost reads
+    // the live usage ledger). The plain export stays exactly the dossier.
+    if (url.searchParams.get("include") === "packet") {
+      sendJson(res, 200, {
+        ...dossier,
+        review_packet: wg.reviewPacket(id, (n) => ticketCostInfo(n)),
+      });
       return;
     }
     sendJson(res, 200, dossier);

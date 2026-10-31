@@ -294,7 +294,7 @@ EOF
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
       _R_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
+      GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
@@ -308,6 +308,15 @@ EOF
       R_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
       # A run stopped by its turn cap says so in the envelope: name it in the hold reason.
       R_CAPHIT="$(gaffer_json expr 'd.subtype === "error_max_turns" ? String(d.num_turns ?? "?") : ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
+      # USAGE WINDOW (lib/usage-pause.sh, rc 0/1/2 as in tick.sh): a reviewer refused by
+      # the plan's usage window / a rate limit reviewed nothing. It is held like any
+      # reviewer that did not run, and the pause is recorded so the next tick does not
+      # spawn straight into the same refusal.
+      R_USAGE_LIMITED=0
+      if declare -F gaffer_usage_pause_record >/dev/null 2>&1; then
+        gaffer_usage_pause_record "$R_USAGE_JSON" "$RNUM" review >/dev/null
+        [ "$?" != 1 ] && R_USAGE_LIMITED=1
+      fi
       rm -f "$R_USAGE_JSON"
       # S-H2: resolve the verdict from the reviewer's OUT-OF-BAND STRUCTURED FINAL line
       # ({"verdict":"APPROVE"|"CHANGES"}) — NOT a free-text grep over its prose, and not a
@@ -321,7 +330,10 @@ EOF
       # mode, send a possibly-fine delivery back to rework. Hold instead: leave the ticket
       # in_review for a human, skip it for the rest of this run, and say why.
       R_HELD_REASON=""
-      if [ -n "$R_CAPHIT" ]; then
+      if [ "$R_USAGE_LIMITED" = 1 ]; then
+        R_HELD_REASON="reviewer refused by the usage window (rc=$rrc; $(gaffer_usage_pause_active 2>/dev/null || echo 'the pause could not be written')) — not a verdict"
+        R_VERDICT=held
+      elif [ -n "$R_CAPHIT" ]; then
         R_HELD_REASON="reviewer hit its turn cap ($R_CAPHIT turns; GAFFER_REVIEW_MAX_TURNS / GAFFER_MAX_TURNS) before a verdict — not a verdict"
         R_VERDICT=held
       elif [ "$rrc" -ne 0 ] || [ -z "${R_RESULT// /}" ]; then
@@ -383,7 +395,7 @@ EOF
         # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
         # clamped to GAFFER_MAX_TURNS.
         _S_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
+        GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
           "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
         gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
@@ -523,8 +535,13 @@ EOF
           # flag is an UNexported shell var) so autonomous still passes; a graduated earned row
           # passes via the DB policy with the floor off; an unearned ticket the server REFUSES.
           _AP_ERR=""
+          # STALE REVISION: the approval names the commit the reviewer judged (RSHA, of the
+          # primary write repo). The server refuses it when the branch moved since, and —
+          # because this reviewer read only the primary repo — when the ticket writes to
+          # another repo too: a multi-repo ticket is held for a HUMAN approval of every repo.
+          _RREPO_NAME="$(echo "$RSHOW" | jget '((((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || "")' 2>/dev/null || echo '')"
           if _AP_ERR="$( ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
-               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" 2>&1 >/dev/null ) )"; then
+               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" --commit "${_RREPO_NAME:+$_RREPO_NAME=}$RSHA" 2>&1 >/dev/null ) )"; then
             log "AFK: runner (reviewer principal $REVIEWER_AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
             # LITE self-instrumentation: mark auto-approved-trivial tickets so the gate-skip
             # is measurable — if a lite-auto-approved ticket later needs rework/revert, the

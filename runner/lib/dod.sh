@@ -73,6 +73,32 @@ gaffer_dod_install_enabled() {
   esac
 }
 
+# The STRIPPED environment the pre-gate install runs in (an allowlist, never the
+# runner's env): PATH, a throwaway HOME, TMPDIR, locale, CI=1 and the egress proxy /
+# CA settings a registry fetch needs. Nothing else crosses — no DISPATCH_API_TOKEN,
+# GITHUB_TOKEN, ANTHROPIC_API_KEY, NPM_TOKEN, cloud keys. Under the docker provider
+# the image's own HOME/PATH apply (the host's do not exist inside the container).
+# Fills the named array ($1) and names the throwaway HOME in $2 (the caller removes it).
+#   gaffer_dod_install_env <array-name> <home-var-name>
+gaffer_dod_install_env() {
+  local _arr="$1" _hv="$2" _h="" _v _name
+  local -a _e=()
+  if [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ] && [ -n "${GAFFER_DOD_WRAP:-}" ]; then
+    _e+=( "HOME=${GAFFER_SANDBOX_HOME:-/root}" "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+  else
+    _h="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-dod-install-home.XXXXXX" 2>/dev/null)" || _h=""
+    _e+=( "HOME=${_h:-/nonexistent}" "PATH=${PATH:-/usr/bin:/bin}" )
+  fi
+  _e+=( "TMPDIR=${TMPDIR:-/tmp}" "CI=1" "LANG=${LANG:-C.UTF-8}" )
+  for _name in LC_ALL HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy \
+               NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
+    eval "_v=\${$_name:-}"
+    [ -n "$_v" ] && _e+=( "$_name=$_v" )
+  done
+  eval "$_arr=(\"\${_e[@]}\")"
+  eval "$_hv=\"\$_h\""
+}
+
 # PRE-GATE ENABLER (not a gate). A fresh delivery worktree has no node_modules, so
 # the DoD test gate cannot run — the first greenfield deliveries fail "tests could
 # not run" until deps are present. This installs the worktree's dependencies IN THE
@@ -90,6 +116,8 @@ gaffer_dod_install_enabled() {
 #   <pm>                 → install succeeded (node_modules materialised)
 #   FAILED:<pm>          → install ATTEMPTED but failed (diagnostic on stderr)
 #   FAILED:timeout:<pm>  → install TIMED OUT (gaffer_timeout returned 124)
+#   SKIPPED:sandbox_unavailable:<pm>
+#                        → GAFFER_STRICT_REQUIRE=1 and no validation wrap: refused
 #   (empty)              → no-op (non-node repo, no lockfile, deps already present,
 #                          or the pm binary is unavailable)
 #   gaffer_dod_install_deps <worktree-dir>
@@ -129,13 +157,35 @@ gaffer_dod_install_deps() {
     npm)  _script='npm ci --ignore-scripts || npm install --ignore-scripts' ;;
   esac
 
+  # SAME ISOLATION BOUNDARY AS VALIDATION. An install executes repository code
+  # (a .pnpmfile.cjs, a yarn `yarnPath`, a lifecycle script a package manager runs
+  # despite --ignore-scripts), so it runs exactly where the gates run: through
+  # GAFFER_DOD_WRAP with the validation profile (no data plane, no model credential,
+  # the same write roots), in a STRIPPED environment (env -i: no operator tokens, a
+  # throwaway HOME so ~/.npmrc auth and other HOME secrets are not readable). Under
+  # GAFFER_STRICT_REQUIRE an install with no wrap FAILS CLOSED (nothing executes):
+  # the operator asserted that no repository code runs outside an OS sandbox.
+  local _wrap="${GAFFER_DOD_WRAP:-}" _profile=() _ienv=() _ihome=""
+  if [ -z "$_wrap" ]; then
+    case "${GAFFER_STRICT_REQUIRE:-0}" in
+      1|true|yes|on)
+        printf 'gaffer: dod-install: GAFFER_STRICT_REQUIRE=1 and no validation sandbox wraps the install in %s — NOT running %s install (fail closed; the test gate will surface missing deps)\n' "$dir" "$pm" >&2
+        echo "SKIPPED:sandbox_unavailable:$pm"
+        return 0 ;;
+    esac
+  else
+    _profile=( env GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none )
+  fi
+  gaffer_dod_install_env _ienv _ihome
   local _out _rc
   _out="$(mktemp "${TMPDIR:-/tmp}/gaffer-dod-install.XXXXXX")" || _out="/dev/null"
   # stdin from /dev/null: the caller loops over its worktree rows on stdin, and an
   # install that reads stdin would swallow the rows for the repos after this one.
+  # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$dir" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" bash -c "$_script" ) </dev/null >"$_out" 2>&1
+    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap env -i "${_ienv[@]}" bash -c "$_script" ) </dev/null >"$_out" 2>&1
   _rc=$?
+  [ -n "$_ihome" ] && rm -rf "$_ihome"
 
   # Fail-soft verdict. Success = node_modules materialised → echo the pm for the
   # caller's log. Otherwise the install was ATTEMPTED but failed: surface the
@@ -224,18 +274,30 @@ gaffer_dod_run_one() {
 #
 # INPUT (stdin): one TAB-separated row per write repo —
 #   label <TAB> worktree <TAB> tests_on <TAB> typecheck_on <TAB> lint_on \
-#         <TAB> test_cmd <TAB> typecheck_cmd <TAB> lint_cmd
+#         <TAB> test_cmd <TAB> typecheck_cmd <TAB> lint_cmd [<TAB> base_ref <TAB> allow]
 #   *_on is "1" (gate enabled) or "0" (gate disabled for this repo). A *_cmd field
 #   that is empty OR the literal sentinel `-` means the gate is SKIPPED for that
 #   repo (no command configured). The sentinel is REQUIRED for any empty command
 #   field because TAB is IFS-whitespace: `read` collapses consecutive tabs, so an
 #   empty middle field would silently shift the columns. Callers MUST pass `-`.
+#   GATE INTEGRITY (optional trailing fields; absent ⇒ today's behaviour exactly):
+#   base_ref is the COMMIT the delivery was cut from (a full SHA, recorded by tick.sh
+#   when it created the worktree — see gaffer_delivery_base_sha), or for older callers
+#   a branch name, whose merge-base with HEAD is used (`-` = none); allow is "1"
+#   when a human set allow_test_changes on the ticket. With a base_ref, each gate's
+#   package.json script is read from the BASE commit (gaffer_dod_resolve_cmd), and an
+#   `integrity` row is appended per repo (gaffer_dod_integrity_row): PASS or FLAG,
+#   never FAIL.
 #
 # ARGS:
 #   $1 = a results file the caller reads back. Each gate writes ONE line:
-#          GATE<TAB>name<TAB>repo<TAB>PASS|FAIL|SKIP<TAB>rc<TAB>note
-#        and, for a FAIL, a captured output tail framed by:
+#          GATE<TAB>name<TAB>repo<TAB>PASS|FAIL|SKIP|FLAG<TAB>rc<TAB>note[<TAB>source]
+#        (source: where the command's behaviour was read from — see
+#        gaffer_dod_resolve_cmd; FLAG only on the integrity row) and, for a FAIL, a
+#        captured output tail framed by:
 #          ---DOD-OUTPUT name@repo---\n<tail>\n---END-DOD-OUTPUT---
+#        and, for the tests gate (pass or fail), the runner's summary lines framed by:
+#          ---DOD-TALLY tests@repo---\n<lines>\n---END-DOD-TALLY---
 #
 # RETURNS: 0 when every gate passed or was skipped; 1 when ANY gate failed. Pure:
 # moves/evidence/logging are the caller's job.
@@ -243,7 +305,7 @@ gaffer_run_dod_gates() {
   local results="$1"
   : > "$results"
   local any_fail=0
-  local label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd
+  local label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd base allow
   # Fail CLOSED if we can't even create a scratch file (e.g. disk full): record a
   # FAIL the caller will park on, rather than running gates against a bad outfile.
   local tmpout
@@ -253,9 +315,23 @@ gaffer_run_dod_gates() {
   fi
   # Iterate gate definitions in a stable order so the evidence/board read the same
   # every run: tests, then typecheck, then lint.
-  while IFS=$'\t' read -r label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd; do
+  while IFS=$'\t' read -r label wt tests_on tc_on lint_on test_cmd tc_cmd lint_cmd base allow; do
     [ -n "$wt" ] || continue
-    local gate cmd on
+    local gate cmd on run_cmd src _mb=""
+    [ "$base" = "-" ] && base=""
+    # GATE INTEGRITY: the commit the delivery branched from. Empty when there is no
+    # base ref (callers that predate the check) or it cannot be resolved — then the
+    # commands run as registered and the integrity row FLAGs the unresolved base.
+    # A recorded SHA is used AS IS: a branch name can be moved by the agent from inside
+    # its worktree (`git branch -f main HEAD`), and a merge-base taken from the moved
+    # branch would hide every commit made before the move.
+    if [ -n "$base" ]; then
+      if [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        git -C "$wt" cat-file -e "$base^{commit}" 2>/dev/null && _mb="$base"
+      else
+        _mb="$(git -C "$wt" merge-base "$base" HEAD 2>/dev/null)" || _mb=""
+      fi
+    fi
     for gate in tests typecheck lint; do
       case "$gate" in
         tests)     on="$tests_on"; cmd="$test_cmd" ;;
@@ -274,10 +350,18 @@ gaffer_run_dod_gates() {
         printf 'GATE\t%s\t%s\tSKIP\t0\tno command configured\n' "$gate" "$label" >> "$results"
         continue
       fi
-      gaffer_dod_run_one "$wt" "$tmpout" "$cmd"
+      # Read the command's package.json script from the BASE commit (never the
+      # worktree's head) when a base is known, so a delivery that rewrites
+      # `scripts.test` cannot redirect its own gate. Without a base: today's command.
+      run_cmd="$cmd"; src=""
+      if [ -n "$base" ]; then
+        gaffer_dod_resolve_cmd "$wt" "$_mb" "$cmd"
+        run_cmd="$_GAFFER_DOD_RUN_CMD"; src="$_GAFFER_DOD_SOURCE"
+      fi
+      gaffer_dod_run_one "$wt" "$tmpout" "$run_cmd"
       local rc=$?
       if [ "$rc" -eq 0 ]; then
-        printf 'GATE\t%s\t%s\tPASS\t0\t%s\n' "$gate" "$label" "$cmd" >> "$results"
+        printf 'GATE\t%s\t%s\tPASS\t0\t%s%s\n' "$gate" "$label" "$cmd" "${src:+$'\t'$src}" >> "$results"
       else
         any_fail=1
         local note
@@ -286,7 +370,7 @@ gaffer_run_dod_gates() {
           127) note="command could not be run (spawn/exit 127): $cmd" ;;
           *)   note="exited $rc: $cmd" ;;
         esac
-        printf 'GATE\t%s\t%s\tFAIL\t%s\t%s\n' "$gate" "$label" "$rc" "$note" >> "$results"
+        printf 'GATE\t%s\t%s\tFAIL\t%s\t%s%s\n' "$gate" "$label" "$rc" "$note" "${src:+$'\t'$src}" >> "$results"
         # Capture the DISTILLED real failure (bounded) for the evidence row AND the
         # next attempt's feedback — the failing test name(s) + the assertion/error/
         # stack, NOT a blind tail of the whole log. Falls back to a plain tail when
@@ -296,10 +380,166 @@ gaffer_run_dod_gates() {
           || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
         printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
       fi
+      # REVIEW PACKET: keep the test runner's own summary lines (pass or fail) so the
+      # Review view can say what the runner saw and flag an agent claim that disagrees.
+      [ "$gate" = "tests" ] && gaffer_dod_tally_block "$tmpout" "$gate" "$label" >> "$results"
     done
+    # GATE INTEGRITY row for this repo (PASS / FLAG — never FAIL, never any_fail).
+    if [ -n "$base" ]; then
+      gaffer_dod_integrity_row "$wt" "$_mb" "$label" "${allow:-0}" "$test_cmd" "$tc_cmd" "$lint_cmd" >> "$results"
+    fi
   done
   rm -f "$tmpout"
   [ "$any_fail" -eq 0 ]
+}
+
+# GATE INTEGRITY: the commit a delivery branch was cut from — what the DoD rows pass as
+# base_ref and what tick.sh records on the repo delivery (`--base-sha`) for dispatch's
+# server-side scan. Computed by the RUNNER, never read from the branch tip after an
+# agent has run, so the agent cannot choose it (by moving the base branch, or by being
+# retried on a branch that already holds its commits):
+#   cut-sha given (this tick cut the branch with `worktree add -B` off the base and
+#     captured its start point AT THE CUT): that commit;
+#   otherwise the first known SHA (the one recorded when the branch was first cut, or
+#     this tick's earlier pass) that is still a commit in the repo;
+#   else the merge-base of base and branch now (a legacy row with nothing recorded).
+# Prints a full SHA, or nothing (then the integrity row FLAGs an unresolved base).
+#   gaffer_delivery_base_sha <repo> <base-branch> <work-branch> <cut-sha|""> [known-sha...]
+gaffer_delivery_base_sha() {
+  local repo="$1" base="$2" work="$3" cut="$4" sha="" k
+  shift 4 2>/dev/null || shift $#
+  for k in "$cut" "$@"; do
+    if [[ "$k" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+       && git -C "$repo" cat-file -e "$k^{commit}" 2>/dev/null; then
+      sha="$k"; break
+    fi
+  done
+  if [ -z "$sha" ]; then
+    sha="$(git -C "$repo" merge-base "$base" "refs/heads/$work" 2>/dev/null)" || sha=""
+  fi
+  [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && printf '%s\n' "$sha"
+  return 0
+}
+
+# The typed gate-integrity seam (packages/crew runtime/dod/gateIntegrityCli.js), which
+# runs dispatch's one classifier — the same one behind the server-side `test-modified`
+# risk annotation.
+_gaffer_gate_integrity_cli() { printf '%s' "${CREW_DIR:-}/dist/runtime/dod/gateIntegrityCli.js"; }
+
+# GATE INTEGRITY, part 1: resolve a gate command against the BASE commit's package.json.
+# Sets two globals (a subshell would lose them):
+#   _GAFFER_DOD_RUN_CMD  the command to execute — the registered one, or, when the
+#                        delivery changed/removed the script it names, the base
+#                        commit's script body (so editing package.json cannot
+#                        redirect the gate)
+#   _GAFFER_DOD_SOURCE   "<source>: <note>" for the evidence — registered | base |
+#                        base-pinned | head | unresolved
+# Never fails: with no base commit or no crew dist the registered command runs
+# (today's behaviour) and the source says why; the integrity row flags the same.
+#   gaffer_dod_resolve_cmd <worktree> <base-commit> <command>
+gaffer_dod_resolve_cmd() {
+  local wt="$1" mb="$2" cmd="$3" cli _line _src _note _run
+  _GAFFER_DOD_RUN_CMD="$cmd"
+  cli="$(_gaffer_gate_integrity_cli)"
+  if [ -z "$mb" ]; then
+    _GAFFER_DOD_SOURCE="unresolved: no base commit found; ran the registered command against the delivery's scripts"
+    return 0
+  fi
+  if [ ! -f "$cli" ]; then
+    _GAFFER_DOD_SOURCE="unresolved: gate-integrity resolver unavailable (crew dist missing); ran the registered command"
+    return 0
+  fi
+  _line="$(node "$cli" resolve --worktree "$wt" --base "$mb" --cmd "$cmd" 2>/dev/null </dev/null | head -n 1)"
+  IFS=$'\t' read -r _src _note _run <<< "$_line"
+  if [ -z "$_src" ] || [ -z "${_run// /}" ]; then
+    _GAFFER_DOD_SOURCE="unresolved: gate-integrity resolver gave no answer; ran the registered command"
+    return 0
+  fi
+  _GAFFER_DOD_RUN_CMD="$_run"
+  _GAFFER_DOD_SOURCE="$_src: $_note"
+  return 0
+}
+
+# GATE INTEGRITY, part 2: print ONE results row for a repo:
+#   GATE<TAB>integrity<TAB>repo<TAB>PASS|FLAG<TAB>0<TAB>reason<TAB>source
+# FLAG when base..worktree deleted or renamed a test file, added a skip/only marker,
+# changed or removed a gate script, or touched test-runner config — or when the scan
+# could not run (no base, no crew dist): it fails toward a human, never toward a pass.
+# allow=1 (a human set allow_test_changes) turns a FLAG into PASS with a note. This
+# row never FAILs a delivery in this slice; dispatch's `test-modified` risk annotation
+# (same classifier, computed server-side) is what holds an auto-approve.
+#   gaffer_dod_integrity_row <worktree> <base-commit> <label> <allow> <cmd>...
+gaffer_dod_integrity_row() {
+  local wt="$1" mb="$2" label="$3" allow="$4" cli _row c
+  shift 4
+  local _args=()
+  for c in "$@"; do
+    [ -n "$c" ] && [ "$c" != "-" ] && _args+=(--cmd "$c")
+  done
+  cli="$(_gaffer_gate_integrity_cli)"
+  if [ -z "$mb" ]; then
+    printf 'GATE\tintegrity\t%s\tFLAG\t0\tcould not resolve the base commit, so test changes could not be checked\tunresolved\n' "$label"
+    return 0
+  fi
+  if [ ! -f "$cli" ]; then
+    printf 'GATE\tintegrity\t%s\tFLAG\t0\tthe integrity scan could not run (crew dist missing)\tunresolved\n' "$label"
+    return 0
+  fi
+  _row="$(node "$cli" scan --worktree "$wt" --base "$mb" --label "$label" --allow "$allow" \
+    ${_args[@]+"${_args[@]}"} 2>/dev/null </dev/null | head -n 1)"
+  case "$_row" in
+    "GATE	integrity	"*) printf '%s\n' "$_row" ;;
+    *) printf 'GATE\tintegrity\t%s\tFLAG\t0\tthe integrity scan gave no answer\tunresolved\n' "$label" ;;
+  esac
+  return 0
+}
+
+# REVIEW PACKET: the summary lines a test gate's output carries, framed as
+#   ---DOD-TALLY <gate>@<repo>---\n<lines>\n---END-DOD-TALLY---
+# Lines kept (ANSI stripped, each cut to 300 chars, the last 40): vitest
+# "Tests  N passed (N)", jest "Tests: … total", pytest "N passed … in 0.1s", cargo
+# "test result: …", node --test "# tests N" / "# pass N" …; for `go test -v`, the
+# top-level --- PASS/FAIL/SKIP lines are
+# counted into one "gotest-tally: pass=N fail=M skip=K" line. The lines are the
+# delivered code's own output, so tabs become spaces and any line that starts with
+# GATE, --- or gotest-tally: is dropped: nothing in the block can pass for a runner
+# GATE row, close the frame early or fake the go tally. Prints nothing when no
+# summary is found. Pure text in, text out; never fails the gate.
+#   gaffer_dod_tally_block <gate-output-file> <gate> <repo-label>
+gaffer_dod_tally_block() {
+  local infile="$1" gate="$2" label="$3" lines
+  [ -f "$infile" ] || return 0
+  lines="$(awk '
+    BEGIN { esc = sprintf("%c", 27); n = 0; gp = 0; gf = 0; gs = 0 }
+    {
+      line = $0
+      gsub(esc "\\[[0-9;?]*[A-Za-z]", "", line)
+      gsub(/\r/, "", line)
+      # A tab in a kept line could forge a GATE row: the results file is tab-separated.
+      gsub(/\t/, " ", line)
+      if (line ~ /^--- PASS: /) { gp++; next }
+      if (line ~ /^--- FAIL: /) { gf++; next }
+      if (line ~ /^--- SKIP: /) { gs++; next }
+      t = line; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t)
+      keep = 0
+      if (t ~ /^Tests[ \t]+.*[0-9]+ (passed|failed|skipped|todo).*\([0-9]+\)$/) keep = 1
+      else if (t ~ /^Tests:[ \t]+.*[0-9]+ total/) keep = 1
+      else if (t ~ /^test result: /) keep = 1
+      else if (t ~ /[0-9]+ (passed|failed).* in [0-9.]+s/) keep = 1
+      else if (t ~ /^(# |ℹ )(tests|pass|fail|cancelled|skipped|todo) [0-9]+$/) keep = 1
+      # Never keep a line that reads as a runner row or frame marker (GATE …, ---…)
+      # or as the go tally this block writes itself.
+      if (t ~ /^(GATE|---|gotest-tally:)/) keep = 0
+      if (keep) { buf[n % 40] = substr(t, 1, 300); n++ }
+    }
+    END {
+      start = (n > 40) ? n - 40 : 0
+      for (i = start; i < n; i++) print buf[i % 40]
+      if (gp + gf + gs > 0) printf "gotest-tally: pass=%d fail=%d skip=%d\n", gp, gf, gs
+    }
+  ' "$infile" 2>/dev/null)" || return 0
+  [ -n "$lines" ] || return 0
+  printf -- '---DOD-TALLY %s@%s---\n%s\n---END-DOD-TALLY---\n' "$gate" "$label" "$lines"
 }
 
 # Render a one-line human summary of a results file (for the factory log).
@@ -346,6 +586,10 @@ gaffer_dod_evidence_summary() {
     local json
     json="$(awk -F'\t' -v OVERALL="$overall" '
       BEGIN { printf "{\"dod\":\"%s\",\"gates\":[", OVERALL }
+      # GATE rows are read only outside the framed output/tally blocks.
+      /^---DOD-(OUTPUT|TALLY) / { inframe = 1; next }
+      /^---END-DOD-(OUTPUT|TALLY)---/ { inframe = 0; next }
+      inframe { next }
       $1=="GATE" {
         if (n++) printf ","
         gsub(/\\/,"\\\\",$6); gsub(/"/,"\\\"",$6)
@@ -409,5 +653,30 @@ gaffer_dod_extract_failure() {
     /^---END-DOD-OUTPUT---/ { keep = 0; next }
     keep && !/^[ \t]*$/ { print "  " $0 }
   ' "$results" 2>/dev/null
+  return 0
+}
+
+# GATE INTEGRITY: log each integrity row of a results file — a FLAG as a WARNING the
+# operator sees in the factory log (the evidence row and the Review banner carry it
+# too). Uses tick.sh's `log` when defined, else stderr. Never fails.
+#   gaffer_dod_log_integrity <results-file>
+gaffer_dod_log_integrity() {
+  local results="$1" _g _name _repo _st _rc _note _src _msg _inframe=0
+  [ -f "$results" ] || return 0
+  while IFS=$'\t' read -r _g _name _repo _st _rc _note _src; do
+    # Only the runner's own rows, OUTSIDE the framed output/tally blocks (a GATE-shaped
+    # line inside a frame is the delivered code's output, not an integrity verdict).
+    case "$_g" in
+      ---DOD-OUTPUT\ *|---DOD-TALLY\ *) _inframe=1; continue ;;
+      ---END-DOD-OUTPUT---*|---END-DOD-TALLY---*) _inframe=0; continue ;;
+    esac
+    [ "$_inframe" -eq 0 ] || continue
+    [ "$_g" = "GATE" ] && [ "$_name" = "integrity" ] || continue
+    case "$_st" in
+      FLAG) _msg="DoD: integrity FLAG for ${NUM:+#$NUM }($_repo) — $_note; a human must look before this ships (dispatch holds auto-approve; \`wg ticket allow-test-changes\` if intended)" ;;
+      *)    _msg="DoD: integrity $_st for ${NUM:+#$NUM }($_repo) — $_note" ;;
+    esac
+    if declare -F log >/dev/null 2>&1; then log "$_msg"; else printf '%s\n' "$_msg" >&2; fi
+  done < "$results"
   return 0
 }

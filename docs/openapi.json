@@ -456,7 +456,7 @@
           "Configuration"
         ],
         "summary": "List factory settings",
-        "description": "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`).",
+        "description": "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
         "responses": {
           "200": {
             "description": "`{ settings: SettingView[] }`.",
@@ -546,6 +546,75 @@
           },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/settings/secret/{key}": {
+      "get": {
+        "operationId": "getApiSettingsSecretByKey",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Read a secret setting back (admin)",
+        "description": "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "key."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ key, value, source }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1711,11 +1780,38 @@
               "type": "string"
             },
             "description": "Limit to one repository (name or id)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A visible window: at most this many cards per area (1..1000). Without it every card is returned."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "With `limit`: skip this many cards in each area (default 0)."
+          },
+          {
+            "name": "area",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "With `limit`: return only this area's window (a column, `closed` or `wontDo`); the other areas come back empty."
           }
         ],
         "responses": {
           "200": {
-            "description": "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+            "description": "`BoardView`: the columns plus the closed area, `counts` (every area's total, whatever the window) and `window` (the window applied, or null). With a window, Done, closed and won't-do are newest first. A card's `claim` carries `agent_display`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1736,6 +1832,16 @@
           },
           "403": {
             "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2309,7 +2415,7 @@
           "Read models"
         ],
         "summary": "Factory health and ROI",
-        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall.",
+        "description": "Event-log hash-chain integrity, spend, event-derived cycle time and throughput, flow efficiency, governance, skills and recall. `usage_pause` reports the runner's pause after a usage-limit or rate-limit refusal (`{ active, paused_until, kind, basis, message, ticket, lane? }`; `{ active: false }` when not paused).",
         "parameters": [
           {
             "name": "window_days",
@@ -3308,7 +3414,7 @@
           "Review & delivery"
         ],
         "summary": "Approve the review",
-        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins the approved branch head. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
         "parameters": [
           {
             "name": "id",
@@ -3320,6 +3426,16 @@
             "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/approveReviewBody"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "`{ ticket, event_id, merge?, approve_outcome? }`.",
@@ -3363,6 +3479,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3743,7 +3869,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<delivery branch>` per write repository. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on.",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on.",
         "parameters": [
           {
             "name": "id",
@@ -3761,7 +3887,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketDiff"
                 }
               }
             }
@@ -3812,7 +3938,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery dossier",
-        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`.",
+        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
         "parameters": [
           {
             "name": "id",
@@ -3835,11 +3961,23 @@
               ]
             },
             "description": "`markdown` for the rendered document."
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "packet"
+              ]
+            },
+            "description": "`packet` adds the Review view's `review_packet` to the JSON."
           }
         ],
         "responses": {
           "200": {
-            "description": "`Dossier`. The rendered dossier (`text/markdown`).",
+            "description": "`Dossier` (plus `review_packet` with `?include=packet`). The rendered dossier (`text/markdown`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3943,6 +4081,95 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/allow-test-changes": {
+      "post": {
+        "operationId": "postTicketsByIdAllowTestChanges",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Allow test changes (gate integrity)",
+        "description": "A human allows (or withdraws) this ticket's allowance to change its tests: delete or rename a test file, add a skip marker, rewrite a gate script. The runner's integrity gate row then reads PASS with a note instead of FLAG, and the `test-modified` risk annotation drops to medium so it no longer holds an auto-approve. Human or admin principals only (agent and system are refused); recorded as a `ticket.test_changes_allowed` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/allowTestChangesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, allow_test_changes, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestChangesAllowed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9352,6 +9579,161 @@
           "depends_on"
         ]
       },
+      "allowTestChangesBody": {
+        "type": "object",
+        "properties": {
+          "allow_test_changes": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "allow_test_changes"
+        ]
+      },
+      "ApproveOutcome": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "held_ci",
+              "to_tester",
+              "land_now",
+              "land_next_tick",
+              "waits_for_merge"
+            ]
+          },
+          "approvable": {
+            "type": "boolean",
+            "description": "False only when the server would refuse (held_ci)."
+          },
+          "to_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "in_testing",
+                  "ready_for_merge"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": "string",
+            "description": "The sign-off button, e.g. \"Approve and send to tester\"."
+          },
+          "confirm_label": {
+            "type": "string",
+            "description": "The armed button (the second press approves)."
+          },
+          "done_label": {
+            "type": "string",
+            "description": "The button once approved."
+          },
+          "sentence": {
+            "type": "string",
+            "description": "One line under the button: what follows the click."
+          },
+          "via": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pr",
+                  "local"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lands_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The write repo a landing merges."
+          },
+          "not_landed_repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Write repos no landing path merges."
+          },
+          "review_mode": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent",
+              "both"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "approvable",
+          "to_status",
+          "label",
+          "confirm_label",
+          "done_label",
+          "sentence",
+          "via",
+          "pr_url",
+          "lands_repo",
+          "not_landed_repos",
+          "review_mode"
+        ],
+        "additionalProperties": false
+      },
+      "approveReviewBody": {
+        "type": "object",
+        "properties": {
+          "commits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "sha": {
+                  "type": "string",
+                  "pattern": "^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"
+                }
+              },
+              "required": [
+                "sha"
+              ]
+            },
+            "maxItems": 100
+          }
+        }
+      },
       "assignReviewerBody": {
         "type": "object",
         "properties": {
@@ -10902,6 +11284,93 @@
           }
         }
       },
+      "RepoDiff": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved delivery branch, or null."
+          },
+          "baseBranch": {
+            "type": "string",
+            "description": "The default branch the delivery branch is diffed against."
+          },
+          "diff": {
+            "type": "string",
+            "description": "Raw unified diff text (possibly truncated); empty when unavailable."
+          },
+          "files": {
+            "type": "integer"
+          },
+          "additions": {
+            "type": "integer"
+          },
+          "deletions": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "unavailable": {
+            "type": "string",
+            "enum": [
+              "no_branch",
+              "repo_not_on_disk",
+              "no_local_path",
+              "empty",
+              "git_error"
+            ],
+            "description": "Why no diff text is available."
+          },
+          "message": {
+            "type": "string"
+          },
+          "riskAnnotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RiskAnnotation"
+            }
+          },
+          "repoId": {
+            "type": "string",
+            "description": "The repository id, so an approval can name the repo it saw."
+          },
+          "headSha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision)."
+          }
+        },
+        "required": [
+          "repo",
+          "branch",
+          "baseBranch",
+          "diff",
+          "files",
+          "additions",
+          "deletions",
+          "truncated",
+          "riskAnnotations"
+        ],
+        "additionalProperties": false,
+        "description": "The delivery diff for one write repository."
+      },
       "resolveDecisionBody": {
         "type": "object",
         "properties": {
@@ -11096,6 +11565,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -11156,6 +11629,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -11205,118 +11679,7 @@
             "description": "The auto-merge command, when one is configured."
           },
           "approve_outcome": {
-            "type": "object",
-            "properties": {
-              "kind": {
-                "type": "string",
-                "enum": [
-                  "held_ci",
-                  "to_tester",
-                  "land_now",
-                  "land_next_tick",
-                  "waits_for_merge"
-                ]
-              },
-              "approvable": {
-                "type": "boolean",
-                "description": "False only when the server would refuse (held_ci)."
-              },
-              "to_status": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "enum": [
-                      "in_testing",
-                      "ready_for_merge"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "label": {
-                "type": "string",
-                "description": "The sign-off button, e.g. \"Approve and send to tester\"."
-              },
-              "confirm_label": {
-                "type": "string",
-                "description": "The armed button (the second press approves)."
-              },
-              "done_label": {
-                "type": "string",
-                "description": "The button once approved."
-              },
-              "sentence": {
-                "type": "string",
-                "description": "One line under the button: what follows the click."
-              },
-              "via": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "enum": [
-                      "pr",
-                      "local"
-                    ]
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "pr_url": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "lands_repo": {
-                "anyOf": [
-                  {
-                    "type": "string"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "The write repo a landing merges."
-              },
-              "not_landed_repos": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                },
-                "description": "Write repos no landing path merges."
-              },
-              "review_mode": {
-                "type": "string",
-                "enum": [
-                  "human",
-                  "agent",
-                  "both"
-                ]
-              }
-            },
-            "required": [
-              "kind",
-              "approvable",
-              "to_status",
-              "label",
-              "confirm_label",
-              "done_label",
-              "sentence",
-              "via",
-              "pr_url",
-              "lands_repo",
-              "not_landed_repos",
-              "review_mode"
-            ],
-            "additionalProperties": false,
+            "$ref": "#/components/schemas/ApproveOutcome",
             "description": "What the approval did: the tester, a landing now, the merge lane's next tick, or a wait for Merge now."
           }
         },
@@ -11325,6 +11688,60 @@
           "event_id"
         ],
         "additionalProperties": false
+      },
+      "RiskAnnotation": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RiskKind"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "description": "Short human summary."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The concrete paths that triggered it."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`test-modified` only: one human line per finding, for the Review banner."
+          },
+          "allowed": {
+            "type": "boolean",
+            "description": "`test-modified` only: a human allowed test changes on this ticket; the annotation drops to medium and no longer holds an approve on its own."
+          }
+        },
+        "required": [
+          "kind",
+          "severity",
+          "detail"
+        ],
+        "additionalProperties": false,
+        "description": "An advisory risk flag on a repo's delivery diff."
+      },
+      "RiskKind": {
+        "type": "string",
+        "enum": [
+          "sensitive-path",
+          "dependency-change",
+          "large-deletion",
+          "test-modified"
+        ],
+        "description": "What a risk annotation flags. `sensitive-path`: secret/auth/infra paths; `dependency-change`: a manifest or lockfile; `large-deletion`: many deleted lines; `test-modified`: the delivery changed the tests that gate it (deleted/renamed a test file, added a skip/only marker, changed a gate script, touched test or package-manager config). Unallowed, `test-modified` raises observed risk to high and holds an agent approve for a person."
       },
       "runProductOwnerBody": {
         "type": "object",
@@ -11686,6 +12103,27 @@
         ],
         "additionalProperties": false
       },
+      "TestChangesAllowed": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "allow_test_changes": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "allow_test_changes",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "TestContractSet": {
         "type": "object",
         "properties": {
@@ -11951,6 +12389,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -12011,6 +12453,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -12382,6 +12825,29 @@
         ],
         "additionalProperties": false
       },
+      "TicketDiff": {
+        "type": "object",
+        "properties": {
+          "ticketId": {
+            "type": "string"
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoDiff"
+            }
+          },
+          "approve_outcome": {
+            "$ref": "#/components/schemas/ApproveOutcome",
+            "description": "An in_review ticket only: the first step a human Approve would certainly take now."
+          }
+        },
+        "required": [
+          "ticketId",
+          "repos"
+        ],
+        "additionalProperties": false
+      },
       "TicketEnvelope": {
         "type": "object",
         "properties": {
@@ -12553,6 +13019,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -12613,6 +13083,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -12800,6 +13271,10 @@
                 "acceptance": {
                   "type": "integer"
                 },
+                "allow_test_changes": {
+                  "type": "integer",
+                  "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+                },
                 "human_owner": {
                   "anyOf": [
                     {
@@ -12857,6 +13332,7 @@
                 "bootstrap",
                 "can_be_tested",
                 "acceptance",
+                "allow_test_changes",
                 "human_owner",
                 "human_delivered",
                 "delivery_budget_usd",
@@ -13056,6 +13532,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -13116,6 +13596,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",

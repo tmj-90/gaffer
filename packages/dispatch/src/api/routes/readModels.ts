@@ -15,8 +15,12 @@ import {
   type FlowTicket,
 } from "../../health/deliveryFlow.js";
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
-import { aggregateHealth, type ReworkResolver } from "../../health/healthAggregator.js";
+import { aggregateHealth, type SendBack } from "../../health/healthAggregator.js";
+import { sendBacksByTicket } from "../../health/sendBacks.js";
+import { isBoardArea } from "../../services/boardService.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
+import { readUsagePause } from "../../health/usagePause.js";
+import { DispatchError } from "../../util/errors.js";
 import { errorBody, methodNotAllowed, safeDecode, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import { buildRunDetail } from "../runDetail.js";
@@ -107,11 +111,38 @@ export function routeReadModels(
   // filtered, paged read through `memory list --json` with mutating siblings.
 
   // /api/board — tickets grouped into kanban columns (+ closed area).
-  // Accepts optional ?repo= to restrict the board to one repository.
+  // Accepts optional ?repo= to restrict the board to one repository, and a visible
+  // WINDOW: ?limit=N (cards per area, 1..1000) [&offset=M] [&area=<column|closed|wontDo>]
+  // returns at most N cards per area from M (only that area with ?area=), while
+  // `counts` always carries every area's total. Without ?limit every card is returned.
   if (segments.length === 2 && segments[1] === "board") {
     if (method !== "GET") return methodNotAllowed(res);
     const repoFilter = url.searchParams.get("repo") ?? undefined;
-    sendJson(res, 200, wg.board(repoFilter));
+    const rawLimit = url.searchParams.get("limit");
+    if (rawLimit === null) {
+      sendJson(res, 200, wg.board(repoFilter));
+      return;
+    }
+    const limit = Number.parseInt(rawLimit, 10);
+    const offset = Number.parseInt(url.searchParams.get("offset") ?? "0", 10);
+    const area = url.searchParams.get("area") ?? undefined;
+    if (
+      !Number.isFinite(limit) ||
+      limit < 1 ||
+      limit > 1000 ||
+      !Number.isFinite(offset) ||
+      offset < 0
+    ) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "limit must be 1..1000 and offset a non-negative integer.",
+        { limit: rawLimit, offset: url.searchParams.get("offset") },
+      );
+    }
+    if (area !== undefined && !isBoardArea(area)) {
+      throw new DispatchError("VALIDATION_ERROR", `'${area}' is not a board area.`, { area });
+    }
+    sendJson(res, 200, wg.board(repoFilter, { limit, offset, ...(area ? { area } : {}) }));
     return;
   }
 
@@ -272,23 +303,10 @@ export function routeReadModels(
         updated_at: t.updated_at,
         done_at: sig?.done_at ?? null,
         active_ms: sig?.active_ms ?? null,
+        wait_ms: sig?.wait_ms ?? null,
       };
     });
 
-    // Rework resolver: ticket-number → rework-attempt count, one grouped query.
-    const reworkRows = wg.db
-      .prepare(
-        `SELECT t.number AS number, COUNT(*) AS c
-           FROM rework_attempts ra
-           JOIN tickets t ON t.id = ra.ticket_id
-          WHERE t.number IS NOT NULL
-          GROUP BY t.number`,
-      )
-      .all() as Array<{ number: number; c: number }>;
-    const reworkByNumber = new Map(reworkRows.map((r) => [r.number, r.c]));
-    const resolveRework: ReworkResolver = (n) => reworkByNumber.get(n) ?? 0;
-
-    const health = aggregateHealth(process.env, { shippedCount, resolveRework });
     const nowMs = Date.parse(wg.clock.now()) || Date.now();
     const flow = deliveryFlow(flowTickets, nowMs);
 
@@ -328,11 +346,36 @@ export function routeReadModels(
       reason: r.reason,
       atMs: Date.parse(r.created_at) || 0,
     }));
+    // SEND-BACKS: a reviewer's or tester's rejection (a transition back to work) AND
+    // the runner's own retry after a failed gate (rework_attempts). Both count as
+    // rework — the report used to read only the second, so a ticket a reviewer bounced
+    // showed 0% sent back and $0 rework.
+    const retryRows = wg.db
+      .prepare(`SELECT ticket_id AS ticketId, created_at AS at FROM rework_attempts`)
+      .all() as Array<{ ticketId: string; at: string }>;
+    const sendBacks = sendBacksByTicket(
+      govRows.map((r) => ({
+        ticketId: r.ticket_id,
+        fromStatus: r.from_status,
+        toStatus: r.to_status,
+        reason: r.reason,
+        at: r.created_at,
+      })),
+      retryRows,
+    );
     // Rework counts keyed by ticket ENTITY ID (governanceRoi keys off entity_id, not number).
-    const reworkByIdRows = wg.db
-      .prepare(`SELECT ticket_id AS id, COUNT(*) AS c FROM rework_attempts GROUP BY ticket_id`)
-      .all() as Array<{ id: string; c: number }>;
-    const reworkById = new Map(reworkByIdRows.map((r) => [r.id, r.c]));
+    const reworkById = new Map([...sendBacks].map(([id, list]) => [id, list.length]));
+    // The ledger keys spend by ticket NUMBER.
+    const numberById = new Map(allTickets.map((t) => [t.id, t.number]));
+    const sendBacksByNumber = new Map<number, SendBack[]>();
+    for (const [id, list] of sendBacks) {
+      const n = numberById.get(id);
+      if (typeof n === "number") sendBacksByNumber.set(n, list);
+    }
+    const health = aggregateHealth(process.env, {
+      shippedCount,
+      resolveSendBacks: (n) => sendBacksByNumber.get(n) ?? [],
+    });
     const governance = governanceRoi(govTransitions, reworkById, nowMs, windowDays);
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
@@ -349,6 +392,9 @@ export function routeReadModels(
       // TAMPER-EVIDENT LOG: the work_events hash chain re-derived (memoised per
       // log head for 60s — the Overview polls this route).
       event_log: eventLog,
+      // USAGE WINDOW: the runner's pause after a usage-limit / rate-limit refusal
+      // ($GAFFER_DATA/usage-pause.json). `{ active:false }` when the factory is not paused.
+      usage_pause: readUsagePause(process.env, nowMs),
       total_usd: health.total_usd,
       estimated_usd: health.estimated_usd,
       ticket_count: health.ticket_count,
@@ -366,6 +412,12 @@ export function routeReadModels(
       duration: health.duration,
       cycle_time: flow.cycle_time,
       throughput: flow.throughput,
+      // Flow efficiency = time an agent worked the ticket / lead time; review, testing,
+      // the merge queue and holds are WAITING, reported on their own (the transition
+      // log cannot show active review time). Never sent before, so the dashboard fell
+      // back to a WIP ratio that read 100% for one shipped ticket.
+      flow_efficiency: flow.flow_efficiency,
+      waiting: flow.waiting,
       // Governance-ROI: merge / rework / unattended-safe rates from real transitions.
       governance,
       // Skill hit-rate (selected-vs-applied). Zero-state when no telemetry.

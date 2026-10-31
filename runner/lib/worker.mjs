@@ -13,13 +13,16 @@
 // usage-ledger.mjs, and the bash cap/spend guards each open-coded a tolerant JSON
 // parse via `node -e` in delivery-recovery.sh. All of it now flows through the
 // extractors here:
-//   parseResult(text) -> { json, resultText, usage, capHit, stopReason }
+//   parseResult(text) -> { json, resultText, usage, capHit, stopReason, usageLimit }
 //     resultText — the agent's `.result` text ("" when absent/unparseable)
 //     usage      — { models, topLevelUsage, totalCostUsd, numTurns, durationMs }
 //                  (tokens verbatim; dollars RELAYED, never computed — see honesty
 //                   rules in usage-ledger.mjs, which shapes these into a ledger row)
 //     capHit     — { numTurns, stopReasonIsMaxTurns } (turn-cap detection signals)
 //     stopReason — the stop/finish reason string, or null
+//     usageLimit — { kind, id, message, resetsAtMs, resetBasis } when the call was
+//                  refused by a usage window or rate limit (USAGE_LIMIT_PATTERNS,
+//                  the one table of matched strings), else null
 // usage-ledger.mjs imports the same extractors (so a ledger row and parseResult can
 // never diverge); delivery-recovery.sh's bash helpers call the `parse-result` CLI
 // below (so bash cap/spend read the SAME parse). Honesty rule: a value the payload
@@ -45,7 +48,8 @@
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -298,11 +302,23 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
   return { ok: true, socket: sock, bridgedConfig: bridged, dataPlane: "bridge", stop };
 }
 
-export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
+export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "worker" }) {
   const provider = workerProvider(process.env);
   if (provider !== DEFAULT_WORKER_PROVIDER) {
     // codex / local / any non-Claude provider — honest stub, FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
+  }
+  // BUDGET ADMISSION (external review #6): the ONE check every paid launch passes
+  // immediately before it spawns (lib/budget-admission.mjs; the bash seam asks the same
+  // module). Daily or lifetime budget exhausted, or the spend unknowable with a cap set
+  // ⇒ NO spawn: status 77, empty stdout, nothing booked to the ledger.
+  const admission = paidLaunchAdmission({ kind, env: process.env });
+  if (!admission.ok) {
+    const r = failClosedResult(admission.reason);
+    r.status = BUDGET_REFUSED_STATUS;
+    r.budgetRefused = true;
+    process.stderr.write(`worker: ${admission.reason}\n`);
+    return r;
   }
   // claude-code — the current path. With the sandbox off and no dollar cap configured
   // this is byte-identical. An opted-in per-call cap (GAFFER_MAX_CALL_USD, clamped to
@@ -641,12 +657,315 @@ export function extractStopReason(json) {
   return null;
 }
 
+// =====================================================================
+// USAGE-LIMIT / RATE-LIMIT DETECTION (the usage-window-aware scheduler)
+// ---------------------------------------------------------------------
+// A plan's usage window running out (or an API rate limit) is NOT a failed
+// delivery: the agent never got to work. Read as a failure it burned an attempt
+// and, repeated overnight, parked good tickets. parseResult classifies it as its
+// own outcome (`usageLimit`) so the tick can release the claim WITHOUT counting an
+// attempt and pause the whole factory until the window resets (lib/usage-pause.mjs).
+//
+// THE TABLE BELOW IS THE ONLY PLACE THESE STRINGS LIVE. Each row records where the
+// exact text comes from, so nothing is matched on a guess. Rules:
+//   • Text rows match ONLY on an ERROR envelope (is_error:true, an error_* subtype,
+//     or type:"error"): an agent whose ordinary reply talks about rate limiting
+//     (a ticket that adds a rate limiter) is never misread as a limit hit.
+//     There is NO exception, the legacy whole-string form included: `.result` on a
+//     success envelope is the agent's own final reply, which a misbehaving or
+//     prompt-injected agent controls. Honouring it would let the agent release its
+//     ticket with no attempt counted on every pass and never be parked for a human.
+//   • Text rows are anchored at the start of the string (`^`) and checked against
+//     the envelope's `.result` and each `errors[]` string.
+//   • `reset` names how the reset time is read when present: "clock" (the CLI's
+//     " · resets 3pm (Europe/London)" suffix), "epoch" (unix seconds in the match),
+//     "retry-after" (a retry-after seconds hint in the text). No reset → the
+//     configured default pause (usage-pause.mjs), which errs toward a longer wait.
+// Verified against two Claude Code builds: 2.1.42's npm cli.js, and 2.1.316's
+// native binary (the CLI on PATH on the build host this was checked on; the
+// factory runs whichever build its operator installed, so BOTH wordings stay):
+//   2.1.42  rj1(A,q)  = `You've hit your ${A}${q}`, A ∈ {session limit, weekly
+//               limit, Opus limit, Sonnet limit, usage limit, limit}.
+//   2.1.316 M(e,n,_,{progressSavedSuffix}) = `You've hit your ${e}${n}` plus an
+//               optional ` · progress saved`, e from its label table {5-hour limit,
+//               weekly limit, Opus limit, Sonnet limit, Fable limit, usage credit
+//               limit} or the literals "usage limit" / "limit".
+//   Both:     n/q = ` · resets ${time}` where time is "3pm" / "3:30pm" within 24h,
+//               "Oct 9, 3pm" beyond (", 2027" added in another year), then
+//               ` (${Intl timeZone})`. A trailing ` · progress saved` (2.1.316)
+//               follows the zone; parseResetClock ignores trailing segments.
+//   2.1.42  b79       = `You're out of extra usage${q}` (overage disabled: out_of_credits).
+//   2.1.316           = `You're out of usage credits${n}` (+ ` · progress saved`), and
+//               `You're out of usage credits. Switch to another model…`.
+//   2.1.316           = `You've reached your Fable limit` / `…limit.` (mid-session).
+//   2.1.42  kw6       = `API Error: Rate limit reached` (HTTP 429 without unified-limit
+//               headers); Qq1 (Opus high load) is also tagged error:"rate_limit".
+//   NOT matched on purpose: spend caps and admin switches ("You've hit your
+//   monthly spend limit", "…team's shared budget", "Your seat type doesn't
+//   include…", "… requires usage credits"). They do not end on their own; a
+//   human has to raise the cap, so they stay ordinary failures that park the
+//   ticket for a person instead of an open-ended run of paused re-tries.
+// The Agent SDK's assistant message carries `error: "rate_limit"`
+// (SDKAssistantMessageError); the raw Messages API 429 body is
+// {type:"error", error:{type:"rate_limit_error", message}}.
+// When Claude Code changes a string, add a row here (and a fixture in
+// test/usage-limit-detect.test.mjs) — never loosen an existing one.
+// =====================================================================
+export const USAGE_LIMIT_PATTERNS = Object.freeze([
+  {
+    id: "cc-hit-your-limit",
+    kind: "usage_limit",
+    re: /^You've hit your (?:5-hour limit|session limit|weekly limit|Opus limit|Sonnet limit|Fable limit|usage credit limit|usage limit|limit)(?=$|\s|\u00b7|\.)/,
+    reset: "clock",
+    source:
+      "Claude Code 2.1.42 cli.js rj1() and 2.1.316 M(): `You've hit your <limit> · resets <time> (<zone>)[ · progress saved]`",
+  },
+  {
+    id: "cc-out-of-usage-credits",
+    kind: "usage_limit",
+    re: /^You're out of usage credits(?=$|\s|\u00b7|\.)/,
+    reset: "clock",
+    source:
+      "Claude Code 2.1.316 (overage out_of_credits): `You're out of usage credits · resets <time> (<zone>)[ · progress saved]`",
+  },
+  {
+    id: "cc-reached-your-limit",
+    kind: "usage_limit",
+    re: /^You've reached your (?:[A-Za-z0-9-]+ )?limit(?=$|\s|\u00b7|\.)/,
+    reset: "clock",
+    source: "Claude Code 2.1.316 (mid-session): `You've reached your Fable limit[.]`",
+  },
+  {
+    id: "cc-out-of-extra-usage",
+    kind: "usage_limit",
+    re: /^You're out of extra usage(?=$|\s|\u00b7)/,
+    reset: "clock",
+    source: "Claude Code 2.1.42 cli.js b79(): `You're out of extra usage · resets <time> (<zone>)`",
+  },
+  {
+    id: "cc-legacy-usage-limit",
+    kind: "usage_limit",
+    re: /^Claude AI usage limit reached\|(\d{9,11})\s*$/,
+    reset: "epoch",
+    source:
+      "Claude Code 1.x print mode: `Claude AI usage limit reached|<unix seconds>` (absent from 2.1.42)",
+  },
+  {
+    id: "cc-api-rate-limit",
+    kind: "rate_limit",
+    re: /^API Error: Rate limit reached(?=$|\s|[.:])/,
+    reset: "retry-after",
+    source: "Claude Code 2.1.42 cli.js kw6(): `API Error: Rate limit reached` (HTTP 429)",
+  },
+  {
+    id: "cc-opus-high-load",
+    kind: "rate_limit",
+    re: /^Opus is experiencing high load, please use \/model to switch to Sonnet/,
+    reset: null,
+    source: 'Claude Code 2.1.42 cli.js Qq1, returned with error:"rate_limit"',
+  },
+  {
+    id: "api-429-rate-limit-error",
+    kind: "rate_limit",
+    re: /^API Error: 429\b[\s\S]*"type"\s*:\s*"rate_limit_error"/,
+    reset: "retry-after",
+    source: "Messages API 429 body relayed by Claude Code as `API Error: 429 {…rate_limit_error…}`",
+  },
+]);
+
+/** Structural (non-text) shapes, checked before the text table. Same contract. */
+export const USAGE_LIMIT_SHAPES = Object.freeze([
+  {
+    id: "sdk-assistant-error-rate-limit",
+    kind: "rate_limit",
+    test: (j) => j.error === "rate_limit",
+    source: 'Agent SDK SDKAssistantMessage.error === "rate_limit"',
+  },
+  {
+    id: "api-error-rate-limit-error",
+    kind: "rate_limit",
+    test: (j) =>
+      !!j.error &&
+      typeof j.error === "object" &&
+      j.error.type === "rate_limit_error" &&
+      (j.type === "error" || j.is_error === true),
+    source: 'Messages API error body {type:"error", error:{type:"rate_limit_error"}}',
+  },
+]);
+
+function isErrorEnvelope(json) {
+  return (
+    json.is_error === true ||
+    json.type === "error" ||
+    (typeof json.subtype === "string" && /^error/.test(json.subtype))
+  );
+}
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** The UTC offset (ms) of `tz` at the instant `utcMs`; throws on an unknown zone. */
+function tzOffsetMs(utcMs, tz) {
+  const f = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const p = {};
+  for (const x of f.formatToParts(new Date(utcMs))) p[x.type] = x.value;
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour % 24, +p.minute, +p.second);
+  return asUtc - Math.floor(utcMs / 1000) * 1000;
+}
+
+/** A wall-clock time in `tz` → epoch ms (DST-correct to the minute). */
+function zonedToUtcMs(y, mo, d, h, mi, tz) {
+  const guess = Date.UTC(y, mo, d, h, mi);
+  const off = tzOffsetMs(guess, tz);
+  let t = guess - off;
+  const off2 = tzOffsetMs(t, tz);
+  if (off2 !== off) t = guess - off2;
+  return t;
+}
+
+/** Today's calendar date in `tz` at `nowMs`. */
+function zonedToday(nowMs, tz) {
+  const t = nowMs + tzOffsetMs(nowMs, tz);
+  const d = new Date(t);
+  return { y: d.getUTCFullYear(), mo: d.getUTCMonth(), d: d.getUTCDate() };
+}
+
 /**
- * THE seam: parse a captured `--output-format json` envelope into the four things
- * every caller needs — the agent text, the usage signals, the cap signals, and the
- * stop reason. `json` is included for callers that still shape their own record.
+ * Parse Claude Code's reset suffix — `· resets 3pm (Europe/London)`,
+ * `· resets 3:30pm (UTC)`, `· resets Oct 9, 3pm (America/New_York)`,
+ * `· resets Oct 9, 2027, 3pm (…)` — into epoch ms, the NEXT such instant after
+ * `nowMs`. Returns null when there is no suffix, the time does not parse, or the
+ * zone is unknown (the caller then uses the configured default pause). A suffix
+ * without a zone is read in the host's zone (the CLI formats in its own zone).
+ * Trailing ` · …` segments after the reset (2.1.316's ` · progress saved`) are
+ * ignored, so they cannot push a weekly reset back to the short default pause.
  */
-export function parseResult(text) {
+export function parseResetClock(text, nowMs = Date.now()) {
+  if (typeof text !== "string") return null;
+  // Drop trailing ` · …` segments that carry no reset (2.1.316 appends
+  // ` · progress saved` after the zone), so the zone anchor below still holds.
+  let head = text.trim();
+  for (;;) {
+    const tail = /\s*[\u00b7\u2219]\s*([^\u00b7\u2219]*)$/.exec(head);
+    if (!tail || /\bresets\b/i.test(tail[1])) break;
+    head = head.slice(0, tail.index).trimEnd();
+  }
+  const m = /(?:\u00b7|\u2219|-)\s*resets\s+(.+?)\s*(?:\(([^)]+)\))?\s*$/i.exec(head);
+  if (!m) return null;
+  const when = m[1].trim();
+  const tz = (m[2] || "").trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const t =
+    /^(?:([A-Za-z]{3})[a-z]*\.?\s+(\d{1,2}),\s*(?:(\d{4}),\s*)?)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i.exec(
+      when,
+    );
+  if (!t) return null;
+  let hour = parseInt(t[4], 10);
+  const minute = t[5] ? parseInt(t[5], 10) : 0;
+  if (hour < 1 || hour > 12 || minute > 59) return null;
+  hour = (hour % 12) + (t[6].toLowerCase() === "p" ? 12 : 0);
+  try {
+    if (t[1]) {
+      const mo = MONTHS.indexOf(t[1].toLowerCase());
+      const day = parseInt(t[2], 10);
+      if (mo < 0 || day < 1 || day > 31) return null;
+      const today = zonedToday(nowMs, tz);
+      let y = t[3] ? parseInt(t[3], 10) : today.y;
+      let at = zonedToUtcMs(y, mo, day, hour, minute, tz);
+      // "Oct 9" with no year that is already well past → next year's Oct 9.
+      if (!t[3] && at < nowMs - 86_400_000) at = zonedToUtcMs(++y, mo, day, hour, minute, tz);
+      return at;
+    }
+    const today = zonedToday(nowMs, tz);
+    let at = zonedToUtcMs(today.y, today.mo, today.d, hour, minute, tz);
+    if (at <= nowMs) at = zonedToUtcMs(today.y, today.mo, today.d + 1, hour, minute, tz);
+    return at;
+  } catch {
+    return null; // unknown time zone
+  }
+}
+
+/** A `retry-after: N` / `retry after N seconds` hint in the text → epoch ms, or null. */
+export function parseRetryAfter(text, nowMs = Date.now()) {
+  if (typeof text !== "string") return null;
+  const m = /retry[-_ ]after["':\s]*(\d{1,7})/i.exec(text);
+  if (!m) return null;
+  const s = parseInt(m[1], 10);
+  return Number.isFinite(s) && s > 0 ? nowMs + s * 1000 : null;
+}
+
+/**
+ * Classify a parsed envelope as a usage-limit / rate-limit outcome, or null.
+ *   → { kind: "usage_limit"|"rate_limit", id, message, resetsAtMs: number|null,
+ *       resetBasis: "clock"|"epoch"|"retry-after"|null }
+ * `message` is the matched text (≤300 chars) so the event and the status line can
+ * quote what the CLI said. `resetsAtMs` is null when no reset could be read.
+ */
+export function detectUsageLimit(json, nowMs = Date.now()) {
+  if (!json || typeof json !== "object") return null;
+  const isErr = isErrorEnvelope(json);
+  // Structural shapes are typed fields the SDK / API set, not prose, so they need no
+  // error-envelope gate of their own beyond what each row checks.
+  for (const s of USAGE_LIMIT_SHAPES) {
+    if (s.test(json)) {
+      const msg =
+        (json.error && typeof json.error === "object" && typeof json.error.message === "string"
+          ? json.error.message
+          : typeof json.result === "string"
+            ? json.result
+            : "") || s.id;
+      const ra = parseRetryAfter(msg, nowMs);
+      return {
+        kind: s.kind,
+        id: s.id,
+        message: msg.slice(0, 300),
+        resetsAtMs: ra,
+        resetBasis: ra == null ? null : "retry-after",
+      };
+    }
+  }
+  const texts = [];
+  if (typeof json.result === "string") texts.push(json.result.trim());
+  if (Array.isArray(json.errors)) {
+    for (const e of json.errors) if (typeof e === "string") texts.push(e.trim());
+  }
+  for (const text of texts) {
+    for (const p of USAGE_LIMIT_PATTERNS) {
+      if (!isErr) continue;
+      const m = p.re.exec(text);
+      if (!m) continue;
+      let resetsAtMs = null;
+      if (p.reset === "clock") resetsAtMs = parseResetClock(text, nowMs);
+      else if (p.reset === "epoch") resetsAtMs = parseInt(m[1], 10) * 1000;
+      else if (p.reset === "retry-after") resetsAtMs = parseRetryAfter(text, nowMs);
+      if (!Number.isFinite(resetsAtMs)) resetsAtMs = null;
+      return {
+        kind: p.kind,
+        id: p.id,
+        message: text.slice(0, 300),
+        resetsAtMs,
+        resetBasis: resetsAtMs == null ? null : p.reset,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * THE seam: parse a captured `--output-format json` envelope into the things every
+ * caller needs — the agent text, the usage signals, the cap signals, the stop
+ * reason, and whether the call was refused by a usage window / rate limit
+ * (`usageLimit`, see detectUsageLimit; null for every ordinary result). `json` is
+ * included for callers that still shape their own record.
+ */
+export function parseResult(text, { nowMs = Date.now() } = {}) {
   const json = parseClaudeJson(text);
   return {
     json,
@@ -654,6 +973,7 @@ export function parseResult(text) {
     usage: extractUsage(json),
     capHit: extractCapSignals(json),
     stopReason: extractStopReason(json),
+    usageLimit: detectUsageLimit(json, nowMs),
   };
 }
 
@@ -683,6 +1003,9 @@ export const Worker = {
 //        → exit 0 iff the run stopped on its --max-budget-usd cap, else exit 1
 //   node lib/worker.mjs parse-result result-text          --json-file <f>
 //        → prints the model's reply text (empty when absent); exit 0
+//   node lib/worker.mjs parse-result usage-limit          --json-file <f>
+//        → prints the detectUsageLimit JSON and exits 0 on a usage/rate-limit
+//          outcome; prints nothing and exits 1 otherwise
 // =====================================================================
 function readFileSafe(f) {
   try {
@@ -718,6 +1041,11 @@ function parseResultCli(argv) {
       stopReasonIsBudget(parseClaudeJson(jsonFile ? readFileSafe(jsonFile) : "")) ? 0 : 1,
     );
   }
+  if (field === "usage-limit") {
+    if (!parsed.usageLimit) process.exit(1);
+    process.stdout.write(JSON.stringify(parsed.usageLimit));
+    process.exit(0);
+  }
   if (field === "result-text") {
     // The model's reply text from the envelope (empty when absent/unparseable).
     // Used by the eval judge to feed the reply into deliveryJudgeCli --mode parse.
@@ -727,7 +1055,20 @@ function parseResultCli(argv) {
   process.exit(2); // unknown field
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI when invoked directly — compared by real path too, so a symlinked
+// runner dir (a test's fake runner, a packaged install) still reaches the CLI instead
+// of silently exiting 0 with no output (which `parse-result usage-limit` callers would
+// otherwise have to guess about).
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === `file://${process.argv[1]}`) return true;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+if (invokedDirectly()) {
   const argv = process.argv.slice(2);
   if (argv[0] === "parse-result") parseResultCli(argv);
   else process.exit(2);

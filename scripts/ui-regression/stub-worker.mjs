@@ -27,10 +27,18 @@ const envelope = (result, extra = {}) =>
 
 // ── classify the call ───────────────────────────────────────────────────────
 const isWorktree = existsSync(path.join(cwd, ".git")) && existsSync(path.join(cwd, "package.json"));
+// A greenfield bootstrap runs IN the fresh repo dir the runner just created (a git repo
+// with a README baseline and no package.json yet); GAFFER_BOOTSTRAP_DIR names it.
+const isBootstrapDir =
+  existsSync(path.join(cwd, ".git")) &&
+  !existsSync(path.join(cwd, "package.json")) &&
+  Boolean(process.env.GAFFER_BOOTSTRAP_DIR || process.env.GAFFER_TICKET);
 let kind = "other";
 if (/black-box tests for #\d+/.test(prompt)) kind = "tester";
 else if (/machine-read verdict/.test(prompt) || /\{"verdict"/.test(prompt)) kind = "reviewer";
 else if (/You are an INTAKE agent/.test(prompt)) kind = "clarify";
+else if (/resolve a merge conflict on the delivery branch/.test(prompt)) kind = "resolver";
+else if (isBootstrapDir) kind = "bootstrap";
 else if (isWorktree) kind = "delivery";
 
 const num = (re) => {
@@ -46,7 +54,11 @@ const ticket =
         ? num(/ticket #(\d+)/)
         : kind === "clarify"
           ? num(/DRAFT ticket #(\d+)/)
-          : String(process.env.GAFFER_TICKET || "");
+          : kind === "resolver"
+            ? num(/\(ticket #(\d+)\)/)
+            : kind === "bootstrap"
+              ? String(process.env.GAFFER_TICKET || num(/Bootstrap ticket #(\d+)/))
+              : String(process.env.GAFFER_TICKET || "");
 
 // ── mode + per-ticket call counter ─────────────────────────────────────────
 let modeSpec = { mode: "ok" };
@@ -261,6 +273,85 @@ async function main() {
       }
     }
     return envelope("Clarified the draft.");
+  }
+
+  if (kind === "resolver") {
+    // Merge the default branch in (a real merge, real conflicts) and resolve each
+    // conflict block: main's lines first, then this branch's lines main does not have
+    // — except the branch's own rewrite of addTask, which main's version supersedes.
+    // Option resolver:"markers" commits the conflicted files AS-IS (markers and all),
+    // the bad resolution the re-gate must hold.
+    const def = (/Merge the default branch "([^"]+)" INTO/.exec(prompt) || [])[1] || "main";
+    let conflicted;
+    try {
+      git(cwd, "-c", "merge.conflictstyle=merge", "merge", "--no-edit", def);
+      return envelope(`Merged ${def} cleanly; nothing to resolve.`);
+    } catch {
+      conflicted = git(cwd, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
+    }
+    const markers = modeSpec.resolver === "markers";
+    for (const f of conflicted) {
+      if (markers) continue;
+      const file = path.join(cwd, f);
+      const txt = readFileSync(file, "utf8").replace(
+        /<<<<<<< [^\n]*\n([\s\S]*?)=======\n([\s\S]*?)>>>>>>> [^\n]*\n/g,
+        (_m, ours, theirs) => {
+          const th = theirs.split("\n").filter(Boolean);
+          const extra = ours
+            .split("\n")
+            .filter(Boolean)
+            .filter((l) => !th.includes(l) && !/^export function addTask\b/.test(l));
+          return [...th, ...extra].join("\n") + "\n";
+        },
+      );
+      writeFileSync(file, txt);
+    }
+    commitAll(
+      markers
+        ? `Merge ${def} into the branch (stub resolver: markers left in ${conflicted.join(", ")})`
+        : `Merge ${def} into the branch; resolve ${conflicted.join(", ")} (stub resolver)`,
+    );
+    return envelope(
+      markers
+        ? `Merged ${def}; committed ${conflicted.join(", ")} with the conflict markers still in.`
+        : `Resolved the conflicts in ${conflicted.join(", ")}: kept ${def}'s addTask and this branch's helper and test. Tests pass.`,
+      { total_cost_usd: 0.01, num_turns: 3 },
+    );
+  }
+
+  if (kind === "bootstrap") {
+    // Scaffold a tiny node project with a passing test, as a bootstrap agent would.
+    const t = ticket || "0";
+    mkdirSync(path.join(cwd, "src"), { recursive: true });
+    mkdirSync(path.join(cwd, "test"), { recursive: true });
+    const name = path.basename(cwd);
+    writeFileSync(
+      path.join(cwd, "package.json"),
+      JSON.stringify(
+        {
+          name,
+          version: "0.1.0",
+          private: true,
+          type: "module",
+          scripts: { test: "node --test", lint: 'node -e "process.exit(0)"' },
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    writeFileSync(
+      path.join(cwd, "src", "tasks.js"),
+      "export function addTask(list, title) { return [...list, { title, done: false }]; }\n",
+    );
+    writeFileSync(
+      path.join(cwd, "test", "tasks.test.js"),
+      'import test from "node:test"; import assert from "node:assert/strict";\nimport { addTask } from "../src/tasks.js";\ntest("addTask appends", () => { assert.equal(addTask([], "a").length, 1); });\n',
+    );
+    commitAll(`feat: scaffold ${name} (stub bootstrap for #${t})`);
+    return envelope(
+      `Scaffolded ${name}: package.json with a node --test script, src/tasks.js and one passing test.\n\nSmallest-change note: a fresh scaffold of three files (package.json, src/tasks.js, test/tasks.test.js); nothing else.`,
+      { total_cost_usd: 0.02, num_turns: 4 },
+    );
   }
 
   if (kind === "delivery") {

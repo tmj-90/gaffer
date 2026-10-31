@@ -144,6 +144,36 @@ export interface BoardView {
    * whether it is landing, lands on the next tick, or waits for Merge now.
    */
   readyForMerge: BoardCard[];
+  /**
+   * How many tickets each area holds IN TOTAL, whatever window was returned: a
+   * windowed lane shows `cards.length` of `counts.columns[column]`.
+   */
+  counts: {
+    columns: Record<BoardColumn, number>;
+    closed: number;
+    wontDo: number;
+  };
+  /** The window applied (`null` ⇒ every card was returned). */
+  window: BoardWindow | null;
+}
+
+/** An area of the board a window can page through. */
+export type BoardArea = BoardColumn | "closed" | "wontDo";
+
+/**
+ * A visible window over the board: at most `limit` cards per area starting at
+ * `offset`. With `area`, only that area's window is returned (the others come back
+ * empty, their counts intact) — the dashboard's "show more" for one lane.
+ */
+export interface BoardWindow {
+  limit: number;
+  offset: number;
+  area?: BoardArea;
+}
+
+/** True when `v` names a board area a window can page through. */
+export function isBoardArea(v: string): v is BoardArea {
+  return v === "closed" || v === "wontDo" || isBoardColumn(v);
 }
 
 /** Median time (ms) tickets spent in a state, over completed intervals. */
@@ -363,9 +393,40 @@ export class BoardService {
    *   linked to that repo are included. Omit (or pass undefined) for the
    *   full board (back-compat).
    */
-  board(repo?: string): BoardView {
+  board(repo?: string, window?: BoardWindow): BoardView {
     const now = this.clock.now();
     const tickets = this.tickets.listFiltered(repo ? { repo } : {});
+
+    // Place every ticket in its area first (cheap): the counts are always whole-board,
+    // and only the tickets inside the window are enriched into cards below.
+    const byArea = new Map<BoardArea, Ticket[]>([
+      ...BOARD_COLUMNS.map((c) => [c, []] as [BoardArea, Ticket[]]),
+      ["closed", []],
+      ["wontDo", []],
+    ]);
+    for (const ticket of tickets) {
+      // `cancelled` is the terminal won't-do bucket (reopenable); `failed` stays in
+      // the closed area; everything else maps to a live column.
+      const area: BoardArea =
+        ticket.status === "cancelled" ? "wontDo" : (columnFor(ticket.status) ?? "closed");
+      byArea.get(area)!.push(ticket);
+    }
+    // A window over the history areas starts at the newest (the dashboard shows Done
+    // newest first): sort them before slicing so page one holds what was just shipped.
+    if (window) {
+      const newestFirst = (a: Ticket, b: Ticket): number =>
+        b.updated_at < a.updated_at ? -1 : b.updated_at > a.updated_at ? 1 : 0;
+      for (const area of ["done", "closed", "wontDo"] as const) byArea.get(area)!.sort(newestFirst);
+    }
+    const visible = (area: BoardArea): Ticket[] => {
+      const all = byArea.get(area)!;
+      if (!window) return all;
+      if (window.area !== undefined && window.area !== area) return [];
+      return all.slice(window.offset, window.offset + window.limit);
+    };
+    const shown = new Map<BoardArea, Ticket[]>(
+      [...byArea.keys()].map((area) => [area, visible(area)]),
+    );
 
     // Index active claims by ticket so each card resolves its holder in O(1).
     const claimsByTicket = new Map<string, ActiveClaimView>();
@@ -373,43 +434,47 @@ export class BoardService {
       claimsByTicket.set(claim.ticket_id, claim);
     }
 
-    // One batched query for every card's write-boundary repos (avoids N+1).
-    const reposByTicket = this.repos.writeRefsForTickets(tickets.map((t) => t.id));
+    // One query for the shown cards' write-boundary repos (no N+1, no IN-list limit).
+    const shownIds = [...shown.values()].flatMap((list) => list.map((t) => t.id));
+    const reposByTicket = this.repos.writeRefsForTickets(shownIds);
     const displays = this.agentDisplays();
+    const cardsFor = (area: BoardArea): BoardCard[] =>
+      shown
+        .get(area)!
+        .map((ticket) =>
+          this.toBoardCard(
+            ticket,
+            claimsByTicket.get(ticket.id),
+            now,
+            reposByTicket.get(ticket.id) ?? [],
+            displays,
+          ),
+        );
 
-    const empty = (): BoardColumnView[] =>
-      BOARD_COLUMNS.map((column) => ({ column, cards: [] as BoardCard[] }));
-    const columns = empty();
-    const byColumn = new Map<BoardColumn, BoardCard[]>(columns.map((c) => [c.column, c.cards]));
-    const closed: BoardCard[] = [];
-    const wontDo: BoardCard[] = [];
-
-    for (const ticket of tickets) {
-      const card = this.toBoardCard(
-        ticket,
-        claimsByTicket.get(ticket.id),
-        now,
-        reposByTicket.get(ticket.id) ?? [],
-        displays,
-      );
-      // `cancelled` is the terminal won't-do bucket (reopenable); `failed` stays in
-      // the closed area; everything else maps to a live column.
-      if (ticket.status === "cancelled") {
-        wontDo.push(card);
-        continue;
-      }
-      const column = columnFor(ticket.status);
-      if (column === null) {
-        closed.push(card);
-        continue;
-      }
-      byColumn.get(column)!.push(card);
-    }
+    const columns: BoardColumnView[] = BOARD_COLUMNS.map((column) => ({
+      column,
+      cards: cardsFor(column),
+    }));
+    const counts = {
+      columns: Object.fromEntries(BOARD_COLUMNS.map((c) => [c, byArea.get(c)!.length])) as Record<
+        BoardColumn,
+        number
+      >,
+      closed: byArea.get("closed")!.length,
+      wontDo: byArea.get("wontDo")!.length,
+    };
 
     // The `ready_for_merge` column's cards, surfaced as a dedicated array too.
-    const readyForMerge = byColumn.get("ready_for_merge") ?? [];
+    const readyForMerge = columns.find((c) => c.column === "ready_for_merge")?.cards ?? [];
 
-    return { columns, closed, wontDo, readyForMerge };
+    return {
+      columns,
+      closed: cardsFor("closed"),
+      wontDo: cardsFor("wontDo"),
+      readyForMerge,
+      counts,
+      window: window ?? null,
+    };
   }
 
   /** Build a single board card, computing AC progress + claim/lease state. */

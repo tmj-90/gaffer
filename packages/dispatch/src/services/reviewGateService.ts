@@ -42,6 +42,12 @@ import { recordAcCheckInput } from "../domain/schemas.js";
 import { AC_CHECK_VERIFIER } from "../policy/policy.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
+import {
+  computeLandingStatus,
+  LANDING_PREFIX,
+  type LandingStatus,
+  REVIEW_PIN_PREFIX,
+} from "./landingStatus.js";
 import { isTestingEnabled, testerProvenance } from "../util/testingLane.js";
 import {
   contractHash,
@@ -100,6 +106,35 @@ export function approvalUnchanged(
   return deliverySha === mergeSha;
 }
 
+/** The current head of one write repo's delivery branch (see reviewedHeadsResolver). */
+export interface ReviewedHead {
+  repoId: string;
+  repo: string;
+  branch: string;
+  sha: string;
+}
+
+/**
+ * A commit the approver SAW (the Review view sends the `headSha` the diff endpoint
+ * returned; the CLI takes `--commit <repo>=<sha>`). `repo` is the repo id or name; null
+ * means "the ticket's only repo" and is refused for a multi-repo ticket.
+ */
+export interface ShownCommit {
+  repo: string | null;
+  sha: string;
+}
+
+export interface ApproveReviewOptions {
+  /** The commit(s) the approver reviewed. When present every write repo must match. */
+  commits?: readonly ShownCommit[] | undefined;
+  /**
+   * Entry points (REST, CLI) set this: an approval that names no commit is refused when
+   * any write repo has a resolvable head. The library default stays permissive so
+   * fixtures without git keep working; production callers always pass commits.
+   */
+  requireCommits?: boolean | undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -138,13 +173,22 @@ export interface ReviewGateServiceDeps {
    */
   readonly approvalShaResolver?: ApprovalShaResolver;
   /**
-   * REVIEW PIN (human approvals): resolves the delivery-branch head a HUMAN approves, so
-   * `approveReview` records it as the reviewed-commit pin (system `commit` evidence, uri
-   * `gaffer-reviewed-commit:<sha>`) that runner/lib/tester-binding.mjs enforces on every
-   * landing path — commits added after the approval are held, never landed unreviewed.
-   * `undefined` (the default) or a null result records no pin.
+   * REVIEW PIN: resolves the CURRENT delivery-branch head of every write repo (one entry
+   * per repo whose branch resolves), so `approveReview` can (a) refuse an approval whose
+   * shown commits no longer match (`stale_revision`) and (b) record one reviewed-commit
+   * pin per repo (system `commit` evidence, uri `gaffer-reviewed-commit:<sha>`, `repo_id`
+   * set) that runner/lib/tester-binding.mjs enforces on every landing path and the done
+   * gate requires to have landed. `undefined` (the default) or `[]` records no pin.
    */
-  readonly reviewedHeadResolver?: (ticket: Ticket) => { sha: string; branch: string } | null;
+  readonly reviewedHeadsResolver?: (ticket: Ticket) => readonly ReviewedHead[];
+  /**
+   * PER-REPOSITORY LANDING: true when `sha` is already contained in the repo's default
+   * branch (`git merge-base --is-ancestor`). markMerged uses it as POSITIVE evidence for a
+   * pending repo a merge path landed without recording it (a configured
+   * DISPATCH_MERGE_CMD, a merge by hand) and records the landing; anything it cannot
+   * verify stays pending. `undefined` verifies nothing.
+   */
+  readonly landedOnDefaultResolver?: (repoId: string, sha: string) => boolean;
   /**
    * GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate that answers
    * "does an explicit mode='auto' approve policy cover this ticket (its risk × ALL
@@ -231,6 +275,13 @@ function validatedBinding(
   return out;
 }
 
+/**
+ * PER-REPOSITORY LANDING: the `via` values whose landing happened upstream (a merged PR,
+ * possibly squashed), so the local default branch cannot confirm it. Every other landing
+ * is checked against git before it is recorded.
+ */
+const UNVERIFIABLE_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale"]);
+
 export class ReviewGateService {
   private readonly db: Db;
   private readonly clock: Clock;
@@ -249,8 +300,8 @@ export class ReviewGateService {
   private readonly onTicketParked:
     ((ticket: import("../domain/types.js").Ticket, detail: string) => void) | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
-  private readonly reviewedHeadResolver:
-    ((ticket: Ticket) => { sha: string; branch: string } | null) | undefined;
+  private readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];
+  private readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
 
@@ -269,7 +320,8 @@ export class ReviewGateService {
     this.requireRegisteredAgentApprover = deps.requireRegisteredAgentApprover ?? false;
     this.onTicketParked = deps.onTicketParked;
     this.approvalShaResolver = deps.approvalShaResolver;
-    this.reviewedHeadResolver = deps.reviewedHeadResolver;
+    this.reviewedHeadsResolver = deps.reviewedHeadsResolver;
+    this.landedOnDefaultResolver = deps.landedOnDefaultResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
     this.observedRiskResolver = deps.observedRiskResolver;
   }
@@ -286,7 +338,11 @@ export class ReviewGateService {
    * can never approve its own work. Operator opt-in via `DISPATCH_ALLOW_AGENT_APPROVE=1`
    * removes this gate (their machine, their call).
    */
-  approveReview(ticketRef: string, actor: Actor): TransitionResult {
+  approveReview(
+    ticketRef: string,
+    actor: Actor,
+    opts: ApproveReviewOptions = {},
+  ): TransitionResult {
     // P0 authz — do NOT weaken or remove this check. An agent may approve ONLY when
     // the operator opted in via DISPATCH_ALLOW_AGENT_APPROVE=1 (the pre-Phase-3 flag,
     // FIRST and unchanged) OR — Graduated Autonomy (Spec 2, Phase 3) — an EXPLICIT
@@ -357,13 +413,16 @@ export class ReviewGateService {
     // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
     // resolver throw or absence yields `null` (unknown) and never blocks the approve.
     const approvedUnchanged = this.computeApprovedUnchanged(ticket);
-    // REVIEW PIN: what a HUMAN approved is the branch head NOW. Resolved before the
-    // transition (git runs outside the write lock) and recorded right after it, so the pin
-    // post-dates the ticket's entry into in_review (tester-binding ignores older pins).
-    // Agent approvals are pinned by the runner itself (lib/review.sh pins the commit the
-    // reviewer judged, which may predate the approve call), so they are left alone here.
-    const humanPin =
-      actor.type === "human" || actor.type === "admin" ? this.resolveReviewedHead(ticket) : null;
+    // REVIEW PIN + STALE REVISION (external review #2). The heads are resolved before the
+    // transition (git runs outside the write lock). When the approver names the commits
+    // they saw, every write repo's head must still BE that commit — a branch that moved
+    // between the render and the click is refused (409 stale_revision), never approved.
+    // The pins recorded below are the commits the approver saw, one per repo, written in
+    // the SAME transaction as the transition. Without named commits (library callers) a
+    // HUMAN approval pins the current heads, as before; an agent approval without commits
+    // is pinned by the runner (lib/review.sh) only.
+    const heads = this.resolveReviewedHeads(ticket);
+    const pins = this.checkShownCommits(ticket, heads, actor, opts);
     // BBT-001: when the testing lane is ON and this ticket is eligible, route
     // through the independent tester (`in_review -> in_testing`) instead of
     // straight to merge. testerVerdict:true guards this transition.
@@ -372,38 +431,43 @@ export class ReviewGateService {
     // only ways out of in_testing are a recorded tester verdict or a human's
     // tester-pass / tester-fail (auditable evidence), never a plain approve.
     if (this.approveRoutesToTesting(ticket)) {
+      return inTransaction(this.db, () => {
+        const result = this.transitions.transition({
+          ticketId: ticket.id,
+          actor,
+          toStatus: "in_testing",
+          reason: "review_approved_to_testing",
+          expectedFromStatus: "in_review",
+          testerVerdict: true,
+          approvedUnchanged,
+        });
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.routed_to_testing",
+          payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
+        });
+        this.recordApprovalPins(ticket, actor, pins);
+        return result;
+      });
+    }
+    // The done gate's git runs HERE, before transition() takes the write lock.
+    const deliveryDiff = this.transitions.deliveryDiffProof(ticket.id);
+    return inTransaction(this.db, () => {
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
-        toStatus: "in_testing",
-        reason: "review_approved_to_testing",
+        toStatus: "ready_for_merge",
+        reason: "review_approved",
         expectedFromStatus: "in_review",
-        testerVerdict: true,
         approvedUnchanged,
+        reviewApprove: true, // reached the merge-ready state through the guarded approve path
+        deliveryDiff,
       });
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
-        actor,
-        event_type: "ticket.routed_to_testing",
-        payload: { from: "in_review", ...(ticket.acceptance === 1 ? { acceptance: true } : {}) },
-      });
-      this.recordHumanApprovalPin(ticket, actor, humanPin);
+      this.recordApprovalPins(ticket, actor, pins);
       return result;
-    }
-    const result = this.transitions.transition({
-      ticketId: ticket.id,
-      actor,
-      toStatus: "ready_for_merge",
-      reason: "review_approved",
-      expectedFromStatus: "in_review",
-      approvedUnchanged,
-      reviewApprove: true, // reached the merge-ready state through the guarded approve path
-      // The done gate's git runs HERE, before transition() takes the write lock.
-      deliveryDiff: this.transitions.deliveryDiffProof(ticket.id),
     });
-    this.recordHumanApprovalPin(ticket, actor, humanPin);
-    return result;
   }
 
   /**
@@ -418,7 +482,7 @@ export class ReviewGateService {
   /** The candidate commit REQUIRED CI is read for on approve (null when no CI is recorded). */
   private approveCiCandidate(ticket: Ticket): string | null {
     return this.ciStatus(ticket.id, null).required
-      ? (this.resolveReviewedHead(ticket)?.sha ?? null)
+      ? (this.ciCandidateHead(ticket)?.sha ?? null)
       : null;
   }
 
@@ -432,41 +496,240 @@ export class ReviewGateService {
     return { state: ci.state, commit: ci.commit };
   }
 
-  /** Best-effort head lookup for the human approval pin (a throw records no pin). */
-  private resolveReviewedHead(ticket: Ticket): { sha: string; branch: string } | null {
+  /**
+   * REQUIRED CI's candidate: the delivery head of the ticket's PRIMARY write repo (the
+   * first write repo in role order — the repo whose PR the runner's CI gate polls), or
+   * null when it does not resolve.
+   */
+  private ciCandidateHead(ticket: Ticket): ReviewedHead | null {
+    return this.resolveReviewedHeads(ticket)[0] ?? null;
+  }
+
+  /** Best-effort head lookup (a throw resolves no head: nothing to compare or pin). */
+  private resolveReviewedHeads(ticket: Ticket): readonly ReviewedHead[] {
     try {
-      return this.reviewedHeadResolver?.(ticket) ?? null;
+      return this.reviewedHeadsResolver?.(ticket) ?? [];
     } catch {
-      return null;
+      return [];
     }
   }
 
   /**
-   * Record the commit a human approved as the REVIEW PIN — a SYSTEM `commit` evidence row
-   * (agents record evidence as `agent` and cannot forge one) that the landing check reads
-   * on every path (the merge lane, the dashboard Merge, `gaffer merge`). Without it a human
-   * approval bound nothing: commits pushed to the branch between the approve and the merge
-   * landed unreviewed.
+   * STALE REVISION: compare the commits the approver saw with the current heads, and
+   * return the pins to record. Refuses (STATE_CONFLICT, details.reason `stale_revision`)
+   * when any write repo's head differs from what was shown, a repo was not shown at all,
+   * or a shown repo no longer resolves; and (`revision_required`) when the entry point
+   * requires named commits and none were given while a head exists.
    */
-  private recordHumanApprovalPin(
+  private checkShownCommits(
     ticket: Ticket,
+    heads: readonly ReviewedHead[],
     actor: Actor,
-    pin: { sha: string; branch: string } | null,
-  ): void {
-    if (!pin) return;
-    this.evidence.insert({
-      id: newId(),
-      ticket_id: ticket.id,
-      ac_id: null,
-      repo_id: null,
-      decision_id: null,
-      evidence_type: "commit",
-      summary: `human review (${actor.id ?? actor.type}) approved commit ${pin.sha} of ${pin.branch}`,
-      uri: `gaffer-reviewed-commit:${pin.sha}`,
-      payload_json: JSON.stringify({ kind: "review_pin", approver_type: actor.type }),
-      created_by: "dispatch",
-      recorded_by_actor_type: "system",
-      created_at: this.clock.now(),
+    opts: ApproveReviewOptions,
+  ): readonly ReviewedHead[] {
+    const commits = opts.commits;
+    if (commits === undefined || commits.length === 0) {
+      if (opts.requireCommits && heads.length > 0) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Approve names the commit you reviewed. Current head${heads.length > 1 ? "s" : ""}: ` +
+            heads.map((h) => `${h.repo}=${h.sha}`).join(", ") +
+            ". Look at the diff, then approve with those commits (the dashboard sends them; " +
+            "on the CLI pass --commit <repo>=<sha> for each repo).",
+          {
+            reason: "revision_required",
+            ticket_number: ticket.number,
+            current: heads.map((h) => ({ repo: h.repo, repo_id: h.repoId, sha: h.sha })),
+          },
+        );
+      }
+      // Legacy library path: a human approval pins what is there now; an agent's is
+      // pinned by the runner.
+      return actor.type === "human" || actor.type === "admin" ? heads : [];
+    }
+    const matches = (c: ShownCommit, h: ReviewedHead): boolean =>
+      c.repo === null ? heads.length === 1 : c.repo === h.repoId || c.repo === h.repo;
+    const moved: Array<{ repo: string; shown: string | null; current: string | null }> = [];
+    for (const h of heads) {
+      const shown = commits.find((c) => matches(c, h));
+      const sha = shown ? shown.sha.trim().toLowerCase() : null;
+      if (sha !== h.sha) moved.push({ repo: h.repo, shown: sha, current: h.sha });
+    }
+    for (const c of commits) {
+      if (!heads.some((h) => matches(c, h)))
+        moved.push({
+          repo: c.repo ?? "(unnamed)",
+          shown: c.sha.trim().toLowerCase(),
+          current: null,
+        });
+    }
+    if (moved.length > 0) {
+      const what = moved
+        .map((m) =>
+          m.current === null
+            ? `${m.repo} no longer has a delivery head to approve`
+            : m.shown === null
+              ? `${m.repo} (${m.current.slice(0, 12)}) was not in what you approved`
+              : `${m.repo} is now ${m.current.slice(0, 12)} (you reviewed ${m.shown.slice(0, 12)})`,
+        )
+        .join("; ");
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        moved.every((m) => m.shown === null)
+          ? `The approval does not cover every repository this ticket changes: ${what}. Nothing was approved — review every repository's diff and approve them together.`
+          : `The change moved since it was shown: ${what}. Nothing was approved — reload the diff and review it again.`,
+        { reason: "stale_revision", ticket_number: ticket.number, repos: moved },
+      );
+    }
+    return heads;
+  }
+
+  /**
+   * Record the commit(s) an approval covers as REVIEW PINS — one SYSTEM `commit` evidence
+   * row per write repo (agents record evidence as `agent` and cannot forge one) that the
+   * landing check reads on every path (the merge lane, the dashboard Merge, `gaffer
+   * merge`) and the done gate requires to have landed. Without them an approval bound
+   * nothing: commits pushed to a branch between the approve and the merge landed
+   * unreviewed, and a second repo's change could be left behind.
+   */
+  private recordApprovalPins(ticket: Ticket, actor: Actor, pins: readonly ReviewedHead[]): void {
+    const who = actor.type === "agent" ? "agent review" : "human review";
+    for (const pin of pins) {
+      this.evidence.insert({
+        id: newId(),
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: pin.repoId,
+        decision_id: null,
+        evidence_type: "commit",
+        summary: `${who} (${actor.id ?? actor.type}) approved commit ${pin.sha} of ${pin.branch} in ${pin.repo}`,
+        uri: `${REVIEW_PIN_PREFIX}${pin.sha}`,
+        payload_json: JSON.stringify({
+          kind: "review_pin",
+          approver_type: actor.type,
+          repo: pin.repo,
+        }),
+        created_by: "dispatch",
+        recorded_by_actor_type: "system",
+        created_at: this.clock.now(),
+      });
+    }
+  }
+
+  /** PER-REPOSITORY LANDING: which approved revisions have landed (see landingStatus.ts). */
+  landingStatus(ref: string): LandingStatus {
+    const ticket = this.ticketSvc.resolveTicket(ref);
+    return computeLandingStatus(this.db, ticket.id);
+  }
+
+  /**
+   * PER-REPOSITORY LANDING: record that one write repo's approved commit reached its
+   * default branch. SYSTEM/admin only (the landing paths run as the runner). Idempotent:
+   * recording the same (repo, commit) again returns the existing row. The commit must be
+   * that repo's current review pin — landing something nobody approved is refused.
+   */
+  recordLanding(
+    ref: string,
+    input: { repo: string; commit: string; via?: string | undefined },
+    actor: Actor,
+  ): { ticketId: string; repo: string; commit: string; recorded: boolean; status: LandingStatus } {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only a system or admin actor may record a landing.",
+        { actor_type: actor.type },
+      );
+    }
+    const sha = input.commit.trim().toLowerCase();
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "commit must be a full git commit id (40 or 64 hex characters).",
+      );
+    }
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.resolveTicket(ref);
+      if (ticket.status !== "ready_for_merge") {
+        throw new DispatchError(
+          "ILLEGAL_TRANSITION",
+          "A landing can only be recorded for an approved ticket (ready_for_merge).",
+          { status: ticket.status },
+        );
+      }
+      const before = computeLandingStatus(this.db, ticket.id);
+      const target = before.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
+      if (!target || target.sha !== sha) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `${input.repo} has no approved revision ${sha.slice(0, 12)} on #${ticket.number}; only an approved commit can be recorded as landed.`,
+          {
+            reason: "not_approved_revision",
+            approved: before.repos.map((r) => ({ repo: r.repo, sha: r.sha })),
+          },
+        );
+      }
+      if (target.landed) {
+        return {
+          ticketId: ticket.id,
+          repo: target.repo,
+          commit: sha,
+          recorded: false,
+          status: before,
+        };
+      }
+      // A LOCAL landing is checkable: the merge paths merge the pinned commit itself, so
+      // it must be contained in the repo's default branch. Fail closed — a commit git
+      // cannot show there (or a check that errors) is not recorded, so a forged or
+      // mistaken row can never let markMerged close a ticket whose repo never landed.
+      // A PR landing (`pr`, `pr-stale`) happens upstream and may be squashed, so the
+      // local branch is no evidence either way; only the merge lane records one.
+      if (this.landedOnDefaultResolver && !UNVERIFIABLE_LANDING_VIAS.has(input.via ?? "")) {
+        let onDefault: boolean;
+        try {
+          onDefault = this.landedOnDefaultResolver(target.repoId, sha);
+        } catch {
+          onDefault = false;
+        }
+        if (!onDefault) {
+          throw new DispatchError(
+            "STATE_CONFLICT",
+            `${target.repo}'s default branch does not contain ${sha.slice(0, 12)}; a local landing is recorded only once git shows the approved commit there.`,
+            { reason: "not_on_default_branch", repo: target.repo, commit: sha },
+          );
+        }
+      }
+      this.evidence.insert({
+        id: newId(),
+        ticket_id: ticket.id,
+        ac_id: null,
+        repo_id: target.repoId,
+        decision_id: null,
+        evidence_type: "commit",
+        summary: `landed ${sha} of #${ticket.number} on ${target.repo}'s default branch${input.via ? ` (via ${input.via})` : ""}`,
+        uri: `${LANDING_PREFIX}${sha}`,
+        payload_json: JSON.stringify({
+          kind: "landing",
+          repo: target.repo,
+          via: input.via ?? null,
+        }),
+        created_by: "dispatch",
+        recorded_by_actor_type: "system",
+        created_at: this.clock.now(),
+      });
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.repo_landed",
+        payload: { repo: target.repo, commit: sha, via: input.via ?? null },
+      });
+      return {
+        ticketId: ticket.id,
+        repo: target.repo,
+        commit: sha,
+        recorded: true,
+        status: computeLandingStatus(this.db, ticket.id),
+      };
     });
   }
 
@@ -643,13 +906,20 @@ export class ReviewGateService {
         reasons,
         files: observed?.files ?? null,
         lines: observed?.lines ?? null,
+        ...(observed?.holds?.length ? { holds: observed.holds } : {}),
       },
     });
-    throw new DispatchError(
-      "OBSERVED_RISK_ESCALATED",
-      `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`,
-      { declared: ticket.risk_level, observed: observedLevel, reasons },
-    );
+    // GATE INTEGRITY: a hard hold (the delivery weakened its own tests) is named as such —
+    // the declared level does not matter for it, so "exceeds declared" would mislead.
+    const message = observed?.holds?.length
+      ? `Auto-approve held for human review: the delivery modified the tests that gate it (${observed.holds.join("; ")}). A human can approve, or allow test changes on the ticket.`
+      : `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`;
+    throw new DispatchError("OBSERVED_RISK_ESCALATED", message, {
+      declared: ticket.risk_level,
+      observed: observedLevel,
+      reasons,
+      ...(observed?.holds?.length ? { holds: observed.holds } : {}),
+    });
   }
 
   /**
@@ -681,7 +951,7 @@ export class ReviewGateService {
     // here, outside the write transaction, and only when CI results exist at all.
     const ciCandidate =
       input.tested_commit ??
-      (this.ciStatus(pre.id, null).required ? (this.resolveReviewedHead(pre)?.sha ?? null) : null);
+      (this.ciStatus(pre.id, null).required ? (this.ciCandidateHead(pre)?.sha ?? null) : null);
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ticketRef);
       if (ticket.status !== "in_testing") {
@@ -869,6 +1139,45 @@ export class ReviewGateService {
       );
     }
     const ticket = this.ticketSvc.resolveTicket(ref);
+    // PER-REPOSITORY LANDING: `done` means EVERY approved revision landed. A two-repo
+    // ticket whose second repo's change is still on its delivery branch stays
+    // ready_for_merge (a visible "partly merged" item in the human queue); the merge
+    // paths land the rest and call this again.
+    let landing = computeLandingStatus(this.db, ticket.id);
+    if (landing.pending > 0 && this.landedOnDefaultResolver) {
+      // Git is the truth for a local landing: record what is verifiably on the default
+      // branch already (as SYSTEM evidence, via "git-verified"), then re-read.
+      for (const r of landing.repos.filter((x) => !x.landed)) {
+        let onDefault: boolean;
+        try {
+          onDefault = this.landedOnDefaultResolver(r.repoId, r.sha);
+        } catch {
+          onDefault = false;
+        }
+        if (onDefault)
+          this.recordLanding(
+            ticket.id,
+            { repo: r.repoId, commit: r.sha, via: "git-verified" },
+            { type: "system" },
+          );
+      }
+      landing = computeLandingStatus(this.db, ticket.id);
+    }
+    if (landing.pending > 0) {
+      const pending = landing.repos.filter((r) => !r.landed);
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `#${ticket.number} is not done: ${pending.map((r) => `${r.repo} (${r.sha.slice(0, 12)})`).join(", ")} ` +
+          `${pending.length === 1 ? "has" : "have"} not landed yet` +
+          (landing.landed > 0 ? ` (${landing.landed} of ${landing.repos.length} landed)` : "") +
+          ". Merge the remaining repositories; the ticket is done when every approved revision has landed.",
+        {
+          reason: landing.partial ? "partial_landing" : "not_landed",
+          pending: pending.map((r) => ({ repo: r.repo, sha: r.sha })),
+          landed: landing.repos.filter((r) => r.landed).map((r) => ({ repo: r.repo, sha: r.sha })),
+        },
+      );
+    }
     const approvedUnchanged = this.computeApprovedUnchanged(ticket);
     return this.transitions.transition({
       ticketId: ticket.id,

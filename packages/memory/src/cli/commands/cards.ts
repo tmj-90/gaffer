@@ -27,6 +27,7 @@ import {
   searchFileCards,
   setWatermark,
   upsertFileCard,
+  verifyFileCards,
 } from "../../core/fileCards.js";
 import { canonicalizeRepo } from "../../core/repoIdentity.js";
 import {
@@ -413,6 +414,9 @@ export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise
   // --keep-model: a MECHANICAL-ONLY refresh (no --tldr/--role-*) carries an existing
   // card's model half forward instead of nulling it — the post-merge freshness path.
   const keepModel = getBool(args.flags, "keep-model");
+  // --carry-from <old>: this file was renamed from <old>; a mechanical-only upsert takes
+  // the old card's model half (the caller deletes the old card afterwards).
+  const carryFrom = getString(args.flags, "carry-from");
   const json = getBool(args.flags, "json");
 
   // Read the file off disk — the mechanical source of truth. A path that
@@ -492,6 +496,7 @@ export async function cmdCardUpsert(args: ReturnType<typeof parseArgs>): Promise
       ...(model ? { model } : {}),
       ...(promptVersion ? { promptVersion } : {}),
       ...(keepModel ? { preserveModel: true } : {}),
+      ...(carryFrom ? { carryModelFrom: carryFrom } : {}),
     });
 
     if (json) {
@@ -549,6 +554,124 @@ export async function cmdCardSync(args: ReturnType<typeof parseArgs>): Promise<n
       process.stdout.write(`card watermark for ${sync.repo} set to ${sync.syncedCommit}\n`);
     }
     return 0;
+  } finally {
+    db.close();
+  }
+}
+
+// ── card verify ───────────────────────────────────────────────────────
+
+/** Read `rel` under `root` (never outside it); null when absent or unreadable. */
+function readUnder(root: string, rel: string): string | null {
+  const abs = resolve(root, rel);
+  if (abs === root || !abs.startsWith(root + "/")) return null;
+  try {
+    return readFileSync(abs, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `memory card verify --canonical <c> --repo <r> --repo-root <abs> [--fix]
+ *   [--commit <sha>] [--json]`
+ *
+ * Check EVERY stored card for the repo against the tree at --repo-root (a checkout of
+ * the commit the index is about to claim): a card whose path is not in the tree is
+ * MISSING, one whose content hash differs from the file is STALE. With --fix, missing
+ * cards are deleted and stale ones re-carded mechanically (the model summary is kept),
+ * then the set is verified again. With --commit, the watermark is advanced to that
+ * commit ONLY when the final verification is clean — "indexed at <commit>" is never
+ * recorded for cards that do not describe it.
+ *
+ * Exit 0 when clean, 1 when problems remain (the watermark is then left alone).
+ */
+export async function cmdCardVerify(args: ReturnType<typeof parseArgs>): Promise<number> {
+  const resolved = resolveRepoArgs(args, "card verify");
+  if (!resolved) return 2;
+  const repoRoot = getString(args.flags, "repo-root");
+  if (!repoRoot || !isAbsolute(repoRoot)) {
+    process.stderr.write("memory: card verify requires --repo-root <absolute-repo-path>\n");
+    return 2;
+  }
+  const root = resolve(repoRoot);
+  const fix = getBool(args.flags, "fix");
+  const commit = getString(args.flags, "commit");
+  const json = getBool(args.flags, "json");
+  const hashOf = (rel: string): string | null => {
+    const content = readUnder(root, rel);
+    return content === null ? null : sha256(content);
+  };
+
+  const db = openDb();
+  try {
+    const rk = repoKey(resolved.canonical);
+    const first = verifyFileCards(db, rk, hashOf);
+    let deleted = 0;
+    let refreshed = 0;
+    if (fix && !first.clean) {
+      for (const path of first.missing) {
+        if (deleteFileCard(db, rk, path)) deleted++;
+      }
+      for (const path of first.stale) {
+        const fileContent = readUnder(root, path);
+        if (fileContent === null) continue;
+        const contentHash = sha256(fileContent);
+        const loc = countLines(fileContent);
+        const mech = validateMechanical({
+          path,
+          contentHash,
+          loc,
+          source: "verify",
+          fileContent,
+        });
+        upsertFileCard(db, {
+          repoKey: rk,
+          canonical: resolved.canonical,
+          repo: resolved.repo,
+          path,
+          contentHash,
+          loc,
+          symbols: extractFileSymbols(path, fileContent),
+          ...(commit ? { syncedCommit: commit } : {}),
+          source: "verify",
+          cardStatus: mech.cardStatus,
+          validatedAt: new Date().toISOString(),
+          ...(mech.reasons.length > 0 ? { validationError: mech.reasons.join("; ") } : {}),
+          preserveModel: true,
+        });
+        refreshed++;
+      }
+    }
+    const final = fix && !first.clean ? verifyFileCards(db, rk, hashOf) : first;
+    let watermark: string | null = null;
+    if (final.clean && commit) {
+      watermark = setWatermark(db, rk, resolved.repo, commit, resolved.canonical).syncedCommit;
+    }
+    const report = {
+      checked: first.checked,
+      missing: first.missing,
+      stale: first.stale,
+      fixed: { deleted, refreshed },
+      clean: final.clean,
+      remaining: { missing: final.missing, stale: final.stale },
+      watermark,
+    };
+    if (json) {
+      process.stdout.write(JSON.stringify(report) + "\n");
+    } else {
+      process.stdout.write(
+        `card verify ${resolved.repo}: checked ${first.checked}, missing ${first.missing.length}, ` +
+          `stale ${first.stale.length}` +
+          (fix ? `; fixed ${deleted} deleted, ${refreshed} re-carded` : "") +
+          (final.clean
+            ? watermark
+              ? `; clean — watermark → ${watermark}\n`
+              : "; clean\n"
+            : `; NOT clean (${final.missing.length} missing, ${final.stale.length} stale) — watermark left alone\n`),
+      );
+    }
+    return final.clean ? 0 : 1;
   } finally {
     db.close();
   }
@@ -691,6 +814,7 @@ export async function cmdCardMarkFailed(args: ReturnType<typeof parseArgs>): Pro
  *   upsert       --canonical <c> --repo <r> --repo-root <abs> --path <rel> [model fields]
  *   sync         --canonical <c> --repo <r> --commit <sha>
  *   mark-failed  --canonical <c> --repo <r> --path <p> --reason <r>
+ *   verify       --canonical <c> --repo <r> --repo-root <abs> [--fix] [--commit <sha>]
  */
 export async function cmdCard(args: ReturnType<typeof parseArgs>): Promise<number> {
   const sub = args.positionals[0];
@@ -699,8 +823,9 @@ export async function cmdCard(args: ReturnType<typeof parseArgs>): Promise<numbe
   if (sub === "upsert") return await cmdCardUpsert(args);
   if (sub === "sync") return await cmdCardSync(args);
   if (sub === "mark-failed") return await cmdCardMarkFailed(args);
+  if (sub === "verify") return await cmdCardVerify(args);
   process.stderr.write(
-    "memory: card requires a subcommand — `memory card get|search|upsert|sync|mark-failed`\n",
+    "memory: card requires a subcommand — `memory card get|search|upsert|sync|verify|mark-failed`\n",
   );
   return 2;
 }

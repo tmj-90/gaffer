@@ -123,9 +123,16 @@ wg expire-claims >/dev/null 2>&1 \
 # this sweeps the matching stale worktree dirs. Safe even at concurrency 1 — a
 # clean data dir has none — and it NEVER touches a worktree whose ticket is still
 # claimed/in_progress (a live worker's), so it's safe to run before the pool spins.
+# POSITIVE EVIDENCE ONLY (external review #4): a worktree whose ticket status cannot be
+# read (Dispatch down, a missing DB) is KEPT and named, never treated as abandoned; only
+# a done, failed or cancelled ticket's worktree is removed (every other status is kept
+# and named: a clean `git status` cannot see gitignored files); DRY_RUN removes nothing.
 if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
-  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+  _reclaim_err="$(mktemp "${TMPDIR:-/tmp}/gaffer-reclaim.XXXXXX" 2>/dev/null || echo /dev/null)"
+  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>"$_reclaim_err" | tr '\n' ' ')"
   [ -n "${_reclaimed// /}" ] && echo "gaffer factory: reclaimed orphaned worktree(s) for ticket(s): ${_reclaimed% }"
+  [ -s "$_reclaim_err" ] && sed 's/^gaffer: orphan-recovery: /gaffer factory: worktree preserved: /; s/^gaffer factory: worktree preserved: DRY_RUN: /gaffer factory: DRY_RUN: /' "$_reclaim_err" >&2
+  [ "$_reclaim_err" = /dev/null ] || rm -f "$_reclaim_err"
 fi
 
 RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
@@ -217,7 +224,8 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   # now-unclaimed ones we can already see. NEVER touches a claimed/in_progress
   # ticket's worktree, so a (now-finished) pool leaves only genuinely-stale dirs.
   if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
-    _reclaimed_end="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+    # Same positive-evidence rule as at start; the kept-worktree notes go to stderr.
+    _reclaimed_end="$(gaffer_cleanup_orphaned_worktrees | tr '\n' ' ')"
     [ -n "${_reclaimed_end// /}" ] && echo "gaffer factory: end-of-run reclaimed orphaned worktree(s): ${_reclaimed_end% }"
   fi
 
@@ -252,7 +260,24 @@ _setup_error=0
 # Without it bash carried on to the next tick whenever the reaped tick exited normally.
 _loop_stop=0
 trap '_loop_stop=1' INT TERM HUP
+_loop_stopping() { [ "$_loop_stop" = 1 ]; }
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
+  # USAGE WINDOW (lib/usage-pause.sh): a model call was refused by the plan's usage
+  # window / a rate limit and $GAFFER_DATA/usage-pause.json says when it resets. Sleep
+  # until then instead of spinning ticks into the refusal; no tick is admitted, so the
+  # day cap, MAX_TICKS and the empty-poll count are untouched while it waits. A stop
+  # signal ends the wait at once; a human who clears the pause early is honoured
+  # within GAFFER_USAGE_PAUSE_POLL_SECS.
+  if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
+     && _up_line="$(gaffer_usage_pause_active)"; then
+    echo "gaffer factory: $_up_line — sleeping until then, no new work admitted (lift it early: node $HERE/lib/usage-pause.mjs clear)"
+    if ! gaffer_usage_pause_wait _loop_stopping; then
+      echo "gaffer factory: stop signal — not starting another tick."
+      break
+    fi
+    echo "gaffer factory: usage pause over — admitting work again."
+    continue
+  fi
   # LIVE CAPS: the day caps are re-read from the CURRENT config before every
   # admission, so a dashboard edit (lower MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD)
   # stops a running loop at its next tick — not only the next loop pass. Fail closed:

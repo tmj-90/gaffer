@@ -13,6 +13,12 @@
 #   • tester (prompt asks for "black-box tests for #N"): see the tester_* modes
 #     (default: tester_pass);
 #   • intake clarify ("You are an INTAKE agent"): a bare "ok" unless mode clarify;
+#   • conflict resolver ("resolve a merge conflict on the delivery branch", bin/
+#     merge-ticket.mjs): merges the default branch into the branch for real and resolves
+#     each conflict block (the default branch's lines, then the branch's own lines it
+#     lacks, minus the branch's rewrite of addTask), commits ON the branch;
+#   • greenfield bootstrap (cwd is the fresh repo the runner made: a git repo with no
+#     package.json): scaffolds package.json + src/tasks.js + one passing test, commits;
 #   • everything else (onboard analysis, product owner, judge): a bare "ok" envelope —
 #     the product-owner run therefore ends "failed: filed 0 drafts", which is the honest
 #     classification and is asserted as "run recorded", not "drafts filed".
@@ -47,6 +53,8 @@
 #                      pauses the ticket; the resumed call (after Continue) finishes.
 #   conflict           the delivery rewrites line 1 of src/tasks.js (addTask) with a
 #                      ticket-specific body, so two such tickets conflict on merge.
+#                      {"mode":"conflict","resolver":"markers"}: the resolver commits the
+#                      conflicted files with the markers still in (a bad resolution).
 # Every call is RECORDED as one JSON line in $GAFFER_DATA/stub-calls.jsonl:
 #   {ts, kind, ticket, mode, call, cwd, argv (prompt elided), env (GAFFER_* names and
 #    values the agent saw), prompt}

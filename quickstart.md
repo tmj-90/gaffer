@@ -148,6 +148,11 @@ runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (L
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
 
+If the model refuses a call because your usage window ran out (or a rate limit hit),
+the ticket goes back to Ready without counting an attempt and the run sleeps until the
+window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
+on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
+
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
 `gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and
 your `--check` commands, and **submits it for review** (`in_review`). The run summary
@@ -165,17 +170,46 @@ runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge
 runner/gaffer merge 1                            # the same conflict-safe merge the dashboard's Merge button runs
 ```
 
+`approve` shows the commit of each repository it is about to approve, with a diffstat,
+and asks; the approval covers exactly those commits. If a branch moves before you
+confirm, the approval is refused and nothing is approved. Non-interactively, pass the
+commits you reviewed: `runner/gaffer approve 1 --commit <repo>=<sha>` (one per repo;
+`runner/gaffer wg ticket diff 1 --heads` prints them).
+
 `merge` first builds the merge of the approved commit onto your current default branch in
 a scratch worktree and runs your repo's test/lint gates on **that** merge (the merge gate):
 only if the combination passes does it land that exact merge commit on the default branch,
 mark the ticket **done**, refresh the repo's digest + feature ledger and delete the merged
-branch. A combination that fails (each side passed alone) never lands: the ticket is held
-for you (*blocked*, with the failing output on it) and your default branch is untouched.
+branch. A ticket that spans several repositories lands one such gated merge per
+repository and is done only when all of them landed. A combination that fails (each side
+passed alone) never lands: the ticket is held for you (*blocked*, with the failing output
+on it) and your default branch is untouched.
 A merge conflict is never forced: the ticket goes back for rework and re-approval.
 Run your repo's tests afterwards; the change is on your default branch, in your checkout.
 
 For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy
 flags under **Safety** below — off by default.
+
+> **A delivery that changed its own tests waits for you.** If the agent deleted or renamed
+> a test, added a `.skip` / `.only` / `xfail`, or changed the `test` script (or a hook or
+> script it runs, such as an added `pretest`), the gates' **integrity** row reads FLAG, the
+> Review view shows a banner naming each change, and an agent approve is held whatever the
+> autonomy flags say. If the ticket really should change its tests (removing an obsolete
+> suite, say), allow it before or after the delivery:
+>
+> ```bash
+> runner/gaffer wg ticket allow-test-changes 1 --reason "the v1 suite is obsolete"
+> ```
+>
+> or press **Allow test changes…** on the Review view. `--off` withdraws it.
+>
+> The allowance turns only the integrity FLAG and the hold into a PASS with a note (and the
+> `test-modified` annotation into medium). It does **not** change what the gate runs: a
+> gate script the delivery changed still runs as the **base** commit has it, so a ticket
+> whose job is to change `scripts.test` can still fail its tests gate. To change the gate
+> itself, change the repo's registered test/lint command
+> (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`), or merge the script change
+> to the base branch first.
 
 > **Readying a ticket needs a reviewer under the strict policy packs.** The default
 > policy pack is `solo_loose`, which readies freely. But tickets under
@@ -287,7 +321,14 @@ docker compose logs dashboard | grep token=   # the login URL, token included
 ```
 
 State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos`
-inside the container, so onboard them by that path. The container itself is the
+inside the container, so onboard them by that path. A repository the factory creates
+for a greenfield build is created under `/repos` too (`GAFFER_BOOTSTRAP_ROOT=/repos`),
+so it lives on the host beside the others and survives `docker compose down` / `up`
+and a rebuilt image; anything under the container's home directory does not. The build
+context is an allow-list (`.dockerignore`): only the manifests, the lockfile,
+`packages/`, `runner/`, `scripts/` and the licence files reach the image, never
+`./repos`, a `.env`, a database or `.gaffer/` (`node scripts/docker-context-check.mjs`
+lists the context and checks it; CI runs it). The container itself is the
 containment boundary there, so the runner's own OS sandbox is off; on a Docker host
 running the factory natively, `docker compose --profile sandbox build` produces the
 per-ticket delivery image and egress proxy the `docker` sandbox provider uses.

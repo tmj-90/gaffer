@@ -9,7 +9,8 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -530,6 +531,79 @@ try {
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
 
+  // ── 5. (review packet) the runner's verdict strip under the title ─────────
+  //   One dossier read (?include=packet) draws the gates with their commands, the
+  //   tester, cost and turns, the attempt, risk, and the criteria table: the
+  //   machine-checked AC shows the runner's exit code, not the agent's word.
+  {
+    const strip = await waitFor(
+      async () => ((await page.$(".rv-verdict .vd-cell.vd-gates")) ? true : null),
+      "the verdict strip",
+      15000,
+      500,
+    ).catch(() => null);
+    if (!strip) bad("Review: no verdict strip under the title");
+    else {
+      const gl = (await page.getAttribute(".vd-cell.vd-gates", "aria-label")) || "";
+      /^Gates: passed, \d+ of \d+ ran$/.test(gl)
+        ? ok(`Review packet: the gates cell reads the runner's DoD ("${gl}")`)
+        : bad(`Review packet: gates cell label '${gl}'`);
+      const gt = (await page.textContent(".vd-cell.vd-gates")) || "";
+      /npm test/.test(gt) && /The runner saw \d+ tests? pass \(node:test\)/.test(gt)
+        ? ok("Review packet: the tests gate names its command and the runner's own test count")
+        : bad(`Review packet: gates cell text '${gt.slice(0, 200)}'`);
+      const cells = await page.$$eval(".rv-verdict .vd-cell", (els) =>
+        els.map((e) => e.className.match(/vd-(gates|tester|cost|attempts|risk|pin)\b/)?.[1]),
+      );
+      ["gates", "tester", "cost", "attempts", "risk"].every((k) => cells.includes(k))
+        ? ok(`Review packet: the strip draws ${cells.filter(Boolean).join(", ")}`)
+        : bad(`Review packet: strip cells ${JSON.stringify(cells)}`);
+      const acRow = (await page.textContent(".rv-ac-table tr.ac-ev-runner").catch(() => "")) || "";
+      /Runner · exit 0/.test(acRow) && /npm test/.test(acRow)
+        ? ok(
+            "Review packet: the machine-checked criterion shows the runner's exit 0 and its command",
+          )
+        : bad(`Review packet: AC table runner row '${acRow.slice(0, 200)}'`);
+      // Both themes: the strip and the table under the dark kit, audited like the views.
+      await page.emulateMedia({ colorScheme: "dark" });
+      await sleep(300);
+      const bg = await page.$eval(".vd-cells", (e) => getComputedStyle(e).backgroundColor);
+      const light = /rgb\((2[3-5]\d), (2[3-5]\d), (2[3-5]\d)\)/.test(bg);
+      !light
+        ? ok(`Review packet: the strip follows the dark kit (${bg})`)
+        : bad(`Review packet: the strip stayed light under the dark kit (${bg})`);
+      await shot(page, "review-packet-dark");
+      if (AXE_SOURCE) await auditA11y(page, "review-packet-dark", "1400");
+      await page.emulateMedia({ colorScheme: "light" });
+      await sleep(200);
+    }
+  }
+
+  // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
+  //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
+  //          Sign-off shows no "tests changed" banner. A delivery that weakened its
+  //          tests is covered by runner/test/gate-integrity-e2e*.test.sh + the JSDOM test.
+  const giRow = await waitFor(
+    async () => {
+      const rows = await page.$$eval(".dod-item", (els) =>
+        els.map((e) => ({
+          cls: e.className,
+          gate: (e.querySelector(".dod-gate") || {}).textContent || "",
+        })),
+      );
+      return rows.find((r) => r.gate === "integrity") || null;
+    },
+    "integrity row in the gates checklist",
+    15000,
+    500,
+  ).catch(() => null);
+  giRow && /dod-i-pass/.test(giRow.cls)
+    ? ok("Review gates checklist carries the gate-integrity row, passed for a clean delivery")
+    : bad(`no passing integrity row in the gates checklist (${giRow ? giRow.cls : "absent"})`);
+  (await page.locator(".integrity-banner").count()) === 0
+    ? ok("no tests-changed banner on a clean delivery's Sign-off")
+    : bad("a tests-changed banner showed on a clean delivery");
+
   // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
   //        reader back to the top of the diff they are reading. On a short
   //        viewport, scroll to the bottom of the queue, then make the factory emit
@@ -575,6 +649,51 @@ try {
         );
     await page.setViewportSize({ width: 1400, height: 1000 });
     await sleep(300);
+  }
+
+  // ── 5b. STALE REVISION (external review #2): the diff names the commit it shows; a
+  //        commit pushed to the branch after the render makes Approve refuse (409
+  //        stale_revision), the view say the change moved, and reload the new diff.
+  {
+    const d = (await api("GET", `/tickets/${ticket.id}/diff`)).json;
+    const rd = (d?.repos || []).find((r) => r.headSha);
+    rd
+      ? ok(`diff endpoint names the commit it rendered (${rd.repo} @ ${rd.headSha.slice(0, 12)})`)
+      : bad("diff endpoint returned no headSha");
+    const repoPath = REPO_PATH;
+    if (rd && repoPath && rd.branch) {
+      const g = (...a) =>
+        execFileSync("git", ["-C", repoPath, "-c", "user.name=ui", "-c", "user.email=ui@x", ...a], {
+          encoding: "utf8",
+        }).trim();
+      // Advance the delivery branch WITHOUT touching the live checkout (a commit-tree on
+      // the branch tip's tree, then update-ref), so the next approval is stale.
+      const tip = g("rev-parse", `refs/heads/${rd.branch}`);
+      const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
+      g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
+      const btn = page
+        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
+        .first();
+      await waitFor(
+        async () => (!(await btn.isDisabled()) ? true : null),
+        "approve enabled",
+        30000,
+        500,
+      );
+      await btn.click();
+      await btn.click();
+      const banner = await page
+        .waitForSelector(".diff-moved-banner", { timeout: 15000 })
+        .catch(() => null);
+      banner
+        ? ok("Review: a stale approval is refused and the view says the change moved")
+        : bad("Review: no 'the change moved' banner after a stale approval");
+      const still = (await api("GET", `/tickets/${ticket.id}`)).json.ticket;
+      still?.status === "in_review"
+        ? ok("Review: the stale approval approved nothing (still in review)")
+        : bad(`Review: stale approval moved the ticket to ${still?.status}`);
+      await shot(page, "review-stale-revision");
+    } else note("stale-revision step skipped: no REPO_PATH / head to advance");
   }
 
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
@@ -741,6 +860,41 @@ try {
     whoJson && whoJson.capability === "read" && whoJson.actor && whoJson.actor.id === "ci-reviewer"
       ? ok("API: the minted token authenticates as principal ci-reviewer (read)")
       : bad(`API: minted token whoami unexpected: ${who.status} ${JSON.stringify(whoJson)}`);
+    // External review #5: a webhook URL is a secret — a read principal sees only whether
+    // it is set and its host, and cannot read it back.
+    {
+      await api("POST", "/api/settings", {
+        settings: { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
+      });
+      const asRead = await fetch(`${BASE}/api/settings`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      const txt = asRead.ok ? await asRead.text() : "";
+      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
+        ? ok("API: a read principal sees a webhook as configured + host only")
+        : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
+      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      back.status === 403
+        ? ok("API: a read principal is refused the secret read-back (403)")
+        : bad(`API: secret read-back answered ${back.status} to a read principal`);
+      // The page is already on #/settings, so a goto to the same hash would not re-render
+      // it: reload to read the settings as saved by the POST above.
+      await page.reload({ waitUntil: "load" });
+      await page
+        .waitForSelector("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret", { timeout: 5000 })
+        .catch(() => {});
+      await sleep(400);
+      const maskedTxt =
+        (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
+        "";
+      maskedTxt.includes("hooks.slack.com") && !maskedTxt.includes("SECRET")
+        ? ok("Settings: the Slack webhook shows masked (set · host) with Replace")
+        : bad(`Settings: the webhook field is not masked: '${maskedTxt.slice(0, 80)}'`);
+      await shot(page, "settings-secret-masked");
+      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY_SLACK_URL: "" } });
+    }
     const denied = await fetch(`${BASE}/tickets`, {
       method: "POST",
       headers: { Authorization: `Bearer ${minted}`, "content-type": "application/json" },
@@ -970,6 +1124,117 @@ try {
     await shot(page, "floor");
   }
 
+  // ── 6z. usage-window pause on Health: the runner writes $GAFFER_DATA/usage-pause.json
+  //   when the model refuses a call on its usage window; Health says so first, in
+  //   both themes, at 320 and 1440, and passes the a11y audit. Removed afterwards so
+  //   the rest of the run is not paused (the dashboard only reads the file).
+  if (process.env.GAFFER_DATA) {
+    const pauseFile = path.join(process.env.GAFFER_DATA, "usage-pause.json");
+    const until = Date.now() + 3_600_000;
+    writeFileSync(
+      pauseFile,
+      JSON.stringify({
+        paused_until: new Date(until).toISOString(),
+        until_ms: until,
+        kind: "usage_limit",
+        basis: "reset",
+        message: "You've hit your session limit · resets 3pm (UTC)",
+        ticket: ticket.number ?? null,
+      }),
+    );
+    try {
+      for (const [w, h, theme] of [
+        [1440, 900, "light"],
+        [320, 640, "dark"],
+      ]) {
+        const c3 = await browser.newContext({ viewport: { width: w, height: h } });
+        const p3 = await c3.newPage();
+        await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
+        await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+        await sleep(900);
+        const got = await p3.evaluate(() => {
+          const n = document.querySelector(".usage-pause-note");
+          return {
+            text: n ? n.textContent.trim() : "",
+            label: n ? n.getAttribute("aria-label") : "",
+            overflow: document.documentElement.scrollWidth > window.innerWidth,
+          };
+        });
+        /^Paused until .+: usage limit\./.test(got.text) &&
+        /^The factory is paused until .+ because of a usage limit\.$/.test(got.label || "") &&
+        !got.overflow
+          ? ok(
+              `health@${w} ${theme}: "${got.text.slice(0, 48)}…" (sentence label, no sideways scroll)`,
+            )
+          : bad(
+              `health@${w} ${theme}: pause note '${got.text}' label '${got.label}' overflow=${got.overflow}`,
+            );
+        await shot(p3, `health-usage-pause-${w}-${theme}`);
+        if (AXE_SOURCE) await auditA11y(p3, "health (usage pause)", String(w));
+        await c3.close();
+      }
+    } finally {
+      try {
+        unlinkSync(pauseFile);
+      } catch {
+        /* already gone */
+      }
+    }
+  } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
+
+  // ── 6a. work: the board is a visible window with whole-board counts ─────────
+  //   The Work view asks /api/board for a window per lane (?limit=), and each lane
+  //   head reads the server's total for that lane, not just the cards it loaded.
+  {
+    const boardReqs = [];
+    const onReq = (req) => {
+      if (req.url().includes("/api/board")) boardReqs.push(req.url());
+    };
+    page.on("request", onReq);
+    await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+    await sleep(900);
+    page.off("request", onReq);
+    boardReqs.some((u) => /[?&]limit=\d+/.test(u))
+      ? ok("work: the board is fetched as a visible window (?limit=)")
+      : bad(`work: board requests carry no window: ${boardReqs.join(" ") || "none"}`);
+    const windowed = (await api("GET", "/api/board?limit=1")).json;
+    const heads = await page
+      .$$eval(".board-col", (els) =>
+        els.map((e) => [e.dataset.column, e.querySelector(".board-col-count")?.textContent]),
+      )
+      .catch(() => []);
+    const wrong = heads.filter(
+      ([col, n]) => String(windowed?.counts?.columns?.[col] ?? "?") !== String(n),
+    );
+    heads.length && !wrong.length
+      ? ok(`work: every lane head equals the server's count (${heads.length} lanes)`)
+      : bad(`work: lane heads disagree with /api/board counts: ${JSON.stringify(wrong)}`);
+  }
+
+  // ── 6b. health: flow efficiency claims only agent-working time ──────────────
+  //   The merged ticket above has a transition history, so the form guide shows the
+  //   flow efficiency as working time and lists where shipped tickets waited (the
+  //   merge queue on its own) instead of counting review and the queue as work.
+  {
+    await page.goto(`${BASE}/#/health`, { waitUntil: "load" });
+    await sleep(900);
+    const bandLabel =
+      (await page.getAttribute(".form-guide .fg-eff .band", "aria-label").catch(() => "")) || "";
+    /^Flow efficiency (<1|\d+)% of lead time with an agent working on the ticket$/.test(bandLabel)
+      ? ok(`health: flow efficiency says what it measures ("${bandLabel}")`)
+      : bad(`health: flow efficiency band reads '${bandLabel}'`);
+    const waitRows = await page
+      .$$eval(".form-guide .fg-wait dt", (els) => els.map((e) => e.textContent.trim()))
+      .catch(() => []);
+    waitRows.includes("Waiting to merge") &&
+    waitRows.includes("In review or testing") &&
+    waitRows.includes("Sent back, waiting for rework") &&
+    waitRows.includes("Before work started")
+      ? ok(`health: waiting is shown on its own (${waitRows.join(", ")})`)
+      : bad(`health: no waiting breakdown (rows: ${waitRows.join(", ") || "none"})`);
+    await shot(page, "health-flow");
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [
@@ -1038,7 +1303,7 @@ try {
       { w: 1280, h: 800, views },
       { w: 1440, h: 900, views },
       { w: 360, h: 780, views: ["overview", "work", "review", "floor"] },
-      { w: 320, h: 640, views: ["overview", "work", "floor"] },
+      { w: 320, h: 640, views: ["overview", "work", "review", "floor"] },
     ];
     for (const { w, h, views: vs, axe: runAxe } of sweep) {
       const c2 = await browser.newContext({ viewport: { width: w, height: h } });

@@ -111,6 +111,63 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("diff <ref>")
+    .description(
+      "The delivery diff per write repo, with the head commit (`headSha`) it was computed " +
+        "against. --heads prints only `repo=sha` lines — the values `review approve --commit` takes.",
+    )
+    .option("--heads", "print only one repo=sha line per write repo", false)
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const d = wg.ticketDiff(wg.resolveTicket(ref).id);
+      if (opts.heads) {
+        for (const r of d.repos) if (r.headSha) process.stdout.write(`${r.repo}=${r.headSha}\n`);
+      } else {
+        printJson(d);
+      }
+      wg.db.close();
+    });
+
+  ticket
+    .command("landing <ref>")
+    .description(
+      "PER-REPOSITORY LANDING: each write repo's approved commit and whether it has landed. " +
+        "A ticket is done only when every approved revision has landed.",
+    )
+    .action((ref, _opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      printJson({ ok: true, ...wg.landingStatus(ref) });
+      wg.db.close();
+    });
+
+  ticket
+    .command("record-landing <ref>")
+    .description(
+      "PER-REPOSITORY LANDING: record that one write repo's approved commit reached its " +
+        "default branch (the merge paths call this per repo). System/admin only; idempotent.",
+    )
+    .requiredOption("--repo <repo>", "repo name or id")
+    .requiredOption("--commit <sha>", "the approved commit that landed")
+    .option(
+      "--via <how>",
+      "local | git-verified (checked against the default branch) | pr | pr-stale (upstream)",
+    )
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.recordLanding(
+        ref,
+        { repo: String(opts.repo), commit: String(opts.commit), via: opts.via },
+        actor,
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("dossier <ref>")
     .description(
       "DELIVERY-DOSSIER: assemble the tamper-evident evidence artifact for a " +
@@ -352,6 +409,31 @@ export function registerTicket(program: Command): void {
         ? { type: "admin", id: process.env.USER ?? "cli" }
         : cliActor();
       const res = wg.setTestable(ref, !opts.off, actor);
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
+    .command("allow-test-changes <ref>")
+    .description(
+      "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
+        "skip marker, change a gate script) — the runner's integrity gate row then reads " +
+        "PASS with a note instead of FLAG, and the test changes alone no longer hold an auto-approve " +
+        "(they still count as medium risk, so a ticket declared low is still held). " +
+        "It does NOT change which command the gate runs: a gate script the delivery changed " +
+        "still runs as the BASE commit has it, so to change the gate itself, change the " +
+        "repo's registered test/lint command or merge the script change to the base first. " +
+        "--off withdraws the allowance. Human/admin only; recorded as an event.",
+    )
+    .option("--off", "withdraw the allowance (test changes are flagged again)", false)
+    .option("--reason <text>", "why this ticket may change its tests (kept on the event)")
+    .option("--admin", "act as an admin actor", false)
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = opts.admin
+        ? { type: "admin", id: process.env.USER ?? "cli" }
+        : cliActor();
+      const res = wg.setAllowTestChanges(ref, !opts.off, actor, opts.reason);
       printJson({ ok: true, ...res });
       wg.db.close();
     });
@@ -640,6 +722,14 @@ export function registerTicket(program: Command): void {
     .description("Record (upsert) a repo's delivery artifact on a ticket")
     .option("--branch <branch>", "branch name")
     .option("--commit <sha>", "commit sha")
+    .option(
+      "--base-sha <sha>",
+      "the commit the delivery branch was cut from (the runner records it; the gate-integrity scan diffs from it)",
+    )
+    .option(
+      "--base-recut",
+      "with --base-sha: the runner cut the branch again from the base, so the new base replaces the stored one (a stored base is otherwise write-once)",
+    )
     .option("--pr <url>", "pull-request url")
     .option("--status <status>", "delivery status")
     .option("--evidence <ref>", "evidence reference")
@@ -651,6 +741,8 @@ export function registerTicket(program: Command): void {
           repo_id: repoRef,
           branch_name: opts.branch,
           commit_sha: opts.commit,
+          base_sha: opts.baseSha,
+          ...(opts.baseRecut ? { base_recut: true } : {}),
           pr_url: opts.pr,
           status: opts.status,
           evidence_ref: opts.evidence,

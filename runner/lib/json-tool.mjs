@@ -736,7 +736,8 @@ switch (cmd) {
 
   // ── dod.sh ────────────────────────────────────────────────────────────────────
   // dod-evidence-summary <results-file> <PASS|FAIL>: the JSON line the dashboard parses,
-  // then the human transcript and the failing output blocks, verbatim.
+  // then the human transcript, the failing output blocks and the tests gate's summary
+  // (DOD-TALLY) blocks, verbatim.
   case "dod-evidence-summary": {
     const [results, overall] = args;
     let text;
@@ -749,21 +750,39 @@ switch (cmd) {
     const lines = [];
     const splitLines = text.split(/\r\n|\r|\n/);
     if (splitLines.length && splitLines[splitLines.length - 1] === "") splitLines.pop();
+    // GATE rows are the runner's own and live only OUTSIDE the framed output/tally
+    // blocks; a GATE-shaped line inside a frame is the delivered code's output.
+    let inFrame = false;
     for (const ln of splitLines) {
+      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-TALLY ")) {
+        inFrame = true;
+        continue;
+      }
+      if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-TALLY---")) {
+        inFrame = false;
+        continue;
+      }
+      if (inFrame) continue;
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
-        const [, gate, repo, status, rc, note] = parts;
-        gates.push({ gate, repo, status, rc, note });
-        lines.push(`  [${status}] ${gate} (${repo}) — ${note}`);
+        const [, gate, repo, status, rc, note, source] = parts;
+        // GATE INTEGRITY: the optional 7th column says where the command's behaviour was
+        // read from (base / base-pinned / head / registered / unresolved); absent on rows
+        // that predate it, so their JSON stays byte-identical.
+        gates.push(
+          source ? { gate, repo, status, rc, note, source } : { gate, repo, status, rc, note },
+        );
+        lines.push(`  [${status}] ${gate} (${repo}) — ${note}${source ? ` [${source}]` : ""}`);
       }
     }
     const tail = [];
     let keep = false;
     for (const ln of splitLines) {
-      if (ln.startsWith("---DOD-OUTPUT ")) {
+      // The failing output blocks and (REVIEW PACKET) the tests gate's summary lines.
+      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-TALLY ")) {
         keep = true;
         tail.push(ln);
-      } else if (ln.startsWith("---END-DOD-OUTPUT---")) {
+      } else if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-TALLY---")) {
         tail.push(ln);
         keep = false;
       } else if (keep) tail.push(ln);
@@ -973,12 +992,23 @@ switch (cmd) {
     const l = lift.lift;
     const wm = lift.withMemory;
     const wo = lift.withoutMemory;
-    const arms = `with-memory ${wm.meanScore}/5 (n=${wm.count}) vs without ${wo.meanScore}/5 (n=${wo.count})`;
+    const arms = `memory primed ${wm.meanScore}/5 (n=${wm.count}) vs not primed ${wo.meanScore}/5 (n=${wo.count})`;
     const lstr =
       l !== null && l !== undefined
         ? `${l >= 0 ? "+" : ""}${Number(l).toFixed(2)}`
         : "n/a (need both arms)";
-    println(`memory lift         ${lstr}   ${arms}`);
+    // HONEST NAME (external review #11): a judge-score GAP on submitted work across
+    // different tickets — not a memory uplift; the exclusion and the sample are shown.
+    println(`memory score gap    ${lstr}   ${arms}`);
+    println(
+      `                    judge score on SUBMITTED work only, different tickets per arm — not an uplift`,
+    );
+    println(
+      `                    excludes attempts that failed before submission (gate, park, refused submit)`,
+    );
+    println(
+      `                    honest measure: a matched-ticket comparison (docs/eval-harness.md) — not measured`,
+    );
     if (cost.costedCount) {
       const cpp = cost.costPerPass;
       const tail =

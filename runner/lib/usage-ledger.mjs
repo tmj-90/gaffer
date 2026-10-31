@@ -38,7 +38,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -47,6 +47,7 @@ import { isAbsolute, join } from "node:path";
 // importers (tests, decompose.mjs, product-owner-run.mjs) are unchanged.
 import {
   UNKNOWN,
+  detectUsageLimit,
   extractResultText,
   extractUsage,
   numOrUnknown,
@@ -54,7 +55,8 @@ import {
 } from "./worker.mjs";
 
 export { UNKNOWN, extractResultText, parseClaudeJson };
-export const LEDGER_FILENAME = "usage-ledger.jsonl";
+// The ledger path is resolved in ONE place, shared with the paid-launch admission check.
+export { LEDGER_FILENAME, resolveLedgerPath } from "./usage-ledger-path.mjs";
 export const VALID_KINDS = new Set([
   "delivery",
   "clarify",
@@ -250,12 +252,15 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     numTurns !== UNKNOWN ||
     durationMs !== UNKNOWN;
   if (!hasAnySignal) {
-    return unknownRecord({
-      ts,
-      ticket,
-      kind,
-      reason: reason || "result JSON carried no usage block",
-    });
+    return withUsageLimit(
+      unknownRecord({
+        ts,
+        ticket,
+        kind,
+        reason: reason || "result JSON carried no usage block",
+      }),
+      json,
+    );
   }
 
   // If modelUsage is absent but top-level usage exists, synthesise a single
@@ -275,7 +280,7 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     };
   }
 
-  return {
+  const rec = {
     ts: ts || new Date().toISOString(),
     ticket: ticket ?? null,
     kind: kind || null,
@@ -286,23 +291,16 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     num_turns: numTurns,
     duration_ms: durationMs,
   };
+  return withUsageLimit(rec, json);
 }
 
-/**
- * The ledger file, or null when there is none. GAFFER_USAGE_LEDGER wins; `0`, `off`,
- * `false` or `no` turn the ledger off (they used to be taken as a file name, so
- * `GAFFER_USAGE_LEDGER=0` wrote a file called `0` into whatever directory the runner
- * was in). A relative path resolves under GAFFER_DATA when that is set. Without an
- * explicit path the ledger is $GAFFER_DATA/usage-ledger.jsonl, gated on GAFFER_DATA.
- */
-export function resolveLedgerPath(env = process.env) {
-  const explicit = (env.GAFFER_USAGE_LEDGER ?? "").trim();
-  if (explicit) {
-    if (/^(0|off|false|no)$/i.test(explicit)) return null;
-    if (!isAbsolute(explicit) && env.GAFFER_DATA) return join(env.GAFFER_DATA, explicit);
-    return explicit;
-  }
-  return env.GAFFER_DATA ? join(env.GAFFER_DATA, LEDGER_FILENAME) : null;
+// A call the usage window / rate limit refused is labelled on its row (the SAME
+// detectUsageLimit parseResult uses, so the ledger and the scheduler agree). Absent
+// on every ordinary row, so existing rows and readers are unchanged.
+function withUsageLimit(rec, json) {
+  const limit = detectUsageLimit(json);
+  if (limit) rec.usage_limit = limit.kind;
+  return rec;
 }
 
 /**
@@ -355,6 +353,8 @@ function parseCliArgs(argv) {
     killEstimate: null,
     killBasis: null,
     elapsedMs: null,
+    attemptId: null,
+    startedAt: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -368,6 +368,26 @@ function parseCliArgs(argv) {
     else if (a === "--kill-basis") out.killBasis = argv[++i];
     // How long the killed call ran — scales the estimate (deriveKillEstimate).
     else if (a === "--elapsed-ms") out.elapsedMs = argv[++i];
+    // The delivery attempt this call belongs to, and when it was spawned: lets the
+    // Health report charge a correction's spend to the send-back that caused it.
+    else if (a === "--attempt-id") out.attemptId = argv[++i];
+    else if (a === "--started-at") out.startedAt = argv[++i];
+  }
+  return out;
+}
+
+/**
+ * Stamp a record with its delivery attempt (`attempt_id`, e.g. `c3f9a…/2` — a hash of
+ * the claim, never the claim token itself, and the attempt number within it) and the
+ * call's spawn time (`started_at`). Malformed values are dropped, never guessed.
+ */
+export function withAttempt(record, { attemptId, startedAt } = {}) {
+  const out = { ...record };
+  if (typeof attemptId === "string" && /^[A-Za-z0-9._:/-]{1,96}$/.test(attemptId)) {
+    out.attempt_id = attemptId;
+  }
+  if (typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))) {
+    out.started_at = new Date(Date.parse(startedAt)).toISOString();
   }
   return out;
 }
@@ -505,7 +525,10 @@ function cliMain(argv) {
       killBasis: args.killBasis,
       elapsedMs: args.elapsedMs,
     });
-    record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
+    // A usage-window refusal also exits non-zero but carries a full envelope. Its row
+    // keeps the conservative estimate (the spend caps never under-count) and is
+    // labelled usage_limit so the ledger says why the call ended.
+    record = withUsageLimit(estimatedRecord({ ticket, kind, reason, estimateUsd, basis }), json);
   } else if (json === null) {
     const reason = "no parseable --output-format json on stdout";
     const { estimateUsd, basis } = deriveKillEstimate({
@@ -518,7 +541,7 @@ function cliMain(argv) {
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }
-  appendUsageRecord(record);
+  appendUsageRecord(withAttempt(record, args));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

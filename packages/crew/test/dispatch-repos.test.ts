@@ -42,6 +42,19 @@ describe("withDispatchRepos — Dispatch's registry is the idle loops' repo sour
     expect(events.types()).toContain("dispatch_repos_merged");
   });
 
+  it("carries the recorded remote, so GitHub ingest can resolve a dashboard-onboarded repo", () => {
+    const wg = new FakeDispatchClient();
+    wg.seedRepository({
+      name: "api",
+      localPath: "/srv/api",
+      remoteUrl: "https://github.com/acme/api.git",
+    });
+    wg.seedRepository({ name: "local", localPath: "/srv/local" });
+    const merged = withDispatchRepos(registryWith([]), wg);
+    expect(merged.get("api").remote_url).toBe("https://github.com/acme/api.git");
+    expect(merged.get("local").remote_url).toBeNull();
+  });
+
   it("skips a Dispatch repo without a local path (nothing on disk to scan)", () => {
     const wg = new FakeDispatchClient();
     wg.seedRepository({ name: "remote-only", localPath: null });

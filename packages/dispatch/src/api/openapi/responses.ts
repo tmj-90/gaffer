@@ -16,6 +16,14 @@ import {
   APPROVE_OUTCOME_KINDS,
   type ApproveOutcome as ApproveOutcomeType,
 } from "../../services/approveOutcome.js";
+import type {
+  RepoDiff as RepoDiffShape,
+  TicketDiff as TicketDiffShape,
+} from "../../services/diffService.js";
+import {
+  RISK_KINDS,
+  type RiskAnnotation as RiskAnnotationShape,
+} from "../../services/riskAnnotations.js";
 import type { AgentDisplay } from "../../services/squadService.js";
 
 /**
@@ -59,6 +67,9 @@ export const TicketRow = z
     can_be_tested: int,
     test_contract: nstr.describe("JSON-encoded test contract or null."),
     acceptance: int,
+    allow_test_changes: int.describe(
+      "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note).",
+    ),
     human_owner: nstr,
     human_delivered: nstr,
     delivery_budget_usd: z.number().nullable(),
@@ -252,6 +263,89 @@ export const TestableSet = z
     eventId: str.describe("Deprecated camelCase twin of event_id."),
   })
   .strict();
+
+export const TestChangesAllowed = z
+  .object({ ticket_id: str, allow_test_changes: z.boolean(), event_id: eventId })
+  .strict();
+
+export const RiskKind = z
+  .enum(RISK_KINDS)
+  .describe(
+    "What a risk annotation flags. `sensitive-path`: secret/auth/infra paths; " +
+      "`dependency-change`: a manifest or lockfile; `large-deletion`: many deleted lines; " +
+      "`test-modified`: the delivery changed the tests that gate it (deleted/renamed a " +
+      "test file, added a skip/only marker, changed a gate script, touched test or " +
+      "package-manager config). Unallowed, `test-modified` raises observed risk to high " +
+      "and holds an agent approve for a person.",
+  );
+
+export const RiskAnnotation = z
+  .object({
+    kind: RiskKind,
+    severity: z.enum(["high", "medium"]),
+    detail: str.describe("Short human summary."),
+    paths: z.array(str).optional().describe("The concrete paths that triggered it."),
+    items: z
+      .array(str)
+      .optional()
+      .describe("`test-modified` only: one human line per finding, for the Review banner."),
+    allowed: z
+      .boolean()
+      .optional()
+      .describe(
+        "`test-modified` only: a human allowed test changes on this ticket; the annotation " +
+          "drops to medium and no longer holds an approve on its own.",
+      ),
+  } satisfies Record<keyof RiskAnnotationShape, ZodType>)
+  .strict()
+  .describe("An advisory risk flag on a repo's delivery diff.");
+
+export const RepoDiff = z
+  .object({
+    repo: str,
+    branch: nstr.describe("The resolved delivery branch, or null."),
+    baseBranch: str.describe("The default branch the delivery branch is diffed against."),
+    diff: str.describe("Raw unified diff text (possibly truncated); empty when unavailable."),
+    files: int,
+    additions: int,
+    deletions: int,
+    truncated: z.boolean(),
+    unavailable: z
+      .enum(["no_branch", "repo_not_on_disk", "no_local_path", "empty", "git_error"])
+      .optional()
+      .describe("Why no diff text is available."),
+    message: str.optional(),
+    riskAnnotations: z.array(RiskAnnotation),
+    repoId: str.optional().describe("The repository id, so an approval can name the repo it saw."),
+    headSha: str
+      .nullable()
+      .optional()
+      .describe(
+        "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision).",
+      ),
+  } satisfies Record<keyof RepoDiffShape, ZodType>)
+  .strict()
+  .describe("The delivery diff for one write repository.");
+
+export const TicketDiff = z
+  .object({ ticketId: str, repos: z.array(RepoDiff) } satisfies Record<
+    keyof TicketDiffShape,
+    ZodType
+  >)
+  .extend({
+    approve_outcome: ApproveOutcome.optional().describe(
+      "An in_review ticket only: the first step a human Approve would certainly take now.",
+    ),
+  })
+  .strict();
+
+/** Response schemas rendered as their own components and `$ref`d where nested. */
+export const SHARED_RESPONSE_COMPONENTS = [
+  "ApproveOutcome",
+  "RepoDiff",
+  "RiskAnnotation",
+  "RiskKind",
+] as const;
 
 export const TestContractSet = z
   .object({

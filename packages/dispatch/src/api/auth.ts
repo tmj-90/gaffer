@@ -261,6 +261,22 @@ export function isMutationAuthorized(req: IncomingMessage): boolean {
 }
 
 /**
+ * True ONLY for an ADMIN principal: the operator's own full token, an active named
+ * principal whose actor type is `admin` with full capability, or auth disabled (the
+ * embedder/test posture, where every caller is the operator). A read-scoped token and a
+ * `human` principal are not admins. Gates read-back of secret-bearing settings.
+ */
+export function isAdminRequest(req: IncomingMessage): boolean {
+  const full = apiToken();
+  if (!full) return true;
+  const provided = bearer(req);
+  if (provided.length === 0) return false;
+  if (tokenMatches(provided, full)) return true;
+  const p = requestPrincipal(req);
+  return Boolean(p && p.principal.capability === "full" && p.principal.actor_type === "admin");
+}
+
+/**
  * True ONLY when the request carries a CORRECT credential — either the full token
  * or the derived read-scoped token. Unlike {@link isAuthorized} this never returns
  * true merely because auth is disabled — it proves the caller actually holds a

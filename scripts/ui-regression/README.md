@@ -78,7 +78,7 @@ another's queue.
 
 The stub worker takes a per-ticket MODE from `$GAFFER_DATA/stub-mode.json` (the
 agent runs under `env -i`, so a STUB_* variable never reaches it): ok, fail_first,
-changes_verdict, tester_pass, tester_fail, tester_no_verdict, clarify, slow_claim,
+fail_always, changes_verdict, tester_pass, tester_fail, tester_no_verdict, clarify, slow_claim,
 pause_first, conflict. `stub-claude.sh`'s header documents each, and every call is
 recorded (env, argv, prompt) in `$GAFFER_DATA/stub-calls.jsonl`.
 

@@ -27,6 +27,8 @@
 #                      commits; every later delivery call fixes that assertion and
 #                      commits — so the DoD tests gate rejects attempt 1 and the runner's
 #                      in-tick rework loop re-invokes the agent with the real failure.
+#   fail_always        like fail_first, but no later call fixes it: every attempt fails
+#                      the tests gate (a delivery that exhausts its attempts and parks).
 #   changes_verdict    the FIRST reviewer call for the ticket says RECOMMEND CHANGES and
 #                      ends {"verdict":"CHANGES"}; later reviewer calls APPROVE.
 #   tester_pass        the tester commits test/tester-<N>.test.js (a passing black-box

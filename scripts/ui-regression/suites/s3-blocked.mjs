@@ -14,7 +14,7 @@ export default async function s3(t, L) {
     acs: ["covered by a test"],
     ready: true,
   });
-  L.setStubMode(stuck.number, "fail_first");
+  L.setStubMode(stuck.number, "fail_always");
   await t.visit("work");
   await t.poll();
   const parked = await L.waitStatus(stuck.id, L.SETTLED, 240000);
@@ -70,7 +70,7 @@ export default async function s3(t, L) {
   // Park it again (a second exhausted attempt) and unblock it to Ready this time.
   await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" });
   await L.api("POST", `/tickets/${stuck.id}/ready`);
-  L.setStubMode(stuck.number, "fail_first");
+  L.setStubMode(stuck.number, "fail_always");
   await t.visit("work");
   await t.poll();
   await L.waitStatus(stuck.id, L.SETTLED, 240000);

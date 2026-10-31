@@ -315,12 +315,16 @@ async function main() {
         tests,
         `import { ${fn} } from "../src/tasks.js";\ntest("${fn} drops completed", () => { assert.equal(${fn}([{title:"a",done:true}]).length, 0); });\n`,
       );
-      if (mode === "fail_first")
+      if (mode === "fail_first" || mode === "fail_always")
         appendFileSync(
           tests,
           `test("stubFailFirst${t} keeps one task", () => { assert.equal(${fn}([{title:"a",done:true}]).length, 1); });\n`,
         );
       commitAll(`feat: ${fn} helper (stub agent delivery)`);
+    } else if (mode === "fail_always") {
+      // Never fixes: the failing test stays, so every attempt fails the tests gate.
+      appendFileSync(tasks, `// ${fn} still failing (delivery call ${call})\n`);
+      commitAll(`chore: ${fn} attempt ${call} (stub agent, still failing)`);
     } else if (mode !== "fail_first") {
       // A redelivery (rework, resume) still changes something, as an agent would.
       appendFileSync(tasks, `// ${fn} revisited (delivery call ${call})\n`);

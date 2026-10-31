@@ -50,4 +50,12 @@ export interface VerdictBinding {
   tested_commit?: string;
   contract_hash?: string;
   replay?: ReplayState;
+  /**
+   * TESTER REPLAY (external review #4): the commit on `gaffer-tests/ticket-<n>` holding the
+   * test files this run of the tester saved (the runner's commit of its worktree), or
+   * `"none"` when this run saved none. The landing replays exactly that commit's files on
+   * the merge candidate — never whatever the branch points at by then, so an earlier run's
+   * tests, a deleted branch or a rewritten one cannot stand in for this PASS's assertions.
+   */
+  tests_commit?: string;
 }

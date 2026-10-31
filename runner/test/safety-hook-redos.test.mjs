@@ -92,6 +92,29 @@ for (const [label, prefix] of Object.entries(inputs)) {
   }
 }
 
+// The paren-less perl/ruby write forms and `git -C <dir>` write targets (the
+// $GAFFER_DATA guard): their patterns are structured, not `[^,]*` scans, so a long run of
+// repeated call names stays linear — ~45 KB of each is answered (denied: an inline write
+// whose path cannot be read) well inside the budget.
+for (const [label, command] of [
+  ["perl paren-less open", `perl -e '${"open ".repeat(9000)}'`],
+  ["ruby paren-less File.open", `ruby -e '${"File.open ".repeat(5000)}'`],
+  ["ruby paren-less File.new", `ruby -e '${"File.new x ".repeat(4000)}'`],
+]) {
+  const { status, ms } = timed(command);
+  t.assert(
+    `hook answers ~45 KB of ${label} with exit 2 in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+    status === 2 && ms - baseline < 1000,
+  );
+}
+{
+  const { status, ms } = timed(`git ${"-C . ".repeat(8000)}checkout -- x`);
+  t.assert(
+    `hook answers 8000 repeated git -C dirs in < 1s over start-up (exit ${status}, ${ms}ms, start-up ${baseline}ms)`,
+    ms - baseline < 1000,
+  );
+}
+
 // The ~100 KB deep path (`echo x > /a/a/…`, and the same path as a Write) took ~60-70s
 // to decide in the secret-path regexes, which are polynomial in the input length. The
 // input-size cap now blocks it before any rule runs: the whole spawned hook answers

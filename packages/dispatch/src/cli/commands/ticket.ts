@@ -168,6 +168,48 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("record-tester-replay <ref>")
+    .description(
+      "TESTER REPLAY: record that the independent tester's test files passed on the revision " +
+        "that landed (the runner's landing path calls this once the merge gate replayed them on " +
+        "the merge candidate). System only; idempotent per landed revision.",
+    )
+    .requiredOption("--commit <sha>", "the landed revision (the gated merge commit)")
+    .requiredOption("--pin <sha>", "the tested commit whose assertions were replayed")
+    .option("--files-json <json>", "JSON array of the tester's test files that ran", "[]")
+    .option("--repo <repo>", "repo name or id (default: the ticket's primary repo)")
+    .option("--via <how>", "local | pr")
+    .option("--note <text>", "why these (or no) tester files were replayed")
+    .option("--as <actor>", "actor type: system", "system")
+    .action((ref, opts, cmd) => {
+      parseAs(opts.as, ["system"] as const);
+      let files: unknown;
+      try {
+        files = JSON.parse(String(opts.filesJson));
+      } catch {
+        files = null;
+      }
+      if (!Array.isArray(files) || !files.every((f) => typeof f === "string")) {
+        throw new DispatchError("VALIDATION_ERROR", "--files-json must be a JSON array of paths");
+      }
+      const wg = open(cmd.optsWithGlobals());
+      const res = wg.recordTesterReplay(
+        ref,
+        {
+          commit: String(opts.commit),
+          pin: String(opts.pin),
+          files: files as string[],
+          repo: opts.repo ? String(opts.repo) : undefined,
+          via: opts.via ? String(opts.via) : undefined,
+          note: opts.note ? String(opts.note) : undefined,
+        },
+        { type: "system" },
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("dossier <ref>")
     .description(
       "DELIVERY-DOSSIER: assemble the tamper-evident evidence artifact for a " +
@@ -483,6 +525,10 @@ export function registerTicket(program: Command): void {
       "--replay <state>",
       "the runner's clean replay of the tester's tests on the tested commit: passed | failed | skipped",
     )
+    .option(
+      "--tests-commit <sha|none>",
+      "the commit holding the test files this tester run saved (gaffer-tests/ticket-<n>), or none",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
@@ -495,6 +541,7 @@ export function registerTicket(program: Command): void {
           ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
           ...(opts.replay ? { replay: String(opts.replay) } : {}),
+          ...(opts.testsCommit ? { tests_commit: String(opts.testsCommit) } : {}),
         },
         actor,
       );

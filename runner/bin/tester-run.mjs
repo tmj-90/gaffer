@@ -110,6 +110,7 @@ import {
   shadowNote,
   writeAgentSettings,
 } from "../lib/agent-home.mjs";
+import { isTestPath, testerTestFiles } from "../lib/tester-replay.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -449,6 +450,7 @@ export function recordVerdict(ticketNumber, verdict, summary, env = process.env,
     ...(binding.testedCommit ? ["--tested-commit", String(binding.testedCommit)] : []),
     ...(binding.contractHash ? ["--contract-hash", String(binding.contractHash)] : []),
     ...(binding.replay ? ["--replay", String(binding.replay)] : []),
+    ...(binding.testsCommit ? ["--tests-commit", String(binding.testsCommit)] : []),
   ];
   const override = (env.DISPATCH_TESTER_VERDICT_CMD ?? "").trim();
   let argv;
@@ -620,13 +622,9 @@ export function linkNodeModules(repoPath, checkout) {
   return linked;
 }
 
-/** Paths a tester may legitimately create or change: tests and its own installed wiring. */
-export function isTestPath(p) {
-  const n = String(p).replace(/\\/g, "/").replace(/^\.\//, "");
-  if (/^(\.claude\/|CLAUDE\.factory\.md$|\.mcp\.json$)/.test(n)) return true;
-  if (/(^|\/)(test|tests|__tests__|spec|specs|e2e|fixtures?)(\/|$)/i.test(n)) return true;
-  return /\.(test|spec)\.[cm]?[jt]sx?$/i.test(n) || /(^|\/)test[-_.][^/]*$/i.test(n);
-}
+// The tester's test-file rule lives in lib/tester-replay.mjs, shared with the landing
+// paths that replay those files on the merge candidate (re-exported here for callers).
+export { isTestPath };
 
 /**
  * What the tester changed relative to the tested commit, split into implementation and
@@ -657,9 +655,7 @@ export function inspectTesterChanges(worktree, baseCommit) {
   return {
     ok: true,
     implementation: all.filter((p) => !isTestPath(p)),
-    tests: all.filter(
-      (p) => isTestPath(p) && !/^(\.claude\/|CLAUDE\.factory\.md$|\.mcp\.json$)/.test(p),
-    ),
+    tests: testerTestFiles(all),
   };
 }
 
@@ -1071,6 +1067,10 @@ function runLiveTester(context) {
   // for good. It also can never collide with a delivery branch whose title-slug is
   // "tests" (gaffer/ticket-<n>-tests), which `checkout -B` would have rewritten.
   let testsBranch = null;
+  // TESTER REPLAY (external review #4): the PASS names the exact commit holding THIS run's
+  // tests (or "none"), so the landing replays those files on the merge candidate — never
+  // whatever the branch points at by then (an earlier run's tests, a rewritten branch).
+  let testsCommit = "none";
   const dirty = (git(worktree, "status", "--porcelain").stdout || "").trim();
   const ahead = (git(worktree, "rev-list", "--count", `${branch}..HEAD`).stdout || "0").trim();
   if (dirty || ahead !== "0") {
@@ -1090,7 +1090,9 @@ function runLiveTester(context) {
         `black-box tests for #${n}`,
       );
     }
-    log(`kept the tester's tests on ${testsBranch}`);
+    const head = (git(worktree, "rev-parse", "--verify", "HEAD").stdout || "").trim();
+    if (/^[0-9a-f]{40,64}$/.test(head)) testsCommit = head;
+    log(`kept the tester's tests on ${testsBranch} (${testsCommit.slice(0, 12)})`);
   }
   cleanup();
 
@@ -1206,6 +1208,7 @@ function runLiveTester(context) {
     testedCommit,
     contractHash: testedContractHash,
     ...(verdict === "pass" && replay ? { replay: replay.state } : {}),
+    ...(verdict === "pass" ? { testsCommit } : {}),
   });
   if (!recorded.ok) {
     fail(
@@ -1221,6 +1224,7 @@ function runLiveTester(context) {
       verdict,
       recorded,
       testsBranch,
+      testsCommit,
       summary,
       testedCommit,
       contractHash: testedContractHash,

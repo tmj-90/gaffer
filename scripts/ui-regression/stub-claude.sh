@@ -52,4 +52,9 @@
 #    values the agent saw), prompt}
 # so a suite can prove a setting reached the next tick (env / --max-turns) and that a
 # human's words reached the agent (prompt).
-exec node "$(dirname "$0")/stub-worker.mjs" "$@"
+_w="$(dirname "$0")/stub-worker.mjs"
+if [ ! -f "$_w" ]; then
+  echo "stub-claude: $_w is missing — install stub-worker.mjs beside this wrapper (setup.sh does; a test that copies only the wrapper must copy both)" >&2
+  exit 70
+fi
+exec node "$_w" "$@"

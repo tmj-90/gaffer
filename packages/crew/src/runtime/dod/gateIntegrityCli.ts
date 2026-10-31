@@ -18,7 +18,9 @@
 //       GATE\tintegrity\t<repo>\tPASS|FLAG\t0\t<reason>\t<source>
 //       FLAG when base..worktree deleted/renamed a test file, added a skip/only
 //       marker, changed/removed/added a script a gate script reaches (its hooks and
-//       the scripts it runs) or touched test-runner config — or
+//       the scripts it runs), touched test-runner config, or touched (added too) a
+//       package-manager rc file (.npmrc, .yarnrc, .yarnrc.yml, bunfig.toml), on disk
+//       as well as in git (an ignored .npmrc still reconfigures the gate) — or
 //       when the scan could not see the whole change. PASS-with-note when a human
 //       set allow_test_changes on the ticket (`--allow 1`). NEVER FAIL: this slice
 //       only flags; dispatch's `test-modified` risk annotation (computed server-side
@@ -40,11 +42,14 @@ import { join } from "node:path";
 import {
   collectTestIntegrity,
   extraTestPathRe,
+  GATE_RC_NAMES,
   gateScriptNamesOf,
   hasIntegrityFindings,
   resolveGateCommand,
   summarizeIntegrity,
+  type ConfigChange,
   type IntegrityGit,
+  type TestIntegrityFindings,
 } from "dispatch/test-integrity";
 
 /** One TAB-safe field: tabs/newlines in a reason would shift the results columns. */
@@ -74,6 +79,58 @@ function readOrNull(p: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** At most this many package dirs are checked for an rc file on disk. */
+const MAX_RC_DIRS = 500;
+
+/**
+ * Package-manager rc files ON DISK that the git diff cannot see: an `.npmrc` the
+ * delivery wrote but `.gitignore` keeps out of the auto-commit still reconfigures the
+ * gate (npm/pnpm read it from the worktree). Checks the root and every tracked
+ * package.json's directory; an rc file absent at base is `added`, one whose bytes
+ * differ from base is `modified`. Paths the diff already reported are skipped.
+ */
+function untrackedRcChanges(
+  wt: string,
+  git: IntegrityGit,
+  base: string,
+  seen: ReadonlySet<string>,
+): ConfigChange[] {
+  const dirs = new Set<string>([""]);
+  const ls = git(["ls-files", "-z", "--", "package.json", ":(glob)**/package.json"]);
+  if (ls.status === 0) {
+    for (const f of ls.stdout.split("\0")) {
+      if (!f || /(?:^|\/)node_modules\//.test(f)) continue;
+      const i = f.lastIndexOf("/");
+      dirs.add(i < 0 ? "" : f.slice(0, i));
+      if (dirs.size >= MAX_RC_DIRS) break;
+    }
+  }
+  const out: ConfigChange[] = [];
+  for (const d of dirs) {
+    for (const name of GATE_RC_NAMES) {
+      const p = d ? `${d}/${name}` : name;
+      if (seen.has(p)) continue;
+      const disk = readOrNull(join(wt, p));
+      if (disk === null) continue;
+      const atBase = git(["show", `${base}:${p}`], { maxBuffer: 1024 * 1024 });
+      if (atBase.status !== 0) out.push({ path: p, change: "added" });
+      else if (atBase.truncated || atBase.stdout !== disk)
+        out.push({ path: p, change: "modified" });
+    }
+  }
+  return out;
+}
+
+function withRcOnDisk(
+  f: TestIntegrityFindings,
+  wt: string,
+  git: IntegrityGit,
+  base: string,
+): TestIntegrityFindings {
+  const extra = untrackedRcChanges(wt, git, base, new Set(f.configs.map((c) => c.path)));
+  return extra.length ? { ...f, configs: [...f.configs, ...extra] } : f;
 }
 
 interface Args {
@@ -145,10 +202,15 @@ function scan(a: Args): string {
     }
     return git(args, opts);
   };
-  const findings = collectTestIntegrity(wtGit, a.base, "@WORKTREE@", {
-    gateScriptNames: gateScriptNamesOf(a.cmds),
-    extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
-  });
+  const findings = withRcOnDisk(
+    collectTestIntegrity(wtGit, a.base, "@WORKTREE@", {
+      gateScriptNames: gateScriptNamesOf(a.cmds),
+      extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
+    }),
+    a.worktree,
+    git,
+    a.base,
+  );
   const source = `base ${a.base.slice(0, 12)} vs worktree`;
   if (!hasIntegrityFindings(findings)) return row("PASS", summarizeIntegrity(findings), source);
   const summary = summarizeIntegrity(findings);

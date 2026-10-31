@@ -57,6 +57,9 @@ describe("isTestPath", () => {
     "tests/test_api.py",
     "app/test_models.py",
     "app/models_test.py",
+    "app/tests.py", // Django's default test module (unittest's `test*.py` glob)
+    "pkg/tests.py",
+    "testsuite.py",
     "spec/user_spec.rb",
     "src/test/java/FooTest.java",
     "src/FooTests.cs",
@@ -102,6 +105,8 @@ describe("addedSkipMarkers: every marker class", () => {
     ["tests/test_x.py", "    pytest.skip('nope')", "pytest.skip()"],
     ["tests/test_x.py", "@unittest.skip('later')", "@unittest.skip"],
     ["tests/test_x.py", "        self.skipTest('later')", "skipTest()"],
+    ["app/tests.py", "@pytest.mark.skip(reason='later')", "@pytest.mark.skip"],
+    ["app/tests.py", "    @unittest.skip('later')", "@unittest.skip"],
     ["pkg/x_test.go", '\tt.Skip("flaky")', "t.Skip"],
     ["pkg/x_test.go", '\tt.Skipf("%s", why)', "t.Skipf"],
     ["src/lib.rs", "#[ignore]", "#[ignore]"],
@@ -251,6 +256,45 @@ describe("name-status: deletes, renames, config", () => {
       "deleted 2 test files (src/old.test.ts, tests/conftest.py)",
     );
     expect(integrityItems(f)).toContain("renamed test file test/b.test.ts → test/b.ts");
+  });
+
+  it("flags a deleted Django app/tests.py (unittest's default test*.py glob)", () => {
+    const f = analyzeTestIntegrity({
+      nameStatus: [
+        { status: "M", path: "app/models.py" },
+        { status: "D", path: "app/tests.py" },
+      ],
+      patch: "",
+    });
+    expect(f.deleted).toEqual(["app/tests.py"]);
+    expect(summarizeIntegrity(f)).toContain("deleted 1 test file (app/tests.py)");
+  });
+
+  it("flags a package-manager rc file on ADD, as well as modify, delete and rename", () => {
+    const f = analyzeTestIntegrity({
+      nameStatus: [
+        { status: "A", path: ".npmrc" },
+        { status: "A", path: "packages/web/.npmrc" },
+        { status: "M", path: ".yarnrc.yml" },
+        { status: "D", path: ".yarnrc" },
+        { status: "R100", from: "notes.txt", path: "bunfig.toml" },
+        { status: "A", path: "src/npmrc.md" }, // not an rc name
+        { status: "A", path: "vitest.config.ts" }, // added test config stays unflagged
+      ],
+      patch: "",
+    });
+    expect(f.configs).toEqual([
+      { path: ".npmrc", change: "added" },
+      { path: "packages/web/.npmrc", change: "added" },
+      { path: ".yarnrc.yml", change: "modified" },
+      { path: ".yarnrc", change: "deleted" },
+      { path: "bunfig.toml", change: "added" },
+    ]);
+    expect(hasIntegrityFindings(f)).toBe(true);
+    expect(summarizeIntegrity(f)).toContain(
+      "touched package-manager config (.npmrc added, packages/web/.npmrc added, .yarnrc.yml modified, +2 more)",
+    );
+    expect(integrityItems(f)).toContain("added package-manager config .npmrc");
   });
 
   it("a clean change has no findings and a reassuring summary", () => {
@@ -563,6 +607,34 @@ describe("collectTestIntegrity against a real git repo", () => {
     const bad = collectTestIntegrity(git, "nope", "feat");
     expect(bad.incomplete).toHaveLength(1);
     expect(hasIntegrityFindings(bad)).toBe(true);
+  });
+
+  it("finds a deleted Django tests.py, a skip inside another, and an added .npmrc", () => {
+    dir = mkdtempSync(join(tmpdir(), "gi-"));
+    sh(["init", "-q", "-b", "main"]);
+    mkdirSync(join(dir, "shop"));
+    mkdirSync(join(dir, "blog"));
+    const t =
+      "from django.test import TestCase\n\nclass T(TestCase):\n    def test_a(self):\n        self.assertTrue(True)\n";
+    writeFileSync(join(dir, "shop/tests.py"), t);
+    writeFileSync(join(dir, "blog/tests.py"), t);
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { test: "node --test" } }));
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "base"]);
+    const base = sh(["rev-parse", "HEAD"]).trim();
+    sh(["checkout", "-qb", "feat"]);
+    unlinkSync(join(dir, "shop/tests.py"));
+    writeFileSync(
+      join(dir, "blog/tests.py"),
+      t.replace("    def test_a", "    @pytest.mark.skip(reason='later')\n    def test_a"),
+    );
+    writeFileSync(join(dir, ".npmrc"), "script-shell=/bin/true\n");
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "weaken"]);
+    const f = collectTestIntegrity(git, base, "feat");
+    expect(f.deleted).toEqual(["shop/tests.py"]);
+    expect(f.markers).toEqual([{ path: "blog/tests.py", marker: "@pytest.mark.skip", line: 4 }]);
+    expect(f.configs).toEqual([{ path: ".npmrc", change: "added" }]);
   });
 
   it("finds node:test option skips, runtime skips and a skip behind a comment", () => {

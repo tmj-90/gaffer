@@ -55,7 +55,8 @@ export interface ScriptChange {
 
 export interface ConfigChange {
   readonly path: string;
-  readonly change: "modified" | "deleted" | "renamed";
+  /** `added`: only for package-manager rc files ({@link isGateRcPath}), never test config. */
+  readonly change: "modified" | "deleted" | "renamed" | "added";
 }
 
 export interface TestIntegrityFindings {
@@ -81,7 +82,9 @@ const TEST_BASENAME_RE = new RegExp(
     String.raw`\.(?:test|spec|e2e|it)\.[cm]?[jt]sx?$`, // JS/TS (vitest, jest, mocha, playwright)
     String.raw`\.(?:test|spec)\.(?:vue|svelte)$`,
     String.raw`_test\.go$`,
-    String.raw`^test_[^/]*\.py$`,
+    // unittest's default discovery glob is `test*.py` (Django's `app/tests.py` is in it);
+    // pytest's defaults are `test_*.py` and `*_test.py`.
+    String.raw`^test[^/]*\.py$`,
     String.raw`_test\.py$`,
     String.raw`_(?:spec|test)\.rb$`,
     String.raw`(?:Tests?|IT|Spec)\.(?:java|kt|kts|scala|groovy)$`,
@@ -559,7 +562,22 @@ const TEST_CONFIG_RE =
   /(?:^|\/)(?:(?:vitest|jest|playwright|cypress|karma|ava|wdio|nyc)\.config\.[^/]+|vitest\.workspace\.[^/]+|karma\.conf\.[^/]+|jest\.setup\.[^/]+|\.mocharc(?:\.[^/]+)?|\.nycrc(?:\.[^/]+)?|pytest\.ini|conftest\.py|tox\.ini|\.coveragerc|phpunit\.xml(?:\.dist)?|\.rspec)$/i;
 
 export function isTestConfigPath(p: string): boolean {
-  return TEST_CONFIG_RE.test(p);
+  return TEST_CONFIG_RE.test(p) || isGateRcPath(p);
+}
+
+/**
+ * Package-manager rc files, at the root or in any package dir. They configure how
+ * `npm test` / `pnpm run lint` / `yarn test` / `bun test` RUN — `script-shell=/bin/true`
+ * or `node-options=--test-name-pattern=x` in a project `.npmrc` turns every gate into a
+ * no-op without touching package.json or a test. Unlike test-runner config (which a
+ * greenfield scaffold adds as a matter of course) one of these is flagged on ADD too:
+ * an rc file a delivery introduces redirects the gate just as surely as one it edits.
+ */
+export const GATE_RC_NAMES = [".npmrc", ".yarnrc", ".yarnrc.yml", "bunfig.toml"] as const;
+const GATE_RC_RE = /(?:^|\/)(?:\.npmrc|\.yarnrc|\.yarnrc\.yml|bunfig\.toml)$/i;
+
+export function isGateRcPath(p: string): boolean {
+  return GATE_RC_RE.test(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -595,8 +613,12 @@ export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings
     } else if (s === "R" && e.from !== undefined) {
       if (isTestPath(e.from, extra)) renamed.push({ from: e.from, to: e.path });
       if (isTestConfigPath(e.from)) configs.push({ path: e.from, change: "renamed" });
+      // Renaming a file INTO an rc name is adding that rc file.
+      else if (isGateRcPath(e.path)) configs.push({ path: e.path, change: "added" });
     } else if (s === "M" || s === "T") {
       if (isTestConfigPath(e.path)) configs.push({ path: e.path, change: "modified" });
+    } else if (s === "A" || s === "C") {
+      if (isGateRcPath(e.path)) configs.push({ path: e.path, change: "added" });
     }
   }
   const scripts: ScriptChange[] = [];
@@ -624,6 +646,10 @@ export function hasIntegrityFindings(f: TestIntegrityFindings): boolean {
   );
 }
 
+function configKind(p: string): string {
+  return isGateRcPath(p) ? "package-manager config" : "test config";
+}
+
 function list(items: readonly string[], max: number): string {
   const shown = items.slice(0, max).join(", ");
   return items.length > max ? `${shown}, +${items.length - max} more` : shown;
@@ -640,7 +666,7 @@ export function integrityItems(f: TestIntegrityFindings): string[] {
   for (const m of f.markers)
     out.push(`added ${m.marker} in ${m.path}${m.line ? `:${m.line}` : ""}`);
   for (const s of f.scripts) out.push(`${s.change} script "${s.script}" in ${s.file}`);
-  for (const c of f.configs) out.push(`${c.change} test config ${c.path}`);
+  for (const c of f.configs) out.push(`${c.change} ${configKind(c.path)} ${c.path}`);
   for (const r of f.incomplete) out.push(`scan incomplete: ${r}`);
   return out;
 }
@@ -677,10 +703,20 @@ export function summarizeIntegrity(f: TestIntegrityFindings, max = 3): string {
       )})`,
     );
   }
-  if (f.configs.length) {
+  const rc = f.configs.filter((c) => isGateRcPath(c.path));
+  const tc = f.configs.filter((c) => !isGateRcPath(c.path));
+  if (tc.length) {
     parts.push(
       `touched test config (${list(
-        f.configs.map((c) => `${c.path} ${c.change}`),
+        tc.map((c) => `${c.path} ${c.change}`),
+        max,
+      )})`,
+    );
+  }
+  if (rc.length) {
+    parts.push(
+      `touched package-manager config (${list(
+        rc.map((c) => `${c.path} ${c.change}`),
         max,
       )})`,
     );

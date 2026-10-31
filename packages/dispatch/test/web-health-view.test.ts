@@ -179,6 +179,61 @@ describe("web: Health view", () => {
     expect(document.querySelector(".health-spark svg")).not.toBeNull();
   });
 
+  it("shows 'Paused until <time>: usage limit' when the runner is paused on a usage window", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as Record<string, unknown>),
+      usage_pause: {
+        active: true,
+        paused_until: "2026-11-01T00:00:00.000Z",
+        kind: "usage_limit",
+        basis: "reset",
+        message: "You've hit your session limit · resets 11:59pm (UTC)",
+        ticket: 7,
+      },
+    };
+    await loadApp();
+    const note = document.querySelector(".health-view .usage-pause-note");
+    expect(note).not.toBeNull();
+    expect(note?.getAttribute("role")).toBe("status");
+    // A sentence, not a label.
+    expect(note?.getAttribute("aria-label")).toMatch(
+      /^The factory is paused until .+ because of a usage limit\.$/,
+    );
+    const text = note?.textContent ?? "";
+    expect(text).toMatch(/^Paused until .+: usage limit\./);
+    expect(text).toContain("#7 went back to Ready without counting an attempt");
+    expect(text).toContain("You've hit your session limit");
+    expect(text).toContain("the reset the model reported");
+    // The rest of the page still renders under it.
+    expect(kpiValue("Cost / feature")).toBe("$1.00");
+  });
+
+  it("says 'rate limit' for a rate-limit pause, and the default wait when no reset was reported", async () => {
+    healthPayload = {
+      ...(FULL_HEALTH as Record<string, unknown>),
+      usage_pause: {
+        active: true,
+        paused_until: "2026-11-01T00:00:00.000Z",
+        kind: "rate_limit",
+        basis: "default",
+        message: "API Error: Rate limit reached",
+        ticket: null,
+      },
+    };
+    await loadApp();
+    const text = document.querySelector(".usage-pause-note")?.textContent ?? "";
+    expect(text).toMatch(/^Paused until .+: rate limit\./);
+    expect(text).toContain("the default wait");
+    expect(text).not.toContain("went back to Ready");
+  });
+
+  it("shows no pause note when the runner is not paused", async () => {
+    healthPayload = { ...(FULL_HEALTH as Record<string, unknown>), usage_pause: { active: false } };
+    await loadApp();
+    expect(document.querySelector(".health-view h1")).not.toBeNull();
+    expect(document.querySelector(".usage-pause-note")).toBeNull();
+  });
+
   it("degrades cleanly when skills telemetry is empty and Memory is not wired", async () => {
     healthPayload = DEGRADED_HEALTH;
     await loadApp();

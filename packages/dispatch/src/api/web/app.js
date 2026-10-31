@@ -5715,6 +5715,13 @@ function reportLine(f, e) {
       return { st: "in_review", say: "delivery recorded" };
     case "ticket.blocked":
       return { st: "blocked", say: "parked: it needs you" };
+    case "ticket.usage_limited":
+      return {
+        st: "ready",
+        say: p.paused_until
+          ? `held back: usage limit, until ${fmtTime(p.paused_until)}`
+          : "held back: usage limit",
+      };
     case "ticket.paused":
       return {
         st: "paused",
@@ -10591,6 +10598,14 @@ function eventSentence(ev, repos) {
       };
     case "ticket.blocked":
       return { text: "Parked: it needs you", note: p.reason || null, st: "blocked" };
+    case "ticket.usage_limited":
+      return {
+        text: p.paused_until
+          ? `Held back by the usage limit until ${fmtTime(p.paused_until)} (no attempt counted)`
+          : "Held back by the usage limit (no attempt counted)",
+        note: p.reason || null,
+        st: "ready",
+      };
     case "ticket.delivery_recorded":
       return { text: p.branch_name ? `Delivered on ${p.branch_name}` : "Delivery recorded" };
     case "ticket.repo_delivery_recorded":
@@ -11697,6 +11712,43 @@ function healthBarRow(name, valueText, ratio, tone) {
 }
 
 /**
+ * The Health banner for a usage-window pause (/api/health `usage_pause`, read from
+ * the runner's $GAFFER_DATA/usage-pause.json): "Paused until <time>: usage limit",
+ * what the model said, and that it lifts on its own. The ticket it hit went back to
+ * Ready without counting an attempt.
+ */
+function usagePauseNote(p) {
+  const label = p.kind === "rate_limit" ? "rate limit" : "usage limit";
+  const when = fmtTime(p.paused_until);
+  const said = p.message ? ` The model said: "${p.message}".` : "";
+  const why = p.unreadable
+    ? " The pause file could not be read, so the factory holds for the default wait."
+    : p.basis === "reset"
+      ? " The time is the reset the model reported, plus a minute."
+      : " No reset time was reported, so this is the default wait.";
+  return el(
+    "div",
+    {
+      class: "warn-box usage-pause-note",
+      role: "status",
+      "aria-label": `The factory is paused until ${when} because of a ${label}.`,
+    },
+    [
+      icon("alert"),
+      el("span", {}, [
+        el("strong", {}, `Paused until ${when}: ${label}. `),
+        "No new work starts until then, and it resumes on its own." +
+          (p.ticket != null
+            ? ` Ticket #${p.ticket} went back to Ready without counting an attempt.`
+            : "") +
+          said +
+          why,
+      ]),
+    ],
+  );
+}
+
+/**
  * Factory Health / ROI surface. Reads the ONE authoritative /api/health envelope
  * and renders the ROI KPI row (cost/feature, skill hit-rate, spend-by-kind,
  * rework-cost share, measured-coverage %) plus the two newly-wired dead sources:
@@ -11968,6 +12020,10 @@ async function renderHealth() {
       ],
     ),
   );
+  // USAGE WINDOW: the runner paused admission after the model refused a call on its
+  // usage window / a rate limit. Say so first: it is why nothing is moving.
+  const usagePause = health.usage_pause && health.usage_pause.active ? health.usage_pause : null;
+  if (usagePause) wrap.appendChild(usagePauseNote(usagePause));
   if (bouncing) bouncing.id = "health-injuries";
   const wait = treatment ? waitingNote(treatment._waiting) : null;
   if (wait && devFlow) devFlow.appendChild(wait);

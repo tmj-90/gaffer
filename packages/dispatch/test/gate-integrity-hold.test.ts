@@ -178,6 +178,77 @@ describe("the auto-ship gate holds a test-weakening delivery", () => {
     d.db.close();
   });
 
+  it("the runner's integrity FLAG holds a clean-diff delivery too (a git-ignored .npmrc)", () => {
+    const dod = (status: string) =>
+      `DoD: PASS\n${JSON.stringify({
+        dod: "PASS",
+        gates: [
+          { gate: "tests", repo: "svc", status: "PASS", rc: "0", note: "" },
+          {
+            gate: "integrity",
+            repo: "svc",
+            status,
+            rc: "0",
+            note: "touched package-manager config (.npmrc added)",
+          },
+        ],
+      })}`;
+    const d = open(nonEmptyDiffRunner);
+    const id = inReview(d, "high");
+    d.attachDeliveryEvidence(
+      id,
+      { evidenceType: "test_output", summary: dod("FLAG") },
+      {
+        type: "system",
+      },
+    );
+    const reviewer: Actor = { type: "agent", id: "rev-1" };
+    expect(codeOf(() => d.approveReview(id, reviewer))).toBe("OBSERVED_RISK_ESCALATED");
+    const ev = listEvents(d.db, "ticket", id).find(
+      (e) => e.event_type === "ticket.autoship_escalated",
+    );
+    expect(JSON.parse(ev!.payload_json ?? "{}").holds?.[0]).toMatch(
+      /runner integrity gate.*\.npmrc added/,
+    );
+    // An agent cannot mask it with a cleaner checklist of its own (a newer row it recorded).
+    d.db
+      .prepare(
+        `INSERT INTO evidence (id, ticket_id, evidence_type, summary, created_by, recorded_by_actor_type, created_at)
+         VALUES ('ev-agent-mask', ?, 'test_output', ?, 'mcp-agent', 'agent', '2999-01-01T00:00:00.000Z')`,
+      )
+      .run(id, dod("PASS"));
+    expect(codeOf(() => d.approveReview(id, reviewer))).toBe("OBSERVED_RISK_ESCALATED");
+    // A human's allowance lifts it.
+    d.setAllowTestChanges(id, true, human, "the .npmrc is intended");
+    d.approveReview(id, reviewer);
+    expect(d.resolveTicket(id).status).toBe("ready_for_merge");
+    d.db.close();
+  });
+
+  it("a later runner checklist without the FLAG lifts the runner hold", () => {
+    const d = open(nonEmptyDiffRunner);
+    const id = inReview(d, "high");
+    const row = (status: string) =>
+      `DoD: PASS\n${JSON.stringify({ dod: "PASS", gates: [{ gate: "integrity", repo: "svc", status, rc: "0", note: "x" }] })}`;
+    d.attachDeliveryEvidence(
+      id,
+      { evidenceType: "test_output", summary: row("FLAG") },
+      {
+        type: "system",
+      },
+    );
+    d.attachDeliveryEvidence(
+      id,
+      { evidenceType: "test_output", summary: row("PASS") },
+      {
+        type: "system",
+      },
+    );
+    d.approveReview(id, { type: "agent", id: "rev-1" });
+    expect(d.resolveTicket(id).status).toBe("ready_for_merge");
+    d.db.close();
+  });
+
   it("a control: the same declared-high ticket with a clean diff auto-ships", () => {
     const d = open(nonEmptyDiffRunner);
     const id = inReview(d, "high");

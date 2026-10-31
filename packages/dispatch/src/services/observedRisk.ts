@@ -177,3 +177,43 @@ export function shouldEscalate(
   if (ceiling && riskRank(observed.level) >= riskRank(ceiling)) return true;
   return false;
 }
+
+/**
+ * GATE INTEGRITY, the runner's side: the holds a DoD evidence summary carries. The
+ * runner's integrity row sees things the server-side diff cannot — a git-ignored
+ * `.npmrc` in the worktree reconfigures the gate but never reaches a commit — so an
+ * unexcused `integrity` FLAG in the latest trusted DoD record holds the auto-ship too.
+ * `summary` is the runner's `DoD: <overall>\n<json>…` evidence text; anything that does
+ * not parse yields no hold (the diff-based check still applies). Pure.
+ */
+export function runnerIntegrityHolds(summary: string | null | undefined): string[] {
+  if (!summary || !summary.startsWith("DoD: ")) return [];
+  const json = summary.split("\n")[1] ?? "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const gates = (parsed as { gates?: unknown }).gates;
+  if (!Array.isArray(gates)) return [];
+  const out: string[] = [];
+  for (const g of gates as Array<Record<string, unknown>>) {
+    if (g.gate !== "integrity" || g.status !== "FLAG") continue;
+    const repo = typeof g.repo === "string" && g.repo ? g.repo : "repo";
+    const note = typeof g.note === "string" && g.note ? g.note : "flagged";
+    out.push(`${repo}: tests modified (runner integrity gate) — ${note}`);
+  }
+  return out;
+}
+
+/** Fold the runner's integrity holds into an observation (holds ⇒ level high). */
+export function withRunnerIntegrityHolds(observed: ObservedRisk, holds: string[]): ObservedRisk {
+  if (holds.length === 0) return observed;
+  return {
+    ...observed,
+    level: "high",
+    reasons: [...observed.reasons, ...holds],
+    holds: [...(observed.holds ?? []), ...holds],
+  };
+}

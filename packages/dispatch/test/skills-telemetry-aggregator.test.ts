@@ -72,8 +72,22 @@ describe("skillsTelemetryAggregator: aggregateTelemetryRows", () => {
     // a: selected 2, applied 2 → 100%. b: selected 3, applied 1 → 33.3%.
     const a = agg.by_skill.find((s) => s.skill === "a")!;
     const b = agg.by_skill.find((s) => s.skill === "b")!;
-    expect(a).toEqual({ skill: "a", selected: 2, applied: 2, hit_rate_pct: 100 });
-    expect(b).toEqual({ skill: "b", selected: 3, applied: 1, hit_rate_pct: 33.3 });
+    expect(a).toEqual({
+      skill: "a",
+      selected: 2,
+      applied: 2,
+      hit_rate_pct: 100,
+      opened: 0,
+      refused: 0,
+    });
+    expect(b).toEqual({
+      skill: "b",
+      selected: 3,
+      applied: 1,
+      hit_rate_pct: 33.3,
+      opened: 0,
+      refused: 0,
+    });
 
     // Overall: 3 applied of 5 selections = 60%.
     expect(agg.total_selected).toBe(5);
@@ -84,6 +98,36 @@ describe("skillsTelemetryAggregator: aggregateTelemetryRows", () => {
     expect(agg.by_skill[0]!.skill).toBe("b");
     // last_record_at is the max ts.
     expect(agg.last_record_at).toBe("2025-01-11T10:00:00Z");
+  });
+
+  it("reports opened and refused reads beside the hit-rate, never inside it", () => {
+    // A refused read of the mounted Java pack is visible as refused — not as use.
+    const rows = [
+      {
+        selected: ["java-conventions", "run-tests"],
+        applied: [],
+        opened: [],
+        refused: ["java-conventions"],
+      },
+      {
+        selected: ["java-conventions", "run-tests"],
+        applied: ["run-tests"],
+        opened: ["java-conventions"],
+      },
+      // A hand-edited row cannot claim both, or an unselected skill.
+      {
+        selected: ["java-conventions"],
+        applied: [],
+        opened: ["java-conventions"],
+        refused: ["java-conventions", "x"],
+      },
+    ].map((r) => parseTelemetryLine(JSON.stringify({ ts: "2025-01-10T10:00:00Z", ...r }))!);
+    const agg = aggregateTelemetryRows(rows);
+    const java = agg.by_skill.find((s) => s.skill === "java-conventions")!;
+    expect(java).toMatchObject({ selected: 3, applied: 0, opened: 2, refused: 1, hit_rate_pct: 0 });
+    expect(agg.total_opened).toBe(2);
+    expect(agg.total_refused).toBe(1);
+    expect(agg.total_applied).toBe(1); // only run-tests, named in the output
   });
 
   it("NEGATIVE CONTROL: a malformed / irrelevant row does not count", () => {
@@ -102,7 +146,9 @@ describe("skillsTelemetryAggregator: aggregateTelemetryRows", () => {
     expect(agg.total_selected).toBe(2);
     expect(agg.total_applied).toBe(1);
     expect(agg.overall_hit_rate_pct).toBe(50);
-    expect(agg.by_skill).toEqual([{ skill: "a", selected: 2, applied: 1, hit_rate_pct: 50 }]);
+    expect(agg.by_skill).toEqual([
+      { skill: "a", selected: 2, applied: 1, hit_rate_pct: 50, opened: 0, refused: 0 },
+    ]);
   });
 });
 

@@ -1066,7 +1066,7 @@ _gaffer_prompt_inputs_json() {
   fi
   local resuming=false
   [ "$variant" = "resume" ] && resuming=true
-  GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_RESUMING="$resuming" GF_SKILLS="${SKILLS:-}" \
+  GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_RESUMING="$resuming" GF_SKILLS="${SKILLS:-}${SKILLS_NOTE:-}" \
   GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_RD="${_RD:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
   GF_PCB="${PRODUCT_CONTEXT_BLOCK:-}" GF_WORK_BRANCH="${WORK_BRANCH:-}" \
   GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" gaffer_json prompt-inputs "$variant"

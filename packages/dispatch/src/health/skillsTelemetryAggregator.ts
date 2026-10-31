@@ -4,9 +4,11 @@
  * The runner writes one JSONL row per agent run (delivery, bootstrap, review,
  * security-review, clarify, and the plan / spec / product / test / merge runners) to
  * `skills-telemetry.jsonl` (see runner/bin/record-skill-usage.mjs) capturing which
- * skills were SELECTED (mounted for the run) and which were APPLIED (named in the
- * agent's output, or opened per the safety hook's tool ledger). Until now that trail
- * had ZERO consumers.
+ * skills were SELECTED (mounted for the run), which were APPLIED (named in the
+ * agent's output), which were OPENED (a read the safety hook ALLOWED, per its
+ * decision-stamped tool ledger) and which were REFUSED (a read the hook blocked — the
+ * agent never saw the file). An open is not an application, and a refused read is
+ * neither: both are reported beside the hit-rate, never folded into it.
  *
  * This module reads it and answers one question: for the skills we SELECT, how
  * often does the agent actually USE them? A skill selected 40 times but applied
@@ -37,6 +39,10 @@ export interface SkillTelemetryRow {
   selected: string[];
   /** Selected skills the agent actually applied (⊆ selected). */
   applied: string[];
+  /** Selected skills whose files the hook let the agent read (⊆ selected). */
+  opened?: string[];
+  /** Selected skills whose read the hook refused (⊆ selected; never also opened). */
+  refused?: string[];
 }
 
 /** Per-skill selected/applied counts and the derived hit-rate. */
@@ -48,6 +54,10 @@ export interface SkillHitRateEntry {
   applied: number;
   /** applied/selected as a 0–100 number (0 when never selected). */
   hit_rate_pct: number;
+  /** How many of those selections the agent opened (a read the hook allowed). */
+  opened: number;
+  /** How many of those selections had a read the hook refused. */
+  refused: number;
 }
 
 /** The full skill-telemetry aggregate. */
@@ -60,6 +70,10 @@ export interface SkillTelemetryAggregate {
   total_applied: number;
   /** total_applied/total_selected as a 0–100 number, or null when nothing was selected. */
   overall_hit_rate_pct: number | null;
+  /** Sum of opened-that-were-selected across all rows. */
+  total_opened: number;
+  /** Sum of refused-that-were-selected across all rows (a mount the agent could not read). */
+  total_refused: number;
   /** Per-skill breakdown, highest selection count first. */
   by_skill: SkillHitRateEntry[];
   last_record_at: string | null;
@@ -117,7 +131,13 @@ export function parseTelemetryLine(line: string): SkillTelemetryRow | null {
     return null;
   }
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
-  const r = raw as { ts?: unknown; selected?: unknown; applied?: unknown };
+  const r = raw as {
+    ts?: unknown;
+    selected?: unknown;
+    applied?: unknown;
+    opened?: unknown;
+    refused?: unknown;
+  };
 
   const selected = toNameArray(r.selected);
   if (selected.length === 0) return null; // nothing was selected → no signal
@@ -125,9 +145,14 @@ export function parseTelemetryLine(line: string): SkillTelemetryRow | null {
   // applied is only meaningful for skills that were actually selected.
   const selectedSet = new Set(selected);
   const applied = toNameArray(r.applied).filter((name) => selectedSet.has(name));
+  const opened = toNameArray(r.opened).filter((name) => selectedSet.has(name));
+  const openedSet = new Set(opened);
+  const refused = toNameArray(r.refused).filter(
+    (name) => selectedSet.has(name) && !openedSet.has(name),
+  );
 
   const ts = typeof r.ts === "string" ? r.ts : new Date().toISOString();
-  return { ts, selected, applied };
+  return { ts, selected, applied, opened, refused };
 }
 
 /**
@@ -153,30 +178,46 @@ export function readTelemetryRows(telemetryPath: string): SkillTelemetryRow[] {
 export function aggregateTelemetryRows(rows: SkillTelemetryRow[]): SkillTelemetryAggregate {
   let totalSelected = 0;
   let totalApplied = 0;
+  let totalOpened = 0;
+  let totalRefused = 0;
   let lastRecordAt: string | null = null;
-  const bySkill = new Map<string, { selected: number; applied: number }>();
+  const bySkill = new Map<
+    string,
+    { selected: number; applied: number; opened: number; refused: number }
+  >();
 
   for (const row of rows) {
     if (lastRecordAt === null || row.ts > lastRecordAt) lastRecordAt = row.ts;
     const appliedSet = new Set(row.applied);
+    const openedSet = new Set(row.opened ?? []);
+    const refusedSet = new Set(row.refused ?? []);
     for (const skill of row.selected) {
       totalSelected += 1;
-      const entry = bySkill.get(skill) ?? { selected: 0, applied: 0 };
+      const entry = bySkill.get(skill) ?? { selected: 0, applied: 0, opened: 0, refused: 0 };
       entry.selected += 1;
       if (appliedSet.has(skill)) {
         entry.applied += 1;
         totalApplied += 1;
+      }
+      if (openedSet.has(skill)) {
+        entry.opened += 1;
+        totalOpened += 1;
+      } else if (refusedSet.has(skill)) {
+        entry.refused += 1;
+        totalRefused += 1;
       }
       bySkill.set(skill, entry);
     }
   }
 
   const by_skill: SkillHitRateEntry[] = Array.from(bySkill.entries())
-    .map(([skill, { selected, applied }]) => ({
+    .map(([skill, { selected, applied, opened, refused }]) => ({
       skill,
       selected,
       applied,
       hit_rate_pct: pctOf(applied, selected),
+      opened,
+      refused,
     }))
     // Most-selected first; ties broken by higher hit-rate then name for stability.
     .sort(
@@ -191,6 +232,8 @@ export function aggregateTelemetryRows(rows: SkillTelemetryRow[]): SkillTelemetr
     total_selected: totalSelected,
     total_applied: totalApplied,
     overall_hit_rate_pct: totalSelected > 0 ? pctOf(totalApplied, totalSelected) : null,
+    total_opened: totalOpened,
+    total_refused: totalRefused,
     by_skill,
     last_record_at: lastRecordAt,
   };

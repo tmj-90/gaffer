@@ -348,6 +348,28 @@ export function resolveTicket(dbPath, number) {
     if (!branch) return null;
     const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
 
+    // Every WRITE repo's name + stack (the tester mounts the union of their stacks). An
+    // older schema without repositories.stack / ticket_repos.relation resolves to [].
+    let writeRepos = [];
+    for (const withRelation of [true, false]) {
+      try {
+        writeRepos = db
+          .prepare(
+            "SELECT r.name AS name, r.stack AS stack FROM ticket_repos tr " +
+              "JOIN repositories r ON r.id = tr.repo_id WHERE tr.ticket_id = ? AND tr.access = 'write'" +
+              (withRelation
+                ? " AND (tr.relation IS NULL OR tr.relation IN ('confirmed', 'implicit_single_repo'))"
+                : "") +
+              " ORDER BY r.name",
+          )
+          .all(ticket.id)
+          .map((r) => ({ name: String(r.name || ""), stack: r.stack ? String(r.stack) : "" }));
+        break;
+      } catch {
+        writeRepos = [];
+      }
+    }
+
     return {
       ticketId: String(ticket.id),
       number: ticket.number,
@@ -361,6 +383,7 @@ export function resolveTicket(dbPath, number) {
       branch,
       prUrl,
       status: ticket.status == null ? null : String(ticket.status),
+      writeRepos,
     };
   } catch {
     return null;

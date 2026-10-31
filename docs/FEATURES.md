@@ -522,6 +522,36 @@ hands-off autonomy is a deliberate choice you make, not the starting state.*
 
 ---
 
+## Skills — the right pack, mounted where the agent reads it
+
+Every agent run (delivery, review, the independent tester, intake, planning, merge)
+gets its own skill set from the factory library, chosen by role and by the ticket's
+stack: the conventions pack of the language, the lenses of the role, and the packs the
+ticket text calls for, never the whole library.
+
+- **Every repo on the ticket counts.** A ticket spanning a TypeScript frontend and a
+  Java service is selected for both stacks, for delivery, review and the tester alike,
+  and each prompt names each repo's pack. Files named in the ticket (or, for review,
+  the delivery's diff) still narrow the set to the ecosystems they touch.
+- **Mounted where Claude Code looks.** Skills are copied to
+  `.claude/skills/<name>/SKILL.md` in the agent's worktree, beside a repo's own skills;
+  a repo skill of the same name wins, the prompt says so, and teardown removes only
+  Gaffer's copies. The copies sit inside the worktree, so the safety hook lets the
+  agent read them without any exception to its read boundary.
+- **Use is measured honestly.** The Health view's skill panel shows, per skill, how
+  often it was selected, applied (named in the agent's output), opened (a read the
+  safety hook allowed) and refused (a read it blocked). A refused read never counts
+  as use, and an open is never counted as an application.
+- **A live check, on demand.** `GAFFER_LIVE_SKILL_TEST=1 bash runner/test/live-skill-use.test.sh`
+  plants a harmless instruction ("include the token `GAFFER-SKILL-<role>-<nonce>`")
+  inside each role's intended skill only, runs the real Claude Code CLI through the
+  real tick on a tiny fixture repo, and checks each role's recorded result for its
+  token and its telemetry row. It skips cleanly, saying what it needs, without the
+  variable, a working CLI or credentials. Set `GAFFER_LIVE_SKILL_MODEL` to your
+  cheapest model; it prints the cost.
+
+---
+
 ## Where to go next
 
 - [`../README.md`](../README.md) — the overview, architecture, install and safety

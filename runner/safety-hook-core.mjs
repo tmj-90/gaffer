@@ -199,6 +199,9 @@ function canonicalize(p, depth = 0) {
 // Best-effort telemetry only — never read by the allow/block decision.
 let CURRENT_TOOL = null;
 let CURRENT_TARGET = null;
+// True once the decision has identified the tool call (payload parsed): only then is
+// the call written to the tool ledger, stamped with the verdict (see logToolCall).
+let TOOL_OBSERVED = false;
 
 // Coarse category for the block ledger, derived from the reason string so the
 // trust report can group "what the agent kept trying" without parsing prose.
@@ -267,7 +270,12 @@ function logBlock(reason) {
 // first Write, the real "unnecessary scans avoided" signal) and how many served
 // file cards were then Read. It mirrors logBlock exactly: gated on GAFFER_DATA, fully swallowed,
 // and NEVER read by the allow/block decision — it cannot weaken the hook.
-function logToolCall(tool, target) {
+//
+// DECISION-STAMPED: the row is written AFTER the decision and carries it
+// (`decision: "allow" | "block"`). Skill telemetry counts a skill as OPENED only from a
+// row this hook ALLOWED (record-skill-usage.mjs detectOpened); a refused Read of a
+// mounted skill used to be logged before the decision and so counted as use.
+function logToolCall(tool, target, allowed) {
   try {
     const dir = process.env.GAFFER_DATA;
     if (!dir) return;
@@ -286,6 +294,7 @@ function logToolCall(tool, target) {
       tool: t,
       kind,
       target: target ? String(target).slice(0, 240) : null,
+      decision: allowed ? "allow" : "block",
     });
     appendFileSync(join(dir, "tool-metrics.jsonl"), entry + "\n");
   } catch {
@@ -714,10 +723,16 @@ const NODE_WRITE_PRESENCE = [
 const RUBY_WRITE_PRESENCE = [
   /\b(?:File|IO)\.write\s*\(/,
   /\bFile\.open\s*\([^)]*,\s*["'][^"']*[waWA]/,
+  // Paren-less calls (`File.write "p", "x"`, `File.open "p", "a" do …`) were missed.
+  /\b(?:File|IO)\.(?:write|binwrite)\s/,
+  /\bFile\.(?:open|new)\s[^,;]{0,1024},\s*["'][^"']*[waWA+]/,
   /\b(?:FileUtils\.(?:cp|mv|copy|move)|File\.rename)\b/,
 ];
 const PERL_WRITE_PRESENCE = [
   /\bopen\s*\([^,]*,\s*["']\+?>>?/, // open(FH, '>'|'>>', …) or open(FH, ">…")
+  // The paren-less forms (open F, ">…" / open my $f, ">>", …). Bounded quantifiers keep
+  // these linear on a 64 KiB adversarial input (an unbounded one is quadratic: ~1 s).
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?/,
 ];
 const PHP_WRITE_PRESENCE = [
   /\bfile_put_contents\s*\(/,
@@ -742,6 +757,8 @@ const NODE_WRITE_LITERALS = [
 const RUBY_WRITE_LITERALS = [
   /\b(?:File|IO)\.write\s*\(\s*(["'][^"']*["'])/,
   /\bFile\.open\s*\(\s*(["'][^"']*["'])\s*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s+(["'][^"']*["'])/,
+  /\bFile\.(?:open|new)\s+(["'][^"']*["'])\s*,\s*["'][^"']*[waWA+]/,
 ];
 const PERL_WRITE_LITERALS = [
   // 3-arg form: open(FH, '>'|'>>', 'path')  → capture the path (3rd arg).
@@ -751,6 +768,9 @@ const PERL_WRITE_LITERALS = [
   // → literal). We re-wrap in a sentinel quote so the shared stripQuotes/
   // classify path works; the leading >>? and any whitespace are dropped.
   /\bopen\s*\(\s*[^,]*,\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
+  // …and both forms without parentheses: open my $f, '>', 'path' / open F, ">path".
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?["']\s*,\s*(["'][^"']*["'])/,
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
 ];
 const PHP_WRITE_LITERALS = [
   /\bfile_put_contents\s*\(\s*(["'][^"']*["'])/,
@@ -2211,6 +2231,10 @@ function extractBashWriteTargets(cmd) {
     } else if (verb === "sed" && /\s-[a-z]*i/.test(segment)) {
       // `sed -i ... FILE` — in-place edit; the file is the last operand.
       if (operands.length >= 1) add(operands[operands.length - 1]);
+    } else if ((verb === "perl" || verb === "ruby") && /\s-[a-z]*i/.test(segment)) {
+      // `perl -pi -e PROG FILE…` / `ruby -i -pe PROG FILE…` — in-place edit of every
+      // operand after the program (or script): each FILE is written.
+      for (const op of operands.slice(1)) add(op);
     } else if (AWK_FAMILY.has(verb)) {
       // awk/gawk/mawk: scan the program body for `> path` redirect write targets.
       // The program is the first non-flag operand (the quoted script).
@@ -3401,9 +3425,10 @@ function runDecision(raw) {
       input.path ??
       input.pattern ??
       null;
-    // Chunk 2b metric: record every observed tool call (telemetry only — this runs
-    // BEFORE dispatch and never influences the allow/block outcome below).
-    logToolCall(tool, CURRENT_TARGET);
+    // Chunk 2b metric: every observed tool call is recorded (telemetry only — never
+    // read by the allow/block outcome below). decideRaw() writes the row once the
+    // verdict exists, stamped with it, so a refused call never reads as an allowed one.
+    TOOL_OBSERVED = true;
     // INPUT-SIZE CAP, part 2: every field a rule reads, before any rule reads it.
     checkInputSize(tool, input);
     switch (tool) {
@@ -3497,6 +3522,7 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     // decision's tool/target into this one's ledger entries.
     CURRENT_TOOL = null;
     CURRENT_TARGET = null;
+    TOOL_OBSERVED = false;
     STDOUT_SINK =
       stdout ??
       ((text) => {
@@ -3507,7 +3533,10 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     // exiting would have ended the process with exit 0.
     return verdictResult(new HookVerdict(true, undefined), collected);
   } catch (err) {
-    if (err instanceof HookVerdict) return verdictResult(err, collected);
+    if (err instanceof HookVerdict) {
+      if (TOOL_OBSERVED) logToolCall(CURRENT_TOOL, CURRENT_TARGET, err.allowed);
+      return verdictResult(err, collected);
+    }
     throw err;
   } finally {
     STDOUT_SINK = null;

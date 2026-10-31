@@ -1034,6 +1034,33 @@ rootCase(
   WRITE_ROOT,
   "allow",
 );
+// REVIEW (skill-routing): the PAREN-LESS perl / ruby write forms and the in-place `-i`
+// edit were ALLOWED into any path — the agent could append a forged `decision: "allow"`
+// row to $GAFFER_DATA/tool-metrics.jsonl (or write anywhere else) through them.
+for (const [label, cmd] of [
+  ["perl -e paren-less 2-arg open '>>'", `perl -e 'open F,">>${OUTSIDE}/a.txt"; print F 1'`],
+  ["perl -e paren-less 3-arg open", `perl -e 'open my $f, ">>", "${OUTSIDE}/a.txt"'`],
+  ["ruby -e paren-less File.write", `ruby -e 'File.write "${OUTSIDE}/a.txt", "x"'`],
+  [
+    "ruby -e paren-less File.open 'a'",
+    `ruby -e 'File.open "${OUTSIDE}/a.txt", "a" do |f| f.puts 1 end'`,
+  ],
+  ["ruby -e paren-less IO.write", `ruby -e 'IO.write "${READ_ROOT}/a.txt", "x"'`],
+  ["perl -pi in-place edit", `perl -pi -e 's/block/allow/' ${OUTSIDE}/a.txt`],
+  ["perl -i.bak in-place edit", `perl -i.bak -pe 's/a/b/' ${READ_ROOT}/a.txt`],
+  ["ruby -i in-place edit", `ruby -i -pe 'gsub(/a/, "b")' ${OUTSIDE}/a.txt`],
+]) {
+  rootCase(`${label} OUTSIDE the write roots → DENY`, bash(cmd), ROOT_ENV, WRITE_ROOT, "deny");
+}
+for (const [label, cmd] of [
+  ["perl -e paren-less open '>' INSIDE", `perl -e 'open F,">${WRITE_ROOT}/a.txt"'`],
+  ["perl -e paren-less 3-arg open INSIDE", `perl -e 'open my $f, ">", "${WRITE_ROOT}/a.txt"'`],
+  ["ruby -e paren-less File.write INSIDE", `ruby -e 'File.write "${WRITE_ROOT}/a.txt", "x"'`],
+  ["perl -pi in-place edit INSIDE", `perl -pi -e 's/a/b/' ${WRITE_ROOT}/a.txt`],
+  ["perl -ne read-only (no -i)", `perl -ne 'print if /a/' ${WRITE_ROOT}/a.txt`],
+]) {
+  rootCase(`${label} → ALLOW`, bash(cmd), ROOT_ENV, WRITE_ROOT, "allow");
+}
 // FAIL-CLOSED: write present but destination is dynamic (no provable literal).
 rootCase(
   "node -e dynamic write dest → DENY (fail-closed)",
@@ -1559,6 +1586,138 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
   if (res2 === 2) passed += 1;
   else failures.push(`block-ledger: deny must still exit 2 without GAFFER_DATA, got ${res2}`);
   rmSync(ledgerDir, { recursive: true, force: true });
+}
+
+// --- MOUNTED SKILLS: readable where Gaffer put them, and the ledger tells the truth -----
+// The reviewer's case: a skill mounted as a `.claude/skills` SYMLINK into runner/skills
+// resolves outside the worktree, so the hook REFUSED the explicit Read — yet the tool
+// ledger (written before the decision) recorded the Read, and the skill telemetry read
+// it as "opened" and "applied". Now (a) Gaffer installs real copies, which resolve
+// inside the worktree and read through with no hook exception, while a symlink out of
+// the worktree is still refused (reads are not widened); (b) every ledger row carries
+// the hook's own decision, written after it.
+{
+  const { installSkillCopies } = await import("../lib/agent-home.mjs");
+  const wt = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-skillwt-")));
+  const data = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-skilldata-")));
+  const env = {
+    ...process.env,
+    GAFFER_WRITE_ROOTS: wt,
+    GAFFER_READ_ROOTS: "",
+    GAFFER_DATA: data,
+    GAFFER_TICKET: "4711",
+  };
+  const ledger = () => {
+    try {
+      return readFileSync(resolve(data, "tool-metrics.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => JSON.parse(l));
+    } catch {
+      return [];
+    }
+  };
+  const read = (file_path) =>
+    decide({ tool_name: "Read", tool_input: { file_path } }, { env, cwd: wt });
+  const expect = (label, cond) => (cond ? (passed += 1) : failures.push(`mounted skill: ${label}`));
+
+  // The OLD layout (the regression's shape): refused, and the row says so.
+  const lib = resolve(RUNNER, "skills");
+  spawnSync("mkdir", ["-p", resolve(wt, ".claude")]);
+  symlinkSync(lib, resolve(wt, ".claude", "skills"), "dir");
+  const viaLink = read(resolve(wt, ".claude/skills/java-conventions/SKILL.md"));
+  expect(
+    `a skill read through a symlink out of the worktree is still refused (exit ${viaLink.exitCode})`,
+    viaLink.exitCode === 2,
+  );
+  let rows = ledger();
+  expect(
+    `the refused read is in the ledger stamped decision=block (${JSON.stringify(rows.at(-1))})`,
+    rows.length === 1 && rows[0].decision === "block" && rows[0].tool === "Read",
+  );
+
+  // The NEW layout: real copies under the worktree's .claude/skills.
+  rmSync(resolve(wt, ".claude", "skills"), { force: true });
+  const installed = installSkillCopies(resolve(wt, ".claude"), ["java-conventions", "run-tests"], {
+    skillsDir: lib,
+    key: "delivery-4711",
+  });
+  expect(`both skills installed as copies (${installed})`, installed.length === 2);
+  const viaCopy = read(resolve(wt, ".claude/skills/java-conventions/SKILL.md"));
+  expect(
+    `a mounted skill copy is readable (exit ${viaCopy.exitCode}: ${viaCopy.reason ?? ""})`,
+    viaCopy.exitCode === 0,
+  );
+  const relCopy = read(".claude/skills/run-tests/SKILL.md");
+  expect(`…by a relative path too (exit ${relCopy.exitCode})`, relCopy.exitCode === 0);
+  const viaBash = decide(
+    { tool_name: "Bash", tool_input: { command: "cat .claude/skills/java-conventions/SKILL.md" } },
+    { env, cwd: wt },
+  );
+  expect(`…and through a Bash cat (exit ${viaBash.exitCode})`, viaBash.exitCode === 0);
+  rows = ledger();
+  expect(
+    `each allowed read is in the ledger stamped decision=allow (${rows.map((r) => r.decision)})`,
+    rows.length === 4 && rows.slice(1).every((r) => r.decision === "allow"),
+  );
+
+  // No widening: a link planted inside the copies, out to the library or a secret, is refused.
+  symlinkSync(
+    resolve(lib, "python-conventions"),
+    resolve(wt, ".claude/skills/python-conventions"),
+    "dir",
+  );
+  const planted = read(resolve(wt, ".claude/skills/python-conventions/SKILL.md"));
+  expect(
+    `a planted link out of the mount is refused (exit ${planted.exitCode})`,
+    planted.exitCode === 2,
+  );
+  const outside = read(resolve(lib, "java-conventions", "SKILL.md"));
+  expect(
+    `the library itself stays outside the agent's reads (exit ${outside.exitCode})`,
+    outside.exitCode === 2,
+  );
+  const secret = read(resolve(wt, ".claude/skills/java-conventions/.env"));
+  expect(
+    `a secret-shaped file inside a copy is still refused (exit ${secret.exitCode})`,
+    secret.exitCode === 2,
+  );
+
+  // The agent cannot forge a ledger row: the telemetry files sit outside every write root.
+  for (const f of ["tool-metrics.jsonl", "skills-telemetry.jsonl"]) {
+    const w = decide(
+      { tool_name: "Write", tool_input: { file_path: resolve(data, f) } },
+      { env, cwd: wt },
+    );
+    expect(`a Write to ${f} is refused (exit ${w.exitCode})`, w.exitCode === 2);
+    const b = decide(
+      {
+        tool_name: "Bash",
+        tool_input: { command: `echo '{"decision":"allow"}' >> ${resolve(data, f)}` },
+      },
+      { env, cwd: wt },
+    );
+    expect(`a Bash append to ${f} is refused (exit ${b.exitCode})`, b.exitCode === 2);
+    // …nor through an inline interpreter's paren-less write or an in-place edit.
+    for (const command of [
+      `perl -e 'open F,">>${resolve(data, f)}"; print F "{}"'`,
+      `ruby -e 'File.write "${resolve(data, f)}", "{}"'`,
+      `perl -pi -e 's/"block"/"allow"/' ${resolve(data, f)}`,
+    ]) {
+      const v = decide({ tool_name: "Bash", tool_input: { command } }, { env, cwd: wt });
+      expect(
+        `${command.split(" ")[0]} forging ${f} is refused (exit ${v.exitCode})`,
+        v.exitCode === 2,
+      );
+    }
+  }
+  // Without GAFFER_DATA nothing is logged and the decision is unchanged.
+  const quiet = decide(
+    { tool_name: "Read", tool_input: { file_path: ".claude/skills/run-tests/SKILL.md" } },
+    { env: { ...env, GAFFER_DATA: "" }, cwd: wt },
+  );
+  expect(`no GAFFER_DATA: same allow (exit ${quiet.exitCode})`, quiet.exitCode === 0);
+  for (const d of [wt, data]) rmSync(d, { recursive: true, force: true });
 }
 
 // =====================================================================

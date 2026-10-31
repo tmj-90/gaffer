@@ -1081,6 +1081,18 @@ try {
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
+            // "N things need you" is said once on a phone: with rows on the Team Sheet,
+            // the headline's count and the scoreboard's Need-you cell are not shown.
+            needYouRepeats:
+              sheet && sheet.querySelector(".own-row")
+                ? [...document.querySelectorAll(".scoreboard .hl-count, .scoreboard .sc-needs")]
+                    .filter((n) => n.getBoundingClientRect().width > 0)
+                    .map((n) => n.className)
+                : [],
+            // The headline leads with the work: no clause opens on a ticket number.
+            hlLeadsWithNumber: [...document.querySelectorAll(".scoreboard .hl-block")]
+              .map((n) => n.textContent.trim())
+              .filter((t) => /^#\d/.test(t)),
             // The Map: a ground card never clips its own words, never runs off the
             // pitch, and the server's implicit "repo:<name>" scope is not a ground.
             grounds: [...document.querySelectorAll(".scope-graph .scope-gnode")]
@@ -1120,6 +1132,12 @@ try {
         }
         if (m.grounds.length) problems.push(`${tag} ${m.grounds.join(", ")}`);
         if (m.doubleRules) problems.push(`${tag} ${m.doubleRules} treatment rows ruled twice`);
+        if (v === "overview" && w <= 760 && m.needYouRepeats.length)
+          problems.push(
+            `${tag} the need-you count repeats beside the Team Sheet (${m.needYouRepeats.join(", ")})`,
+          );
+        if (m.hlLeadsWithNumber.length)
+          problems.push(`${tag} a headline clause leads with a number: ${m.hlLeadsWithNumber[0]}`);
         if (v === "overview" && m.sheetTop != null && m.sheetTop > m.vh && w >= 390)
           problems.push(`${tag} team sheet below the fold (${Math.round(m.sheetTop)})`);
         if (runAxe && AXE_SOURCE) await auditA11y(p2, v, String(w));

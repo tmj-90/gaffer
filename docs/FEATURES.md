@@ -136,6 +136,16 @@ Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
 renames an agent in place; a taken shirt number is refused with the holder's
 name, and a read-only token sees no editors.
 
+**The headline names the work.** The Overview's scoreboard headline leads with
+the ticket's title, the number kept as a muted reference after it: "Webhook
+delivery #10 is blocked by a failing test.", never "#10 is blocked." With nothing
+blocked, the first thing waiting leads ("Export tasks to CSV #12 awaits your
+sign-off."). The same goes for every scoreboard sentence that names a ticket (an
+approved change not yet merged, the tickets the squad is on, Health's recurring
+injuries, the Review page's "moved on" card). On a phone the count is said once,
+on the Team Sheet: the headline drops its "3 things need you." for the work, and
+the scoreboard keeps the three counters not already on screen.
+
 **The Floor.** `#/floor` draws the live factory as an isometric floor: stations
 along a conveyor in lifecycle order (drawing office, Stores, Assembly,
 Inspection, test rig, loading bay, Despatch), one parcel per open ticket at its

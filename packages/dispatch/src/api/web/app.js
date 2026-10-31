@@ -3404,9 +3404,42 @@ function parkedOnTest(f, t, reason) {
 }
 
 /**
+ * A ticket's title as a headline names it: the work first, cut at its first
+ * "for / with / via / so that / when" clause and at a word near 44 characters
+ * ("Webhook delivery for task events" → "Webhook delivery"). The full title stays on
+ * the element's title and accessible name.
+ */
+function headTitle(title, max = 44) {
+  const full = String(title || "").trim();
+  if (!full) return "";
+  const m = full.match(/^(.{6,}?)\s+(?:for|with|via|so that|when)\s+\S/i);
+  let short = m && m[1].split(/\s+/).length >= 2 ? m[1] : full;
+  if (short.length > max) {
+    const cut = short.slice(0, max + 1).replace(/\s+\S*$/, "");
+    short = `${cut || short.slice(0, max)}…`;
+  }
+  return short.replace(/[\s,;:.-]+$/, "") || full;
+}
+/** The ticket's number as the reference after its title: muted, never the subject. */
+function hlRef(t) {
+  return t && t.number != null ? el("span", { class: "hl-ref" }, `#${t.number}`) : null;
+}
+/** "<title> #N": the work, then its reference. */
+function hlWork(t, fallback = "A ticket") {
+  const what = t ? headTitle(t.title) : "";
+  if (!what) return [fallback];
+  const ref = hlRef(t);
+  return [el("span", { class: "hl-what" }, what), ref ? " " : "", ref];
+}
+
+/**
  * The scoreboard's headline: one specific sentence from the queue, every clause a
- * link to its object. "5 things need you. ■ Epic “Repeat orders” is blocked at #6
- * by a failing test." When nothing does, it says what the squad is doing instead.
+ * link to its object, and the WORK leads, never a ticket number: "5 things need you.
+ * ■ Webhook delivery #10 is blocked by a failing test." (the number is the muted
+ * reference after the title). With nothing parked the first thing waiting leads
+ * ("Export to CSV #12 awaits your sign-off."). On a phone the count gives way to that
+ * clause: the Team Sheet says how many, once. When nothing needs you, it says what the
+ * squad is doing instead.
  */
 function matchHeadline(f) {
   const items = f.items;
@@ -3444,20 +3477,72 @@ function matchHeadline(f) {
       const t = rowTicket(f, p);
       const epic = t && f.epicOf.get(t.id);
       const test = parkedOnTest(f, t, p.reason);
-      const ref = t && t.number != null ? `#${t.number}` : "a ticket";
+      const verb = t && t.status === "blocked" ? "is blocked" : "is parked";
       lead.push(
         " ",
-        el("a", { class: "hl-block", href: t ? `#/ticket/${t.id}` : "#what-i-own" }, [
-          el("span", { class: "hl-nb" }, [glyph("blocked", 34), epic ? "Epic" : ref]),
-          " ",
-          epic
-            ? [el("q", {}, epic), ` is blocked at ${ref}`]
-            : t && t.status === "blocked"
-              ? "is blocked"
-              : "is parked",
-          test ? " by a failing test." : ".",
-        ]),
+        el(
+          "a",
+          {
+            class: "hl-block",
+            href: t ? `#/ticket/${t.id}` : "#what-i-own",
+            title: t ? t.title : null,
+          },
+          [
+            el("span", { class: "hl-nb" }, [
+              glyph("blocked", 34),
+              epic
+                ? "Epic"
+                : el("span", { class: "hl-what" }, (t && headTitle(t.title)) || "A ticket"),
+            ]),
+            " ",
+            epic
+              ? [el("q", {}, epic), " is blocked at ", ...hlWork(t)]
+              : t && t.number != null
+                ? [hlRef(t), " ", verb]
+                : verb,
+            test ? " by a failing test." : ".",
+          ],
+        ),
       );
+    }
+    // Nothing parked: the first thing waiting leads, named by its work.
+    if (!parked.length) {
+      const r0 = reviews[0] && rowTicket(f, reviews[0]);
+      const m0 = merges[0] && rowTicket(f, merges[0]);
+      if (r0)
+        lead.push(
+          " ",
+          el("a", { class: "hl-block hl-wait", href: `#/review/${r0.id}`, title: r0.title }, [
+            ...hlWork(r0),
+            " awaits your sign-off.",
+          ]),
+        );
+      else if (m0)
+        lead.push(
+          " ",
+          el("a", { class: "hl-block hl-wait", href: `#/ticket/${m0.id}`, title: m0.title }, [
+            ...hlWork(m0),
+            " is approved, not merged.",
+          ]),
+        );
+      else if (decisions.length)
+        lead.push(
+          " ",
+          el(
+            "a",
+            { class: "hl-block hl-wait", href: "#what-i-own" },
+            `${plural(decisions.length, "decision")} ${decisions.length === 1 ? "waits" : "wait"} for your answer.`,
+          ),
+        );
+      else if (others.length)
+        lead.push(
+          " ",
+          el(
+            "a",
+            { class: "hl-block hl-wait", href: "#what-i-own" },
+            `${plural(others.length, "call")} ${others.length === 1 ? "waits" : "wait"} for you.`,
+          ),
+        );
     }
     if (reviews.length) {
       const first = rowTicket(f, reviews[0]);
@@ -3471,25 +3556,47 @@ function matchHeadline(f) {
     }
     if (decisions.length)
       sub.push(el("a", { href: "#what-i-own" }, plural(decisions.length, "decision")));
-    for (const m of merges.slice(0, 2)) {
+    // The lead already names the first approved-but-unmerged change when nothing is
+    // parked or in review; the sub line names the rest, work first.
+    const leadMerge = !parked.length && !reviews.length ? 1 : 0;
+    for (const m of merges.slice(leadMerge, 2)) {
       const t = rowTicket(f, m);
-      if (t) sub.push(el("a", { href: `#/ticket/${t.id}` }, `#${t.number} approved, not merged`));
+      if (t)
+        sub.push(
+          el("a", { href: `#/ticket/${t.id}`, title: t.title }, [
+            ...hlWork(t),
+            " approved, not merged",
+          ]),
+        );
     }
     if (merges.length > 2) sub.push(`${merges.length - 2} more approved, not merged`);
     if (others.length)
       sub.push(el("a", { href: "#what-i-own" }, plural(others.length, "other call")));
     sub.push(squadLine);
   } else {
-    lead = [el("span", { class: "hl-count" }, "Nothing needs you.")];
+    lead = [el("span", { class: "hl-count hl-calm" }, "Nothing needs you.")];
+    // What the squad is on, by the work (the number after it): at most two named.
     const on = f.claims
-      .map((c) => c.ticket_number)
-      .filter((n) => n != null)
-      .sort((a, b) => a - b)
-      .map((n) => "#" + n);
+      .filter((c) => c.ticket_number != null)
+      .sort((a, b) => a.ticket_number - b.ticket_number);
+    const named = on
+      .slice(0, 2)
+      .map((c) =>
+        hlWork({ number: c.ticket_number, title: c.ticket_title || "" }, `#${c.ticket_number}`),
+      );
     const free = slots ? Math.max(0, slots - onPitch) : null;
     sub.push(
-      `${squadLine}${on.length ? `, on ${on.join(on.length === 2 ? " and " : ", ")}` : ""}` +
-        (free != null ? `; ${plural(free, "slot")} free` : ""),
+      el("span", {}, [
+        squadLine,
+        ...(named.length
+          ? [
+              ", on ",
+              ...named.flatMap((w, i) => (i ? [" and ", ...w] : w)),
+              on.length > 2 ? ` and ${on.length - 2} more` : "",
+            ]
+          : []),
+        free != null ? `; ${plural(free, "slot")} free` : "",
+      ]),
     );
   }
   if (f.summary.staleClaims > 0)
@@ -3535,6 +3642,7 @@ function overviewScoreboard(f) {
             href: "#what-i-own",
             flip: "needs",
             title: `${total} waiting for you`,
+            cls: "sc-needs",
           }),
           statCell({
             label: "On the pitch",
@@ -7072,8 +7180,20 @@ function panelHead(title, aux, link, opts = {}) {
  * an optional sparkline with its own baseline. No delta chips: a "▲100%" the data
  * cannot support is not shown. `flip` keys a digit flip on first paint/change.
  */
-function statCell({ label, value, unit, sub, series, href, flip, needs = false, title, after }) {
-  return el(href ? "a" : "div", { class: "kpi", href, title }, [
+function statCell({
+  label,
+  value,
+  unit,
+  sub,
+  series,
+  href,
+  flip,
+  needs = false,
+  title,
+  after,
+  cls,
+}) {
+  return el(href ? "a" : "div", { class: cls ? `kpi ${cls}` : "kpi", href, title }, [
     el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
     el("div", { class: "kpi-figure" }, [
       el(
@@ -12430,7 +12550,7 @@ async function renderHealth() {
   // The number is the sum of the lines below it (each ticket counted once).
   const lines = treatment ? [...treatment.querySelectorAll(".needs-item")] : [];
   const onTable = treatment ? Number(treatment.dataset.total || 0) : 0;
-  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-num")] : [];
+  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-row")] : [];
   const ledgerBroken = eventLog && !eventLog.chain_ok;
   const verdict = ledgerBroken
     ? "The ledger has been altered."
@@ -12452,10 +12572,14 @@ async function renderHealth() {
     }),
     injured.length
       ? el("a", { href: "#health-injuries", class: "is-injury" }, [
-          injured
-            .slice(0, 3)
-            .map((n) => n.textContent)
-            .join(", "),
+          // The work first, its number after (muted): "Webhook delivery #4, …".
+          injured.slice(0, 3).flatMap((row, i) => {
+            const t = {
+              number: (row.querySelector(".bounce-num")?.textContent || "").replace(/^#/, ""),
+              title: row.querySelector(".bounce-title")?.textContent || "",
+            };
+            return [i ? ", " : "", ...hlWork(t, `#${t.number}`)];
+          }),
           injured.length > 3 ? ` and ${injured.length - 3} more` : "",
           injured.length === 1 ? " keeps coming back" : " keep coming back",
         ])
@@ -15843,7 +15967,7 @@ async function renderReview(param) {
           "h1",
           { class: "rv-gone-h" },
           t
-            ? `#${t.number} is ${statusLabel(t.status).toLowerCase()} now.`
+            ? [...hlWork(t), ` is ${statusLabel(t.status).toLowerCase()} now.`]
             : "That change is not in review.",
         ),
         el("p", {}, [

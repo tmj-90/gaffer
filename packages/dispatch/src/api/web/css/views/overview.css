@@ -25,6 +25,28 @@
   .hl-nb {
     white-space: nowrap;
   }
+  /* The work leads; a long title may wrap (the glyph stays with its first word). */
+  .hl-nb .hl-what {
+    white-space: normal;
+  }
+  /* The ticket number is the reference after the work: muted and smaller, so the
+     headline reads as the work at a glance. */
+  .hl-ref {
+    color: var(--board-ink-2);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .hl .hl-ref {
+    font-size: 0.62em;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    vertical-align: 0.12em;
+  }
+  /* Off the dark board (the Review page's "moved on" card) it is ink on paper. */
+  .rv-gone-h .hl-ref {
+    color: var(--ink-2);
+    font-size: 0.62em;
+  }
   .hl q {
     quotes: "\201C" "\201D";
   }
@@ -1154,6 +1176,18 @@
     }
   }
   @media (max-width: 760px) {
+    /* Said once on a phone: the Team Sheet carries how many need you, so the
+       headline leads with the work and the scoreboard keeps the three counters
+       not already on screen (the pitch, today's deliveries, the wage bill). */
+    .hl:has(.hl-block) > .hl-count {
+      display: none;
+    }
+    .sb-cells .kpi.sc-needs {
+      display: none;
+    }
+    .sb-cells:has(.sc-needs) {
+      grid-template-columns: 0.9fr 0.9fr 1.3fr;
+    }
     .own-more {
       min-height: 44px;
     }

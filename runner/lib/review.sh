@@ -294,7 +294,7 @@ EOF
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
       _R_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
+      GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
@@ -383,7 +383,7 @@ EOF
         # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
         # clamped to GAFFER_MAX_TURNS.
         _S_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
+        GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
           "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
         gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true

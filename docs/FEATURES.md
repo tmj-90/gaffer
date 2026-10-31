@@ -296,7 +296,10 @@ between real tickets) and the **planning-debate** depth. Secret-bearing settings
 the Slack and generic webhook URLs, which are posting authority on their own — are
 never shown back: the panel says whether one is set and names its host, with
 **Replace** and **Remove**; only an admin principal can read the value through the
-API. Every knob the factory
+API. The **budget caps** (daily and lifetime, in dollars) are checked immediately
+before every paid agent launch — a delivery, a review, Plan a build, Suggest work,
+the tester, onboarding analysis, the merge resolver — so an exhausted budget starts
+nothing, wherever the work was asked for. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it
 — is listed in the generated [`CONFIG.md`](CONFIG.md).
 

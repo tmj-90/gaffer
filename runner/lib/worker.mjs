@@ -45,6 +45,7 @@
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
 import { spawn, spawnSync } from "node:child_process";
+import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
@@ -298,11 +299,23 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
   return { ok: true, socket: sock, bridgedConfig: bridged, dataPlane: "bridge", stop };
 }
 
-export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env }) {
+export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "worker" }) {
   const provider = workerProvider(process.env);
   if (provider !== DEFAULT_WORKER_PROVIDER) {
     // codex / local / any non-Claude provider — honest stub, FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
+  }
+  // BUDGET ADMISSION (external review #6): the ONE check every paid launch passes
+  // immediately before it spawns (lib/budget-admission.mjs; the bash seam asks the same
+  // module). Daily or lifetime budget exhausted, or the spend unknowable with a cap set
+  // ⇒ NO spawn: status 77, empty stdout, nothing booked to the ledger.
+  const admission = paidLaunchAdmission({ kind, env: process.env });
+  if (!admission.ok) {
+    const r = failClosedResult(admission.reason);
+    r.status = BUDGET_REFUSED_STATUS;
+    r.budgetRefused = true;
+    process.stderr.write(`worker: ${admission.reason}\n`);
+    return r;
   }
   // claude-code — the current path. With the sandbox off and no dollar cap configured
   // this is byte-identical. An opted-in per-call cap (GAFFER_MAX_CALL_USD, clamped to

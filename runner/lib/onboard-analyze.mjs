@@ -1307,6 +1307,7 @@ export function runAnalysisTurn(
   const t0 = Date.now();
   try {
     res = Worker.deliver({
+      kind: "onboarding-analysis",
       bin: claudeBin,
       argv: args,
       cwd,

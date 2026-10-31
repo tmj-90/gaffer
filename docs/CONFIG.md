@@ -53,7 +53,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
-| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse) and in-flight work pauses. Empty = unlimited. |
+| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse, and every paid agent launch — including Plan a build and Suggest work — is refused right before it would start) and in-flight work pauses. Empty = unlimited. |
 | `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
@@ -153,7 +153,7 @@ computed from other knobs at runtime.
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. A change applies from the next loop pass. |
 | `MAX_TICKS_PER_DAY` | `50` | yes (int) | crew, dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. A running loop re-reads it before every tick. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
-| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
+| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it, and every paid agent launch (delivery, review, clarify, tester, Plan a build, Suggest work, onboarding analysis, the merge resolver) is refused right before it would start. Empty or 0 = off. |
 
 ### Parallel ticket execution
 

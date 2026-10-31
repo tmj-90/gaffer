@@ -1284,7 +1284,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
     )
     _B_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
+    GAFFER_LAUNCH_KIND=bootstrap worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
     brc=$?
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     gaffer_record_skill_usage "$NUM" bootstrap "$STACK" "$B_SKILLS" "$B_USAGE_JSON" \
@@ -2579,7 +2579,7 @@ $_trail_q
   _PRESPAWN_REFS="$(gaffer_snapshot_refs "$WT_ROWS")"
   GAFFER_TICK_TIMEOUT="$_AGENT_TIMEOUT"  # the deadline guard's clamp (attempt 1 only)
   _SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"  # skill telemetry: tool-ledger rows from here on
-  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
+  GAFFER_LAUNCH_KIND=delivery worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
     "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
   GAFFER_TICK_TIMEOUT="$_TICK_TIMEOUT_CFG"

@@ -1818,6 +1818,7 @@ function main() {
   // runs exactly when AUTO_MERGE is on ran outside the containment seam.
   const t0 = Date.now();
   const res = Worker.deliver({
+    kind: "merge-resolver",
     bin: CONFIG.claudeBin,
     argv,
     cwd: worktree,

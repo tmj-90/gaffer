@@ -132,7 +132,7 @@ gaffer_eval_judge_delivery() (
   CLAUDE_FLAGS="--disallowedTools ${GAFFER_JUDGE_DENIED_TOOLS:-Bash,Edit,Write,MultiEdit,NotebookEdit,Read,Grep,Glob,LS,WebFetch,WebSearch,Task,TodoWrite}"
   judge_turns="${GAFFER_JUDGE_MAX_TURNS:-2}"
   type gaffer_role_turns >/dev/null 2>&1 && judge_turns="$(gaffer_role_turns "$judge_turns")"
-  worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \
+  GAFFER_LAUNCH_KIND=eval-judge worker_deliver "$tmp/cwd" "$prompt" "$judge_flag" "$tmp/mcp.json" "$tmp/envelope.json" "" \
     "$judge_turns" --tools "" --strict-mcp-config --disable-slash-commands \
     >/dev/null 2>&1
   worker_rc=$?   # a failed judge turn is fail-soft; the guard below skips

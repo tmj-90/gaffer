@@ -193,7 +193,16 @@ without a restart, and the dashboard launched by `gaffer dashboard` shows its ow
 defaults as editable, not env-locked. The day caps (`MAX_TICKS_PER_DAY`,
 `GAFFER_DAILY_BUDGET_USD`) are re-read from the current config by `loop.sh` and every
 pool `worker.sh` before each admission (`gaffer_refresh_day_caps`, lib/budget.sh), so
-lowering one stops a running loop at its next tick; a cap that cannot be re-read
+lowering one stops a running loop at its next tick. **Every paid launch is admitted on
+its own, immediately before it spawns**: `lib/budget-admission.mjs` checks the daily
+(`GAFFER_DAILY_BUDGET_USD`) and lifetime (`GAFFER_BUDGET_USD`) caps against the usage
+ledger as it stands (env first, else `settings.json`; an unreadable ledger or
+settings file with a cap set refuses), and both worker seams ask it — `lib/worker.sh`
+`worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
+`gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
+for Plan a build, product owner for Suggest work, onboarding analysis, the merge
+resolver; status 77) — as does `bin/spec-author.mjs` before its own spawn. A refused
+launch spawns nothing and books nothing (`runner/test/paid-launch-admission.test.sh`); a cap that cannot be re-read
 stops the run (fail closed). A `settings.json` that exists but does not parse as a
 flat JSON object (a hand edit, a truncated copy), or that cannot be read because
 `node` is missing, never drops a cap to its default: the re-source keeps the

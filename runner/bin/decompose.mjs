@@ -1155,6 +1155,7 @@ function runClaudeTurn(prompt, opts, model) {
   const t0 = Date.now();
   try {
     res = Worker.deliver({
+      kind: "decompose",
       bin: claudeBin,
       argv: args,
       cwd: home.dir,

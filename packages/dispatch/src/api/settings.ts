@@ -259,8 +259,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the " +
       "labelled estimate booked for a killed/timed-out call). Once today's spend is at " +
       "or over it, no new paid work starts until the next UTC day — the loop, every " +
-      "parallel worker, the daemon and the dashboard's Poll button all honour it. " +
-      "Empty or 0 = off.",
+      "parallel worker, the daemon and the dashboard's Poll button all honour it, and " +
+      "every paid agent launch (delivery, review, clarify, tester, Plan a build, " +
+      "Suggest work, onboarding analysis, the merge resolver) is refused right before " +
+      "it would start. Empty or 0 = off.",
   },
   {
     key: "GAFFER_TICK_TIMEOUT",
@@ -288,8 +290,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help:
       "Total factory spend ceiling in USD (summed from the usage-ledger). As " +
       "headroom runs low the router biases cheaper; at $0 headroom no new paid work " +
-      "starts (ticks, Poll and the daemon refuse) and in-flight work pauses. " +
-      "Empty = unlimited.",
+      "starts (ticks, Poll and the daemon refuse, and every paid agent launch — " +
+      "including Plan a build and Suggest work — is refused right before it would " +
+      "start) and in-flight work pauses. Empty = unlimited.",
   },
   {
     key: "GAFFER_BUDGET_LOW_THRESHOLD",

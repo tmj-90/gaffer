@@ -10,7 +10,10 @@
 //   - the routes: GET /diff carries the prediction for an in_review ticket, and
 //     review/approve answers what the click actually did.
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -267,6 +270,8 @@ const ENV_KEYS = [
   "GAFFER_MERGE_LANE",
   "GAFFER_PR_MERGE_METHOD",
   "DISPATCH_ALLOW_AGENT_APPROVE",
+  "GAFFER_USAGE_PAUSE_FILE",
+  "GAFFER_DATA",
 ] as const;
 let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -433,6 +438,30 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
     expect(wg.approveOutcome(id, { mergeCommand: true }).agent_hold).toBeNull();
     // And the human approval goes through (it was never held).
     expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+
+  it("a usage-window pause: the next tick waits for it, and the line says until when", () => {
+    process.env.AUTO_MERGE = "1";
+    const dir = mkdtempSync(join(tmpdir(), "approve-pause-"));
+    const until = new Date(Date.now() + 3_600_000).toISOString();
+    writeFileSync(
+      join(dir, "usage-pause.json"),
+      JSON.stringify({ paused_until: until, kind: "usage_limit" }),
+    );
+    process.env.GAFFER_DATA = dir;
+    const wg = freshWg();
+    const { id } = inReview(wg);
+    const o = wg.approveOutcome(id, { mergeCommand: false });
+    expect(o.kind).toBe("land_next_tick");
+    expect(o.sentence).toContain(`paused for the usage limit until ${until}`);
+    // The same pause read as the ticket's landing_state once approved.
+    wg.approveReview(id, human);
+    expect(wg.landingState(id)?.paused_until).toBe(until);
+    // No pause: the sentence says none.
+    rmSync(join(dir, "usage-pause.json"));
+    expect(wg.approveOutcomeFacts(id, { mergeCommand: false }).pause).toBeNull();
+    rmSync(dir, { recursive: true, force: true });
     wg.db.close();
   });
 

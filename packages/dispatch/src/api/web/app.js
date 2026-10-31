@@ -3946,7 +3946,10 @@ function renderOwnedItem(it, i = 0, f = null) {
         el("span", { class: `own-kind own-kind--${it.kind}` }, [
           ycard(16, "ycard-row"),
           OWN_GLYPH[it.kind] ? glyph(OWN_GLYPH[it.kind], 16) : null,
-          OWN_WORD[it.kind] || it.label,
+          // An approved change says where its landing is (the ticket page's own words).
+          (it.kind === "awaiting_merge" && t && t.landing_state && t.landing_state.label) ||
+            OWN_WORD[it.kind] ||
+            it.label,
         ]),
         ref ? el("span", { class: "own-ref" }, ref) : null,
       ]),
@@ -16952,16 +16955,18 @@ async function renderReview(param) {
         tab.appendChild(el("small", { class: "rv-tab-done" }, "approved"));
       }
       const meta = wrap.querySelector(".rv-meta .badge.st");
-      // The approval's own outcome is where the landing is now (the server's words).
+      // Where the landing is now, in the server's words: the approved ticket's own
+      // landing_state (what the ticket page, the board and the queue say, a usage pause
+      // included), else the approval's outcome.
       const landed = {
         land_now: "Approved · landing",
         land_next_tick: "Approved · lands next tick",
         waits_for_merge: "Approved · waiting for Merge now",
       }[done.kind];
-      if (meta && to)
-        meta.replaceWith(
-          statusBadge(to, landed ? { label: landed, detail: done.sentence } : undefined),
-        );
+      const landing =
+        (r && r.ticket && r.ticket.landing_state) ||
+        (landed ? { label: landed, detail: done.sentence } : undefined);
+      if (meta && to) meta.replaceWith(statusBadge(to, landing));
       clear(doneLine);
       doneLine.append(
         el("span", { class: "rv-done-t" }, [

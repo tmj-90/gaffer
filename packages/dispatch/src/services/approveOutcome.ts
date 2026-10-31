@@ -90,6 +90,12 @@ export interface ApproveOutcomeFacts {
   alsoLandsRepos: string[];
   /** Write repos with no checkout on this machine: no landing path can merge them. */
   noCheckoutRepos: string[];
+  /**
+   * USAGE-WINDOW PAUSE: while the runner's pause file holds a pause no tick runs, so the
+   * merge lane's "next tick" is the first one after it ends (health/usagePause.ts, the
+   * same read landing_state uses). Null or absent when no pause is active.
+   */
+  pause?: { until: string; kind: "usage_limit" | "rate_limit" } | null;
 }
 
 export interface ApproveOutcome {
@@ -159,6 +165,13 @@ function partialClause(f: ApproveOutcomeFacts): string {
   if (f.noCheckoutRepos.length > 0)
     out += ` ${andList(f.noCheckoutRepos)} ${f.noCheckoutRepos.length === 1 ? "has" : "have"} no checkout on this machine, so no landing path can merge ${f.noCheckoutRepos.length === 1 ? "it" : "them"}.`;
   return out;
+}
+
+/** The merge lane's next tick waits for an active usage-window pause: say until when. */
+function pauseClause(f: ApproveOutcomeFacts): string {
+  if (!f.pause) return "";
+  const what = f.pause.kind === "rate_limit" ? "rate limit" : "usage limit";
+  return ` The runner is paused for the ${what} until ${f.pause.until} and runs no tick before then, so the merge lane lands it on the first tick after.`;
 }
 
 function bothClause(f: ApproveOutcomeFacts): string {
@@ -291,7 +304,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       label: "Approve, lands on next tick",
       confirm_label: "Confirm: lands on next tick",
       done_label: "Waits for the merge lane",
-      sentence: `It moves to Ready for merge. ${why}, so the runner's merge lane lands it at the start of its next tick (while the runner is running): ${landingClause(f)}.${partialClause(f)}${bothClause(f)}${tests}`,
+      sentence: `It moves to Ready for merge. ${why}, so the runner's merge lane lands it at the start of its next tick (while the runner is running): ${landingClause(f)}.${pauseClause(f)}${partialClause(f)}${bothClause(f)}${tests}`,
     };
   }
   const why = f.autoMerge

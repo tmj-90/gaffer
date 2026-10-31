@@ -364,7 +364,9 @@ export async function routeTickets(
         approveOutcome = undefined;
       }
       sendJson(res, 200, {
-        ticket: result.ticket,
+        // An approval that reached ready_for_merge carries its landing_state, so the
+        // Review view's status says what the ticket page and the board say.
+        ticket: { ...result.ticket, ...withLanding(wg, result.ticket) },
         event_id: result.eventId,
         ...(merge ? { merge } : {}),
         ...(approveOutcome ? { approve_outcome: approveOutcome } : {}),

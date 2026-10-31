@@ -1,3 +1,4 @@
+import type { LandingState } from "./landingState.js";
 import { type Db } from "../db/connection.js";
 import {
   TICKET_STATUSES,
@@ -71,6 +72,12 @@ export interface BoardCard {
   number: number | null;
   title: string;
   status: TicketStatus;
+  /**
+   * An approved (ready_for_merge) or held ticket only: where the landing is, so the
+   * status label tells the truth ("Approved · waiting for Merge now", "lands next tick",
+   * "landing", "partly landed", or the hold). Stamped by Dispatch.board.
+   */
+  landing_state?: LandingState;
   priority: number;
   risk_level: RiskLevel;
   updated_at: string;
@@ -131,10 +138,10 @@ export interface BoardView {
   closed: BoardCard[];
   wontDo: BoardCard[];
   /**
-   * Approved-and-merging tickets (`ready_for_merge`): approved by a human, the
-   * merge runner is doing the git merge. Surfaced as a dedicated array (mirroring
-   * the `ready_for_merge` column in `columns`) so a caller can render the
-   * "Approved · merging" column without re-scanning the column list.
+   * Approved tickets (`ready_for_merge`), not yet landed. Surfaced as a dedicated
+   * array (mirroring the `ready_for_merge` column in `columns`) so a caller can render
+   * the column without re-scanning the column list; each card's `landing_state` says
+   * whether it is landing, lands on the next tick, or waits for Merge now.
    */
   readyForMerge: BoardCard[];
 }

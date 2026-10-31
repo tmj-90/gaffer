@@ -1255,21 +1255,35 @@ const STATUS_LABELS = {
   blocked: "Blocked",
   in_review: "In review",
   in_testing: "In testing",
-  ready_for_merge: "Approved · merging",
+  // Never "merging": nothing merges an approval unless a landing path does. A ticket
+  // that carries the server's `landing_state` reads its truthful label instead.
+  ready_for_merge: "Approved · to merge",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
   paused: "Paused",
 };
-function statusLabel(status) {
+/**
+ * A status's word. An approved (ready_for_merge) or held ticket passes the server's
+ * `landing_state`, so the word says where the landing really is ("Approved · waiting
+ * for Merge now", "Approved · lands next tick", "Approved · landing", "Approved ·
+ * partly landed", or the hold: "Held · merge gate failed").
+ */
+function statusLabel(status, landing) {
+  if (landing && landing.label && (status === "ready_for_merge" || landing.kind === "held"))
+    return landing.label;
   return STATUS_LABELS[status] || status;
 }
 /** A status: its §6 glyph + its word, together (never colour alone). */
-function statusBadge(status) {
-  return el("span", { class: `badge st status-${status}` }, [
-    glyph(status, 16),
-    el("span", {}, statusLabel(status)),
-  ]);
+function statusBadge(status, landing) {
+  return el(
+    "span",
+    {
+      class: `badge st status-${status}`,
+      title: landing && landing.detail ? landing.detail : null,
+    },
+    [glyph(status, 16), el("span", {}, statusLabel(status, landing))],
+  );
 }
 /** Risk: outlined condensed caps ("HIGH RISK" reads on its own, not by hue). */
 /** Risk chip. `long` says "high risk" (a page's meta line, where "high" alone is ambiguous). */
@@ -2890,7 +2904,7 @@ async function buildPaletteSources() {
   const ticketItems = tickets.map((t, i) => ({
     group: "Tickets",
     label: `${t.number != null ? `#${t.number} ` : ""}${t.title}`,
-    hint: statusLabel(t.status),
+    hint: statusLabel(t.status, t.landing_state),
     icon: "ticket",
     number: t.number != null ? String(t.number) : null,
     lookupOnly: i >= 60,
@@ -4116,7 +4130,7 @@ function hideRepoSheet(repo, after) {
 function sheetTicket(t) {
   if (!t) return null;
   return el("p", { class: "rs-ticket" }, [
-    t.status ? glyph(t.status, 16, statusLabel(t.status)) : null,
+    t.status ? glyph(t.status, 16, statusLabel(t.status, t.landing_state)) : null,
     t.number != null ? el("b", { class: "rs-num tabnum" }, `#${t.number}`) : null,
     t.title ? el("span", { class: "rs-title" }, t.title) : null,
   ]);
@@ -5149,7 +5163,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     const run = f.runByTicket.get(t.number);
     const nm = needs.has(t.id);
     const who = claim ? agentWho(claim.agent_id, claim.agent_display_name) : null;
-    const label = `#${t.number} ${statusLabel(t.status)}${who ? `, ${who.name}${who.no ? ` (No. ${Number(who.no)})` : ""} on it` : ""}${nm ? ", needs you" : ""}: ${t.title}`;
+    const label = `#${t.number} ${statusLabel(t.status, t.landing_state)}${who ? `, ${who.name}${who.no ? ` (No. ${Number(who.no)})` : ""} on it` : ""}${nm ? ", needs you" : ""}: ${t.title}`;
     const a = svgS("a", {
       href: t.status === "in_review" ? `#/review/${t.id}` : `#/ticket/${t.id}`,
       class: `counter${claim ? " has-agent" : ""}${nm ? " needs" : ""}`,
@@ -5445,7 +5459,7 @@ function tacticsBoard(f) {
               off.map((t) =>
                 el("li", {}, [
                   el("a", { href: `#/ticket/${t.id}`, class: `off-${t.status}` }, [
-                    statusBadge(t.status),
+                    statusBadge(t.status, t.landing_state),
                     el("b", {}, `#${t.number}`),
                     el("span", { class: "off-t" }, t.title),
                   ]),
@@ -5611,7 +5625,7 @@ function cupRuns(f) {
                           "a",
                           {
                             href: `#/ticket/${t.id}`,
-                            "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+                            "aria-label": `#${t.number} ${statusLabel(t.status, t.landing_state)}: ${t.title}`,
                           },
                           [
                             glyph(t.status, 16),
@@ -5674,7 +5688,7 @@ function injuryList(f) {
           list.map((t) =>
             el("li", {}, [
               el("p", { class: "inj-top" }, [
-                statusBadge(t.status),
+                statusBadge(t.status, t.landing_state),
                 el("a", { href: `#/ticket/${t.id}` }, `#${t.number} ${t.title}`),
               ]),
               el("p", { class: "inj-why" }, injuryWhy(f, t)),
@@ -6035,7 +6049,7 @@ function squadForm(f) {
                           t
                             ? el("a", { href: `#/ticket/${t.id}` }, `On #${claim.ticket_number}`)
                             : `On #${claim.ticket_number}`,
-                          t ? ` · ${statusLabel(t.status).toLowerCase()}` : "",
+                          t ? ` · ${statusLabel(t.status, t.landing_state).toLowerCase()}` : "",
                           run
                             ? run.num_turns
                               ? ` · ${run.phase ? run.phase + " · " : ""}${run.num_turns} turns · ${money(run.cost_usd)}`
@@ -8955,13 +8969,14 @@ const TICKET_ACTION_KEYS = {
   claimed: [],
   in_progress: [],
   blocked: ["unblock", "wont_do"],
-  // Review surface: approve takes the ticket to `ready_for_merge` (merging).
+  // Review surface: approve takes the ticket to `ready_for_merge` (or in_testing).
   in_review: ["approve", "rework", "wont_do"],
   // BBT-001: independent testing lane. The tester agent owns the verdict (pass →
   // ready_for_merge, fail → refining); a human can also record it from here when the
   // lane is off, held (no verdict token) or the operator tested by hand.
   in_testing: ["tester_pass", "tester_fail"],
-  // Approved-and-merging: the merge runner is working. A human can mark it merged
+  // Approved, not landed (its landing_state says whether anything is landing it). A
+  // human can merge it now, mark it merged
   // (admin override) or send it back for rework — but NOT "mark ready".
   ready_for_merge: ["merge_now", "mark_merged", "rework"],
   // Terminal: reopen only where allowed (cancelled is reopenable; done is not).
@@ -9274,7 +9289,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
                     { href: `#/ticket/${t.id}` },
                     t.number != null ? `#${t.number}` : t.id.slice(0, 8),
                   ),
-                  ` ${t.status === "cancelled" ? "won't do" : statusLabel(t.status).toLowerCase()}`,
+                  ` ${t.status === "cancelled" ? "won't do" : statusLabel(t.status, t.landing_state).toLowerCase()}`,
                 ]),
               closedAll.length > 6 ? `, and ${closedAll.length - 6} more` : "",
               ".",
@@ -9477,11 +9492,12 @@ function humanLaneAction(card) {
 }
 
 /** A status word with its glyph, at card size (for a card whose status is not its lane's). */
-function cardStatus(status) {
-  return el("span", { class: `card-status st-${status}` }, [
-    glyph(status, 14),
-    el("span", {}, statusLabel(status)),
-  ]);
+function cardStatus(status, landing) {
+  return el(
+    "span",
+    { class: `card-status st-${status}`, title: landing && landing.detail ? landing.detail : null },
+    [glyph(status, 14), el("span", {}, statusLabel(status, landing))],
+  );
 }
 
 /**
@@ -9495,7 +9511,12 @@ function renderBoardCard(card, laneKey, needs) {
 
   const top = el("div", { class: "card-top" }, [
     el("span", { class: "num" }, numText),
-    laneKey && card.status !== laneKey && card.status !== "done" ? cardStatus(card.status) : null,
+    // An approved or held card always says where its landing is (the lane cannot).
+    card.landing_state
+      ? cardStatus(card.status, card.landing_state)
+      : laneKey && card.status !== laneKey && card.status !== "done"
+        ? cardStatus(card.status)
+        : null,
     el("span", { class: "card-tags" }, [
       card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
       el(
@@ -9800,7 +9821,7 @@ function renderWorkList(allTickets, needs, claims = []) {
                   t.title,
                 ),
               ]),
-              el("td", { class: "c-status" }, statusBadge(t.status)),
+              el("td", { class: "c-status" }, statusBadge(t.status, t.landing_state)),
               el("td", { class: "c-agent" }, who),
               el("td", { class: "c-risk" }, riskBadge(t.risk_level)),
               el("td", { class: "c-pri tabnum" }, `P${t.priority}`),
@@ -10061,7 +10082,13 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
     case "in_review":
       return [el("b", {}, "In review. "), "It waits for your sign-off."];
     case "ready_for_merge":
-      return [el("b", {}, "Approved. "), "It is with the merge runner now."];
+      // The server's landing_state says where the landing is; never claim a merge runs.
+      return [
+        el("b", {}, "Approved. "),
+        t.landing_state && t.landing_state.detail
+          ? t.landing_state.detail
+          : "It waits in Ready for merge until a landing path lands it.",
+      ];
     case "done":
       return [
         el("b", {}, "Done. "),
@@ -10078,7 +10105,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
     case "in_progress": {
       const by = deliveredBy(events);
       return [
-        el("b", {}, `${statusLabel(t.status)}. `),
+        el("b", {}, `${statusLabel(t.status, t.landing_state)}. `),
         by ? `${by.name} is on it.` : "An agent is on it.",
       ];
     }
@@ -10087,7 +10114,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
     case "draft":
     case "refining":
       return [
-        el("b", {}, `${statusLabel(t.status)}. `),
+        el("b", {}, `${statusLabel(t.status, t.landing_state)}. `),
         "Mark it ready when its criteria are right.",
       ];
     case "cancelled": {
@@ -10107,7 +10134,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
       ];
     }
     default:
-      return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
+      return [el("b", {}, `${statusLabel(t.status, t.landing_state)}. `), "An agent is on it."];
   }
 }
 
@@ -10342,7 +10369,7 @@ async function ticketEpicCard(t, scopes) {
                   {
                     href: `#/ticket/${x.id}`,
                     "aria-current": x.id === t.id ? "page" : null,
-                    "aria-label": `#${x.number} ${statusLabel(x.status)}: ${x.title}`,
+                    "aria-label": `#${x.number} ${statusLabel(x.status, x.landing_state)}: ${x.title}`,
                   },
                   [
                     glyph(x.status, 16),
@@ -10669,7 +10696,7 @@ async function renderTicket(id) {
   };
 
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
-  // runner may be held. The status ("Approved · merging") and the lede say where it is.
+  // runner may be held. The status (its landing_state) and the lede say where it is.
   const headActions = [
     ...ticketActionKeys(t.status).map((key) =>
       actionButtons[key] ? roLock(actionButtons[key]()) : null,
@@ -10729,7 +10756,7 @@ async function renderTicket(id) {
       mark,
       el("div", { class: "tk-head-main" }, [
         el("p", { class: "tk-meta" }, [
-          statusBadge(t.status),
+          statusBadge(t.status, t.landing_state),
           repoW ? repoTag(repoW.name, 20) : null,
           riskBadge(t.risk_level, { long: true }),
           // The acceptance ticket is its campaign's Final: say so where it is named.
@@ -11500,7 +11527,7 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         : { txt: "shipped clean — no rework", cls: "ok" }
       : reworks > 0
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
-        : { txt: statusLabel(t.status).toLowerCase(), cls: "dim" };
+        : { txt: statusLabel(t.status, t.landing_state).toLowerCase(), cls: "dim" };
 
   const head = el("div", { class: "panel-head mem-primed-head" }, [
     el("h2", { class: "panel-title" }, "The scouting report"),
@@ -15787,7 +15814,7 @@ async function renderClearDesk(wrap) {
       ? [
           "you signed ",
           el("a", { href: `#/ticket/${signed.id}` }, `#${signed.number}`),
-          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status).toLowerCase()} now`,
+          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status, signed.landing_state).toLowerCase()} now`,
         ]
       : null,
     playing.length
@@ -15861,7 +15888,7 @@ async function renderClearDesk(wrap) {
       el("span", { class: "rv-res-no" }, `#${t.number}`),
       el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
       el("span", { class: "rv-res-st" }, [
-        statusBadge(t.status),
+        statusBadge(t.status, t.landing_state),
         signed && t.id === signed.id ? el("small", { class: "rv-res-you" }, "you signed it") : null,
       ]),
       el(
@@ -15889,7 +15916,9 @@ async function renderClearDesk(wrap) {
       el("span", { class: "rv-res-no" }, `#${t.number}`),
       el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
       el("span", { class: "rv-res-st" }, [
-        c && c.agent_id ? agentChip(c.agent_id, c.agent_display_name, 22) : statusBadge(t.status),
+        c && c.agent_id
+          ? agentChip(c.agent_id, c.agent_display_name, 22)
+          : statusBadge(t.status, t.landing_state),
       ]),
       el(
         "span",
@@ -15978,7 +16007,7 @@ async function renderReview(param) {
           "h1",
           { class: "rv-gone-h" },
           t
-            ? [...hlWork(t), ` is ${statusLabel(t.status).toLowerCase()} now.`]
+            ? [...hlWork(t), ` is ${statusLabel(t.status, t.landing_state).toLowerCase()} now.`]
             : "That change is not in review.",
         ),
         el("p", {}, [
@@ -16073,7 +16102,16 @@ async function renderReview(param) {
         tab.appendChild(el("small", { class: "rv-tab-done" }, "approved"));
       }
       const meta = wrap.querySelector(".rv-meta .badge.st");
-      if (meta && to) meta.replaceWith(statusBadge(to));
+      // The approval's own outcome is where the landing is now (the server's words).
+      const landed = {
+        land_now: "Approved · landing",
+        land_next_tick: "Approved · lands next tick",
+        waits_for_merge: "Approved · waiting for Merge now",
+      }[done.kind];
+      if (meta && to)
+        meta.replaceWith(
+          statusBadge(to, landed ? { label: landed, detail: done.sentence } : undefined),
+        );
       clear(doneLine);
       doneLine.append(
         el("span", { class: "rv-done-t" }, [
@@ -16409,7 +16447,7 @@ async function renderReview(param) {
         t.title,
       ]),
       el("p", { class: "rv-meta" }, [
-        statusBadge(t.status),
+        statusBadge(t.status, t.landing_state),
         repo ? repoTag(repo.name, 20) : null,
         riskBadge(t.risk_level, { long: true }),
         by
@@ -16818,7 +16856,7 @@ function mapCounterHref(c) {
  */
 function mapCounter(c, { link = true } = {}) {
   const tone = mapTone(c.status);
-  const word = statusLabel(c.status);
+  const word = statusLabel(c.status, c.landing_state);
   const marks = [
     el("span", { class: "mag-n tabnum" }, String(c.number ?? "?")),
     tone === "yellow" ? ycard(12, "mag-card") : null,
@@ -17856,7 +17894,7 @@ function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
               : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
-              statusBadge(t.status),
+              statusBadge(t.status, t.landing_state),
               t.updated_at
                 ? el(
                     "time",
@@ -18811,7 +18849,7 @@ function renderRepoTickets(repo, tickets, err) {
             el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
-              statusBadge(t.status),
+              statusBadge(t.status, t.landing_state),
               el(
                 "time",
                 { class: "repo-ticket-time", datetime: t.updated_at },
@@ -19496,7 +19534,7 @@ function renderEpicDag(byPhase, phases, ctx) {
     const needs = NEEDS_SIGN_OFF.has(t.status);
     const waitsOnHeld = blockers.some((b) => heldIds.has(b.depends_on_ticket_id));
     const label = [
-      `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+      `#${t.number} ${statusLabel(t.status, t.landing_state)}: ${t.title}`,
       repo ? `in ${repo}` : "",
       agent ? `${agent.name} on it` : "",
       needs ? (t.status === "in_review" ? "waits for your sign-off" : "waits for the merge") : "",
@@ -19517,7 +19555,7 @@ function renderEpicDag(byPhase, phases, ctx) {
         el("span", { class: "dn-top" }, [
           el("span", { class: "dn-num" }, t.number != null ? `#${t.number}` : "—"),
           needs ? ycard(16) : null,
-          statusBadge(t.status),
+          statusBadge(t.status, t.landing_state),
         ]),
         el("span", { class: "dn-title" }, t.title),
         el("span", { class: "dn-foot" }, [
@@ -24799,7 +24837,7 @@ function floorModel(f) {
 /** The sentence a parcel reads as: "#12 Fix the login redirect, in review, delivered by Kev (No. 9)". */
 function floorSentence(p) {
   const named = (w) => `${w.name}${w.no ? ` (No. ${Number(w.no)})` : ""}`;
-  let s = `#${p.number} ${p.title}, ${FLOOR_WORDS[p.status] || statusLabel(p.status)}`;
+  let s = `#${p.number} ${p.title}, ${FLOOR_WORDS[p.status] || statusLabel(p.status, p.landing_state)}`;
   if (p.who) s += `, ${named(p.who)} on it${p.running ? ", its run in progress" : ""}`;
   else if (p.by) s += `, delivered by ${named(p.by)}`;
   if (p.needs) s += ", needs you";
@@ -25575,7 +25613,11 @@ async function renderFloor() {
             el("li", {}, [
               agentTag(p.who.name, 22, p.who.no, agentTitle(p.who)),
               el("a", { href: `#/ticket/${p.id}` }, [el("b", {}, `#${p.number}`), " ", p.title]),
-              el("span", { class: "fl-bench-st" }, FLOOR_WORDS[p.status] || statusLabel(p.status)),
+              el(
+                "span",
+                { class: "fl-bench-st" },
+                FLOOR_WORDS[p.status] || statusLabel(p.status, p.landing_state),
+              ),
             ]),
           ),
         )

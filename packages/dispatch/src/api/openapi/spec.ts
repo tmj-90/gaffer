@@ -587,7 +587,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Ticket detail",
     description:
-      "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. `:id` accepts the ticket id or number.",
+      "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. An approved (`ready_for_merge`) or held ticket carries `ticket.landing_state` (`{ kind, label, detail, hold }`: waiting_for_merge, lands_next_tick, landing, partly_landed or held), the same field the board cards, GET /tickets and the human queue carry. `:id` accepts the ticket id or number.",
     capability: "read",
     responses: [
       ok(

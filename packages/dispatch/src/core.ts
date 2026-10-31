@@ -131,6 +131,7 @@ import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import {
   BoardService,
   resolveMoveTarget,
+  type BoardCard,
   type BoardView,
   type DashboardSummary,
 } from "./services/boardService.js";
@@ -155,6 +156,12 @@ import {
   isAutonomyAllowed,
   policyGrantsAuto,
 } from "./services/autonomyPolicyService.js";
+import {
+  decideLandingState,
+  type LandingFacts,
+  type LandingHold,
+  type LandingState,
+} from "./services/landingState.js";
 import {
   decideApproveOutcome,
   type ApproveOutcome,
@@ -1541,6 +1548,160 @@ export class Dispatch {
     return decideApproveOutcome(this.approveOutcomeFacts(ref, opts));
   }
 
+  /**
+   * WHERE AN APPROVED CHANGE IS: the facts behind a ready_for_merge (or held) ticket's
+   * status label, read from what the landing paths themselves act on — the review pin
+   * against the branch head (the landing check's "moved since review"), the merge gate's
+   * evidence and the CI result for the head, the hold a parked ticket carries, a merge run
+   * the API started that is still running, per-repo landings, and the merge lane's rule
+   * (an earned merge gate, or AUTO_MERGE and a human approval; GAFFER_MERGE_LANE).
+   * Git runs only for a ready_for_merge ticket; any other status reads no facts.
+   */
+  landingFacts(ref: string | Ticket, env: NodeJS.ProcessEnv = process.env): LandingFacts | null {
+    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
+    if (ticket.status !== "ready_for_merge" && ticket.status !== "blocked") return null;
+    const events = listEvents(this.db, "ticket", ticket.id);
+    const transitions = events
+      .filter((e) => e.event_type === "ticket.transitioned")
+      .map((e) => {
+        let pl: { to?: string; reason?: string | null } = {};
+        try {
+          pl = (JSON.parse(e.payload_json || "{}") as typeof pl) || {};
+        } catch {
+          pl = {};
+        }
+        return { e, to: pl.to ?? "", reason: pl.reason ?? "" };
+      });
+    const lastInto = (st: string) => [...transitions].reverse().find((t) => t.to === st);
+    const base = {
+      mergeRunning: false,
+      landedRepos: [] as string[],
+      writeRepos: [] as string[],
+      autoMerge: false,
+      mergeLane: false,
+      mergeGateEarned: false,
+      approver: "",
+    };
+    if (ticket.status === "blocked") {
+      const m = /^held:(merge_gate_red|ci_red)$/.exec(lastInto("blocked")?.reason ?? "");
+      return { ...base, status: ticket.status, hold: m ? (m[1] as LandingHold) : null };
+    }
+    // Everything after the ticket's latest entry into ready_for_merge, in log order (the
+    // event log's insertion order, never a clock comparison across tables).
+    const entry = lastInto("ready_for_merge")?.e;
+    const afterEntry = entry ? events.slice(events.indexOf(entry) + 1) : events;
+    const recordedSince = new Set(
+      afterEntry
+        .filter((e) => e.event_type === "evidence.recorded")
+        .map((e) => {
+          try {
+            const pl = JSON.parse(e.payload_json || "{}") as { evidence_id?: string };
+            return String(pl.evidence_id ?? "");
+          } catch {
+            return "";
+          }
+        }),
+    );
+    const evidence = this.evidence.listForTicket(ticket.id);
+    // The approval on the ticket's current path to merge (the merge lane's own rule).
+    let start = 0;
+    transitions.forEach((t, i) => {
+      if (t.to === "in_review") start = i + 1;
+    });
+    let approver = "";
+    for (const t of transitions.slice(start))
+      if (t.reason === "review_approved" || t.reason === "review_approved_to_testing")
+        approver = t.e.actor_type;
+    let hold: LandingHold | null = null;
+    const head = this.resolveApprovedHead(ticket);
+    const pin = [...evidence]
+      .reverse()
+      .find((ev) => (ev.uri ?? "").startsWith("gaffer-reviewed-commit:"));
+    const pinned = pin ? (pin.uri ?? "").slice("gaffer-reviewed-commit:".length).toLowerCase() : "";
+    if (head && pinned && !head.sha.startsWith(pinned) && !pinned.startsWith(head.sha))
+      hold = "moved_since_review";
+    else if (
+      evidence.some((ev) => ev.summary.startsWith("MERGE GATE FAILED") && recordedSince.has(ev.id))
+    )
+      hold = "merge_gate_red";
+    else if (head && this.reviewGateSvc.ciStatus(ticket.id, head.sha).state === "fail")
+      hold = "ci_red";
+    // A merge run the API started for this approval, still running.
+    const started = [...afterEntry].reverse().find((e) => e.event_type === "ticket.merge_started");
+    let mergeRunning = false;
+    if (started) {
+      try {
+        const runId = (JSON.parse(started.payload_json || "{}") as { run_id?: string }).run_id;
+        const row = runId
+          ? (this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
+              { status: string } | undefined)
+          : undefined;
+        mergeRunning = row?.status === "running";
+      } catch {
+        mergeRunning = false;
+      }
+    }
+    const writes = this.repos
+      .listForTicket(ticket.id)
+      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
+    const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
+    return {
+      status: ticket.status,
+      hold,
+      mergeRunning,
+      landedRepos: writes
+        .filter((l) => this.repoDeliveries.find(ticket.id, l.id)?.status === "done")
+        .map((l) => l.name),
+      writeRepos: writes.map((l) => l.name),
+      autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
+      mergeLane: !["0", "false", "no", "off"].includes(lane),
+      mergeGateEarned: isAutonomyAllowed(
+        this.autonomyPolicy,
+        this.writeRepoIdsForTicket(ticket),
+        ticket.risk_level,
+        "merge",
+        env,
+      ),
+      approver,
+    };
+  }
+
+  /** The truthful status label for an approved or held ticket (see landingState.ts). */
+  landingState(ref: string | Ticket, env: NodeJS.ProcessEnv = process.env): LandingState | null {
+    try {
+      const facts = this.landingFacts(ref, env);
+      return facts ? decideLandingState(facts) : null;
+    } catch {
+      return null; // a status label never fails the read it rides on
+    }
+  }
+
+  /** Stamp `landing_state` on each approved or held ticket of a list (others untouched). */
+  withLandingState<T extends Ticket>(
+    tickets: readonly T[],
+  ): Array<T & { landing_state?: LandingState }> {
+    return tickets.map((t) => {
+      if (t.status !== "ready_for_merge" && t.status !== "blocked") return t;
+      const ls = this.landingState(t);
+      return ls ? { ...t, landing_state: ls } : t;
+    });
+  }
+
+  /**
+   * Record that the API started a merge run for an approved ticket, so its status can say
+   * "landing" while that run is running (the runs table does not carry the ticket).
+   */
+  noteMergeStarted(ref: string, runId: string | null, actor: Actor): void {
+    const ticket = this.resolveTicket(ref);
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.merge_started",
+      payload: { run_id: runId },
+    });
+  }
+
   markMerged(ref: string, actor: Actor): TransitionResult {
     return this.reviewGateSvc.markMerged(ref, actor);
   }
@@ -2378,7 +2539,25 @@ export class Dispatch {
    *   linked to that repo are included. Omit for the full board.
    */
   board(repo?: string): BoardView {
-    return this.boardSvc.board(repo);
+    const view = this.boardSvc.board(repo);
+    // Approved and held cards carry where their landing is (one read per such ticket).
+    const states = new Map<string, LandingState>();
+    const stamp = (c: BoardCard): BoardCard => {
+      if (c.status !== "ready_for_merge" && c.status !== "blocked") return c;
+      if (!states.has(c.id)) {
+        const ls = this.landingState(c.id);
+        if (ls) states.set(c.id, ls);
+      }
+      const ls = states.get(c.id);
+      return ls ? { ...c, landing_state: ls } : c;
+    };
+    return {
+      ...view,
+      columns: view.columns.map((col) => ({ ...col, cards: col.cards.map(stamp) })),
+      closed: view.closed.map(stamp),
+      wontDo: view.wontDo.map(stamp),
+      readyForMerge: view.readyForMerge.map(stamp),
+    };
   }
 
   /**
@@ -2422,7 +2601,16 @@ export class Dispatch {
    * changes no semantics and adds no gate. Read-only.
    */
   humanQueue(): HumanQueue {
-    return this.humanQueueSvc.build();
+    const q = this.humanQueueSvc.build();
+    return {
+      ...q,
+      items: q.items.map((it) => {
+        const t = it.ticket;
+        if (!t || (t.status !== "ready_for_merge" && t.status !== "blocked")) return it;
+        const ls = this.landingState(t.id);
+        return ls ? { ...it, ticket: { ...t, landing_state: ls } } : it;
+      }),
+    };
   }
 
   /**

@@ -205,6 +205,15 @@ structural barrier the whole design hangs on.
   when it does ("Confirm and land now"); after approval the button and the band
   under it say where the change went (`GET /tickets/:id/diff` carries
   `approve_outcome`).
+- **An approved ticket's status says where its landing is.** It never reads
+  "merging" unless something merges it: *Approved · waiting for Merge now*
+  (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
+  runner's merge lane lands it: Auto-merge on and a human approval, or an earned
+  merge grant), *Approved · landing* (a merge the dashboard started is running),
+  *Approved · partly landed* (some of its write repos landed), or the hold's own
+  words — *Held · moved since review*, *Held · merge gate failed*, *Held · CI red*.
+  The server stamps it as `landing_state` on the ticket, the board cards, the
+  ticket list and the Team Sheet.
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
   a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read

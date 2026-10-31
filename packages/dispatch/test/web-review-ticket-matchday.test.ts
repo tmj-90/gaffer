@@ -337,7 +337,9 @@ describe("web: Match Day review + ticket", () => {
     expect(cells.find((c) => c.startsWith("To merge"))).toContain("01");
     const results = app.querySelector(".rv-results")?.textContent || "";
     expect(results).toContain("#16");
-    expect(results).toContain("Approved · merging");
+    // No landing_state in this payload: the neutral word, never "merging".
+    expect(results).toContain("Approved · to merge");
+    expect(results).not.toMatch(/merging/i);
     expect(app.querySelector('.rv-results a[href="#/ticket/tkt-1"]')).toBeTruthy();
   });
 });

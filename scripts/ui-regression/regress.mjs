@@ -647,6 +647,15 @@ try {
       await page.reload({ waitUntil: "load" });
       await page.waitForSelector(mergeNow, { timeout: 15000 });
     }
+    // The status says what is true while it waits: nothing lands it but Merge now.
+    const word = (
+      (await page.textContent(".badge.st.status-ready_for_merge").catch(() => "")) || ""
+    ).trim();
+    word === "Approved · waiting for Merge now"
+      ? ok(`Ticket page: the approved status reads '${word}' (Auto-merge off)`)
+      : bad(
+          `Ticket page: the approved status reads '${word}', not 'Approved · waiting for Merge now'`,
+        );
     await page.click(mergeNow);
     ok("Ticket page: Merge now pressed (runs the merge runner)");
   }

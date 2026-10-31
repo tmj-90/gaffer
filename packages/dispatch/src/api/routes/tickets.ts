@@ -75,6 +75,29 @@ const TICKET_SUB = {
   TESTER: "tester",
 } as const;
 
+/** `{ landing_state }` for an approved or held ticket, else nothing (spread into a ticket). */
+function withLanding(
+  wg: Dispatch,
+  ref: string | Parameters<Dispatch["landingState"]>[0],
+): { landing_state?: NonNullable<ReturnType<Dispatch["landingState"]>> } {
+  const ls = wg.landingState(ref);
+  return ls ? { landing_state: ls } : {};
+}
+
+/** A merge the API started: noted on the ticket so its status reads "landing" meanwhile. */
+function noteMerge(
+  wg: Dispatch,
+  ticketId: string,
+  merge: { triggered: boolean; runId?: string | null } | undefined,
+): void {
+  if (!merge || !merge.triggered) return;
+  try {
+    wg.noteMergeStarted(ticketId, merge.runId ?? null, apiActor());
+  } catch {
+    // Best-effort: the merge has started; only the status word is lost.
+  }
+}
+
 export async function routeTickets(
   wg: Dispatch,
   mergeRunner: MergeRunner,
@@ -102,7 +125,12 @@ export async function routeTickets(
         { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
       );
       sendJson(res, 200, {
-        tickets: page.tickets,
+        // Approved and held tickets carry `landing_state` (their truthful status label).
+        tickets: page.tickets.map((t) =>
+          t.status === "ready_for_merge" || t.status === "blocked"
+            ? { ...t, ...withLanding(wg, t.id) }
+            : t,
+        ),
         total: page.total,
         ...(q.limit !== undefined ? { limit: q.limit, offset: q.offset ?? 0 } : {}),
       });
@@ -157,7 +185,7 @@ export async function routeTickets(
     if (method === "GET") {
       const view = wg.view(id);
       sendJson(res, 200, {
-        ticket: view.ticket,
+        ticket: { ...view.ticket, ...withLanding(wg, view.ticket) },
         acceptance_criteria: view.acceptanceCriteria,
         repositories: view.repositories,
         // `scopes` carries the ticket↔scope links (incl. its containing `epic`
@@ -299,6 +327,7 @@ export async function routeTickets(
         merge = envFlagOn(process.env[AUTO_MERGE_ENV])
           ? mergeRunner.trigger({ ticketNumber: number })
           : { triggered: false, pid: null, skipped: "auto_merge_off" };
+        noteMerge(wg, result.ticket.id, merge);
       }
       // What the click actually did, in the words the Review view's done band uses: the
       // predicted outcome settled against the real route (tester, merge started/skipped).
@@ -396,6 +425,7 @@ export async function routeTickets(
       throw new DispatchError("ILLEGAL_TRANSITION", "Ticket has no number; cannot start a merge.");
     }
     const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
+    noteMerge(wg, ticket.id, merge);
     sendJson(res, 202, { ticket, merge });
     return;
   }

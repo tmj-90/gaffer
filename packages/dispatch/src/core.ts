@@ -124,6 +124,11 @@ import {
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
 import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
+import {
+  ReviewPacketService,
+  type CostReader,
+  type ReviewPacket,
+} from "./services/reviewPacketService.js";
 import { SpecsService } from "./services/specsService.js";
 import { SpecCoverageService } from "./services/specCoverageService.js";
 import { resolveSpecClauseSeeder } from "./services/specClauseSeeder.js";
@@ -193,6 +198,7 @@ export function resolveMaxAttempts(env: NodeJS.ProcessEnv = process.env): number
 
 /** BBT-001 global toggle: is the independent black-box testing lane ON? */
 export { isTestingEnabled, testerProvenance } from "./util/testingLane.js";
+import { isTestingEnabled } from "./util/testingLane.js";
 
 /**
  * An evidence row enriched with derived provenance for the reviewer surface.
@@ -348,6 +354,7 @@ export class Dispatch {
   readonly specCoverageSvc: SpecCoverageService;
   readonly boardSvc: BoardService;
   readonly dossierSvc: DossierService;
+  readonly reviewPacketSvc: ReviewPacketService;
   readonly reviewGateSvc: ReviewGateService;
   readonly autonomyRecommendations: AutonomyRecommendationService;
   readonly pauseSvc: PauseService;
@@ -530,6 +537,18 @@ export class Dispatch {
       acs: this.acs,
       evidence: this.evidence,
       repoDeliveries: this.repoDeliveries,
+    });
+    this.reviewPacketSvc = new ReviewPacketService({
+      db,
+      acs: this.acs,
+      evidence: this.evidence,
+      reworkAttempts: this.reworkAttempts,
+      maxAttempts: this.maxAttempts,
+      // Mirrors approveReview's routing: an acceptance ticket always goes through the
+      // tester; a testable one does when the testing lane is on.
+      testerExpected: (t) =>
+        t.acceptance === 1 ||
+        ((this.testingEnabledOverride ?? isTestingEnabled()) && t.can_be_tested === 1),
     });
     this.reviewGateSvc = new ReviewGateService({
       db,
@@ -1582,6 +1601,15 @@ export class Dispatch {
   dossier(ref: string): Dossier {
     const ticket = this.resolveTicket(ref);
     return this.dossierSvc.assemble(ticket);
+  }
+
+  /**
+   * REVIEW PACKET: the runner-verified facts the Review view draws above the agent's
+   * words (gates, tester, cost, attempts, risk, the review pin, per-criterion check
+   * results, test-count disagreements). Pure read; outside the dossier's hash.
+   */
+  reviewPacket(ref: string, costFor: CostReader): ReviewPacket {
+    return this.reviewPacketSvc.assemble(this.resolveTicket(ref), costFor);
   }
 
   /**

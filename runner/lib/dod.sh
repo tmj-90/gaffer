@@ -236,6 +236,8 @@ gaffer_dod_run_one() {
 #          GATE<TAB>name<TAB>repo<TAB>PASS|FAIL|SKIP<TAB>rc<TAB>note
 #        and, for a FAIL, a captured output tail framed by:
 #          ---DOD-OUTPUT name@repo---\n<tail>\n---END-DOD-OUTPUT---
+#        and, for the tests gate (pass or fail), the runner's summary lines framed by:
+#          ---DOD-TALLY tests@repo---\n<lines>\n---END-DOD-TALLY---
 #
 # RETURNS: 0 when every gate passed or was skipped; 1 when ANY gate failed. Pure:
 # moves/evidence/logging are the caller's job.
@@ -296,10 +298,51 @@ gaffer_run_dod_gates() {
           || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
         printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
       fi
+      # REVIEW PACKET: keep the test runner's own summary lines (pass or fail) so the
+      # Review view can say what the runner saw and flag an agent claim that disagrees.
+      [ "$gate" = "tests" ] && gaffer_dod_tally_block "$tmpout" "$gate" "$label" >> "$results"
     done
   done
   rm -f "$tmpout"
   [ "$any_fail" -eq 0 ]
+}
+
+# REVIEW PACKET: the summary lines a test gate's output carries, framed as
+#   ---DOD-TALLY <gate>@<repo>---\n<lines>\n---END-DOD-TALLY---
+# Lines kept (ANSI stripped, each cut to 300 chars, the last 20): vitest
+# "Tests  N passed (N)", jest "Tests: … total", pytest "N passed … in 0.1s", cargo
+# "test result: …"; for `go test -v`, the top-level --- PASS/FAIL/SKIP lines are
+# counted into one "gotest-tally: pass=N fail=M skip=K" line. Prints nothing when no
+# summary is found. Pure text in, text out; never fails the gate.
+#   gaffer_dod_tally_block <gate-output-file> <gate> <repo-label>
+gaffer_dod_tally_block() {
+  local infile="$1" gate="$2" label="$3" lines
+  [ -f "$infile" ] || return 0
+  lines="$(awk '
+    BEGIN { esc = sprintf("%c", 27); n = 0; gp = 0; gf = 0; gs = 0 }
+    {
+      line = $0
+      gsub(esc "\\[[0-9;?]*[A-Za-z]", "", line)
+      gsub(/\r/, "", line)
+      if (line ~ /^--- PASS: /) { gp++; next }
+      if (line ~ /^--- FAIL: /) { gf++; next }
+      if (line ~ /^--- SKIP: /) { gs++; next }
+      t = line; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t)
+      keep = 0
+      if (t ~ /^Tests[ \t]+.*[0-9]+ (passed|failed|skipped|todo).*\([0-9]+\)$/) keep = 1
+      else if (t ~ /^Tests:[ \t]+.*[0-9]+ total/) keep = 1
+      else if (t ~ /^test result: /) keep = 1
+      else if (t ~ /[0-9]+ (passed|failed).* in [0-9.]+s/) keep = 1
+      if (keep) { buf[n % 20] = substr(t, 1, 300); n++ }
+    }
+    END {
+      start = (n > 20) ? n - 20 : 0
+      for (i = start; i < n; i++) print buf[i % 20]
+      if (gp + gf + gs > 0) printf "gotest-tally: pass=%d fail=%d skip=%d\n", gp, gf, gs
+    }
+  ' "$infile" 2>/dev/null)" || return 0
+  [ -n "$lines" ] || return 0
+  printf -- '---DOD-TALLY %s@%s---\n%s\n---END-DOD-TALLY---\n' "$gate" "$label" "$lines"
 }
 
 # Render a one-line human summary of a results file (for the factory log).

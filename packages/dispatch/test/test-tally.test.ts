@@ -1,0 +1,130 @@
+// REVIEW PACKET: reading test counts out of runner output and out of the agent's
+// words, and flagging only a real disagreement between the two.
+
+import { describe, expect, it } from "vitest";
+
+import { compareTestClaims, parseRunnerTally, parseTestClaims } from "../src/util/testTally.js";
+
+const ESC = String.fromCharCode(27);
+
+describe("parseRunnerTally: the usual runner summaries", () => {
+  it("vitest (summed across packages, ANSI stripped, Test Files ignored)", () => {
+    const t = parseRunnerTally(
+      [
+        " Test Files  3 passed (3)",
+        `      Tests  ${ESC}[32m40 passed${ESC}[39m (40)`,
+        " Test Files  1 failed | 1 passed (2)",
+        "      Tests  1 failed | 1 passed | 2 skipped (4)",
+      ].join("\n"),
+    );
+    expect(t).toMatchObject({ framework: "vitest", passed: 41, failed: 1, skipped: 2, total: 44 });
+    expect(t!.lines).toHaveLength(2);
+  });
+
+  it("jest", () => {
+    expect(
+      parseRunnerTally("Tests:       1 failed, 2 skipped, 41 passed, 44 total\nSnapshots: 0 total"),
+    ).toMatchObject({ framework: "jest", passed: 41, failed: 1, skipped: 2, total: 44 });
+  });
+
+  it("pytest (with and without the ===== frame)", () => {
+    expect(
+      parseRunnerTally("========= 1 failed, 41 passed, 2 skipped in 0.12s ========="),
+    ).toMatchObject({
+      framework: "pytest",
+      passed: 41,
+      failed: 1,
+      skipped: 2,
+    });
+    expect(parseRunnerTally("12 passed in 0.03s")).toMatchObject({ passed: 12, failed: 0 });
+  });
+
+  it("go test -v (top-level --- lines and the runner's tally line)", () => {
+    const raw = [
+      "=== RUN   TestA",
+      "--- PASS: TestA (0.00s)",
+      "    --- PASS: TestA/sub (0.00s)",
+      "--- FAIL: TestB (0.01s)",
+      "--- SKIP: TestC (0.00s)",
+      "FAIL",
+    ].join("\n");
+    expect(parseRunnerTally(raw)).toMatchObject({
+      framework: "go",
+      passed: 1,
+      failed: 1,
+      skipped: 1,
+      total: 3,
+    });
+    expect(parseRunnerTally("gotest-tally: pass=12 fail=0 skip=1")).toMatchObject({
+      framework: "go",
+      passed: 12,
+      skipped: 1,
+    });
+  });
+
+  it("cargo (one line per test binary, summed)", () => {
+    expect(
+      parseRunnerTally(
+        [
+          "test result: ok. 10 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+          "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+        ].join("\n"),
+      ),
+    ).toMatchObject({ framework: "cargo", passed: 12, failed: 1, skipped: 1, total: 14 });
+  });
+
+  it("no summary ⇒ null (never zero)", () => {
+    expect(parseRunnerTally("all good\nDone in 3s")).toBeNull();
+    expect(parseRunnerTally("")).toBeNull();
+  });
+});
+
+describe("parseTestClaims: what the agent said", () => {
+  it("reads counted and bare claims", () => {
+    expect(parseTestClaims("Implemented clearDone; all 42 tests pass.")).toEqual([
+      { passed: 42, all: true, excerpt: "Implemented clearDone; all 42 tests pass." },
+    ]);
+    expect(parseTestClaims("12/12 tests passing")[0]).toMatchObject({ passed: 12, all: true });
+    expect(parseTestClaims("30 unit tests passed")[0]).toMatchObject({ passed: 30, all: false });
+    expect(parseTestClaims("All tests pass.")[0]).toMatchObject({ passed: null, all: true });
+    // A pasted runner line is still the agent's word.
+    expect(parseTestClaims("Tests  9 passed (9)")[0]).toMatchObject({ passed: 9, all: true });
+  });
+
+  it("ignores counts that are not a pass claim", () => {
+    expect(parseTestClaims("Added 3 new tests for the edge cases.")).toEqual([]);
+    expect(parseTestClaims("Smallest-change note: modified src/a.ts")).toEqual([]);
+  });
+
+  it("a counted claim wins over a bare 'all pass'", () => {
+    const c = parseTestClaims("All tests pass.\n42 tests passing");
+    expect(c).toHaveLength(1);
+    expect(c[0]!.passed).toBe(42);
+  });
+});
+
+describe("compareTestClaims", () => {
+  const tally = { framework: "vitest", passed: 40, failed: 0, skipped: 0, total: 40, lines: [] };
+
+  it("flags a claimed count the runner did not see", () => {
+    const d = compareTestClaims(parseTestClaims("all 42 tests pass"), tally);
+    expect(d).toHaveLength(1);
+    expect(d[0]!.message).toBe("The summary says 42, the runner saw 40.");
+  });
+
+  it("says nothing when the counts agree, or when there is no runner count", () => {
+    expect(compareTestClaims(parseTestClaims("all 40 tests pass"), tally)).toEqual([]);
+    expect(compareTestClaims(parseTestClaims("all 42 tests pass"), null)).toEqual([]);
+  });
+
+  it("flags 'all pass' against a runner failure or a failed test gate", () => {
+    const failing = { ...tally, passed: 39, failed: 1 };
+    expect(compareTestClaims(parseTestClaims("All tests pass."), failing)[0]!.message).toBe(
+      "The summary says all tests pass, the runner saw 39 passing and 1 failing.",
+    );
+    expect(
+      compareTestClaims(parseTestClaims("All tests pass."), null, { testsGateFailed: true })[0]!
+        .message,
+    ).toBe("The summary says all tests pass, the runner saw the test gate fail.");
+  });
+});

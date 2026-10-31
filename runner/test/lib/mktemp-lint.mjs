@@ -16,8 +16,11 @@
 //         (runner/test/lib/tmpdir.sh), which refuses ".", "/", $HOME, the start dir,
 //         the repo root, their ancestors and anything outside a temp root.
 //   node (.mjs)
-//     M1  no direct `mkdtempSync(` call: `gafferMkdtemp` (runner/test/lib/tmpdir.mjs)
-//         exits 70 with a clear message and refuses a result outside a temp root.
+//     M1  no direct `mkdtempSync(` / `mkdtemp(` call and no `mktemp` run through
+//         child_process: `gafferMkdtemp` (runner/test/lib/tmpdir.mjs) exits 70 with a
+//         clear message and refuses a result outside a temp root.
+//   (T2 also refuses a backtick `mktemp`; T3 also covers the WORK that
+//   lib/stub-tick.sh creates for the files sourcing it.)
 //
 // Comment lines and heredoc bodies (stub scripts a test writes) are not the test's own
 // code and are skipped. Usage: node mktemp-lint.mjs <file>... — prints
@@ -33,8 +36,22 @@ function lintMjs(file, text) {
   text.split("\n").forEach((line, i) => {
     const t = line.trim();
     if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return;
-    if (/\bmkdtempSync\s*\(/.test(line))
-      report(file, i + 1, "M1", "mkdtempSync( — use gafferMkdtemp from runner/test/lib/tmpdir.mjs");
+    if (/\bmkdtemp(Sync)?\s*\(/.test(line))
+      report(
+        file,
+        i + 1,
+        "M1",
+        "mkdtemp( / mkdtempSync( — use gafferMkdtemp from runner/test/lib/tmpdir.mjs",
+      );
+    // `mktemp` run through child_process (execSync("mktemp -d"), spawnSync("mktemp")):
+    // its stdout is never checked the way gafferMkdtemp checks.
+    else if (/\bmktemp\b/.test(line))
+      report(
+        file,
+        i + 1,
+        "M1",
+        "mktemp from Node (child_process) — use gafferMkdtemp from runner/test/lib/tmpdir.mjs",
+      );
   });
 }
 
@@ -97,6 +114,13 @@ function lintSh(file, text) {
     }
   }
   const tempVars = new Set(["GAFFER_TEST_ISO"]);
+  // lib/stub-tick.sh creates (and checks) WORK for the files that source it.
+  if (code.some(([, l]) => /^\s*(source|\.)\s+\S*stub-tick\.sh/.test(l))) tempVars.add("WORK");
+  // A backtick substitution cannot be checked the way `$(…)` is (and nests badly).
+  for (const [n, line] of code) {
+    if (/`[^`]*\bmktemp\b[^`]*`/.test(line))
+      report(file, n, "T2", '`mktemp` in backticks — use `VAR="$(mktemp …)"` and check it');
+  }
   const producer = new RegExp(
     String.raw`\$\(\s*(mktemp\b[^)]*|gaffer_test_tmpdir\b[^)]*` +
       (tempFns.size ? `|(?:${[...tempFns].join("|")})(?:\\s[^)]*)?` : "") +
@@ -153,7 +177,7 @@ function lintSh(file, text) {
   }
   // T3: bare rm -rf of a temp root.
   const rmRe =
-    /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*(?:\s+-[a-zA-Z]+)*|-[a-zA-Z]+\s+-[rR])\s+([^;|&)']*)/g;
+    /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*(?:\s+-[a-zA-Z]+)*|-[a-zA-Z]+\s+-[rR]|(?:--?[a-zA-Z-]+\s+)*--recursive(?:\s+--?[a-zA-Z-]+)*)\s+([^;|&)']*)/g;
   for (const [n, line] of code) {
     for (const m of line.matchAll(rmRe)) {
       for (const tok of m[1].trim().split(/\s+/)) {

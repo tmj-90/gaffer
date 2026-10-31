@@ -76,6 +76,15 @@ rm -rf "$(dirname "$WORK")"'
 bad  iso-rm sh T3 'gaffer_test_isolate; trap '"'"'rm -rf "$GAFFER_TEST_ISO"'"'"' EXIT'
 bad  mkdtemp mjs M1 'import { mkdtempSync } from "node:fs";
 const W = mkdtempSync("/tmp/x-");'
+bad  long-rm sh T3 'WORK="$(mktemp -d)" || exit 70
+rm --force --recursive "$WORK"'
+bad  backtick sh T2 'W=`mktemp -d`'
+bad  stub-tick-work sh T3 'source "$HERE/lib/stub-tick.sh"
+cleanup() { rm -rf "$WORK"; }'
+bad  mkdtemp-async mjs M1 'import { mkdtemp } from "node:fs/promises";
+const W = await mkdtemp("/tmp/x-");'
+bad  mktemp-exec mjs M1 'import { execSync } from "node:child_process";
+const W = execSync("mktemp -d").toString().trim();'
 good guarded-next sh 'WORK="$(mktemp -d "${TMPDIR:-/tmp}/x.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
@@ -105,6 +114,40 @@ refuses "an ancestor of the repository root" "$(dirname "$ROOT")"
 refuses "a relative path" "runner"
 refuses "a directory outside every temp root" "$RUNNER_DIR/test/lib"
 [ -d "$ROOT/.git" ] || [ -f "$ROOT/.git" ] && ok "N3 the checkout's .git is still there" || fail "N3 the checkout's .git vanished"
+# A path that only LOOKS like it is under a temp root: through `..`, through a symlink a
+# test (or the code under test) left in TMPDIR, or that symlink with a trailing slash
+# (`rm -rf link/` empties the target). The probe victim must live OUTSIDE every temp
+# root, so it goes beside $HOME (or, if HOME is itself a temp dir, in the checkout), and
+# is removed by the EXIT trap below.
+VICTIM=""
+for _vb in "${HOME:-}" "$ROOT"; do
+  case "$_vb" in /*) ;; *) continue ;; esac
+  [ -d "$_vb" ] && [ -w "$_vb" ] || continue
+  _gaffer_test_under_tmp "$_vb" && continue
+  VICTIM="$_vb/.gaffer-rmwork-victim.$$"; break
+done
+if [ -z "$VICTIM" ]; then
+  fail "N3 no writable directory outside the temp roots for the symlink probes (HOME=${HOME:-} ROOT=$ROOT)"
+else
+  trap 'gaffer_test_rm_work "$WORK"; gaffer_test_rm_work --anywhere "$VICTIM" 2>/dev/null' EXIT
+  mkdir -p "$VICTIM/sub"; echo keep >"$VICTIM/MARK"; echo keep >"$VICTIM/sub/MARK"
+  ln -s "$VICTIM" "$WORK/vlink"
+  survives() { [ -f "$VICTIM/MARK" ] && [ -f "$VICTIM/sub/MARK" ]; }
+  why="$(gaffer_test_rm_work "/tmp/..$VICTIM" 2>&1)"; rc=$?
+  survives && [ "$rc" != 0 ] && ok "N3 refuses a path that leaves the temp root through '..'" || fail "N3 /tmp/..$VICTIM: rc $rc, victim $(survives && echo intact || echo DELETED): $why"
+  mkdir -p "$VICTIM/sub"; echo keep >"$VICTIM/MARK"; echo keep >"$VICTIM/sub/MARK"
+  why="$(gaffer_test_rm_work "$WORK/vlink/sub" 2>&1)"; rc=$?
+  survives && [ "$rc" != 0 ] && ok "N3 refuses a path reached through a symlink in the temp root" || fail "N3 $WORK/vlink/sub: rc $rc, victim $(survives && echo intact || echo DELETED): $why"
+  mkdir -p "$VICTIM/sub"; echo keep >"$VICTIM/MARK"; echo keep >"$VICTIM/sub/MARK"
+  why="$(gaffer_test_rm_work "$WORK/vlink/" 2>&1)"; rc=$?
+  survives && [ ! -e "$WORK/vlink" ] && [ ! -L "$WORK/vlink" ] && ok "N3 a symlink in the temp root (even 'link/'): only the link is removed, never its target" \
+    || fail "N3 $WORK/vlink/: rc $rc, victim $(survives && echo intact || echo DELETED), link $([ -L "$WORK/vlink" ] && echo kept || echo gone): $why"
+  _pfx="/tmp/..$(dirname "$VICTIM")/.gaffer-mkdtemp-probe.$$-"
+  OUT="$(node --input-type=module -e "import { gafferMkdtemp } from '$HERE/lib/tmpdir.mjs'; gafferMkdtemp(process.argv[1]); console.log('SHOULD-NOT-RUN');" "$_pfx" 2>&1)"; rc=$?
+  [ "$rc" = 70 ] && ! ls -d "$(dirname "$VICTIM")"/.gaffer-mkdtemp-probe.$$-* >/dev/null 2>&1 \
+    && ok "N3 gafferMkdtemp: a prefix that leaves the temp root through '..' is refused and its dir removed" || fail "N3 gafferMkdtemp '..' prefix rc $rc: $OUT"
+  for _d in "$(dirname "$VICTIM")"/.gaffer-mkdtemp-probe.$$-*; do [ -d "$_d" ] && rmdir "$_d" 2>/dev/null; done
+fi
 T="$(gaffer_test_tmpdir rmwork-probe)" || exit 70
 mkdir -p "$T/a/b"; echo x >"$T/a/b/f"
 gaffer_test_rm_work "$T" && [ ! -e "$T" ] && ok "N3 removes a real temp dir" || fail "N3 did not remove $T"

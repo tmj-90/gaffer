@@ -21,6 +21,8 @@
 # empty, relative, ".", "/", $HOME, the directory the test started in, the repository
 # root, any ANCESTOR of those, or anything not strictly under a temp root (TMPDIR as it
 # was when this file was sourced, the current TMPDIR, or /tmp — each also canonical).
+# "Under" is decided on where the path really is (`..` and symlinked parents resolved),
+# never on its spelling, and a trailing slash never makes it follow a symlink.
 # If this file cannot be sourced, the guards fail (127 → `|| exit 70`) and the cleanup
 # is "command not found": nothing is ever removed by accident.
 # Portable to macOS bash 3.2; no GNU-only flags. runner/test/no-unchecked-mktemp.test.sh
@@ -43,17 +45,37 @@ if [ -z "${_GAFFER_TEST_SNAPSHOT:-}" ]; then
   _GAFFER_TEST_HOME_AT_SOURCE="${HOME:-}"
 fi
 
-# _gaffer_test_under_tmp <path>: true when <path> lies strictly under a temp root.
+# _gaffer_test_where <path>: where <path> ITSELF really is — `..` and every symlinked
+# parent resolved, the last component kept as is (a symlink there is what `rm -rf`
+# removes, not its target). A path whose parent does not exist has nothing to remove
+# and stays literal. The literal spelling never decides: `/tmp/../home/x` and
+# `$TMPDIR/link-to-elsewhere/x` only LOOK like temp paths.
+_gaffer_test_where() {
+  local p="$1" d b
+  if [ -d "$p" ] && [ ! -L "$p" ]; then _gaffer_test_canon "$p"; return 0; fi
+  d="$(dirname "$p")"; b="$(basename "$p")"
+  case "$b" in . | ..) [ -d "$p" ] && { _gaffer_test_canon "$p"; return 0; } ;; esac
+  if [ -d "$d" ]; then
+    d="$(_gaffer_test_canon "$d")"
+    [ "$d" = "/" ] && d=""
+    printf '%s/%s' "$d" "$b"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+# _gaffer_test_under_tmp <path>: true when <path> really lies strictly under a temp root
+# (its _gaffer_test_where location, against each root's literal and canonical form).
 _gaffer_test_under_tmp() {
-  local p="$1" c="$1" r root
-  [ -d "$p" ] && c="$(_gaffer_test_canon "$p")"
+  local w r root
+  w="$(_gaffer_test_where "$1")"
+  case "$w" in */../* | */.. | */./* | */.) return 1 ;; esac   # unresolved: never "under"
   for r in "$_GAFFER_TEST_TMP_AT_SOURCE" "${TMPDIR:-/tmp}" /tmp; do
     case "$r" in /*) ;; *) continue ;; esac   # a relative TMPDIR is no temp root
     r="$(_gaffer_test_strip "$r")"
     [ "$r" = "/" ] && continue                # nor is "/"
     for root in "$r" "$(_gaffer_test_canon "$r")"; do
-      case "$p" in "$root"/?*) return 0 ;; esac
-      case "$c" in "$root"/?*) return 0 ;; esac
+      case "$w" in "$root"/?*) return 0 ;; esac
     done
   done
   return 1
@@ -63,7 +85,7 @@ _gaffer_test_under_tmp() {
 # must never be removed; returns 1 when it is removable. "anywhere" drops the temp-root
 # requirement (an operator-chosen output dir) but keeps every other refusal.
 _gaffer_test_unsafe() {
-  local p="$1" mode="${2:-tmp}" c prot
+  local p="$1" mode="${2:-tmp}" c w prot
   case "$p" in
     "") echo "the path is empty"; return 0 ;;
     . | ./ | .. | ../) echo "the path is '$p' (the current or parent directory)"; return 0 ;;
@@ -72,8 +94,12 @@ _gaffer_test_unsafe() {
   esac
   p="$(_gaffer_test_strip "$p")"
   [ "$p" = "/" ] && { echo "the path is /"; return 0; }
+  # c: what the path FOLLOWS to (a symlink's target too) — refused if that is, or holds,
+  # a protected directory, however it is spelled; w: where the path itself is.
   c="$p"; [ -d "$p" ] && c="$(_gaffer_test_canon "$p")"
   [ "$c" = "/" ] && { echo "the path '$p' resolves to /"; return 0; }
+  w="$(_gaffer_test_where "$p")"
+  [ "$w" = "/" ] && { echo "the path '$p' resolves to /"; return 0; }
   # Protected: $HOME and the directory the test started in (as they were when this file
   # was sourced), the repository root, and the current $HOME / $PWD unless those are
   # themselves inside a temp root (a test that exported HOME=$WORK/home or cd'd into its
@@ -86,14 +112,14 @@ _gaffer_test_unsafe() {
       continue
     fi
     prot="$(_gaffer_test_strip "$prot")"
-    case "$prot/" in "$p"/* | "$c"/*) echo "the path '$p' is, or contains, the protected directory '$prot'"; return 0 ;; esac
+    case "$prot/" in "$p"/* | "$c"/* | "$w"/*) echo "the path '$p' is, or contains, the protected directory '$prot'"; return 0 ;; esac
     if [ -d "$prot" ]; then
       prot="$(_gaffer_test_canon "$prot")"
-      case "$prot/" in "$p"/* | "$c"/*) echo "the path '$p' is, or contains, the protected directory '$prot'"; return 0 ;; esac
+      case "$prot/" in "$p"/* | "$c"/* | "$w"/*) echo "the path '$p' is, or contains, the protected directory '$prot'"; return 0 ;; esac
     fi
   done
   [ "$mode" = anywhere ] && return 1
-  _gaffer_test_under_tmp "$p" || { echo "the path '$p' is not under a temp root (TMPDIR=${TMPDIR:-<unset>})"; return 0; }
+  _gaffer_test_under_tmp "$p" || { echo "the path '$p' is not under a temp root (it is really '$w'; TMPDIR=${TMPDIR:-<unset>})"; return 0; }
   return 1
 }
 
@@ -140,7 +166,9 @@ gaffer_test_rm_work() {
       rc=1
       continue
     fi
-    rm -rf "$p"
+    # The checked spelling, trailing slashes stripped: `rm -rf link/` would empty the
+    # link's TARGET, `rm -rf link` removes only the link.
+    rm -rf "$(_gaffer_test_strip "$p")"
   done
   return "$rc"
 }

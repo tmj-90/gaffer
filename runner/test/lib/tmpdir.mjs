@@ -44,14 +44,16 @@ export function gafferMkdtemp(prefix) {
       `mktemp failed: could not create a temp directory from "${prefix}" (${e?.code || e?.message || e})`,
     );
   }
-  let canon = dir;
+  // Decide on where the directory really is (`..` and symlinked parents resolved), never
+  // on its spelling: "/tmp/../home/x-" only looks like a temp path.
+  let canon = null;
   try {
     canon = realpathSync(dir);
   } catch {
-    /* keep the literal path */
+    /* unresolvable: refused below */
   }
   const under = (p) => tempRoots().some((r) => p.startsWith(r + sep) && p.length > r.length + 1);
-  if (!isAbsolute(dir) || !(under(dir) || under(canon))) {
+  if (!isAbsolute(dir) || canon === null || !under(canon)) {
     try {
       rmdirSync(dir); // empty: it was created a moment ago
     } catch {

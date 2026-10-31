@@ -99,6 +99,13 @@ if [ -e .git ]; then
       node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell=/bin/true\n")'
       printf '.npmrc\n' >> "$(git rev-parse --git-path info/exclude)"
       git -c user.email=s@s -c user.name=s commit -qam "feat: ignored npmrc" >/dev/null 2>&1; done_json; exit 0 ;;
+    skipworktree-hide)  # commit the broken a(); then hide a skipped test from git: the
+                        # index keeps the original (skip-worktree), the disk has test.skip
+      printf 'export function a() { return 2; }\n' > src/a.js
+      git -c user.email=s@s -c user.name=s commit -qam "feat: helper" >/dev/null 2>&1
+      git update-index --skip-worktree test/a.test.js >/dev/null 2>&1
+      sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak
+      done_json; exit 0 ;;
     move-base)       # commit a test.skip, move the base branch onto it, commit again
       printf 'export function a() { return 2; }\n' > src/a.js
       sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak

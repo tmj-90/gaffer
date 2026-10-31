@@ -26,6 +26,9 @@
 #      gate to the base expansion and FLAG the integrity row.
 #   I  a recorded base SHA is used as is: moving `main` onto a committed test.skip
 #      hides it from a branch-name base but not from the SHA; gaffer_delivery_base_sha.
+#   J  git's switches cannot hide a weakened test: a skip-worktree / assume-unchanged
+#      test changed on disk FLAGs; a .gitattributes `-diff` cannot hide an added skip;
+#      other marker spellings (bracket access, pytestmark, a Go build constraint).
 #
 # Requires git, node and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash test/gate-integrity.test.sh      (bash 3.2-safe)
@@ -329,6 +332,37 @@ grep -q '_gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY' "$TICK" \
   && ok "I8 tick.sh captures the cut commit at every worktree add -B (first cut and retry re-cut), never a later tip" \
   || fail "I8 tick.sh does not capture the cut commit at each -B"
 git -C "$R" update-ref refs/heads/main "$MAIN0"
+
+echo "== J: git's own switches cannot hide a weakened test from the scan =="
+# The gate runs the files ON DISK; the scan asks git what changed. An index entry marked
+# skip-worktree / assume-unchanged (or dropped by a sparse checkout) makes `git diff`
+# trust the index, so a test skipped or deleted on disk would look untouched — and the
+# auto-commit's `add -A` never stages it, so the committed branch looks clean too.
+delivery
+printf 'echo 2\n' > "$WT/src/value.sh"; commit_wt "break the value"
+git -C "$WT" update-index --skip-worktree tests/value.test.sh
+printf 'exit 0\n' > "$WT/tests/value.test.sh"          # gutted on disk only
+gates "npm test" main
+I="$(row integrity)"
+[ "$RC" -eq 0 ] && [ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *"hidden from git"*"tests/value.test.sh"* ]] \
+  && ok "J1 a skip-worktree test edited on disk: the gate passes on it, and the integrity row FLAGs the hidden file" \
+  || fail "J1 expected a FLAG naming the hidden tests/value.test.sh, got rc=$RC: $I"
+delivery
+git -C "$WT" update-index --assume-unchanged tests/other.test.sh
+rm -f "$WT/tests/other.test.sh"
+gates "true" main
+[[ "$(col "$(row integrity)" 6)" == *"hidden from git"*"tests/other.test.sh"* ]] \
+  && ok "J2 an assume-unchanged test deleted on disk FLAGs" || fail "J2 got: $(row integrity)"
+delivery
+printf 'tests/** -diff\n' > "$WT/.gitattributes"
+mkdir -p "$WT/tests"; printf "it.skip('x', () => {})\n" > "$WT/tests/attr.test.js"; commit_wt "attrs"
+printf "it.skip('y', () => {})\n" >> "$WT/tests/attr.test.js"; commit_wt "skip behind -diff"
+gates "true" "$(git -C "$WT" rev-parse HEAD~1)"
+[[ "$(col "$(row integrity)" 6)" == *"it.skip in tests/attr.test.js"* ]] \
+  && ok "J3 a .gitattributes '-diff' on the tests cannot hide an added skip" || fail "J3 got: $(row integrity)"
+marker_case "js bracket"      test/k.test.js        "test['skip']('x', () => {})"           test.skip
+marker_case "pytestmark"      tests/test_mod.py     "pytestmark = pytest.mark.skip"         pytest.mark.skip
+marker_case "go build tag"    pkg/y_test.go         "//go:build ignore"                     "go build constraint"
 
 echo
 echo "gate-integrity: $PASS passed, ${#FAILURES[@]} failed"

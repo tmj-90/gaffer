@@ -26,6 +26,7 @@ import {
   extraTestPathRe,
   gateScriptNamesOf,
   hasIntegrityFindings,
+  hiddenIndexPaths,
   integrityItems,
   isTestPath,
   parseNameStatusZ,
@@ -597,6 +598,48 @@ describe("gate command resolution against the base commit", () => {
     const head = JSON.stringify({ scripts: { test: "x" } });
     const r = resolveGateCommand("npm test -- a,b", basePkg, head, "abc");
     expect(r.command).toContain("( vitest run a,b )");
+  });
+});
+
+describe("hiddenIndexPaths", () => {
+  it("names skip-worktree and assume-unchanged entries from `git ls-files -v -z`", () => {
+    const out = [
+      "H src/a.js",
+      "S test/a.test.js",
+      "h test/b.test.js",
+      "H test/c.test.js",
+      "s x y.js",
+      "",
+    ].join("\0");
+    expect(hiddenIndexPaths(out)).toEqual(["test/a.test.js", "test/b.test.js", "x y.js"]);
+    expect(hiddenIndexPaths("H a\0H b\0")).toEqual([]);
+    expect(hiddenIndexPaths("")).toEqual([]);
+  });
+
+  it("matches what git reports for a real index", () => {
+    const d = mkdtempSync(join(tmpdir(), "gi-"));
+    try {
+      const g = (args: string[]) =>
+        execFileSync("git", ["-C", d, ...args], {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: "t",
+            GIT_AUTHOR_EMAIL: "t@t",
+            GIT_COMMITTER_NAME: "t",
+            GIT_COMMITTER_EMAIL: "t@t",
+          },
+        });
+      g(["init", "-q", "-b", "main"]);
+      for (const f of ["a.test.js", "b.test.js", "c.js"]) writeFileSync(join(d, f), "x\n");
+      g(["add", "-A"]);
+      g(["commit", "-qm", "base"]);
+      g(["update-index", "--skip-worktree", "a.test.js"]);
+      g(["update-index", "--assume-unchanged", "b.test.js"]);
+      expect(hiddenIndexPaths(g(["ls-files", "-v", "-z"]))).toEqual(["a.test.js", "b.test.js"]);
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
   });
 });
 

@@ -31,6 +31,10 @@
 #   9. npmrc-ignored: the same `.npmrc`, git-ignored through info/exclude so it is never
 #      committed. The on-disk check still FLAGs it, and dispatch holds the agent approve
 #      on the runner's FLAG (the committed diff alone is clean).
+#  10. skipworktree-hide: commits the broken a(), then marks test/a.test.js skip-worktree
+#      and skips it ON DISK. git diff and the auto-commit trust the index, so the
+#      committed branch looks clean while the gate runs the skipped test. The integrity
+#      row FLAGs the hidden file and dispatch holds the agent approve on the runner's FLAG.
 #
 # Requires node, git, perl and the built dispatch / memory / crew dists; SKIPs otherwise.
 # Run: bash runner/test/gate-integrity-e2e.test.sh   (KEEP=1 keeps the temp dir)
@@ -264,6 +268,23 @@ else
   fail "9: expected the delivery in review (status $(st "$T9"))"
 fi
 retire "$T9"
+
+echo "== 10. a test hidden from git (skip-worktree) and skipped on disk is still flagged =="
+T10="$(new_ready "Hide the skip from git" "deliver a helper")"
+echo skipworktree-hide > "$MODE"; run_tick >/dev/null
+J10="$(dod_json "$T10")"
+[ "$(gate_field "$J10" tests status)" = PASS ] && ok "10: (the gate ran the skipped test on disk and passed)" \
+  || fail "10: tests gate: $J10"
+[ "$(gate_field "$J10" integrity status)" = FLAG ] && [[ "$(gate_field "$J10" integrity note)" == *"hidden from git"*"test/a.test.js"* ]] \
+  && ok "10: the integrity row FLAGs the skip-worktree test" || fail "10: evidence: $J10"
+if [ "$(st "$T10")" = "in_review" ]; then
+  review_tick >/dev/null
+  [ "$(st "$T10")" = "in_review" ] && ok "10: the agent reviewer's approve was HELD — still in_review" \
+    || fail "10: status after the agent review: $(st "$T10") (the broken a() shipped behind a hidden skip)"
+else
+  fail "10: expected the delivery in review (status $(st "$T10"))"
+fi
+retire "$T10"
 
 echo
 echo "gate-integrity-e2e: $PASS passed, ${#FAILURES[@]} failed"

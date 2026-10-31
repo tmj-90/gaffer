@@ -45,6 +45,7 @@ import {
   GATE_RC_NAMES,
   gateScriptNamesOf,
   hasIntegrityFindings,
+  hiddenIndexPaths,
   resolveGateCommand,
   summarizeIntegrity,
   type ConfigChange,
@@ -57,9 +58,15 @@ function field(s: string): string {
   return s.replace(/[\t\r\n]+/g, " ").trim();
 }
 
+/**
+ * Repo config that would make git skip looking at the working tree is switched off for
+ * every scan call: an fsmonitor that reports nothing changed, core.ignoreStat.
+ */
+const SCAN_GIT_CONFIG = ["-c", "core.fsmonitor=false", "-c", "core.ignoreStat=false"] as const;
+
 function gitIn(wt: string): IntegrityGit {
   return (args, opts) => {
-    const r = spawnSync("git", ["-C", wt, ...args], {
+    const r = spawnSync("git", [...SCAN_GIT_CONFIG, "-C", wt, ...args], {
       encoding: "utf8",
       maxBuffer: opts?.maxBuffer ?? 16 * 1024 * 1024,
       timeout: 60_000,
@@ -133,6 +140,35 @@ function withRcOnDisk(
   return extra.length ? { ...f, configs: [...f.configs, ...extra] } : f;
 }
 
+/**
+ * Index entries git does not compare with the working tree (skip-worktree,
+ * assume-unchanged, a sparse checkout): whatever is on disk under them is what the gate
+ * ran, and the diff above could not see it. Any such entry makes the scan incomplete.
+ */
+function withHiddenIndexEntries(
+  f: TestIntegrityFindings,
+  git: IntegrityGit,
+): TestIntegrityFindings {
+  const ls = git(["ls-files", "-v", "-z"], { maxBuffer: 64 * 1024 * 1024 });
+  if (ls.status !== 0 || ls.truncated) {
+    return {
+      ...f,
+      incomplete: [...f.incomplete, "git could not list the index to check for hidden files"],
+    };
+  }
+  const hidden = hiddenIndexPaths(ls.stdout);
+  if (hidden.length === 0) return f;
+  const shown =
+    hidden.slice(0, 3).join(", ") + (hidden.length > 3 ? `, +${hidden.length - 3} more` : "");
+  return {
+    ...f,
+    incomplete: [
+      ...f.incomplete,
+      `${hidden.length} tracked file${hidden.length === 1 ? " is" : "s are"} hidden from git's change check (skip-worktree / assume-unchanged): ${shown}`,
+    ],
+  };
+}
+
 interface Args {
   mode: string;
   worktree: string;
@@ -202,14 +238,17 @@ function scan(a: Args): string {
     }
     return git(args, opts);
   };
-  const findings = withRcOnDisk(
-    collectTestIntegrity(wtGit, a.base, "@WORKTREE@", {
-      gateScriptNames: gateScriptNamesOf(a.cmds),
-      extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
-    }),
-    a.worktree,
+  const findings = withHiddenIndexEntries(
+    withRcOnDisk(
+      collectTestIntegrity(wtGit, a.base, "@WORKTREE@", {
+        gateScriptNames: gateScriptNamesOf(a.cmds),
+        extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
+      }),
+      a.worktree,
+      git,
+      a.base,
+    ),
     git,
-    a.base,
   );
   const source = `base ${a.base.slice(0, 12)} vs worktree`;
   if (!hasIntegrityFindings(findings)) return row("PASS", summarizeIntegrity(findings), source);

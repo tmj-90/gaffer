@@ -823,6 +823,23 @@ export function parseNameStatusZ(out: string): NameStatusEntry[] {
 }
 
 /** The git seam {@link collectTestIntegrity} needs: run git with args in the repo. */
+/**
+ * Tracked paths whose working-tree changes `git diff` does not look at: entries marked
+ * skip-worktree (`S`, also what a sparse checkout leaves behind) or assume-unchanged
+ * (a lowercase tag), from `git ls-files -v -z`. A gate runs the files ON DISK, so a test
+ * changed or deleted under one of these bits passes the gate while the scan — and the
+ * auto-commit — see the untouched index copy. Pure.
+ */
+export function hiddenIndexPaths(lsFilesV: string): string[] {
+  const out: string[] = [];
+  for (const entry of lsFilesV.split("\0")) {
+    if (entry.length < 3 || entry[1] !== " ") continue;
+    const tag = entry[0]!;
+    if (tag === "S" || (tag >= "a" && tag <= "z")) out.push(entry.slice(2));
+  }
+  return out;
+}
+
 export type IntegrityGit = (
   args: readonly string[],
   opts?: { maxBuffer?: number },

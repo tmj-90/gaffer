@@ -3426,24 +3426,24 @@ function parkedOnTest(f, t, reason) {
 }
 
 /**
- * A ticket's title as a headline names it: the work first, cut at its first
- * "for / with / via / so that / when" clause, without a trailing "(…)", and at a
- * word near 44 characters
- * ("Webhook delivery for task events" → "Webhook delivery"). The full title stays on
- * the element's title and accessible name.
+ * A ticket's title as a headline names it: the WHOLE title (the work, in its own words),
+ * without a trailing "(…)" (a run id, a date), cut only by length, at a word boundary,
+ * with an ellipsis. Never cut at a word like "for / with / via": "Add retry with backoff"
+ * is not "Add retry". The full title stays on the element's title and accessible name.
  */
-function headTitle(title, max = 44) {
+function headTitle(title, max = 60) {
   const full = String(title || "").trim();
   if (!full) return "";
-  const m = full.match(/^(.{6,}?)\s+(?:for|with|via|so that|when)\s+\S/i);
-  let short = m && m[1].split(/\s+/).length >= 2 ? m[1] : full;
   // A trailing parenthetical (a run id, a date) is reference, not the work.
-  short = short.replace(/\s+\([^()]*\)$/, "") || short;
+  let short = full.replace(/\s+\([^()]*\)$/, "") || full;
   if (short.length > max) {
-    const cut = short.slice(0, max + 1).replace(/\s+\S*$/, "");
+    const cut = short
+      .slice(0, max + 1)
+      .replace(/\s+\S*$/, "")
+      .replace(/[\s,;:.-]+$/, "");
     short = `${cut || short.slice(0, max)}…`;
   }
-  return short.replace(/[\s,;:.-]+$/, "") || full;
+  return short;
 }
 /** The ticket's number as the reference after its title: muted, never the subject. */
 function hlRef(t) {
@@ -3460,7 +3460,7 @@ function hlWork(t, fallback = "A ticket") {
 /**
  * The scoreboard's headline: one specific sentence from the queue, every clause a
  * link to its object, and the WORK leads, never a ticket number: "5 things need you.
- * ■ Webhook delivery #10 is blocked by a failing test." (the number is the muted
+ * ■ Webhook delivery for task events #10 is blocked by a failing test." (the number is the muted
  * reference after the title). With nothing parked the first thing waiting leads
  * ("Export to CSV #12 awaits your sign-off."). On a phone the count gives way to that
  * clause: the Team Sheet says how many, once. When nothing needs you, it says what the
@@ -12751,7 +12751,7 @@ async function renderHealth() {
     }),
     injured.length
       ? el("a", { href: "#health-injuries", class: "is-injury" }, [
-          // The work first, its number after (muted): "Webhook delivery #4, …".
+          // The work first, its number after (muted): "Webhook delivery for task events #4, …".
           injured.slice(0, 3).flatMap((row, i) => {
             const t = {
               number: (row.querySelector(".bounce-num")?.textContent || "").replace(/^#/, ""),

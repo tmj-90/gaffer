@@ -138,7 +138,7 @@ describe("web overview: the headline leads with the work", () => {
     expect(block.getAttribute("title")).toBe("Webhook delivery for task events");
     // The sub line names the approved change by its work too.
     const sub = document.querySelector(".scoreboard .hl-sub")?.textContent || "";
-    expect(sub).toContain("Retry queue #14 approved, not merged");
+    expect(sub).toContain("Retry queue with backoff #14 approved, not merged");
     expect(sub).not.toMatch(/(?:^|·\s*)#14\b/);
   });
 
@@ -149,6 +149,35 @@ describe("web overview: the headline leads with the work", () => {
     const lead = hl().querySelector(".hl-block") as HTMLElement;
     expect(lead?.textContent).toBe("Export tasks to CSV #12 awaits your sign-off.");
     expect(lead.getAttribute("href")).toBe("#/review/tk-12");
+  });
+
+  it("the full title, never cut at a stop word: 'Add retry with backoff' stays whole", async () => {
+    const t = { ...REVIEW, title: "Add retry with backoff" };
+    tickets = [t];
+    queue = { items: [item("review", t)], counts: { total: 1 } };
+    await boot();
+    const lead = hl().querySelector(".hl-block") as HTMLElement;
+    expect(lead?.querySelector(".hl-what")?.textContent).toBe("Add retry with backoff");
+    expect(lead?.textContent).toBe("Add retry with backoff #12 awaits your sign-off.");
+  });
+
+  it("a long title is cut by length only, at a word boundary, with an ellipsis", async () => {
+    const t = {
+      ...REVIEW,
+      title: "Deliver webhooks for task events with retries and backoff to every subscriber",
+    };
+    tickets = [t];
+    queue = { items: [item("review", t)], counts: { total: 1 } };
+    await boot();
+    const lead = hl().querySelector(".hl-block") as HTMLElement;
+    const what = lead?.querySelector(".hl-what")?.textContent ?? "";
+    expect(what.endsWith("…")).toBe(true);
+    const shown = what.slice(0, -1);
+    // A prefix of the title ending on a whole word, and longer than any stop-word cut.
+    expect(t.title.startsWith(shown)).toBe(true);
+    expect(t.title.charAt(shown.length)).toBe(" ");
+    expect(shown).toContain("with retries");
+    expect(lead.getAttribute("title")).toBe(t.title);
   });
 
   it("a trailing run id or date is reference, not the work", async () => {
@@ -174,7 +203,7 @@ describe("web overview: the headline leads with the work", () => {
     await boot();
     expect(hl().textContent).toContain("Nothing needs you.");
     const sub = document.querySelector(".scoreboard .hl-sub")?.textContent || "";
-    expect(sub).toContain("on Webhook delivery #3");
+    expect(sub).toContain("on Webhook delivery for task events #3");
   });
 
   it("on a phone the count is said once: the Team Sheet keeps it", async () => {

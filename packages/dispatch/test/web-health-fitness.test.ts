@@ -112,7 +112,7 @@ describe("web: Health — the physio room", () => {
     stubFetch({ ticketsByStatus: {}, staleClaims: 0, blocked: 0, openDecisions: 0 });
     await loadApp();
     const injury = document.querySelector(".health-view a.is-injury") as HTMLElement;
-    expect(injury?.textContent).toBe("Webhook delivery #4 keeps coming back");
+    expect(injury?.textContent).toBe("Webhook delivery for task events #4 keeps coming back");
     expect(injury.querySelector(".hl-ref")?.textContent).toBe("#4");
   });
 

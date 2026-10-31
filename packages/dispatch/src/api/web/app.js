@@ -24610,14 +24610,26 @@ async function renderFloor() {
   const streamTimer = setTimeout(paintStream, 6500);
   wrap.appendChild(streamP);
 
-  if (!m.open.length && !m.despatched.length)
+  // Quiet whenever no parcel is in play, not only before the first despatch: after
+  // the day's last merge the floor is just as empty, so say so, with the day's count.
+  if (!m.open.length)
     wrap.appendChild(
       el("div", { class: "empty-state fl-quiet" }, [
-        el("p", { class: "es-title" }, [
-          "The floor is quiet: no tickets in play. ",
-          el("a", { href: "#/create" }, "Plan a build"),
-          " to start the shift.",
-        ]),
+        el(
+          "p",
+          { class: "es-title" },
+          m.despatched.length
+            ? [
+                `The floor is quiet: no tickets in play, ${m.despatched.length} despatched today. `,
+                el("a", { href: "#/create" }, "Plan a build"),
+                " to start the next one.",
+              ]
+            : [
+                "The floor is quiet: no tickets in play. ",
+                el("a", { href: "#/create" }, "Plan a build"),
+                " to start the shift.",
+              ],
+        ),
       ]),
     );
 

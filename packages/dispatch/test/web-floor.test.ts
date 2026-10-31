@@ -359,6 +359,27 @@ describe("web: the Floor", () => {
     );
   });
 
+  it("is still quiet after the day's merges, and counts them", async () => {
+    stubFetch({ tickets: [tk(9, "done", "Merged earlier", 1), tk(10, "done", "Merged", 0)] });
+    mountShell("#/floor");
+    await boot();
+    const view = await floorReady();
+    // Two parcels sit on the lorry, none is in play: the quiet line still shows.
+    expect(view.querySelectorAll("a.fl-parcel").length).toBe(2);
+    expect(view.querySelector(".fl-quiet .es-title")?.textContent).toBe(
+      "The floor is quiet: no tickets in play, 2 despatched today. Plan a build to start the next one.",
+    );
+    expect(view.querySelector('.fl-quiet a[href="#/create"]')).not.toBeNull();
+  });
+
+  it("has no quiet line while a parcel is in play", async () => {
+    stubFetch({ tickets: [tk(9, "done", "Merged", 0), tk(11, "ready", "Next up", 0)] });
+    mountShell("#/floor");
+    await boot();
+    const view = await floorReady();
+    expect(view.querySelector(".fl-quiet")).toBeNull();
+  });
+
   it("the Team Sheet clamps a long card body to four lines, and More opens it", async () => {
     const questions = Array.from(
       { length: 8 },

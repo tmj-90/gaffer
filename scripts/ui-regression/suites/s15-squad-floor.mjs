@@ -11,25 +11,17 @@ import path from "node:path";
 export default async function s15(t, L) {
   const p = t.page;
 
-  // ── an empty floor says so ────────────────────────────────────────────────
+  // ── an empty floor says so (also after the day's merges) ──────────────────
   const open = (await L.listTickets()).filter((x) => !L.TERMINAL.includes(x.status));
-  const doneToday = (await L.listTickets()).filter(
-    (x) =>
-      x.status === "done" &&
-      String(x.updated_at).slice(0, 10) === new Date().toISOString().slice(0, 10),
-  );
   await t.visit("floor");
-  if (!open.length && !doneToday.length) {
+  if (!open.length) {
     const q = (await p.textContent(".fl-quiet").catch(() => "")) || "";
     t.check(
       /The floor is quiet/.test(q) && (await p.locator('.fl-quiet a[href="#/create"]').count()),
-      "an empty Floor says it is quiet and links to Plan a build",
+      "a Floor with no parcel in play says it is quiet and links to Plan a build",
       `empty floor reads '${q}'`,
     );
-  } else
-    t.note(
-      `floor empty state not checked: ${open.length} open / ${doneToday.length} done today in this shard`,
-    );
+  } else t.note(`floor empty state not checked: ${open.length} open in this shard`);
 
   // ── Name your club: name, short, kit colours ─────────────────────────────
   const before = (await L.api("GET", "/api/club")).json.club;

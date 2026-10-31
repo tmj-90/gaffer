@@ -75,7 +75,8 @@ gaffer_parked_ticket_numbers() {
 }
 
 # Print the ticket numbers whose preserved branches are NOT in-flight work: every
-# PARKED ticket (gaffer_parked_ticket_numbers) plus every CANCELLED (won't do) one.
+# PARKED ticket (gaffer_parked_ticket_numbers) plus every CANCELLED (won't do) and
+# DONE one.
 # A cancelled ticket is terminal — nothing will deliver on its branch again unless a
 # human reopens it — but its branch is usually KEPT (a recorded delivery artifact is
 # never swept, see gaffer_sweep_abandoned_branches), so it must not hold the repo's
@@ -85,6 +86,11 @@ gaffer_parked_ticket_numbers() {
 gaffer_inactive_ticket_numbers() {
   gaffer_parked_ticket_numbers
   _bp_wg_list cancelled 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
+  # DONE is terminal too. Its branch is normally merged (and so never listed), but a
+  # ticket closed with "I merged it by hand" after a squash or rebase merge — or a
+  # hand-applied change — leaves its gaffer/ branch unmerged, and counting it held a
+  # slot of the repo's branch cap for good.
+  _bp_wg_list "done" 2>/dev/null | node "$_GAFFER_JSON_TOOL" numbers 2>/dev/null
   return 0
 }
 

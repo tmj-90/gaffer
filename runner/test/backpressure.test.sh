@@ -24,6 +24,7 @@
 #   CANCELLED-1 won't-do (cancelled) tickets' KEPT delivery branches do NOT count:
 #             three won't-dos on delivered work must not leave the repo in
 #             backpressure for good (the sweep keeps recorded artifacts on purpose)
+#   DONE-1    nor do done tickets' branches left unmerged by a merge done by hand
 #
 # Zero deps beyond git + python3. Run: bash test/backpressure.test.sh
 # =====================================================================
@@ -378,6 +379,21 @@ fi
 read -r PB PR PC <<< "$(GAFFER_WG_LIST_CMD="/bin/false" gaffer_repo_pressure "$CREPO" main cancelledrepo 5)"
 [ "$PB" = "3" ] && ok "cancelled-status lookup failure → the branches still count (fail-safe)" \
   || fail "a failed lookup dropped cancelled branches from the count (got $PB)"
+
+echo "== DONE-1: a done ticket's unmerged branch (merged by hand: squash / rebase) must NOT count =="
+# "I merged it by hand" closes the ticket as done; after a squash or rebase merge its
+# gaffer/ branch is not an ancestor of main, so it stays in the unmerged list forever.
+cat > "$WORK/wg_list_done.sh" <<'EOF2'
+#!/usr/bin/env bash
+case "$1" in
+  "done") echo '[{"number":2},{"number":3},{"number":4}]' ;;
+  *)    echo '[]' ;;
+esac
+EOF2
+chmod +x "$WORK/wg_list_done.sh"
+read -r PB PR PC <<< "$(GAFFER_WG_LIST_CMD="$WORK/wg_list_done.sh" gaffer_repo_pressure "$CREPO" main cancelledrepo 5)"
+[ "$PB" = "0" ] && ok "3 done tickets' unmerged branches → active branch pressure 0" \
+  || fail "done tickets' unmerged branches still counted (branches=$PB)"
 
 # PROOF: tick.sh passes the candidate ticket to the pressure probe (self-bypass)
 # and the stale "one extra tick" claim is gone from the sweep guard comment.

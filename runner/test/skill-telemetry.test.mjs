@@ -171,70 +171,75 @@ check("recordFromOpts counts the mount's names as selected (universal set includ
 // that needs a refused or an unstamped row says so).
 const ledger = (rows) =>
   rows
-    .map((r) => JSON.stringify(typeof r === "object" && !("decision" in r) ? { ...r, decision: "allow" } : r))
+    .map((r) =>
+      JSON.stringify(typeof r === "object" && !("decision" in r) ? { ...r, decision: "allow" } : r),
+    )
     .join("\n") + "\n";
-check("detectOpened: an ALLOWED Read of .claude/skills/<name>/ in THIS run counts as opened", () => {
-  const text = ledger([
-    // before the run started → ignored
-    {
-      ts: "2026-01-01T09:59:59.000Z",
-      ticket: "7",
-      tool: "Read",
-      target: "/wt/7/.claude/skills/run-lint/SKILL.md",
-    },
-    // this delivery (ticket match), absolute Read
-    {
-      ts: "2026-01-01T10:00:01.500Z",
-      ticket: "7",
-      tool: "Read",
-      target: "/wt/7/.claude/skills/run-tests/SKILL.md",
-    },
-    // this delivery, a Bash cat with a relative path
-    {
-      ts: "2026-01-01T10:00:02.000Z",
-      ticket: "7",
-      tool: "Bash",
-      target: "cat .claude/skills/self-review/SKILL.md",
-    },
-    // another ticket's agent → ignored
-    {
-      ts: "2026-01-01T10:00:03.000Z",
-      ticket: "8",
-      tool: "Read",
-      target: "/wt/8/.claude/skills/minimalism/SKILL.md",
-    },
-    // a ticketless reviewer in its own worktree root → counted when the root matches
-    {
-      ts: "2026-01-01T10:00:04.000Z",
-      ticket: null,
-      tool: "Read",
-      target: "/data/worktrees/review-7/.claude/skills/review-ticket/SKILL.md",
-    },
-    // an unselected skill → never invented
-    {
-      ts: "2026-01-01T10:00:05.000Z",
-      ticket: "7",
-      tool: "Read",
-      target: "/wt/7/.claude/skills/seo-audit/SKILL.md",
-    },
-    "not json",
-  ]);
-  const sel = ["run-tests", "run-lint", "self-review", "minimalism", "review-ticket"];
-  eq(
-    detectOpened(sel, text, { ticket: "7", since: "2026-01-01T10:00:00Z" }),
-    ["run-tests", "self-review"],
-    "delivery (ticket-scoped)",
-  );
-  eq(
-    detectOpened(sel, text, {
-      since: "2026-01-01T10:00:00Z",
-      roots: ["/data/worktrees/review-7"],
-    }),
-    ["review-ticket"],
-    "reviewer (root-scoped, no ticket)",
-  );
-  eq(detectOpened(sel, "", { ticket: "7" }), [], "no ledger → nothing");
-});
+check(
+  "detectOpened: an ALLOWED Read of .claude/skills/<name>/ in THIS run counts as opened",
+  () => {
+    const text = ledger([
+      // before the run started → ignored
+      {
+        ts: "2026-01-01T09:59:59.000Z",
+        ticket: "7",
+        tool: "Read",
+        target: "/wt/7/.claude/skills/run-lint/SKILL.md",
+      },
+      // this delivery (ticket match), absolute Read
+      {
+        ts: "2026-01-01T10:00:01.500Z",
+        ticket: "7",
+        tool: "Read",
+        target: "/wt/7/.claude/skills/run-tests/SKILL.md",
+      },
+      // this delivery, a Bash cat with a relative path
+      {
+        ts: "2026-01-01T10:00:02.000Z",
+        ticket: "7",
+        tool: "Bash",
+        target: "cat .claude/skills/self-review/SKILL.md",
+      },
+      // another ticket's agent → ignored
+      {
+        ts: "2026-01-01T10:00:03.000Z",
+        ticket: "8",
+        tool: "Read",
+        target: "/wt/8/.claude/skills/minimalism/SKILL.md",
+      },
+      // a ticketless reviewer in its own worktree root → counted when the root matches
+      {
+        ts: "2026-01-01T10:00:04.000Z",
+        ticket: null,
+        tool: "Read",
+        target: "/data/worktrees/review-7/.claude/skills/review-ticket/SKILL.md",
+      },
+      // an unselected skill → never invented
+      {
+        ts: "2026-01-01T10:00:05.000Z",
+        ticket: "7",
+        tool: "Read",
+        target: "/wt/7/.claude/skills/seo-audit/SKILL.md",
+      },
+      "not json",
+    ]);
+    const sel = ["run-tests", "run-lint", "self-review", "minimalism", "review-ticket"];
+    eq(
+      detectOpened(sel, text, { ticket: "7", since: "2026-01-01T10:00:00Z" }),
+      ["run-tests", "self-review"],
+      "delivery (ticket-scoped)",
+    );
+    eq(
+      detectOpened(sel, text, {
+        since: "2026-01-01T10:00:00Z",
+        roots: ["/data/worktrees/review-7"],
+      }),
+      ["review-ticket"],
+      "reviewer (root-scoped, no ticket)",
+    );
+    eq(detectOpened(sel, "", { ticket: "7" }), [], "no ledger → nothing");
+  },
+);
 check("detectOpened: a root matches on a path boundary, never as a bare prefix", () => {
   const at = "2026-01-01T10:00:01.000Z";
   const text = ledger([
@@ -343,7 +348,13 @@ check("a REFUSED read records refused — never opened, never applied", () => {
           target: "/wt/12/.claude/skills/java-conventions/SKILL.md",
           decision: "block",
         },
-        { ts, ticket: "12", tool: "Bash", target: "cat .claude/skills/run-tests/SKILL.md", decision: "block" },
+        {
+          ts,
+          ticket: "12",
+          tool: "Bash",
+          target: "cat .claude/skills/run-tests/SKILL.md",
+          decision: "block",
+        },
       ]),
     );
     const rec = recordFromOpts({
@@ -360,18 +371,44 @@ check("a REFUSED read records refused — never opened, never applied", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
-check("scanLedger: an unstamped (pre-decision) row proves nothing; refused-then-allowed is opened", () => {
-  const ts = "2026-01-01T10:00:01.000Z";
-  const text = [
-    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/run-tests/SKILL.md" }),
-    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/run-lint/SKILL.md", decision: "block" }),
-    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/run-lint/SKILL.md", decision: "allow" }),
-    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/minimalism/SKILL.md", decision: "maybe" }),
-  ].join("\n");
-  const sel = ["run-tests", "run-lint", "minimalism"];
-  eq(scanLedger(sel, text, { ticket: "5" }), { opened: ["run-lint"], refused: [] }, "scan");
-  eq(detectOpened(sel, text, { ticket: "5" }), ["run-lint"], "detectOpened agrees");
-});
+check(
+  "scanLedger: an unstamped (pre-decision) row proves nothing; refused-then-allowed is opened",
+  () => {
+    const ts = "2026-01-01T10:00:01.000Z";
+    const text = [
+      JSON.stringify({
+        ts,
+        ticket: "5",
+        tool: "Read",
+        target: "/w/.claude/skills/run-tests/SKILL.md",
+      }),
+      JSON.stringify({
+        ts,
+        ticket: "5",
+        tool: "Read",
+        target: "/w/.claude/skills/run-lint/SKILL.md",
+        decision: "block",
+      }),
+      JSON.stringify({
+        ts,
+        ticket: "5",
+        tool: "Read",
+        target: "/w/.claude/skills/run-lint/SKILL.md",
+        decision: "allow",
+      }),
+      JSON.stringify({
+        ts,
+        ticket: "5",
+        tool: "Read",
+        target: "/w/.claude/skills/minimalism/SKILL.md",
+        decision: "maybe",
+      }),
+    ].join("\n");
+    const sel = ["run-tests", "run-lint", "minimalism"];
+    eq(scanLedger(sel, text, { ticket: "5" }), { opened: ["run-lint"], refused: [] }, "scan");
+    eq(detectOpened(sel, text, { ticket: "5" }), ["run-lint"], "detectOpened agrees");
+  },
+);
 check("recordSkillUsage: a refused read in the hook ledger is refused, not applied", () => {
   const dir = mkdtempSync(join(tmpdir(), "skill-telem-role-refused-"));
   try {

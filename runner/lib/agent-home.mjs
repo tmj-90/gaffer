@@ -92,9 +92,13 @@ export function removeSkillCopies(skillsPath) {
  * the agent's roots; a `.claude/skills` symlink into runner/skills made every explicit
  * Read of a mounted skill a refusal. A copy resolves inside the agent's own directory.
  */
-export function installSkillCopies(claudeDir, names, { skillsDir, key = "mount", manifestDir = "" }) {
+export function installSkillCopies(
+  claudeDir,
+  names,
+  { skillsDir, key = "mount", manifestDir = "" },
+) {
   const link = resolve(claudeDir, "skills");
-  let st = null;
+  let st;
   try {
     st = lstatSync(link);
   } catch {
@@ -103,7 +107,7 @@ export function installSkillCopies(claudeDir, names, { skillsDir, key = "mount",
   if (st?.isSymbolicLink()) {
     // An older Gaffer mount (a link into the library or a manifest) is replaced; any
     // other link is the repo's, and is left alone with nothing installed through it.
-    let target = "";
+    let target;
     try {
       target = resolve(dirname(link), readlinkSync(link));
     } catch {

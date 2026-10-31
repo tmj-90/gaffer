@@ -336,7 +336,9 @@ export function resolveTicket(dbPath, number) {
           .prepare(
             "SELECT r.name AS name, r.stack AS stack FROM ticket_repos tr " +
               "JOIN repositories r ON r.id = tr.repo_id WHERE tr.ticket_id = ? AND tr.access = 'write'" +
-              (withRelation ? " AND (tr.relation IS NULL OR tr.relation IN ('confirmed', 'implicit_single_repo'))" : "") +
+              (withRelation
+                ? " AND (tr.relation IS NULL OR tr.relation IN ('confirmed', 'implicit_single_repo'))"
+                : "") +
               " ORDER BY r.name",
           )
           .all(ticket.id)

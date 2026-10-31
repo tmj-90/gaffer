@@ -828,7 +828,8 @@ export function ticketWriteRepos(repositories = []) {
  */
 export function ticketStacks(repositories = []) {
   const out = [];
-  for (const { stack } of ticketWriteRepos(repositories)) if (stack && !out.includes(stack)) out.push(stack);
+  for (const { stack } of ticketWriteRepos(repositories))
+    if (stack && !out.includes(stack)) out.push(stack);
   if (out.length) return out;
   const list = Array.isArray(repositories) ? repositories : [];
   const first = list.find((r) => r?.local_path) ?? list[0];
@@ -841,7 +842,11 @@ export function ticketStacks(repositories = []) {
  * repos on different stacks, limited to the packs actually `selected` (per-path routing
  * may have narrowed one out). "" for a single-stack ticket.
  */
-export function stackPackNote(repositories = [], selected = [], { skillsDir = DEFAULT_SKILLS_DIR } = {}) {
+export function stackPackNote(
+  repositories = [],
+  selected = [],
+  { skillsDir = DEFAULT_SKILLS_DIR } = {},
+) {
   const repos = ticketWriteRepos(repositories).filter((r) => r.stack);
   if (new Set(repos.map((r) => r.stack)).size < 2) return "";
   const chosen = new Set(selected);
@@ -962,9 +967,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     process.stdout.write(ticketStacks(ticketJson(opts.ticketStacks)).join(",") + "\n");
   } else if (opts.ticketPackNote) {
     process.stdout.write(
-      stackPackNote(ticketJson(opts.ticketPackNote), parseInlineList(opts.selected).map((n) => n.trim()), {
-        skillsDir: opts.skillsDir,
-      }),
+      stackPackNote(
+        ticketJson(opts.ticketPackNote),
+        parseInlineList(opts.selected).map((n) => n.trim()),
+        {
+          skillsDir: opts.skillsDir,
+        },
+      ),
     );
   } else if (opts.listAreas) {
     process.stdout.write(listAreas(opts.skillsDir).join("\n") + "\n");

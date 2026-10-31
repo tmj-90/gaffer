@@ -108,18 +108,35 @@ const names = readdirSync(SKILLS_DIR).filter((n) => {
     return false;
   }
 });
-const installed = installSkillCopies(join(WT, ".claude"), names, { skillsDir: SKILLS_DIR, key: "claims" });
-check(`every library skill installs as a copy (${installed.length} of ${names.length})`, installed.length === names.length);
+const installed = installSkillCopies(join(WT, ".claude"), names, {
+  skillsDir: SKILLS_DIR,
+  key: "claims",
+});
+check(
+  `every library skill installs as a copy (${installed.length} of ${names.length})`,
+  installed.length === names.length,
+);
 const readRc = (file, cwd) =>
   spawnSync(process.execPath, [HOOK], {
     input: JSON.stringify({ tool_name: "Read", tool_input: { file_path: file } }),
     cwd,
     encoding: "utf8",
     timeout: 20000,
-    env: { ...process.env, GAFFER_WRITE_ROOTS: cwd, GAFFER_READ_ROOTS: "", GAFFER_DATA: DATA, GAFFER_TICKET: "" },
+    env: {
+      ...process.env,
+      GAFFER_WRITE_ROOTS: cwd,
+      GAFFER_READ_ROOTS: "",
+      GAFFER_DATA: DATA,
+      GAFFER_TICKET: "",
+    },
   }).status;
-const unreadable = installed.filter((n) => readRc(join(WT, ".claude", "skills", n, "SKILL.md"), WT) !== 0);
-check(`every mounted skill is readable through the hook (refused: ${unreadable.join(", ")})`, unreadable.length === 0);
+const unreadable = installed.filter(
+  (n) => readRc(join(WT, ".claude", "skills", n, "SKILL.md"), WT) !== 0,
+);
+check(
+  `every mounted skill is readable through the hook (refused: ${unreadable.join(", ")})`,
+  unreadable.length === 0,
+);
 const OLD = mkdtempSync(join(tmpdir(), "skills-hook-oldlayout-"));
 mkdirSync(join(OLD, ".claude"));
 symlinkSync(SKILLS_DIR, join(OLD, ".claude", "skills"), "dir");
@@ -127,7 +144,10 @@ check(
   "a skill reached through a symlink into the library stays refused (no read widening)",
   readRc(join(OLD, ".claude", "skills", "run-tests", "SKILL.md"), OLD) === 2,
 );
-const rows = readFileSync(join(DATA, "tool-metrics.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+const rows = readFileSync(join(DATA, "tool-metrics.jsonl"), "utf8")
+  .trim()
+  .split("\n")
+  .map((l) => JSON.parse(l));
 check(
   "the hook stamped every Read with its own decision",
   rows.length === installed.length + 1 &&

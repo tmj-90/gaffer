@@ -72,8 +72,22 @@ describe("skillsTelemetryAggregator: aggregateTelemetryRows", () => {
     // a: selected 2, applied 2 → 100%. b: selected 3, applied 1 → 33.3%.
     const a = agg.by_skill.find((s) => s.skill === "a")!;
     const b = agg.by_skill.find((s) => s.skill === "b")!;
-    expect(a).toEqual({ skill: "a", selected: 2, applied: 2, hit_rate_pct: 100, opened: 0, refused: 0 });
-    expect(b).toEqual({ skill: "b", selected: 3, applied: 1, hit_rate_pct: 33.3, opened: 0, refused: 0 });
+    expect(a).toEqual({
+      skill: "a",
+      selected: 2,
+      applied: 2,
+      hit_rate_pct: 100,
+      opened: 0,
+      refused: 0,
+    });
+    expect(b).toEqual({
+      skill: "b",
+      selected: 3,
+      applied: 1,
+      hit_rate_pct: 33.3,
+      opened: 0,
+      refused: 0,
+    });
 
     // Overall: 3 applied of 5 selections = 60%.
     expect(agg.total_selected).toBe(5);
@@ -89,10 +103,24 @@ describe("skillsTelemetryAggregator: aggregateTelemetryRows", () => {
   it("reports opened and refused reads beside the hit-rate, never inside it", () => {
     // A refused read of the mounted Java pack is visible as refused — not as use.
     const rows = [
-      { selected: ["java-conventions", "run-tests"], applied: [], opened: [], refused: ["java-conventions"] },
-      { selected: ["java-conventions", "run-tests"], applied: ["run-tests"], opened: ["java-conventions"] },
+      {
+        selected: ["java-conventions", "run-tests"],
+        applied: [],
+        opened: [],
+        refused: ["java-conventions"],
+      },
+      {
+        selected: ["java-conventions", "run-tests"],
+        applied: ["run-tests"],
+        opened: ["java-conventions"],
+      },
       // A hand-edited row cannot claim both, or an unselected skill.
-      { selected: ["java-conventions"], applied: [], opened: ["java-conventions"], refused: ["java-conventions", "x"] },
+      {
+        selected: ["java-conventions"],
+        applied: [],
+        opened: ["java-conventions"],
+        refused: ["java-conventions", "x"],
+      },
     ].map((r) => parseTelemetryLine(JSON.stringify({ ts: "2025-01-10T10:00:00Z", ...r }))!);
     const agg = aggregateTelemetryRows(rows);
     const java = agg.by_skill.find((s) => s.skill === "java-conventions")!;

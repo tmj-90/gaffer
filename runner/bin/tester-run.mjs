@@ -822,9 +822,7 @@ export function buildTesterPrompt({ context, worktree, repoName, skills = [], sk
  * write repo's stack alone left a two-repo ticket's second language unmounted.
  */
 export function testerStacks(resolved) {
-  const stacks = ticketStacks(
-    (resolved?.writeRepos ?? []).map((r) => ({ ...r, access: "write" })),
-  );
+  const stacks = ticketStacks((resolved?.writeRepos ?? []).map((r) => ({ ...r, access: "write" })));
   return stacks.length ? stacks : [resolved?.repo?.stack || ""].filter(Boolean);
 }
 

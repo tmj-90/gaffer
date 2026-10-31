@@ -1494,7 +1494,8 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
       return [];
     }
   };
-  const read = (file_path) => decide({ tool_name: "Read", tool_input: { file_path } }, { env, cwd: wt });
+  const read = (file_path) =>
+    decide({ tool_name: "Read", tool_input: { file_path } }, { env, cwd: wt });
   const expect = (label, cond) => (cond ? (passed += 1) : failures.push(`mounted skill: ${label}`));
 
   // The OLD layout (the regression's shape): refused, and the row says so.
@@ -1502,7 +1503,10 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
   spawnSync("mkdir", ["-p", resolve(wt, ".claude")]);
   symlinkSync(lib, resolve(wt, ".claude", "skills"), "dir");
   const viaLink = read(resolve(wt, ".claude/skills/java-conventions/SKILL.md"));
-  expect(`a skill read through a symlink out of the worktree is still refused (exit ${viaLink.exitCode})`, viaLink.exitCode === 2);
+  expect(
+    `a skill read through a symlink out of the worktree is still refused (exit ${viaLink.exitCode})`,
+    viaLink.exitCode === 2,
+  );
   let rows = ledger();
   expect(
     `the refused read is in the ledger stamped decision=block (${JSON.stringify(rows.at(-1))})`,
@@ -1517,7 +1521,10 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
   });
   expect(`both skills installed as copies (${installed})`, installed.length === 2);
   const viaCopy = read(resolve(wt, ".claude/skills/java-conventions/SKILL.md"));
-  expect(`a mounted skill copy is readable (exit ${viaCopy.exitCode}: ${viaCopy.reason ?? ""})`, viaCopy.exitCode === 0);
+  expect(
+    `a mounted skill copy is readable (exit ${viaCopy.exitCode}: ${viaCopy.reason ?? ""})`,
+    viaCopy.exitCode === 0,
+  );
   const relCopy = read(".claude/skills/run-tests/SKILL.md");
   expect(`…by a relative path too (exit ${relCopy.exitCode})`, relCopy.exitCode === 0);
   const viaBash = decide(
@@ -1532,20 +1539,39 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
   );
 
   // No widening: a link planted inside the copies, out to the library or a secret, is refused.
-  symlinkSync(resolve(lib, "python-conventions"), resolve(wt, ".claude/skills/python-conventions"), "dir");
+  symlinkSync(
+    resolve(lib, "python-conventions"),
+    resolve(wt, ".claude/skills/python-conventions"),
+    "dir",
+  );
   const planted = read(resolve(wt, ".claude/skills/python-conventions/SKILL.md"));
-  expect(`a planted link out of the mount is refused (exit ${planted.exitCode})`, planted.exitCode === 2);
+  expect(
+    `a planted link out of the mount is refused (exit ${planted.exitCode})`,
+    planted.exitCode === 2,
+  );
   const outside = read(resolve(lib, "java-conventions", "SKILL.md"));
-  expect(`the library itself stays outside the agent's reads (exit ${outside.exitCode})`, outside.exitCode === 2);
+  expect(
+    `the library itself stays outside the agent's reads (exit ${outside.exitCode})`,
+    outside.exitCode === 2,
+  );
   const secret = read(resolve(wt, ".claude/skills/java-conventions/.env"));
-  expect(`a secret-shaped file inside a copy is still refused (exit ${secret.exitCode})`, secret.exitCode === 2);
+  expect(
+    `a secret-shaped file inside a copy is still refused (exit ${secret.exitCode})`,
+    secret.exitCode === 2,
+  );
 
   // The agent cannot forge a ledger row: the telemetry files sit outside every write root.
   for (const f of ["tool-metrics.jsonl", "skills-telemetry.jsonl"]) {
-    const w = decide({ tool_name: "Write", tool_input: { file_path: resolve(data, f) } }, { env, cwd: wt });
+    const w = decide(
+      { tool_name: "Write", tool_input: { file_path: resolve(data, f) } },
+      { env, cwd: wt },
+    );
     expect(`a Write to ${f} is refused (exit ${w.exitCode})`, w.exitCode === 2);
     const b = decide(
-      { tool_name: "Bash", tool_input: { command: `echo '{"decision":"allow"}' >> ${resolve(data, f)}` } },
+      {
+        tool_name: "Bash",
+        tool_input: { command: `echo '{"decision":"allow"}' >> ${resolve(data, f)}` },
+      },
       { env, cwd: wt },
     );
     expect(`a Bash append to ${f} is refused (exit ${b.exitCode})`, b.exitCode === 2);

@@ -136,7 +136,13 @@ runner does not treat it as one:
   with reason-code `usage_limit` WITHOUT counting an attempt (no `attempt_count`
   bump, no no-commit counter, no rework row, no skip-list entry), records a
   `ticket.usage_limited` event with `paused_until`, and reports `usage_paused`.
-  A resumed delivery goes back to `paused` with its worktree.
+  A resumed delivery goes back to `paused` with its worktree. The envelope is
+  classified first, WITHOUT the pause lock (`worker.mjs parse-result usage-limit`);
+  only a confirmed refusal takes `$GAFFER_DATA/.usage-pause.lock` to record the
+  pause. A lock that cannot be taken or a crash in either step therefore never turns
+  an ordinary result into a refusal: a classifier failure is an ordinary result, and
+  only a confirmed refusal whose pause could not be written fails closed (released
+  without an attempt and skipped for the rest of the run).
 - `lib/usage-pause.mjs` writes `$GAFFER_DATA/usage-pause.json`. The pause ends at the
   reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
   (default 60) when none was printed; never sooner than 10 minutes, never later than

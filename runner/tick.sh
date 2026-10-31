@@ -2626,6 +2626,9 @@ $_trail_q
   # reason-code usage_limit (a ticket.usage_limited event) WITHOUT counting an
   # attempt, and stop. Every admission point waits for the pause to end. A resumed
   # delivery goes back to `paused` (worktree kept) for its Continue.
+  # rc 1 = an ordinary result (also any failure to CLASSIFY — that runs without the
+  # pause lock, so a held lock or a crash cannot fake a refusal); rc 0 = a refusal,
+  # pause written; rc 2 = a confirmed refusal whose pause could not be written.
   _UL_REC="$(gaffer_usage_pause_record "$USAGE_JSON" "$NUM" delivery)"; _UL_RC=$?
   if [ "$_UL_RC" != 1 ]; then
     _UL_UNTIL=""; _UL_KIND=""; _UL_MSG=""

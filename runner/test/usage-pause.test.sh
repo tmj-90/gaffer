@@ -119,6 +119,25 @@ GAFFER_USAGE_PAUSE_FILE="$WORK/no-such-dir/sub/x.json" gaffer_usage_pause_active
 GAFFER_USAGE_PAUSE_FILE="$WORK/not-a-dir/usage-pause.json" gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; rc=$?
 [ "$rc" = 2 ] && ok "a refusal whose pause cannot be written → rc 2 (the tick fails closed)" || fail "unwritable pause rc=$rc (want 2)"
 node "$MJS" clear
+# CLASSIFY BEFORE THE LOCK: a lock that cannot be taken, or a record step that
+# crashes, must never turn an ordinary result into a "refusal" (it used to: rc 2, and
+# the tick released a committed delivery to ready and skip-listed it).
+gaffer_with_lock() { return 1; }   # the lock could not be taken (as on a timeout)
+gaffer_usage_pause_record "$WORK/ok.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 1 ] && ok "lock unavailable + an ordinary result → rc 1 (ordinary path, not a refusal)" || fail "lock unavailable + ok.json rc=$rc (want 1)"
+gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 2 ] && [ ! -e "$PF" ] && ok "lock unavailable + a confirmed refusal → rc 2 (fail closed), no pause" || fail "lock unavailable + limit.json rc=$rc (want 2)"
+unset -f gaffer_with_lock
+printf 'throw new Error("boom");\n' > "$WORK/crash.mjs"
+GAFFER_USAGE_PAUSE_MJS="$WORK/crash.mjs" gaffer_usage_pause_record "$WORK/ok.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 1 ] && ok "a record step that crashes + an ordinary result → rc 1" || fail "crashing record + ok.json rc=$rc (want 1)"
+GAFFER_USAGE_PAUSE_MJS="$WORK/crash.mjs" gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 2 ] && ok "a record step that crashes + a confirmed refusal → rc 2" || fail "crashing record + limit.json rc=$rc (want 2)"
+GAFFER_USAGE_WORKER_MJS="$WORK/crash.mjs" gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 1 ] && [ ! -e "$PF" ] && ok "a classifier that crashes → rc 1 (the ordinary failure path; nothing recorded)" || fail "crashing classifier rc=$rc (want 1)"
+printf '' > "$WORK/silent.mjs"
+GAFFER_USAGE_WORKER_MJS="$WORK/silent.mjs" gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 1 ] && ok "a classifier that exits 0 with no detection JSON → rc 1 (not read as a refusal)" || fail "silent classifier rc=$rc (want 1)"
 write_pause 2
 line="$(gaffer_usage_pause_active)" && has "$line" "paused until" && has "$line" ": usage limit" \
   && ok "_active prints '$line'" || fail "_active did not report the pause ('$line')"
@@ -146,6 +165,9 @@ GAFFER_USAGE_PAUSE_MJS="$LINKED/lib/usage-pause.mjs" gaffer_usage_pause_active >
   && fail "a symlinked usage-pause.mjs reads as paused with no pause file" || ok "a symlinked usage-pause.mjs with no pause → not paused"
 GAFFER_USAGE_PAUSE_MJS="$LINKED/lib/usage-pause.mjs" gaffer_usage_pause_record "$WORK/ok.json" 9 delivery >/dev/null; rc=$?
 [ "$rc" = 1 ] && ok "a symlinked record on an ordinary result → rc 1 (not a refusal)" || fail "symlinked record rc=$rc"
+GAFFER_USAGE_PAUSE_MJS="$LINKED/lib/usage-pause.mjs" GAFFER_USAGE_WORKER_MJS="$LINKED/lib/worker.mjs" gaffer_usage_pause_record "$WORK/limit.json" 9 delivery >/dev/null; rc=$?
+[ "$rc" = 0 ] && [ -s "$PF" ] && ok "a symlinked classifier + record still pause on a refusal → rc 0" || fail "symlinked refusal rc=$rc (want 0)"
+node "$MJS" clear
 write_pause 30
 GAFFER_USAGE_PAUSE_MJS="$LINKED/lib/usage-pause.mjs" gaffer_usage_pause_active >/dev/null \
   && ok "a symlinked usage-pause.mjs reads a real pause" || fail "symlinked status missed a pause"

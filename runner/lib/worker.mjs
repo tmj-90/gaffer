@@ -48,7 +48,7 @@
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1001,7 +1001,20 @@ function parseResultCli(argv) {
   process.exit(2); // unknown field
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Run as a CLI when invoked directly — compared by real path too, so a symlinked
+// runner dir (a test's fake runner, a packaged install) still reaches the CLI instead
+// of silently exiting 0 with no output (which `parse-result usage-limit` callers would
+// otherwise have to guess about).
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  if (import.meta.url === `file://${process.argv[1]}`) return true;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+if (invokedDirectly()) {
   const argv = process.argv.slice(2);
   if (argv[0] === "parse-result") parseResultCli(argv);
   else process.exit(2);

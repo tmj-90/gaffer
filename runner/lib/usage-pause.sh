@@ -16,17 +16,33 @@
 
 _GAFFER_UP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${GAFFER_USAGE_PAUSE_MJS:=$_GAFFER_UP_LIB/usage-pause.mjs}"
+# The classifier (parse-result usage-limit). Its own variable, not GAFFER_WORKER_MJS,
+# so a test that points the pause store elsewhere still classifies with the real table.
+: "${GAFFER_USAGE_WORKER_MJS:=$_GAFFER_UP_LIB/worker.mjs}"
 
 # gaffer_usage_pause_record <json-file> <ticket> <lane>
 # Exit 0 and echo the TSV record line (<until s>\t<ISO>\t<kind>\t<basis>\t<message>)
 # when the captured envelope is a usage/rate-limit refusal and the pause was written;
 # exit 1 when it is an ordinary result; exit 2 when it IS a refusal but the pause could
-# not be written (the caller must then fail closed). Serialised under a lock so two
-# pool workers that hit the limit together keep the longer wait.
+# not be written (the caller must then fail closed).
+#
+# Two steps, in this order, so a broken pause store can never turn an ordinary result
+# into a "refusal":
+#   1. CLASSIFY, without the lock: `worker.mjs parse-result usage-limit` (the same
+#      parseResult the record step uses). Anything but exit 0 with the detection JSON
+#      on stdout — exit 1 (not a refusal), a node crash, a lock-less CLI that printed
+#      nothing — is an ordinary result (rc 1), and the caller takes the normal path
+#      (review, the no-commit park, the attempt ladder). Only a confirmed refusal
+#      goes on.
+#   2. RECORD, under the lock (two pool workers that hit the limit together keep the
+#      longer wait). Only now may a failure — a lock that could not be taken, a write
+#      that failed, a crash — return 2.
 gaffer_usage_pause_record() {
   local jf="$1" num="${2:-}" lane="${3:-delivery}" out rc
   [ -f "$jf" ] || return 1
   command -v node >/dev/null 2>&1 || return 1
+  out="$(node "$GAFFER_USAGE_WORKER_MJS" parse-result usage-limit --json-file "$jf" 2>/dev/null)" || return 1
+  case "$out" in "{"*) ;; *) return 1 ;; esac
   # `record` exits 10 for "not a refusal"; any other non-zero (a write failure, a
   # lock that could not be taken) is a refusal whose pause was NOT recorded.
   if declare -F gaffer_with_lock >/dev/null 2>&1 && [ -n "${GAFFER_DATA:-}" ]; then

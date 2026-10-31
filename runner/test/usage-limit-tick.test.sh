@@ -23,6 +23,10 @@
 #      with no attempt counted forever. It takes the ordinary failure path: no
 #      usage_paused, no pause file, no ticket.usage_limited event, and the
 #      no-commit / attempt accounting moves so a human eventually sees the ticket.
+#   E. LOCK HELD: with $GAFFER_DATA/.usage-pause.lock held elsewhere and a short
+#      GAFFER_LOCK_TIMEOUT, a delivery that commits and returns a SUCCESS envelope
+#      still reaches in_review (no usage_paused, no ticket.usage_limited event, not
+#      skip-listed): classification runs without the lock.
 # Requires a built workspace + git. SKIPs otherwise.
 # Run: bash runner/test/usage-limit-tick.test.sh
 # =====================================================================
@@ -187,6 +191,56 @@ AT2="$(sql 'select attempt_count from tickets where number=?' "$NUM2")"
 has "$L3" "tick 1/1 → error" && ok "loop reported tick → error (the ordinary failure path)" || fail "loop3: $(grep 'tick 1' "$WORK/loop3.log")"
 [ "$ST2" = "refining" ] && ok "#$NUM2 was parked to refining for a human (as for any no-commit reply)" \
   || fail "#$NUM2 is '$ST2' (want refining): attempt_count=${AT2:-0} nocommit=${NC2:-none}"
+
+echo "== E: a held usage-pause lock cannot turn a real delivery into a 'refusal' =="
+# The classifier runs WITHOUT the lock; only a confirmed refusal goes on to the locked
+# record step. With the lock held by someone else (and a short GAFFER_LOCK_TIMEOUT), a
+# delivery that committed work and returned a normal SUCCESS envelope used to read as
+# rc 2 ("refusal, pause not written"): released to ready, a ticket.usage_limited event
+# with paused_until null, skip-listed. It must reach review like any delivery.
+node "$MJS" clear
+NUM3="$(wg ticket create -t "Add OUT marker" -d "Add an OUT.txt file at the repo root." --risk low 2>/dev/null | node "$RUNNER_DIR/lib/json-tool.mjs" expr 'd.ticket.number')"
+TID3="$(sql 'select id from tickets where number=?' "$NUM3")"
+node -e '
+const {DatabaseSync}=require("node:sqlite"); const db=new DatabaseSync(process.env.DISPATCH_DB);
+db.prepare("insert into ticket_repos(ticket_id,repo_id,role,access,relation,source) values(?,?,?,?,?,?)").run(process.argv[1],process.argv[2],"primary","write","confirmed","manual");
+db.prepare("insert into acceptance_criteria(id,ticket_id,text,sort_order) values(?,?,?,0)").run("ac-3",process.argv[1],"OUT.txt exists at the repo root");
+' "$TID3" "$RID"
+wg ticket ready "$NUM3" >/dev/null 2>&1
+[ "$(sql 'select status from tickets where number=?' "$NUM3")" = "ready" ] || fail "fixture ticket #$NUM3 did not reach ready"
+CALLS3="$WORK/claude-calls-3"; : > "$CALLS3"
+cat >"$FAKE/claude-ok" <<SH
+#!/bin/sh
+date +%s >> "$CALLS3"
+printf 'out\n' > OUT.txt
+git -c user.email=fake@agent -c user.name="fake agent" -c commit.gpgsign=false add -A >/dev/null 2>&1
+git -c user.email=fake@agent -c user.name="fake agent" -c commit.gpgsign=false commit -qm "deliver: add OUT.txt" >/dev/null 2>&1
+printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":2,"result":"Added OUT.txt.","stop_reason":"end_turn","total_cost_usd":0.01}'
+SH
+chmod +x "$FAKE/claude-ok"
+# Hold $GAFFER_DATA/.usage-pause.lock for both lock flavours: flock(1) where present
+# (Linux/CI) and the mkdir spinlock with a LIVE holder pid (macOS, no flock).
+UL_LOCK="$GAFFER_DATA/.usage-pause.lock"; READY="$WORK/lock-held"
+(
+  if command -v flock >/dev/null 2>&1; then exec 9>>"$UL_LOCK"; flock 9; fi
+  : > "$READY"
+  while :; do sleep 1; done
+) &
+HOLDER=$!
+mkdir -p "$UL_LOCK.d"; echo "$HOLDER" > "$UL_LOCK.d/pid"
+n=0; while [ ! -e "$READY" ] && [ "$n" -lt 50 ]; do sleep 0.1; n=$((n + 1)); done
+[ -e "$READY" ] && ok "the usage-pause lock is held by another process" || fail "could not hold the usage-pause lock"
+CLAUDE_BIN="$FAKE/claude-ok" GAFFER_LOCK_TIMEOUT=2 MAX_TICKS=1 bash "$RUNNER_DIR/loop.sh" >"$WORK/loop4.log" 2>&1
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$UL_LOCK.d"
+L4="$(cat "$WORK/loop4.log")"
+[ "$(wc -l < "$CALLS3" | tr -d ' ')" = "1" ] && ok "one delivery call was made" || fail "ok-stub calls: $(wc -l < "$CALLS3")"
+has "$L4" "usage_paused" && fail "a successful delivery was reported as usage_paused under a held lock" || ok "the tick did NOT report usage_paused"
+ST3="$(sql 'select status from tickets where number=?' "$NUM3")"
+[ "$ST3" = "in_review" ] && ok "#$NUM3 reached in_review" || fail "#$NUM3 is '$ST3' (want in_review): $(grep 'tick 1' "$WORK/loop4.log")"
+[ "$(sql "select count(*) from work_events where entity_id=? and event_type='ticket.usage_limited'" "$TID3")" = "0" ] \
+  && ok "no ticket.usage_limited event" || fail "a ticket.usage_limited event was recorded for #$NUM3"
+grep -qx "$NUM3" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && fail "#$NUM3 was skip-listed" || ok "#$NUM3 was not skip-listed"
+[ ! -e "$GAFFER_DATA/usage-pause.json" ] && ok "no usage-pause.json was written" || fail "a pause was recorded: $(cat "$GAFFER_DATA/usage-pause.json")"
 
 echo
 if [ "${#FAILS[@]}" -eq 0 ]; then

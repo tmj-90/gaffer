@@ -3112,26 +3112,31 @@ let measureCtx;
  * Break a name into at most `max` lines that each fit `width` (breaking after
  * - _ / . first); the last line is cut with an ellipsis if it still overflows.
  */
-function wrapLabel(str, size, width, max = 2) {
+function wrapLabel(str, size, width, max = 2, face = "cond") {
   const parts = String(str).match(/[^-_/.]+[-_/.]?/g) || [String(str)];
   const lines = [];
   let cur = "";
   for (const p of parts) {
-    if (cur && textWidth(cur + p, size) > width && lines.length < max - 1) {
+    if (cur && textWidth(cur + p, size, 0, face) > width && lines.length < max - 1) {
       lines.push(cur);
       cur = p;
     } else cur += p;
   }
   lines.push(cur);
   const last = lines.length - 1;
-  if (textWidth(lines[last], size) > width) {
+  if (textWidth(lines[last], size, 0, face) > width) {
     let t = lines[last];
-    while (t.length > 1 && textWidth(t + "…", size) > width) t = t.slice(0, -1);
+    while (t.length > 1 && textWidth(t + "…", size, 0, face) > width) t = t.slice(0, -1);
     lines[last] = t + "…";
   }
   return lines;
 }
-function textWidth(str, size, track = 0) {
+/**
+ * `face` is the face the label is drawn in: "cond" for the board's condensed labels
+ * (zone names, tallies), "text" for the operational detail drawn in the body face
+ * (channel labels, the tags beside a shirt), so a measured box fits what is drawn.
+ */
+function textWidth(str, size, track = 0, face = "cond") {
   if (measureCtx === undefined) {
     try {
       measureCtx = document.createElement("canvas").getContext("2d") || null;
@@ -3140,8 +3145,11 @@ function textWidth(str, size, track = 0) {
     }
   }
   const s = String(str);
-  if (!measureCtx) return s.length * size * (0.5 + track);
-  measureCtx.font = `700 ${size}px "Sofia Sans Condensed", "Arial Narrow", sans-serif`;
+  if (!measureCtx) return s.length * size * ((face === "text" ? 0.56 : 0.5) + track);
+  measureCtx.font =
+    face === "text"
+      ? `600 ${size}px "Sofia Sans", system-ui, sans-serif`
+      : `700 ${size}px "Sofia Sans Condensed", "Arial Narrow", sans-serif`;
   return measureCtx.measureText(s).width + s.length * size * track;
 }
 
@@ -3405,7 +3413,8 @@ function parkedOnTest(f, t, reason) {
 
 /**
  * A ticket's title as a headline names it: the work first, cut at its first
- * "for / with / via / so that / when" clause and at a word near 44 characters
+ * "for / with / via / so that / when" clause, without a trailing "(…)", and at a
+ * word near 44 characters
  * ("Webhook delivery for task events" → "Webhook delivery"). The full title stays on
  * the element's title and accessible name.
  */
@@ -3414,6 +3423,8 @@ function headTitle(title, max = 44) {
   if (!full) return "";
   const m = full.match(/^(.{6,}?)\s+(?:for|with|via|so that|when)\s+\S/i);
   let short = m && m[1].split(/\s+/).length >= 2 ? m[1] : full;
+  // A trailing parenthetical (a run id, a date) is reference, not the work.
+  short = short.replace(/\s+\([^()]*\)$/, "") || short;
   if (short.length > max) {
     const cut = short.slice(0, max + 1).replace(/\s+\S*$/, "");
     short = `${cut || short.slice(0, max)}…`;
@@ -4758,7 +4769,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     box(kx, ky, kx + ks, ky + ks, "kit");
     if (P) {
       // A phone has no room beside the kit: the name sits under it, wrapped.
-      const lines = wrapLabel(r, FS.cl, CH - 10, 2);
+      const lines = wrapLabel(r, FS.cl, CH - 10, 2, "text");
       lines.forEach((ln, i) =>
         kits.append(
           svgS(
@@ -4783,13 +4794,13 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
         svgS("rect", {
           x: x + 33,
           y: by - FS.cl * 0.82,
-          width: Math.max(0, Math.min(textWidth(r, FS.cl) + 6, zx - x - 33)),
+          width: Math.max(0, Math.min(textWidth(r, FS.cl, 0, "text") + 6, zx - x - 33)),
           height: FS.cl * 1.08,
           class: "mow-a",
         }),
         svgS("text", { x: x + 36, y: by, class: "cl halo-a", style: pxs(FS.cl) }, r),
       );
-      box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl), y + 22 + FS.cl * 0.4, "cl");
+      box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl, 0, "text"), y + 22 + FS.cl * 0.4, "cl");
     }
   });
 
@@ -5171,7 +5182,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
           padX = fs * 0.45,
           padY = fs * 0.32,
           lh = fs * 1.12;
-        const w = Math.max(...lines.map((l) => textWidth(l, fs, 0.02))) + padX * 2,
+        const w = Math.max(...lines.map((l) => textWidth(l, fs, 0.02, "text"))) + padX * 2,
           h = lines.length * lh + padY * 2 - fs * 0.12;
         const top = shirt.top + SH * 0.1,
           gap = 6;

@@ -151,6 +151,16 @@ describe("web overview: the headline leads with the work", () => {
     expect(lead.getAttribute("href")).toBe("#/review/tk-12");
   });
 
+  it("a trailing run id or date is reference, not the work", async () => {
+    const t = { ...REVIEW, title: "Tech-debt hotspots: taskflow-mini (2026-10-31)" };
+    tickets = [t];
+    queue = { items: [item("review", t)], counts: { total: 1 } };
+    await boot();
+    const lead = hl().querySelector(".hl-block") as HTMLElement;
+    expect(lead?.textContent).toBe("Tech-debt hotspots: taskflow-mini #12 awaits your sign-off.");
+    expect(lead.getAttribute("title")).toBe(t.title);
+  });
+
   it("nothing needs you: the squad's tickets are named by their work", async () => {
     claims = [
       {

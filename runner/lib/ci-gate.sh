@@ -264,6 +264,33 @@ gaffer_ci_gate() {
   fi
 }
 
+# ONE CI read for an already-delivered candidate — the merge lane asks it before landing
+# a ticket whose CI is recorded, so a result that turned red after approval (a re-run, a
+# check added late) is caught before the code lands. Records the result like the gate.
+#   gaffer_ci_check_once <ticket_num> <repo_dir> <branch>
+#     → 0 PASS for the candidate · 2 FAIL (recorded: dispatch holds an approved ticket)
+#     · 1 still pending / unreadable / checks for another commit (nothing recorded)
+gaffer_ci_check_once() {
+  local num="$1" repo_dir="$2" branch="$3" candidate rows pr_head verdict detail
+  candidate="$(gaffer_ci_candidate "$repo_dir" "$branch")"
+  [ -n "$candidate" ] || return 1
+  command -v "$GAFFER_GH_BIN" >/dev/null 2>&1 || return 1
+  rows="$( (cd "$repo_dir" 2>/dev/null && "$GAFFER_GH_BIN" pr checks "$branch" --json "$GAFFER_GH_CHECK_FIELDS" 2>/dev/null) | gaffer_ci_checks_rows)"
+  [ -n "$rows" ] || return 1
+  pr_head="$(gaffer_ci_pr_head "$repo_dir" "$branch")"
+  [ "$pr_head" = "$candidate" ] || return 1
+  verdict="$(gaffer_parse_checks "$rows")"
+  case "$verdict" in
+    pass) gaffer_ci_record "$num" "$candidate" pass "all checks passed (re-checked before landing)"; return 0 ;;
+    fail:*)
+      detail="${verdict#fail:}"
+      local url="${detail#*|}"
+      gaffer_ci_record "$num" "$candidate" fail "check '${detail%%|*}' failed${url:+; see $url} (re-checked before landing)"
+      return 2 ;;
+    *) return 1 ;;
+  esac
+}
+
 # DEPENDENCY (tick.sh consults this BEFORE gaffer_ci_gate): the checks are read off the
 # delivery PR (`gh pr checks <branch>`), so GAFFER_REQUIRE_CI without GAFFER_CREATE_PR
 # polled a PR that never exists and, under the strict timeout policy, rejected EVERY

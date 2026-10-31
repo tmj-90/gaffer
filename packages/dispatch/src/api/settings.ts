@@ -444,7 +444,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Require CI green before review",
     help:
       "Poll the delivery PR's CI checks and only let the ticket into review when they pass; " +
-      "red checks reject it back to rework. REQUIRES 'Deliver as a pull request' — the checks " +
+      "red checks reject it back to rework. Required means required: approval (and a tester " +
+      "PASS) is refused until CI has passed for the exact commit being approved, a red result " +
+      "for an approved ticket holds it for a human (blocked, ci_red), and the merge lane " +
+      "re-reads CI before landing. REQUIRES 'Deliver as a pull request' — the checks " +
       "live on the PR, so with PR delivery off this gate is skipped with a warning (it used to " +
       "poll a PR that never existed and reject every delivery at the timeout).",
   },

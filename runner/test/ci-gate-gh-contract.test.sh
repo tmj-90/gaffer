@@ -96,7 +96,8 @@ if [ -n "$REAL_GH" ] && "$REAL_GH" pr checks --help >"$WORK/help" 2>/dev/null; t
   fields="$(sed -n '/JSON FIELDS/,/^$/p' "$WORK/help" | tail -n +2 | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$')"
   miss=""; for f in ${GAFFER_GH_CHECK_FIELDS//,/ }; do grep -qx "$f" <<<"$fields" || miss+="$f "; done
   [ -z "$miss" ] && ok "real $("$REAL_GH" --version | head -1 | cut -d' ' -f1-3): pr checks documents every field the gate uses" || fail "real gh lacks: $miss"
-  "$REAL_GH" pr view --help 2>/dev/null | sed -n '/JSON FIELDS/,/^$/p' | grep -q headRefOid && ok "real gh: pr view documents headRefOid" || fail "real gh pr view lacks headRefOid"
+  _view_help="$("$REAL_GH" pr view --help 2>/dev/null | sed -n '/JSON FIELDS/,/^$/p')"
+  grep -q headRefOid <<<"$_view_help" && ok "real gh: pr view documents headRefOid" || fail "real gh pr view lacks headRefOid"
 else
   ok "SKIP live check: no gh on PATH"
 fi

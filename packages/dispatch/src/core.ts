@@ -105,6 +105,7 @@ import {
   computeTicketDiff,
   defaultGitRunner,
   type GitRunner,
+  type RepoDiff,
   resolveBranchHead,
   type TicketDiff,
 } from "./services/diffService.js";
@@ -157,6 +158,7 @@ import {
   ReviewGateService,
 } from "./services/reviewGateService.js";
 import {
+  type ObservedRisk,
   observedRisk,
   runnerIntegrityHolds,
   withRunnerIntegrityHolds,
@@ -656,14 +658,7 @@ export class Dispatch {
       // GATE INTEGRITY: plus the runner's integrity FLAG from the latest trusted DoD
       // record (what the worktree held that the committed diff cannot show, e.g. a
       // git-ignored .npmrc), unless a human allowed test changes on the ticket.
-      observedRiskResolver: (ticket) => {
-        const observed = observedRisk(this.ticketDiff(ticket.id).repos);
-        if (ticket.allow_test_changes === 1) return observed;
-        return withRunnerIntegrityHolds(
-          observed,
-          runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
-        );
-      },
+      observedRiskResolver: (ticket) => this.observedRiskFor(ticket),
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
@@ -736,6 +731,22 @@ export class Dispatch {
       )
       .get(ticketId) as { summary: string } | undefined;
     return row?.summary ?? null;
+  }
+
+  /**
+   * OBSERVED RISK of a delivery as the auto-ship gate reads it (enforceObservedRiskCeiling):
+   * the real diff's risk annotations, plus — unless a human allowed test changes on the
+   * ticket — the runner's integrity FLAG from the latest trusted DoD record. Its `holds`
+   * are the GATE INTEGRITY hard holds: an agent or auto approval is refused while any is
+   * present; a human approval is not. `repos` reuses a diff already read.
+   */
+  observedRiskFor(ticket: Ticket, repos?: readonly RepoDiff[]): ObservedRisk {
+    const observed = observedRisk(repos ?? this.ticketDiff(ticket.id).repos);
+    if (ticket.allow_test_changes === 1) return observed;
+    return withRunnerIntegrityHolds(
+      observed,
+      runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
+    );
   }
 
   ticketDiff(ref: string): TicketDiff {
@@ -1622,15 +1633,33 @@ export class Dispatch {
    * predicate), and the landing repos as every landing path plans them (the first write
    * repo with a local path lands first, then each other write repo with one; see
    * landingStatus.ts). `mergeCommand` is whether the API's merge runner has a command to
-   * start (the caller holds the runner). `ci: false` skips the CI read (it runs git) for
-   * an approval that already happened.
+   * start (the caller holds the runner). The gate-integrity holds are the auto-ship
+   * gate's own read (observedRiskFor); `approver: "agent"` asks what an agent or auto
+   * approval would do. `ci: false` skips the CI and integrity reads (they run git) for an
+   * approval that already happened; `repos` reuses a diff the caller already read.
    */
   approveOutcomeFacts(
     ref: string,
-    opts: { mergeCommand: boolean; ci?: boolean; env?: NodeJS.ProcessEnv },
+    opts: {
+      mergeCommand: boolean;
+      ci?: boolean;
+      env?: NodeJS.ProcessEnv;
+      approver?: "human" | "agent";
+      repos?: readonly RepoDiff[];
+    },
   ): ApproveOutcomeFacts {
     const env = opts.env ?? process.env;
     const ticket = this.resolveTicket(ref);
+    // GATE INTEGRITY: the hard holds the auto-ship gate would raise (the same read). A
+    // throw is indeterminate: the gate fails toward a human, and so does this fact.
+    let testModifiedHolds: string[] = [];
+    if (opts.ci !== false) {
+      try {
+        testModifiedHolds = [...(this.observedRiskFor(ticket, opts.repos).holds ?? [])];
+      } catch {
+        testModifiedHolds = ["the delivery diff could not be read to check its tests"];
+      }
+    }
     const writes = this.repos
       .listForTicket(ticket.id)
       .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
@@ -1639,6 +1668,8 @@ export class Dispatch {
     const method = (env.GAFFER_PR_MERGE_METHOD ?? "").trim().toLowerCase();
     const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
     return {
+      approver: opts.approver ?? "human",
+      testModifiedHolds,
       ciHold: opts.ci === false ? null : this.reviewGateSvc.approveCiHold(ticket),
       toTester: this.reviewGateSvc.approveRoutesToTesting(ticket),
       acceptance: ticket.acceptance === 1,
@@ -1670,7 +1701,12 @@ export class Dispatch {
   /** The first step a human approve of this ticket will certainly take (see approveOutcome.ts). */
   approveOutcome(
     ref: string,
-    opts: { mergeCommand: boolean; env?: NodeJS.ProcessEnv },
+    opts: {
+      mergeCommand: boolean;
+      env?: NodeJS.ProcessEnv;
+      approver?: "human" | "agent";
+      repos?: readonly RepoDiff[];
+    },
   ): ApproveOutcome {
     return decideApproveOutcome(this.approveOutcomeFacts(ref, opts));
   }

@@ -26,7 +26,11 @@ import {
   settleApproveOutcome,
 } from "../src/services/approveOutcome.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import {
+  giveTicketRealDelivery,
+  nonEmptyDiffRunner,
+  testWeakeningDiffRunner,
+} from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
@@ -169,6 +173,41 @@ describe("decideApproveOutcome: one outcome per approve path", () => {
     expect(o.sentence).toContain("docs-site has no checkout on this machine");
   });
 
+  it("tests changed: an agent or auto approval is held_test_modified, a human's is not", () => {
+    const holds = ["tests modified: src/x.test.ts deleted"];
+    const agent = decideApproveOutcome(
+      facts({ approver: "agent", testModifiedHolds: holds, autoMerge: true }),
+    );
+    expect(agent.kind).toBe("held_test_modified");
+    expect(agent.approvable).toBe(false);
+    expect(agent.to_status).toBeNull();
+    expect(agent.label).toBe("Approve held: tests changed, a person must allow it");
+    expect(agent.sentence).toContain("src/x.test.ts deleted");
+    // The human's button keeps its outcome; its line says it is not held, and why to look.
+    const human = decideApproveOutcome(facts({ testModifiedHolds: holds, autoMerge: true }));
+    expect(human.kind).toBe("land_next_tick");
+    expect(human.approvable).toBe(true);
+    expect(human.label).toBe("Approve, lands on next tick");
+    expect(human.sentence).toContain("your approval is not held by that");
+    expect(human.sentence).toContain("the test-changes banner above lists what changed");
+    expect(human.agent_hold?.kind).toBe("held_test_modified");
+    expect(human.agent_hold?.holds).toEqual(holds);
+    // No holds: nothing said, nothing held.
+    const clean = decideApproveOutcome(facts({ approver: "agent", autoMerge: true }));
+    expect(clean.kind).toBe("land_next_tick");
+    expect(decideApproveOutcome(facts()).agent_hold).toBeNull();
+    // Required CI holds everyone first.
+    expect(
+      decideApproveOutcome(
+        facts({
+          approver: "agent",
+          testModifiedHolds: holds,
+          ciHold: { state: "fail", commit: null },
+        }),
+      ).kind,
+    ).toBe("held_ci");
+  });
+
   it("REVIEW_MODE both: the click is the human confirmation of the agent screen", () => {
     const o = decideApproveOutcome(facts({ reviewMode: "both" }));
     expect(o.kind).toBe("waits_for_merge");
@@ -227,6 +266,7 @@ const ENV_KEYS = [
   "REVIEW_MODE",
   "GAFFER_MERGE_LANE",
   "GAFFER_PR_MERGE_METHOD",
+  "DISPATCH_ALLOW_AGENT_APPROVE",
 ] as const;
 let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
@@ -359,6 +399,40 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
     expect(o.also_lands_repos).toEqual([]);
     expect(o.not_landed_repos).toEqual(["web-storefront"]);
     expect(o.sentence).toContain("web-storefront has no checkout on this machine");
+    wg.db.close();
+  });
+
+  it("a delivery that weakened its tests: held_test_modified for an agent, as the gate refuses it", () => {
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
+    const wg = Dispatch.open(":memory:", new TestClock(), testWeakeningDiffRunner);
+    const { id } = inReview(wg);
+    const agent = wg.approveOutcome(id, { mergeCommand: true, approver: "agent" });
+    expect(agent.kind).toBe("held_test_modified");
+    expect(agent.approvable).toBe(false);
+    expect(agent.sentence).toMatch(/tests modified/);
+    // The outcome is the gate's own read: an agent approve really is refused.
+    const reviewer = wg.registerAgent({ display_name: "rev" }, human);
+    let code = "";
+    try {
+      wg.approveReview(id, { type: "agent", id: reviewer.id });
+    } catch (e) {
+      code = (e as { code?: string }).code ?? "";
+    }
+    expect(code).toBe("OBSERVED_RISK_ESCALATED");
+    // The human's outcome is not held, says so, and names the agent hold.
+    const mine = wg.approveOutcome(id, { mergeCommand: true });
+    expect(mine.kind).toBe("waits_for_merge");
+    expect(mine.approvable).toBe(true);
+    expect(mine.agent_hold?.kind).toBe("held_test_modified");
+    expect(mine.sentence).toContain("your approval is not held by that");
+    // A person allows test changes: the hold lifts for the agent too.
+    wg.setAllowTestChanges(id, true, human, "the old suite is obsolete");
+    expect(wg.approveOutcome(id, { mergeCommand: true, approver: "agent" }).kind).toBe(
+      "waits_for_merge",
+    );
+    expect(wg.approveOutcome(id, { mergeCommand: true }).agent_hold).toBeNull();
+    // And the human approval goes through (it was never held).
+    expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
     wg.db.close();
   });
 

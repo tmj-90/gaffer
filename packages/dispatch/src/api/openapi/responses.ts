@@ -212,7 +212,11 @@ export const TicketTransition = z
 export const ApproveOutcome = z
   .object({
     kind: z.enum(APPROVE_OUTCOME_KINDS),
-    approvable: z.boolean().describe("False only when the server would refuse (held_ci)."),
+    approvable: z
+      .boolean()
+      .describe(
+        "False only when the server would refuse (held_ci, or held_test_modified for an agent).",
+      ),
     to_status: z.enum(["in_testing", "ready_for_merge"]).nullable(),
     label: str.describe('The sign-off button, e.g. "Approve and send to tester".'),
     confirm_label: str.describe("The armed button (the second press approves)."),
@@ -228,6 +232,18 @@ export const ApproveOutcome = z
       .array(str)
       .describe("Write repos with no checkout here: no landing path can merge them."),
     review_mode: z.enum(["human", "agent", "both"]),
+    agent_hold: z
+      .object({
+        kind: z.literal("held_test_modified"),
+        label: str,
+        sentence: str,
+        holds: z.array(str).describe("The gate-integrity findings that hold it."),
+      })
+      .strict()
+      .nullable()
+      .describe(
+        "The hold an agent or auto approval would hit now (the tests that gate it changed); a human approval is not held by it.",
+      ),
   })
   .strict() satisfies ZodType<ApproveOutcomeType>;
 

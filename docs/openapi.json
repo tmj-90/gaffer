@@ -3869,7 +3869,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on.",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
         "parameters": [
           {
             "name": "id",
@@ -9601,6 +9601,7 @@
             "type": "string",
             "enum": [
               "held_ci",
+              "held_test_modified",
               "to_tester",
               "land_now",
               "land_next_tick",
@@ -9609,7 +9610,7 @@
           },
           "approvable": {
             "type": "boolean",
-            "description": "False only when the server would refuse (held_ci)."
+            "description": "False only when the server would refuse (held_ci, or held_test_modified for an agent)."
           },
           "to_status": {
             "anyOf": [
@@ -9697,6 +9698,42 @@
               "agent",
               "both"
             ]
+          },
+          "agent_hold": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "held_test_modified"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "sentence": {
+                    "type": "string"
+                  },
+                  "holds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The gate-integrity findings that hold it."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "label",
+                  "sentence",
+                  "holds"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The hold an agent or auto approval would hit now (the tests that gate it changed); a human approval is not held by it."
           }
         },
         "required": [
@@ -9712,7 +9749,8 @@
           "lands_repo",
           "also_lands_repos",
           "not_landed_repos",
-          "review_mode"
+          "review_mode",
+          "agent_hold"
         ],
         "additionalProperties": false
       },

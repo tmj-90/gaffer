@@ -519,6 +519,7 @@ export async function routeTickets(
         ? {
             approve_outcome: wg.approveOutcome(ticket.id, {
               mergeCommand: mergeRunner.configured?.() ?? false,
+              repos: diff.repos, // the integrity holds read the diff just computed
             }),
           }
         : {}),

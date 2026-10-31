@@ -283,7 +283,10 @@ structural barrier the whole design hangs on.
   (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
   the landing), **Approve, waits for Merge now** (Auto-merge off), or **Approve
   held: CI not passed** (required CI has no PASS for the commit, so the server
-  would refuse). A line under the button says what follows; on a multi-repo
+  would refuse). When the delivery changed the tests that gate it, an agent's or
+  auto approval is held (*Approve held: tests changed, a person must allow it*)
+  but a human's is not: the line under the button says so and points at the
+  test-changes banner. A line under the button says what follows; on a multi-repo
   ticket it says every write repo lands the same way, one merge each through the
   merge gate, and that a repo that fails is held while the landed ones stay
   recorded (a repo with no checkout on this machine is named as one nothing can

@@ -8,6 +8,14 @@
  *
  *   held_ci          GAFFER_REQUIRE_CI has recorded CI for this ticket and the candidate
  *                    commit has no PASS: approveReview refuses (POLICY_DENIED).
+ *   held_test_modified
+ *                    GATE INTEGRITY, for an AGENT or auto approval only: the delivery
+ *                    changed the tests that gate it (an unallowed `test-modified` finding,
+ *                    or the runner's integrity FLAG), so the auto-ship gate refuses
+ *                    (OBSERVED_RISK_ESCALATED) until a person approves or allows test
+ *                    changes. A HUMAN approval is not held by it: the human's outcome is
+ *                    the usual one, its line says the tests changed and that the
+ *                    test-changes banner lists them, and `agent_hold` names the hold.
  *   to_tester        an epic's acceptance ticket, or GAFFER_TESTING on and the ticket is
  *                    testable: approveReview routes it in_review → in_testing.
  *   land_now         AUTO_MERGE on and DISPATCH_MERGE_CMD set: the route fires the merge
@@ -32,6 +40,7 @@
 
 export const APPROVE_OUTCOME_KINDS = [
   "held_ci",
+  "held_test_modified",
   "to_tester",
   "land_now",
   "land_next_tick",
@@ -43,6 +52,14 @@ export type ReviewMode = "human" | "agent" | "both";
 
 /** The facts the decision is made from (all read server-side, never from the client). */
 export interface ApproveOutcomeFacts {
+  /** Whose approval this is: the human sign-off (default) or an agent / auto approval. */
+  approver?: "human" | "agent";
+  /**
+   * GATE INTEGRITY: the hard holds the auto-ship gate raises now (observedRisk `holds`:
+   * an unallowed test-modified finding, the runner's integrity FLAG); empty when none or
+   * a person allowed test changes. Hold an agent approval; never a human one.
+   */
+  testModifiedHolds?: string[];
   /** The required-CI hold approveReview would raise now, or null (no CI recorded / PASS). */
   ciHold: { state: string | null; commit: string | null } | null;
   /** approveReview routes this ticket to the independent tester (in_testing). */
@@ -99,7 +116,22 @@ export interface ApproveOutcome {
   /** Write repos with no checkout here: no landing path can merge them. */
   not_landed_repos: string[];
   review_mode: ReviewMode;
+  /**
+   * A human outcome only: the hold an agent or auto approval of this ticket would hit
+   * now (held_test_modified), so the line can say the human's approval is not held by it.
+   */
+  agent_hold: AgentHold | null;
 }
+
+/** The gate-integrity hold on an agent or auto approval, carried on the human's outcome. */
+export interface AgentHold {
+  kind: "held_test_modified";
+  label: string;
+  sentence: string;
+  holds: string[];
+}
+
+const TEST_HOLD_LABEL = "Approve held: tests changed, a person must allow it";
 
 function andList(xs: readonly string[]): string {
   if (xs.length <= 1) return xs.join("");
@@ -141,11 +173,37 @@ function afterPass(f: ApproveOutcomeFacts): string {
   return "it waits for Merge now";
 }
 
-/** The first step that will certainly happen when a human approves now. */
+/** The gate-integrity hold on an agent or auto approval, or null when none applies. */
+function agentHold(f: ApproveOutcomeFacts): AgentHold | null {
+  const holds = f.testModifiedHolds ?? [];
+  if (holds.length === 0) return null;
+  return {
+    kind: "held_test_modified",
+    label: TEST_HOLD_LABEL,
+    sentence: `The delivery changed the tests that gate it (${holds.join("; ")}). An agent's or auto approval is refused until a person approves it or allows test changes on the ticket.`,
+    holds: [...holds],
+  };
+}
+
+/** The human's line when the tests changed: not held, but read the banner first. */
+function testChangesClause(hold: AgentHold | null): string {
+  return hold
+    ? " The tests that gate it changed: your approval is not held by that (only an agent's or auto approval is), and the test-changes banner above lists what changed."
+    : "";
+}
+
+/**
+ * The first step that will certainly happen when this approval is made now: a human's
+ * sign-off by default, or (approver "agent") an agent or auto approval, which the
+ * gate-integrity hold refuses where a human's goes through.
+ */
 export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
+  const hold = agentHold(f);
+  const agent = f.approver === "agent";
   const base = {
     pr_url: f.prUrl,
     review_mode: f.reviewMode,
+    agent_hold: agent ? null : hold,
   };
   if (f.ciHold) {
     const at = f.ciHold.commit ? ` for ${f.ciHold.commit.slice(0, 12)}` : "";
@@ -165,6 +223,23 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       not_landed_repos: [],
     };
   }
+  if (agent && hold) {
+    return {
+      ...base,
+      kind: "held_test_modified",
+      approvable: false,
+      to_status: null,
+      label: TEST_HOLD_LABEL,
+      confirm_label: TEST_HOLD_LABEL,
+      done_label: "Approve held",
+      sentence: hold.sentence,
+      via: null,
+      lands_repo: null,
+      also_lands_repos: [],
+      not_landed_repos: [],
+    };
+  }
+  const tests = agent ? "" : testChangesClause(hold);
   if (f.toTester) {
     const why = f.acceptance
       ? "An epic's acceptance ticket always goes to the independent tester."
@@ -177,7 +252,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       label: "Approve and send to tester",
       confirm_label: "Confirm: send to tester",
       done_label: "Sent to tester",
-      sentence: `It moves to In testing, not to merge. ${why} A PASS takes it to Ready for merge, where ${afterPass(f)}.${bothClause(f)}`,
+      sentence: `It moves to In testing, not to merge. ${why} A PASS takes it to Ready for merge, where ${afterPass(f)}.${bothClause(f)}${tests}`,
       via: null,
       lands_repo: null,
       also_lands_repos: [],
@@ -200,7 +275,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       label: "Approve and land now",
       confirm_label: "Confirm and land now",
       done_label: "Landing now",
-      sentence: `Auto-merge on approval is on: the merge runner starts now, runs the landing check and the merge gate, then ${landingClause(f)}.${partialClause(f)}${bothClause(f)}`,
+      sentence: `Auto-merge on approval is on: the merge runner starts now, runs the landing check and the merge gate, then ${landingClause(f)}.${partialClause(f)}${bothClause(f)}${tests}`,
     };
   }
   if ((f.autoMerge || f.mergeGateEarned) && f.mergeLane) {
@@ -216,7 +291,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       label: "Approve, lands on next tick",
       confirm_label: "Confirm: lands on next tick",
       done_label: "Waits for the merge lane",
-      sentence: `It moves to Ready for merge. ${why}, so the runner's merge lane lands it at the start of its next tick (while the runner is running): ${landingClause(f)}.${partialClause(f)}${bothClause(f)}`,
+      sentence: `It moves to Ready for merge. ${why}, so the runner's merge lane lands it at the start of its next tick (while the runner is running): ${landingClause(f)}.${partialClause(f)}${bothClause(f)}${tests}`,
     };
   }
   const why = f.autoMerge
@@ -230,7 +305,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
     label: "Approve, waits for Merge now",
     confirm_label: "Confirm approval",
     done_label: "Waits for Merge now",
-    sentence: `It waits in Ready for merge: ${why}, so it lands only when someone presses Merge now.${bothClause(f)}`,
+    sentence: `It waits in Ready for merge: ${why}, so it lands only when someone presses Merge now.${bothClause(f)}${tests}`,
     via: null,
     lands_repo: null,
     also_lands_repos: [],

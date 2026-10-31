@@ -781,6 +781,11 @@ export GAFFER_CAP_DETECT_TURNS
 # Set to 0 to fall back to the legacy park-to-refining + teardown behaviour.
 : "${GAFFER_PAUSE_ON_CAP:=1}"        # 1 = pause+keep worktree (default); 0 = legacy park+teardown
 export GAFFER_PAUSE_ON_CAP
+# USAGE-WINDOW PAUSE: minutes to pause admission after a usage-limit / rate-limit
+# refusal when the CLI printed no reset time (a printed reset wins). Floor 10 minutes,
+# enforced in lib/usage-pause.mjs whatever this says; junk falls back to 60.
+: "${GAFFER_USAGE_PAUSE_DEFAULT_MIN:=60}"
+export GAFFER_USAGE_PAUSE_DEFAULT_MIN
 # (GAFFER_MAX_RESUMES_PER_TICK was removed: nothing read it. A tick delivers ONE
 # ticket, so it re-enters at most one Continue'd paused ticket — first, before any
 # new claim — and the next tick takes the next one.)
@@ -2269,6 +2274,11 @@ gaffer_review_reason() {
 # and DAILY_COUNTER_FILE.
 # shellcheck source=lib/budget.sh
 [ -f "$RUNNER_DIR/lib/budget.sh" ] && source "$RUNNER_DIR/lib/budget.sh"
+
+# Usage-window pause helpers (gaffer_usage_pause_record / _active / _until / _wait):
+# a usage-limit or rate-limit refusal pauses admission until the window resets.
+# shellcheck source=lib/usage-pause.sh
+[ -f "$RUNNER_DIR/lib/usage-pause.sh" ] && source "$RUNNER_DIR/lib/usage-pause.sh"
 
 # Auto-merge helper (defines gaffer_auto_merge). In-tree, so this is defensive.
 # shellcheck source=lib/automerge.sh

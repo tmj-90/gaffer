@@ -9,7 +9,7 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -944,6 +944,64 @@ try {
     } else note("floor: no parcel to focus (an empty floor)");
     await shot(page, "floor");
   }
+
+  // ── 6z. usage-window pause on Health: the runner writes $GAFFER_DATA/usage-pause.json
+  //   when the model refuses a call on its usage window; Health says so first, in
+  //   both themes, at 320 and 1440, and passes the a11y audit. Removed afterwards so
+  //   the rest of the run is not paused (the dashboard only reads the file).
+  if (process.env.GAFFER_DATA) {
+    const pauseFile = path.join(process.env.GAFFER_DATA, "usage-pause.json");
+    const until = Date.now() + 3_600_000;
+    writeFileSync(
+      pauseFile,
+      JSON.stringify({
+        paused_until: new Date(until).toISOString(),
+        until_ms: until,
+        kind: "usage_limit",
+        basis: "reset",
+        message: "You've hit your session limit · resets 3pm (UTC)",
+        ticket: ticket.number ?? null,
+      }),
+    );
+    try {
+      for (const [w, h, theme] of [
+        [1440, 900, "light"],
+        [320, 640, "dark"],
+      ]) {
+        const c3 = await browser.newContext({ viewport: { width: w, height: h } });
+        const p3 = await c3.newPage();
+        await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
+        await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+        await sleep(900);
+        const got = await p3.evaluate(() => {
+          const n = document.querySelector(".usage-pause-note");
+          return {
+            text: n ? n.textContent.trim() : "",
+            label: n ? n.getAttribute("aria-label") : "",
+            overflow: document.documentElement.scrollWidth > window.innerWidth,
+          };
+        });
+        /^Paused until .+: usage limit\./.test(got.text) &&
+        /^The factory is paused until .+ because of a usage limit\.$/.test(got.label || "") &&
+        !got.overflow
+          ? ok(
+              `health@${w} ${theme}: "${got.text.slice(0, 48)}…" (sentence label, no sideways scroll)`,
+            )
+          : bad(
+              `health@${w} ${theme}: pause note '${got.text}' label '${got.label}' overflow=${got.overflow}`,
+            );
+        await shot(p3, `health-usage-pause-${w}-${theme}`);
+        if (AXE_SOURCE) await auditA11y(p3, "health (usage pause)", String(w));
+        await c3.close();
+      }
+    } finally {
+      try {
+        unlinkSync(pauseFile);
+      } catch {
+        /* already gone */
+      }
+    }
+  } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
 
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");

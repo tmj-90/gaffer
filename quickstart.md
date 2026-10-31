@@ -148,6 +148,11 @@ runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (L
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
 
+If the model refuses a call because your usage window ran out (or a rate limit hit),
+the ticket goes back to Ready without counting an attempt and the run sleeps until the
+window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
+on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
+
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
 `gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and
 your `--check` commands, and **submits it for review** (`in_review`). The run summary

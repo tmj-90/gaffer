@@ -129,19 +129,41 @@ interface Opts {
   approved?: Record<string, unknown>;
   anns?: unknown[];
   packet?: unknown;
+  /** Refuse the first approve as stale (the branch moved), then move the head. */
+  staleOnce?: boolean;
 }
 let posts: string[] = [];
+let approveBodies: unknown[] = [];
+let headSha = "a".repeat(40);
 function stubFetch(o: Opts = {}): void {
   posts = [];
+  approveBodies = [];
+  headSha = "a".repeat(40);
+  let refuse = Boolean(o.staleOnce);
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (init && init.method === "POST") posts.push(url);
       let body: unknown;
-      if (url.includes("/review/approve"))
+      if (url.includes("/review/approve")) {
+        approveBodies.push(init?.body ? JSON.parse(String(init.body)) : null);
+        if (refuse) {
+          refuse = false;
+          headSha = "b".repeat(40);
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: "STATE_CONFLICT",
+                message: "taskflow-api is now bbbbbbbbbbbb (you reviewed aaaaaaaaaaaa).",
+                details: { reason: "stale_revision" },
+              },
+            }),
+            { status: 409, headers: { "content-type": "application/json" } },
+          );
+        }
         body = o.approved || { ticket: { ...T, status: "in_testing" } };
-      else if (url.includes("/dossier"))
+      } else if (url.includes("/dossier"))
         body = { schema: "dossier.v1", review_packet: o.packet ?? null };
       else if (url.includes("/diff"))
         body = {
@@ -149,6 +171,8 @@ function stubFetch(o: Opts = {}): void {
           repos: [
             {
               repo: "taskflow-api",
+              repoId: "r1",
+              headSha,
               branch: T.branch_name,
               baseBranch: "main",
               files: 1,
@@ -352,6 +376,26 @@ describe("web review: the button names what Approve does", () => {
     expect(btn().disabled).toBe(true);
     expect(btn().textContent).toBe("Approve held: CI not passed");
     expect(document.querySelector(".diff-block-banner")?.textContent).toContain("Required CI");
+  });
+
+  it("a stale approval and the outcome coexist: the moved banner, the outcome's button, the new head", async () => {
+    stubFetch({ outcome: OUTCOMES.land_now, staleOnce: true });
+    await boot();
+    expect(btn().textContent).toBe("Approve and land now");
+    btn().click();
+    btn().click(); // refused: the branch moved since it was shown
+    for (let i = 0; i < 10; i++) await tick();
+    expect(approveBodies[0]).toEqual({ commits: [{ repo: "r1", sha: "a".repeat(40) }] });
+    const banner = document.querySelector(".signoff .diff-moved-banner");
+    expect(banner, "the moved banner in the sign-off").not.toBeNull();
+    expect(document.querySelector(".rv-done:not([hidden])")).toBeNull();
+    // The reloaded view still names what Approve does, with its line under the button.
+    expect(btn().textContent).toBe("Approve and land now");
+    expect((document.querySelector(".signoff-next") as HTMLElement).hidden).toBe(false);
+    btn().click();
+    btn().click();
+    for (let i = 0; i < 8; i++) await tick();
+    expect(approveBodies[1]).toEqual({ commits: [{ repo: "r1", sha: "b".repeat(40) }] });
   });
 
   it("an older server with no approve_outcome: plain Approve, and the arm says no merge", async () => {

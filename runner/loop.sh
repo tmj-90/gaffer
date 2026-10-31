@@ -260,7 +260,24 @@ _setup_error=0
 # Without it bash carried on to the next tick whenever the reaped tick exited normally.
 _loop_stop=0
 trap '_loop_stop=1' INT TERM HUP
+_loop_stopping() { [ "$_loop_stop" = 1 ]; }
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
+  # USAGE WINDOW (lib/usage-pause.sh): a model call was refused by the plan's usage
+  # window / a rate limit and $GAFFER_DATA/usage-pause.json says when it resets. Sleep
+  # until then instead of spinning ticks into the refusal; no tick is admitted, so the
+  # day cap, MAX_TICKS and the empty-poll count are untouched while it waits. A stop
+  # signal ends the wait at once; a human who clears the pause early is honoured
+  # within GAFFER_USAGE_PAUSE_POLL_SECS.
+  if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
+     && _up_line="$(gaffer_usage_pause_active)"; then
+    echo "gaffer factory: $_up_line — sleeping until then, no new work admitted (lift it early: node $HERE/lib/usage-pause.mjs clear)"
+    if ! gaffer_usage_pause_wait _loop_stopping; then
+      echo "gaffer factory: stop signal — not starting another tick."
+      break
+    fi
+    echo "gaffer factory: usage pause over — admitting work again."
+    continue
+  fi
   # LIVE CAPS: the day caps are re-read from the CURRENT config before every
   # admission, so a dashboard edit (lower MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD)
   # stops a running loop at its next tick — not only the next loop pass. Fail closed:

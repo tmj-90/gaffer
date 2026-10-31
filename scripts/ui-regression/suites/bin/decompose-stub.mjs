@@ -6,7 +6,8 @@
 //   • otherwise a plan: three tickets, ticket 2 dependsOn ticket 1. A brownfield
 //     request (context.repo) stamps that repo on every ticket; a spec-driven one
 //     threads each requirement clause onto an AC as clauseRef. A brief that says
-//     "greenfield" gets a bootstrap ticket first (the others depend on it).
+//     "greenfield" gets a bootstrap ticket first (the others depend on it), every
+//     ticket naming the new repo "task-app".
 // Every call is appended to $GAFFER_DATA/decompose-calls.jsonl for the suites.
 import { appendFileSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -63,8 +64,14 @@ const tickets = [
   }),
 ];
 if (greenfield) {
-  for (const t of tickets) t.dependsOn = [0, ...t.dependsOn.map((d) => d + 1)];
+  // A brand-new repo: every ticket names it (the dashboard defers the link to the
+  // bootstrap, carrying the name as `source`, so the runner creates it by that name).
+  for (const t of tickets) {
+    t.dependsOn = [0, ...t.dependsOn.map((d) => d + 1)];
+    t.repo = "task-app";
+  }
   tickets.unshift({
+    repo: "task-app",
     title: "Bootstrap the task app",
     description: "a package.json and a passing test",
     acceptanceCriteria: ["the repo has a package.json whose test script passes"],

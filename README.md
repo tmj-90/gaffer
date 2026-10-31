@@ -97,7 +97,7 @@ runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review s
 runner/gaffer merge 1
 ```
 
-`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
+`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
 
 To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), put the repos you want worked on under `./repos`, and run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` and `docker compose logs dashboard` shows the login link.
 
@@ -107,7 +107,7 @@ To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OA
 
 ![The Tactics Board: the ticket lifecycle drawn as a pitch, one channel per repo, each agent a numbered shirt on the ticket it holds](docs/img/match-day-tactics-board.png)
 
-A gaffer is the manager, so the dashboard is match day. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today and the wage bill against the daily budget. Beside it is the Team Sheet, a numbered list of everything waiting on you with one action on each row. The Tactics Board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The Gaffer's Sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen.
+A gaffer is the manager, so the dashboard is match day. The Overview opens on a scoreboard showing how many things need you, how many agents are on the pitch, what's been delivered today and the wage bill against the daily budget. Beside it is the Team Sheet, a numbered list of everything waiting on you with one action on each row. The Tactics Board is a drawn pitch with the ticket lifecycle running left to right and one channel per repo. Each agent is a numbered shirt standing on the ticket it holds, and chalk arrows show the moves of the last three hours. Review becomes The Gaffer's Sign-off, with the flags, the gates, the acceptance criteria and the diff on one screen. Under the title, a verdict strip puts what the runner recorded above what the agent wrote: each gate and the command it ran, the test count the runner saw, the tester's verdict, cost and turns, the attempt and its rework, the risk reasons and the reviewed-commit pin. Each acceptance criterion shows the runner's exit code or "no machine evidence", and an agent summary that claims a whole-suite test count the runner didn't see is flagged.
 
 ![The Gaffer's Sign-off: flags, gates, acceptance criteria and the diff on one screen](docs/img/match-day-review.png)
 

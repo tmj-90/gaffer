@@ -144,6 +144,66 @@ commit, and records each result with `wg ticket ci-result` (pending → pass/fai
 refuses approval and a tester PASS without a PASS for the candidate, a red result holds an
 approved ticket (`ci_red`), and the merge lane re-reads CI before landing.
 
+### When the model's usage window runs out
+
+A delivery call can come back refused by the plan's usage window or a rate limit
+(`You've hit your session limit · resets 3pm (Europe/London)`, newer builds'
+`You've hit your 5-hour limit · resets 3pm (UTC) · progress saved`, `You're out of
+usage credits`, `API Error: Rate limit reached`, the SDK's `error: "rate_limit"`).
+That is not a failed delivery, so the runner does not treat it as one. The table
+covers both the 2.1.42 npm build's wording and the 2.1.316 native build's; a
+trailing ` · progress saved` does not hide the reset time. Spend caps and admin
+switches (`You've hit your monthly spend limit`, `…team's shared budget`) are not
+a pause: they need a person to raise the cap, so they stay ordinary failures.
+
+- `lib/worker.mjs` `parseResult` classifies it (`usageLimit`) from one table of
+  matched strings, `USAGE_LIMIT_PATTERNS` / `USAGE_LIMIT_SHAPES`, each row citing
+  where its exact text comes from. Text rows only match an error envelope
+  (`is_error: true`), so a reply that talks about rate limiting is never misread.
+  There is no exception: on a success envelope `.result` is the agent's own reply,
+  so an agent that answers `Claude AI usage limit reached|<epoch>` takes the normal
+  failure path (no-commit counter, park for a human), not a free release.
+- `tick.sh` keeps any work the agent made before the refusal (a WIP checkpoint; a
+  branch with commits is kept for the next attempt), releases the claim to `ready`
+  with reason-code `usage_limit` WITHOUT counting an attempt (no `attempt_count`
+  bump, no no-commit counter, no rework row, no skip-list entry), records a
+  `ticket.usage_limited` event with `paused_until`, and reports `usage_paused`.
+  A resumed delivery goes back to `paused` with its worktree. The envelope is
+  classified first, WITHOUT the pause lock (`worker.mjs parse-result usage-limit`);
+  only a confirmed refusal takes `$GAFFER_DATA/.usage-pause.lock` to record the
+  pause. A lock that cannot be taken or a crash in either step therefore never turns
+  an ordinary result into a refusal: a classifier failure is an ordinary result, and
+  only a confirmed refusal whose pause could not be written fails closed (released
+  without an attempt and skipped for the rest of the run).
+- A greenfield bootstrap refused the same way records the pause too and goes back
+  to `ready` (not `blocked`, not skipped); its partial scaffold stays in place as a
+  resumable bootstrap target for the retry.
+- A refused independent tester (`bin/tester-run.mjs`, phase `usage_limited`, exit 3)
+  is neither a verdict nor a hold: `lib/tester.sh` records the pause from the raw
+  envelope (`GAFFER_TESTER_ENVELOPE_OUT`), skips the ticket for this run only and
+  tests it again after the window resets. Before, it was held in_testing for a human
+  and, being remembered across runs, never re-tested.
+- A refused agent reviewer is held like any reviewer that did not run (in_review,
+  not a verdict) and records the pause too, so the next tick does not spawn into
+  the same refusal.
+- `lib/usage-pause.mjs` writes `$GAFFER_DATA/usage-pause.json`. The pause ends at the
+  reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
+  (default 60) when none was printed; never sooner than 10 minutes, never later than
+  8 days, never shortened by a later refusal. A pause file that does not parse is
+  read as active for the default wait (fail closed). The bash helpers hand node the
+  config's `GAFFER_DATA` explicitly (`factory.config.sh` does not export it), and
+  with no `GAFFER_DATA` at all the CLI uses the same default data dir as the runner,
+  so `status` / `clear` typed in a plain shell act on the pause the runner wrote.
+- While it holds, `tick.sh` claims and spawns nothing (`no_work`), `loop.sh` and
+  `gaffer run --daemon` sleep until it ends instead of spinning (re-reading the file
+  every `GAFFER_USAGE_PAUSE_POLL_SECS`, default 60, so an early clear is honoured), a
+  `GAFFER_CONCURRENCY>1` pool stops admitting new work, and `gaffer status` and the
+  dashboard's Health view say `paused until <time>: usage limit`. It lifts on its
+  own; `node runner/lib/usage-pause.mjs clear` lifts it early.
+- The time left in a window is not spent on maintenance work in this release (it is
+  unclear whether headless usage shares the window); `usage-pause.mjs` documents the
+  seam for a future, opt-in lane.
+
 ## Setup & the `gaffer` CLI
 
 `setup.sh` builds the three TypeScript products and initialises factory state
@@ -431,6 +491,7 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `test/run-summary.test.sh` — run-summary report validation (`bash test/run-summary.test.sh`)
 - `test/stabilisation-integration.test.sh` — end-to-end proof the hygiene + backpressure gates fire against real `tick.sh` (`bash test/stabilisation-integration.test.sh`)
 - `test/dod-gate.test.sh` — Definition-of-Done validation: a failing `test_command` fails the gate; all-pass proceeds; an un-configured gate is skipped not failed; a disabled gate is not run; an unrunnable command is a fail not a crash; `GAFFER_DOD=0` disables enforcement; and (against the **real dispatch CLI**) a DoD failure review-rejects an in_review ticket to refining with the checklist recorded as evidence (`bash test/dod-gate.test.sh`)
+- `test/dod-tally.test.sh` — the tests gate keeps the test runner's summary lines (vitest, jest, pytest, cargo, `go test -v`, `node --test`) in a `---DOD-TALLY---` block on the DoD evidence, for the Review view's "the runner saw N", and a test that prints a tab-separated `GATE` line cannot forge a gate row (`bash test/dod-tally.test.sh`)
 - `test/self-op-ban.test.sh` — self-operation ban unit tests for `gaffer_is_self_target` + tick.sh wiring (`bash test/self-op-ban.test.sh`)
 - `test/self-op-ban-integration.test.sh` — end-to-end proof the self-op ban refuses a delivery whose target is a Gaffer component, honours `GAFFER_ALLOW_SELF_DELIVERY=1`, and leaves a non-Gaffer target unaffected (`bash test/self-op-ban-integration.test.sh`)
 - `launchd/com.gaffer.factory.plist.template` — scheduled-run template with `__GAFFER_REPO__` / `__GAFFER_DATA__` placeholders (disabled by default; render with `sed` before loading)

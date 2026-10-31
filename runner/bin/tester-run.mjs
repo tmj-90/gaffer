@@ -54,10 +54,18 @@
 // OUTPUT (stdout, exactly ONE JSON object):
 //   dry-run:  { "phase":"dry-run", ticket, context }
 //   verdict:  { "phase":"verdict", ticket, verdict, recorded }
+//   held:     { "phase":"held", ticket, reason, … }   (exit 2) — a human decides
+//   usage_limited: { "phase":"usage_limited", ticket, kind, reason, resetsAt, … }
+//             (exit 3) — the call was refused by the plan's usage window or a rate
+//             limit (lib/worker.mjs detectUsageLimit): not a verdict and not a hold;
+//             the runner records the pause and tests the ticket again after it.
 //   error:    { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on dry-run / verdict; 1 on a hard failure (no ticket, unresolvable,
-//   record failure).
+//   record failure); 2 held; 3 usage_limited.
+// GAFFER_TESTER_ENVELOPE_OUT (optional): a --live run writes the raw `claude -p`
+//   envelope there, so lib/tester.sh classifies a usage-limit refusal with the same
+//   locked recorder the delivery path uses (gaffer_usage_pause_record).
 // =====================================================================
 
 import { spawnSync } from "node:child_process";
@@ -83,7 +91,13 @@ import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
-import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
+import {
+  detectUsageLimit,
+  extractResultText,
+  parseClaudeJson,
+  roleTurnCap,
+  Worker,
+} from "../lib/worker.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -961,7 +975,17 @@ function runLiveTester(context) {
   // Ledger + verdict.
   let verdict = null;
   let text = "";
+  let usageLimit = null;
   const elapsedMs = Date.now() - t0;
+  // The raw envelope for the runner's usage-window pause record (lib/tester.sh).
+  const envelopeOut = String(process.env.GAFFER_TESTER_ENVELOPE_OUT ?? "").trim();
+  if (envelopeOut && !res.error && typeof res.stdout === "string") {
+    try {
+      writeFileSync(envelopeOut, res.stdout, { mode: 0o600 });
+    } catch (e) {
+      log(`could not write the envelope to ${envelopeOut}: ${e?.message ?? e}`);
+    }
+  }
   if (res.error) {
     // A timed-out call did paid work: book the labelled estimate, never a silent $0.
     // Any other error (ENOENT, Worker.deliver failing closed) never ran claude, so it
@@ -981,8 +1005,12 @@ function runLiveTester(context) {
     } else {
       appendUsageRecord(buildUsageRecord({ json, ticket: n, kind: "tester" }));
       text = extractResultText(json) ?? "";
+      // USAGE WINDOW: a call refused by the usage window / a rate limit never tested
+      // anything (the same one table the delivery path reads; text rows need an error
+      // envelope, so the tester's own reply quoting the words is not a refusal).
+      usageLimit = detectUsageLimit(json);
     }
-    verdict = parseTesterVerdict(text);
+    verdict = usageLimit ? null : parseTesterVerdict(text);
   }
 
   // ACCEPTANCE GATE: the tester tests the implementation, it never changes it. Inspect what
@@ -1042,6 +1070,26 @@ function runLiveTester(context) {
       .map((l) => l.trim())
       .filter((l) => /^(PASS|FAIL)\b/i.test(l))
       .pop() || "";
+  if (usageLimit) {
+    log(
+      `the tester call for #${n} was refused by the ${usageLimit.kind === "rate_limit" ? "rate limit" : "usage window"} (${usageLimit.message}) — not a verdict and not a hold; it is tested again once the window resets`,
+    );
+    emit(
+      {
+        phase: "usage_limited",
+        ticket: n,
+        kind: usageLimit.kind,
+        reason: usageLimit.message,
+        resetsAt: Number.isFinite(usageLimit.resetsAtMs)
+          ? new Date(usageLimit.resetsAtMs).toISOString()
+          : null,
+        testsBranch,
+        testedCommit,
+      },
+      3,
+    );
+    return;
+  }
   if (verdict === null) {
     log(`no verdict token from the tester for #${n} — HOLDING in_testing for a human`);
     emit(

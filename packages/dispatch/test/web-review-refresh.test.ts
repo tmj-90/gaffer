@@ -32,6 +32,7 @@ function stubFetch(): void {
       const url = String(input);
       calls.push(url);
       if (url.includes("/tickets?status=in_review")) return json({ tickets: queue });
+      if (/\/tickets\/[^/?]+\/dossier/.test(url)) return json({ review_packet: PACKET });
       const diff = url.match(/\/tickets\/([^/?]+)\/diff/);
       if (diff) return json({ repos: [] });
       const detail = url.match(/\/tickets\/([^/?]+)$/);
@@ -47,6 +48,18 @@ function stubFetch(): void {
     }),
   );
 }
+// A minimal review packet (the strip's every cell has something to draw).
+const PACKET = {
+  gates: null,
+  tester: null,
+  tester_expected: false,
+  cost: { cost_usd: 0, estimated_usd: 0, num_turns: 0, unknown_calls: 0, ledger_status: "ok" },
+  attempts: { attempt_count: 0, max_attempts: 3, rework: [] },
+  risk: { level: "low", reasons: [] },
+  pin: null,
+  acceptance: [],
+  disagreements: [],
+};
 function mountShell(): void {
   document.body.innerHTML = `
     <div id="toast" class="toast" role="alert" hidden></div>
@@ -64,6 +77,7 @@ async function settle(n = 8): Promise<void> {
 const count = (re: RegExp) => calls.filter((u) => re.test(u)).length;
 const DETAIL = /\/tickets\/rv-\d+$/;
 const DIFF = /\/tickets\/rv-\d+\/diff$/;
+const DOSSIER = /\/tickets\/rv-\d+\/dossier\?include=packet$/;
 
 describe("web: Review refresh only re-reads a changed queue", () => {
   beforeEach(() => {
@@ -99,6 +113,8 @@ describe("web: Review refresh only re-reads a changed queue", () => {
     const distinct = (re: RegExp) => new Set(calls.filter((u) => re.test(u))).size;
     expect(distinct(DETAIL)).toBe(1);
     expect(distinct(DIFF)).toBe(1);
+    // The review packet: one dossier read for the one change on screen.
+    expect(distinct(DOSSIER)).toBe(1);
     const before = document.querySelector("#app > .view");
     expect(before).not.toBeNull();
     // Baselines after the first paint: what the boot read is not under test
@@ -108,6 +124,7 @@ describe("web: Review refresh only re-reads a changed queue", () => {
     const listReads = count(LIST);
     const detailReads = count(DETAIL);
     const diffReads = count(DIFF);
+    const dossierReads = count(DOSSIER);
 
     vi.advanceTimersByTime(9000); // one refresh tick
     await settle();
@@ -119,6 +136,7 @@ describe("web: Review refresh only re-reads a changed queue", () => {
     // …but, no N+1: the unchanged queue triggered no detail or diff reads…
     expect(count(DETAIL)).toBe(detailReads);
     expect(count(DIFF)).toBe(diffReads);
+    expect(count(DOSSIER)).toBe(dossierReads);
     // …and the view on screen is the same node (scroll, open details, cursor kept).
     expect(document.querySelector("#app > .view")).toBe(before);
   });
@@ -134,5 +152,26 @@ describe("web: Review refresh only re-reads a changed queue", () => {
 
     expect(document.querySelector("#app > .view")).not.toBe(before);
     expect(document.getElementById("app")!.textContent).toContain("Review 2 (redelivered)");
+  });
+
+  it("re-renders for another ticket's change without re-reading this one's packet", async () => {
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
+    await settle();
+    const on = "/tickets/rv-1/dossier?include=packet";
+    expect(calls.filter((u) => u.endsWith(on)).length).toBeGreaterThan(0);
+    const before = calls.filter((u) => u.endsWith(on)).length;
+    const view = document.querySelector("#app > .view");
+    // rv-2 (not on screen) changed: the page re-renders, rv-1's packet comes from the cache.
+    queue[1] = { ...queue[1], updated_at: "2026-10-30T10:05:00Z", title: "Review 2 (redelivered)" };
+    vi.advanceTimersByTime(9000);
+    await settle(12);
+    expect(document.querySelector("#app > .view")).not.toBe(view);
+    expect(document.querySelector(".rv-verdict")).not.toBeNull();
+    expect(calls.filter((u) => u.endsWith(on)).length).toBe(before);
+    // rv-1 itself changed: its packet is read again.
+    queue[0] = { ...queue[0], updated_at: "2026-10-30T10:06:00Z" };
+    vi.advanceTimersByTime(9000);
+    await settle(12);
+    expect(calls.filter((u) => u.endsWith(on)).length).toBe(before + 1);
   });
 });

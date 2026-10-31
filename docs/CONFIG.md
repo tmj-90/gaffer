@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 134 |
-| Knobs editable in the dashboard | 56 |
+| Knobs with a runner default | 137 |
+| Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 76 |
+| Env reads in code with no default and no UI entry | 78 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -115,6 +115,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_PAUSE_ON_CAP` | `1` | yes (boolean) | dispatch, runner | When the spend ceiling is hit, pause in-flight work instead of hard-stopping. |
+| `GAFFER_USAGE_PAUSE_DEFAULT_MIN` | `60` | yes (int) | dispatch, runner | When the model refuses a call on its usage window or a rate limit, the ticket goes back to ready without counting an attempt and the factory pauses: no tick claims work, and gaffer run --daemon, the loop and a worker pool sleep until the pause ends. The pause lasts until the reset time the model reported, plus a minute; this setting is the wait when no reset time was reported. Default 60. Never less than 10 minutes (a lower value is raised to 10; a reported reset is also held to at least 10 minutes and at most 8 days). gaffer status and the Health view show the pause; it lifts on its own (or early: node runner/lib/usage-pause.mjs clear). |
 | `GAFFER_DASHBOARD_URL` | _derived_ (`http://127.0.0.1:${DISPATCH_API_PORT:-8787}`) |  | dispatch, runner |  |
 | `GAFFER_REAP_GRACE` | `30` |  | runner | FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group reaper. |
 
@@ -217,7 +218,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
-| `GAFFER_MERGE_LANE` | `1` |  | runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
+| `GAFFER_MERGE_LANE` | `1` |  | dispatch, runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
 | `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default bran |
 | `GAFFER_MERGE_GATE_RETRIES` | `2` |  | runner | MERGE GATE (lib/land.sh, bin/merge-ticket.mjs): every landing first builds the merge of the approved commit onto the CURRENT target in a scratch worktree and runs the repo's DoD gates on that merge (bin/dod-regate.sh: te |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria and raise blocking decisions (one paid agent call per draft, once per run). A draft with no linked repo on disk (a greenfield epic's tickets before the bootstrap links one) is skipped and logged, and the pass moves on to the next draft. |
@@ -279,6 +280,13 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta plan-change` |  | runner | skills mounted on every delivery (= select-skills ROLE_PROFILES.delivery.core) |
+
+### lib/usage-pause.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_USAGE_PAUSE_MJS` | _derived_ (`$_GAFFER_UP_LIB/usage-pause.mjs`) |  | runner |  |
+| `GAFFER_USAGE_WORKER_MJS` | _derived_ (`$_GAFFER_UP_LIB/worker.mjs`) |  | runner | The classifier (parse-result usage-limit). |
 
 ## Dashboard-only settings
 
@@ -376,6 +384,8 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_WORKTREE_ROOT` |  | `runner/lib/trust-workspace.mjs` |
+| `GAFFER_USAGE_PAUSE_FILE` | _(empty)_ | `packages/dispatch/src/health/usagePause.ts`, `runner/lib/usage-pause.mjs` |
+| `GAFFER_USAGE_PAUSE_POLL_SECS` | `60` | `runner/lib/usage-pause.sh` |
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |

@@ -166,6 +166,37 @@ structural barrier the whole design hangs on.
 - The diff you review is the **real `git diff`**, computed server-side from the
   delivery branch against the repo's default branch — not a summary the agent
   wrote about itself.
+- **The runner's facts come first.** Under the title, a **verdict strip** shows
+  what the runner recorded, not what the agent says: each Definition-of-Done
+  gate (passed, failed or skipped, with the command it ran) and the test count
+  the runner saw in the test gate's own output (vitest, jest, pytest, cargo,
+  `go test -v`, `node --test`); the independent tester's verdict and the commit
+  it tested (or "after you" when it runs after your approval); cost and turns so
+  far from the usage ledger; the attempt and who sent it back before; the risk
+  level with its reasons (recorded, then the diff's own risk flags); and the
+  reviewed-commit pin when one is recorded. The **acceptance-criteria table**
+  shows each criterion's check command and the runner's recorded exit code, or
+  **no machine evidence** on a yellow card when only the agent's word (or
+  nothing) backs it. When the agent's evidence for the current attempt claims a
+  count for the whole suite ("all 42 tests pass", "42/42", a pasted runner line,
+  or a bare "42 tests pass" outside a criterion's evidence) or "all tests pass",
+  and the runner's output contradicts it, a flag says so: "the summary says 42,
+  the runner saw 40". A count for part of the suite ("3 new tests", "30 unit
+  tests", one criterion's or one file's "3 tests pass", "1 of 2 passing") is not
+  compared, nor is a claim from an attempt that was sent back. Gate results, the test count and criterion exit codes
+  come only from rows the runner recorded as the system, and the tester's verdict
+  only from the row a tester pass or fail recorded; an agent-recorded row that
+  looks like a gate report or a tester verdict is ignored. On a reworked ticket
+  the strip shows only this round's facts: a tester verdict or a review pin
+  recorded before the ticket last entered review, and a criterion's check result
+  from before the latest send-back, are about earlier code and are left out (the
+  landing check ignores such a pin too). It is
+  one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
+  is what the test runner printed, and the tests run the delivered code, so treat
+  a match as consistency, not proof. The runner keeps those summary lines with
+  tabs turned into spaces and drops any that start with `GATE`, `---` or
+  `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
+  so a test that prints a gate-shaped line cannot add a gate to the strip.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.
@@ -368,6 +399,23 @@ hands the feature back to `backlog`; after two failed plans in a row it is left 
 for you. Off by default.
 Confirming a brownfield epic yourself (every ticket on one existing repo) moves that
 feature to `building` too.
+
+**Usage limits pause the factory, they do not fail tickets.** When the model
+refuses a delivery call because the plan's usage window ran out or a rate limit
+hit, the ticket goes back to Ready without counting an attempt (any work the agent
+had committed stays on its branch) and the factory pauses until the window resets:
+the reset time Claude Code printed plus a minute (a 5-hour, weekly or per-model
+limit alike, in both the older and the current CLI wording), or the **Usage-limit pause**
+setting (`GAFFER_USAGE_PAUSE_DEFAULT_MIN`, default 60 minutes, never below 10) when
+it printed none. No tick claims work meanwhile; `gaffer run --daemon`, the loop and
+a worker pool sleep instead of spinning. `gaffer status` and the **Health** view
+show "Paused until <time>: usage limit", and the ticket's timeline records the
+refusal. The pause lifts on its own. An overnight run that hits its window no longer
+parks good tickets. The same holds when the refused call was a new repo's
+scaffold, the independent tester or the agent reviewer: the factory pauses and the
+ticket waits where it was, rather than being parked or held for a person. A spend
+cap or an admin switch is not a pause: it needs someone to raise the cap, so those
+tickets are parked for a person as before.
 
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to

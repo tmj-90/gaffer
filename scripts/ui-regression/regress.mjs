@@ -10,7 +10,7 @@
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -531,6 +531,54 @@ try {
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
 
+  // ── 5. (review packet) the runner's verdict strip under the title ─────────
+  //   One dossier read (?include=packet) draws the gates with their commands, the
+  //   tester, cost and turns, the attempt, risk, and the criteria table: the
+  //   machine-checked AC shows the runner's exit code, not the agent's word.
+  {
+    const strip = await waitFor(
+      async () => ((await page.$(".rv-verdict .vd-cell.vd-gates")) ? true : null),
+      "the verdict strip",
+      15000,
+      500,
+    ).catch(() => null);
+    if (!strip) bad("Review: no verdict strip under the title");
+    else {
+      const gl = (await page.getAttribute(".vd-cell.vd-gates", "aria-label")) || "";
+      /^Gates: passed, \d+ of \d+ ran$/.test(gl)
+        ? ok(`Review packet: the gates cell reads the runner's DoD ("${gl}")`)
+        : bad(`Review packet: gates cell label '${gl}'`);
+      const gt = (await page.textContent(".vd-cell.vd-gates")) || "";
+      /npm test/.test(gt) && /The runner saw \d+ tests? pass \(node:test\)/.test(gt)
+        ? ok("Review packet: the tests gate names its command and the runner's own test count")
+        : bad(`Review packet: gates cell text '${gt.slice(0, 200)}'`);
+      const cells = await page.$$eval(".rv-verdict .vd-cell", (els) =>
+        els.map((e) => e.className.match(/vd-(gates|tester|cost|attempts|risk|pin)\b/)?.[1]),
+      );
+      ["gates", "tester", "cost", "attempts", "risk"].every((k) => cells.includes(k))
+        ? ok(`Review packet: the strip draws ${cells.filter(Boolean).join(", ")}`)
+        : bad(`Review packet: strip cells ${JSON.stringify(cells)}`);
+      const acRow = (await page.textContent(".rv-ac-table tr.ac-ev-runner").catch(() => "")) || "";
+      /Runner · exit 0/.test(acRow) && /npm test/.test(acRow)
+        ? ok(
+            "Review packet: the machine-checked criterion shows the runner's exit 0 and its command",
+          )
+        : bad(`Review packet: AC table runner row '${acRow.slice(0, 200)}'`);
+      // Both themes: the strip and the table under the dark kit, audited like the views.
+      await page.emulateMedia({ colorScheme: "dark" });
+      await sleep(300);
+      const bg = await page.$eval(".vd-cells", (e) => getComputedStyle(e).backgroundColor);
+      const light = /rgb\((2[3-5]\d), (2[3-5]\d), (2[3-5]\d)\)/.test(bg);
+      !light
+        ? ok(`Review packet: the strip follows the dark kit (${bg})`)
+        : bad(`Review packet: the strip stayed light under the dark kit (${bg})`);
+      await shot(page, "review-packet-dark");
+      if (AXE_SOURCE) await auditA11y(page, "review-packet-dark", "1400");
+      await page.emulateMedia({ colorScheme: "light" });
+      await sleep(200);
+    }
+  }
+
   // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
   //        reader back to the top of the diff they are reading. On a short
   //        viewport, scroll to the bottom of the queue, then make the factory emit
@@ -1026,6 +1074,64 @@ try {
     await shot(page, "floor");
   }
 
+  // ── 6z. usage-window pause on Health: the runner writes $GAFFER_DATA/usage-pause.json
+  //   when the model refuses a call on its usage window; Health says so first, in
+  //   both themes, at 320 and 1440, and passes the a11y audit. Removed afterwards so
+  //   the rest of the run is not paused (the dashboard only reads the file).
+  if (process.env.GAFFER_DATA) {
+    const pauseFile = path.join(process.env.GAFFER_DATA, "usage-pause.json");
+    const until = Date.now() + 3_600_000;
+    writeFileSync(
+      pauseFile,
+      JSON.stringify({
+        paused_until: new Date(until).toISOString(),
+        until_ms: until,
+        kind: "usage_limit",
+        basis: "reset",
+        message: "You've hit your session limit · resets 3pm (UTC)",
+        ticket: ticket.number ?? null,
+      }),
+    );
+    try {
+      for (const [w, h, theme] of [
+        [1440, 900, "light"],
+        [320, 640, "dark"],
+      ]) {
+        const c3 = await browser.newContext({ viewport: { width: w, height: h } });
+        const p3 = await c3.newPage();
+        await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
+        await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+        await sleep(900);
+        const got = await p3.evaluate(() => {
+          const n = document.querySelector(".usage-pause-note");
+          return {
+            text: n ? n.textContent.trim() : "",
+            label: n ? n.getAttribute("aria-label") : "",
+            overflow: document.documentElement.scrollWidth > window.innerWidth,
+          };
+        });
+        /^Paused until .+: usage limit\./.test(got.text) &&
+        /^The factory is paused until .+ because of a usage limit\.$/.test(got.label || "") &&
+        !got.overflow
+          ? ok(
+              `health@${w} ${theme}: "${got.text.slice(0, 48)}…" (sentence label, no sideways scroll)`,
+            )
+          : bad(
+              `health@${w} ${theme}: pause note '${got.text}' label '${got.label}' overflow=${got.overflow}`,
+            );
+        await shot(p3, `health-usage-pause-${w}-${theme}`);
+        if (AXE_SOURCE) await auditA11y(p3, "health (usage pause)", String(w));
+        await c3.close();
+      }
+    } finally {
+      try {
+        unlinkSync(pauseFile);
+      } catch {
+        /* already gone */
+      }
+    }
+  } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [
@@ -1094,7 +1200,7 @@ try {
       { w: 1280, h: 800, views },
       { w: 1440, h: 900, views },
       { w: 360, h: 780, views: ["overview", "work", "review", "floor"] },
-      { w: 320, h: 640, views: ["overview", "work", "floor"] },
+      { w: 320, h: 640, views: ["overview", "work", "review", "floor"] },
     ];
     for (const { w, h, views: vs, axe: runAxe } of sweep) {
       const c2 = await browser.newContext({ viewport: { width: w, height: h } });

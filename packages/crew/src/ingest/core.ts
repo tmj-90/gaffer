@@ -53,6 +53,8 @@ export interface NormalizedIssue {
   body: string | null;
   /** Stable, unique source URL — the dedup identity and `Source:` marker. */
   url: string;
+  /** The issue's labels at ingest time, shown on the draft (empty/absent = none). */
+  labels?: readonly string[];
 }
 
 export interface IngestResult {
@@ -74,7 +76,11 @@ export function ingestIssueAsDraft(
   const existing = dispatch.findTicketBySource(issue.url);
   if (existing) return { ticketId: existing.ticketId, deduped: true };
 
-  const description = `${issue.body ?? ""}\n\nSource: ${issue.url}`;
+  // The labels a teammate triaged the issue with (bug, enhancement, …) travel with the
+  // draft so whoever promotes it sees them; the Source marker stays the last line.
+  const labels = (issue.labels ?? []).filter(Boolean);
+  const labelLine = labels.length ? `\n\nLabels: ${labels.join(", ")}` : "";
+  const description = `${issue.body ?? ""}${labelLine}\n\nSource: ${issue.url}`;
   const created = dispatch.createDraftTicket({
     title: issue.title,
     description,

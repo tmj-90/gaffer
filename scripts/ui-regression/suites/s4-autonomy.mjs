@@ -8,9 +8,10 @@
 //   • the dial: choosing Autonomous shows the Go/No-Go with the containment check
 //     before anything is saved.
 // The agent-ships paths (DISPATCH_ALLOW_AGENT_APPROVE, MERGE_ON_AGENT_REVIEW, the
-// merge lane after an agent approval, graduated policies) and PR mode need a server
-// with an OS sandbox (or GAFFER_STRICT_REQUIRE=0 out of band) and a fake `gh`; they
-// are SKIPPED here with that reason rather than half-tested.
+// merge lane after an agent approval, graduated policies) need a server with an OS
+// sandbox (or GAFFER_STRICT_REQUIRE=0 out of band); they are SKIPPED here with that
+// reason rather than half-tested. PR mode with required CI is s4b-pr-mode, which runs
+// on its own server with a fake `gh` on PATH.
 export default async function s4(t, L) {
   const p = t.page;
   const deliver = async (title) => {
@@ -150,8 +151,5 @@ export default async function s4(t, L) {
 
   t.skip(
     "agent approval / MERGE_ON_AGENT_REVIEW / the merge lane after an agent approval / graduated policies: need a contained runner (OS sandbox or GAFFER_STRICT_REQUIRE=0 out of band) — scaffold for an own-server shard",
-  );
-  t.skip(
-    "PR mode (GAFFER_CREATE_PR + GAFFER_PR_MERGE_METHOD): needs its own server with a fake `gh` on PATH",
   );
 }

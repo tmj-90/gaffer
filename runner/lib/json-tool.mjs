@@ -736,7 +736,8 @@ switch (cmd) {
 
   // ── dod.sh ────────────────────────────────────────────────────────────────────
   // dod-evidence-summary <results-file> <PASS|FAIL>: the JSON line the dashboard parses,
-  // then the human transcript and the failing output blocks, verbatim.
+  // then the human transcript, the failing output blocks and the tests gate's summary
+  // (DOD-TALLY) blocks, verbatim.
   case "dod-evidence-summary": {
     const [results, overall] = args;
     let text;
@@ -749,7 +750,19 @@ switch (cmd) {
     const lines = [];
     const splitLines = text.split(/\r\n|\r|\n/);
     if (splitLines.length && splitLines[splitLines.length - 1] === "") splitLines.pop();
+    // GATE rows are the runner's own and live only OUTSIDE the framed output/tally
+    // blocks; a GATE-shaped line inside a frame is the delivered code's output.
+    let inFrame = false;
     for (const ln of splitLines) {
+      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-TALLY ")) {
+        inFrame = true;
+        continue;
+      }
+      if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-TALLY---")) {
+        inFrame = false;
+        continue;
+      }
+      if (inFrame) continue;
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
         const [, gate, repo, status, rc, note] = parts;
@@ -760,10 +773,11 @@ switch (cmd) {
     const tail = [];
     let keep = false;
     for (const ln of splitLines) {
-      if (ln.startsWith("---DOD-OUTPUT ")) {
+      // The failing output blocks and (REVIEW PACKET) the tests gate's summary lines.
+      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-TALLY ")) {
         keep = true;
         tail.push(ln);
-      } else if (ln.startsWith("---END-DOD-OUTPUT---")) {
+      } else if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-TALLY---")) {
         tail.push(ln);
         keep = false;
       } else if (keep) tail.push(ln);

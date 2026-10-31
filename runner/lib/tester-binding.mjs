@@ -11,7 +11,9 @@
 // "whatever the branch points at by the time the merge runs"; a PR merge passes it as
 // `gh pr merge --match-head-commit`).
 //
-// Decision (`landingDecision`), read from the dispatch DB, never from agent text:
+// Decision (`landingDecision`), read from the dispatch DB, never from agent text. A
+// "tester PASS" is only the row a `ticket.tester_passed` event names (the tester pass
+// path); a verdict-shaped row the delivery agent recorded itself is not one.
 //   no tester PASS recorded   → an ordinary ticket lands (no tester involved);
 //                               an ACCEPTANCE ticket is HELD (nothing certifies it)
 //   a HUMAN PASS (waiver)     → lands, pinned to the branch head, logged as a waiver
@@ -148,17 +150,30 @@ export function readTesterEvidence(dbPath, ticketNumber, repoId = null) {
       t = db.prepare("SELECT id FROM tickets WHERE number = ?").get(num); // pre-v26 schema
     }
     if (!t || !t.id) return { error: `ticket #${num} not found` };
+    // TESTER VERDICT: only the row the tester pass path recorded counts, i.e. a row a
+    // `ticket.tester_passed` event on this ticket names (dispatch's testerPass writes the
+    // row and the event in one transaction; nothing else writes that event). A
+    // verdict-shaped row anyone else recorded is not a tester PASS: the delivery agent's
+    // record_ac_evidence accepts any payload, so {verdict:"pass", provenance:"human"} from
+    // it must not land as a waiver. The same rule as the Review view's packet
+    // (packages/dispatch/src/services/reviewPacketService.ts readTester).
     let pass = null;
     try {
       const row = db
         .prepare(
-          "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' " +
-            'AND payload_json LIKE \'%"verdict":"pass"%\' ORDER BY created_at DESC, rowid DESC LIMIT 1',
+          "SELECT e.payload_json FROM evidence e WHERE e.ticket_id = ? AND e.evidence_type = 'test_output' " +
+            'AND e.payload_json LIKE \'%"verdict":"pass"%\' ' +
+            "AND EXISTS (SELECT 1 FROM work_events w WHERE w.entity_type = 'ticket' " +
+            "AND w.entity_id = e.ticket_id AND w.event_type = 'ticket.tester_passed' " +
+            "AND json_extract(w.payload_json, '$.evidence_id') = e.id) " +
+            "ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1",
         )
         .get(t.id);
       if (row && typeof row.payload_json === "string") pass = JSON.parse(row.payload_json);
     } catch {
-      pass = null; // no evidence table (minimal fixture) = no tester verdict
+      // No evidence or event table (a minimal fixture): no tester verdict on record. That
+      // fails closed: an acceptance ticket holds, an ordinary one is a head landing.
+      pass = null;
     }
     const reviewed = readReviewPin(db, t.id, repoId);
     return {

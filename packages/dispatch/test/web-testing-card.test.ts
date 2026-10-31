@@ -156,7 +156,8 @@ describe("BBT-001 web: the Independent testing card", () => {
     ]);
     await bootDetail();
 
-    const text = document.body.textContent ?? "";
+    // Scoped to the testing card: the page's Evidence card lists every row on purpose.
+    const text = document.querySelector(".tk-testing")?.textContent ?? "";
     // The real tester verdict still renders…
     expect(text).toContain("12 black-box tests pass against the contract");
     expect(text).toContain("by agent");

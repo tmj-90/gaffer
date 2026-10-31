@@ -346,6 +346,12 @@ try {
     "#one-ticket textarea",
     "Users need to drop completed tasks. Add clearDone(list) with a unit test.",
   );
+  // Create waits for a write repo: held (aria-disabled) and saying so before one is on.
+  const createSel = '#one-ticket button:has-text("Create ticket")';
+  (await page.getAttribute(createSel, "aria-disabled")) === "true" &&
+  /Attach a write repo first/.test((await page.textContent("#one-ticket")) || "")
+    ? ok("Create view: Create is held, and says so, until a write repo is attached")
+    : bad("Create view: Create looks pressable with no write repo attached");
   // "Repos & scope": pick the repo in the "Add a repo…" select (access stays `write`) and press Add.
   const attached = await page.evaluate(() => {
     const sel = [...document.querySelectorAll("select")].find((s) =>
@@ -365,7 +371,10 @@ try {
       ? ok("Create view: attached taskflow-mini (write) via the repo select + Add")
       : bad("Create view: Add did not attach the repo");
   } else note("Create view: 'Add a repo…' select does not list taskflow-mini");
-  await page.click('#one-ticket button:has-text("Create ticket")');
+  (await page.getAttribute(createSel, "aria-disabled")) === "false"
+    ? ok("Create view: attaching the write repo released Create")
+    : bad("Create view: Create is still held after attaching a write repo");
+  await page.click(createSel);
   const ticket = await waitFor(
     async () => {
       const r = await api("GET", "/tickets");

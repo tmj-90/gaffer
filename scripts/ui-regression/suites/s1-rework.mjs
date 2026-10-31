@@ -75,6 +75,16 @@ export default async function s1(t, L) {
     "the failure history quotes the failing test's name and its assertion as the runner captured them",
     `the failure history does not quote stubFailFirst${tk.number}: '${histTxt.slice(0, 200)}'`,
   );
+  // The captured stack names the repo's files, not the runner's worktree dir.
+  const histShown = await p
+    .locator(".failure-history")
+    .innerText()
+    .catch(() => "");
+  t.check(
+    !/\/worktrees\//.test(histShown),
+    "the failure history shows paths relative to the repo root (no worktree prefix)",
+    `the failure history still carries a worktree path: '${(histShown.match(/\S*\/worktrees\/\S*/) || [""])[0]}'`,
+  );
   const trail = (await L.api("GET", `/tickets/${tk.id}/rework-trail`)).json;
   const rows = trail.trail || trail.attempts || trail.rework_trail || [];
   t.check(
@@ -188,6 +198,29 @@ export default async function s1(t, L) {
     ev.length >= 1,
     "the reviewer agent's CHANGES reasoning is recorded on the ticket as evidence (through its MCP record_ac_evidence)",
     "no reviewer evidence mentions the docstring",
+  );
+  // The Work card says the reviewer agent asked for changes (advisory), before the
+  // human opens the diff; the ticket page keeps the reviewer's rows in its Evidence.
+  await t.visit("work");
+  const advLine =
+    (await p
+      .textContent(`.board-card[data-id="${tk.id}"] .card-advisory`, { timeout: 8000 })
+      .catch(() => "")) || "";
+  t.check(
+    /Reviewer agent: changes requested — .*docstring/.test(advLine),
+    `the Work card shows the advisory verdict ("${advLine.slice(0, 90)}")`,
+    `the in_review card shows no advisory verdict: '${advLine}'`,
+  );
+  await t.visit(`ticket/${tk.id}`);
+  await p
+    .locator("details.tk-evidence > summary")
+    .click()
+    .catch(() => {});
+  const evTxt = (await p.textContent("details.tk-evidence").catch(() => "")) || "";
+  t.check(
+    /docstring/.test(evTxt) && /Reported by agents|Recorded by the runner/.test(evTxt),
+    "the ticket page's Evidence card lists the reviewer's rows by who recorded them",
+    `the ticket page's Evidence card reads '${evTxt.slice(0, 160)}'`,
   );
   t.skip(
     "where Review shows the reviewer agent's advisory verdict (its evidence rows) is HELD until the review-packet change lands",

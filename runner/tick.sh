@@ -1729,7 +1729,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # lists, the review-feedback framing and the quarantine envelope around
   # the (untrusted) reasons are all rendered by crew's deliveryPrompt.ts, which
   # reads _RF through _gaffer_prompt_inputs_json (factory.config.sh).
-  _RF="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json review-feedback 2>/dev/null || true)"
+  # The human's answers to decisions on this ticket ride in the same way (_RD, a
+  # JSON array the renderer quotes inside an untrusted envelope), so an agent that
+  # skips get_ticket's resolved_decisions does not ask the same question again.
+  _TSHOW="$(wg ticket show "$NUM" 2>/dev/null || true)"
+  _RF="$(printf '%s' "$_TSHOW" | gaffer_json review-feedback 2>/dev/null || true)"
+  _RD="$(printf '%s' "$_TSHOW" | gaffer_json resolved-decisions 2>/dev/null || true)"
 
   # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the

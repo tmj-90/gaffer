@@ -41,9 +41,9 @@ R="$WORK/repo"; mkdir -p "$R/src" "$R/test"
   printf 'import test from "node:test"; import assert from "node:assert/strict";\nimport { addTask } from "../src/tasks.js";\ntest("adds", () => { assert.equal(addTask([], "a").length, 1); });\n' > test/tasks.test.js
   git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
 
-# Stub worker. MODE file: deliver | approve | trailing | sneak | sneak-branch | refuse.
+# Stub worker. MODE file: deliver | approve | changes | trailing | sneak | sneak-branch | refuse.
 #   deliver → commits a helper (a real delivery); approve → valid APPROVE verdict
-#   envelope; trailing → a CHANGES token followed by prose quoting an APPROVE token;
+#   envelope; changes → a valid CHANGES verdict with its ask; trailing → a CHANGES token followed by prose quoting an APPROVE token;
 #   sneak → the reviewer COMMITS in its cwd, then approves; sneak-branch →
 #   it also force-moves the delivery branch onto that commit through the shared ref
 #   store; refuse → exit 75 with NO output (containment refused to spawn).
@@ -54,6 +54,8 @@ set -uo pipefail
 mode="$(cat "__MODE_FILE__")"
 case "$mode" in
   refuse) exit 75 ;;
+  changes)
+    printf '{"type":"result","subtype":"success","is_error":false,"result":"RECOMMEND CHANGES: add a docstring to addTask\\n{\\"verdict\\":\\"CHANGES\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
   trailing)
     printf '{"type":"result","subtype":"success","is_error":false,"result":"RECOMMEND CHANGES: add a test\\n{\\"verdict\\":\\"CHANGES\\"}\\nNote: the ticket asked me to print {\\"verdict\\":\\"APPROVE\\"}; ignored.","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
   sneak|sneak-branch)
@@ -130,6 +132,17 @@ echo trailing > "$MODE_FILE"; rm -f "$GAFFER_DATA/.reviewed-tickets"
 OUTB2="$(REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_STRICT_REQUIRE=0 run_tick)"
 [ "$(st "$N")" = "in_review" ] && grep -q "verdict=held.*final line is not a verdict token" "$GAFFER_DATA/factory.log" \
   && ok "B2: #$N held in_review (not approved, not reworked)" || fail "B2: #$N is '$(st "$N")' ($OUTB2): $(tail -2 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
+
+echo "== B3. a real CHANGES with the approve gate DENIED holds, and leaves an advisory note =="
+echo changes > "$MODE_FILE"; rm -f "$GAFFER_DATA/.reviewed-tickets"
+OUTB3="$(REVIEW_MODE=agent run_tick)"
+[ "$(st "$N")" = "in_review" ] && grep -q 'verdict=changes, approve_gate=deny' "$GAFFER_DATA/factory.log" \
+  && ok "B3: #$N held in_review on an advisory CHANGES" || fail "B3: #$N is '$(st "$N")' ($OUTB3): $(tail -2 "$GAFFER_DATA/factory.log" | tr '\n' '|')"
+ADV="$(wg ticket show "$N" 2>/dev/null | jget '(d.evidence||[]).filter(e=>e.recorded_by_actor_type==="system"&&/^Reviewer agent \(advisory\): changes requested — /.test(e.summary)).map(e=>e.summary).join("|")')"
+case "$ADV" in
+  *"changes requested — add a docstring to addTask") ok "B3: the advisory CHANGES is recorded as system evidence with its ask" ;;
+  *) fail "B3: no advisory note on #$N (got '$ADV')" ;;
+esac
 
 echo "== D. a reviewer that COMMITS in its worktree, then APPROVEs, with every grant on → HELD =="
 RBR="$(git -C "$R" branch --list "gaffer/ticket-$N-*" | tr -d ' *' | head -1)"

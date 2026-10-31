@@ -99,6 +99,14 @@ export interface BoardCard {
    */
   lastReviewFeedback: ReviewFeedback | null;
   /**
+   * An in_review ticket's ADVISORY reviewer-agent verdict: the reviewer agent asked
+   * for changes but the runner may not act on it here (supervised), so the ticket
+   * waits for a human. Read from the runner's SYSTEM evidence note (prefix
+   * {@link ADVISORY_REVIEW_PREFIX}) recorded since the ticket last entered review, so
+   * the card says so before the human opens the diff. `null` otherwise.
+   */
+  advisoryReview: { verdict: "changes"; reason: string; at: string } | null;
+  /**
    * The confirmed write-boundary repos this ticket delivers to (id + name), so a
    * card can cross-link straight to a repo's detail page. Empty until a boundary
    * is confirmed; usually one entry (multi-repo tickets carry several).
@@ -308,6 +316,12 @@ export interface BoardServiceDeps {
   readonly agentDisplays?: () => Map<string, AgentDisplay>;
 }
 
+/**
+ * The runner's advisory-verdict note (runner/lib/review.sh, hold branch). Only a
+ * SYSTEM-recorded row with this prefix counts: an agent's own evidence never does.
+ */
+export const ADVISORY_REVIEW_PREFIX = "Reviewer agent (advisory): changes requested — ";
+
 export class BoardService {
   private readonly db: Db;
   private readonly clock: Clock;
@@ -431,7 +445,28 @@ export class BoardService {
       claim: claimCard,
       humanOwner: ticket.human_owner,
       lastReviewFeedback: parseReviewFeedback(ticket.last_review_feedback),
+      advisoryReview: ticket.status === "in_review" ? this.advisoryReview(ticket.id) : null,
       repos,
+    };
+  }
+
+  /** The latest advisory CHANGES note since the ticket last entered review, if any. */
+  private advisoryReview(ticketId: string): BoardCard["advisoryReview"] {
+    const row = this.db
+      .prepare(
+        `SELECT summary, created_at FROM evidence
+          WHERE ticket_id = ? AND recorded_by_actor_type = 'system' AND substr(summary, 1, ?) = ?
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(ticketId, ADVISORY_REVIEW_PREFIX.length, ADVISORY_REVIEW_PREFIX) as
+      { summary: string; created_at: string } | undefined;
+    if (!row) return null;
+    const entered = this.events.enteredStatusAt(ticketId, "in_review");
+    if (entered && row.created_at < entered.at) return null; // a verdict on an earlier delivery
+    return {
+      verdict: "changes",
+      reason: row.summary.slice(ADVISORY_REVIEW_PREFIX.length).trim(),
+      at: row.created_at,
     };
   }
 

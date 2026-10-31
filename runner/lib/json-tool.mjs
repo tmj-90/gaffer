@@ -394,6 +394,10 @@ switch (cmd) {
       });
     }
     const readRoots = (e.GF_READ_ROOTS ?? "").split("\n").filter((l) => l !== "");
+    // The human's decision answers ($_RD, from resolved-decisions); fail-soft to [].
+    let resolvedDecisions = [];
+    const rd = tryParse(e.GF_RD || "[]");
+    if (rd.ok && Array.isArray(rd.value)) resolvedDecisions = rd.value.filter(isObj);
     println(
       JSON.stringify({
         kind: "delivery",
@@ -403,6 +407,7 @@ switch (cmd) {
         skills: e.GF_SKILLS ?? "",
         lenses: e.GF_LENSES ?? "",
         reviewFeedbackReasons: reasons,
+        resolvedDecisions,
         fileCardsBlock: e.GF_FCB ?? "",
         productContextBlock: e.GF_PCB ?? "",
         workBranch: e.GF_WORK_BRANCH ?? "",
@@ -606,6 +611,27 @@ switch (cmd) {
     const seen = new Set();
     const uniq = outList.filter((x) => (seen.has(x) ? false : (seen.add(x), true)));
     for (const r of uniq.slice(-5)) println(`  - ${r}`);
+    break;
+  }
+  // resolved-decisions: stdin = ticket show → one JSON line, the human's answers to
+  // decisions linked to this ticket (resolvedDecisions), oldest first, last five:
+  // [{title, question, status, answer}]. The delivery prompt quotes them (inside an
+  // untrusted envelope) so an agent that skips get_ticket does not re-ask. Fail-soft:
+  // bad input or no answers → "[]".
+  case "resolved-decisions": {
+    const p = tryParse(readStdin());
+    const d = p.ok && isObj(p.value) ? p.value : {};
+    const rows = (Array.isArray(d.resolvedDecisions) ? d.resolvedDecisions : [])
+      .filter((x) => isObj(x) && (x.status === "accepted" || x.status === "rejected"))
+      .sort((a, b) => String(a.resolved_at || "").localeCompare(String(b.resolved_at || "")))
+      .slice(-5)
+      .map((x) => ({
+        title: String(x.title || ""),
+        question: String(x.question || ""),
+        status: x.status,
+        answer: String(x.resolved_answer || ""),
+      }));
+    println(JSON.stringify(rows));
     break;
   }
   // worktree-rows-json: stdin = TAB rows (id name path base wt) → JSON array of the

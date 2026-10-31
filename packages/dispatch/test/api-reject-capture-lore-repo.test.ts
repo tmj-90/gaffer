@@ -72,7 +72,7 @@ describe("POST /tickets/:id/review/reject with captureLore", () => {
         captureLore: true,
       });
       expect(res.status).toBe(200);
-      expect(res.body.lore_capture).toMatchObject({ captured: true });
+      expect(res.body.lore_capture).toMatchObject({ captured: true, repo: "svc" });
       expect(captured).toHaveLength(1);
       expect(captured[0]!.repo).toBe("svc");
     } finally {

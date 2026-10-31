@@ -2,8 +2,9 @@
 // S13 principals. Settings → Access mints a full (write) credential and a read-only
 // one, each token shown once. The full principal signs in through ?token= and files
 // a ticket from the Create view, recorded as itself. The read principal signs in, is
-// told who it is, sees the squad and the crest with no editors, and a mutation it
-// attempts is refused with a readable message.
+// told who it is, sees the squad and the crest with no editors, sees one read-only
+// strip with Poll for work and Settings' editors switched off, and a write it sends
+// anyway is refused by the server.
 export default async function s13(t, L) {
   const p = t.page;
   const minted = [];
@@ -117,16 +118,33 @@ export default async function s13(t, L) {
     );
     await rp.goto(`${L.BASE}/#/work`, { waitUntil: "load" });
     const poll = rp.locator('button:has-text("Poll for work")').first();
-    if (await poll.count()) {
-      await L.clearToast(rp);
-      await poll.click();
-      const toast = (await L.waitToast(rp, /./, 8000)) || "";
-      t.check(
-        /read|permission|not allowed|forbidden|403/i.test(toast),
-        `a mutation offered to the read token is refused with a readable message ("${toast.slice(0, 90)}")`,
-        `Poll with a read token toasted '${toast}'`,
-      );
-    } else t.ok("the Work view offers the read token no Poll for work button");
+    await poll.waitFor({ timeout: 10000 }).catch(() => {});
+    const strip = (await rp.textContent("#ro-strip").catch(() => "")) || "";
+    const pollOff =
+      (await poll.count()) > 0 &&
+      (await poll.isDisabled()) &&
+      /Read-only access/.test((await poll.getAttribute("title")) || "");
+    t.check(
+      pollOff && /Read-only access/.test(strip),
+      "the read token sees one read-only strip and Poll for work switched off, with a title saying why",
+      `read token on Work: strip='${strip.slice(0, 80)}' poll disabled=${await poll.isDisabled().catch(() => "?")}`,
+    );
+    await rp.goto(`${L.BASE}/#/settings`, { waitUntil: "load" });
+    const save = rp.locator('button:has-text("Save changes")').first();
+    await save.waitFor({ timeout: 10000 }).catch(() => {});
+    const editors = await rp.locator(".boot-main .setting-row input:enabled").count();
+    t.check(
+      (await save.isDisabled().catch(() => false)) && editors === 0,
+      "Settings with a read token: Save changes and every editor are switched off",
+      `read token on Settings: ${editors} live editor(s), Save disabled=${await save.isDisabled().catch(() => "?")}`,
+    );
+    // The server still refuses a write the page no longer offers.
+    const refused = await L.api("POST", "/poll-work", {}, rtok);
+    t.check(
+      refused.status === 403,
+      "a write sent with the read token anyway is refused by the server (403)",
+      `POST /poll-work with the read token answered ${refused.status}`,
+    );
     await rp.context().close();
   }
   t.skip(

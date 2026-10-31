@@ -515,6 +515,28 @@ try {
           `checked AC not runner-verified: status=${checked.status} verified_by=${checked.verified_by}`,
         );
   }
+  // Provenance: the runner recorded which model and which CLI ran the attempt, and the
+  // ticket page's attempt history shows it.
+  const runEv = (view.evidence || []).find((e) => {
+    try {
+      return e.evidence_type === "log" && JSON.parse(e.payload_json || "{}").kind === "agent_run";
+    } catch {
+      return false;
+    }
+  });
+  runEv
+    ? ok(`agent-run evidence recorded: ${runEv.summary}`)
+    : bad("no agent-run evidence (model + CLI version) recorded for the delivery");
+  await page.goto(`${BASE}/#/ticket/${ticket.id}`, { waitUntil: "load" });
+  const runLine = await page
+    .waitForSelector(".attempt-run", { timeout: 15000 })
+    .then((h) => h.textContent())
+    .catch(() => null);
+  runLine && /^Model .+ · CLI .+/.test(runLine)
+    ? ok(`ticket page: attempt history shows "${runLine}"`)
+    : bad("ticket page: no model/CLI line in the attempt history");
+  await shot(page, "ticket-attempt-provenance");
+  await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
   // SSE: the Work board should have refreshed itself (no manual reload) — the card moved to Review.
   await sleep(2500);
   const boardText = await page.textContent("#app");

@@ -44,7 +44,16 @@ export interface DeliveryEvidenceInput {
   evidenceType: EvidenceType;
   summary: string;
   uri?: string | undefined;
+  /**
+   * Optional structured detail, a JSON OBJECT as text (e.g. the runner's per-attempt
+   * agent-run record: attempt, model, CLI version). At most 4 KB; anything that is not
+   * a JSON object is refused.
+   */
+  payloadJson?: string | undefined;
 }
+
+/** Cap on a system evidence payload: structured detail, not a log dump. */
+export const DELIVERY_EVIDENCE_PAYLOAD_MAX = 4096;
 
 /** Result of recording a delivery artifact. */
 export interface DeliveryArtifactResult {
@@ -698,6 +707,28 @@ export class TicketService {
     if (input.summary.trim().length === 0) {
       throw new DispatchError("VALIDATION_ERROR", "Delivery evidence summary is required.");
     }
+    let payloadJson: string | null = null;
+    if (input.payloadJson !== undefined && input.payloadJson.trim() !== "") {
+      if (input.payloadJson.length > DELIVERY_EVIDENCE_PAYLOAD_MAX) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `Delivery evidence payload is over ${DELIVERY_EVIDENCE_PAYLOAD_MAX} characters.`,
+        );
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(input.payloadJson);
+      } catch {
+        parsed = null;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "Delivery evidence payload must be a JSON object.",
+        );
+      }
+      payloadJson = JSON.stringify(parsed);
+    }
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(ref);
@@ -711,7 +742,7 @@ export class TicketService {
         evidence_type: input.evidenceType,
         summary: input.summary,
         uri: input.uri ?? null,
-        payload_json: null,
+        payload_json: payloadJson,
         created_by: actor.id ?? actor.type,
         recorded_by_actor_type: actor.type,
         created_at: now,

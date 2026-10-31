@@ -195,6 +195,11 @@ structural barrier the whole design hangs on.
   "Event log" card re-derive the chain. Each event also carries the **runner
   tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
   whole trail — the runner's calls and the agent's MCP writes — reads as one.
+- **Every attempt names its model and its CLI.** The runner records, per delivery
+  attempt, the model that served the call (and the one it asked for) and the
+  Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,
+  `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
+  ticket page's **Attempts** history shows "Model … · CLI …" on each attempt.
 
 ![The Gaffer's Sign-off](img/review.png)
 

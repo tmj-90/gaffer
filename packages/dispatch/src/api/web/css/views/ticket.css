@@ -591,6 +591,28 @@
     font-weight: 700;
     font-size: var(--t14);
   }
+  /* Which model and CLI ran the attempt (agent-run evidence). */
+  .attempt-run {
+    margin: 0;
+    font-size: var(--t12);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  .agent-run-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .agent-run {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 4px 10px;
+    padding: 6px 0;
+    border-bottom: var(--hair);
+  }
   .failure-kick-none {
     display: grid;
     gap: 6px;

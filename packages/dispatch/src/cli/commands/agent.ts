@@ -315,11 +315,17 @@ export function registerAgentSystem(program: Command): void {
     .requiredOption("--type <type>", "evidence type (e.g. diff_summary, pull_request)")
     .requiredOption("--summary <text>", "evidence summary")
     .option("--uri <uri>", "evidence uri")
+    .option("--payload-json <json>", "structured detail: a JSON object (at most 4 KB)")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const res = wg.attachDeliveryEvidence(
         ref,
-        { evidenceType: opts.type, summary: opts.summary, uri: opts.uri },
+        {
+          evidenceType: opts.type,
+          summary: opts.summary,
+          uri: opts.uri,
+          payloadJson: opts.payloadJson,
+        },
         { type: "system" },
       );
       printJson({ ok: true, ...res });

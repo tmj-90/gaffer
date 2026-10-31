@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 134 |
+| Knobs with a runner default | 135 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
@@ -284,6 +284,12 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta plan-change` |  | runner | skills mounted on every delivery (= select-skills ROLE_PROFILES.delivery.core) |
+
+### lib/worker.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_CLAUDE_VERSION` | _(empty)_ |  | runner | pin the Claude Code CLI version recorded per call (e.g. a docker image's CLI); empty = read it from the binary |
 
 ## Dashboard-only settings
 

@@ -2590,6 +2590,9 @@ $_trail_q
   # ledger removes $USAGE_JSON on either the pause or normal path.
   gaffer_record_skill_usage "$NUM" delivery "$STACK" "$SKILLS, $LENSES" "$USAGE_JSON" \
     "delivery-$NUM" "$PRIMARY_REPO" "$_SKILL_SINCE"
+  # PROVENANCE: which model served this attempt and which CLI ran it, as the ticket's
+  # agent-run evidence (the ticket page's attempt history reads it). Fail-soft.
+  gaffer_record_agent_run "$NUM" "$USAGE_JSON" "$rc" "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
   # RESUME REPORT: the resume prompt tells the agent to END its message with the AC ->
   # test lines and the smallest-change note (written for the tokenless resume, whose
   # record_ac_evidence calls are refused; a leased resume's evidence writes now land
@@ -2655,7 +2658,7 @@ $_trail_q
     _PAUSE_REASON="cap_hit"
     [ "$_TIMEOUT_HIT" = "1" ] && _PAUSE_REASON="timeout"
     [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
-    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$USAGE_JSON"
     # Serialise the full worktree map (one entry per write repo) so a multi-repo
     # delivery resumes EVERY worktree, not just the primary. WT_ROWS is the runner's
@@ -2688,7 +2691,7 @@ $_trail_q
   # Capture the attempt's REAL spend before the envelope is removed — the eval
   # judge attaches it to the quality record at submit time (cost-per-pass metric).
   _DELIVERY_SPEND_USD="$(gaffer_delivery_spend "$USAGE_JSON" 2>/dev/null || true)"
-  gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+  gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
   rm -f "$USAGE_JSON"
   log "delivery tick for #$NUM finished (rc=$rc)"
 

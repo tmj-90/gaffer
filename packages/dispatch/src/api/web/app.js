@@ -9728,11 +9728,41 @@ function failingTestCard(trail) {
 }
 
 /**
+ * The runner's per-attempt AGENT-RUN evidence (tick.sh gaffer_record_agent_run): which
+ * model served each delivery attempt and which Claude Code CLI ran it. Oldest first.
+ */
+function agentRuns(evidence) {
+  const runs = [];
+  for (const e of evidence || []) {
+    if (e.evidence_type !== "log" || !e.payload_json) continue;
+    const p = parseJsonSafe(e.payload_json);
+    if (!p || p.kind !== "agent_run") continue;
+    runs.push({ ...p, created_at: e.created_at });
+  }
+  return runs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+/** The run behind a failed attempt: same number, recorded at or before the failure. */
+function runForAttempt(runs, a) {
+  const same = runs.filter((r) => r.attempt === a.attempt);
+  const before = same.filter((r) => !a.created_at || String(r.created_at) <= String(a.created_at));
+  return (before.length ? before : same).pop() || null;
+}
+/** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */
+function runLine(r) {
+  const served = Array.isArray(r.models_served) && r.models_served.length ? r.models_served : null;
+  const model = served ? served.join(", ") : r.model_requested || "default";
+  return `Model ${model} · CLI ${r.claude_version || "unknown"}`;
+}
+
+/**
  * Attempts as a penalty shootout: one goal per attempt, the ball marked where the
  * delivery went wide, then the captured failure for each (collapsed: identical
- * failures are shown once above as the scoreline).
+ * failures are shown once above as the scoreline). Each attempt names the model and
+ * the CLI version that ran it, from the agent-run evidence. A ticket with runs but no
+ * failure gets the plain list of its attempts instead.
  */
-function renderFailureHistory(trail) {
+function renderFailureHistory(trail, runs = []) {
+  if ((!Array.isArray(trail) || trail.length === 0) && runs.length) return renderAgentRuns(runs);
   if (!Array.isArray(trail) || trail.length === 0) return null;
   const max = trail[trail.length - 1].max_attempts;
   const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
@@ -9793,6 +9823,10 @@ function renderFailureHistory(trail) {
             a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
             el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
           ]),
+          (() => {
+            const r = runForAttempt(runs, a);
+            return r ? el("p", { class: "attempt-run mono" }, runLine(r)) : null;
+          })(),
           el("details", { class: "failure-more" }, [
             el("summary", {}, "What it said"),
             // Untrusted captured tool output: a text node in a focusable, named <pre>.
@@ -9817,6 +9851,39 @@ function renderFailureHistory(trail) {
             el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
             el("span", { class: "failure-attempt-time" }, "not taken"),
           ]),
+        ]),
+      ),
+    ),
+  ]);
+}
+
+/** Attempts with no failure on record: each run, its model and its CLI version. */
+function renderAgentRuns(runs) {
+  return el("section", { class: "card failure-history agent-runs" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Attempts",
+        el("span", { class: "panel-aux" }, runs.length === 1 ? "1 run" : `${runs.length} runs`),
+      ]),
+    ]),
+    el(
+      "p",
+      { class: "dim failure-history-sub" },
+      "Which model and which Claude Code CLI ran each attempt, oldest first.",
+    ),
+    el(
+      "ol",
+      { class: "agent-run-list" },
+      runs.map((r) =>
+        el("li", { class: "agent-run" }, [
+          el(
+            "span",
+            { class: "failure-attempt-num" },
+            r.attempt ? `Attempt ${r.attempt}${r.max_attempts ? `/${r.max_attempts}` : ""}` : "Run",
+          ),
+          el("span", { class: "attempt-run mono" }, runLine(r)),
+          r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+          el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
         ]),
       ),
     ),
@@ -10523,7 +10590,7 @@ async function renderTicket(id) {
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
-  const failureHistory = renderFailureHistory(trail);
+  const failureHistory = renderFailureHistory(trail, agentRuns(view.evidence));
   const failingTest =
     OFF_PITCH.has(t.status) || t.status === "refining" ? failingTestCard(trail) : null;
   const epicCard = el("div", { class: "tk-epic-slot" });

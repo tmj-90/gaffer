@@ -161,7 +161,13 @@ GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflic
 An optional, size-gated, round-capped two-model **planning debate**
 (`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
-from real measurements, never invented**.
+from real measurements, never invented**. Every ledger row made through the worker
+seam also names its call: `attempt` (delivery), `model_requested` (`default` = the
+CLI's own) beside the measured `models` map, and `claude_version`
+(`lib/claude-version.mjs`: read from a native or npm install without running it,
+else `claude --version`; `GAFFER_CLAUDE_VERSION` pins it). Each delivery attempt
+also gets agent-run evidence on its ticket (`gaffer_record_agent_run`), which the
+ticket page's attempt history shows.
 
 ## Configuration (env always wins)
 

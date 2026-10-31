@@ -1588,6 +1588,54 @@ function mountView(content) {
 }
 
 /**
+ * An inline form the operator has open survives a re-render. A control that opens
+ * a form in place (a lore draft's Reject → reason + confirm) marks its container
+ * `data-keep-key` (a key stable across renders: the record's id) and, while the form
+ * is open, `data-keep-open`. This moves each open container of the outgoing tree
+ * into the incoming one, in place of its fresh twin with the same key, so a refresh
+ * that changed OTHER rows (or the lore filter's own re-fetch landing late) leaves
+ * the half-typed reason, and the handlers bound to it, where they were. A form whose
+ * record is gone from the new data has no twin and goes with the old tree. Answers
+ * a restore() to call once the incoming tree is in the document: it puts the focus
+ * (and the text selection) back when it was inside a carried form, and answers
+ * whether it did.
+ */
+function carryOpenForms(from, to) {
+  let refocus = null;
+  if (from && to && from.querySelectorAll) {
+    const active = document.activeElement;
+    for (const open of from.querySelectorAll("[data-keep-key][data-keep-open]")) {
+      const key = open.dataset.keepKey;
+      const twin = [...to.querySelectorAll("[data-keep-key]")].find(
+        (n) => n.dataset.keepKey === key,
+      );
+      if (!twin) continue;
+      if (active && open.contains(active))
+        refocus = {
+          node: active,
+          sel:
+            typeof active.selectionStart === "number"
+              ? [active.selectionStart, active.selectionEnd]
+              : null,
+        };
+      twin.replaceWith(open);
+    }
+  }
+  return () => {
+    if (!refocus || !refocus.node.isConnected) return false;
+    refocus.node.focus({ preventScroll: true });
+    if (refocus.sel) {
+      try {
+        refocus.node.setSelectionRange(refocus.sel[0], refocus.sel[1]);
+      } catch {
+        /* not a text control */
+      }
+    }
+    return true;
+  };
+}
+
+/**
  * Views that draw their own failure page (one specific message + Try again). The
  * router uses it only for a navigation; a failed background refresh keeps the
  * view on screen, and a later refresh that succeeds replaces the failure page.
@@ -2486,8 +2534,10 @@ function refreshCurrentView() {
       // Hold the old height across the swap: async parts of the new view (diffs)
       // mount as short placeholders, and a shorter page would clamp scroll to 0.
       app.style.minHeight = `${app.offsetHeight}px`;
+      const restoreForms = carryOpenForms(current, content);
       mountView(content);
       se.scrollTop = y;
+      restoreForms();
       flipDigits(content, prevDigits);
       const release = () => {
         if (app.firstElementChild === content) app.style.minHeight = "";
@@ -22257,19 +22307,19 @@ async function renderMemory(param) {
   await mountLoreCard(loreSlot, repos, reload);
 
   // Refresh without moving anything: an unchanged read keeps the DOM (and the
-  // open folds, the focus and the scroll) as it is.
-  wrap.dataset.sig = hashText(
-    JSON.stringify([
-      repos.map((r) => r.name),
-      allDrafts,
-      digestRes,
-      featuresRes,
-      loreSlot._res || null,
-      { ...loreFilter, foldOpen: undefined },
-      memoryState,
-    ]),
-  );
+  // open folds, the focus and the scroll) as it is. The lore card re-reads on its
+  // own (a filter or a page change) and then re-signs the view (mountLoreCard),
+  // so the next refresh compares against what is on screen, not the first read.
+  wrap._memSigBase = [repos.map((r) => r.name), allDrafts, digestRes, featuresRes];
+  wrap.dataset.sig = memorySignature(wrap._memSigBase, loreSlot._res);
   return wrap;
+}
+
+/** The Memory view's data signature: the view's reads, the lore page and its filters. */
+function memorySignature(base, loreRes) {
+  return hashText(
+    JSON.stringify([...base, loreRes || null, { ...loreFilter, foldOpen: undefined }, memoryState]),
+  );
 }
 
 /**
@@ -22347,8 +22397,11 @@ async function remountMemory(param) {
   }
   const se = document.scrollingElement || document.documentElement;
   const y = se.scrollTop;
+  const restoreForms = carryOpenForms(app.firstElementChild, content);
   mountView(content);
   se.scrollTop = y;
+  // A form still open (a reject the server refused keeps its reason) keeps the focus.
+  if (restoreForms()) return;
   // Triage keeps its place: focus goes to the next draft's Approve (or the card).
   if (focusIdx >= 0) {
     const next = [...content.querySelectorAll(".lore-row[data-status='draft'] .lore-approve")];
@@ -22395,6 +22448,9 @@ async function mountLoreCard(slot, repos, reload) {
     loreFilter.repo = memoryState.repo;
     loreFilter.offset = 0;
   }
+  // Only the newest read lands: two quick filter changes must not let the older
+  // answer paint over the newer one.
+  const seq = (slot._seq = (slot._seq || 0) + 1);
   let res;
   try {
     res = await api("GET", loreQueryPath(), undefined, { signal: routeSignal() });
@@ -22402,16 +22458,23 @@ async function mountLoreCard(slot, repos, reload) {
     if (e && e.code === "ABORTED") throw e;
     res = { available: false, reason: e && e.message ? e.message : "The lore request failed." };
   }
+  if (seq !== slot._seq) return;
   if (!slot.isConnected && slot.childNodes.length) return; // view was torn down mid-fetch
   slot._res = res;
+  const card = renderLoreList(res, loreFilter.repo, {
+    repos,
+    refresh: () => mountLoreCard(slot, repos, reload),
+    reload: reload || (() => mountLoreCard(slot, repos, reload)),
+  });
+  // The read can land after the operator opened a reject on the card it replaces
+  // (a slow server): the open form moves over to its row in the new page.
+  const restoreForms = carryOpenForms(slot.firstElementChild, card);
   clear(slot);
-  slot.appendChild(
-    renderLoreList(res, loreFilter.repo, {
-      repos,
-      refresh: () => mountLoreCard(slot, repos, reload),
-      reload: reload || (() => mountLoreCard(slot, repos, reload)),
-    }),
-  );
+  slot.appendChild(card);
+  restoreForms();
+  // Re-sign the view: what is on screen is now this page under these filters.
+  const view = slot.closest(".view-memory");
+  if (view && view._memSigBase) view.dataset.sig = memorySignature(view._memSigBase, res);
 }
 
 /**
@@ -22821,7 +22884,12 @@ function renderLoreList(res, repo, opts = {}) {
             { class: "btn small lore-reject", type: "button", "aria-label": `Reject “${l.title}”` },
             "Reject",
           );
-          const actionsEl = el("div", { class: "lore-actions" }, [approve, reject]);
+          // Keyed by the draft's id, so an open reject survives a re-render (carryOpenForms).
+          const actionsEl = el(
+            "div",
+            { class: "lore-actions", dataset: { keepKey: `lore:${l.id}` } },
+            [approve, reject],
+          );
           // Reject asks for an optional reason in place (the memory CLI recommends
           // one: the agent that filed the draft reads it). Enter rejects, with or
           // without words; Escape puts the buttons back.
@@ -22844,6 +22912,7 @@ function renderLoreList(res, repo, opts = {}) {
               el("div", { class: "lore-reject-btns" }, [confirm, cancel]),
             ]);
             const close = () => {
+              delete actionsEl.dataset.keepOpen;
               actionsEl.replaceChildren(approve, reject);
               reject.focus();
             };
@@ -22865,6 +22934,7 @@ function renderLoreList(res, repo, opts = {}) {
               });
             });
             actionsEl.replaceChildren(form);
+            actionsEl.dataset.keepOpen = "1";
             why.focus();
           });
           return actionsEl;

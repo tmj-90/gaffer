@@ -45,12 +45,49 @@ export default async function s4(t, L) {
     `AUTO_MERGE save: ${sv.status} ${JSON.stringify(sv.sent)}`,
   );
   const ap = await t.approve(a);
-  const landed = await L.waitStatus(a.id, ["done"], 120000, 2000);
-  t.check(
-    landed,
-    `with AUTO_MERGE on, approving #${a.number} in Review landed it (done) without Merge now`,
-    `after approval with AUTO_MERGE on #${a.number} is '${(await L.ticketOf(a.id)).status}' (first ${ap?.status})`,
-  );
+  // Landing is gated: the merge of the branch onto the CURRENT target is built and the
+  // repo's Definition-of-Done gates run on that combined code before anything lands.
+  // AUTO_MERGE is an autonomy flag, so the gate runs under strict containment; on a
+  // host with no OS sandbox (this shared server: provider none, no sandbox-exec) the
+  // gate cannot run and fails CLOSED: the ticket is HELD (blocked, merge_gate_red) with
+  // the merge-gate evidence, and main is untouched. That is the promise under test.
+  // The landing itself (done) needs a contained runner; see the note.
+  const settled = await L.waitStatus(a.id, ["done", "blocked"], 120000, 2000);
+  const view = await L.ticketView(a.id);
+  const after = view.ticket;
+  const blockedEv = (view.events || []).filter((e) => e.event_type === "ticket.blocked").pop();
+  const blockedReason = (() => {
+    try {
+      return JSON.parse(blockedEv?.payload_json || "{}").reason || "";
+    } catch {
+      return String(blockedEv?.payload_json || "");
+    }
+  })();
+  if (after.status === "done") {
+    t.ok(`with AUTO_MERGE on, approving #${a.number} landed it through the merge gate (done)`);
+  } else {
+    t.check(
+      settled &&
+        after.status === "blocked" &&
+        /merge gate|merge_gate|fails its gates|sandbox/i.test(blockedReason),
+      `with AUTO_MERGE on and no OS sandbox, approving #${a.number} did NOT land it: the merge gate held it (blocked) with its reason recorded`,
+      `after approval with AUTO_MERGE on #${a.number} is '${after.status}' (first ${ap?.status}); blocked reason: ${blockedReason.slice(0, 200)}`,
+    );
+    t.note(
+      `AUTO_MERGE landing (done) needs a contained runner (OS sandbox); this host holds at the merge gate instead`,
+    );
+  }
+  if (after.status === "blocked" && L.REPO_PATH) {
+    const branch = view.ticket?.branch_name || "";
+    const onMain = branch
+      ? L.git(L.REPO_PATH, "branch", "--merged", "main", "--list", branch).trim()
+      : "";
+    t.check(
+      onMain === "",
+      `main is untouched by the held landing (the delivery branch is not merged)`,
+      `the held landing reached main anyway: ${onMain}`,
+    );
+  }
   await t.visit("settings");
   await t.setSetting("AUTO_MERGE", "0");
   await t.saveSettings();

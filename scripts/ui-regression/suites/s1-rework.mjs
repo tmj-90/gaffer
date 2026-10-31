@@ -204,13 +204,30 @@ export default async function s1(t, L) {
 
   // ── agent approval needs containment: with DISPATCH_ALLOW_AGENT_APPROVE on and
   //    no OS sandbox, the runner refuses to launch an agent and says so ──
+  // "No OS sandbox" is set, not assumed: SANDBOX_PROVIDER is auto-detected per host
+  // (sandbox-exec on macOS, docker wherever a docker daemon answers — every GitHub
+  // ubuntu runner), and with a provider the gate wraps the agent instead of refusing:
+  // the docker sandbox then failed to come up, the agent exited with no commits and
+  // the ticket went back to ready, never blocked (and the next Poll took it again,
+  // ahead of the reject-cap ticket). Choosing provider "none" in the same save makes
+  // this world provider-less on every host.
   await t.visit("settings");
   await t.setSetting("DISPATCH_ALLOW_AGENT_APPROVE", "1");
+  await t.setSetting("SANDBOX_PROVIDER", "none");
   const savedA = await t.saveSettings();
   t.check(
-    savedA.status < 300 && savedA.sent.DISPATCH_ALLOW_AGENT_APPROVE === "1",
-    "Settings: 'Agents may approve reviews' switched on and saved",
+    savedA.status < 300 &&
+      savedA.sent.DISPATCH_ALLOW_AGENT_APPROVE === "1" &&
+      savedA.sent.SANDBOX_PROVIDER === "none",
+    "Settings: 'Agents may approve reviews' switched on and Sandbox provider 'none' saved (no OS sandbox on any host)",
     `agent-approve save: ${savedA.status} ${JSON.stringify(savedA.sent)}`,
+  );
+  const smA = await L.settingsMap();
+  t.check(
+    smA.get("SANDBOX_PROVIDER")?.effective === "none" &&
+      smA.get("DISPATCH_ALLOW_AGENT_APPROVE")?.effective === "1",
+    "GET /api/settings reports SANDBOX_PROVIDER=none and DISPATCH_ALLOW_AGENT_APPROVE=1 effective, so the next tick runs with no provider",
+    `after the containment save: SANDBOX_PROVIDER=${JSON.stringify(smA.get("SANDBOX_PROVIDER"))} DISPATCH_ALLOW_AGENT_APPROVE=${JSON.stringify(smA.get("DISPATCH_ALLOW_AGENT_APPROVE"))}`,
   );
   const contained = await L.seedTicket(t, {
     title: `Containment check (${L.tag("s1")})`,
@@ -219,19 +236,22 @@ export default async function s1(t, L) {
   });
   await t.visit("work");
   await t.poll();
+  const pollC = t.lastPoll;
   const refused = await L.waitStatus(contained.id, L.SETTLED, 120000);
   await t.visit("work");
   const cardC =
     (await p
       .textContent(`.board-card:has(.num:text-is("#${contained.number}"))`)
       .catch(() => "")) || "";
-  t.check(
-    refused?.status === "blocked" &&
-      /sandbox/i.test(cardC) &&
-      L.stubCalls({ kind: "delivery", ticket: contained.number }).length === 0,
-    `with agent approval on and no OS sandbox the runner fails closed: #${contained.number} parked, no agent launched, and its Work card names the missing sandbox`,
-    `containment: status=${refused?.status} agent calls=${L.stubCalls({ kind: "delivery", ticket: contained.number }).length} card='${cardC.slice(0, 160)}'`,
-  );
+  const callsC = L.stubCalls({ kind: "delivery", ticket: contained.number }).length;
+  if (refused?.status === "blocked" && /sandbox/i.test(cardC) && callsC === 0)
+    t.ok(
+      `with agent approval on and no OS sandbox the runner fails closed: #${contained.number} parked, no agent launched, and its Work card names the missing sandbox`,
+    );
+  else
+    t.bad(
+      `containment: status=${refused?.status} agent calls=${callsC} card='${cardC.slice(0, 160)}' · ${await L.whyStuck(contained, pollC)}`,
+    );
   t.skip(
     "CHANGES → rework with the reviewer's feedback (the AFK loop) needs a contained runner (sandbox or GAFFER_STRICT_REQUIRE=0 out of band); this shared server keeps the containment gate on — see suites/s4-autonomy.mjs",
   );
@@ -252,11 +272,24 @@ export default async function s1(t, L) {
     acs: ["covered by a test"],
     ready: true,
   });
+  // A tick delivers the oldest ready ticket, so this Poll is about #capped only if
+  // nothing older is still queued (the containment ticket above must have parked).
+  const queuedFirst = (await L.listTickets())
+    .filter((x) => x.status === "ready" && x.id !== capped.id)
+    .map((x) => `#${x.number}`);
+  t.check(
+    queuedFirst.length === 0,
+    `the reject-cap ticket #${capped.number} is the only ready ticket, so the next Poll delivers it`,
+    `ready tickets ahead of reject-cap #${capped.number}: ${queuedFirst.join(" ")} — the Poll will take those first`,
+  );
   await t.visit("work");
   await t.poll();
+  const pollCap = t.lastPoll;
   const capDelivered = await L.waitStatus(capped.id, L.SETTLED, 240000);
   if (capDelivered?.status !== "in_review")
-    t.bad(`reject-cap ticket delivery ended in '${capDelivered?.status}'`);
+    t.bad(
+      `reject-cap ticket delivery ended in '${capDelivered?.status}' · ${await L.whyStuck(capped, pollCap)}`,
+    );
   else {
     await t.visit(`review/${capped.id}`, { label: "review/:id" });
     await p.locator('button:has-text("Send back…")').first().click();

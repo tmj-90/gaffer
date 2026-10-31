@@ -17,7 +17,7 @@
 // Zero deps beyond node. Run: node test/usage-limit-detect.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -275,6 +275,37 @@ try {
     "CLI usage-limit on an ordinary result → exit 1, no output",
     r2.status === 1 && r2.stdout === "",
     r2.status,
+  );
+  // The ledger CLI on a refusal that exited 1 (Claude Code exits non-zero on
+  // is_error): the conservative kill estimate is kept, and the row says why.
+  writeFileSync(f, text);
+  const lr = spawnSync(
+    "node",
+    [
+      resolve(RUNNER_DIR, "lib", "usage-ledger.mjs"),
+      "--kind",
+      "delivery",
+      "--ticket",
+      "7",
+      "--rc",
+      "1",
+      "--json-file",
+      f,
+    ],
+    { encoding: "utf8", env: { ...process.env, GAFFER_DATA: dir, GAFFER_USAGE_LEDGER: "" } },
+  );
+  let row = {};
+  try {
+    row = JSON.parse(
+      readFileSync(join(dir, "usage-ledger.jsonl"), "utf8").trim().split("\n").pop(),
+    );
+  } catch {
+    /* asserted below */
+  }
+  assert(
+    "ledger CLI, rc=1 refusal: still the unmeasured/estimated row (caps never under-count) + usage_limit label",
+    lr.status === 0 && row.usage_limit === "usage_limit" && row.measured === false,
+    row,
   );
 } finally {
   rmSync(dir, { recursive: true, force: true });

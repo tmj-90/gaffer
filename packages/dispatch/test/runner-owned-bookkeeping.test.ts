@@ -118,6 +118,57 @@ describe("runner-owned bookkeeping", () => {
     expect(reclaim.claimToken).toBeTruthy();
   });
 
+  it("runnerRelease --to ready with reason-code usage_limit records ticket.usage_limited and counts no attempt", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const { ticketId, token } = seedReadyClaimedTicket(wg);
+    const before = wg.view(ticketId).ticket.attempt_count;
+    const res = wg.runnerRelease(
+      {
+        ticket_id: ticketId,
+        to: "ready",
+        claimToken: token,
+        reason: "usage limit: You've hit your session limit; not counted as an attempt",
+        reasonCode: "usage_limit",
+        pausedUntil: "2026-11-01T00:00:00Z",
+      },
+      systemActor,
+    );
+    expect(res.status).toBe("ready");
+    const view = wg.view(ticketId);
+    // No attempt, no feedback on the card: the call was refused, not failed.
+    expect(view.ticket.attempt_count).toBe(before);
+    expect(view.ticket.last_review_feedback ?? null).toBeNull();
+    const ev = view.events.find((e) => e.event_type === "ticket.usage_limited");
+    expect(ev).toBeTruthy();
+    const p = JSON.parse(String(ev?.payload_json ?? "{}")) as Record<string, unknown>;
+    expect(p.reason_code).toBe("usage_limit");
+    expect(p.paused_until).toBe("2026-11-01T00:00:00.000Z");
+    expect(String(p.reason)).toContain("not counted as an attempt");
+    expect(view.events.map((e) => e.event_type)).toContain("claim.released");
+  });
+
+  it("runnerRelease --to ready without usage_limit writes no usage event; a junk paused-until is null", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const a = seedReadyClaimedTicket(wg);
+    wg.runnerRelease({ ticket_id: a.ticketId, to: "ready", claimToken: a.token }, systemActor);
+    expect(wg.view(a.ticketId).events.map((e) => e.event_type)).not.toContain(
+      "ticket.usage_limited",
+    );
+    const b = seedReadyClaimedTicket(wg);
+    wg.runnerRelease(
+      {
+        ticket_id: b.ticketId,
+        to: "ready",
+        claimToken: b.token,
+        reasonCode: "usage_limit",
+        pausedUntil: "soon",
+      },
+      systemActor,
+    );
+    const ev = wg.view(b.ticketId).events.find((e) => e.event_type === "ticket.usage_limited");
+    expect(JSON.parse(String(ev?.payload_json ?? "{}")).paused_until).toBeNull();
+  });
+
   it("runnerRelease --to refining parks a claimed delivery (branch preserved lane)", () => {
     const wg = Dispatch.open(":memory:", new TestClock());
     const { ticketId, token } = seedReadyClaimedTicket(wg);

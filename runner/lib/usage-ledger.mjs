@@ -519,7 +519,10 @@ function cliMain(argv) {
       killBasis: args.killBasis,
       elapsedMs: args.elapsedMs,
     });
-    record = estimatedRecord({ ticket, kind, reason, estimateUsd, basis });
+    // A usage-window refusal also exits non-zero but carries a full envelope. Its row
+    // keeps the conservative estimate (the spend caps never under-count) and is
+    // labelled usage_limit so the ledger says why the call ended.
+    record = withUsageLimit(estimatedRecord({ ticket, kind, reason, estimateUsd, basis }), json);
   } else if (json === null) {
     const reason = "no parseable --output-format json on stdout";
     const { estimateUsd, basis } = deriveKillEstimate({

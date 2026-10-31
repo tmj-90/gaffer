@@ -168,6 +168,12 @@ if [ -n "$repo_lines" ]; then printf '%s\n' "$repo_lines"
 else printf "    ${c_dim}(none — \`gaffer onboard <path>\` registers one)${c_off}\n"; fi
 
 printf "\n  ${c_dim}work${c_off}\n"
+# USAGE WINDOW (lib/usage-pause.mjs): a model call was refused by the plan's usage
+# window / a rate limit, and the factory admits no work until the pause ends. Shown
+# first, because it is why nothing moves. It lifts on its own; not a human's job.
+if _usage_line="$(node "$HERE/lib/usage-pause.mjs" status 2>/dev/null)"; then
+  warn "$_usage_line  (no new work starts until then; it lifts on its own — early: node $HERE/lib/usage-pause.mjs clear)"
+fi
 printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$review" "$blocked" "$ready" "$paused"
 [ "$paused_waiting" -gt 0 ] && printf "    ${c_yel}paused, waiting on you: %s${c_off}  (hit a cap with its work kept — Continue or Stop it on the board, or: gaffer wg ticket continue <n>)\n" "$paused_waiting"
 [ "$resume_req" -gt 0 ] && printf "    ${c_dim}paused, Continue pressed: %s (the next tick resumes it)${c_off}\n" "$resume_req"

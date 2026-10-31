@@ -69,6 +69,7 @@ LEDGER="$GAFFER_USAGE_LEDGER"
 
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 
 echo "== deliver, send back, correct, approve, merge =="
 T="$(wg ticket create -t "Export header row" -d "the CSV export writes a header row" --risk low 2>/dev/null | jget 'd.ticket.number')"
@@ -81,7 +82,8 @@ wg review reject "$T" --to ready --reason "the export drops the header row" --re
 [ "$(st "$T")" = "ready" ] && ok "#$T sent back by the reviewer → ready" || fail "send-back: status=$(st "$T")"
 AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$T")" = "in_review" ] && ok "#$T correction → in_review" || fail "correction: status=$(st "$T")"
-wg review approve "$T" --reviewer human1 >/dev/null 2>&1
+# Approval names the reviewed commit (a stale or unnamed revision is refused).
+wg review approve "$T" $(approve_heads "$T") --reviewer human1 >/dev/null 2>&1
 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$T")" = "done" ] && ok "#$T merged → done" || fail "merge: status=$(st "$T")"
 

@@ -114,6 +114,7 @@ q(){ (cd "$ROOT/packages/memory" && node -e '
   db.close();' "$MEMORY_DB" "$1" 2>/dev/null); }
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 new_ticket() { local n; n="$(wg ticket create -t "$1" -d "$2" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "change made" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; printf '%s' "$n"; }
 LOGF="$GAFFER_DATA/factory.log"
 
@@ -123,7 +124,7 @@ B="$(new_ticket "Fees on settle" "settle() charges a fee: settleWithFees")"; wg 
 AUTO_MERGE=0 run_tick >/dev/null; AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$A")" = "in_review" ] && [ "$(st "$B")" = "in_review" ] && ok "#$A and #$B delivered → in_review" \
   || fail "delivery: #$A=$(st "$A") #$B=$(st "$B")"
-wg review approve "$A" --reviewer human1 >/dev/null 2>&1; wg review approve "$B" --reviewer human1 >/dev/null 2>&1
+wg review approve "$A" $(approve_heads "$A") --reviewer human1 >/dev/null 2>&1; wg review approve "$B" $(approve_heads "$B") --reviewer human1 >/dev/null 2>&1
 
 echo "== the merge lane lands both =="
 for _ in 1 2; do
@@ -165,7 +166,7 @@ echo "== the same overlap through the dashboard Merge path (bin/merge-ticket.mjs
 C="$(new_ticket "Move ledger to book" "move src/ledger.ts to src/book.ts")"; wg ticket ready "$C" >/dev/null 2>&1
 E="$(new_ticket "Net settlement" "settleWithFees becomes settleNet")"; wg ticket ready "$E" >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null; AUTO_MERGE=0 run_tick >/dev/null
-wg review approve "$C" --reviewer human1 >/dev/null 2>&1; wg review approve "$E" --reviewer human1 >/dev/null 2>&1
+wg review approve "$C" $(approve_heads "$C") --reviewer human1 >/dev/null 2>&1; wg review approve "$E" $(approve_heads "$E") --reviewer human1 >/dev/null 2>&1
 for t in "$C" "$E"; do
   node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$t" >"$WORK/merge-$t.json" 2>"$WORK/merge-$t.err" || true
 done

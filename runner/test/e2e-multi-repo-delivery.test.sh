@@ -268,6 +268,61 @@ git -C "$REPO_A" merge-base --is-ancestor "$H2A" main && git -C "$REPO_B" merge-
   && ok "the lane gated EACH repo's merge on its current main (two merge-gate passes)" \
   || fail "expected two merge-gate passes in the lane log: $(tr '\n' '|' < "$LANE_LOG")"
 
+echo "== LAND (merge lane path): A lands, B cannot (dirty checkout) → PARTLY MERGED, not done; a retry lands B =="
+# External review #4's fixture on the merge lane: both repos passed their checks and the
+# ticket is approved; repoB's live checkout has an uncommitted edit, so B cannot land.
+N4="$(wg ticket create -t "fourth spanning ticket" --description "lane partial" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+AC4="$(wg ac add "$N4" -t "both" 2>/dev/null | jget 'd.ac_id')"
+wg ticket repo-access set "$N4" repoA --access write --relation confirmed >/dev/null 2>&1
+wg ticket repo-access set "$N4" repoB --access write --relation confirmed >/dev/null 2>&1
+wg ticket ready "$N4" >/dev/null 2>&1
+TOK4="$(wg claim-ticket "$N4" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
+BR4="gaffer/t$N4"
+git -C "$REPO_A" worktree add -q -b "$BR4" "$WORK/wt4A" main; git -C "$REPO_B" worktree add -q -b "$BR4" "$WORK/wt4B" main
+( export WT="$WORK/wt4A" TICKET="$N4" AC_ID="$AC4" CLI_JS DB GAFFER_CLAIM_TOKEN="$TOK4" MARK="partA"; "$STUB" -p x >/dev/null 2>&1 )
+( export WT="$WORK/wt4B" TICKET="$N4" AC_ID="$AC4" CLI_JS DB GAFFER_CLAIM_TOKEN="$TOK4" MARK="partB"; "$STUB" -p x >/dev/null 2>&1 )
+git -C "$REPO_A" worktree remove --force "$WORK/wt4A" >/dev/null 2>&1; git -C "$REPO_B" worktree remove --force "$WORK/wt4B" >/dev/null 2>&1
+wg ticket repo-delivery record "$N4" repoA --branch "$BR4" >/dev/null 2>&1
+wg ticket repo-delivery record "$N4" repoB --branch "$BR4" >/dev/null 2>&1
+wg submit "$N4" --token "$TOK4" --reason "both" >/dev/null 2>&1
+H4A="$(git -C "$REPO_A" rev-parse "$BR4")"; H4B="$(git -C "$REPO_B" rev-parse "$BR4")"
+# shellcheck disable=SC2046
+wg review approve "$N4" --reviewer human1 $(wg ticket diff "$N4" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
+[ "$(status_of "$N4")" = "ready_for_merge" ] && ok "#$N4 approved in both repos (both passed their checks)" || fail "#$N4 approve failed (status $(status_of "$N4"))"
+printf 'operator edit\n' >> "$REPO_B/src/mod.ts"   # B cannot land over live edits
+lane4() {
+  (
+    log() { printf '%s\n' "$*" >> "$WORK/lane4.log"; }
+    gaffer_refresh_cards() { :; }
+    _gaffer_flag_on() { case "${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+    export DISPATCH_DB="$DB" GAFFER_DIGEST_DISABLE=1 RUNNER_DIR
+    # shellcheck source=../lib/automerge.sh
+    source "$RUNNER_DIR/lib/automerge.sh"
+    # shellcheck source=../lib/land.sh
+    source "$RUNNER_DIR/lib/land.sh"
+    gaffer_land_delivery "$N4" "$REPO_A" "$BR4" main "$(wg ticket show "$N4" 2>/dev/null)" MERGE
+  )
+}
+lane4; L4RC=$?
+[ "$L4RC" -ne 0 ] && ok "the lane did not report a full landing (rc=$L4RC)" || fail "the lane returned 0 with repoB unlanded"
+git -C "$REPO_A" merge-base --is-ancestor "$H4A" main && ok "A's change reached repoA's main" || fail "repoA main lacks $H4A"
+git -C "$REPO_B" merge-base --is-ancestor "$H4B" main && fail "B landed over the dirty checkout" || ok "B's change is still only on its delivery branch"
+[ "$(status_of "$N4")" = "ready_for_merge" ] && ok "the ticket is NOT done: it stays ready_for_merge" || fail "#$N4 after the partial lane landing: $(status_of "$N4")"
+Q4="$(wg human-queue --json 2>/dev/null | N="$N4" jget '((d.items||[]).find(i => i.ticket && String(i.ticket.number) === process.env.N) || {}).label || ""')"
+[ "$Q4" = "Partly merged" ] && ok "the human queue says 'Partly merged'" || fail "human queue label for #$N4: '$Q4'"
+[ "$(wg ticket landing "$N4" 2>/dev/null | jget 'd.partial ? "partial" : "not-partial"')" = "partial" ] \
+  && ok "the landing status reads partial (A landed, B pending)" || fail "landing status for #$N4: $(wg ticket landing "$N4" 2>/dev/null)"
+MM4_ERR="$(wg ticket mark-merged "$N4" --as system 2>&1 >/dev/null)"
+case "$MM4_ERR" in *partial_landing*) ok "mark-merged is refused (partial_landing) while B has not landed" ;; *) fail "mark-merged was not refused: $MM4_ERR" ;; esac
+grep -q "PARTLY MERGED" "$WORK/lane4.log" && ok "the lane log says PARTLY MERGED" || fail "no PARTLY MERGED line: $(tr '\n' '|' < "$WORK/lane4.log")"
+A4_MERGES="$(git -C "$REPO_A" rev-list --merges --count main)"
+git -C "$REPO_B" checkout -q -- src/mod.ts
+lane4; L4RC2=$?
+[ "$L4RC2" -eq 0 ] && ok "the retry lands the rest (rc 0)" || fail "lane retry rc=$L4RC2: $(tr '\n' '|' < "$WORK/lane4.log")"
+git -C "$REPO_B" merge-base --is-ancestor "$H4B" main && ok "B's change reached repoB's main on the retry" || fail "repoB main lacks $H4B after the retry"
+[ "$(git -C "$REPO_A" rev-list --merges --count main)" = "$A4_MERGES" ] && ok "A was not merged a second time" || fail "repoA re-merged on the lane retry"
+[ "$(status_of "$N4")" = "done" ] && ok "with both default branches carrying their change, the ticket is done" || fail "#$N4 after the retry: $(status_of "$N4")"
+
 echo "== MERGE GATE on a SECONDARY repo (lane path): repoB's combination is red → held =="
 # Each side passes alone; the combination fails repoB's gate: the branch adds combo-a, and
 # after the approval main gains combo-b. repoA (primary) lands and is recorded; repoB's

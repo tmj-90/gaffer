@@ -177,6 +177,33 @@ for dry in 1 0; do
   case "$LOUT" in *"worktree preserved: #90 ticket status is UNKNOWN"*) ok "loop (DRY_RUN=$dry) says the worktree was preserved and why" ;; *) fail "loop did not say so: $(printf '%s' "$LOUT" | head -8 | tr '\n' '|')" ;; esac
 done
 
+echo "== external review #4: the dashboard's Poll (bin/poll-once.sh) with Dispatch UNAVAILABLE keeps uncommitted work =="
+# The reviewer's fixture: a delivery worktree with an uncommitted file; the dispatch DB
+# missing, then the dispatch CLI failing; poll-once.sh with DRY_RUN=1 and DRY_RUN=0. The
+# file and the worktree survive every run, and the poll names the ticket as preserved
+# with status UNKNOWN.
+PW="$WORK/poll"; mkdir -p "$PW/.gaffer/worktrees"
+git -C "$REPO" worktree add -q -b gaffer/ticket-91-x "$PW/.gaffer/worktrees/ticket-91/repo" "$BASE" >/dev/null 2>&1
+echo "uncommitted" > "$PW/.gaffer/worktrees/ticket-91/repo/wip.txt"
+printf '#!/usr/bin/env bash\necho TICK_RESULT=no_work\n' > "$WORK/poll-tick.sh"; chmod +x "$WORK/poll-tick.sh"
+BROKEN="$WORK/broken-dispatch"; mkdir -p "$BROKEN/dist/cli"
+printf 'process.stderr.write("dispatch: simulated failure\\n"); process.exit(1);\n' > "$BROKEN/dist/cli/index.js"
+for mode in missing-db failing-cli; do
+  for dry in 1 0; do
+    if [ "$mode" = missing-db ]; then _dd="$RUNNER_DIR/../packages/dispatch"; _db="$PW/.gaffer/missing/dispatch.sqlite"
+    else _dd="$BROKEN"; _db="$PW/.gaffer/dispatch.sqlite"; : > "$_db"; fi   # the DB is there; the CLI fails
+    POUT="$(env -u GAFFER_WG_SHOW_CMD GAFFER_DATA="$PW/.gaffer" DISPATCH_DIR="$_dd" DISPATCH_DB="$_db" \
+      MEMORY_DB="$PW/.gaffer/memory.sqlite" DISPATCH_AUDIT="$PW/.gaffer/audit.jsonl" CLAUDE_BIN="$WORK/claude" \
+      GAFFER_POLL_TICK_SH="$WORK/poll-tick.sh" DRY_RUN=$dry \
+      perl -e 'alarm shift; exec @ARGV' 120 bash "$RUNNER_DIR/bin/poll-once.sh" 2>&1)"
+    { [ -d "$PW/.gaffer/worktrees/ticket-91/repo" ] && [ -f "$PW/.gaffer/worktrees/ticket-91/repo/wip.txt" ]; } \
+      && ok "poll (DRY_RUN=$dry, $mode): the worktree and its uncommitted file are intact" \
+      || fail "poll (DRY_RUN=$dry, $mode) deleted the worktree or its file: $(printf '%s' "$POUT" | tail -5 | tr '\n' '|')"
+    case "$POUT" in *"worktree preserved: #91 ticket status is UNKNOWN"*) ok "poll (DRY_RUN=$dry, $mode) names #91 as preserved with status UNKNOWN" ;;
+      *) fail "poll (DRY_RUN=$dry, $mode) did not name #91 as preserved/UNKNOWN: $(printf '%s' "$POUT" | head -8 | tr '\n' '|')" ;; esac
+  done
+done
+
 echo "== AC5: empty/absent root is a no-op =="
 rm -rf "$GAFFER_DATA/worktrees"
 gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1 && ok "absent worktrees root → no-op exit 0" || fail "absent root returned non-zero"

@@ -28,6 +28,19 @@
 # next pass instead of the values the daemon read when it started. (Each pass's loop.sh
 # is a child process and re-sources the config itself.) Unset, the caps are read from
 # this shell, as before (the unit test's stubbed caps).
+#
+# USAGE WINDOW: while $GAFFER_DATA/usage-pause.json holds a pause (a model call was
+# refused by the plan's usage window / a rate limit — lib/usage-pause.mjs), the daemon
+# starts no pass: it prints "paused until <time>: usage limit" and sleeps until then
+# (interruptible; re-read every GAFFER_USAGE_PAUSE_POLL_SECS). The leftover window is
+# NOT spent on maintenance work in this slice (see usage-pause.mjs LEFTOVER-WINDOW SEAM).
+
+# The pause helpers come with factory.config.sh; a bare source of this file (the unit
+# test) loads them directly.
+if ! declare -F gaffer_usage_pause_active >/dev/null 2>&1; then
+  # shellcheck source=usage-pause.sh
+  [ -f "$(dirname "${BASH_SOURCE[0]}")/usage-pause.sh" ] && source "$(dirname "${BASH_SOURCE[0]}")/usage-pause.sh"
+fi
 
 # Echo why today's caps refuse a pass and return 1, or return 0 when a pass may run.
 _gaffer_daemon_cap_check() {
@@ -74,7 +87,18 @@ gaffer_run_daemon() {
   _GAFFER_DAEMON_STOP=0
   # A stop signal finishes the current pass, then exits — graceful, never mid-delivery.
   trap '_GAFFER_DAEMON_STOP=1' INT TERM
+  _gaffer_daemon_stopping() { [ "$_GAFFER_DAEMON_STOP" = "1" ]; }
+  local _up_line
   while [ "$_GAFFER_DAEMON_STOP" = "0" ]; do
+    if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
+       && _up_line="$(gaffer_usage_pause_active)"; then
+      printf 'gaffer daemon: %s — sleeping until then instead of starting a pass\n' "$_up_line" >&2
+      gaffer_usage_pause_wait _gaffer_daemon_stopping || break
+      printf 'gaffer daemon: usage pause over — resuming passes\n' >&2
+      cycles=$((cycles + 1))
+      [ "$max" -gt 0 ] 2>/dev/null && [ "$cycles" -ge "$max" ] && break
+      continue
+    fi
     if _gaffer_daemon_caps_ok; then
       bash "$loop_sh"; rc=$?
       passes=$((passes + 1))

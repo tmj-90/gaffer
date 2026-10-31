@@ -117,6 +117,93 @@ maintenance lane so it runs alongside delivery rather than only on idle ticks.
    and submits for review. It never marks its own work `done`.
 5. `loop.sh` repeats until the queue drains or the stop conditions hit.
 
+The candidate scan walks **claimable** work (`wg ticket list -s ready --claimable`: every
+dependency done), so `MAX_CANDIDATES` bounds tickets a claim can take — a low-priority
+prerequisite is never starved behind higher-priority dependants that cannot start.
+
+**Landing = the merge gate.** Every landing path (`lib/land.sh` for the merge lane and the
+agent review's ship, `bin/merge-ticket.mjs` for the dashboard's Merge now and `gaffer
+merge`) builds the merge of the approved commit onto the CURRENT default branch in a
+scratch worktree, runs the repo's DoD gates on that merge through `bin/dod-regate.sh` (the
+delivery gate's gates: `test_command`, `lint_command` and the typecheck command
+`gaffer_dod_typecheck_cmd` resolves — `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
+typecheck script, detected from the gated target head first), and
+lands exactly the gated merge commit only while the default branch is still the commit it
+gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
+target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
+combination is held for a human: the gate output is attached as evidence and the ticket
+goes `ready_for_merge → blocked` (`wg ticket hold … --reason-code merge_gate_red`), the
+default branch untouched. In PR mode the gate runs on the merge onto the freshly fetched
+remote default branch before `gh pr merge --match-head-commit <pin>`; the repo's branch
+protection is the compare-and-land upstream.
+
+**Required CI** (`GAFFER_REQUIRE_CI=1`, PR mode): `lib/ci-gate.sh` reads `gh pr checks
+--json name,state,bucket,link` (the real CLI fields; `fixtures/gh` holds the recorded field
+lists and output shapes the contract test enforces), checks the PR head is the candidate
+commit, and records each result with `wg ticket ci-result` (pending → pass/fail). Dispatch
+refuses approval and a tester PASS without a PASS for the candidate, a red result holds an
+approved ticket (`ci_red`), and the merge lane re-reads CI before landing.
+
+### When the model's usage window runs out
+
+A delivery call can come back refused by the plan's usage window or a rate limit
+(`You've hit your session limit · resets 3pm (Europe/London)`, newer builds'
+`You've hit your 5-hour limit · resets 3pm (UTC) · progress saved`, `You're out of
+usage credits`, `API Error: Rate limit reached`, the SDK's `error: "rate_limit"`).
+That is not a failed delivery, so the runner does not treat it as one. The table
+covers both the 2.1.42 npm build's wording and the 2.1.316 native build's; a
+trailing ` · progress saved` does not hide the reset time. Spend caps and admin
+switches (`You've hit your monthly spend limit`, `…team's shared budget`) are not
+a pause: they need a person to raise the cap, so they stay ordinary failures.
+
+- `lib/worker.mjs` `parseResult` classifies it (`usageLimit`) from one table of
+  matched strings, `USAGE_LIMIT_PATTERNS` / `USAGE_LIMIT_SHAPES`, each row citing
+  where its exact text comes from. Text rows only match an error envelope
+  (`is_error: true`), so a reply that talks about rate limiting is never misread.
+  There is no exception: on a success envelope `.result` is the agent's own reply,
+  so an agent that answers `Claude AI usage limit reached|<epoch>` takes the normal
+  failure path (no-commit counter, park for a human), not a free release.
+- `tick.sh` keeps any work the agent made before the refusal (a WIP checkpoint; a
+  branch with commits is kept for the next attempt), releases the claim to `ready`
+  with reason-code `usage_limit` WITHOUT counting an attempt (no `attempt_count`
+  bump, no no-commit counter, no rework row, no skip-list entry), records a
+  `ticket.usage_limited` event with `paused_until`, and reports `usage_paused`.
+  A resumed delivery goes back to `paused` with its worktree. The envelope is
+  classified first, WITHOUT the pause lock (`worker.mjs parse-result usage-limit`);
+  only a confirmed refusal takes `$GAFFER_DATA/.usage-pause.lock` to record the
+  pause. A lock that cannot be taken or a crash in either step therefore never turns
+  an ordinary result into a refusal: a classifier failure is an ordinary result, and
+  only a confirmed refusal whose pause could not be written fails closed (released
+  without an attempt and skipped for the rest of the run).
+- A greenfield bootstrap refused the same way records the pause too and goes back
+  to `ready` (not `blocked`, not skipped); its partial scaffold stays in place as a
+  resumable bootstrap target for the retry.
+- A refused independent tester (`bin/tester-run.mjs`, phase `usage_limited`, exit 3)
+  is neither a verdict nor a hold: `lib/tester.sh` records the pause from the raw
+  envelope (`GAFFER_TESTER_ENVELOPE_OUT`), skips the ticket for this run only and
+  tests it again after the window resets. Before, it was held in_testing for a human
+  and, being remembered across runs, never re-tested.
+- A refused agent reviewer is held like any reviewer that did not run (in_review,
+  not a verdict) and records the pause too, so the next tick does not spawn into
+  the same refusal.
+- `lib/usage-pause.mjs` writes `$GAFFER_DATA/usage-pause.json`. The pause ends at the
+  reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
+  (default 60) when none was printed; never sooner than 10 minutes, never later than
+  8 days, never shortened by a later refusal. A pause file that does not parse is
+  read as active for the default wait (fail closed). The bash helpers hand node the
+  config's `GAFFER_DATA` explicitly (`factory.config.sh` does not export it), and
+  with no `GAFFER_DATA` at all the CLI uses the same default data dir as the runner,
+  so `status` / `clear` typed in a plain shell act on the pause the runner wrote.
+- While it holds, `tick.sh` claims and spawns nothing (`no_work`), `loop.sh` and
+  `gaffer run --daemon` sleep until it ends instead of spinning (re-reading the file
+  every `GAFFER_USAGE_PAUSE_POLL_SECS`, default 60, so an early clear is honoured), a
+  `GAFFER_CONCURRENCY>1` pool stops admitting new work, and `gaffer status` and the
+  dashboard's Health view say `paused until <time>: usage limit`. It lifts on its
+  own; `node runner/lib/usage-pause.mjs clear` lifts it early.
+- The time left in a window is not spent on maintenance work in this release (it is
+  unclear whether headless usage shares the window); `usage-pause.mjs` documents the
+  seam for a future, opt-in lane.
+
 ## Setup & the `gaffer` CLI
 
 `setup.sh` builds the three TypeScript products and initialises factory state
@@ -129,7 +216,7 @@ the Claude CLI; that's only for live runs.
 | Command | What it does |
 | --- | --- |
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
-| `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
+| `gaffer onboard <path> [--standalone] [--name <alias>]` | Register + scan a repo (a name match is a refresh only for the same canonical local path; any other record of that name — another checkout, a record whose checkout is gone (a moved clone, even with the same remote), or a record with no local path — is refused and left unchanged; `--name` gives it its own record), run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). |
 | `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human (reviews, blocked, unmerged approvals, decisions, paused deliveries awaiting Continue/Stop). Finds a `--foreground` dashboard (no pid file) by probing its `/healthz`. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |

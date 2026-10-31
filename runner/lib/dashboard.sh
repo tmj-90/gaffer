@@ -94,6 +94,14 @@ gaffer_dashboard_env_unset_flags() {
       _flags="$_flags -u $_k"
     done <<< "$_keys"
   fi
+  # Bounds the config DERIVED from those tick-only knobs (attempts × GAFFER_TICK_TIMEOUT
+  # + margin) go too, unless the operator set them: inherited, they kept the
+  # launcher's figure while the knob they came from was dropped — an operator's
+  # GAFFER_TICK_TIMEOUT=120 left every dashboard-spawned tick with a 480s outer bound
+  # under a 1800s per-call cap, so the deadline guard refused every in-tick rework.
+  for _k in GAFFER_TICK_OUTER_TIMEOUT GAFFER_CLAIM_TTL; do
+    case " ${_GAFFER_ENV_AT_SOURCE:-} " in *" $_k "*) ;; *) _flags="$_flags -u $_k" ;; esac
+  done
   # The re-source bookkeeping (factory.config.sh) is the launcher's, not the
   # server's: the dashboard is a fresh root for the processes it spawns.
   _flags="$_flags -u _GAFFER_OPERATOR_ENV"

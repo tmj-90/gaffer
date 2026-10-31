@@ -105,6 +105,14 @@ echo "== AC5: empty/absent root is a no-op =="
 rm -rf "$GAFFER_DATA/worktrees"
 gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1 && ok "absent worktrees root → no-op exit 0" || fail "absent root returned non-zero"
 
+echo "== AC6: the dashboard's Poll (bin/poll-once.sh) sweeps too, like loop.sh =="
+# A factory driven only by Poll for work never runs loop.sh, so a Stopped pause's
+# worktree was never reaped. Both entry points must call the sweep.
+for f in "$RUNNER_DIR/loop.sh" "$RUNNER_DIR/bin/poll-once.sh"; do
+  grep -q 'gaffer_cleanup_orphaned_worktrees' "$f" && ok "$(basename "$f") calls gaffer_cleanup_orphaned_worktrees" \
+    || fail "$(basename "$f") never sweeps orphaned worktrees"
+done
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"; exit 0

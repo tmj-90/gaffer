@@ -278,6 +278,26 @@ export async function routeApi(
     );
     return;
   }
+  // A record's earlier versions (`memory history <id> --json`), for the Memory
+  // view's per-row History. A read: it degrades to 200 `{ available:false }`.
+  if (
+    segments.length === 5 &&
+    segments[1] === "memory" &&
+    segments[2] === "lore" &&
+    segments[4] === "history"
+  ) {
+    if (method !== "GET") return methodNotAllowed(res);
+    const id = safeDecode(segments[3] as string);
+    if (id === null || !LORE_ID_RE.test(id)) {
+      return sendJson(
+        res,
+        422,
+        errorBody("VALIDATION_ERROR", "Malformed lore id (expected 8 chars of a-z2-9)."),
+      );
+    }
+    sendJson(res, 200, memoryReader.loreHistory(id));
+    return;
+  }
   if (
     segments.length === 5 &&
     segments[1] === "memory" &&

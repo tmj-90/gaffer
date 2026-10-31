@@ -557,6 +557,7 @@ export class FakeDispatchClient implements DispatchClient {
       testCommand: r.testCommand ?? null,
       lintCommand: r.lintCommand ?? null,
       coverageCommand: r.coverageCommand ?? null,
+      remoteUrl: r.remoteUrl ?? null,
     };
     this.repositories.push(repo);
     return repo;

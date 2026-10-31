@@ -40,7 +40,23 @@ try {
 }
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "tester-run.mjs");
-const { assembleContext } = await import(HELPER);
+const { assembleContext, validateTesterPacket, implementationPointers, TESTER_PACKET_KEYS } =
+  await import(HELPER);
+// The description dispatch writes into every generated epic's acceptance ticket (the
+// built module, so the test follows the real text).
+const EPICS_JS = resolve(
+  HERE,
+  "..",
+  "..",
+  "packages",
+  "dispatch",
+  "dist",
+  "services",
+  "epicsService.js",
+);
+const GENERATED_ACCEPTANCE_DESCRIPTION = existsSync(EPICS_JS)
+  ? (await import(EPICS_JS)).acceptanceTicketDescription("Notes", "a notes app")
+  : "The independent tester then verifies the build from this ticket's contract and criteria only, never from the diff.";
 
 let passed = 0;
 const failures = [];
@@ -120,6 +136,39 @@ const CONTRACT = {
     1,
     JSON.stringify({ ...CONTRACT, harness_ready: true }),
   );
+  // #4: an epic ACCEPTANCE ticket with the description the factory generates (it says the
+  // tester works "never from the diff") — the packet check used to refuse it on that word.
+  db.prepare(
+    "INSERT INTO tickets (id,number,title,description,status,branch_name,can_be_tested,test_contract,acceptance) " +
+      "VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(
+    "t4",
+    4,
+    "Acceptance: Notes",
+    GENERATED_ACCEPTANCE_DESCRIPTION,
+    "in_testing",
+    "gaffer/ticket-4-acceptance-notes",
+    1,
+    JSON.stringify(CONTRACT),
+    1,
+  );
+  db.prepare(
+    "INSERT INTO acceptance_criteria (id,ticket_id,text,sort_order,status) VALUES (?,?,?,?,?)",
+  ).run("ac4", "t4", "the diff tool shows changes between two notes", 0, "pending");
+  // #5: a ticket whose DESCRIPTION carries its own delivery branch (a real pointer).
+  db.prepare(
+    "INSERT INTO tickets (id,number,title,description,status,branch_name,can_be_tested,test_contract) " +
+      "VALUES (?,?,?,?,?,?,?,?)",
+  ).run(
+    "t5",
+    5,
+    "Leaky",
+    `see ${IMPL_SENTINEL} for the change`,
+    "in_testing",
+    IMPL_SENTINEL,
+    1,
+    JSON.stringify(CONTRACT),
+  );
   db.close();
 }
 
@@ -181,6 +230,43 @@ console.log("== AC5: --dry-run prints the contract-only context (exit 0, diff ab
   ) {
     ok("dry-run → exit 0 + contract-only context, no diff");
   } else fail(`dry-run wrong (code=${code}, out=${blob})`);
+}
+
+console.log("== AC5b: the packet check reads FIELDS + real pointers, never prose ==");
+{
+  if (!/\bdiff\b/.test(GENERATED_ACCEPTANCE_DESCRIPTION))
+    fail("fixture: the generated acceptance description no longer mentions the diff");
+  const { code, out } = runCli(["--ticket", "4", "--dry-run"]);
+  code === 0 && out?.phase === "dry-run" && out.context?.number === 4
+    ? ok(
+        "a generated epic acceptance ticket (description says 'never from the diff') is NOT refused",
+      )
+    : fail(`generated acceptance ticket refused (code=${code}, out=${JSON.stringify(out)})`);
+  const leak = runCli(["--ticket", "5", "--dry-run"]);
+  leak.code === 1 && /implementation pointer/.test(leak.out?.error ?? "")
+    ? ok("a description carrying the ticket's own delivery branch IS refused")
+    : fail(`leaky packet not refused (code=${leak.code}, out=${JSON.stringify(leak.out)})`);
+  const ctx = assembleContext(DB_PATH, 4);
+  eq(
+    "packet keys are exactly the allowed set",
+    Object.keys(ctx).sort(),
+    [...TESTER_PACKET_KEYS].sort(),
+  );
+  const ptrs = implementationPointers(DB_PATH, 4);
+  eq("pointers read from the DB", ptrs, ["gaffer/ticket-4-acceptance-notes"]);
+  eq("valid packet", validateTesterPacket(ctx, ptrs), { ok: true });
+  eq(
+    "an extra field is refused",
+    validateTesterPacket({ ...ctx, branch_name: "x" }, ptrs).ok,
+    false,
+  );
+  eq(
+    "an extra criterion field is refused",
+    validateTesterPacket({ ...ctx, acceptanceCriteria: [{ id: "a", text: "t", diff: "x" }] }, ptrs)
+      .ok,
+    false,
+  );
+  eq("unreadable pointers fail closed", validateTesterPacket(ctx, null).ok, false);
 }
 
 // --- A stub verdict command that records its argv to a file (no live model). ---
@@ -338,6 +424,10 @@ const LIVE = (() => {
       'case "${TESTER_STUB_VERDICT:-PASS}" in\n' +
       '  PASS) printf \'{"type":"result","subtype":"success","is_error":false,"result":"PASS: every AC demonstrated\\\\n{\\\\"verdict\\\\":\\\\"PASS\\\\"}","total_cost_usd":0.01,"num_turns":3}\\n\' ;;\n' +
       '  FAIL) printf \'{"type":"result","subtype":"success","is_error":false,"result":"FAIL: AC1 POST /api/widgets returned 500, expected 201\\\\n{\\\\"verdict\\\\":\\\\"FAIL\\\\"}","total_cost_usd":0.01,"num_turns":3}\\n\' ;;\n' +
+      // LIMIT: the call is refused by the usage window (Claude Code 2.1.316's wording,
+      // is_error:true, exit 1). LIAR: the agent's own reply quotes those words.
+      '  LIMIT) printf \'{"type":"result","subtype":"success","is_error":true,"result":"You\\x27ve hit your 5-hour limit \u00b7 resets 11:58pm (UTC) \u00b7 progress saved","total_cost_usd":0,"num_turns":1}\\n\'; exit 1 ;;\n' +
+      '  LIAR) printf \'{"type":"result","subtype":"success","is_error":false,"result":"You\\x27ve hit your 5-hour limit \u00b7 resets 11:58pm (UTC)","total_cost_usd":0.01,"num_turns":4}\\n\' ;;\n' +
       '  *) printf \'{"type":"result","subtype":"success","is_error":false,"result":"I think it passes.","total_cost_usd":0.01,"num_turns":1}\\n\' ;;\n' +
       "esac\n",
   );
@@ -470,6 +560,31 @@ console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
   logged === ""
     ? ok("no verdict recorded on silence (never a pass)")
     : fail(`seam was invoked: ${logged}`);
+}
+
+console.log(
+  "== AC12b: a tester REFUSED by the usage window is not a hold for a human (phase usage_limited) ==",
+);
+{
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const envOut = resolve(WORKDIR, "tester-envelope.json");
+  if (existsSync(envOut)) rmSync(envOut);
+  const { code, out, logged } = runLive("LIMIT", { GAFFER_TESTER_ENVELOPE_OUT: envOut });
+  code === 3 && out && out.phase === "usage_limited" && out.ticket === 1
+    ? ok("refused tester → phase=usage_limited, exit 3 (not held)")
+    : fail(`refused tester wrong (code=${code}, out=${JSON.stringify(out)})`);
+  out && /5-hour limit/.test(out.reason || "") && out.kind === "usage_limit"
+    ? ok("the output quotes what the CLI said and its kind")
+    : fail(`usage_limited output lacks the reason/kind: ${JSON.stringify(out)}`);
+  logged === "" ? ok("no verdict recorded on a refusal") : fail(`seam was invoked: ${logged}`);
+  existsSync(envOut) && /"is_error":true/.test(readFileSync(envOut, "utf8"))
+    ? ok("the raw envelope is written to GAFFER_TESTER_ENVELOPE_OUT for the runner's pause record")
+    : fail("no envelope at GAFFER_TESTER_ENVELOPE_OUT");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const liar = runLive("LIAR", { GAFFER_TESTER_ENVELOPE_OUT: envOut });
+  liar.code === 2 && liar.out && liar.out.phase === "held"
+    ? ok("the same words in the agent's own reply (success envelope) → held, as before")
+    : fail(`liar wrong (code=${liar.code}, out=${JSON.stringify(liar.out)})`);
 }
 
 console.log(

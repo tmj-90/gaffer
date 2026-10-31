@@ -1,0 +1,13 @@
+[
+  {
+    "bucket": "cancel",
+    "completedAt": "2026-10-30T12:00:10Z",
+    "description": "",
+    "event": "pull_request",
+    "link": "https://github.com/acme/api/actions/runs/104/job/207",
+    "name": "test (ubuntu-latest)",
+    "startedAt": "2026-10-30T11:58:00Z",
+    "state": "CANCELLED",
+    "workflow": "CI"
+  }
+]

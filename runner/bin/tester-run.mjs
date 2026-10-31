@@ -54,10 +54,18 @@
 // OUTPUT (stdout, exactly ONE JSON object):
 //   dry-run:  { "phase":"dry-run", ticket, context }
 //   verdict:  { "phase":"verdict", ticket, verdict, recorded }
+//   held:     { "phase":"held", ticket, reason, … }   (exit 2) — a human decides
+//   usage_limited: { "phase":"usage_limited", ticket, kind, reason, resetsAt, … }
+//             (exit 3) — the call was refused by the plan's usage window or a rate
+//             limit (lib/worker.mjs detectUsageLimit): not a verdict and not a hold;
+//             the runner records the pause and tests the ticket again after it.
 //   error:    { "phase":"error", error }   (exit 1)
 //
 // EXIT: 0 on dry-run / verdict; 1 on a hard failure (no ticket, unresolvable,
-//   record failure).
+//   record failure); 2 held; 3 usage_limited.
+// GAFFER_TESTER_ENVELOPE_OUT (optional): a --live run writes the raw `claude -p`
+//   envelope there, so lib/tester.sh classifies a usage-limit refusal with the same
+//   locked recorder the delivery path uses (gaffer_usage_pause_record).
 // =====================================================================
 
 import { spawnSync } from "node:child_process";
@@ -83,7 +91,13 @@ import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { selectForRole } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
-import { extractResultText, parseClaudeJson, roleTurnCap, Worker } from "../lib/worker.mjs";
+import {
+  detectUsageLimit,
+  extractResultText,
+  parseClaudeJson,
+  roleTurnCap,
+  Worker,
+} from "../lib/worker.mjs";
 import {
   appendUsageRecord,
   buildUsageRecord,
@@ -304,6 +318,114 @@ export function assembleContext(dbPath, number) {
       /* already closed */
     }
   }
+}
+
+/**
+ * CONTRACT-ONLY PACKET — the fields that may enter the tester's packet, and nothing
+ * else. The packet check used to regex the WHOLE serialised ticket for the word "diff",
+ * so the factory's own acceptance description ("…from this ticket's contract and
+ * criteria only, never from the diff…") refused every generated epic's acceptance
+ * ticket before the tester launched. The invariant is about POINTERS to the
+ * implementation (the delivery branch, its PR, its commit), not about a word in prose:
+ * validate the packet's shape field by field, and look for the ticket's real pointer
+ * values in it.
+ */
+export const TESTER_PACKET_KEYS = Object.freeze([
+  "ticketId",
+  "number",
+  "title",
+  "description",
+  "status",
+  "acceptance",
+  "testContractRaw",
+  "acceptanceCriteria",
+  "testContract",
+  "mode",
+]);
+const AC_KEYS = new Set(["id", "text", "status"]);
+const CONTRACT_KEYS = new Set([
+  "changed_surfaces",
+  "runtime_deps",
+  "env_vars",
+  "run_command",
+  "harness_ready",
+]);
+
+/**
+ * The ticket's implementation pointers as stored in dispatch: its top-level and per-repo
+ * delivery branches, PR URLs and delivered commits. → string[] (deduplicated, only values
+ * long enough to be specific), or null when the DB cannot be read (the caller fails closed).
+ */
+export function implementationPointers(dbPath, number) {
+  const num = parseInt(String(number ?? "").trim(), 10);
+  if (!Number.isInteger(num) || num <= 0 || !existsSync(dbPath)) return null;
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const t = db.prepare("SELECT id, branch_name, pr_url FROM tickets WHERE number = ?").get(num);
+    if (!t) return null;
+    const out = [t.branch_name, t.pr_url];
+    const optional = (sql) => {
+      try {
+        return db.prepare(sql).all(t.id);
+      } catch {
+        return []; // a minimal / older schema without the table
+      }
+    };
+    for (const r of optional("SELECT branch_name, pr_url FROM ticket_repos WHERE ticket_id = ?"))
+      out.push(r.branch_name, r.pr_url);
+    for (const r of optional(
+      "SELECT branch_name, pr_url, commit_sha FROM ticket_repo_delivery WHERE ticket_id = ?",
+    ))
+      out.push(r.branch_name, r.pr_url, r.commit_sha);
+    return [...new Set(out.map((v) => String(v ?? "").trim()).filter((v) => v.length >= 8))];
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
+ * Validate the assembled packet: exactly the allowed fields, each criterion and the test
+ * contract with exactly their own fields, and none of the ticket's implementation pointer
+ * VALUES anywhere in it. → { ok: true } | { ok: false, reason }. Pure; exported for tests.
+ */
+export function validateTesterPacket(context, pointers) {
+  if (!context || typeof context !== "object") return { ok: false, reason: "no packet" };
+  if (!Array.isArray(pointers))
+    return { ok: false, reason: "the ticket's implementation pointers could not be read" };
+  const extra = Object.keys(context).filter((k) => !TESTER_PACKET_KEYS.includes(k));
+  if (extra.length) return { ok: false, reason: `unexpected packet field(s): ${extra.join(", ")}` };
+  if (!Array.isArray(context.acceptanceCriteria))
+    return { ok: false, reason: "acceptanceCriteria is not a list" };
+  for (const ac of context.acceptanceCriteria) {
+    const bad = Object.keys(ac ?? {}).filter((k) => !AC_KEYS.has(k));
+    if (bad.length)
+      return { ok: false, reason: `unexpected criterion field(s): ${bad.join(", ")}` };
+  }
+  if (context.testContract !== null && context.testContract !== undefined) {
+    const bad = Object.keys(context.testContract).filter((k) => !CONTRACT_KEYS.has(k));
+    if (bad.length)
+      return { ok: false, reason: `unexpected test-contract field(s): ${bad.join(", ")}` };
+  }
+  const strings = [];
+  const walk = (v) => {
+    if (typeof v === "string") strings.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(context);
+  for (const p of pointers) {
+    if (strings.some((s) => s.includes(p)))
+      return { ok: false, reason: `the packet carries an implementation pointer (${p})` };
+  }
+  return { ok: true };
 }
 
 /**
@@ -852,7 +974,17 @@ function runLiveTester(context) {
   // Ledger + verdict.
   let verdict = null;
   let text = "";
+  let usageLimit = null;
   const elapsedMs = Date.now() - t0;
+  // The raw envelope for the runner's usage-window pause record (lib/tester.sh).
+  const envelopeOut = String(process.env.GAFFER_TESTER_ENVELOPE_OUT ?? "").trim();
+  if (envelopeOut && !res.error && typeof res.stdout === "string") {
+    try {
+      writeFileSync(envelopeOut, res.stdout, { mode: 0o600 });
+    } catch (e) {
+      log(`could not write the envelope to ${envelopeOut}: ${e?.message ?? e}`);
+    }
+  }
   if (res.error) {
     // A timed-out call did paid work: book the labelled estimate, never a silent $0.
     // Any other error (ENOENT, Worker.deliver failing closed) never ran claude, so it
@@ -872,8 +1004,12 @@ function runLiveTester(context) {
     } else {
       appendUsageRecord(buildUsageRecord({ json, ticket: n, kind: "tester" }));
       text = extractResultText(json) ?? "";
+      // USAGE WINDOW: a call refused by the usage window / a rate limit never tested
+      // anything (the same one table the delivery path reads; text rows need an error
+      // envelope, so the tester's own reply quoting the words is not a refusal).
+      usageLimit = detectUsageLimit(json);
     }
-    verdict = parseTesterVerdict(text);
+    verdict = usageLimit ? null : parseTesterVerdict(text);
   }
 
   // ACCEPTANCE GATE: the tester tests the implementation, it never changes it. Inspect what
@@ -933,6 +1069,26 @@ function runLiveTester(context) {
       .map((l) => l.trim())
       .filter((l) => /^(PASS|FAIL)\b/i.test(l))
       .pop() || "";
+  if (usageLimit) {
+    log(
+      `the tester call for #${n} was refused by the ${usageLimit.kind === "rate_limit" ? "rate limit" : "usage window"} (${usageLimit.message}) — not a verdict and not a hold; it is tested again once the window resets`,
+    );
+    emit(
+      {
+        phase: "usage_limited",
+        ticket: n,
+        kind: usageLimit.kind,
+        reason: usageLimit.message,
+        resetsAt: Number.isFinite(usageLimit.resetsAtMs)
+          ? new Date(usageLimit.resetsAtMs).toISOString()
+          : null,
+        testsBranch,
+        testedCommit,
+      },
+      3,
+    );
+    return;
+  }
   if (verdict === null) {
     log(`no verdict token from the tester for #${n} — HOLDING in_testing for a human`);
     emit(
@@ -1062,9 +1218,14 @@ function main() {
   // Defence-in-depth: assert the assembled context carries NO implementation
   // pointer. This is the centerpiece invariant — if it ever regresses, fail loudly
   // rather than silently leak the diff to the tester.
-  const serialised = JSON.stringify(context);
-  if (/branch_name|pr_url|\bdiff\b/i.test(serialised)) {
-    fail("assembled tester context unexpectedly contains an implementation pointer — refusing");
+  // The check is on the packet's FIELDS and the ticket's real pointer values (branch,
+  // PR, delivered commit) — never a word in the prose (see validateTesterPacket).
+  const packet = validateTesterPacket(
+    context,
+    implementationPointers(CONFIG.dispatchDb, context.number),
+  );
+  if (!packet.ok) {
+    fail(`assembled tester context failed the contract-only check (${packet.reason}) — refusing`);
     return;
   }
 

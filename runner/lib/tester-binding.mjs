@@ -150,7 +150,67 @@ export function readTesterEvidence(dbPath, ticketNumber) {
   }
 }
 
-export function landingDecision({ dbPath, ticketNumber, repoPath, branch }) {
+/**
+ * REQUIRED CI: the CI results the runner recorded for this ticket (`ticket.ci_result`
+ * events, newest first) → { required, state } for `commit`. No result ever recorded ⇒ CI
+ * is not required for this ticket. Unreadable ⇒ null (the caller holds).
+ */
+export function readCiState(dbPath, ticketNumber, commit) {
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const num = parseInt(String(ticketNumber ?? "").replace(/^#/, ""), 10);
+    const t = db.prepare("SELECT id FROM tickets WHERE number = ?").get(num);
+    if (!t) return null;
+    let rows;
+    try {
+      rows = db
+        .prepare(
+          "SELECT json_extract(payload_json, '$.commit') AS c, json_extract(payload_json, '$.state') AS s " +
+            "FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.ci_result' " +
+            "ORDER BY rowid DESC",
+        )
+        .all(t.id);
+    } catch {
+      return { required: false, state: null }; // no event log (minimal fixture)
+    }
+    if (!rows.length) return { required: false, state: null };
+    const want = String(commit ?? "").toLowerCase();
+    const hit = rows.find((r) => {
+      const c = String(r.c ?? "").toLowerCase();
+      return c !== "" && want !== "" && (want.startsWith(c) || c.startsWith(want));
+    });
+    return { required: true, state: hit ? String(hit.s ?? "") : null };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+export function landingDecision(args) {
+  const d = testerLandingDecision(args);
+  if (!d.ok) return d;
+  // REQUIRED CI: the commit about to land must have a recorded CI PASS when the runner
+  // has been recording CI for this ticket — every landing path asks this, not only the
+  // approve that preceded it.
+  const ci = readCiState(args.dbPath, args.ticketNumber, d.pin);
+  if (ci === null) return hold("unreadable", "the ticket's CI results could not be read");
+  if (ci.required && ci.state !== "pass")
+    return hold(
+      "ci-not-passed",
+      `required CI has ${ci.state === "fail" ? "FAILED" : "not passed"} for ${String(d.pin).slice(0, 12)} (${ci.state || "no result for this commit"})`,
+      { head: d.head },
+    );
+  return d;
+}
+
+function testerLandingDecision({ dbPath, ticketNumber, repoPath, branch }) {
   const ev = readTesterEvidence(dbPath, ticketNumber);
   if (ev.error) return hold("unreadable", ev.error);
   const head = branchHead(repoPath, branch);

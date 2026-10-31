@@ -36,6 +36,13 @@ The "Plan a build" panel runs a real, multi-turn decomposer (the dashboard's
    **"Create as draft"** or **"Create & ready"**. Drafts never sneak work into the
    queue; "Create & ready" readies only the tickets that pass the `ready` gate
    (a criterion-less ticket stays draft).
+4. **What you agreed is checked.** Every answer you gave the planner is a
+   requirement. The proposal lists them under *Agreed while planning* and flags
+   any that no proposed ticket's criteria cover (a "30-minute expiry" with no
+   criterion mentioning 30 minutes). Each one you keep becomes a criterion of the
+   Final (the epic's acceptance ticket), so the independent tester checks it even
+   when the planner's tickets left it out. `POST /epics` takes them as
+   `epic.agreed_requirements`, or reads them from `plan_session_id`.
 
 You are never trapped in the clarify loop: **"Build the tickets"** forces the
 best plan from the brief and answers so far, and a long conversation
@@ -177,6 +184,29 @@ structural barrier the whole design hangs on.
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
   `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
+- **"Done" means the combined code passed the gates on the target.** A branch
+  that passed its gates and a default branch that passed its gates can still
+  merge cleanly into something that fails (one side renames the field the other
+  side starts reading). So before anything lands — the merge lane, **Merge now**,
+  `gaffer merge`, the agent review's ship — the factory builds the merge of the
+  approved commit onto the *current* default branch in a scratch worktree and
+  runs the repo's Definition-of-Done gates on **that** merge — the same gates the
+  delivery ran: its test and lint commands and the typecheck script detected from
+  its package.json (read from the default branch first). It lands exactly
+  the gated merge commit, and only while the default branch is still the commit
+  it gated (compare-and-land; a branch that moved meanwhile is gated again). A
+  red combination never lands: the default branch is untouched and the ticket
+  waits in your queue (*blocked*, `merge_gate_red`) with the failing gate output
+  as evidence. In PR mode the gate runs on the merge onto the freshly fetched
+  remote default branch before `gh pr merge` is asked; GitHub's branch
+  protection ("require branches to be up to date" plus required checks) is the
+  compare-and-land upstream.
+- **Required CI is required.** With *Require CI green before review* on, the
+  runner records the CI result for the exact commit under review; approval (and
+  a tester PASS) is refused until that commit's CI has passed, a red result for an
+  approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
+  CI again before landing. The CI gate asks `gh` only for the fields the real CLI
+  exposes (`gh pr checks --json name,state,bucket,link`).
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates
@@ -347,6 +377,23 @@ hands the feature back to `backlog`; after two failed plans in a row it is left 
 for you. Off by default.
 Confirming a brownfield epic yourself (every ticket on one existing repo) moves that
 feature to `building` too.
+
+**Usage limits pause the factory, they do not fail tickets.** When the model
+refuses a delivery call because the plan's usage window ran out or a rate limit
+hit, the ticket goes back to Ready without counting an attempt (any work the agent
+had committed stays on its branch) and the factory pauses until the window resets:
+the reset time Claude Code printed plus a minute (a 5-hour, weekly or per-model
+limit alike, in both the older and the current CLI wording), or the **Usage-limit pause**
+setting (`GAFFER_USAGE_PAUSE_DEFAULT_MIN`, default 60 minutes, never below 10) when
+it printed none. No tick claims work meanwhile; `gaffer run --daemon`, the loop and
+a worker pool sleep instead of spinning. `gaffer status` and the **Health** view
+show "Paused until <time>: usage limit", and the ticket's timeline records the
+refusal. The pause lifts on its own. An overnight run that hits its window no longer
+parks good tickets. The same holds when the refused call was a new repo's
+scaffold, the independent tester or the agent reviewer: the factory pauses and the
+ticket waits where it was, rather than being parked or held for a person. A spend
+cap or an admin switch is not a pause: it needs someone to raise the cap, so those
+tickets are parked for a person as before.
 
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to

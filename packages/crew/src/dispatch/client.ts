@@ -184,6 +184,11 @@ export interface DispatchRepository {
   id: string;
   name: string;
   localPath: string | null;
+  /**
+   * The registered remote (onboarding stores origin's URL): the identity check on
+   * re-onboarding and what GitHub ingest reaches the repo by; absent on older facades.
+   */
+  remoteUrl?: string | null;
   defaultBranch: string;
   stack: string | null;
   riskLevel: string;
@@ -194,8 +199,12 @@ export interface DispatchRepository {
 
 export interface DispatchClient {
   listReady(): ReadyTicket[];
-  /** Dispatch's repository registry (visible repos). `[]` when the facade lacks it. */
-  listRepositories(): DispatchRepository[];
+  /**
+   * Dispatch's repository registry (visible repos; `includeHidden` adds hidden ones —
+   * the onboarding identity check must see every record a name can collide with).
+   * `[]` when the facade lacks it.
+   */
+  listRepositories(includeHidden?: boolean): DispatchRepository[];
   /**
    * Count tickets DELIVERED for a repo: tickets in the terminal `done` state
    * that reference the named repo. Used by the idle scan loops' per-repo

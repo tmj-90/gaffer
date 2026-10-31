@@ -332,4 +332,72 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     expect(res.status).toBe(202);
     expect(res.body.pending).toMatchObject({ testing: 1 });
   });
+
+  it("fires for an approved ticket the merge lane would land (AUTO_MERGE on), not otherwise", async () => {
+    restore = withEnv({
+      AUTO_MERGE: "1",
+      GAFFER_MERGE_LANE: undefined,
+      CREW_CONFIG: "/nonexistent/crew.yaml",
+    });
+    h = await startHarness(
+      { run: () => ({ started: true, pid: 7 }) },
+      false,
+      seedInStatus("ready_for_merge"),
+    );
+    let res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.pending).toMatchObject({ ready: 0, merge: 1 });
+    expect(h.runCount()).toBe(1);
+    for (const env of [{ AUTO_MERGE: "0" }, { AUTO_MERGE: "1", GAFFER_MERGE_LANE: "0" }]) {
+      await h.close();
+      restore();
+      restore = withEnv({
+        GAFFER_MERGE_LANE: undefined,
+        ...env,
+        CREW_CONFIG: "/nonexistent/crew.yaml",
+      });
+      h = await startHarness(
+        { run: () => ({ started: true, pid: 7 }) },
+        false,
+        seedInStatus("ready_for_merge"),
+      );
+      res = await call(h.baseUrl, "POST", "/poll-work");
+      expect(res.status).toBe(200);
+      expect(res.body.polled).toBe(false);
+      expect(h.runCount()).toBe(0);
+    }
+  });
+
+  it("fires for a draft with a local repo when clarify-when-idle is on, not for a repo-less one", async () => {
+    const draftWithRepo = (local: boolean) => (wg: Dispatch) => {
+      const t = wg.createTicket({ title: local ? "vague draft" : "repo-less draft" }, human);
+      if (local) {
+        wg.registerRepository(
+          { name: "svc", default_branch: "main", local_path: "/tmp/svc" },
+          human,
+        );
+        wg.linkRepository(t.id, "svc", "primary", human);
+      }
+    };
+    restore = withEnv({ CLARIFY_DRAFTS_WHEN_IDLE: "1", CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness({ run: () => ({ started: true, pid: 6 }) }, false, draftWithRepo(true));
+    let res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.pending).toMatchObject({ clarify: 1 });
+    await h.close();
+    h = await startHarness({ run: () => ({ started: true, pid: 6 }) }, false, draftWithRepo(false));
+    res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.polled).toBe(false);
+    await h.close();
+    restore();
+    restore = withEnv({
+      CLARIFY_DRAFTS_WHEN_IDLE: undefined,
+      CREW_CONFIG: "/nonexistent/crew.yaml",
+    });
+    h = await startHarness({ run: () => ({ started: true, pid: 6 }) }, false, draftWithRepo(true));
+    res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.polled).toBe(false);
+  });
 });

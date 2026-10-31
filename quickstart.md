@@ -45,6 +45,9 @@ This scans + registers the repo **and** runs a `claude -p` analysis that writes 
 **Repo Digest** (what the codebase is + how it's structured), a **Feature ledger** (the
 product capabilities it ships — not infrastructure), and grounded, cited **lore drafts**
 into the memory store. Re-running it is idempotent — it refreshes rather than duplicating.
+A different repository with the same directory name (two unrelated `api` checkouts) is
+refused rather than merged into the first one's record; onboard it under its own name with
+`runner/gaffer onboard /path/to/other/api --name other-api`.
 
 > Lore lands as **drafts** (gated). Approve what's worth keeping with the memory CLI;
 > nothing is auto-promoted.
@@ -145,6 +148,11 @@ runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (L
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
 
+If the model refuses a call because your usage window ran out (or a rate limit hit),
+the ticket goes back to Ready without counting an attempt and the run sleeps until the
+window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
+on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
+
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
 `gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and
 your `--check` commands, and **submits it for review** (`in_review`). The run summary
@@ -162,9 +170,13 @@ runner/gaffer approve 1 --reviewer <your-name>   # in_review → ready_for_merge
 runner/gaffer merge 1                            # the same conflict-safe merge the dashboard's Merge button runs
 ```
 
-`merge` fast-forwards your repo's default branch from the ticket branch, marks the
-ticket **done**, refreshes the repo's digest + feature ledger, and deletes the merged
-branch. A merge conflict is never forced: the ticket goes back for rework and re-approval.
+`merge` first builds the merge of the approved commit onto your current default branch in
+a scratch worktree and runs your repo's test/lint gates on **that** merge (the merge gate):
+only if the combination passes does it land that exact merge commit on the default branch,
+mark the ticket **done**, refresh the repo's digest + feature ledger and delete the merged
+branch. A combination that fails (each side passed alone) never lands: the ticket is held
+for you (*blocked*, with the failing output on it) and your default branch is untouched.
+A merge conflict is never forced: the ticket goes back for rework and re-approval.
 Run your repo's tests afterwards; the change is on your default branch, in your checkout.
 
 For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy

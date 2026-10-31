@@ -165,6 +165,11 @@ export function registerTicket(program: Command): void {
     .command("list")
     .description("List tickets")
     .option("-s, --status <status>", "filter by status")
+    .option(
+      "--claimable",
+      "only tickets whose dependencies are all done (what a claim can take); the runner's candidate scan applies its limit to this list",
+      false,
+    )
     .action((opts, cmd) => {
       if (opts.status !== undefined) {
         const statusResult = z.enum(TICKET_STATUSES).safeParse(opts.status);
@@ -177,7 +182,16 @@ export function registerTicket(program: Command): void {
         }
       }
       const wg = open(cmd.optsWithGlobals());
-      const rows = wg.list(opts.status);
+      // SCHEDULER: a dependant whose prerequisite is not done can never be claimed. The
+      // runner's scan used to walk them first (priority order) and hit its limit before
+      // reaching the low-priority prerequisite that would unblock them all — forever.
+      const rows = wg
+        .list(opts.status)
+        .filter(
+          (t) =>
+            opts.claimable !== true ||
+            wg.ticketDependencies.unsatisfiedDependencies(t.id).length === 0,
+        );
       printJson(
         // `acceptance` rides along so the runner's tester lane can pick an epic's
         // acceptance ticket out of in_testing even with GAFFER_TESTING off.
@@ -241,6 +255,68 @@ export function registerTicket(program: Command): void {
         actor,
       );
       printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
+    .command("hold <ref>")
+    .description(
+      "Hold an approved ticket for a human (ready_for_merge | in_testing -> blocked) with a " +
+        "reason code — the runner's merge gate and a late red CI result. System/admin only.",
+    )
+    .requiredOption("--reason-code <code>", "snake_case reason code (e.g. merge_gate_red, ci_red)")
+    .requiredOption("--reason <text>", "why it is held (shown in the human queue)")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.holdForHuman(
+        ref,
+        { reasonCode: String(opts.reasonCode), reason: String(opts.reason) },
+        actor,
+      );
+      printJson({ ok: true, status: res.ticket.status, event: res.eventId });
+      wg.db.close();
+    });
+
+  ticket
+    .command("ci-result <ref>")
+    .description(
+      "REQUIRED CI: record a CI result for the ticket's candidate commit (pending | pass | " +
+        "fail). A fail on an approved ticket holds it for a human. System/admin only.",
+    )
+    .requiredOption("--commit <sha>", "the commit the checks ran on")
+    .requiredOption("--state <state>", "pending | pass | fail")
+    .option("--detail <text>", "the failing check (name + url) or a note")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const state = z.enum(["pending", "pass", "fail"]).parse(String(opts.state));
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.recordCiResult(
+        ref,
+        {
+          commit: String(opts.commit),
+          state,
+          ...(opts.detail ? { detail: String(opts.detail) } : {}),
+        },
+        actor,
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
+    .command("ci-status <ref>")
+    .description("REQUIRED CI: the latest recorded CI state for a commit of the ticket")
+    .option("--commit <sha>", "the candidate commit (default: the latest result)")
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      printJson({ ok: true, ...wg.ciStatus(ref, opts.commit ? String(opts.commit) : null) });
       wg.db.close();
     });
 

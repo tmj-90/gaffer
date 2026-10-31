@@ -453,7 +453,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Require CI green before review",
     help:
       "Poll the delivery PR's CI checks and only let the ticket into review when they pass; " +
-      "red checks reject it back to rework. REQUIRES 'Deliver as a pull request' — the checks " +
+      "red checks reject it back to rework. Required means required: approval (and a tester " +
+      "PASS) is refused until CI has passed for the exact commit being approved, a red result " +
+      "for an approved ticket holds it for a human (blocked, ci_red), and the merge lane " +
+      "re-reads CI before landing. REQUIRES 'Deliver as a pull request' — the checks " +
       "live on the PR, so with PR delivery off this gate is skipped with a warning (it used to " +
       "poll a PR that never existed and reject every delivery at the timeout).",
   },
@@ -560,6 +563,21 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     group: "budget",
     label: "Pause on budget cap",
     help: "When the spend ceiling is hit, pause in-flight work instead of hard-stopping.",
+  },
+  {
+    key: "GAFFER_USAGE_PAUSE_DEFAULT_MIN",
+    type: "int",
+    group: "budget",
+    label: "Usage-limit pause (min)",
+    help:
+      "When the model refuses a call on its usage window or a rate limit, the ticket goes " +
+      "back to ready without counting an attempt and the factory pauses: no tick claims " +
+      "work, and gaffer run --daemon, the loop and a worker pool sleep until the pause " +
+      "ends. The pause lasts until the reset time the model reported, plus a minute; this " +
+      "setting is the wait when no reset time was reported. Default 60. Never less than " +
+      "10 minutes (a lower value is raised to 10; a reported reset is also held to at least " +
+      "10 minutes and at most 8 days). gaffer status and the Health view show the pause; " +
+      "it lifts on its own (or early: node runner/lib/usage-pause.mjs clear).",
   },
   {
     key: "GAFFER_CI_POLL_ATTEMPTS",

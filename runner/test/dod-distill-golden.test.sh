@@ -50,12 +50,14 @@ printf '%s\n' ' RUN  v1.6.0' ' ❯ src/sum.test.ts (1 test | 1 failed)' '   ✕ 
 printf '%s\n' ' FAIL  src/sum.test.js' '  ● Calc › adds' '    expect(received).toBe(expected)' '    Expected: 4' '    Received: 3' '      at Object.<anonymous> (src/sum.test.js:5:19)' > "$CORPUS/jest.log"
 printf '%s\n' '[INFO] Running com.example.CalcTest' '[ERROR] Tests run: 1, Failures: 1 <<< FAILURE!' 'org.opentest4j.AssertionFailedError: expected: <4> but was: <3>' > "$CORPUS/maven.log"
 printf '\tat com.example.CalcTest.testAdd(CalcTest.java:12)\n' >> "$CORPUS/maven.log"
+# node --test (TAP): the failing test's NAME line must survive, not only the assertion.
+printf '%s\n' 'TAP version 13' '# Subtest: ok one' 'ok 1 - ok one' '# Subtest: drops completed' 'not ok 2 - drops completed' '  ---' "  location: '/r/test/a.test.js:7:1'" '  error: |-' '    Expected values to be strictly equal:' '  expected: 1' '  actual: 0' '  ...' '# fail 1' > "$CORPUS/tap.log"
 printf '%s\n' 'Building project...' 'Compiling module A' 'Compiling module B' 'Done in 4.2s' > "$CORPUS/nosig.log"
 printf '%s\n' 'first line' '' '   ' 'last line' > "$CORPUS/blanks.log"
 : > "$CORPUS/empty.log"
 : > "$CORPUS/big.log"
 for i in $(seq 1 60); do printf 'FAIL case %s\n' "$i" >> "$CORPUS/big.log"; done
-for f in go pytest vitest jest maven nosig blanks empty; do distill_case "$f" "$CORPUS/$f.log" 40; done
+for f in go pytest vitest jest maven tap nosig blanks empty; do distill_case "$f" "$CORPUS/$f.log" 40; done
 distill_case big-2 "$CORPUS/big.log" 2
 distill_case big-40 "$CORPUS/big.log" 40
 distill_case big-60 "$CORPUS/big.log" 60

@@ -245,23 +245,41 @@ switch (cmd) {
   }
 
   // ── ac-checks.sh ─────────────────────────────────────────────────────────────
-  // ac-check-rows: stdin = ticket show → "<ac-id>\t<check_command>\t<label>" per AC that
-  // carries a check (TABs/newlines collapsed); exit 3 on unparseable input.
+  // ac-check-rows: stdin = ticket show → "<ac-id>\t<base64(check_command)>\t<label>" per AC
+  // that carries a check; exit 3 on unparseable input. The command travels BASE64 so its
+  // bytes (a quoted TAB, newlines, backslashes, non-ASCII) reach `bash -c` exactly as
+  // stored: the row format used to collapse TABs/newlines to spaces, and a failing
+  // criterion was recorded satisfied. Only the display label is flattened.
   case "ac-check-rows": {
     const p = tryParse(readStdin());
     if (!p.ok) process.exit(3);
     const d = p.value || {};
     const acs = d.acceptanceCriteria || d.acceptance_criteria || [];
     acs.forEach((ac, idx) => {
-      let cmd = String((ac && ac.check_command) || "").trim();
-      if (!cmd) return;
-      cmd = cmd.replace(/\t/g, " ").replace(/\n/g, " ").replace(/\r/g, " ");
+      const raw = ac && typeof ac.check_command === "string" ? ac.check_command : "";
+      if (!raw.trim()) return;
+      const cmd = Buffer.from(raw, "utf8").toString("base64");
       const text = String((ac && ac.text) || "")
         .replace(/\t/g, " ")
         .replace(/\n/g, " ")
         .slice(0, 60);
       println(`${pyStr((ac && ac.id) ?? "")}\t${cmd}\tAC${idx + 1}: ${text}`);
     });
+    break;
+  }
+
+  // ── ci-gate.sh ──────────────────────────────────────────────────────────────────
+  // ci-check-rows: stdin = `gh pr checks --json name,state,bucket,link` (the REAL field
+  // names) → "<name>\t<state>\t<bucket>\t<link>" per check. TABs/newlines inside a
+  // value are flattened (display fields). Unparseable / non-array → nothing.
+  case "ci-check-rows": {
+    const p = tryParse(readStdin());
+    const rows = p.ok && Array.isArray(p.value) ? p.value : [];
+    const flat = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+    for (const c of rows) {
+      if (!c || typeof c !== "object") continue;
+      println([flat(c.name), flat(c.state), flat(c.bucket), flat(c.link)].join("\t"));
+    }
     break;
   }
 
@@ -376,6 +394,10 @@ switch (cmd) {
       });
     }
     const readRoots = (e.GF_READ_ROOTS ?? "").split("\n").filter((l) => l !== "");
+    // The human's decision answers ($_RD, from resolved-decisions); fail-soft to [].
+    let resolvedDecisions = [];
+    const rd = tryParse(e.GF_RD || "[]");
+    if (rd.ok && Array.isArray(rd.value)) resolvedDecisions = rd.value.filter(isObj);
     println(
       JSON.stringify({
         kind: "delivery",
@@ -385,6 +407,7 @@ switch (cmd) {
         skills: e.GF_SKILLS ?? "",
         lenses: e.GF_LENSES ?? "",
         reviewFeedbackReasons: reasons,
+        resolvedDecisions,
         fileCardsBlock: e.GF_FCB ?? "",
         productContextBlock: e.GF_PCB ?? "",
         workBranch: e.GF_WORK_BRANCH ?? "",
@@ -588,6 +611,27 @@ switch (cmd) {
     const seen = new Set();
     const uniq = outList.filter((x) => (seen.has(x) ? false : (seen.add(x), true)));
     for (const r of uniq.slice(-5)) println(`  - ${r}`);
+    break;
+  }
+  // resolved-decisions: stdin = ticket show → one JSON line, the human's answers to
+  // decisions linked to this ticket (resolvedDecisions), oldest first, last five:
+  // [{title, question, status, answer}]. The delivery prompt quotes them (inside an
+  // untrusted envelope) so an agent that skips get_ticket does not re-ask. Fail-soft:
+  // bad input or no answers → "[]".
+  case "resolved-decisions": {
+    const p = tryParse(readStdin());
+    const d = p.ok && isObj(p.value) ? p.value : {};
+    const rows = (Array.isArray(d.resolvedDecisions) ? d.resolvedDecisions : [])
+      .filter((x) => isObj(x) && (x.status === "accepted" || x.status === "rejected"))
+      .sort((a, b) => String(a.resolved_at || "").localeCompare(String(b.resolved_at || "")))
+      .slice(-5)
+      .map((x) => ({
+        title: String(x.title || ""),
+        question: String(x.question || ""),
+        status: x.status,
+        answer: String(x.resolved_answer || ""),
+      }));
+    println(JSON.stringify(rows));
     break;
   }
   // worktree-rows-json: stdin = TAB rows (id name path base wt) → JSON array of the

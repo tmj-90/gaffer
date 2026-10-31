@@ -9,7 +9,7 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -346,6 +346,12 @@ try {
     "#one-ticket textarea",
     "Users need to drop completed tasks. Add clearDone(list) with a unit test.",
   );
+  // Create waits for a write repo: held (aria-disabled) and saying so before one is on.
+  const createSel = '#one-ticket button:has-text("Create ticket")';
+  (await page.getAttribute(createSel, "aria-disabled")) === "true" &&
+  /Attach a write repo first/.test((await page.textContent("#one-ticket")) || "")
+    ? ok("Create view: Create is held, and says so, until a write repo is attached")
+    : bad("Create view: Create looks pressable with no write repo attached");
   // "Repos & scope": pick the repo in the "Add a repo…" select (access stays `write`) and press Add.
   const attached = await page.evaluate(() => {
     const sel = [...document.querySelectorAll("select")].find((s) =>
@@ -365,7 +371,10 @@ try {
       ? ok("Create view: attached taskflow-mini (write) via the repo select + Add")
       : bad("Create view: Add did not attach the repo");
   } else note("Create view: 'Add a repo…' select does not list taskflow-mini");
-  await page.click('#one-ticket button:has-text("Create ticket")');
+  (await page.getAttribute(createSel, "aria-disabled")) === "false"
+    ? ok("Create view: attaching the write repo released Create")
+    : bad("Create view: Create is still held after attaching a write repo");
+  await page.click(createSel);
   const ticket = await waitFor(
     async () => {
       const r = await api("GET", "/tickets");
@@ -961,6 +970,64 @@ try {
     await shot(page, "floor");
   }
 
+  // ── 6z. usage-window pause on Health: the runner writes $GAFFER_DATA/usage-pause.json
+  //   when the model refuses a call on its usage window; Health says so first, in
+  //   both themes, at 320 and 1440, and passes the a11y audit. Removed afterwards so
+  //   the rest of the run is not paused (the dashboard only reads the file).
+  if (process.env.GAFFER_DATA) {
+    const pauseFile = path.join(process.env.GAFFER_DATA, "usage-pause.json");
+    const until = Date.now() + 3_600_000;
+    writeFileSync(
+      pauseFile,
+      JSON.stringify({
+        paused_until: new Date(until).toISOString(),
+        until_ms: until,
+        kind: "usage_limit",
+        basis: "reset",
+        message: "You've hit your session limit · resets 3pm (UTC)",
+        ticket: ticket.number ?? null,
+      }),
+    );
+    try {
+      for (const [w, h, theme] of [
+        [1440, 900, "light"],
+        [320, 640, "dark"],
+      ]) {
+        const c3 = await browser.newContext({ viewport: { width: w, height: h } });
+        const p3 = await c3.newPage();
+        await p3.goto(`${BASE}/?token=${TOKEN}#/health`, { waitUntil: "load" });
+        await p3.evaluate((t) => document.documentElement.setAttribute("data-theme", t), theme);
+        await sleep(900);
+        const got = await p3.evaluate(() => {
+          const n = document.querySelector(".usage-pause-note");
+          return {
+            text: n ? n.textContent.trim() : "",
+            label: n ? n.getAttribute("aria-label") : "",
+            overflow: document.documentElement.scrollWidth > window.innerWidth,
+          };
+        });
+        /^Paused until .+: usage limit\./.test(got.text) &&
+        /^The factory is paused until .+ because of a usage limit\.$/.test(got.label || "") &&
+        !got.overflow
+          ? ok(
+              `health@${w} ${theme}: "${got.text.slice(0, 48)}…" (sentence label, no sideways scroll)`,
+            )
+          : bad(
+              `health@${w} ${theme}: pause note '${got.text}' label '${got.label}' overflow=${got.overflow}`,
+            );
+        await shot(p3, `health-usage-pause-${w}-${theme}`);
+        if (AXE_SOURCE) await auditA11y(p3, "health (usage pause)", String(w));
+        await c3.close();
+      }
+    } finally {
+      try {
+        unlinkSync(pauseFile);
+      } catch {
+        /* already gone */
+      }
+    }
+  } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [
@@ -981,8 +1048,13 @@ try {
   ]) {
     const before = consoleErrors.length;
     await page.goto(`${BASE}/#/${v}`, { waitUntil: "load" });
-    await sleep(900);
-    const txt = (await page.textContent("#app")) || "";
+    // Wait for the view to paint (up to 6 s on a loaded runner), not a fixed 900 ms.
+    let txt = "";
+    for (let i = 0; i < 12; i++) {
+      await sleep(500);
+      txt = (await page.textContent("#app")) || "";
+      if (txt.trim().length > 50) break;
+    }
     txt.trim().length > 50 && consoleErrors.length === before
       ? ok(`view '${v}' renders (${txt.trim().length} chars, no console errors)`)
       : bad(
@@ -1224,6 +1296,79 @@ try {
             `board move: draft ${draft0}→${draft1}→${draft2}, console errors: ${newErrs.join(" | ")}`,
           );
     }
+  }
+  // ── 10. Plan a build: an answer given while the planner asks its questions reaches the
+  // Final. The planner (POST /plan-build, answered here by the page's network layer — the
+  // stub worker does not plan) asks how long a link lives, the answer is "30 minutes",
+  // the proposal omits it: the proposal must flag it, and confirming must create the
+  // acceptance ticket WITH that criterion (real server, real POST /epics).
+  {
+    let turns = 0;
+    await page.route("**/plan-build", async (route) => {
+      turns++;
+      const body =
+        turns === 1
+          ? { phase: "clarify", questions: ["How long should a short link stay valid?"] }
+          : {
+              phase: "plan",
+              plan: {
+                epic: { name: `Shortener ${RUN_TAG}`, description: "A link shortener" },
+                tickets: [
+                  {
+                    title: `Shorten a URL (${RUN_TAG})`,
+                    description: "POST /links returns a short code",
+                    acceptanceCriteria: ["POST /links returns a short code"],
+                    dependsOn: [],
+                  },
+                ],
+              },
+            };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(body),
+      });
+    });
+    await page.goto(`${BASE}/#/create`, { waitUntil: "load" });
+    const say = async (text) => {
+      await page.fill(".pb-composer .pb-input", text);
+      await page.click('.pb-composer button[aria-label="Send"]');
+      await sleep(1200);
+    };
+    await say("a link shortener");
+    await say("Links expire after 30 minutes");
+    const flagged = await page
+      .locator(
+        'section[aria-label="Requirements agreed while planning"] .pb-agreed-item.is-uncovered',
+      )
+      .count();
+    flagged === 1
+      ? ok("Plan a build: the 30-minute answer is listed and flagged as in no ticket's criteria")
+      : bad(
+          `Plan a build: agreed-requirement section shows ${flagged} uncovered item(s), expected 1`,
+        );
+    await shot(page, "plan-agreed-requirements");
+    await page.click('button:has-text("Create as draft")');
+    const acc = await waitFor(
+      async () => {
+        const list = (await api("GET", "/tickets")).json.tickets || [];
+        return list.find((t) => t.title === `Acceptance: Shortener ${RUN_TAG}`) || null;
+      },
+      "acceptance ticket created",
+      15000,
+      500,
+    ).catch(() => null);
+    const view = acc ? (await api("GET", `/tickets/${acc.id}`)).json : null;
+    const acs = (view && (view.acceptanceCriteria || view.acceptance_criteria)) || [];
+    acs.some((a) => /Agreed during planning: Links expire after 30 minutes/.test(a.text))
+      ? ok("Plan a build: the acceptance ticket carries the agreed 30-minute requirement")
+      : bad(
+          `Plan a build: acceptance criteria lack the agreed requirement (${acs
+            .map((a) => a.text)
+            .join(" | ")
+            .slice(0, 300)})`,
+        );
+    await page.unroute("**/plan-build");
   }
 } catch (err) {
   bad("harness error: " + (err?.stack || err));

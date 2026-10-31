@@ -671,9 +671,10 @@ try {
       const tip = g("rev-parse", `refs/heads/${rd.branch}`);
       const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
       g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
-      const btn = page
-        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
-        .first();
+      // The sign-off button by its class: its label names the server's outcome, and the
+      // armed label is the outcome's confirmation ("Confirm approval", "Confirm and land
+      // now"…), so a text match would lose it between the two clicks.
+      const btn = page.locator("button.signoff-btn").first();
       await waitFor(
         async () => (!(await btn.isDisabled()) ? true : null),
         "approve enabled",

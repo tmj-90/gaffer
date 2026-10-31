@@ -156,6 +156,11 @@ asks for a daily budget (prefilled at $5) and saves it to Settings → Budget & 
 it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` in your environment opts out (for a
 key you cap somewhere else). It is ignored in `settings.json`.
 
+If the model refuses a call because your usage window ran out (or a rate limit hit),
+the ticket goes back to Ready without counting an attempt and the run sleeps until the
+window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
+on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
+
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
 `gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and
 your `--check` commands, and **submits it for review** (`in_review`). The run summary

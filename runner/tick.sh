@@ -7,7 +7,10 @@
 # it FILED work (drafts, ingested issues, an epic, lore suggestions); maintenance_ran = it
 # ran a model-backed step (feature-backlog planning) but filed nothing — counted against
 # the day cap but an empty poll for draining; no_work = nothing claimable and nothing new
-# (the deterministic scans cost nothing, so a scan that finds nothing new is no_work).
+# (the deterministic scans cost nothing, so a scan that finds nothing new is no_work);
+# usage_paused = the delivery call was refused by the plan's usage window or a rate
+# limit: the claim went back to `ready` without counting an attempt and the factory is
+# paused until the window resets (lib/usage-pause.mjs).
 #
 # DRY_RUN=1 (default) prints the plan and never invokes Claude or mutates a repo.
 set -uo pipefail
@@ -461,6 +464,16 @@ if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_budget_headroom_ok >/dev/null
   log "BUDGET: lifetime budget exhausted (GAFFER_BUDGET_USD=\$${GAFFER_BUDGET_USD}, headroom \$${GAFFER_BUDGET_REMAINING:-unknown}) — not starting new paid work this tick; raise GAFFER_BUDGET_USD to continue"
   result no_work; exit 0
 fi
+# USAGE WINDOW (lib/usage-pause.sh): a model call was refused by the plan's usage
+# window or a rate limit, and $GAFFER_DATA/usage-pause.json says when it resets. Until
+# then no tick claims or spawns anything — a refused call would only be refused again.
+# `no_work` hands the day-cap slot back (nothing was spent); loop.sh, worker.sh and the
+# daemon read the same pause and sleep rather than run ticks into this gate.
+if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
+   && _USAGE_PAUSE_LINE="$(gaffer_usage_pause_active)"; then
+  log "USAGE: $_USAGE_PAUSE_LINE — not starting new paid work this tick"
+  result no_work; exit 0
+fi
 
 # Ensure a stable factory agent (register once).
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
@@ -499,19 +512,21 @@ CLAIM_TOKEN=""
 # Release/park the runner-held delivery claim (RUNNER-OWNED-BOOKKEEPING). $1 =
 # ready|refining|blocked, $2 = reason. Optional structured park metadata for the
 # board card + the activity trail: $3 = reason-code (e.g. rework_exhausted), $4 =
-# attempt reached, $5 = attempt ceiling. With a token (normal delivery) the matching
+# attempt reached, $5 = attempt ceiling, $6 = paused-until ISO (reason-code
+# usage_limit: the ticket.usage_limited event carries when the window resets). With a token (normal delivery) the matching
 # claim is released; without one (a resumed in_progress delivery) the ticket is
 # transitioned tokenlessly via the same guarded runner-release path. `blocked` is the
 # VISIBLE terminal park for an exhausted rework loop — a human never wonders where the
 # ticket went. Best-effort + logged.
 gaffer_release_delivery() {
-  local to="$1" reason="$2" code="${3:-}" attempt="${4:-}" maxa="${5:-}"
+  local to="$1" reason="$2" code="${3:-}" attempt="${4:-}" maxa="${5:-}" until="${6:-}"
   # DRY_RUN never claims, so it never releases — keep it side-effect-free.
   [ "${DRY_RUN:-0}" = "1" ] && return 0
   local extra=()
   [ -n "$code" ]    && extra+=(--reason-code "$code")
   [ -n "$attempt" ] && extra+=(--attempt "$attempt")
   [ -n "$maxa" ]    && extra+=(--max "$maxa")
+  [ -n "$until" ]   && extra+=(--paused-until "$until")
   # BOUNDED RETRY. A single failed control-plane call used to be final: the claim
   # stayed live until its TTL, the ticket sat 'claimed' and a human was paged — for
   # what is usually a transient (a busy SQLite writer under GAFFER_CONCURRENCY>1, a
@@ -1302,8 +1317,27 @@ if [ "$READY_COUNT" -gt 0 ]; then
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     gaffer_record_skill_usage "$NUM" bootstrap "$STACK" "$B_SKILLS" "$B_USAGE_JSON" \
       "bootstrap-$NUM" "$B_DIR" "$_B_SKILL_SINCE"
+    # USAGE WINDOW: a bootstrap refused by the plan's usage window / a rate limit is not
+    # a failed scaffold (same rc 0/1/2 contract as the delivery path below). Record the
+    # pause, release the claim to `ready` without parking it for a human, and keep the
+    # partial scaffold: the dir stays a resumable bootstrap target for the retry.
+    _B_UL_REC="$(gaffer_usage_pause_record "$B_USAGE_JSON" "$NUM" bootstrap)"; _B_UL_RC=$?
     rm -f "$B_USAGE_JSON"
     log "bootstrap delivery for #$NUM finished (rc=$brc)"
+    if [ "$_B_UL_RC" != 1 ]; then
+      _UL_UNTIL=""; _UL_MSG=""
+      IFS=$'\t' read -r _ _UL_UNTIL _ _ _UL_MSG <<<"$_B_UL_REC"
+      _UL_LINE="$(gaffer_usage_pause_active || echo "paused: usage limit")"
+      gaffer_release_delivery ready \
+        "usage limit: ${_UL_MSG:-refused by the usage window}; ${_UL_LINE}; not counted as an attempt (scaffold kept at $B_DIR)" \
+        usage_limit "" "" "$_UL_UNTIL"
+      if [ "$_B_UL_RC" != 0 ]; then
+        gaffer_skip_ticket "$NUM"   # FAIL CLOSED: no pause written, so do not re-claim it this run
+        log "USAGE: WARNING — bootstrap #$NUM was refused by a usage/rate limit but the pause could not be written under $GAFFER_DATA; skipping the ticket for the rest of this run"
+      fi
+      log "USAGE: bootstrap #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready, scaffold kept at $B_DIR; $_UL_LINE"
+      result usage_paused; exit 0
+    fi
     if [ "$brc" -ne 0 ]; then
       # FINDING-12: park bootstrap failures to the VISIBLE `blocked` column (event +
       # attention count in status.sh / the human queue) — `refining` hid them from
@@ -1729,7 +1763,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # lists, the review-feedback framing and the quarantine envelope around
   # the (untrusted) reasons are all rendered by crew's deliveryPrompt.ts, which
   # reads _RF through _gaffer_prompt_inputs_json (factory.config.sh).
-  _RF="$(wg ticket show "$NUM" 2>/dev/null | gaffer_json review-feedback 2>/dev/null || true)"
+  # The human's answers to decisions on this ticket ride in the same way (_RD, a
+  # JSON array the renderer quotes inside an untrusted envelope), so an agent that
+  # skips get_ticket's resolved_decisions does not ask the same question again.
+  _TSHOW="$(wg ticket show "$NUM" 2>/dev/null || true)"
+  _RF="$(printf '%s' "$_TSHOW" | gaffer_json review-feedback 2>/dev/null || true)"
+  _RD="$(printf '%s' "$_TSHOW" | gaffer_json resolved-decisions 2>/dev/null || true)"
 
   # ── PRIOR CONTEXT (file cards) — via shared gaffer_prime_context_block ───────
   # Runner has ALREADY resolved scope (write/read partition above). Pull the
@@ -2622,6 +2661,56 @@ $_trail_q
   if [ "$_RESUMING" = "1" ]; then
     gaffer_record_resume_report "$NUM" "$USAGE_JSON" \
       || log "RESUME: could not record the resumed agent's report for #$NUM (continuing)"
+  fi
+  # ── USAGE WINDOW: a usage-limit / rate-limit refusal is NOT a failed delivery ──
+  # The agent was refused by the plan's usage window or a rate limit before it could
+  # work (lib/worker.mjs detectUsageLimit — the ONE table of matched strings). Read
+  # as a failure it went through the no-commit counter / the rework ladder, burned
+  # an attempt every tick until the window reset, and parked good tickets overnight.
+  # Instead: record the factory-wide pause ($GAFFER_DATA/usage-pause.json, its end
+  # from the reset the CLI printed or GAFFER_USAGE_PAUSE_DEFAULT_MIN), keep whatever
+  # the agent made before the refusal (WIP checkpoint; the branch is kept when it has
+  # commits and the next delivery builds on it), release the claim to `ready` with
+  # reason-code usage_limit (a ticket.usage_limited event) WITHOUT counting an
+  # attempt, and stop. Every admission point waits for the pause to end. A resumed
+  # delivery goes back to `paused` (worktree kept) for its Continue.
+  # rc 1 = an ordinary result (also any failure to CLASSIFY — that runs without the
+  # pause lock, so a held lock or a crash cannot fake a refusal); rc 0 = a refusal,
+  # pause written; rc 2 = a confirmed refusal whose pause could not be written.
+  _UL_REC="$(gaffer_usage_pause_record "$USAGE_JSON" "$NUM" delivery)"; _UL_RC=$?
+  if [ "$_UL_RC" != 1 ]; then
+    _UL_UNTIL=""; _UL_KIND=""; _UL_MSG=""
+    IFS=$'\t' read -r _ _UL_UNTIL _UL_KIND _ _UL_MSG <<<"$_UL_REC"
+    _UL_LINE="$(gaffer_usage_pause_active || echo "paused: usage limit")"
+    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    rm -f "$USAGE_JSON"
+    gaffer_wip_checkpoint "$WT_ROWS" "$NUM" "$TITLE" \
+      && log "USAGE: #$NUM had uncommitted work at the refusal — WIP checkpoint committed on $WORK_BRANCH"
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "${_UL_KIND:-usage_limit}: ${_UL_MSG:-refused by the usage window}"
+      log "USAGE: resumed #$NUM was refused (${_UL_MSG:-usage limit}) — re-paused with its worktree; $_UL_LINE"
+      result usage_paused; exit 0
+    fi
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+      _UL_BRANCH="branch $WORK_BRANCH kept for the next attempt"
+    else
+      gaffer_cleanup_worktrees drop-branch
+      _UL_BRANCH="no work to keep"
+    fi
+    gaffer_release_delivery ready \
+      "usage limit: ${_UL_MSG:-refused by the usage window}; ${_UL_LINE}; not counted as an attempt" \
+      usage_limit "" "" "$_UL_UNTIL"
+    if [ "$_UL_RC" != 0 ]; then
+      # FAIL CLOSED: the pause could not be written, so nothing would stop the next
+      # tick re-claiming this ticket straight into the same refusal. Skip it for the
+      # rest of this run (the next ticket meets the same refusal and is skipped too).
+      gaffer_skip_ticket "$NUM"
+      log "USAGE: WARNING — #$NUM was refused by a usage/rate limit but the pause could not be written under $GAFFER_DATA; skipping the ticket for the rest of this run"
+    fi
+    log "USAGE: #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready without counting an attempt ($_UL_BRANCH); $_UL_LINE"
+    result usage_paused; exit 0
   fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
   # If the agent hit the TURN cap (num_turns at/over the cap, or a max-turns stop

@@ -1476,6 +1476,13 @@
   .toast.ok {
     box-shadow: 0 3px 0 var(--sky);
   }
+  .toast-link {
+    flex: none;
+    color: var(--sky-on-board);
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
   .toast-code {
     font: 700 var(--t12) var(--f-mono);
     color: var(--board-ink-2);
@@ -1535,6 +1542,12 @@
   .movemenu-item:hover,
   .movemenu-item:focus-visible {
     background: var(--sky-wash);
+  }
+  /* Won't do… is an act, not a lane: a hairline sets it apart from the lanes. */
+  .movemenu-item.movemenu-wontdo {
+    border-top: 1px solid var(--rule);
+    border-radius: 0 0 var(--r) var(--r);
+    color: var(--red);
   }
   .movemenu-dot {
     width: 10px;
@@ -1654,6 +1667,10 @@
     border-color: var(--ink);
     background: var(--sky-wash);
   }
+  .value-sheet-input {
+    width: 100%;
+    font-family: var(--f-mono);
+  }
   .reject-reason-input {
     width: 100%;
     min-height: 6.5em;
@@ -1662,7 +1679,8 @@
   .reject-dialog .act-hint {
     margin-top: calc(-1 * var(--s3));
   }
-  .reject-dialog .act-hint.is-error {
+  .reject-dialog .act-hint.is-error,
+  .value-sheet .act-hint.is-error {
     color: var(--red);
     font-weight: 700;
   }

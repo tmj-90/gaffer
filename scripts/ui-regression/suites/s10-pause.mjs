@@ -31,6 +31,12 @@ export default async function s10(t, L) {
   const b = await pause("Pause and stop");
   const wt = L.stubCalls({ kind: "delivery", ticket: b.number })[0]?.cwd;
   await t.visit(`ticket/${b.id}`);
+  const stopTitle = await p.locator('.view button:has-text("Stop")').first().getAttribute("title");
+  t.check(
+    /worktree is removed on the next tick/.test(stopTitle || ""),
+    "the paused Stop says what happens: cancelled, worktree removed on the next tick",
+    `the Stop button's title reads: ${stopTitle}`,
+  );
   await p.locator('.view button:has-text("Stop")').first().click();
   await p.locator(".reject-dialog .reject-reason-input").fill("not worth more turns");
   const sresP = p.waitForResponse((r) => r.url().endsWith(`/tickets/${b.id}/stop`), {

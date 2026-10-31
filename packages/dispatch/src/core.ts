@@ -1767,6 +1767,7 @@ export class Dispatch {
       reasonCode?: string;
       attempt?: number;
       maxAttempts?: number;
+      pausedUntil?: string;
     },
     actor: Actor,
   ): { status: string; eventId: string } {

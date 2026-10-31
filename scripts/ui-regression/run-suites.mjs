@@ -5,47 +5,18 @@
 // suite. Prints one summary line per suite and the overall
 // "UI scenarios: N ok, N FAIL" line; exits 1 on any FAIL. Env: BASE TOKEN REPO_PATH
 // OUT GAFFER_DATA (run-suites.sh sets them); UI_SUITES or argv names the suites.
-import { mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import * as L from "./lib.mjs";
+import { ORDER, available as listSuites, requested } from "./suite-plan.mjs";
 
+export { ORDER };
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 mkdirSync(L.OUT, { recursive: true });
-
-// The order suites run in when none are named (also the order inside a shard).
-export const ORDER = [
-  "s1-rework",
-  "s2-wont-do",
-  "s3-blocked",
-  "s10-pause",
-  "s5-tester",
-  "s6-decisions",
-  "s12-settings",
-  "s13-principals",
-  "s9-memory",
-  "s14-map",
-  "s15-squad-floor",
-  "s8-specs",
-  "s7-plan",
-  "s11-health",
-  "s4-autonomy",
-  "s16-review-hold",
-  "s17-conflict",
-  "s12b-idle-lanes",
-  "sweep",
-];
-
-const available = readdirSync(path.join(HERE, "suites"))
-  .filter((f) => f.endsWith(".mjs"))
-  .map((f) => f.replace(/\.mjs$/, ""));
-const asked = (
-  process.argv.slice(2).length
-    ? process.argv.slice(2)
-    : (process.env.UI_SUITES || "").split(/[\s,]+/)
-).filter(Boolean);
-const names = asked.length ? asked : ORDER.filter((n) => available.includes(n));
+const available = listSuites();
+const names = requested(process.argv.slice(2));
 const unknown = names.filter((n) => !available.includes(n));
 if (unknown.length) {
   console.error(`unknown suite(s): ${unknown.join(", ")} (have: ${available.join(", ")})`);
@@ -256,8 +227,16 @@ const summary = [];
 const t0all = Date.now();
 const boot = L.makeReporter("bootstrap");
 let repo = null;
+// A suite that starts from an EMPTY factory (no onboarded repo: a greenfield plan)
+// exports `onboard = false`; the sample repo is then left unregistered when every
+// suite of the run says so (an own-server world runs exactly one suite).
+const mods = await Promise.all(
+  names.map((n) => import(pathToFileURL(path.join(HERE, "suites", `${n}.mjs`)).href)),
+);
 try {
-  repo = await bootstrap(boot);
+  if (mods.every((m) => m.onboard === false))
+    boot.note("bootstrap: the sample repo is NOT onboarded (every suite of this run starts empty)");
+  else repo = await bootstrap(boot);
 } catch (e) {
   boot.bad("bootstrap harness error: " + (e?.stack || e));
 }

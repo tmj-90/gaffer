@@ -63,8 +63,27 @@ _gaffer_tester_pass() {
   # tester FAIL for a human in autonomous mode and the ticket never moved again.
   _T_FAIL_TO=""
   [ "$(gaffer_auto_decision "$TNUM" approve)" = "allow" ] && _T_FAIL_TO=ready
+  # The tester-run hands back its raw claude envelope here, so a usage-window refusal
+  # is classified and recorded by the same locked helper the delivery path uses.
+  local _t_env="$GAFFER_DATA/.usage-tester-$TNUM.json" _t_ul_rc=1 _t_ul_line=""
+  rm -f "$_t_env"
   _T_OUT="$(GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" MEMORY_DB="$MEMORY_DB" GAFFER_TESTER_FAIL_TO="$_T_FAIL_TO" \
+    GAFFER_TESTER_ENVELOPE_OUT="$_t_env" \
     node "$RUNNER_DIR/bin/tester-run.mjs" --ticket "$TNUM" --live 2>>"$GAFFER_DATA/tester.log")"; _trc=$?
+  # USAGE WINDOW (lib/usage-pause.sh, rc 0/1/2 as in tick.sh): a tester refused by the
+  # plan's usage window / a rate limit tested nothing. It is NOT a hold for a human (a
+  # hold is remembered across runs and the ticket would never be re-tested): record the
+  # pause, skip the ticket for this run only, and test it again once the window resets.
+  if [ -s "$_t_env" ] && declare -F gaffer_usage_pause_record >/dev/null 2>&1; then
+    gaffer_usage_pause_record "$_t_env" "$TNUM" tester >/dev/null; _t_ul_rc=$?
+  fi
+  rm -f "$_t_env"
+  if [ "$_t_ul_rc" != 1 ]; then
+    _t_ul_line="$(gaffer_usage_pause_active 2>/dev/null || echo "the pause could not be written under $GAFFER_DATA")"
+    log "TESTER: #$TNUM refused by the usage window ($(printf '%s' "$_T_OUT" | jget 'String(d.reason || "").slice(0, 300)' 2>/dev/null)) — not a verdict and not a hold; tested again after the pause ($_t_ul_line)"
+    _gaffer_locked .skip.lock _gaffer_append_line "$TESTED_FILE" "$TNUM"
+    result usage_paused; exit 0
+  fi
   _T_PHASE="$(printf '%s' "$_T_OUT" | jget 'd.phase || ""' 2>/dev/null || echo '')"
   _T_VERDICT="$(printf '%s' "$_T_OUT" | jget 'd.verdict || ""' 2>/dev/null || echo '')"
   _T_BRANCH="$(printf '%s' "$_T_OUT" | jget 'd.testsBranch || ""' 2>/dev/null || echo '')"

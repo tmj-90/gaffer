@@ -17,6 +17,7 @@ import {
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { aggregateHealth, type ReworkResolver } from "../../health/healthAggregator.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
+import { readUsagePause } from "../../health/usagePause.js";
 import { errorBody, methodNotAllowed, safeDecode, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import { buildRunDetail } from "../runDetail.js";
@@ -349,6 +350,9 @@ export function routeReadModels(
       // TAMPER-EVIDENT LOG: the work_events hash chain re-derived (memoised per
       // log head for 60s — the Overview polls this route).
       event_log: eventLog,
+      // USAGE WINDOW: the runner's pause after a usage-limit / rate-limit refusal
+      // ($GAFFER_DATA/usage-pause.json). `{ active:false }` when the factory is not paused.
+      usage_pause: readUsagePause(process.env, nowMs),
       total_usd: health.total_usd,
       estimated_usd: health.estimated_usd,
       ticket_count: health.ticket_count,

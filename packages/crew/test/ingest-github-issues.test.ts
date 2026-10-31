@@ -95,6 +95,7 @@ describe("ingestGithubIssues", () => {
         title: "Add login throttling",
         body: "Brute-force protection.",
         url: "https://github.com/acme/web-app/issues/7",
+        labels: [{ id: "L1", name: "agent-ok", description: "", color: "ededed" }, { name: "bug" }],
       },
       {
         number: 9,
@@ -128,6 +129,7 @@ describe("ingestGithubIssues", () => {
     expect(ticket7.ticket.description).toContain(
       "Source: https://github.com/acme/web-app/issues/7",
     );
+    expect(ticket7.ticket.description).toContain("Labels: agent-ok, bug");
     expect(ticket7.repositories[0]?.name).toBe("web-app");
 
     // A relabel command per issue, removing the trigger label and adding the queued one.
@@ -143,6 +145,8 @@ describe("ingestGithubIssues", () => {
     expect(listCall.command).toContain("--repo 'acme/web-app'");
     expect(listCall.command).toContain("--label 'agent-ok'");
     expect(listCall.command).toContain("--state open");
+    // Only fields the real `gh issue list --json` has (gh refuses any other).
+    expect(listCall.command).toContain("--json number,title,body,url,labels");
 
     expect(events.types()).toContain("ingest_issue_ingested");
   });

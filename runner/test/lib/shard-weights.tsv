@@ -23,6 +23,7 @@
 70	branch-switch-recovery.test.sh
 65	tick-deadline.test.sh
 62	branch-switch-fresh.test.sh
+60	usage-limit-tick.test.sh
 58	e2e-per-path-stack-routing.test.sh
 55	e2e-memory-routing.test.sh
 40	eval-replay.test.sh
@@ -33,6 +34,7 @@
 30	ci-gate-needs-pr.test.sh
 30	concurrency-bookkeeping.test.sh
 30	parallel-stop-live.test.sh
+30	usage-pause.test.sh
 28	maintenance-lane.test.sh
 26	dashboard-qr.test.sh
 21	cli-contract-regression.test.sh
@@ -140,6 +142,7 @@
 2	safety-hook-search.test.mjs
 2	skills-wiring.test.sh
 2	turn-caps.test.sh
+2	usage-limit-detect.test.mjs
 1	agent-env-scrub.test.sh
 1	agent-env-shell.test.sh
 1	agent-env.test.sh

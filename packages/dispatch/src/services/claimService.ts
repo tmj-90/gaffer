@@ -725,6 +725,9 @@ export class ClaimService {
    * `last_review_feedback` (with the optional `reasonCode`/`attempt`/`maxAttempts`)
    * so the board card surfaces WHY the ticket bounced and, for `blocked`, a
    * `ticket.blocked` event is appended for the activity trail + the human-unblock gate.
+   * A release to `ready` with reasonCode `usage_limit` (the model's usage window or a
+   * rate limit refused the call) appends a `ticket.usage_limited` event carrying
+   * `paused_until`; nothing on the ticket counts it as an attempt.
    */
   runnerRelease(
     input: {
@@ -735,6 +738,8 @@ export class ClaimService {
       reasonCode?: string;
       attempt?: number;
       maxAttempts?: number;
+      /** reasonCode `usage_limit` only: when the usage window resets (ISO). */
+      pausedUntil?: string;
     },
     actor: Actor,
   ): { status: string; eventId: string } {
@@ -783,6 +788,23 @@ export class ClaimService {
           actor,
           event_type: "ticket.blocked",
           payload: { reason, reason_code: input.reasonCode ?? null },
+        });
+      }
+      // USAGE WINDOW: the delivery call was refused by the model's usage window / a
+      // rate limit. The ticket goes back to `ready` untouched (no attempt counted, no
+      // feedback on the card); the event is the durable record of WHY it bounced and
+      // when the factory resumes, so the timeline does not read as a silent requeue.
+      if (input.to === "ready" && input.reasonCode === "usage_limit") {
+        const until =
+          input.pausedUntil && Number.isFinite(Date.parse(input.pausedUntil))
+            ? new Date(Date.parse(input.pausedUntil)).toISOString()
+            : null;
+        writeEvent(this.db, {
+          entity_type: "ticket",
+          entity_id: ticket.id,
+          actor,
+          event_type: "ticket.usage_limited",
+          payload: { reason, reason_code: "usage_limit", paused_until: until },
         });
       }
       return { status: result.ticket.status, eventId: result.eventId };

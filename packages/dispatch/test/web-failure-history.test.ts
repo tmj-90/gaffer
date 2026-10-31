@@ -4,6 +4,9 @@
 // full ordered rework trail (attempt 1 → 2 → …), each with its gate + the distilled
 // failing test + assertion. This is the "why did #N fail" surface an operator
 // returns to — distinct from the board's latest-only rework chip.
+// Paths are repo-relative: the runner's worktree prefix
+// (…/data/worktrees/ticket-<N>/<repo key>/) means nothing to a reviewer, so both
+// the failing-test card's location line and every captured stack drop it.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -158,6 +161,44 @@ describe("failure-diagnosis web: the ticket-detail Failure history card", () => 
     const pre = card?.querySelector("pre.failure-detail");
     expect(pre).toBeTruthy();
     expect(pre?.querySelector("*")).toBeNull();
+  });
+
+  it("shows worktree paths relative to the repo root, in the location line and the stack", async () => {
+    const WT = "/home/op/.gaffer/data/worktrees/ticket-1/3f2c9a7e-1b2d-4c5e-8f90-a1b2c3d4e5f6";
+    stubFetch([
+      {
+        ...REWORK_TRAIL[0],
+        distilled_failure: [
+          `FAIL ${WT}/test/tasks.test.js > clearDone > drops done tasks`,
+          "  - Expected: 1",
+          "  + Received: 2",
+          ` ❯ ${WT}/test/tasks.test.js:7:1`,
+          `    at Object.<anonymous> (file://${WT}/src/tasks.js:3:9)`,
+          "    at /usr/lib/node/runner.js:1:1",
+        ].join("\n"),
+      },
+    ]);
+    // The failing-test card heads a ticket that is out (blocked, failed) or refining.
+    TICKET.status = "blocked";
+    try {
+      await bootDetail();
+    } finally {
+      TICKET.status = "in_progress";
+    }
+    const where = document.querySelector(".failing-test .ft-where")?.textContent ?? "";
+    expect(where).toContain("at test/tasks.test.js:7");
+    expect(where).not.toContain("7:1");
+    expect(document.querySelector(".failing-test .ftest-name")?.textContent).toContain(
+      "test/tasks.test.js",
+    );
+    const all = document.querySelector("#app")?.textContent ?? "";
+    expect(all).not.toContain("worktrees/");
+    expect(all).not.toContain("3f2c9a7e");
+    const stack = document.querySelector(".failure-history pre.failure-detail")?.textContent ?? "";
+    expect(stack).toContain("❯ test/tasks.test.js:7:1");
+    expect(stack).toContain("(src/tasks.js:3:9)");
+    // A path outside the worktree is left as it is.
+    expect(stack).toContain("/usr/lib/node/runner.js:1:1");
   });
 
   it("shows no Failure history card for a ticket that never bounced", async () => {

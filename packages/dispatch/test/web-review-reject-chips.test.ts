@@ -57,7 +57,7 @@ function stubFetch(): void {
             },
           ],
         };
-      else if (url.includes(`/tickets/${TICKET.id}/review/reject`)) payload = { ok: true };
+      else if (url.includes(`/tickets/${TICKET.id}/review/reject`)) payload = rejectPayload;
       else if (url.includes(`/tickets/${TICKET.id}`))
         payload = { ...TICKET, acceptance_criteria: [], evidence: [], events: [] };
       else if (url.includes("/tickets")) payload = { tickets: [TICKET] };
@@ -68,6 +68,8 @@ function stubFetch(): void {
     }),
   );
 }
+
+let rejectPayload: unknown = { ok: true };
 
 function mountShell(): void {
   document.body.innerHTML = `
@@ -113,6 +115,7 @@ function rejectCalls(): Call[] {
 describe("web AFK P3: reject-reason chips replace window.prompt on the Review gate", () => {
   beforeEach(() => {
     calls = [];
+    rejectPayload = { ok: true };
     mountShell();
     vi.resetModules();
     stubFetch();
@@ -183,6 +186,32 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
     expect(sent[0]!.body).toMatchObject({ to: "refining", reason: chipText });
     // The sheet closes after a successful reject (the shared sheet stays in the DOM, closed).
     expect(document.querySelector(".sheet.open .reject-dialog")).toBeNull();
+  });
+
+  it("Send back with capture says both in ONE toast, naming and linking the repo the draft waits in", async () => {
+    rejectPayload = { ok: true, lore_capture: { captured: true, id: "l1", repo: "svc" } };
+    await bootReview();
+    buttonByText("Send back…")!.click();
+    (document.querySelector(".reject-chip") as HTMLButtonElement).click();
+    (document.querySelector(".reject-capture-cb") as HTMLInputElement).checked = true;
+    // Count every message the toast shows: two back to back replaced the first unread.
+    const shown: string[] = [];
+    const node = document.getElementById("toast")!;
+    const seen = new MutationObserver(() => {
+      if (!node.hidden && node.textContent) shown.push(node.textContent);
+    });
+    seen.observe(node, { childList: true, attributes: true });
+    submitButton()!.click();
+    for (let i = 0; i < 4; i++) await tick();
+    seen.disconnect();
+    expect(rejectCalls()[0]!.body).toMatchObject({ captureLore: true });
+    const msg = "#7 sent back · reason filed as draft lore for svc.";
+    expect(node.querySelector(".toast-msg")?.textContent).toBe(msg);
+    expect(new Set(shown)).toEqual(new Set([`${msg}Approve it in Memory`]));
+    // It says where the draft waits for a human, and links there.
+    const link = node.querySelector<HTMLAnchorElement>("a.toast-link")!;
+    expect(link.textContent).toBe("Approve it in Memory");
+    expect(link.getAttribute("href")).toBe("#/memory/svc");
   });
 
   it("typing a free-text reason (no chip) also submits", async () => {

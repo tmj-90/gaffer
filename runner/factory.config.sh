@@ -786,6 +786,11 @@ export GAFFER_CAP_DETECT_TURNS
 # Set to 0 to fall back to the legacy park-to-refining + teardown behaviour.
 : "${GAFFER_PAUSE_ON_CAP:=1}"        # 1 = pause+keep worktree (default); 0 = legacy park+teardown
 export GAFFER_PAUSE_ON_CAP
+# USAGE-WINDOW PAUSE: minutes to pause admission after a usage-limit / rate-limit
+# refusal when the CLI printed no reset time (a printed reset wins). Floor 10 minutes,
+# enforced in lib/usage-pause.mjs whatever this says; junk falls back to 60.
+: "${GAFFER_USAGE_PAUSE_DEFAULT_MIN:=60}"
+export GAFFER_USAGE_PAUSE_DEFAULT_MIN
 # (GAFFER_MAX_RESUMES_PER_TICK was removed: nothing read it. A tick delivers ONE
 # ticket, so it re-enters at most one Continue'd paused ticket — first, before any
 # new claim — and the next tick takes the next one.)
@@ -1026,7 +1031,7 @@ gaffer_mcp_runtime_set_env() {
 # golden (packages/crew/test/fixtures/tick-context/prompt.fresh.golden.txt).
 #
 # Usage: gaffer_render_delivery_prompt <fresh|resume|bootstrap>   → prompt on STDOUT
-#   The RAW inputs (TITLE, _RF, WT_ROWS, READ_ROOTS, SKILLS, LENSES, the context
+#   The RAW inputs (TITLE, _RF, _RD, WT_ROWS, READ_ROOTS, SKILLS, LENSES, the context
 #   blocks, WORK_BRANCH, PRIMARY_REPO; B_SKILLS/B_DIR for bootstrap) are read from
 #   the ambient tick.sh scope and assembled into the renderer's JSON document by
 #   _gaffer_prompt_inputs_json below. The render carries no trailing newline.
@@ -1050,7 +1055,8 @@ gaffer_render_delivery_prompt() {
 # ── Typed branch input assembly: build the renderPromptCli JSON document from the
 #    ambient RAW inputs (mirrors runner/test/capture-context-golden.sh's inputs.json
 #    emitter). reviewFeedbackReasons is recovered from the pre-block "  - " lines in
-#    $_RF; writeRepos from WT_ROWS ($5 path, $2 name); readRoots from READ_ROOTS.
+#    $_RF; resolvedDecisions from the JSON in $_RD; writeRepos from WT_ROWS ($5 path,
+#    $2 name); readRoots from READ_ROOTS.
 #    json-tool.mjs (node) json-encodes arbitrary title/path bytes safely. ───────
 _gaffer_prompt_inputs_json() {
   local variant="$1"
@@ -1061,7 +1067,7 @@ _gaffer_prompt_inputs_json() {
   local resuming=false
   [ "$variant" = "resume" ] && resuming=true
   GF_NUM="${NUM:-}" GF_TITLE="${TITLE:-}" GF_RESUMING="$resuming" GF_SKILLS="${SKILLS:-}" \
-  GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
+  GF_LENSES="${LENSES:-}" GF_RF="${_RF:-}" GF_RD="${_RD:-}" GF_FCB="${FILE_CARDS_BLOCK:-}" \
   GF_PCB="${PRODUCT_CONTEXT_BLOCK:-}" GF_WORK_BRANCH="${WORK_BRANCH:-}" \
   GF_WT_ROWS="${WT_ROWS:-}" GF_READ_ROOTS="${READ_ROOTS:-}" GF_PRIMARY="${PRIMARY_REPO:-}" gaffer_json prompt-inputs "$variant"
 }
@@ -2304,6 +2310,11 @@ gaffer_review_reason() {
 # and DAILY_COUNTER_FILE.
 # shellcheck source=lib/budget.sh
 [ -f "$RUNNER_DIR/lib/budget.sh" ] && source "$RUNNER_DIR/lib/budget.sh"
+
+# Usage-window pause helpers (gaffer_usage_pause_record / _active / _until / _wait):
+# a usage-limit or rate-limit refusal pauses admission until the window resets.
+# shellcheck source=lib/usage-pause.sh
+[ -f "$RUNNER_DIR/lib/usage-pause.sh" ] && source "$RUNNER_DIR/lib/usage-pause.sh"
 
 # Auto-merge helper (defines gaffer_auto_merge). In-tree, so this is defensive.
 # shellcheck source=lib/automerge.sh

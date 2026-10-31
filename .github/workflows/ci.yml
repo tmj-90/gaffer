@@ -443,7 +443,14 @@ jobs:
           - name: squad-memory-map-specs-pause
             suites: s15-squad-floor s9-memory s14-map s8-specs s10-pause
           - name: plan-health-autonomy-sweep
-            suites: s7-plan s11-health s4-autonomy sweep s16-review-hold s17-conflict s12b-idle-lanes
+            suites: s7-plan s11-health s4-autonomy sweep s16-review-hold
+          # Each of these starts ITS OWN dashboard + data dir with the env it declares
+          # (`server` in the suite: a fake gh on PATH, a GitHub remote, ingest on, a
+          # greenfield root, merges that rewrite main) — run-suites.sh builds one world
+          # per suite. Measured locally (suite time, a loaded machine): ~3.7, ~1, ~1 and
+          # ~2.8 min, ~10 min for the shard with four world setups.
+          - name: own-server
+            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -479,6 +486,11 @@ jobs:
             ${{ runner.temp }}/ui-scenarios/data/factory.log
             ${{ runner.temp }}/ui-scenarios/data/dashboard.log
             ${{ runner.temp }}/ui-scenarios/data/stub-calls.jsonl
+            ${{ runner.temp }}/ui-scenarios-*/shots
+            ${{ runner.temp }}/ui-scenarios-*/data/factory.log
+            ${{ runner.temp }}/ui-scenarios-*/data/dashboard.log
+            ${{ runner.temp }}/ui-scenarios-*/data/stub-calls.jsonl
+            ${{ runner.temp }}/ui-scenarios-*/gh-state/calls.jsonl
           if-no-files-found: ignore
           retention-days: 14
 

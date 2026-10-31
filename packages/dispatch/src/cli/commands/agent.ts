@@ -195,6 +195,10 @@ export function registerAgent(program: Command): void {
     .option("--reason-code <code>", "structured reason code, e.g. rework_exhausted")
     .option("--attempt <n>", "rework attempt number reached (paired with --max)")
     .option("--max <n>", "rework attempt ceiling (GAFFER_MAX_DELIVERY_ATTEMPTS)")
+    .option(
+      "--paused-until <iso>",
+      "with --reason-code usage_limit: when the usage window resets (recorded on the ticket.usage_limited event)",
+    )
     .action((ref, opts, cmd) => {
       if (opts.to !== "ready" && opts.to !== "refining" && opts.to !== "blocked") {
         throw new Error("--to must be 'ready', 'refining', or 'blocked'");
@@ -210,6 +214,7 @@ export function registerAgent(program: Command): void {
           ...(opts.reasonCode ? { reasonCode: opts.reasonCode } : {}),
           ...(opts.attempt !== undefined ? { attempt: Number(opts.attempt) } : {}),
           ...(opts.max !== undefined ? { maxAttempts: Number(opts.max) } : {}),
+          ...(opts.pausedUntil ? { pausedUntil: String(opts.pausedUntil) } : {}),
         },
         { type: "system" },
       );

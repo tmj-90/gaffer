@@ -237,6 +237,11 @@ else if (verb === "features") process.stdout.write(features);
 else if (verb === "list" && process.argv.includes("--json")) process.stdout.write(loreJson + "\\n");
 else if (verb === "list") process.stdout.write(lore);
 else if (verb === "recall-stats") process.stdout.write(recall);
+else if (verb === "history") {
+  const id = process.argv[3];
+  if (id === "zzzzzzzz") { process.stderr.write("memory: no record with id zzzzzzzz\\n"); process.exit(1); }
+  process.stdout.write(JSON.stringify({ id, current: { version: 2, status: "active", at: "2026-10-02T00:00:00Z", title: "Use pure helpers", summary: "now" }, versions: [{ version: 1, status: "draft", at: "2026-10-01T00:00:00Z", replacedAt: "2026-10-02T00:00:00Z", title: "Use pure helpers", summary: "before" }] }) + "\\n");
+}
 else if (verb === "approve" || verb === "reject") {
   const id = process.argv[3];
   if (id === "zzzzzzzz") {
@@ -454,6 +459,38 @@ describe("API: /api/memory/* read surfaces", () => {
       expect(stubCalls(h.cli).length).toBe(before);
     });
 
+    it("GET /api/memory/lore/:id/history reads `history <id> --json`, newest first", async () => {
+      const res = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/history`);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        available: boolean;
+        id: string;
+        current: { version: number; summary: string };
+        versions: Array<{ version: number; summary: string; at: string }>;
+      };
+      expect(body.available).toBe(true);
+      expect(body.id).toBe("bbbb3333");
+      expect(body.current).toMatchObject({ version: 2, summary: "now" });
+      expect(body.versions).toEqual([
+        {
+          version: 1,
+          status: "draft",
+          at: "2026-10-01T00:00:00Z",
+          title: "Use pure helpers",
+          summary: "before",
+        },
+      ]);
+      expect(stubCalls(h.cli).at(-1)).toEqual(["history", "bbbb3333", "--json"]);
+      // An unknown record degrades like every memory read; a malformed id is 422.
+      const gone = await fetch(`${h.baseUrl}/api/memory/lore/zzzzzzzz/history`);
+      expect(gone.status).toBe(200);
+      expect(((await gone.json()) as { available: boolean }).available).toBe(false);
+      const bad = await fetch(`${h.baseUrl}/api/memory/lore/..%2Fetc/history`);
+      expect(bad.status).toBe(422);
+      const post = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/history`, { method: "POST" });
+      expect(post.status).toBe(405);
+    });
+
     it("POST /api/memory/lore/:id/approve runs `memory approve <id>` and reports active", async () => {
       const res = await fetch(`${h.baseUrl}/api/memory/lore/bbbb3333/approve`, { method: "POST" });
       expect(res.status).toBe(200);
@@ -599,6 +636,35 @@ describe.skipIf(!existsSync(REAL_MEMORY_CLI))(
         }
         expect(isMemoryRefusal("memory: x is not a pending draft (already active)")).toBe(true);
         expect(isMemoryRefusal("Memory CLI exited 1: database is locked")).toBe(false);
+      } finally {
+        await h.close();
+      }
+    });
+
+    it("GET …/history reads the real CLI's versions after an update", async () => {
+      const dir = mkdtempSync(join(tmpdir(), "wg-mem-real-"));
+      const env = { MEMORY_CLI_BIN: REAL_MEMORY_CLI, MEMORY_DB: join(dir, "memory.sqlite") };
+      const { spawnSync } = await import("node:child_process");
+      const mem = (...args: string[]) =>
+        spawnSync(process.execPath, [REAL_MEMORY_CLI, ...args], {
+          env: { ...process.env, ...env, MEMORY_AUDIT_OFF: "1" },
+          encoding: "utf8",
+        });
+      const add = mem("add", "--title", "A rule", "--summary", "first", "--body", "b");
+      const id = /\b([a-z2-9]{8})\b/.exec(add.stdout)?.[1];
+      expect(id).toBeTruthy();
+      expect(mem("update", id!, "--summary", "second").status).toBe(0);
+      const h = await startHarness(createMemoryReader(env));
+      try {
+        const res = await fetch(`${h.baseUrl}/api/memory/lore/${id}/history`);
+        const body = (await res.json()) as {
+          available: boolean;
+          current: { version: number; summary: string };
+          versions: Array<{ version: number; summary: string }>;
+        };
+        expect(body.available).toBe(true);
+        expect(body.current).toMatchObject({ version: 2, summary: "second" });
+        expect(body.versions.map((v) => [v.version, v.summary])).toEqual([[1, "first"]]);
       } finally {
         await h.close();
       }

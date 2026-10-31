@@ -164,7 +164,8 @@ _gaffer_refund_run_tick_unlocked() {
 # until midnight. An idle maintenance tick whose deterministic scan filed nothing is
 # reported as `no_work` too (tick.sh): the scans call no model. Every OTHER result
 # counts: the productive ones (worked / reviewed / tested / clarified / idle_drafted /
-# maintenance_drafted / paused), `maintenance_ran` (an idle tick that ran the paid
+# maintenance_drafted / paused), `usage_paused` (the delivery call ran and was refused
+# by the usage window: a spawn, so it counts), `maintenance_ran` (an idle tick that ran the paid
 # feature-backlog planner but filed nothing), an `error` (the agent
 # may have run before a gate failed) and an EMPTY/unknown result (the outer timeout
 # reaped a tick mid-agent — real spend with no result line). Conservative by design:

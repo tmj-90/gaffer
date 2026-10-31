@@ -87,6 +87,11 @@ for d in a b; do
 done
 git -C "$WORK/a/web" remote add origin "git@github.com:acme/web.git"
 git -C "$WORK/b/web" remote add origin "https://github.com/Acme/web"
+# The profile stores the remote as git reports it. A host-wide url.<base>.insteadOf
+# (cloud sandboxes rewrite git@github.com: to https://) changes that spelling, so
+# the expected values are read back from git, not hardcoded.
+A_WEB_REMOTE="$(git -C "$WORK/a/web" remote get-url origin)"
+B_WEB_REMOTE="$(git -C "$WORK/b/web" remote get-url origin)"
 onboard "$WORK/a/web"; rc=$?
 [ "$rc" -eq 0 ] && ok "a/web onboards" || fail "a/web onboard exit $rc: $(tail -3 "$WORK/out" | tr '\n' '|')"
 WEB_REPOS="$(repos)"; WEB_PROFILE="$(profile web)"
@@ -96,10 +101,10 @@ onboard "$WORK/b/web"; rc=$?
 OUT="$(cat "$WORK/out")"
 case "$OUT" in *"$WORK/a/web, which no longer exists"*"wg repo hide web"*"--name <alias>"*) ok "the refusal says the old checkout is gone and gives the --name guidance" ;; *) fail "moved-clone message: $(printf '%s' "$OUT" | tail -3 | tr '\n' '|' | cut -c1-500)" ;; esac
 [ "$(repos)" = "$WEB_REPOS" ] && ok "dispatch records unchanged (no silent relocation)" || fail "dispatch records changed: $(repos)"
-[ "$(profile web)" = "$WEB_PROFILE" ] && [ "$WEB_PROFILE" = "$WORK/a/web https://github.com/acme/web.git" ] \
-  && ok "stored profile unchanged: a/web's own path and remote, not a/web's path with b/web's remote" || fail "profile now: $(profile web) (was $WEB_PROFILE)"
+[ "$(profile web)" = "$WEB_PROFILE" ] && [ "$WEB_PROFILE" = "$WORK/a/web $A_WEB_REMOTE" ] \
+  && ok "stored profile unchanged: a/web's own path and remote, not a/web's path with b/web's remote" || fail "profile now: $(profile web) (was $WEB_PROFILE; expected $WORK/a/web $A_WEB_REMOTE)"
 onboard "$WORK/b/web" --name web-b; rc=$?
-[ "$rc" -eq 0 ] && [ "$(profile web-b)" = "$WORK/b/web https://github.com/Acme/web" ] \
+[ "$rc" -eq 0 ] && [ "$(profile web-b)" = "$WORK/b/web $B_WEB_REMOTE" ] \
   && ok "the moved checkout onboards under an alias with its own path and remote" || fail "alias onboard exit $rc, profile $(profile web-b)"
 
 echo "== 5: a path-less record is not adopted =="

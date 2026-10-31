@@ -72,7 +72,11 @@ then runs the chosen suites in one browser: one summary line per suite and
 Suites share `lib.mjs` (REST, waits, toasts, the axe gate and the layout probe,
 seed helpers, the stub-mode file) and the context `run-suites.mjs` builds
 (`t.visit` audits each view it opens once, `t.poll`, `t.setSetting`,
-`t.saveSettings`, `t.approve`). After each suite the driver restores
+`t.saveSettings`, `t.approve`). `t.poll` keeps the POST /poll-work answer as
+`t.lastPoll`; a step whose ticket never reaches its status prints
+`L.whyStuck(ticket, t.lastPoll)` (the ticket by id and by number, any ready
+ticket queued ahead of it, the poll answer, the tick's run log tail and the
+factory.log lines naming it), so a CI failure reads from the job log alone. After each suite the driver restores
 settings.json and closes every ticket left open, so a suite never inherits
 another's queue.
 

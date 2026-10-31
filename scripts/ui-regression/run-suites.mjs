@@ -153,14 +153,34 @@ function makeContext(name, repo) {
       if (axe) await L.auditA11y(page, `${key}@${page.viewportSize()?.width}`, t);
     }
   };
-  /** Press Poll for work on the Work view; answers the toast it raised. */
+  /**
+   * Press Poll for work on the Work view; answers the toast it raised. The POST
+   * /poll-work answer ({status, body}: polled, pending, the tick's run id) is kept
+   * as t.lastPoll, so a step whose ticket never moves can say what the poll did
+   * (L.whyStuck).
+   */
+  t.lastPoll = null;
   t.poll = async () => {
     if (!/#\/work/.test(t.page.url())) await t.visit("work");
     const btn = t.page.locator('button:has-text("Poll for work")').first();
     await btn.waitFor({ timeout: 15000 });
     // Only a toast that appears AFTER this click answers it.
     await L.clearToast(t.page);
+    const resP = t.page
+      .waitForResponse(
+        (res) => res.url().endsWith("/poll-work") && res.request().method() === "POST",
+        { timeout: 15000 },
+      )
+      .catch(() => null);
     await btn.click();
+    const res = await resP;
+    let body = null;
+    try {
+      body = res ? await res.json() : null;
+    } catch {
+      /* not json */
+    }
+    t.lastPoll = { status: res ? res.status() : null, body };
     return (await L.waitToast(t.page, /./, 15000)) || "";
   };
   /** Approve a delivered ticket from its Review page (two presses: arm, confirm). */

@@ -341,7 +341,7 @@ console.log("== AC4: --output-format json is wired into the consolidated invocat
   assert("lib/worker.sh: the invocation uses --output-format json", workerJson === 1);
   // tick.sh + the extracted review/clarify passes route all 5 agent turns through the
   // seam: delivery, bootstrap, the reviewer, the SECURITY second-opinion reviewer, clarify.
-  const routed = (passes.match(/^\s*worker_deliver /gm) || []).length;
+  const routed = (passes.match(/^\s*(GAFFER_LAUNCH_KIND=[a-z-]+ )?worker_deliver /gm) || []).length;
   assert(
     "tick.sh + review/clarify libs route exactly 5 turns through worker_deliver",
     routed === 5,

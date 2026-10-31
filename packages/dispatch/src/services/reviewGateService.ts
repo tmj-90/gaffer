@@ -523,7 +523,9 @@ export class ReviewGateService {
         .join("; ");
       throw new DispatchError(
         "STATE_CONFLICT",
-        `The change moved since it was shown: ${what}. Nothing was approved — reload the diff and review it again.`,
+        moved.every((m) => m.shown === null)
+          ? `The approval does not cover every repository this ticket changes: ${what}. Nothing was approved — review every repository's diff and approve them together.`
+          : `The change moved since it was shown: ${what}. Nothing was approved — reload the diff and review it again.`,
         { reason: "stale_revision", ticket_number: ticket.number, repos: moved },
       );
     }

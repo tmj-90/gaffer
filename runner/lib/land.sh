@@ -262,7 +262,10 @@ _gaffer_land_one() {
       # sides, and reopens the ticket for RE-REVIEW of the resolved diff — never a
       # silent landing. Once per ticket; a second conflict after a resolver pass waits
       # for a human.
-      if _gaffer_land_conflict_resolve "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_WHO"; then
+      # The resolver works on the PRIMARY repo; a secondary repo's conflict is a human's.
+      if [ "$_RSEC" = "1" ]; then
+        log "$_WHO: #$RNUM merge of $RBRANCH in $(basename "$RREPO") hit a CONFLICT (a secondary repository; the resolver handles the primary only) — held for a human"
+      elif _gaffer_land_conflict_resolve "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_WHO"; then
         _mrc=5
       else
         log "$_WHO: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human"

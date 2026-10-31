@@ -15,7 +15,7 @@ import type { ReworkAttemptRepository } from "../repositories/reworkAttemptRepos
 import {
   compareTestClaims,
   parseRunnerTally,
-  parseTestClaims,
+  parseTestClaimsFrom,
   type TestDisagreement,
   type TestTally,
 } from "../util/testTally.js";
@@ -217,29 +217,47 @@ function testOutputBlocks(summary: string): string {
   const tally = new Map<string, string[]>();
   const output = new Map<string, string[]>();
   const order: string[] = [];
+  // The block that is open (any gate's, not only the tests gate's), and where its lines
+  // go (null for a block that is not the tests gate's). While a block is open a line
+  // that looks like an opener is that block's output, not a new block: a failing lint
+  // run's captured tail cannot start a tests tally of its own.
+  let openKind: "TALLY" | "OUTPUT" | null = null;
   let into: string[] | null = null;
   for (const line of summary.split("\n")) {
+    if (openKind !== null) {
+      if (line.startsWith(`---END-DOD-${openKind}---`)) {
+        openKind = null;
+        into = null;
+      } else if (into) into.push(line);
+      continue;
+    }
     const open = line.match(/^---DOD-(TALLY|OUTPUT) ([^@]+)@(.*?)---\s*$/);
-    if (open) {
-      into = null;
-      if (open[2] !== "tests") continue;
-      const key = `${open[2]}@${open[3]}`;
-      if (!order.includes(key)) order.push(key);
-      const bucket = open[1] === "TALLY" ? tally : output;
-      const lines = bucket.get(key) ?? [];
-      bucket.set(key, lines);
-      into = lines;
-      continue;
-    }
-    if (/^---END-DOD-(TALLY|OUTPUT)---/.test(line)) {
-      into = null;
-      continue;
-    }
-    if (into) into.push(line);
+    if (!open) continue;
+    openKind = open[1] as "TALLY" | "OUTPUT";
+    into = null;
+    if (open[2] !== "tests") continue;
+    const key = `${open[2]}@${open[3]}`;
+    if (!order.includes(key)) order.push(key);
+    const bucket = openKind === "TALLY" ? tally : output;
+    const lines = bucket.get(key) ?? [];
+    bucket.set(key, lines);
+    into = lines;
   }
   const out: string[] = [];
   for (const key of order) out.push(...(tally.get(key) ?? output.get(key) ?? []));
   return out.join("\n");
+}
+
+/** The evidence ids the tester's verdict events name (its own verdict rows). */
+function testerVerdictIds(events: WorkEvent[]): Set<string> {
+  const ids = new Set<string>();
+  for (const ev of events) {
+    if (ev.event_type !== "ticket.tester_passed" && ev.event_type !== "ticket.tester_failed")
+      continue;
+    const id = str(payloadOf(ev).evidence_id);
+    if (id) ids.add(id);
+  }
+  return ids;
 }
 
 /**
@@ -249,13 +267,7 @@ function testOutputBlocks(summary: string): string {
  * payload anyone else recorded (an agent's record_ac_evidence, say) is not the tester's.
  */
 function readTester(rows: Evidence[], events: WorkEvent[]): PacketTester | null {
-  const verdictIds = new Set<string>();
-  for (const ev of events) {
-    if (ev.event_type !== "ticket.tester_passed" && ev.event_type !== "ticket.tester_failed")
-      continue;
-    const id = str(payloadOf(ev).evidence_id);
-    if (id) verdictIds.add(id);
-  }
+  const verdictIds = testerVerdictIds(events);
   for (let i = rows.length - 1; i >= 0; i--) {
     const e = rows[i]!;
     if (e.evidence_type !== "test_output" || !verdictIds.has(e.id)) continue;
@@ -383,15 +395,27 @@ export class ReviewPacketService {
         for (const x of r) if (typeof x === "string" && !reasons.includes(x)) reasons.push(x);
     }
 
-    // The agent's words: everything an agent recorded, read for test-count claims.
-    const agentText = rows
-      .filter((e) => e.recorded_by_actor_type === "agent")
-      .map((e) => e.summary)
-      .join("\n");
+    const rework = readRework(ticket.id, events, this.deps.reworkAttempts.listForTicket(ticket.id));
+    // The agent's words about the CURRENT attempt: the rows an agent recorded since
+    // the latest send-back (a gate bounce, a tester fail, a review rejection). A claim
+    // an earlier attempt made was about earlier code; the runner's tally is this one's.
+    // The tester's verdict rows are not the delivery's summary (it ran its own tests).
+    const testerRows = testerVerdictIds(events);
+    const sentBackAt = rework.length > 0 ? rework[rework.length - 1]!.at : null;
+    const claims = parseTestClaimsFrom(
+      rows
+        .filter(
+          (e) =>
+            e.recorded_by_actor_type === "agent" &&
+            !testerRows.has(e.id) &&
+            (sentBackAt === null || e.created_at > sentBackAt),
+        )
+        .map((e) => ({ text: e.summary, acScoped: e.ac_id !== null })),
+    );
     const testsFailed = Boolean(
       gates && gates.rows.some((g) => g.gate === "tests" && g.status === "FAIL"),
     );
-    const disagreements = compareTestClaims(parseTestClaims(agentText), gates?.tally ?? null, {
+    const disagreements = compareTestClaims(claims, gates?.tally ?? null, {
       testsGateFailed: testsFailed,
     });
 
@@ -413,7 +437,7 @@ export class ReviewPacketService {
       attempts: {
         attempt_count: ticket.attempt_count,
         max_attempts: this.deps.maxAttempts,
-        rework: readRework(ticket.id, events, this.deps.reworkAttempts.listForTicket(ticket.id)),
+        rework,
       },
       risk: { level: ticket.risk_level, reasons },
       pin: readPin(rows),

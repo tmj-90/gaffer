@@ -170,9 +170,13 @@ structural barrier the whole design hangs on.
   reviewed-commit pin when one is recorded. The **acceptance-criteria table**
   shows each criterion's check command and the runner's recorded exit code, or
   **no machine evidence** on a yellow card when only the agent's word (or
-  nothing) backs it. When the agent's evidence claims a test count or "all tests
-  pass" that the runner's output contradicts, a flag says so: "the summary says
-  42, the runner saw 40". Gate results, the test count and criterion exit codes
+  nothing) backs it. When the agent's evidence for the current attempt claims a
+  count for the whole suite ("all 42 tests pass", "42/42", a pasted runner line,
+  or a bare "42 tests pass" outside a criterion's evidence) or "all tests pass",
+  and the runner's output contradicts it, a flag says so: "the summary says 42,
+  the runner saw 40". A count for part of the suite ("3 new tests", "30 unit
+  tests", one criterion's or one file's "3 tests pass", "1 of 2 passing") is not
+  compared, nor is a claim from an attempt that was sent back. Gate results, the test count and criterion exit codes
   come only from rows the runner recorded as the system, and the tester's verdict
   only from the row a tester pass or fail recorded; an agent-recorded row that
   looks like a gate report or a tester verdict is ignored. It is

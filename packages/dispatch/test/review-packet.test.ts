@@ -55,17 +55,6 @@ function ticketInReview(wg: Dispatch): { id: string; number: number } {
   wg.markReady(t.id, human);
   const agent = wg.registerAgent({ display_name: "a" }, human);
   const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor);
-  // The agent's words: a prose AC it marks done itself, and a test-count claim.
-  wg.recordEvidence(
-    {
-      claimToken: claim!.claimToken,
-      ticket_id: t.id,
-      ac_id: prose.id,
-      evidence_type: "manual_note",
-      summary: "README updated. All 42 tests pass.",
-    },
-    agentActor,
-  );
   // An agent-forged DoD row must not count as the runner's.
   wg.recordEvidence(
     {
@@ -88,6 +77,20 @@ function ticketInReview(wg: Dispatch): { id: string; number: number } {
       distilledFailure: "FAIL src/a.test.ts > clearDone\nexpected 1 to be 0",
     },
     system,
+  );
+  // The current attempt starts after the bounce.
+  if (wg.clock instanceof TestClock) wg.clock.advanceSeconds(1);
+  // The agent's words: a prose AC it marks done itself, and a test-count claim
+  // about the whole suite ("All 42") that the runner's 40 contradicts.
+  wg.recordEvidence(
+    {
+      claimToken: claim!.claimToken,
+      ticket_id: t.id,
+      ac_id: prose.id,
+      evidence_type: "manual_note",
+      summary: "README updated. All 42 tests pass.",
+    },
+    agentActor,
   );
   wg.attachDeliveryEvidence(t.id, { evidenceType: "test_output", summary: DOD_PASS }, system);
   wg.recordAcCheck(
@@ -258,6 +261,149 @@ describe("REVIEW PACKET runner tally on a failing tests gate", () => {
     } finally {
       wg.db.close();
     }
+  });
+});
+
+describe("REVIEW PACKET runner tally: a block opener inside another gate's output", () => {
+  it("a failing lint run's captured tail cannot start a tests tally", () => {
+    const clock = new TestClock();
+    const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
+    try {
+      const { id } = ticketInReview(wg);
+      clock.advanceSeconds(60);
+      const summary = [
+        "DoD: FAIL",
+        JSON.stringify({
+          dod: "FAIL",
+          gates: [
+            { gate: "tests", repo: "svc", status: "PASS", rc: "0", note: "npm test" },
+            { gate: "lint", repo: "svc", status: "FAIL", rc: "1", note: "exited 1: npm run lint" },
+          ],
+        }),
+        "",
+        "---DOD-TALLY tests@svc---",
+        "      Tests  40 passed (40)",
+        "---END-DOD-TALLY---",
+        "---DOD-OUTPUT lint@svc---",
+        "src/a.ts: error no-unused-vars",
+        // Printed by the code under test into its own lint output: still lint's output.
+        "---DOD-TALLY tests@svc---",
+        "      Tests  999 passed (999)",
+        "---END-DOD-TALLY---",
+        "---END-DOD-OUTPUT---",
+      ].join("\n");
+      wg.attachDeliveryEvidence(id, { evidenceType: "test_output", summary }, system);
+      expect(wg.reviewPacket(id, cost).gates?.tally).toMatchObject({ passed: 40, failed: 0 });
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
+describe("REVIEW PACKET test-count flag: whole-suite claims of the current attempt", () => {
+  interface Note {
+    summary: string;
+    /** Recorded against an acceptance criterion (record_ac_evidence). */
+    perAc?: boolean;
+    /** Recorded by the attempt a gate bounced (before the send-back). */
+    earlier?: boolean;
+  }
+
+  /** A delivery whose runner saw 40 passing, with these agent notes on it. */
+  function delivered(notes: Note[]): string[] {
+    const clock = new TestClock();
+    const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
+    try {
+      wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+      const t = wg.createTicket(
+        { title: "Lock saves", description: "x", policy_pack: "team_light" },
+        human,
+      );
+      wg.linkRepository(t.id, "svc", "primary", human);
+      const ac = wg.addAcceptanceCriterion(
+        { ticket_id: t.id, text: "Two concurrent saves both land" },
+        human,
+      ).ac;
+      wg.markReady(t.id, human);
+      const agent = wg.registerAgent({ display_name: "a" }, human);
+      const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor);
+      const record = (n: Note) =>
+        wg.recordEvidence(
+          {
+            claimToken: claim!.claimToken,
+            ticket_id: t.id,
+            ...(n.perAc ? { ac_id: ac.id } : {}),
+            evidence_type: "manual_note",
+            summary: n.summary,
+          },
+          agentActor,
+        );
+      const earlier = notes.filter((n) => n.earlier);
+      for (const n of earlier) record(n);
+      if (earlier.length > 0) {
+        clock.advanceSeconds(1);
+        wg.recordReworkAttempt(
+          {
+            ticket_id: t.id,
+            attempt: 1,
+            maxAttempts: 3,
+            reason: "DoD failed",
+            gate: "tests",
+            distilledFailure: "FAIL test/lock.test.ts",
+          },
+          system,
+        );
+        clock.advanceSeconds(1);
+      }
+      for (const n of notes.filter((x) => !x.earlier)) record(n);
+      wg.attachDeliveryEvidence(t.id, { evidenceType: "test_output", summary: DOD_PASS }, system);
+      return wg.reviewPacket(t.id, cost).disagreements.map((d) => d.message);
+    } finally {
+      wg.db.close();
+    }
+  }
+
+  it("a criterion's own test count is not a claim about the suite", () => {
+    expect(
+      delivered([
+        {
+          perAc: true,
+          summary: "test/lock.test.ts: 3 tests pass (two concurrent saves both land)",
+        },
+      ]),
+    ).toEqual([]);
+    expect(delivered([{ perAc: true, summary: "3 tests pass" }])).toEqual([]);
+    expect(delivered([{ perAc: true, summary: "3/3 tests passing" }])).toEqual([]);
+  });
+
+  it("a count of new or partial tests is not a claim about the suite", () => {
+    expect(delivered([{ summary: "Added 3 new tests pass" }])).toEqual([]);
+    expect(delivered([{ summary: "1 of 2 tests passing before the fix" }])).toEqual([]);
+    expect(delivered([{ summary: "30 unit tests passed" }])).toEqual([]);
+  });
+
+  it("a claim an earlier attempt made is not compared with this attempt's run", () => {
+    expect(delivered([{ earlier: true, summary: "All 42 tests pass." }])).toEqual([]);
+    expect(
+      delivered([
+        { earlier: true, summary: "All 42 tests pass." },
+        { summary: "All 40 tests pass." },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("a whole-suite claim of this attempt that the runner contradicts still flags", () => {
+    const want = ["The summary says 42, the runner saw 40."];
+    expect(delivered([{ perAc: true, summary: "All 42 tests pass." }])).toEqual(want);
+    expect(delivered([{ summary: "42 tests pass" }])).toEqual(want);
+    expect(delivered([{ summary: "42/42 tests passing" }])).toEqual(want);
+    expect(delivered([{ summary: "Tests  42 passed (42)" }])).toEqual(want);
+    expect(
+      delivered([
+        { earlier: true, summary: "All 40 tests pass." },
+        { summary: "All 42 tests pass." },
+      ]),
+    ).toEqual(want);
   });
 });
 

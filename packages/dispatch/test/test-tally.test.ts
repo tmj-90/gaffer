@@ -3,7 +3,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { compareTestClaims, parseRunnerTally, parseTestClaims } from "../src/util/testTally.js";
+import {
+  compareTestClaims,
+  parseRunnerTally,
+  parseTestClaims,
+  parseTestClaimsFrom,
+} from "../src/util/testTally.js";
 
 const ESC = String.fromCharCode(27);
 
@@ -106,7 +111,7 @@ describe("parseTestClaims: what the agent said", () => {
       { passed: 42, all: true, excerpt: "Implemented clearDone; all 42 tests pass." },
     ]);
     expect(parseTestClaims("12/12 tests passing")[0]).toMatchObject({ passed: 12, all: true });
-    expect(parseTestClaims("30 unit tests passed")[0]).toMatchObject({ passed: 30, all: false });
+    expect(parseTestClaims("42 tests passing")[0]).toMatchObject({ passed: 42, all: false });
     expect(parseTestClaims("All tests pass.")[0]).toMatchObject({ passed: null, all: true });
     // A pasted runner line is still the agent's word.
     expect(parseTestClaims("Tests  9 passed (9)")[0]).toMatchObject({ passed: 9, all: true });
@@ -115,6 +120,39 @@ describe("parseTestClaims: what the agent said", () => {
   it("ignores counts that are not a pass claim", () => {
     expect(parseTestClaims("Added 3 new tests for the edge cases.")).toEqual([]);
     expect(parseTestClaims("Smallest-change note: modified src/a.ts")).toEqual([]);
+  });
+
+  it("reads only claims about the whole suite", () => {
+    // Part of the suite: new, unit, added, partial, one file's.
+    expect(parseTestClaims("30 unit tests passed")).toEqual([]);
+    expect(parseTestClaims("Added 3 new tests pass")).toEqual([]);
+    expect(parseTestClaims("Added 3 tests pass")).toEqual([]);
+    expect(parseTestClaims("1 of 2 tests passing before the fix")).toEqual([]);
+    expect(parseTestClaims("test/lock.test.ts: 3 tests pass")).toEqual([]);
+    expect(parseTestClaims("all unit tests pass")).toEqual([]);
+    // A file's count still reads when it says "all".
+    expect(parseTestClaims("all 42 tests pass, incl. test/lock.test.ts")[0]).toMatchObject({
+      passed: 42,
+      all: true,
+    });
+  });
+
+  it("in a criterion's row, only an explicit 'all' speaks for the suite", () => {
+    const ac = { acScoped: true };
+    expect(parseTestClaims("3 tests pass", ac)).toEqual([]);
+    expect(parseTestClaims("3/3 tests pass", ac)).toEqual([]);
+    expect(parseTestClaims("Tests  3 passed (3)", ac)).toEqual([]);
+    expect(parseTestClaims("All 42 tests pass.", ac)[0]).toMatchObject({ passed: 42, all: true });
+    expect(parseTestClaims("All tests pass.", ac)[0]).toMatchObject({ passed: null, all: true });
+  });
+
+  it("merges claims across rows, each read in its own scope", () => {
+    const c = parseTestClaimsFrom([
+      { text: "3 tests pass", acScoped: true },
+      { text: "42 tests pass" },
+      { text: "All tests pass." },
+    ]);
+    expect(c.map((x) => x.passed)).toEqual([42]);
   });
 
   it("a counted claim wins over a bare 'all pass'", () => {

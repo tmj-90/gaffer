@@ -211,11 +211,18 @@ export function parseRunnerTally(text: string): TestTally | null {
   };
 }
 
-const TEST_WORD = "(?:unit\\s+|integration\\s+|e2e\\s+|end-to-end\\s+|new\\s+|existing\\s+)?tests?";
+/**
+ * A tests word scoped to part of the suite ("3 new tests", "30 unit tests"). A count
+ * so qualified speaks for that part, not for the whole run, so it is never compared
+ * with the runner's tally.
+ */
+const QUALIFIER =
+  "(?:unit|integration|e2e|end-to-end|new|existing|regression|black-box|smoke|added|focused)";
+const TEST_WORD = `(?:(${QUALIFIER})[\\s-]+)?tests?`;
 const PASS_WORD = "(?:pass(?:es|ed|ing)?|green|succeed(?:s|ed)?)";
-/** "12/12 tests pass", "12 of 12 tests passing". */
+/** "12/12 tests pass", "all 12 of 12 tests passing". */
 const RATIO_RE = new RegExp(
-  `(\\d+)\\s*(?:/|of|out of)\\s*(\\d+)\\s+${TEST_WORD}\\s+(?:are\\s+|now\\s+)?${PASS_WORD}`,
+  `\\b(all\\s+)?(\\d+)\\s*(?:/|of|out of)\\s*(\\d+)\\s+${TEST_WORD}\\s+(?:are\\s+|now\\s+)?${PASS_WORD}`,
   "gi",
 );
 /** "all 42 tests pass", "42 tests passing", "42 tests are green". */
@@ -226,16 +233,43 @@ const COUNT_RE = new RegExp(
 /** "all tests pass", "all the tests passed", "tests all pass". */
 const ALL_RE = new RegExp(
   `\\ball\\s+(?:the\\s+|of\\s+the\\s+)?${TEST_WORD}\\s+(?:are\\s+|now\\s+)?${PASS_WORD}|\\btests\\s+all\\s+${PASS_WORD}`,
-  "i",
+  "gi",
 );
+/** "Added 3 tests pass", "wrote 2 tests passing": the count is of tests just written. */
+const WROTE_BEFORE = /\b(?:added|adds|adding|wrote|writes|new)\s+(?:all\s+)?$/i;
+/** A line that names one test file speaks for that file ("test/lock.test.ts: 3 tests pass"). */
+const TEST_FILE_RE =
+  /(?:^|[\s/(:'"`])[\w.-]*(?:\.(?:test|spec)\.[cm]?[jt]sx?|_test\.(?:go|py)|_spec\.rb)\b|(?:^|[\s/(:'"`])test_[\w-]+\.py\b/i;
+
+/** Where the agent's words were recorded. */
+export interface ClaimSource {
+  text: string;
+  /**
+   * True for a row recorded against one acceptance criterion (`ac_id` set). Its
+   * counts speak for that criterion's tests, so only an explicit "all N" in it is
+   * read as a claim about the whole suite.
+   */
+  acScoped?: boolean;
+}
 
 /**
- * What the agent's words claim about the tests. Reads plain prose and any runner
- * summary the agent pasted (a pasted line is still the agent's word, not the
- * runner's). One claim per distinct passing count; a bare "all tests pass" is kept
- * only when no counted claim was found.
+ * What the agent's words claim about the WHOLE test suite. A count is read as such a
+ * claim only when it speaks for the whole run:
+ *  - "all N tests pass", or "N/N" / "N of N" (every test, counted);
+ *  - a runner summary line the agent pasted (still the agent's word, not the runner's);
+ *  - a bare "N tests pass" in a row that is not about one criterion and names no
+ *    single test file.
+ * Never read: counts qualified as part of the suite ("3 new tests", "30 unit tests",
+ * "Added 3 tests"), a partial "1 of 2 tests passing", and in a criterion's row
+ * (`acScoped`) anything without "all". One claim per distinct passing count; a bare
+ * "all tests pass" is kept only when no counted claim was found.
  */
-export function parseTestClaims(text: string): TestClaim[] {
+export function parseTestClaims(text: string, scope: { acScoped?: boolean } = {}): TestClaim[] {
+  return parseTestClaimsFrom([{ text, acScoped: scope.acScoped === true }]);
+}
+
+/** {@link parseTestClaims} over several recorded rows, each with its own scope. */
+export function parseTestClaimsFrom(sources: readonly ClaimSource[]): TestClaim[] {
   const out: TestClaim[] = [];
   const seen = new Set<string>();
   const add = (c: TestClaim) => {
@@ -244,30 +278,48 @@ export function parseTestClaims(text: string): TestClaim[] {
     seen.add(key);
     out.push(c);
   };
-  for (const raw of String(text || "").split(/\r?\n/)) {
-    const line = clean(raw);
-    if (!line) continue;
-    let counted = false;
-    for (const m of line.matchAll(RATIO_RE)) {
-      const a = Number(m[1]);
-      const b = Number(m[2]);
-      add({ passed: a, all: a === b, excerpt: line });
-      counted = true;
-    }
-    if (!counted) {
-      for (const m of line.matchAll(COUNT_RE)) {
-        add({ passed: Number(m[2]), all: Boolean(m[1]), excerpt: line });
-        counted = true;
+  for (const src of sources) {
+    const acScoped = Boolean(src.acScoped);
+    for (const raw of String(src.text || "").split(/\r?\n/)) {
+      const line = clean(raw);
+      if (!line) continue;
+      const oneFile = TEST_FILE_RE.test(line);
+      const wrote = (index: number) => WROTE_BEFORE.test(line.slice(0, index));
+      // Matched a count at all (read or deliberately dropped): the line is about counts.
+      let matched = false;
+      for (const m of line.matchAll(RATIO_RE)) {
+        matched = true;
+        const said = Boolean(m[1]);
+        const a = Number(m[2]);
+        const b = Number(m[3]);
+        if (a !== b || m[4] || wrote(m.index ?? 0)) continue;
+        if ((acScoped || oneFile) && !said) continue;
+        add({ passed: a, all: true, excerpt: line });
+      }
+      if (!matched) {
+        for (const m of line.matchAll(COUNT_RE)) {
+          matched = true;
+          const said = Boolean(m[1]);
+          if (m[3] || wrote(m.index ?? 0)) continue;
+          if ((acScoped || oneFile) && !said) continue;
+          add({ passed: Number(m[2]), all: said, excerpt: line });
+        }
+      }
+      if (!matched) {
+        const pasted = readSummaryLine(line);
+        if (pasted) {
+          matched = true;
+          if (!acScoped && !oneFile)
+            add({ passed: pasted.passed, all: pasted.failed === 0, excerpt: line });
+        }
+      }
+      if (!matched) {
+        for (const m of line.matchAll(ALL_RE)) {
+          if (m[1]) continue;
+          add({ passed: null, all: true, excerpt: line });
+        }
       }
     }
-    if (!counted) {
-      const pasted = readSummaryLine(line);
-      if (pasted) {
-        add({ passed: pasted.passed, all: pasted.failed === 0, excerpt: line });
-        counted = true;
-      }
-    }
-    if (!counted && ALL_RE.test(line)) add({ passed: null, all: true, excerpt: line });
   }
   // A bare "all pass" says less than a counted claim; keep it only when alone.
   return out.some((c) => c.passed !== null) ? out.filter((c) => c.passed !== null) : out;

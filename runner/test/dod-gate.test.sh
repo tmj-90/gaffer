@@ -492,8 +492,8 @@ printf 'repo\t%s\t1\t1\t1\t-\t%s\t-\n' "$TCR2" "$G8_CMD" | gaffer_run_dod_gates 
 [ "$G8_RC" -eq 1 ] && grep -qE $'^GATE\ttypecheck\trepo\tFAIL' "$RESG" \
   && ok "G8 the detected typecheck command runs as the gate and a type error FAILS the DoD" \
   || fail "G8 detected gate did not fail (rc=$G8_RC, cmd='$G8_CMD'): $(tr '\n' '|' < "$RESG")"
-grep -q '_dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$rbase")"' "$RUNNER_DIR/tick.sh" \
-  && ok "G9 tick.sh resolves each write repo's typecheck command through gaffer_dod_typecheck_cmd" \
+grep -q '_dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$_dbase")"' "$RUNNER_DIR/tick.sh" \
+  && ok "G9 tick.sh resolves each write repo's typecheck command through gaffer_dod_typecheck_cmd, read from the recorded base commit" \
   || fail "G9 tick.sh does not use gaffer_dod_typecheck_cmd for the typecheck gate"
 
 echo

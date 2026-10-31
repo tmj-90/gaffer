@@ -105,8 +105,10 @@ import {
   computeTicketDiff,
   defaultGitRunner,
   type GitRunner,
+  resolveBranchHead,
   type TicketDiff,
 } from "./services/diffService.js";
+import { computeLandingStatus, type LandingStatus } from "./services/landingStatus.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -137,12 +139,22 @@ import {
   BoardService,
   resolveMoveTarget,
   type BoardView,
+  type BoardWindow,
   type DashboardSummary,
 } from "./services/boardService.js";
 import { PauseService, type PauseInput } from "./services/pauseService.js";
 import { HumanQueueService, type HumanQueue } from "./services/humanQueueService.js";
-import { ReviewGateService, type ApprovalShas } from "./services/reviewGateService.js";
-import { observedRisk } from "./services/observedRisk.js";
+import {
+  type ApprovalShas,
+  type ApproveReviewOptions,
+  type ReviewedHead,
+  ReviewGateService,
+} from "./services/reviewGateService.js";
+import {
+  observedRisk,
+  runnerIntegrityHolds,
+  withRunnerIntegrityHolds,
+} from "./services/observedRisk.js";
 import {
   AutonomyRecommendationService,
   type AutonomyRecommendation,
@@ -247,6 +259,12 @@ export interface TicketView {
    * never bounced. Powers the ticket-detail "why did #N fail" history.
    */
   reworkTrail: ReworkAttempt[];
+  /**
+   * PER-REPOSITORY LANDING: the approved commit of each write repo (its current review
+   * pin) and whether that commit has landed on the repo's default branch. A ticket is
+   * done only when every one has; `partial` marks a held, partly merged ticket.
+   */
+  landing: LandingStatus;
 }
 
 /**
@@ -270,8 +288,10 @@ export type { TicketRepoAccessResult } from "./services/repoService.js";
 export type {
   BoardCard,
   BoardCardClaim,
+  BoardArea,
   BoardColumnView,
   BoardView,
+  BoardWindow,
   CycleTimeStat,
   StuckTicket,
   RepoProgress,
@@ -580,7 +600,9 @@ export class Dispatch {
       // REVIEW PIN for a HUMAN approval: the commit the human approved (the primary write
       // repo's delivery-branch head at approve time), recorded as system evidence so every
       // landing path holds a branch that moved past it. Pure read; null when unknown.
-      reviewedHeadResolver: (ticket) => this.resolveApprovedHead(ticket),
+      reviewedHeadsResolver: (ticket) => this.resolveApprovedHeads(ticket),
+      // PER-REPOSITORY LANDING: git ancestry as positive evidence of a landing.
+      landedOnDefaultResolver: (repoId, sha) => this.commitOnDefaultBranch(repoId, sha),
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
       // ORs with the env flag — true iff a mode='auto' approve policy covers every
       // write repo at this ticket's risk. NO env read here (that stays in the gate).
@@ -596,7 +618,17 @@ export class Dispatch {
       // computeTicketDiff + the advisory risk-annotation overlay) so the gate can hold for
       // a human when observed exceeds the DECLARED risk_level. Pure read; a throw degrades
       // to indeterminate (fail toward human). Never grants an approval.
-      observedRiskResolver: (ticket) => observedRisk(this.ticketDiff(ticket.id).repos),
+      // GATE INTEGRITY: plus the runner's integrity FLAG from the latest trusted DoD
+      // record (what the worktree held that the committed diff cannot show, e.g. a
+      // git-ignored .npmrc), unless a human allowed test changes on the ticket.
+      observedRiskResolver: (ticket) => {
+        const observed = observedRisk(this.ticketDiff(ticket.id).repos);
+        if (ticket.allow_test_changes === 1) return observed;
+        return withRunnerIntegrityHolds(
+          observed,
+          runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
+        );
+      },
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
@@ -620,6 +652,7 @@ export class Dispatch {
       tickets: this.tickets,
       events: this.events,
       dependencies: this.ticketDependencies,
+      landingStatus: (ticketId) => computeLandingStatus(this.db, ticketId),
     });
   }
 
@@ -652,6 +685,24 @@ export class Dispatch {
    * read; every failure mode (no branch, repo not on disk, empty, git error) is
    * reported per-repo rather than thrown. See {@link computeTicketDiff}.
    */
+  /**
+   * GATE INTEGRITY: the latest DoD checklist the runner recorded on a ticket (a
+   * `test_output` evidence row whose summary starts `DoD: `), ignoring rows an agent
+   * recorded (an agent cannot mask the runner's FLAG with a cleaner checklist).
+   * Null when there is none. Pure read.
+   */
+  latestDodSummary(ticketId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT summary FROM evidence
+          WHERE ticket_id = ? AND evidence_type = 'test_output' AND summary LIKE 'DoD: %'
+            AND (recorded_by_actor_type IS NULL OR recorded_by_actor_type <> 'agent')
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { summary: string } | undefined;
+    return row?.summary ?? null;
+  }
+
   ticketDiff(ref: string): TicketDiff {
     const ticket = this.resolveTicket(ref);
     return computeTicketDiff(
@@ -714,33 +765,41 @@ export class Dispatch {
   }
 
   /**
-   * REVIEW PIN (human approvals): the commit a human approves is the current head of the
-   * ticket's delivery branch in its PRIMARY write repo — the same repo + branch the
-   * landing paths resolve (the runner's merge lane and bin/merge-ticket.mjs take the first
-   * write repo with a local path, and the per-repo delivery branch, falling back to the
-   * ticket's). Returns the full commit id and branch, or null when the repo is not on disk,
-   * no branch is recorded, or git fails (the approval then records no pin and the landing
-   * check falls back to what it did before). Pure read.
+   * REVIEW PIN: the current delivery-branch head of EVERY active write repo on the ticket
+   * (the same repos, branch resolution and `rev-parse` the review diff uses — see
+   * diffService.resolveBranchHead — so the commit the Review view showed and the commit
+   * compared here are resolved one way). A repo that is not on disk or whose branch does
+   * not resolve yields no entry (nothing to compare, pin or land). Pure read.
    */
-  private resolveApprovedHead(ticket: Ticket): { sha: string; branch: string } | null {
+  private resolveApprovedHeads(ticket: Ticket): ReviewedHead[] {
     const runGit = this.gitRunner ?? defaultGitRunner;
-    const repo = this.repos
-      .listForTicket(ticket.id)
-      .find((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write" && l.local_path);
-    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return null;
-    const branch =
-      this.repos.ticketRepoBranch(ticket.id, repo.id) ??
-      this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
-      ticket.branch_name;
-    if (!branch) return null;
+    const out: ReviewedHead[] = [];
+    for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
+      if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
+      if (!repo.local_path || !existsSync(repo.local_path)) continue;
+      const branch =
+        this.repos.ticketRepoBranch(ticket.id, repo.id) ??
+        this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
+        ticket.branch_name;
+      if (!branch || branch.trim() === "") continue;
+      const sha = resolveBranchHead(runGit, repo.local_path, branch);
+      if (sha) out.push({ repoId: repo.id, repo: repo.name, branch, sha });
+    }
+    return out;
+  }
+
+  /** True when `sha` is contained in the repo's default branch (a verified landing). */
+  private commitOnDefaultBranch(repoId: string, sha: string): boolean {
+    const repo = this.repos.findById(repoId);
+    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return false;
+    const runGit = this.gitRunner ?? defaultGitRunner;
     const res = runGit(repo.local_path, [
-      "rev-parse",
-      "--verify",
-      "--quiet",
-      `refs/heads/${branch}^{commit}`,
+      "merge-base",
+      "--is-ancestor",
+      sha,
+      `refs/heads/${repo.default_branch || "main"}`,
     ]);
-    const sha = res.status === 0 ? res.stdout.trim().toLowerCase() : "";
-    return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha) ? { sha, branch } : null;
+    return res.status === 0;
   }
 
   // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------
@@ -1389,8 +1448,26 @@ export class Dispatch {
     });
   }
 
-  approveReview(ticketRef: string, actor: Actor): TransitionResult {
-    return this.reviewGateSvc.approveReview(ticketRef, actor);
+  approveReview(
+    ticketRef: string,
+    actor: Actor,
+    opts: ApproveReviewOptions = {},
+  ): TransitionResult {
+    return this.reviewGateSvc.approveReview(ticketRef, actor, opts);
+  }
+
+  /** PER-REPOSITORY LANDING: which approved revisions have landed. */
+  landingStatus(ref: string): LandingStatus {
+    return this.reviewGateSvc.landingStatus(ref);
+  }
+
+  /** PER-REPOSITORY LANDING: record one repo's approved commit as landed (system/admin). */
+  recordLanding(
+    ref: string,
+    input: { repo: string; commit: string; via?: string | undefined },
+    actor: Actor,
+  ): ReturnType<ReviewGateService["recordLanding"]> {
+    return this.reviewGateSvc.recordLanding(ref, input, actor);
   }
 
   /**
@@ -1445,6 +1522,16 @@ export class Dispatch {
 
   setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
     return this.ticketSvc.setTestContract(ticketRef, raw, actor);
+  }
+
+  /** GATE INTEGRITY: a human allows this ticket to change its tests (human/admin only). */
+  setAllowTestChanges(
+    ticketRef: string,
+    allowed: boolean,
+    actor: Actor,
+    reason?: string,
+  ): { ticketId: string; allowTestChanges: boolean; eventId: string } {
+    return this.ticketSvc.setAllowTestChanges(ticketRef, allowed, actor, reason);
   }
 
   getTestContract(ticketRef: string): TestContract | null {
@@ -2061,6 +2148,8 @@ export class Dispatch {
       testContract: parseTestContract(ticket.test_contract),
       // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
       reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
+      // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
+      landing: computeLandingStatus(this.db, ticket.id),
     };
   }
 
@@ -2338,8 +2427,8 @@ export class Dispatch {
    * @param repo Optional repository name/id — when supplied, only tickets
    *   linked to that repo are included. Omit for the full board.
    */
-  board(repo?: string): BoardView {
-    return this.boardSvc.board(repo);
+  board(repo?: string, window?: BoardWindow): BoardView {
+    return this.boardSvc.board(repo, window);
   }
 
   /**

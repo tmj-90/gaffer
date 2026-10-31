@@ -257,15 +257,27 @@ COMMANDS
                             Returns cards ordered by bm25 relevance.
   card upsert --canonical <c> --repo <r> --repo-root <abs> --path <rel>
       [--tldr <t>] [--role-primary <r>] [--role-tag <x> ...] [--model <m>]
-      [--prompt-version <v>] [--synced-commit <sha>] [--source <s>] [--json]
+      [--prompt-version <v>] [--synced-commit <sha>] [--source <s>]
+      [--keep-model] [--carry-from <old-path>] [--json]
                             Write/refresh one file card. Reads the file off
                             disk, computes mechanical fields + symbols, runs
                             both validation gates, then upserts. The caller
                             supplies only model-derived intent (tldr/role).
+                            --carry-from: the file was renamed from <old-path>;
+                            the new card takes the old card's summary.
   card sync --canonical <c> --repo <r> --commit <sha> [--json]
                             Record the repo's card-set watermark (the commit
                             the cards were built from). Run once after an
                             onboard card pass.
+  card verify --canonical <c> --repo <r> --repo-root <abs> [--fix]
+      [--commit <sha>] [--json]
+                            Check EVERY stored card against the tree at
+                            --repo-root: a path not in the tree is missing, a
+                            content hash that differs is stale. --fix deletes
+                            missing cards and re-cards stale ones (summary
+                            kept), then re-checks. --commit advances the
+                            watermark only when the final check is clean.
+                            Exit 1 while problems remain.
   delete-file-card --canonical <c> --repo <r> --path <p> [--json]
                             Hard-delete one file card (row + FTS entry) for a
                             deleted / renamed-away file so no stale card is left

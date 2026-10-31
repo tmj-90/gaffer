@@ -37,6 +37,13 @@ export interface ObservedRisk {
   files: number;
   /** Total lines changed (additions + deletions) across write repos. */
   lines: number;
+  /**
+   * HARD holds: signals that hold an auto-ship for a human WHATEVER the declared risk.
+   * Today only GATE INTEGRITY's unallowed `test-modified` (the delivery deleted/renamed
+   * tests, added skip markers or rewrote a gate script). Optional so an older caller's
+   * literal still type-checks; absent ⇒ no hold.
+   */
+  holds?: string[];
 }
 
 /** Parse a positive-int env knob, falling back to `fallback` when absent/invalid. */
@@ -71,6 +78,8 @@ function maxLevel(a: RiskLevel, b: RiskLevel): RiskLevel {
  * Signals (all from data diffService already computed — no new evidence source):
  *  - risk annotations: a `sensitive-path` flag ⇒ high; `dependency-change` /
  *    `large-deletion` ⇒ medium (directly reuses the advisory overlay).
+ *  - `test-modified` (GATE INTEGRITY) ⇒ high + a hard hold; medium when a human
+ *    allowed test changes on the ticket.
  *  - size: total files ≥ FILES_HIGH or lines ≥ LINES_HIGH ⇒ high; ≥ *_MEDIUM ⇒ medium.
  *
  * `determinate` is false when there are no write repos or ANY write repo's diff was
@@ -83,6 +92,7 @@ export function observedRisk(
 ): ObservedRisk {
   const t = sizeThresholds(env);
   const reasons: string[] = [];
+  const holds: string[] = [];
   let level: RiskLevel = "low";
   let files = 0;
   let lines = 0;
@@ -94,6 +104,15 @@ export function observedRisk(
       if (ann.kind === "sensitive-path") {
         level = maxLevel(level, "high");
         reasons.push(`${repo.repo}: ${ann.detail}`);
+      } else if (ann.kind === "test-modified") {
+        // GATE INTEGRITY: the tests that decide "done" were weakened. Unallowed ⇒ high
+        // AND a hard hold (a declared-high ticket must not auto-ship past it either);
+        // a human's allow_test_changes keeps it visible at medium, no hold.
+        const sev = ann.severity === "high" ? "high" : "medium";
+        level = maxLevel(level, sev);
+        const reason = `${repo.repo}: tests modified — ${ann.detail}`;
+        reasons.push(reason);
+        if (sev === "high") holds.push(reason);
       } else {
         level = maxLevel(level, "medium");
         reasons.push(`${repo.repo}: ${ann.detail}`);
@@ -118,7 +137,7 @@ export function observedRisk(
     );
   }
 
-  return { level, determinate, reasons, files, lines };
+  return { level, determinate, reasons, files, lines, holds };
 }
 
 /**
@@ -137,6 +156,8 @@ export function observedRiskCeiling(env: NodeJS.ProcessEnv = process.env): RiskL
 /**
  * The pure escalation predicate. ESCALATE (hold for a human) iff:
  *   - the observation is indeterminate (fail toward human), OR
+ *   - it carries a HARD hold (an unallowed `test-modified`: the gate's own tests were
+ *     weakened, so the green gate proves nothing — whatever the declared level), OR
  *   - observed level > declared level (the under-declaration this gate exists to catch), OR
  *   - a hard ceiling is configured and observed >= that ceiling.
  *
@@ -150,8 +171,49 @@ export function shouldEscalate(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   if (!observed.determinate) return true;
+  if ((observed.holds?.length ?? 0) > 0) return true;
   if (riskRank(observed.level) > riskRank(declared)) return true;
   const ceiling = observedRiskCeiling(env);
   if (ceiling && riskRank(observed.level) >= riskRank(ceiling)) return true;
   return false;
+}
+
+/**
+ * GATE INTEGRITY, the runner's side: the holds a DoD evidence summary carries. The
+ * runner's integrity row sees things the server-side diff cannot — a git-ignored
+ * `.npmrc` in the worktree reconfigures the gate but never reaches a commit — so an
+ * unexcused `integrity` FLAG in the latest trusted DoD record holds the auto-ship too.
+ * `summary` is the runner's `DoD: <overall>\n<json>…` evidence text; anything that does
+ * not parse yields no hold (the diff-based check still applies). Pure.
+ */
+export function runnerIntegrityHolds(summary: string | null | undefined): string[] {
+  if (!summary || !summary.startsWith("DoD: ")) return [];
+  const json = summary.split("\n")[1] ?? "";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const gates = (parsed as { gates?: unknown }).gates;
+  if (!Array.isArray(gates)) return [];
+  const out: string[] = [];
+  for (const g of gates as Array<Record<string, unknown>>) {
+    if (g.gate !== "integrity" || g.status !== "FLAG") continue;
+    const repo = typeof g.repo === "string" && g.repo ? g.repo : "repo";
+    const note = typeof g.note === "string" && g.note ? g.note : "flagged";
+    out.push(`${repo}: tests modified (runner integrity gate) — ${note}`);
+  }
+  return out;
+}
+
+/** Fold the runner's integrity holds into an observation (holds ⇒ level high). */
+export function withRunnerIntegrityHolds(observed: ObservedRisk, holds: string[]): ObservedRisk {
+  if (holds.length === 0) return observed;
+  return {
+    ...observed,
+    level: "high",
+    reasons: [...observed.reasons, ...holds],
+    holds: [...(observed.holds ?? []), ...holds],
+  };
 }

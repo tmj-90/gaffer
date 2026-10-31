@@ -14,7 +14,22 @@
  * Over-flagging is safe here (advisory), so the patterns lean inclusive.
  */
 
-export type RiskKind = "sensitive-path" | "dependency-change" | "large-deletion";
+import {
+  hasIntegrityFindings,
+  integrityItems,
+  integrityPaths,
+  summarizeIntegrity,
+  type TestIntegrityFindings,
+} from "./testIntegrity.js";
+
+/** Every kind, in the order the Review view lists them. */
+export const RISK_KINDS = [
+  "sensitive-path",
+  "dependency-change",
+  "large-deletion",
+  "test-modified",
+] as const;
+export type RiskKind = (typeof RISK_KINDS)[number];
 
 export interface RiskAnnotation {
   readonly kind: RiskKind;
@@ -23,6 +38,17 @@ export interface RiskAnnotation {
   readonly detail: string;
   /** The concrete paths that triggered it (omitted for count-only signals). */
   readonly paths?: readonly string[];
+  /**
+   * `test-modified` only: one human line per finding ("deleted test file a.test.ts",
+   * "added it.skip in b.test.ts:4") for the Review banner.
+   */
+  readonly items?: readonly string[];
+  /**
+   * `test-modified` only: a human allowed test changes on this ticket
+   * (`allow_test_changes`). The annotation stays visible but drops to medium and no
+   * longer holds an auto-approve on its own.
+   */
+  readonly allowed?: boolean;
 }
 
 /**
@@ -96,4 +122,27 @@ export function computeRiskAnnotations(
     });
   }
   return out;
+}
+
+/**
+ * GATE INTEGRITY: the `test-modified` annotation for one repo's change, or null when the
+ * delivery deleted/renamed no test file, added no skip marker and left the gate scripts
+ * and test config alone. HIGH by default — observedRisk.ts turns an unallowed one into a
+ * HOLD on the auto-ship path whatever the declared risk — and MEDIUM when a human set
+ * `allow_test_changes` on the ticket (still shown, no longer a hold by itself).
+ */
+export function testModifiedAnnotation(
+  findings: TestIntegrityFindings,
+  allowed: boolean,
+): RiskAnnotation | null {
+  if (!hasIntegrityFindings(findings)) return null;
+  const summary = summarizeIntegrity(findings);
+  return {
+    kind: "test-modified",
+    severity: allowed ? "medium" : "high",
+    detail: allowed ? `${summary} (test changes allowed on this ticket by a human)` : summary,
+    paths: integrityPaths(findings),
+    items: integrityItems(findings),
+    ...(allowed ? { allowed: true } : {}),
+  };
 }

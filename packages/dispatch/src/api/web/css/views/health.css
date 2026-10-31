@@ -221,6 +221,37 @@
     align-content: start;
     gap: 10px;
   }
+  /* where shipped tickets waited: the merge queue, review, holds, the backlog */
+  .fg-wait {
+    display: grid;
+    gap: 6px;
+    margin: 0;
+  }
+  .fg-wait > div {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 2px 8px;
+    padding-top: 6px;
+    border-top: var(--hair);
+  }
+  .fg-wait dt {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-2);
+  }
+  .fg-wait dd {
+    margin: 0;
+    font: 800 var(--t16) / 1.2 var(--f-display);
+    text-align: right;
+  }
+  .fg-wait small {
+    display: block;
+    font: 600 var(--t12) / 1.3 var(--f-cond);
+    color: var(--ink-2);
+  }
 
   /* --- running now: what is in play beside what has just finished ------------ */
   .hx-12 > .run-activity .run-activity-body:has(> .run-now) {

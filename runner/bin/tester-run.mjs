@@ -969,6 +969,7 @@ function runLiveTester(context) {
   log(`testing #${n} (${repo.name} @ ${branch}) in ${worktree}; skills: ${skills.join(", ")}`);
   const t0 = Date.now();
   const res = Worker.deliver({
+    kind: "tester",
     bin: CONFIG.claudeBin,
     argv,
     cwd: worktree,

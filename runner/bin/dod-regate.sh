@@ -11,7 +11,14 @@
 # gated but not landed); a FAIL keeps the resolution off the branch and holds the
 # ticket for a human.
 #
-#   dod-regate.sh <worktree> <repo-label> <test_cmd|-> <lint_cmd|-> [base-ref]
+#   dod-regate.sh <worktree> <repo-label> <test_cmd|-> <lint_cmd|-> [base-ref] [allow]
+#
+# GATE INTEGRITY: with a base-ref (the merge gate's gated target head, the conflict
+# re-gate's default-branch tip) the gate row carries it as lib/dod.sh's base_ref, so
+# each gate's package.json script is read from that commit (a branch that rewrote
+# `scripts.test` cannot redirect the merge gate either) and an `integrity` row compares
+# the base with the gated tree: PASS or FLAG, never FAIL, never an executed gate.
+# allow is "1" when a human set allow_test_changes on the ticket (FLAG → PASS + note).
 #
 # Same gate runner, same per-gate toggles (GAFFER_DOD_TESTS / _TYPECHECK / _LINT,
 # GAFFER_DOD_TYPECHECK_CMD), the SAME typecheck command as the delivery gate
@@ -31,7 +38,8 @@
 # shellcheck shell=bash
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WT="${1:-}" LABEL="${2:-repo}" TEST_CMD="${3:--}" LINT_CMD="${4:--}" BASE="${5:-}"
+WT="${1:-}" LABEL="${2:-repo}" TEST_CMD="${3:--}" LINT_CMD="${4:--}" BASE="${5:-}" ALLOW="${6:-0}"
+[ "$ALLOW" = "1" ] || ALLOW=0
 fail_line() {
   printf 'DoD: FAIL\n{"dod":"FAIL","gates":[{"gate":"config","repo":"%s","status":"FAIL","rc":"-","note":"%s"}]}\n' "$LABEL" "$1"
   exit 1
@@ -67,8 +75,13 @@ TC_CMD="$(gaffer_dod_typecheck_cmd "$WT" "$BASE")"; [ -n "${TC_CMD// /}" ] || TC
 if gaffer_dod_install_enabled; then gaffer_dod_install_deps "$WT" >/dev/null 2>&1 || true; fi
 RESULTS="$(mktemp "${TMPDIR:-/tmp}/gaffer-regate.XXXXXX")" || fail_line "could not create a results file (mktemp failed)"
 OVERALL=PASS
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$LABEL" "$WT" "${GAFFER_DOD_TESTS:-1}" "${GAFFER_DOD_TYPECHECK:-1}" \
-  "${GAFFER_DOD_LINT:-1}" "$TEST_CMD" "$TC_CMD" "$LINT_CMD" | gaffer_run_dod_gates "$RESULTS" || OVERALL=FAIL
+# GATE INTEGRITY: the base ref and the human's allowance ride as the row's trailing
+# fields (`-` = no base: the commands run as registered and no integrity row is added).
+_BASE_COL="$BASE"; [ -n "${_BASE_COL// /}" ] || _BASE_COL="-"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$LABEL" "$WT" "${GAFFER_DOD_TESTS:-1}" "${GAFFER_DOD_TYPECHECK:-1}" \
+  "${GAFFER_DOD_LINT:-1}" "$TEST_CMD" "$TC_CMD" "$LINT_CMD" "$_BASE_COL" "$ALLOW" | gaffer_run_dod_gates "$RESULTS" || OVERALL=FAIL
+# The integrity verdict goes to stderr (no tick `log` here); stdout stays the evidence.
+gaffer_dod_log_integrity "$RESULTS" || true
 if [ "$OVERALL" = PASS ] && [ "$(gaffer_dod_executed_count "$RESULTS")" -eq 0 ] && [ "${GAFFER_ALLOW_NO_DOD:-0}" != "1" ]; then
   # The delivery gate's rule: zero executed gates is not a verification.
   fail_line "zero DoD gates executed on the resolution (no test_command, lint_command or typecheck script configured; GAFFER_ALLOW_NO_DOD=1 waives)"

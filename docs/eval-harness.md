@@ -46,9 +46,18 @@ falsifiable.
 ## The metrics (`evalLedgerCli --mode summarize`)
 
 - **passRate / blockRate / meanScore / dimensionMeans** — the quality baseline.
-- **memoryLift** — mean score with memory context minus without. Positive lift
-  is evidence the memory asset earns its keep; ~zero says it doesn't. `null`
-  until both arms have data (never a fake 0).
+- **memoryLift — read it as the *memory score gap*, not an uplift.** It is the mean
+  judge score of submitted deliveries that had memory primed minus the mean of those
+  that did not. The two arms are **different tickets** (memory tends to be primed on
+  repos and tasks the factory already knows, which are also easier), and the judge
+  only scores work that cleared every gate and was submitted, so the number answers
+  neither "does memory cause better work" nor "what does it cost". `gaffer eval`
+  prints it as `memory score gap` with each arm's sample size, the exclusion, and a
+  pointer to the honest measurement below; the JSON carries
+  `measure: "judge_score_gap_on_submitted_work"`, `label`, `sample`
+  (`withMemory` / `withoutMemory` / `distinctTickets`), `excludes`, and
+  `matched: null` with `matchedReason`. `null` until both arms have data (never a
+  fake 0).
 - **cost.costPerPass** — total real spend over the costed records divided by the
   number of judge-passing deliveries: what a *good* delivery costs, with spend
   on failures amortised in. The FinOps headline.
@@ -57,6 +66,33 @@ falsifiable.
 node packages/crew/dist/eval/evalLedgerCli.js --mode summarize \
   --file "$GAFFER_DATA/eval-ledger.jsonl"
 ```
+
+## Matched-ticket comparison (the honest measurement — not built yet)
+
+The question the memory gap cannot answer is causal: *for the same work, does
+priming memory produce better outcomes at lower total cost?* The measurement that
+answers it, and the seam it would fill (`memoryLift.matched`, today `null`):
+
+1. **Same tickets, both arms.** Take a fixed set of tickets (the gate-replay
+   fixtures, or real tickets re-run from their recorded base commit) and deliver
+   each twice: once with the durable memory primed, once with priming disabled (no
+   product context, lore or file cards in the primer — a per-arm switch the
+   experiment runner adds; no setting suppresses priming today). Randomise the order
+   so model drift does not favour one arm.
+2. **Count every attempt, not only submissions.** For each ticket and arm record
+   the attempts until submission or park, the total spend from the usage ledger
+   (including killed and timed-out calls), whether it was submitted at all, the
+   judge score when it was, and whether a human accepted it (approved without a
+   rework).
+3. **Report paired differences.** Per ticket: Δ acceptance, Δ total spend, Δ
+   attempts, Δ judge score; then the mean and a confidence interval over tickets,
+   with the ticket count. A ticket that one arm never submitted counts as a failure
+   for that arm, not as missing data.
+
+It is not built because it needs a second, paid delivery of every ticket and an
+experiment runner that suppresses priming per arm; the ledger today records judged
+submissions only. Until then treat the memory score gap as a description of the
+work that was submitted, never as evidence that memory improved it.
 
 ## Knobs
 

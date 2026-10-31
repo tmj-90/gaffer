@@ -1916,7 +1916,16 @@ export function findPossibleDuplicates(
     repos?: ReadonlyArray<string>;
     tags?: ReadonlyArray<string>;
   },
-  options: { allowRestricted?: boolean; limit?: number } = {},
+  options: {
+    allowRestricted?: boolean;
+    limit?: number;
+    /**
+     * PUBLICATION STATUS (external review #7): false ⇒ only ACTIVE records are candidates.
+     * The factory-context MCP passes false — an unapproved draft must not reach another
+     * agent through duplicate feedback. Default true (the CLI / standalone behaviour).
+     */
+    includeDrafts?: boolean;
+  } = {},
 ): PossibleDuplicateResult {
   const empty: PossibleDuplicateResult = {
     duplicates: [],
@@ -1937,7 +1946,7 @@ export function findPossibleDuplicates(
        FROM lore l JOIN lore_fts fts ON fts.rowid = l.rowid
        WHERE lore_fts MATCH ?
          AND l.id != ?
-         AND l.status IN ('active', 'draft')
+         AND l.status IN (${options.includeDrafts === false ? "'active'" : "'active', 'draft'"})
        ORDER BY score ASC
        LIMIT 40`,
     )

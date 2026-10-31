@@ -150,7 +150,10 @@ grep -q '^TICK_RESULT=no_work$' <<<"$OUT" && ! grep -q '"claim-ticket"' "$CALLS"
 # The operator's own commands, from a plain shell (no GAFFER_DATA / GAFFER_HOME): a
 # checkout whose runner/lib holds the real files (node resolves symlinks, so a copy).
 PLAIN="$WORK/plain"; mkdir -p "$PLAIN/runner/lib" "$PLAIN/.gaffer"
-cp "$RUNNER_DIR/lib/usage-pause.mjs" "$RUNNER_DIR/lib/worker.mjs" "$PLAIN/runner/lib/"
+# usage-pause.mjs and its local import closure (worker.mjs → budget-admission.mjs →
+# usage-ledger-path.mjs).
+cp "$RUNNER_DIR/lib/usage-pause.mjs" "$RUNNER_DIR/lib/worker.mjs" "$RUNNER_DIR/lib/budget-admission.mjs" \
+   "$RUNNER_DIR/lib/usage-ledger-path.mjs" "$PLAIN/runner/lib/"
 node -e 'const ms=Date.now()+3600e3;require("fs").writeFileSync(process.argv[1],JSON.stringify({paused_until:new Date(ms).toISOString(),until_ms:ms,kind:"usage_limit",basis:"reset",message:"t",ticket:7,lane:"bootstrap",recorded_at:new Date().toISOString()}))' "$PLAIN/.gaffer/usage-pause.json"
 SOUT="$(cd "$WORK" && env -u GAFFER_DATA -u GAFFER_HOME -u GAFFER_USAGE_PAUSE_FILE node "$PLAIN/runner/lib/usage-pause.mjs" status 2>&1)"; src=$?
 [ "$src" = 0 ] && case "$SOUT" in "paused until "*) true ;; *) false ;; esac \

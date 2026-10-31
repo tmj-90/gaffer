@@ -611,6 +611,26 @@
     width: 100%;
     max-width: 260px;
   }
+  /* A secret-bearing setting: never shown, only whether it is set (and its host). */
+  .setting-secret-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--s2);
+    min-width: 0;
+  }
+  .setting-secret {
+    color: var(--ink-2);
+    font-size: var(--t14);
+    overflow-wrap: anywhere;
+  }
+  .setting-secret.is-removing {
+    text-decoration: line-through;
+  }
+  .setting-secret-row input[type="password"] {
+    flex: 1 1 100%;
+  }
   .switch-word {
     min-width: 2.2em;
     font: 800 var(--t14) / 1 var(--f-cond);

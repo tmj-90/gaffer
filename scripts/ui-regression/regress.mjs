@@ -9,6 +9,7 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
+import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -578,6 +579,31 @@ try {
     }
   }
 
+  // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
+  //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
+  //          Sign-off shows no "tests changed" banner. A delivery that weakened its
+  //          tests is covered by runner/test/gate-integrity-e2e*.test.sh + the JSDOM test.
+  const giRow = await waitFor(
+    async () => {
+      const rows = await page.$$eval(".dod-item", (els) =>
+        els.map((e) => ({
+          cls: e.className,
+          gate: (e.querySelector(".dod-gate") || {}).textContent || "",
+        })),
+      );
+      return rows.find((r) => r.gate === "integrity") || null;
+    },
+    "integrity row in the gates checklist",
+    15000,
+    500,
+  ).catch(() => null);
+  giRow && /dod-i-pass/.test(giRow.cls)
+    ? ok("Review gates checklist carries the gate-integrity row, passed for a clean delivery")
+    : bad(`no passing integrity row in the gates checklist (${giRow ? giRow.cls : "absent"})`);
+  (await page.locator(".integrity-banner").count()) === 0
+    ? ok("no tests-changed banner on a clean delivery's Sign-off")
+    : bad("a tests-changed banner showed on a clean delivery");
+
   // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
   //        reader back to the top of the diff they are reading. On a short
   //        viewport, scroll to the bottom of the queue, then make the factory emit
@@ -623,6 +649,51 @@ try {
         );
     await page.setViewportSize({ width: 1400, height: 1000 });
     await sleep(300);
+  }
+
+  // ── 5b. STALE REVISION (external review #2): the diff names the commit it shows; a
+  //        commit pushed to the branch after the render makes Approve refuse (409
+  //        stale_revision), the view say the change moved, and reload the new diff.
+  {
+    const d = (await api("GET", `/tickets/${ticket.id}/diff`)).json;
+    const rd = (d?.repos || []).find((r) => r.headSha);
+    rd
+      ? ok(`diff endpoint names the commit it rendered (${rd.repo} @ ${rd.headSha.slice(0, 12)})`)
+      : bad("diff endpoint returned no headSha");
+    const repoPath = REPO_PATH;
+    if (rd && repoPath && rd.branch) {
+      const g = (...a) =>
+        execFileSync("git", ["-C", repoPath, "-c", "user.name=ui", "-c", "user.email=ui@x", ...a], {
+          encoding: "utf8",
+        }).trim();
+      // Advance the delivery branch WITHOUT touching the live checkout (a commit-tree on
+      // the branch tip's tree, then update-ref), so the next approval is stale.
+      const tip = g("rev-parse", `refs/heads/${rd.branch}`);
+      const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
+      g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
+      const btn = page
+        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
+        .first();
+      await waitFor(
+        async () => (!(await btn.isDisabled()) ? true : null),
+        "approve enabled",
+        30000,
+        500,
+      );
+      await btn.click();
+      await btn.click();
+      const banner = await page
+        .waitForSelector(".diff-moved-banner", { timeout: 15000 })
+        .catch(() => null);
+      banner
+        ? ok("Review: a stale approval is refused and the view says the change moved")
+        : bad("Review: no 'the change moved' banner after a stale approval");
+      const still = (await api("GET", `/tickets/${ticket.id}`)).json.ticket;
+      still?.status === "in_review"
+        ? ok("Review: the stale approval approved nothing (still in review)")
+        : bad(`Review: stale approval moved the ticket to ${still?.status}`);
+      await shot(page, "review-stale-revision");
+    } else note("stale-revision step skipped: no REPO_PATH / head to advance");
   }
 
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
@@ -764,6 +835,41 @@ try {
     whoJson && whoJson.capability === "read" && whoJson.actor && whoJson.actor.id === "ci-reviewer"
       ? ok("API: the minted token authenticates as principal ci-reviewer (read)")
       : bad(`API: minted token whoami unexpected: ${who.status} ${JSON.stringify(whoJson)}`);
+    // External review #5: a webhook URL is a secret — a read principal sees only whether
+    // it is set and its host, and cannot read it back.
+    {
+      await api("POST", "/api/settings", {
+        settings: { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
+      });
+      const asRead = await fetch(`${BASE}/api/settings`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      const txt = asRead.ok ? await asRead.text() : "";
+      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
+        ? ok("API: a read principal sees a webhook as configured + host only")
+        : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
+      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      back.status === 403
+        ? ok("API: a read principal is refused the secret read-back (403)")
+        : bad(`API: secret read-back answered ${back.status} to a read principal`);
+      // The page is already on #/settings, so a goto to the same hash would not re-render
+      // it: reload to read the settings as saved by the POST above.
+      await page.reload({ waitUntil: "load" });
+      await page
+        .waitForSelector("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret", { timeout: 5000 })
+        .catch(() => {});
+      await sleep(400);
+      const maskedTxt =
+        (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
+        "";
+      maskedTxt.includes("hooks.slack.com") && !maskedTxt.includes("SECRET")
+        ? ok("Settings: the Slack webhook shows masked (set · host) with Replace")
+        : bad(`Settings: the webhook field is not masked: '${maskedTxt.slice(0, 80)}'`);
+      await shot(page, "settings-secret-masked");
+      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY_SLACK_URL: "" } });
+    }
     const denied = await fetch(`${BASE}/tickets`, {
       method: "POST",
       headers: { Authorization: `Bearer ${minted}`, "content-type": "application/json" },
@@ -1050,6 +1156,59 @@ try {
       }
     }
   } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
+
+  // ── 6a. work: the board is a visible window with whole-board counts ─────────
+  //   The Work view asks /api/board for a window per lane (?limit=), and each lane
+  //   head reads the server's total for that lane, not just the cards it loaded.
+  {
+    const boardReqs = [];
+    const onReq = (req) => {
+      if (req.url().includes("/api/board")) boardReqs.push(req.url());
+    };
+    page.on("request", onReq);
+    await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+    await sleep(900);
+    page.off("request", onReq);
+    boardReqs.some((u) => /[?&]limit=\d+/.test(u))
+      ? ok("work: the board is fetched as a visible window (?limit=)")
+      : bad(`work: board requests carry no window: ${boardReqs.join(" ") || "none"}`);
+    const windowed = (await api("GET", "/api/board?limit=1")).json;
+    const heads = await page
+      .$$eval(".board-col", (els) =>
+        els.map((e) => [e.dataset.column, e.querySelector(".board-col-count")?.textContent]),
+      )
+      .catch(() => []);
+    const wrong = heads.filter(
+      ([col, n]) => String(windowed?.counts?.columns?.[col] ?? "?") !== String(n),
+    );
+    heads.length && !wrong.length
+      ? ok(`work: every lane head equals the server's count (${heads.length} lanes)`)
+      : bad(`work: lane heads disagree with /api/board counts: ${JSON.stringify(wrong)}`);
+  }
+
+  // ── 6b. health: flow efficiency claims only agent-working time ──────────────
+  //   The merged ticket above has a transition history, so the form guide shows the
+  //   flow efficiency as working time and lists where shipped tickets waited (the
+  //   merge queue on its own) instead of counting review and the queue as work.
+  {
+    await page.goto(`${BASE}/#/health`, { waitUntil: "load" });
+    await sleep(900);
+    const bandLabel =
+      (await page.getAttribute(".form-guide .fg-eff .band", "aria-label").catch(() => "")) || "";
+    /^Flow efficiency (<1|\d+)% of lead time with an agent working on the ticket$/.test(bandLabel)
+      ? ok(`health: flow efficiency says what it measures ("${bandLabel}")`)
+      : bad(`health: flow efficiency band reads '${bandLabel}'`);
+    const waitRows = await page
+      .$$eval(".form-guide .fg-wait dt", (els) => els.map((e) => e.textContent.trim()))
+      .catch(() => []);
+    waitRows.includes("Waiting to merge") &&
+    waitRows.includes("In review or testing") &&
+    waitRows.includes("Sent back, waiting for rework") &&
+    waitRows.includes("Before work started")
+      ? ok(`health: waiting is shown on its own (${waitRows.join(", ")})`)
+      : bad(`health: no waiting breakdown (rows: ${waitRows.join(", ") || "none"})`);
+    await shot(page, "health-flow");
+  }
 
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");

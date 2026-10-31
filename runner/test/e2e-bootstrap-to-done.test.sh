@@ -59,6 +59,9 @@ source "$RUNNER_DIR/lib/greenfield.sh"
 source "$RUNNER_DIR/lib/automerge.sh"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
+# STALE REVISION: an approval names the commit(s) it reviewed — the heads `ticket diff`
+# reports, exactly what the dashboard sends.
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 repo_registered() {  # count of registered repositories with the given name
@@ -138,7 +141,7 @@ ok "recorded branch_name = $B_WORK_BRANCH (delivered via the ordinary review lan
 echo "== FINISH: submit → approve → auto-merge → mark-merged → DONE =="
 wg submit "$NUM" --token "$TOKEN" --reason "bootstrapped new repo + scaffold delivered" >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "in_review" ] && ok "submit moved the bootstrap ticket claimed → in_review" || fail "#$NUM not in_review after submit (got '$(status_of "$NUM")')"
-wg review approve "$NUM" --reviewer human1 >/dev/null 2>&1
+wg review approve "$NUM" $(approve_heads "$NUM") --reviewer human1 >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "ready_for_merge" ] && ok "approve → ready_for_merge (done-gate satisfied by the real branch diff)" || fail "#$NUM not ready_for_merge after approve (got '$(status_of "$NUM")')"
 gaffer_auto_merge "$DIR" "$B_WORK_BRANCH" main; MRC=$?
 [ "$MRC" -eq 0 ] && ok "gaffer_auto_merge landed the scaffold on main (rc0)" || fail "auto-merge rc=$MRC"

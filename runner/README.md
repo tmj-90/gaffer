@@ -127,7 +127,9 @@ merge`) builds the merge of the approved commit onto the CURRENT default branch 
 scratch worktree, runs the repo's DoD gates on that merge through `bin/dod-regate.sh` (the
 delivery gate's gates: `test_command`, `lint_command` and the typecheck command
 `gaffer_dod_typecheck_cmd` resolves — `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
-typecheck script, detected from the gated target head first), and
+typecheck script, detected from the gated target head first; gate integrity: each gate's
+package.json script is read from that target head and an `integrity` row — PASS/FLAG, never
+FAIL, with the ticket's human `allow_test_changes` — compares it with the merged tree), and
 lands exactly the gated merge commit only while the default branch is still the commit it
 gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
 target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red
@@ -235,6 +237,23 @@ rejected delivery's worktree is torn down; its commits live on the ephemeral
 branch and never merge. The isolation is physical (the OS enforces it), not
 trust-based.
 
+**Leftover worktrees are removed on positive evidence only.** At the start and end of a
+run `loop.sh` sweeps worktrees a killed worker left behind (`lib/orphan-recovery.sh`).
+A worktree whose ticket status cannot be read (Dispatch down, a missing database, a
+timeout, an unknown ticket) is **kept** and named ("worktree preserved: … status is
+UNKNOWN"); a claimed, in-progress or paused ticket's worktree is kept; every other
+non-terminal ticket's worktree (draft, ready, blocked, in review, in testing, ready for
+merge) is kept and named too, even when `git status` shows it clean, because that check
+cannot see gitignored files such as a local `.env`. Only a definite terminal status
+(`done` / `failed` / `cancelled`) from a successful read removes a worktree; a ticket
+delivered again clears its own stale worktree first. `--dry-run` removes nothing and
+says what it would remove.
+
+**A dry run changes nothing, on the resume path too.** A `--dry-run` tick that finds a
+paused ticket whose Continue was pressed logs "DRY_RUN: would resume paused #N …" and
+stops before `resume-begin`: no lease is taken, the ticket stays `paused`, and the
+resume request stays queued for the next live tick (`runner/test/resume-dry-run.test.sh`).
+
 ## Model tiering
 
 Planning and implementation run on different models, configured in
@@ -248,7 +267,11 @@ GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflic
 An optional, size-gated, round-capped two-model **planning debate**
 (`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
-from real measurements, never invented**.
+from real measurements, never invented**. Every delivery row also carries its
+`attempt_id` (a hash of the claim plus the attempt number within it, never the
+claim token) and `started_at`, so the Health report can charge the spend of the
+attempts after a send-back (a reviewer's or tester's rejection, or a retry after a
+failed gate) to rework.
 
 ## Configuration (env always wins)
 
@@ -271,7 +294,24 @@ without a restart, and the dashboard launched by `gaffer dashboard` shows its ow
 defaults as editable, not env-locked. The day caps (`MAX_TICKS_PER_DAY`,
 `GAFFER_DAILY_BUDGET_USD`) are re-read from the current config by `loop.sh` and every
 pool `worker.sh` before each admission (`gaffer_refresh_day_caps`, lib/budget.sh), so
-lowering one stops a running loop at its next tick; a cap that cannot be re-read
+lowering one stops a running loop at its next tick. **Every paid launch is admitted on
+its own, immediately before it spawns**: `lib/budget-admission.mjs` checks the daily
+(`GAFFER_DAILY_BUDGET_USD`) and lifetime (`GAFFER_BUDGET_USD`) caps against the usage
+ledger as it stands (env first, else `settings.json`; an unreadable ledger or
+settings file with a cap set refuses). It reads the ledger the writer appends to (one
+resolver, `lib/usage-ledger-path.mjs`: a relative `GAFFER_USAGE_LEDGER` lives under
+`GAFFER_DATA`), and with a cap set a ledger that is turned off
+(`GAFFER_USAGE_LEDGER=0`/`off`) or has no location refuses too: nothing would be booked
+against the cap. Both worker seams ask it — `lib/worker.sh`
+`worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
+`gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
+for Plan a build, product owner for Suggest work, onboarding analysis, the merge
+resolver; status 77) — as do `bin/spec-author.mjs` before its own spawn and the
+ambiguous-sibling inherit classifier (`lib/greenfield.sh` `_gaffer_inherit_amb_spawn`,
+kind `inherit`, after a bootstrap), which on a refusal leaves the link for a human. If
+`lib/budget.sh` was not sourced, both shell callers load it; a check that still cannot be
+asked refuses the launch. A refused
+launch spawns nothing and books nothing (`runner/test/paid-launch-admission.test.sh`); a cap that cannot be re-read
 stops the run (fail closed). A `settings.json` that exists but does not parse as a
 flat JSON object (a hand edit, a truncated copy), or that cannot be read because
 `node` is missing, never drops a cap to its default: the re-source keeps the
@@ -307,6 +347,18 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
   is applied yet.
+- **Per-repository landing.** A ticket with write access to several repositories lands
+  one merge per repository: `lib/land.sh` (the merge lane and the review pass) and
+  `bin/merge-ticket.mjs` (the dashboard's Merge, `gaffer merge`) walk the ticket's approved
+  revisions (`wg ticket landing <n>`: one review pin per repo), land each pinned commit
+  (`lib/tester-binding.mjs --repo-id`; a secondary repo lands only its pinned commit), and
+  record it (`wg ticket record-landing`, which refuses a local landing unless git shows
+  the pinned commit on the repo's default branch; the safety hook denies it to agents,
+  like `mark-merged`). `mark-merged` is refused until every approved
+  revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
+  in the human queue) with its branches kept, and a retry skips the repos that already
+  landed (`already-landed`) instead of merging them again. A secondary repo that conflicts
+  is held for a human; the resolver runs for the primary repo only.
 - **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
   spawns the resolver agent once, in a throwaway worktree of the delivery branch, then
   **re-gates** the committed resolution with `bin/dod-regate.sh` — no conflict markers
@@ -321,6 +373,22 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   each digest section with `source: "merge:#<n>"` and the feature → `shipped`. **No agent
   is spawned in the merge hot path.** If no prepared delta is present it falls back to a
   minimal deterministic freshness stamp (+ feature → `shipped` when linked).
+
+- **File cards follow the merged commit, verified before they are marked current.**
+  After every landing (the merge lane and the review pass through `lib/land.sh` →
+  `gaffer_refresh_cards` in `lib/card-refresh.sh`; the dashboard Merge button through
+  `bin/merge-ticket.mjs`), the cards are brought in line with the default branch's NEW
+  TIP, never the delivery branch's own view of it: two tickets forked from one main can
+  overlap (A renames `archive.ts` → `ledger.ts`, B edits a function in `archive.ts`; git
+  lands B's edit in `ledger.ts`, while B's branch still has `archive.ts`). The refresh
+  diffs the card watermark (or the fork point) → the merged commit with rename detection,
+  reads files from a throwaway detached worktree of that commit (a rename carries the old
+  card's summary to the new path with `card upsert --carry-from`, then drops the old
+  card), and then runs `memory card verify --fix --commit <merged sha>`: every stored
+  card's path must exist in that tree and its content hash must match, a missing card is
+  removed and a stale one re-carded, and the watermark moves to the merged commit **only
+  when that check is clean**. A refresh that is not clean holds the watermark (logged),
+  so the next merge re-diffs from there.
 
 The whole path mirrors the ledger discipline: every memory write is **gated, try/caught,
 and fully swallowed** — a memory-write failure NEVER fails or blocks a merge — and every
@@ -457,7 +525,7 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `test/intake-gate.test.sh` — clarify intake-gate wiring (`bash test/intake-gate.test.sh`)
 - `lib/hygiene.sh` — delivery-hygiene assertions: hard-fail guard against the leaks an unattended run produced (copied src tree, leaked `.crew/events.jsonl`, self-referential/broken symlinks, `node_modules` added/deleted)
 - `lib/minimalism.sh` — minimalism post-condition (a missing smallest-change note is flagged `needs_human_review`, or sent back to rework under `MINIMALISM_REQUIRE_NOTE=1`; an oversized diff is flagged `needs_human_review: oversized_diff` whatever the note verdict, never failed)
-- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured or detected command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` ; typecheck (no dispatch field) runs `GAFFER_DOD_TYPECHECK_CMD`, else the repo's package.json typecheck script (`typecheck` / `type-check` / `check-types` / `types:check`, or a bare `tsc --noEmit` script), auto-detected from the base branch first by `gaffer_dod_typecheck_cmd`. A repo's `coverage_command` is not a DoD gate (it feeds the idle coverage loop). **Ships:** tests · typecheck · lint. **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
+- `lib/dod.sh` — **enforced Definition of Done (I3)**: the runner (never the agent) runs the enabled DoD gates — **tests / typecheck / lint** — deterministically in each write repo's delivery worktree, each under `gaffer_timeout`, BEFORE a ticket may rest in the human review lane. ALL pass/skip → proceed; ANY fail → **auto-reject back to refining** (the same path R-6/HYGIENE hardened) with the failing gate name + an output tail recorded as `test_output` evidence (the Review view renders the ✓/✗ checklist). A gate with **no configured or detected command is SKIPPED, not failed** (and logged). Toggled only by env: `GAFFER_DOD=0` disables enforcement, `GAFFER_DOD_TESTS` / `GAFFER_DOD_TYPECHECK` / `GAFFER_DOD_LINT` (default 1) toggle each gate (`docs/CONFIG.md`). crew.yaml's `definition_of_done` block (factory-wide or per repo) is **not read** by the runner, and `crew doctor` warns when it is changed. Commands come from each repo's dispatch `test_command`/`lint_command` ; typecheck (no dispatch field) runs `GAFFER_DOD_TYPECHECK_CMD`, else the repo's package.json typecheck script (`typecheck` / `type-check` / `check-types` / `types:check`, or a bare `tsc --noEmit` script), auto-detected from the base branch first by `gaffer_dod_typecheck_cmd`. A repo's `coverage_command` is not a DoD gate (it feeds the idle coverage loop). **Gate integrity:** each row also carries the base COMMIT the delivery was cut from (tick.sh captures the commit at the moment `worktree add -B` cuts the branch — `_BRANCH_CUT_SHAS`, also on a retry that re-cuts — resolves it with `gaffer_delivery_base_sha`, and records it on the repo delivery with `wg ticket repo-delivery record --base-sha`, adding `--base-recut` only for a fresh cut; a kept or resumed branch and an in-tick retry that builds on the previous attempt keep the commit already known, never the branch tip; dispatch refuses to replace a stored base without `--base-recut`; a branch name, the older contract, is resolved by merge-base) and the human's `allow_test_changes`; with them, `gaffer_dod_resolve_cmd` reads a package-script gate command's body from the **base commit** (a delivery that rewrote `scripts.test`, added or changed a `pre`/`post` hook, or changed a script reached through `test: npm run unit` runs the base expansion: source `base-pinned`), each GATE row gains a 7th `source` column, and `gaffer_dod_integrity_row` appends one `integrity` row per repo — PASS, or FLAG for deleted/renamed test files, added skip/focus markers (including node:test `{ skip: true }` options, `t.skip()` / `this.skip()` / `ctx.skip()`, `it.concurrent.skip`, and a marker after a comment on the same line), any change/removal/addition among the scripts the gate scripts reach (hooks, `npm run X`, `run-s` words), touched test config (an added one too, once the base has tests; package.json `jest`/`mocha`/… keys), a tracked file hidden from git (skip-worktree / assume-unchanged), a test file that lost test cases or every assertion (counted per language family, so moved tests do not count), or a package-manager rc file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) added, changed, deleted or renamed — read from git and from the worktree on disk, so a git-ignored `.npmrc` counts (the typed seam is `packages/crew` `runtime/dod/gateIntegrityCli.js`, running dispatch's `testIntegrity` classifier, the same one behind the server's `test-modified` risk flag). A FLAG never fails the run and the integrity row never counts as an executed gate; `allow=1` turns it into PASS with a note; no base or no crew dist FLAGs (never a silent pass). `GAFFER_TEST_PATH_RE` adds test paths. **Ships:** tests · typecheck · lint · integrity (flag only). **Deferred follow-ups (NOT yet gates):** coverage-did-not-decrease (needs a stored baseline), SAST/SCA (needs I2), CI-green (H3), docs-updated.
 - `lib/tester.sh` — the independent black-box tester pass (in_testing → `bin/tester-run.mjs --live`). A ticket the tester cannot decide (no verdict token, the tester changed implementation files, a PASS that failed its clean replay) is HELD in_testing: the tester-run's own reason is logged and attached as a `tester held: <reason>` manual_note, and the hold is remembered in `$GAFFER_DATA/.tester-held` for that stay in_testing so later runs do not pay to re-test it (`test/tester-held.test.sh`)
 - `lib/backpressure.sh` — per-repo backpressure (unmerged `gaffer/*` branches + in_review tickets + active claims vs cap)
 - `run-summary.sh` — end-of-run report (landed / failed-safe / parked / re-queued / oversized / per-repo pressure / cleanup state); printed by `loop.sh`

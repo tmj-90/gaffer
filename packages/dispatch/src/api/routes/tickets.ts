@@ -10,6 +10,7 @@ import type { MergeRunner } from "../mergeRunner.js";
 import {
   addAcBody,
   addTicketDependencyBody,
+  approveReviewBody,
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
@@ -24,6 +25,7 @@ import {
   setPrimaryScopeBody,
   setRequiredCapabilitiesBody,
   setTestableBody,
+  allowTestChangesBody,
   setTestContractBody,
   setTicketRepoAccessBody,
   stopPausedBody,
@@ -72,6 +74,8 @@ const TICKET_SUB = {
   // BBT-001: independent black-box testing handover + tester verdict.
   TESTABLE: "testable",
   TEST_CONTRACT: "test-contract",
+  // GATE INTEGRITY: the human's per-ticket "this ticket may change its tests" flag.
+  ALLOW_TEST_CHANGES: "allow-test-changes",
   TESTER: "tester",
 } as const;
 
@@ -274,7 +278,14 @@ export async function routeTickets(
   if (segments.length === 4 && sub === TICKET_SUB.REVIEW && method === "POST") {
     const action = segments[3] as string;
     if (action === "approve") {
-      const result = wg.approveReview(id, apiActor());
+      // STALE REVISION (external review #2): the approval names the commit(s) the Review
+      // view rendered; the service refuses with 409 stale_revision when a branch moved
+      // since, and 409 revision_required when no commit was named.
+      const body = approveReviewBody.parse(await readJsonBody(req));
+      const result = wg.approveReview(id, apiActor(), {
+        commits: (body.commits ?? []).map((c) => ({ repo: c.repo ?? null, sha: c.sha })),
+        requireCommits: true,
+      });
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on
       // approval") is ON, fire the configured merge command (fire-and-forget; logged,
@@ -380,6 +391,20 @@ export async function routeTickets(
     }
     const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
     sendJson(res, 202, { ticket, merge });
+    return;
+  }
+
+  // GATE INTEGRITY: /tickets/:id/allow-test-changes — a HUMAN allows (or withdraws the
+  // allowance for) this ticket to change its tests. The service refuses agent and
+  // system principals, so an agent token cannot excuse its own test edits.
+  if (segments.length === 3 && sub === TICKET_SUB.ALLOW_TEST_CHANGES && method === "POST") {
+    const body = allowTestChangesBody.parse(await readJsonBody(req));
+    const result = wg.setAllowTestChanges(id, body.allow_test_changes, apiActor(), body.reason);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      allow_test_changes: result.allowTestChanges,
+      event_id: result.eventId,
+    });
     return;
   }
 

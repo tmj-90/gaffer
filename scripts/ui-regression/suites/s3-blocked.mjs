@@ -116,15 +116,39 @@ export default async function s3(t, L) {
       `no Merge… row for #${appr.number} on the Team Sheet`,
     );
     if (seen) {
+      // "Done" means landed: a by-hand claim is checked against the default branch. The
+      // approved commit is NOT on main yet, so the first click is refused and the status
+      // does not move; after a real merge the same button closes the ticket.
       await mbtn.click();
       await p.locator('.sheet.open button:has-text("I merged it by hand")').click();
-      const done = await L.waitStatus(appr.id, ["done"], 15000, 500);
-      const tst = await L.waitToast(p, /marked merged/, 5000);
+      const refused = await L.waitToast(p, /not landed/, 10000);
+      await L.sleep(500);
+      const still = (await L.ticketOf(appr.id)).status;
       t.check(
-        done && tst,
-        `"I merged it by hand" closed #${appr.number} as done (toast "${tst}")`,
-        `mark-merged: status=${(await L.ticketOf(appr.id)).status} toast=${tst}`,
+        refused && still === "ready_for_merge",
+        `"I merged it by hand" before the merge is refused: #${appr.number} stays Approved, not merged (toast "${refused}")`,
+        `mark-merged without a landing: status=${still} toast=${refused}`,
       );
+      await p
+        .locator('.sheet.open button:has-text("Cancel")')
+        .click()
+        .catch(() => {});
+      const branch = (await L.ticketView(appr.id)).ticket?.branch_name || "";
+      if (L.REPO_PATH && branch) {
+        L.git(L.REPO_PATH, "merge", "--no-ff", "--no-edit", "-q", branch);
+        await t.visit("overview");
+        const mbtn2 = p.locator(`#what-i-own button[aria-label="Merge #${appr.number}"]`);
+        await mbtn2.waitFor({ timeout: 15000 }).catch(() => {});
+        await mbtn2.click();
+        await p.locator('.sheet.open button:has-text("I merged it by hand")').click();
+        const done = await L.waitStatus(appr.id, ["done"], 15000, 500);
+        const tst = await L.waitToast(p, /marked merged/, 5000);
+        t.check(
+          done && tst,
+          `after a real merge of ${branch} into main, "I merged it by hand" closed #${appr.number} as done (toast "${tst}")`,
+          `mark-merged after the merge: status=${(await L.ticketOf(appr.id)).status} toast=${tst}`,
+        );
+      } else t.bad(`no REPO_PATH/branch to merge #${appr.number} by hand (branch='${branch}')`);
     }
   }
 

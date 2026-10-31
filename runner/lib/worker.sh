@@ -1,5 +1,6 @@
 # Gaffer worker seam — the ONE headless `claude -p` invocation for the bash runner.
 # shellcheck shell=bash
+_GAFFER_WORKER_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # WHAT THIS IS (Spec 3 / Phase 1 — consolidate the invocation, zero behaviour change)
 # -----------------------------------------------------------------------------------
@@ -134,6 +135,22 @@ worker_deliver() {
   local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _bridge_dir="" _rc=0
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     claude-code)
+      # ── BUDGET ADMISSION (external review #6): the ONE check before EVERY paid launch
+      # (lib/budget.sh → lib/budget-admission.mjs, shared with the Node seam). Daily or
+      # lifetime budget exhausted, or the spend unknowable with a cap set ⇒ NO spawn:
+      # rc 77, empty envelope, nothing booked. GAFFER_LAUNCH_KIND names the launcher.
+      # If budget.sh was not sourced, load the sibling copy; if the check still cannot
+      # be asked, the launch is refused (fail closed), never waved through.
+      if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 && [ -f "$_GAFFER_WORKER_LIB/budget.sh" ]; then
+        # shellcheck source=budget.sh
+        . "$_GAFFER_WORKER_LIB/budget.sh"
+      fi
+      if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
+         || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}"; then
+        : > "$out_json"
+        printf 'worker: budget admission refused the paid %s launch — no agent spawned\n' "${GAFFER_LAUNCH_KIND:-worker}" >&2
+        return 77
+      fi
       # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──
       # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).
       # Populated here so the scrub is byte-identical for every site (each site called

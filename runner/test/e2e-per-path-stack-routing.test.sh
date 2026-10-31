@@ -12,7 +12,7 @@
 #   C. a ticket naming no file → BOTH packs (the repo's full compound stack).
 #   D. a ticket spanning TWO repos (TypeScript client + Java service) naming no file →
 #      delivery, review and the tester each mount BOTH packs, and each prompt names each
-#      repo's pack.
+#      repo's pack (the agent approval is held for a human, who approves both repos).
 # Run: bash runner/test/e2e-per-path-stack-routing.test.sh
 # =====================================================================
 set -uo pipefail
@@ -188,7 +188,14 @@ if [ -n "$RD" ] && [ "$RD" != "$RB" ]; then
   assert_skills "D: reviewer (diff touches .ts in one repo, .java in the other)" "$RD" "$PACKS,review-ticket" "python-conventions,csharp-conventions"
   grep -qF "svc (java): java-conventions" "$RD/prompt" && ok "D: reviewer prompt names each repo's pack" || fail "D: reviewer prompt lacks the per-repo pack note"
 else fail "D: no new reviewer spawn"; fi
-[ "$(st "$TD")" = "in_testing" ] && ok "D: approved → in_testing" || fail "D: #$TD is '$(st "$TD")' after review"
+# A two-repo ticket is never agent-approved: the reviewer's approval names only the
+# primary repo's commit, so dispatch refuses it and the ticket is held for a HUMAN
+# approval of every repo (lib/review.sh, STALE REVISION). A human approves both heads.
+[ "$(st "$TD")" = "in_review" ] && ok "D: the agent approval of a two-repo ticket is held for a human" \
+  || fail "D: #$TD is '$(st "$TD")' after the agent review (expected held in_review)"
+# shellcheck disable=SC2046
+GAFFER_TESTING=1 wg review approve "$TD" --reviewer human1 $(wg ticket diff "$TD" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
+[ "$(st "$TD")" = "in_testing" ] && ok "D: a human approval of both repos → in_testing" || fail "D: #$TD is '$(st "$TD")' after the human approval"
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
 TT="$(last_call tester)"
 if [ -n "$TT" ]; then

@@ -21,8 +21,16 @@ import type { GitRunner } from "../../src/services/diffService.js";
  * and every `git diff ...` returns a small non-empty patch, so branch resolution +
  * the real-diff gate succeed. Intended for tests that just need the gate satisfied.
  */
+/** A fixed merge-base the fakes report (the gate-integrity scan resolves one). */
+export const FAKE_MERGE_BASE = "a".repeat(40);
+
 export const nonEmptyDiffRunner: GitRunner = (_cwd, args) => {
   const joined = args.join(" ");
+  if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
+  // GATE INTEGRITY: the name-status scan sees one modified source file (no test touched).
+  if (joined.startsWith("diff --name-status")) {
+    return { status: 0, stdout: "M\0src/x.ts\0", stderr: "" };
+  }
   if (joined.startsWith("diff --numstat")) {
     return { status: 0, stdout: "5\t1\tsrc/x.ts\n", stderr: "" };
   }
@@ -44,6 +52,10 @@ export const nonEmptyDiffRunner: GitRunner = (_cwd, args) => {
  */
 export const highRiskDiffRunner: GitRunner = (_cwd, args) => {
   const joined = args.join(" ");
+  if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
+  if (joined.startsWith("diff --name-status")) {
+    return { status: 0, stdout: "M\0.github/workflows/ci.yml\0M\0src/auth/login.ts\0", stderr: "" };
+  }
   if (joined.startsWith("diff --numstat")) {
     return {
       status: 0,
@@ -64,6 +76,7 @@ export const highRiskDiffRunner: GitRunner = (_cwd, args) => {
 /** A git runner that always reports an EMPTY diff (no changes in the range). */
 export const emptyDiffRunner: GitRunner = (_cwd, args) => {
   const joined = args.join(" ");
+  if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
   if (joined.startsWith("diff")) return { status: 0, stdout: "", stderr: "" };
   return { status: 0, stdout: "", stderr: "" };
 };
@@ -92,3 +105,44 @@ export function giveTicketRealDelivery(
   wg.recordRepoDelivery({ ticket_id: ticketId, repo_id: repo.id, branch_name: branch }, actor);
   return { repoId: repo.id, branch };
 }
+
+/**
+ * GATE INTEGRITY: a git runner whose delivery DELETED a test file and added an `it.skip`
+ * (and is otherwise low-risk: one small source change). Used to exercise the
+ * `test-modified` hard hold.
+ */
+export const testWeakeningDiffRunner: GitRunner = (_cwd, args) => {
+  const joined = args.join(" ");
+  if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
+  if (joined.startsWith("diff --numstat")) {
+    return {
+      status: 0,
+      stdout: "1\t0\tsrc/x.ts\n0\t12\tsrc/x.test.ts\n1\t1\tsrc/y.test.ts\n",
+      stderr: "",
+    };
+  }
+  if (joined.startsWith("diff --name-status")) {
+    return {
+      status: 0,
+      stdout: "M\0src/x.ts\0D\0src/x.test.ts\0M\0src/y.test.ts\0",
+      stderr: "",
+    };
+  }
+  if (joined.startsWith("diff -U0")) {
+    return {
+      status: 0,
+      stdout:
+        "diff --git a/src/y.test.ts b/src/y.test.ts\n--- a/src/y.test.ts\n+++ b/src/y.test.ts\n" +
+        "@@ -4 +4 @@\n-it('adds', () => {\n+it.skip('adds', () => {\n",
+      stderr: "",
+    };
+  }
+  if (joined.startsWith("diff")) {
+    return {
+      status: 0,
+      stdout: "diff --git a/src/x.ts b/src/x.ts\n+a real change\n",
+      stderr: "",
+    };
+  }
+  return { status: 0, stdout: "", stderr: "" };
+};

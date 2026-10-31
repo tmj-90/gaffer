@@ -471,7 +471,8 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
       body: "b",
     });
     expect(json.status).toBe("draft");
-    const got = await callJson(client, "get_lore", { id: json.id });
+    // Read the stored draft directly: in factory context get_lore hides drafts.
+    const got = { json: getLore(db, json.id)! };
     expect([...got.json.repos].sort()).toEqual(["auth", "payments-svc"]);
   });
 
@@ -485,7 +486,7 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
       body: "b",
       repos: ["auth"],
     });
-    const got = await callJson(client, "get_lore", { id: json.id });
+    const got = { json: getLore(db, json.id)! };
     expect(got.json.repos).toEqual(["auth"]);
   });
 
@@ -499,7 +500,7 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
       body: "b",
       repos: [],
     });
-    const got = await callJson(client, "get_lore", { id: json.id });
+    const got = { json: getLore(db, json.id)! };
     expect(got.json.repos).toEqual(["payments-svc"]);
   });
 
@@ -511,7 +512,7 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
       summary: "s",
       body: "b",
     });
-    const got = await callJson(client, "get_lore", { id: json.id });
+    const got = { json: getLore(db, json.id)! };
     expect(got.json.repos).toEqual([]);
   });
 
@@ -524,7 +525,7 @@ describe("MCP — suggest_lore defaults repos from the factory ticket scope", ()
       body: "b",
     });
     expect(json.status).toBe("draft");
-    const got = await callJson(client, "get_lore", { id: json.id });
+    const got = { json: getLore(db, json.id)! };
     expect(got.json.repos).toEqual([]);
   });
 });
@@ -1364,5 +1365,107 @@ describe("MCP — retrieval-ROI logging on the read path (migration 011)", () =>
     const res = await callJson(client, "search_lore", { query: "webhook" });
     expect(res.isError).toBe(false);
     expect(res.json.results).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PUBLICATION STATUS — a draft is invisible to a FACTORY agent in every read path
+// (external review #7). A second agent learned an UNAPPROVED draft's id through
+// suggest_lore's duplicate feedback and fetched its full text with get_lore.
+// ---------------------------------------------------------------------------
+describe("factory context: drafts are invisible in every read path", () => {
+  const DRAFT_TITLE = "Rotate payment webhook signing secret quarterly";
+
+  async function draftByAgentA(c: Client): Promise<string> {
+    const r = await callJson(c, "suggest_lore", {
+      title: DRAFT_TITLE,
+      summary: "Unapproved draft from agent A",
+      body: "DRAFT-BODY rotate via vault path kv/payments/webhook",
+      repos: ["svc"],
+    });
+    expect(r.isError).toBe(false);
+    expect(r.json.status).toBe("draft");
+    return r.json.id as string;
+  }
+
+  it("duplicate feedback never names a draft; an ACTIVE near-duplicate still shows", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "svc";
+    client = await connectClient(db);
+    const draftId = await draftByAgentA(client);
+    const active = addLore(db, {
+      title: "Rotate payment webhook signing key yearly",
+      summary: "approved",
+      body: "approved body",
+      repos: ["svc"],
+    });
+    const b = await callJson(client, "suggest_lore", {
+      title: "Rotate payment webhook signing key",
+      summary: "B",
+      body: "B body",
+      repos: ["svc"],
+    });
+    expect(b.isError).toBe(false);
+    expect(b.text).not.toContain(draftId);
+    expect(b.text).not.toContain(DRAFT_TITLE);
+    expect((b.json.possibleDuplicates as Array<{ id: string }>).map((d) => d.id)).toContain(
+      active.id,
+    );
+  });
+
+  it("get_lore of a draft id answers exactly like a missing id", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "svc";
+    client = await connectClient(db);
+    const draftId = await draftByAgentA(client);
+    const got = await callJson(client, "get_lore", { id: draftId });
+    expect(got.isError).toBe(true);
+    expect(got.json).toEqual({ found: false, id: draftId });
+    expect(got.text).not.toContain("DRAFT-BODY");
+    // The record is still there for the human review queue.
+    expect(getLore(db, draftId)?.status).toBe("draft");
+  });
+
+  it("report_conflict against a draft is refused as an unknown id (no 'it is a draft' tell)", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "svc";
+    client = await connectClient(db);
+    const draftId = await draftByAgentA(client);
+    const r = await callJson(client, "report_conflict", {
+      existingId: draftId,
+      observation: "the code does something else",
+      source: "https://example.com/src/x.ts",
+      repos: ["svc"],
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("unknown_existing_id");
+    expect(r.text).not.toContain("draft");
+  });
+
+  it("search_lore with includeDrafts still hides drafts in factory context", async () => {
+    process.env["GAFFER_FACTORY"] = "1";
+    process.env["GAFFER_TICKET_REPOS"] = "svc";
+    client = await connectClient(db);
+    const draftId = await draftByAgentA(client);
+    const s = await callJson(client, "search_lore", {
+      query: "rotate payment webhook",
+      includeDrafts: true,
+    });
+    expect(s.text).not.toContain(draftId);
+  });
+
+  it("standalone (no GAFFER_FACTORY): a draft stays readable by id and in duplicate feedback", async () => {
+    client = await connectClient(db);
+    const draftId = await draftByAgentA(client);
+    const got = await callJson(client, "get_lore", { id: draftId });
+    expect(got.isError).toBe(false);
+    expect(got.json.status).toBe("draft");
+    const b = await callJson(client, "suggest_lore", {
+      title: "Rotate payment webhook signing key",
+      summary: "B",
+      body: "B body",
+      repos: ["svc"],
+    });
+    expect(b.text).toContain(draftId);
   });
 });

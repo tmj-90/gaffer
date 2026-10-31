@@ -22,16 +22,34 @@
  *   - cycle series    = per-completion-day mean cycle, carried forward across the window
  *   - throughput      = tickets `done` bucketed per completion UTC day over the window
  *   - last7/prev7     = trailing-7 vs prior-7 shipped counts
- *   - flow efficiency = median over done tickets of (time in ACTIVE states) /
- *                       (done_at - created_at), as a percentage. Active states are
- *                       the ones where the factory is working the ticket (claimed,
- *                       in_progress, in_review, in_testing, ready_for_merge); time
- *                       parked in draft / refining / ready / blocked / paused is
- *                       waiting. The caller derives `active_ms` from the transition
- *                       log. `null` when no done ticket carries the signal — never a
- *                       fake 0 (the previous client-side number was a WIP ratio,
- *                       done / (done + everything in flight), which is not flow
- *                       efficiency at all).
+ *   - flow efficiency = median over done tickets of (time an agent was WORKING the
+ *                       ticket: `claimed` / `in_progress`) / (done_at - created_at),
+ *                       as a percentage. `null` when no done ticket carries the
+ *                       signal — never a fake 0.
+ *   - waiting         = the rest of the lead time, split by what it was waiting on:
+ *                       review (`in_review` / `in_testing`), the merge queue
+ *                       (`ready_for_merge`), held (`blocked` / `paused`), sent back
+ *                       (draft / refining / ready AFTER work began: a reviewer's or
+ *                       tester's send-back waiting for a human to refine it or the
+ *                       runner to re-claim it) and the backlog before work started
+ *                       (draft / refining / ready before work began). The QUEUE share
+ *                       is review + merge + held + sent back over lead time.
+ *
+ * "Work began" is the first transition into a working, review or merge state
+ * (`claimed`, `in_progress`, `in_review`, `in_testing`, `ready_for_merge`). All time
+ * before it is backlog, including a hold (a draft blocked on a dependency has not
+ * started). After it, draft / refining / ready mean the ticket was sent back and is
+ * queued for rework, so that time counts as queued after work began rather than as
+ * time "before work started". The four parts partition lead time: work, queued after
+ * work began, and backlog before it.
+ *
+ * Why review and the merge queue are WAITING, not work (third external review): a
+ * ticket that took 11 minutes to reach merge-ready and then sat there for a week read
+ * as 100% flow efficiency, "time spent working", because ready_for_merge (and
+ * in_review / in_testing) counted as active. The transition log shows how long a
+ * ticket sat in review, never how long anyone actively reviewed it, so the metric
+ * claims only what the log can establish: time with an agent on it is work, time
+ * between hand-offs is a queue, and the merge wait is reported on its own.
  */
 
 /** Minimal ticket shape needed for delivery-flow maths. */
@@ -46,11 +64,28 @@ export interface FlowTicket {
    */
   done_at?: string | null;
   /**
-   * Milliseconds the ticket spent in ACTIVE states over its life (from the
-   * transition log). Absent/null ⇒ the ticket contributes nothing to flow
+   * Milliseconds an agent spent WORKING the ticket (`claimed` / `in_progress`, from
+   * the transition log). Absent/null ⇒ the ticket contributes nothing to flow
    * efficiency (it never contributes a fake value).
    */
   active_ms?: number | null;
+  /** Milliseconds per waiting bucket (from the transition log); absent ⇒ no signal. */
+  wait_ms?: FlowWaitMs | null;
+}
+
+/** Time a shipped ticket spent waiting after it was created, by what it waited on. */
+export interface FlowWaitMs {
+  /** In review or testing (waiting for, or with, a reviewer or tester). */
+  review: number;
+  /** Approved and waiting to merge (`ready_for_merge`). */
+  merge: number;
+  /** Blocked or paused after work began (a hold before it is backlog). */
+  held: number;
+  /**
+   * Back in draft / refining / ready after work began: sent back by a reviewer or
+   * tester (or reset) and waiting for a human to refine it or the runner to re-claim it.
+   */
+  requeued: number;
 }
 
 /** The authoritative cycle-time + throughput + flow-efficiency read model. */
@@ -78,13 +113,55 @@ export interface DeliveryFlow {
     /** How many shipped tickets contributed to the median (0 ⇒ null above). */
     sample: number;
   };
+  /**
+   * Where the rest of the lead time went, medians over shipped tickets with the
+   * signal (all null when none). Review is counted as waiting: the log shows how long
+   * a ticket sat in review, not how long anyone actively reviewed it.
+   */
+  waiting: {
+    sample: number;
+    /**
+     * Median share of lead time queued after work began (review + merge + held + sent
+     * back), 0..100.
+     */
+    queue_pct: number | null;
+    /** Median queued time (review + merge + held + sent back), ms. */
+    queue_ms: number | null;
+    /** Median time in review or testing, ms. */
+    review_ms: number | null;
+    /** Median time approved and waiting to merge, ms. */
+    merge_wait_ms: number | null;
+    /** The longest merge wait among shipped tickets, ms. */
+    merge_wait_max_ms: number | null;
+    /** Median time blocked or paused after work began, ms. */
+    held_ms: number | null;
+    /** Median time sent back and waiting to be reworked (draft / refining / ready after work began), ms. */
+    requeued_ms: number | null;
+    /** Median time before work started (everything before the first claim / review / merge state), ms. */
+    backlog_ms: number | null;
+  };
 }
 
 const DAY_MS = 86_400_000;
 const DEFAULT_WINDOW_DAYS = 14;
 
-/** Ticket states in which the factory is actively working the ticket. */
-export const FLOW_ACTIVE_STATES: ReadonlySet<string> = new Set([
+/** Ticket states in which an agent is working the ticket: the only "work" time. */
+export const FLOW_ACTIVE_STATES: ReadonlySet<string> = new Set(["claimed", "in_progress"]);
+
+/** Which waiting bucket a state's time falls in (states not listed: backlog / terminal). */
+export const FLOW_WAIT_BUCKET: Readonly<Record<string, keyof FlowWaitMs>> = {
+  in_review: "review",
+  in_testing: "review",
+  ready_for_merge: "merge",
+  blocked: "held",
+  paused: "held",
+};
+
+/** Backlog states: before work began they are backlog, after it a send-back queue. */
+export const FLOW_BACKLOG_STATES: ReadonlySet<string> = new Set(["draft", "refining", "ready"]);
+
+/** Entering any of these means work on the ticket has begun. */
+const FLOW_WORK_BEGAN_STATES: ReadonlySet<string> = new Set([
   "claimed",
   "in_progress",
   "in_review",
@@ -135,6 +212,14 @@ export function deliveryFlow(
   const cycleVals: number[] = [];
   // Flow efficiency: active / lead per ticket, where the signal is present.
   const effVals: number[] = [];
+  // Waiting: per-ticket queue share and per-bucket durations.
+  const queuePct: number[] = [];
+  const queueMs: number[] = [];
+  const reviewMs: number[] = [];
+  const mergeMs: number[] = [];
+  const heldMs: number[] = [];
+  const requeuedMs: number[] = [];
+  const backlogMs: number[] = [];
 
   for (const t of doneTickets) {
     const doneIso = completionIso(t);
@@ -149,6 +234,19 @@ export function deliveryFlow(
       leadMs > 0
     ) {
       effVals.push(Math.min(100, (t.active_ms / leadMs) * 100));
+      const w = t.wait_ms;
+      if (w) {
+        // `requeued` may be absent on a signal built before the bucket existed.
+        const requeued = typeof w.requeued === "number" ? w.requeued : 0;
+        const queued = w.review + w.merge + w.held + requeued;
+        queuePct.push(Math.min(100, (queued / leadMs) * 100));
+        queueMs.push(queued);
+        reviewMs.push(w.review);
+        mergeMs.push(w.merge);
+        heldMs.push(w.held);
+        requeuedMs.push(requeued);
+        backlogMs.push(Math.max(0, leadMs - t.active_ms - queued));
+      }
     }
 
     const idx = keyIndex.get(String(doneIso).slice(0, 10));
@@ -182,6 +280,17 @@ export function deliveryFlow(
       median_pct: effVals.length === 0 ? null : Math.round(median(effVals) * 10) / 10,
       sample: effVals.length,
     },
+    waiting: {
+      sample: queuePct.length,
+      queue_pct: queuePct.length === 0 ? null : Math.round(median(queuePct) * 10) / 10,
+      queue_ms: queueMs.length === 0 ? null : Math.round(median(queueMs)),
+      review_ms: reviewMs.length === 0 ? null : Math.round(median(reviewMs)),
+      merge_wait_ms: mergeMs.length === 0 ? null : Math.round(median(mergeMs)),
+      merge_wait_max_ms: mergeMs.length === 0 ? null : Math.max(...mergeMs),
+      held_ms: heldMs.length === 0 ? null : Math.round(median(heldMs)),
+      requeued_ms: requeuedMs.length === 0 ? null : Math.round(median(requeuedMs)),
+      backlog_ms: backlogMs.length === 0 ? null : Math.round(median(backlogMs)),
+    },
   };
 }
 
@@ -197,15 +306,21 @@ export interface FlowTransition {
 export interface FlowSignals {
   done_at: string | null;
   active_ms: number | null;
+  /** Time in each waiting bucket before done_at; null when the ticket never reached done. */
+  wait_ms: FlowWaitMs | null;
 }
 
 /**
  * Reduce the ordered transition log (grouped by ticket, chronological within a
- * ticket) to the two per-ticket signals the flow maths needs: when the ticket last
- * entered `done`, and how long it spent in ACTIVE states before that. Time in an
- * active state that is still open at `done_at` is closed there; time after the
- * last `done` (a later reopen) is ignored — the metric describes the shipped
- * delivery, not what happened to the ticket afterwards.
+ * ticket) to the per-ticket signals the flow maths needs: when the ticket last
+ * entered `done`, how long an agent worked it before that, and how long it waited in
+ * review, the merge queue, on hold and sent back for rework. Each interval between two transitions belongs
+ * to the state the earlier one entered; an interval still open at `done_at` is closed
+ * there. Time after the last `done` (a later reopen) is ignored — the metric describes
+ * the shipped delivery, not what happened to the ticket afterwards. Time before the
+ * first transition is backlog (deliveryFlow derives it from the lead time), and so is
+ * draft / refining / ready time before work began; the same states after work began
+ * (a send-back) count as `requeued`.
  */
 export function flowSignalsFromTransitions(
   transitions: readonly FlowTransition[],
@@ -222,27 +337,39 @@ export function flowSignalsFromTransitions(
     let doneAt: string | null = null;
     for (const tr of ordered) if (tr.to_status === "done") doneAt = tr.created_at;
     if (doneAt === null) {
-      out.set(ticketId, { done_at: null, active_ms: null });
+      out.set(ticketId, { done_at: null, active_ms: null, wait_ms: null });
       continue;
     }
     const doneMs = Date.parse(doneAt);
     let activeMs = 0;
-    let activeSince: number | null = null;
+    const wait: FlowWaitMs = { review: 0, merge: 0, held: 0, requeued: 0 };
+    let state: string | null = null;
+    let since: number | null = null;
+    let workBegan = false;
+    const close = (until: number): void => {
+      if (state === null || since === null) return;
+      const span = Math.max(0, Math.min(until, doneMs) - since);
+      // Everything before work began is backlog, left to deliveryFlow's remainder
+      // (a draft blocked on a dependency has not started; it is not queued work).
+      if (!workBegan) return;
+      if (FLOW_ACTIVE_STATES.has(state)) activeMs += span;
+      else if (FLOW_BACKLOG_STATES.has(state)) wait.requeued += span;
+      else {
+        const bucket = FLOW_WAIT_BUCKET[state];
+        if (bucket) wait[bucket] += span;
+      }
+    };
     for (const tr of ordered) {
       const at = Date.parse(tr.created_at);
       if (at > doneMs) break;
-      const wasActive = activeSince !== null;
-      const nowActive = tr.to_status !== null && FLOW_ACTIVE_STATES.has(tr.to_status);
-      if (wasActive && !nowActive) {
-        activeMs += Math.max(0, at - (activeSince as number));
-        activeSince = null;
-      } else if (!wasActive && nowActive) {
-        activeSince = at;
-      }
+      close(at);
+      state = tr.to_status;
+      since = at;
+      if (state !== null && FLOW_WORK_BEGAN_STATES.has(state)) workBegan = true;
       if (at === doneMs && tr.to_status === "done") break;
     }
-    if (activeSince !== null) activeMs += Math.max(0, doneMs - activeSince);
-    out.set(ticketId, { done_at: doneAt, active_ms: activeMs });
+    close(doneMs);
+    out.set(ticketId, { done_at: doneAt, active_ms: activeMs, wait_ms: wait });
   }
   return out;
 }

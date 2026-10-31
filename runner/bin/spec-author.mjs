@@ -98,6 +98,7 @@ import {
   parseClaudeJson,
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
+import { paidLaunchAdmission } from "../lib/budget-admission.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
 import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
@@ -490,6 +491,13 @@ function runClaudeTurn(prompt, opts) {
     home = makeAgentHome("spec-author-", { role: "spec" });
   } catch (err) {
     return fail(err?.message ?? String(err));
+  }
+  // BUDGET ADMISSION (external review #6): this spawn is outside Worker.deliver, so it
+  // asks the same shared check itself, immediately before the paid launch.
+  const admission = paidLaunchAdmission({ kind: "spec-author" });
+  if (!admission.ok) {
+    home.remove();
+    return fail(admission.reason);
   }
   let res;
   const t0 = Date.now();

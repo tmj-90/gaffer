@@ -765,9 +765,14 @@ switch (cmd) {
       if (inFrame) continue;
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
-        const [, gate, repo, status, rc, note] = parts;
-        gates.push({ gate, repo, status, rc, note });
-        lines.push(`  [${status}] ${gate} (${repo}) — ${note}`);
+        const [, gate, repo, status, rc, note, source] = parts;
+        // GATE INTEGRITY: the optional 7th column says where the command's behaviour was
+        // read from (base / base-pinned / head / registered / unresolved); absent on rows
+        // that predate it, so their JSON stays byte-identical.
+        gates.push(
+          source ? { gate, repo, status, rc, note, source } : { gate, repo, status, rc, note },
+        );
+        lines.push(`  [${status}] ${gate} (${repo}) — ${note}${source ? ` [${source}]` : ""}`);
       }
     }
     const tail = [];
@@ -987,12 +992,23 @@ switch (cmd) {
     const l = lift.lift;
     const wm = lift.withMemory;
     const wo = lift.withoutMemory;
-    const arms = `with-memory ${wm.meanScore}/5 (n=${wm.count}) vs without ${wo.meanScore}/5 (n=${wo.count})`;
+    const arms = `memory primed ${wm.meanScore}/5 (n=${wm.count}) vs not primed ${wo.meanScore}/5 (n=${wo.count})`;
     const lstr =
       l !== null && l !== undefined
         ? `${l >= 0 ? "+" : ""}${Number(l).toFixed(2)}`
         : "n/a (need both arms)";
-    println(`memory lift         ${lstr}   ${arms}`);
+    // HONEST NAME (external review #11): a judge-score GAP on submitted work across
+    // different tickets — not a memory uplift; the exclusion and the sample are shown.
+    println(`memory score gap    ${lstr}   ${arms}`);
+    println(
+      `                    judge score on SUBMITTED work only, different tickets per arm — not an uplift`,
+    );
+    println(
+      `                    excludes attempts that failed before submission (gate, park, refused submit)`,
+    );
+    println(
+      `                    honest measure: a matched-ticket comparison (docs/eval-harness.md) — not measured`,
+    );
     if (cost.costedCount) {
       const cpp = cost.costPerPass;
       const tail =

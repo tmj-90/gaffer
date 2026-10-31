@@ -160,7 +160,9 @@ const FULL: Payload = {
     tk(5, "in_testing"),
     tk(6, "ready_for_merge"),
     tk(7, "blocked", "Repeat orders"),
-    tk(8, "done", "Shipped today", 30),
+    // Done a minute ago, not 30: the Floor counts despatches since the LOCAL day
+    // start, and a 30-minute-old fixture is "yesterday" just after midnight.
+    tk(8, "done", "Shipped today", 1),
     tk(9, "done", "Shipped long ago", 60 * 24 * 3),
     tk(10, "cancelled"),
     tk(11, "refining"),
@@ -189,7 +191,7 @@ const FULL: Payload = {
       {
         event_type: "ticket.transitioned",
         payload_json: JSON.stringify({ from: "ready_for_merge", to: "done" }),
-        created_at: ago(30),
+        created_at: ago(1),
       },
     ],
     "tk-9": [

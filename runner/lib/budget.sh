@@ -298,12 +298,6 @@ gaffer_day_usd_spent() {
   ' 2>/dev/null || printf 'unknown'
 }
 
-# Return 0 (true) if starting new paid work today stays within the UTC-day USD cap.
-# An empty or <=0 cap means OFF (unlimited) — the pre-Part-B default. The compare is
-# done in awk with the cap/spend passed via -v (NEVER interpolated into the program
-# body) so an awk-metacharacter settings value coerces to 0 (`+0`) and reads as OFF,
-# never executes. Boundary: spent < cap ⇒ OK (proceed); spent == cap or over ⇒ NOT
-# OK (halt) — same "at the cap halts" semantics as gaffer_day_cap_ok.
 # ── Lifetime budget admission (GAFFER_BUDGET_USD) ────────────────────────────
 # GAFFER_BUDGET_USD is the factory's HARD lifetime ceiling; factory.config.sh sums the
 # ledger into GAFFER_BUDGET_REMAINING every time it is sourced (once per tick). It used
@@ -325,6 +319,12 @@ gaffer_budget_headroom_ok() {
   awk -v r="$rem" 'BEGIN{exit !(r+0 > 0)}' 2>/dev/null
 }
 
+# Return 0 (true) if starting new paid work today stays within the UTC-day USD cap.
+# An empty or <=0 cap means OFF (unlimited) — the pre-Part-B default. The compare is
+# done in awk with the cap/spend passed via -v (NEVER interpolated into the program
+# body) so an awk-metacharacter settings value coerces to 0 (`+0`) and reads as OFF,
+# never executes. Boundary: spent < cap ⇒ OK (proceed); spent == cap or over ⇒ NOT
+# OK (halt) — same "at the cap halts" semantics as gaffer_day_cap_ok.
 gaffer_day_usd_cap_ok() {
   local cap="${GAFFER_DAILY_BUDGET_USD:-}"
   [ -z "$cap" ] && return 0

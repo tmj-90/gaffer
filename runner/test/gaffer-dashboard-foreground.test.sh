@@ -61,7 +61,7 @@ if [ -f "$RUNNER_DIR/../packages/dispatch/dist/api/settings.js" ]; then
   ( source "$RUNNER_DIR/lib/dashboard.sh"; DISPATCH_DIR="$WORK/baddist" PATH="$BINDIR:$PATH" gaffer_dashboard_env_unset_flags ) 2>"$WORK/bad.err" >/dev/null
   grep -q "could not read the setting keys" "$WORK/bad.err" && ok "an unreadable settings dist warns loudly (no silent || true)" || fail "an unreadable settings dist was swallowed: $(cat "$WORK/bad.err")"
 else
-  echo "  skip  dispatch dist not built (pnpm -C packages/dispatch build)"
+  echo "SKIP: dispatch dist not built (pnpm -C packages/dispatch build)"
 fi
 
 echo "== --lan binds every interface =="

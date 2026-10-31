@@ -142,23 +142,33 @@ on the merge (or DoD is off), the PRIMARY repo's merge gate — `_gaffer_merge_g
 `_gaffer_merge_gate_tester_replay` in `lib/land.sh` (PR mode's gate on `FETCH_HEAD`
 included) and `gateProposedMerge` / `replayOnMergeCandidate` in `bin/merge-ticket.mjs` —
 asks `lib/tester-replay.mjs` whether a bound tester PASS of exactly the pinned commit is why
-the ticket lands, and which test files the tester added or changed on
-`gaffer-tests/ticket-<n>` relative to that commit (`testerTestFiles`: the same rule
-`bin/tester-run.mjs` inspects with — test paths only, never `.claude/`, `CLAUDE.factory.md`,
-`.mcp.json` or `node_modules`; a tests branch that does not descend from the tested commit is
-an earlier run's and is not replayed). Those files are checked out into the scratch merge's
+the ticket lands, and which test files the tester added or changed relative to that commit
+(`testerTestFiles`: the same rule `bin/tester-run.mjs` inspects with — test paths only, never
+`.claude/`, `CLAUDE.factory.md`, `.mcp.json` or `node_modules`). Which tests: the commit the
+PASS is bound to (`--tests-commit`, which `bin/tester-run.mjs` records: its own commit on
+`gaffer-tests/ticket-<n>`, or `none` when the run saved no tests) — never the branch as it
+stands at landing time, so a rewritten or deleted tests branch changes nothing, and a bound
+commit git cannot find holds. (A PASS recorded before that binding falls back to the branch;
+one that does not descend from the tested commit is an earlier run's and is not replayed.) Those files are checked out into the scratch merge's
 working tree (the gated merge commit is unchanged: they run, they never land) and the repo's
 `test_command` runs there through `bin/dod-regate.sh` (tests only). A failure holds the
 ticket like a red gate (`wg ticket hold … --reason-code tester_replay_red`, the files named,
 the output attached); no tester PASS on record (not in the testing lane, or a human waiver)
 runs nothing extra; an unreadable DB or a git error holds (fail closed);
-`GAFFER_TESTER_REPLAY=0` skips it and records nothing. When the candidate lands, the landing
-path records which assertions passed on which landed revision with `wg ticket
-record-tester-replay <n> --commit <landed merge> --pin <tested> --files-json '[…]' --as
-system` — system only (the service refuses every other actor; the safety hook refuses the
-command to agents). `wg stats` counts an epic as accepted only on that record (`unreplayed`
-otherwise), and `gaffer status` and the dashboard ticket page read it instead of guessing
-from timestamps. Tests: `test/land-tester-replay.test.sh` (every landing path) and
+`GAFFER_TESTER_REPLAY=0` skips it and records nothing — so while it is off **no epic can
+count as accepted** (`gaffer status` says so). When the candidate lands, the landing path
+records which assertions passed on which landed revision with `wg ticket record-tester-replay
+<n> --commit <landed> --pin <tested> --files-json '[…]' [--note …] --as system` — system only
+(the service refuses every other actor; the safety hook refuses it, and `attach-evidence`, to
+agents; generic system evidence cannot carry the record's uri). `<landed>` is the gated merge
+for a local landing; for a PR landing it is the local default's head after the fast-forward,
+recorded only when its tree equals the candidate's the replay passed on (a remote default that
+moved, or a merge whose local default was not fast-forwarded, records nothing). The record
+also names the ticket's other write repos, which the tester never ran in (`not_replayed_repos`:
+the tester tests the primary repo only). `wg stats` counts an epic as accepted only on that
+record **with at least one tester test file** (`unreplayed` otherwise: zero tester assertions
+ran on what landed), and `gaffer status` and the dashboard ticket page read it instead of
+guessing from timestamps. Tests: `test/land-tester-replay.test.sh` (every landing path) and
 `test/e2e-release-gate-tester-replay.test.sh` (the reviewer's fixture, end to end).
 
 **Required CI** (`GAFFER_REQUIRE_CI=1`, PR mode): `lib/ci-gate.sh` reads `gh pr checks

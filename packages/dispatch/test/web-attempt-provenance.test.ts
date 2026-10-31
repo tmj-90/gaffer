@@ -198,6 +198,46 @@ describe("web: the attempt history names the model and the CLI", () => {
     expect(card.querySelectorAll(".failure-kick-none")).toHaveLength(0);
   });
 
+  it("labels each failure with the attempt that failed, the number its run carries", async () => {
+    // The live two-attempt case: run 1 (weak-m) fails DoD and is filed on the trail as
+    // attempt 2; run 2 (strong-m) is delivered. The failure is attempt 1's, so it must
+    // read "Attempt 1/2" next to weak-m, and the delivered run "Attempt 2/2": no two
+    // rows claim the same attempt.
+    stubFetch(
+      [
+        run(1, "2026-01-02T00:00:00Z", { models_served: ["weak-m-served"], max_attempts: 2 }),
+        run(2, "2026-01-02T00:10:00Z", { models_served: ["strong-m-served"], max_attempts: 2 }),
+      ],
+      [{ ...failure(2, "2026-01-02T00:05:00Z", "definition-of-done"), max_attempts: 2 }],
+    );
+    await boot();
+    const card = document.querySelector(".failure-history")!;
+    const failed = card.querySelector(".failure-attempt")!;
+    expect(failed.querySelector(".failure-attempt-num")?.textContent).toBe("Attempt 1/2");
+    expect(failed.querySelector(".attempt-run")?.textContent).toContain("weak-m-served");
+    expect(failed.querySelector("pre")?.getAttribute("aria-label")).toBe(
+      "Attempt 1 failure output",
+    );
+    const passed = card.querySelector(".failure-run")!;
+    expect(passed.querySelector(".failure-attempt-num")?.textContent).toBe("Attempt 2/2");
+    expect(passed.querySelector(".attempt-run")?.textContent).toContain("strong-m-served");
+    const labels = [...card.querySelectorAll(".failure-attempt-num")].map((n) => n.textContent);
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("labels a failure whose agent never ran with its own attempt too", async () => {
+    // Trail attempts 2 and 3 are the failures of attempts 1 and 2; the kick left is 3.
+    stubFetch(
+      [run(1, "2026-01-02T00:00:00Z")],
+      [failure(2, "2026-01-02T00:05:00Z"), failure(3, "2026-01-02T00:07:00Z", "agent-env-install")],
+    );
+    await boot();
+    const labels = [...document.querySelectorAll(".failure-history .failure-attempt-num")].map(
+      (n) => n.textContent,
+    );
+    expect(labels).toEqual(["Attempt 1/3", "Attempt 2/3", "Attempt 3/3"]);
+  });
+
   it("names no model for a failed attempt whose agent never ran", async () => {
     // Run 1 fails the tests gate (trail attempt 2). Attempt 2 fails before the agent is
     // launched (agent-env-install, trail attempt 3), so no agent-run row exists for it.

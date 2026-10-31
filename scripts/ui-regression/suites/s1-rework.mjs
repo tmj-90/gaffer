@@ -91,6 +91,16 @@ export default async function s1(t, L) {
     `ticket page names the model and CLI of all ${calls.length} attempts, the passing one included`,
     `ticket page: ${runLines} model line(s) for ${calls.length} attempts; passing row '${passRow.slice(0, 120)}'`,
   );
+  // The failure is attempt 1's (the trail files it under attempt 2) and the delivered
+  // run is attempt 2: each row carries its own attempt, none twice.
+  const nums = await p.locator(".failure-history .failure-attempt-num").allTextContents();
+  t.check(
+    /^Attempt 1\b/.test(nums[0] || "") &&
+      /^Attempt 2\b/.test(nums[1] || "") &&
+      new Set(nums).size === nums.length,
+    `the attempt rows are numbered by the attempt they record (${nums.join(", ")})`,
+    `attempt row labels: ${JSON.stringify(nums)}`,
+  );
   await L.shot(p, "s1-failure-history");
 
   // ── Review: Send back… with a quick-reason chip ────────────────────────────

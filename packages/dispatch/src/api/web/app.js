@@ -9820,6 +9820,17 @@ function agentRuns(evidence) {
   return runs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
 }
 /**
+ * The attempt a trail entry is the failure of. The runner files a failure under the
+ * NEXT attempt's number (tick.sh `runner-rework --attempt $_next`), so trail attempt N
+ * is the failure of attempt N-1. An entry numbered below 2 was not written that way and
+ * keeps its own number; null when it has none.
+ */
+function failedAttempt(a) {
+  const n = Number(a && a.attempt);
+  if (!Number.isInteger(n)) return null;
+  return n >= 2 ? n - 1 : n;
+}
+/**
  * The run behind a failure: the latest agent run recorded at or before the failure
  * whose attempt is the one that failed (trail attempt N → run N-1). Time order alone is
  * not enough: an attempt can fail before its agent is launched (agent-env-install), and
@@ -9830,8 +9841,7 @@ function agentRuns(evidence) {
 function runForAttempt(runs, a) {
   if (!a || !a.created_at) return null;
   const at = String(a.created_at);
-  const n = Number(a.attempt);
-  const want = Number.isInteger(n) && n >= 2 ? n - 1 : null;
+  const want = Number(a.attempt) >= 2 ? failedAttempt(a) : null;
   const before = runs.filter(
     (r) => r.created_at && String(r.created_at) <= at && (want === null || r.attempt === want),
   );
@@ -9927,10 +9937,13 @@ function renderFailureHistory(trail, runs = []) {
         ...trail.map((a, i) => {
           const mx =
             typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+          // Labelled with the attempt that FAILED (the trail files it one higher), so the
+          // number matches its run's and the rows below it.
+          const n = failedAttempt(a) ?? a.attempt;
           return el("li", { class: "failure-attempt" }, [
             goal(i),
             el("div", { class: "failure-attempt-head" }, [
-              el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${mx}`),
+              el("span", { class: "failure-attempt-num" }, `Attempt ${n}${mx}`),
               a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
               el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
             ]),
@@ -9947,7 +9960,7 @@ function renderFailureHistory(trail, runs = []) {
                   class: "failure-detail",
                   tabindex: "0",
                   role: "region",
-                  "aria-label": `Attempt ${a.attempt} failure output`,
+                  "aria-label": `Attempt ${n} failure output`,
                 },
                 a.distilled_failure || "(no detail captured)",
               ),

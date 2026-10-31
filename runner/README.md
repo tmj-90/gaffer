@@ -204,7 +204,8 @@ else `claude --version`; `GAFFER_CLAUDE_VERSION` pins it). Each delivery attempt
 also gets agent-run evidence on its ticket (`gaffer_record_agent_run`, recorded as the
 system actor), which the ticket page's attempt history shows; a failure there names the
 run of the attempt that failed (the trail files it under the next attempt's number;
-an attempt that failed before its agent ran names none), every other run (the attempt that passed, a parked
+an attempt that failed before its agent ran names none) under that attempt's own
+number, every other run (the attempt that passed, a parked
 ticket's last go) is listed after the failures, and an agent-recorded `agent_run` row
 is ignored.
 

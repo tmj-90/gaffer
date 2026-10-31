@@ -250,9 +250,10 @@ structural barrier the whole design hangs on.
   `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
   ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
   failure names the run of the attempt that failed (none when the agent never ran,
-  as when its environment could not be installed), every other run (the attempt that
-  passed after a failure, a parked ticket's last go) follows the failures on its own
-  row, and only the runner's own rows count, so an agent cannot name its own model.
+  as when its environment could not be installed) and carries that attempt's number,
+  every other run (the attempt that passed after a failure, a parked ticket's last
+  go) follows the failures on its own row, and only the runner's own rows count, so
+  an agent cannot name its own model.
 
 ![The Gaffer's Sign-off](img/review.png)
 

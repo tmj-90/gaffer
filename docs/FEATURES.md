@@ -148,6 +148,16 @@ Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
 renames an agent in place; a taken shirt number is refused with the holder's
 name, and a read-only token sees no editors.
 
+**The headline names the work.** The Overview's scoreboard headline leads with
+the ticket's title, the number kept as a muted reference after it: "Webhook
+delivery #10 is blocked by a failing test.", never "#10 is blocked." With nothing
+blocked, the first thing waiting leads ("Export tasks to CSV #12 awaits your
+sign-off."). The same goes for every scoreboard sentence that names a ticket (an
+approved change not yet merged, the tickets the squad is on, Health's recurring
+injuries, the Review page's "moved on" card). On a phone the count is said once,
+on the Team Sheet: the headline drops its "3 things need you." for the work, and
+the scoreboard keeps the three counters not already on screen.
+
 **The Floor.** `#/floor` draws the live factory as an isometric floor: stations
 along a conveyor in lifecycle order (drawing office, Stores, Assembly,
 Inspection, test rig, loading bay, Despatch), one parcel per open ticket at its
@@ -264,6 +274,50 @@ structural barrier the whole design hangs on.
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
   `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
+- **The button says what the click does.** The server works out the first step
+  an approval will certainly take from the settings and ticket state the approve
+  path itself reads, and the sign-off button names it: **Approve and send to
+  tester** (the testing lane, or an epic's acceptance ticket), **Approve and land
+  now** (Auto-merge on with a merge command: the landing check and the merge gate
+  run at once, through the PR in PR mode), **Approve, lands on next tick**
+  (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
+  the landing), **Approve, waits for Merge now** (Auto-merge off), or **Approve
+  held: CI not passed** (required CI has no PASS for the commit, so the server
+  would refuse). When the delivery changed the tests that gate it, an agent's or
+  auto approval is held (*Approve held: tests changed, a person must allow it*)
+  but a human's is not: the line under the button says so and points at the
+  test-changes banner. A line under the button says what follows; on a multi-repo
+  ticket it says every write repo lands the same way, one merge each through the
+  merge gate, and that a repo that fails is held while the landed ones stay
+  recorded (a repo with no checkout on this machine is named as one nothing can
+  merge); under Review mode *both* the line says this click is the human
+  confirmation. The armed button only says it lands
+  when it does ("Confirm and land now"); after approval the button and the band
+  under it say where the change went (`GET /tickets/:id/diff` carries
+  `approve_outcome`).
+- **An approved ticket's status says where its landing is.** It never reads
+  "merging" unless something merges it: *Approved · waiting for Merge now*
+  (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
+  runner's merge lane lands it: Auto-merge on and a human approval, or an earned
+  merge grant; *(paused: usage limit)* with the time while the usage window has
+  paused the runner), *Approved · landing* (a merge the dashboard started is running),
+  *Approved · partly landed* (a landing is recorded for some of its write repos'
+  approved commits, not all: Merge now lands the rest and never re-merges a
+  landed one), or the hold's own words — *Held · moved since review* (naming the
+  repo whose branch moved off its review pin), *Held · merge gate failed*, *Held ·
+  CI red*.
+  The server stamps it as `landing_state` on the ticket, the board cards, the
+  ticket list and the Team Sheet.
+- **A request for a human is never "Nothing flagged".** The runner's
+  `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
+  a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read
+  from the same evidence rows the Evidence list shows. They head the flags, count
+  in the summary line, sit in a yellow band beside the button (a live status for
+  screen readers), and the evidence row they came from is marked *asks for a
+  human*. With the verdict strip on the page they read its gate rows, so the
+  sign-off never says a gate failed under a strip that says the gates passed; a
+  test change is one *Test modified* flag beside the test-changes banner, never
+  repeated as an integrity gate or a risk level.
 - **"Done" means the combined code passed the gates on the target.** A branch
   that passed its gates and a default branch that passed its gates can still
   merge cleanly into something that fails (one side renames the field the other

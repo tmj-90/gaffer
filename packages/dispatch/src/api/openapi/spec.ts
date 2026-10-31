@@ -614,7 +614,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Ticket detail",
     description:
-      "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. `:id` accepts the ticket id or number.",
+      "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. An approved (`ready_for_merge`) or held ticket carries `ticket.landing_state` (`{ kind, label, detail, hold, paused_until? }` — `paused_until` while the runner's usage-window pause delays lands_next_tick: waiting_for_merge, lands_next_tick, landing, partly_landed — some approved revisions have a landing record, not all — or held), the same field the board cards, GET /tickets and the human queue carry. `:id` accepts the ticket id or number.",
     capability: "read",
     responses: [
       ok(
@@ -706,11 +706,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Approve the review",
     description:
-      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on and the approval reached ready_for_merge (an approval routed to in_testing starts no merge and carries no `merge`; one that reached ready_for_merge carries `ticket.landing_state`, as GET /tickets/:id does); otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
     capability: "full",
     body: "approveReviewBody",
     responses: [
-      ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"),
+      ok("`{ ticket, event_id, merge?, approve_outcome? }`.", "ReviewApproved"),
       notFound,
       conflict,
       invalid,
@@ -776,9 +776,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery diff",
     description:
-      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve.",
+      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
     capability: "read",
-    responses: [ok("`{ ticketId, repos: RepoDiff[] }`.", "TicketDiff"), notFound],
+    responses: [ok("`{ ticketId, repos: RepoDiff[], approve_outcome? }`.", "TicketDiff"), notFound],
   },
   {
     method: "GET",

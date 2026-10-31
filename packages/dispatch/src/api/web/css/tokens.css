@@ -183,8 +183,15 @@
     --f-text: "Sofia Sans", system-ui, sans-serif; /* body, rows, buttons */
     --f-cond: "Sofia Sans Condensed", "Sofia Sans", sans-serif; /* dense labels */
     --f-mono: "Fragment Mono", ui-monospace, monospace; /* code, SHAs, paths */
+    /* Operational detail (timestamps, branch lines, evidence, small pitch labels,
+       meta under a row) is read, not scanned: the body face, a step larger and
+       looser than the condensed labels. The condensed and display faces stay for
+       headlines, section titles, the score and the programme's labels. */
+    --f-detail: var(--f-text);
+    --lh-detail: 1.45;
     /* Scale (px): the brief's six steps plus the headline and the scoreboard. */
     --t12: 12px; /* floor: meta only, weight ≥ 600 */
+    --t13: 13px; /* operational detail in the body face (the condensed floor is 12) */
     --t14: 14px;
     --t16: 16px;
     --t20: 20px;

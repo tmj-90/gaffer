@@ -105,10 +105,16 @@ import {
   computeTicketDiff,
   defaultGitRunner,
   type GitRunner,
+  type RepoDiff,
   resolveBranchHead,
   type TicketDiff,
 } from "./services/diffService.js";
-import { computeLandingStatus, type LandingStatus } from "./services/landingStatus.js";
+import { readUsagePause } from "./health/usagePause.js";
+import {
+  computeLandingStatus,
+  REVIEW_PIN_PREFIX,
+  type LandingStatus,
+} from "./services/landingStatus.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -138,6 +144,7 @@ import { resolveSpecLoreReader } from "./services/specLoreReader.js";
 import {
   BoardService,
   resolveMoveTarget,
+  type BoardCard,
   type BoardView,
   type BoardWindow,
   type DashboardSummary,
@@ -151,6 +158,7 @@ import {
   ReviewGateService,
 } from "./services/reviewGateService.js";
 import {
+  type ObservedRisk,
   observedRisk,
   runnerIntegrityHolds,
   withRunnerIntegrityHolds,
@@ -166,7 +174,24 @@ import {
   type AutonomyPolicyView,
   type AutonomyMode,
 } from "./repositories/autonomyPolicyRepository.js";
-import { isAutonomyAllowed, policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import {
+  AUTO_MERGE_ENV,
+  envFlagOn,
+  isAutonomyAllowed,
+  policyGrantsAuto,
+} from "./services/autonomyPolicyService.js";
+import {
+  decideLandingState,
+  type LandingFacts,
+  type LandingHold,
+  type LandingState,
+} from "./services/landingState.js";
+import {
+  decideApproveOutcome,
+  type ApproveOutcome,
+  type ApproveOutcomeFacts,
+  type ReviewMode,
+} from "./services/approveOutcome.js";
 import {
   PrincipalRepository,
   type PrincipalActorType,
@@ -335,6 +360,18 @@ export type { AddDependencyResult } from "./services/ticketService.js";
  * Owns the DB handle, repositories and the transition service; validates input
  * with the Zod schemas before mutating.
  */
+/**
+ * USAGE-WINDOW PAUSE as a landing fact: while the runner's pause file holds a pause no
+ * tick runs, so the merge lane lands nothing until it ends (health/usagePause.ts reads
+ * the file exactly as the runner does). Null when no pause is active.
+ */
+function usagePauseFact(
+  env: NodeJS.ProcessEnv,
+): { until: string; kind: "usage_limit" | "rate_limit" } | null {
+  const p = readUsagePause(env);
+  return p.active ? { until: p.paused_until ?? "its end", kind: p.kind ?? "usage_limit" } : null;
+}
+
 export class Dispatch {
   readonly db: Db;
   readonly tickets: TicketRepository;
@@ -621,14 +658,7 @@ export class Dispatch {
       // GATE INTEGRITY: plus the runner's integrity FLAG from the latest trusted DoD
       // record (what the worktree held that the committed diff cannot show, e.g. a
       // git-ignored .npmrc), unless a human allowed test changes on the ticket.
-      observedRiskResolver: (ticket) => {
-        const observed = observedRisk(this.ticketDiff(ticket.id).repos);
-        if (ticket.allow_test_changes === 1) return observed;
-        return withRunnerIntegrityHolds(
-          observed,
-          runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
-        );
-      },
+      observedRiskResolver: (ticket) => this.observedRiskFor(ticket),
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
@@ -701,6 +731,22 @@ export class Dispatch {
       )
       .get(ticketId) as { summary: string } | undefined;
     return row?.summary ?? null;
+  }
+
+  /**
+   * OBSERVED RISK of a delivery as the auto-ship gate reads it (enforceObservedRiskCeiling):
+   * the real diff's risk annotations, plus — unless a human allowed test changes on the
+   * ticket — the runner's integrity FLAG from the latest trusted DoD record. Its `holds`
+   * are the GATE INTEGRITY hard holds: an agent or auto approval is refused while any is
+   * present; a human approval is not. `repos` reuses a diff already read.
+   */
+  observedRiskFor(ticket: Ticket, repos?: readonly RepoDiff[]): ObservedRisk {
+    const observed = observedRisk(repos ?? this.ticketDiff(ticket.id).repos);
+    if (ticket.allow_test_changes === 1) return observed;
+    return withRunnerIntegrityHolds(
+      observed,
+      runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
+    );
   }
 
   ticketDiff(ref: string): TicketDiff {
@@ -1579,6 +1625,296 @@ export class Dispatch {
     return this.reviewGateSvc.ciStatus(ticket.id, commit);
   }
 
+  /**
+   * WHAT HAPPENS ON APPROVE: the facts a HUMAN approve of this ticket acts on, read from
+   * the same predicates the approve path uses — the tester route and the CI hold come from
+   * ReviewGateService (the code approveReview runs), AUTO_MERGE as the approve route reads
+   * it, the merge gate as the runner's merge lane asks it (the autonomyGateDecision
+   * predicate), and the landing repos as every landing path plans them (the first write
+   * repo with a local path lands first, then each other write repo with one; see
+   * landingStatus.ts). `mergeCommand` is whether the API's merge runner has a command to
+   * start (the caller holds the runner). The gate-integrity holds are the auto-ship
+   * gate's own read (observedRiskFor); `approver: "agent"` asks what an agent or auto
+   * approval would do. `ci: false` skips the CI and integrity reads (they run git) for an
+   * approval that already happened; `repos` reuses a diff the caller already read.
+   */
+  approveOutcomeFacts(
+    ref: string,
+    opts: {
+      mergeCommand: boolean;
+      ci?: boolean;
+      env?: NodeJS.ProcessEnv;
+      approver?: "human" | "agent";
+      repos?: readonly RepoDiff[];
+    },
+  ): ApproveOutcomeFacts {
+    const env = opts.env ?? process.env;
+    const ticket = this.resolveTicket(ref);
+    // GATE INTEGRITY: the hard holds the auto-ship gate would raise (the same read). A
+    // throw is indeterminate: the gate fails toward a human, and so does this fact.
+    let testModifiedHolds: string[] = [];
+    if (opts.ci !== false) {
+      try {
+        testModifiedHolds = [...(this.observedRiskFor(ticket, opts.repos).holds ?? [])];
+      } catch {
+        testModifiedHolds = ["the delivery diff could not be read to check its tests"];
+      }
+    }
+    const writes = this.repos
+      .listForTicket(ticket.id)
+      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
+    const lands = writes.find((l) => l.local_path) ?? null;
+    const mode = (env.REVIEW_MODE ?? "human").trim().toLowerCase();
+    const method = (env.GAFFER_PR_MERGE_METHOD ?? "").trim().toLowerCase();
+    const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
+    return {
+      approver: opts.approver ?? "human",
+      testModifiedHolds,
+      ciHold: opts.ci === false ? null : this.reviewGateSvc.approveCiHold(ticket),
+      toTester: this.reviewGateSvc.approveRoutesToTesting(ticket),
+      acceptance: ticket.acceptance === 1,
+      autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
+      mergeCommand: opts.mergeCommand,
+      mergeLane: !["0", "false", "no", "off"].includes(lane),
+      mergeGateEarned: isAutonomyAllowed(
+        this.autonomyPolicy,
+        this.writeRepoIdsForTicket(ticket),
+        ticket.risk_level,
+        "merge",
+        env,
+      ),
+      reviewMode: (["human", "agent", "both"].includes(mode) ? mode : "human") as ReviewMode,
+      prMode: envFlagOn(env.GAFFER_CREATE_PR),
+      prUrl: lands
+        ? this.repos.ticketRepoPrUrl(ticket.id, lands.id) || ticket.pr_url || null
+        : ticket.pr_url || null,
+      prMergeMethod: ["merge", "squash", "rebase"].includes(method) ? method : "merge",
+      landsRepo: lands ? lands.name : null,
+      baseBranch: lands ? lands.default_branch || null : null,
+      // PER-REPOSITORY LANDING: every other write repo with a checkout lands too (the
+      // landing plan is the approved revisions with a local path, primary first).
+      alsoLandsRepos: writes.filter((l) => l !== lands && l.local_path).map((l) => l.name),
+      noCheckoutRepos: writes.filter((l) => !l.local_path).map((l) => l.name),
+      // The same pause read as landing_state, so the line and the status agree.
+      pause: usagePauseFact(env),
+    };
+  }
+
+  /** The first step a human approve of this ticket will certainly take (see approveOutcome.ts). */
+  approveOutcome(
+    ref: string,
+    opts: {
+      mergeCommand: boolean;
+      env?: NodeJS.ProcessEnv;
+      approver?: "human" | "agent";
+      repos?: readonly RepoDiff[];
+    },
+  ): ApproveOutcome {
+    return decideApproveOutcome(this.approveOutcomeFacts(ref, opts));
+  }
+
+  /**
+   * WHERE AN APPROVED CHANGE IS: the facts behind a ready_for_merge (or held) ticket's
+   * status label, read from what the landing paths themselves act on — the review pin
+   * against the branch head (the landing check's "moved since review"), the merge gate's
+   * evidence and the CI result for the head, the hold a parked ticket carries, a merge run
+   * the API started that is still running, per-repo landings, and the merge lane's rule
+   * (an earned merge gate, or AUTO_MERGE and a human approval; GAFFER_MERGE_LANE).
+   * Git runs only for a ready_for_merge ticket; any other status reads no facts.
+   */
+  landingFacts(ref: string | Ticket, env: NodeJS.ProcessEnv = process.env): LandingFacts | null {
+    const ticket = typeof ref === "string" ? this.resolveTicket(ref) : ref;
+    if (ticket.status !== "ready_for_merge" && ticket.status !== "blocked") return null;
+    const events = listEvents(this.db, "ticket", ticket.id);
+    const transitions = events
+      .filter((e) => e.event_type === "ticket.transitioned")
+      .map((e) => {
+        let pl: { to?: string; reason?: string | null } = {};
+        try {
+          pl = (JSON.parse(e.payload_json || "{}") as typeof pl) || {};
+        } catch {
+          pl = {};
+        }
+        return { e, to: pl.to ?? "", reason: pl.reason ?? "" };
+      });
+    const lastInto = (st: string) => [...transitions].reverse().find((t) => t.to === st);
+    const writeLinks = () =>
+      this.repos
+        .listForTicket(ticket.id)
+        .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
+    const base = {
+      mergeRunning: false,
+      landedRepos: [] as string[],
+      writeRepos: [] as string[],
+      autoMerge: false,
+      mergeLane: false,
+      mergeGateEarned: false,
+      approver: "",
+    };
+    if (ticket.status === "blocked") {
+      const m = /^held:(merge_gate_red|ci_red)$/.exec(lastInto("blocked")?.reason ?? "");
+      if (!m) return { ...base, status: ticket.status, hold: null };
+      // A held multi-repo landing says which repos already landed (they stay landed).
+      return {
+        ...base,
+        ...this.landedAndWriteRepos(computeLandingStatus(this.db, ticket.id), writeLinks()),
+        status: ticket.status,
+        hold: m[1] as LandingHold,
+      };
+    }
+    // Everything after the ticket's latest entry into ready_for_merge, in log order (the
+    // event log's insertion order, never a clock comparison across tables).
+    const entry = lastInto("ready_for_merge")?.e;
+    const afterEntry = entry ? events.slice(events.indexOf(entry) + 1) : events;
+    const recordedSince = new Set(
+      afterEntry
+        .filter((e) => e.event_type === "evidence.recorded")
+        .map((e) => {
+          try {
+            const pl = JSON.parse(e.payload_json || "{}") as { evidence_id?: string };
+            return String(pl.evidence_id ?? "");
+          } catch {
+            return "";
+          }
+        }),
+    );
+    const evidence = this.evidence.listForTicket(ticket.id);
+    // The approval on the ticket's current path to merge (the merge lane's own rule).
+    let start = 0;
+    transitions.forEach((t, i) => {
+      if (t.to === "in_review") start = i + 1;
+    });
+    let approver = "";
+    for (const t of transitions.slice(start))
+      if (t.reason === "review_approved" || t.reason === "review_approved_to_testing")
+        approver = t.e.actor_type;
+    let hold: LandingHold | null = null;
+    // PER-REPOSITORY LANDING: the approved revision of every write repo (its review pin
+    // since the ticket last entered review) and whether a landing of it is on record.
+    const landing = computeLandingStatus(this.db, ticket.id);
+    const heads = this.resolveApprovedHeads(ticket);
+    const head = heads[0] ?? null; // the primary write repo: required CI's candidate
+    // MOVED SINCE REVIEW, per repo as the landing check reads it: a repo still to land
+    // whose delivery-branch head is no longer its pinned commit. A landed repo is done
+    // (its branch may be gone). A legacy approval with no per-repo pin compares its one
+    // pin with the primary head, as before.
+    const movedRepos = landing.repos
+      .filter((r) => !r.landed)
+      .filter((r) => {
+        const h = heads.find((x) => x.repoId === r.repoId);
+        return h !== undefined && h.sha !== r.sha;
+      })
+      .map((r) => r.repo);
+    if (landing.repos.length === 0) {
+      const pin = [...evidence]
+        .reverse()
+        .find(
+          (ev) =>
+            ev.repo_id === null &&
+            ev.recorded_by_actor_type === "system" &&
+            (ev.uri ?? "").startsWith(REVIEW_PIN_PREFIX),
+        );
+      const pinned = pin ? (pin.uri ?? "").slice(REVIEW_PIN_PREFIX.length).toLowerCase() : "";
+      if (head && pinned && !head.sha.startsWith(pinned) && !pinned.startsWith(head.sha))
+        movedRepos.push(head.repo);
+    }
+    if (movedRepos.length > 0) hold = "moved_since_review";
+    else if (
+      evidence.some((ev) => ev.summary.startsWith("MERGE GATE FAILED") && recordedSince.has(ev.id))
+    )
+      hold = "merge_gate_red";
+    else if (head && this.reviewGateSvc.ciStatus(ticket.id, head.sha).state === "fail")
+      hold = "ci_red";
+    // A merge run the API started for this approval, still running.
+    const started = [...afterEntry].reverse().find((e) => e.event_type === "ticket.merge_started");
+    let mergeRunning = false;
+    if (started) {
+      try {
+        const runId = (JSON.parse(started.payload_json || "{}") as { run_id?: string }).run_id;
+        const row = runId
+          ? (this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
+              { status: string } | undefined)
+          : undefined;
+        mergeRunning = row?.status === "running";
+      } catch {
+        mergeRunning = false;
+      }
+    }
+    const writes = writeLinks();
+    const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
+    return {
+      status: ticket.status,
+      hold,
+      mergeRunning,
+      movedRepos,
+      ...this.landedAndWriteRepos(landing, writes),
+      pause: usagePauseFact(env),
+      autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
+      mergeLane: !["0", "false", "no", "off"].includes(lane),
+      mergeGateEarned: isAutonomyAllowed(
+        this.autonomyPolicy,
+        this.writeRepoIdsForTicket(ticket),
+        ticket.risk_level,
+        "merge",
+        env,
+      ),
+      approver,
+    };
+  }
+
+  /**
+   * The repos a landing state names: with per-repo review pins, the approved revisions
+   * and those recorded landed (`gaffer-landed-commit:` system rows, computeLandingStatus);
+   * a legacy approval with no per-repo pin names its write repos, none recorded landed.
+   */
+  private landedAndWriteRepos(
+    landing: LandingStatus,
+    writes: ReadonlyArray<{ name: string }>,
+  ): { landedRepos: string[]; writeRepos: string[] } {
+    if (landing.repos.length === 0)
+      return { landedRepos: [], writeRepos: writes.map((l) => l.name) };
+    return {
+      landedRepos: landing.repos.filter((r) => r.landed).map((r) => r.repo),
+      writeRepos: landing.repos.map((r) => r.repo),
+    };
+  }
+
+  /** The truthful status label for an approved or held ticket (see landingState.ts). */
+  landingState(ref: string | Ticket, env: NodeJS.ProcessEnv = process.env): LandingState | null {
+    try {
+      const facts = this.landingFacts(ref, env);
+      return facts ? decideLandingState(facts) : null;
+    } catch {
+      return null; // a status label never fails the read it rides on
+    }
+  }
+
+  /** Stamp `landing_state` on each approved or held ticket of a list (others untouched). */
+  withLandingState<T extends Ticket>(
+    tickets: readonly T[],
+  ): Array<T & { landing_state?: LandingState }> {
+    return tickets.map((t) => {
+      if (t.status !== "ready_for_merge" && t.status !== "blocked") return t;
+      const ls = this.landingState(t);
+      return ls ? { ...t, landing_state: ls } : t;
+    });
+  }
+
+  /**
+   * Record that the API started a merge run for an approved ticket, so its status can say
+   * "landing" while that run is running (the runs table does not carry the ticket).
+   */
+  noteMergeStarted(ref: string, runId: string | null, actor: Actor): void {
+    const ticket = this.resolveTicket(ref);
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.merge_started",
+      payload: { run_id: runId },
+    });
+  }
+
   markMerged(ref: string, actor: Actor): TransitionResult {
     return this.reviewGateSvc.markMerged(ref, actor);
   }
@@ -2428,7 +2764,25 @@ export class Dispatch {
    *   linked to that repo are included. Omit for the full board.
    */
   board(repo?: string, window?: BoardWindow): BoardView {
-    return this.boardSvc.board(repo, window);
+    const view = this.boardSvc.board(repo, window);
+    // Approved and held cards carry where their landing is (one read per such ticket).
+    const states = new Map<string, LandingState>();
+    const stamp = (c: BoardCard): BoardCard => {
+      if (c.status !== "ready_for_merge" && c.status !== "blocked") return c;
+      if (!states.has(c.id)) {
+        const ls = this.landingState(c.id);
+        if (ls) states.set(c.id, ls);
+      }
+      const ls = states.get(c.id);
+      return ls ? { ...c, landing_state: ls } : c;
+    };
+    return {
+      ...view,
+      columns: view.columns.map((col) => ({ ...col, cards: col.cards.map(stamp) })),
+      closed: view.closed.map(stamp),
+      wontDo: view.wontDo.map(stamp),
+      readyForMerge: view.readyForMerge.map(stamp),
+    };
   }
 
   /**
@@ -2472,7 +2826,16 @@ export class Dispatch {
    * changes no semantics and adds no gate. Read-only.
    */
   humanQueue(): HumanQueue {
-    return this.humanQueueSvc.build();
+    const q = this.humanQueueSvc.build();
+    return {
+      ...q,
+      items: q.items.map((it) => {
+        const t = it.ticket;
+        if (!t || (t.status !== "ready_for_merge" && t.status !== "blocked")) return it;
+        const ls = this.landingState(t.id);
+        return ls ? { ...it, ticket: { ...t, landing_state: ls } } : it;
+      }),
+    };
   }
 
   /**

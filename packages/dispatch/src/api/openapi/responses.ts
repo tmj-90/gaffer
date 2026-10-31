@@ -12,6 +12,10 @@ import {
   type Ticket,
 } from "../../domain/types.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
+import {
+  APPROVE_OUTCOME_KINDS,
+  type ApproveOutcome as ApproveOutcomeType,
+} from "../../services/approveOutcome.js";
 import type {
   RepoDiff as RepoDiffShape,
   TicketDiff as TicketDiffShape,
@@ -200,14 +204,65 @@ export const TicketTransition = z
   })
   .strict();
 
+/**
+ * What a human Approve does, said as the first step that will certainly happen (see
+ * services/approveOutcome.ts). On GET /tickets/:id/diff it is the prediction for an
+ * in_review ticket; on review/approve it is what the click actually did.
+ */
+export const ApproveOutcome = z
+  .object({
+    kind: z.enum(APPROVE_OUTCOME_KINDS),
+    approvable: z
+      .boolean()
+      .describe(
+        "False only when the server would refuse (held_ci, or held_test_modified for an agent).",
+      ),
+    to_status: z.enum(["in_testing", "ready_for_merge"]).nullable(),
+    label: str.describe('The sign-off button, e.g. "Approve and send to tester".'),
+    confirm_label: str.describe("The armed button (the second press approves)."),
+    done_label: str.describe("The button once approved."),
+    sentence: str.describe("One line under the button: what follows the click."),
+    via: z.enum(["pr", "local"]).nullable(),
+    pr_url: nstr,
+    lands_repo: nstr.describe("The primary write repo a landing merges first."),
+    also_lands_repos: z
+      .array(str)
+      .describe("The other write repos the same landing merges after it, one merge each."),
+    not_landed_repos: z
+      .array(str)
+      .describe("Write repos with no checkout here: no landing path can merge them."),
+    review_mode: z.enum(["human", "agent", "both"]),
+    agent_hold: z
+      .object({
+        kind: z.literal("held_test_modified"),
+        label: str,
+        sentence: str,
+        holds: z.array(str).describe("The gate-integrity findings that hold it."),
+      })
+      .strict()
+      .nullable()
+      .describe(
+        "The hold an agent or auto approval would hit now (the tests that gate it changed); a human approval is not held by it.",
+      ),
+  })
+  .strict() satisfies ZodType<ApproveOutcomeType>;
+
 export const ReviewApproved = z
   .object({
     ticket: TicketRow,
     event_id: eventId,
     merge: z
-      .object({ triggered: z.boolean(), pid: int.nullable(), skipped: str.optional() })
+      .object({
+        triggered: z.boolean(),
+        pid: int.nullable(),
+        skipped: str.optional(),
+        runId: nstr.optional(),
+      })
       .optional()
       .describe("The auto-merge command, when one is configured."),
+    approve_outcome: ApproveOutcome.optional().describe(
+      "What the approval did: the tester, a landing now, the merge lane's next tick, or a wait for Merge now.",
+    ),
   })
   .strict();
 
@@ -298,10 +353,20 @@ export const TicketDiff = z
     keyof TicketDiffShape,
     ZodType
   >)
+  .extend({
+    approve_outcome: ApproveOutcome.optional().describe(
+      "An in_review ticket only: the first step a human Approve would certainly take now.",
+    ),
+  })
   .strict();
 
 /** Response schemas rendered as their own components and `$ref`d where nested. */
-export const SHARED_RESPONSE_COMPONENTS = ["RepoDiff", "RiskAnnotation", "RiskKind"] as const;
+export const SHARED_RESPONSE_COMPONENTS = [
+  "ApproveOutcome",
+  "RepoDiff",
+  "RiskAnnotation",
+  "RiskKind",
+] as const;
 
 export const TestContractSet = z
   .object({

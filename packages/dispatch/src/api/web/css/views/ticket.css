@@ -295,7 +295,7 @@
     border-inline: 2px solid var(--board-rule);
   }
   .ft-where {
-    font: 600 var(--t14) / 1.4 var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
     overflow-wrap: anywhere;
   }
@@ -583,7 +583,7 @@
     text-transform: uppercase;
   }
   .failure-attempt-time {
-    font: 600 var(--t12) var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .failure-gate {
@@ -645,7 +645,7 @@
   }
   .mem-primed-at {
     white-space: nowrap;
-    font: 600 var(--t12) var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .mem-primed-none,
@@ -681,7 +681,7 @@
   }
   .tk-report .timeline li > .ev-time {
     grid-column: 1;
-    font: 700 var(--t14) / 1.4 var(--f-cond);
+    font: 600 var(--t14) / var(--lh-detail) var(--f-detail);
   }
   .tk-report .timeline li > .glyph,
   .tk-report .timeline li > .rp-dot {
@@ -716,7 +716,7 @@
     color: var(--red);
   }
   .ev-actor {
-    font: 600 var(--t12) var(--f-cond);
+    font: 600 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .tk-report .ev-tick {
@@ -868,6 +868,6 @@
     font: 700 var(--t16) / 1.25 var(--f-text);
   }
   .tk-evidence-note {
-    font: 600 var(--t14) / 1.3 var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
   }
 }

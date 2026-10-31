@@ -671,9 +671,10 @@ try {
       const tip = g("rev-parse", `refs/heads/${rd.branch}`);
       const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
       g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
-      const btn = page
-        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
-        .first();
+      // The sign-off button by its class: its label names the server's outcome, and the
+      // armed label is the outcome's confirmation ("Confirm approval", "Confirm and land
+      // now"…), so a text match would lose it between the two clicks.
+      const btn = page.locator("button.signoff-btn").first();
       await waitFor(
         async () => (!(await btn.isDisabled()) ? true : null),
         "approve enabled",
@@ -699,9 +700,7 @@ try {
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
   // stream while the diff loads, and a handle taken before that detaches
   // ("Element is not attached to the DOM"). A locator re-resolves on every action.
-  const approveBtn = page
-    .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
-    .first();
+  const approveBtn = page.locator("button.signoff-btn").first();
   if ((await approveBtn.count()) === 0) bad("no Approve button on the review view");
   else {
     const disabled = await approveBtn.isDisabled();
@@ -712,11 +711,29 @@ try {
       30000,
       500,
     );
+    // The button names what the click does (the server's approve_outcome), and the line
+    // under it says what follows. AUTO_MERGE is off here, so nothing may promise a merge.
+    const restLabel = ((await approveBtn.textContent()) || "").trim();
+    const nextLine = (
+      (await page
+        .locator(".signoff-next")
+        .textContent()
+        .catch(() => "")) || ""
+    ).trim();
+    /^Approve\b/.test(restLabel) && !/land now/i.test(restLabel)
+      ? ok(`Approve names its outcome: '${restLabel}'`)
+      : bad(`Approve does not name its outcome (label='${restLabel}')`);
+    nextLine
+      ? ok(`a line under Approve says what follows: '${nextLine.slice(0, 80)}…'`)
+      : bad("no line under Approve saying what follows");
     await approveBtn.click();
-    const armedLabel = await approveBtn.textContent();
+    const armedLabel = ((await approveBtn.textContent()) || "").trim();
     /confirm/i.test(armedLabel)
-      ? ok("Approve is a two-step control: first click ARMS ('Confirm merge')")
+      ? ok(`Approve is a two-step control: first click ARMS ('${armedLabel}')`)
       : bad(`first click did not arm (label='${armedLabel}')`);
+    !/confirm merge/i.test(armedLabel)
+      ? ok("the armed button promises no merge the click will not start")
+      : bad(`the armed button says '${armedLabel}' with Auto-merge on approval off`);
     await approveBtn.click();
     ok("Approve confirmed");
   }
@@ -750,6 +767,15 @@ try {
       await page.reload({ waitUntil: "load" });
       await page.waitForSelector(mergeNow, { timeout: 15000 });
     }
+    // The status says what is true while it waits: nothing lands it but Merge now.
+    const word = (
+      (await page.textContent(".badge.st.status-ready_for_merge").catch(() => "")) || ""
+    ).trim();
+    word === "Approved · waiting for Merge now"
+      ? ok(`Ticket page: the approved status reads '${word}' (Auto-merge off)`)
+      : bad(
+          `Ticket page: the approved status reads '${word}', not 'Approved · waiting for Merge now'`,
+        );
     await page.click(mergeNow);
     ok("Ticket page: Merge now pressed (runs the merge runner)");
   }
@@ -1330,6 +1356,18 @@ try {
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
+            // "N things need you" is said once on a phone: with rows on the Team Sheet,
+            // the headline's count and the scoreboard's Need-you cell are not shown.
+            needYouRepeats:
+              sheet && sheet.querySelector(".own-row")
+                ? [...document.querySelectorAll(".scoreboard .hl-count, .scoreboard .sc-needs")]
+                    .filter((n) => n.getBoundingClientRect().width > 0)
+                    .map((n) => n.className)
+                : [],
+            // The headline leads with the work: no clause opens on a ticket number.
+            hlLeadsWithNumber: [...document.querySelectorAll(".scoreboard .hl-block")]
+              .map((n) => n.textContent.trim())
+              .filter((t) => /^#\d/.test(t)),
             // The Map: a ground card never clips its own words, never runs off the
             // pitch, and the server's implicit "repo:<name>" scope is not a ground.
             grounds: [...document.querySelectorAll(".scope-graph .scope-gnode")]
@@ -1369,6 +1407,12 @@ try {
         }
         if (m.grounds.length) problems.push(`${tag} ${m.grounds.join(", ")}`);
         if (m.doubleRules) problems.push(`${tag} ${m.doubleRules} treatment rows ruled twice`);
+        if (v === "overview" && w <= 760 && m.needYouRepeats.length)
+          problems.push(
+            `${tag} the need-you count repeats beside the Team Sheet (${m.needYouRepeats.join(", ")})`,
+          );
+        if (m.hlLeadsWithNumber.length)
+          problems.push(`${tag} a headline clause leads with a number: ${m.hlLeadsWithNumber[0]}`);
         if (v === "overview" && m.sheetTop != null && m.sheetTop > m.vh && w >= 390)
           problems.push(`${tag} team sheet below the fold (${Math.round(m.sheetTop)})`);
         if (runAxe && AXE_SOURCE) await auditA11y(p2, v, String(w));

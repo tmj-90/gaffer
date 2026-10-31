@@ -1,3 +1,4 @@
+import type { LandingState } from "./landingState.js";
 import type { DecisionSeverity, TicketStatus } from "../domain/types.js";
 import type { DecisionRepository } from "../repositories/decisionRepository.js";
 import type { TicketDependencyRepository } from "../repositories/ticketDependencyRepository.js";
@@ -35,6 +36,8 @@ export interface HumanQueueTicketRef {
   number: number | null;
   title: string;
   status: TicketStatus;
+  /** An approved or held ticket: where its landing is (stamped by Dispatch.humanQueue). */
+  landing_state?: LandingState;
 }
 
 /**

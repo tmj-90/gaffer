@@ -156,24 +156,46 @@ export interface RepoIdentityRecord {
  * the same name describes? A name match used to be treated as a refresh whatever it
  * named: two unrelated repos both called "api" both "onboarded", the second's ticket
  * setup selected the first checkout, and the stored profile combined the first's local
- * path with the second's remote. The same repository is the same CANONICAL LOCAL PATH;
- * a record with no local path matches only on an identical remote. Anything else is a
- * different repository and is refused (exported for tests). A record whose checkout no
- * longer exists (a moved clone) is matched on the remote instead.
+ * path with the second's remote. The same repository is the same CANONICAL LOCAL PATH
+ * and nothing else (exported for tests).
+ *
+ * A refresh never relocates a record. A record whose checkout is gone (a moved or
+ * deleted clone) used to match on an identical remote; the refresh then could not move
+ * it (dispatch's registration is duplicate-tolerant and kept the old local_path, the
+ * context store's rescan kept the old localPath and took the new remote), so one record
+ * held the deleted checkout's path and the new checkout's remote and deliveries targeted
+ * a directory that no longer existed. A record with no local path is never adopted
+ * either: dispatch would keep its empty path while the store recorded this one. Both are
+ * refused with the --name guidance; a human decides which record is the repository.
  */
 export function sameRepository(
   record: RepoIdentityRecord,
   scan: { path: string; remoteUrl: string | null },
 ): boolean {
-  if (record.localPath && canonicalPath(record.localPath) === canonicalPath(scan.path)) return true;
-  // A record whose checkout is still ON DISK elsewhere is a different repository, even
-  // with the same remote (a second clone is a second checkout). One whose checkout is
-  // GONE (moved or deleted) — or that never had a path — is this repository only when
-  // the remotes are identical and non-empty.
-  if (record.localPath && statSync(record.localPath, { throwIfNoEntry: false }) !== undefined)
-    return false;
-  const a = normalizeRemote(record.remoteUrl);
-  return a !== "" && a === normalizeRemote(scan.remoteUrl);
+  return !!record.localPath && canonicalPath(record.localPath) === canonicalPath(scan.path);
+}
+
+/** Why `record` is not the checkout being onboarded, in words for the refusal. */
+function identityConflict(
+  record: RepoIdentityRecord,
+  scan: { path: string; remoteUrl: string | null },
+  name: string,
+): string {
+  const remote = record.remoteUrl ? `, remote ${record.remoteUrl}` : "";
+  const r = normalizeRemote(record.remoteUrl);
+  const sameRemote = r !== "" && r === normalizeRemote(scan.remoteUrl);
+  if (!record.localPath)
+    return `${record.source}: registered with no local path${remote || ", no remote"}; onboarding does not adopt a path-less record`;
+  if (statSync(record.localPath, { throwIfNoEntry: false }) === undefined)
+    return (
+      `${record.source}: ${record.localPath}, which no longer exists${remote}; a refresh is only the ` +
+      `same checkout path and never moves a record` +
+      (sameRemote
+        ? `. It has the same remote, so this may be the same repository moved: onboard it under an ` +
+          `alias and hide the old record (wg repo hide ${name})`
+        : "")
+    );
+  return `${record.source}: ${record.localPath}${remote}`;
 }
 
 function assertSameRepository(
@@ -196,10 +218,9 @@ function assertSameRepository(
     });
   for (const rec of records) {
     if (sameRepository(rec, scan)) continue;
-    const where = rec.localPath ?? rec.remoteUrl ?? "an unknown location";
     throw new CrewError(
       "NAME_TAKEN",
-      `a different repository is already onboarded as "${name}" (${rec.source}: ${where}); ` +
+      `a different repository is already onboarded as "${name}" (${identityConflict(rec, scan, name)}); ` +
         `${scan.path} was NOT onboarded and neither record was changed. Onboard it under a ` +
         `distinct alias (gaffer onboard ${scan.path} --name <alias>).`,
       {

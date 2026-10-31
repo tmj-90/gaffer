@@ -49,22 +49,20 @@ describe("sameRepository / normalizeRemote", () => {
       rmSync(base, { recursive: true, force: true });
     }
   });
-  it("a record whose checkout is gone (moved) matches on an identical remote only", () => {
+  it("a record whose checkout is gone (moved clone) is never a refresh, even with the same remote", () => {
     const gone = {
       source: "dispatch" as const,
       localPath: "/nonexistent/gaffer/api",
       remoteUrl: "https://h/o/api",
     };
-    expect(sameRepository(gone, { path: "/new/api", remoteUrl: "git@h:o/api.git" })).toBe(true);
+    expect(sameRepository(gone, { path: "/new/api", remoteUrl: "git@h:o/api.git" })).toBe(false);
     expect(sameRepository(gone, { path: "/new/api", remoteUrl: "https://h/o/other" })).toBe(false);
-    expect(
-      sameRepository({ ...gone, remoteUrl: null }, { path: "/new/api", remoteUrl: null }),
-    ).toBe(false);
+    // The record's own (gone) path is still the same repository.
+    expect(sameRepository(gone, { path: "/nonexistent/gaffer/api", remoteUrl: null })).toBe(true);
   });
-  it("a path-less record matches only an identical non-empty remote", () => {
+  it("a path-less record is never adopted, whatever its remote", () => {
     const rec = { source: "dispatch" as const, localPath: null, remoteUrl: "git@h:o/api.git" };
-    expect(sameRepository(rec, { path: "/z", remoteUrl: "https://h/o/api" })).toBe(true);
-    expect(sameRepository(rec, { path: "/z", remoteUrl: "https://h/other/api" })).toBe(false);
+    expect(sameRepository(rec, { path: "/z", remoteUrl: "https://h/o/api" })).toBe(false);
     expect(sameRepository({ ...rec, remoteUrl: null }, { path: "/z", remoteUrl: null })).toBe(
       false,
     );
@@ -122,5 +120,38 @@ describe("onboardRepo refuses a name taken by a different repository", () => {
     );
     expect(r.profile.localPath).toBe(join(parent, "two", "api"));
     expect(store.readProfile("api")?.localPath).toBe(join(parent, "one", "api"));
+  });
+
+  it("moved clone: the old checkout deleted, the same remote elsewhere → NAME_TAKEN, no merged record", () => {
+    const store = new RepoContextStore({ root, factoryId: "f", clock: new TestClock() });
+    const dispatch = new FakeDispatchClient();
+    const deps = { store, dispatch, git };
+    const a = join(parent, "one", "api");
+    const b = join(parent, "two", "api");
+    const remoteGit = (url: string) => new DryRunGitAdapter({ isRepo: true, remoteUrl: url });
+    onboardRepo(
+      a,
+      { mapping: { mode: "standalone" } },
+      { ...deps, git: remoteGit("git@github.com:acme/api.git") },
+    );
+    const before = store.readProfile("api");
+    const dispatchBefore = JSON.stringify(dispatch.listRepositories());
+    rmSync(a, { recursive: true, force: true });
+    let err: { code?: string; message?: string } = {};
+    try {
+      onboardRepo(
+        b,
+        { mapping: { mode: "standalone" } },
+        { ...deps, git: remoteGit("https://github.com/Acme/api") },
+      );
+    } catch (e) {
+      err = e as { code?: string; message?: string };
+    }
+    expect(err.code).toBe("NAME_TAKEN");
+    expect(err.message).toMatch(/no longer exists/);
+    expect(err.message).toMatch(/--name <alias>/);
+    // Neither record was touched: no first-path + second-remote merge.
+    expect(store.readProfile("api")).toEqual(before);
+    expect(JSON.stringify(dispatch.listRepositories())).toBe(dispatchBefore);
   });
 });

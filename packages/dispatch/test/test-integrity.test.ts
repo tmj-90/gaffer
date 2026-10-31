@@ -348,6 +348,20 @@ describe("name-status: deletes, renames, config", () => {
     expect(integrityItems(f)).toContain("added package-manager config .npmrc");
   });
 
+  it("flags a test file replaced by a symlink or another file type (status T)", () => {
+    const f = analyzeTestIntegrity({
+      nameStatus: [
+        { status: "T", path: "test/a.test.js" },
+        { status: "T", path: "src/link.js" },
+      ],
+      patch: "",
+    });
+    expect(f.incomplete).toEqual([
+      "test file test/a.test.js was replaced by a symlink or another file type, so its tests could not be read",
+    ]);
+    expect(hasIntegrityFindings(f)).toBe(true);
+  });
+
   it("flags ADDED test-runner config once the base already has tests (not a greenfield scaffold)", () => {
     const nameStatus = [
       { status: "A", path: "vitest.config.mjs" },

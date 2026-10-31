@@ -30,7 +30,7 @@
 #      test changed on disk FLAGs; a .gitattributes `-diff` cannot hide an added skip;
 #      other marker spellings (bracket access, pytestmark, a Go build constraint);
 #      test-runner config ADDED to a repo that has tests (committed, git-ignored on
-#      disk, or a package.json `jest` key) FLAGs.
+#      disk, or a package.json `jest` key) FLAGs; a test file replaced by a symlink FLAGs.
 #
 # Requires git, node and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash test/gate-integrity.test.sh      (bash 3.2-safe)
@@ -381,6 +381,12 @@ commit_wt "jest key"
 gates "true" main
 [[ "$(col "$(row integrity)" 6)" == *"package.json#jest added"* ]] \
   && ok "J6 a jest key added to package.json FLAGs" || fail "J6 got: $(row integrity)"
+delivery
+rm -f "$WT/tests/other.test.sh"; : > "$WT/src/empty.sh"; ln -s ../src/empty.sh "$WT/tests/other.test.sh"
+commit_wt "a test replaced by a symlink to an empty file"
+gates "true" main
+[[ "$(col "$(row integrity)" 6)" == *"tests/other.test.sh was replaced by a symlink"* ]] \
+  && ok "J7 a test file replaced by a symlink FLAGs" || fail "J7 got: $(row integrity)"
 marker_case "js bracket"      test/k.test.js        "test['skip']('x', () => {})"           test.skip
 marker_case "pytestmark"      tests/test_mod.py     "pytestmark = pytest.mark.skip"         pytest.mark.skip
 marker_case "go build tag"    pkg/y_test.go         "//go:build ignore"                     "go build constraint"

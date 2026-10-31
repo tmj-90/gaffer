@@ -703,6 +703,7 @@ export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings
   const deleted: string[] = [];
   const renamed: Array<{ from: string; to: string }> = [];
   const configs: ConfigChange[] = [];
+  const typeChanged: string[] = [];
   for (const e of input.nameStatus) {
     const s = e.status.charAt(0);
     if (s === "D") {
@@ -717,6 +718,12 @@ export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings
         configs.push({ path: e.path, change: "added" });
     } else if (s === "M" || s === "T") {
       if (isTestConfigPath(e.path)) configs.push({ path: e.path, change: "modified" });
+      // A test file swapped for a symlink (to an empty file, say) keeps its path, and its
+      // "content" is now a link target the marker scan cannot read.
+      else if (s === "T" && isTestPath(e.path, extra))
+        typeChanged.push(
+          `test file ${e.path} was replaced by a symlink or another file type, so its tests could not be read`,
+        );
     } else if (s === "A" || s === "C") {
       if (isGateRcPath(e.path) || (baseHasTests && isTestConfigPath(e.path)))
         configs.push({ path: e.path, change: "added" });
@@ -733,7 +740,7 @@ export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings
     markers: addedSkipMarkers(input.patch, extra),
     scripts,
     configs,
-    incomplete: [...(input.incomplete ?? [])],
+    incomplete: [...(input.incomplete ?? []), ...typeChanged],
   };
 }
 

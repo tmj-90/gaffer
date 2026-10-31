@@ -389,10 +389,7 @@ export class ReviewGateService {
     // results for this ticket (GAFFER_REQUIRE_CI), approval needs a PASS for the
     // CANDIDATE commit — the head being approved. A CLI approve used to go through while
     // the CI poll was still open, and the late red result could no longer stop it.
-    this.assertCiPassed(
-      ticket,
-      this.ciStatus(ticket.id, null).required ? (this.ciCandidateHead(ticket)?.sha ?? null) : null,
-    );
+    this.assertCiPassed(ticket, this.approveCiCandidate(ticket));
     // REVIEWER ≠ AUTHOR (server-side, not by convention). Even on an autonomy-permitted
     // agent approve, the approving principal must not be the agent that DELIVERED the
     // ticket: the id on the ticket's most recent claim. Before this the "agent cannot
@@ -444,7 +441,7 @@ export class ReviewGateService {
     // GAFFER_TESTING toggle does not apply. Acceptance is a gate, not an option: the
     // only ways out of in_testing are a recorded tester verdict or a human's
     // tester-pass / tester-fail (auditable evidence), never a plain approve.
-    if (ticket.acceptance === 1 || (this.testingEnabled() && ticket.can_be_tested === 1)) {
+    if (this.approveRoutesToTesting(ticket)) {
       return inTransaction(this.db, () => {
         const result = this.transitions.transition({
           ticketId: ticket.id,
@@ -482,6 +479,32 @@ export class ReviewGateService {
       this.recordApprovalPins(ticket, actor, pins);
       return result;
     });
+  }
+
+  /**
+   * BBT-001 + ACCEPTANCE GATE: does an approve of this ticket go to the independent
+   * tester (in_review -> in_testing) rather than to merge? The ONE predicate approveReview
+   * routes on, public so the Review view's "what happens on approve" names the same route.
+   */
+  approveRoutesToTesting(ticket: Ticket): boolean {
+    return ticket.acceptance === 1 || (this.testingEnabled() && ticket.can_be_tested === 1);
+  }
+
+  /** The candidate commit REQUIRED CI is read for on approve (null when no CI is recorded). */
+  private approveCiCandidate(ticket: Ticket): string | null {
+    return this.ciStatus(ticket.id, null).required
+      ? (this.ciCandidateHead(ticket)?.sha ?? null)
+      : null;
+  }
+
+  /**
+   * REQUIRED CI: the hold an approve of this ticket would hit right now (the same check
+   * approveReview's assertCiPassed raises), or null when approval is not held by CI.
+   */
+  approveCiHold(ticket: Ticket): { state: string | null; commit: string | null } | null {
+    const ci = this.ciStatus(ticket.id, this.approveCiCandidate(ticket));
+    if (!ci.required || ci.state === "pass") return null;
+    return { state: ci.state, commit: ci.commit };
   }
 
   /**
@@ -1084,13 +1107,20 @@ export class ReviewGateService {
         reasons,
         files: observed?.files ?? null,
         lines: observed?.lines ?? null,
+        ...(observed?.holds?.length ? { holds: observed.holds } : {}),
       },
     });
-    throw new DispatchError(
-      "OBSERVED_RISK_ESCALATED",
-      `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`,
-      { declared: ticket.risk_level, observed: observedLevel, reasons },
-    );
+    // GATE INTEGRITY: a hard hold (the delivery weakened its own tests) is named as such —
+    // the declared level does not matter for it, so "exceeds declared" would mislead.
+    const message = observed?.holds?.length
+      ? `Auto-approve held for human review: the delivery modified the tests that gate it (${observed.holds.join("; ")}). A human can approve, or allow test changes on the ticket.`
+      : `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`;
+    throw new DispatchError("OBSERVED_RISK_ESCALATED", message, {
+      declared: ticket.risk_level,
+      observed: observedLevel,
+      reasons,
+      ...(observed?.holds?.length ? { holds: observed.holds } : {}),
+    });
   }
 
   /**

@@ -85,7 +85,7 @@
     color: var(--ink);
   }
   .rv-branch {
-    font: 600 var(--t14) / 1.4 var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
     overflow-wrap: anywhere;
   }
@@ -166,6 +166,37 @@
     font-size: var(--t16);
     line-height: 1.45;
   }
+  /* The requests for a human, beside the button: a yellow-card band in the
+     sign-off block, so a reviewer reads them where they sign. */
+  .signoff-asks-slot:empty {
+    display: none;
+  }
+  .signoff-asks {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px 12px;
+    background: var(--mark-wash);
+    border-left: 6px solid var(--yellow);
+    border-radius: var(--r);
+    font: 400 var(--t14) / 1.45 var(--f-text);
+  }
+  .signoff-asks-h {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-weight: 700;
+  }
+  .signoff-asks-list {
+    display: grid;
+    gap: 4px;
+  }
+  /* One line under the button: what the click does next. */
+  .signoff-next:not([hidden]) {
+    margin: calc(-1 * var(--s2)) 0 0;
+    color: var(--ink-2);
+    font: 400 var(--t14) / 1.45 var(--f-text);
+  }
   .review-card-actions {
     align-items: center;
   }
@@ -204,6 +235,13 @@
     gap: 2px;
     font-weight: 700;
   }
+  /* The button names the outcome ("Approve, waits for Merge now"): on a narrow
+     phone it wraps onto two lines rather than push the page sideways. */
+  .signoff-btn {
+    white-space: normal;
+    text-align: center;
+    text-wrap: balance;
+  }
   .signoff-btn.is-approved:disabled {
     opacity: 1;
     background: var(--paper);
@@ -215,7 +253,7 @@
     color: var(--ink-2);
   }
   .rv-keys {
-    font: 600 var(--t12) / 1.6 var(--f-cond);
+    font: 500 var(--t13) / 1.6 var(--f-detail);
     color: var(--ink-2);
   }
   .rv-keys .kbd {
@@ -265,7 +303,7 @@
   }
   .flag-src {
     margin-top: 6px;
-    font: 600 var(--t12) / 1.3 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .flag-none {
@@ -321,7 +359,7 @@
     font: 800 var(--t34) / 1.05 var(--f-display);
   }
   .ac-meta {
-    font: 600 var(--t14) / 1.35 var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .ac-meta code {
@@ -350,8 +388,15 @@
   .review-evi:first-child {
     border-top: 0;
   }
+  /* A row that asks for a human carries the same yellow edge as the band
+     beside the button, so the two read as one thing. */
+  .review-evi.evi-asks {
+    box-shadow: inset 6px 0 0 var(--yellow);
+    margin-left: calc(-1 * var(--s4));
+    padding-left: var(--s4);
+  }
   .evi-time {
-    font: 700 var(--t14) var(--f-cond);
+    font: 600 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .evi-main {
@@ -369,7 +414,7 @@
     display: inline-flex;
     gap: 6px;
     align-items: center;
-    font: 600 var(--t12) / 1.2 var(--f-cond);
+    font: 600 var(--t13) / 1.3 var(--f-detail);
     color: var(--ink-2);
   }
   .evi-summary {
@@ -377,7 +422,7 @@
     max-width: none;
   }
   .evi-more > summary {
-    font: 700 var(--t12) / 1.6 var(--f-cond);
+    font: 600 var(--t13) / 1.6 var(--f-detail);
     color: var(--ink-2);
     cursor: pointer;
   }
@@ -435,6 +480,24 @@
   .dod-mark.dod-skip {
     color: var(--ink-2);
   }
+  /* Gate integrity: a FLAG is a yellow card, not a red one — it never fails a delivery. */
+  .dod-mark.dod-flag {
+    color: var(--on-yellow);
+    background: var(--yellow);
+    border-color: var(--ycard-edge);
+  }
+  .dod-w-flag {
+    color: var(--ink);
+  }
+  .dod-note-flag,
+  .dod-note-pass {
+    color: var(--ink);
+  }
+  .dod-src {
+    grid-column: 2 / -1;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
   .dod-gate {
     font-weight: 700;
     overflow-wrap: anywhere;
@@ -459,6 +522,22 @@
     grid-column: 2 / -1;
     color: var(--red);
     overflow-wrap: anywhere;
+  }
+  /* Passed only on the rerun at concurrency 1: a yellow card, never colour alone. */
+  .dod-flaky {
+    grid-column: 4;
+    grid-row: 1;
+    justify-self: start;
+    padding: 2px 8px;
+    border-radius: var(--r);
+    background: var(--yellow);
+    color: var(--on-yellow);
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .dod-note.dod-note-flaky {
+    color: var(--ink-2);
   }
   ul.clean,
   ol.clean {
@@ -673,6 +752,44 @@
   .diff-block-banner {
     margin: 0;
   }
+
+  /* --- gate integrity: the delivery changed the tests that gate it --------- */
+  .integrity-slot:empty {
+    display: none;
+  }
+  .integrity-slot {
+    margin: var(--s2) 0;
+  }
+  .integrity-banner {
+    border-color: var(--ycard-edge);
+    background: var(--mark-wash);
+  }
+  .integrity-banner.is-allowed {
+    border-color: var(--rule-2);
+    background: var(--paper-2);
+  }
+  .integrity-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .integrity-h {
+    margin: 0;
+    font-weight: 800;
+  }
+  .integrity-items {
+    margin: 0;
+    padding-left: 18px;
+    font: 500 var(--t14) / 1.45 var(--f-mono);
+    overflow-wrap: anywhere;
+  }
+  .integrity-note {
+    margin: 0;
+    font-weight: 500;
+  }
+  .integrity-body .btn {
+    justify-self: start;
+  }
   .diff-pre {
     margin: 0;
     max-height: 560px;
@@ -828,6 +945,9 @@
   .vd-w-fail {
     color: var(--red);
   }
+  .vd-w-flag {
+    color: var(--ink);
+  }
   .vd-cmd,
   .vd-note {
     min-width: 0;
@@ -852,7 +972,7 @@
     overflow-wrap: anywhere;
   }
   .vd-when {
-    font: 600 var(--t12) / 1 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .vd-why {
@@ -1053,7 +1173,7 @@
   }
   .rv-res-when {
     grid-area: when;
-    font: 600 var(--t14) / 1.2 var(--f-cond);
+    font: 500 var(--t14) / 1.3 var(--f-detail);
     color: var(--ink-2);
     white-space: nowrap;
   }

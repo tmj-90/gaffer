@@ -12,6 +12,18 @@ import {
   type Ticket,
 } from "../../domain/types.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
+import {
+  APPROVE_OUTCOME_KINDS,
+  type ApproveOutcome as ApproveOutcomeType,
+} from "../../services/approveOutcome.js";
+import type {
+  RepoDiff as RepoDiffShape,
+  TicketDiff as TicketDiffShape,
+} from "../../services/diffService.js";
+import {
+  RISK_KINDS,
+  type RiskAnnotation as RiskAnnotationShape,
+} from "../../services/riskAnnotations.js";
 import type { AgentDisplay } from "../../services/squadService.js";
 
 /**
@@ -55,6 +67,9 @@ export const TicketRow = z
     can_be_tested: int,
     test_contract: nstr.describe("JSON-encoded test contract or null."),
     acceptance: int,
+    allow_test_changes: int.describe(
+      "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note).",
+    ),
     human_owner: nstr,
     human_delivered: nstr,
     delivery_budget_usd: z.number().nullable(),
@@ -189,14 +204,65 @@ export const TicketTransition = z
   })
   .strict();
 
+/**
+ * What a human Approve does, said as the first step that will certainly happen (see
+ * services/approveOutcome.ts). On GET /tickets/:id/diff it is the prediction for an
+ * in_review ticket; on review/approve it is what the click actually did.
+ */
+export const ApproveOutcome = z
+  .object({
+    kind: z.enum(APPROVE_OUTCOME_KINDS),
+    approvable: z
+      .boolean()
+      .describe(
+        "False only when the server would refuse (held_ci, or held_test_modified for an agent).",
+      ),
+    to_status: z.enum(["in_testing", "ready_for_merge"]).nullable(),
+    label: str.describe('The sign-off button, e.g. "Approve and send to tester".'),
+    confirm_label: str.describe("The armed button (the second press approves)."),
+    done_label: str.describe("The button once approved."),
+    sentence: str.describe("One line under the button: what follows the click."),
+    via: z.enum(["pr", "local"]).nullable(),
+    pr_url: nstr,
+    lands_repo: nstr.describe("The primary write repo a landing merges first."),
+    also_lands_repos: z
+      .array(str)
+      .describe("The other write repos the same landing merges after it, one merge each."),
+    not_landed_repos: z
+      .array(str)
+      .describe("Write repos with no checkout here: no landing path can merge them."),
+    review_mode: z.enum(["human", "agent", "both"]),
+    agent_hold: z
+      .object({
+        kind: z.literal("held_test_modified"),
+        label: str,
+        sentence: str,
+        holds: z.array(str).describe("The gate-integrity findings that hold it."),
+      })
+      .strict()
+      .nullable()
+      .describe(
+        "The hold an agent or auto approval would hit now (the tests that gate it changed); a human approval is not held by it.",
+      ),
+  })
+  .strict() satisfies ZodType<ApproveOutcomeType>;
+
 export const ReviewApproved = z
   .object({
     ticket: TicketRow,
     event_id: eventId,
     merge: z
-      .object({ triggered: z.boolean(), pid: int.nullable(), skipped: str.optional() })
+      .object({
+        triggered: z.boolean(),
+        pid: int.nullable(),
+        skipped: str.optional(),
+        runId: nstr.optional(),
+      })
       .optional()
       .describe("The auto-merge command, when one is configured."),
+    approve_outcome: ApproveOutcome.optional().describe(
+      "What the approval did: the tester, a landing now, the merge lane's next tick, or a wait for Merge now.",
+    ),
   })
   .strict();
 
@@ -218,6 +284,89 @@ export const TestableSet = z
     eventId: str.describe("Deprecated camelCase twin of event_id."),
   })
   .strict();
+
+export const TestChangesAllowed = z
+  .object({ ticket_id: str, allow_test_changes: z.boolean(), event_id: eventId })
+  .strict();
+
+export const RiskKind = z
+  .enum(RISK_KINDS)
+  .describe(
+    "What a risk annotation flags. `sensitive-path`: secret/auth/infra paths; " +
+      "`dependency-change`: a manifest or lockfile; `large-deletion`: many deleted lines; " +
+      "`test-modified`: the delivery changed the tests that gate it (deleted/renamed a " +
+      "test file, added a skip/only marker, changed a gate script, touched test or " +
+      "package-manager config). Unallowed, `test-modified` raises observed risk to high " +
+      "and holds an agent approve for a person.",
+  );
+
+export const RiskAnnotation = z
+  .object({
+    kind: RiskKind,
+    severity: z.enum(["high", "medium"]),
+    detail: str.describe("Short human summary."),
+    paths: z.array(str).optional().describe("The concrete paths that triggered it."),
+    items: z
+      .array(str)
+      .optional()
+      .describe("`test-modified` only: one human line per finding, for the Review banner."),
+    allowed: z
+      .boolean()
+      .optional()
+      .describe(
+        "`test-modified` only: a human allowed test changes on this ticket; the annotation " +
+          "drops to medium and no longer holds an approve on its own.",
+      ),
+  } satisfies Record<keyof RiskAnnotationShape, ZodType>)
+  .strict()
+  .describe("An advisory risk flag on a repo's delivery diff.");
+
+export const RepoDiff = z
+  .object({
+    repo: str,
+    branch: nstr.describe("The resolved delivery branch, or null."),
+    baseBranch: str.describe("The default branch the delivery branch is diffed against."),
+    diff: str.describe("Raw unified diff text (possibly truncated); empty when unavailable."),
+    files: int,
+    additions: int,
+    deletions: int,
+    truncated: z.boolean(),
+    unavailable: z
+      .enum(["no_branch", "repo_not_on_disk", "no_local_path", "empty", "git_error"])
+      .optional()
+      .describe("Why no diff text is available."),
+    message: str.optional(),
+    riskAnnotations: z.array(RiskAnnotation),
+    repoId: str.optional().describe("The repository id, so an approval can name the repo it saw."),
+    headSha: str
+      .nullable()
+      .optional()
+      .describe(
+        "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision).",
+      ),
+  } satisfies Record<keyof RepoDiffShape, ZodType>)
+  .strict()
+  .describe("The delivery diff for one write repository.");
+
+export const TicketDiff = z
+  .object({ ticketId: str, repos: z.array(RepoDiff) } satisfies Record<
+    keyof TicketDiffShape,
+    ZodType
+  >)
+  .extend({
+    approve_outcome: ApproveOutcome.optional().describe(
+      "An in_review ticket only: the first step a human Approve would certainly take now.",
+    ),
+  })
+  .strict();
+
+/** Response schemas rendered as their own components and `$ref`d where nested. */
+export const SHARED_RESPONSE_COMPONENTS = [
+  "ApproveOutcome",
+  "RepoDiff",
+  "RiskAnnotation",
+  "RiskKind",
+] as const;
 
 export const TestContractSet = z
   .object({

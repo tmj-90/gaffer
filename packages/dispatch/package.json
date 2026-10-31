@@ -39,6 +39,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
+    "./test-integrity": {
+      "types": "./dist/services/testIntegrity.d.ts",
+      "import": "./dist/services/testIntegrity.js"
+    },
     "./zod3-compat": {
       "types": "./dist/util/zod3Compat.d.ts",
       "import": "./dist/util/zod3Compat.js"

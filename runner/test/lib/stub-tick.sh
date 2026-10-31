@@ -26,6 +26,12 @@ R="$WORK/repo"; mkrepo "$R"
 # The stub agent's MODE file decides what a delivery turn does (see the cases below).
 # Every spawn records the worktree's branch + commit count AT SPAWN.
 MODE="$WORK/mode"; echo deliver > "$MODE"
+# The `script-shell` the npmrc-* modes point npm at: a no-op that exists on every host.
+# NOT /bin/true — macOS has only /usr/bin/true, so there npm failed to spawn the
+# shell (ENOENT, exit 254), the gates went red and the delivery ended `blocked`
+# instead of passing vacuously into review where the integrity FLAG must hold it.
+NOOP_SHELL="$WORK/bin/noop-shell"
+printf '#!/bin/sh\nexit 0\n' > "$NOOP_SHELL"; chmod +x "$NOOP_SHELL"
 REVIEW="$WORK/review"; echo approve > "$REVIEW"
 cat > "$WORK/bin/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -69,12 +75,84 @@ if [ -e .git ]; then
         commit retry
       fi
       done_json; exit 0 ;;
+    # GATE INTEGRITY modes (gate-integrity-e2e*.test.sh): break a() and weaken the gate.
+    redirect-tests)  # point scripts.test at a no-op
+      printf 'export function a() { return 2; }\n' > src/a.js
+      sed -i.bak 's/"test": "node --test"/"test": "node -e 0"/' package.json && rm -f package.json.bak
+      git -c user.email=s@s -c user.name=s commit -qam "feat: redirect" >/dev/null 2>&1; done_json; exit 0 ;;
+    skip-test)       # mark the failing test skipped
+      printf 'export function a() { return 2; }\n' > src/a.js
+      sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak
+      git -c user.email=s@s -c user.name=s commit -qam "feat: skip" >/dev/null 2>&1; done_json; exit 0 ;;
+    delete-test)     # delete the test file, keep one trivial test so the runner has work
+      printf 'export function a() { return 2; }\n' > src/a.js
+      git rm -q test/a.test.js >/dev/null 2>&1
+      printf 'import test from "node:test";\ntest("smoke", () => {});\n' > test/smoke.test.js
+      git add -A >/dev/null 2>&1
+      git -c user.email=s@s -c user.name=s commit -qm "feat: delete" >/dev/null 2>&1; done_json; exit 0 ;;
+    hook-hide)       # leave scripts.test alone; ADD a pretest that hides the failing test
+      printf 'export function a() { return 2; }\n' > src/a.js
+      node -e 'const f="package.json";const fs=require("fs");const p=JSON.parse(fs.readFileSync(f,"utf8"));p.scripts.pretest="mkdir -p .stash && mv test/a.test.js .stash/";p.scripts.posttest="mv .stash/a.test.js test/";fs.writeFileSync(f,JSON.stringify(p,null,2)+"\n")'
+      git -c user.email=s@s -c user.name=s commit -qam "feat: hooks" >/dev/null 2>&1; done_json; exit 0 ;;
+    npmrc-hide)      # leave package.json + tests alone; ADD a project .npmrc that makes
+                     # every npm script a no-op (the name split so a hook's .npmrc rule misses it)
+      printf 'export function a() { return 2; }\n' > src/a.js
+      node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell="+process.argv[1]+"\n")' "__NOOP_SHELL__"
+      git add -A >/dev/null 2>&1
+      git -c user.email=s@s -c user.name=s commit -qm "feat: npmrc" >/dev/null 2>&1; done_json; exit 0 ;;
+    npmrc-ignored)   # the same .npmrc, but git-ignored (info/exclude) so it is never committed
+      printf 'export function a() { return 2; }\n' > src/a.js
+      node -e 'require("fs").writeFileSync(".np"+"mrc","script-shell="+process.argv[1]+"\n")' "__NOOP_SHELL__"
+      printf '.npmrc\n' >> "$(git rev-parse --git-path info/exclude)"
+      git -c user.email=s@s -c user.name=s commit -qam "feat: ignored npmrc" >/dev/null 2>&1; done_json; exit 0 ;;
+    skipworktree-hide)  # commit the broken a(); then hide a skipped test from git: the
+                        # index keeps the original (skip-worktree), the disk has test.skip
+      printf 'export function a() { return 2; }\n' > src/a.js
+      git -c user.email=s@s -c user.name=s commit -qam "feat: helper" >/dev/null 2>&1
+      git update-index --skip-worktree test/a.test.js >/dev/null 2>&1
+      sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak
+      done_json; exit 0 ;;
+    move-base)       # commit a test.skip, move the base branch onto it, commit again
+      printf 'export function a() { return 2; }\n' > src/a.js
+      sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak
+      git -c user.email=s@s -c user.name=s commit -qam "feat: skip" >/dev/null 2>&1
+      git update-ref refs/heads/main HEAD >/dev/null 2>&1  # (`git branch -f` refuses: main is checked out)
+      printf 'export function more() { return 3; }\n' >> src/a.js
+      git -c user.email=s@s -c user.name=s commit -qam "feat: more" >/dev/null 2>&1; done_json; exit 0 ;;
+    # In-tick RETRY modes (GAFFER_MAX_DELIVERY_ATTEMPTS=2): attempt 1 weakens the gate
+    # and fails DoD; attempt 2 builds on that branch. The gates must still judge the
+    # delivery from the commit the branch was cut at, not attempt 1's tip.
+    retry-redirect)
+      if [ ! -e "$CALLS/retried-$MODE" ]; then
+        touch "$CALLS/retried-$MODE"
+        printf 'export function a() { return 2; }\n' > src/a.js
+        sed -i.bak 's/"test": "node --test"/"test": "node -e 0"/' package.json && rm -f package.json.bak
+        printf 'import test from "node:test";\ntest("smoke", () => { throw new Error("x"); });\n' > test/smoke.test.js
+        git add -A >/dev/null 2>&1
+        git -c user.email=s@s -c user.name=s commit -qm "feat: redirect (attempt 1)" >/dev/null 2>&1
+      else
+        commit "attempt 2"
+      fi
+      done_json; exit 0 ;;
+    retry-delete)
+      if [ ! -e "$CALLS/retried-$MODE" ]; then
+        touch "$CALLS/retried-$MODE"
+        printf 'export function a() { return 2; }\n' > src/a.js
+        git rm -q test/a.test.js >/dev/null 2>&1; mkdir -p test   # (git rm drops the emptied dir)
+        printf 'import test from "node:test";\ntest("smoke", () => { throw new Error("x"); });\n' > test/smoke.test.js
+        git add -A >/dev/null 2>&1
+        git -c user.email=s@s -c user.name=s commit -qm "feat: delete (attempt 1)" >/dev/null 2>&1
+      else
+        printf 'import test from "node:test";\ntest("smoke", () => {});\n' > test/smoke.test.js
+        git -c user.email=s@s -c user.name=s commit -qam "fix: smoke (attempt 2)" >/dev/null 2>&1
+      fi
+      done_json; exit 0 ;;
     *) commit "$MODE"; done_json; exit 0 ;;
   esac
 fi
 echo other > "$D/kind"; printf '{"type":"result","subtype":"success","is_error":false,"result":"ok"}\n'
 STUB
-sed -i.bak "s|__CALLS__|$CALLS|; s|__MODE__|$MODE|; s|__REVIEW__|$REVIEW|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
+sed -i.bak "s|__CALLS__|$CALLS|; s|__MODE__|$MODE|; s|__REVIEW__|$REVIEW|; s|__NOOP_SHELL__|$NOOP_SHELL|g" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_MAX_TURNS=3 GAFFER_TICK_TIMEOUT=90 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \

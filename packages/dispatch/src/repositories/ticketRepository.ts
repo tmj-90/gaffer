@@ -21,12 +21,12 @@ export class TicketRepository {
           (id, number, title, description, status, priority, risk_level, policy_pack,
            source, created_by, reviewer, branch_name, pr_url, attempt_count, row_version,
            scheduled_after, due_at, bootstrap, last_review_feedback, can_be_tested,
-           test_contract, acceptance, human_owner, human_delivered, delivery_budget_usd, created_at, updated_at)
+           test_contract, acceptance, allow_test_changes, human_owner, human_delivered, delivery_budget_usd, created_at, updated_at)
          VALUES
           (@id, @number, @title, @description, @status, @priority, @risk_level, @policy_pack,
            @source, @created_by, @reviewer, @branch_name, @pr_url, @attempt_count, @row_version,
            @scheduled_after, @due_at, @bootstrap, @last_review_feedback, @can_be_tested,
-           @test_contract, @acceptance, @human_owner, @human_delivered, @delivery_budget_usd, @created_at, @updated_at)`,
+           @test_contract, @acceptance, @allow_test_changes, @human_owner, @human_delivered, @delivery_budget_usd, @created_at, @updated_at)`,
       )
       .run(ticket);
   }
@@ -167,6 +167,17 @@ export class TicketRepository {
   }
 
   /**
+   * GATE INTEGRITY: set the ticket's human `allow_test_changes` flag (0/1). A plain
+   * write — no row_version bump — like {@link setCanBeTested}: it changes how a gate
+   * row reads, not the status machine. The caller (ticketService) enforces who may set it.
+   */
+  setAllowTestChanges(id: string, value: boolean, nowIso: string): void {
+    this.db
+      .prepare(`UPDATE tickets SET allow_test_changes = @value, updated_at = @now WHERE id = @id`)
+      .run({ id, value: value ? 1 : 0, now: nowIso });
+  }
+
+  /**
    * BBT-001: set (or, with `null`, clear) the ticket's `test_contract` JSON. A
    * plain write — no row_version bump — for the same reason as
    * {@link setCanBeTested}: the contract is handover metadata, not a status change.
@@ -284,6 +295,7 @@ const SUMMARY_COLUMN_SET: Record<keyof TicketSummary, true> = {
   bootstrap: true,
   can_be_tested: true,
   acceptance: true,
+  allow_test_changes: true,
   human_owner: true,
   human_delivered: true,
   delivery_budget_usd: true,

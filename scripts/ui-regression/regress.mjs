@@ -470,6 +470,32 @@ try {
   await page.waitForSelector('button:has-text("Poll for work")', { timeout: 15000 });
   await shot(page, "work-board-ready");
   await page.click('button:has-text("Poll for work")');
+  // First live run: no dollar cap is set yet, so the poll asks for a daily budget
+  // (prefilled $5) and saves it before firing — the runner refuses an uncapped live
+  // tick (runner/lib/budget.sh gaffer_spend_cap_ok).
+  const capSheet = await page
+    .waitForSelector('.sheet.open:has-text("Set a daily budget")', { timeout: 8000 })
+    .catch(() => null);
+  if (capSheet) {
+    const capVal = await page.inputValue("#spend-cap-usd");
+    capVal === "5"
+      ? ok("first poll: the daily-budget sheet opens, prefilled at $5")
+      : bad(`daily-budget sheet prefilled '${capVal}', not 5`);
+    await shot(page, "first-run-daily-budget");
+    if (AXE_SOURCE) await auditA11y(page, "first-run-daily-budget", "1400");
+    await page.click('button:has-text("Save and poll")');
+    const capSaved = await waitFor(
+      async () => {
+        const rows = (await api("GET", "/api/settings")).json.settings || [];
+        const r = rows.find((x) => x.key === "GAFFER_DAILY_BUDGET_USD");
+        return r && Number(r.value) === 5 ? r : null;
+      },
+      "daily budget saved",
+      10000,
+      500,
+    );
+    capSaved && ok("first poll: GAFFER_DAILY_BUDGET_USD=5 saved to settings.json, then polled");
+  } else bad("first poll with no dollar cap did not ask for a daily budget");
   ok("Work view: 'Poll for work' clicked (spawns one live tick)");
   const delivered = await waitFor(
     async () => {
@@ -499,6 +525,33 @@ try {
           `checked AC not runner-verified: status=${checked.status} verified_by=${checked.verified_by}`,
         );
   }
+  // Provenance: the runner recorded which model and which CLI ran the attempt, and the
+  // ticket page's attempt history shows it.
+  const runEv = (view.evidence || []).find((e) => {
+    try {
+      return e.evidence_type === "log" && JSON.parse(e.payload_json || "{}").kind === "agent_run";
+    } catch {
+      return false;
+    }
+  });
+  runEv
+    ? ok(`agent-run evidence recorded: ${runEv.summary}`)
+    : bad("no agent-run evidence (model + CLI version) recorded for the delivery");
+  // Only a runner-recorded row is provenance (the page ignores an agent's own claim).
+  if (runEv)
+    runEv.recorded_by_actor_type === "system"
+      ? ok("agent-run evidence is recorded by the runner (system actor)")
+      : bad(`agent-run evidence recorded by '${runEv.recorded_by_actor_type}', not the runner`);
+  await page.goto(`${BASE}/#/ticket/${ticket.id}`, { waitUntil: "load" });
+  const runLine = await page
+    .waitForSelector(".attempt-run", { timeout: 15000 })
+    .then((h) => h.textContent())
+    .catch(() => null);
+  runLine && /^Model .+ · CLI .+/.test(runLine)
+    ? ok(`ticket page: attempt history shows "${runLine}"`)
+    : bad("ticket page: no model/CLI line in the attempt history");
+  await shot(page, "ticket-attempt-provenance");
+  await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
   // SSE: the Work board should have refreshed itself (no manual reload) — the card moved to Review.
   await sleep(2500);
   const boardText = await page.textContent("#app");
@@ -579,6 +632,31 @@ try {
     }
   }
 
+  // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
+  //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
+  //          Sign-off shows no "tests changed" banner. A delivery that weakened its
+  //          tests is covered by runner/test/gate-integrity-e2e*.test.sh + the JSDOM test.
+  const giRow = await waitFor(
+    async () => {
+      const rows = await page.$$eval(".dod-item", (els) =>
+        els.map((e) => ({
+          cls: e.className,
+          gate: (e.querySelector(".dod-gate") || {}).textContent || "",
+        })),
+      );
+      return rows.find((r) => r.gate === "integrity") || null;
+    },
+    "integrity row in the gates checklist",
+    15000,
+    500,
+  ).catch(() => null);
+  giRow && /dod-i-pass/.test(giRow.cls)
+    ? ok("Review gates checklist carries the gate-integrity row, passed for a clean delivery")
+    : bad(`no passing integrity row in the gates checklist (${giRow ? giRow.cls : "absent"})`);
+  (await page.locator(".integrity-banner").count()) === 0
+    ? ok("no tests-changed banner on a clean delivery's Sign-off")
+    : bad("a tests-changed banner showed on a clean delivery");
+
   // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
   //        reader back to the top of the diff they are reading. On a short
   //        viewport, scroll to the bottom of the queue, then make the factory emit
@@ -646,9 +724,10 @@ try {
       const tip = g("rev-parse", `refs/heads/${rd.branch}`);
       const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
       g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
-      const btn = page
-        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
-        .first();
+      // The sign-off button by its class: its label names the server's outcome, and the
+      // armed label is the outcome's confirmation ("Confirm approval", "Confirm and land
+      // now"…), so a text match would lose it between the two clicks.
+      const btn = page.locator("button.signoff-btn").first();
       await waitFor(
         async () => (!(await btn.isDisabled()) ? true : null),
         "approve enabled",
@@ -674,9 +753,7 @@ try {
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
   // stream while the diff loads, and a handle taken before that detaches
   // ("Element is not attached to the DOM"). A locator re-resolves on every action.
-  const approveBtn = page
-    .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
-    .first();
+  const approveBtn = page.locator("button.signoff-btn").first();
   if ((await approveBtn.count()) === 0) bad("no Approve button on the review view");
   else {
     const disabled = await approveBtn.isDisabled();
@@ -687,11 +764,29 @@ try {
       30000,
       500,
     );
+    // The button names what the click does (the server's approve_outcome), and the line
+    // under it says what follows. AUTO_MERGE is off here, so nothing may promise a merge.
+    const restLabel = ((await approveBtn.textContent()) || "").trim();
+    const nextLine = (
+      (await page
+        .locator(".signoff-next")
+        .textContent()
+        .catch(() => "")) || ""
+    ).trim();
+    /^Approve\b/.test(restLabel) && !/land now/i.test(restLabel)
+      ? ok(`Approve names its outcome: '${restLabel}'`)
+      : bad(`Approve does not name its outcome (label='${restLabel}')`);
+    nextLine
+      ? ok(`a line under Approve says what follows: '${nextLine.slice(0, 80)}…'`)
+      : bad("no line under Approve saying what follows");
     await approveBtn.click();
-    const armedLabel = await approveBtn.textContent();
+    const armedLabel = ((await approveBtn.textContent()) || "").trim();
     /confirm/i.test(armedLabel)
-      ? ok("Approve is a two-step control: first click ARMS ('Confirm merge')")
+      ? ok(`Approve is a two-step control: first click ARMS ('${armedLabel}')`)
       : bad(`first click did not arm (label='${armedLabel}')`);
+    !/confirm merge/i.test(armedLabel)
+      ? ok("the armed button promises no merge the click will not start")
+      : bad(`the armed button says '${armedLabel}' with Auto-merge on approval off`);
     await approveBtn.click();
     ok("Approve confirmed");
   }
@@ -725,6 +820,15 @@ try {
       await page.reload({ waitUntil: "load" });
       await page.waitForSelector(mergeNow, { timeout: 15000 });
     }
+    // The status says what is true while it waits: nothing lands it but Merge now.
+    const word = (
+      (await page.textContent(".badge.st.status-ready_for_merge").catch(() => "")) || ""
+    ).trim();
+    word === "Approved · waiting for Merge now"
+      ? ok(`Ticket page: the approved status reads '${word}' (Auto-merge off)`)
+      : bad(
+          `Ticket page: the approved status reads '${word}', not 'Approved · waiting for Merge now'`,
+        );
     await page.click(mergeNow);
     ok("Ticket page: Merge now pressed (runs the merge runner)");
   }
@@ -1305,6 +1409,18 @@ try {
             pipeDisplay: pipe ? getComputedStyle(pipe).display : null,
             card: card ? card.getBoundingClientRect().toJSON() : null,
             sheetTop: sheet ? sheet.getBoundingClientRect().top : null,
+            // "N things need you" is said once on a phone: with rows on the Team Sheet,
+            // the headline's count and the scoreboard's Need-you cell are not shown.
+            needYouRepeats:
+              sheet && sheet.querySelector(".own-row")
+                ? [...document.querySelectorAll(".scoreboard .hl-count, .scoreboard .sc-needs")]
+                    .filter((n) => n.getBoundingClientRect().width > 0)
+                    .map((n) => n.className)
+                : [],
+            // The headline leads with the work: no clause opens on a ticket number.
+            hlLeadsWithNumber: [...document.querySelectorAll(".scoreboard .hl-block")]
+              .map((n) => n.textContent.trim())
+              .filter((t) => /^#\d/.test(t)),
             // The Map: a ground card never clips its own words, never runs off the
             // pitch, and the server's implicit "repo:<name>" scope is not a ground.
             grounds: [...document.querySelectorAll(".scope-graph .scope-gnode")]
@@ -1344,6 +1460,12 @@ try {
         }
         if (m.grounds.length) problems.push(`${tag} ${m.grounds.join(", ")}`);
         if (m.doubleRules) problems.push(`${tag} ${m.doubleRules} treatment rows ruled twice`);
+        if (v === "overview" && w <= 760 && m.needYouRepeats.length)
+          problems.push(
+            `${tag} the need-you count repeats beside the Team Sheet (${m.needYouRepeats.join(", ")})`,
+          );
+        if (m.hlLeadsWithNumber.length)
+          problems.push(`${tag} a headline clause leads with a number: ${m.hlLeadsWithNumber[0]}`);
         if (v === "overview" && m.sheetTop != null && m.sheetTop > m.vh && w >= 390)
           problems.push(`${tag} team sheet below the fold (${Math.round(m.sheetTop)})`);
         if (runAxe && AXE_SOURCE) await auditA11y(p2, v, String(w));

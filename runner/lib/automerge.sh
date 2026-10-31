@@ -79,7 +79,16 @@ gaffer_auto_merge() {
   return "$rc"
 }
 
-# gaffer_pr_merge <repo_dir> <pr_url> <default_branch>
+# PROVENANCE TRAILERS (lib/provenance-trailers.mjs): every landing path writes the
+# ticket, the approving actor and the gate verdicts into the merge commit as git
+# trailers (Gaffer-Ticket / Gaffer-Reviewed-By / Gaffer-Gates; never a model name). They
+# are not signed: they record what the dispatch DB said, for `git log`, not a proof.
+: "${GAFFER_PROVENANCE_TRAILERS:=1}"   # 0 = land with the plain merge message (and a fast-forward when one is possible), as before
+export GAFFER_PROVENANCE_TRAILERS
+
+# gaffer_pr_merge <repo_dir> <pr_url> <default_branch> [pin_commit] [trailers]
+# [trailers] go in the merge commit's body (`gh pr merge --body`); a rebase merge makes
+# no merge commit, so it carries none.
 # PR MODE: land an approved delivery THROUGH its pull request instead of merging the
 # branch locally. When GAFFER_CREATE_PR opened a PR (the ticket carries pr_url), a local
 # merge left that PR open forever and the default branch unpushed — the opposite of what
@@ -94,7 +103,7 @@ gaffer_auto_merge() {
 #   → 3  PR merged upstream but the local default branch is checked out DIRTY — not touched
 #   → 4  PR merged upstream but the local fast-forward failed — pull by hand
 gaffer_pr_merge() {
-  local repo="$1" pr_url="$2" def="$3" pin="${4:-}"
+  local repo="$1" pr_url="$2" def="$3" pin="${4:-}" trailers="${5:-}"
   [ -n "$repo" ] && [ -n "$pr_url" ] && [ -n "$def" ] || return 2
   local gh_bin="${GAFFER_GH_BIN:-gh}" remote="${GAFFER_PR_REMOTE:-origin}"
   command -v "$gh_bin" >/dev/null 2>&1 || return 2
@@ -104,7 +113,8 @@ gaffer_pr_merge() {
     rebase) method=rebase ;;
     *)      method=merge ;;   # default — a typo can never pick an unintended method
   esac
-  ( cd "$repo" 2>/dev/null && GH_PROMPT_DISABLED=1 "$gh_bin" pr merge "$pr_url" "--$method" --delete-branch ${pin:+--match-head-commit "$pin"} ) \
+  [ "$method" = rebase ] && trailers=""
+  ( cd "$repo" 2>/dev/null && GH_PROMPT_DISABLED=1 "$gh_bin" pr merge "$pr_url" "--$method" --delete-branch ${pin:+--match-head-commit "$pin"} ${trailers:+--body "$trailers"} ) \
     >/dev/null 2>&1 || return 1
 
   local head_branch

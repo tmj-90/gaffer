@@ -14,11 +14,14 @@
 # and the three are scaled by that ratio (rework-cost-live rounded up).
 # land-tester-replay, e2e-release-gate-tester-replay: ESTIMATES (Linux under shared load:
 # 290s / 98s while other suites ran; refresh from the next CI run).
+# rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
 200	land-tester-replay.test.sh
 161	direct-run-isolation.test.sh
+150	gate-integrity-e2e.test.sh
+150	gate-integrity-e2e-retry.test.sh
 149	waste-controls.test.sh
 132	e2e-agent-skill-routing.test.sh
 127	e2e-release-gate-merge-typecheck.test.sh
@@ -38,6 +41,7 @@
 60	usage-limit-tick.test.sh
 58	e2e-per-path-stack-routing.test.sh
 55	e2e-memory-routing.test.sh
+52	rework-final-trail.test.sh
 45	rework-cost-live.test.sh
 40	eval-replay.test.sh
 40	resume-abort.test.sh

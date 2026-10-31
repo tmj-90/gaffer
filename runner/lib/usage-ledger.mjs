@@ -353,6 +353,9 @@ function parseCliArgs(argv) {
     killEstimate: null,
     killBasis: null,
     elapsedMs: null,
+    attempt: null,
+    model: null,
+    claudeVersion: null,
     attemptId: null,
     startedAt: null,
   };
@@ -368,6 +371,10 @@ function parseCliArgs(argv) {
     else if (a === "--kill-basis") out.killBasis = argv[++i];
     // How long the killed call ran — scales the estimate (deriveKillEstimate).
     else if (a === "--elapsed-ms") out.elapsedMs = argv[++i];
+    // Per-attempt provenance (lib/worker.sh worker_deliver → gaffer_usage_record).
+    else if (a === "--attempt") out.attempt = argv[++i];
+    else if (a === "--model") out.model = argv[++i];
+    else if (a === "--claude-version") out.claudeVersion = argv[++i];
     // The delivery attempt this call belongs to, and when it was spawned: lets the
     // Health report charge a correction's spend to the send-back that caused it.
     else if (a === "--attempt-id") out.attemptId = argv[++i];
@@ -389,6 +396,35 @@ export function withAttempt(record, { attemptId, startedAt } = {}) {
   if (typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))) {
     out.started_at = new Date(Date.parse(startedAt)).toISOString();
   }
+  return out;
+}
+
+/** A short, printable label (a model id, a CLI version): never a log dump. */
+function provLabel(v) {
+  if (v == null) return null;
+  const s = String(v)
+    .split("\n")[0]
+    .replace(/[^A-Za-z0-9 ._()+:/@[\]-]/g, "")
+    .trim()
+    .slice(0, 80);
+  return s || null;
+}
+
+/**
+ * Stamp a ledger record with WHICH call it was: the delivery attempt, the model the
+ * call asked for (`default` = the CLI's own default; the measured `models` map still
+ * names what actually served it) and the Claude Code CLI version that ran it. Every
+ * later quality metric (per model, per CLI release) keys on these. Absent inputs add
+ * nothing, so older call sites write exactly the record they always did.
+ */
+export function withProvenance(record, { attempt, model, claudeVersion } = {}) {
+  const out = { ...record };
+  const n = attempt != null && /^\d+$/.test(String(attempt)) ? Number(attempt) : null;
+  if (n != null && n > 0) out.attempt = n;
+  const m = provLabel(model);
+  if (m) out.model_requested = m;
+  const v = provLabel(claudeVersion);
+  if (v) out.claude_version = v;
   return out;
 }
 
@@ -486,6 +522,49 @@ export function recordKilledCall({ kind, ticket, reason, elapsedMs, env = proces
   return appendUsageRecord(record, env);
 }
 
+/**
+ * The per-attempt AGENT-RUN evidence tick.sh attaches to the ticket after each
+ * delivery attempt: which model served it (the measured `modelUsage` ids, else the
+ * model the call asked for) and which Claude Code CLI ran it. Returns
+ * `{ summary, payload }` — a one-line summary for the evidence list and the
+ * structured payload the ticket page's attempt history reads.
+ */
+export function agentRunEvidence({ json, role, attempt, maxAttempts, model, claudeVersion, rc }) {
+  let served = [];
+  try {
+    const { models } = extractUsage(json || {});
+    if (models && typeof models === "object") {
+      served = Object.keys(models)
+        .filter((k) => k && k !== "(unknown-model)")
+        .map(provLabel)
+        .filter(Boolean)
+        .slice(0, 4);
+    }
+  } catch {
+    served = [];
+  }
+  const requested = provLabel(model) || "default";
+  const version = provLabel(claudeVersion) || "unknown";
+  const a = attempt != null && /^\d+$/.test(String(attempt)) ? Number(attempt) : null;
+  const m = maxAttempts != null && /^\d+$/.test(String(maxAttempts)) ? Number(maxAttempts) : null;
+  const code = rc != null && /^-?\d+$/.test(String(rc)) ? Number(rc) : null;
+  const payload = {
+    kind: "agent_run",
+    role: provLabel(role) || "delivery",
+    attempt: a,
+    max_attempts: m,
+    model_requested: requested,
+    models_served: served,
+    claude_version: version,
+    rc: code,
+  };
+  const shown = served.length ? served.join(", ") : requested;
+  const summary =
+    `Agent run${a ? `, attempt ${a}${m ? `/${m}` : ""}` : ""}: model ${shown}` +
+    `, CLI ${version}${code != null && code !== 0 ? ` (exit ${code})` : ""}`;
+  return { summary, payload };
+}
+
 function readInput(jsonFile) {
   try {
     if (jsonFile) return readFileSync(jsonFile, "utf8");
@@ -496,6 +575,24 @@ function readInput(jsonFile) {
 }
 
 function cliMain(argv) {
+  // `--agent-run-evidence`: print the agent-run evidence (line 1 the summary, line 2
+  // the payload JSON) for tick.sh to attach; writes NO ledger record.
+  if (argv.includes("--agent-run-evidence")) {
+    const a = parseCliArgs(argv.filter((x) => x !== "--agent-run-evidence"));
+    const i = argv.indexOf("--max-attempts");
+    const r = argv.indexOf("--role");
+    const { summary, payload } = agentRunEvidence({
+      json: parseClaudeJson(readInput(a.jsonFile)),
+      role: r >= 0 ? argv[r + 1] : "delivery",
+      attempt: a.attempt,
+      maxAttempts: i >= 0 ? argv[i + 1] : null,
+      model: a.model,
+      claudeVersion: a.claudeVersion,
+      rc: a.rc,
+    });
+    process.stdout.write(summary + "\n" + JSON.stringify(payload) + "\n");
+    return;
+  }
   const args = parseCliArgs(argv);
   const ticket =
     args.ticket && /^\d+$/.test(String(args.ticket)) ? Number(args.ticket) : args.ticket || null;
@@ -541,7 +638,7 @@ function cliMain(argv) {
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }
-  appendUsageRecord(withAttempt(record, args));
+  appendUsageRecord(withAttempt(withProvenance(record, args), args));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

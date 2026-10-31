@@ -34,6 +34,12 @@ if declare -F gaffer_settings_readable >/dev/null 2>&1 && ! gaffer_settings_read
   echo "gaffer poll: settings.json ($GAFFER_DATA/settings.json) cannot be read — not polling." >&2
   echo "TICK_RESULT=no_work"; exit 0
 fi
+# A live poll needs a dollar cap like any live run (lib/budget.sh gaffer_spend_cap_ok).
+# The line ends "— not polling." so the dashboard reads it as a REFUSED run and toasts it.
+if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
+  echo "gaffer poll: $(gaffer_spend_cap_hint) — not polling." >&2
+  echo "TICK_RESULT=no_work"; exit 0
+fi
 if [ "$DRY_RUN" != "1" ]; then
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2

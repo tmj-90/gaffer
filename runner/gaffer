@@ -408,6 +408,13 @@ run)
   _live_dry="${_GAFFER_OP_DRY_RUN:-0}"
   [ "$_flag_dry" = 1 ] && _live_dry=1
   [ "$_live_dry" = 1 ] && warn "DRY_RUN=1 is set in your environment — this pass previews only; unset it to deliver for real"
+  # A live run needs a dollar cap (lib/budget.sh gaffer_spend_cap_ok) — said here, before
+  # the daemon starts, so `--daemon` never sits backing off a refusal. loop.sh checks
+  # again for a direct or scheduled run.
+  if [ "$_live_dry" != 1 ] && ! DRY_RUN=0 gaffer_spend_cap_ok; then
+    err "gaffer run: refusing a live run — $(gaffer_spend_cap_hint) (or preview with --dry-run)"
+    exit 3
+  fi
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
   _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
   if [ "$_daemon" = 0 ]; then exec env DRY_RUN="$_live_dry" bash "$_loop_sh"; fi

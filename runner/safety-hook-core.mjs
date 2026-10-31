@@ -199,6 +199,9 @@ function canonicalize(p, depth = 0) {
 // Best-effort telemetry only — never read by the allow/block decision.
 let CURRENT_TOOL = null;
 let CURRENT_TARGET = null;
+// True once the decision has identified the tool call (payload parsed): only then is
+// the call written to the tool ledger, stamped with the verdict (see logToolCall).
+let TOOL_OBSERVED = false;
 
 // Coarse category for the block ledger, derived from the reason string so the
 // trust report can group "what the agent kept trying" without parsing prose.
@@ -267,7 +270,12 @@ function logBlock(reason) {
 // first Write, the real "unnecessary scans avoided" signal) and how many served
 // file cards were then Read. It mirrors logBlock exactly: gated on GAFFER_DATA, fully swallowed,
 // and NEVER read by the allow/block decision — it cannot weaken the hook.
-function logToolCall(tool, target) {
+//
+// DECISION-STAMPED: the row is written AFTER the decision and carries it
+// (`decision: "allow" | "block"`). Skill telemetry counts a skill as OPENED only from a
+// row this hook ALLOWED (record-skill-usage.mjs detectOpened); a refused Read of a
+// mounted skill used to be logged before the decision and so counted as use.
+function logToolCall(tool, target, allowed) {
   try {
     const dir = process.env.GAFFER_DATA;
     if (!dir) return;
@@ -286,6 +294,7 @@ function logToolCall(tool, target) {
       tool: t,
       kind,
       target: target ? String(target).slice(0, 240) : null,
+      decision: allowed ? "allow" : "block",
     });
     appendFileSync(join(dir, "tool-metrics.jsonl"), entry + "\n");
   } catch {
@@ -712,21 +721,22 @@ const NODE_WRITE_PRESENCE = [
   /\b(?:fs\.)?(?:cpSync|copyFileSync|renameSync)\s*\(/,
 ];
 const RUBY_WRITE_PRESENCE = [
-  /\b(?:File|IO)\.write\s*\(/,
-  /\bFile\.open\s*\([^)]*,\s*["'][^"']*[waWA]/,
-  // Paren-less calls (Ruby's usual one-liner style): `File.write "p", x`,
-  // `File.open "p", "w" do … end`, `File.new "p", "a"`, `IO.binwrite p, x`.
-  /\b(?:File|IO)\.(?:write|binwrite)\b/,
-  // The first argument is a quoted string, a name / method chain, or one call:
-  // structured (not `[^,]*`) so the scan stays linear on long input.
-  /\bFile\.(?:open|new)\s+(?:"[^"\n]*"|'[^'\n]*'|[\w.:]+(?:\([^()\n]*\))?)\s*,\s*["'][^"']*[waWA]/,
-  /\bFile\.new\s*\([^)]*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s*\(/,
+  /\bFile\.(?:open|new)\s*\([^)]*,\s*["'][^"']*[waWA]/,
+  // Paren-less calls (`File.write "p", "x"`, `File.open "p", "a" do …`) were missed.
+  /\b(?:File|IO)\.(?:write|binwrite)\s/,
+  /\bFile\.(?:open|new)\s[^,;]{0,1024},\s*["'][^"']*[waWA+]/,
+  // …and the paren-less form whose path is one call (`File.open File.join(dir, "f"), "w"`):
+  // the call's own comma ends the bounded scan above before the mode is reached. The call
+  // is structured (a name / method chain, then one paren group) so it stays linear.
+  /\bFile\.(?:open|new)\s+[\w.:]+\([^()\n]*\)\s*,\s*["'][^"']*[waWA+]/,
   /\b(?:FileUtils\.(?:cp|mv|copy|move)|File\.rename)\b/,
 ];
 const PERL_WRITE_PRESENCE = [
   /\bopen\s*\([^,]*,\s*["']\+?>>?/, // open(FH, '>'|'>>', …) or open(FH, ">…")
-  // Paren-less: `open F, ">path"`, `open my $f, ">", "path"` (Perl's usual one-liner form).
-  /\bopen\s+(?:(?:my|our|local)\s+)?[$*]?[\w:]+\s*,\s*["']\+?>>?/,
+  // The paren-less forms (open F, ">…" / open my $f, ">>", …). Bounded quantifiers keep
+  // these linear on a 64 KiB adversarial input (an unbounded one is quadratic: ~1 s).
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?/,
 ];
 const PHP_WRITE_PRESENCE = [
   /\bfile_put_contents\s*\(/,
@@ -749,8 +759,10 @@ const NODE_WRITE_LITERALS = [
   /\b(?:fs\.)?(?:cpSync|copyFileSync|renameSync)\s*\([^,]*,\s*(["'`][^"'`]*["'`])\s*\)/,
 ];
 const RUBY_WRITE_LITERALS = [
-  /\b(?:File|IO)\.(?:write|binwrite)\s*\(?\s*(["'][^"']*["'])/,
-  /\bFile\.(?:open|new)\s*\(?\s*(["'][^"']*["'])\s*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s*\(\s*(["'][^"']*["'])/,
+  /\bFile\.(?:open|new)\s*\(\s*(["'][^"']*["'])\s*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s+(["'][^"']*["'])/,
+  /\bFile\.(?:open|new)\s+(["'][^"']*["'])\s*,\s*["'][^"']*[waWA+]/,
 ];
 const PERL_WRITE_LITERALS = [
   // 3-arg form: open(FH, '>'|'>>', 'path')  → capture the path (3rd arg).
@@ -760,9 +772,9 @@ const PERL_WRITE_LITERALS = [
   // → literal). We re-wrap in a sentinel quote so the shared stripQuotes/
   // classify path works; the leading >>? and any whitespace are dropped.
   /\bopen\s*\(\s*[^,]*,\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
-  // The same two forms without parentheses: `open my $f, ">", "p"` / `open F, ">p"`.
-  /\bopen\s+(?:(?:my|our|local)\s+)?[$*]?[\w:]+\s*,\s*["']\+?>>?["']\s*,\s*(["'][^"']*["'])/,
-  /\bopen\s+(?:(?:my|our|local)\s+)?[$*]?[\w:]+\s*,\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
+  // …and both forms without parentheses: open my $f, '>', 'path' / open F, ">path".
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?["']\s*,\s*(["'][^"']*["'])/,
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
 ];
 const PHP_WRITE_LITERALS = [
   /\bfile_put_contents\s*\(\s*(["'][^"']*["'])/,
@@ -2251,6 +2263,10 @@ function extractBashWriteTargets(cmd) {
     } else if (verb === "sed" && /\s-[a-z]*i/.test(segment)) {
       // `sed -i ... FILE` — in-place edit; the file is the last operand.
       if (operands.length >= 1) add(operands[operands.length - 1]);
+    } else if ((verb === "perl" || verb === "ruby") && /\s-[a-z]*i/.test(segment)) {
+      // `perl -pi -e PROG FILE…` / `ruby -i -pe PROG FILE…` — in-place edit of every
+      // operand after the program (or script): each FILE is written.
+      for (const op of operands.slice(1)) add(op);
     } else if (AWK_FAMILY.has(verb)) {
       // awk/gawk/mawk: scan the program body for `> path` redirect write targets.
       // The program is the first non-flag operand (the quoted script).
@@ -2637,6 +2653,205 @@ function branchCreationBoundaryReason(cmd, roots) {
 }
 
 // =====================================================================
+// GATE INTEGRITY: BRANCH REF REWRITES (token-based)
+// ---------------------------------------------------------------------
+// A delivery worktree shares refs with the real repo, so a ref rewrite from inside it
+// (`git branch -f main HEAD`) moves the operator's base branch onto the agent's own
+// commits. lib/dangerous-commands.mjs denies the plain spellings by regex; this check
+// reads the TOKENS so the forms git also accepts are caught: combined short flags
+// (`-fq`), a flag after the arguments (`branch main HEAD --force`), global options
+// before the subcommand (`git -c k=v -C dir branch …`), `--`, an abbreviated long
+// option (`--forc`), a redirect between the arguments, and `xargs`-fed arguments.
+// The rule: a force / copy flag on `git branch`, `checkout -B`, `switch -C` is allowed
+// only when EVERY argument is a runner-owned `gaffer/…` branch or a HEAD start point
+// (`git branch -f gaffer/ticket-5-x HEAD`); `git branch -m/-M` (rename) is always
+// denied; a `symbolic-ref` WRITE (two arguments, or -d) is denied unless it points at
+// refs/heads/gaffer/…; push/fetch into a local path (`.`, `./`, `$PWD`, `/abs`) is
+// denied; and a `-c alias.…` / `git config alias.…` that would smuggle any of these
+// behind an alias is denied. Fails closed on anything it cannot read literally
+// (`$VAR`, a glob, a command substitution as an argument). HONEST RESIDUAL: a script
+// file the hook never sees can still run git — the structural guarantee is that the
+// runner records the delivery's base commit itself and dispatch checks it (SECURITY.md).
+// =====================================================================
+
+// git's global options that take their value as the NEXT token.
+const GIT_GLOBAL_VALUE_OPTS = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--config-env",
+  "--super-prefix",
+  "--exec-path",
+  "--list-cmds",
+  "--attr-source",
+]);
+// A shell redirection token; `bare` when the target is the NEXT token (`2>`, `>`).
+const REDIRECT_TOKEN = /^\d*(?:&>>?|>>?|<<?<?|>&|<&|>\|)(.*)$/;
+const REF_REWRITE_VERBS = /\b(?:branch|update-ref|symbolic-ref|checkout|switch|push|fetch)\b/;
+
+/** A literal word as bash would pass it (quotes / backslashes removed), or null if dynamic. */
+function literalWord(token) {
+  if (/[$`*?[{}()]/.test(token)) return null;
+  return token.replace(/['"\\]/g, "");
+}
+
+/** An argument a force/copy may name: a runner-owned gaffer/ branch, or a HEAD start point. */
+function safeRefArg(token) {
+  const w = literalWord(token);
+  if (w === null) return false;
+  return /^(?:refs\/heads\/)?gaffer\/[A-Za-z0-9._/-]+$/.test(w) || /^HEAD(?:[~^]\d*)*$/.test(w);
+}
+
+/** Split a git subcommand's tokens into flags and positionals (redirections dropped). */
+function gitArgsOf(tokens) {
+  const flags = [];
+  const positionals = [];
+  let endOfOpts = false;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const t = tokens[i];
+    const r = REDIRECT_TOKEN.exec(t);
+    if (r) {
+      if (r[1] === "") i += 1; // `>` `2>`: the target is the next token
+      continue;
+    }
+    if (!endOfOpts && t === "--") {
+      endOfOpts = true;
+      continue;
+    }
+    if (!endOfOpts && literalWord(t)?.startsWith("-")) flags.push(literalWord(t));
+    else positionals.push(t);
+  }
+  return { flags, positionals };
+}
+
+const isPrefixOf = (flag, long, min) =>
+  flag.startsWith("--") && flag.length - 2 >= min && long.startsWith(flag.slice(2));
+const shortCluster = (flag, letters) =>
+  /^-[A-Za-z]+$/.test(flag) && [...flag.slice(1)].some((c) => letters.includes(c));
+
+/** Why one git invocation (tokens after `git`) rewrites a non-gaffer ref, or null. */
+function gitRefRewriteReason(after, fedByXargs) {
+  // Global options before the subcommand (`-C dir`, `-c k=v`, `--git-dir=x`, `-P`…).
+  let i = 0;
+  const aliases = [];
+  while (i < after.length && literalWord(after[i])?.startsWith("-")) {
+    const opt = literalWord(after[i]);
+    if (GIT_GLOBAL_VALUE_OPTS.has(opt)) {
+      if (opt === "-c" && i + 1 < after.length) aliases.push(after[i + 1]);
+      i += 2;
+    } else {
+      if (/^--config-env=/.test(opt) || /^-c.+/.test(opt)) aliases.push(opt);
+      i += 1;
+    }
+  }
+  for (const a of aliases) {
+    const w = (literalWord(a) ?? a).replace(/^-c/, "");
+    if (
+      /^alias\./i.test(w) &&
+      (REF_REWRITE_VERBS.test(w) || /=\s*!/.test(w) || literalWord(a) === null)
+    ) {
+      return "a git alias that runs a ref-rewriting command";
+    }
+  }
+  if (i >= after.length) return null;
+  const sub = literalWord(after[i]);
+  if (sub === null) return null; // `git $SUB …`: the verb rules elsewhere govern dynamic commands
+  const { flags, positionals } = gitArgsOf(after.slice(i + 1));
+  const allSafe = () => !fedByXargs && positionals.every(safeRefArg);
+  if (sub === "branch") {
+    const move = flags.some((f) => shortCluster(f, "mM") || isPrefixOf(f, "move", 1));
+    if (move) return "git branch -m/-M (renaming a branch)";
+    const force = flags.some(
+      (f) => shortCluster(f, "fcC") || isPrefixOf(f, "force", 1) || isPrefixOf(f, "copy", 1),
+    );
+    if (force && !allSafe()) return "git branch -f/-c/-C of a non-gaffer branch";
+    return null;
+  }
+  if (sub === "checkout") {
+    if (flags.some((f) => shortCluster(f, "B")) && !allSafe()) {
+      return "git checkout -B of a non-gaffer branch";
+    }
+    return null;
+  }
+  if (sub === "switch") {
+    const recreate = flags.some(
+      (f) => shortCluster(f, "C") || (f.startsWith("--force-") && isPrefixOf(f, "force-create", 7)),
+    );
+    if (recreate && !allSafe()) return "git switch -C of a non-gaffer branch";
+    return null;
+  }
+  if (sub === "symbolic-ref") {
+    const del = flags.some((f) => shortCluster(f, "d") || isPrefixOf(f, "delete", 1));
+    if (del) return "git symbolic-ref --delete";
+    if (positionals.length >= 2) {
+      const target = literalWord(positionals[1]);
+      if (
+        fedByXargs ||
+        target === null ||
+        !/^refs\/heads\/gaffer\/[A-Za-z0-9._/-]+$/.test(target)
+      ) {
+        return "git symbolic-ref pointing a ref at a non-gaffer branch";
+      }
+    }
+    if (fedByXargs) return "git symbolic-ref with arguments from stdin";
+    return null;
+  }
+  if (sub === "update-ref") return "git update-ref";
+  if (sub === "push" || sub === "fetch") {
+    if (positionals.length === 0) return null;
+    const repo = literalWord(positionals[0]);
+    if (repo === null || /^(?:\.|\.\.|~)(?:\/|$)|^\/|^file:/.test(repo)) {
+      return `git ${sub} into a local repository (${positionals[0]})`;
+    }
+    return null;
+  }
+  if (sub === "config") {
+    const key = positionals.length > 0 ? literalWord(positionals[0]) : "";
+    if (key !== null && /^alias\./i.test(key) && positionals.length >= 2) {
+      const val = positionals
+        .slice(1)
+        .map((t) => literalWord(t) ?? t)
+        .join(" ");
+      if (
+        REF_REWRITE_VERBS.test(val) ||
+        /^!/.test(val) ||
+        positionals.slice(1).some((t) => literalWord(t) === null)
+      ) {
+        return "git config of an alias that runs a ref-rewriting command";
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * GATE INTEGRITY: a block reason when the command rewrites a branch ref other than a
+ * runner-owned gaffer/ branch (see the section comment), or null. Scanned per segment
+ * and inside `sh -c '…'` bodies.
+ */
+function refRewriteReason(cmd) {
+  for (const segment of cmd.split(/(?:&&|\|\||;|\n|(?<![>&])&(?!>)|(?<!>)\|)/)) {
+    const tokens = tokenizeSegment(segment.trim());
+    for (let g = 0; g < tokens.length; g += 1) {
+      if (basename(normalizeVerb(tokens[g])) !== "git") continue;
+      const fedByXargs = tokens.slice(0, g).some((t) => basename(normalizeVerb(t)) === "xargs");
+      const why = gitRefRewriteReason(tokens.slice(g + 1), fedByXargs);
+      if (why) {
+        return `branch ref rewrite (${why}) — the agent commits on its ticket branch and never moves, renames or force-resets another branch`;
+      }
+    }
+  }
+  for (const body of extractShellDashCBodies(cmd)) {
+    const nested = refRewriteReason(body);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+// =====================================================================
 // FACTORY FRONT DOOR (the agent must not run the factory's own code)
 // ---------------------------------------------------------------------
 // The live factory checkout holds the privileged entry points: `runner/gaffer
@@ -3000,6 +3215,9 @@ function checkCommand(cmd) {
   const branchReason = branchCreationBoundaryReason(cmd, roots);
   if (branchReason) block(`${branchReason} — "${cmd.slice(0, 120)}"`);
 
+  const refReason = refRewriteReason(cmd);
+  if (refReason) block(`${refReason} — "${cmd.slice(0, 120)}"`);
+
   const frontDoor = factoryExecutionReason(cmd, roots);
   if (frontDoor) block(`${frontDoor} — "${cmd.slice(0, 120)}"`);
 
@@ -3303,9 +3521,10 @@ function runDecision(raw) {
       input.path ??
       input.pattern ??
       null;
-    // Chunk 2b metric: record every observed tool call (telemetry only — this runs
-    // BEFORE dispatch and never influences the allow/block outcome below).
-    logToolCall(tool, CURRENT_TARGET);
+    // Chunk 2b metric: every observed tool call is recorded (telemetry only — never
+    // read by the allow/block outcome below). decideRaw() writes the row once the
+    // verdict exists, stamped with it, so a refused call never reads as an allowed one.
+    TOOL_OBSERVED = true;
     // INPUT-SIZE CAP, part 2: every field a rule reads, before any rule reads it.
     checkInputSize(tool, input);
     switch (tool) {
@@ -3399,6 +3618,7 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     // decision's tool/target into this one's ledger entries.
     CURRENT_TOOL = null;
     CURRENT_TARGET = null;
+    TOOL_OBSERVED = false;
     STDOUT_SINK =
       stdout ??
       ((text) => {
@@ -3409,7 +3629,10 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     // exiting would have ended the process with exit 0.
     return verdictResult(new HookVerdict(true, undefined), collected);
   } catch (err) {
-    if (err instanceof HookVerdict) return verdictResult(err, collected);
+    if (err instanceof HookVerdict) {
+      if (TOOL_OBSERVED) logToolCall(CURRENT_TOOL, CURRENT_TARGET, err.allowed);
+      return verdictResult(err, collected);
+    }
     throw err;
   } finally {
     STDOUT_SINK = null;

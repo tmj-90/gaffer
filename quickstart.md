@@ -142,11 +142,19 @@ When you're ready to let it deliver for real, read **`runner/preflight.sh`** fir
 
 ```bash
 bash runner/preflight.sh              # verify the environment
+export GAFFER_DAILY_BUDGET_USD=5      # a dollar cap: a live run refuses to start without one
 runner/gaffer run                     # go live — ONE pass: drains the ready queue, then exits
                                       #   (the same as DRY_RUN=0 bash runner/loop.sh)
 runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (Linux + macOS),
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
+
+A live run needs a dollar cap. With neither `GAFFER_DAILY_BUDGET_USD` (per UTC day) nor
+`GAFFER_BUDGET_USD` (lifetime) set, `gaffer run`, `loop.sh` and the dashboard's **Poll for
+work** refuse to start and print the fix. In the dashboard, the first **Poll for work**
+asks for a daily budget (prefilled at $5) and saves it to Settings → Budget & caps before
+it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` in your environment opts out (for a
+key you cap somewhere else). It is ignored in `settings.json`.
 
 If the model refuses a call because your usage window ran out (or a rate limit hit),
 the ticket goes back to Ready without counting an attempt and the run sleeps until the
@@ -189,6 +197,27 @@ Run your repo's tests afterwards; the change is on your default branch, in your 
 
 For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy
 flags under **Safety** below — off by default.
+
+> **A delivery that changed its own tests waits for you.** If the agent deleted or renamed
+> a test, added a `.skip` / `.only` / `xfail`, or changed the `test` script (or a hook or
+> script it runs, such as an added `pretest`), the gates' **integrity** row reads FLAG, the
+> Review view shows a banner naming each change, and an agent approve is held whatever the
+> autonomy flags say. If the ticket really should change its tests (removing an obsolete
+> suite, say), allow it before or after the delivery:
+>
+> ```bash
+> runner/gaffer wg ticket allow-test-changes 1 --reason "the v1 suite is obsolete"
+> ```
+>
+> or press **Allow test changes…** on the Review view. `--off` withdraws it.
+>
+> The allowance turns only the integrity FLAG and the hold into a PASS with a note (and the
+> `test-modified` annotation into medium). It does **not** change what the gate runs: a
+> gate script the delivery changed still runs as the **base** commit has it, so a ticket
+> whose job is to change `scripts.test` can still fail its tests gate. To change the gate
+> itself, change the repo's registered test/lint command
+> (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`), or merge the script change
+> to the base branch first.
 
 > **Readying a ticket needs a reviewer under the strict policy packs.** The default
 > policy pack is `solo_loose`, which readies freely. But tickets under

@@ -251,6 +251,12 @@ _gaffer_land_one() {
   _RPR=""
   [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
   _mrc=""
+  # PROVENANCE TRAILERS on the merge commit (this repo's gated merge commit, or its PR's
+  # merge): the ticket, the approving actor and the gate verdicts, read from the
+  # dispatch DB (lib/provenance-trailers.mjs; empty when GAFFER_PROVENANCE_TRAILERS=0).
+  # Fail-soft: no trailers never holds a landing.
+  local _TRAILERS=""
+  _TRAILERS="$(node "$RUNNER_DIR/lib/provenance-trailers.mjs" --db "${DISPATCH_DB:-}" --ticket "$RNUM" 2>/dev/null || true)"
   if [ -n "$_RPR" ]; then
     # MERGE GATE, PR MODE: gate the merge of the pin onto the remote target as just
     # fetched (the local default when the fetch fails). GitHub merges the PR, so the
@@ -259,7 +265,7 @@ _gaffer_land_one() {
     # combination failed the gates.
     local _pr_target="refs/heads/$RDEFAULT"
     git -C "$RREPO" fetch --quiet "${GAFFER_PR_REMOTE:-origin}" "$RDEFAULT" >/dev/null 2>&1 && _pr_target="FETCH_HEAD"
-    _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "$_pr_target" "$_WHO" "$_RSEC"; _mgrc=$?
+    _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "$_pr_target" "$_WHO" "" "$_RSEC"; _mgrc=$?
     case "$_mgrc" in
       0) ;;
       1) _mrc=1 ;;   # the combination conflicts: the resolver path below, no PR merge
@@ -268,7 +274,7 @@ _gaffer_land_one() {
     esac
   fi
   if [ -n "$_RPR" ] && [ -z "$_mrc" ]; then
-    gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN"; _prc=$?
+    gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN" "$_TRAILERS"; _prc=$?
     case "$_prc" in
       0) _mrc=0; _MERGED_VIA=pr
          log "$_WHO: #$RNUM merged THROUGH its PR $_RPR (gh pr merge --${GAFFER_PR_MERGE_METHOD:-merge} --delete-branch); local $RDEFAULT fast-forwarded" ;;
@@ -297,7 +303,7 @@ _gaffer_land_one() {
   if [ -z "$_mrc" ]; then
     local _mg_try=0 _mg_max="${GAFFER_MERGE_GATE_RETRIES:-2}" _lrc
     while :; do
-      _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "refs/heads/$RDEFAULT" "$_WHO" "$_RSEC"; _mgrc=$?
+      _gaffer_merge_gate "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$RSHOW" "refs/heads/$RDEFAULT" "$_WHO" "$_TRAILERS" "$_RSEC"; _mgrc=$?
       case "$_mgrc" in
         0) ;;
         1) _mrc=1; break ;;
@@ -389,7 +395,13 @@ _gaffer_land_one() {
 # DoD is OFF), the PRIMARY repo's gate also replays the tester's test files from
 # gaffer-tests/ticket-<n> on that same scratch merge (_gaffer_merge_gate_tester_replay); a
 # failure is a red gate (rc 4, _MG_KIND=tester_replay_red, naming the files).
-#   _gaffer_merge_gate <num> <repo> <branch> <default> <pin> <show-json> <target-ref> [who] [secondary]
+#   _gaffer_merge_gate <num> <repo> <branch> <default> <pin> <show-json> <target-ref> [who] [trailers] [secondary]
+#     [trailers] — the provenance trailer block (lib/provenance-trailers.mjs) for the gated
+#     merge commit, which is the commit that lands: with it the merge is `--no-ff`, so a
+#     merge commit exists to carry them; without it a fast-forward stays possible ("" in
+#     PR mode, where GitHub makes the merge commit).
+#     [secondary] — "1" for a ticket's secondary repo (no tester replay: the tester's verdict
+#     describes the primary).
 #     → 0 the merge passed (or DoD is OFF — GAFFER_DOD=0, logged) · 1 the merge CONFLICTS
 #       · 4 the merge FAILS its gates or the tester's replay · 2 the gate could not run
 #       (held, fail closed).
@@ -399,13 +411,15 @@ _gaffer_land_one() {
 #     a bound tester PASS's tests passed on _MG_MERGE), _MG_REPLAY_FILES (JSON array) and
 #     _MG_REPLAY_COUNT.
 _gaffer_merge_gate() {
-  local num="$1" repo="$2" branch="$3" def="$4" pin="$5" show="$6" target_ref="$7" who="${8:-MERGE}" secondary="${9:-0}"
+  local num="$1" repo="$2" branch="$3" def="$4" pin="$5" show="$6" target_ref="$7" who="${8:-MERGE}" trailers="${9:-}" secondary="${10:-0}"
+  local msg="Merge branch '$branch'" ffopt=()
+  if [ -n "$trailers" ]; then msg="$msg"$'\n\n'"$trailers"; ffopt=(--no-ff); fi
   _MG_TARGET=""; _MG_MERGE=""; _MG_EVIDENCE=""; _MG_REASON=""; _MG_KIND=""
   _MG_REPLAY_RECORD=0; _MG_REPLAY_FILES="[]"; _MG_REPLAY_COUNT=0; _MG_REPLAY_NOTE=""
   [ -n "$pin" ] || { _MG_REASON="no pinned commit to gate"; return 2; }
   _MG_TARGET="$(git -C "$repo" rev-parse --verify --quiet "$target_ref^{commit}" 2>/dev/null)" \
     || { _MG_TARGET=""; _MG_REASON="the target $target_ref cannot be resolved"; return 2; }
-  local wt="${GAFFER_DATA:-${TMPDIR:-/tmp}}/worktrees/merge-gate-$num-$$" ids=() rc out label tcmd lcmd
+  local wt="${GAFFER_DATA:-${TMPDIR:-/tmp}}/worktrees/merge-gate-$num-$$" ids=() rc out label tcmd lcmd allow
   mkdir -p "$(dirname "$wt")" 2>/dev/null || true
   git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"
   if ! git -C "$repo" worktree add --quiet --detach --force "$wt" "$_MG_TARGET" >/dev/null 2>&1; then
@@ -413,7 +427,7 @@ _gaffer_merge_gate() {
   fi
   # The merge needs an identity; the repo's own when it has one.
   git -C "$repo" config user.email >/dev/null 2>&1 || ids=(-c user.name=gaffer -c user.email=gaffer@localhost)
-  if ! git -C "$wt" ${ids[@]+"${ids[@]}"} merge --quiet --no-edit -m "Merge branch '$branch'" "$pin" >/dev/null 2>&1; then
+  if ! git -C "$wt" ${ids[@]+"${ids[@]}"} merge --quiet --no-edit ${ffopt[@]+"${ffopt[@]}"} -m "$msg" "$pin" >/dev/null 2>&1; then
     git -C "$wt" merge --abort >/dev/null 2>&1 || true
     git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"; git -C "$repo" worktree prune >/dev/null 2>&1 || true
     _MG_REASON="the merge onto ${_MG_TARGET:0:12} conflicts"; return 1
@@ -423,10 +437,17 @@ _gaffer_merge_gate() {
   label="$(basename "$repo")"
   tcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).test_command || ""' 2>/dev/null || true)"
   lcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).lint_command || ""' 2>/dev/null || true)"
+  # GATE INTEGRITY: a human's allow_test_changes on the ticket (fails closed to 0); the
+  # merge gate's integrity row (target head vs the merge) then reads PASS with a note.
+  allow="$(printf '%s' "$show" | jget '(d.ticket && d.ticket.allow_test_changes === 1) ? 1 : 0' 2>/dev/null || echo 0)"
+  [ "$allow" = "1" ] || allow=0
   log "$who: #$num MERGE GATE — gating the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (merge ${_MG_MERGE:0:12}) in a scratch worktree"
   # The gated target head is the base the typecheck script is detected from (as the
-  # delivery gate reads its base branch first): the branch cannot drop that gate.
-  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET" 2>/dev/null)"; rc=$?
+  # delivery gate reads its base branch first): the branch cannot drop that gate. It is
+  # also the gate-integrity base: the gate scripts are read from it and the evidence
+  # carries an integrity row (PASS/FLAG, never FAIL) for the merged tree. The scratch
+  # worktree stays until the tester replay below has run on the same merge.
+  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET" "$allow" 2>/dev/null)"; rc=$?
   _MG_EVIDENCE="$out"
   local trc=0
   case "$rc" in

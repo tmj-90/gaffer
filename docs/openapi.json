@@ -2688,7 +2688,7 @@
           "Tickets"
         ],
         "summary": "Ticket detail",
-        "description": "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. `:id` accepts the ticket id or number.",
+        "description": "The full `TicketView`: acceptance criteria, repos, scopes, decisions, dependencies, evidence, events and the rework trail, plus `agent_display` — the presentation of every registered agent the ticket names, keyed by agent id. An approved (`ready_for_merge`) or held ticket carries `ticket.landing_state` (`{ kind, label, detail, hold, paused_until? }` — `paused_until` while the runner's usage-window pause delays lands_next_tick: waiting_for_merge, lands_next_tick, landing, partly_landed — some approved revisions have a landing record, not all — or held), the same field the board cards, GET /tickets and the human queue carry. `:id` accepts the ticket id or number.",
         "parameters": [
           {
             "name": "id",
@@ -3414,7 +3414,7 @@
           "Review & delivery"
         ],
         "summary": "Approve the review",
-        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on and the approval reached ready_for_merge (an approval routed to in_testing starts no merge and carries no `merge`; one that reached ready_for_merge carries `ticket.landing_state`, as GET /tickets/:id does); otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
         "parameters": [
           {
             "name": "id",
@@ -3438,7 +3438,7 @@
         },
         "responses": {
           "200": {
-            "description": "`{ ticket, event_id, merge? }`.",
+            "description": "`{ ticket, event_id, merge?, approve_outcome? }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3869,7 +3869,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve.",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
         "parameters": [
           {
             "name": "id",
@@ -3883,11 +3883,11 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ repos: RepoDiff[] }`.",
+            "description": "`{ ticketId, repos: RepoDiff[], approve_outcome? }`.",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object"
+                  "$ref": "#/components/schemas/TicketDiff"
                 }
               }
             }
@@ -4081,6 +4081,95 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/allow-test-changes": {
+      "post": {
+        "operationId": "postTicketsByIdAllowTestChanges",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Allow test changes (gate integrity)",
+        "description": "A human allows (or withdraws) this ticket's allowance to change its tests: delete or rename a test file, add a skip marker, rewrite a gate script. The runner's integrity gate row then reads PASS with a note instead of FLAG, and the `test-modified` risk annotation drops to medium so it no longer holds an auto-approve. Human or admin principals only (agent and system are refused); recorded as a `ticket.test_changes_allowed` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/allowTestChangesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, allow_test_changes, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestChangesAllowed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9490,6 +9579,181 @@
           "depends_on"
         ]
       },
+      "allowTestChangesBody": {
+        "type": "object",
+        "properties": {
+          "allow_test_changes": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "allow_test_changes"
+        ]
+      },
+      "ApproveOutcome": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "held_ci",
+              "held_test_modified",
+              "to_tester",
+              "land_now",
+              "land_next_tick",
+              "waits_for_merge"
+            ]
+          },
+          "approvable": {
+            "type": "boolean",
+            "description": "False only when the server would refuse (held_ci, or held_test_modified for an agent)."
+          },
+          "to_status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "in_testing",
+                  "ready_for_merge"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "type": "string",
+            "description": "The sign-off button, e.g. \"Approve and send to tester\"."
+          },
+          "confirm_label": {
+            "type": "string",
+            "description": "The armed button (the second press approves)."
+          },
+          "done_label": {
+            "type": "string",
+            "description": "The button once approved."
+          },
+          "sentence": {
+            "type": "string",
+            "description": "One line under the button: what follows the click."
+          },
+          "via": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "pr",
+                  "local"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pr_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lands_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The primary write repo a landing merges first."
+          },
+          "also_lands_repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The other write repos the same landing merges after it, one merge each."
+          },
+          "not_landed_repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Write repos with no checkout here: no landing path can merge them."
+          },
+          "review_mode": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent",
+              "both"
+            ]
+          },
+          "agent_hold": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "const": "held_test_modified"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "sentence": {
+                    "type": "string"
+                  },
+                  "holds": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "The gate-integrity findings that hold it."
+                  }
+                },
+                "required": [
+                  "kind",
+                  "label",
+                  "sentence",
+                  "holds"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The hold an agent or auto approval would hit now (the tests that gate it changed); a human approval is not held by it."
+          }
+        },
+        "required": [
+          "kind",
+          "approvable",
+          "to_status",
+          "label",
+          "confirm_label",
+          "done_label",
+          "sentence",
+          "via",
+          "pr_url",
+          "lands_repo",
+          "also_lands_repos",
+          "not_landed_repos",
+          "review_mode",
+          "agent_hold"
+        ],
+        "additionalProperties": false
+      },
       "approveReviewBody": {
         "type": "object",
         "properties": {
@@ -11066,6 +11330,93 @@
           }
         }
       },
+      "RepoDiff": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved delivery branch, or null."
+          },
+          "baseBranch": {
+            "type": "string",
+            "description": "The default branch the delivery branch is diffed against."
+          },
+          "diff": {
+            "type": "string",
+            "description": "Raw unified diff text (possibly truncated); empty when unavailable."
+          },
+          "files": {
+            "type": "integer"
+          },
+          "additions": {
+            "type": "integer"
+          },
+          "deletions": {
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "unavailable": {
+            "type": "string",
+            "enum": [
+              "no_branch",
+              "repo_not_on_disk",
+              "no_local_path",
+              "empty",
+              "git_error"
+            ],
+            "description": "Why no diff text is available."
+          },
+          "message": {
+            "type": "string"
+          },
+          "riskAnnotations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RiskAnnotation"
+            }
+          },
+          "repoId": {
+            "type": "string",
+            "description": "The repository id, so an approval can name the repo it saw."
+          },
+          "headSha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The delivery branch head this diff was computed against; sent back on approve, and a moved head is refused (stale_revision)."
+          }
+        },
+        "required": [
+          "repo",
+          "branch",
+          "baseBranch",
+          "diff",
+          "files",
+          "additions",
+          "deletions",
+          "truncated",
+          "riskAnnotations"
+        ],
+        "additionalProperties": false,
+        "description": "The delivery diff for one write repository."
+      },
       "resolveDecisionBody": {
         "type": "object",
         "properties": {
@@ -11260,6 +11611,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -11320,6 +11675,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -11350,6 +11706,16 @@
               },
               "skipped": {
                 "type": "string"
+              },
+              "runId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -11357,6 +11723,10 @@
               "pid"
             ],
             "description": "The auto-merge command, when one is configured."
+          },
+          "approve_outcome": {
+            "$ref": "#/components/schemas/ApproveOutcome",
+            "description": "What the approval did: the tester, a landing now, the merge lane's next tick, or a wait for Merge now."
           }
         },
         "required": [
@@ -11364,6 +11734,60 @@
           "event_id"
         ],
         "additionalProperties": false
+      },
+      "RiskAnnotation": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/RiskKind"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "description": "Short human summary."
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The concrete paths that triggered it."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`test-modified` only: one human line per finding, for the Review banner."
+          },
+          "allowed": {
+            "type": "boolean",
+            "description": "`test-modified` only: a human allowed test changes on this ticket; the annotation drops to medium and no longer holds an approve on its own."
+          }
+        },
+        "required": [
+          "kind",
+          "severity",
+          "detail"
+        ],
+        "additionalProperties": false,
+        "description": "An advisory risk flag on a repo's delivery diff."
+      },
+      "RiskKind": {
+        "type": "string",
+        "enum": [
+          "sensitive-path",
+          "dependency-change",
+          "large-deletion",
+          "test-modified"
+        ],
+        "description": "What a risk annotation flags. `sensitive-path`: secret/auth/infra paths; `dependency-change`: a manifest or lockfile; `large-deletion`: many deleted lines; `test-modified`: the delivery changed the tests that gate it (deleted/renamed a test file, added a skip/only marker, changed a gate script, touched test or package-manager config). Unallowed, `test-modified` raises observed risk to high and holds an agent approve for a person."
       },
       "runProductOwnerBody": {
         "type": "object",
@@ -11725,6 +12149,27 @@
         ],
         "additionalProperties": false
       },
+      "TestChangesAllowed": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "allow_test_changes": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "allow_test_changes",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "TestContractSet": {
         "type": "object",
         "properties": {
@@ -11990,6 +12435,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -12050,6 +12499,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -12421,6 +12871,29 @@
         ],
         "additionalProperties": false
       },
+      "TicketDiff": {
+        "type": "object",
+        "properties": {
+          "ticketId": {
+            "type": "string"
+          },
+          "repos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepoDiff"
+            }
+          },
+          "approve_outcome": {
+            "$ref": "#/components/schemas/ApproveOutcome",
+            "description": "An in_review ticket only: the first step a human Approve would certainly take now."
+          }
+        },
+        "required": [
+          "ticketId",
+          "repos"
+        ],
+        "additionalProperties": false
+      },
       "TicketEnvelope": {
         "type": "object",
         "properties": {
@@ -12592,6 +13065,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -12652,6 +13129,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -12839,6 +13317,10 @@
                 "acceptance": {
                   "type": "integer"
                 },
+                "allow_test_changes": {
+                  "type": "integer",
+                  "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+                },
                 "human_owner": {
                   "anyOf": [
                     {
@@ -12896,6 +13378,7 @@
                 "bootstrap",
                 "can_be_tested",
                 "acceptance",
+                "allow_test_changes",
                 "human_owner",
                 "human_delivered",
                 "delivery_budget_usd",
@@ -13095,6 +13578,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -13155,6 +13642,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",

@@ -19,7 +19,9 @@
 # prove an env-locked row is read-only. A suite that declares `server = { env,
 # fixtures }` (suite-plan.mjs) gets its OWN world after the shared one: a fresh out
 # dir ($UI_REGRESS_OUT-<suite>), port ($UI_REGRESS_PORT + n), data dir, sample repo
-# and dashboard started with that env and those fixtures (own-env.sh).
+# and dashboard started with that env and those fixtures (own-env.sh). Every world,
+# shared or own, gets a $5 daily budget through Settings before its suites run
+# (own-env.sh ui_world_daily_budget); run.sh leaves it unset for the first-run sheet.
 # Prints one line per suite, "UI scenarios: …" per world and, with more than one
 # world, a combined "UI scenarios (every world): …" line; exits 1 on any FAIL.
 # Env: UI_REGRESS_PORT (default 8798) · UI_REGRESS_OUT (default /tmp/gaffer-ui-scenarios)
@@ -78,6 +80,9 @@ ui_world() {
     }
     # shellcheck source=setup.sh
     source "$_HERE/setup.sh"
+    # Every world (the shared one and each own-server one) gets the $5 daily budget
+    # before its suites press Poll for work (own-env.sh ui_world_daily_budget).
+    ui_world_daily_budget || { ui_teardown; exit 2; }
     if [ -n "$own" ]; then
       ui_run_fixtures after "${fixtures[@]+"${fixtures[@]}"}" || { ui_teardown; exit 2; }
     fi

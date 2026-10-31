@@ -117,6 +117,16 @@ grep -q "MERGE: #$A merged ($BA → main, via local) and marked done" "$LOGF" &&
 grep -q "MERGE: main merged locally — no origin remote, nothing to push" "$LOGF" && ok "A: no-origin repo logs 'nothing to push' (not a failed push)" || fail "A: no-origin push line missing or wrong: $(grep -i 'push' "$LOGF" | tail -2 | tr '\n' '|' | cut -c1-300)"
 [ "$(st "$DEP")" = "in_review" ] && ok "A: dependent #$DEP was unblocked AND delivered in the SAME tick (lane runs before the scan)" || fail "A: dependent status=$(st "$DEP") — expected in_review"
 grep -q '^TICK_RESULT=worked$' <<<"$OUT" && ok "A: the tick still reports its delivery (lane never exits the tick)" || fail "A: tick result $OUT"
+# PROVENANCE TRAILERS (lib/provenance-trailers.mjs): the merge commit names the ticket,
+# the approving actor and the gate verdicts — read from the DB, no model name.
+_AMSG="$(git -C "$R" log -1 --format=%B main)"
+[[ "$_AMSG" == *"Gaffer-Ticket: #$A"* ]] && ok "A: the merge commit carries Gaffer-Ticket: #$A" || fail "A: no ticket trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
+[[ "$_AMSG" == *"Gaffer-Reviewed-By: human:human1"* ]] && ok "A: …and the approving human (Gaffer-Reviewed-By: human:human1)" || fail "A: reviewer trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
+# (the stub records no AC evidence, so the honest count is 0 of 1)
+[[ "$_AMSG" == *"Gaffer-Gates: DoD PASS (tests pass, typecheck skip, lint pass, integrity pass); AC 0/1 satisfied"* ]] && ok "A: …and the gate verdicts (DoD per gate, the AC count)" || fail "A: gates trailer: $(printf '%s' "$_AMSG" | tr '\n' '|')"
+_ATR="$(git -C "$R" log -1 --format='%(trailers:key=Gaffer-Ticket,valueonly)' main | tr -d '[:space:]')"
+[ "$_ATR" = "#$A" ] && ok "A: git reads them as trailers (%(trailers))" || fail "A: git trailer parse gave '$_ATR'"
+[ "$(git -C "$R" rev-list --parents -n 1 main | wc -w | tr -d ' ')" = 3 ] && ok "A: a real merge commit carries them (--no-ff)" || fail "A: main HEAD is not a merge commit"
 
 echo "== B. supervised: the merge gate holds; logged once per run; loop.sh resets the skip file =="
 B="$(new_ticket "Held helper" "deliver a helper")"; wg ticket ready "$B" >/dev/null 2>&1
@@ -134,8 +144,10 @@ grep -q '"\$GAFFER_DATA/.merge-held-tickets"' "$RUNNER_DIR/loop.sh" && ok "B: lo
 # The hold lasts for the RUN (like .reviewed-tickets): the next run (loop.sh resets the
 # skip file) re-asks the policy, and with the merge floor on the held ticket lands.
 rm -f "$GAFFER_DATA/.merge-held-tickets"
-GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
+GAFFER_PROVENANCE_TRAILERS=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$B")" = "done" ] && ok "B: next run with the merge floor on → the held ticket lands" || fail "B: status=$(st "$B") after floor on"
+_BMSG="$(git -C "$R" log -1 --format=%B main)"
+[[ "$_BMSG" != *"Gaffer-"* ]] && ok "B: GAFFER_PROVENANCE_TRAILERS=0 → no trailers on the landing" || fail "B: trailers written with the switch off: $(printf '%s' "$_BMSG" | tr '\n' '|')"
 
 echo "== C. GAFFER_MERGE_LANE=0 disables the lane =="
 C="$(new_ticket "Lane-off helper" "deliver a helper")"; wg ticket ready "$C" >/dev/null 2>&1

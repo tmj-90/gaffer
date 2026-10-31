@@ -127,7 +127,11 @@ at onboarding and editable there, because a wrong gate command is the commonest
 reason a delivery bounces or ships unverified. The typecheck gate runs the repo's
 package.json typecheck script (a `typecheck`-style script or a bare
 `tsc --noEmit`), read from the base branch so a delivery cannot delete it away;
-`GAFFER_DOD_TYPECHECK_CMD` overrides it. The repo's coverage command is stored on
+`GAFFER_DOD_TYPECHECK_CMD` overrides it. The same holds for every gate: when a
+gate command calls a package.json script (`npm test`, `pnpm run lint`), the
+script is read from the commit the delivery branched from, and a delivery that
+rewrote it runs the base script instead, so editing `package.json` cannot
+redirect its own gate. The repo's coverage command is stored on
 the same page but is **not** a Definition-of-Done gate (coverage-did-not-decrease
 needs a stored baseline and is deferred): it feeds the idle coverage scan below.
 
@@ -143,6 +147,16 @@ payload carries) on the board cards, the Tactics Board, Review, ticket timelines
 Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
 renames an agent in place; a taken shirt number is refused with the holder's
 name, and a read-only token sees no editors.
+
+**The headline names the work.** The Overview's scoreboard headline leads with
+the ticket's title, the number kept as a muted reference after it: "Webhook
+delivery #10 is blocked by a failing test.", never "#10 is blocked." With nothing
+blocked, the first thing waiting leads ("Export tasks to CSV #12 awaits your
+sign-off."). The same goes for every scoreboard sentence that names a ticket (an
+approved change not yet merged, the tickets the squad is on, Health's recurring
+injuries, the Review page's "moved on" card). On a phone the count is said once,
+on the Team Sheet: the headline drops its "3 things need you." for the work, and
+the scoreboard keeps the three counters not already on screen.
 
 **The Floor.** `#/floor` draws the live factory as an isometric floor: stations
 along a conveyor in lifecycle order (drawing office, Stores, Assembly,
@@ -260,6 +274,50 @@ structural barrier the whole design hangs on.
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
   `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
+- **The button says what the click does.** The server works out the first step
+  an approval will certainly take from the settings and ticket state the approve
+  path itself reads, and the sign-off button names it: **Approve and send to
+  tester** (the testing lane, or an epic's acceptance ticket), **Approve and land
+  now** (Auto-merge on with a merge command: the landing check and the merge gate
+  run at once, through the PR in PR mode), **Approve, lands on next tick**
+  (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
+  the landing), **Approve, waits for Merge now** (Auto-merge off), or **Approve
+  held: CI not passed** (required CI has no PASS for the commit, so the server
+  would refuse). When the delivery changed the tests that gate it, an agent's or
+  auto approval is held (*Approve held: tests changed, a person must allow it*)
+  but a human's is not: the line under the button says so and points at the
+  test-changes banner. A line under the button says what follows; on a multi-repo
+  ticket it says every write repo lands the same way, one merge each through the
+  merge gate, and that a repo that fails is held while the landed ones stay
+  recorded (a repo with no checkout on this machine is named as one nothing can
+  merge); under Review mode *both* the line says this click is the human
+  confirmation. The armed button only says it lands
+  when it does ("Confirm and land now"); after approval the button and the band
+  under it say where the change went (`GET /tickets/:id/diff` carries
+  `approve_outcome`).
+- **An approved ticket's status says where its landing is.** It never reads
+  "merging" unless something merges it: *Approved · waiting for Merge now*
+  (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
+  runner's merge lane lands it: Auto-merge on and a human approval, or an earned
+  merge grant; *(paused: usage limit)* with the time while the usage window has
+  paused the runner), *Approved · landing* (a merge the dashboard started is running),
+  *Approved · partly landed* (a landing is recorded for some of its write repos'
+  approved commits, not all: Merge now lands the rest and never re-merges a
+  landed one), or the hold's own words — *Held · moved since review* (naming the
+  repo whose branch moved off its review pin), *Held · merge gate failed*, *Held ·
+  CI red*.
+  The server stamps it as `landing_state` on the ticket, the board cards, the
+  ticket list and the Team Sheet.
+- **A request for a human is never "Nothing flagged".** The runner's
+  `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
+  a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read
+  from the same evidence rows the Evidence list shows. They head the flags, count
+  in the summary line, sit in a yellow band beside the button (a live status for
+  screen readers), and the evidence row they came from is marked *asks for a
+  human*. With the verdict strip on the page they read its gate rows, so the
+  sign-off never says a gate failed under a strip that says the gates passed; a
+  test change is one *Test modified* flag beside the test-changes banner, never
+  repeated as an integrity gate or a risk level.
 - **"Done" means the combined code passed the gates on the target.** A branch
   that passed its gates and a default branch that passed its gates can still
   merge cleanly into something that fails (one side renames the field the other
@@ -311,6 +369,35 @@ structural barrier the whole design hangs on.
   back to review. A resolution that fails is
   moved off the branch (`refs/gaffer/conflict-resolved/<n>`) and held for a
   human.
+- **A delivery that changed its own tests is flagged, and never auto-approved.**
+  The gates' **integrity** row compares the delivery with its base and FLAGs a
+  deleted or renamed test file, a new skip/focus marker (`.skip`, `.only`,
+  `xit`, `it.todo`, `it.concurrent.skip`, node:test's `{ skip: true }`,
+  `t.skip()`/`this.skip()`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
+  `@Disabled`, …), a changed gate script (or an added `pretest`/`posttest`, or a
+  changed script it runs), a touched or newly added test-runner config, a test
+  file hidden from git (skip-worktree / assume-unchanged), a test file that lost
+  test cases or all its assertions ("test cases removed: 3 → 0"), or a package-manager rc
+  file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) the delivery added or
+  changed, which can make `npm test` run nothing (an ignored one on disk too; the
+  runner's FLAG holds the approve even when the committed diff is clean). It compares against
+  the commit the runner recorded when it cut the branch (kept across retries,
+  never replaced by a later branch tip), so moving the base branch from the
+  worktree, or a second attempt building on the first, cannot hide a change. The
+  server recomputes the same check from the real diff (risk flag *Test
+  modified*), the Sign-off shows a banner naming each change, the Team Sheet
+  row carries a *Tests changed* chip, and an agent approve is held for a person
+  whatever the ticket's declared risk. When the ticket really should change its
+  tests, **Allow test changes…** on the Sign-off (or
+  `gaffer wg ticket allow-test-changes <n> --reason …`) records your allowance
+  as an event: the row then reads PASS with a note. Only a person can set it.
+  It does not change what the gate runs: a changed gate script still runs as
+  the base has it, so to change the gate itself, change the repo's registered
+  test/lint command or merge the script change first.
+  The merge gate and the conflict re-gate run the same check on the merged
+  tree, against the target head (scripts read from it, an integrity row in
+  their checklist). This first slice flags; it never fails a delivery or a
+  landing.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
   recorded and its acceptance criteria reset. A **won't-do** on delivered work
   keeps its branch as a record, and that branch no longer counts against the
@@ -324,6 +411,36 @@ structural barrier the whole design hangs on.
   "Event log" card re-derive the chain. Each event also carries the **runner
   tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
   whole trail — the runner's calls and the agent's MCP writes — reads as one.
+- **A flaky test does not burn an attempt.** With a worker pool
+  (`GAFFER_CONCURRENCY` above 1) a red tests gate is rerun once at concurrency 1
+  (one rerun at a time across the pool, after the other workers' gate runs finish)
+  before the attempt counts. Only the tests gate, only once. A pass on the rerun is
+  a green gate marked **Flaky suspected** on the Review card, its note naming both
+  runs, with the first run's output kept in the DoD evidence and a
+  `needs_human_review` note on the ticket; a second red is the failure, naming both
+  exit codes. `GAFFER_DOD_FLAKY_RERUN=0` turns it off.
+- **The merge commit says where it came from.** Every landing path (the Merge
+  button, `gaffer merge`, the merge lane, the AFK review pass, a PR merge) writes git
+  trailers into the merge commit, read from the dispatch DB:
+  `Gaffer-Ticket: #12`, `Gaffer-Reviewed-By: human:tom` (or `agent:<id>`) and
+  `Gaffer-Gates: DoD PASS (tests pass, lint skip); AC 3/3 satisfied; tester PASS`.
+  The tester part comes from the tester's own verdict transition since the latest
+  approval, never from evidence an agent could record.
+  The merge gate's gated merge commit, which is the commit that lands, carries
+  them, and it is then `--no-ff`, so there is a merge commit to carry them. No
+  model name is written (the usage ledger records that), and the trailers are not
+  signed. `GAFFER_PROVENANCE_TRAILERS=0` turns them off.
+- **Every attempt names its model and its CLI.** The runner records, per delivery
+  attempt, the model that served the call (and the one it asked for) and the
+  Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,
+  `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
+  ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
+  failure names the run of the attempt that failed (none when the agent never ran,
+  as when its environment could not be installed) and carries that attempt's number,
+  every other run (the attempt that passed after a failure) follows the failures on
+  its own row, and only the runner's own rows count, so an agent cannot name its own
+  model. The attempt that used up the cap is on the history as a failure too
+  ("Attempt 3/3 · definition-of-done failed"), recorded before the ticket parks.
 
 ![The Gaffer's Sign-off](img/review.png)
 
@@ -429,6 +546,13 @@ on**:
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
+**A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
+the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`
+or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
+Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
+then polls. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
+opts out (a value in `settings.json` is ignored).
+
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Secret-bearing settings —
 the Slack and generic webhook URLs, which are posting authority on their own — are
@@ -505,6 +629,36 @@ launch the agent rather than run it uncontained. The provider is auto-detected
 Autonomy flags, all opt-in and shown off, with Planning debate, Idle loops and
 the other groups folded below. Nothing here is enabled by default — full
 hands-off autonomy is a deliberate choice you make, not the starting state.*
+
+---
+
+## Skills — the right pack, mounted where the agent reads it
+
+Every agent run (delivery, review, the independent tester, intake, planning, merge)
+gets its own skill set from the factory library, chosen by role and by the ticket's
+stack: the conventions pack of the language, the lenses of the role, and the packs the
+ticket text calls for, never the whole library.
+
+- **Every repo on the ticket counts.** A ticket spanning a TypeScript frontend and a
+  Java service is selected for both stacks, for delivery, review and the tester alike,
+  and each prompt names each repo's pack. Files named in the ticket (or, for review,
+  the delivery's diff) still narrow the set to the ecosystems they touch.
+- **Mounted where Claude Code looks.** Skills are copied to
+  `.claude/skills/<name>/SKILL.md` in the agent's worktree, beside a repo's own skills;
+  a repo skill of the same name wins, the prompt says so, and teardown removes only
+  Gaffer's copies. The copies sit inside the worktree, so the safety hook lets the
+  agent read them without any exception to its read boundary.
+- **Use is measured honestly.** The Health view's skill panel shows, per skill, how
+  often it was selected, applied (named in the agent's output), opened (a read the
+  safety hook allowed) and refused (a read it blocked). A refused read never counts
+  as use, and an open is never counted as an application.
+- **A live check, on demand.** `GAFFER_LIVE_SKILL_TEST=1 bash runner/test/live-skill-use.test.sh`
+  plants a harmless instruction ("include the token `GAFFER-SKILL-<role>-<nonce>`")
+  inside each role's intended skill only, runs the real Claude Code CLI through the
+  real tick on a tiny fixture repo, and checks each role's recorded result for its
+  token and its telemetry row. It skips cleanly, saying what it needs, without the
+  variable, a working CLI or credentials. Set `GAFFER_LIVE_SKILL_MODEL` to your
+  cheapest model; it prints the cost.
 
 ---
 

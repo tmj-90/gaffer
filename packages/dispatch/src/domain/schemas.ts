@@ -373,6 +373,17 @@ export const recordRepoDeliveryInput = z.object({
     .regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE)
     .optional(),
   commit_sha: z.string().trim().min(1).max(200).optional(),
+  // GATE INTEGRITY: the commit the delivery was cut from — a full hex object id. Set by
+  // the runner (CLI); the agent's MCP tool does not pass it.
+  base_sha: z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/, "base_sha must be a full 40- or 64-hex commit id")
+    .optional(),
+  // A stored base_sha is write-once: a different one replaces it only when the runner
+  // says it cut the delivery branch again from the base (`base_recut`), so a later
+  // record can never move the base onto the delivery's own commits.
+  base_recut: z.boolean().optional(),
   pr_url: z.string().trim().min(1).max(2_000).refine(PR_URL_SAFE, PR_URL_SAFE_MESSAGE).optional(),
   status: z.enum(TICKET_REPO_DELIVERY_STATUSES).optional(),
   evidence_ref: z.string().trim().min(1).max(2_000).optional(),

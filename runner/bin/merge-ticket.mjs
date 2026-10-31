@@ -153,6 +153,7 @@ import {
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
 import { applyTesterTests, replayPlan } from "../lib/tester-replay.mjs";
+import { mergeMessage, provenanceTrailers } from "../lib/provenance-trailers.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -349,6 +350,28 @@ export function resolveTicket(dbPath, number) {
     if (!branch) return null;
     const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
 
+    // Every WRITE repo's name + stack (the tester mounts the union of their stacks). An
+    // older schema without repositories.stack / ticket_repos.relation resolves to [].
+    let writeRepos = [];
+    for (const withRelation of [true, false]) {
+      try {
+        writeRepos = db
+          .prepare(
+            "SELECT r.name AS name, r.stack AS stack FROM ticket_repos tr " +
+              "JOIN repositories r ON r.id = tr.repo_id WHERE tr.ticket_id = ? AND tr.access = 'write'" +
+              (withRelation
+                ? " AND (tr.relation IS NULL OR tr.relation IN ('confirmed', 'implicit_single_repo'))"
+                : "") +
+              " ORDER BY r.name",
+          )
+          .all(ticket.id)
+          .map((r) => ({ name: String(r.name || ""), stack: r.stack ? String(r.stack) : "" }));
+        break;
+      } catch {
+        writeRepos = [];
+      }
+    }
+
     return {
       ticketId: String(ticket.id),
       number: ticket.number,
@@ -362,6 +385,7 @@ export function resolveTicket(dbPath, number) {
       branch,
       prUrl,
       status: ticket.status == null ? null : String(ticket.status),
+      writeRepos,
     };
   } catch {
     return null;
@@ -462,17 +486,22 @@ export function resolvePrMergeMethod(raw) {
   return PR_MERGE_METHODS.includes(m) ? m : "merge";
 }
 
-/** The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`. */
-export function buildPrMergeArgv({ prUrl, method, matchHeadCommit }) {
+/**
+ * The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`, plus
+ * `--body <trailers>` for the merge commit (not for a rebase, which makes none).
+ */
+export function buildPrMergeArgv({ prUrl, method, matchHeadCommit, body }) {
+  const m = resolvePrMergeMethod(method);
   return [
     "pr",
     "merge",
     String(prUrl),
-    `--${resolvePrMergeMethod(method)}`,
+    `--${m}`,
     "--delete-branch",
     // ACCEPTANCE GATE: merge only if the PR head is still the commit the landing
     // decision approved — never silently merge a different PR head.
     ...(matchHeadCommit ? ["--match-head-commit", String(matchHeadCommit)] : []),
+    ...(body && m !== "rebase" ? ["--body", String(body)] : []),
   ];
 }
 
@@ -525,8 +554,9 @@ export function mergeViaPr({
   method,
   remote,
   matchHeadCommit,
+  body,
 }) {
-  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit });
+  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit, body });
   const gh = spawnSync(ghBin, argv, {
     cwd: repoPath,
     encoding: "utf8",
@@ -802,7 +832,19 @@ export function resolveGateCommands(dbPath, number, repoId = null) {
     }
     // A named repo that is not on the ticket: nothing says what its gates are — fail closed.
     if (repoId && !row) return null;
-    return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim() };
+    // GATE INTEGRITY: a human's allow_test_changes (schema v29). Its own query, so a
+    // schema without the column only loses the allowance (the integrity row FLAGs),
+    // never the gate commands. Fails closed: anything unreadable means no allowance.
+    let allow = false;
+    try {
+      allow =
+        Number(
+          db.prepare("SELECT allow_test_changes AS a FROM tickets WHERE number = ?").get(num)?.a,
+        ) === 1;
+    } catch {
+      allow = false;
+    }
+    return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim(), allow };
   } catch {
     return null;
   } finally {
@@ -962,6 +1004,7 @@ export function gateProposedMerge({
   label,
   commands,
   gateDir,
+  trailers = [],
   env = process.env,
   testerReplay = null,
 }) {
@@ -1006,9 +1049,26 @@ export function gateProposedMerge({
   try {
     const hasIdentity = git(repoPath, "config", "user.email").status === 0;
     const ids = hasIdentity ? [] : ["-c", "user.name=gaffer", "-c", "user.email=gaffer@localhost"];
+    // PROVENANCE TRAILERS (lib/provenance-trailers.mjs): the gated merge commit is the
+    // commit that lands, so it carries them; with trailers it is --no-ff so a merge
+    // commit exists to carry them (without, a fast-forward stays possible, as before).
+    const withTrailers = Array.isArray(trailers) && trailers.length > 0;
     const m = spawnSync(
       "git",
-      ["-C", wt, ...ids, "merge", "--quiet", "--no-edit", "-m", `Merge branch '${branch}'`, pin],
+      [
+        "-C",
+        wt,
+        ...ids,
+        "merge",
+        "--quiet",
+        "--no-edit",
+        ...(withTrailers ? ["--no-ff"] : []),
+        "-m",
+        withTrailers
+          ? mergeMessage(`Merge branch '${branch}'`, trailers)
+          : `Merge branch '${branch}'`,
+        pin,
+      ],
       { encoding: "utf8" },
     );
     if (m.status !== 0) {
@@ -1029,8 +1089,10 @@ export function gateProposedMerge({
         commands.test || "-",
         commands.lint || "-",
         // The gated target head: the typecheck script is auto-detected from it first,
-        // exactly as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd).
+        // exactly as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd),
+        // and it is the gate-integrity base (scripts read from it + an integrity row).
         target,
+        commands.allow ? "1" : "0",
       ],
       { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
     );
@@ -1323,8 +1385,10 @@ function gateCheckout({ gateWt, parents, label, commands, env, failed, base }) {
       commands.test || "-",
       commands.lint || "-",
       // The default branch's tip: the typecheck script is auto-detected from it first
-      // (gaffer_dod_typecheck_cmd), so a resolution cannot drop that gate.
+      // (gaffer_dod_typecheck_cmd), so a resolution cannot drop that gate; it is also
+      // the gate-integrity base (scripts read from it + an integrity row).
       base || "",
+      commands.allow ? "1" : "0",
     ],
     { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
   );
@@ -1787,6 +1851,7 @@ function landThroughMergeGate({
   gateDir,
   secondary = false,
   testerReplay = null,
+  trailers = [],
 }) {
   const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
   const where = secondary && repoName ? ` in ${repoName}` : "";
@@ -1800,6 +1865,8 @@ function landThroughMergeGate({
       commands,
       gateDir,
       testerReplay: secondary ? null : testerReplay,
+      // The gated merge commit is the commit that lands: it carries the trailers.
+      trailers,
     });
     if (gate.kind === "conflict" || gate.kind === "red" || gate.kind === "error")
       return { kind: gate.kind, gate };
@@ -1910,6 +1977,8 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
   const plan = readLandingPlan(ticketNumber);
   const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
   if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
+  // PROVENANCE TRAILERS — the same block the primary's merge commit carries.
+  const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber });
   for (const r of plan) {
     if (r.repoId === primaryRepoId) {
       out.landed.push(r.repo);
@@ -1965,6 +2034,8 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
       commands: resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId),
       gateDir: resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`),
       secondary: true,
+      // Each repo's gated merge commit is the commit that lands there: it carries them too.
+      trailers,
     });
     if (res.kind === "conflict") {
       why(`${res.gate.reason} (merge conflict)`);
@@ -2153,6 +2224,8 @@ function main() {
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
   const pin = decision.pin;
+  // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
+  const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
   // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
   // after a partial landing) — never merge it again; land the repos still pending.
   let landed =
@@ -2234,6 +2307,7 @@ function main() {
         method: process.env.GAFFER_PR_MERGE_METHOD,
         remote: process.env.GAFFER_PR_REMOTE,
         matchHeadCommit: pin,
+        body: trailers.join("\n"),
       });
       if (pr.ok) {
         landed = { via: "pr", prUrl: resolved.prUrl, fastForwarded: pr.fastForwarded };
@@ -2292,6 +2366,8 @@ function main() {
       commands: gateCommands,
       gateDir,
       testerReplay,
+      // The gated merge commit is the commit that lands: it carries the trailers.
+      trailers,
     });
     // A conflict falls through to the resolver below (landed stays null).
     if (res.kind === "red") return holdRed(res.gate);

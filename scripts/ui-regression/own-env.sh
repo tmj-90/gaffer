@@ -23,7 +23,7 @@
 #   bootstrap-root GAFFER_BOOTSTRAP_ROOT = $OUT/greenfield (new repos are made there),
 #                  GAFFER_REGISTRY_PROBE=0 (the bootstrap's registry probe needs the
 #                  network; the stub installs nothing).
-# Relies on setup.sh's globals: HERE OUT R.
+# Relies on setup.sh's globals: HERE OUT R (and PORT TOKEN for ui_world_daily_budget).
 # =====================================================================
 
 ui_fixture_fake_gh() {
@@ -56,6 +56,20 @@ ui_fixture_ingest_on_after() {
 ui_fixture_bootstrap_root() {
   export GAFFER_BOOTSTRAP_ROOT="$OUT/greenfield" GAFFER_REGISTRY_PROBE=0
   mkdir -p "$GAFFER_BOOTSTRAP_ROOT"
+}
+
+# A live tick needs a dollar cap (lib/budget.sh gaffer_spend_cap_ok): the suites press
+# Poll for work and POST /poll-work throughout, so EVERY scenario world (the shared one
+# and each own-server one) gets a $5 daily budget, the value the first-run sheet offers,
+# once its dashboard is up. Saved through Settings (settings.json), not exported: an env
+# value would be env-locked, and S10 lowers this cap from Settings. The golden path
+# (run.sh) never sources this file, so it leaves the cap unset and still drives the
+# first-run sheet. Relies on setup.sh's globals: PORT TOKEN.
+ui_world_daily_budget() {
+  curl -sf -X POST -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+    --data '{"settings":{"GAFFER_DAILY_BUDGET_USD":"5"}}' \
+    "http://127.0.0.1:$PORT/api/settings" >/dev/null \
+    || { echo "could not set the scenario world's daily budget (POST /api/settings)"; return 1; }
 }
 
 # Run every named fixture's half: ui_run_fixtures <before|after> <name>…

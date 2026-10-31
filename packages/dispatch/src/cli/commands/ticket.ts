@@ -456,6 +456,31 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("allow-test-changes <ref>")
+    .description(
+      "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
+        "skip marker, change a gate script) — the runner's integrity gate row then reads " +
+        "PASS with a note instead of FLAG, and the test changes alone no longer hold an auto-approve " +
+        "(they still count as medium risk, so a ticket declared low is still held). " +
+        "It does NOT change which command the gate runs: a gate script the delivery changed " +
+        "still runs as the BASE commit has it, so to change the gate itself, change the " +
+        "repo's registered test/lint command or merge the script change to the base first. " +
+        "--off withdraws the allowance. Human/admin only; recorded as an event.",
+    )
+    .option("--off", "withdraw the allowance (test changes are flagged again)", false)
+    .option("--reason <text>", "why this ticket may change its tests (kept on the event)")
+    .option("--admin", "act as an admin actor", false)
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = opts.admin
+        ? { type: "admin", id: process.env.USER ?? "cli" }
+        : cliActor();
+      const res = wg.setAllowTestChanges(ref, !opts.off, actor, opts.reason);
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("test-contract <ref>")
     .description(
       "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +
@@ -744,6 +769,14 @@ export function registerTicket(program: Command): void {
     .description("Record (upsert) a repo's delivery artifact on a ticket")
     .option("--branch <branch>", "branch name")
     .option("--commit <sha>", "commit sha")
+    .option(
+      "--base-sha <sha>",
+      "the commit the delivery branch was cut from (the runner records it; the gate-integrity scan diffs from it)",
+    )
+    .option(
+      "--base-recut",
+      "with --base-sha: the runner cut the branch again from the base, so the new base replaces the stored one (a stored base is otherwise write-once)",
+    )
     .option("--pr <url>", "pull-request url")
     .option("--status <status>", "delivery status")
     .option("--evidence <ref>", "evidence reference")
@@ -755,6 +788,8 @@ export function registerTicket(program: Command): void {
           repo_id: repoRef,
           branch_name: opts.branch,
           commit_sha: opts.commit,
+          base_sha: opts.baseSha,
+          ...(opts.baseRecut ? { base_recut: true } : {}),
           pr_url: opts.pr,
           status: opts.status,
           evidence_ref: opts.evidence,

@@ -227,3 +227,44 @@ describe("failure-diagnosis: the append-only rework failure trail", () => {
     expect(wg.bouncingTickets({ limit: 0 })).toHaveLength(0);
   });
 });
+
+describe("failure-diagnosis: the last allowed attempt's failure (--final)", () => {
+  it("appends the trail row without a 'reworking' card or event", () => {
+    const wg = Dispatch.open(":memory:", new TestClock());
+    const ticketId = seedTicket(wg);
+    wg.recordReworkAttempt(
+      { ticket_id: ticketId, attempt: 2, maxAttempts: 2, reason: "tests: red", gate: "tests" },
+      systemActor,
+    );
+    const before = wg.db
+      .prepare("SELECT last_review_feedback AS f FROM tickets WHERE id = ?")
+      .get(ticketId) as { f: string };
+    const res = wg.recordReworkAttempt(
+      {
+        ticket_id: ticketId,
+        attempt: 3,
+        maxAttempts: 2,
+        reason: "definition-of-done: red again",
+        gate: "definition-of-done",
+        distilledFailure: "FAIL red\n  expected 2 to be 1",
+        final: true,
+      },
+      systemActor,
+    );
+    expect(res.eventId).toBeNull();
+    const trail = wg.reworkTrail(ticketId);
+    expect(trail.map((r) => [r.attempt, r.gate])).toEqual([
+      [2, "tests"],
+      [3, "definition-of-done"],
+    ]);
+    expect(trail[1]!.distilled_failure).toContain("expected 2 to be 1");
+    const after = wg.db
+      .prepare("SELECT last_review_feedback AS f FROM tickets WHERE id = ?")
+      .get(ticketId) as { f: string };
+    expect(after.f).toBe(before.f);
+    const events = wg.db
+      .prepare("SELECT COUNT(*) AS n FROM work_events WHERE entity_id = ? AND event_type = ?")
+      .get(ticketId, "ticket.reworking") as { n: number };
+    expect(events.n).toBe(1);
+  });
+});

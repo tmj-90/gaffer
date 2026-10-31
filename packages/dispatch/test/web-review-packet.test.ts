@@ -11,6 +11,8 @@
 //    machine evidence" on a yellow card when only the agent's word backs it;
 //  - "the summary says N, the runner saw M" when the agent's count disagrees.
 //  - an agent-recorded row that looks like a DoD report is never read as the gates.
+//  - gate integrity: an integrity FLAG row reads flagged in the strip (not one of the
+//    gates that ran) while the Sign-off's integrity banner is drawn beside it.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -136,6 +138,12 @@ const PACKET = {
 
 let packet: unknown = PACKET;
 let calls: string[] = [];
+// GATE INTEGRITY: the diff's risk annotations and the ticket's evidence, per test.
+const DEFAULT_ANNS = [
+  { kind: "dependency-change", severity: "medium", detail: "package.json changed" },
+];
+let diffAnns: unknown[] = DEFAULT_ANNS;
+let extraEvidence: unknown[] = [];
 function stubFetch(): void {
   calls = [];
   vi.stubGlobal(
@@ -159,9 +167,7 @@ function stubFetch(): void {
               additions: 1,
               deletions: 0,
               diff: "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1,1 +1,2 @@\n a\n+b",
-              riskAnnotations: [
-                { kind: "dependency-change", severity: "medium", detail: "package.json changed" },
-              ],
+              riskAnnotations: diffAnns,
             },
           ],
         };
@@ -187,6 +193,7 @@ function stubFetch(): void {
               recorded_by_agent: true,
               created_at: "2026-10-30T09:00:00Z",
             },
+            ...extraEvidence,
           ],
           events: [],
         };
@@ -220,6 +227,8 @@ const label = (sel: string) => document.querySelector(sel)?.getAttribute("aria-l
 describe("web: the review packet on The Gaffer's Sign-off", () => {
   beforeEach(() => {
     packet = PACKET;
+    diffAnns = DEFAULT_ANNS;
+    extraEvidence = [];
     vi.resetModules();
     stubFetch();
     mount();
@@ -288,6 +297,73 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     // The reviewed-commit pin.
     expect(text(".vd-cell.vd-pin .vd-v")).toBe("fedcba987654");
     expect(text(".vd-cell.vd-pin")).toContain("By the agent review");
+  });
+
+  it("draws the strip and the gate-integrity banner together for a delivery that changed its tests", async () => {
+    const finding = "deleted 1 test file (src/x.test.ts)";
+    packet = {
+      ...PACKET,
+      gates: {
+        ...PACKET.gates,
+        rows: [
+          ...PACKET.gates.rows,
+          { gate: "integrity", repo: "svc", status: "FLAG", rc: "0", command: null, note: finding },
+        ],
+      },
+    };
+    diffAnns = [
+      ...DEFAULT_ANNS,
+      {
+        kind: "test-modified",
+        severity: "high",
+        detail: finding,
+        paths: ["src/x.test.ts"],
+        items: ["deleted test file src/x.test.ts"],
+      },
+    ];
+    extraEvidence = [
+      {
+        id: "dod-runner",
+        evidence_type: "test_output",
+        summary: `DoD: PASS\n${JSON.stringify({
+          dod: "PASS",
+          gates: [
+            { gate: "tests", repo: "svc", status: "PASS", rc: "0", note: "npm test" },
+            { gate: "integrity", repo: "svc", status: "FLAG", rc: "0", note: finding },
+          ],
+        })}`,
+        created_by: "system",
+        recorded_by_actor_type: "system",
+        created_at: "2026-10-30T09:58:00Z",
+      },
+    ];
+    await boot();
+    // The verdict strip: the integrity row is flagged (the yellow "!"), not skipped,
+    // and it is not counted among the gates that ran.
+    const gi = [...document.querySelectorAll(".vd-gate-list .vd-gate")].find((li) =>
+      li.textContent?.includes("integrity"),
+    );
+    expect(gi).toBeTruthy();
+    expect(gi!.classList.contains("vd-g-flag")).toBe(true);
+    expect(gi!.querySelector(".dod-mark.dod-flag")?.textContent).toBe("!");
+    expect(gi!.querySelector(".vd-word")?.textContent).toBe("flagged");
+    expect(gi!.querySelector(".vd-note")?.textContent).toBe(finding);
+    expect(label(".vd-cell.vd-gates")).toBe("Gates: passed, 2 of 3 ran");
+    // The strip's risk cell takes the diff's test-modified reason (strip._setRisk) …
+    expect(text(".vd-cell.vd-risk")).toContain(finding);
+    // … and the Sign-off's integrity banner is drawn beside it, with its flag card.
+    const banner = document.querySelector(".integrity-banner");
+    expect(banner).not.toBeNull();
+    expect(banner!.textContent).toContain("deleted test file src/x.test.ts");
+    expect(document.querySelector(".rv-verdict")).not.toBeNull();
+    const flagTitles = [...document.querySelectorAll(".flag-list .flag-title")].map(
+      (h) => h.textContent,
+    );
+    expect(flagTitles).toContain("Test modified");
+    // The gates checklist carries the runner's FLAG row too.
+    expect(document.querySelector(".dod-item.dod-i-flag .dod-note")?.textContent).toContain(
+      finding,
+    );
   });
 
   it("shows when the tester comes, and leaves the pin out when none is recorded", async () => {

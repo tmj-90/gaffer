@@ -750,34 +750,60 @@ switch (cmd) {
     const lines = [];
     const splitLines = text.split(/\r\n|\r|\n/);
     if (splitLines.length && splitLines[splitLines.length - 1] === "") splitLines.pop();
-    // GATE rows are the runner's own and live only OUTSIDE the framed output/tally
-    // blocks; a GATE-shaped line inside a frame is the delivered code's output.
+    // GATE rows are the runner's own and live only OUTSIDE the framed output/rerun/
+    // tally blocks; a GATE-shaped line inside a frame is the delivered code's output.
     let inFrame = false;
     for (const ln of splitLines) {
-      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-TALLY ")) {
+      if (
+        ln.startsWith("---DOD-OUTPUT ") ||
+        ln.startsWith("---DOD-RERUN ") ||
+        ln.startsWith("---DOD-TALLY ")
+      ) {
         inFrame = true;
         continue;
       }
-      if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-TALLY---")) {
+      if (
+        ln.startsWith("---END-DOD-OUTPUT---") ||
+        ln.startsWith("---END-DOD-RERUN---") ||
+        ln.startsWith("---END-DOD-TALLY---")
+      ) {
         inFrame = false;
         continue;
       }
       if (inFrame) continue;
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
-        const [, gate, repo, status, rc, note] = parts;
-        gates.push({ gate, repo, status, rc, note });
-        lines.push(`  [${status}] ${gate} (${repo}) — ${note}`);
+        const [, gate, repo, status, rc, note, source, mark] = parts;
+        // GATE INTEGRITY: the optional 7th column says where the command's behaviour was
+        // read from (base / base-pinned / head / registered / unresolved); absent (or
+        // empty) on rows that predate it, so their JSON stays byte-identical. The
+        // optional 8th column `flaky-suspected`: a tests gate that went red under a
+        // parallel pool and passed when rerun at concurrency 1 (lib/dod.sh).
+        const row = source
+          ? { gate, repo, status, rc, note, source }
+          : { gate, repo, status, rc, note };
+        if (mark === "flaky-suspected") row.flaky = true;
+        gates.push(row);
+        lines.push(`  [${status}] ${gate} (${repo}) — ${note}${source ? ` [${source}]` : ""}`);
       }
     }
     const tail = [];
     let keep = false;
     for (const ln of splitLines) {
-      // The failing output blocks and (REVIEW PACKET) the tests gate's summary lines.
-      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-TALLY ")) {
+      // The failing output blocks, the flaky rerun's first-run output and (REVIEW
+      // PACKET) the tests gate's summary lines.
+      if (
+        ln.startsWith("---DOD-OUTPUT ") ||
+        ln.startsWith("---DOD-RERUN ") ||
+        ln.startsWith("---DOD-TALLY ")
+      ) {
         keep = true;
         tail.push(ln);
-      } else if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-TALLY---")) {
+      } else if (
+        ln.startsWith("---END-DOD-OUTPUT---") ||
+        ln.startsWith("---END-DOD-RERUN---") ||
+        ln.startsWith("---END-DOD-TALLY---")
+      ) {
         tail.push(ln);
         keep = false;
       } else if (keep) tail.push(ln);

@@ -182,6 +182,90 @@ ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 GAFFER_SANDBOX_DATA_PLANE=n
 has_mount "$GAFFER_DATA:$GAFFER_DATA:rw" && fail "empty data plane (GAFFER_SANDBOX_DATA_PLANE=none) mounted GAFFER_DATA rw" || ok "an EMPTY MCP config declared by the launcher ⇒ no databases either"
 unset ANTHROPIC_API_KEY GAFFER_SANDBOX_CLAUDE_CREDENTIALS
 
+echo "== (h) a repository cannot add a host directory to the mounts (external review #6) =="
+# The node_modules links the RUNNER creates (gaffer_link_node_modules) point at the
+# primary checkout's own node_modules at the same relative path; that is the whole
+# allow-list. Every other symlink in the worktree is repo- or agent-controlled and must
+# never become a bind mount, however it is spelled.
+# shellcheck source=../lib/agent-env.sh
+source "$RUNNER_DIR/lib/agent-env.sh"
+HOSTDIR="$WORK/host-home"; mkdir -p "$HOSTDIR/.ssh"; echo secret > "$HOSTDIR/.ssh/id_rsa"
+P2="$WORK/primary"; mkdir -p "$P2/node_modules/dep" "$P2/packages/a/node_modules/dep"
+git -C "$P2" init -q -b main
+git -C "$P2" config user.email t@e; git -C "$P2" config user.name t
+printf 'node_modules\n' > "$P2/.gitignore"; mkdir -p "$P2/packages/a" "$P2/packages/b" "$P2/packages/c" "$P2/packages/d"
+for d in a b c d; do echo "$d" > "$P2/packages/$d/index.js"; done
+git -C "$P2" add -A; git -C "$P2" commit -qm seed
+WT2="$WORK/wt2"; git -C "$P2" worktree add -q -b gaffer/ticket-9 "$WT2" main
+gaffer_link_node_modules "$P2" "$WT2"
+[ -L "$WT2/node_modules" ] && [ -L "$WT2/packages/a/node_modules" ] && ok "fixture: the runner linked the root + workspace node_modules" || fail "fixture: gaffer_link_node_modules did not link"
+# The repository's own links (what a hostile commit or an earlier container step leaves):
+ln -s "$HOSTDIR" "$WT2/packages/b/node_modules"                          # absolute, outside
+ln -s "$WORK/hop1" "$WT2/packages/c/node_modules"; ln -s "$WORK/hop2" "$WORK/hop1"; ln -s /etc "$WORK/hop2"  # a chain
+ln -s ../../../host-home "$WT2/packages/d/node_modules"                  # relative, escapes via ..
+mkdir -p "$WT2/tools/node_modules/x"                                     # a real directory, not a link
+printf '%s\n' "$WT2" > "$WRF"
+dry() { GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
+          bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'pnpm test' 2>"$WORK/stderr.h"; }
+ARGV="$(dry)"; rc=$?
+[ "$rc" -eq 0 ] && ok "the wrapper still runs (rc 0) with hostile links present" || fail "wrapper rc $rc: $(cat "$WORK/stderr.h")"
+P2C="$(cd "$P2" && pwd -P)"
+has_mount "$P2C/node_modules:$P2/node_modules:ro" && ok "the runner's root link → primary node_modules mounted ro (as before)" || fail "legit root node_modules mount missing (argv: $(grep -F node_modules <<<"$ARGV" | tr '\n' ' '))"
+has_mount "$P2C/packages/a/node_modules:$P2/packages/a/node_modules:ro" && ok "the runner's workspace-package link mounted ro (as before)" || fail "legit workspace node_modules mount missing"
+grep -qF -- "$HOSTDIR" <<<"$ARGV" && fail "an absolute link OUTSIDE the worktree became a mount: $(grep -F -- "$HOSTDIR" <<<"$ARGV" | head -1)" || ok "absolute link to a host directory: NOT mounted"
+grep -qE -- '^/etc:' <<<"$ARGV" && fail "a symlink CHAIN ending at /etc became a mount" || ok "symlink chain to /etc: NOT mounted"
+grep -qF -- "hop" <<<"$ARGV" && fail "a hop of the chain became a mount" || ok "no hop of the chain is mounted"
+grep -qF -- "$WT2/packages/b/node_modules" "$WORK/stderr.h" && ok "WARNING names the absolute external link" || fail "no warning naming $WT2/packages/b/node_modules: $(cat "$WORK/stderr.h")"
+grep -qF -- "$WT2/packages/c/node_modules" "$WORK/stderr.h" && ok "WARNING names the chained link" || fail "no warning naming the chained link"
+grep -qF -- "$WT2/packages/d/node_modules" "$WORK/stderr.h" && ok "WARNING names the relative ..-escaping link" || fail "no warning naming the relative escaping link"
+grep -qF -- "$WT2/node_modules:" "$WORK/stderr.h" || grep -qF -- "$WT2/packages/a/node_modules:" "$WORK/stderr.h" && fail "the runner's own link was warned about: $(cat "$WORK/stderr.h")" || ok "no warning for the runner's own links"
+grep -qF -- "$WT2/tools/node_modules" <<<"$ARGV" && fail "a real node_modules DIRECTORY got its own mount" || ok "a real node_modules directory: no extra mount (inside the rw worktree, unchanged)"
+has_mount "$WT2:$WT2:rw" && ok "the worktree itself is still mounted rw" || fail "worktree rw mount missing"
+
+# A primary-side node_modules that is itself a symlink (a repository COMMITTING a
+# node_modules link) resolves outside the primary: refused even though it is the
+# runner-shaped path.
+P3="$WORK/primary3"; mkdir -p "$P3"; git -C "$P3" init -q -b main
+git -C "$P3" config user.email t@e; git -C "$P3" config user.name t
+ln -s "$HOSTDIR" "$P3/node_modules"; git -C "$P3" add -A; git -C "$P3" commit -qm 'commit a node_modules link'
+WT3="$WORK/wt3"; git -C "$P3" worktree add -q -b gaffer/ticket-10 "$WT3" main
+[ -L "$WT3/node_modules" ] && ok "fixture: the worktree checked out the committed node_modules link" || fail "fixture: committed link missing"
+printf '%s\n' "$WT3" > "$WRF"
+ARGV="$(dry)"
+grep -qF -- "$HOSTDIR" <<<"$ARGV" && fail "a COMMITTED node_modules link (primary-side symlink) became a mount" || ok "committed node_modules link: NOT mounted"
+grep -qF -- "$WT3/node_modules" "$WORK/stderr.h" && ok "WARNING names the committed link" || fail "no warning for the committed link"
+
+# A forged `.git` file: the worktree is writable, so its `.git` may name ANOTHER repo.
+# Neither its git metadata nor dependency links are honoured.
+OTHER="$WORK/other-repo"; mkdir -p "$OTHER/node_modules/dep"; git -C "$OTHER" init -q -b main
+git -C "$OTHER" config user.email t@e; git -C "$OTHER" config user.name t
+git -C "$OTHER" commit -q --allow-empty -m seed
+git -C "$OTHER" worktree add -q -b side "$WORK/other-wt" main
+WT4="$WORK/wt4"; git -C "$P2" worktree add -q -b gaffer/ticket-11 "$WT4" main
+OTHERC="$(cd "$OTHER" && pwd -P)"
+printf 'gitdir: %s/.git/worktrees/other-wt\n' "$OTHERC" > "$WT4/.git"
+ln -s "$OTHER/node_modules" "$WT4/node_modules"
+printf '%s\n' "$WT4" > "$WRF"
+ARGV="$(dry)"
+grep -qF -- "$OTHERC/.git" <<<"$ARGV" && fail "a forged .git file mounted ANOTHER repo's git metadata: $(grep -F -- "$OTHERC/.git" <<<"$ARGV" | head -1)" || ok "forged .git file: the other repo's git metadata is NOT mounted"
+grep -qF -- "$OTHERC/node_modules" <<<"$ARGV" && fail "a forged .git file let the other repo's node_modules be mounted" || ok "forged .git file: no dependency link honoured"
+grep -q 'not mounting any git metadata' "$WORK/stderr.h" && ok "WARNING explains the refused .git file" || fail "no warning for the forged .git file: $(cat "$WORK/stderr.h")"
+# And the legitimate linked worktree keeps its git mounts (regression guard).
+printf '%s\n' "$WT2" > "$WRF"
+ARGV="$(dry)"
+has_mount "$P2C/.git:$P2C/.git:ro" && ok "a genuine linked worktree still gets its repo's .git ro" || fail "genuine .git mount missing"
+
+# The agent's `.claude/skills` link (bridge / none mode) follows the same rule: only a
+# runner skill mount under $GAFFER_DATA/skills-mounts/ is ever mounted.
+rm -f "$WT/.claude/skills"; ln -s "$HOSTDIR" "$WT/.claude/skills"
+printf '%s\n' "$WT" > "$WRF"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>"$WORK/stderr.sk")"
+grep -qF -- "$HOSTDIR" <<<"$ARGV" && fail "a .claude/skills link to a host directory became a mount" || ok ".claude/skills link outside the skill mounts: NOT mounted"
+grep -qF -- "$WT/.claude/skills" "$WORK/stderr.sk" && ok "WARNING names the .claude/skills link" || fail "no warning for the .claude/skills link"
+rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.claude/skills"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>/dev/null)"
+grep -qF -- "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" <<<"$ARGV" && ok "the runner's own skills mount is still mounted ro" || fail "runner skills mount missing"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

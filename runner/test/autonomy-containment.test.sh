@@ -144,8 +144,14 @@ grep -qE 'if \[ "\$\{STRICT_MODE:-0\}" = "1" \] \|\| _sandbox_strict_required; t
 
 echo "== 6: docker wrapper mounts the factory's packages + node_modules and follows symlinks =="
 HOME_FAKE="$WORK/home"; mkdir -p "$HOME_FAKE/packages/dispatch/dist" "$HOME_FAKE/node_modules/.pnpm" "$HOME_FAKE/runner"
+# The worktree is a real LINKED worktree of the real repo: the wrapper mounts a
+# node_modules link only when it is the one the runner makes (the primary checkout's
+# own node_modules), which it verifies through git's worktree registration.
 REAL_REPO="$WORK/real-repo"; mkdir -p "$REAL_REPO/node_modules/.bin"
-WT="$WORK/wt"; mkdir -p "$WT"; ln -s "$REAL_REPO/node_modules" "$WT/node_modules"
+git -C "$REAL_REPO" init -q -b main
+git -C "$REAL_REPO" -c user.email=t@e -c user.name=t commit -q --allow-empty -m seed
+WT="$WORK/wt"; git -C "$REAL_REPO" worktree add -q -b gaffer/t "$WT" main
+ln -s "$REAL_REPO/node_modules" "$WT/node_modules"
 WRF="$WORK/wr"; printf '%s\n' "$WT" > "$WRF"; RRF="$WORK/rr"; : > "$RRF"
 ARGV="$(cd "$WT" && GAFFER_HOME="$HOME_FAKE" RUNNER_DIR="$HOME_FAKE/runner" GAFFER_DATA="$GAFFER_DATA" GAFFER_SANDBOX_DRY_RUN=1 \
   bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- true 2>&1)"

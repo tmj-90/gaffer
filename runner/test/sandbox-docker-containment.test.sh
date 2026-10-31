@@ -86,6 +86,12 @@ SIB="$GAFFER_DATA/worktrees/ticket-2"; mkdir -p "$SIB"; echo "TOPSECRET_SIBLING"
 SECRET_DIR="$WORK/host-home"; mkdir -p "$SECRET_DIR"
 SECRET="$SECRET_DIR/.aws-credentials"; echo "TOPSECRET_AKIA_do_not_leak" > "$SECRET"
 export GAFFER_DATA GAFFER_SANDBOX_IMAGE="$_IMG"
+# External review #6: a node_modules symlink the REPOSITORY planted (pointing at the host
+# secret's directory) must not become a mount, while the link the runner creates (the
+# primary checkout's own node_modules, as gaffer_link_node_modules makes it) still works.
+mkdir -p "$REPO/node_modules/legit-dep"; echo LEGIT_DEP_CONTENT > "$REPO/node_modules/legit-dep/index.js"
+ln -s "$REPO/node_modules" "$WT/node_modules"
+mkdir -p "$WT/packages/evil"; ln -s "$SECRET_DIR" "$WT/packages/evil/node_modules"
 
 WRF="$GAFFER_DATA/sandbox-write-roots"; printf '%s\n' "$WT" > "$WRF"
 RRF="$GAFFER_DATA/sandbox-read-roots"; : > "$RRF"
@@ -109,6 +115,8 @@ PAYLOAD="
   if git -C '$WT' status >/dev/null 2>&1; then echo GIT_STATUS_OK; else echo GIT_STATUS_FAIL; fi
   if git -C '$WT' add canary >/dev/null 2>&1 && git -C '$WT' -c user.email=s@x -c user.name=s commit -qm sandbox-commit >/dev/null 2>&1; then echo GIT_COMMIT_OK; else echo GIT_COMMIT_FAIL; fi
   if echo x >> '$GIT_COMMON/config' 2>/dev/null; then echo GITCONFIG_WRITABLE; else echo GITCONFIG_RO; fi
+  if cat '$WT/packages/evil/node_modules/.aws-credentials' 2>/dev/null | grep -q TOPSECRET; then echo DEPLINK_LEAK; else echo DEPLINK_ISOLATED; fi
+  if grep -q LEGIT_DEP_CONTENT '$WT/node_modules/legit-dep/index.js' 2>/dev/null; then echo DEPLINK_OK; else echo DEPLINK_MISSING; fi
 "
 
 # The wrapped argv names THIS call's --mcp-config so the wrapper keeps that one file
@@ -118,13 +126,17 @@ echo "$OUT" | sed 's/^/    /'
 
 fail=0
 for want in READ_ISOLATED EGRESS_BLOCKED RAWIP_BLOCKED WRITE_OK NNP_SET CAPS_DROPPED \
-            DATA_MASKED OWN_MCP_OK DB_RW_OK GIT_STATUS_OK GIT_COMMIT_OK GITCONFIG_RO; do
+            DATA_MASKED OWN_MCP_OK DB_RW_OK GIT_STATUS_OK GIT_COMMIT_OK GITCONFIG_RO \
+            DEPLINK_ISOLATED DEPLINK_OK; do
   if echo "$OUT" | grep -q "$want"; then echo "  ok   $want"; else echo "  FAIL expected $want"; fail=1; fi
 done
 for bad in READ_LEAK EGRESS_LEAK RAWIP_LEAK WRITE_FAIL NNP_UNSET CAPS_KEPT \
-           DATA_LEAK OWN_MCP_MISSING DB_RW_FAIL GIT_STATUS_FAIL GIT_COMMIT_FAIL GITCONFIG_WRITABLE; do
+           DATA_LEAK OWN_MCP_MISSING DB_RW_FAIL GIT_STATUS_FAIL GIT_COMMIT_FAIL GITCONFIG_WRITABLE \
+           DEPLINK_LEAK DEPLINK_MISSING; do
   if echo "$OUT" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
 done
+# The refused link is named in a WARNING (never mounted silently, never fails open).
+if echo "$OUT" | grep -qF "symlink $WT/packages/evil/node_modules"; then echo "  ok   the repository's external node_modules link was refused with a WARNING"; else echo "  FAIL no warning for the external node_modules link"; fail=1; fi
 # The write must have actually landed on the host worktree (proves the rw mount round-trips).
 if [ -f "$WT/canary" ]; then echo "  ok   worktree write round-tripped to host"; else echo "  FAIL canary not on host"; fail=1; fi
 # The commit made INSIDE must be on the host repo's branch (the .git mounts round-trip).

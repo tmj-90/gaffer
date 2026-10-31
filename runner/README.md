@@ -382,7 +382,11 @@ best-effort OS-level containment layer *on top of* the worktree + hook, via a
 **provider seam** (`sandbox-exec` and `docker` today; a microVM provider is a design sketch).
 It is defence-in-depth, **not** a security guarantee — see
 [`STRICT_MODE.md`](STRICT_MODE.md) for the provider model, the network caveat,
-and per-repo config.
+and per-repo config. Under the `docker` provider no path inside the worktree can
+choose a mount: a `node_modules` symlink is mounted only when it is the runner's own
+link to the primary checkout's `node_modules`, a `.git` file only when git's worktree
+registration confirms it, and anything else is skipped with a `WARNING`
+(`lib/sandbox-docker.sh`, [`SECURITY.md`](../SECURITY.md)).
 
 ## Run the showcase
 ```bash

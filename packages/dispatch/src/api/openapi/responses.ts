@@ -220,8 +220,13 @@ export const ApproveOutcome = z
     sentence: str.describe("One line under the button: what follows the click."),
     via: z.enum(["pr", "local"]).nullable(),
     pr_url: nstr,
-    lands_repo: nstr.describe("The write repo a landing merges."),
-    not_landed_repos: z.array(str).describe("Write repos no landing path merges."),
+    lands_repo: nstr.describe("The primary write repo a landing merges first."),
+    also_lands_repos: z
+      .array(str)
+      .describe("The other write repos the same landing merges after it, one merge each."),
+    not_landed_repos: z
+      .array(str)
+      .describe("Write repos with no checkout here: no landing path can merge them."),
     review_mode: z.enum(["human", "agent", "both"]),
   })
   .strict() satisfies ZodType<ApproveOutcomeType>;

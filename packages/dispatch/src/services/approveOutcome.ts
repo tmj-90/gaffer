@@ -20,6 +20,12 @@
  * merge gate on the combination, CI re-read before landing, a PR merge gh refuses) are
  * not certain at approve time, so they are said as what runs next, never as an outcome.
  *
+ * A multi-repo ticket lands EVERY write repo with a checkout (PER-REPOSITORY LANDING,
+ * services/landingStatus.ts): the approval pins each repo's head, and the merge lane and
+ * Merge now land them primary first, each through the merge gate on its own default
+ * branch. A repo that fails is held with the landed ones recorded (partly landed), and
+ * the next landing lands only the rest.
+ *
  * Pure: every input is a fact the caller read from the same predicates approveReview,
  * the approve route and the merge lane use (see Dispatch.approveOutcomeFacts).
  */
@@ -59,12 +65,14 @@ export interface ApproveOutcomeFacts {
   prUrl: string | null;
   /** GAFFER_PR_MERGE_METHOD (merge · squash · rebase). */
   prMergeMethod: string;
-  /** The write repo the landing paths merge (the first write repo with a local path). */
+  /** The PRIMARY write repo the landing paths merge first (the first with a local path). */
   landsRepo: string | null;
   /** That repo's default branch. */
   baseBranch: string | null;
-  /** The other write repos: no landing path merges them. */
-  otherWriteRepos: string[];
+  /** The other write repos with a checkout: each lands after the primary, the same way. */
+  alsoLandsRepos: string[];
+  /** Write repos with no checkout on this machine: no landing path can merge them. */
+  noCheckoutRepos: string[];
 }
 
 export interface ApproveOutcome {
@@ -84,9 +92,11 @@ export interface ApproveOutcome {
   /** How a landing merges: through the PR, locally, or no landing follows directly. */
   via: "pr" | "local" | null;
   pr_url: string | null;
-  /** The write repo a landing merges; null when no landing follows. */
+  /** The primary write repo a landing merges first; null when no landing follows. */
   lands_repo: string | null;
-  /** Write repos no landing path merges (a multi-repo ticket lands partially). */
+  /** The other write repos the same landing merges after it (one merge per repo). */
+  also_lands_repos: string[];
+  /** Write repos with no checkout here: no landing path can merge them. */
   not_landed_repos: string[];
   review_mode: ReviewMode;
 }
@@ -106,10 +116,17 @@ function landingClause(f: ApproveOutcomeFacts): string {
   return `it merges ${repo} locally`;
 }
 
+/** A multi-repo landing: every repo with a checkout lands, one merge each. */
 function partialClause(f: ApproveOutcomeFacts): string {
-  if (!f.landsRepo || f.otherWriteRepos.length === 0) return "";
-  const others = andList(f.otherWriteRepos);
-  return ` Only ${f.landsRepo} lands: ${others} ${f.otherWriteRepos.length === 1 ? "is" : "are"} not merged by any landing path, so merge ${f.otherWriteRepos.length === 1 ? "it" : "them"} by hand.`;
+  if (!f.landsRepo) return "";
+  let out = "";
+  if (f.alsoLandsRepos.length > 0)
+    out +=
+      ` ${andList(f.alsoLandsRepos)} ${f.alsoLandsRepos.length === 1 ? "lands" : "land"} after it the same way, each through the merge gate on its own default branch.` +
+      " A repo that fails is held with the landed ones recorded (Approved · partly landed), and the next landing merges only the rest.";
+  if (f.noCheckoutRepos.length > 0)
+    out += ` ${andList(f.noCheckoutRepos)} ${f.noCheckoutRepos.length === 1 ? "has" : "have"} no checkout on this machine, so no landing path can merge ${f.noCheckoutRepos.length === 1 ? "it" : "them"}.`;
+  return out;
 }
 
 function bothClause(f: ApproveOutcomeFacts): string {
@@ -144,6 +161,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       sentence: `Required CI has not passed${at} (${state}). The server refuses approval until a passing result is recorded for this commit.`,
       via: null,
       lands_repo: null,
+      also_lands_repos: [],
       not_landed_repos: [],
     };
   }
@@ -162,13 +180,15 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       sentence: `It moves to In testing, not to merge. ${why} A PASS takes it to Ready for merge, where ${afterPass(f)}.${bothClause(f)}`,
       via: null,
       lands_repo: null,
+      also_lands_repos: [],
       not_landed_repos: [],
     };
   }
   const landed = {
     via: (f.prUrl ? "pr" : "local") as "pr" | "local",
     lands_repo: f.landsRepo,
-    not_landed_repos: f.landsRepo ? [...f.otherWriteRepos] : [],
+    also_lands_repos: f.landsRepo ? [...f.alsoLandsRepos] : [],
+    not_landed_repos: [...f.noCheckoutRepos],
   };
   if (f.autoMerge && f.mergeCommand) {
     return {
@@ -213,6 +233,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
     sentence: `It waits in Ready for merge: ${why}, so it lands only when someone presses Merge now.${bothClause(f)}`,
     via: null,
     lands_repo: null,
+    also_lands_repos: [],
     not_landed_repos: [],
   };
 }

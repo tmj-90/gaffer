@@ -45,7 +45,8 @@ const FACTS: ApproveOutcomeFacts = {
   prMergeMethod: "merge",
   landsRepo: "billing-api",
   baseBranch: "main",
-  otherWriteRepos: [],
+  alsoLandsRepos: [],
+  noCheckoutRepos: [],
 };
 const facts = (o: Partial<ApproveOutcomeFacts> = {}): ApproveOutcomeFacts => ({ ...FACTS, ...o });
 
@@ -140,13 +141,32 @@ describe("decideApproveOutcome: one outcome per approve path", () => {
     expect(o.sentence).toContain("no pull request was recorded");
   });
 
-  it("a multi-repo ticket names the repos no landing path merges", () => {
+  it("a multi-repo ticket lands every repo: the others after the primary, held if one fails", () => {
     const o = decideApproveOutcome(
-      facts({ autoMerge: true, mergeCommand: true, otherWriteRepos: ["web-storefront"] }),
+      facts({ autoMerge: true, mergeCommand: true, alsoLandsRepos: ["web-storefront"] }),
     );
     expect(o.lands_repo).toBe("billing-api");
-    expect(o.not_landed_repos).toEqual(["web-storefront"]);
-    expect(o.sentence).toContain("Only billing-api lands: web-storefront is not merged");
+    expect(o.also_lands_repos).toEqual(["web-storefront"]);
+    expect(o.not_landed_repos).toEqual([]);
+    expect(o.sentence).toContain(
+      "web-storefront lands after it the same way, each through the merge gate on its own default branch.",
+    );
+    expect(o.sentence).toContain("Approved · partly landed");
+    expect(o.sentence).not.toMatch(/by hand|Only billing-api lands/);
+    // The merge lane lands them all the same way.
+    const tick = decideApproveOutcome(
+      facts({ autoMerge: true, alsoLandsRepos: ["web-storefront"] }),
+    );
+    expect(tick.kind).toBe("land_next_tick");
+    expect(tick.also_lands_repos).toEqual(["web-storefront"]);
+  });
+
+  it("a write repo with no checkout here is named as one no landing path can merge", () => {
+    const o = decideApproveOutcome(
+      facts({ autoMerge: true, mergeCommand: true, noCheckoutRepos: ["docs-site"] }),
+    );
+    expect(o.not_landed_repos).toEqual(["docs-site"]);
+    expect(o.sentence).toContain("docs-site has no checkout on this machine");
   });
 
   it("REVIEW_MODE both: the click is the human confirmation of the agent screen", () => {
@@ -227,13 +247,20 @@ function freshWg(): Dispatch {
 /** A ticket in review with ONE write repo on disk and a real delivery diff. */
 function inReview(
   wg: Dispatch,
-  opts: { extraWrite?: string } = {},
+  opts: { extraWrite?: string; extraOnDisk?: boolean } = {},
 ): { id: string; number: number } {
   const t = wg.createTicket({ title: "Ship", description: "x", policy_pack: "team_light" }, human);
   const { ac } = wg.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
   giveTicketRealDelivery(wg, t.id, human, { repoName: "billing-api" });
   if (opts.extraWrite) {
-    const r = wg.registerRepository({ name: opts.extraWrite, default_branch: "main" }, human);
+    const r = wg.registerRepository(
+      {
+        name: opts.extraWrite,
+        default_branch: "main",
+        ...(opts.extraOnDisk ? { local_path: process.cwd() } : {}),
+      },
+      human,
+    );
     wg.setTicketRepoAccess(
       { ticket_id: t.id, repo_id: r.id, access: "write", relation: "confirmed" },
       human,
@@ -311,13 +338,27 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
     wg.db.close();
   });
 
-  it("a multi-repo ticket: the repo every landing path merges, and the one none does", () => {
+  it("a multi-repo ticket with both checkouts: every repo lands, the primary first", () => {
+    process.env.AUTO_MERGE = "1";
+    const wg = freshWg();
+    const { id } = inReview(wg, { extraWrite: "web-storefront", extraOnDisk: true });
+    const o = wg.approveOutcome(id, { mergeCommand: true });
+    expect(o.lands_repo).toBe("billing-api");
+    expect(o.also_lands_repos).toEqual(["web-storefront"]);
+    expect(o.not_landed_repos).toEqual([]);
+    expect(o.sentence).toContain("web-storefront lands after it the same way");
+    wg.db.close();
+  });
+
+  it("a write repo with no checkout on this machine is the one no landing path merges", () => {
     process.env.AUTO_MERGE = "1";
     const wg = freshWg();
     const { id } = inReview(wg, { extraWrite: "web-storefront" });
     const o = wg.approveOutcome(id, { mergeCommand: true });
     expect(o.lands_repo).toBe("billing-api");
+    expect(o.also_lands_repos).toEqual([]);
     expect(o.not_landed_repos).toEqual(["web-storefront"]);
+    expect(o.sentence).toContain("web-storefront has no checkout on this machine");
     wg.db.close();
   });
 

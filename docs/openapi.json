@@ -9674,14 +9674,21 @@
                 "type": "null"
               }
             ],
-            "description": "The write repo a landing merges."
+            "description": "The primary write repo a landing merges first."
+          },
+          "also_lands_repos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The other write repos the same landing merges after it, one merge each."
           },
           "not_landed_repos": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Write repos no landing path merges."
+            "description": "Write repos with no checkout here: no landing path can merge them."
           },
           "review_mode": {
             "type": "string",
@@ -9703,6 +9710,7 @@
           "via",
           "pr_url",
           "lands_repo",
+          "also_lands_repos",
           "not_landed_repos",
           "review_mode"
         ],

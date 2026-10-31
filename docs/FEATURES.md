@@ -283,9 +283,12 @@ structural barrier the whole design hangs on.
   (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
   the landing), **Approve, waits for Merge now** (Auto-merge off), or **Approve
   held: CI not passed** (required CI has no PASS for the commit, so the server
-  would refuse). A line under the button says what follows; a multi-repo ticket
-  names the repos no landing path merges, and under Review mode *both* the line
-  says this click is the human confirmation. The armed button only says it lands
+  would refuse). A line under the button says what follows; on a multi-repo
+  ticket it says every write repo lands the same way, one merge each through the
+  merge gate, and that a repo that fails is held while the landed ones stay
+  recorded (a repo with no checkout on this machine is named as one nothing can
+  merge); under Review mode *both* the line says this click is the human
+  confirmation. The armed button only says it lands
   when it does ("Confirm and land now"); after approval the button and the band
   under it say where the change went (`GET /tickets/:id/diff` carries
   `approve_outcome`).

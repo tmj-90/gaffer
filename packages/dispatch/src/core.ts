@@ -1618,11 +1618,12 @@ export class Dispatch {
    * WHAT HAPPENS ON APPROVE: the facts a HUMAN approve of this ticket acts on, read from
    * the same predicates the approve path uses — the tester route and the CI hold come from
    * ReviewGateService (the code approveReview runs), AUTO_MERGE as the approve route reads
-   * it, the merge gate as the runner's merge lane asks it (the autonomyGateDecision predicate), and the
-   * landing repo as every landing path resolves it (the first write repo with a local
-   * path; the others are not merged). `mergeCommand` is whether the API's merge runner
-   * has a command to start (the caller holds the runner). `ci: false` skips the CI read
-   * (it runs git) for an approval that already happened.
+   * it, the merge gate as the runner's merge lane asks it (the autonomyGateDecision
+   * predicate), and the landing repos as every landing path plans them (the first write
+   * repo with a local path lands first, then each other write repo with one; see
+   * landingStatus.ts). `mergeCommand` is whether the API's merge runner has a command to
+   * start (the caller holds the runner). `ci: false` skips the CI read (it runs git) for
+   * an approval that already happened.
    */
   approveOutcomeFacts(
     ref: string,
@@ -1659,7 +1660,10 @@ export class Dispatch {
       prMergeMethod: ["merge", "squash", "rebase"].includes(method) ? method : "merge",
       landsRepo: lands ? lands.name : null,
       baseBranch: lands ? lands.default_branch || null : null,
-      otherWriteRepos: writes.filter((l) => l !== lands).map((l) => l.name),
+      // PER-REPOSITORY LANDING: every other write repo with a checkout lands too (the
+      // landing plan is the approved revisions with a local path, primary first).
+      alsoLandsRepos: writes.filter((l) => l !== lands && l.local_path).map((l) => l.name),
+      noCheckoutRepos: writes.filter((l) => !l.local_path).map((l) => l.name),
     };
   }
 

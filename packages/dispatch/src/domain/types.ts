@@ -855,6 +855,12 @@ export interface TicketRepoDelivery {
   repo_id: string;
   branch_name: string | null;
   commit_sha: string | null;
+  /**
+   * GATE INTEGRITY: the commit the delivery branch was cut from (recorded by the
+   * runner at worktree creation; null on rows recorded before v30). The integrity
+   * scan diffs from it rather than from the movable base branch name.
+   */
+  base_sha: string | null;
   pr_url: string | null;
   status: TicketRepoDeliveryStatus;
   evidence_ref: string | null;

@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 29;
+export const SCHEMA_VERSION = 30;
 
 // No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
 // them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.
@@ -436,6 +436,10 @@ CREATE TABLE IF NOT EXISTS ticket_repo_delivery (
   repo_id      TEXT NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
   branch_name  TEXT,
   commit_sha   TEXT,
+  -- GATE INTEGRITY (v29→v30): the commit the delivery branch was cut from, recorded
+  -- by the runner when it creates the worktree. The integrity scan diffs from it
+  -- (never from the base branch NAME, which an agent could move).
+  base_sha     TEXT,
   pr_url       TEXT,
   status       TEXT NOT NULL DEFAULT 'not_started' CHECK (status IN (
     'not_started','branch_created','changes_made','tests_failed',

@@ -301,6 +301,10 @@ function migrateLocked(db: Db): void {
   // an EXISTING tickets table — a plain additive ALTER (0/1, default 0, no CHECK), so
   // no rebuild. No-op on a fresh DB (SCHEMA_SQL creates it) and idempotent afterwards.
   alterTicketsAddAllowTestChanges(db);
+  // GATE INTEGRITY (v29→v30): add the runner-recorded `base_sha` column to an EXISTING
+  // ticket_repo_delivery table — a plain additive ALTER (nullable TEXT; NULL ⇒ a
+  // delivery recorded before the column, scanned from the merge-base as before).
+  alterRepoDeliveryAddBaseSha(db);
   // SQUAD (v26→v27): add the presentation-only `squad_name` + `shirt_number` columns
   // to an EXISTING agents table — plain additive ALTERs (NULL backfill ⇒ unnamed,
   // no number), so no rebuild. Must run BEFORE SCHEMA_SQL, whose partial unique
@@ -483,6 +487,17 @@ function alterTicketsAddAllowTestChanges(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("allow_test_changes")) {
     db.exec("ALTER TABLE tickets ADD COLUMN allow_test_changes INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+/** GATE INTEGRITY additive migration (v29→v30): ticket_repo_delivery.base_sha. */
+function alterRepoDeliveryAddBaseSha(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(ticket_repo_delivery)").all() as Array<{
+    name: string;
+  }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  if (!info.some((c) => c.name === "base_sha")) {
+    db.exec("ALTER TABLE ticket_repo_delivery ADD COLUMN base_sha TEXT");
   }
 }
 

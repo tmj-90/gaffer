@@ -284,8 +284,11 @@ export function registerTicket(program: Command): void {
     .command("allow-test-changes <ref>")
     .description(
       "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
-        "skip marker, rewrite a gate script) — the runner's integrity gate row then reads " +
+        "skip marker, change a gate script) — the runner's integrity gate row then reads " +
         "PASS with a note instead of FLAG, and an auto-approve is no longer held for it. " +
+        "It does NOT change which command the gate runs: a gate script the delivery changed " +
+        "still runs as the BASE commit has it, so to change the gate itself, change the " +
+        "repo's registered test/lint command or merge the script change to the base first. " +
         "--off withdraws the allowance. Human/admin only; recorded as an event.",
     )
     .option("--off", "withdraw the allowance (test changes are flagged again)", false)
@@ -585,6 +588,10 @@ export function registerTicket(program: Command): void {
     .description("Record (upsert) a repo's delivery artifact on a ticket")
     .option("--branch <branch>", "branch name")
     .option("--commit <sha>", "commit sha")
+    .option(
+      "--base-sha <sha>",
+      "the commit the delivery branch was cut from (the runner records it; the gate-integrity scan diffs from it)",
+    )
     .option("--pr <url>", "pull-request url")
     .option("--status <status>", "delivery status")
     .option("--evidence <ref>", "evidence reference")
@@ -596,6 +603,7 @@ export function registerTicket(program: Command): void {
           repo_id: repoRef,
           branch_name: opts.branch,
           commit_sha: opts.commit,
+          base_sha: opts.baseSha,
           pr_url: opts.pr,
           status: opts.status,
           evidence_ref: opts.evidence,

@@ -235,6 +235,11 @@ interface DiffTarget {
   rangeDesc: string;
   /** The repo's registered gate commands (the integrity scan's named scripts). */
   gateCommands: string[];
+  /**
+   * GATE INTEGRITY: the commit the delivery was cut from, as the runner recorded it at
+   * worktree creation (null on older rows). The integrity scan diffs from it.
+   */
+  baseSha: string | null;
 }
 
 /**
@@ -254,7 +259,9 @@ function resolveDiffTargets(
   return writeRepos.map((repo) => {
     const baseBranch = repo.default_branch || "main";
     const legacyBranch = deps.repos.ticketRepoBranch(ticket.id, repo.id);
-    const deliveryBranch = deps.repoDeliveries.find(ticket.id, repo.id)?.branch_name ?? null;
+    const delivery = deps.repoDeliveries.find(ticket.id, repo.id);
+    const deliveryBranch = delivery?.branch_name ?? null;
+    const recordedBase = delivery?.base_sha ?? null;
     const branch =
       nonEmpty(legacyBranch) ?? nonEmpty(deliveryBranch) ?? nonEmpty(ticket.branch_name);
 
@@ -315,6 +322,7 @@ function resolveDiffTargets(
         gateCommands: [repo.test_command, repo.lint_command].filter(
           (c): c is string => typeof c === "string" && c.trim() !== "",
         ),
+        baseSha: recordedBase && /^[0-9a-f]{40,64}$/.test(recordedBase) ? recordedBase : null,
       },
     };
   });
@@ -334,9 +342,15 @@ function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
 
 /**
  * GATE INTEGRITY for one diff target: the base..head integrity findings, read from the
- * real repo (merge-base of the default branch and the delivery branch, so the default
- * branch moving on does not count as the delivery deleting anything). A git failure is
- * an `incomplete` finding — it flags, never passes silently.
+ * real repo. The base is the commit the runner RECORDED when it cut the delivery
+ * branch (`ticket_repo_delivery.base_sha`), never the base branch name alone: an agent
+ * can move that branch from inside its worktree (`git branch -f main HEAD`), and a
+ * merge-base taken from the moved branch would hide the commits before the move. When
+ * the base branch no longer contains the recorded commit (it was rewritten), the scan
+ * still runs from the recorded commit and the gap is an `incomplete` finding. Rows
+ * recorded before the column existed fall back to the merge-base of the default branch
+ * and the delivery branch. A git failure is an `incomplete` finding — it flags, never
+ * passes silently.
  */
 function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindings {
   const git = (args: readonly string[], opts?: { maxBuffer?: number }): GitResult =>
@@ -346,17 +360,37 @@ function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindin
     extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
   };
   if (t.isBootstrap) return collectTestIntegrity(git, GIT_EMPTY_TREE, "HEAD", opts);
+  const incompleteOnly = (why: string): TestIntegrityFindings => ({
+    deleted: [],
+    renamed: [],
+    markers: [],
+    scripts: [],
+    configs: [],
+    incomplete: [why],
+  });
+  if (t.baseSha) {
+    const short = t.baseSha.slice(0, 12);
+    if (runGit(t.localPath, ["cat-file", "-e", `${t.baseSha}^{commit}`]).status !== 0) {
+      return incompleteOnly(
+        `the commit ${t.branch} was cut from (${short}) is no longer in the repository`,
+      );
+    }
+    const extra: string[] = [];
+    const anc = runGit(t.localPath, ["merge-base", "--is-ancestor", t.baseSha, t.baseBranch]);
+    if (anc.status !== 0) {
+      extra.push(
+        anc.status === 1
+          ? `${t.baseBranch} no longer contains ${short}, the commit ${t.branch} was cut from (the base branch was rewritten)`
+          : `could not check that ${t.baseBranch} still contains ${short}, the commit ${t.branch} was cut from`,
+      );
+    }
+    const f = collectTestIntegrity(git, t.baseSha, t.branch!, opts);
+    return extra.length ? { ...f, incomplete: [...f.incomplete, ...extra] } : f;
+  }
   const mb = runGit(t.localPath, ["merge-base", t.baseBranch, t.branch!]);
   const base = mb.status === 0 ? mb.stdout.trim() : "";
   if (!/^[0-9a-f]{40,64}$/.test(base)) {
-    return {
-      deleted: [],
-      renamed: [],
-      markers: [],
-      scripts: [],
-      configs: [],
-      incomplete: [`could not find where ${t.branch} branched from ${t.baseBranch}`],
-    };
+    return incompleteOnly(`could not find where ${t.branch} branched from ${t.baseBranch}`);
   }
   return collectTestIntegrity(git, base, t.branch!, opts);
 }

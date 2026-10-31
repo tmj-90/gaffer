@@ -615,6 +615,15 @@ export class TicketService {
 
   recordRepoDelivery(raw: unknown, actor: Actor): RepoDeliveryResult {
     const input = recordRepoDeliveryInput.parse(raw);
+    // GATE INTEGRITY: the base commit is the runner's record of where the delivery was
+    // cut; the delivering agent never sets it (its MCP tool does not pass it either).
+    if (input.base_sha !== undefined && actor.type === "agent") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "An agent cannot record a delivery's base commit; the runner records it.",
+        { ticket_id: input.ticket_id, actor_type: actor.type },
+      );
+    }
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(input.ticket_id);
@@ -635,6 +644,7 @@ export class TicketService {
           repoId: repo.id,
           branchName: input.branch_name ?? null,
           commitSha: input.commit_sha ?? null,
+          baseSha: input.base_sha ?? null,
           prUrl: input.pr_url ?? null,
           status: input.status ?? existing?.status ?? "not_started",
           evidenceRef: input.evidence_ref ?? null,

@@ -12,6 +12,8 @@ export interface TicketRepoDeliveryUpsert {
   repoId: string;
   branchName: string | null;
   commitSha: string | null;
+  /** Omitted/null leaves the stored base_sha untouched. */
+  baseSha?: string | null;
   prUrl: string | null;
   status: TicketRepoDeliveryStatus;
   evidenceRef: string | null;
@@ -32,14 +34,15 @@ export class TicketRepoDeliveryRepository {
     this.db
       .prepare(
         `INSERT INTO ticket_repo_delivery
-          (ticket_id, repo_id, branch_name, commit_sha, pr_url, status, evidence_ref,
+          (ticket_id, repo_id, branch_name, commit_sha, base_sha, pr_url, status, evidence_ref,
            created_at, updated_at)
          VALUES
-          (@ticket_id, @repo_id, @branch_name, @commit_sha, @pr_url, @status, @evidence_ref,
-           @now, @now)
+          (@ticket_id, @repo_id, @branch_name, @commit_sha, @base_sha, @pr_url, @status,
+           @evidence_ref, @now, @now)
          ON CONFLICT(ticket_id, repo_id) DO UPDATE SET
            branch_name  = COALESCE(excluded.branch_name, branch_name),
            commit_sha   = COALESCE(excluded.commit_sha, commit_sha),
+           base_sha     = COALESCE(excluded.base_sha, base_sha),
            pr_url       = COALESCE(excluded.pr_url, pr_url),
            status       = excluded.status,
            evidence_ref = COALESCE(excluded.evidence_ref, evidence_ref),
@@ -50,6 +53,7 @@ export class TicketRepoDeliveryRepository {
         repo_id: input.repoId,
         branch_name: input.branchName,
         commit_sha: input.commitSha,
+        base_sha: input.baseSha ?? null,
         pr_url: input.prUrl,
         status: input.status,
         evidence_ref: input.evidenceRef,

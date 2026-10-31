@@ -1,7 +1,8 @@
 // S9 the memory ledger. The repo page shows its digest (or its honest empty state)
 // and the feature ledger by status; a Send back… from Review with "also capture as
-// a lore draft" files the reason as draft lore (reject-to-lore); the Memory view
-// rejects that draft with a reason; an Approve pressed on a draft that is no longer
+// a lore draft" files the reason as draft lore (reject-to-lore), in one toast that
+// links to Memory; the Memory view's search finds that draft, its History reads its
+// versions, and the view rejects it with a reason; an Approve pressed on a draft that is no longer
 // a draft (closed elsewhere while the page was open) is refused with a readable
 // message, not an outage; a ticket that merges leaves a distilled requirement draft;
 // the ticket page shows what the delivery prompt was primed with.
@@ -91,6 +92,31 @@ export default async function s9(t, L) {
     await p.selectOption("select.lore-filter-status", "draft");
     const row = p.locator(`.lore-row[data-lore-id="${drafted.id}"]`);
     await row.waitFor({ timeout: 15000 });
+    // The search box narrows the rows in place; the row's History reads its versions.
+    await p.fill(".lore-search-input", "pure helpers mutation");
+    const found = await row.isVisible();
+    const visibleRows = await p.locator(".lore-row:not([hidden])").count();
+    await p.fill(".lore-search-input", "");
+    await row.locator("details.lore-history > summary").click();
+    const hist = await L.maybe(
+      async () => {
+        const txt =
+          (await row
+            .locator(".lore-history-body")
+            .textContent()
+            .catch(() => "")) || "";
+        return /No earlier versions|v\d+ · current/.test(txt) ? txt : null;
+      },
+      "lore history",
+      10000,
+      300,
+    );
+    t.check(
+      found && visibleRows >= 1 && hist,
+      `Memory: the search box found the captured draft, and its History read the versions ("${(hist || "").slice(0, 60)}")`,
+      `lore search/history: found=${found} rows shown=${visibleRows} history='${hist}'`,
+    );
+    await row.locator("details.lore-history > summary").click();
     await row.locator("button.lore-reject").click();
     await row.locator("input.lore-reason").fill("too specific to one review");
     const resP = p.waitForResponse(

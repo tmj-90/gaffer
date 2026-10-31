@@ -22389,6 +22389,7 @@ const loreFilter = {
   status: "",
   kind: "",
   repo: "",
+  q: "", // the search box over the page shown (kept across a refresh)
   pageRepo: null,
   offset: 0,
   limit: 50,
@@ -22928,6 +22929,7 @@ function renderLoreList(res, repo, opts = {}) {
                 "Served into a ticket that was then reworked or blocked — curate it with `memory review`.",
               )
             : null,
+          l.id ? loreHistory(l) : null,
         ]),
         // Ratification: only a DRAFT can be approved or rejected (an active record is
         // deprecated/superseded through the CLI's lifecycle verbs, not from here).
@@ -22936,6 +22938,20 @@ function renderLoreList(res, repo, opts = {}) {
     );
   };
   const list = el("div", { class: "lore-list" });
+  // The search box narrows the rows shown in place (what each row says: title,
+  // summary, kind, repos, tags, source); every word must match.
+  const searchText = new Map();
+  const rowOf = (l) => {
+    const node = row(l);
+    searchText.set(
+      node,
+      [l.title, l.summary, l.kind, l.source, ...(l.repos || []), ...(l.tags || [])]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase(),
+    );
+    return node;
+  };
   for (const g of LORE_GROUPS) {
     const items = lore.filter((l) => g.statuses.includes(l.status));
     if (!items.length) continue;
@@ -22945,7 +22961,7 @@ function renderLoreList(res, repo, opts = {}) {
         el("span", { class: "count" }, String(items.length)),
       ]),
     );
-    for (const l of items) list.appendChild(row(l));
+    for (const l of items) list.appendChild(rowOf(l));
   }
   const other = lore.filter((l) => !LORE_GROUPS.some((g) => g.statuses.includes(l.status)));
   if (other.length) {
@@ -22955,8 +22971,9 @@ function renderLoreList(res, repo, opts = {}) {
         el("span", { class: "count" }, String(other.length)),
       ]),
     );
-    for (const l of other) list.appendChild(row(l));
+    for (const l of other) list.appendChild(rowOf(l));
   }
+  card.appendChild(loreSearch(list, searchText, lore.length, total));
   card.appendChild(list);
   card.appendChild(loreNote);
 
@@ -22995,6 +23012,105 @@ function renderLoreList(res, repo, opts = {}) {
     );
   }
   return card;
+}
+
+/**
+ * The search box over the lore rows shown: every word must appear in a row (title,
+ * summary, kind, repos, tags, source). It narrows in place, hides a group heading
+ * left with no row, and says how many match; when the store holds more than this
+ * page it says the search covers this page, which the filters above narrow.
+ */
+function loreSearch(list, searchText, shown, total) {
+  const input = el("input", {
+    type: "search",
+    class: "lore-search-input",
+    value: loreFilter.q,
+    autocomplete: "off",
+    placeholder: "Words in a title, summary, tag or repo",
+  });
+  const count = el("p", { class: "lore-search-count dim", role: "status" });
+  const apply = () => {
+    loreFilter.q = input.value;
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    let hits = 0;
+    let heading = null;
+    let headingHits = 0;
+    const closeHeading = () => {
+      if (heading) heading.hidden = words.length > 0 && headingHits === 0;
+    };
+    for (const node of list.children) {
+      if (node.tagName === "H3") {
+        closeHeading();
+        heading = node;
+        headingHits = 0;
+        continue;
+      }
+      const text = searchText.get(node) || "";
+      const match = words.every((w) => text.includes(w));
+      node.hidden = !match;
+      if (match) {
+        hits += 1;
+        headingHits += 1;
+      }
+    }
+    closeHeading();
+    count.textContent = words.length
+      ? `${hits} of the ${plural(shown, "record")} shown ${hits === 1 ? "matches" : "match"}${total > shown ? ` (the store holds ${total}: the filters above reach the rest)` : ""}.`
+      : "";
+    count.hidden = !words.length;
+  };
+  input.addEventListener("input", apply);
+  apply();
+  return el("div", { class: "lore-search" }, [field("Search lore", input), count]);
+}
+
+/**
+ * A lore row's History: every earlier version of the record (each update snapshots
+ * the one before), newest first, read on first open from
+ * GET /api/memory/lore/:id/history. Read-only: it changes nothing.
+ */
+function loreHistory(l) {
+  const body = el("div", { class: "lore-history-body" });
+  const box = el("details", { class: "lore-history" }, [el("summary", {}, "History"), body]);
+  let loaded = false;
+  box.addEventListener("toggle", async () => {
+    if (!box.open || loaded) return;
+    loaded = true;
+    body.replaceChildren(el("p", { class: "dim" }, "Reading the history…"));
+    let h = null;
+    try {
+      h = await api("GET", `/api/memory/lore/${encodeURIComponent(l.id)}/history`);
+    } catch (e) {
+      h = { available: false, reason: (e && e.message) || "the request failed" };
+    }
+    if (!h || !h.available) {
+      loaded = false; // let a later open try again
+      body.replaceChildren(
+        el("p", { class: "dim" }, `History unavailable: ${(h && h.reason) || "no answer"}.`),
+      );
+      return;
+    }
+    const line = (v, current) =>
+      el("li", { class: `lore-version${current ? " is-current" : ""}` }, [
+        el("p", { class: "lv-head" }, [
+          el("b", { class: "tabnum" }, `v${v.version}`),
+          ` · ${current ? "current" : v.status} · `,
+          el("time", { datetime: v.at }, v.at ? fmtDay(v.at) : "undated"),
+        ]),
+        v.title && v.title !== l.title ? el("p", { class: "lv-title" }, v.title) : null,
+        v.summary ? el("p", { class: "lv-summary" }, v.summary) : null,
+      ]);
+    body.replaceChildren(
+      h.versions.length
+        ? el(
+            "ol",
+            { class: "lore-versions", "aria-label": `Versions of “${l.title}”, newest first` },
+            [line(h.current, true), ...h.versions.map((v) => line(v, false))],
+          )
+        : el("p", { class: "dim" }, "No earlier versions: this record has not been edited."),
+    );
+  });
+  return box;
 }
 
 // ===========================================================================

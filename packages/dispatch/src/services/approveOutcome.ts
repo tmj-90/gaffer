@@ -15,7 +15,7 @@
  *                    (OBSERVED_RISK_ESCALATED) until a person approves or allows test
  *                    changes. A HUMAN approval is not held by it: the human's outcome is
  *                    the usual one, its line says the tests changed and that the
- *                    test-changes banner lists them, and `agent_hold` names the hold.
+ *                    Flags below the button name them, and `agent_hold` names the hold.
  *   to_tester        an epic's acceptance ticket, or GAFFER_TESTING on and the ticket is
  *                    testable: approveReview routes it in_review → in_testing.
  *   land_now         AUTO_MERGE on and DISPATCH_MERGE_CMD set: the route fires the merge
@@ -201,7 +201,7 @@ function agentHold(f: ApproveOutcomeFacts): AgentHold | null {
 /** The human's line when the tests changed: not held, but read the banner first. */
 function testChangesClause(hold: AgentHold | null): string {
   return hold
-    ? " The tests that gate it changed: your approval is not held by that (only an agent's or auto approval is), and the test-changes banner above lists what changed."
+    ? " The tests that gate it changed: your approval is not held by that (only an agent's or auto approval is), and the Flags below the button name what changed."
     : "";
 }
 

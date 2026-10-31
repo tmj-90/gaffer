@@ -518,7 +518,7 @@ describe("web review: one source of evidence, one finding said once", () => {
       outcome: {
         ...OUTCOMES.waits_for_merge,
         sentence:
-          "It waits in Ready for merge: Auto-merge on approval is off, so it lands only when someone presses Merge now. The tests that gate it changed: your approval is not held by that (only an agent's or auto approval is), and the test-changes banner above lists what changed.",
+          "It waits in Ready for merge: Auto-merge on approval is off, so it lands only when someone presses Merge now. The tests that gate it changed: your approval is not held by that (only an agent's or auto approval is), and the Flags below the button name what changed.",
         agent_hold: {
           kind: "held_test_modified",
           label: "Approve held: tests changed, a person must allow it",
@@ -544,7 +544,7 @@ describe("web review: one source of evidence, one finding said once", () => {
     expect(btn().textContent).toBe("Approve, waits for Merge now");
     const next = document.querySelector(".signoff-next")?.textContent || "";
     expect(next).toContain("your approval is not held by that");
-    expect(next).toContain("test-changes banner");
+    expect(next).toContain("the Flags below the button name what changed");
   });
 
   it("the runner's integrity FLAG with a clean diff (a git-ignored file) is still asked, once", async () => {

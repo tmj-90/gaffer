@@ -278,5 +278,13 @@ describe("the sign-off's requests for a human are the current round's (real API,
     await openReview(f);
     expect(band()).toContain("Gate flagged: integrity");
     expect(summary()).not.toContain("Nothing flagged");
+    // The line under the button points at what is on the page: with a clean diff there
+    // is no test-changes banner (that is the diff's test-modified finding), only the flag.
+    const line = document.querySelector(".signoff-next")?.textContent ?? "";
+    expect(line).toContain("your approval is not held by that");
+    expect(document.querySelector(".integrity-banner")).toBeNull();
+    expect(line).not.toContain("banner");
+    expect(line).toContain("the Flags below");
+    expect(document.querySelector(".rv-flags")?.textContent).toContain("Gate flagged: integrity");
   });
 });

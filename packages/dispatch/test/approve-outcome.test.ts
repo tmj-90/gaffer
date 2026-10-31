@@ -192,7 +192,7 @@ describe("decideApproveOutcome: one outcome per approve path", () => {
     expect(human.approvable).toBe(true);
     expect(human.label).toBe("Approve, lands on next tick");
     expect(human.sentence).toContain("your approval is not held by that");
-    expect(human.sentence).toContain("the test-changes banner above lists what changed");
+    expect(human.sentence).toContain("the Flags below the button name what changed");
     expect(human.agent_hold?.kind).toBe("held_test_modified");
     expect(human.agent_hold?.holds).toEqual(holds);
     // No holds: nothing said, nothing held.

@@ -161,7 +161,11 @@ GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflic
 An optional, size-gated, round-capped two-model **planning debate**
 (`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
-from real measurements, never invented**.
+from real measurements, never invented**. Every delivery row also carries its
+`attempt_id` (a hash of the claim plus the attempt number within it, never the
+claim token) and `started_at`, so the Health report can charge the spend of the
+attempts after a send-back (a reviewer's or tester's rejection, or a retry after a
+failed gate) to rework.
 
 ## Configuration (env always wins)
 

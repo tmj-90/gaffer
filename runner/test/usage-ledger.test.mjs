@@ -39,6 +39,7 @@ const {
   resolveLedgerPath,
   UNKNOWN,
   LEDGER_FILENAME,
+  withAttempt,
 } = await import(MOD);
 const { isMeasuredRow } = await import(resolve(RUNNER_DIR, "lib", "estimate.mjs"));
 
@@ -311,6 +312,65 @@ console.log("== AC3b: CLI prints .result text AND writes the ledger (gated on GA
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+console.log("== REWORK COST: a delivery row carries its attempt id and spawn time ==");
+{
+  const dir = mkdtempSync(join(tmpdir(), "usage-attempt-"));
+  try {
+    const sampleFile = join(dir, "sample.json");
+    writeFileSync(sampleFile, JSON.stringify(SAMPLE));
+    const res = spawnSync(
+      process.execPath,
+      [
+        MOD,
+        "--kind",
+        "delivery",
+        "--ticket",
+        "7",
+        "--rc",
+        "0",
+        "--attempt-id",
+        "c0123456789ab/2",
+        "--started-at",
+        "2026-10-30T09:00:00.250Z",
+        "--json-file",
+        sampleFile,
+      ],
+      { env: { ...process.env, GAFFER_DATA: dir }, encoding: "utf8" },
+    );
+    assert("CLI with attempt flags exits 0", res.status === 0);
+    const rec = JSON.parse(readFileSync(join(dir, LEDGER_FILENAME), "utf8").trim());
+    assert("attempt_id recorded verbatim", rec.attempt_id === "c0123456789ab/2");
+    assert(
+      "started_at recorded at millisecond precision",
+      rec.started_at === "2026-10-30T09:00:00.250Z",
+    );
+    assert(
+      "the measured cost is untouched",
+      rec.total_cost_usd === 0.1234 && rec.measured === true,
+    );
+    assert(
+      "a malformed attempt id or time is dropped, never guessed",
+      !("attempt_id" in withAttempt({}, { attemptId: "bad id; rm" })) &&
+        !("started_at" in withAttempt({}, { startedAt: "yesterday-ish" })),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  const cfg = readFileSync(resolve(RUNNER_DIR, "factory.config.sh"), "utf8");
+  const tick = readFileSync(resolve(RUNNER_DIR, "tick.sh"), "utf8");
+  assert(
+    "gaffer_usage_record passes the attempt flags for delivery rows only",
+    /if \[ "\$kind" = delivery \]; then attempt=/.test(cfg) &&
+      cfg.includes('--attempt-id "$attempt"'),
+  );
+  assert(
+    "tick.sh stamps the attempt right before the delivery spawn",
+    /gaffer_delivery_attempt_stamp "\$_DELIV_ATTEMPT"[\s\S]{0,200}worker_deliver "\$PRIMARY_REPO"/.test(
+      tick,
+    ),
+  );
 }
 
 console.log("== AC4: --output-format json is wired into the consolidated invocation ==");

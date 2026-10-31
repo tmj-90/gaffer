@@ -139,6 +139,20 @@ done today. It reads the Overview's own data and refreshes on the live stream.
 Parcels, robots and stations are links with sentence labels; the stations and
 benches are also listed as text under the drawing.
 
+**Health: what the numbers mean.** `#/health` (and `GET /api/health`) reads the
+usage ledger and the ticket transition log, and says only what those can show:
+
+- **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
+  or when the runner retries it after a failed gate; both count. Every delivery
+  ledger row carries its attempt (a hash of the claim plus the attempt number,
+  never the claim token) and the time it started, so **spent on rework** is the
+  delivery spend of the attempts that started after the ticket's first send-back.
+  A $1 attempt, a rejection and a $3 correction read as $3 on rework (75% of
+  spend), and the referee's **rework rate** as 1 of 1 merged tickets sent back.
+  Each ticket's row says how many send-backs came from review and how many from
+  the runner, and whether its spend was placed by attempt or, for rows older than
+  attempt ids, by the call's end time minus its duration.
+
 ![The work board](img/board.png)
 
 *Tickets spread across the lanes: the Recurring tasks drafts being shaped,

@@ -5425,8 +5425,10 @@ function wageBill(f) {
             el(
               "small",
               {},
+              // Rework = delivery spend on the attempts after a reviewer, the tester
+              // or a failed gate sent the ticket back (the ledger's attempt timeline).
               h.rework?.rework_cost_share_pct != null
-                ? `${h.rework.rework_cost_share_pct}% of spend`
+                ? `${h.rework.rework_cost_share_pct}% of spend, on attempts after a send-back`
                 : "",
             ),
           ]),
@@ -6303,7 +6305,7 @@ async function fitnessRoomPanels(healthRes) {
             "Rework rate",
             gov.reworkRate,
             (r) =>
-              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first, by a reviewer, the tester or a failed gate`,
           ),
           tile(
             "Unattended-safe",

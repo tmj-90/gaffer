@@ -234,6 +234,109 @@ describe("GET /api/health", () => {
     }
   });
 
+  it("counts a review send-back as rework and charges the correction's spend to it", async () => {
+    // Third external review: a $1 first attempt, a reviewer's rejection, then a $3
+    // correction read as $4 total and one shipped ticket, but $0 rework and 0% sent
+    // back — the report counted only the runner's own retries (rework_attempts).
+    const ledger = join(tmpDir, "usage-ledger.jsonl");
+    const h = await startHarness({
+      GAFFER_DATA: undefined,
+      GAFFER_USAGE_LEDGER: ledger,
+      MEMORY_CLI_BIN: undefined,
+      MEMORY_DB: undefined,
+    });
+    try {
+      const nowMs = Date.parse(h.clock.now());
+      const at = (hoursAgo: number) => new Date(nowMs - hoursAgo * 3_600_000).toISOString();
+      const t = h.wg.createTicket({ title: "Sent back once" }, human);
+      h.wg.db
+        .prepare(`UPDATE tickets SET status='done', created_at=? WHERE id=?`)
+        .run(at(10), t.id);
+      let seq = 0;
+      const tx = (from: string, to: string, reason: string, actor: string, hoursAgo: number) =>
+        h.wg.db
+          .prepare(
+            `INSERT INTO work_events (id, entity_type, entity_id, actor_type, event_type, payload_json, created_at)
+             VALUES (@id, 'ticket', @tid, @actor, 'ticket.transitioned', @p, @at)`,
+          )
+          .run({
+            id: `sb-${seq++}`,
+            tid: t.id,
+            actor,
+            p: JSON.stringify({ from, to, reason }),
+            at: at(hoursAgo),
+          });
+      tx("ready", "in_progress", "claimed", "agent", 9);
+      tx("in_progress", "in_review", "submitted", "agent", 8.5);
+      tx("in_review", "refining", "the export drops the header row", "human", 8); // sent back
+      tx("refining", "ready", "re-readied", "human", 7.5);
+      tx("ready", "in_progress", "claimed", "agent", 7);
+      tx("in_progress", "in_review", "submitted", "agent", 6);
+      tx("in_review", "ready_for_merge", "review_approved", "human", 5);
+      tx("ready_for_merge", "done", "merge_completed", "system", 4);
+      const row = (cost: number, attempt: string, startedHoursAgo: number, endedHoursAgo: number) =>
+        JSON.stringify({
+          ts: at(endedHoursAgo),
+          ticket: t.number,
+          kind: "delivery",
+          measured: true,
+          models: {},
+          total_cost_usd: cost,
+          num_turns: 4,
+          duration_ms: (startedHoursAgo - endedHoursAgo) * 3_600_000,
+          attempt_id: attempt,
+          started_at: at(startedHoursAgo),
+        });
+      writeFileSync(ledger, [row(1, "c1/1", 9, 8.6), row(3, "c2/1", 7, 6.1)].join("\n") + "\n");
+
+      const { status, body } = await get(h.baseUrl, "/api/health");
+      expect(status).toBe(200);
+      expect(body.total_usd).toBe(4);
+      expect(body.shipped_count).toBe(1);
+      const rework = body.rework as {
+        total_rework_cost_usd: number;
+        rework_cost_share_pct: number;
+        by_ticket: Array<Record<string, unknown>>;
+      };
+      expect(rework.total_rework_cost_usd).toBe(3);
+      expect(rework.rework_cost_share_pct).toBe(75);
+      expect(rework.by_ticket).toEqual([
+        {
+          ticket: t.number,
+          rework_count: 1,
+          review_send_backs: 1,
+          runner_retries: 0,
+          ticket_cost_usd: 4,
+          rework_cost_usd: 3,
+          rework_attempts: 1,
+          basis: "attempt",
+        },
+      ]);
+      const gov = body.governance as {
+        reworkRate: { rate: number | null; numerator: number; denominator: number };
+      };
+      expect(gov.reworkRate).toEqual({ rate: 1, numerator: 1, denominator: 1 });
+
+      // A runner retry inside the correction counts too, and its spend stays rework.
+      h.wg.db
+        .prepare(
+          `INSERT INTO rework_attempts (id, ticket_id, attempt, max_attempts, gate, distilled_failure, created_at)
+           VALUES ('ra-1', ?, 2, 3, 'tests', 'header test failed', ?)`,
+        )
+        .run(t.id, at(6.5));
+      const again = await get(h.baseUrl, "/api/health");
+      const r2 = again.body.rework as { by_ticket: Array<Record<string, unknown>> };
+      expect(r2.by_ticket[0]).toMatchObject({
+        rework_count: 2,
+        review_send_backs: 1,
+        runner_retries: 1,
+        rework_cost_usd: 3,
+      });
+    } finally {
+      await h.close();
+    }
+  });
+
   it("computes cost-per-shipped from the real done-ticket count and reports full coverage", async () => {
     const ledger = join(tmpDir, "usage-ledger.jsonl");
     const today = new Date().toISOString().slice(0, 10);

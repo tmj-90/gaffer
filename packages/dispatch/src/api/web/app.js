@@ -15002,7 +15002,7 @@ function allowTestChangesSheet(t, allow) {
     allow ? `Allow test changes on ${ref}` : `Withdraw the test-changes allowance on ${ref}`,
     {
       intro: allow
-        ? "Only when the ticket asked for these test changes. The gate's integrity row will read PASS with a note, and an agent may approve it again under your autonomy policy. You still sign the change off here."
+        ? "Only when the ticket asked for these test changes. The gate's integrity row will read PASS with a note on its next run, and the test changes alone no longer hold an agent's approve (they still count as medium risk, so a ticket declared low stays held). You still sign the change off here."
         : "Test changes on this ticket are flagged again, and an agent approve is held until a person looks.",
       body: allow ? reason : null,
       focus: allow ? reason : undefined,
@@ -15086,7 +15086,7 @@ function integrityBanner(t, anns) {
           "p",
           { class: "integrity-note" },
           allowed
-            ? "A person allowed it, so the gate reads PASS with a note. Check the changes are the ones the ticket asked for."
+            ? "A person allowed it, so the gate reads PASS with a note from its next run. Check the changes are the ones the ticket asked for."
             : "A green gate proves less when its own tests changed. Auto-approve is held until a person looks.",
         ),
         el(

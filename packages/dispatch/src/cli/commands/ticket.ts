@@ -285,7 +285,8 @@ export function registerTicket(program: Command): void {
     .description(
       "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
         "skip marker, change a gate script) — the runner's integrity gate row then reads " +
-        "PASS with a note instead of FLAG, and an auto-approve is no longer held for it. " +
+        "PASS with a note instead of FLAG, and the test changes alone no longer hold an auto-approve " +
+        "(they still count as medium risk, so a ticket declared low is still held). " +
         "It does NOT change which command the gate runs: a gate script the delivery changed " +
         "still runs as the BASE commit has it, so to change the gate itself, change the " +
         "repo's registered test/lint command or merge the script change to the base first. " +

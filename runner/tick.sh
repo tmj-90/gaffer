@@ -3180,6 +3180,13 @@ $_trail_q
         [ -n "$_DOD_EV" ] && wg attach-evidence "$NUM" --type test_output \
           --summary "$_DOD_EV" >/dev/null 2>&1 \
           && log "DoD: recorded PASS checklist evidence on #$NUM" || true
+        # FLAKY RERUN (lib/dod.sh): a tests gate that went red under the pool and passed
+        # at concurrency 1 did not cost an attempt — flag it for the reviewer.
+        if grep -q $'\tflaky-suspected$' "$DOD_RESULTS" 2>/dev/null; then
+          log "DoD: #$NUM tests passed only on the rerun at concurrency 1 — flaky suspected; flagging needs_human_review"
+          wg attach-evidence "$NUM" --type manual_note \
+            --summary "needs_human_review: flaky tests suspected — the tests gate failed under a parallel pool and passed when rerun at concurrency 1 (both runs are in the DoD evidence)" >/dev/null 2>&1 || true
+        fi
         _DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS" 2>/dev/null || true)"
         rm -f "$DOD_RESULTS"
       else

@@ -161,7 +161,9 @@ GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflic
 An optional, size-gated, round-capped two-model **planning debate**
 (`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
-from real measurements, never invented**. Every landed delivery's merge commit carries
+from real measurements, never invented**. Under a worker pool a red tests gate is rerun once at concurrency 1 before the
+attempt counts (`lib/dod.sh` `gaffer_dod_rerun_serial`; a pass is marked flaky
+suspected; `GAFFER_DOD_FLAKY_RERUN=0` turns it off). Every landed delivery's merge commit carries
 `Gaffer-Ticket` / `Gaffer-Reviewed-By` / `Gaffer-Gates` trailers
 (`lib/provenance-trailers.mjs`, used by `lib/land.sh` and `bin/merge-ticket.mjs`; a
 local landing is `--no-ff` while they are on; `GAFFER_PROVENANCE_TRAILERS=0` turns them

@@ -460,6 +460,22 @@
     color: var(--red);
     overflow-wrap: anywhere;
   }
+  /* Passed only on the rerun at concurrency 1: a yellow card, never colour alone. */
+  .dod-flaky {
+    grid-column: 4;
+    grid-row: 1;
+    justify-self: start;
+    padding: 2px 8px;
+    border-radius: var(--r);
+    background: var(--yellow);
+    color: var(--on-yellow);
+    font: 700 var(--t12) / 1.2 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .dod-note.dod-note-flaky {
+    color: var(--ink-2);
+  }
   ul.clean,
   ol.clean {
     list-style: none;

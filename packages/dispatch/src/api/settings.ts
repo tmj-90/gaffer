@@ -469,6 +469,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Concurrent ticks",
     help:
       "How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. " +
+      "Above 1, a red tests gate is rerun once at concurrency 1 before the attempt counts; a pass on the rerun " +
+      "is flagged flaky suspected for the reviewer (GAFFER_DOD_FLAKY_RERUN=0 turns the rerun off). " +
       "A change applies from the next loop pass.",
   },
   {

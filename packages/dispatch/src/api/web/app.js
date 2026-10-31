@@ -14833,6 +14833,14 @@ function dodChecklist(evidence) {
         status === "pass" ? "passed" : status === "fail" ? "failed" : "skipped",
       ),
     ];
+    // A tests gate that passed only on its rerun at concurrency 1 (lib/dod.sh): a yellow
+    // card for the reviewer, and the note names both runs.
+    if (g.flaky === true) {
+      children.push(el("span", { class: "dod-flaky" }, "Flaky suspected"));
+      if (g.note)
+        children.push(el("span", { class: "dod-note dod-note-flaky ac-meta" }, String(g.note)));
+      return el("li", { class: `dod-item dod-i-${status} is-flaky` }, children);
+    }
     // A passing gate names the command it ran; a failing one surfaces its captured note.
     if (status === "fail" && g.note) {
       children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
@@ -14845,6 +14853,7 @@ function dodChecklist(evidence) {
     el("div", { class: "ac-meta dod-cap" }, [
       "Definition of Done ",
       badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
+      dod.gates.some((g) => g.flaky === true) ? badge("flaky suspected", "no-dot") : null,
     ]),
     el("ul", { class: "clean dod-list" }, items),
   ]);

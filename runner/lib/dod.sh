@@ -199,6 +199,9 @@ gaffer_dod_run_one() {
   # Under the docker provider the image's own PATH/HOME must apply (the host's do not
   # exist inside) — mirrors lib/worker.sh's substitution for the agent spawn.
   local _wrap="${GAFFER_DOD_WRAP:-}" _env=() _profile=()
+  # Extra env for THIS run only (the flaky rerun's serial hints, gaffer_dod_rerun_serial).
+  local _xenv=()
+  if [ -n "${_GAFFER_DOD_EXTRA_ENV[*]-}" ]; then _xenv=(env "${_GAFFER_DOD_EXTRA_ENV[@]}"); fi
   if [ -n "$_wrap" ]; then
     # VALIDATION PROFILE (explicit, independent of the agent bridge's lifetime): the
     # wrapper mounts NO data plane (no databases, no ledgers, no bridge socket — the
@@ -216,8 +219,95 @@ gaffer_dod_run_one() {
   # remaining rows, so later repos' gates and later ACs never ran and the gate PASSED.
   # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$wt" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} bash -c "$cmd" ) </dev/null >"$outfile" 2>&1
+    gaffer_timeout "$GAFFER_DOD_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap ${_env[@]+"${_env[@]}"} ${_xenv[@]+"${_xenv[@]}"} bash -c "$cmd" ) </dev/null >"$outfile" 2>&1
   return $?
+}
+_GAFFER_DOD_EXTRA_ENV=()
+
+# ── FLAKY-TEST RERUN (a red TEST gate under a parallel pool) ──────────────────
+# With GAFFER_CONCURRENCY>1 several deliveries' suites share the machine, and a test
+# that races for a port, a temp dir or CPU can go red on code that is fine — burning
+# one of GAFFER_MAX_DELIVERY_ATTEMPTS and, at worst, parking a correct delivery. So a
+# red TESTS gate (never typecheck or lint), run under a pool, is rerun ONCE at
+# concurrency 1 before the attempt counts:
+#   * one rerun at a time across the pool (a lock in $GAFFER_DATA), after the other
+#     workers' in-flight gate runs have finished (bounded wait), while new gate runs
+#     wait for it; the test process gets serial hints (GAFFER_DOD_SERIAL=1,
+#     RUST_TEST_THREADS=1, PYTEST_XDIST_AUTO_NUM_WORKERS=1);
+#   * rerun passes → the gate is PASS, marked `flaky-suspected`, its note naming both
+#     runs, and the first run's output kept in a ---DOD-RERUN--- block; the caller
+#     flags the ticket needs_human_review;
+#   * rerun fails → FAIL as before, the note naming both exit codes, the rerun's output
+#     as the failure;
+#   * the rerun cannot get the lock in time → the first FAIL stands (fail closed).
+# GAFFER_DOD_FLAKY_RERUN=0 turns it off.
+: "${GAFFER_DOD_FLAKY_RERUN:=1}"
+: "${GAFFER_DOD_RERUN_WAIT:=120}"   # max seconds the rerun waits for the other workers' in-flight gate runs to finish
+
+# The pool size this gate runs under (GAFFER_CONCURRENCY; 1 when unset or garbage).
+_gaffer_dod_pool_size() {
+  local n="${GAFFER_CONCURRENCY:-1}"
+  case "$n" in ''|*[!0-9]*) n=1 ;; esac
+  printf '%s' "$n"
+}
+_gaffer_dod_serial_dir() { printf '%s' "${GAFFER_DATA:-${TMPDIR:-/tmp}}/.dod-serial"; }
+# True when a red tests gate qualifies for the rerun.
+gaffer_dod_rerun_eligible() {
+  case "${GAFFER_DOD_FLAKY_RERUN:-1}" in 0|false|off|no) return 1 ;; esac
+  [ "$(_gaffer_dod_pool_size)" -gt 1 ]
+}
+# Mark / unmark a gate run in flight (pool mode only), so the rerun can wait for them.
+_gaffer_dod_mark() {
+  local d; d="$(_gaffer_dod_serial_dir)/running"
+  mkdir -p "$d" 2>/dev/null && : > "$d/$$" 2>/dev/null
+  return 0
+}
+_gaffer_dod_unmark() { rm -f "$(_gaffer_dod_serial_dir)/running/$$" 2>/dev/null; return 0; }
+# Before a pool gate run starts: wait (bounded) while another worker's rerun holds
+# the serial lock, so the rerun really runs alone.
+_gaffer_dod_wait_for_rerun() {
+  local lock waited=0 holder
+  lock="$(_gaffer_dod_serial_dir)/rerun.lock"
+  while [ -d "$lock" ] && [ "$waited" -lt "${GAFFER_DOD_TIMEOUT:-900}" ]; do
+    holder="$(cat "$lock/pid" 2>/dev/null)"
+    [ -n "$holder" ] && [ "$holder" != "$$" ] && ! kill -0 "$holder" 2>/dev/null && break
+    sleep 1; waited=$((waited + 1))
+  done
+  return 0
+}
+# gaffer_dod_rerun_serial <worktree> <outfile> <cmd> → the rerun's exit status, or 75
+# when the serial lock could not be taken in time (nothing was run).
+gaffer_dod_rerun_serial() {
+  local wt="$1" outfile="$2" cmd="$3" dir lock waited=0 holder rc
+  dir="$(_gaffer_dod_serial_dir)"; lock="$dir/rerun.lock"
+  mkdir -p "$dir" 2>/dev/null || return 75
+  while ! mkdir "$lock" 2>/dev/null; do
+    holder="$(cat "$lock/pid" 2>/dev/null)"
+    # A holder that died leaves its lock: reap it (liveness, never age).
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then rm -rf "$lock" 2>/dev/null; continue; fi
+    [ "$waited" -ge "${GAFFER_DOD_TIMEOUT:-900}" ] && return 75
+    sleep 1; waited=$((waited + 1))
+  done
+  printf '%s\n' "$$" > "$lock/pid"
+  # Let the other workers' in-flight gate runs finish (bounded): a marker whose
+  # process is gone is stale and ignored.
+  _gaffer_dod_unmark
+  local w=0 busy f p
+  while [ "$w" -lt "${GAFFER_DOD_RERUN_WAIT:-120}" ]; do
+    busy=0
+    for f in "$dir/running/"*; do
+      [ -e "$f" ] || continue
+      p="${f##*/}"
+      if kill -0 "$p" 2>/dev/null; then busy=1; else rm -f "$f" 2>/dev/null; fi
+    done
+    [ "$busy" = 0 ] && break
+    sleep 1; w=$((w + 1))
+  done
+  _GAFFER_DOD_EXTRA_ENV=(GAFFER_DOD_SERIAL=1 RUST_TEST_THREADS=1 PYTEST_XDIST_AUTO_NUM_WORKERS=1)
+  gaffer_dod_run_one "$wt" "$outfile" "$cmd"; rc=$?
+  _GAFFER_DOD_EXTRA_ENV=()
+  rm -rf "$lock" 2>/dev/null
+  return "$rc"
 }
 
 # Run the enabled DoD gates across every write repo and emit a structured verdict.
@@ -274,8 +364,39 @@ gaffer_run_dod_gates() {
         printf 'GATE\t%s\t%s\tSKIP\t0\tno command configured\n' "$gate" "$label" >> "$results"
         continue
       fi
+      local _pool; _pool="$(_gaffer_dod_pool_size)"
+      if [ "$_pool" -gt 1 ]; then _gaffer_dod_wait_for_rerun; _gaffer_dod_mark; fi
       gaffer_dod_run_one "$wt" "$tmpout" "$cmd"
       local rc=$?
+      [ "$_pool" -gt 1 ] && _gaffer_dod_unmark
+      # FLAKY RERUN: a red tests gate under a pool runs once more at concurrency 1.
+      local _rerun_note=""
+      if [ "$rc" -ne 0 ] && [ "$gate" = tests ] && gaffer_dod_rerun_eligible; then
+        local _first_rc="$rc" _first_out
+        _first_out="$(mktemp "${TMPDIR:-/tmp}/gaffer-dod-first.XXXXXX" 2>/dev/null)" || _first_out=""
+        [ -n "$_first_out" ] && cp "$tmpout" "$_first_out" 2>/dev/null
+        gaffer_dod_rerun_serial "$wt" "$tmpout" "$cmd"; local _rrc=$?
+        if [ "$_rrc" -eq 0 ]; then
+          printf 'GATE\t%s\t%s\tPASS\t0\tpass-on-retry (flaky suspected): run 1 exited %s under a pool of %s; run 2 at concurrency 1 passed: %s\tflaky-suspected\n' \
+            "$gate" "$label" "$_first_rc" "$_pool" "$cmd" >> "$results"
+          printf -- '---DOD-RERUN %s@%s (run 1, exit %s, pool of %s)---\n' "$gate" "$label" "$_first_rc" "$_pool" >> "$results"
+          if [ -n "$_first_out" ]; then
+            gaffer_dod_distill_output "$_first_out" "$GAFFER_DOD_OUTPUT_TAIL" >> "$results" 2>/dev/null \
+              || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$_first_out" 2>/dev/null >> "$results" || true
+          fi
+          printf -- '\n---END-DOD-RERUN---\n' >> "$results"
+          [ -n "$_first_out" ] && rm -f "$_first_out"
+          continue
+        fi
+        [ -n "$_first_out" ] && rm -f "$_first_out"
+        if [ "$_rrc" -eq 75 ]; then
+          _rerun_note=" (run 1 under a pool of $_pool; the rerun at concurrency 1 could not take the serial lock in time, so run 1 stands)"
+          # the first run's output is still in $tmpout: the rerun never ran
+        else
+          _rerun_note=" (run 1 exited $_first_rc under a pool of $_pool; run 2 at concurrency 1 also failed)"
+          rc="$_rrc"
+        fi
+      fi
       if [ "$rc" -eq 0 ]; then
         printf 'GATE\t%s\t%s\tPASS\t0\t%s\n' "$gate" "$label" "$cmd" >> "$results"
       else
@@ -286,6 +407,7 @@ gaffer_run_dod_gates() {
           127) note="command could not be run (spawn/exit 127): $cmd" ;;
           *)   note="exited $rc: $cmd" ;;
         esac
+        note="$note$_rerun_note"
         printf 'GATE\t%s\t%s\tFAIL\t%s\t%s\n' "$gate" "$label" "$rc" "$note" >> "$results"
         # Capture the DISTILLED real failure (bounded) for the evidence row AND the
         # next attempt's feedback — the failing test name(s) + the assertion/error/

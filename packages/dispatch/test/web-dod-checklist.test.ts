@@ -152,6 +152,35 @@ describe("I3 web: the Review-view Definition-of-Done checklist", () => {
     expect(noteText).toContain("<img src=x onerror=alert(1)>");
   });
 
+  it("flags a tests gate that passed only on its rerun at concurrency 1 (flaky suspected)", async () => {
+    const note =
+      "pass-on-retry (flaky suspected): run 1 exited 1 under a pool of 3; run 2 at concurrency 1 passed: pnpm test";
+    const payload = JSON.stringify({
+      dod: "PASS",
+      gates: [{ gate: "tests", repo: "repo", status: "PASS", rc: "0", note, flaky: true }],
+    });
+    stubFetch([
+      {
+        id: "ev-dod-flaky",
+        evidence_type: "test_output",
+        summary: `DoD: PASS\n${payload}\n\n  transcript line`,
+        payload_json: null,
+        created_by: "factory-dod",
+        created_at: "2026-01-02T00:00:00Z",
+      },
+    ]);
+    await bootReview();
+    const block = document.querySelector(".review-dod");
+    expect(block).toBeTruthy();
+    expect(block!.textContent).toContain("flaky suspected");
+    const item = block!.querySelector(".dod-item.is-flaky");
+    expect(item, "the flaky gate row is marked").toBeTruthy();
+    expect(item!.querySelector(".dod-flaky")?.textContent).toBe("Flaky suspected");
+    // Both runs are named, as text.
+    expect(item!.querySelector(".dod-note-flaky")?.textContent).toBe(note);
+    expect(item!.querySelector(".dod-mark.dod-pass")?.textContent).toBe("✓");
+  });
+
   it("renders no DoD block when there is no DoD evidence (back-compat)", async () => {
     stubFetch([
       {

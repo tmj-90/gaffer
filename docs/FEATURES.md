@@ -195,6 +195,14 @@ structural barrier the whole design hangs on.
   "Event log" card re-derive the chain. Each event also carries the **runner
   tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
   whole trail — the runner's calls and the agent's MCP writes — reads as one.
+- **A flaky test does not burn an attempt.** With a worker pool
+  (`GAFFER_CONCURRENCY` above 1) a red tests gate is rerun once at concurrency 1
+  (one rerun at a time across the pool, after the other workers' gate runs finish)
+  before the attempt counts. Only the tests gate, only once. A pass on the rerun is
+  a green gate marked **Flaky suspected** on the Review card, its note naming both
+  runs, with the first run's output kept in the DoD evidence and a
+  `needs_human_review` note on the ticket; a second red is the failure, naming both
+  exit codes. `GAFFER_DOD_FLAKY_RERUN=0` turns it off.
 - **The merge commit says where it came from.** Every landing path (the Merge
   button, `gaffer merge`, the merge lane, the AFK review pass, a PR merge) writes git
   trailers into the merge commit, read from the dispatch DB:

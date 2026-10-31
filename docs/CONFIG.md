@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 136 |
+| Knobs with a runner default | 138 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
@@ -159,7 +159,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_CONCURRENCY` | `1` | yes (int) | crew, dispatch, runner | How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. A change applies from the next loop pass. |
+| `GAFFER_CONCURRENCY` | `1` | yes (int) | crew, dispatch, runner | How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. Above 1, a red tests gate is rerun once at concurrency 1 before the attempt counts; a pass on the rerun is flagged flaky suspected for the reviewer (GAFFER_DOD_FLAKY_RERUN=0 turns the rerun off). A change applies from the next loop pass. |
 | `MAX_CONCURRENT_TICKETS_PER_REPO` | `1` | yes (int) | dispatch, runner | Cap on tickets worked at once within one repo. |
 | `MAX_CANDIDATES` | `25` | yes (int) | dispatch, runner | Upper bound on ready tickets the scheduler considers each tick. |
 
@@ -270,6 +270,8 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_DOD_INSTALL_TIMEOUT` | _derived_ (`${GAFFER_DOD_TIMEOUT:-900}`) |  | runner | Max wall-clock seconds for the PRE-GATE dependency install (see gaffer_dod_install_deps). |
+| `GAFFER_DOD_FLAKY_RERUN` | `1` |  | dispatch, runner | ── FLAKY-TEST RERUN (a red TEST gate under a parallel pool) ────────────────── With GAFFER_CONCURRENCY>1 several deliveries' suites share the machine, and a test that races for a port, a temp dir or CPU can go red on cod |
+| `GAFFER_DOD_RERUN_WAIT` | `120` |  | runner | max seconds the rerun waits for the other workers' in-flight gate runs to finish |
 | `GAFFER_DOD_FEEDBACK_LINES` | _derived_ (`${GAFFER_DOD_OUTPUT_TAIL:-40}`) |  | crew, runner | How many lines of distilled failure to keep per gate. |
 
 ### lib/pr-create.sh

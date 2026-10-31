@@ -708,18 +708,24 @@ switch (cmd) {
     for (const ln of splitLines) {
       const parts = ln.split("\t");
       if (parts[0] === "GATE" && parts.length >= 6) {
-        const [, gate, repo, status, rc, note] = parts;
-        gates.push({ gate, repo, status, rc, note });
+        const [, gate, repo, status, rc, note, mark] = parts;
+        // A 7th field `flaky-suspected`: a tests gate that went red under a parallel
+        // pool and passed when rerun at concurrency 1 (lib/dod.sh).
+        gates.push(
+          mark === "flaky-suspected"
+            ? { gate, repo, status, rc, note, flaky: true }
+            : { gate, repo, status, rc, note },
+        );
         lines.push(`  [${status}] ${gate} (${repo}) — ${note}`);
       }
     }
     const tail = [];
     let keep = false;
     for (const ln of splitLines) {
-      if (ln.startsWith("---DOD-OUTPUT ")) {
+      if (ln.startsWith("---DOD-OUTPUT ") || ln.startsWith("---DOD-RERUN ")) {
         keep = true;
         tail.push(ln);
-      } else if (ln.startsWith("---END-DOD-OUTPUT---")) {
+      } else if (ln.startsWith("---END-DOD-OUTPUT---") || ln.startsWith("---END-DOD-RERUN---")) {
         tail.push(ln);
         keep = false;
       } else if (keep) tail.push(ln);

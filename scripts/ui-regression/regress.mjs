@@ -956,8 +956,13 @@ try {
   ]) {
     const before = consoleErrors.length;
     await page.goto(`${BASE}/#/${v}`, { waitUntil: "load" });
-    await sleep(900);
-    const txt = (await page.textContent("#app")) || "";
+    // Wait for the view to paint (up to 6 s on a loaded runner), not a fixed 900 ms.
+    let txt = "";
+    for (let i = 0; i < 12; i++) {
+      await sleep(500);
+      txt = (await page.textContent("#app")) || "";
+      if (txt.trim().length > 50) break;
+    }
     txt.trim().length > 50 && consoleErrors.length === before
       ? ok(`view '${v}' renders (${txt.trim().length} chars, no console errors)`)
       : bad(

@@ -156,6 +156,9 @@ a pause: they need a person to raise the cap, so they stay ordinary failures.
   envelope (`GAFFER_TESTER_ENVELOPE_OUT`), skips the ticket for this run only and
   tests it again after the window resets. Before, it was held in_testing for a human
   and, being remembered across runs, never re-tested.
+- A refused agent reviewer is held like any reviewer that did not run (in_review,
+  not a verdict) and records the pause too, so the next tick does not spawn into
+  the same refusal.
 - `lib/usage-pause.mjs` writes `$GAFFER_DATA/usage-pause.json`. The pause ends at the
   reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
   (default 60) when none was printed; never sooner than 10 minutes, never later than

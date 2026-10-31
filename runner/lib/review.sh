@@ -308,6 +308,15 @@ EOF
       R_RESULT="$(gaffer_json expr 'd.result ?? ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
       # A run stopped by its turn cap says so in the envelope: name it in the hold reason.
       R_CAPHIT="$(gaffer_json expr 'd.subtype === "error_max_turns" ? String(d.num_turns ?? "?") : ""' --file "$R_USAGE_JSON" 2>/dev/null || echo '')"
+      # USAGE WINDOW (lib/usage-pause.sh, rc 0/1/2 as in tick.sh): a reviewer refused by
+      # the plan's usage window / a rate limit reviewed nothing. It is held like any
+      # reviewer that did not run, and the pause is recorded so the next tick does not
+      # spawn straight into the same refusal.
+      R_USAGE_LIMITED=0
+      if declare -F gaffer_usage_pause_record >/dev/null 2>&1; then
+        gaffer_usage_pause_record "$R_USAGE_JSON" "$RNUM" review >/dev/null
+        [ "$?" != 1 ] && R_USAGE_LIMITED=1
+      fi
       rm -f "$R_USAGE_JSON"
       # S-H2: resolve the verdict from the reviewer's OUT-OF-BAND STRUCTURED FINAL line
       # ({"verdict":"APPROVE"|"CHANGES"}) — NOT a free-text grep over its prose, and not a
@@ -321,7 +330,10 @@ EOF
       # mode, send a possibly-fine delivery back to rework. Hold instead: leave the ticket
       # in_review for a human, skip it for the rest of this run, and say why.
       R_HELD_REASON=""
-      if [ -n "$R_CAPHIT" ]; then
+      if [ "$R_USAGE_LIMITED" = 1 ]; then
+        R_HELD_REASON="reviewer refused by the usage window (rc=$rrc; $(gaffer_usage_pause_active 2>/dev/null || echo 'the pause could not be written')) — not a verdict"
+        R_VERDICT=held
+      elif [ -n "$R_CAPHIT" ]; then
         R_HELD_REASON="reviewer hit its turn cap ($R_CAPHIT turns; GAFFER_REVIEW_MAX_TURNS / GAFFER_MAX_TURNS) before a verdict — not a verdict"
         R_VERDICT=held
       elif [ "$rrc" -ne 0 ] || [ -z "${R_RESULT// /}" ]; then

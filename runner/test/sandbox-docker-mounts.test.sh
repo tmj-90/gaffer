@@ -334,6 +334,10 @@ rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.
 ARGV="$(legacy)"
 masked_dir skills-mounts && fail "legacy: the runner's own skills mount got masked" || ok "legacy: the runner's own skills mount stays visible"
 masked_file dashboard-token && ok "legacy: with the runner's own link, dashboard-token is still masked" || fail "legacy: dashboard-token not masked"
+# The runner's link is recognised by where it resolves, not by how GAFFER_DATA is spelled
+# (bin/tester-run.mjs writes a resolve()d path; an operator may export a trailing slash).
+ARGV="$(GAFFER_DATA="$GAFFER_DATA/" GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>/dev/null)"
+grep -qF -- "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" <<<"$ARGV" && ok "bridge: GAFFER_DATA with a trailing slash still mounts the runner's skills link" || fail "bridge: trailing-slash GAFFER_DATA lost the skills mount"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

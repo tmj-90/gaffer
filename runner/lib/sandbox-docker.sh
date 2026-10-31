@@ -245,23 +245,28 @@ _primary_checkout() {
   dirname "$_VW_COMMON"
 }
 
-# _runner_skills_key <write-root>: when <write-root>/.claude/skills is the link
-# gaffer_skills_mount (lib/skills-mount.sh) creates — literally
-# "$GAFFER_DATA/skills-mounts/<key>", resolving to a real directory directly under the
-# canonical skills-mounts dir — print <key>; otherwise print nothing. The link lives in
-# the writable worktree, so its text never reaches a mount or the legacy mask allow-list
-# unless it has exactly that shape.
-_runner_skills_key() {
-  local sk skc skroot key
-  [ -n "${GAFFER_DATA:-}" ] && [ -L "$1/.claude/skills" ] || return 0
+# _runner_skills_link <write-root>: when <write-root>/.claude/skills is a runner skill
+# mount link (lib/skills-mount.sh, bin/tester-run.mjs) — an absolute, plain path (no
+# `..`, `.`, `:` or newline) resolving to a real directory DIRECTLY under the canonical
+# $GAFFER_DATA/skills-mounts — set _RSK_KEY to that directory's name and _RSK_AT to the
+# link text (the container path the link names) and return 0; else return 1. The link
+# lives in the writable worktree, so nothing taken from it reaches a mount or the legacy
+# mask allow-list unless it has exactly that shape, and the allow-list entry is built
+# from the resolved name, never from the link text.
+_RSK_KEY=""; _RSK_AT=""
+_runner_skills_link() {
+  local sk skc skroot
+  _RSK_KEY=""; _RSK_AT=""
+  [ -n "${GAFFER_DATA:-}" ] && [ -L "$1/.claude/skills" ] || return 1
   sk="$(readlink "$1/.claude/skills" 2>/dev/null || true)"
-  case "$sk" in "$GAFFER_DATA"/skills-mounts/?*) ;; *) return 0 ;; esac
-  key="${sk#"$GAFFER_DATA"/skills-mounts/}"
-  case "$key" in */* | . | ..) return 0 ;; esac
+  case "$sk" in /*) ;; *) return 1 ;; esac
+  case "$sk" in *:* | *$'\n'* | */../* | */.. | */./* | */.) return 1 ;; esac
   skc="$(_readlink_f "$1/.claude/skills" || true)"
   skroot="$(_readlink_f "$GAFFER_DATA/skills-mounts" || true)"
-  [ -n "$skc" ] && [ -n "$skroot" ] && [ -d "$skc" ] && [ "$skc" = "$skroot/$key" ] || return 0
-  printf '%s\n' "$key"
+  [ -n "$skc" ] && [ -n "$skroot" ] && [ -d "$skc" ] && [ "$(dirname "$skc")" = "$skroot" ] || return 1
+  case "$(basename "$skc")" in "" | . | ..) return 1 ;; esac
+  _RSK_KEY="$(basename "$skc")"; _RSK_AT="$sk"
+  return 0
 }
 
 # Each write root's node_modules are SYMLINKS into the real checkout (tick.sh links
@@ -417,9 +422,8 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
       _skc="$(_readlink_f "$_wr/.claude/skills" || true)"
       [ -n "$_skc" ] && [ -d "$_skc" ] || continue
       _covered "$_skc" && continue
-      _skk="$(_runner_skills_key "$_wr")"
-      if [ -n "$_skk" ]; then
-        _covered "$GAFFER_DATA/skills-mounts/$_skk" || _add_mount_at "$_skc" "$GAFFER_DATA/skills-mounts/$_skk" ro
+      if _runner_skills_link "$_wr"; then
+        _covered "$_RSK_AT" || _add_mount_at "$_skc" "$_RSK_AT" ro
         continue
       fi
       _warn "not mounting $_skc for the symlink $_wr/.claude/skills: only a runner skill mount under $GAFFER_DATA/skills-mounts/ may be mounted there"
@@ -451,13 +455,12 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
   _keep+=( safety-blocks.jsonl tool-metrics.jsonl )
   # The agent's per-agent skills mount (its `.claude/skills` symlink target) — links
   # into the read-only runner/skills library, nothing secret.
-  # Only the runner-shaped link counts (_runner_skills_key): the link text is writable by
+  # Only the runner-shaped link counts (_runner_skills_link): the link text is writable by
   # the repository and the agent, and copying it here verbatim would let it unmask any
   # entry (the dashboard token, settings.json, the sibling worktrees).
   for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-    _skk="$(_runner_skills_key "$_wr")"
-    if [ -n "$_skk" ]; then
-      _keep+=( "skills-mounts/$_skk" )
+    if _runner_skills_link "$_wr"; then
+      _keep+=( "skills-mounts/$_RSK_KEY" )
     elif [ -L "$_wr/.claude/skills" ]; then
       case "$(readlink "$_wr/.claude/skills" 2>/dev/null || true)" in
         "$GAFFER_DATA"/*) _warn "not unmasking the target of the symlink $_wr/.claude/skills: only a runner skill mount under $GAFFER_DATA/skills-mounts/ stays visible" ;;

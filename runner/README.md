@@ -137,6 +137,30 @@ default branch untouched. In PR mode the gate runs on the merge onto the freshly
 remote default branch before `gh pr merge --match-head-commit <pin>`; the repo's branch
 protection is the compare-and-land upstream.
 
+**Tester replay on the landing candidate** (external review #4). Once the repo's gates pass
+on the merge (or DoD is off), the PRIMARY repo's merge gate — `_gaffer_merge_gate` /
+`_gaffer_merge_gate_tester_replay` in `lib/land.sh` (PR mode's gate on `FETCH_HEAD`
+included) and `gateProposedMerge` / `replayOnMergeCandidate` in `bin/merge-ticket.mjs` —
+asks `lib/tester-replay.mjs` whether a bound tester PASS of exactly the pinned commit is why
+the ticket lands, and which test files the tester added or changed on
+`gaffer-tests/ticket-<n>` relative to that commit (`testerTestFiles`: the same rule
+`bin/tester-run.mjs` inspects with — test paths only, never `.claude/`, `CLAUDE.factory.md`,
+`.mcp.json` or `node_modules`; a tests branch that does not descend from the tested commit is
+an earlier run's and is not replayed). Those files are checked out into the scratch merge's
+working tree (the gated merge commit is unchanged: they run, they never land) and the repo's
+`test_command` runs there through `bin/dod-regate.sh` (tests only). A failure holds the
+ticket like a red gate (`wg ticket hold … --reason-code tester_replay_red`, the files named,
+the output attached); no tester PASS on record (not in the testing lane, or a human waiver)
+runs nothing extra; an unreadable DB or a git error holds (fail closed);
+`GAFFER_TESTER_REPLAY=0` skips it and records nothing. When the candidate lands, the landing
+path records which assertions passed on which landed revision with `wg ticket
+record-tester-replay <n> --commit <landed merge> --pin <tested> --files-json '[…]' --as
+system` — system only (the service refuses every other actor; the safety hook refuses the
+command to agents). `wg stats` counts an epic as accepted only on that record (`unreplayed`
+otherwise), and `gaffer status` and the dashboard ticket page read it instead of guessing
+from timestamps. Tests: `test/land-tester-replay.test.sh` (every landing path) and
+`test/e2e-release-gate-tester-replay.test.sh` (the reviewer's fixture, end to end).
+
 **Required CI** (`GAFFER_REQUIRE_CI=1`, PR mode): `lib/ci-gate.sh` reads `gh pr checks
 --json name,state,bucket,link` (the real CLI fields; `fixtures/gh` holds the recorded field
 lists and output shapes the contract test enforces), checks the PR head is the candidate

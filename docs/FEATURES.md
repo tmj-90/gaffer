@@ -277,6 +277,25 @@ structural barrier the whole design hangs on.
   remote default branch before `gh pr merge` is asked; GitHub's branch
   protection ("require branches to be up to date" plus required checks) is the
   compare-and-land upstream.
+- **The independent tester's assertions run on what lands, not only on what it
+  tested.** The tester's PASS is about the commit it tested, and its black-box
+  tests live on their own branch (`gaffer-tests/ticket-<n>`), never on the
+  delivery branch. After the default branch moved, the merge could pass the
+  repo's own suite yet fail the tester's saved assertion. So once the merge gate
+  passes, the same scratch merge also gets the tester's test files (only the ones
+  it added or changed, never its agent wiring) and the repo's test command runs
+  there too — on every landing path, PR mode's gate on the fetched remote
+  included. A failing assertion holds the landing exactly like a red gate
+  (*blocked*, `tester_replay_red`, naming the files, the output as evidence,
+  the default branch untouched); the tester's files run on the candidate but
+  never land. When the candidate lands, the runner records **which tester
+  assertions passed on which landed revision** (`gaffer-tester-replayed:<sha>`,
+  a system record only the landing path writes). That record is the one answer
+  everywhere: the ticket page's *On the landed revision* list, `gaffer status`,
+  and `wg stats`, which counts an epic as **accepted** only when its acceptance
+  ticket has it (*unreplayed* otherwise). A held replay keeps the epic out; a
+  repaired, re-tested retry that lands counts it once. A ticket the tester never
+  saw runs nothing extra.
 - **Required CI is required.** With *Require CI green before review* on, the
   runner records the CI result for the exact commit under review; approval (and
   a tester PASS) is refused until that commit's CI has passed, a red result for an

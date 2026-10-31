@@ -45,12 +45,12 @@
 45	rework-cost-live.test.sh
 40	eval-replay.test.sh
 40	resume-abort.test.sh
-35	parallel-stop.test.sh
+60	parallel-stop.test.sh
 32	self-op-ban-integration.test.sh
 31	setup-error-circuit.test.sh
 30	ci-gate-needs-pr.test.sh
 30	concurrency-bookkeeping.test.sh
-30	parallel-stop-live.test.sh
+130	parallel-stop-live.test.sh
 30	usage-pause.test.sh
 28	maintenance-lane.test.sh
 26	dashboard-qr.test.sh

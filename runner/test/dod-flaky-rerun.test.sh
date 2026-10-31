@@ -166,7 +166,7 @@ else
 fi
 
 echo "## UNIT $PASS ${#FAILURES[@]}"
-for f in "${FAILURES[@]}"; do echo "## FAIL $f"; done
+for f in ${FAILURES[@]+"${FAILURES[@]}"}; do echo "## FAIL $f"; done
 ) > "$WORK/unit.out" 2>&1
 grep -v '^## ' "$WORK/unit.out"
 UP="$(sed -n 's/^## UNIT \([0-9]*\) .*/\1/p' "$WORK/unit.out")"; PASS=$((PASS + ${UP:-0}))

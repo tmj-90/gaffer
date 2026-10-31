@@ -468,6 +468,105 @@ check("recordSkillUsage (the .mjs runners' seam) appends a role record; fail-sof
   }
 });
 
+// --- REVIEW (skill-routing): "opened" means an allowed READ of a file inside the mounted
+// skill. A row that only NAMES the path (a Write, an echo, an ls), a Read that walks out of
+// the skill with `..`, a repo's own `src/skills/<name>/` file, and a repo skill that
+// shadows Gaffer's pack of the same name (not mounted) must never count as an open.
+check("scanLedger: only an allowed READ of a file inside the skill is an open", () => {
+  const ts = "2026-01-01T10:00:01.000Z";
+  const row = (tool, target, decision = "allow") => ({ ts, ticket: "4", tool, target, decision });
+  const text = ledger([
+    // a Read that walks out of the skill to a repo file
+    row("Read", "/wt/.claude/skills/java-conventions/../../src/Main.java"),
+    // writes / edits under a skill path
+    row("Write", "/wt/.claude/skills/run-tests/notes.md"),
+    row("Edit", "/wt/.claude/skills/run-lint/SKILL.md"),
+    // Bash that names the path without reading a file
+    row("Bash", "echo .claude/skills/minimalism/SKILL.md"),
+    row("Bash", "ls .claude/skills/self-review/"),
+    row("Bash", "touch .claude/skills/plan-change/x"),
+    // the repo's own source tree that happens to hold a `skills/<name>/` dir
+    row("Read", "/wt/packages/app/src/skills/record-evidence/index.ts"),
+    // a Grep pattern is not a read of the skill
+    row("Grep", ".claude/skills/prepare-digest-delta/"),
+    // a blocked Write is not a refused READ either
+    row("Write", "/wt/.claude/skills/review-ticket/SKILL.md", "block"),
+    // genuine reads: a Read, a Bash reader after `cd … &&`, a `sed -n` view
+    row("Read", "/wt/.claude/skills/typescript-conventions/SKILL.md"),
+    row("Bash", "cd /wt && sed -n 1,40p .claude/skills/python-conventions/SKILL.md"),
+    row("Bash", "head -50 '.claude/skills/kotlin-conventions/reference.md' | tail -5"),
+  ]);
+  const sel = [
+    "java-conventions",
+    "run-tests",
+    "run-lint",
+    "minimalism",
+    "self-review",
+    "plan-change",
+    "record-evidence",
+    "prepare-digest-delta",
+    "review-ticket",
+    "typescript-conventions",
+    "python-conventions",
+    "kotlin-conventions",
+  ];
+  eq(
+    scanLedger(sel, text, { ticket: "4" }),
+    {
+      opened: ["typescript-conventions", "python-conventions", "kotlin-conventions"],
+      refused: [],
+    },
+    "only real reads",
+  );
+});
+check("recordFromOpts: a repo skill that shadows a pack (not in the mount) is never opened", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-telem-shadow-"));
+  try {
+    const mount = join(dir, "mount");
+    mkdirSync(join(mount, "java-conventions"), { recursive: true });
+    const tl = join(dir, "tool-metrics.jsonl");
+    const ts = new Date().toISOString();
+    writeFileSync(
+      tl,
+      ledger([
+        { ts, ticket: "6", tool: "Read", target: "/wt/.claude/skills/java-conventions/SKILL.md" },
+        // the repo's OWN record-evidence (Gaffer's pack of that name was not mounted over it)
+        { ts, ticket: "6", tool: "Read", target: "/wt/.claude/skills/record-evidence/SKILL.md" },
+        {
+          ts,
+          ticket: "6",
+          tool: "Read",
+          target: "/wt/.claude/skills/record-evidence/.env",
+          decision: "block",
+        },
+      ]),
+    );
+    const rec = recordFromOpts({
+      ticket: "6",
+      selected: "java-conventions, record-evidence",
+      mount,
+      toolLedger: tl,
+      since: new Date(Date.now() - 60000).toISOString(),
+    });
+    eq(rec.opened, ["java-conventions"], "only the mounted pack's read is an open");
+    eq(rec.refused, [], "a refused read of the repo's skill is not Gaffer's pack refused");
+
+    const rec2 = recordSkillUsage({
+      ticket: 6,
+      role: "test",
+      selected: ["java-conventions", "record-evidence"],
+      output: "",
+      agentDir: "/wt",
+      mount,
+      since: new Date(Date.now() - 60000).toISOString(),
+      env: { GAFFER_DATA: dir },
+    });
+    eq(rec2.opened, ["java-conventions"], "recordSkillUsage bounds opens to the mount too");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 if (failures.length) {
   console.error(`skill-telemetry: ${passed} passed, ${failures.length} FAILED`);
   for (const f of failures) console.error(`  - ${f}`);

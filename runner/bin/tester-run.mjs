@@ -991,6 +991,8 @@ function runLiveTester(context) {
     selected: skills,
     output: res.stdout || "",
     agentDir: worktree,
+    // The manifest of what Gaffer installed: a repo skill shadowing a pack is not an open.
+    mount: resolve(GAFFER_DATA, "skills-mounts", `tester-${n}`),
     since: new Date(t0).toISOString(),
   });
   try {

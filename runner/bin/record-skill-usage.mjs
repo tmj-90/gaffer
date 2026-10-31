@@ -66,6 +66,65 @@ export function detectApplied(selected, outputText) {
   });
 }
 
+// Shell commands that READ the files they are given (a Bash row counts as a read only
+// through one of these). Anything else that merely names a skill path — echo, ls, touch,
+// a redirect — opened nothing.
+const BASH_READERS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "less",
+  "more",
+  "sed",
+  "awk",
+  "grep",
+  "egrep",
+  "fgrep",
+  "rg",
+  "nl",
+  "bat",
+  "view",
+  "batcat",
+]);
+
+/** Normalise a path lexically (`a/b/../c` → `a/c`), keeping a leading `/`. */
+function normalisePath(p) {
+  const abs = p.startsWith("/");
+  const out = [];
+  for (const seg of p.split("/")) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") {
+      if (out.length && out[out.length - 1] !== "..") out.pop();
+      else if (!abs) out.push("..");
+      continue;
+    }
+    out.push(seg);
+  }
+  return (abs ? "/" : "") + out.join("/");
+}
+
+/**
+ * The file paths a ledger row READ, normalised: a Read's file_path, or the operands of a
+ * reader command in a Bash row (each `;` / `&&` / `||` / `|` segment on its own). Every
+ * other tool — Write, Edit, Grep, Glob, a Bash `echo` — read no skill file: [].
+ */
+function readPaths(tool, target) {
+  if (tool === "Read") return [normalisePath(target)];
+  if (tool !== "Bash") return [];
+  const paths = [];
+  for (const seg of target.split(/&&|\|\||[;|\n]/)) {
+    const words = seg
+      .trim()
+      .split(/\s+/)
+      .map((w) => w.replace(/^["'`]+|["'`]+$/g, ""))
+      .filter(Boolean);
+    if (!words.length || !BASH_READERS.has(words[0].split("/").pop())) continue;
+    for (const w of words.slice(1))
+      if (!w.startsWith("-") && w.includes("/")) paths.push(normalisePath(w));
+  }
+  return paths;
+}
+
 /**
  * Skills the agent OPENED, and skills whose read the hook REFUSED, from the safety
  * hook's tool ledger (one JSON row per tool call: {ts, ticket, tool, target, decision}).
@@ -94,10 +153,13 @@ export function scanLedger(selected, ledgerText, { ticket = "", since = "", root
           `(^|[^A-Za-z0-9_.~/-])${r.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=$|[/\\s"'\`;&|)<>])`,
         ),
     );
+  // A path is INSIDE a skill only once normalised (`.claude/skills/x/../../src/A.java` is
+  // a repo file) and only at a mount location: the agent's `.claude/skills/<name>/` (its
+  // copies) or a mount manifest. A repo's own `src/skills/<name>/` is not a skill.
   const res = selected.map((name) => [
     name,
     new RegExp(
-      `(^|[\\s"'=/])(\\.claude/skills|skills-mount|skills-mounts/[^/\\s]+|skills)/${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/`,
+      `(^|/)(\\.claude/skills|skills-mount|skills-mounts/[^/]+)/${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/[^/]`,
     ),
   ]);
   const opened = new Set();
@@ -119,7 +181,8 @@ export function scanLedger(selected, ledgerText, { ticket = "", since = "", root
       (ticket && row.ticket != null && String(row.ticket) === String(ticket)) ||
       scopes.some((re) => re.test(target));
     if (!ours) continue;
-    for (const [name, re] of res) if (re.test(target)) into.add(name);
+    for (const path of readPaths(row.tool, target))
+      for (const [name, re] of res) if (re.test(path)) into.add(name);
   }
   return {
     opened: selected.filter((n) => opened.has(n)),
@@ -223,10 +286,20 @@ export function parseArgs(argv) {
   return opts;
 }
 
+/**
+ * The names whose `.claude/skills/<name>/` holds GAFFER'S copy: with a mount manifest, only
+ * the manifest's names (a selected name missing from it is a repo skill that shadows the
+ * pack — reading the repo's file is not opening Gaffer's pack); without one, `selected`.
+ */
+function mountedOnly(selected, mounted) {
+  return mounted.length ? selected.filter((n) => mounted.includes(n)) : selected;
+}
+
 /** Compose a record from parsed opts, reading the scan file if provided. */
 export function recordFromOpts(opts) {
   // The mount is what the agent could actually see (selection ∪ the universal set).
-  const selected = parseList([opts.selected, ...mountedNames(opts.mount)].join(","));
+  const mounted = mountedNames(opts.mount);
+  const selected = parseList([opts.selected, ...mounted].join(","));
   const explicit = parseList(opts.applied);
   let scanned = [];
   if (opts.scan) {
@@ -239,7 +312,7 @@ export function recordFromOpts(opts) {
   let ledger = { opened: [], refused: [] };
   if (opts.toolLedger) {
     try {
-      ledger = scanLedger(selected, readFileSync(opts.toolLedger, "utf8"), {
+      ledger = scanLedger(mountedOnly(selected, mounted), readFileSync(opts.toolLedger, "utf8"), {
         ticket: opts.ticket,
         since: opts.since,
         roots: [...(opts.roots ?? []), opts.mount].filter(Boolean),
@@ -265,6 +338,7 @@ export function recordSkillUsage({
   selected = [],
   output = "",
   agentDir = "",
+  mount = "",
   since = "",
   env = process.env,
 } = {}) {
@@ -278,7 +352,8 @@ export function recordSkillUsage({
     let ledger = { opened: [], refused: [] };
     if (env.GAFFER_DATA) {
       try {
-        ledger = scanLedger(names, readFileSync(`${env.GAFFER_DATA}/tool-metrics.jsonl`, "utf8"), {
+        const ledgerText = readFileSync(`${env.GAFFER_DATA}/tool-metrics.jsonl`, "utf8");
+        ledger = scanLedger(mountedOnly(names, mountedNames(mount)), ledgerText, {
           ticket: "",
           since,
           roots: [agentDir].filter(Boolean),

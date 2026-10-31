@@ -124,8 +124,11 @@ const OUTCOMES: Record<string, Outcome> = {
 
 interface Opts {
   evidence?: unknown[];
+  events?: unknown[];
   outcome?: Outcome | null;
   approved?: Record<string, unknown>;
+  anns?: unknown[];
+  packet?: unknown;
 }
 let posts: string[] = [];
 function stubFetch(o: Opts = {}): void {
@@ -138,6 +141,8 @@ function stubFetch(o: Opts = {}): void {
       let body: unknown;
       if (url.includes("/review/approve"))
         body = o.approved || { ticket: { ...T, status: "in_testing" } };
+      else if (url.includes("/dossier"))
+        body = { schema: "dossier.v1", review_packet: o.packet ?? null };
       else if (url.includes("/diff"))
         body = {
           ticketId: T.id,
@@ -150,7 +155,7 @@ function stubFetch(o: Opts = {}): void {
               additions: 1,
               deletions: 0,
               diff: DIFF,
-              riskAnnotations: [],
+              riskAnnotations: o.anns || [],
             },
           ],
           ...(o.outcome === null ? {} : { approve_outcome: o.outcome || OUTCOMES.to_tester }),
@@ -166,7 +171,7 @@ function stubFetch(o: Opts = {}): void {
           blocking_decisions: [],
           dependencies: [],
           evidence: o.evidence || [],
-          events: [],
+          events: o.events || [],
           rework_trail: [],
         };
       else if (url.includes("/agents")) body = { agents: [] };
@@ -358,5 +363,164 @@ describe("web review: the button names what Approve does", () => {
     btn().click();
     for (let i = 0; i < 6; i++) await tick();
     expect(document.querySelector(".rv-done")?.textContent).toContain("tester");
+  });
+});
+
+// GATE INTEGRITY + THE REVIEW PACKET: the flags, the summary and the band beside the button
+// read the verdict strip's own gate rows, and the tests changing is one finding said once.
+const INTEGRITY_NOTE = "deleted 1 test file (src/webhooks.test.ts)";
+function packet(rows: Array<Record<string, unknown>>, overall = "PASS") {
+  return {
+    gates: { overall, recorded_at: "2026-10-29T11:40:00Z", rows, tally: null },
+    tester: null,
+    tester_expected: false,
+    cost: {
+      cost_usd: 0.5,
+      measured_usd: 0.5,
+      estimated_usd: 0,
+      num_turns: 4,
+      unknown_calls: 0,
+      ledger_status: "ok",
+      budget_usd: null,
+    },
+    attempts: { attempt_count: 0, max_attempts: 3, rework: [] },
+    risk: { level: "medium", reasons: [] },
+    pin: null,
+    acceptance: [],
+    disagreements: [],
+  };
+}
+const TESTS_PASS = {
+  gate: "tests",
+  repo: "taskflow-api",
+  status: "PASS",
+  rc: "0",
+  command: "pnpm test",
+  note: null,
+};
+const INTEGRITY_FLAG = {
+  gate: "integrity",
+  repo: "taskflow-api",
+  status: "FLAG",
+  rc: "0",
+  command: null,
+  note: INTEGRITY_NOTE,
+};
+const TEST_MODIFIED = {
+  kind: "test-modified",
+  severity: "high",
+  detail: INTEGRITY_NOTE,
+  paths: ["src/webhooks.test.ts"],
+  items: ["deleted test file src/webhooks.test.ts"],
+};
+const ESCALATED = {
+  id: "e-esc",
+  event_type: "ticket.autoship_escalated",
+  actor_type: "agent",
+  payload_json: JSON.stringify({
+    declared: "medium",
+    observed: "high",
+    reasons: ["tests modified: " + INTEGRITY_NOTE],
+    holds: ["tests modified: " + INTEGRITY_NOTE],
+  }),
+  created_at: "2026-10-29T11:45:00Z",
+};
+
+describe("web review: one source of evidence, one finding said once", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    mount();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+  const titles = () =>
+    [...document.querySelectorAll(".rv-flags .flag-title")].map((h) => h.textContent);
+
+  it("the flags and the summary read the strip's gate rows, never an evidence row it does not trust", async () => {
+    // A DoD-looking FAIL row with no recorded actor (a legacy or hand-made row): the strip,
+    // which reads only the runner's own record, says the gates passed; so must the sign-off.
+    stubFetch({
+      packet: packet([TESTS_PASS]),
+      evidence: [
+        {
+          id: "ev-dod-legacy",
+          evidence_type: "test_output",
+          summary:
+            "DoD: FAIL\n" +
+            JSON.stringify({
+              dod: "FAIL",
+              gates: [{ gate: "tests", repo: "taskflow-api", status: "FAIL", note: "exit 1" }],
+            }),
+          created_by: "someone",
+          created_at: "2026-10-29T11:41:00Z",
+        },
+      ],
+    });
+    await boot();
+    expect(document.querySelector(".rv-verdict .vd-gates .vd-v")?.textContent).toBe("Passed");
+    expect(titles()).not.toContain("Gate failed");
+    const summary = document.querySelector(".signoff-sum")?.textContent || "";
+    expect(summary).toContain("Gates passed");
+    expect(summary).not.toContain("A gate failed");
+  });
+
+  it("tests changed: one Test modified flag, no repeat in the band, and the line says a human approval is not held", async () => {
+    stubFetch({
+      packet: packet([TESTS_PASS, INTEGRITY_FLAG]),
+      anns: [TEST_MODIFIED],
+      events: [ESCALATED],
+      outcome: {
+        ...OUTCOMES.waits_for_merge,
+        sentence:
+          "It waits in Ready for merge: Auto-merge on approval is off, so it lands only when someone presses Merge now. The tests that gate it changed: your approval is not held by that (only an agent's or auto approval is), and the test-changes banner above lists what changed.",
+        agent_hold: {
+          kind: "held_test_modified",
+          label: "Approve held: tests changed, a person must allow it",
+          sentence: "The delivery changed the tests that gate it.",
+          holds: ["tests modified: " + INTEGRITY_NOTE],
+        },
+      },
+    });
+    await boot();
+    // The strip shows the runner's integrity row as flagged; the banner names the change.
+    expect(document.querySelector(".rv-verdict .vd-g-flag")).not.toBeNull();
+    expect(document.querySelector(".signoff .integrity-banner")).not.toBeNull();
+    // The flags band lists the finding once: no integrity-gate or observed-risk repeat.
+    const t = titles();
+    expect(t.filter((x) => x === "Test modified")).toHaveLength(1);
+    expect(t).not.toContain("Gate flagged: integrity");
+    expect(t).not.toContain("Observed risk above declared");
+    expect(t).not.toContain("Auto-approve held: tests changed");
+    // The band beside the button does not repeat the banner.
+    expect(document.querySelector(".signoff-asks")).toBeNull();
+    // The human's button is not held; its line says so and points at the banner.
+    expect(btn().disabled).toBe(false);
+    expect(btn().textContent).toBe("Approve, waits for Merge now");
+    const next = document.querySelector(".signoff-next")?.textContent || "";
+    expect(next).toContain("your approval is not held by that");
+    expect(next).toContain("test-changes banner");
+  });
+
+  it("the runner's integrity FLAG with a clean diff (a git-ignored file) is still asked, once", async () => {
+    stubFetch({ packet: packet([TESTS_PASS, INTEGRITY_FLAG]), events: [ESCALATED] });
+    await boot();
+    const t = titles();
+    expect(t.filter((x) => x === "Gate flagged: integrity")).toHaveLength(1);
+    expect(t).not.toContain("Observed risk above declared");
+    expect(t).not.toContain("Auto-approve held: tests changed");
+    expect(document.querySelector(".signoff-asks")?.textContent).toContain(INTEGRITY_NOTE);
+  });
+
+  it("an escalation for the tests changing, with no other record of it, says that, not a risk level", async () => {
+    stubFetch({ packet: packet([TESTS_PASS]), events: [ESCALATED] });
+    await boot();
+    const t = titles();
+    expect(t).toContain("Auto-approve held: tests changed");
+    expect(t).not.toContain("Observed risk above declared");
+    expect(document.querySelector(".signoff-asks")?.textContent).toContain(
+      "a human approval is not",
+    );
   });
 });

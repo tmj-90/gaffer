@@ -16031,7 +16031,10 @@ function reviewFlag(title, body, source) {
  * human". The flags, the summary line and the warnings beside the button all read this
  * one list, built from the same rows the Evidence list renders, so the sign-off can never
  * say "Nothing flagged" over a request for a human further down the page.
- * Returns [{ id, title, detail, source }]; `id` is the evidence row's id (null for events).
+ * Returns [{ id, title, detail, source, topic? }]; `id` is the evidence row's id (null for
+ * events). `topic: "tests"` marks the GATE INTEGRITY asks (the runner's integrity FLAG, an
+ * auto-approve held because the tests changed): one finding, which the diff's
+ * `test-modified` flag and the test-changes banner say instead once the diff has loaded.
  */
 const HUMAN_ASK_RULES = [
   [/^needs_human_review\b[:\s]*/i, "Runner asks for a human review", "Raised by the runner"],
@@ -16076,13 +16079,17 @@ function humanAsks(evidence, events, dod) {
       });
     }
   }
+  let integrityFlag = false;
   for (const g of (dod && dod.gates) || []) {
     if (String(g.status || "").toUpperCase() !== "FLAG") continue;
+    const integrity = g.gate === "integrity";
+    integrityFlag = integrityFlag || integrity;
     out.push({
       id: null,
       title: `Gate flagged: ${g.gate || "gate"}`,
       detail: g.note ? String(g.note) : "The Definition of Done flagged this gate for a human.",
       source: "Raised by the runner's gates",
+      ...(integrity ? { topic: "tests" } : {}),
     });
   }
   for (const e of events || []) {
@@ -16092,6 +16099,19 @@ function humanAsks(evidence, events, dod) {
       p = JSON.parse(e.payload_json || "{}") || {};
     } catch {
       p = {};
+    }
+    // GATE INTEGRITY: an escalation for the tests changing is that finding, not a risk level
+    // above the declared one; said once (the runner's integrity FLAG, when present, says it).
+    if (Array.isArray(p.holds) && p.holds.length) {
+      if (!integrityFlag)
+        out.push({
+          id: null,
+          title: "Auto-approve held: tests changed",
+          detail: `${p.holds.join("; ")}. An agent's or auto approval is held until a person looks; a human approval is not.`,
+          source: "Raised by the gate-integrity check",
+          topic: "tests",
+        });
+      continue;
     }
     out.push({
       id: null,
@@ -16103,6 +16123,25 @@ function humanAsks(evidence, events, dod) {
     });
   }
   return out;
+}
+
+/**
+ * The review packet's gate report in the DoD row's shape: the verdict strip's own rows
+ * (the server's read of the runner's DoD record), so the flags, the summary and the
+ * requests for a human never say something about the gates the strip contradicts.
+ */
+function packetDod(p) {
+  const g = p && p.gates;
+  if (!g) return null;
+  return {
+    dod: g.overall,
+    gates: (g.rows || []).map((r) => ({
+      gate: r.gate,
+      repo: r.repo,
+      status: r.status,
+      note: r.note || r.command || "",
+    })),
+  };
 }
 
 /**
@@ -16781,11 +16820,16 @@ async function renderReview(param) {
   const by = deliveredBy(ticketEvents);
   const rby = reviewedBy(detail.ticket || t, ticketEvents);
   const since = sinceStatus(ticketEvents, "in_review");
-  const dod = parseDodEvidence(evidence);
+  // ONE SOURCE for the gates: with a review packet, the verdict strip's rows (the server's
+  // read of the runner's DoD record); without one (an older server), the evidence row.
+  const dod = packet ? packetDod(packet) : parseDodEvidence(evidence);
   const writes = blockedWrites(evidence);
   // Every row below that asks for a human: the flags, the summary and the warnings
   // beside the button read this one list.
   const asks = humanAsks(evidence, ticketEvents, dod);
+  // Once the diff shows the tests changed, the integrity asks are that finding: the
+  // `test-modified` flag and the test-changes banner say it, never twice.
+  let shownAsks = asks;
   const prUrl = safeHttpUrl(t.pr_url);
 
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
@@ -17103,8 +17147,11 @@ async function renderReview(param) {
       "From the ticket's criteria",
     ]);
   const paintFlags = (riskAnns, outside = []) => {
+    const testsChanged = riskAnns.some((a) => a.kind === "test-modified");
+    shownAsks = testsChanged ? asks.filter((a) => a.topic !== "tests") : asks;
+    paintAsks();
     const all = [
-      ...asks.map((a) => [a.title, a.detail, a.source]),
+      ...shownAsks.map((a) => [a.title, a.detail, a.source]),
       ...riskAnns.map((a) => [
         String(a.kind)
           .replace(/-/g, " ")
@@ -17149,30 +17196,35 @@ async function renderReview(param) {
       ? `${plural(all.length, "thing")} to check before you sign: ${all.map((x) => x[0].toLowerCase()).join(", ")}. ${gates}${crit}.`
       : `Nothing flagged. ${gates}${crit}.`;
   };
-  paintFlags([]);
-
   // The requests for a human, beside the button: the reviewer sees them where they sign.
-  const asksBox = asks.length
-    ? el(
+  const asksSlot = el("div", { class: "signoff-asks-slot" });
+  function paintAsks() {
+    clear(asksSlot);
+    const list = shownAsks;
+    if (!list.length) return;
+    asksSlot.appendChild(
+      el(
         "div",
         {
           class: "signoff-asks",
           role: "status",
-          "aria-label": `${plural(asks.length, "request")} for a human before you sign`,
+          "aria-label": `${plural(list.length, "request")} for a human before you sign`,
         },
         [
           el("p", { class: "signoff-asks-h" }, [
             icon("alert", "", 18),
-            ` ${asks.length === 1 ? "A human is asked for" : `${asks.length} requests for a human`} before you sign`,
+            ` ${list.length === 1 ? "A human is asked for" : `${list.length} requests for a human`} before you sign`,
           ]),
           el(
             "ul",
             { class: "clean signoff-asks-list" },
-            asks.map((a) => el("li", {}, [el("b", {}, a.title), el("span", {}, ` ${a.detail}`)])),
+            list.map((a) => el("li", {}, [el("b", {}, a.title), el("span", {}, ` ${a.detail}`)])),
           ),
         ],
-      )
-    : null;
+      ),
+    );
+  }
+  paintFlags([]);
 
   const branchLine = el("p", { class: "rv-branch" }, [
     t.branch_name ? el("code", { class: "mono" }, t.branch_name) : null,
@@ -17279,7 +17331,7 @@ async function renderReview(param) {
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
       movedBanner,
-      asksBox,
+      asksSlot,
       integritySlot,
       canApprove ? diffBlockBanner : null,
       el(

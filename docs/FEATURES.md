@@ -314,7 +314,10 @@ structural barrier the whole design hangs on.
   from the same evidence rows the Evidence list shows. They head the flags, count
   in the summary line, sit in a yellow band beside the button (a live status for
   screen readers), and the evidence row they came from is marked *asks for a
-  human*.
+  human*. With the verdict strip on the page they read its gate rows, so the
+  sign-off never says a gate failed under a strip that says the gates passed; a
+  test change is one *Test modified* flag beside the test-changes banner, never
+  repeated as an integrity gate or a risk level.
 - **"Done" means the combined code passed the gates on the target.** A branch
   that passed its gates and a default branch that passed its gates can still
   merge cleanly into something that fails (one side renames the field the other

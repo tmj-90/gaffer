@@ -168,6 +168,9 @@
   }
   /* The requests for a human, beside the button: a yellow-card band in the
      sign-off block, so a reviewer reads them where they sign. */
+  .signoff-asks-slot:empty {
+    display: none;
+  }
   .signoff-asks {
     display: grid;
     gap: 6px;

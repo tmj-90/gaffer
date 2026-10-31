@@ -212,6 +212,11 @@ describe("dispatch export under a concurrent writer", () => {
       expect((caught as DispatchError).code).toBe("INCONSISTENT_BUNDLE");
       expect((caught as DispatchError).message).toMatch(/restore check.*not written/);
       expect((caught as DispatchError).message).toMatch(/dangling/);
+      // A retry is not the whole advice: a source that is itself inconsistent fails
+      // the same way every time, and the message says so.
+      expect((caught as DispatchError).message).toMatch(
+        /if it fails the same way.*needs repairing/,
+      );
     } finally {
       src.close();
     }

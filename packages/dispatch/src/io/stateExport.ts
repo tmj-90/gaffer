@@ -223,6 +223,16 @@ export interface BundleVerification {
 }
 
 /**
+ * What to do next. A retry fixes a snapshot torn by something outside the read
+ * transaction; when the same check fails again, the source rows themselves are
+ * inconsistent and a retry will never produce a backup that restores.
+ */
+const RETRY_HINT =
+  "Run the export again; if it fails the same way, the source database itself fails " +
+  "this check (e.g. `PRAGMA foreign_key_check` reports rows) and needs repairing before " +
+  "it can be backed up.";
+
+/**
  * Prove a bundle restores before anyone relies on it: load it into a scratch
  * in-memory database with the importer itself (the same envelope, event-chain and
  * foreign-key checks `dispatch import` runs) and confirm every row landed. Throws an
@@ -244,7 +254,7 @@ export function verifyBundleRestores(bundle: StateBundle): BundleVerification {
       throw new DispatchError(
         "INCONSISTENT_BUNDLE",
         `Export failed its restore check, so it was not written: ${reason} ` +
-          "The source database is unchanged; run the export again.",
+          `The source database is unchanged. ${RETRY_HINT}`,
         { stage: "export-verify", cause: code },
       );
     }
@@ -255,8 +265,7 @@ export function verifyBundleRestores(bundle: StateBundle): BundleVerification {
         throw new DispatchError(
           "INCONSISTENT_BUNDLE",
           `Export failed its restore check, so it was not written: ${table} restored ` +
-            `${restored} of ${expected} row(s). The source database is unchanged; run the ` +
-            "export again.",
+            `${restored} of ${expected} row(s). The source database is unchanged. ${RETRY_HINT}`,
           { stage: "export-verify", table, expected, restored },
         );
       }

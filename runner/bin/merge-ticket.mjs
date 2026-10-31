@@ -1080,7 +1080,10 @@ export function parseDiffStatus(diffOut) {
  * carries the old card's summary), and let refreshFileCards verify every stored card
  * against the same tree before it advances the watermark. Skipped (logged) when the
  * repo was never carded, when the local default branch is stale after a PR merge, or
- * when the watermark is not on the merged commit's history.
+ * when the merged commit cannot be resolved or checked out. The diff is tree to tree
+ * (`watermark..tip`), so it is the right change set even when the watermark is not an
+ * ancestor of the tip (a rewritten main); the verification then catches any card the
+ * diff did not reach.
  */
 function refreshCardsForMergedCommit(repo, landed, log) {
   if (landed?.via === "pr" && landed.fastForwarded === false) {

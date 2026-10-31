@@ -51,13 +51,33 @@ export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
 wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
 wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --lint "npm run lint" >/dev/null 2>&1
-mk() { local n; n="$(wg ticket create -t "$1" -d "deliver $1" --risk low --priority "$2" 2>/dev/null | jget 'd.ticket.number')"
-       wg ac add "$n" -t "line added" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; printf '%s' "$n"; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
-
-PRE="$(mk "Prerequisite" 0)"; wg ticket ready "$PRE" >/dev/null 2>&1
-DEPS=()
-for i in $(seq 1 30); do d="$(mk "Dependant $i" 10)"; wg ticket dep add "$d" "$PRE" >/dev/null 2>&1; wg ticket ready "$d" >/dev/null 2>&1; DEPS+=("$d"); done
+# The queue, built in ONE process through the dispatch facade (31 tickets × 5 CLI calls
+# took over two minutes on a loaded runner): the prerequisite at priority 0, then 30
+# dependants at priority 10, each with a criterion, the repo as its write repo, ready.
+NUMS="$(node --input-type=module -e '
+  const { Dispatch } = await import(process.argv[1]);
+  const d = Dispatch.open(process.argv[2]);
+  const human = { type: "human", id: "fixture" };
+  const mk = (title, priority) => {
+    const t = d.createTicket({ title, description: `deliver ${title}`, risk_level: "low", priority }, human);
+    d.addAcceptanceCriterion({ ticket_id: t.id, text: "line added" }, human);
+    d.setTicketRepoAccess({ ticket_id: t.id, repo_id: "repo", access: "write", relation: "confirmed" }, human);
+    return t;
+  };
+  const pre = mk("Prerequisite", 0);
+  const deps = [];
+  for (let i = 1; i <= 30; i++) {
+    const t = mk(`Dependant ${i}`, 10);
+    d.addDependency({ ticket: t.id, depends_on: pre.id }, human);
+    deps.push(t);
+  }
+  for (const t of [pre, ...deps]) d.markReady(t.id, human);
+  process.stdout.write([pre, ...deps].map((t) => t.number).join(" "));
+  d.db.close();' "$ROOT/packages/dispatch/dist/core.js" "$DISPATCH_DB" 2>/dev/null)"
+read -r PRE REST <<<"$NUMS"
+read -r -a DEPS <<<"$REST"
+[ "${#DEPS[@]}" = 30 ] || { echo "FIXTURE ERROR: could not build the queue ($NUMS)"; exit 1; }
 
 echo "== 3: the claimable listing =="
 ALL="$(wg ticket list -s ready | jget 'd.length')"

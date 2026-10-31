@@ -366,7 +366,13 @@ export class Dispatch {
    * `DISPATCH_MAX_ATTEMPTS` (default {@link DEFAULT_MAX_ATTEMPTS}); overridable
    * per-instance for tests via the constructor option.
    */
-  readonly maxAttempts: number;
+  get maxAttempts(): number {
+    // Read per use, not once at startup: DISPATCH_MAX_ATTEMPTS saved from Settings
+    // lands in this process's env (writeSettings), and a long-running dashboard must
+    // enforce the cap the operator just saved.
+    return this.maxAttemptsOverride ?? resolveMaxAttempts();
+  }
+  private readonly maxAttemptsOverride: number | undefined;
 
   /**
    * BBT-001: per-instance override for the `GAFFER_TESTING` toggle. `undefined`
@@ -406,7 +412,7 @@ export class Dispatch {
   ) {
     this.db = db;
     this.gitRunner = gitRunner;
-    this.maxAttempts = options.maxAttempts ?? resolveMaxAttempts();
+    this.maxAttemptsOverride = options.maxAttempts;
     this.testingEnabledOverride = options.testingEnabled;
     this.requireRegisteredAgentApprover = options.requireRegisteredAgentApprover ?? false;
     this.notifier = options.notifier ?? buildNotifierFromEnv();
@@ -539,7 +545,7 @@ export class Dispatch {
       evidence: this.evidence,
       transitions: this.transitions,
       ticketSvc: this.ticketSvc,
-      maxAttempts: this.maxAttempts,
+      maxAttempts: () => this.maxAttempts,
       testingEnabledOverride: this.testingEnabledOverride,
       // REVIEWER ≠ AUTHOR: the agents table, so an agent approver can be checked to be a
       // registered principal (see requireRegisteredAgentApprover).

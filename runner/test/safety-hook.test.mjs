@@ -1351,6 +1351,9 @@ for (const [label, cmd] of [
   // GATE INTEGRITY: an agent can never excuse its own test edits.
   ["wg ticket allow-test-changes", "wg ticket allow-test-changes 5 --reason ok"],
   ["dispatch ticket allow-test-changes", "dispatch ticket allow-test-changes 5"],
+  // ... nor move the gate itself: the registered DoD commands are the human's.
+  ["wg repo set-commands", "wg repo set-commands app --test 'true'"],
+  ["dispatch repo set-commands --lint", "dispatch repo set-commands app --lint ''"],
   ["dispatch ticket test-contract", "dispatch ticket test-contract 5 --run 'npm start'"],
   ["wg ticket tester-pass", "wg ticket tester-pass 5 --summary ok"],
   ["wg ticket repo-delivery record", "wg ticket repo-delivery record 5 app --status done"],

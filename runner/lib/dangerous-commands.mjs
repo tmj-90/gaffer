@@ -400,8 +400,9 @@ export const DANGEROUS_COMMANDS = [
     // human's answer to a decision (`decisions resolve`), and the squad identity
     // (`agent rename`, `club set`): an agent never names itself or the club. And the
     // GATE INTEGRITY allowance (`ticket allow-test-changes`): only a human may excuse a
-    // delivery's test edits (dispatch also refuses an agent actor server-side).
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|reject|repo-access|set-testable|allow-test-changes|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set)\b/,
+    // delivery's test edits (dispatch also refuses an agent actor server-side), and the
+    // repo's registered DoD commands (`repo set-commands`): they ARE the gate.
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

@@ -23140,39 +23140,43 @@ function loreSearch(list, searchText, shown, total) {
 /**
  * A lore row's History: every earlier version of the record (each update snapshots
  * the one before), newest first, read on first open from
- * GET /api/memory/lore/:id/history. Read-only: it changes nothing.
+ * GET /api/memory/lore/:id/history. Read-only: it changes nothing. Which rows are
+ * open, and what they read, outlive a live refresh of the Memory view: an open
+ * History is never folded away (or read again) under the reader.
  */
+const loreHistoryOpen = new Set();
+const loreHistoryRead = new Map(); // lore id → the pending or settled read
 function loreHistory(l) {
   const body = el("div", { class: "lore-history-body" });
   const box = el("details", { class: "lore-history" }, [el("summary", {}, "History"), body]);
-  let loaded = false;
-  box.addEventListener("toggle", async () => {
-    if (!box.open || loaded) return;
-    loaded = true;
-    body.replaceChildren(el("p", { class: "dim" }, "Reading the history…"));
-    let h;
-    try {
-      h = await api("GET", `/api/memory/lore/${encodeURIComponent(l.id)}/history`);
-    } catch (e) {
-      h = { available: false, reason: (e && e.message) || "the request failed" };
+  const line = (v, current) =>
+    el("li", { class: `lore-version${current ? " is-current" : ""}` }, [
+      el("p", { class: "lv-head" }, [
+        el("b", { class: "tabnum" }, `v${v.version}`),
+        ` · ${current ? "current" : v.status} · `,
+        el("time", { datetime: v.at }, v.at ? fmtDay(v.at) : "undated"),
+      ]),
+      v.title && v.title !== l.title ? el("p", { class: "lv-title" }, v.title) : null,
+      v.summary ? el("p", { class: "lv-summary" }, v.summary) : null,
+    ]);
+  const load = async () => {
+    let read = loreHistoryRead.get(l.id);
+    if (!read) {
+      body.replaceChildren(el("p", { class: "dim" }, "Reading the history…"));
+      read = api("GET", `/api/memory/lore/${encodeURIComponent(l.id)}/history`).catch((e) => ({
+        available: false,
+        reason: (e && e.message) || "the request failed",
+      }));
+      loreHistoryRead.set(l.id, read);
     }
+    const h = await read;
     if (!h || !h.available) {
-      loaded = false; // let a later open try again
+      loreHistoryRead.delete(l.id); // let a later open try again
       body.replaceChildren(
         el("p", { class: "dim" }, `History unavailable: ${(h && h.reason) || "no answer"}.`),
       );
       return;
     }
-    const line = (v, current) =>
-      el("li", { class: `lore-version${current ? " is-current" : ""}` }, [
-        el("p", { class: "lv-head" }, [
-          el("b", { class: "tabnum" }, `v${v.version}`),
-          ` · ${current ? "current" : v.status} · `,
-          el("time", { datetime: v.at }, v.at ? fmtDay(v.at) : "undated"),
-        ]),
-        v.title && v.title !== l.title ? el("p", { class: "lv-title" }, v.title) : null,
-        v.summary ? el("p", { class: "lv-summary" }, v.summary) : null,
-      ]);
     body.replaceChildren(
       h.versions.length
         ? el(
@@ -23182,7 +23186,17 @@ function loreHistory(l) {
           )
         : el("p", { class: "dim" }, "No earlier versions: this record has not been edited."),
     );
+  };
+  box.addEventListener("toggle", () => {
+    if (box.open) {
+      loreHistoryOpen.add(l.id);
+      void load();
+    } else loreHistoryOpen.delete(l.id);
   });
+  if (loreHistoryOpen.has(l.id)) {
+    box.open = true;
+    void load();
+  }
   return box;
 }
 

@@ -134,6 +134,22 @@ describe("web: Memory lore history and search", () => {
     expect(historyCalls).toHaveLength(1);
   });
 
+  it("an open History stays open, unread again, across a re-render of the view", async () => {
+    await boot();
+    const open = () => rowOf("aaaa2222").querySelector<HTMLDetailsElement>("details.lore-history")!;
+    open().open = true;
+    open().dispatchEvent(new Event("toggle"));
+    for (let i = 0; i < 4; i++) await tick();
+    expect(historyCalls).toHaveLength(1);
+    // A live refresh re-renders the Memory view (here: navigate away and back).
+    location.hash = "#/memory/sample-repo?x=1";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    for (let i = 0; i < 8; i++) await tick();
+    expect(open().open).toBe(true);
+    expect(open().querySelectorAll(".lore-version")).toHaveLength(2);
+    expect(historyCalls).toHaveLength(1);
+  });
+
   it("a record never edited says so", async () => {
     await boot();
     const box = rowOf("bbbb3333").querySelector<HTMLDetailsElement>("details.lore-history")!;

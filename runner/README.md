@@ -166,14 +166,16 @@ attempt counts (`lib/dod.sh` `gaffer_dod_rerun_serial`; a pass is marked flaky
 suspected; `GAFFER_DOD_FLAKY_RERUN=0` turns it off). Every landed delivery's merge commit carries
 `Gaffer-Ticket` / `Gaffer-Reviewed-By` / `Gaffer-Gates` trailers
 (`lib/provenance-trailers.mjs`, used by `lib/land.sh` and `bin/merge-ticket.mjs`; a
-local landing is `--no-ff` while they are on; `GAFFER_PROVENANCE_TRAILERS=0` turns them
-off). Every ledger row made through the worker
+local landing is `--no-ff` while they are on; the tester verdict comes from the
+tester's `tester_passed` / `tester_failed` transition, never from evidence;
+`GAFFER_PROVENANCE_TRAILERS=0` turns them off). Every ledger row made through the worker
 seam also names its call: `attempt` (delivery), `model_requested` (`default` = the
 CLI's own) beside the measured `models` map, and `claude_version`
 (`lib/claude-version.mjs`: read from a native or npm install without running it,
 else `claude --version`; `GAFFER_CLAUDE_VERSION` pins it). Each delivery attempt
-also gets agent-run evidence on its ticket (`gaffer_record_agent_run`), which the
-ticket page's attempt history shows.
+also gets agent-run evidence on its ticket (`gaffer_record_agent_run`, recorded as the
+system actor), which the ticket page's attempt history shows; a failure there names the
+latest run recorded before it, and an agent-recorded `agent_run` row is ignored.
 
 ## Configuration (env always wins)
 

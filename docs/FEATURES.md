@@ -208,6 +208,8 @@ structural barrier the whole design hangs on.
   trailers into the merge commit, read from the dispatch DB:
   `Gaffer-Ticket: #12`, `Gaffer-Reviewed-By: human:tom` (or `agent:<id>`) and
   `Gaffer-Gates: DoD PASS (tests pass, lint skip); AC 3/3 satisfied; tester PASS`.
+  The tester part comes from the tester's own verdict transition since the latest
+  approval, never from evidence an agent could record.
   A local landing is then `--no-ff`, so there is a merge commit to carry them. No
   model name is written (the usage ledger records that), and the trailers are not
   signed. `GAFFER_PROVENANCE_TRAILERS=0` turns them off.
@@ -215,7 +217,9 @@ structural barrier the whole design hangs on.
   attempt, the model that served the call (and the one it asked for) and the
   Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,
   `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
-  ticket page's **Attempts** history shows "Model … · CLI …" on each attempt.
+  ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
+  failure names the run recorded just before it, and only the runner's own rows
+  count, so an agent cannot name its own model.
 
 ![The Gaffer's Sign-off](img/review.png)
 

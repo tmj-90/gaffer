@@ -242,7 +242,12 @@ export interface EpicAcceptance {
   readonly implementation_total: number;
   /**
    * accepted   — VERIFIED: done, and the latest PASS is an agent/system verdict bound to a
-   *              tested commit, the contract on record (hash matches) and a clean replay;
+   *              tested commit, the contract on record (hash matches) and a clean replay,
+   *              AND the runner's landing path recorded that the tester's assertions passed
+   *              on the revision that LANDED (a `gaffer-tester-replayed:<sha>` system row
+   *              for that tested commit — see services/testerReplay.ts);
+   * unreplayed — done on a bound PASS, but no record that the tester's assertions passed on
+   *              the landed revision (they were never run against what landed);
    * waived     — done on a HUMAN tester-pass (an explicit decision, shown as such — never
    *              the same evidence as a revision-bound test);
    * stale      — done, but the contract changed after the bound PASS;
@@ -253,7 +258,14 @@ export interface EpicAcceptance {
    * pending    — not yet reached (draft / ready / claimed / in_progress / in_review / paused).
    */
   readonly result:
-    "accepted" | "waived" | "stale" | "unverified" | "testing" | "failed" | "pending";
+    | "accepted"
+    | "waived"
+    | "stale"
+    | "unverified"
+    | "unreplayed"
+    | "testing"
+    | "failed"
+    | "pending";
   /** True when every implementation ticket is done and the build is neither accepted nor waived. */
   readonly unaccepted: boolean;
   /** Provenance of the latest PASS (agent / system / human), or null when none was recorded. */
@@ -289,6 +301,8 @@ export interface AcceptanceSummary {
   readonly waived: number;
   readonly stale: number;
   readonly unverified: number;
+  /** Done on a bound PASS whose assertions were never recorded as passing on the landed revision. */
+  readonly unreplayed: number;
   readonly failed: number;
   readonly epics: readonly EpicAcceptance[];
 }
@@ -315,6 +329,7 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     waived: 0,
     stale: 0,
     unverified: 0,
+    unreplayed: 0,
     failed: 0,
     epics: [],
   };
@@ -390,7 +405,7 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       if (provenance === "human") result = "waived";
       else if (contractChanged) result = "stale";
       else if (acceptedCommit !== null && acceptedHash !== null && replay === "passed")
-        result = "accepted";
+        result = replayed ? "accepted" : "unreplayed";
       else result = "unverified";
     } else if (r.status === "in_testing") result = "testing";
     else if (r.status === "refining" || r.status === "blocked" || r.status === "failed")
@@ -428,6 +443,7 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     waived: epics.filter((e) => e.result === "waived").length,
     stale: epics.filter((e) => e.result === "stale").length,
     unverified: epics.filter((e) => e.result === "unverified").length,
+    unreplayed: epics.filter((e) => e.result === "unreplayed").length,
     failed: epics.filter((e) => e.result === "failed").length,
     epics,
   };
@@ -479,11 +495,11 @@ export function renderStats(stats: StatsReport): string {
   if (a && a.epics.length > 0) {
     lines.push("");
     lines.push(
-      `Builds:  ${a.accepted} accepted (verified) · ${a.waived} waived by a human · ${a.unverified} unverified · ${a.stale} stale · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
+      `Builds:  ${a.accepted} accepted (verified) · ${a.waived} waived by a human · ${a.unverified} unverified · ${a.unreplayed} not replayed on the landed revision · ${a.stale} stale · ${a.testing} in acceptance testing · ${a.failed} failed acceptance · ${a.unaccepted} NOT accepted with implementation merged`,
     );
     for (const e of a.epics) {
       lines.push(
-        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)}${e.replayed_files.length ? ` (${e.replayed_files.join(", ")})` : ""}` : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)}${e.replayed_files.length ? ` (${e.replayed_files.join(", ")})` : ""}` : ""}${e.result === "unreplayed" ? "  ← the tester's assertions were never recorded passing on the revision that landed" : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
       );
     }
   }

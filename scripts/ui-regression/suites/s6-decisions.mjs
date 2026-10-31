@@ -2,7 +2,8 @@
 // human_required decision through the real dispatch MCP server and parks its ticket;
 // the Team Sheet shows a Decision row; Answer… refuses an empty answer, then records
 // the human's answer; once the ticket is back in the queue the next delivery's
-// get_ticket (the agent's first call over MCP) returns that answer. A second question is rejected from the Team Sheet. Then the
+// prompt quotes that answer and its get_ticket (the agent's first call over MCP)
+// returns it. A second question is rejected from the Team Sheet. Then the
 // intake clarify pass (CLARIFY_DRAFTS_WHEN_IDLE, saved in Settings) files criteria and
 // a decision on a vague draft through the same MCP server, without wedging on a
 // repo-less draft.
@@ -131,10 +132,15 @@ export default async function s6(t, L) {
     "the human's answer reached the agent on its next delivery: get_ticket (the agent's first call) returns it under resolved_decisions",
     `the redelivered agent's get_ticket did not carry the answer: '${seen.slice(0, 160)}'`,
   );
-  t.note(
-    prompt.includes(ANSWER)
-      ? "the delivery prompt itself also quotes the answer"
-      : "the delivery prompt itself does not quote the answer; the agent gets it from get_ticket",
+  // The prompt quotes it too (inside its untrusted envelope), so an agent that skips
+  // get_ticket does not ask again.
+  const answers = (prompt.match(
+    /<untrusted-decision-answers>[\s\S]*?<\/untrusted-decision-answers>/,
+  ) || [""])[0];
+  t.check(
+    /HUMAN ANSWERS/.test(prompt) && answers.includes(ANSWER),
+    "the next delivery prompt quotes the human's answer inside its untrusted envelope",
+    `the redelivery prompt does not quote the answer: '${answers || "(no decision-answers envelope)"}'`,
   );
 
   // ── reject a question from the Team Sheet ─────────────────────────────────

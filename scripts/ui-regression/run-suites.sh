@@ -24,7 +24,9 @@
 # the env to drive `node run-suites.mjs <suite>` against it while writing a suite.
 # =====================================================================
 set -uo pipefail
+# shellcheck disable=SC2034  # both read by setup.sh, sourced below
 UI_SETUP_DEFAULT_OUT=/tmp/gaffer-ui-scenarios
+# shellcheck disable=SC2034
 UI_SETUP_DEFAULT_PORT=8798
 ui_setup_before_dashboard() {
   # Canned planning bins (no model): the dashboard's plan-build / spec-build runners

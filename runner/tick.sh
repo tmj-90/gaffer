@@ -923,6 +923,13 @@ if [ -n "$RESUME_NUM" ]; then
   REPO_PATH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
   STACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
   TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
+  # PREVIEW IS PREVIEW (external review #8): a dry run reports the resume and changes
+  # NOTHING — no resume-begin, so no lease, no paused → in_progress, and the human's
+  # resume request stays queued for the live tick. Checked BEFORE the lease is taken.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    log "DRY_RUN: would resume paused #$NUM ('$TITLE') in its existing worktree — resume-begin NOT called: no lease taken, the ticket stays paused and its resume request stays queued for the live tick"
+    result worked; exit 0
+  fi
   # The resume is LEASED to this runner (--agent/--ttl): the pause released the old
   # lease, and resume-begin takes a fresh one and prints its token. From here a resumed
   # delivery uses the same token paths as a fresh one — heartbeat, claim-gated submit,

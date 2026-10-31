@@ -157,6 +157,11 @@ ticket's worktree with uncommitted changes is kept; only a definite terminal sta
 (`done` / `failed` / `cancelled`), or a clean worktree whose commits are already on the
 branch, is removed. `--dry-run` removes nothing and says what it would remove.
 
+**A dry run changes nothing, on the resume path too.** A `--dry-run` tick that finds a
+paused ticket whose Continue was pressed logs "DRY_RUN: would resume paused #N …" and
+stops before `resume-begin`: no lease is taken, the ticket stays `paused`, and the
+resume request stays queued for the next live tick (`runner/test/resume-dry-run.test.sh`).
+
 ## Model tiering
 
 Planning and implementation run on different models, configured in

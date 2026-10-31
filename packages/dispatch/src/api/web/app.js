@@ -23150,7 +23150,7 @@ function loreHistory(l) {
     if (!box.open || loaded) return;
     loaded = true;
     body.replaceChildren(el("p", { class: "dim" }, "Reading the history…"));
-    let h = null;
+    let h;
     try {
       h = await api("GET", `/api/memory/lore/${encodeURIComponent(l.id)}/history`);
     } catch (e) {

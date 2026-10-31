@@ -15224,9 +15224,12 @@ function pausedInfo(events) {
  * nodes (el coerces strings) — never innerHTML — so it stays XSS-safe.
  */
 function parseDodEvidence(evidence) {
+  // The runner records the DoD row as the system actor; an agent-recorded row that
+  // merely looks like one is the agent's word, never a gate verdict.
   const rows = (evidence || []).filter(
     (ev) =>
       ev.evidence_type === "test_output" &&
+      ev.recorded_by_agent !== true &&
       typeof ev.summary === "string" &&
       ev.summary.startsWith("DoD: "),
   );
@@ -15568,6 +15571,356 @@ function reviewFlag(title, body, source) {
   ]);
 }
 
+// ── The review packet: the runner's facts, above the agent's words ──────────
+// One GET /tickets/:id/dossier?include=packet per change, kept against the
+// ticket's id@updated_at: a refresh that re-renders the page for another
+// ticket's sake (the queue moved) reuses it, and a changed ticket reads it again.
+const packetCache = new Map();
+async function reviewPacketFor(t, signal) {
+  const sig = `${t.id}@${t.updated_at || ""}`;
+  const hit = packetCache.get(t.id);
+  if (hit && hit.sig === sig) return hit.packet;
+  const d = await api("GET", `/tickets/${t.id}/dossier?include=packet`, undefined, { signal });
+  const packet = (d && d.review_packet) || null;
+  if (packet) packetCache.set(t.id, { sig, packet });
+  return packet;
+}
+/** Forget packets for tickets that left the queue (the cache never outgrows it). */
+function prunePacketCache(tickets) {
+  const live = new Set(tickets.map((t) => t.id));
+  for (const id of packetCache.keys()) if (!live.has(id)) packetCache.delete(id);
+}
+
+const VD_WORD = { PASS: "passed", FAIL: "failed", SKIPPED: "skipped" };
+/** One cell of the verdict strip: a caps label, the verdict, then its detail. */
+function verdictCell(key, label, value, aria, body, tone = "") {
+  return el(
+    "div",
+    {
+      class: `vd-cell vd-${key}${tone ? ` vd-${tone}` : ""}`,
+      role: "group",
+      "aria-label": aria,
+    },
+    [
+      el("p", { class: "vd-k" }, label),
+      el("p", { class: "vd-v" }, value),
+      el("div", { class: "vd-body" }, body),
+    ],
+  );
+}
+/** Who sent a delivery back, said plainly. */
+function reworkWho(r) {
+  if (r.by === "gate") return r.gate ? `the ${r.gate} gate` : "a gate";
+  return r.by === "tester" ? "the tester" : "the review";
+}
+/** What a criterion's evidence is, said on its row (and in its label). */
+function acEvidenceWords(a) {
+  const c = a.check;
+  if (a.evidence_kind === "runner" && c)
+    return c.passed
+      ? `The runner ran the check: exit ${c.exit_code ?? 0}`
+      : `The runner ran the check and it failed: exit ${c.exit_code ?? "unknown"}`;
+  if (a.evidence_kind === "human" && c)
+    return `A person recorded the check result: exit ${c.exit_code ?? "unknown"}`;
+  if (a.evidence_kind === "agent") return "No machine evidence: only the agent's word";
+  return "No machine evidence: nothing recorded";
+}
+
+/**
+ * The verdict strip under the title: gates, the independent tester, cost and
+ * turns, attempts and rework, risk and its reasons, the reviewed-commit pin.
+ * Each a recorded fact (see services/reviewPacketService.ts). `setRisk(anns)`
+ * adds the diff's own risk annotations once the diff has loaded.
+ */
+function verdictStrip(p) {
+  const cells = [];
+
+  // Gates: the runner's DoD rows, each with its command; the test count it saw.
+  const g = p.gates;
+  const gateBody = [];
+  if (g) {
+    gateBody.push(
+      el(
+        "ul",
+        { class: "clean vd-gate-list" },
+        g.rows.map((r) => {
+          const st = r.status === "PASS" ? "pass" : r.status === "FAIL" ? "fail" : "skip";
+          return el("li", { class: `vd-gate vd-g-${st}` }, [
+            el(
+              "span",
+              { class: `dod-mark dod-${st}`, "aria-hidden": "true" },
+              st === "pass" ? "✓" : st === "fail" ? "✗" : "–",
+            ),
+            el("b", {}, r.gate),
+            el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
+            r.command
+              ? el("code", { class: "vd-cmd mono" }, r.command)
+              : r.note
+                ? el("span", { class: "vd-note" }, r.note)
+                : null,
+          ]);
+        }),
+      ),
+    );
+    gateBody.push(
+      el(
+        "p",
+        { class: "vd-sub" },
+        g.tally
+          ? `The runner saw ${plural(g.tally.passed, "test")} pass${
+              g.tally.failed ? `, ${g.tally.failed} fail` : ""
+            }${g.tally.skipped ? `, ${g.tally.skipped} skipped` : ""} (${g.tally.framework}).`
+          : "The runner's test output carries no test count.",
+      ),
+    );
+  } else gateBody.push(el("p", { class: "vd-sub" }, "The runner has recorded no gate report."));
+  for (const d of p.disagreements || [])
+    gateBody.push(el("p", { class: "vd-flag" }, [ycard(16), d.message]));
+  const ran = g ? g.rows.filter((r) => r.status !== "SKIPPED").length : 0;
+  cells.push(
+    verdictCell(
+      "gates",
+      "Gates",
+      g ? (g.overall === "PASS" ? "Passed" : "Failed") : "No report",
+      g
+        ? `Gates: ${g.overall === "PASS" ? "passed" : "failed"}, ${ran} of ${g.rows.length} ran`
+        : "Gates: no report recorded",
+      gateBody,
+      g ? (g.overall === "PASS" ? "ok" : "bad") : "warn",
+    ),
+  );
+
+  // The independent tester: its verdict and what it tested, or when it comes.
+  const ts = p.tester;
+  cells.push(
+    ts
+      ? verdictCell(
+          "tester",
+          "Tester",
+          ts.verdict === "pass" ? "Passed" : "Failed",
+          `Independent tester: ${ts.verdict === "pass" ? "passed" : "failed"}${
+            ts.tested_commit ? `, tested commit ${ts.tested_commit.slice(0, 12)}` : ""
+          }`,
+          [
+            el("p", { class: "vd-sub" }, [
+              ts.tested_commit
+                ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
+                : "No commit recorded",
+              ts.provenance
+                ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
+                : "",
+              ` · ${fmtTime(ts.at)}`,
+            ]),
+            el("p", { class: "vd-say" }, ts.summary),
+          ],
+          ts.verdict === "pass" ? "ok" : "bad",
+        )
+      : verdictCell(
+          "tester",
+          "Tester",
+          p.tester_expected ? "After you" : "None",
+          p.tester_expected
+            ? "Independent tester: runs after your approval"
+            : "Independent tester: not used for this ticket",
+          el(
+            "p",
+            { class: "vd-sub" },
+            p.tester_expected
+              ? "The independent tester runs once you approve, against the commit you sign."
+              : "This ticket does not go through the independent tester.",
+          ),
+        ),
+  );
+
+  // Cost and turns so far, from the usage ledger (an estimate is said as one).
+  const c = p.cost;
+  const unknown = c.ledger_status === "unreadable";
+  const untracked = c.ledger_status === "unconfigured" || c.ledger_status === "no_ticket";
+  cells.push(
+    verdictCell(
+      "cost",
+      "Cost",
+      unknown ? "Unknown" : untracked ? "Not tracked" : money(c.cost_usd),
+      unknown
+        ? "Cost: unknown, the usage ledger could not be read"
+        : untracked
+          ? "Cost: not tracked, no usage ledger"
+          : `Cost so far: ${money(c.cost_usd)} over ${plural(c.num_turns, "turn")}`,
+      el("p", { class: "vd-sub" }, [
+        unknown
+          ? "The usage ledger could not be read."
+          : untracked
+            ? "No usage ledger is configured."
+            : plural(c.num_turns, "turn"),
+        !unknown && c.estimated_usd > 0 ? ` · ${money(c.estimated_usd)} of it estimated` : "",
+        c.unknown_calls ? ` · ${plural(c.unknown_calls, "call")} unmeasured` : "",
+        c.budget_usd != null ? ` · budget ${moneyW(c.budget_usd)}` : "",
+      ]),
+      unknown ? "warn" : "",
+    ),
+  );
+
+  // Attempts and the rework history (latest three).
+  const at = p.attempts;
+  const rework = at.rework || [];
+  cells.push(
+    verdictCell(
+      "attempts",
+      "Attempt",
+      `${at.attempt_count + 1} of ${at.max_attempts}`,
+      `Attempt ${at.attempt_count + 1} of ${at.max_attempts}, sent back ${plural(rework.length, "time")}`,
+      rework.length
+        ? [
+            el(
+              "ol",
+              { class: "clean vd-rework" },
+              rework
+                .slice(-3)
+                .map((r) =>
+                  el("li", {}, [
+                    el("span", { class: "vd-when tabnum" }, fmtTime(r.at)),
+                    ` Sent back by ${reworkWho(r)}: `,
+                    el("span", { class: "vd-why" }, r.reason),
+                  ]),
+                ),
+            ),
+            rework.length > 3
+              ? el("p", { class: "vd-sub" }, `${plural(rework.length - 3, "earlier send-back")}`)
+              : null,
+          ]
+        : el("p", { class: "vd-sub" }, "First time through: nothing has sent it back."),
+      rework.length ? "warn" : "",
+    ),
+  );
+
+  // Risk: the declared level, the recorded reasons, then the diff's own flags.
+  const riskList = el("ul", { class: "clean vd-reasons" });
+  const riskSub = el("p", { class: "vd-sub" }, "Reading the diff's risk check…");
+  const riskCell = verdictCell(
+    "risk",
+    "Risk",
+    riskBadge(p.risk.level, { long: true }),
+    `Risk: ${p.risk.level}`,
+    [riskList, riskSub],
+  );
+  const paintRisk = (anns) => {
+    clear(riskList);
+    const reasons = [...p.risk.reasons, ...(anns || []).map((a) => a.detail)];
+    for (const r of reasons) riskList.appendChild(el("li", {}, r));
+    if (anns) riskSub.textContent = reasons.length ? "" : "The diff's risk check raised nothing.";
+    riskSub.hidden = !riskSub.textContent;
+    riskCell.setAttribute(
+      "aria-label",
+      `Risk: ${p.risk.level}${reasons.length ? `, ${plural(reasons.length, "reason")}` : ""}`,
+    );
+  };
+  paintRisk(null);
+  cells.push(riskCell);
+
+  // The reviewed-commit pin, when one is recorded: landing merges only that commit.
+  if (p.pin)
+    cells.push(
+      verdictCell(
+        "pin",
+        "Pinned",
+        el("code", { class: "mono" }, p.pin.sha.slice(0, 12)),
+        `Reviewed commit pinned: ${p.pin.sha.slice(0, 12)}`,
+        el("p", { class: "vd-sub" }, [
+          /^agent review/.test(p.pin.summary) ? "By the agent review" : "By a review",
+          ` · ${fmtTime(p.pin.at)}. Only this commit can land.`,
+        ]),
+      ),
+    );
+
+  const strip = el(
+    "section",
+    { class: "rv-verdict", "aria-label": "The runner's verdict" },
+    el("div", { class: "vd-cells" }, cells),
+  );
+  strip._setRisk = paintRisk;
+  return strip;
+}
+
+/**
+ * The acceptance criteria as the runner sees them: each with its check command
+ * and the runner's recorded exit code, or "no machine evidence" on a yellow card
+ * when only the agent's word (or nothing) backs it.
+ */
+function acTable(rows) {
+  return el("table", { class: "rv-ac-table" }, [
+    el("caption", { class: "sr-only" }, "Acceptance criteria and the evidence behind each"),
+    el(
+      "thead",
+      {},
+      el("tr", {}, [
+        el("th", { scope: "col" }, "Criterion"),
+        el("th", { scope: "col" }, "Check"),
+        el("th", { scope: "col" }, "Evidence"),
+      ]),
+    ),
+    el(
+      "tbody",
+      {},
+      rows.map((a) => {
+        const kind = a.evidence_kind;
+        const failed = a.check && !a.check.passed;
+        const tone = kind === "runner" || kind === "human" ? (failed ? "bad" : "ok") : "none";
+        const words = acEvidenceWords(a);
+        return el(
+          "tr",
+          {
+            class: `ac-ev ac-ev-${kind} ac-ev-${tone}`,
+            "aria-label": `${a.text}: ${String(a.status).replace(/_/g, " ")}. ${words}.`,
+          },
+          [
+            el("td", { class: "ac-ev-t" }, [
+              el("span", {}, a.text),
+              el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+            ]),
+            el(
+              "td",
+              { class: "ac-ev-cmd" },
+              a.check_command
+                ? el("code", { class: "mono" }, a.check_command)
+                : el("span", { class: "dim" }, "No check command"),
+            ),
+            el(
+              "td",
+              { class: "ac-ev-what" },
+              el("div", { class: "ac-ev-in" }, [
+                tone === "ok"
+                  ? el("span", { class: "dod-mark dod-pass", "aria-hidden": "true" }, "✓")
+                  : tone === "bad"
+                    ? redCard(16)
+                    : ycard(16),
+                el("span", { class: "ac-ev-word" }, [
+                  kind === "runner" || kind === "human"
+                    ? el("span", {}, [
+                        el("b", {}, kind === "runner" ? "Runner" : "Person"),
+                        ` · exit ${a.check.exit_code ?? "unknown"}`,
+                      ])
+                    : el("b", {}, "No machine evidence"),
+                  el(
+                    "small",
+                    { class: "ac-ev-by" },
+                    kind === "agent"
+                      ? `The agent's word${a.verified_by ? ` (verified by ${actorName("agent", a.verified_by)})` : ""}`
+                      : kind === "none"
+                        ? "Nothing recorded"
+                        : a.verified_by
+                          ? `verified by ${a.verified_by}`
+                          : fmtTime(a.check.at),
+                  ),
+                ]),
+              ]),
+            ),
+          ],
+        );
+      }),
+    ),
+  ]);
+}
+
 /** The change last signed off in this tab, so the clear desk can say where it went. */
 let lastSignedOff = null;
 
@@ -15820,7 +16173,13 @@ async function renderReview(param) {
 
   const t = tickets[idx];
   const next = tickets[idx + 1] || (idx > 0 ? tickets[0] : null);
-  const detail = await api("GET", `/tickets/${t.id}`, undefined, { signal });
+  prunePacketCache(tickets);
+  // The detail and the review packet (one dossier read, cached per id@updated_at)
+  // in parallel; a packet that cannot be read leaves the page as it was without it.
+  const [detail, packet] = await Promise.all([
+    api("GET", `/tickets/${t.id}`, undefined, { signal }),
+    reviewPacketFor(t, signal).catch(() => null),
+  ]);
   const ac = detail.acceptance_criteria || [];
   const evidence = detail.evidence || [];
   const ticketEvents = detail.events || [];
@@ -16078,6 +16437,12 @@ async function renderReview(param) {
         .join(", ")}.`,
       "Raised by the runner",
     ]);
+  for (const d of (packet && packet.disagreements) || [])
+    flagsNow.push([
+      "Test count disagrees",
+      `${d.message} The agent wrote: “${d.excerpt}”. Trust the gate output, not the summary.`,
+      "Derived from the agent's evidence and the runner's test output",
+    ]);
   if (ac.length && satisfied < ac.length)
     flagsNow.push([
       "Criteria not met",
@@ -16147,6 +16512,7 @@ async function renderReview(param) {
       if (approveBtn) approveBtn.setAttribute("disabled", "");
     }
     const live = repos.filter((r) => !r.unavailable);
+    strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
     const outside = outsideStatedChange(evidence, live);
     paintFlags(
       live.flatMap((r) => r.riskAnnotations || []),
@@ -16167,6 +16533,9 @@ async function renderReview(param) {
       );
     }
   };
+  // The verdict strip: the runner's facts, under the title and above everything
+  // the agent wrote. Built before the diff so the diff's risk flags can join it.
+  const strip = packet ? verdictStrip(packet) : null;
   const diffBox = renderTicketDiff(
     t.id,
     canApprove ? applyDiffState : (s, r) => applyDiffState(s, r),
@@ -16202,6 +16571,7 @@ async function renderReview(param) {
       branchLine,
     ]),
   );
+  if (strip) wrap.appendChild(strip);
 
   signoff = el(
     "section",
@@ -16276,7 +16646,7 @@ async function renderReview(param) {
           el("span", { class: "count" }, `${satisfied} of ${ac.length}`),
         ])
       : null,
-    ac.length ? acChecklist(ac) : null,
+    ac.length ? (packet ? acTable(packet.acceptance) : acChecklist(ac)) : null,
   ]);
 
   wrap.appendChild(

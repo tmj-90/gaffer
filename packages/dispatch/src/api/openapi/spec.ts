@@ -752,16 +752,20 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery dossier",
     description:
-      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`.",
+      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
     capability: "read",
     query: {
       format: {
         description: "`markdown` for the rendered document.",
         schema: { type: "string", enum: ["json", "markdown"] },
       },
+      include: {
+        description: "`packet` adds the Review view's `review_packet` to the JSON.",
+        schema: { type: "string", enum: ["packet"] },
+      },
     },
     responses: [
-      ok("`Dossier`."),
+      ok("`Dossier` (plus `review_packet` with `?include=packet`)."),
       { status: 200, description: "The rendered dossier (`text/markdown`).", content: "markdown" },
       notFound,
     ],

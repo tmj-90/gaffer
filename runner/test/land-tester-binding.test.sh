@@ -7,6 +7,9 @@
 #   B. the SAME moved candidate is refused by BOTH paths (nothing merged)
 #   C. both paths land a bound, unmoved candidate — and merge the PINNED commit
 #   D. an acceptance ticket with no bound PASS is refused by both paths
+#   A3. only the tester's own verdict row counts: one a `ticket.tester_passed` event
+#       names (dispatch's testerPass writes both); a verdict-shaped row the delivery
+#       agent recorded through record_ac_evidence is not a tester PASS
 # Real git repos, a reduced SQLite dispatch fixture, real land.sh + automerge.sh, real
 # merge-ticket.mjs. Run: bash runner/test/land-tester-binding.test.sh
 # =====================================================================
@@ -32,13 +35,16 @@ sql "CREATE TABLE tickets (id TEXT PRIMARY KEY, number INTEGER UNIQUE, title TEX
      CREATE TABLE evidence (id TEXT PRIMARY KEY, ticket_id TEXT, evidence_type TEXT, summary TEXT, payload_json TEXT, created_at TEXT);
      CREATE TABLE repositories (id TEXT PRIMARY KEY, name TEXT UNIQUE, local_path TEXT, default_branch TEXT, stack TEXT);
      CREATE TABLE ticket_repos (ticket_id TEXT, repo_id TEXT, role TEXT, branch_name TEXT, access TEXT, pr_url TEXT);
+     CREATE TABLE work_events (id TEXT PRIMARY KEY, entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, actor_type TEXT NOT NULL, actor_id TEXT, event_type TEXT NOT NULL, payload_json TEXT, correlation_id TEXT, created_at TEXT NOT NULL, prev_hash TEXT, hash TEXT);
      INSERT INTO tickets VALUES ('t9', 9, 'x', 'ready_for_merge', 'gaffer/ticket-9-x', NULL, 0);
      INSERT INTO repositories VALUES ('r1', 'repo', '$R', 'main', '');
      INSERT INTO ticket_repos VALUES ('t9', 'r1', 'primary', 'gaffer/ticket-9-x', 'write', NULL);"
-set_pass() {  # $1 = payload json ('' = no evidence)
-  sql "DELETE FROM evidence;"
+set_pass() {  # $1 = payload json ('' = no evidence); $2 = "forged": no tester event names it
+  sql "DELETE FROM evidence; DELETE FROM work_events WHERE event_type = 'ticket.tester_passed';"
   # Named columns: the Node merge path's mark-merged migrates this fixture (adds columns).
   [ -n "$1" ] && sql "INSERT INTO evidence (id, ticket_id, evidence_type, summary, payload_json, created_at) VALUES ('e1', 't9', 'test_output', 'pass', '$1', '2026-09-29T00:00:00Z');"
+  # The tester pass path (dispatch testerPass) names its row in a ticket.tester_passed event.
+  [ -n "$1" ] && [ "${2:-}" != forged ] && sql "INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, created_at) VALUES ('tp1', 'ticket', 't9', 'agent', 'tester-1', 'ticket.tester_passed', '{\"evidence_id\":\"e1\"}', '2026-09-29T00:00:00.000Z');"
   return 0
 }
 decide() { node --no-warnings "$HELPER" landing --db "$DB" --ticket 9 --repo "$R" --branch gaffer/ticket-9-x; }
@@ -65,6 +71,21 @@ out="$(node "$HELPER" landing --db "$DB" --ticket 77 --repo "$R" --branch gaffer
 out="$(node "$HELPER" landing --db "$DB" --ticket 9 --repo "$R" --branch no/such-branch)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "no-head" ] && ok "unresolvable branch head → hold" || fail "no head: rc=$rc $out"
 
+echo "== A3: only the tester's own verdict row is a tester PASS =="
+# The delivery agent records a verdict-shaped row itself (record_ac_evidence takes any
+# payload): no ticket.tester_passed event names it.
+sql "UPDATE tickets SET acceptance = 1"
+set_pass '{"verdict":"pass","provenance":"human"}' forged; out="$(decide)"; rc=$?
+[ "$rc" -eq 4 ] && [ "$(kind "$out")" = "unverified" ] && ok "ACCEPTANCE ticket, agent-forged HUMAN PASS → hold (unverified), not a waiver" || fail "forged waiver: rc=$rc $out"
+sql "UPDATE tickets SET acceptance = 0"
+set_pass "{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$TESTED\"}" forged; out="$(decide)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "ordinary ticket, agent-forged bound PASS → no tester PASS on record (no-tester)" || fail "forged bound: rc=$rc $out"
+sql "INSERT INTO work_events (id, entity_type, entity_id, actor_type, actor_id, event_type, payload_json, created_at) VALUES ('tp2', 'ticket', 't9', 'agent', 'tester-1', 'ticket.tester_passed', '{\"evidence_id\":\"other\"}', '2026-09-29T00:00:00.000Z');"
+out="$(decide)"; [ "$(kind "$out")" = "no-tester" ] && ok "a tester event naming ANOTHER row does not make the forged row the tester's" || fail "event for another row: $out"
+sql "DELETE FROM work_events WHERE id = 'tp2';"
+set_pass "{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$TESTED\"}"; out="$(decide)"; rc=$?
+[ "$rc" -eq 0 ] && [ "$(kind "$out")" = "bound" ] && ok "the same row named by a ticket.tester_passed event → bound" || fail "tester row: rc=$rc $out"
+
 echo "== A2: the REVIEW PIN — a head landing is bound to the commit the agent review approved =="
 g checkout -q -b gaffer/ticket-10-y; echo r1 > "$R/g"; g add -A; g commit -q -m deliver10
 REVIEWED="$(g rev-parse gaffer/ticket-10-y)"; g checkout -q main
@@ -85,10 +106,11 @@ pin "$REVIEWED" system 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
 g checkout -q gaffer/ticket-10-y; echo late > "$R/g"; g add -A; g commit -q -m "unreviewed late commit"; g checkout -q main
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "branch moved past the reviewed commit → hold (moved-since-review)" || fail "moved since review: rc=$rc $out"
-sql2 "INSERT INTO evidence VALUES ('h1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"human\"}', 'human', '2026-09-29T00:06:00.000Z');"
+sql2 "INSERT INTO evidence VALUES ('h1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"human\"}', 'human', '2026-09-29T00:06:00.000Z');
+      INSERT INTO work_events VALUES ('w2', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"h1\"}', '2026-09-29T00:06:00.000Z');"
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && ok "a HUMAN tester waiver does not unpin it → hold" || fail "waiver + moved: rc=$rc $out"
-sql2 "DELETE FROM evidence WHERE id = 'h1';"
+sql2 "DELETE FROM evidence WHERE id = 'h1'; DELETE FROM work_events WHERE id = 'w2';"
 pin "$REVIEWED" agent 2026-09-29T00:05:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "no-tester" ] && ok "a pin row recorded by an AGENT is not a pin (cannot be forged through the MCP)" || fail "agent pin: rc=$rc $out"
 pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?
@@ -97,13 +119,14 @@ pin "$REVIEWED" system 2026-09-28T23:00:00.000Z; out="$(decide10)"; rc=$?
 # before the tester ran) must not land just because head == tested.
 LATE="$(g rev-parse gaffer/ticket-10-y)"
 pin "$REVIEWED" system 2026-09-29T00:05:00.000Z
-sql2 "INSERT INTO evidence VALUES ('b1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$LATE\"}', 'agent', '2026-09-29T00:07:00.000Z');"
+sql2 "INSERT INTO evidence VALUES ('b1', 't10', 'test_output', 'pass', NULL, '{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$LATE\"}', 'agent', '2026-09-29T00:07:00.000Z');
+      INSERT INTO work_events VALUES ('w3', 'ticket', 't10', 'ticket.tester_passed', '{\"evidence_id\":\"b1\"}', '2026-09-29T00:07:00.000Z');"
 out="$(decide10)"; rc=$?
 [ "$rc" -eq 4 ] && [ "$(kind "$out")" = "moved-since-review" ] && [[ "$out" == *"\"tested\":\"$LATE\""* ]] \
   && ok "bound tester PASS of an UNREVIEWED commit (tested != reviewed) → hold (moved-since-review)" || fail "bound but unreviewed: rc=$rc $out"
 pin "$LATE" system 2026-09-29T00:06:00.000Z; out="$(decide10)"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(kind "$out")" = "bound" ] && ok "bound PASS of the reviewed commit → land" || fail "bound + reviewed: rc=$rc $out"
-sql2 "DELETE FROM evidence WHERE id = 'b1';"
+sql2 "DELETE FROM evidence WHERE id = 'b1'; DELETE FROM work_events WHERE id = 'w3';"
 
 # ── the Bash path: real land.sh + automerge.sh, stubbed tick globals ─────────────
 LOGF="$WORK/log"; CALLS="$WORK/calls"

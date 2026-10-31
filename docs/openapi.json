@@ -3812,7 +3812,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery dossier",
-        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`.",
+        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
         "parameters": [
           {
             "name": "id",
@@ -3835,11 +3835,23 @@
               ]
             },
             "description": "`markdown` for the rendered document."
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "packet"
+              ]
+            },
+            "description": "`packet` adds the Review view's `review_packet` to the JSON."
           }
         ],
         "responses": {
           "200": {
-            "description": "`Dossier`. The rendered dossier (`text/markdown`).",
+            "description": "`Dossier` (plus `review_packet` with `?include=packet`). The rendered dossier (`text/markdown`).",
             "content": {
               "application/json": {
                 "schema": {

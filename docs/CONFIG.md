@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 137 |
+| Knobs with a runner default | 138 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 78 |
@@ -80,6 +80,7 @@ computed from other knobs at runtime.
 | `GAFFER_DOD_TYPECHECK` | `1` |  | crew, runner | 1 = run the typecheck gate (auto-detected command) |
 | `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | crew, runner | override the auto-detected typecheck command |
 | `GAFFER_DOD_TIMEOUT` | `900` |  | crew, runner | wall-clock cap (seconds) per gate and per AC check command |
+| `GAFFER_TEST_PATH_RE` | _(empty)_ |  | crew, dispatch | extra test-path regex for the gate-integrity check (additive) |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the wor |
@@ -176,7 +177,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODE` | `supervised` | yes (string: supervised / lite / graduated / autonomous / strict) | dispatch, runner | Preset that sets the whole autonomy cluster at once (review mode, agent approval, auto-merge, auto-push, memory auto-approve): supervised · lite · graduated · autonomous · strict. supervised (default) keeps a human on every merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, no sensitive path) that passed every gate + earned an APPROVE from the reviewer agent — and still leaves a human to MERGE (never auto-merges); non-trivial tickets hold for you. (Because auto-approve drops the human quality gate, lite requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) graduated ships what each repo has EARNED at its risk level and holds everything else for you (the reviewer agent runs, but the per-repo/risk autonomy policy is the sole allow-path — set grants in the per-repo policy editor); autonomous lets agents approve and auto-merges + pushes approved work; strict adds OS-level sandbox containment on top of autonomous, chosen by SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on a non-macOS host strict has no OS containment beyond the deterministic hook — set GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. Picking a mode prevents a half-configured autonomy posture. The individual knobs below still override the mode — an explicitly-set flag always wins. |
-| `DISPATCH_ALLOW_AGENT_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). |
+| `DISPATCH_ALLOW_AGENT_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). An agent approve is still held for a person whenever the real diff's observed risk exceeds the declared risk, and ALWAYS when the delivery changed the tests that gate it (deleted or renamed a test file, added a skip/only marker, changed a gate script, one of its pre/post hooks or a script it runs, touched test config, or added or changed a package-manager rc file such as .npmrc) — unless a person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or Allow test changes on the Review page). The allowance clears the hold only; the gate still runs the base commit's scripts. |
 | `MEMORY_AUTO_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | crew, dispatch, memory, runner | Let the memory the runner itself files go live without a human review step: the requirement distilled from each delivered ticket, onboarding's induction lore and `memory suggest` from the CLI. Lore a delivery agent suggests over MCP always stays a draft for you to approve, whatever this says. |
 
 ### Autonomy REQUIRES containment

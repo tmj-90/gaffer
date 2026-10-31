@@ -127,7 +127,11 @@ at onboarding and editable there, because a wrong gate command is the commonest
 reason a delivery bounces or ships unverified. The typecheck gate runs the repo's
 package.json typecheck script (a `typecheck`-style script or a bare
 `tsc --noEmit`), read from the base branch so a delivery cannot delete it away;
-`GAFFER_DOD_TYPECHECK_CMD` overrides it. The repo's coverage command is stored on
+`GAFFER_DOD_TYPECHECK_CMD` overrides it. The same holds for every gate: when a
+gate command calls a package.json script (`npm test`, `pnpm run lint`), the
+script is read from the commit the delivery branched from, and a delivery that
+rewrote it runs the base script instead, so editing `package.json` cannot
+redirect its own gate. The repo's coverage command is stored on
 the same page but is **not** a Definition-of-Done gate (coverage-did-not-decrease
 needs a stored baseline and is deferred): it feeds the idle coverage scan below.
 
@@ -292,6 +296,35 @@ structural barrier the whole design hangs on.
   back to review. A resolution that fails is
   moved off the branch (`refs/gaffer/conflict-resolved/<n>`) and held for a
   human.
+- **A delivery that changed its own tests is flagged, and never auto-approved.**
+  The gates' **integrity** row compares the delivery with its base and FLAGs a
+  deleted or renamed test file, a new skip/focus marker (`.skip`, `.only`,
+  `xit`, `it.todo`, `it.concurrent.skip`, node:test's `{ skip: true }`,
+  `t.skip()`/`this.skip()`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
+  `@Disabled`, …), a changed gate script (or an added `pretest`/`posttest`, or a
+  changed script it runs), a touched or newly added test-runner config, a test
+  file hidden from git (skip-worktree / assume-unchanged), a test file that lost
+  test cases or all its assertions ("test cases removed: 3 → 0"), or a package-manager rc
+  file (`.npmrc`, `.yarnrc`, `.yarnrc.yml`, `bunfig.toml`) the delivery added or
+  changed, which can make `npm test` run nothing (an ignored one on disk too; the
+  runner's FLAG holds the approve even when the committed diff is clean). It compares against
+  the commit the runner recorded when it cut the branch (kept across retries,
+  never replaced by a later branch tip), so moving the base branch from the
+  worktree, or a second attempt building on the first, cannot hide a change. The
+  server recomputes the same check from the real diff (risk flag *Test
+  modified*), the Sign-off shows a banner naming each change, the Team Sheet
+  row carries a *Tests changed* chip, and an agent approve is held for a person
+  whatever the ticket's declared risk. When the ticket really should change its
+  tests, **Allow test changes…** on the Sign-off (or
+  `gaffer wg ticket allow-test-changes <n> --reason …`) records your allowance
+  as an event: the row then reads PASS with a note. Only a person can set it.
+  It does not change what the gate runs: a changed gate script still runs as
+  the base has it, so to change the gate itself, change the repo's registered
+  test/lint command or merge the script change first.
+  The merge gate and the conflict re-gate run the same check on the merged
+  tree, against the target head (scripts read from it, an integrity row in
+  their checklist). This first slice flags; it never fails a delivery or a
+  landing.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
   recorded and its acceptance criteria reset. A **won't-do** on delivered work
   keeps its branch as a record, and that branch no longer counts against the

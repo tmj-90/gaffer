@@ -77,8 +77,39 @@ function appendNote(out: JsonSchema, note: string): JsonSchema {
 
 const REFINEMENT_NOTE = "Additional validation rule applies (not expressible in JSON Schema).";
 
+/** Shared component schemas in effect for the current {@link zodToJsonSchemaWithRefs} call. */
+let named: { refs: ReadonlyMap<ZodType, string>; root: ZodType; used: Set<string> } | null = null;
+
+/**
+ * Convert `schema`, rendering every NESTED occurrence of a schema in `refs` as a
+ * `$ref` to `#/components/schemas/<name>` instead of inlining it (the root itself is
+ * always rendered). Returns the names it referenced, so the caller can add them as
+ * components (each converted the same way).
+ */
+export function zodToJsonSchemaWithRefs(
+  schema: ZodType,
+  path: string,
+  refs: ReadonlyMap<ZodType, string>,
+): { schema: JsonSchema; used: string[] } {
+  const prev = named;
+  const used = new Set<string>();
+  named = { refs, root: schema, used };
+  try {
+    return { schema: zodToJsonSchema(schema, path), used: [...used] };
+  } finally {
+    named = prev;
+  }
+}
+
 /** Convert one zod schema. `path` is only used for error messages. */
 export function zodToJsonSchema(schema: ZodType, path = ""): JsonSchema {
+  if (named && schema !== named.root) {
+    const ref = named.refs.get(schema);
+    if (ref !== undefined) {
+      named.used.add(ref);
+      return { $ref: `#/components/schemas/${ref}` };
+    }
+  }
   const refinements = refinementCount(schema);
   if (refinements === 0) return convert(schema, path);
   // Render the schema as it stood before its refinements, then note each rule

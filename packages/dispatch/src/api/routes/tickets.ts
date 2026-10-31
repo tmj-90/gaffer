@@ -25,6 +25,7 @@ import {
   setPrimaryScopeBody,
   setRequiredCapabilitiesBody,
   setTestableBody,
+  allowTestChangesBody,
   setTestContractBody,
   setTicketRepoAccessBody,
   stopPausedBody,
@@ -73,6 +74,8 @@ const TICKET_SUB = {
   // BBT-001: independent black-box testing handover + tester verdict.
   TESTABLE: "testable",
   TEST_CONTRACT: "test-contract",
+  // GATE INTEGRITY: the human's per-ticket "this ticket may change its tests" flag.
+  ALLOW_TEST_CHANGES: "allow-test-changes",
   TESTER: "tester",
 } as const;
 
@@ -388,6 +391,20 @@ export async function routeTickets(
     }
     const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
     sendJson(res, 202, { ticket, merge });
+    return;
+  }
+
+  // GATE INTEGRITY: /tickets/:id/allow-test-changes — a HUMAN allows (or withdraws the
+  // allowance for) this ticket to change its tests. The service refuses agent and
+  // system principals, so an agent token cannot excuse its own test edits.
+  if (segments.length === 3 && sub === TICKET_SUB.ALLOW_TEST_CHANGES && method === "POST") {
+    const body = allowTestChangesBody.parse(await readJsonBody(req));
+    const result = wg.setAllowTestChanges(id, body.allow_test_changes, apiActor(), body.reason);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      allow_test_changes: result.allowTestChanges,
+      event_id: result.eventId,
+    });
     return;
   }
 

@@ -2,7 +2,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
-import { computeRiskAnnotations, type RiskAnnotation } from "./riskAnnotations.js";
+import {
+  computeRiskAnnotations,
+  testModifiedAnnotation,
+  type RiskAnnotation,
+} from "./riskAnnotations.js";
+import {
+  collectTestIntegrity,
+  extraTestPathRe,
+  gateScriptNamesOf,
+  type TestIntegrityFindings,
+} from "./testIntegrity.js";
 import type { RepoRepository } from "../repositories/repoRepository.js";
 import type { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
 import type { TicketRepository } from "../repositories/ticketRepository.js";
@@ -232,6 +242,13 @@ interface DiffTarget {
   label: string;
   /** The range for error text. */
   rangeDesc: string;
+  /** The repo's registered gate commands (the integrity scan's named scripts). */
+  gateCommands: string[];
+  /**
+   * GATE INTEGRITY: the commit the delivery was cut from, as the runner recorded it at
+   * worktree creation (null on older rows). The integrity scan diffs from it.
+   */
+  baseSha: string | null;
 }
 
 /**
@@ -251,7 +268,9 @@ function resolveDiffTargets(
   return writeRepos.map((repo) => {
     const baseBranch = repo.default_branch || "main";
     const legacyBranch = deps.repos.ticketRepoBranch(ticket.id, repo.id);
-    const deliveryBranch = deps.repoDeliveries.find(ticket.id, repo.id)?.branch_name ?? null;
+    const delivery = deps.repoDeliveries.find(ticket.id, repo.id);
+    const deliveryBranch = delivery?.branch_name ?? null;
+    const recordedBase = delivery?.base_sha ?? null;
     const branch =
       nonEmpty(legacyBranch) ?? nonEmpty(deliveryBranch) ?? nonEmpty(ticket.branch_name);
 
@@ -309,6 +328,10 @@ function resolveDiffTargets(
         diffArgs: isBootstrap ? [GIT_EMPTY_TREE, "HEAD"] : [`${baseBranch}...${branch}`],
         label: isBootstrap ? "initial commit" : branch!,
         rangeDesc: isBootstrap ? "the initial commit" : `${baseBranch}...${branch}`,
+        gateCommands: [repo.test_command, repo.lint_command].filter(
+          (c): c is string => typeof c === "string" && c.trim() !== "",
+        ),
+        baseSha: recordedBase && /^[0-9a-f]{40,64}$/.test(recordedBase) ? recordedBase : null,
       },
     };
   });
@@ -344,6 +367,61 @@ function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
     return { ...res, stdout: cut === -1 ? "" : res.stdout.slice(0, cut + 1) };
   }
   return res;
+}
+
+/**
+ * GATE INTEGRITY for one diff target: the base..head integrity findings, read from the
+ * real repo. The base is the commit the runner RECORDED when it cut the delivery
+ * branch (`ticket_repo_delivery.base_sha`), never the base branch name alone: an agent
+ * can move that branch from inside its worktree (`git branch -f main HEAD`), and a
+ * merge-base taken from the moved branch would hide the commits before the move. When
+ * the base branch no longer contains the recorded commit (it was rewritten), the scan
+ * still runs from the recorded commit and the gap is an `incomplete` finding. Rows
+ * recorded before the column existed fall back to the merge-base of the default branch
+ * and the delivery branch. A git failure is an `incomplete` finding — it flags, never
+ * passes silently.
+ */
+function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindings {
+  const git = (args: readonly string[], opts?: { maxBuffer?: number }): GitResult =>
+    runGit(t.localPath, args, opts);
+  const opts = {
+    gateScriptNames: gateScriptNamesOf(t.gateCommands),
+    extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
+  };
+  if (t.isBootstrap) return collectTestIntegrity(git, GIT_EMPTY_TREE, "HEAD", opts);
+  const incompleteOnly = (why: string): TestIntegrityFindings => ({
+    deleted: [],
+    renamed: [],
+    markers: [],
+    scripts: [],
+    configs: [],
+    incomplete: [why],
+  });
+  if (t.baseSha) {
+    const short = t.baseSha.slice(0, 12);
+    if (runGit(t.localPath, ["cat-file", "-e", `${t.baseSha}^{commit}`]).status !== 0) {
+      return incompleteOnly(
+        `the commit ${t.branch} was cut from (${short}) is no longer in the repository`,
+      );
+    }
+    const extra: string[] = [];
+    const anc = runGit(t.localPath, ["merge-base", "--is-ancestor", t.baseSha, t.baseBranch]);
+    if (anc.status !== 0) {
+      extra.push(
+        anc.status === 1
+          ? `${t.baseBranch} no longer contains ${short}, the commit ${t.branch} was cut from (the base branch was rewritten)`
+          : `could not check that ${t.baseBranch} still contains ${short}, the commit ${t.branch} was cut from`,
+      );
+    }
+    const f = collectTestIntegrity(git, t.baseSha, t.branch!, opts);
+    return extra.length ? { ...f, incomplete: [...f.incomplete, ...extra] } : f;
+  }
+  const mb = runGit(t.localPath, ["merge-base", t.baseBranch, t.branch!]);
+  const base = mb.status === 0 ? mb.stdout.trim() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(base)) {
+    return incompleteOnly(`could not find where ${t.branch} branched from ${t.baseBranch}`);
+  }
+  return collectTestIntegrity(git, base, t.branch!, opts);
 }
 
 /**
@@ -392,7 +470,17 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
     const { files, additions, deletions, paths } = parseNumstat(stat.stdout);
     // ADVISORY risk flags for the reviewer — computed from the real changed paths +
     // deletion count. Never gates; the authoritative diff below is unchanged.
-    const riskAnnotations = computeRiskAnnotations(paths, deletions);
+    // GATE INTEGRITY adds `test-modified` (deleted/renamed tests, new skip markers, a
+    // rewritten gate script): advisory here too, but observedRisk.ts makes an unallowed
+    // one a hard hold on the auto-ship path.
+    const testAnn = testModifiedAnnotation(
+      testIntegrityFor(runGit, t),
+      ticket.allow_test_changes === 1,
+    );
+    const riskAnnotations = [
+      ...computeRiskAnnotations(paths, deletions),
+      ...(testAnn ? [testAnn] : []),
+    ];
 
     // The runner stops git once the patch passes its cap and flags `truncated`: a
     // lockfile regeneration or fixture drop is still a real diff, shown capped.

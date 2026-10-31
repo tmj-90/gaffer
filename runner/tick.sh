@@ -1959,6 +1959,20 @@ $PRODUCT_CONTEXT_BLOCK}"
   # paid-for commits. A kept branch with commits is logged.
   _BRANCH_CREATED_THIS_TICK=""
   _gaffer_branch_created_here() { grep -qxF -- "$1" <<<"$_BRANCH_CREATED_THIS_TICK"; }
+  # GATE INTEGRITY: the commit each `worktree add -B` cut $WORK_BRANCH at, captured at
+  # the cut (before any agent runs), by repo path: "<path>\t<sha>" lines, the latest cut
+  # last. Reading the branch tip LATER is wrong — on an in-tick retry the tip holds the
+  # previous attempt's commits — so the recorded base comes from here, never the tip.
+  _BRANCH_CUT_SHAS=""
+  _gaffer_note_branch_cut() {
+    local _c
+    _c="$(git -C "$1" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH^{commit}" 2>/dev/null)" || _c=""
+    _BRANCH_CUT_SHAS="$(awk -F'\t' -v p="$1" '$1!=p' <<<"$_BRANCH_CUT_SHAS")"
+    [ -n "$_BRANCH_CUT_SHAS" ] && _BRANCH_CUT_SHAS+=$'\n'
+    [ -n "$_c" ] && _BRANCH_CUT_SHAS+="$1"$'\t'"$_c"$'\n'
+    return 0
+  }
+  _gaffer_branch_cut_sha() { awk -F'\t' -v p="$1" '$1==p{s=$2} END{if(s!="")print s}' <<<"$_BRANCH_CUT_SHAS"; }
   gaffer_cleanup_worktrees() {
     # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
     # tick created it (see BRANCH RETENTION above).
@@ -2085,6 +2099,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       gaffer_link_node_modules "$rpath" "$rwt"
     elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
       _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'   # this tick owns the branch (BRANCH RETENTION)
+      _gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY: the cut commit, now
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -2123,6 +2138,53 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "delivery FAILED for #$NUM — a write repo could not be worktree'd; not running the agent"
     result error; exit 0
   fi
+
+  # GATE INTEGRITY: fix the commit each delivery branch was cut from NOW, before the
+  # agent runs, and record it on the repo delivery (`--base-sha`, no branch, so it is
+  # not delivery evidence). The DoD gate reads its package.json scripts from that
+  # commit and the integrity scans (the runner's row and dispatch's server-side
+  # `test-modified`) diff from it — never from the base branch NAME, which the agent
+  # could move from inside its worktree (`git branch -f main HEAD`). The base is the
+  # commit captured when `worktree add -B` cut the branch (_BRANCH_CUT_SHAS); a kept or
+  # resumed branch — and every in-tick retry that did not re-cut — keeps the commit
+  # already known (stored in dispatch, else this tick's earlier pass). A stored base is
+  # write-once: dispatch replaces it only on `--base-recut`. Fail-soft: an unrecorded
+  # base still pins this tick's gates; the base branch name is the last resort.
+  _DELIV_BASE_SHAS=""
+  _gaffer_record_delivery_bases() {
+    local rid rname rpath rbase rwt _cut _prev _stored _sha _list _prev_map _recut
+    _prev_map="$_DELIV_BASE_SHAS"
+    _DELIV_BASE_SHAS=""
+    _list="$(wg ticket repo-delivery list "$NUM" 2>/dev/null || echo '[]')"
+    while IFS=$'\t' read -r rid rname rpath rbase rwt; do
+      [ -n "$rpath" ] || continue
+      rbase="${rbase:-main}"
+      _cut="$(_gaffer_branch_cut_sha "$rpath")"
+      _prev="$(awk -F'\t' -v p="$rpath" '$1==p{print $2; exit}' <<<"$_prev_map")"
+      _stored="$(printf '%s' "$_list" | RID="$rid" RNAME="$rname" jget '(() => {
+        const rows = Array.isArray(d) ? d : [];
+        const r = rows.find((x) => (process.env.RID && x.repo_id === process.env.RID) || (process.env.RNAME && x.repo_name === process.env.RNAME));
+        return r && typeof r.base_sha === "string" ? r.base_sha : "";
+      })()' 2>/dev/null || echo '')"
+      _sha="$(gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_cut" "$_stored" "$_prev")"
+      if [ -z "$_sha" ]; then
+        log "GATE INTEGRITY: could not resolve the commit $WORK_BRANCH was cut from in ${rname:-repo} ($rpath) for #$NUM — the gates fall back to the base branch $rbase"
+        continue
+      fi
+      _DELIV_BASE_SHAS+="$rpath"$'\t'"$_sha"$'\n'
+      [ "$_sha" = "$_stored" ] && continue
+      # Only a commit this tick cut the branch at may replace a stored base.
+      _recut=""; [ -n "$_cut" ] && [ "$_sha" = "$_cut" ] && [ -n "$_stored" ] && _recut="--base-recut"
+      if wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha" $_recut >/dev/null 2>&1; then
+        log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base recorded: $(printf '%s' "$_sha" | cut -c1-12) (off $rbase${_recut:+, branch re-cut})"
+      else
+        log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base $(printf '%s' "$_sha" | cut -c1-12) did not record (non-fatal; this tick's gates still use it)"
+      fi
+    done <<< "$WT_ROWS"
+  }
+  # The recorded base commit for a write repo (empty when none was resolved).
+  _gaffer_delivery_base_for() { awk -F'\t' -v p="$1" '$1==p{print $2; exit}' <<<"$_DELIV_BASE_SHAS"; }
+  _gaffer_record_delivery_bases
 
   # Live: install the factory's MCP servers, safety hook + permissions, skills and
   # brief as PROJECT-LOCAL config so headless Claude auto-loads them, then run. The
@@ -2580,11 +2642,15 @@ $_trail_q
       # are the starting point for rework. Fall back to -B off base if the branch
       # somehow vanished (defensive — it should always exist).
       if ! git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
-        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 \
-          && _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'
+        if git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
+          _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'
+          _gaffer_note_branch_cut "$rpath"        # re-cut off base: a new base commit
+        fi
       fi
       gaffer_link_node_modules "$rpath" "$rwt"
     done <<< "$WT_ROWS"
+    # A branch re-cut off base above has a new base commit (others keep theirs).
+    _gaffer_record_delivery_bases
     # RE-INSTALL the agent environment into the FRESH worktree. The rework
     # teardown destroyed the untracked runner config with the old worktree — a
     # fresh checkout has NO .claude/settings.json (the safety-hook wiring!),
@@ -3216,6 +3282,12 @@ $_trail_q
     _DOD_TESTS_ON="${GAFFER_DOD_TESTS:-1}"
     _DOD_TC_ON="${GAFFER_DOD_TYPECHECK:-1}"
     _DOD_LINT_ON="${GAFFER_DOD_LINT:-1}"
+    # GATE INTEGRITY: has a HUMAN allowed this ticket to change its tests? Read FRESH
+    # (not from the tick-start SHOW) so an allowance set while the agent worked counts.
+    # Fails closed: an unreadable ticket means no allowance (the row FLAGs, never FAILs).
+    _DOD_ALLOW_TESTS="$(wg ticket show "$NUM" 2>/dev/null \
+      | jget '(d.ticket && d.ticket.allow_test_changes === 1) ? 1 : 0' 2>/dev/null || echo 0)"
+    [ "$_DOD_ALLOW_TESTS" = "1" ] || _DOD_ALLOW_TESTS=0
     # Build the gate-runner input: one row per write repo with its resolved commands.
     DOD_ROWS=""
     while IFS=$'\t' read -r rid rname rpath rbase rwt; do
@@ -3230,7 +3302,11 @@ $_trail_q
       # typecheck has no dispatch field: GAFFER_DOD_TYPECHECK_CMD (an override for every
       # repo), else the command auto-detected from this repo's package.json, read from
       # the base branch first so a delivery cannot delete the gate away.
-      _dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$rbase")"
+      # GATE INTEGRITY: the commit the delivery was cut from (recorded before the agent
+      # ran); the base branch name only when none was resolved.
+      _dbase="$(_gaffer_delivery_base_for "$rpath")"
+      [ -n "$_dbase" ] || _dbase="$rbase"
+      _dtc="$(gaffer_dod_typecheck_cmd "$rwt" "$_dbase")"
       [ -z "${GAFFER_DOD_TYPECHECK_CMD:-}" ] && [ -n "$_dtc" ] && [ "$_DOD_TC_ON" = "1" ] \
         && log "DoD: typecheck gate for ${_dlabel} runs the auto-detected '$_dtc' (package.json script; GAFFER_DOD_TYPECHECK_CMD overrides it)"
       # Empty command fields MUST be the sentinel `-`: TAB is IFS-whitespace, so the
@@ -3238,9 +3314,12 @@ $_trail_q
       [ -n "${_dtest// /}" ] || _dtest="-"
       [ -n "${_dtc// /}" ]   || _dtc="-"
       [ -n "${_dlint// /}" ] || _dlint="-"
-      DOD_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+      # GATE INTEGRITY: the base commit the delivery was cut from (the gate reads each
+      # command's package.json script from that commit and appends an integrity row)
+      # plus the human's allowance. `-` when unknown: integrity then FLAGs the gap.
+      DOD_ROWS+="$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
         "$_dlabel" "$rwt" "$_DOD_TESTS_ON" "$_DOD_TC_ON" "$_DOD_LINT_ON" \
-        "$_dtest" "$_dtc" "$_dlint")"$'\n'
+        "$_dtest" "$_dtc" "$_dlint" "${_dbase:--}" "$_DOD_ALLOW_TESTS")"$'\n'
     done <<< "$WT_ROWS"
     DOD_ROWS="${DOD_ROWS%$'\n'}"
 
@@ -3270,6 +3349,7 @@ $_trail_q
       DOD_RESULTS="$GAFFER_DATA/.dod-$NUM.results"
       if printf '%s\n' "$DOD_ROWS" | gaffer_run_dod_gates "$DOD_RESULTS"; then
         log "DoD: #$NUM PASSED — $(gaffer_dod_summary_line "$DOD_RESULTS")"
+        gaffer_dod_log_integrity "$DOD_RESULTS"
         # Zero executed gates means no gate commands are configured (all skipped):
         # the delivery was never actually verified. FAIL by default so a
         # misconfigured repo cannot silently ship unverified work. Opt out with
@@ -3299,6 +3379,7 @@ $_trail_q
         # ── A gate FAILED → auto-reject back to rework (never a human's time) ──
         _DOD_SUM="$(gaffer_dod_summary_line "$DOD_RESULTS")"
         log "DoD: #$NUM FAILED — $_DOD_SUM; auto-rejecting back to rework (not submitting for review)"
+        gaffer_dod_log_integrity "$DOD_RESULTS"
         _DOD_EV="$(gaffer_dod_evidence_summary "$DOD_RESULTS" FAIL)"
         # THE CRUX of (b): distil the ACTUAL failure (failing test name + assertion/
         # error), not the gate-name summary, so the next attempt can self-correct.

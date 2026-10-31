@@ -150,7 +150,11 @@ import {
   type ReviewedHead,
   ReviewGateService,
 } from "./services/reviewGateService.js";
-import { observedRisk } from "./services/observedRisk.js";
+import {
+  observedRisk,
+  runnerIntegrityHolds,
+  withRunnerIntegrityHolds,
+} from "./services/observedRisk.js";
 import {
   AutonomyRecommendationService,
   type AutonomyRecommendation,
@@ -614,7 +618,17 @@ export class Dispatch {
       // computeTicketDiff + the advisory risk-annotation overlay) so the gate can hold for
       // a human when observed exceeds the DECLARED risk_level. Pure read; a throw degrades
       // to indeterminate (fail toward human). Never grants an approval.
-      observedRiskResolver: (ticket) => observedRisk(this.ticketDiff(ticket.id).repos),
+      // GATE INTEGRITY: plus the runner's integrity FLAG from the latest trusted DoD
+      // record (what the worktree held that the committed diff cannot show, e.g. a
+      // git-ignored .npmrc), unless a human allowed test changes on the ticket.
+      observedRiskResolver: (ticket) => {
+        const observed = observedRisk(this.ticketDiff(ticket.id).repos);
+        if (ticket.allow_test_changes === 1) return observed;
+        return withRunnerIntegrityHolds(
+          observed,
+          runnerIntegrityHolds(this.latestDodSummary(ticket.id)),
+        );
+      },
     });
     this.autonomyRecommendations = new AutonomyRecommendationService({
       reviewDecisions: () => this.events.reviewDecisions(),
@@ -671,6 +685,24 @@ export class Dispatch {
    * read; every failure mode (no branch, repo not on disk, empty, git error) is
    * reported per-repo rather than thrown. See {@link computeTicketDiff}.
    */
+  /**
+   * GATE INTEGRITY: the latest DoD checklist the runner recorded on a ticket (a
+   * `test_output` evidence row whose summary starts `DoD: `), ignoring rows an agent
+   * recorded (an agent cannot mask the runner's FLAG with a cleaner checklist).
+   * Null when there is none. Pure read.
+   */
+  latestDodSummary(ticketId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT summary FROM evidence
+          WHERE ticket_id = ? AND evidence_type = 'test_output' AND summary LIKE 'DoD: %'
+            AND (recorded_by_actor_type IS NULL OR recorded_by_actor_type <> 'agent')
+          ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { summary: string } | undefined;
+    return row?.summary ?? null;
+  }
+
   ticketDiff(ref: string): TicketDiff {
     const ticket = this.resolveTicket(ref);
     return computeTicketDiff(
@@ -1490,6 +1522,16 @@ export class Dispatch {
 
   setTestContract(ticketRef: string, raw: unknown, actor: Actor): TestContract {
     return this.ticketSvc.setTestContract(ticketRef, raw, actor);
+  }
+
+  /** GATE INTEGRITY: a human allows this ticket to change its tests (human/admin only). */
+  setAllowTestChanges(
+    ticketRef: string,
+    allowed: boolean,
+    actor: Actor,
+    reason?: string,
+  ): { ticketId: string; allowTestChanges: boolean; eventId: string } {
+    return this.ticketSvc.setAllowTestChanges(ticketRef, allowed, actor, reason);
   }
 
   getTestContract(ticketRef: string): TestContract | null {

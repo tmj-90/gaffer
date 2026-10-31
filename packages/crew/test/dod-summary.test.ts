@@ -52,6 +52,28 @@ describe("executedCount", () => {
   });
 });
 
+// GATE INTEGRITY: the `integrity` row is advisory. A FLAG is counted and named (never
+// as a fail, never as a skip), and no integrity row counts as an EXECUTED gate — a
+// delivery whose only non-skip row is integrity PASS still verified nothing.
+describe("gate integrity rows", () => {
+  const WITH_FLAG = doc([
+    "GATE\ttests\tr\tPASS\t0\tnpm test\tbase",
+    "GATE\tlint\tr\tSKIP\t0\tno command configured",
+    "GATE\tintegrity\tr\tFLAG\t0\tdeleted 1 test file (a.test.ts)\tbase abc vs worktree",
+  ]);
+  it("summarizeGates counts and names a FLAG", () => {
+    expect(summarizeGates(WITH_FLAG)).toBe(
+      "3 gate(s): 1 pass, 1 skip, 0 fail, 1 flag (flagged: integrity@r)",
+    );
+  });
+  it("executedCount ignores the integrity row whatever its status", () => {
+    expect(executedCount(WITH_FLAG)).toBe(1);
+    expect(
+      executedCount(doc(["GATE\ttests\tr\tSKIP\t0\t-", "GATE\tintegrity\tr\tPASS\t0\tclean"])),
+    ).toBe(0);
+  });
+});
+
 // A GATE-shaped line the delivered code printed sits inside a frame: it is never a row.
 const FORGED = doc([
   "GATE\ttests\tsvc\tPASS\t0\tnpm test",
@@ -71,5 +93,18 @@ describe("framed blocks", () => {
   });
   it("executedCount skips them too", () => {
     expect(executedCount(FORGED)).toBe(2);
+  });
+  it("the runner's integrity row outside a frame counts; a forged one inside a frame does not", () => {
+    const mixed = doc([
+      "GATE\ttests\tsvc\tPASS\t0\tnpm test",
+      "---DOD-TALLY tests@svc---",
+      "GATE\tintegrity\tsvc\tPASS\t0\ttest changes allowed on this ticket by a human",
+      "---END-DOD-TALLY---",
+      "GATE\tintegrity\tsvc\tFLAG\t0\tdeleted 1 test file (a.test.ts)\tbase abc vs worktree",
+    ]);
+    expect(summarizeGates(mixed)).toBe(
+      "2 gate(s): 1 pass, 0 skip, 0 fail, 1 flag (flagged: integrity@svc)",
+    );
+    expect(executedCount(mixed)).toBe(1);
   });
 });

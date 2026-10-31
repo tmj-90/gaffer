@@ -435,6 +435,24 @@
   .dod-mark.dod-skip {
     color: var(--ink-2);
   }
+  /* Gate integrity: a FLAG is a yellow card, not a red one — it never fails a delivery. */
+  .dod-mark.dod-flag {
+    color: var(--on-yellow);
+    background: var(--yellow);
+    border-color: var(--ycard-edge);
+  }
+  .dod-w-flag {
+    color: var(--ink);
+  }
+  .dod-note-flag,
+  .dod-note-pass {
+    color: var(--ink);
+  }
+  .dod-src {
+    grid-column: 2 / -1;
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
   .dod-gate {
     font-weight: 700;
     overflow-wrap: anywhere;
@@ -673,6 +691,44 @@
   .diff-block-banner {
     margin: 0;
   }
+
+  /* --- gate integrity: the delivery changed the tests that gate it --------- */
+  .integrity-slot:empty {
+    display: none;
+  }
+  .integrity-slot {
+    margin: var(--s2) 0;
+  }
+  .integrity-banner {
+    border-color: var(--ycard-edge);
+    background: var(--mark-wash);
+  }
+  .integrity-banner.is-allowed {
+    border-color: var(--rule-2);
+    background: var(--paper-2);
+  }
+  .integrity-body {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+  }
+  .integrity-h {
+    margin: 0;
+    font-weight: 800;
+  }
+  .integrity-items {
+    margin: 0;
+    padding-left: 18px;
+    font: 500 var(--t14) / 1.45 var(--f-mono);
+    overflow-wrap: anywhere;
+  }
+  .integrity-note {
+    margin: 0;
+    font-weight: 500;
+  }
+  .integrity-body .btn {
+    justify-self: start;
+  }
   .diff-pre {
     margin: 0;
     max-height: 560px;
@@ -827,6 +883,9 @@
   }
   .vd-w-fail {
     color: var(--red);
+  }
+  .vd-w-flag {
+    color: var(--ink);
   }
   .vd-cmd,
   .vd-note {

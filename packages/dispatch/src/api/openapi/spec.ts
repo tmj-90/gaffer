@@ -3,7 +3,7 @@ import type { ZodType } from "zod";
 import { VERSION } from "../../version.js";
 import * as S from "../schemas.js";
 import * as R from "./responses.js";
-import { type JsonSchema, zodToJsonSchema } from "./zodJsonSchema.js";
+import { type JsonSchema, zodToJsonSchema, zodToJsonSchemaWithRefs } from "./zodJsonSchema.js";
 
 /**
  * The REST surface as data: one {@link EndpointSpec} per method + path the
@@ -80,6 +80,11 @@ const principalAdminRequired: ResponseSpec = {
   status: 403,
   description:
     "The caller authenticated with a principal token; only the shared operator token may manage principals (`PRINCIPAL_ADMIN_REQUIRED`).",
+  content: "json",
+};
+const forbidden: ResponseSpec = {
+  status: 403,
+  description: "The calling principal may not do this (`ACTOR_NOT_PERMITTED`).",
   content: "json",
 };
 const conflict: ResponseSpec = {
@@ -773,7 +778,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description:
       "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve.",
     capability: "read",
-    responses: [ok("`{ repos: RepoDiff[] }`."), notFound],
+    responses: [ok("`{ ticketId, repos: RepoDiff[] }`.", "TicketDiff"), notFound],
   },
   {
     method: "GET",
@@ -813,6 +818,27 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       ),
       notFound,
       invalid,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/allow-test-changes",
+    tag: T.review,
+    summary: "Allow test changes (gate integrity)",
+    description:
+      "A human allows (or withdraws) this ticket's allowance to change its tests: delete " +
+      "or rename a test file, add a skip marker, rewrite a gate script. The runner's " +
+      "integrity gate row then reads PASS with a note instead of FLAG, and the " +
+      "`test-modified` risk annotation drops to medium so it no longer holds an " +
+      "auto-approve. Human or admin principals only (agent and system are refused); " +
+      "recorded as a `ticket.test_changes_allowed` event.",
+    capability: "full",
+    body: "allowTestChangesBody",
+    responses: [
+      ok("`{ ticket_id, allow_test_changes, event_id }`.", "TestChangesAllowed"),
+      notFound,
+      invalid,
+      forbidden,
     ],
   },
   {
@@ -1573,11 +1599,20 @@ export function buildOpenApiDocument(): Record<string, unknown> {
     if (!schemas[name as string]) schemas[name as string] = zodToJsonSchema(z, String(name));
     return name as string;
   };
+  // Response schemas nested inside others that are components in their own right
+  // (rendered as `$ref`s wherever they appear).
+  const sharedRefs = new Map<ZodType, string>(
+    R.SHARED_RESPONSE_COMPONENTS.map((n) => [R[n] as ZodType, n]),
+  );
   const useResponseSchema = (name: keyof typeof R): string => {
     const z = R[name];
     if (!isZod(z))
       throw new Error(`openapi: ${String(name)} is not a zod schema export of responses.ts`);
-    if (!schemas[name]) schemas[name] = zodToJsonSchema(z, String(name));
+    if (!schemas[name]) {
+      const { schema, used } = zodToJsonSchemaWithRefs(z, String(name), sharedRefs);
+      schemas[name] = schema;
+      for (const u of used) useResponseSchema(u as keyof typeof R);
+    }
     return name;
   };
   schemas[ERROR_SCHEMA_NAME] = {

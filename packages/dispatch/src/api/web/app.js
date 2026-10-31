@@ -3804,6 +3804,8 @@ function renderOwnedItem(it, i = 0, f = null) {
   const reason = it.reason || "(no reason given)";
   // Who played it: the agent on the ticket's latest claim (a change, a merge, a parked ticket).
   const by = f && t && OWN_BY_KINDS.has(it.kind) ? deliveredBy(f.details.get(t.id)?.events) : null;
+  const tFlag =
+    f && t && OWN_BY_KINDS.has(it.kind) ? integrityFlagOf(f.details.get(t.id)?.evidence) : null;
   return el("div", { class: `own-row own-row--${it.kind}`, dataset: { kind: it.kind } }, [
     el("span", { class: "own-rank", "aria-hidden": "true" }, String(i + 1)),
     el("div", { class: "own-body" }, [
@@ -3831,6 +3833,18 @@ function renderOwnedItem(it, i = 0, f = null) {
               it.kind === "parked" ? "with " : "delivered by ",
               agentChip(by.id, by.name, 18),
             ])
+          : null,
+        // GATE INTEGRITY: the runner flagged that this delivery changed its own tests.
+        tFlag
+          ? el(
+              "span",
+              {
+                class: "own-flag",
+                title: String(tFlag.note || ""),
+                "aria-label": `Tests changed: ${String(tFlag.note || "this delivery changed its tests")}.`,
+              },
+              [icon("alert", "", 14), "Tests changed"],
+            )
           : null,
         // The server's structured code and its advice, as the referee's notebook:
         // one group, so the advice never wraps onto a line of its own.
@@ -15376,8 +15390,15 @@ function dodChecklist(evidence) {
   if (!dod) return null;
   const overall = dod.dod === "PASS" ? "PASS" : "FAIL";
   const items = dod.gates.map((g) => {
-    const status = g.status === "PASS" ? "pass" : g.status === "FAIL" ? "fail" : "skip";
-    const mark = status === "pass" ? "✓" : status === "fail" ? "✗" : "–";
+    const status =
+      g.status === "PASS"
+        ? "pass"
+        : g.status === "FAIL"
+          ? "fail"
+          : g.status === "FLAG"
+            ? "flag"
+            : "skip";
+    const mark = { pass: "✓", fail: "✗", flag: "!", skip: "–" }[status];
     const children = [
       el("span", { class: `dod-mark dod-${status}`, "aria-hidden": "true" }, mark),
       el("span", { class: "dod-gate" }, String(g.gate || "gate")),
@@ -15385,15 +15406,19 @@ function dodChecklist(evidence) {
       el(
         "span",
         { class: `dod-word dod-w-${status}` },
-        status === "pass" ? "passed" : status === "fail" ? "failed" : "skipped",
+        { pass: "passed", fail: "failed", flag: "flagged", skip: "skipped" }[status],
       ),
     ];
-    // A passing gate names the command it ran; a failing one surfaces its captured note.
-    if (status === "fail" && g.note) {
-      children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
+    // A passing gate names the command it ran; a failing one surfaces its captured note,
+    // and the integrity row (gate integrity) says what it found in words.
+    if ((status === "fail" || status === "flag" || g.gate === "integrity") && g.note) {
+      children.push(el("span", { class: `dod-note dod-note-${status} ac-meta` }, String(g.note)));
     } else if (g.note) {
       children.push(el("code", { class: "dod-cmd mono" }, String(g.note)));
     }
+    // Where the command's behaviour was read from (the base commit, for a script).
+    if (g.source && g.gate !== "integrity")
+      children.push(el("span", { class: "dod-src ac-meta" }, String(g.source)));
     return el("li", { class: `dod-item dod-i-${status}` }, children);
   });
   return el("div", { class: `review-dod dod-${overall === "PASS" ? "ok" : "bad"}` }, [
@@ -15683,6 +15708,145 @@ function repoPath(p, repos) {
   }
   return shortPath(s);
 }
+// --- Gate integrity: the delivery changed the tests that decide it is done -----
+
+/** The server's `test-modified` risk annotations across a diff's live repos. */
+function testModifiedAnns(repos) {
+  return (repos || [])
+    .filter((r) => !r.unavailable)
+    .flatMap((r) => (r.riskAnnotations || []).map((a) => ({ ...a, repo: r.repo })))
+    .filter((a) => a.kind === "test-modified");
+}
+
+/** The runner's integrity row from the newest DoD evidence, when it FLAGged. */
+function integrityFlagOf(evidence) {
+  const dod = parseDodEvidence(evidence);
+  if (!dod) return null;
+  return dod.gates.find((g) => g.gate === "integrity" && g.status === "FLAG") || null;
+}
+
+/**
+ * Allow (or withdraw) test changes on a ticket — a human's call, recorded as an event.
+ * With it set, the runner's integrity row reads PASS with a note and the server no
+ * longer holds an auto-approve for the test changes on their own.
+ */
+function allowTestChangesSheet(t, allow) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  const reason = el("textarea", {
+    class: "input",
+    rows: "2",
+    maxlength: "500",
+    "aria-label": "Why this ticket may change its tests",
+    placeholder: "Why this ticket may change its tests (kept on the event)",
+  });
+  actionSheet(
+    allow ? `Allow test changes on ${ref}` : `Withdraw the test-changes allowance on ${ref}`,
+    {
+      intro: allow
+        ? "Only when the ticket asked for these test changes. The gate's integrity row will read PASS with a note on its next run, and the test changes alone no longer hold an agent's approve (they still count as medium risk, so a ticket declared low stays held). You still sign the change off here."
+        : "Test changes on this ticket are flagged again, and an agent approve is held until a person looks.",
+      body: allow ? reason : null,
+      focus: allow ? reason : undefined,
+      actions: [
+        el(
+          "button",
+          {
+            class: allow ? "btn primary" : "btn danger",
+            type: "button",
+            onclick: () =>
+              guard(async () => {
+                const why = allow ? reason.value.trim() : "";
+                await api("POST", `/tickets/${t.id}/allow-test-changes`, {
+                  allow_test_changes: allow,
+                  ...(why ? { reason: why } : {}),
+                });
+                closeSheet();
+                toast(
+                  allow ? `Test changes allowed on ${ref}.` : `Allowance withdrawn on ${ref}.`,
+                  {
+                    ok: true,
+                  },
+                );
+                router();
+              }),
+          },
+          allow ? "Allow test changes" : "Withdraw allowance",
+        ),
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      ],
+    },
+  );
+}
+
+/**
+ * The Review banner for a delivery that changed its own tests: what changed (one line
+ * per finding, from the server's `test-modified` annotation), what that means for the
+ * auto-approve, and the human's allow / withdraw control. Empty when nothing changed.
+ */
+function integrityBanner(t, anns) {
+  if (!anns.length) return null;
+  const allowed = anns.every((a) => a.allowed);
+  // One line per finding; the repo leads only when more than one repo changed tests.
+  const many = new Set(anns.map((a) => a.repo)).size > 1;
+  const items = anns.flatMap((a) =>
+    (a.items && a.items.length ? a.items : [a.detail]).map((line) =>
+      many ? `${a.repo}: ${line}` : line,
+    ),
+  );
+  const shown = items.slice(0, 8);
+  return el(
+    "div",
+    {
+      class: `warn-box integrity-banner${allowed ? " is-allowed" : ""}`,
+      role: allowed ? "status" : "alert",
+      "aria-label": allowed
+        ? "Test changes are allowed on this ticket."
+        : "This delivery changed the tests that gate it.",
+    },
+    [
+      icon("alert"),
+      el("div", { class: "integrity-body" }, [
+        el(
+          "p",
+          { class: "integrity-h" },
+          allowed
+            ? "Test changes are allowed on this ticket."
+            : "This delivery changed the tests that decide it is done.",
+        ),
+        el(
+          "ul",
+          { class: "integrity-items" },
+          [
+            ...shown.map((line) => el("li", {}, line)),
+            items.length > shown.length
+              ? el("li", { class: "dim" }, `and ${items.length - shown.length} more`)
+              : null,
+          ].filter(Boolean),
+        ),
+        el(
+          "p",
+          { class: "integrity-note" },
+          allowed
+            ? "A person allowed it, so the gate reads PASS with a note from its next run. Check the changes are the ones the ticket asked for."
+            : "A green gate proves less when its own tests changed. Auto-approve is held until a person looks.",
+        ),
+        // A read token sees the control switched off (the server refuses it anyway).
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              onclick: () => allowTestChangesSheet(t, !allowed),
+            },
+            allowed ? "Withdraw allowance…" : "Allow test changes…",
+          ),
+        ),
+      ]),
+    ],
+  );
+}
+
 /** One flag: a yellow card, a caps title, what it means, who raised it. */
 function reviewFlag(title, body, source) {
   return el("li", { class: "flag" }, [
@@ -15715,7 +15879,7 @@ function prunePacketCache(tickets) {
   for (const id of packetCache.keys()) if (!live.has(id)) packetCache.delete(id);
 }
 
-const VD_WORD = { PASS: "passed", FAIL: "failed", SKIPPED: "skipped" };
+const VD_WORD = { PASS: "passed", FAIL: "failed", FLAG: "flagged", SKIPPED: "skipped" };
 /** One cell of the verdict strip: a caps label, the verdict, then its detail. */
 function verdictCell(key, label, value, aria, body, tone = "") {
   return el(
@@ -15768,12 +15932,20 @@ function verdictStrip(p) {
         "ul",
         { class: "clean vd-gate-list" },
         g.rows.map((r) => {
-          const st = r.status === "PASS" ? "pass" : r.status === "FAIL" ? "fail" : "skip";
+          // GATE INTEGRITY: a FLAG is the yellow "!" of the gates checklist, never a skip.
+          const st =
+            r.status === "PASS"
+              ? "pass"
+              : r.status === "FAIL"
+                ? "fail"
+                : r.status === "FLAG"
+                  ? "flag"
+                  : "skip";
           return el("li", { class: `vd-gate vd-g-${st}` }, [
             el(
               "span",
               { class: `dod-mark dod-${st}`, "aria-hidden": "true" },
-              st === "pass" ? "✓" : st === "fail" ? "✗" : "–",
+              { pass: "✓", fail: "✗", flag: "!", skip: "–" }[st],
             ),
             el("b", {}, r.gate),
             el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
@@ -15800,14 +15972,16 @@ function verdictStrip(p) {
   } else gateBody.push(el("p", { class: "vd-sub" }, "The runner has recorded no gate report."));
   for (const d of p.disagreements || [])
     gateBody.push(el("p", { class: "vd-flag" }, [ycard(16), d.message]));
-  const ran = g ? g.rows.filter((r) => r.status !== "SKIPPED").length : 0;
+  // The integrity row checks the gates; it is not one of them (it never "ran" the work).
+  const gateList = g ? g.rows.filter((r) => r.gate !== "integrity") : [];
+  const ran = gateList.filter((r) => r.status !== "SKIPPED").length;
   cells.push(
     verdictCell(
       "gates",
       "Gates",
       g ? (g.overall === "PASS" ? "Passed" : "Failed") : "No report",
       g
-        ? `Gates: ${g.overall === "PASS" ? "passed" : "failed"}, ${ran} of ${g.rows.length} ran`
+        ? `Gates: ${g.overall === "PASS" ? "passed" : "failed"}, ${ran} of ${gateList.length} ran`
         : "Gates: no report recorded",
       gateBody,
       g ? (g.overall === "PASS" ? "ok" : "bad") : "warn",
@@ -16587,6 +16761,8 @@ async function renderReview(param) {
         ],
       )
     : null;
+  // GATE INTEGRITY: filled once the diff loads, from the server's `test-modified` flag.
+  const integritySlot = el("div", { class: "integrity-slot" });
 
   // Flags: what to look at before signing. Evidence flags now; the diff's risk
   // annotations join them once the diff loads.
@@ -16642,7 +16818,11 @@ async function renderReview(param) {
         a.detail +
           (a.kind === "sensitive-path"
             ? ". Check it is safe to ship, and that a migration has a way back."
-            : "."),
+            : a.kind === "test-modified"
+              ? a.allowed
+                ? ". Allowed by a person; check these are the changes the ticket asked for."
+                : ". A green gate proves less when its own tests changed; auto-approve is held."
+              : "."),
         "Raised by the server's risk check",
       ]),
       ...outside.map((o) => [
@@ -16698,6 +16878,9 @@ async function renderReview(param) {
     }
     const live = repos.filter((r) => !r.unavailable);
     strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
+    clear(integritySlot);
+    const ib = integrityBanner(t, testModifiedAnns(live));
+    if (ib) integritySlot.appendChild(ib);
     const outside = outsideStatedChange(evidence, live);
     paintFlags(
       live.flatMap((r) => r.riskAnnotations || []),
@@ -16770,6 +16953,7 @@ async function renderReview(param) {
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
       movedBanner,
+      integritySlot,
       canApprove ? diffBlockBanner : null,
       el(
         "div",

@@ -823,14 +823,17 @@ export function ticketWriteRepos(repositories = []) {
  * The stack(s) a ticket's skills are selected for: the UNION of every write repo's
  * registered stack (distinct, payload order). A ticket spanning a TypeScript frontend
  * and a Java service gets both — the first write repo's stack alone left the second
- * language out of delivery, review and the tester. No write repo → the first linked
- * repo with a local path (then any repo), as the runner resolved it before.
+ * language out of delivery, review and the tester. No write repo at all → the first
+ * linked repo with a local path (then any repo), as the runner resolved it before; a
+ * read-only repo never contributes while a write repo exists.
  */
 export function ticketStacks(repositories = []) {
   const out = [];
-  for (const { stack } of ticketWriteRepos(repositories))
-    if (stack && !out.includes(stack)) out.push(stack);
-  if (out.length) return out;
+  const writes = ticketWriteRepos(repositories);
+  for (const { stack } of writes) if (stack && !out.includes(stack)) out.push(stack);
+  // A ticket WITH write repos is selected for their stacks only: when none of them has a
+  // stack registered, a read-only repo's stack must not stand in for them.
+  if (out.length || writes.length) return out;
   const list = Array.isArray(repositories) ? repositories : [];
   const first = list.find((r) => r?.local_path) ?? list[0];
   const legacy = String(first?.stack ?? "").trim();

@@ -1157,6 +1157,46 @@ check("ticketStacks: the UNION of the write repos' stacks, else the first linked
   );
   eq(ticketStacks([]), [], "nothing linked");
 });
+// REVIEW (skill-routing): a READ-ONLY repo never contributes a stack — not even through
+// the legacy fallback, which applies only when the ticket has no write repo at all.
+check("ticketStacks: three write repos union; a read-only / context-only repo never counts", () => {
+  const RO = { name: "docs", access: "read", relation: "confirmed", stack: "go", local_path: "/d" };
+  const CTX = {
+    name: "ctx",
+    access: "write",
+    relation: "context_only",
+    stack: "rust",
+    local_path: "/e",
+  };
+  const PY = {
+    name: "py",
+    access: "write",
+    relation: "confirmed",
+    stack: "python",
+    local_path: "/p",
+  };
+  eq(ticketStacks([RO, ...TWO_REPOS, CTX, PY]), ["typescript-react", "java", "python"], "three");
+  const UNSTACKED = {
+    name: "w",
+    access: "write",
+    relation: "confirmed",
+    stack: "",
+    local_path: "/w",
+  };
+  eq(
+    ticketStacks([RO, UNSTACKED]),
+    [],
+    "a write repo with no stack → no stack, not the read repo's",
+  );
+  const sel = selectSkills({
+    stacks: ticketStacks([RO, ...TWO_REPOS, PY]),
+    text: "round totals",
+  }).map((s) => s.name);
+  const note = stackPackNote([RO, ...TWO_REPOS, PY], sel);
+  for (const pack of ["typescript-conventions", "java-conventions", "python-conventions"])
+    eq(note.split(pack).length - 1, 1, `the note names ${pack} exactly once (${note})`);
+  assert(!/docs|go-conventions/.test(note), `the read-only repo is not in the note: ${note}`);
+});
 const TEXT = "Round totals consistently in both the client and the service";
 for (const role of ["delivery", "review", "test"]) {
   check(`two-repo ticket, ${role}: the TypeScript AND the Java pack, no foreign pack`, () => {

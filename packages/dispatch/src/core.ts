@@ -1516,6 +1516,22 @@ export class Dispatch {
     return this.reviewGateSvc.recordLanding(ref, input, actor);
   }
 
+  /** TESTER REPLAY: record the tester's tests passed on the landed revision (system only). */
+  recordTesterReplay(
+    ref: string,
+    input: {
+      commit: string;
+      pin: string;
+      files: readonly string[];
+      repo?: string | undefined;
+      via?: string | undefined;
+      note?: string | undefined;
+    },
+    actor: Actor,
+  ): ReturnType<ReviewGateService["recordTesterReplay"]> {
+    return this.reviewGateSvc.recordTesterReplay(ref, input, actor);
+  }
+
   /**
    * MACHINE-CHECKABLE AC: the runner records the result of executing an AC's
    * `check_command` (trusted actor only — see ReviewGateService.recordAcCheck).
@@ -1535,6 +1551,7 @@ export class Dispatch {
       tested_commit?: string;
       contract_hash?: string;
       replay?: string;
+      tests_commit?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -1550,6 +1567,7 @@ export class Dispatch {
       tested_commit?: string;
       contract_hash?: string;
       replay?: string;
+      tests_commit?: string;
     },
     actor: Actor,
   ): TransitionResult {

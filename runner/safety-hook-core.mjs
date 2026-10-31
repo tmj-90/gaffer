@@ -721,11 +721,15 @@ const NODE_WRITE_PRESENCE = [
   /\b(?:fs\.)?(?:cpSync|copyFileSync|renameSync)\s*\(/,
 ];
 const RUBY_WRITE_PRESENCE = [
-  /\b(?:File|IO)\.write\s*\(/,
-  /\bFile\.open\s*\([^)]*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s*\(/,
+  /\bFile\.(?:open|new)\s*\([^)]*,\s*["'][^"']*[waWA]/,
   // Paren-less calls (`File.write "p", "x"`, `File.open "p", "a" do …`) were missed.
   /\b(?:File|IO)\.(?:write|binwrite)\s/,
   /\bFile\.(?:open|new)\s[^,;]{0,1024},\s*["'][^"']*[waWA+]/,
+  // …and the paren-less form whose path is one call (`File.open File.join(dir, "f"), "w"`):
+  // the call's own comma ends the bounded scan above before the mode is reached. The call
+  // is structured (a name / method chain, then one paren group) so it stays linear.
+  /\bFile\.(?:open|new)\s+[\w.:]+\([^()\n]*\)\s*,\s*["'][^"']*[waWA+]/,
   /\b(?:FileUtils\.(?:cp|mv|copy|move)|File\.rename)\b/,
 ];
 const PERL_WRITE_PRESENCE = [
@@ -755,8 +759,8 @@ const NODE_WRITE_LITERALS = [
   /\b(?:fs\.)?(?:cpSync|copyFileSync|renameSync)\s*\([^,]*,\s*(["'`][^"'`]*["'`])\s*\)/,
 ];
 const RUBY_WRITE_LITERALS = [
-  /\b(?:File|IO)\.write\s*\(\s*(["'][^"']*["'])/,
-  /\bFile\.open\s*\(\s*(["'][^"']*["'])\s*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s*\(\s*(["'][^"']*["'])/,
+  /\bFile\.(?:open|new)\s*\(\s*(["'][^"']*["'])\s*,\s*["'][^"']*[waWA]/,
   /\b(?:File|IO)\.(?:write|binwrite)\s+(["'][^"']*["'])/,
   /\bFile\.(?:open|new)\s+(["'][^"']*["'])\s*,\s*["'][^"']*[waWA+]/,
 ];
@@ -2083,6 +2087,34 @@ const DOCKER_GROUPS = new Set(["container", "compose", "service", "pod"]);
 const DOCKER_SUBCOMMANDS = new Set(["run", "create", "cp", "exec", "build", "start"]);
 const DOCKER_SHORT_VALUE_FLAGS = new Set([..."acehlmpuvw"]);
 
+/**
+ * git subcommands that never write the work tree or the repository (`git -C <dir> …`
+ * with one of these is a read, judged by the read rules; any other subcommand run in
+ * another directory is a write there).
+ */
+const GIT_READ_ONLY_SUBCOMMANDS = new Set([
+  "status",
+  "log",
+  "show",
+  "diff",
+  "rev-parse",
+  "rev-list",
+  "ls-files",
+  "ls-tree",
+  "cat-file",
+  "blame",
+  "grep",
+  "describe",
+  "shortlog",
+  "merge-base",
+  "name-rev",
+  "for-each-ref",
+  "show-ref",
+  "whatchanged",
+  "version",
+  "help",
+]);
+
 function extractBashWriteTargets(cmd) {
   const targets = [];
   // Effective cwd for resolving RELATIVE targets. Updated as the segment loop
@@ -2359,6 +2391,70 @@ function extractBashWriteTargets(cmd) {
       // worktree dir escaped the boundary. (The branch the `-b` creates is checked
       // separately by branchCreationBoundaryReason.)
       const rawGit = effective.rest.slice(1);
+      // `git -C <dir>` / `--work-tree <dir>` / `--git-dir <dir>` run git IN another
+      // directory: a mutating subcommand there (checkout, apply, add, init, reset, mv,
+      // stash, commit, config, …) writes files in <dir>, so `git -C "$GAFFER_DATA"
+      // checkout -- settings.json` rewrote the runner's own settings past the write
+      // boundary. Every such dir is a write target unless the subcommand is one of
+      // the read-only ones below (the boundary then judges it like any other write;
+      // a dynamic dir fails closed). Unknown subcommands count as writes.
+      {
+        const gitDirs = [];
+        let sub = "";
+        for (let k = 0; k < rawGit.length; k += 1) {
+          const tk = unquote(rawGit[k]);
+          if (tk === "-C" || tk === "--git-dir" || tk === "--work-tree") {
+            gitDirs.push(rawGit[(k += 1)] ?? "");
+            continue;
+          }
+          const eqd = tk.match(/^--(?:git-dir|work-tree)=(.*)$/);
+          if (eqd) {
+            gitDirs.push(eqd[1]);
+            continue;
+          }
+          if (/^-C./.test(tk)) {
+            gitDirs.push(tk.slice(2));
+            continue;
+          }
+          if (
+            tk === "-c" ||
+            tk === "--namespace" ||
+            tk === "--exec-path" ||
+            tk === "--config-env"
+          ) {
+            k += 1; // the option's value
+            continue;
+          }
+          if (tk.startsWith("-")) continue;
+          sub = tk;
+          break;
+        }
+        if (gitDirs.length > 0 && sub && !GIT_READ_ONLY_SUBCOMMANDS.has(sub)) {
+          // A READ-root repo keeps its own rules (branch creation is judged by
+          // branchCreationBoundaryReason; a plain checkout there stays allowed) —
+          // except under $GAFFER_DATA, the runner's state, which is never a repo an
+          // agent works in. Everywhere else the dir is a write target.
+          const roots = resolveRoots();
+          const data = process.env.GAFFER_DATA
+            ? canonicalize(resolve(process.env.GAFFER_DATA))
+            : "";
+          for (const d of new Set(gitDirs)) {
+            const p = d === "" ? UNVERIFIABLE_TARGET : expandTildeWord(d.trim(), effectiveCwd);
+            if (
+              p === UNVERIFIABLE_TARGET ||
+              /[$`]/.test(p) ||
+              (!p.startsWith("/") && effectiveCwd === null)
+            ) {
+              targets.push(UNVERIFIABLE_TARGET);
+              continue;
+            }
+            const c = canonicalize(resolve(effectiveCwd ?? "/", p));
+            const inData = data !== "" && isInsideRoot(data, c);
+            if (!inData && isInsideAny(roots.readRoots, c)) continue;
+            add(d);
+          }
+        }
+      }
       const wi = rawGit.indexOf("worktree");
       if (wi !== -1 && rawGit[wi + 1] === "add") {
         for (let k = wi + 2; k < rawGit.length; k += 1) {

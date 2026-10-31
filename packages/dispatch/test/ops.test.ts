@@ -172,6 +172,7 @@ describe("stats --json projection shape", () => {
       waived: 0,
       stale: 0,
       unverified: 0,
+      unreplayed: 0,
       failed: 0,
       epics: [],
     });

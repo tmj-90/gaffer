@@ -412,7 +412,9 @@ function autoMerge(r, trailers) {
       r,
       trailers,
     ],
-    { encoding: "utf8", env: GATE_ENV },
+    // The merge lane's gate also replays the tester's tests (lib/tester-replay.mjs), which
+    // reads the dispatch DB: the lane always has one, and without it the gate holds.
+    { encoding: "utf8", env: { ...GATE_ENV, DISPATCH_DB: DB } },
   );
 }
 {

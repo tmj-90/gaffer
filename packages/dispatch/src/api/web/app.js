@@ -12024,6 +12024,66 @@ function renderTestingCard(t, evidence) {
       )
     : el("p", { class: "dim" }, "No tester results recorded yet.");
 
+  // TESTER REPLAY: which of the tester's assertions passed on which LANDED revision — the
+  // runner's own record (a SYSTEM row, uri gaffer-tester-replayed:<sha>), written only when
+  // the merge gate replayed the tester's tests on the exact merge candidate and it landed.
+  // Read from the record, never guessed from timestamps; the epic is accepted only on it.
+  // Only the record itself counts: a SYSTEM row with the uri AND the record's payload
+  // (dispatch refuses the uri on any other system evidence path).
+  const replayPayload = (e) => {
+    try {
+      const p = JSON.parse(e.payload_json || "{}");
+      return p && p.kind === "tester_replay" ? p : null;
+    } catch {
+      return null;
+    }
+  };
+  const replays = (evidence || []).filter(
+    (e) =>
+      e.recorded_by_actor_type === "system" &&
+      typeof e.uri === "string" &&
+      e.uri.startsWith("gaffer-tester-replayed:") &&
+      replayPayload(e) !== null,
+  );
+  const replayList = replays.length
+    ? el(
+        "ul",
+        { class: "clean" },
+        replays.map((e) => {
+          const sha = e.uri.slice("gaffer-tester-replayed:".length);
+          const p = replayPayload(e) || {};
+          const files = Array.isArray(p.files) ? p.files.filter((f) => typeof f === "string") : [];
+          const others = Array.isArray(p.not_replayed_repos)
+            ? p.not_replayed_repos.filter((f) => typeof f === "string")
+            : [];
+          return el("li", { class: files.length ? "tt-row tt-pass" : "tt-row" }, [
+            glyph(
+              files.length ? "done" : "blocked",
+              16,
+              files.length
+                ? "Passed on the landed revision"
+                : "No tester test ran on the landed revision",
+            ),
+            el("div", {}, [
+              files.length ? "Passed on the landed revision " : "Landed ",
+              el("code", { class: "mono" }, sha.slice(0, 12)),
+              files.length
+                ? `: ${files.join(", ")}`
+                : " with no tester test file replayed (not counted as accepted)",
+              others.length ? `. Not replayed in ${others.join(", ")}.` : "",
+            ]),
+            el("div", { class: "ac-meta tt-who" }, `runner · ${fmtTime(e.created_at)}`),
+          ]);
+        }),
+      )
+    : el(
+        "p",
+        { class: "dim" },
+        t.status === "done"
+          ? "No record that the tester's assertions passed on the revision that landed."
+          : "Replayed on the merge candidate when it lands.",
+      );
+
   return el("section", { class: "card panel tk-testing", "aria-label": "Independent testing" }, [
     panelHead("Independent testing", testable ? "black-box tester on" : "off", null, {}),
     el("div", { class: "setting-row tk-testable" }, [
@@ -12049,6 +12109,8 @@ function renderTestingCard(t, evidence) {
     contractRows,
     el("h3", { class: "tk-h3" }, "Tester results"),
     evidenceList,
+    el("h3", { class: "tk-h3" }, "On the landed revision"),
+    replayList,
   ]);
 }
 

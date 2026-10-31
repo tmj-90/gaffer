@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { createHash } from "node:crypto";
 
-import { computeStats, contractHash } from "../src/cli/ops.js";
+import { computeStats, contractHash, renderStats } from "../src/cli/ops.js";
 import { Dispatch } from "../src/core.js";
 import { migrate } from "../src/db/connection.js";
 import { SCHEMA_VERSION } from "../src/db/schema.js";
@@ -70,6 +70,28 @@ function planWithTwoTickets(wg: Dispatch, extra: Record<string, unknown> = {}) {
 }
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
+/** The revision that LANDED (the gated merge of SHA onto the default branch). */
+const LANDED = "89abcdef0123456789abcdef0123456789abcdef";
+
+/**
+ * TESTER REPLAY: the runner's landing path records that the tester's assertions passed on
+ * the landed revision (system only). Recorded against the ticket's delivery repo, whose
+ * stub git (nonEmptyDiffRunner) reports every commit on the default branch — the real check
+ * is in tester-replay-record.test.ts.
+ */
+function recordReplay(wg: Dispatch, ticketId: string, tested = SHA, landed = LANDED) {
+  return wg.recordTesterReplay(
+    ticketId,
+    {
+      commit: landed,
+      pin: tested,
+      files: ["test/bb-acceptance.test.js"],
+      repo: `delivery-${ticketId}`,
+      via: "local",
+    },
+    systemActor,
+  );
+}
 
 /** The binding the runner's tester records on an automated PASS (see tester-run.mjs). */
 function boundPass(wg: Dispatch, ticketId: string) {
@@ -253,17 +275,175 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
     expect(wg.view(accId).ticket.status).toBe("in_testing");
   });
 
-  it("a bound PASS (commit + current contract + clean replay) → done reads accepted (verified) and leaves the attention count", () => {
+  it("a bound PASS (commit + current contract + clean replay) whose assertions passed on the LANDED revision → done reads accepted (verified) and leaves the attention count", () => {
     const wg = freshWg({ testingEnabled: false });
     const { accId } = epicToReview(wg);
     wg.approveReview(accId, reviewer);
     const pass = wg.testerPass(accId, boundPass(wg, accId), testerAgent);
     expect(pass.ticket.status).toBe("ready_for_merge");
+    expect(recordReplay(wg, accId).recorded).toBe(true);
     wg.markMerged(accId, systemActor);
     const a = computeStats(wg.db).acceptance;
     expect(a.epics[0]!.result).toBe("accepted");
     expect(a.epics[0]!.accepted_commit).toBe(SHA);
     expect(a.epics[0]!.replay).toBe("passed");
+    expect(a.epics[0]!.replayed_commit).toBe(LANDED);
+    expect(a.epics[0]!.replayed_files).toEqual(["test/bb-acceptance.test.js"]);
+    expect(a.accepted).toBe(1);
+    expect(a.unaccepted).toBe(0);
+  });
+
+  it("TESTER REPLAY: a bound PASS that landed with NO record of its assertions passing on the landed revision reads unreplayed — never accepted", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    wg.markMerged(accId, systemActor);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("unreplayed");
+    expect(a.epics[0]!.replayed_commit).toBeNull();
+    expect(a.unreplayed).toBe(1);
+    expect(a.accepted).toBe(0);
+    expect(a.unaccepted).toBe(1);
+  });
+
+  it("TESTER REPLAY: a landing that replayed NO tester test file (stale or empty tests branch, or a PASS that saved none) reads unreplayed — zero assertions on what landed is not accepted", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: "none" }, testerAgent);
+    expect(
+      wg.recordTesterReplay(
+        accId,
+        {
+          commit: LANDED,
+          pin: SHA,
+          files: [],
+          repo: `delivery-${accId}`,
+          via: "local",
+          note: "refs/heads/gaffer-tests/ticket-3 does not descend from the tested commit",
+        },
+        systemActor,
+      ).recorded,
+    ).toBe(true);
+    wg.markMerged(accId, systemActor);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("unreplayed");
+    expect(a.epics[0]!.replayed_commit).toBe(LANDED);
+    expect(a.epics[0]!.replayed_files).toEqual([]);
+    expect(a.accepted).toBe(0);
+    expect(a.unreplayed).toBe(1);
+    expect(a.unaccepted).toBe(1);
+    expect(renderStats(computeStats(wg.db))).toContain("with NO tester test file replayed");
+  });
+
+  it("TESTER REPLAY: the PASS's tests_commit binding is validated (a sha or none)", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    expectCode(
+      () => wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: "HEAD" }, testerAgent),
+      "VALIDATION_ERROR",
+    );
+    wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: LANDED }, testerAgent);
+    const row = wg.db
+      .prepare(
+        "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(accId) as { payload_json: string };
+    expect(JSON.parse(row.payload_json).tests_commit).toBe(LANDED);
+  });
+
+  it("TESTER REPLAY: a generic SYSTEM evidence row cannot carry the record's uri (attach-evidence)", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    expectCode(
+      () =>
+        wg.attachDeliveryEvidence(
+          accId,
+          { evidenceType: "commit", summary: "x", uri: `gaffer-tester-replayed:${LANDED}` },
+          systemActor,
+        ),
+      "VALIDATION_ERROR",
+    );
+  });
+
+  it("TESTER REPLAY: a row shaped like the record but recorded by an agent does not count the epic", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    wg.db
+      .prepare(
+        "INSERT INTO evidence (id, ticket_id, evidence_type, summary, uri, payload_json, created_by, recorded_by_actor_type, created_at) VALUES ('forged', ?, 'commit', 'forged', ?, ?, 'agent-runner', 'agent', '2099-01-01T00:00:00.000Z')",
+      )
+      .run(
+        accId,
+        `gaffer-tester-replayed:${LANDED}`,
+        JSON.stringify({ kind: "tester_replay", tested: SHA, pin: SHA, files: [] }),
+      );
+    wg.markMerged(accId, systemActor);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("unreplayed");
+    expect(a.accepted).toBe(0);
+  });
+
+  it("TESTER REPLAY: a held replay keeps the epic out; a repaired retry that lands counts it exactly once", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, boundPass(wg, accId), testerAgent);
+    // The landing replayed the tester's assertion on the merge candidate and it FAILED:
+    // held for a human, nothing recorded, the epic is not accepted.
+    wg.holdForHuman(
+      accId,
+      {
+        reasonCode: "tester_replay_red",
+        reason: "the independent tester's tests (test/bb-label.test.js) fail on the merge",
+      },
+      systemActor,
+    );
+    let a = computeStats(wg.db).acceptance;
+    expect(wg.view(accId).ticket.status).toBe("blocked");
+    expect(a.epics[0]!.result).toBe("failed");
+    expect(a.accepted).toBe(0);
+    expect(a.unaccepted).toBe(1);
+    // The repair: back to ready, re-delivered, re-approved, re-tested on the new commit.
+    const REPAIRED = "fedcba9876543210fedcba9876543210fedcba98";
+    const LANDED2 = "1111111111111111111111111111111111111111";
+    wg.moveTicket(accId, "ready", human);
+    const agent2 = wg.registerAgent({ display_name: "b" }, human);
+    // Re-delivered on the same branch (its delivery repo is already linked).
+    const claim = wg.claimTicket(
+      { ticket_id: accId, agent_id: agent2.id, ttl_seconds: 300 },
+      agentActor,
+    );
+    wg.recordDeliveryArtifact(
+      { claim_token: claim.claimToken, ticket_id: accId, branch_name: "feat/x" },
+      agentActor,
+    );
+    wg.submitForReview({ claimToken: claim.claimToken, ticket_id: accId }, agentActor);
+    expect(wg.view(accId).ticket.status).toBe("in_review");
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, { ...boundPass(wg, accId), tested_commit: REPAIRED }, testerAgent);
+    // A record of the EARLIER tested commit does not describe this PASS.
+    wg.db
+      .prepare(
+        "INSERT INTO evidence (id, ticket_id, evidence_type, summary, uri, payload_json, created_by, recorded_by_actor_type, created_at) VALUES ('old-replay', ?, 'commit', 'old', ?, ?, 'dispatch', 'system', '2000-01-01T00:00:00.000Z')",
+      )
+      .run(
+        accId,
+        `gaffer-tester-replayed:${LANDED}`,
+        JSON.stringify({ kind: "tester_replay", tested: SHA, pin: SHA, files: [] }),
+      );
+    expect(() => recordReplay(wg, accId, SHA, LANDED2)).toThrow(/no tester PASS bound/);
+    expect(recordReplay(wg, accId, REPAIRED, LANDED2).recorded).toBe(true);
+    wg.markMerged(accId, systemActor);
+    a = computeStats(wg.db).acceptance;
+    expect(a.epics).toHaveLength(1);
+    expect(a.epics[0]!.result).toBe("accepted");
+    expect(a.epics[0]!.accepted_commit).toBe(REPAIRED);
+    expect(a.epics[0]!.replayed_commit).toBe(LANDED2);
     expect(a.accepted).toBe(1);
     expect(a.unaccepted).toBe(0);
   });
@@ -321,6 +501,7 @@ describe("acceptance gate: a verdict is bound to the tested commit and contract"
     expect(payload.tested_commit).toBe(SHA);
     expect(payload.contract_hash).toBe(bound.contract_hash);
     expect(payload.replay).toBe("passed");
+    recordReplay(wg, accId);
     wg.markMerged(accId, systemActor);
     expect(computeStats(wg.db).acceptance.epics[0]!.result).toBe("accepted");
     wg.db

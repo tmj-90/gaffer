@@ -22,9 +22,13 @@
 //   3. the caller runs the repo's test command there through bin/dod-regate.sh (tests only),
 //      and a failure HOLDS the landing exactly like a red merge gate (tester_replay_red).
 // No tester PASS bound to the pinned commit → nothing extra runs and no record is due (the
-// ticket was not in the testing lane, or a human waived it). A bound PASS with no test
-// files on record still records the replay (the candidate passed the repo's own suite,
-// which is all the tester ran). Fail CLOSED: an unreadable DB or a git error HOLDS.
+// ticket was not in the testing lane, or a human waived it). WHICH tests: the commit the
+// PASS names (`tests_commit`, recorded by bin/tester-run.mjs: the tester's own commit on the
+// tests branch, or "none") — never the branch as it stands at landing time, which any
+// process with the repository can rewrite. A bound PASS with no test files still records
+// the landing (files: []), and a record with no files never counts an epic as accepted
+// (zero tester assertions ran on what landed). Fail CLOSED: an unreadable DB, a git error
+// or a bound tests commit git cannot find HOLDS.
 //
 // CLI (lib/land.sh):
 //   node lib/tester-replay.mjs apply --db <dispatch.sqlite> --ticket <n> --repo <path>
@@ -127,6 +131,54 @@ export function testerTestsOnRecord({ repoPath, ticketNumber, testedCommit }) {
 }
 
 /**
+ * The tests a PASS BOUND (its `tests_commit`, recorded by bin/tester-run.mjs): the files the
+ * tester added or modified in that exact commit relative to the tested commit. The branch
+ * ref is not read, so a later rewrite or deletion of gaffer-tests/ticket-<n> cannot change
+ * what is replayed. A bound commit git cannot find, or one that does not descend from the
+ * tested commit, cannot be replayed: ok:false (the caller HOLDS).
+ *   → { ok: true, files, ref, head, reason } | { ok: false, reason }
+ */
+export function testerTestsOfCommit({ repoPath, ticketNumber, testedCommit, testsCommit }) {
+  const ref = `refs/heads/${testsBranchName(ticketNumber)}`;
+  const c = git(repoPath, "cat-file", "-e", `${testsCommit}^{commit}`);
+  if (c.error || c.status !== 0)
+    return {
+      ok: false,
+      reason: `the tester's tests commit ${testsCommit.slice(0, 12)} (bound to its PASS) is not in the repository`,
+    };
+  const anc = git(repoPath, "merge-base", "--is-ancestor", testedCommit, testsCommit);
+  if (anc.status !== 0)
+    return {
+      ok: false,
+      reason: `the tester's tests commit ${testsCommit.slice(0, 12)} does not descend from the tested commit ${testedCommit.slice(0, 12)}`,
+    };
+  const d = git(
+    repoPath,
+    "diff",
+    "--name-only",
+    "--no-renames",
+    "--diff-filter=AM",
+    testedCommit,
+    testsCommit,
+  );
+  if (d.status !== 0 || d.error)
+    return {
+      ok: false,
+      reason: `git could not list the tester's changes in ${testsCommit.slice(0, 12)}`,
+    };
+  const files = testerTestFiles((d.stdout || "").split("\n"));
+  return {
+    ok: true,
+    files,
+    ref,
+    head: testsCommit,
+    reason: files.length
+      ? `${files.length} tester test file(s) in ${testsCommit.slice(0, 12)} (bound to the PASS)`
+      : `the tester's tests commit ${testsCommit.slice(0, 12)} adds or changes no test file`,
+  };
+}
+
+/**
  * Should the landing of `pin` replay the tester's tests, and record that it did?
  *   → { ok, run, record, files, tests_ref, tests_head, tested, reason }
  * `record` — a bound (agent/system) tester PASS of exactly `pin` is why this lands: the
@@ -163,7 +215,23 @@ export function replayPlan({ dbPath, ticketNumber, repoPath, pin, env = process.
     return none("GAFFER_TESTER_REPLAY=0: the tester's tests are not replayed (no replay record)", {
       tested,
     });
-  const t = testerTestsOnRecord({ repoPath, ticketNumber, testedCommit: tested });
+  // The PASS names the commit holding its tests (tester-run records it): replay exactly
+  // those, or nothing when it saved none. An older PASS without the binding falls back to
+  // the branch (an earlier run's branch is then not replayed — and a record with no files
+  // never counts an epic as accepted: see dispatch's computeAcceptance).
+  const bound = typeof pass.tests_commit === "string" ? pass.tests_commit.toLowerCase() : "";
+  const t =
+    bound === "none"
+      ? {
+          ok: true,
+          files: [],
+          ref: `refs/heads/${testsBranchName(ticketNumber)}`,
+          head: "",
+          reason: "the tester's PASS saved no test files of its own",
+        }
+      : /^[0-9a-f]{40,64}$/.test(bound)
+        ? testerTestsOfCommit({ repoPath, ticketNumber, testedCommit: tested, testsCommit: bound })
+        : testerTestsOnRecord({ repoPath, ticketNumber, testedCommit: tested });
   if (!t.ok) return { ...none(t.reason, { tested }), ok: false };
   return {
     ok: true,

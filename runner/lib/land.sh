@@ -87,16 +87,37 @@ _gaffer_land_record() {
 # dashboard ticket page read it. Only when the gate set _MG_REPLAY_RECORD (a bound tester
 # PASS is why this ticket lands). A failure is logged, never fatal: the merge has landed,
 # and the epic then reads "not replayed" — never accepted on a record that is missing.
+# WHICH revision landed: a local landing lands exactly the gated merge (compare-and-land).
+# A PR landing lands whatever GitHub made of the PR (a merge, squash or rebase commit, on
+# the remote default as it stood then): the record names the local default's head after the
+# fast-forward, and only when its TREE equals the candidate's the gate replayed on (the
+# remote default did not move in between) — otherwise, or when the local default was not
+# fast-forwarded (pr-stale), nothing here can show the replay ran on what landed: no record.
 _gaffer_land_replay_record() {
-  local num="$1" repo_id="$2" merge="$3" pin="$4" via="$5" who="$6"
+  local num="$1" repo_id="$2" merge="$3" pin="$4" via="$5" who="$6" repo="${7:-}" def="${8:-}"
   [ "${_MG_REPLAY_RECORD:-0}" = "1" ] && [ -n "$merge" ] && [ -n "$pin" ] || return 0
+  local landed="$merge" _lt _mt
+  case "$via" in
+    local) ;;
+    pr)
+      landed="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$def^{commit}" 2>/dev/null || true)"
+      _lt="$(git -C "$repo" rev-parse --verify --quiet "$landed^{tree}" 2>/dev/null || true)"
+      _mt="$(git -C "$repo" rev-parse --verify --quiet "$merge^{tree}" 2>/dev/null || true)"
+      if [ -z "$landed" ] || [ -z "$_lt" ] || [ "$_lt" != "$_mt" ]; then
+        log "$who: #$num NO tester replay record — the PR landed $def@${landed:0:12}, whose tree is not the candidate ${merge:0:12} the tester's tests passed on (the remote default moved, or the merge method changed the result); the epic is not counted as accepted"
+        return 0
+      fi ;;
+    *)
+      log "$who: #$num NO tester replay record — the landed revision cannot be verified (via $via: the local $def was not fast-forwarded); the epic is not counted as accepted"
+      return 0 ;;
+  esac
   local -a _rr=()
   [ -n "$repo_id" ] && _rr=(--repo "$repo_id")
-  if wg ticket record-tester-replay "$num" --commit "$merge" --pin "$pin" --files-json "${_MG_REPLAY_FILES:-[]}" \
-       --via "$via" ${_rr[@]+"${_rr[@]}"} --as system >/dev/null 2>&1; then
-    log "$who: #$num recorded the tester replay: ${_MG_REPLAY_COUNT:-0} tester test file(s) passed on the landed revision ${merge:0:12}"
+  if wg ticket record-tester-replay "$num" --commit "$landed" --pin "$pin" --files-json "${_MG_REPLAY_FILES:-[]}" \
+       --via "$via" --note "${_MG_REPLAY_NOTE:-}" ${_rr[@]+"${_rr[@]}"} --as system >/dev/null 2>&1; then
+    log "$who: #$num recorded the tester replay: ${_MG_REPLAY_COUNT:-0} tester test file(s) passed on the landed revision ${landed:0:12}"
   else
-    log "$who: #$num could not record the tester replay on ${merge:0:12} — the epic is not counted as accepted until it is"
+    log "$who: #$num could not record the tester replay on ${landed:0:12} — the epic is not counted as accepted until it is"
   fi
 }
 
@@ -302,7 +323,7 @@ _gaffer_land_one() {
       log "$_WHO: #$RNUM merged $RBRANCH → $RDEFAULT in $RREPO (via $_MERGED_VIA)"
       _gaffer_land_record "$RNUM" "$_RID" "$_TB_PIN" "$_MERGED_VIA" "$_WHO"
       # TESTER REPLAY: which tester assertions passed on which landed revision.
-      _gaffer_land_replay_record "$RNUM" "$_RID" "$_MG_MERGE" "$_TB_PIN" "$_MERGED_VIA" "$_WHO"
+      _gaffer_land_replay_record "$RNUM" "$_RID" "$_MG_MERGE" "$_TB_PIN" "$_MERGED_VIA" "$_WHO" "$RREPO" "$RDEFAULT"
       # MEMORY FRESHNESS: write-through the delivered change into the file cards
       # (refresh changed, add new, drop deleted, advance the watermark) so priming
       # stays current instead of decaying. Fail-soft — never blocks the merge.
@@ -380,7 +401,7 @@ _gaffer_land_one() {
 _gaffer_merge_gate() {
   local num="$1" repo="$2" branch="$3" def="$4" pin="$5" show="$6" target_ref="$7" who="${8:-MERGE}" secondary="${9:-0}"
   _MG_TARGET=""; _MG_MERGE=""; _MG_EVIDENCE=""; _MG_REASON=""; _MG_KIND=""
-  _MG_REPLAY_RECORD=0; _MG_REPLAY_FILES="[]"; _MG_REPLAY_COUNT=0
+  _MG_REPLAY_RECORD=0; _MG_REPLAY_FILES="[]"; _MG_REPLAY_COUNT=0; _MG_REPLAY_NOTE=""
   [ -n "$pin" ] || { _MG_REASON="no pinned commit to gate"; return 2; }
   _MG_TARGET="$(git -C "$repo" rev-parse --verify --quiet "$target_ref^{commit}" 2>/dev/null)" \
     || { _MG_TARGET=""; _MG_REASON="the target $target_ref cannot be resolved"; return 2; }
@@ -452,6 +473,7 @@ _gaffer_merge_gate_tester_replay() {
   files="$(printf '%s' "$out" | jget '(d.files || []).join(", ")' 2>/dev/null || echo '')"
   _MG_REPLAY_FILES="$(printf '%s' "$out" | jget 'JSON.stringify(d.files || [])' 2>/dev/null || echo '[]')"
   _MG_REPLAY_COUNT="$(printf '%s' "$out" | jget 'String((d.files || []).length)' 2>/dev/null || echo 0)"
+  _MG_REPLAY_NOTE="$reason"
   if [ "$run" != "1" ]; then
     log "$who: #$num TESTER REPLAY — no tester test files to replay (${reason}); the merge gate's suite is what the tester ran"
     _MG_REPLAY_RECORD=1; return 0

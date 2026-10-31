@@ -24,6 +24,13 @@
 #   R  the landing RECORDS which tester assertions passed on which landed revision
 #      (gaffer-tester-replayed:<sha>, system): the gated merge on main and the files that
 #      ran there; nothing for a held replay or a ticket outside the testing lane.
+#   F  the replay runs the tests the PASS BOUND (tester-run's tests commit), not the branch:
+#      a tests branch rewritten after the PASS (an always-passing assertion swapped in) is
+#      ignored and the bound, failing assertion still holds the landing;
+#   G  PR mode (lib/land.sh), green: the record names the revision that LANDED (the local
+#      default after the fast-forward, tree-equal to the candidate), not the scratch merge;
+#   H  PR mode (bin/merge-ticket.mjs): the remote default moved before GitHub merged, so
+#      what landed is not the candidate the replay passed on — no record.
 # Run: bash runner/test/land-tester-replay.test.sh
 # =====================================================================
 set -uo pipefail
@@ -90,9 +97,10 @@ import { profile } from "../src/profile.js";
 test("the profile is named Ada", () => { assert.equal(profile().name, "Ada"); });'
 # Play the independent tester as bin/tester-run.mjs does: its tests (and its installed
 # wiring) committed on gaffer-tests/ticket-<n> off the tested commit, and a PASS bound to
-# that commit (dispatch's tester pass path: the row a ticket.tester_passed event names).
+# that commit and to the commit holding its tests, or "none" (dispatch's tester pass path:
+# the row a ticket.tester_passed event names).
 tester_pass() {
-  local n="$1" body="${2:-}" head wt
+  local n="$1" body="${2:-}" head wt tc=none
   head="$(git -C "$R" rev-parse "refs/heads/$(branch_of "$n")")"
   if [ -n "$body" ]; then
     wt="$WORK/tester-$n"; git -C "$R" worktree add -q --detach "$wt" "$head" >/dev/null 2>&1
@@ -100,9 +108,10 @@ tester_pass() {
     printf '%s\n' "$body" > "$wt/test/bb-label.test.js"
     printf '{}\n' > "$wt/.claude/settings.json"; printf 'brief\n' > "$wt/CLAUDE.factory.md"
     gitc -C "$wt" checkout -q -B "gaffer-tests/ticket-$n"; gitc -C "$wt" add -A; gitc -C "$wt" commit -qm "black-box tests for #$n"
+    tc="$(git -C "$wt" rev-parse HEAD)"
     git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1
   fi
-  wg ticket tester-pass "$n" --summary "black-box tests pass [tested commit ${head:0:12}]" --tested-commit "$head" --replay passed --as agent >/dev/null 2>&1
+  wg ticket tester-pass "$n" --summary "black-box tests pass [tested commit ${head:0:12}]" --tested-commit "$head" --replay passed --tests-commit "$tc" --as agent >/dev/null 2>&1
 }
 approve() {
   # shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
@@ -114,7 +123,7 @@ hold_of() { wg ticket show "$1" | jget '((d.events || []).filter(e => e.event_ty
 replay_ev() { wg ticket show "$1" | jget '(d.evidence || []).filter(e => (e.summary || "").startsWith("TESTER REPLAY FAILED")).map(e => e.summary).join("\n")' 2>/dev/null; }
 LOGF="$GAFFER_DATA/factory.log"
 
-echo "== setup: eight deliveries, each green on its own =="
+echo "== setup: eleven deliveries, each green on its own =="
 T1="$(new_ticket "Label by display name [read-displayName]" "label() reads profile().displayName")"
 T2="$(new_ticket "Label by display name again [read-displayName]" "label() reads profile().displayName")"
 T3="$(new_ticket "Label by display name, PR [read-displayName]" "label() reads profile().displayName")"
@@ -123,9 +132,13 @@ T5="$(new_ticket "Note five [note-5]" "a note")"
 T6="$(new_ticket "Note six [note-6]" "a note")"
 T7="$(new_ticket "Note seven [note-7]" "a note" plain)"
 T8="$(new_ticket "Note eight [note-8]" "a note")"
-for _ in 1 2 3 4 5 6 7 8; do AUTO_MERGE=0 run_tick >/dev/null; done
-all_review=1; for n in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6" "$T7" "$T8"; do [ "$(st "$n")" = in_review ] || all_review=0; done
-[ "$all_review" = 1 ] && ok "all eight delivered through their DoD gates (in_review)" || fail "statuses: $(for n in "$T1" "$T2" "$T3" "$T4" "$T5" "$T6" "$T7" "$T8"; do printf '#%s=%s ' "$n" "$(st "$n")"; done)"
+T9="$(new_ticket "Label by display name, tampered [read-displayName]" "label() reads profile().displayName")"
+T10="$(new_ticket "Note ten [note-10]" "a note")"
+T11="$(new_ticket "Note eleven [note-11]" "a note")"
+ALL_T="$T1 $T2 $T3 $T4 $T5 $T6 $T7 $T8 $T9 $T10 $T11"
+for _ in $ALL_T; do AUTO_MERGE=0 run_tick >/dev/null; done
+all_review=1; for n in $ALL_T; do [ "$(st "$n")" = in_review ] || all_review=0; done
+[ "$all_review" = 1 ] && ok "all eleven delivered through their DoD gates (in_review)" || fail "statuses: $(for n in $ALL_T; do printf '#%s=%s ' "$n" "$(st "$n")"; done)"
 for n in "$T1" "$T5" "$T6"; do approve "$n"; done
 approve "$T7"
 [ "$(st "$T1")" = in_testing ] && [ "$(st "$T7")" = ready_for_merge ] && ok "a testable approval goes to the tester (in_testing); an ordinary one to ready_for_merge" || fail "after approve: T1=$(st "$T1") T7=$(st "$T7")"
@@ -224,6 +237,72 @@ chmod +x "$WORK/bin/gh"
 grep -q "pr merge" "$WORK/gh-calls" 2>/dev/null && fail "D: gh pr merge ran on a red replay" || ok "D: gh pr merge never ran"
 [ "$(git -C "$R" rev-parse main)" = "$MAIN1" ] && ok "D: main untouched" || fail "D: main moved"
 [ "$(st "$T4")" = "blocked" ] && ok "D: #$T4 held (blocked)" || fail "D: #$T4 status=$(st "$T4")"
+
+echo "== F: a tests branch rewritten after the PASS cannot stand in for the bound assertion =="
+approve "$T9"; tester_pass "$T9" "$LABEL_TEST"
+BOUND9="$(git -C "$R" rev-parse "gaffer-tests/ticket-$T9")"
+# Another process with the repository (any agent's worktree shares its refs) swaps in an
+# assertion that always passes, on a commit that descends from the tested commit.
+( wt="$WORK/tamper"; git -C "$R" worktree add -q --detach "$wt" "$(git -C "$R" rev-parse "refs/heads/$(branch_of "$T9")")" >/dev/null 2>&1
+  mkdir -p "$wt/test"; printf 'import test from "node:test";\ntest("vacuous", () => {});\n' > "$wt/test/bb-label.test.js"
+  gitc -C "$wt" add -A; gitc -C "$wt" commit -qm "tests"; git -C "$R" branch -f "gaffer-tests/ticket-$T9" "$(git -C "$wt" rev-parse HEAD)"
+  git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1 )
+[ "$(git -C "$R" rev-parse "gaffer-tests/ticket-$T9")" != "$BOUND9" ] && ok "F: the tests branch now holds a vacuous assertion" || fail "F: fixture: the tests branch was not rewritten"
+MAIN_F="$(git -C "$R" rev-parse main)"
+GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
+[ "$(st "$T9")" = "blocked" ] && case "$(hold_of "$T9")" in *tester_replay_red*) true ;; *) false ;; esac && ok "F: the bound (failing) assertion still ran on the candidate: held, tester_replay_red" || fail "F: #$T9 status=$(st "$T9") $(grep "#$T9" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-500)"
+[ "$(git -C "$R" rev-parse main)" = "$MAIN_F" ] && ok "F: main untouched" || fail "F: main moved (the vacuous replay let it land)"
+[ -z "$(replay_rec "$T9")" ] && ok "F: no replay record" || fail "F: #$T9 has a replay record: $(replay_rec "$T9")"
+git -C "$R" push -q origin main 2>/dev/null
+
+echo "== G: PR mode (lib/land.sh), green — the record names what LANDED, not the scratch merge =="
+approve "$T10"; tester_pass "$T10" "$NAME_TEST"
+git -C "$R" push -q origin "$(branch_of "$T10")" 2>/dev/null   # the PR's head branch, on the remote
+MAIN_G="$(git -C "$R" rev-parse main)"
+(
+  # shellcheck source=../lib/land.sh
+  source "$RUNNER_DIR/lib/land.sh"
+  log() { printf '%s\n' "$*" >> "$LOGF"; }
+  # GitHub merges the PR (its own merge commit on the remote default), then the local
+  # default is fast-forwarded — what gaffer_pr_merge does.
+  gaffer_pr_merge() {
+    local c="$WORK/gh-clone-g"; rm -rf "$c"; git clone -q -b main "$WORK/origin.git" "$c" 2>/dev/null
+    gitc -C "$c" merge -q --no-ff -m "Merge pull request #10" "$4" && git -C "$c" push -q origin HEAD:main 2>/dev/null || return 1
+    git -C "$1" fetch -q origin "$3" 2>/dev/null && git -C "$1" merge -q --ff-only FETCH_HEAD >/dev/null 2>&1 || return 3
+    return 0
+  }
+  SHOW="$(wg ticket show "$T10" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const d=JSON.parse(s);d.ticket.pr_url="https://github.com/o/r/pull/10";process.stdout.write(JSON.stringify(d))})')"
+  _gaffer_land_one "$T10" "$R" "$(branch_of "$T10")" main "$SHOW" MERGE "" 0
+  echo "rc=$?" > "$WORK/g.rc"
+) >/dev/null 2>&1
+grep -q '^rc=0$' "$WORK/g.rc" 2>/dev/null && ok "G: the PR-mode landing ran (rc 0)" || fail "G: $(cat "$WORK/g.rc" 2>/dev/null) $(grep "#$T10" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+LANDED_G="$(git -C "$R" rev-parse main)"
+[ "$LANDED_G" != "$MAIN_G" ] && [ "$LANDED_G" = "$(git -C "$WORK/origin.git" rev-parse main)" ] && ok "G: the PR merge landed upstream and main was fast-forwarded" || fail "G: main=$LANDED_G origin=$(git -C "$WORK/origin.git" rev-parse main)"
+R10="$(replay_rec "$T10")"
+[ "${R10%% *}" = "$LANDED_G" ] && ok "G: the replay record names the landed revision (main ${LANDED_G:0:12})" || fail "G: record '$R10' vs main $LANDED_G"
+case "$R10" in *'["test/bb-label.test.js"]'*) ok "G: …and the tester file that passed on the candidate with that tree" ;; *) fail "G: record files: $R10" ;; esac
+
+echo "== H: PR mode (bin/merge-ticket.mjs) — the remote moved before GitHub merged: no record =="
+approve "$T11"; tester_pass "$T11" "$NAME_TEST"
+git -C "$R" push -q origin "$(branch_of "$T11")" 2>/dev/null
+node -e 'const {DatabaseSync}=require("node:sqlite");const d=new DatabaseSync(process.argv[1]);d.prepare("UPDATE tickets SET pr_url=? WHERE number=?").run("https://github.com/o/r/pull/11",Number(process.argv[2]));d.close()' "$DISPATCH_DB" "$T11" 2>/dev/null
+cat > "$WORK/bin/gh-h" <<GH
+#!/usr/bin/env bash
+# Someone else's change reaches the remote default first; then GitHub squash-merges the PR.
+pin=""; prev=""; for a in "\$@"; do [ "\$prev" = "--match-head-commit" ] && pin="\$a"; prev="\$a"; done
+case "\$*" in *"pr merge"*) ;; *) exit 0 ;; esac
+c="$WORK/gh-clone-h"; rm -rf "\$c"; git clone -q -b main "$WORK/origin.git" "\$c" 2>/dev/null
+mkdir -p "\$c/docs"; printf 'other\n' > "\$c/docs/other.md"
+git -C "\$c" add -A; git -C "\$c" -c user.email=o@o -c user.name=o commit -qm "someone else"
+git -C "\$c" -c user.email=o@o -c user.name=o merge -q --squash "\$pin" >/dev/null 2>&1
+git -C "\$c" -c user.email=o@o -c user.name=o commit -qm "squash #11" >/dev/null 2>&1
+git -C "\$c" push -q origin HEAD:main 2>/dev/null
+GH
+chmod +x "$WORK/bin/gh-h"
+( cd "$RUNNER_DIR" && GAFFER_GH_BIN="$WORK/bin/gh-h" DISPATCH_DB="$DISPATCH_DB" GAFFER_DATA="$GAFFER_DATA" node bin/merge-ticket.mjs --ticket "$T11" ) >"$WORK/h.out" 2>"$WORK/h.err"; rc=$?
+[ "$rc" -eq 0 ] && git -C "$R" cat-file -e main:docs/other.md 2>/dev/null && git -C "$R" cat-file -e main:docs/note-11.md 2>/dev/null && ok "H: the PR landed upstream on a moved default and main was fast-forwarded" || fail "H: rc=$rc $(tail -c 400 "$WORK/h.out")"
+[ -z "$(replay_rec "$T11")" ] && ok "H: no replay record — what landed is not the candidate the replay passed on" || fail "H: #$T11 recorded a replay on a revision it never ran on: $(replay_rec "$T11") (main $(git -C "$R" rev-parse main))"
+grep -q "NO tester replay record" "$WORK/h.err" 2>/dev/null && ok "H: …and says so" || fail "H: no log line for the missing record"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "land-tester-replay: ALL $PASS checks passed"; exit 0; fi

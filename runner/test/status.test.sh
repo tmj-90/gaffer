@@ -117,6 +117,17 @@ has "$out" "earlier build" && fail "status still warns from timestamps (earlier 
 out="$(trap - EXIT; run_status "{\"ticketsByStatus\":{\"in_review\":0,\"blocked\":0,\"ready\":0},\"acceptance\":{\"unaccepted\":1,\"testing\":0,\"accepted\":0,\"failed\":0,\"epics\":[{\"epic_name\":\"Profile\",\"result\":\"unreplayed\",\"acceptance_ticket\":15,\"accepted_commit\":\"$ACC_SHA\",\"replayed_commit\":null,\"replayed_files\":[]}]}}")"
 has "$out" "Profile: unreplayed (acceptance #15 @ ${ACC_SHA:0:12})" && has "$out" "no record that the tester's assertions passed on the revision that landed" \
   && ok "a done build with no replay record says the tester's assertions never ran on what landed" || fail "unreplayed line: $(printf '%s' "$out" | grep -i 'profile' | head -2)"
+# A record that replayed NO tester test file (a PASS that saved none, a stale tests branch)
+# is not an acceptance: the line says what landed and that nothing of the tester's ran there.
+out="$(trap - EXIT; run_status "{\"ticketsByStatus\":{\"in_review\":0,\"blocked\":0,\"ready\":0},\"acceptance\":{\"unaccepted\":1,\"testing\":0,\"accepted\":0,\"failed\":0,\"epics\":[{\"epic_name\":\"Empty\",\"result\":\"unreplayed\",\"acceptance_ticket\":16,\"accepted_commit\":\"$ACC_SHA\",\"replayed_commit\":\"$LANDED_SHA\",\"replayed_files\":[]}]}}")"
+has "$out" "Empty: unreplayed (acceptance #16" && has "$out" "landed ${LANDED_SHA:0:12} with NO tester test file replayed" && ! has "$out" "tester assertions passed on the landed revision ${LANDED_SHA:0:12}" \
+  && ok "a landing that replayed no tester file is named as such, never as assertions that passed" || fail "zero-file record line: $(printf '%s' "$out" | grep -i 'empty' | head -2)"
+# GAFFER_TESTER_REPLAY=0: no landing records a replay, so no epic can count as accepted.
+out="$(trap - EXIT; GAFFER_TESTER_REPLAY=0 run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0}}')"
+has "$out" "tester replay OFF: GAFFER_TESTER_REPLAY is 0" && has "$out" "no epic counts as accepted while it is off" \
+  && ok "GAFFER_TESTER_REPLAY=0 is called out: no epic can count as accepted" || fail "replay-off line missing: $(printf '%s' "$out" | grep -i 'replay' | head -2)"
+out="$(trap - EXIT; run_status '{"ticketsByStatus":{"in_review":0,"blocked":0,"ready":0}}')"
+has "$out" "tester replay OFF" && fail "the replay-off line shows with the replay on" || ok "no replay-off line by default"
 
 # --- 5: no notification when nothing needs a human ------------------
 : > "$SINK"

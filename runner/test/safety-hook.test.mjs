@@ -1272,6 +1272,16 @@ for (const [label, cmd] of [
     "dispatch ticket record-tester-replay --files-json",
     "dispatch ticket record-tester-replay 5 --commit abc1234 --pin def5678 --files-json '[]'",
   ],
+  // attach-evidence writes a SYSTEM row with any uri: a forged review pin
+  // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
+  [
+    "wg attach-evidence --uri gaffer-tester-replayed:",
+    "wg attach-evidence 5 --type commit --summary ok --uri gaffer-tester-replayed:abc1234",
+  ],
+  [
+    "dispatch attach-evidence --uri gaffer-reviewed-commit:",
+    "dispatch attach-evidence 5 --type commit --summary x --uri gaffer-reviewed-commit:abc1234",
+  ],
   ["wg approve-ready", "wg approve-ready 5"],
   ["fg approve-ready", "fg approve-ready 5"],
   ["wg repo-access grant", "wg repo-access grant some/repo"],

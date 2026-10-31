@@ -1110,13 +1110,13 @@ function replayOnMergeCandidate({
     };
   if (!plan.record) {
     log(`#${ticketNumber}: TESTER REPLAY — nothing to replay (${plan.reason})`);
-    return { kind: "pass", replay: { record: false, files: [] } };
+    return { kind: "pass", replay: { record: false, files: [], note: plan.reason } };
   }
   if (!plan.run) {
     log(
       `#${ticketNumber}: TESTER REPLAY — no tester test files to replay (${plan.reason}); the merge gate's suite is what the tester ran`,
     );
-    return { kind: "pass", replay: { record: true, files: [] } };
+    return { kind: "pass", replay: { record: true, files: [], note: plan.reason } };
   }
   const list = plan.files.join(", ");
   const at = `the merge of ${pin.slice(0, 12)} onto ${target.slice(0, 12)}`;
@@ -1168,7 +1168,7 @@ function replayOnMergeCandidate({
     log(
       `#${ticketNumber}: TESTER REPLAY PASS — the tester's tests (${list}) pass on the merge candidate ${merge.slice(0, 12)}`,
     );
-    return { kind: "pass", replay: { record: true, files: plan.files } };
+    return { kind: "pass", replay: { record: true, files: plan.files, note: plan.reason } };
   }
   if (r.error)
     return {
@@ -1185,8 +1185,36 @@ function replayOnMergeCandidate({
   };
 }
 
+/**
+ * TESTER REPLAY: the revision that landed, for the replay record — `gatedMerge` itself for
+ * a local landing (compare-and-land landed exactly it); for a PR landing, the local default
+ * branch's head after the fast-forward, only when its tree equals the gated candidate's.
+ *   → { ok: true, commit } | { ok: false, reason }
+ */
+export function testerReplayLandedRevision(repo, landed, gatedMerge) {
+  if (landed.via === "local") return { ok: true, commit: gatedMerge };
+  if (landed.via !== "pr" || !landed.fastForwarded)
+    return {
+      ok: false,
+      reason: `the landed revision cannot be verified (via ${landed.via}${landed.via === "pr" ? ": the local default branch was not fast-forwarded" : ""})`,
+    };
+  const rev = (ref) => {
+    const r = git(repo.localPath, "rev-parse", "--verify", "--quiet", ref);
+    return r.status === 0 ? String(r.stdout || "").trim() : "";
+  };
+  const head = rev(`refs/heads/${repo.defaultBranch}^{commit}`);
+  const tree = head ? rev(`${head}^{tree}`) : "";
+  const want = rev(`${gatedMerge}^{tree}`);
+  if (!head || !tree || tree !== want)
+    return {
+      ok: false,
+      reason: `the PR landed ${repo.defaultBranch}@${head.slice(0, 12) || "?"}, whose tree is not the candidate ${String(gatedMerge).slice(0, 12)} the tester's tests passed on (the remote default moved, or the merge method changed the result)`,
+    };
+  return { ok: true, commit: head };
+}
+
 /** TESTER REPLAY: record which tester assertions passed on which landed revision (system). */
-function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via) {
+function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via, note = "") {
   const r = runDispatch([
     "ticket",
     "record-tester-replay",
@@ -1199,6 +1227,7 @@ function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via)
     JSON.stringify(files || []),
     "--via",
     String(via || "local"),
+    ...(note ? ["--note", String(note)] : []),
     ...(repoId ? ["--repo", String(repoId)] : []),
     "--as",
     "system",
@@ -2184,7 +2213,8 @@ function main() {
         testerReplay,
       });
       if (gate.kind === "red") return holdRed(gate);
-      if (gate.replay?.record) replayed = { merge: gate.merge, files: gate.replay.files };
+      if (gate.replay?.record)
+        replayed = { merge: gate.merge, files: gate.replay.files, note: gate.replay.note || "" };
       if (gate.kind === "error") {
         fail(
           `refusing to merge #${resolved.number}: the merge gate could not run (${gate.reason}); nothing merged, ticket stays ready_for_merge`,
@@ -2274,7 +2304,7 @@ function main() {
     if (res.kind === "landed") {
       landed = { via: "local", gatedMerge: res.gate.merge, gatedTarget: res.gate.target };
       replayed = res.gate.replay?.record
-        ? { merge: res.gate.merge, files: res.gate.replay.files }
+        ? { merge: res.gate.merge, files: res.gate.replay.files, note: res.gate.replay.note || "" }
         : null;
       log(
         `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
@@ -2297,16 +2327,29 @@ function main() {
     // human queue) with what did land recorded, so a retry lands only the rest.
     if (landed.via !== "earlier" && repo.id)
       recordLandingCli(resolved.number, repo.id, pin, landed.via);
-    // TESTER REPLAY: which tester assertions passed on which landed revision.
-    if (landed.via !== "earlier" && replayed)
-      recordTesterReplayCli(
-        resolved.number,
-        repo.id || null,
-        replayed.merge,
-        pin,
-        replayed.files,
-        landed.via === "pr" && !landed.fastForwarded ? "pr-stale" : landed.via,
-      );
+    // TESTER REPLAY: which tester assertions passed on which landed revision. A local
+    // landing lands exactly the gated merge. A PR landing lands what GitHub made of the PR
+    // (merge, squash or rebase, on the remote default as it stood then): the record names
+    // the fast-forwarded local default's head, and only when its tree is the candidate's
+    // the replay passed on; otherwise (or not fast-forwarded) nothing shows the replay ran
+    // on what landed, so no record is written and the epic is not counted as accepted.
+    if (landed.via !== "earlier" && replayed) {
+      const landedRev = testerReplayLandedRevision(repo, landed, replayed.merge);
+      if (landedRev.ok)
+        recordTesterReplayCli(
+          resolved.number,
+          repo.id || null,
+          landedRev.commit,
+          pin,
+          replayed.files,
+          landed.via,
+          replayed.note,
+        );
+      else
+        log(
+          `#${resolved.number}: NO tester replay record — ${landedRev.reason}; the epic is not counted as accepted`,
+        );
+    }
     const others = landSecondaryRepos(resolved.number, repo.id);
     if (!others.ok) {
       emit(

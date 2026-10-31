@@ -178,7 +178,13 @@ fi
 printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$review" "$blocked" "$ready" "$paused"
 [ "$paused_waiting" -gt 0 ] && printf "    ${c_yel}paused, waiting on you: %s${c_off}  (hit a cap with its work kept — Continue or Stop it on the board, or: gaffer wg ticket continue <n>)\n" "$paused_waiting"
 [ "$resume_req" -gt 0 ] && printf "    ${c_dim}paused, Continue pressed: %s (the next tick resumes it)${c_off}\n" "$resume_req"
-[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
+[ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS, or the tester's assertions were not replayed on the revision that landed — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
+# TESTER REPLAY OFF: no landing replays the tester's tests or records it, so no epic can
+# count as accepted while it is off — say so rather than leave the count to explain itself.
+case "${GAFFER_TESTER_REPLAY:-1}" in
+  1|[Tt][Rr][Uu][Ee]|[Yy][Ee][Ss]|[Oo][Nn]) ;;
+  *) printf "    ${c_yel}tester replay OFF: GAFFER_TESTER_REPLAY is %s${c_off}  (landings do not run the independent tester's tests on what lands and record nothing: no epic counts as accepted while it is off)\n" "$GAFFER_TESTER_REPLAY" ;;
+esac
 # Per-epic acceptance: result, the commit the tester's PASS ran against, and — from the
 # runner's TESTER REPLAY record, not from timestamps — which tester assertions passed on
 # which LANDED revision. An epic is accepted only on that record (`wg stats`); a build whose
@@ -191,7 +197,9 @@ if [ -n "$acc_rows" ]; then
     [ -n "$a_name" ] || continue
     [ "$a_commit" = "-" ] && a_commit=""; [ "$a_replayed" = "-" ] && a_replayed=""; [ "$a_files" = "-" ] && a_files=""
     a_note=""
-    if [ -n "$a_replayed" ]; then
+    if [ -n "$a_replayed" ] && [ -z "$a_files" ]; then
+      a_note="  ${c_yel}(landed ${a_replayed:0:12} with NO tester test file replayed — not accepted; re-test so the tester saves its tests)${c_off}"
+    elif [ -n "$a_replayed" ]; then
       a_note="  ${c_dim}(tester assertions passed on the landed revision ${a_replayed:0:12}${a_files:+: $a_files})${c_off}"
     elif [ "$a_result" = "unreplayed" ]; then
       a_note="  ${c_yel}(no record that the tester's assertions passed on the revision that landed — not accepted)${c_off}"

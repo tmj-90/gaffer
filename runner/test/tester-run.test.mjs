@@ -512,6 +512,15 @@ function runLive(verdictMode, extraEnv = {}) {
   out && out.testsBranch === "gaffer-tests/ticket-1"
     ? ok("emitted JSON names the tests branch")
     : fail(`testsBranch: ${out && out.testsBranch}`);
+  // TESTER REPLAY: the PASS is bound to the exact commit holding THIS run's tests, so the
+  // landing replays those files — not whatever the branch points at by then.
+  const testsHead = LIVE.g("rev-parse", "--verify", "gaffer-tests/ticket-1").stdout.trim();
+  /^[0-9a-f]{40}$/.test(testsHead) &&
+  logged.includes(`"--tests-commit","${testsHead}"`) &&
+  out &&
+  out.testsCommit === testsHead
+    ? ok("verdict carries --tests-commit <the commit holding the tester's tests>")
+    : fail(`no tests-commit binding: ${logged} / ${JSON.stringify(out && out.testsCommit)}`);
   // BACKPRESSURE: the real lib/backpressure.sh counts unmerged gaffer/* branches toward
   // the repo's cap. The tests branch is never merged, so it must not be one of them —
   // under the old gaffer/ticket-<n>-tests name, three tested tickets stopped the repo.

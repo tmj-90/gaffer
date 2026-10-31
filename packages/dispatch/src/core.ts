@@ -108,6 +108,7 @@ import {
   resolveBranchHead,
   type TicketDiff,
 } from "./services/diffService.js";
+import { readUsagePause } from "./health/usagePause.js";
 import {
   computeLandingStatus,
   REVIEW_PIN_PREFIX,
@@ -357,6 +358,18 @@ export type { AddDependencyResult } from "./services/ticketService.js";
  * Owns the DB handle, repositories and the transition service; validates input
  * with the Zod schemas before mutating.
  */
+/**
+ * USAGE-WINDOW PAUSE as a landing fact: while the runner's pause file holds a pause no
+ * tick runs, so the merge lane lands nothing until it ends (health/usagePause.ts reads
+ * the file exactly as the runner does). Null when no pause is active.
+ */
+function usagePauseFact(
+  env: NodeJS.ProcessEnv,
+): { until: string; kind: "usage_limit" | "rate_limit" } | null {
+  const p = readUsagePause(env);
+  return p.active ? { until: p.paused_until ?? "its end", kind: p.kind ?? "usage_limit" } : null;
+}
+
 export class Dispatch {
   readonly db: Db;
   readonly tickets: TicketRepository;
@@ -1793,6 +1806,7 @@ export class Dispatch {
       mergeRunning,
       movedRepos,
       ...this.landedAndWriteRepos(landing, writes),
+      pause: usagePauseFact(env),
       autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
       mergeLane: !["0", "false", "no", "off"].includes(lane),
       mergeGateEarned: isAutonomyAllowed(

@@ -10,7 +10,10 @@
 //   - the routes: GET /tickets/:id, GET /tickets and GET /api/board carry it, and Merge
 //     now records the run so the ticket reads "landing" while it runs.
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -74,13 +77,36 @@ describe("decideLandingState", () => {
     expect(f({ hold: "merge_gate_red" })?.label).toBe("Held · merge gate failed");
     expect(f({ status: "blocked", hold: "ci_red" })?.label).toBe("Held · CI red");
   });
+  it("lands next tick while the usage window is paused: says paused, and until when", () => {
+    const until = "2026-11-01T09:00:00.000Z";
+    const s = f({ autoMerge: true, pause: { until, kind: "usage_limit" } });
+    expect(s?.kind).toBe("lands_next_tick");
+    expect(s?.label).toBe("Approved · lands next tick (paused: usage limit)");
+    expect(s?.detail).toContain(`paused for the usage limit until ${until}`);
+    expect(s?.paused_until).toBe(until);
+    // The pause changes nothing that waits for Merge now, and a hold still wins.
+    expect(f({ pause: { until, kind: "usage_limit" } })?.kind).toBe("waiting_for_merge");
+    expect(
+      f({ autoMerge: true, hold: "ci_red", pause: { until, kind: "usage_limit" } })?.kind,
+    ).toBe("held");
+  });
+  it("a hold says the merge gate and CI hold every landing path", () => {
+    expect(f({ hold: "merge_gate_red" })?.detail).toContain("every landing path");
+    expect(f({ hold: "ci_red" })?.detail).toContain("no landing path merges it");
+  });
   it("any other status has no landing state", () => {
     expect(f({ status: "in_review" })).toBeNull();
     expect(f({ status: "blocked" })).toBeNull();
   });
 });
 
-const ENV_KEYS = ["AUTO_MERGE", "MERGE_ON_AGENT_REVIEW", "GAFFER_MERGE_LANE"] as const;
+const ENV_KEYS = [
+  "AUTO_MERGE",
+  "MERGE_ON_AGENT_REVIEW",
+  "GAFFER_MERGE_LANE",
+  "GAFFER_USAGE_PAUSE_FILE",
+  "GAFFER_DATA",
+] as const;
 let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -163,6 +189,26 @@ describe("Dispatch.landingState: from the facts the landing paths act on", () =>
     expect(wg.landingState(id)?.kind).toBe("lands_next_tick");
     process.env.GAFFER_MERGE_LANE = "off";
     expect(wg.landingState(id)?.kind).toBe("waiting_for_merge");
+    wg.db.close();
+  });
+
+  it("the runner's usage-limit pause file is active: lands next tick says paused", () => {
+    process.env.AUTO_MERGE = "1";
+    const dir = mkdtempSync(join(tmpdir(), "landing-pause-"));
+    const file = join(dir, "usage-pause.json");
+    process.env.GAFFER_USAGE_PAUSE_FILE = file;
+    const wg = freshWg();
+    const { id } = approved(wg);
+    expect(wg.landingState(id)?.label).toBe("Approved · lands next tick");
+    const until = Date.now() + 30 * 60_000;
+    writeFileSync(file, JSON.stringify({ until_ms: until, kind: "usage_limit", basis: "reset" }));
+    const s = wg.landingState(id);
+    expect(s?.label).toBe("Approved · lands next tick (paused: usage limit)");
+    expect(s?.paused_until).toBe(new Date(until).toISOString());
+    // A pause that has ended is no pause.
+    writeFileSync(file, JSON.stringify({ until_ms: Date.now() - 1000, kind: "usage_limit" }));
+    expect(wg.landingState(id)?.label).toBe("Approved · lands next tick");
+    rmSync(dir, { recursive: true, force: true });
     wg.db.close();
   });
 

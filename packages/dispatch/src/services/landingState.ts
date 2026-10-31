@@ -18,6 +18,9 @@
  *                      the merge lane's retry) lands the rest and never re-merges one.
  *   lands_next_tick    the runner's merge lane will land it: an earned merge grant, or
  *                      AUTO_MERGE on and the approval was a human's (the lane's own rule).
+ *                      While the usage-window pause is active (the runner's pause file,
+ *                      health/usagePause.ts) no tick runs, so it says "paused: usage limit"
+ *                      and when the pause ends.
  *   waiting_for_merge  nothing lands it until someone presses Merge now.
  *
  * Pure: Dispatch.landingFacts reads the facts.
@@ -49,6 +52,8 @@ export interface LandingFacts {
   writeRepos: string[];
   /** The repos still to land whose branch head moved off their review pin. */
   movedRepos?: string[];
+  /** The runner's usage-window pause, while active (readUsagePause): no tick runs. */
+  pause?: { until: string; kind: "usage_limit" | "rate_limit" } | null;
   autoMerge: boolean;
   mergeLane: boolean;
   mergeGateEarned: boolean;
@@ -63,6 +68,8 @@ export interface LandingState {
   /** One sentence saying why. */
   detail: string;
   hold: LandingHold | null;
+  /** lands_next_tick only: the usage-window pause the next tick waits for, until when. */
+  paused_until?: string;
 }
 
 const HOLD_WORDS: Record<LandingHold, { label: string; detail: string }> = {
@@ -74,11 +81,12 @@ const HOLD_WORDS: Record<LandingHold, { label: string; detail: string }> = {
   merge_gate_red: {
     label: "Held · merge gate failed",
     detail:
-      "The merge onto the current default branch failed its gates; the default branch was not touched.",
+      "The merge onto the current default branch failed its gates; the default branch was not touched. The merge gate runs on every landing path (the merge lane, Merge now, gaffer merge), so none lands it until a person looks.",
   },
   ci_red: {
     label: "Held · CI red",
-    detail: "Required CI failed for the commit that would land.",
+    detail:
+      "Required CI failed for the commit that would land; no landing path merges it until CI passes or a person looks.",
   },
 };
 
@@ -124,15 +132,27 @@ export function decideLandingState(f: LandingFacts): LandingState | null {
     };
   }
   const human = f.approver === "human" || f.approver === "admin";
-  if (f.mergeLane && (f.mergeGateEarned || (f.autoMerge && human)))
+  if (f.mergeLane && (f.mergeGateEarned || (f.autoMerge && human))) {
+    const why = f.mergeGateEarned
+      ? "An earned merge grant covers it: the runner's merge lane lands it on its next tick."
+      : "Auto-merge on approval is on: the runner's merge lane lands this human approval on its next tick.";
+    if (f.pause) {
+      const what = f.pause.kind === "rate_limit" ? "rate limit" : "usage limit";
+      return {
+        kind: "lands_next_tick",
+        hold: null,
+        label: `Approved · lands next tick (paused: ${what})`,
+        detail: `${why} The runner is paused for the ${what} until ${f.pause.until} and runs no tick before then; it lands on the first tick after.`,
+        paused_until: f.pause.until,
+      };
+    }
     return {
       kind: "lands_next_tick",
       hold: null,
       label: "Approved · lands next tick",
-      detail: f.mergeGateEarned
-        ? "An earned merge grant covers it: the runner's merge lane lands it on its next tick."
-        : "Auto-merge on approval is on: the runner's merge lane lands this human approval on its next tick.",
+      detail: why,
     };
+  }
   return {
     kind: "waiting_for_merge",
     hold: null,

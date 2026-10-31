@@ -245,23 +245,41 @@ switch (cmd) {
   }
 
   // ── ac-checks.sh ─────────────────────────────────────────────────────────────
-  // ac-check-rows: stdin = ticket show → "<ac-id>\t<check_command>\t<label>" per AC that
-  // carries a check (TABs/newlines collapsed); exit 3 on unparseable input.
+  // ac-check-rows: stdin = ticket show → "<ac-id>\t<base64(check_command)>\t<label>" per AC
+  // that carries a check; exit 3 on unparseable input. The command travels BASE64 so its
+  // bytes (a quoted TAB, newlines, backslashes, non-ASCII) reach `bash -c` exactly as
+  // stored: the row format used to collapse TABs/newlines to spaces, and a failing
+  // criterion was recorded satisfied. Only the display label is flattened.
   case "ac-check-rows": {
     const p = tryParse(readStdin());
     if (!p.ok) process.exit(3);
     const d = p.value || {};
     const acs = d.acceptanceCriteria || d.acceptance_criteria || [];
     acs.forEach((ac, idx) => {
-      let cmd = String((ac && ac.check_command) || "").trim();
-      if (!cmd) return;
-      cmd = cmd.replace(/\t/g, " ").replace(/\n/g, " ").replace(/\r/g, " ");
+      const raw = ac && typeof ac.check_command === "string" ? ac.check_command : "";
+      if (!raw.trim()) return;
+      const cmd = Buffer.from(raw, "utf8").toString("base64");
       const text = String((ac && ac.text) || "")
         .replace(/\t/g, " ")
         .replace(/\n/g, " ")
         .slice(0, 60);
       println(`${pyStr((ac && ac.id) ?? "")}\t${cmd}\tAC${idx + 1}: ${text}`);
     });
+    break;
+  }
+
+  // ── ci-gate.sh ──────────────────────────────────────────────────────────────────
+  // ci-check-rows: stdin = `gh pr checks --json name,state,bucket,link` (the REAL field
+  // names) → "<name>\t<state>\t<bucket>\t<link>" per check. TABs/newlines inside a
+  // value are flattened (display fields). Unparseable / non-array → nothing.
+  case "ci-check-rows": {
+    const p = tryParse(readStdin());
+    const rows = p.ok && Array.isArray(p.value) ? p.value : [];
+    const flat = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+    for (const c of rows) {
+      if (!c || typeof c !== "object") continue;
+      println([flat(c.name), flat(c.state), flat(c.bucket), flat(c.link)].join("\t"));
+    }
     break;
   }
 

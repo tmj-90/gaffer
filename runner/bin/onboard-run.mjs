@@ -32,6 +32,11 @@
 //
 // FLAGS:
 //   --repo <name|path>   override DISPATCH_ONBOARD_REPO
+//   --name <alias>       register the repo under this alias instead of its directory
+//                        name (DISPATCH_ONBOARD_NAME). Required when a DIFFERENT
+//                        repository is already onboarded under the directory name: a
+//                        name match is a refresh only for the same repository (same
+//                        canonical local path; a path-less record: the same remote).
 //   --dry-run            do NOT spawn crew; print the planned invocation as JSON
 //                        (used by tests to assert the argv offline)
 //   --summary            the TERMINAL view (`gaffer onboard` passes it): the full log —
@@ -97,13 +102,23 @@ function fail(reason, code = 1) {
 }
 
 function parseArgs(argv) {
-  const opts = { repo: process.env.DISPATCH_ONBOARD_REPO || "", dryRun: false, summary: false };
+  const opts = {
+    repo: process.env.DISPATCH_ONBOARD_REPO || "",
+    name: process.env.DISPATCH_ONBOARD_NAME || "",
+    dryRun: false,
+    summary: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const next = () => argv[(i += 1)];
     switch (arg) {
       case "--repo":
         opts.repo = next() ?? "";
+        break;
+      case "--name":
+        // A distinct ALIAS for a repository whose directory name is already taken by a
+        // different repository (crew refuses a name match that is not the same repo).
+        opts.name = next() ?? "";
         break;
       case "--dry-run":
         opts.dryRun = true;
@@ -175,14 +190,27 @@ export function resolveTarget(dbPath, target) {
   return viaDb && isExistingDir(viaDb) ? resolve(viaDb) : viaDb || null;
 }
 
+/** A safe repository alias: letters, digits, dot, dash, underscore (1–100 chars). */
+export const REPO_ALIAS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
 /**
  * Build the crew onboard argv (the SAME shape `gaffer onboard <path>` runs):
- *   [<crewCli>, -c, <config>, repo, onboard, <path>, --standalone]
+ *   [<crewCli>, -c, <config>, repo, onboard, <path>, --standalone [--id <alias> --name <alias>]]
  * Pulled out so the dry-run path + tests can assert it without spawning anything.
  */
-export function buildCrewArgv({ crewDir, crewConfig, repoPath }) {
+export function buildCrewArgv({ crewDir, crewConfig, repoPath, name = "" }) {
   const cli = resolve(crewDir, "dist", "cli", "index.js");
-  return [cli, "-c", crewConfig, "repo", "onboard", repoPath, "--standalone"];
+  const alias = String(name ?? "").trim();
+  return [
+    cli,
+    "-c",
+    crewConfig,
+    "repo",
+    "onboard",
+    repoPath,
+    "--standalone",
+    ...(alias ? ["--id", alias, "--name", alias] : []),
+  ];
 }
 
 /**
@@ -263,7 +291,29 @@ function lastBalancedObject(text) {
  * the repo name, the test command, whether the model ran, and the intake decision.
  * Pure (returns the lines); exported for tests.
  */
-export function buildOnboardSummary({ stdout, exit, analysis, logFile }) {
+/**
+ * crew's own refusal ({"ok":false,"code","message"} on its stderr/stdout), so a refused
+ * onboard says WHY (a name taken by a different repository, a missing directory) instead
+ * of only "failed — see the log". → { code, message } | null.
+ */
+export function crewRefusal(...outputs) {
+  for (const out of outputs) {
+    for (const line of String(out ?? "").split("\n")) {
+      const t = line.trim();
+      if (!t.startsWith("{")) continue;
+      try {
+        const o = JSON.parse(t);
+        if (o && o.ok === false && typeof o.message === "string")
+          return { code: String(o.code ?? ""), message: o.message };
+      } catch {
+        /* not a JSON line */
+      }
+    }
+  }
+  return null;
+}
+
+export function buildOnboardSummary({ stdout, exit, analysis, logFile, refusal = null }) {
   const facts = extractScanFacts(stdout) ?? {};
   let clarifications = [];
   try {
@@ -275,7 +325,11 @@ export function buildOnboardSummary({ stdout, exit, analysis, logFile }) {
   const name = facts.name ?? facts.repoId ?? "(unknown)";
   const lines = [];
   if ((exit ?? 0) !== 0) {
-    lines.push(`✗ crew onboard failed (exit ${exit}) — see ${logFile}`);
+    lines.push(
+      refusal
+        ? `✗ not onboarded: ${refusal.message}`
+        : `✗ crew onboard failed (exit ${exit}) — see ${logFile}`,
+    );
     return lines;
   }
   const bits = [
@@ -360,6 +414,13 @@ function main() {
     return;
   }
 
+  if (opts.name.trim() && !REPO_ALIAS_RE.test(opts.name.trim())) {
+    fail(
+      `--name "${opts.name}" is not a usable alias (letters, digits, '.', '-', '_'; starts with a letter or digit)`,
+    );
+    return;
+  }
+
   const repoPath = resolveTarget(CONFIG.dispatchDb, opts.repo);
   if (!repoPath) {
     fail(
@@ -372,6 +433,7 @@ function main() {
     crewDir: CONFIG.crewDir,
     crewConfig: CONFIG.crewConfig,
     repoPath,
+    name: opts.name,
   });
 
   if (opts.dryRun) {
@@ -445,12 +507,14 @@ function main() {
     }
   }
 
+  const refusal = (res.status ?? 0) !== 0 ? crewRefusal(res.stderr, res.stdout) : null;
   if (summary) {
     const lines = buildOnboardSummary({
       stdout: res.stdout,
       exit: res.status ?? 0,
       analysis,
       logFile: LOG_FILE,
+      refusal,
     });
     process.stderr.write(lines.join("\n") + "\n");
   }
@@ -461,6 +525,7 @@ function main() {
       repo: opts.repo,
       repoPath,
       exit: res.status ?? 0,
+      ...(refusal ? { refused: refusal } : {}),
       ...(analysis ? { analysis } : {}),
     },
     res.status ?? 0,

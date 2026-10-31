@@ -9263,8 +9263,8 @@
           },
           "check_command": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "description": "Additional validation rule applies (not expressible in JSON Schema). Additional validation rule applies (not expressible in JSON Schema)."
           }
         },
         "required": [
@@ -9410,11 +9410,37 @@
               },
               "acceptance": {
                 "type": "boolean"
+              },
+              "agreed_requirements": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "question": {
+                      "type": "string",
+                      "maxLength": 4000
+                    },
+                    "answer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4000
+                    }
+                  },
+                  "required": [
+                    "answer"
+                  ]
+                },
+                "maxItems": 50
               }
             },
             "required": [
               "name"
             ]
+          },
+          "plan_session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           },
           "tickets": {
             "type": "array",

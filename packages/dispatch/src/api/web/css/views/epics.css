@@ -201,6 +201,10 @@
   .ep-round-head {
     position: relative;
     z-index: 2;
+    /* Its lane's own grass: the bracket-line svg (z-index 1) runs under the whole
+       draw, and text over a transparent box above an svg has no measurable
+       background, so the contrast audit could not check the round names. */
+    background: inherit;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: baseline;

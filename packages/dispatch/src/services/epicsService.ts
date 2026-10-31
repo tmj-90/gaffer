@@ -8,6 +8,7 @@ import { DispatchError } from "../util/errors.js";
 import type { ScopeService } from "./scopeService.js";
 import type { TicketService } from "./ticketService.js";
 import type { RepoService } from "./repoService.js";
+import { agreedRequirementCriterion, type AgreedRequirement } from "../util/planClarifications.js";
 
 /** Result of createEpic (EP-001). */
 export interface CreateEpicResult {
@@ -18,6 +19,8 @@ export interface CreateEpicResult {
   ticketNumbers: number[];
   /** ACCEPTANCE GATE: the number of the epic's build-level acceptance ticket, or null when opted out. */
   acceptanceTicketNumber: number | null;
+  /** Requirements agreed during planning that became acceptance criteria. */
+  agreedRequirements: number;
 }
 
 /**
@@ -51,8 +54,22 @@ export function acceptanceTicketTitle(epicName: string): string {
   return `Acceptance: ${epicName}`.slice(0, 300);
 }
 
-export function acceptanceTicketDescription(epicName: string, brief: string | undefined): string {
+export function acceptanceTicketDescription(
+  epicName: string,
+  brief: string | undefined,
+  agreed: readonly AgreedRequirement[] = [],
+): string {
   const contract = (brief ?? "").trim();
+  const agreedBlock = agreed.length
+    ? [
+        "",
+        "Requirements agreed during planning (each is also an acceptance criterion below):",
+        ...agreed.map(
+          (r) =>
+            `- ${r.answer.trim()}${r.question ? ` (in answer to: "${r.question.trim()}")` : ""}`,
+        ),
+      ]
+    : [];
   return [
     "BUILD-LEVEL ACCEPTANCE (created by the factory for every epic; the only way this build is reported as accepted).",
     "",
@@ -64,6 +81,7 @@ export function acceptanceTicketDescription(epicName: string, brief: string | un
       ? `Brief (the contract):
 ${contract}`
       : "Brief: (none recorded — the epic description is the contract)",
+    ...agreedBlock,
   ].join("\n");
 }
 
@@ -231,6 +249,10 @@ export class EpicsService {
       // is inherited at bootstrap, the same deferred path), contained by the epic,
       // testable with a contract, and wired behind EVERY implementation ticket below.
       let acceptanceTicketNumber: number | null = null;
+      const agreed: AgreedRequirement[] = (input.epic.agreed_requirements ?? []).map((r) => ({
+        ...(r.question !== undefined && r.question.trim() !== "" ? { question: r.question } : {}),
+        answer: r.answer,
+      }));
       if (input.epic.acceptance !== false) {
         const repoSpec = input.tickets.find((t) => t.repo);
         const repoKnown = !repoSpec?.repo || this.repos.findRepository(repoSpec.repo) !== undefined;
@@ -240,6 +262,7 @@ export class EpicsService {
             description: acceptanceTicketDescription(
               input.epic.name,
               input.epic.brief ?? input.epic.description,
+              agreed,
             ),
             risk_level: "medium",
             acceptance: true,
@@ -252,6 +275,15 @@ export class EpicsService {
         );
         for (const text of ACCEPTANCE_CRITERIA) {
           this.tickets.addAcceptanceCriterion({ ticket_id: acceptance.id, text }, actor);
+        }
+        // PLANNING CLARIFICATIONS: every requirement the human agreed while the planner
+        // asked its questions is a criterion of the build's acceptance — the tester
+        // receives it even when the proposed tickets dropped it.
+        for (const r of agreed) {
+          this.tickets.addAcceptanceCriterion(
+            { ticket_id: acceptance.id, text: agreedRequirementCriterion(r) },
+            actor,
+          );
         }
         if (repoSpec?.repo && repoKnown) {
           this.repos.applyTicketRepoAccess(
@@ -321,6 +353,14 @@ export class EpicsService {
           ticket_count: n,
           ticket_numbers: createdNumbers,
           ...(acceptanceTicketNumber !== null ? { acceptance_ticket: acceptanceTicketNumber } : {}),
+          // Counts only (the answers live on the acceptance ticket's criteria). With the
+          // acceptance ticket opted out there is nowhere to carry them: say so.
+          ...(agreed.length
+            ? {
+                agreed_requirements: agreed.length,
+                ...(acceptanceTicketNumber === null ? { agreed_requirements_unplaced: true } : {}),
+              }
+            : {}),
         },
       });
 
@@ -329,6 +369,7 @@ export class EpicsService {
         ticketNumbers: createdNumbers,
         deferredRepoLinks,
         acceptanceTicketNumber,
+        agreedRequirements: acceptanceTicketNumber === null ? 0 : agreed.length,
       };
     });
   }

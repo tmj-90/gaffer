@@ -16,8 +16,8 @@
 // model name is written here: the usage ledger is where a call's model is recorded.
 //
 // Both landing paths use it: lib/land.sh (the merge lane and the AFK review pass, via
-// gaffer_auto_merge / gaffer_pr_merge) and bin/merge-ticket.mjs (the dashboard's Merge
-// button, `gaffer merge`). GAFFER_PROVENANCE_TRAILERS=0 turns them off (the merge is then
+// _gaffer_merge_gate's gated merge commit / gaffer_pr_merge) and bin/merge-ticket.mjs
+// (the dashboard's Merge button, `gaffer merge`: gateProposedMerge / mergeViaPr). GAFFER_PROVENANCE_TRAILERS=0 turns them off (the merge is then
 // exactly what it was before: the plain message, a fast-forward when one is possible).
 // Fail-soft: a DB that cannot be read gives the ticket line alone, never a failed merge.
 //

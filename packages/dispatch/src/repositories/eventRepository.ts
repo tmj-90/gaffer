@@ -61,6 +61,13 @@ export interface TransitionRow {
  * pre-Phase-1 event).
  */
 export interface ReviewDecisionRow {
+  /**
+   * The decision's own id (the work_event id). One decision on a ticket that writes
+   * to N repositories yields N rows — one per repository history — that share this id,
+   * so a cross-repository count can count the DECISION once. Absent on a synthetic row
+   * (each such row is then its own decision).
+   */
+  decisionId?: string;
   repoId: string;
   repoName: string;
   riskLevel: string;
@@ -299,7 +306,8 @@ export class EventRepository {
   reviewDecisions(): ReviewDecisionRow[] {
     const rows = this.db
       .prepare(
-        `SELECT r.id                                          AS repo_id,
+        `SELECT e.id                                          AS decision_id,
+                r.id                                          AS repo_id,
                 r.name                                        AS repo_name,
                 t.risk_level                                  AS risk_level,
                 e.actor_type                                  AS actor_type,
@@ -327,6 +335,7 @@ export class EventRepository {
            AND json_extract(e.payload_json, '$.from') IN ('in_review', 'ready_for_merge')`,
       )
       .all() as Array<{
+      decision_id: string;
       repo_id: string;
       repo_name: string;
       risk_level: string;
@@ -338,6 +347,7 @@ export class EventRepository {
       approved_unchanged: number | null;
     }>;
     return rows.map((r) => ({
+      decisionId: r.decision_id,
       repoId: r.repo_id,
       repoName: r.repo_name,
       riskLevel: r.risk_level,
@@ -379,6 +389,28 @@ export class EventRepository {
       .get({ ticketId }) as
       { at: string; reason: string | null; reasonCode: string | null } | undefined;
     return row ?? null;
+  }
+
+  /**
+   * True when a human UNBLOCKED the ticket into refining (a `blocked -> refining`
+   * transition) after its latest park event: the park was dealt with, so the Team
+   * Sheet must stop listing the ticket as parked even though it sits in refining.
+   */
+  unblockedToRefiningSinceLastPark(ticketId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM work_events t
+          WHERE t.entity_type = 'ticket' AND t.entity_id = @ticketId
+            AND t.event_type = 'ticket.transitioned'
+            AND json_extract(t.payload_json, '$.from') = 'blocked'
+            AND json_extract(t.payload_json, '$.to') = 'refining'
+            AND t.rowid > COALESCE((SELECT MAX(b.rowid) FROM work_events b
+                                     WHERE b.entity_type = 'ticket' AND b.entity_id = @ticketId
+                                       AND b.event_type = 'ticket.blocked'), 0)
+          LIMIT 1`,
+      )
+      .get({ ticketId });
+    return row !== undefined;
   }
 
   /** True when the ticket has at least one work-event of the given type. */

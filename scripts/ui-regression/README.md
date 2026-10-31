@@ -49,3 +49,39 @@ New and Logout controls on screen, render no 24-grid icon wider than 48px, keep 
 Overview's development-flow strip a scrolling flex row, and show the first board
 card / the team sheet above the fold. The Review step also checks that a live
 refresh never moves the reader's scroll position.
+
+## Scenario suites
+
+`run.sh` + `regress.mjs` stay the golden path. Every other product flow the
+dashboard can drive has a scenario suite under `suites/<name>.mjs`, run by:
+
+```bash
+bash scripts/ui-regression/run-suites.sh                 # every suite, in run order
+bash scripts/ui-regression/run-suites.sh s1-rework s3-blocked   # just these
+```
+
+It builds the same world as `run.sh` (both source `setup.sh`: throwaway
+GAFFER_DATA, the taskflow-mini sample repo, the stub worker, `gaffer dashboard
+--restart`), adds canned planning bins (`suites/bin/decompose-stub.mjs`,
+`suites/bin/spec-author-stub.mjs` as GAFFER_DECOMPOSE_BIN / GAFFER_SPEC_AUTHOR_BIN)
+and one operator-exported setting (GAFFER_NOTIFY_DESKTOP=0, to prove env-locking),
+then runs the chosen suites in one browser: one summary line per suite and
+`UI scenarios: N ok, N FAIL`, exit 1 on any FAIL. Results land in
+`/tmp/gaffer-ui-scenarios/shots/results.json`.
+
+Suites share `lib.mjs` (REST, waits, toasts, the axe gate and the layout probe,
+seed helpers, the stub-mode file) and the context `run-suites.mjs` builds
+(`t.visit` audits each view it opens once, `t.poll`, `t.setSetting`,
+`t.saveSettings`, `t.approve`). After each suite the driver restores
+settings.json and closes every ticket left open, so a suite never inherits
+another's queue.
+
+The stub worker takes a per-ticket MODE from `$GAFFER_DATA/stub-mode.json` (the
+agent runs under `env -i`, so a STUB_* variable never reaches it): ok, fail_first,
+fail_always, changes_verdict, tester_pass, tester_fail, tester_no_verdict, clarify, slow_claim,
+pause_first, conflict. `stub-claude.sh`'s header documents each, and every call is
+recorded (env, argv, prompt) in `$GAFFER_DATA/stub-calls.jsonl`.
+
+`run-suites.sh --serve` builds the world and leaves the dashboard up, printing the
+env to drive `node scripts/ui-regression/run-suites.mjs <suite>` against it while
+writing a suite.

@@ -40,7 +40,23 @@ try {
 }
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HELPER = resolve(HERE, "..", "bin", "tester-run.mjs");
-const { assembleContext } = await import(HELPER);
+const { assembleContext, validateTesterPacket, implementationPointers, TESTER_PACKET_KEYS } =
+  await import(HELPER);
+// The description dispatch writes into every generated epic's acceptance ticket (the
+// built module, so the test follows the real text).
+const EPICS_JS = resolve(
+  HERE,
+  "..",
+  "..",
+  "packages",
+  "dispatch",
+  "dist",
+  "services",
+  "epicsService.js",
+);
+const GENERATED_ACCEPTANCE_DESCRIPTION = existsSync(EPICS_JS)
+  ? (await import(EPICS_JS)).acceptanceTicketDescription("Notes", "a notes app")
+  : "The independent tester then verifies the build from this ticket's contract and criteria only, never from the diff.";
 
 let passed = 0;
 const failures = [];
@@ -120,6 +136,39 @@ const CONTRACT = {
     1,
     JSON.stringify({ ...CONTRACT, harness_ready: true }),
   );
+  // #4: an epic ACCEPTANCE ticket with the description the factory generates (it says the
+  // tester works "never from the diff") — the packet check used to refuse it on that word.
+  db.prepare(
+    "INSERT INTO tickets (id,number,title,description,status,branch_name,can_be_tested,test_contract,acceptance) " +
+      "VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(
+    "t4",
+    4,
+    "Acceptance: Notes",
+    GENERATED_ACCEPTANCE_DESCRIPTION,
+    "in_testing",
+    "gaffer/ticket-4-acceptance-notes",
+    1,
+    JSON.stringify(CONTRACT),
+    1,
+  );
+  db.prepare(
+    "INSERT INTO acceptance_criteria (id,ticket_id,text,sort_order,status) VALUES (?,?,?,?,?)",
+  ).run("ac4", "t4", "the diff tool shows changes between two notes", 0, "pending");
+  // #5: a ticket whose DESCRIPTION carries its own delivery branch (a real pointer).
+  db.prepare(
+    "INSERT INTO tickets (id,number,title,description,status,branch_name,can_be_tested,test_contract) " +
+      "VALUES (?,?,?,?,?,?,?,?)",
+  ).run(
+    "t5",
+    5,
+    "Leaky",
+    `see ${IMPL_SENTINEL} for the change`,
+    "in_testing",
+    IMPL_SENTINEL,
+    1,
+    JSON.stringify(CONTRACT),
+  );
   db.close();
 }
 
@@ -181,6 +230,43 @@ console.log("== AC5: --dry-run prints the contract-only context (exit 0, diff ab
   ) {
     ok("dry-run → exit 0 + contract-only context, no diff");
   } else fail(`dry-run wrong (code=${code}, out=${blob})`);
+}
+
+console.log("== AC5b: the packet check reads FIELDS + real pointers, never prose ==");
+{
+  if (!/\bdiff\b/.test(GENERATED_ACCEPTANCE_DESCRIPTION))
+    fail("fixture: the generated acceptance description no longer mentions the diff");
+  const { code, out } = runCli(["--ticket", "4", "--dry-run"]);
+  code === 0 && out?.phase === "dry-run" && out.context?.number === 4
+    ? ok(
+        "a generated epic acceptance ticket (description says 'never from the diff') is NOT refused",
+      )
+    : fail(`generated acceptance ticket refused (code=${code}, out=${JSON.stringify(out)})`);
+  const leak = runCli(["--ticket", "5", "--dry-run"]);
+  leak.code === 1 && /implementation pointer/.test(leak.out?.error ?? "")
+    ? ok("a description carrying the ticket's own delivery branch IS refused")
+    : fail(`leaky packet not refused (code=${leak.code}, out=${JSON.stringify(leak.out)})`);
+  const ctx = assembleContext(DB_PATH, 4);
+  eq(
+    "packet keys are exactly the allowed set",
+    Object.keys(ctx).sort(),
+    [...TESTER_PACKET_KEYS].sort(),
+  );
+  const ptrs = implementationPointers(DB_PATH, 4);
+  eq("pointers read from the DB", ptrs, ["gaffer/ticket-4-acceptance-notes"]);
+  eq("valid packet", validateTesterPacket(ctx, ptrs), { ok: true });
+  eq(
+    "an extra field is refused",
+    validateTesterPacket({ ...ctx, branch_name: "x" }, ptrs).ok,
+    false,
+  );
+  eq(
+    "an extra criterion field is refused",
+    validateTesterPacket({ ...ctx, acceptanceCriteria: [{ id: "a", text: "t", diff: "x" }] }, ptrs)
+      .ok,
+    false,
+  );
+  eq("unreadable pointers fail closed", validateTesterPacket(ctx, null).ok, false);
 }
 
 // --- A stub verdict command that records its argv to a file (no live model). ---

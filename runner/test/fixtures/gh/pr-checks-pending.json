@@ -1,0 +1,24 @@
+[
+  {
+    "bucket": "pass",
+    "completedAt": "2026-10-30T12:01:02Z",
+    "description": "",
+    "event": "pull_request",
+    "link": "https://github.com/acme/api/actions/runs/103/job/205",
+    "name": "lint",
+    "startedAt": "2026-10-30T11:58:00Z",
+    "state": "SUCCESS",
+    "workflow": "CI"
+  },
+  {
+    "bucket": "pending",
+    "completedAt": "0001-01-01T00:00:00Z",
+    "description": "",
+    "event": "pull_request",
+    "link": "https://github.com/acme/api/actions/runs/103/job/206",
+    "name": "test (ubuntu-latest)",
+    "startedAt": "2026-10-30T11:58:00Z",
+    "state": "IN_PROGRESS",
+    "workflow": "CI"
+  }
+]

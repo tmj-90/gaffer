@@ -17,10 +17,7 @@
 # explicitly-gated step (gaffer_auto_push). On conflict it aborts and leaves the delivery
 # branch intact for a human.
 #
-#   gaffer_auto_merge <repo_dir> <branch> <default_branch> [pin_commit] [trailers]
-#     [trailers] — the provenance trailer block (lib/provenance-trailers.mjs) for the
-#     merge commit's message. When given the merge is `--no-ff`, so there IS a merge
-#     commit to carry them; without it the merge is exactly what it always was.
+#   gaffer_auto_merge <repo_dir> <branch> <default_branch> [pin_commit]
 #     → 0  merged cleanly into <default_branch>
 #     → 1  conflict — merge aborted, branch left intact for a human
 #     → 2  bad arguments / missing ref — nothing attempted
@@ -29,11 +26,9 @@
 #     → 6  refused: <branch> no longer points at <pin_commit> (the commit the landing
 #          decision approved) — nothing merged
 gaffer_auto_merge() {
-  local repo="$1" branch="$2" def="$3" pin="${4:-}" trailers="${5:-}"
+  local repo="$1" branch="$2" def="$3" pin="${4:-}"
   [ -n "$repo" ] && [ -n "$branch" ] && [ -n "$def" ] || return 2
   git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1 || return 2
-  local msg="Merge branch '$branch'" ffopt=()
-  if [ -n "$trailers" ]; then msg="$msg"$'\n\n'"$trailers"; ffopt=(--no-ff); fi
   git -C "$repo" rev-parse --verify --quiet "refs/heads/$def" >/dev/null 2>&1 || return 2
   # PINNED MERGE (acceptance gate): when the landing decision names the exact commit to
   # land, merge THAT commit — and refuse if the branch no longer points at it — instead
@@ -56,7 +51,7 @@ gaffer_auto_merge() {
       return 3   # dirty live checkout on the target — never merge over active edits
     fi
     local _merr
-    if _merr="$(git -C "$repo" merge ${ffopt[@]+"${ffopt[@]}"} --no-edit -m "$msg" "$src" 2>&1 >/dev/null)"; then return 0; fi
+    if _merr="$(git -C "$repo" merge --no-edit -m "Merge branch '$branch'" "$src" 2>&1 >/dev/null)"; then return 0; fi
     git -C "$repo" merge --abort 2>/dev/null || true
     # An untracked file in the way is a refusal, not a conflict: rc 1 would hand the
     # branch to the conflict resolver (and spend its one pass) on nothing to resolve.
@@ -69,7 +64,7 @@ gaffer_auto_merge() {
   local wt rc=1
   wt="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-merge.XXXXXX")" || return 2
   if git -C "$repo" worktree add --quiet "$wt" "$def" >/dev/null 2>&1; then
-    if git -C "$wt" merge ${ffopt[@]+"${ffopt[@]}"} --no-edit -m "$msg" "$src" >/dev/null 2>&1; then
+    if git -C "$wt" merge --no-edit -m "Merge branch '$branch'" "$src" >/dev/null 2>&1; then
       rc=0
     else
       git -C "$wt" merge --abort 2>/dev/null || true

@@ -1514,6 +1514,10 @@ function runLive(env, args) {
       CLAUDE_BIN: CLAUDE_STUB,
       GAFFER_GH_BIN: GH_STUB,
       GAFFER_DIGEST_DISABLE: "1",
+      // The fixture repo registers no gate commands; the MERGE GATE (the combined code
+      // is gated before it lands) then needs the zero-gates waiver. Gated combinations
+      // have their own suite (e2e-release-gate-merge-combination).
+      GAFFER_ALLOW_NO_DOD: "1",
       STUB_GH_CALLS: calls,
       STUB_GH_BRANCH: "gaffer/ticket-7-x",
       ...env,
@@ -1763,9 +1767,10 @@ console.log("== B20a: a failed checkout of the default branch is REFUSED, not a 
   const { code, out, err } = runLive({ DISPATCH_DB: db }, ["--ticket", "7"]);
   assert("exit 1 + phase error", code === 1 && out && out.phase === "error");
   assert(
-    "says it REFUSED and names the checkout failure",
+    "says it REFUSED and names the missing default branch",
     /refusing to merge #7/.test(out?.error ?? "") &&
-      /could not checkout no-such-branch/.test(out?.error ?? ""),
+      // The merge gate resolves the target first (it no longer checks the live repo out).
+      /no-such-branch cannot be resolved|could not checkout no-such-branch/.test(out?.error ?? ""),
   );
   assert("resolver NOT spawned", !existsSync(CLAUDE_MARK));
   assert("not reported as a conflict", !/conflicted — spawning/.test(err));
@@ -1836,6 +1841,7 @@ console.log("== APPROVAL GATE: canLand + live refusals for unapproved tickets ==
         CLAUDE_BIN: FAKE,
         DISPATCH_CLI: SPY,
         GAFFER_DIGEST_DISABLE: "1",
+        GAFFER_ALLOW_NO_DOD: "1", // no gate commands in the fixture (see the merge gate)
         SANDBOX_PROVIDER: "none",
       },
     });

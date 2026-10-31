@@ -250,6 +250,33 @@ describe("humanQueue: runner/human parked tickets (parked kind)", () => {
     wg.db.close();
   });
 
+  it("drops a parked ticket a human UNBLOCKED into refining (the park was dealt with)", () => {
+    const wg = fresh();
+    const { id, token } = driveToClaimed(wg);
+    wg.runnerRelease(
+      {
+        ticket_id: id,
+        to: "blocked",
+        claimToken: token,
+        reason: "DoD failed after 1 attempt",
+        reasonCode: "rework_exhausted",
+        attempt: 1,
+        maxAttempts: 1,
+      },
+      systemActor,
+    );
+    expect(wg.humanQueue().items.some((i) => i.kind === "parked" && i.ticket?.id === id)).toBe(
+      true,
+    );
+    // The Team Sheet's Unblock… → Refining: the human takes it back to rewrite it.
+    wg.moveTicket(id, "refining", human);
+    expect(wg.view(id).ticket.status).toBe("refining");
+    const queue = wg.humanQueue();
+    expect(queue.items.some((i) => i.ticket?.id === id)).toBe(false);
+    expect(queue.counts.parked).toBe(0);
+    wg.db.close();
+  });
+
   it("does NOT include an agent-owned refining ticket with no park reason_code", () => {
     const wg = fresh();
     const { id, token } = driveToClaimed(wg);

@@ -974,7 +974,18 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # is one writer so this is byte-identical to before.
   BP_FILE="$GAFFER_DATA/.backpressure-repos"; : > "$BP_FILE"
   NUM=""; SHOW=""; REPO_PATH=""; STACK=""; TITLE=""
-  CANDIDATES="$(echo "$READY_JSON" | gaffer_json pick-unskipped "$SKIP_FILE" --all)"
+  # SCHEDULER: walk CLAIMABLE work (every dependency done), so MAX_CANDIDATES bounds the
+  # tickets a claim can take. Walking the raw ready list let 25 higher-priority dependants
+  # of one low-priority prerequisite fill the limit every tick (each claim refused on the
+  # unmet dependency) and the prerequisite never ran. A failed claimable listing falls
+  # back to the full ready list (the previous walk), never to an empty queue.
+  if _CLAIMABLE_JSON="$(wg ticket list -s ready --claimable 2>/dev/null)" \
+     && [ -n "$(printf '%s' "$_CLAIMABLE_JSON" | jget 'Array.isArray(d) ? "1" : ""' 2>/dev/null)" ]; then
+    CANDIDATES="$(echo "$_CLAIMABLE_JSON" | gaffer_json pick-unskipped "$SKIP_FILE" --all)"
+  else
+    log "candidate scan: the claimable listing failed — walking the full ready list"
+    CANDIDATES="$(echo "$READY_JSON" | gaffer_json pick-unskipped "$SKIP_FILE" --all)"
+  fi
   # A-1: bound the candidate scan. Each candidate costs a `ticket show` + pressure
   # probe; with a per-repo cap (MAX_CONCURRENT_TICKETS_PER_REPO) in force, a tick
   # may legitimately skip several capped repos before finding a free one, so the
@@ -1032,6 +1043,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
   if [ -z "$NUM" ]; then
     if [ -s "$BP_FILE" ]; then
       log "all deliverable ready tickets are in repos under BACKPRESSURE — skipping new claims; prioritising review/merge/cleanup"
+    elif [ -n "${_CLAIMABLE_JSON:-}" ] && [ "$(printf '%s' "$_CLAIMABLE_JSON" | jget 'Array.isArray(d) ? d.length : -1' 2>/dev/null)" = "0" ]; then
+      log "every ready ticket waits on an unfinished dependency — nothing claimable this tick"
     else
       log "all ready tickets failed delivery this run — nothing deliverable"
     fi
@@ -3508,7 +3521,10 @@ $_trail_q
           && log "H3: auto-rejected #$NUM (in_review → refining)" \
           || log "H3: WARNING — could not auto-reject #$NUM to refining (non-fatal)"
       else
-        log "H3: ticket #$NUM is in status '$_CUR_CI_STATUS' (not in_review) — no state move needed"
+        # Not in_review any more: dispatch refuses approval without a CI PASS for the
+        # candidate, and the recorded FAIL HOLDS an already-approved ticket for a human
+        # (ready_for_merge|in_testing → blocked, reason ci_red) — never left landable.
+        log "H3: ticket #$NUM is in status '$_CUR_CI_STATUS' (not in_review) — the recorded CI failure holds it for a human (dispatch: blocked, ci_red)"
       fi
       result error; exit 0
     fi

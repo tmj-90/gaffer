@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // =====================================================================
 // Provenance trailers on a landed delivery's merge commit
-// (lib/provenance-trailers.mjs; lib/automerge.sh gaffer_auto_merge / gaffer_pr_merge;
-// bin/merge-ticket.mjs attemptMerge / buildPrMergeArgv).
+// (lib/provenance-trailers.mjs; lib/land.sh _gaffer_merge_gate / _gaffer_land_gated;
+// lib/automerge.sh gaffer_pr_merge; bin/merge-ticket.mjs gateProposedMerge /
+// landGatedMerge / buildPrMergeArgv).
 // ---------------------------------------------------------------------
 // Proves, against a REAL dispatch schema (`dispatch init`) and real git repos:
 //   T1 the trailer block: ticket, the approving actor (human or agent), the gate
@@ -11,9 +12,10 @@
 //      "none recorded" when nothing approved it; no model name anywhere
 //   T2 GAFFER_PROVENANCE_TRAILERS=0 (or off/false/no) → no trailers; unknown ticket → none
 //   T3 a newline smuggled into an actor id cannot add a trailer line
-//   T4 attemptMerge (the dashboard / `gaffer merge` path) with trailers makes a --no-ff
-//      merge commit whose trailers git parses; without them it fast-forwards as before
-//   T5 gaffer_auto_merge (the merge lane / AFK path) does the same
+//   T4 the merge gate's gated merge commit (the commit that lands) on the dashboard /
+//      `gaffer merge` path (gateProposedMerge → landGatedMerge) carries the trailers as
+//      a --no-ff merge commit git parses; without them it fast-forwards as before
+//   T5 _gaffer_merge_gate → _gaffer_land_gated (the merge lane / AFK path) does the same
 //   T6 the PR path puts them in `gh pr merge --body` (not for a rebase)
 // Run: node runner/test/provenance-trailers.test.mjs
 // =====================================================================
@@ -48,7 +50,9 @@ if (!existsSync(CLI)) {
 const { provenanceTrailers, dodLine, mergeMessage } = await import(
   resolve(RUNNER, "lib/provenance-trailers.mjs")
 );
-const { attemptMerge, buildPrMergeArgv } = await import(resolve(RUNNER, "bin/merge-ticket.mjs"));
+const { gateProposedMerge, landGatedMerge, buildPrMergeArgv } = await import(
+  resolve(RUNNER, "bin/merge-ticket.mjs")
+);
 
 const WORK = mkdtempSync(resolve(tmpdir(), "prov-trailers-"));
 process.on("exit", () => rmSync(WORK, { recursive: true, force: true }));
@@ -311,11 +315,44 @@ function repoWithBranch(name) {
 }
 const TR = provenanceTrailers({ dbPath: DB, ticketNumber: 12, env: {} });
 
-console.log("== T4: attemptMerge (dashboard / gaffer merge) ==");
+// The merge gate with DoD off (GAFFER_DOD=0): the gated merge commit is still built and
+// landed, which is all the trailers need; a throwaway GAFFER_DATA keeps it off the
+// checkout's own state.
+const GATE_ENV = { ...process.env, GAFFER_DOD: "0", GAFFER_DATA: resolve(WORK, "gdata") };
+function jsLand(r, trailers) {
+  const pin = git(r, "rev-parse", "gaffer/ticket-12-x").stdout.trim();
+  const gate = gateProposedMerge({
+    repoPath: r,
+    branch: "gaffer/ticket-12-x",
+    pin,
+    targetRef: "refs/heads/main",
+    label: "r",
+    commands: { test: "", lint: "" },
+    gateDir: resolve(WORK, `gate-${r.split("/").pop()}`),
+    trailers,
+    env: GATE_ENV,
+  });
+  const landed =
+    gate.merge &&
+    landGatedMerge({
+      repoPath: r,
+      defaultBranch: "main",
+      target: gate.target,
+      merge: gate.merge,
+      branch: "gaffer/ticket-12-x",
+      pin,
+    });
+  return { gate, landed, pin };
+}
+console.log("== T4: the gated merge commit (dashboard / gaffer merge) ==");
 {
   const r = repoWithBranch("mt-on");
-  const res = attemptMerge(r, "gaffer/ticket-12-x", "main", null, TR);
-  assert("clean merge", res.clean === true);
+  const { gate, landed } = jsLand(r, TR);
+  assert(
+    "the gate built the merge and it landed",
+    gate.kind === "off" && landed && landed.ok,
+    JSON.stringify({ gate, landed }),
+  );
   assert(
     "a merge commit (two parents)",
     git(r, "rev-list", "--parents", "-n", "1", "main").stdout.trim().split(" ").length === 3,
@@ -339,33 +376,35 @@ console.log("== T4: attemptMerge (dashboard / gaffer merge) ==");
 }
 {
   const r = repoWithBranch("mt-off");
-  const tip = git(r, "rev-parse", "gaffer/ticket-12-x").stdout.trim();
-  attemptMerge(r, "gaffer/ticket-12-x", "main", null, []);
+  const { landed, pin } = jsLand(r, []);
   assert(
     "without trailers it fast-forwards exactly as before",
-    git(r, "rev-parse", "main").stdout.trim() === tip,
+    landed && landed.ok && git(r, "rev-parse", "main").stdout.trim() === pin,
   );
 }
 
-console.log("== T5: gaffer_auto_merge (merge lane / AFK review pass) ==");
+console.log("== T5: _gaffer_merge_gate → _gaffer_land_gated (merge lane / AFK review pass) ==");
 function autoMerge(r, trailers) {
   return spawnSync(
     "bash",
     [
       "-c",
-      '. "$1/lib/automerge.sh"; gaffer_auto_merge "$2" gaffer/ticket-12-x main "" "$3"',
+      'log(){ :; }; jget(){ cat >/dev/null; echo ""; }; export RUNNER_DIR="$1"; . "$1/lib/land.sh"; ' +
+        'pin="$(git -C "$2" rev-parse gaffer/ticket-12-x)"; ' +
+        '_gaffer_merge_gate 12 "$2" gaffer/ticket-12-x main "$pin" "{}" refs/heads/main T "$3" || exit 10; ' +
+        '_gaffer_land_gated "$2" main "$_MG_TARGET" "$_MG_MERGE" gaffer/ticket-12-x "$pin"',
       "_",
       RUNNER,
       r,
       trailers,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", env: GATE_ENV },
   );
 }
 {
   const r = repoWithBranch("am-on");
   const res = autoMerge(r, TR.join("\n"));
-  assert("rc 0", res.status === 0, res.stderr);
+  assert("rc 0", res.status === 0, `rc ${res.status} ${res.stderr}`);
   const body = git(r, "log", "-1", "--format=%B", "main").stdout;
   assert(
     "subject kept",

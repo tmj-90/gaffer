@@ -402,11 +402,13 @@ allowed("pure content search names no secret path (documented gap)", "grep -R TO
 import {
   copyFileSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 
@@ -2097,6 +2099,114 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
     );
 
   for (const d of [SZ_ROOT, SZ_DATA]) rmSync(d, { recursive: true, force: true });
+}
+
+// =====================================================================
+// THE RUNNER'S OWN STATE IN $GAFFER_DATA — never writable by an agent
+// ---------------------------------------------------------------------
+// `$GAFFER_DATA/settings.json` is applied as env defaults by factory.config.sh, so a
+// write there sets ANY runner knob (GAFFER_TESTER_REPLAY=0, GAFFER_DOD=0, budgets);
+// `usage-pause.json` and the `*.jsonl` ledgers drive spend gates and audit trails. The
+// macOS Seatbelt profile still permits writes under $GAFFER_DATA (the MCP dbs live
+// there), so the hook is the control. The worktree sits under $GAFFER_DATA, exactly as
+// the runner lays it out, so `..` from it reaches the data dir, and a symlink committed
+// inside the worktree points straight at it. Every write vector is refused; reads and
+// in-worktree writes stay allowed.
+// =====================================================================
+{
+  const DATA = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-data-")));
+  const WT = resolve(DATA, "worktrees", "ticket-5");
+  mkdirSync(WT, { recursive: true });
+  spawnSync("git", ["-C", WT, "init", "-q"]);
+  for (const f of ["settings.json", "usage-pause.json", "factory.jsonl", "safety-blocks.jsonl"])
+    writeFileSync(resolve(DATA, f), "{}\n");
+  symlinkSync(DATA, resolve(WT, "datalink"));
+  const env = {
+    GAFFER_DATA: DATA,
+    GAFFER_WRITE_ROOTS: WT,
+    GAFFER_READ_ROOTS: DATA,
+    DISPATCH_DB: `${DATA}/dispatch.sqlite`,
+    MEMORY_DB: `${DATA}/memory.sqlite`,
+  };
+  const targets = [
+    ["settings.json", `${DATA}/settings.json`],
+    ["usage-pause.json", `${DATA}/usage-pause.json`],
+    ["a *.jsonl ledger", `${DATA}/factory.jsonl`],
+    ["settings.json via .. from the worktree (absolute)", `${WT}/../../settings.json`],
+    ["settings.json via .. from the worktree (relative)", `../../settings.json`],
+    ["settings.json via a symlink in the worktree (absolute)", `${WT}/datalink/settings.json`],
+    ["settings.json via a symlink in the worktree (relative)", `datalink/settings.json`],
+    ["safety-blocks.jsonl via the symlink", `datalink/safety-blocks.jsonl`],
+  ];
+  for (const [what, p] of targets) {
+    const abs = p.startsWith("/") ? p : resolve(WT, p);
+    for (const [tool, input] of [
+      ["Write", { file_path: abs, content: '{"GAFFER_TESTER_REPLAY":"0"}' }],
+      ["Edit", { file_path: abs, old_string: "{}", new_string: '{"GAFFER_DOD":"0"}' }],
+      ["MultiEdit", { file_path: abs, edits: [{ old_string: "{}", new_string: "{}" }] }],
+    ])
+      rootCase(`${tool} ${what}`, { tool_name: tool, tool_input: input }, env, WT, "deny");
+    for (const cmd of [
+      `echo '{"GAFFER_TESTER_REPLAY":"0"}' > ${p}`,
+      `echo x >> ${p}`,
+      `printf x 1>${p}`,
+      `echo x | tee ${p}`,
+      `echo x | tee -a ${p}`,
+      `cp /tmp/x ${p}`,
+      `mv /tmp/x ${p}`,
+      `install /tmp/x ${p}`,
+      `install -m 644 /tmp/x ${p}`,
+      `node -e "require('fs').writeFileSync('${p}','{}')"`,
+      `node -e "require('fs').appendFileSync('${p}','x')"`,
+      `python3 -c "open('${p}','w').write('{}')"`,
+      `python -c "open('${p}', 'a').write('x')"`,
+      `perl -e 'open F, ">${p}"; print F "x"'`,
+      `perl -e 'open my $f, ">>", "${p}"; print $f "x"'`,
+      `ruby -e 'File.write "${p}", "x"'`,
+      `ruby -e 'File.open "${p}", "w" do |f| f.puts 1 end'`,
+      `sed -i 's/a/b/' ${p}`,
+      `sed -i.bak 's/a/b/' ${p}`,
+    ])
+      rootCase(`Bash ${what}: ${cmd}`, bash(cmd), env, WT, "deny");
+  }
+  for (const cmd of [
+    `echo x > "$GAFFER_DATA/settings.json"`,
+    `cp /tmp/x "$GAFFER_DATA"/usage-pause.json`,
+    `echo x >> \${GAFFER_DATA}/factory.jsonl`,
+    `cd "$GAFFER_DATA" && echo x > settings.json`,
+    `cd ../.. && echo x > settings.json`,
+    `git -C "$GAFFER_DATA" checkout -- settings.json`,
+    `git -C ${DATA} checkout -- settings.json`,
+    `git -C ${DATA} apply /tmp/p.diff`,
+    `git -C ${DATA} init`,
+    `git -C ${WT}/../.. restore settings.json`,
+    `git -C ../.. checkout -- usage-pause.json`,
+    `git -C datalink checkout -- settings.json`,
+    `git --work-tree=${DATA} --git-dir=${DATA}/.git checkout -- settings.json`,
+    `git --work-tree datalink checkout -- settings.json`,
+    // Paths built at runtime are not provably in bounds: fail closed.
+    `perl -e 'open my $f, ">", $ENV{GAFFER_DATA} . "/settings.json"'`,
+    `ruby -e 'File.open File.join(ENV["GAFFER_DATA"], "settings.json"), "w" do |f| f.puts 1 end'`,
+    `ruby -e 'File.write ENV["GAFFER_DATA"] + "/settings.json", "{}"'`,
+  ])
+    rootCase(`Bash $GAFFER_DATA: ${cmd}`, bash(cmd), env, WT, "deny");
+  // Not over-blocked: reads of the data dir, and the same verbs inside the worktree.
+  for (const cmd of [
+    `cat ${DATA}/settings.json`,
+    `git -C ${DATA} log --oneline`,
+    `git -C ${DATA} status`,
+    `git -C ${WT} add -A`,
+    `git -C ${WT} commit -m x`,
+    `git status`,
+    `echo x > out.txt`,
+    `perl -e 'open F, ">out.txt"; print F "x"'`,
+    `perl -e 'open my $f, ">", "out.txt"; print $f 1'`,
+    `ruby -e 'File.write "out.txt", "x"'`,
+    `ruby -e 'File.open "out.txt", "w" do |f| f.puts 1 end'`,
+    `ruby -e 'puts File.read "out.txt"'`,
+  ])
+    rootCase(`Bash in bounds: ${cmd}`, bash(cmd), env, WT, "allow");
+  rmSync(DATA, { recursive: true, force: true });
 }
 
 // =====================================================================

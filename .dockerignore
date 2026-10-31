@@ -1,13 +1,43 @@
-# Build context for the root Dockerfile: sources only. Dependencies and dist are
-# produced inside the image; local state and caches never enter it.
-.git
-.gaffer
-.crew
-node_modules
+# Build context for the root Dockerfile — an ALLOW-LIST (external review #9).
+# Everything is excluded, then only the build inputs are let back in: the workspace
+# manifests and lockfile, the three packages, the runner and the scripts, and the
+# licence files. A deny-list let ./repos (the operator's checked-out repositories) and
+# a root .env into the image; with an allow-list a file nobody named never enters it.
+# `node scripts/docker-context-check.mjs` evaluates this file and fails on repos/,
+# .env, *.sqlite, .gaffer/, .git/, node_modules/ or a missing build input (CI runs it).
+*
+
+# Workspace manifests + lockfile.
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!.npmrc
+# Sources the image builds and runs.
+!packages
+!runner
+!scripts
+# Licence notices shipped with the image.
+!LICENSE
+!NOTICE
+!THIRD_PARTY_NOTICES.md
+
+# Never, wherever it sits inside an allowed directory: dependencies and build output
+# are produced inside the image; local state, databases and secrets stay on the host.
 **/node_modules
 **/dist
 **/coverage
 **/*.tsbuildinfo
-docs/img
-.devcontainer
-compose.yaml
+**/.gaffer
+**/.crew
+**/.git
+**/repos
+**/.env
+**/.env.*
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.db
+**/*.pem
+**/*.key
+**/id_rsa*
+**/id_ed25519*

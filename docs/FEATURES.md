@@ -308,7 +308,7 @@ the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_U
 or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
 Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
 then polls. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
-opts out.
+opts out (a value in `settings.json` is ignored).
 
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Every knob the factory

@@ -853,6 +853,14 @@ function derivedOf(env: NodeJS.ProcessEnv): Map<string, SettingSource> {
  * sees what the dashboard stores, and again after each write so a change takes
  * effect without a restart. Returns the keys it set.
  */
+/**
+ * Keys read from the operator's real environment ONLY: settings.json never sets them,
+ * in this process or in the runner (runner/factory.config.sh skips the same keys).
+ * GAFFER_ALLOW_UNCAPPED lifts the live-run dollar-cap requirement, so a hand-edited
+ * settings.json must not be able to switch it on (SECURITY.md).
+ */
+export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set(["GAFFER_ALLOW_UNCAPPED"]);
+
 export function applySettingsToEnv(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
@@ -862,6 +870,7 @@ export function applySettingsToEnv(
   const isReal = (k: string) =>
     Object.prototype.hasOwnProperty.call(env, k) && !derivedOf(env).has(k);
   for (const [k, v] of Object.entries(file)) {
+    if (ENV_ONLY_KEYS.has(k)) continue;
     if (isReal(k)) continue;
     if (v === "") {
       // An empty stored value means "cleared back to the default": drop any value

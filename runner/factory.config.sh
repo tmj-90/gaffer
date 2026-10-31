@@ -109,6 +109,11 @@ export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 if [ -n "$_gs_out" ]; then
   while IFS=$'\t' read -r _sk _sv; do
     [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
+    # ENVIRONMENT-ONLY keys are never taken from the file. GAFFER_ALLOW_UNCAPPED lifts
+    # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok); a hand-edited or
+    # otherwise written settings.json must not be able to switch that off. Only the
+    # operator's real environment can (SECURITY.md).
+    [ "$_sk" = GAFFER_ALLOW_UNCAPPED ] && continue
     # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
     # processes that read it (the dispatch CLI's notifier, the memory server, crew),
     # not only this shell. Unexported, notifications/auto-approve set in the UI

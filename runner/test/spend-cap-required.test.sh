@@ -11,6 +11,8 @@
 #      no cap; either cap > 0 is enough; GAFFER_ALLOW_UNCAPPED=1 opts out.
 #   2. loop.sh live + no cap → exit 3, the hint, and NO tick ran.
 #   3. loop.sh live + GAFFER_DAILY_BUDGET_USD=5 (or GAFFER_BUDGET_USD=5) runs.
+#   3c. GAFFER_ALLOW_UNCAPPED=1 in settings.json is IGNORED (environment only):
+#      loop.sh and `gaffer run` still exit 3, the Poll refuses, and nothing runs.
 #   4. loop.sh DRY_RUN=1 with no cap still runs (a preview is never refused).
 #   5. `gaffer run` refuses before the loop (and before --daemon) — exit 3, the
 #      loop stub never starts; `gaffer run --dry-run` is not refused.
@@ -85,6 +87,11 @@ run_driver() {  # run_driver <script> [env assignments...] — caller's assignme
 }
 calls() { wc -l < "$WORK/calls" | tr -d ' '; }
 reset() { : > "$WORK/calls"; rm -f "$WORK/.daily-ticks"; }
+# `gaffer run` against a STUB loop.sh (it only records that it started).
+STUBLOOP="$WORK/loop-stub.sh"
+printf '#!/usr/bin/env bash\necho loop >> "%s"\n' "$WORK/calls" > "$STUBLOOP"; chmod +x "$STUBLOOP"
+gaffer_run() { ( trap - EXIT; env -u GAFFER_ALLOW_UNCAPPED -u GAFFER_DAILY_BUDGET_USD -u GAFFER_BUDGET_USD -u DRY_RUN \
+  GAFFER_DATA="$WORK/data" GAFFER_LOOP_SH="$STUBLOOP" GAFFER_DAEMON_MAX_CYCLES=1 "$@" 2>&1 ); }
 
 echo "== 2: loop.sh live with no cap refuses before any tick =="
 reset
@@ -111,16 +118,21 @@ out="$(run_driver "$FAKE/loop.sh")"; rc=$?
 [ "$rc" = 0 ] && [ "$(calls)" = 1 ] && ok "a daily budget saved from Settings lets the loop run" || fail "settings cap: rc=$rc calls=$(calls); out: $out"
 rm -f "$WORK/data/settings.json"
 
-echo "== 4: a dry run is never refused =="
+echo "== 3c: GAFFER_ALLOW_UNCAPPED in settings.json is ignored (environment only) =="
+reset; mkdir -p "$WORK/data"; printf '{"GAFFER_ALLOW_UNCAPPED":"1"}\n' > "$WORK/data/settings.json"
+out="$(run_driver "$FAKE/loop.sh")"; rc=$?
+[ "$rc" = 3 ] && ok "loop.sh: the opt-out in settings.json does not lift the cap (exit 3)" || fail "settings opt-out loop.sh: rc=$rc; out: $out"
+[ "$(calls)" = 0 ] && ok "loop.sh: no tick ran" || fail "$(calls) tick(s) ran on a settings.json opt-out"
 reset
+out="$(gaffer_run bash "$RUNNER_DIR/gaffer" run)"; rc=$?
+[ "$rc" = 3 ] && [ "$(calls)" = 0 ] && ok "gaffer run: the opt-out in settings.json does not lift the cap (exit 3, loop not started)" || fail "settings opt-out gaffer run: rc=$rc calls=$(calls); out: $out"
+
+echo "== 4: a dry run is never refused =="
+reset; rm -f "$WORK/data/settings.json"
 out="$(run_driver "$FAKE/loop.sh" DRY_RUN=1)"; rc=$?
 [ "$rc" = 0 ] && [ "$(calls)" = 1 ] && ok "DRY_RUN=1 with no cap still runs" || fail "dry: rc=$rc calls=$(calls); out: $out"
 
 echo "== 5: gaffer run refuses before the loop starts =="
-STUBLOOP="$WORK/loop-stub.sh"
-printf '#!/usr/bin/env bash\necho loop >> "%s"\n' "$WORK/calls" > "$STUBLOOP"; chmod +x "$STUBLOOP"
-gaffer_run() { ( trap - EXIT; env -u GAFFER_ALLOW_UNCAPPED -u GAFFER_DAILY_BUDGET_USD -u GAFFER_BUDGET_USD -u DRY_RUN \
-  GAFFER_DATA="$WORK/data" GAFFER_LOOP_SH="$STUBLOOP" GAFFER_DAEMON_MAX_CYCLES=1 "$@" 2>&1 ); }
 reset
 out="$(gaffer_run bash "$RUNNER_DIR/gaffer" run)"; rc=$?
 [ "$rc" = 3 ] && [ "$(calls)" = 0 ] && ok "gaffer run: exit 3, loop not started" || fail "gaffer run: rc=$rc calls=$(calls); out: $out"
@@ -142,6 +154,10 @@ out="$(run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick
 grep -qE '^gaffer poll: no dollar cap is set.*— not polling\.$' <<<"$out" \
   && ok "poll prints a refusal the dashboard reads as REFUSED" || fail "poll refusal line: $out"
 grep -q '^TICK_RESULT=no_work$' <<<"$out" && ok "poll reports no_work" || fail "poll result: $out"
+reset; printf '{"GAFFER_ALLOW_UNCAPPED":"1"}\n' > "$WORK/data/settings.json"
+out="$(run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick.sh")"
+[ "$(calls)" = 0 ] && ok "poll: the opt-out in settings.json does not lift the cap" || fail "settings opt-out poll: calls=$(calls); out: $out"
+rm -f "$WORK/data/settings.json"
 reset
 out="$(run_driver "$RUNNER_DIR/bin/poll-once.sh" GAFFER_POLL_TICK_SH="$FAKE/tick.sh" GAFFER_DAILY_BUDGET_USD=5)"
 [ "$(calls)" = 1 ] && ok "poll with a cap runs the tick" || fail "capped poll: calls=$(calls); out: $out"

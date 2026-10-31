@@ -150,8 +150,8 @@ A live run needs a dollar cap. With neither `GAFFER_DAILY_BUDGET_USD` (per UTC d
 `GAFFER_BUDGET_USD` (lifetime) set, `gaffer run`, `loop.sh` and the dashboard's **Poll for
 work** refuse to start and print the fix. In the dashboard, the first **Poll for work**
 asks for a daily budget (prefilled at $5) and saves it to Settings → Budget & caps before
-it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` opts out (for a key you
-cap somewhere else).
+it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` in your environment opts out (for a
+key you cap somewhere else). It is ignored in `settings.json`.
 
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
 `gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and

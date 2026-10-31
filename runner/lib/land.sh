@@ -238,7 +238,7 @@ _gaffer_merge_gate() {
   [ -n "$pin" ] || { _MG_REASON="no pinned commit to gate"; return 2; }
   _MG_TARGET="$(git -C "$repo" rev-parse --verify --quiet "$target_ref^{commit}" 2>/dev/null)" \
     || { _MG_TARGET=""; _MG_REASON="the target $target_ref cannot be resolved"; return 2; }
-  local wt="${GAFFER_DATA:-${TMPDIR:-/tmp}}/worktrees/merge-gate-$num-$$" ids=() rc out label tcmd lcmd
+  local wt="${GAFFER_DATA:-${TMPDIR:-/tmp}}/worktrees/merge-gate-$num-$$" ids=() rc out label tcmd lcmd allow
   mkdir -p "$(dirname "$wt")" 2>/dev/null || true
   git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"
   if ! git -C "$repo" worktree add --quiet --detach --force "$wt" "$_MG_TARGET" >/dev/null 2>&1; then
@@ -256,10 +256,16 @@ _gaffer_merge_gate() {
   label="$(basename "$repo")"
   tcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).test_command || ""' 2>/dev/null || true)"
   lcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).lint_command || ""' 2>/dev/null || true)"
+  # GATE INTEGRITY: a human's allow_test_changes on the ticket (fails closed to 0); the
+  # merge gate's integrity row (target head vs the merge) then reads PASS with a note.
+  allow="$(printf '%s' "$show" | jget '(d.ticket && d.ticket.allow_test_changes === 1) ? 1 : 0' 2>/dev/null || echo 0)"
+  [ "$allow" = "1" ] || allow=0
   log "$who: #$num MERGE GATE — gating the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (merge ${_MG_MERGE:0:12}) in a scratch worktree"
   # The gated target head is the base the typecheck script is detected from (as the
-  # delivery gate reads its base branch first): the branch cannot drop that gate.
-  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET" 2>/dev/null)"; rc=$?
+  # delivery gate reads its base branch first): the branch cannot drop that gate. It is
+  # also the gate-integrity base: the gate scripts are read from it and the evidence
+  # carries an integrity row (PASS/FLAG, never FAIL) for the merged tree.
+  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET" "$allow" 2>/dev/null)"; rc=$?
   git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"; git -C "$repo" worktree prune >/dev/null 2>&1 || true
   _MG_EVIDENCE="$out"
   case "$rc" in

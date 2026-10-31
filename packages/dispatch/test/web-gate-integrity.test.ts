@@ -9,6 +9,7 @@
 //   - The gates checklist renders the runner's integrity FLAG row as flagged (a
 //     yellow "!", never a red ✗) with its note, and each gate's `source`.
 //   - The Team Sheet row of a review whose DoD evidence FLAGged carries "Tests changed".
+//   - A read token sees "Allow test changes…" switched off (the read-only strip's rule).
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -76,6 +77,8 @@ function testModified(allowed: boolean) {
 }
 
 let annotations: unknown[] = [];
+// GET /api/whoami's capability: undefined (a full token, the default) or "read".
+let capability: string | undefined;
 const posts: Array<{ url: string; body: unknown }> = [];
 
 function stubFetch(): void {
@@ -92,6 +95,8 @@ function stubFetch(): void {
         posts.push({ url, body: init.body ? JSON.parse(String(init.body)) : null });
         return json({ ticket_id: TICKET.id, allow_test_changes: true, event_id: "ev-1" });
       }
+      if (url.includes("/api/whoami"))
+        return json(capability ? { capability, actor: { type: "human", id: "viewer" } } : {});
       if (url.includes(`/tickets/${TICKET.id}/diff`))
         return json({
           ticketId: TICKET.id,
@@ -184,6 +189,7 @@ describe("web: gate integrity", () => {
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
     annotations = [];
+    capability = undefined;
   });
 
   it("Review: the banner names what changed and says the auto-approve is held", async () => {
@@ -242,6 +248,26 @@ describe("web: gate integrity", () => {
     expect(banner).not.toBeNull();
     expect(banner!.getAttribute("role")).toBe("status");
     expect(banner!.querySelector("button")?.textContent).toBe("Withdraw allowance…");
+  });
+
+  it("Review: a read token sees the banner with Allow test changes… switched off", async () => {
+    annotations = [testModified(false)];
+    capability = "read";
+    mountShell("#/review");
+    await boot();
+    const btn = [...document.querySelectorAll(".integrity-banner button")].find(
+      (b) => b.textContent === "Allow test changes…",
+    ) as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(true);
+    expect(btn.getAttribute("aria-disabled")).toBe("true");
+    expect(btn.title).toBe("Read-only access: this token can look, not change anything.");
+    btn.click();
+    await tick();
+    expect(
+      document.querySelector('textarea[aria-label="Why this ticket may change its tests"]'),
+    ).toBeNull();
+    expect(posts).toEqual([]);
   });
 
   it("Review: a clean diff shows no banner", async () => {

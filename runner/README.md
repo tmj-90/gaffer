@@ -127,7 +127,9 @@ merge`) builds the merge of the approved commit onto the CURRENT default branch 
 scratch worktree, runs the repo's DoD gates on that merge through `bin/dod-regate.sh` (the
 delivery gate's gates: `test_command`, `lint_command` and the typecheck command
 `gaffer_dod_typecheck_cmd` resolves — `GAFFER_DOD_TYPECHECK_CMD`, else the package.json
-typecheck script, detected from the gated target head first), and
+typecheck script, detected from the gated target head first; gate integrity: each gate's
+package.json script is read from that target head and an `integrity` row — PASS/FLAG, never
+FAIL, with the ticket's human `allow_test_changes` — compares it with the merged tree), and
 lands exactly the gated merge commit only while the default branch is still the commit it
 gated (`update-ref <ref> <merge> <gated-head>`, or a fast-forward of a clean checked-out
 target); a target that moved is re-gated (`GAFFER_MERGE_GATE_RETRIES`, default 2). A red

@@ -241,7 +241,10 @@ structural barrier the whole design hangs on.
   It does not change what the gate runs: a changed gate script still runs as
   the base has it, so to change the gate itself, change the repo's registered
   test/lint command or merge the script change first.
-  This first slice flags; it never fails a delivery.
+  The merge gate and the conflict re-gate run the same check on the merged
+  tree, against the target head (scripts read from it, an integrity row in
+  their checklist). This first slice flags; it never fails a delivery or a
+  landing.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
   recorded and its acceptance criteria reset. A **won't-do** on delivered work
   keeps its branch as a record, and that branch no longer counts against the

@@ -15703,14 +15703,17 @@ function integrityBanner(t, anns) {
             ? "A person allowed it, so the gate reads PASS with a note from its next run. Check the changes are the ones the ticket asked for."
             : "A green gate proves less when its own tests changed. Auto-approve is held until a person looks.",
         ),
-        el(
-          "button",
-          {
-            class: "btn small",
-            type: "button",
-            onclick: () => allowTestChangesSheet(t, !allowed),
-          },
-          allowed ? "Withdraw allowance…" : "Allow test changes…",
+        // A read token sees the control switched off (the server refuses it anyway).
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              onclick: () => allowTestChangesSheet(t, !allowed),
+            },
+            allowed ? "Withdraw allowance…" : "Allow test changes…",
+          ),
         ),
       ]),
     ],

@@ -773,7 +773,19 @@ export function resolveGateCommands(dbPath, number) {
       if (/no such (column|table)/i.test(String(e?.message ?? e))) return { test: "", lint: "" };
       throw e;
     }
-    return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim() };
+    // GATE INTEGRITY: a human's allow_test_changes (schema v29). Its own query, so a
+    // schema without the column only loses the allowance (the integrity row FLAGs),
+    // never the gate commands. Fails closed: anything unreadable means no allowance.
+    let allow = false;
+    try {
+      allow =
+        Number(
+          db.prepare("SELECT allow_test_changes AS a FROM tickets WHERE number = ?").get(num)?.a,
+        ) === 1;
+    } catch {
+      allow = false;
+    }
+    return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim(), allow };
   } catch {
     return null;
   } finally {
@@ -991,8 +1003,10 @@ export function gateProposedMerge({
         commands.test || "-",
         commands.lint || "-",
         // The gated target head: the typecheck script is auto-detected from it first,
-        // exactly as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd).
+        // exactly as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd),
+        // and it is the gate-integrity base (scripts read from it + an integrity row).
         target,
+        commands.allow ? "1" : "0",
       ],
       { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
     );
@@ -1093,8 +1107,10 @@ function gateCheckout({ gateWt, parents, label, commands, env, failed, base }) {
       commands.test || "-",
       commands.lint || "-",
       // The default branch's tip: the typecheck script is auto-detected from it first
-      // (gaffer_dod_typecheck_cmd), so a resolution cannot drop that gate.
+      // (gaffer_dod_typecheck_cmd), so a resolution cannot drop that gate; it is also
+      // the gate-integrity base (scripts read from it + an integrity row).
       base || "",
+      commands.allow ? "1" : "0",
     ],
     { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
   );

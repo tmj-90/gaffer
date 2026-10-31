@@ -20,15 +20,16 @@ _GAFFER_UP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # so a test that points the pause store elsewhere still classifies with the real table.
 : "${GAFFER_USAGE_WORKER_MJS:=$_GAFFER_UP_LIB/worker.mjs}"
 
-# Run usage-pause.mjs with the pause store's settings handed over EXPLICITLY.
-# factory.config.sh leaves GAFFER_DATA a plain, unexported shell variable
+# Run usage-pause.mjs with the data dir handed over EXPLICITLY. factory.config.sh
+# leaves GAFFER_DATA a plain, unexported shell variable
 # (`: "${GAFFER_DATA:=$GAFFER_HOME/.gaffer}"`), so a node child that only read its
 # environment saw no data dir: an operator's `gaffer run` from a plain shell recorded
 # no pause (every refusal fell to the fail-closed skip) and read none. The same rule
 # as every other runner node child: GAFFER_DATA="$GAFFER_DATA" on the command.
+# (GAFFER_USAGE_PAUSE_DEFAULT_MIN is exported by factory.config.sh; the
+# GAFFER_USAGE_PAUSE_FILE override is an operator's exported env var.)
 _gaffer_up_node() {
-  env GAFFER_DATA="${GAFFER_DATA:-}" GAFFER_USAGE_PAUSE_FILE="${GAFFER_USAGE_PAUSE_FILE:-}" \
-    GAFFER_USAGE_PAUSE_DEFAULT_MIN="${GAFFER_USAGE_PAUSE_DEFAULT_MIN:-}" node "$@"
+  env GAFFER_DATA="${GAFFER_DATA:-}" node "$@"
 }
 
 # gaffer_usage_pause_record <json-file> <ticket> <lane>

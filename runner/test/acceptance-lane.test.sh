@@ -12,13 +12,16 @@
 #   5. WIRING: tick.sh reads ticket.acceptance and prepends the acceptance block
 # Run: bash runner/test/acceptance-lane.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/acceptance-lane.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/acceptance-lane.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # A fake RUNNER_DIR whose bin/tester-run.mjs records the ticket it was asked to test
 # and answers with a verdict envelope; lib/ links to the real libs.

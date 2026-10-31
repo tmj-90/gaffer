@@ -34,6 +34,7 @@
 #      still wins. Graduated mode used to ship earned rows with no OS sandbox.
 # Zero deps beyond bash. Run: bash runner/test/autonomy-containment.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -46,7 +47,8 @@ skip_part() { SKIPPED=$((SKIPPED + 1)); printf '  SKIP: %s\n' "$1"; }   # a skip
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/autonomy-containment.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"
 
 # ── 1. config: autonomy entry points default STRICT_MODE=1 ──────────────────

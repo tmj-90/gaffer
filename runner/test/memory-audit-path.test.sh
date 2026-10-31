@@ -18,6 +18,7 @@
 # Skips B when memory is not built. Run: bash runner/test/memory-audit-path.test.sh
 # =====================================================================
 # shellcheck shell=bash
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -32,7 +33,8 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 [ -f "$MEMORY_MCP" ] || { echo "SKIP: memory not built ($MEMORY_MCP missing — run: pnpm -C packages/memory build)"; exit 0; }
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+gaffer_test_check_tmp "$TMP" || exit 70
+trap 'gaffer_test_rm_work "$TMP"' EXIT
 mkdir -p "$TMP/home" "$TMP/data"
 
 run_factory() {

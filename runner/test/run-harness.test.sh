@@ -25,6 +25,7 @@
 #       GAFFER_RUN_SHARD (a CI shard job running this file) never leaks into a test
 # Run: bash runner/test/run-harness.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -36,7 +37,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/run-harness.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 T="$WORK/t"; mkdir -p "$T" "$WORK/root/.gaffer"
 mk() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$T/$1"; }
 # A nested run must not write into the outer CI job's step summary or annotations.

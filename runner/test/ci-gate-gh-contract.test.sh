@@ -17,6 +17,7 @@
 #      gate uses (skipped without gh).
 # Run: bash runner/test/ci-gate-gh-contract.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,7 +34,9 @@ gaffer_ci_sleep() { :; }
 source "$RUNNER_DIR/lib/pr-create.sh"
 # shellcheck source=../lib/ci-gate.sh
 source "$RUNNER_DIR/lib/ci-gate.sh"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ci-gh-contract.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/ci-gh-contract.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 REPO="$WORK/repo"; mkdir -p "$REPO"
 ( cd "$REPO" && git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init \
   && git branch gaffer/ticket-7 && git remote add origin https://github.com/acme/api.git )

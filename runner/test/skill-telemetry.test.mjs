@@ -3,7 +3,8 @@
 // it records which skills were SELECTED per delivery and, best-effort, which were
 // APPLIED (detected in the agent's output). Run: node test/skill-telemetry.test.mjs
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -88,7 +89,7 @@ check("buildRecord captures selected/applied/count and an ISO ts", () => {
 
 // --- recordFromOpts (with scan-file applied detection) ----------------------
 check("recordFromOpts reads --scan and unions explicit + scanned applied", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-"));
   try {
     const scan = join(dir, "out.json");
     writeFileSync(
@@ -119,7 +120,7 @@ check("recordFromOpts tolerates a missing scan file (fail-soft)", () => {
 
 // --- end-to-end CLI append --------------------------------------------------
 check("CLI appends one JSONL record per delivery to --out", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-cli-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-cli-"));
   try {
     const out = join(dir, "telemetry.jsonl");
     const bin = new URL("../bin/record-skill-usage.mjs", import.meta.url).pathname;
@@ -155,7 +156,7 @@ check("CLI appends one JSONL record per delivery to --out", () => {
 
 // --- what was MOUNTED, and what the agent OPENED -----------------------------
 check("recordFromOpts counts the mount's names as selected (universal set included)", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-mount-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-mount-"));
   try {
     for (const n of ["run-tests", "plan-change", "add-api-endpoint"]) mkdirSync(join(dir, n));
     const rec = recordFromOpts({ selected: "add-api-endpoint", mount: dir });
@@ -292,7 +293,7 @@ check("detectOpened: a root matches on a path boundary, never as a bare prefix",
   );
 });
 check("recordFromOpts unions opened skills into applied and records them", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-ledger-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-ledger-"));
   try {
     const tl = join(dir, "tool-metrics.jsonl");
     writeFileSync(
@@ -319,7 +320,7 @@ check("recordFromOpts unions opened skills into applied and records them", () =>
   }
 });
 check("recordSkillUsage (the .mjs runners' seam) appends a role record; fail-soft", () => {
-  const dir = mkdtempSync(join(tmpdir(), "skill-telem-role-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "skill-telem-role-"));
   try {
     const rec = recordSkillUsage({
       ticket: "",

@@ -18,6 +18,7 @@
 #   6. An explicit GAFFER_BUDGET_LOW_THRESHOLD wins over the derived one.
 # Zero deps beyond node + awk. Run: bash test/budget-remaining.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -31,7 +32,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/budget-remaining.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"
 
 # Write a ledger with measured spend 4.5 (3.5 + 1.0) plus one UNMEASURED row that

@@ -13,6 +13,7 @@
 #   • an unrenderable config ⇒ rc 76, NO spawn (fail closed).
 # Run: bash test/worker-mcp-bridge.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -20,8 +21,10 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/worker-bridge.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/worker-bridge.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/.gaffer"; mkdir -p "$GAFFER_DATA"
 export GAFFER_LOG="$WORK/factory.log"
 

@@ -28,6 +28,7 @@
 #
 # Run: bash runner/test/e2e-memory-routing.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 # macOS has no coreutils `timeout`; perl's alarm is the portable bound.
 bound() { if command -v timeout >/dev/null 2>&1; then timeout "$@"; else perl -e 'alarm shift; exec @ARGV' "$@"; fi; }
@@ -44,8 +45,10 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/memory-routing.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-[ "${KEEP:-0}" = 1 ] || trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/memory-routing.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+[ "${KEEP:-0}" = 1 ] || trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data" "$WORK/bin" "$WORK/calls"
 CALLS="$WORK/calls"
 

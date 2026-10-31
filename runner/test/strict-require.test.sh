@@ -9,6 +9,7 @@
 # FAILS CLOSED (returns non-zero) and tick.sh refuses to launch the agent. Proves the
 # REAL sandbox_wrap_cmd from lib/sandbox.sh. Run: bash test/strict-require.test.sh (3.2 ok)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -57,7 +58,8 @@ fi
 # tester / onboarding analysis ran uncontained exactly when autonomy is on.
 if command -v node >/dev/null 2>&1; then
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/strict-require-mjs.XXXXXX")"
-  trap 'rm -rf "$WORK"' EXIT
+  gaffer_test_check_tmp "$WORK" || exit 70
+  trap 'gaffer_test_rm_work "$WORK"' EXIT
   MARKER="$WORK/spawned.marker"
   FAKE="$WORK/fake-claude.sh"
   printf '#!/usr/bin/env bash\n: > "%s"\nprintf "%%s\\n" "{\\"result\\":\\"ok\\"}"\n' "$MARKER" > "$FAKE"; chmod +x "$FAKE"

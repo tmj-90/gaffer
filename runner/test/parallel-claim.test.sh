@@ -20,6 +20,7 @@
 # the test SKIPs (exit 0) rather than failing a checkout without a build.
 # Run: bash test/parallel-claim.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -36,7 +37,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/parallel-claim.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 cli() { node "$CLI_JS" --db "$DB" "$@"; }
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }

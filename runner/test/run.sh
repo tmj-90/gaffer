@@ -50,6 +50,7 @@
 #   --list       print the files that would run (after --shard), run nothing
 #   --           ignored (pnpm forwards it: `pnpm test:runner -- -j 2` works too)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -172,7 +173,8 @@ fi
 command -v perl >/dev/null 2>&1 || { echo "run.sh: perl is required (the per-test cap)" >&2; exit 2; }
 
 RES="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-run.XXXXXX")"
-trap 'rm -rf "$RES"' EXIT
+gaffer_test_check_tmp "$RES" || exit 70
+trap 'gaffer_test_rm_work "$RES"' EXIT
 export GAFFER_RUN_RES="$RES"
 mkdir -p "$RES/tripwire"
 export GAFFER_CLAUDE_TRIPWIRE_LOG="$RES/tripwire.log"

@@ -21,6 +21,7 @@
 # Requires nothing but bash + grep for A–C; D is skipped if memory isn't built.
 # Run:  perl -e 'alarm 120; exec @ARGV' /bin/bash runner/test/recall-feedback.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -96,7 +97,8 @@ if [ ! -f "$MEMORY_CLI" ] || [ ! -f "$MEMORY_MCP" ]; then
   echo "  SKIP: memory not built ($MEMORY_CLI missing — run: pnpm -C packages/memory build)"
 else
   TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
+  gaffer_test_check_tmp "$TMP" || exit 70
+  trap 'gaffer_test_rm_work "$TMP"' EXIT
   export MEMORY_DB="$TMP/memory.sqlite" MEMORY_AUDIT_LOG="$TMP/audit.jsonl"
   # A DECISION: product intent rides in its own PRODUCT CONTEXT block, never from the
   # scope packet, so the packet hit alone must earn it no credit.

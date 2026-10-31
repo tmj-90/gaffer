@@ -13,6 +13,7 @@
 # Real git repos, a reduced SQLite dispatch fixture, real land.sh + automerge.sh, real
 # merge-ticket.mjs. Run: bash runner/test/land-tester-binding.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -21,7 +22,9 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 node -e 'require("node:sqlite")' 2>/dev/null || { echo "SKIP: node:sqlite unavailable"; exit 0; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/land-binding.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/land-binding.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 HELPER="$RUNNER_DIR/lib/tester-binding.mjs"
 g() { git -C "$R" -c user.email=t@t -c user.name=t "$@"; }
 

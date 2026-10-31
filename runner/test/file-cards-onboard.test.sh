@@ -17,6 +17,7 @@
 # Requires the memory package to be BUILT (dist/bin/memory.js). Zero other deps.
 # Run:  perl -e 'alarm 200; exec @ARGV' /bin/bash runner/test/file-cards-onboard.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -40,7 +41,8 @@ if [ ! -f "$MEMORY_CLI" ]; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+gaffer_test_check_tmp "$TMP" || exit 70
+trap 'gaffer_test_rm_work "$TMP"' EXIT
 REPO="$TMP/repo"
 MEM_DB="$TMP/memory.sqlite"
 mkdir -p "$REPO/src"

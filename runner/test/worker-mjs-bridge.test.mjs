@@ -12,15 +12,8 @@
 //   • an unrenderable config ⇒ status 76, no spawn;
 //   • Worker exposes mcpBridgeOn / startMcpBridge.
 // Run: node test/worker-mjs-bridge.test.mjs
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,7 +33,7 @@ const bad = (m) => {
 };
 const check = (c, m) => (c ? ok(m) : bad(m));
 
-const WORK = mkdtempSync(join(tmpdir(), "worker-mjs-bridge-"));
+const WORK = gafferMkdtemp(join(tmpdir(), "worker-mjs-bridge-"));
 const DATA = join(WORK, "data");
 mkdirSync(DATA, { recursive: true });
 const FAKEBIN = join(WORK, "bin");

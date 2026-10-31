@@ -16,6 +16,7 @@
 #      tick.sh itself builds no quarantined prompt fragments (they were dead code).
 # Run: bash test/prompt-quarantine.test.sh (section 4 needs the crew dist).
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -98,7 +99,8 @@ if [ ! -f "$RENDER_CLI" ]; then
   echo "  SKIP: crew not built ($RENDER_CLI) — run pnpm --filter crew build"
 else
   WORK="$(mktemp -d "${TMPDIR:-/tmp}/prompt-quarantine.XXXXXX")"
-  trap 'rm -rf "$WORK"' EXIT
+  gaffer_test_check_tmp "$WORK" || exit 70
+  trap 'gaffer_test_rm_work "$WORK"' EXIT
   export GAFFER_DATA="$WORK/data" DISPATCH_DB="$WORK/data/dispatch.sqlite" MEMORY_DB="$WORK/data/memory.sqlite"
   mkdir -p "$GAFFER_DATA"
   # shellcheck source=../factory.config.sh

@@ -13,6 +13,7 @@
 #      effective ceiling), and the dispatch view surfaces the field.
 # Zero deps beyond awk + node. Run: bash test/ticket-budget-enforce.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -80,7 +81,9 @@ grep -q '_eff_ceiling' "$TICK" \
   || fail "tick.sh missing the effective-ceiling resolution"
 
 if [ -f "$CLI" ]; then
-  WORK="$(mktemp -d "${TMPDIR:-/tmp}/tbudget.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+  WORK="$(mktemp -d "${TMPDIR:-/tmp}/tbudget.XXXXXX")"
+  gaffer_test_check_tmp "$WORK" || exit 70
+  trap 'gaffer_test_rm_work "$WORK"' EXIT
   DB="$WORK/d.sqlite"
   node "$CLI" --db "$DB" init >/dev/null 2>&1
   OUT="$(node "$CLI" --db "$DB" ticket create -t "budgeted" --budget 1.5 2>/dev/null)"

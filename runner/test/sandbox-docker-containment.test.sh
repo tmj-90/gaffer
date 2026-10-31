@@ -19,6 +19,7 @@
 # CI-safe: with no docker daemon the whole gate SKIPS (exit 0) rather than failing, so the
 # bash suite stays green on machines/CI without docker. Where docker IS present it is a
 # real, deterministic containment proof (no live `claude` needed — the payload is a shell).
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -u
 
 RUNNER_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -61,6 +62,7 @@ if ! docker build -q -t gaffer-egress-proxy "$RUNNER_DIR/sandbox/egress-proxy" >
 fi
 
 WORK="$(mktemp -d)"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
 GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA/worktrees"
 # B25(c): the delivery worktree is a REAL linked worktree of a real repo, laid out the
@@ -228,5 +230,5 @@ else
 fi
 
 git -C "$REPO" worktree remove --force "$WT" >/dev/null 2>&1 || true
-rm -rf "$WORK"
+gaffer_test_rm_work "$WORK"
 if [ "$fail" -eq 0 ]; then echo "PASS (Mode-2 containment holds: secret unreadable, egress denied, worktree writable, data dir masked, git works; bridge mode: databases unmounted, token absent, MCP round-trips over the socket)"; exit 0; else echo "FAILED"; exit 1; fi

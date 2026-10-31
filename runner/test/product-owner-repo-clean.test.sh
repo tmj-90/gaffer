@@ -19,6 +19,7 @@
 # Requirements: bash, node >= 22.5 (node:sqlite built-in), git.
 # Run: bash runner/test/product-owner-repo-clean.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -38,8 +39,9 @@ node --input-type=commonjs -e "require('node:sqlite')" 2>/dev/null \
 [ -f "$RUNNER_DIR/safety-hook.mjs" ] || { echo "SKIP: safety-hook.mjs missing"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/po-repo-clean.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
 # 1.  The "registered repo" — a real git repo the operator owns.

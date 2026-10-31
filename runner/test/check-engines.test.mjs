@@ -10,7 +10,8 @@
 //   5 --runtime refuses a Node below the root floor with the version + a fix.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,7 +64,7 @@ test("a root floor below a locked package's floor fails, naming the package", ()
     conflicts.some((c) => c.pkg.startsWith("lint-staged@")),
     "lint-staged is named as excluding 22.0.0",
   );
-  const dir = mkdtempSync(path.join(tmpdir(), "check-engines-"));
+  const dir = gafferMkdtemp(path.join(tmpdir(), "check-engines-"));
   try {
     writeFileSync(path.join(dir, "package.json"), '{"engines":{"node":">=22"}}');
     writeFileSync(path.join(dir, "pnpm-lock.yaml"), lock);
@@ -76,7 +77,7 @@ test("a root floor below a locked package's floor fails, naming the package", ()
 });
 
 test("--runtime refuses a Node below the root floor", () => {
-  const dir = mkdtempSync(path.join(tmpdir(), "check-engines-rt-"));
+  const dir = gafferMkdtemp(path.join(tmpdir(), "check-engines-rt-"));
   try {
     writeFileSync(path.join(dir, "package.json"), '{"engines":{"node":">=99.0.0"}}');
     const r = spawnSync(process.execPath, [SCRIPT, "--runtime", "--root", dir], {

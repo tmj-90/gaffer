@@ -9,13 +9,16 @@
 # through it. Proven with a recording wrap stub (no real sandbox needed) + source pins.
 # Run: bash test/dod-sandbox-wrap.test.sh   (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-wrap.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"; trap 'rm -rf "$WORK"' EXIT   # canonical: macOS TMPDIR ends in "/" and /var → /private/var
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-wrap.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"; trap 'gaffer_test_rm_work "$WORK"' EXIT   # canonical: macOS TMPDIR ends in "/" and /var → /private/var
 
 gaffer_timeout() { shift; "$@"; }   # the gate runner's timeout seam — inert here
 export GAFFER_DOD_TIMEOUT=30

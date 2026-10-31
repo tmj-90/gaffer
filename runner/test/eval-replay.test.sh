@@ -14,6 +14,7 @@
 #   6  a fixture whose patch does not apply is reported as a replay error, not a verdict.
 # Run: bash runner/test/eval-replay.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -24,7 +25,8 @@ P=0; F=0
 ok(){ P=$((P + 1)); printf '  ok   %s\n' "$1"; }
 no(){ F=$((F + 1)); printf '  FAIL %s\n' "$1"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eval-replay-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 jq_(){ node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const v=eval("r."+process.argv[2]);process.stdout.write(v===undefined?"":typeof v==="string"?v:JSON.stringify(v))' "$1" "$2"; }
 
 echo "== 1/2: the committed fixtures pass and results.json is written =="

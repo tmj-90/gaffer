@@ -10,7 +10,8 @@
 // `node safety-hook.mjs` subprocess instead, as does any case passed
 // `{ spawn: true }` (the wrapper's contract cases).
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { realpathSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,7 +30,7 @@ export const tool = (name, input) => ({ tool_name: name, tool_input: input });
 
 /** A realpath'd scratch dir (macOS /tmp is a symlink; the hook canonicalises). */
 export function scratchDir(prefix) {
-  return realpathSync(mkdtempSync(resolve(tmpdir(), prefix)));
+  return realpathSync(gafferMkdtemp(resolve(tmpdir(), prefix)));
 }
 
 /**

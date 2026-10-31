@@ -7,6 +7,7 @@
 #   C  seeded ledger → human view carries pass rate, memory lift, cost/pass
 #   D  --json emits the raw summary (parses; lift matches)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -22,7 +23,8 @@ ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/eval-cli-t.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/gd"; mkdir -p "$GAFFER_DATA"
 
 echo "== A. help lists eval =="

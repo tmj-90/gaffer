@@ -11,7 +11,8 @@
 // Run: node test/skills-hook-claims.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +29,7 @@ const check = (label, cond) => (cond ? (passed += 1) : failures.push(label));
 // Install-shaped commands only: the clauses also name files (`.env`) and paths.
 const TOOL = /^(npm|pnpm|yarn|pip|pip3|uv|pipx|npx|go|cargo|poetry|gem|bundle|dotnet|mvn|gradle)\b/;
 
-const WORK = mkdtempSync(join(tmpdir(), "skills-hook-claims-"));
+const WORK = gafferMkdtemp(join(tmpdir(), "skills-hook-claims-"));
 spawnSync("git", ["init", "-q", WORK]);
 const cache = new Map();
 function hookRc(command) {

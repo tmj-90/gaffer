@@ -22,6 +22,7 @@
 #       pipefail (8 at a time), never answers "trivial"
 # Run: bash runner/test/no-pipe-grep-q.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -59,7 +60,9 @@ for shape in "a || grep -q x f" "grep -q x <<<\"\$X\"" "cmd | grep -c x" "cmd | 
 done
 
 echo "== G2: the lite sensitive-path classifier never fails open under pipefail =="
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/no-pipe-grep-q.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/no-pipe-grep-q.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/data" DISPATCH_DB="$WORK/data/dispatch.sqlite" MEMORY_DB="$WORK/data/memory.sqlite"
 mkdir -p "$GAFFER_DATA"
 # shellcheck source=../factory.config.sh

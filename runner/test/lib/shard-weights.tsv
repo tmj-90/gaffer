@@ -51,6 +51,7 @@
 15	merge-ticket.test.mjs
 15	settings-resource.test.sh
 14	day-cap-no-work.test.sh
+12	mktemp-failure-safe.test.sh
 12	model-routing.test.sh
 12	nocommit-crash-bound.test.sh
 12	registry-probe.test.sh
@@ -115,6 +116,7 @@
 3	h4-pr-create.test.sh
 3	intake-gate.test.sh
 3	json-tool.test.sh
+3	no-unchecked-mktemp.test.sh
 3	run-summary.test.sh
 3	safety-hook-tilde.test.mjs
 3	spec-freeze-seeds-lore.test.sh

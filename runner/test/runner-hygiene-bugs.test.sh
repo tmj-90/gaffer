@@ -14,6 +14,7 @@
 # Hermetic: uses stub CLIs; never invokes claude -p. Zero external deps.
 # Run: bash test/runner-hygiene-bugs.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -24,8 +25,9 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/hygiene-bugs-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-cleanup() { [ "${BASHPID:-}" = "$$" ] && rm -rf "$WORK"; }
+cleanup() { [ "${BASHPID:-}" = "$$" ] && gaffer_test_rm_work "$WORK"; }
 trap cleanup EXIT
 
 # ── Shared git repo setup ──────────────────────────────────────────────────────

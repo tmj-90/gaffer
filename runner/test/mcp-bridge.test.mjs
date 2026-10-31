@@ -10,7 +10,8 @@
 //   • SIGTERM to serve removes the socket.
 // Run: node test/mcp-bridge.test.mjs
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +31,7 @@ const fail = (m) => {
 const assert = (c, m) => (c ? ok(m) : fail(m));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const WORK = mkdtempSync(join(tmpdir(), "mcp-bridge-"));
+const WORK = gafferMkdtemp(join(tmpdir(), "mcp-bridge-"));
 // A stub "MCP server": echoes each stdin line back as JSON plus what it sees in its env.
 const STUB = join(WORK, "stub-server.mjs");
 writeFileSync(

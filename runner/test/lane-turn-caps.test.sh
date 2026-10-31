@@ -17,6 +17,7 @@
 #      GAFFER_DECOMPOSE_AGENT_MAX_TURNS caps the agent on its own (under the ceiling)
 # Run: bash runner/test/lane-turn-caps.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -24,7 +25,9 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/lane-caps.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/lane-caps.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 CFG="$RUNNER_DIR/factory.config.sh"
 cfg() {  # run a snippet with a clean env + the real factory.config.sh sourced
   env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$WORK/data" "$@"

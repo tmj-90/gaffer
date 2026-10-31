@@ -20,6 +20,7 @@
 # no registry/network. Skips cleanly if node/npm are unavailable.
 # Run: bash runner/test/greenfield-ensure-deps.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -57,7 +58,8 @@ type gaffer_ensure_node_modules >/dev/null 2>&1 || {
 }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gf-ensure-deps.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # --- A tiny LOCAL dependency so the install needs no registry/network. -------
 mkdir -p "$WORK/localdep"

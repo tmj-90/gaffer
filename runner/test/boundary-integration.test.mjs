@@ -22,7 +22,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { realpathSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -33,7 +34,7 @@ const failures = [];
 
 /** Create a real git repo in a fresh temp dir; return its canonical path. */
 function makeRepo(prefix) {
-  const dir = realpathSync(mkdtempSync(resolve(tmpdir(), prefix)));
+  const dir = realpathSync(gafferMkdtemp(resolve(tmpdir(), prefix)));
   const res = spawnSync("git", ["-C", dir, "init", "-q"], { encoding: "utf8" });
   if (res.status !== 0) {
     throw new Error(`git init failed for ${dir} — git unavailable in this environment`);
@@ -43,7 +44,7 @@ function makeRepo(prefix) {
 
 const WRITE_ROOT = makeRepo("gaffer-int-write-");
 const READ_ROOT = makeRepo("gaffer-int-read-");
-const OUTSIDE = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-int-outside-")));
+const OUTSIDE = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-int-outside-")));
 const ENV = { GAFFER_WRITE_ROOTS: WRITE_ROOT, GAFFER_READ_ROOTS: READ_ROOT };
 
 /** Run the hook with a tool payload, explicit env, and cwd; return exit code. */

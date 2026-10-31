@@ -27,7 +27,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 
@@ -60,7 +61,7 @@ function eq(label, got, want) {
 }
 
 // --- Build a throwaway dispatch sqlite with the one table resolveRepoPath reads. ---
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "onboard-run-test-"));
+const WORKDIR = gafferMkdtemp(resolve(tmpdir(), "onboard-run-test-"));
 const DB_PATH = resolve(WORKDIR, "dispatch.sqlite");
 const REPO_PATH = resolve(WORKDIR, "demo-repo");
 mkdirSync(REPO_PATH, { recursive: true });
@@ -193,7 +194,7 @@ console.log("== AC9: an unresolvable target is REFUSED ==");
 console.log("== --summary: a short summary on stderr, the full log in $GAFFER_DATA/onboard.log ==");
 {
   const { writeFileSync, readFileSync, existsSync } = await import("node:fs");
-  const work = mkdtempSync(resolve(tmpdir(), "onboard-summary-"));
+  const work = gafferMkdtemp(resolve(tmpdir(), "onboard-summary-"));
   const crewDir = resolve(work, "crew");
   mkdirSync(resolve(crewDir, "dist", "cli"), { recursive: true });
   const crewOut = {

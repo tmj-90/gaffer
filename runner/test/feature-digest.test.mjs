@@ -24,7 +24,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -67,7 +68,7 @@ function eq(label, got, want) {
   else fail(`${label} (got ${JSON.stringify(got)}, want ${JSON.stringify(want)})`);
 }
 
-const WORKDIR = mkdtempSync(resolve(tmpdir(), "feature-digest-test-"));
+const WORKDIR = gafferMkdtemp(resolve(tmpdir(), "feature-digest-test-"));
 
 // --- A SHARED STUB CLI -------------------------------------------------------------
 // Stands in for BOTH the dispatch CLI (the `ticket show` read in readTicketView) AND

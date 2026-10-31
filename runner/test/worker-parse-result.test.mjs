@@ -18,7 +18,8 @@
 // Zero deps beyond node. Run: node test/worker-parse-result.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { writeFileSync, rmSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -186,7 +187,7 @@ console.log("== negative control: MALFORMED envelope → degraded path, never a 
 
 console.log("== parse-result CLI: the bash cap/spend guards' entrypoint (exact format) ==");
 {
-  const dir = mkdtempSync(join(tmpdir(), "worker-pr-"));
+  const dir = gafferMkdtemp(join(tmpdir(), "worker-pr-"));
   try {
     const write = (name, obj) => {
       const f = join(dir, name);

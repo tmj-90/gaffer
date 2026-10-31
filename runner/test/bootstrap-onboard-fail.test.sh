@@ -16,6 +16,7 @@
 #   B3  the tick reports error and the scaffold dir + delivery branch are kept
 # Run: bash runner/test/bootstrap-onboard-fail.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -30,8 +31,10 @@ command -v perl >/dev/null 2>&1 || { echo "SKIP: perl required (timeout primitiv
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/bootstrap-onboard-fail.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/bootstrap-onboard-fail.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ── STUB dispatch CLI: one ready BOOTSTRAP ticket (#7), a claim token, `repo add`
 #    refused with a VALIDATION_ERROR, and a recorder of every call. ─────────────────

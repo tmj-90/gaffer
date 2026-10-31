@@ -23,7 +23,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { mkdtempSync, writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, chmodSync, readFileSync, existsSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -56,7 +57,7 @@ function assert(label, cond) {
   cond ? ok(label) : fail(label);
 }
 
-const WORK = mkdtempSync(resolve(tmpdir(), "build-log-test-"));
+const WORK = gafferMkdtemp(resolve(tmpdir(), "build-log-test-"));
 
 // --- Stub `ticket list -s <status>` and `ticket show <ref>` ----------------------
 // Two DONE tickets:

@@ -21,6 +21,7 @@
 # Hermetic: real git repo + worktree; `node` is stubbed to record its argv+env, so
 # no ~/.claude.json is touched. Run: bash test/trust-main-worktree.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -35,8 +36,10 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 # Extract the REAL functions from tick.sh and source them.
 FN="$(mktemp "${TMPDIR:-/tmp}/trust-fn.XXXXXX")"
+gaffer_test_check_tmp "$FN" file || exit 70
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/trust-wt.XXXXXX")"
-trap 'rm -f "$FN"; rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'rm -f "$FN"; gaffer_test_rm_work "$WORK"' EXIT
 awk '/^gaffer_git_main_worktree\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" > "$FN"
 awk '/^gaffer_trust_workspace\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$TICK" >> "$FN"
 grep -q 'gaffer_git_main_worktree()' "$FN" \

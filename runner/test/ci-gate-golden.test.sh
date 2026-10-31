@@ -8,6 +8,7 @@
 # LC_ALL=C pins byte semantics across the ubuntu + macOS matrix.
 # Run: bash runner/test/ci-gate-golden.test.sh      (SEAM_GOLDEN_CAPTURE=1 to re-pin)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 export LC_ALL=C LC_CTYPE=C
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,9 @@ export CREW_DIR
 pass=0; fail=0
 ok() { echo "  ok   $1"; pass=$((pass + 1)); }
 no() { echo "  FAIL $1"; fail=$((fail + 1)); }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/ci-gate-golden.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/ci-gate-golden.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 pc() {
   local name="$1" label="$2" data="$3"

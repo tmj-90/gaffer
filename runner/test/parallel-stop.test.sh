@@ -11,6 +11,7 @@
 #   P3. KILL to the loop pid (no trap can run)  → workers notice the loop is gone
 # Run: bash runner/test/parallel-stop.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -22,12 +23,14 @@ command -v perl >/dev/null 2>&1 || { echo "SKIP: perl required (timeout primitiv
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/parallel-stop.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/parallel-stop.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
 LP=""
 cleanup() {
   [ -n "$LP" ] && kill -KILL -- "-$LP" 2>/dev/null
   workers | while read -r p; do kill -KILL "$p" 2>/dev/null; done
-  [ "${KEEP:-0}" = 1 ] || rm -rf "$WORK"
+  [ "${KEEP:-0}" = 1 ] || gaffer_test_rm_work "$WORK"
 }
 trap cleanup EXIT
 

@@ -27,6 +27,7 @@
 # Requires node + git + the built crew package (the prompt/MCP renderers the
 # positive control passes through). Run: bash runner/test/bootstrap-hook-fail-closed.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -44,7 +45,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/bootstrap-hook.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ── STUB dispatch CLI: one ready BOOTSTRAP ticket (#7, no linked repo), a claim
 #    token, and a recorder of every call (so the release can be asserted). ───────

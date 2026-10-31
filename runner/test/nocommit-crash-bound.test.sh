@@ -44,6 +44,7 @@
 # Requires the dispatch CLI to be built. SKIPs (exit 0) if it isn't.
 # Run: bash runner/test/nocommit-crash-bound.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -62,7 +63,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/nocommit-bound.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 DB="$WORK/dispatch.sqlite"
 export GAFFER_DATA="$WORK/data"     # DURABLE across simulated runs (like the usage ledger)
 mkdir -p "$GAFFER_DATA"

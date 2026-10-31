@@ -28,6 +28,7 @@
 #
 # Zero deps beyond git + python3. Run: bash test/backpressure.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -44,7 +45,8 @@ export MAX_CONCURRENT_TICKETS_PER_REPO=2
 source "$RUNNER_DIR/lib/backpressure.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/backpressure-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 REPO="$WORK/repo"
 git init -q -b main "$REPO"

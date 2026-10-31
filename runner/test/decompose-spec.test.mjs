@@ -21,7 +21,8 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +49,7 @@ function eq(label, got, want) {
 
 // Run the helper as a CLI with a JSON request via --input; return parsed stdout.
 function runCli(request, extraArgs = []) {
-  const dir = mkdtempSync(resolve(tmpdir(), "decompose-spec-test-"));
+  const dir = gafferMkdtemp(resolve(tmpdir(), "decompose-spec-test-"));
   const file = resolve(dir, "req.json");
   writeFileSync(file, JSON.stringify(request));
   const res = spawnSync(process.execPath, [HELPER, "--dry-run", "--input", file, ...extraArgs], {

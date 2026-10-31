@@ -17,6 +17,7 @@
 #       and land.sh / the conflict re-gate pass one too (wiring).
 # Run: bash runner/test/dod-regate-typecheck.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -24,8 +25,10 @@ PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-regate-tc.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/dod-regate-tc.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"
 export GAFFER_DATA="$WORK/data" GAFFER_DOD_INSTALL=0 GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
 unset GAFFER_DOD_TYPECHECK_CMD GAFFER_ALLOW_NO_DOD GAFFER_DOD GAFFER_DOD_TYPECHECK

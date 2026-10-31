@@ -12,6 +12,7 @@
 #   • it reads the DELIVERY BRANCH's tree (via a throwaway worktree), not the checkout.
 # Run: bash test/card-refresh.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -43,6 +44,7 @@ no(){ F=$((F + 1)); printf '  FAIL %s\n' "$1"; }
 gc(){ git -C "$1" -c user.email=t@t -c user.name=t "${@:2}"; }
 
 D="$(mktemp -d)"
+gaffer_test_check_tmp "$D" || exit 70
 git -C "$D" init -q -b main
 printf 'export const foo=1\n' > "$D/foo.ts"
 printf 'export const old=1\n' > "$D/old.ts"
@@ -81,7 +83,7 @@ NEW_MSTAT="$(q "SELECT model_status FROM file_card WHERE path='foo.ts'")"
 # no leftover worktree
 [ -z "$(git -C "$D" worktree list 2>/dev/null | grep gaffer-cards)" ] && ok "throwaway worktree cleaned up" || no "worktree leaked"
 
-rm -rf "$D"; rm -f "$MEMORY_DB"
+gaffer_test_rm_work "$D"; rm -f "$MEMORY_DB"
 echo
 echo "card-refresh: $P passed, $F failed"
 [ "$F" = 0 ]

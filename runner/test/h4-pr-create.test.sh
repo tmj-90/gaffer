@@ -18,6 +18,7 @@
 #
 # Zero real-network or dispatch deps. Run: bash test/h4-pr-create.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -35,7 +36,8 @@ log() { :; }  # suppress log output in tests
 source "$RUNNER_DIR/lib/pr-create.sh"
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/h4-pr-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
 # Helper: set up a minimal git repo

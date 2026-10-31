@@ -17,7 +17,8 @@
 // Zero deps beyond node. Run: node test/usage-limit-detect.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -365,7 +366,7 @@ assert(
   "an ordinary result's usageLimit is null",
   parseResult('{"result":"done","is_error":false}').usageLimit === null,
 );
-const dir = mkdtempSync(join(tmpdir(), "ul-detect-"));
+const dir = gafferMkdtemp(join(tmpdir(), "ul-detect-"));
 try {
   const f = join(dir, "r.json");
   writeFileSync(f, text);

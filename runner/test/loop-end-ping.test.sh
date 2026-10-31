@@ -17,6 +17,7 @@
 # unbuilt). mktemp + trap cleanup.
 # Run: bash test/loop-end-ping.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -27,8 +28,9 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 has()  { case "$1" in *"$2"*) return 0;; *) return 1;; esac; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/loop-end-ping-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 SINK="$WORK/ping.txt"
 
 # Count seams: each prints the per-case fixture JSON from its env var.

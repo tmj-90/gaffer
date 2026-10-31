@@ -24,14 +24,8 @@
 //   issue edit N --repo S --add-label A --remove-label R  → relabels
 // Anything else exits 1 ("unknown command"), recorded like every other call.
 import { execFileSync } from "node:child_process";
-import {
-  appendFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "../../../../runner/test/lib/tmpdir.mjs";
 import os from "node:os";
 import path from "node:path";
 
@@ -256,7 +250,7 @@ function main() {
     const pin = opt("--match-head-commit");
     if (pin && pin !== sha)
       return done(1, "", `Head branch was modified. Review and try the merge again.`);
-    const tmp = mkdtempSync(path.join(os.tmpdir(), "fake-gh-merge-"));
+    const tmp = gafferMkdtemp(path.join(os.tmpdir(), "fake-gh-merge-"));
     try {
       git(tmp, "clone", "-q", origin, ".");
       git(tmp, "checkout", "-q", pr.base);

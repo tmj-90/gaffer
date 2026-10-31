@@ -17,15 +17,8 @@
 // Run: node runner/test/skill-add.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, lstatSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,7 +49,7 @@ const symlinkExists = (p) => {
 
 const { addSkill, validateSkillDir } = await import(MOD);
 
-const WORK = mkdtempSync(join(tmpdir(), "skill-add-test."));
+const WORK = gafferMkdtemp(join(tmpdir(), "skill-add-test."));
 const SKILLS = join(WORK, "library");
 mkdirSync(SKILLS, { recursive: true });
 

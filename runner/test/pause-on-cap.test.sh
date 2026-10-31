@@ -20,6 +20,7 @@
 #
 # Zero deps beyond git + node. Run: bash test/pause-on-cap.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -36,8 +37,9 @@ command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$CLI" ] || { echo "SKIP: dispatch CLI not built ($CLI) — run: pnpm -C $ROOT/packages/dispatch build"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/pause-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 export DISPATCH_DB="$WORK/dispatch.db"
 wg() { node "$CLI" --db "$DISPATCH_DB" "$@"; }

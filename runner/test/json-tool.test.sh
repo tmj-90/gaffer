@@ -15,6 +15,7 @@
 #   9  factory.config.sh's jget is node-backed and no runner script still calls python3.
 # Run: bash runner/test/json-tool.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -23,7 +24,9 @@ P=0; F=0
 ok(){ P=$((P + 1)); printf '  ok   %s\n' "$1"; }
 no(){ F=$((F + 1)); printf '  FAIL %s\n' "$1"; }
 jt(){ node "$JT" "$@"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/json-tool-test.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/json-tool-test.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 
 SHOW='{"ticket":{"title":"Add thing","status":"ready","description":"long description here","risk_level":null,"attempt_count":"2","bootstrap":1,"delivery_budget_usd":null},
  "repositories":[{"id":"r1","name":"app","local_path":"/repos/app","default_branch":"trunk","stack":"node","access":"write","relation":"confirmed","test_command":"npm test","lint_command":"npm run lint\tfast"},

@@ -27,6 +27,7 @@
 # shared values, this test FAILS. It runs the seam as shipped (the typed
 # renderer, packages/crew renderMcpCli.js), so it needs the crew build.
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -36,7 +37,8 @@ TEMPLATE="$RUNNER_DIR/.mcp.json"
 [ -f "$RUNNER_DIR/../packages/crew/dist/runtime/context/renderMcpCli.js" ] || { echo "SKIP: crew not built — run pnpm -C packages/crew build"; exit 0; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/mcp-render-seam-rc.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 # The seam + its _gaffer_sed_repl helper live in factory.config.sh. Source it
 # with the DB vars set so its top-level defaults resolve without side effects
 # (mirrors mcp-render-golden.test.sh).

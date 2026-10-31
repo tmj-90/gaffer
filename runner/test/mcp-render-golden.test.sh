@@ -9,6 +9,7 @@
 # renderer FAILS CLOSED on a leftover placeholder and without the crew build.
 # Run: bash runner/test/mcp-render-golden.test.sh   (SEAM_GOLDEN_CAPTURE=1 to re-pin)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -18,7 +19,9 @@ TEMPLATE="$RUNNER_DIR/.mcp.json"
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
 [ -f "$RENDER_CLI" ] || { echo "SKIP: crew not built ($RENDER_CLI) — run pnpm -C packages/crew build"; exit 0; }
 [ -f "$TEMPLATE" ] || { echo "FAIL: template missing ($TEMPLATE)" >&2; exit 1; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/mcp-render-golden.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/mcp-render-golden.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/data" DISPATCH_DB="$WORK/data/dispatch.sqlite" MEMORY_DB="$WORK/data/memory.sqlite"
 mkdir -p "$GAFFER_DATA"
 # shellcheck source=../factory.config.sh

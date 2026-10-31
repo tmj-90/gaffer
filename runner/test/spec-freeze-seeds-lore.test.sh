@@ -20,6 +20,7 @@
 #
 # Run:  perl -e 'alarm 120; exec @ARGV' /bin/bash runner/test/spec-freeze-seeds-lore.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -40,7 +41,8 @@ if [ ! -f "$MEMORY_CLI" ] || [ ! -f "$DISPATCH_CLI" ]; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+gaffer_test_check_tmp "$TMP" || exit 70
+trap 'gaffer_test_rm_work "$TMP"' EXIT
 
 export MEMORY_CLI_BIN="$MEMORY_CLI"
 DDB="$TMP/dispatch.sqlite"

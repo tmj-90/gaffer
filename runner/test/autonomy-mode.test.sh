@@ -16,6 +16,7 @@
 # the only inputs are the env vars we pass. Zero deps beyond bash.
 # Run: bash runner/test/autonomy-mode.test.sh   (bash 3.2 safe)
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -26,7 +27,8 @@ ok()   { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/autonomy-mode.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+gaffer_test_check_tmp "$WORK" || exit 70
+trap 'gaffer_test_rm_work "$WORK"' EXIT
 mkdir -p "$WORK/data"   # empty → no settings.json, so the loader is inert
 
 # Source factory.config.sh in a clean env with the given extra vars, then echo

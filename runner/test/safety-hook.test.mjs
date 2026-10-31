@@ -399,15 +399,8 @@ allowed("pure content search names no secret path (documented gap)", "grep -R TO
 // temp directories to act as a write-root and a read-root, and run the hook
 // with GAFFER_WRITE_ROOTS / GAFFER_READ_ROOTS set, asserting allow/deny.
 // =====================================================================
-import {
-  copyFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { copyFileSync, existsSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 
 // --- Deterministic replacement for the stale `git add .` allow ---------------
@@ -419,7 +412,7 @@ import { tmpdir } from "node:os";
 //     ALLOW.
 //   • outside any git repo → inspection unavailable → fail-closed DENY.
 {
-  const repo = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-gitadd-")));
+  const repo = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-gitadd-")));
   const initRes = spawnSync("git", ["-C", repo, "init", "-q"], { encoding: "utf8" });
   const gitOk = initRes.status === 0;
   if (gitOk) {
@@ -440,7 +433,7 @@ import { tmpdir } from "node:os";
     passed += 1;
   }
   // Outside any git repo, `git add .` cannot be proven secret-free → fail-closed.
-  const noRepo = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-norepo-")));
+  const noRepo = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-norepo-")));
   const outside = hookExit(
     { tool_name: "Bash", tool_input: { command: "git add ." } },
     { cwd: noRepo },
@@ -452,9 +445,9 @@ import { tmpdir } from "node:os";
   rmSync(noRepo, { recursive: true, force: true });
 }
 
-const WRITE_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-write-")));
-const READ_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-read-")));
-const OUTSIDE = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-outside-")));
+const WRITE_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-write-")));
+const READ_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-read-")));
+const OUTSIDE = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-outside-")));
 const ROOT_ENV = { GAFFER_WRITE_ROOTS: WRITE_ROOT, GAFFER_READ_ROOTS: READ_ROOT };
 
 /** Decide a tool payload with explicit env + cwd; return the exit code. */
@@ -1102,7 +1095,7 @@ rootCase("FALLBACK secret read still DENY", read(`${WRITE_ROOT}/.env`), {}, WRIT
 // + GAFFER_BOOTSTRAP_DIR, and is tightly scoped: only the install rule, only when
 // the command runs inside the bootstrap dir. Everything else stays gated.
 // BOOT_DIR doubles as a write-root so the install command's CWD is inside it.
-const BOOT_DIR = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-bootstrap-")));
+const BOOT_DIR = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-bootstrap-")));
 const BOOT_ENV = {
   GAFFER_BOOTSTRAP_INSTALL: "1",
   GAFFER_BOOTSTRAP_DIR: BOOT_DIR,
@@ -1240,7 +1233,7 @@ rmSync(BOOT_DIR, { recursive: true, force: true });
 // raw DB. Privileged write subcommands and raw DB access are DENIED; benign
 // read-only CLI lookups stay ALLOWED.
 // =====================================================================
-const CP_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-cp-")));
+const CP_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-cp-")));
 const CP_ENV = {
   GAFFER_WRITE_ROOTS: CP_ROOT,
   DISPATCH_DB: `${CP_ROOT}/dispatch.sqlite`,
@@ -1329,7 +1322,7 @@ rmSync(CP_ROOT, { recursive: true, force: true });
 // with GAFFER_WRITE_ROOTS set to a temp dir whose cwd is inside it, so the only
 // reason any of these escapes the root is the bug under test.
 // =====================================================================
-const PB_WRITE_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-pocwr-")));
+const PB_WRITE_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-pocwr-")));
 const PB_ENV = { GAFFER_WRITE_ROOTS: PB_WRITE_ROOT };
 
 // Each PoC: the EXACT adversarial command, asserted to BLOCK (exit 2). These
@@ -1443,7 +1436,7 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
 // and nothing is written — so the rest of this suite (no GAFFER_DATA) is provably
 // unaffected by the logging. ---
 {
-  const ledgerDir = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-ledger-")));
+  const ledgerDir = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-ledger-")));
   const payload = { tool_name: "Bash", tool_input: { command: "cat .env" } };
   const res = hookExit(payload, {
     env: { ...process.env, GAFFER_DATA: ledgerDir, GAFFER_TICKET: "99" },
@@ -1504,7 +1497,7 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
 // a path OUTSIDE that root — so the ONLY reason it could escape is the bug. All
 // were ALLOWED pre-fix and MUST now BLOCK (exit 2).
 {
-  const S1_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-s1amb-")));
+  const S1_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-s1amb-")));
   const S1_ENV = { GAFFER_WRITE_ROOTS: S1_ROOT };
   const denyAmb = (label, cmd) => {
     const code = runWithEnv(bash(cmd), S1_ENV, S1_ROOT);
@@ -1605,8 +1598,8 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
   // FOLLOWED to its target, which classifies "outside" → BLOCK. We also confirm
   // no file lands outside, and that a link pointing INSIDE the root stays writable.
   {
-    const SWR = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-symwr-")));
-    const SOUT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-symout-")));
+    const SWR = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-symwr-")));
+    const SOUT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-symout-")));
     const env = { GAFFER_WRITE_ROOTS: SWR };
     const link = resolve(SWR, "link");
     const outsideTarget = resolve(SOUT, "target"); // dangling — does not exist yet
@@ -1631,7 +1624,7 @@ allowed("literal in-root cp still allowed", "cp src/a.ts sub/b.ts");
   // also fire on the Bash surface (cwd = the write-root so the ONLY reason each
   // escapes is the bug under test).
   {
-    const BWR = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-bashwrite-")));
+    const BWR = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-bashwrite-")));
     const env = { GAFFER_WRITE_ROOTS: BWR };
     const denyBash = (label, cmd) => {
       const code = runWithEnv(bash(cmd), env, BWR);
@@ -1810,8 +1803,8 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
 {
   const CAP = MAX_INSPECTED_FIELD_BYTES;
   const OVERSIZED = "unverifiable: tool input too large (";
-  const SZ_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-sizecap-")));
-  const SZ_DATA = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-sizecap-data-")));
+  const SZ_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-sizecap-")));
+  const SZ_DATA = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-sizecap-data-")));
   const env = { ...process.env, GAFFER_WRITE_ROOTS: SZ_ROOT, GAFFER_READ_ROOTS: "" };
   const LINE = "The quick brown fox jumps over the lazy dog, 0123456789.\n";
   /** `head` + ordinary prose lines + `tail`, exactly `bytes` long (ASCII). */
@@ -2082,7 +2075,7 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
 // =====================================================================
 {
   const BLOCKED = "BLOCKED by gaffer safety hook: ";
-  const CT_ROOT = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-contract-")));
+  const CT_ROOT = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-contract-")));
   const CT_ENV = { ...process.env, GAFFER_WRITE_ROOTS: CT_ROOT, GAFFER_READ_ROOTS: "" };
   const inRoot = { env: CT_ENV, cwd: CT_ROOT };
   /** Spawn the wrapper with raw stdin; return { status, stdout, stderr }. */
@@ -2239,7 +2232,7 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   );
 
   // The ledger is written by the hook process itself.
-  const ledgerDir = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-contract-ledger-")));
+  const ledgerDir = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-contract-ledger-")));
   contract(
     "block ledger",
     call("Bash", { command: "cat .env" }),
@@ -2279,7 +2272,7 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
 
   // Both guarded imports fail CLOSED (exit 2), never exit 1 (= ALLOW): the wrapper
   // without its core, and wrapper + core without the deny-list.
-  const lone = realpathSync(mkdtempSync(resolve(tmpdir(), "gaffer-contract-lone-")));
+  const lone = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-contract-lone-")));
   copyFileSync(HOOK, resolve(lone, "safety-hook.mjs"));
   const noCore = spawnHook(JSON.stringify(call("Bash", { command: "ls" })), {
     hook: resolve(lone, "safety-hook.mjs"),

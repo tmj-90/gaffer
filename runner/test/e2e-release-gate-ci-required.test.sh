@@ -20,6 +20,7 @@
 #   3  every gh call used the real field names.
 # Run: bash runner/test/e2e-release-gate-ci-required.test.sh
 # =====================================================================
+. "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
@@ -33,9 +34,11 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 # Portable bound (macOS has no GNU timeout).
 bounded() { perl -e 'alarm shift; exec @ARGV' "$@"; }
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/rg-ci-required.XXXXXX")"; WORK="$(cd "$WORK" && pwd -P)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/rg-ci-required.XXXXXX")"
+gaffer_test_check_tmp "$WORK" || exit 70
+WORK="$(cd "$WORK" && pwd -P)"
 TICK_PID=""
-cleanup() { [ -n "$TICK_PID" ] && kill "$TICK_PID" 2>/dev/null; [ "${KEEP:-0}" = 1 ] || rm -rf "$WORK"; }
+cleanup() { [ -n "$TICK_PID" ] && kill "$TICK_PID" 2>/dev/null; [ "${KEEP:-0}" = 1 ] || gaffer_test_rm_work "$WORK"; }
 trap cleanup EXIT
 mkdir -p "$WORK/data" "$WORK/bin"
 R="$WORK/repo"; mkdir -p "$R/src" "$R/test"

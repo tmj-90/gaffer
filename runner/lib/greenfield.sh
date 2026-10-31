@@ -276,6 +276,25 @@ gaffer_ensure_node_modules() {
     return 0 # no lockfile → not a deterministic install; leave it for a human
   fi
   command -v "$pm" >/dev/null 2>&1 || return 0
+  # STRICT-REQUIRE: this prime runs on the HOST before any sandbox wrap exists, and an
+  # install executes repository code (.pnpmfile.cjs, yarnPath) despite --ignore-scripts.
+  # Under GAFFER_STRICT_REQUIRE nothing of the repository's runs outside an OS sandbox,
+  # so the host prime is refused; the delivery worktree's pre-gate install
+  # (gaffer_dod_install_deps) runs inside the validation sandbox instead.
+  case "${GAFFER_STRICT_REQUIRE:-0}" in
+    1|true|yes|on)
+      printf 'gaffer: greenfield: GAFFER_STRICT_REQUIRE=1 — not priming %s deps on the host in %s (the sandboxed pre-gate install covers the worktree)\n' "$pm" "$dir" >&2
+      return 0 ;;
+  esac
+  # A STRIPPED environment (no operator tokens, a throwaway HOME) — the same allowlist
+  # the sandboxed pre-gate install uses (lib/dod.sh gaffer_dod_install_env).
+  local -a _genv=()
+  local _ghome=""
+  if declare -F gaffer_dod_install_env >/dev/null 2>&1; then
+    GAFFER_DOD_WRAP="" gaffer_dod_install_env _genv _ghome
+  else
+    _genv=( "PATH=${PATH:-/usr/bin:/bin}" "HOME=/nonexistent" "TMPDIR=${TMPDIR:-/tmp}" "CI=1" )
+  fi
 
   # Frozen/CI install first (respects the lockfile); fall back to a plain install if
   # the lockfile is out of sync, so a hand-authored scaffold still primes. Output is
@@ -286,19 +305,20 @@ gaffer_ensure_node_modules() {
   local _out=""
   case "$pm" in
     pnpm)
-      _out="$( { (cd "$dir" && pnpm install --frozen-lockfile --ignore-scripts) ||
-        (cd "$dir" && pnpm install --ignore-scripts); } 2>&1 )" || true
+      _out="$( { (cd "$dir" && env -i "${_genv[@]}" pnpm install --frozen-lockfile --ignore-scripts) ||
+        (cd "$dir" && env -i "${_genv[@]}" pnpm install --ignore-scripts); } 2>&1 )" || true
       ;;
     yarn)
-      _out="$( { (cd "$dir" && yarn install --frozen-lockfile --ignore-scripts) ||
-        (cd "$dir" && yarn install --ignore-scripts); } 2>&1 )" || true
+      _out="$( { (cd "$dir" && env -i "${_genv[@]}" yarn install --frozen-lockfile --ignore-scripts) ||
+        (cd "$dir" && env -i "${_genv[@]}" yarn install --ignore-scripts); } 2>&1 )" || true
       ;;
     npm)
-      _out="$( { (cd "$dir" && npm ci --ignore-scripts) ||
-        (cd "$dir" && npm install --ignore-scripts); } 2>&1 )" || true
+      _out="$( { (cd "$dir" && env -i "${_genv[@]}" npm ci --ignore-scripts) ||
+        (cd "$dir" && env -i "${_genv[@]}" npm install --ignore-scripts); } 2>&1 )" || true
       ;;
   esac
 
+  [ -n "$_ghome" ] && rm -rf "$_ghome"
   # Success = node_modules materialised → echo the pm for the caller's log. Otherwise
   # the install was ATTEMPTED but failed: surface the captured reason on stderr and
   # echo a `FAILED:<pm>` sentinel so the caller logs an accurate, ticket-scoped warning

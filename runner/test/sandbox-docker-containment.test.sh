@@ -197,6 +197,9 @@ PAYLOAD3="
   if env | grep -q TOPSECRET_KEY; then echo VKEY_LEAK; else echo VKEY_ABSENT; fi
   if [ -e /root/.claude/.credentials.json ]; then echo VCRED_PRESENT; else echo VCRED_ABSENT; fi
   if echo canary3 > '$WT/canary3' 2>/dev/null; then echo VWRITE_OK; else echo VWRITE_FAIL; fi
+  # External review #1: the pre-gate dependency install runs under THIS profile, so a
+  # repository install hook writing outside the worktree must not reach the host.
+  echo hook > '$WORK/install-hook-marker' 2>/dev/null || true
 "
 printf '{}' > "$WORK/fake-creds.json"
 OUT3="$(ANTHROPIC_API_KEY=TOPSECRET_KEY GAFFER_SANDBOX_CLAUDE_CREDENTIALS="$WORK/fake-creds.json" GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none \
@@ -208,6 +211,7 @@ done
 for bad in VDB_VISIBLE VDATA_PRESENT VKEY_LEAK VCRED_PRESENT VWRITE_FAIL; do
   if echo "$OUT3" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
 done
+if [ -e "$WORK/install-hook-marker" ]; then echo "  FAIL an install-hook write outside the worktree reached the host"; fail=1; else echo "  ok   VINSTALL_HOOK_CONTAINED (a write outside the worktree never reached the host)"; fi
 # And the refusal: bridge on + an MCP config + no socket must not run at all.
 if GAFFER_MCP_BRIDGE=1 timeout 60 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c 'echo RAN' gaffer-sbx --mcp-config "$GAFFER_DATA/mcp-runtime.self.json" >"$WORK/refuse.out" 2>&1; then
   echo "  FAIL bridge on + MCP config + no socket RAN: $(cat "$WORK/refuse.out")"; fail=1

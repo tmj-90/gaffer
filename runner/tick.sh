@@ -1304,8 +1304,27 @@ if [ "$READY_COUNT" -gt 0 ]; then
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     gaffer_record_skill_usage "$NUM" bootstrap "$STACK" "$B_SKILLS" "$B_USAGE_JSON" \
       "bootstrap-$NUM" "$B_DIR" "$_B_SKILL_SINCE"
+    # USAGE WINDOW: a bootstrap refused by the plan's usage window / a rate limit is not
+    # a failed scaffold (same rc 0/1/2 contract as the delivery path below). Record the
+    # pause, release the claim to `ready` without parking it for a human, and keep the
+    # partial scaffold: the dir stays a resumable bootstrap target for the retry.
+    _B_UL_REC="$(gaffer_usage_pause_record "$B_USAGE_JSON" "$NUM" bootstrap)"; _B_UL_RC=$?
     rm -f "$B_USAGE_JSON"
     log "bootstrap delivery for #$NUM finished (rc=$brc)"
+    if [ "$_B_UL_RC" != 1 ]; then
+      _UL_UNTIL=""; _UL_MSG=""
+      IFS=$'\t' read -r _ _UL_UNTIL _ _ _UL_MSG <<<"$_B_UL_REC"
+      _UL_LINE="$(gaffer_usage_pause_active || echo "paused: usage limit")"
+      gaffer_release_delivery ready \
+        "usage limit: ${_UL_MSG:-refused by the usage window}; ${_UL_LINE}; not counted as an attempt (scaffold kept at $B_DIR)" \
+        usage_limit "" "" "$_UL_UNTIL"
+      if [ "$_B_UL_RC" != 0 ]; then
+        gaffer_skip_ticket "$NUM"   # FAIL CLOSED: no pause written, so do not re-claim it this run
+        log "USAGE: WARNING — bootstrap #$NUM was refused by a usage/rate limit but the pause could not be written under $GAFFER_DATA; skipping the ticket for the rest of this run"
+      fi
+      log "USAGE: bootstrap #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready, scaffold kept at $B_DIR; $_UL_LINE"
+      result usage_paused; exit 0
+    fi
     if [ "$brc" -ne 0 ]; then
       # FINDING-12: park bootstrap failures to the VISIBLE `blocked` column (event +
       # attention count in status.sh / the human queue) — `refining` hid them from

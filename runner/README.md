@@ -148,6 +148,9 @@ a pause: they need a person to raise the cap, so they stay ordinary failures.
   an ordinary result into a refusal: a classifier failure is an ordinary result, and
   only a confirmed refusal whose pause could not be written fails closed (released
   without an attempt and skipped for the rest of the run).
+- A greenfield bootstrap refused the same way records the pause too and goes back
+  to `ready` (not `blocked`, not skipped); its partial scaffold stays in place as a
+  resumable bootstrap target for the retry.
 - `lib/usage-pause.mjs` writes `$GAFFER_DATA/usage-pause.json`. The pause ends at the
   reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
   (default 60) when none was printed; never sooner than 10 minutes, never later than

@@ -73,6 +73,32 @@ gaffer_dod_install_enabled() {
   esac
 }
 
+# The STRIPPED environment the pre-gate install runs in (an allowlist, never the
+# runner's env): PATH, a throwaway HOME, TMPDIR, locale, CI=1 and the egress proxy /
+# CA settings a registry fetch needs. Nothing else crosses — no DISPATCH_API_TOKEN,
+# GITHUB_TOKEN, ANTHROPIC_API_KEY, NPM_TOKEN, cloud keys. Under the docker provider
+# the image's own HOME/PATH apply (the host's do not exist inside the container).
+# Fills the named array ($1) and names the throwaway HOME in $2 (the caller removes it).
+#   gaffer_dod_install_env <array-name> <home-var-name>
+gaffer_dod_install_env() {
+  local _arr="$1" _hv="$2" _h="" _v _name
+  local -a _e=()
+  if [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ] && [ -n "${GAFFER_DOD_WRAP:-}" ]; then
+    _e+=( "HOME=${GAFFER_SANDBOX_HOME:-/root}" "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+  else
+    _h="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-dod-install-home.XXXXXX" 2>/dev/null)" || _h=""
+    _e+=( "HOME=${_h:-/nonexistent}" "PATH=${PATH:-/usr/bin:/bin}" )
+  fi
+  _e+=( "TMPDIR=${TMPDIR:-/tmp}" "CI=1" "LANG=${LANG:-C.UTF-8}" )
+  for _name in LC_ALL HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy \
+               NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
+    eval "_v=\${$_name:-}"
+    [ -n "$_v" ] && _e+=( "$_name=$_v" )
+  done
+  eval "$_arr=(\"\${_e[@]}\")"
+  eval "$_hv=\"\$_h\""
+}
+
 # PRE-GATE ENABLER (not a gate). A fresh delivery worktree has no node_modules, so
 # the DoD test gate cannot run — the first greenfield deliveries fail "tests could
 # not run" until deps are present. This installs the worktree's dependencies IN THE
@@ -90,6 +116,8 @@ gaffer_dod_install_enabled() {
 #   <pm>                 → install succeeded (node_modules materialised)
 #   FAILED:<pm>          → install ATTEMPTED but failed (diagnostic on stderr)
 #   FAILED:timeout:<pm>  → install TIMED OUT (gaffer_timeout returned 124)
+#   SKIPPED:sandbox_unavailable:<pm>
+#                        → GAFFER_STRICT_REQUIRE=1 and no validation wrap: refused
 #   (empty)              → no-op (non-node repo, no lockfile, deps already present,
 #                          or the pm binary is unavailable)
 #   gaffer_dod_install_deps <worktree-dir>
@@ -129,13 +157,35 @@ gaffer_dod_install_deps() {
     npm)  _script='npm ci --ignore-scripts || npm install --ignore-scripts' ;;
   esac
 
+  # SAME ISOLATION BOUNDARY AS VALIDATION. An install executes repository code
+  # (a .pnpmfile.cjs, a yarn `yarnPath`, a lifecycle script a package manager runs
+  # despite --ignore-scripts), so it runs exactly where the gates run: through
+  # GAFFER_DOD_WRAP with the validation profile (no data plane, no model credential,
+  # the same write roots), in a STRIPPED environment (env -i: no operator tokens, a
+  # throwaway HOME so ~/.npmrc auth and other HOME secrets are not readable). Under
+  # GAFFER_STRICT_REQUIRE an install with no wrap FAILS CLOSED (nothing executes):
+  # the operator asserted that no repository code runs outside an OS sandbox.
+  local _wrap="${GAFFER_DOD_WRAP:-}" _profile=() _ienv=() _ihome=""
+  if [ -z "$_wrap" ]; then
+    case "${GAFFER_STRICT_REQUIRE:-0}" in
+      1|true|yes|on)
+        printf 'gaffer: dod-install: GAFFER_STRICT_REQUIRE=1 and no validation sandbox wraps the install in %s — NOT running %s install (fail closed; the test gate will surface missing deps)\n' "$dir" "$pm" >&2
+        echo "SKIPPED:sandbox_unavailable:$pm"
+        return 0 ;;
+    esac
+  else
+    _profile=( env GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none )
+  fi
+  gaffer_dod_install_env _ienv _ihome
   local _out _rc
   _out="$(mktemp "${TMPDIR:-/tmp}/gaffer-dod-install.XXXXXX")" || _out="/dev/null"
   # stdin from /dev/null: the caller loops over its worktree rows on stdin, and an
   # install that reads stdin would swallow the rows for the repos after this one.
+  # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$dir" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" bash -c "$_script" ) </dev/null >"$_out" 2>&1
+    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap env -i "${_ienv[@]}" bash -c "$_script" ) </dev/null >"$_out" 2>&1
   _rc=$?
+  [ -n "$_ihome" ] && rm -rf "$_ihome"
 
   # Fail-soft verdict. Success = node_modules materialised → echo the pm for the
   # caller's log. Otherwise the install was ATTEMPTED but failed: surface the
@@ -326,6 +376,8 @@ gaffer_dod_rerun_serial() {
 #          GATE<TAB>name<TAB>repo<TAB>PASS|FAIL|SKIP<TAB>rc<TAB>note
 #        and, for a FAIL, a captured output tail framed by:
 #          ---DOD-OUTPUT name@repo---\n<tail>\n---END-DOD-OUTPUT---
+#        and, for the tests gate (pass or fail), the runner's summary lines framed by:
+#          ---DOD-TALLY tests@repo---\n<lines>\n---END-DOD-TALLY---
 #
 # RETURNS: 0 when every gate passed or was skipped; 1 when ANY gate failed. Pure:
 # moves/evidence/logging are the caller's job.
@@ -418,10 +470,61 @@ gaffer_run_dod_gates() {
           || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
         printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
       fi
+      # REVIEW PACKET: keep the test runner's own summary lines (pass or fail) so the
+      # Review view can say what the runner saw and flag an agent claim that disagrees.
+      [ "$gate" = "tests" ] && gaffer_dod_tally_block "$tmpout" "$gate" "$label" >> "$results"
     done
   done
   rm -f "$tmpout"
   [ "$any_fail" -eq 0 ]
+}
+
+# REVIEW PACKET: the summary lines a test gate's output carries, framed as
+#   ---DOD-TALLY <gate>@<repo>---\n<lines>\n---END-DOD-TALLY---
+# Lines kept (ANSI stripped, each cut to 300 chars, the last 40): vitest
+# "Tests  N passed (N)", jest "Tests: … total", pytest "N passed … in 0.1s", cargo
+# "test result: …", node --test "# tests N" / "# pass N" …; for `go test -v`, the
+# top-level --- PASS/FAIL/SKIP lines are
+# counted into one "gotest-tally: pass=N fail=M skip=K" line. The lines are the
+# delivered code's own output, so tabs become spaces and any line that starts with
+# GATE, --- or gotest-tally: is dropped: nothing in the block can pass for a runner
+# GATE row, close the frame early or fake the go tally. Prints nothing when no
+# summary is found. Pure text in, text out; never fails the gate.
+#   gaffer_dod_tally_block <gate-output-file> <gate> <repo-label>
+gaffer_dod_tally_block() {
+  local infile="$1" gate="$2" label="$3" lines
+  [ -f "$infile" ] || return 0
+  lines="$(awk '
+    BEGIN { esc = sprintf("%c", 27); n = 0; gp = 0; gf = 0; gs = 0 }
+    {
+      line = $0
+      gsub(esc "\\[[0-9;?]*[A-Za-z]", "", line)
+      gsub(/\r/, "", line)
+      # A tab in a kept line could forge a GATE row: the results file is tab-separated.
+      gsub(/\t/, " ", line)
+      if (line ~ /^--- PASS: /) { gp++; next }
+      if (line ~ /^--- FAIL: /) { gf++; next }
+      if (line ~ /^--- SKIP: /) { gs++; next }
+      t = line; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t)
+      keep = 0
+      if (t ~ /^Tests[ \t]+.*[0-9]+ (passed|failed|skipped|todo).*\([0-9]+\)$/) keep = 1
+      else if (t ~ /^Tests:[ \t]+.*[0-9]+ total/) keep = 1
+      else if (t ~ /^test result: /) keep = 1
+      else if (t ~ /[0-9]+ (passed|failed).* in [0-9.]+s/) keep = 1
+      else if (t ~ /^(# |ℹ )(tests|pass|fail|cancelled|skipped|todo) [0-9]+$/) keep = 1
+      # Never keep a line that reads as a runner row or frame marker (GATE …, ---…)
+      # or as the go tally this block writes itself.
+      if (t ~ /^(GATE|---|gotest-tally:)/) keep = 0
+      if (keep) { buf[n % 40] = substr(t, 1, 300); n++ }
+    }
+    END {
+      start = (n > 40) ? n - 40 : 0
+      for (i = start; i < n; i++) print buf[i % 40]
+      if (gp + gf + gs > 0) printf "gotest-tally: pass=%d fail=%d skip=%d\n", gp, gf, gs
+    }
+  ' "$infile" 2>/dev/null)" || return 0
+  [ -n "$lines" ] || return 0
+  printf -- '---DOD-TALLY %s@%s---\n%s\n---END-DOD-TALLY---\n' "$gate" "$label" "$lines"
 }
 
 # Render a one-line human summary of a results file (for the factory log).
@@ -468,6 +571,10 @@ gaffer_dod_evidence_summary() {
     local json
     json="$(awk -F'\t' -v OVERALL="$overall" '
       BEGIN { printf "{\"dod\":\"%s\",\"gates\":[", OVERALL }
+      # GATE rows are read only outside the framed output/tally blocks.
+      /^---DOD-(OUTPUT|TALLY) / { inframe = 1; next }
+      /^---END-DOD-(OUTPUT|TALLY)---/ { inframe = 0; next }
+      inframe { next }
       $1=="GATE" {
         if (n++) printf ","
         gsub(/\\/,"\\\\",$6); gsub(/"/,"\\\"",$6)

@@ -6,6 +6,31 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Added — verify the file-card index against a tree
+
+- **`memory card verify --canonical <c> --repo <r> --repo-root <abs> [--fix]
+  [--commit <sha>] [--json]`.** Checks every stored card for the repo against the
+  tree at `--repo-root`: a card whose path is not there is *missing*, one whose
+  content hash differs is *stale*. `--fix` deletes missing cards and re-cards
+  stale ones (keeping their summary), then checks again; `--commit` records the
+  watermark only when the final check is clean, and the command exits 1 while
+  problems remain. The runner's post-merge refresh ends with it, so a repo is
+  never recorded as indexed at a commit its cards do not describe (core:
+  `verifyFileCards`, `listStoredCardHashes`).
+- **`memory card upsert --carry-from <old-path>`.** A renamed file's new card
+  takes the old card's summary when the refresh is mechanical-only.
+### Security — drafts are invisible to factory agents in every read path
+
+- **An unapproved draft no longer reaches another agent (external review #7).** In
+  factory context a second agent learned a draft's id from `suggest_lore`'s
+  `possibleDuplicates` and fetched its full text with `get_lore`. The
+  publication-status check that `search_lore` applies now covers the duplicate
+  feedback (`findPossibleDuplicates(…, { includeDrafts: false })`, active records
+  only), `get_lore` (a draft answers `{ found: false, id }`, exactly like a missing
+  id) and `report_conflict` (refused as an unknown id). Standalone memory-mcp is
+  unchanged. Tests: `test/mcp-server.test.ts`, crew's
+  `test/memory-draft-visibility-parity.test.ts` against the real server.
+
 ### Fixed — feature ledger and first open
 
 - **A re-added feature no longer loses ledger data.** `add_feature` / `memory

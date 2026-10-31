@@ -107,14 +107,22 @@ export {
   getFileCard,
   getWatermark,
   listCardsForPaths,
+  listStoredCardHashes,
   movableLegacyKeys,
   rekeyRepo,
   repoKey,
   searchFileCards,
   setWatermark,
   upsertFileCard,
+  verifyFileCards,
 } from "./core/fileCards.js";
-export type { RekeyResult, RepoKeyPresence, UpsertFileCardInput } from "./core/fileCards.js";
+export type {
+  CardVerification,
+  RekeyResult,
+  RepoKeyPresence,
+  StoredCardHash,
+  UpsertFileCardInput,
+} from "./core/fileCards.js";
 export { canonicalizeRepo, legacyRepoIdentityForms } from "./core/repoIdentity.js";
 export { validateMechanical, validateModel, sha256 } from "./core/cardValidation.js";
 export type {

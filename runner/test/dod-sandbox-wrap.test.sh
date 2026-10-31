@@ -26,7 +26,7 @@ WT="$WORK/wt"; mkdir -p "$WT"
 # A wrap stub: records that it ran + its cwd, then executes the wrapped command.
 cat > "$WORK/wrap.sh" <<'STUB'
 #!/usr/bin/env bash
-printf '%s\n' "wrapped cwd=$(pwd -P) argv=$*" >> "${WRAP_LOG:?}"
+printf '%s\n' "wrapped profile=${GAFFER_SANDBOX_PROFILE:-none} cwd=$(pwd -P) argv=$*" >> "${WRAP_LOG:?}"
 exec "$@"
 STUB
 chmod +x "$WORK/wrap.sh"
@@ -42,7 +42,7 @@ echo "== 2: GAFFER_DOD_WRAP set ⇒ every gate runs THROUGH the wrap, in the wor
 : > "$WRAP_LOG"; export GAFFER_DOD_WRAP="$WORK/wrap.sh"
 gaffer_dod_run_one "$WT" "$WORK/out" 'echo wrapped-ok; exit 0'; rc=$?
 [ "$rc" -eq 0 ] && grep -q wrapped-ok "$WORK/out" && ok "gate output + rc pass through the wrap" || fail "wrapped gate should pass (rc=$rc)"
-grep -qF "wrapped cwd=$(cd "$WT" && pwd -P) " "$WRAP_LOG" \
+grep -qF " cwd=$(cd "$WT" && pwd -P) " "$WRAP_LOG" \
   && ok "the wrap ran with the delivery worktree as cwd" || fail "wrap cwd was not the worktree: $(cat "$WRAP_LOG")"
 grep -q 'argv=bash -c echo wrapped-ok; exit 0' "$WRAP_LOG" && ok "the wrap received bash -c plus the gate command" || fail "wrap argv unexpected: $(cat "$WRAP_LOG")"
 gaffer_dod_run_one "$WT" "$WORK/out" 'echo boom >&2; exit 3'; rc=$?
@@ -59,6 +59,47 @@ echo "== 4: docker provider ⇒ the image's HOME/PATH are applied inside the wra
 grep -q 'argv=env HOME=/root PATH=/usr/bin:/bin bash -c echo x' "$WRAP_LOG" \
   && ok "docker wrap prepends the image env (host PATH/HOME do not exist inside)" || fail "docker env substitution missing: $(cat "$WRAP_LOG")"
 unset SANDBOX_PROVIDER
+
+echo "== 6: the PRE-GATE dependency install runs inside the SAME wrap (external review #1) =="
+# A repository install hook (.pnpmfile.cjs, yarnPath, a lifecycle script) is repository
+# code. A stub package manager stands in for it: it writes a marker OUTSIDE the worktree
+# and records the env it saw. A denying wrap must stop it; a pass-through wrap must see
+# a stripped env (no operator token, a throwaway HOME).
+IW="$WORK/iwt"; MARK="$WORK/outside-marker"; BIN="$WORK/bin"; mkdir -p "$IW" "$BIN"
+printf '{"name":"x","version":"1.0.0"}' > "$IW/package.json"; printf "lockfileVersion: '9.0'\n" > "$IW/pnpm-lock.yaml"
+cat > "$BIN/pnpm" <<STUB
+#!/usr/bin/env bash
+printf 'hook ran token=%s dispatch=%s home=%s\n' "\${SECRET_TOKEN:-none}" "\${DISPATCH_API_TOKEN:-none}" "\$HOME" > "$MARK"
+mkdir -p node_modules/.x
+STUB
+chmod +x "$BIN/pnpm"
+printf '#!/usr/bin/env bash\nprintf "denied argv=%%s\\n" "$*" >> "${WRAP_LOG:?}"; exit 126\n' > "$WORK/deny.sh"; chmod +x "$WORK/deny.sh"
+: > "$WRAP_LOG"; rm -f "$MARK"
+v="$(PATH="$BIN:$PATH" SECRET_TOKEN=s3cret GAFFER_DOD_WRAP="$WORK/deny.sh" gaffer_dod_install_deps "$IW" 2>/dev/null)"
+[ ! -e "$MARK" ] && ok "a denying validation wrap stops the install hook (no marker outside the worktree)" || fail "install hook ran outside the wrap: $(cat "$MARK" 2>/dev/null)"
+grep -q '^denied argv=env -i .*bash -c pnpm install' "$WRAP_LOG" && ok "the install was handed to the wrap as env -i … bash -c <install>" || fail "install did not go through the wrap: $(cat "$WRAP_LOG")"
+case "$v" in FAILED:pnpm) ok "denied install reports FAILED:pnpm (the gate surfaces it)" ;; *) fail "unexpected verdict under a denying wrap: '$v'" ;; esac
+rm -rf "$IW/node_modules"; : > "$WRAP_LOG"; rm -f "$MARK"
+v="$(PATH="$BIN:$PATH" SECRET_TOKEN=s3cret DISPATCH_API_TOKEN=tok GAFFER_DOD_WRAP="$WORK/wrap.sh" gaffer_dod_install_deps "$IW" 2>/dev/null)"
+[ "$v" = pnpm ] && ok "a pass-through wrap still installs (verdict pnpm)" || fail "pass-through install verdict '$v'"
+grep -q 'token=none dispatch=none' "$MARK" 2>/dev/null && ok "the install env is stripped (no operator token, no DISPATCH_API_TOKEN)" || fail "install saw operator secrets: $(cat "$MARK" 2>/dev/null)"
+grep -q "home=$HOME\$" "$MARK" 2>/dev/null && fail "install saw the operator HOME" || ok "the install runs with a throwaway HOME (no ~/.npmrc, no HOME secrets)"
+grep -q '^wrapped profile=validation .*argv=env -i ' "$WRAP_LOG" && ok "the install ran through the wrap with the validation profile" || fail "pass-through wrap not used with the validation profile: $(cat "$WRAP_LOG")"
+rm -rf "$IW/node_modules"; rm -f "$MARK"
+v="$(PATH="$BIN:$PATH" GAFFER_STRICT_REQUIRE=1 GAFFER_DOD_WRAP= gaffer_dod_install_deps "$IW" 2>/dev/null)"
+[ "$v" = "SKIPPED:sandbox_unavailable:pnpm" ] && [ ! -e "$MARK" ] && ok "strict-require with no wrap ⇒ the install is refused, nothing executes (fail closed)" || fail "strict-require with no wrap ran the install (verdict '$v', marker $( [ -e "$MARK" ] && echo present || echo absent))"
+# The host-side primary prime (greenfield.sh) runs before any wrap exists: under
+# strict-require it must not execute the repository's install at all, and otherwise it
+# runs with the same stripped env.
+# shellcheck source=../lib/greenfield.sh
+source "$RUNNER_DIR/lib/greenfield.sh"
+rm -rf "$IW/node_modules"; rm -f "$MARK"
+v="$(PATH="$BIN:$PATH" GAFFER_STRICT_REQUIRE=1 gaffer_ensure_node_modules "$IW" 2>/dev/null)"
+[ -z "$v" ] && [ ! -e "$MARK" ] && ok "strict-require ⇒ the host primary prime does not run the install" || fail "greenfield prime ran under strict-require (verdict '$v')"
+rm -rf "$IW/node_modules"; rm -f "$MARK"
+v="$(PATH="$BIN:$PATH" SECRET_TOKEN=s3cret gaffer_ensure_node_modules "$IW" 2>/dev/null)"
+grep -q 'token=none' "$MARK" 2>/dev/null && ok "the host primary prime runs with the stripped env" || fail "greenfield prime saw operator secrets: $(cat "$MARK" 2>/dev/null)"
+grep -q 'SKIPPED:sandbox_unavailable' "$RUNNER_DIR/tick.sh" && ok "tick.sh logs the refused install" || fail "tick.sh does not handle SKIPPED:sandbox_unavailable"
 
 echo "== 5: source pins — tick.sh hands the agent's wrap to the gates =="
 grep -q 'export GAFFER_DOD_WRAP="$WRAP"' "$RUNNER_DIR/tick.sh" && ok "tick.sh exports GAFFER_DOD_WRAP=\$WRAP under an active provider" || fail "tick.sh should export GAFFER_DOD_WRAP from the agent's WRAP"

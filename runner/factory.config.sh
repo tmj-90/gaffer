@@ -1596,10 +1596,10 @@ gaffer_usage_record() {
   # [attempt] — the delivery attempt this call was (tick.sh passes it). The model the
   # call asked for and the CLI version that ran it come from the last worker_deliver
   # (lib/worker.sh) and are consumed here like the elapsed time.
-  local attempt="${6:-}" model="${WORKER_LAST_MODEL:-}" cliver="${WORKER_LAST_CLAUDE_VERSION:-}"
+  local attempt_n="${6:-}" model="${WORKER_LAST_MODEL:-}" cliver="${WORKER_LAST_CLAUDE_VERSION:-}"
   WORKER_LAST_MODEL=""; WORKER_LAST_CLAUDE_VERSION=""
   local -a prov=()
-  [ -n "$attempt" ] && prov+=(--attempt "$attempt")
+  [ -n "$attempt_n" ] && prov+=(--attempt "$attempt_n")
   [ -n "$model" ] && prov+=(--model "$model")
   [ -n "$cliver" ] && prov+=(--claude-version "$cliver")
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
@@ -1610,11 +1610,17 @@ gaffer_usage_record() {
   # stderr to the factory log ($GAFFER_LOG) instead of dropping it. The append itself
   # stays best-effort (the trailing `|| true` keeps a ledger problem from failing the
   # tick), but the WARNING is now VISIBLE in the log.
+  # [attempt] — a DELIVERY record also carries its attempt id (GAFFER_USAGE_ATTEMPT_ID: a
+  # hash of the claim + the attempt number) and spawn time (GAFFER_USAGE_STARTED_AT), set
+  # by tick.sh around the delivery spawn, so the Health report can tell the first attempt
+  # from the correction that followed a send-back. Other kinds never carry them.
+  local attempt="" started=""
+  if [ "$kind" = delivery ]; then attempt="${GAFFER_USAGE_ATTEMPT_ID:-}"; started="${GAFFER_USAGE_STARTED_AT:-}"; fi
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
 }
 
@@ -1635,6 +1641,21 @@ gaffer_record_agent_run() {
   [ -n "$summary" ] && [ -n "$payload" ] || return 0
   wg attach-evidence "$ticket" --type log --summary "$summary" --payload-json "$payload" >/dev/null 2>&1 || true
   return 0
+}
+
+# gaffer_delivery_attempt_stamp <attempt-n> — print "<attempt-id> <iso-now-ms>" for the
+# delivery spawn about to start. The id is "c" + 12 hex of sha256(claim token) + "/<n>":
+# stable across one claim's in-tick retries, different for the next claim, and never
+# the token itself (it is read from stdin, so it is not on any argv). Tokenless (a
+# DRY_RUN or a tokenless resume): "t<ticket>-nolease/<n>". Millisecond time, because
+# a send-back and the next spawn can land in the same second.
+gaffer_delivery_attempt_stamp() {
+  printf '%s' "${CLAIM_TOKEN:-}" | node -e '
+    let tok = ""; process.stdin.on("data", (d) => (tok += d)).on("end", () => {
+      const n = process.argv[1] || "1", t = process.argv[2] || "0";
+      const key = tok ? "c" + require("crypto").createHash("sha256").update(tok).digest("hex").slice(0, 12) : `t${t}-nolease`;
+      process.stdout.write(`${key}/${n} ${new Date().toISOString()}`);
+    });' "${1:-1}" "${NUM:-0}" 2>/dev/null || true
 }
 
 # ── Autonomy MODE (single cluster selector) ──────────────────────────────────
@@ -2484,7 +2505,7 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 : "${GAFFER_EVAL_JUDGE:=0}"
 # Post-delivery quality judging (gaffer_eval_judge_delivery): scores a submitted
 # delivery on the crew rubric into the eval ledger (pass rate / cost-per-pass /
-# memory-lift telemetry). Always fail-soft.
+# memory score gap telemetry). Always fail-soft.
 # shellcheck source=lib/eval-judge.sh
 [ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"
 

@@ -5811,8 +5811,10 @@ function wageBill(f) {
             el(
               "small",
               {},
+              // Rework = delivery spend on the attempts after a reviewer, the tester
+              // or a failed gate sent the ticket back (the ledger's attempt timeline).
               h.rework?.rework_cost_share_pct != null
-                ? `${h.rework.rework_cost_share_pct}% of spend`
+                ? `${h.rework.rework_cost_share_pct}% of spend, on attempts after a send-back`
                 : "",
             ),
           ]),
@@ -6451,10 +6453,7 @@ async function fitnessRoomPanels(healthRes) {
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
   const decisions = decisionsRes.decisions || [];
-  const inReview = byStatus.in_review || 0;
-  const blocked = summary.blocked ?? byStatus.blocked ?? 0;
   const staleClaims = summary.staleClaims || 0;
-  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
   const doneTickets = tickets.filter((t) => t.status === "done");
 
   // --- real time-series, bucketed by day from ticket + event timestamps -----
@@ -6466,15 +6465,6 @@ async function fitnessRoomPanels(healthRes) {
     const d = new Date(now - i * DAY);
     days.push({ key: d.toISOString().slice(0, 10), lbl: `${d.getDate()}/${d.getMonth() + 1}` });
   }
-  const bucket = (items, tsOf) => {
-    const m = Object.fromEntries(days.map((d) => [d.key, 0]));
-    for (const it of items) {
-      const k = String(tsOf(it)).slice(0, 10);
-      if (k in m) m[k] += 1;
-    }
-    return days.map((d) => m[d.key]);
-  };
-
   // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
   // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
   // The server reproduces the former client maths, so displayed numbers are
@@ -6492,7 +6482,6 @@ async function fitnessRoomPanels(healthRes) {
     Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
 
   // --- distinct, real per-metric daily series (each KPI gets its own shape) --
-  const createdByDay = bucket(tickets, (t) => t.created_at);
   // deployments: cumulative tickets shipped (a monotonic delivery curve)
   let depAcc = 0;
   const deploySeries = doneByDay.map((v) => (depAcc += v));
@@ -6501,14 +6490,6 @@ async function fitnessRoomPanels(healthRes) {
     const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
     return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : 0;
   });
-  // flow efficiency: 7-day trailing shipped / created (a real ratio trend, %)
-  const flowEffSeries = days.map((_, i) => {
-    const lo = Math.max(0, i - 6);
-    const shipped = doneByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
-    const opened = createdByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
-    return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
-  });
-
   // --- headline metrics -----------------------------------------------------
   // Cycle time + throughput are server-authoritative (from /api/health above).
   // cycleVals is retained ONLY to derive the Lead-time percentile below.
@@ -6526,23 +6507,45 @@ async function fitnessRoomPanels(healthRes) {
     : 0;
   const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
   const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
-  // Flow efficiency is SERVER-AUTHORITATIVE when the endpoint carries it: the median
-  // (active time / lead time) over shipped tickets, from the transition log
-  // (src/health/deliveryFlow.ts). The former client number was a WIP ratio
-  // (done / done+in-flight), which is not flow efficiency; it remains only as the
-  // fallback when the server has no shipped ticket with the signal yet.
+  // Flow efficiency is SERVER-ONLY: the median (time an agent worked the ticket /
+  // lead time) over shipped tickets, from the transition log (src/health/deliveryFlow.ts).
+  // Review, testing, the merge queue, send-backs and holds are waiting, served as
+  // `waiting`; time before work began is the backlog. There
+  // is no client fallback: the old one was a WIP ratio (done / done + in flight) that
+  // read 100% for a single shipped ticket however long it had waited to merge.
   const flowEffServer = health.flow_efficiency || {};
-  const flowEff =
-    typeof flowEffServer.median_pct === "number"
-      ? Math.round(flowEffServer.median_pct)
-      : Math.round(
-          ((byStatus.done || 0) /
-            Math.max(
-              1,
-              (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0),
-            )) *
-            100,
-        );
+  const flowEff = typeof flowEffServer.median_pct === "number" ? flowEffServer.median_pct : null;
+  const flowEffText =
+    flowEff == null ? "—" : flowEff > 0 && flowEff < 1 ? "<1" : String(Math.round(flowEff));
+  const waiting = health.waiting || {};
+  const waitRow = (label, ms, extra) =>
+    el("div", {}, [
+      el("dt", {}, label),
+      el("dd", { class: "tabnum" }, [fmtDuration(ms), extra ? el("small", {}, extra) : null]),
+    ]);
+  const waitingList =
+    waiting.sample > 0
+      ? el("dl", { class: "fg-wait", "aria-label": "Where shipped tickets waited, the median" }, [
+          waitRow(
+            "Waiting to merge",
+            waiting.merge_wait_ms,
+            waiting.merge_wait_max_ms != null
+              ? `longest ${fmtDuration(waiting.merge_wait_max_ms)}`
+              : null,
+          ),
+          waitRow("In review or testing", waiting.review_ms),
+          waitRow("Sent back, waiting for rework", waiting.requeued_ms),
+          waitRow("Blocked or paused", waiting.held_ms),
+          waitRow("Before work started", waiting.backlog_ms),
+          el("div", {}, [
+            el("dt", {}, "Queued after work began"),
+            el("dd", { class: "tabnum" }, [
+              waiting.queue_pct != null ? `${Math.round(waiting.queue_pct)}%` : "—",
+              el("small", {}, "of lead time: review, merge queue, send-backs, holds"),
+            ]),
+          ]),
+        ])
+      : el("p", { class: "section-note" }, "No shipped ticket has a transition history yet.");
   const right = el("div", { class: "fitness-panels stack" });
   const left = right;
 
@@ -6568,9 +6571,9 @@ async function fitnessRoomPanels(healthRes) {
         }),
         statCell({
           label: "Flow efficiency",
-          value: String(flowEff),
-          unit: "%",
-          series: flowEffSeries,
+          value: flowEffText,
+          unit: flowEff == null ? null : "%",
+          sub: flowEff == null ? "nothing shipped yet" : "of lead time an agent worked",
           flip: "eff",
         }),
         statCell({
@@ -6609,14 +6612,21 @@ async function fitnessRoomPanels(healthRes) {
         el("div", { class: "fg-eff flow-eff" }, [
           el("h3", { class: "fg-h" }, [
             "Flow efficiency ",
-            el("b", { class: "tabnum" }, `${flowEff}%`),
+            el("b", { class: "tabnum" }, flowEff == null ? "—" : `${flowEffText}%`),
           ]),
-          band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+          band(
+            flowEff ?? 0,
+            100,
+            flowEff == null
+              ? "Flow efficiency not measured yet"
+              : `Flow efficiency ${flowEffText}% of lead time with an agent working on the ticket`,
+          ),
           el(
             "p",
             { class: "section-note" },
-            "The share of each shipped ticket's lead time spent being worked on rather than waiting (the median).",
+            "The share of each shipped ticket's lead time with an agent working on it (claimed or in progress), the median. Review, testing, the merge queue and holds count as waiting: the transition log shows how long a ticket sat in review, not how long anyone actively reviewed it.",
           ),
+          waitingList,
         ]),
       ]),
     ]),
@@ -6696,7 +6706,7 @@ async function fitnessRoomPanels(healthRes) {
             "Rework rate",
             gov.reworkRate,
             (r) =>
-              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first, by a reviewer, the tester or a failed gate`,
           ),
           tile(
             "Unattended-safe",
@@ -8533,7 +8543,14 @@ async function renderWork() {
   // mode (list mode does not fetch the board at all). Repos + scope nodes feed the
   // "Suggest work" target picker (Feature B) and the repo filter. The human queue
   // says which cards wait on you; the claims say who is on the pitch.
-  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
+  // The board is fetched as a VISIBLE WINDOW (WORK_BOARD_WINDOW cards per lane, Done
+  // newest first) plus whole-board counts: a factory with tens of thousands of
+  // historical tickets once shipped every card to render ~60 per lane (and the
+  // unfiltered board failed outright at 32,767 tickets). The rest is one link away in
+  // the List view, which filters server-side.
+  const boardParams = new URLSearchParams({ limit: String(WORK_BOARD_WINDOW) });
+  if (workState.repo) boardParams.set("repo", workState.repo);
+  const boardQs = `?${boardParams}`;
   const listQs = new URLSearchParams();
   if (workState.status) listQs.set("status", workState.status);
   if (workState.repo) listQs.set("repo", workState.repo);
@@ -8551,9 +8568,15 @@ async function renderWork() {
     ensureSquad(),
   ]);
   const { repos, nodes } = ref;
-  const columns = (board && board.columns) || [];
+  const counts = (board && board.counts) || null;
+  // Each lane carries its TRUE size (`total`), whatever the window loaded.
+  const columns = ((board && board.columns) || []).map((c) => ({
+    ...c,
+    total: counts && counts.columns ? (counts.columns[c.column] ?? c.cards.length) : undefined,
+  }));
   const closed = (board && board.closed) || [];
   const wontDo = (board && board.wontDo) || [];
+  const totals = counts ? { closed: counts.closed, wontDo: counts.wontDo } : null;
   const tickets = (listRes && listRes.tickets) || [];
   const claims = (claimsRes && claimsRes.claims) || [];
   learnAgents(claims);
@@ -8566,7 +8589,7 @@ async function renderWork() {
   // filter on they count the matching cards (BRIEF §2: header counts equal lane
   // counts), and they are redrawn as the viewer types.
   const subText = () =>
-    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo, totals);
   const head = viewHead("Work board", subText(), [
     pollWorkButton(),
     suggestWorkButton(repos, nodes),
@@ -8585,7 +8608,9 @@ async function renderWork() {
 
   // The board or the list, rebuilt in place (no fetch) as the viewer types.
   const build = () =>
-    list ? renderWorkList(tickets, needs, claims) : renderBoard(columns, closed, wontDo, needs);
+    list
+      ? renderWorkList(tickets, needs, claims)
+      : renderBoard(columns, closed, wontDo, needs, totals);
   let main = build();
   const toolbar = renderWorkToolbar(repos, () => {
     const next = build();
@@ -8647,21 +8672,40 @@ function hashText(str) {
  *   failed  = the closed area (the board puts only `failed` tickets there)
  *   wontDo  = cancelled
  */
-function boardCounts(columns, closed = [], wontDo = []) {
+function boardCounts(columns, closed = [], wontDo = [], totals = null) {
   const by = {};
   for (const c of columns) by[c.column] = c.total ?? (c.cards || []).length;
   const live = Object.entries(by)
     .filter(([k]) => k !== "done")
     .reduce((n, [, v]) => n + v, 0);
-  return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
+  return {
+    by,
+    live,
+    shipped: by.done || 0,
+    failed: totals ? totals.closed : closed.length,
+    wontDo: totals ? totals.wontDo : wontDo.length,
+  };
 }
 
-/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+/** Cards per lane the Work board loads (the API's visible window). */
+const WORK_BOARD_WINDOW = 200;
+
+/** True when some lane holds more cards than the window loaded. */
+function boardTruncated(columns) {
+  return columns.some((c) => c.total != null && c.total > (c.cards || []).length);
+}
+
+/**
+ * The board's columns, closed and won't-do narrowed to the client-side filters.
+ * Unfiltered, a lane keeps its true size (`total`); filtered, it counts the loaded
+ * cards that match.
+ */
 function workVisible(columns, closed = [], wontDo = []) {
+  const filtered = workFiltered();
   return {
     columns: columns.map((c) => {
       const cards = (c.cards || []).filter(workMatches);
-      return { ...c, cards, total: cards.length };
+      return { ...c, cards, total: filtered ? cards.length : (c.total ?? cards.length) };
     }),
     closed: closed.filter(workMatches),
     wontDo: wontDo.filter(workMatches),
@@ -8682,10 +8726,10 @@ function workFilterWords() {
  * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
  * the line always equals the lane heads below it.
  */
-function workSummaryLine(columns, closed = [], wontDo = []) {
-  const all = boardCounts(columns, closed, wontDo);
+function workSummaryLine(columns, closed = [], wontDo = [], totals = null) {
+  const all = boardCounts(columns, closed, wontDo, totals);
   const vis = workVisible(columns, closed, wontDo);
-  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo, workFiltered() ? null : totals);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
     // A count never wraps away from its lane name ("1 / done").
@@ -9227,11 +9271,20 @@ function phoneLaneOrder(columns) {
 }
 
 /** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
-function renderBoard(columns, closed, wontDo = [], needs = null) {
+function renderBoard(columns, closed, wontDo = [], needs = null, totals = null) {
   const wrap = el("div", { class: "board-wrap" });
   const phone = isPhoneWidth();
   const total = columns.reduce((n, c) => n + (c.cards || []).length, 0);
   const shown = columns.reduce((n, c) => n + (c.cards || []).filter(workMatches).length, 0);
+  // A filter narrows only the cards the window loaded: say so, and where to search all.
+  if (workFiltered() && boardTruncated(columns)) {
+    wrap.appendChild(
+      el("p", { class: "section-note work-window-note", role: "status" }, [
+        `Filters apply to the first ${WORK_BOARD_WINDOW} cards of each lane. `,
+        el("a", { href: "#/work?mode=list" }, "The list searches every ticket."),
+      ]),
+    );
+  }
   if (!total && !closed.length && !wontDo.length && !workFiltered()) {
     wrap.appendChild(
       emptyState(
@@ -9261,13 +9314,15 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const all = (c.cards || []).filter(workMatches);
       const cards = capLane(c.column, all);
       const label = BOARD_COLUMN_LABELS[c.column] || c.column;
+      // The lane's true size: the server's count unfiltered, the matches filtered.
+      const laneTotal = workFiltered() ? all.length : (c.total ?? all.length);
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
           ? [
               ...cards.map((card) => renderBoardCard(card, c.column, needs)),
-              laneMoreLink(c.column, cards.length, all.length),
+              laneMoreLink(c.column, cards.length, laneTotal),
             ]
           : el("p", { class: "board-empty" }, "Nothing here."),
       );
@@ -9294,7 +9349,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const headBits = [
         glyph(c.column, 18),
         el("h2", { class: "board-col-title" }, label),
-        el("span", { class: "board-col-count tabnum" }, String(all.length)),
+        el("span", { class: "board-col-count tabnum" }, String(laneTotal)),
       ];
       let inner;
       if (phone && all.length) {
@@ -9322,7 +9377,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
         {
           class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
           dataset: { column: c.column, status: c.column },
-          "aria-label": `${label}: ${all.length}`,
+          "aria-label": `${label}: ${laneTotal}`,
         },
         inner,
       );
@@ -9335,32 +9390,41 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
   // Closed without merging: won't do (reversible: Reopen → refining) and failed.
   const wontDoVisible = wontDo.filter(workMatches);
   const failedVisible = closed.filter(workMatches);
+  const areaTotal = (list, key) => (!workFiltered() && totals ? totals[key] : list.length);
   if (wontDoVisible.length || failedVisible.length) {
-    const group = (cls, title, list, action) =>
-      el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${list.length}` }, [
+    const group = (cls, title, list, action, key) => {
+      const n = areaTotal(list, key);
+      return el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${n}` }, [
         el("h3", { class: "closed-head" }, [
           glyph(list[0].status, 16),
           el("span", {}, title),
-          el("span", { class: "closed-count tabnum" }, String(list.length)),
+          el("span", { class: "closed-count tabnum" }, String(n)),
         ]),
         el("ul", { class: "closed-cards" }, [
           ...list.slice(0, BOARD_CLOSED_CAP).map((t) => closedRow(t, action)),
         ]),
-        list.length > BOARD_CLOSED_CAP
-          ? el("p", { class: "section-note" }, `Showing ${BOARD_CLOSED_CAP} of ${list.length}.`)
+        n > BOARD_CLOSED_CAP
+          ? el(
+              "p",
+              { class: "section-note" },
+              `Showing ${Math.min(BOARD_CLOSED_CAP, list.length)} of ${n}.`,
+            )
           : null,
       ]);
+    };
     wrap.appendChild(
       progPage(
         "work-closed",
         null,
         "Closed without merging",
-        plural(wontDoVisible.length + failedVisible.length, "ticket"),
+        plural(areaTotal(wontDoVisible, "wontDo") + areaTotal(failedVisible, "closed"), "ticket"),
         el("div", { class: "closed-groups" }, [
           wontDoVisible.length
-            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen)
+            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen, "wontDo")
             : null,
-          failedVisible.length ? group("failed-area", "Failed", failedVisible, null) : null,
+          failedVisible.length
+            ? group("failed-area", "Failed", failedVisible, null, "closed")
+            : null,
         ]),
       ),
     );
@@ -14600,8 +14664,68 @@ function renderSettingRow(s, editors) {
 /** The mode the settings on screen were read under (for "from the graduated mode"). */
 let settingsModeName = "";
 
+/** Sentinel an untouched secret editor reads as (never sent: it equals `initial`). */
+const SECRET_UNCHANGED = "\u0000unchanged";
+
+/**
+ * A SECRET-BEARING setting (a webhook URL is posting authority): the server never sends
+ * its value, only whether it is set and its host. Show that, masked, with Replace (a new
+ * value is typed in, never the old one shown) and Remove. Untouched, the editor reads as
+ * the sentinel and nothing is sent.
+ */
+function renderSecretSettingInput(s, editors) {
+  const state = s.configured ? `Set${s.host ? ` · ${s.host}` : ""}` : "Not set";
+  const masked = el(
+    "span",
+    {
+      class: `setting-secret mono${s.configured ? " is-set" : ""}`,
+      "aria-label": s.configured
+        ? `${s.label} is set${s.host ? ` for ${s.host}` : ""}; the value is hidden.`
+        : `${s.label} is not set.`,
+    },
+    [s.configured ? "•••••••• " : "", state],
+  );
+  if (s.envLocked) return el("div", { class: "setting-secret-row" }, [masked]);
+  let mode = "keep"; // keep | replace | remove
+  const input = el("input", {
+    type: "password",
+    autocomplete: "off",
+    spellcheck: "false",
+    placeholder: "Paste the new URL",
+    "aria-label": `New value for ${s.label}`,
+    hidden: "",
+  });
+  const replace = el("button", { type: "button", class: "btn small ghost" }, "Replace");
+  const remove = s.configured
+    ? el("button", { type: "button", class: "btn small ghost" }, "Remove")
+    : null;
+  replace.addEventListener("click", () => {
+    mode = "replace";
+    input.hidden = false;
+    input.focus();
+  });
+  if (remove)
+    remove.addEventListener("click", () => {
+      mode = mode === "remove" ? "keep" : "remove";
+      remove.textContent = mode === "remove" ? "Keep" : "Remove";
+      masked.classList.toggle("is-removing", mode === "remove");
+      remove.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  editors.set(s.key, {
+    read: () =>
+      mode === "remove"
+        ? ""
+        : mode === "replace" && input.value.trim() !== ""
+          ? input.value.trim()
+          : SECRET_UNCHANGED,
+    initial: SECRET_UNCHANGED,
+  });
+  return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
+}
+
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
+  if (s.secret) return renderSecretSettingInput(s, editors);
   if (s.envLocked) {
     // Read-only: show the env-driven value if known, else a muted placeholder.
     // The actual env value isn't exposed by the API (it could be a secret), so we
@@ -15493,9 +15617,12 @@ function pausedInfo(events) {
  * nodes (el coerces strings) — never innerHTML — so it stays XSS-safe.
  */
 function parseDodEvidence(evidence) {
+  // The runner records the DoD row as the system actor; an agent-recorded row that
+  // merely looks like one is the agent's word, never a gate verdict.
   const rows = (evidence || []).filter(
     (ev) =>
       ev.evidence_type === "test_output" &&
+      ev.recorded_by_agent !== true &&
       typeof ev.summary === "string" &&
       ev.summary.startsWith("DoD: "),
   );
@@ -15846,8 +15973,382 @@ function reviewFlag(title, body, source) {
   ]);
 }
 
+// ── The review packet: the runner's facts, above the agent's words ──────────
+// One GET /tickets/:id/dossier?include=packet per change, kept against the
+// ticket's id@updated_at: a refresh that re-renders the page for another
+// ticket's sake (the queue moved) reuses it, and a changed ticket reads it again.
+const packetCache = new Map();
+async function reviewPacketFor(t, signal) {
+  const sig = `${t.id}@${t.updated_at || ""}`;
+  const hit = packetCache.get(t.id);
+  if (hit && hit.sig === sig) return hit.packet;
+  const d = await api("GET", `/tickets/${t.id}/dossier?include=packet`, undefined, { signal });
+  const packet = (d && d.review_packet) || null;
+  if (packet) packetCache.set(t.id, { sig, packet });
+  return packet;
+}
+/** Forget packets for tickets that left the queue (the cache never outgrows it). */
+function prunePacketCache(tickets) {
+  const live = new Set(tickets.map((t) => t.id));
+  for (const id of packetCache.keys()) if (!live.has(id)) packetCache.delete(id);
+}
+
+const VD_WORD = { PASS: "passed", FAIL: "failed", SKIPPED: "skipped" };
+/** One cell of the verdict strip: a caps label, the verdict, then its detail. */
+function verdictCell(key, label, value, aria, body, tone = "") {
+  return el(
+    "div",
+    {
+      class: `vd-cell vd-${key}${tone ? ` vd-${tone}` : ""}`,
+      role: "group",
+      "aria-label": aria,
+    },
+    [
+      el("p", { class: "vd-k" }, label),
+      el("p", { class: "vd-v" }, value),
+      el("div", { class: "vd-body" }, body),
+    ],
+  );
+}
+/** Who sent a delivery back, said plainly. */
+function reworkWho(r) {
+  if (r.by === "gate") return r.gate ? `the ${r.gate} gate` : "a gate";
+  return r.by === "tester" ? "the tester" : "the review";
+}
+/** What a criterion's evidence is, said on its row (and in its label). */
+function acEvidenceWords(a) {
+  const c = a.check;
+  if (a.evidence_kind === "runner" && c)
+    return c.passed
+      ? `The runner ran the check: exit ${c.exit_code ?? 0}`
+      : `The runner ran the check and it failed: exit ${c.exit_code ?? "unknown"}`;
+  if (a.evidence_kind === "human" && c)
+    return `A person recorded the check result: exit ${c.exit_code ?? "unknown"}`;
+  if (a.evidence_kind === "agent") return "No machine evidence: only the agent's word";
+  return "No machine evidence: nothing recorded";
+}
+
+/**
+ * The verdict strip under the title: gates, the independent tester, cost and
+ * turns, attempts and rework, risk and its reasons, the reviewed-commit pin.
+ * Each a recorded fact (see services/reviewPacketService.ts). `setRisk(anns)`
+ * adds the diff's own risk annotations once the diff has loaded.
+ */
+function verdictStrip(p) {
+  const cells = [];
+
+  // Gates: the runner's DoD rows, each with its command; the test count it saw.
+  const g = p.gates;
+  const gateBody = [];
+  if (g) {
+    gateBody.push(
+      el(
+        "ul",
+        { class: "clean vd-gate-list" },
+        g.rows.map((r) => {
+          const st = r.status === "PASS" ? "pass" : r.status === "FAIL" ? "fail" : "skip";
+          return el("li", { class: `vd-gate vd-g-${st}` }, [
+            el(
+              "span",
+              { class: `dod-mark dod-${st}`, "aria-hidden": "true" },
+              st === "pass" ? "✓" : st === "fail" ? "✗" : "–",
+            ),
+            el("b", {}, r.gate),
+            el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
+            r.command
+              ? el("code", { class: "vd-cmd mono" }, r.command)
+              : r.note
+                ? el("span", { class: "vd-note" }, r.note)
+                : null,
+          ]);
+        }),
+      ),
+    );
+    gateBody.push(
+      el(
+        "p",
+        { class: "vd-sub" },
+        g.tally
+          ? `The runner saw ${plural(g.tally.passed, "test")} pass${
+              g.tally.failed ? `, ${g.tally.failed} fail` : ""
+            }${g.tally.skipped ? `, ${g.tally.skipped} skipped` : ""} (${g.tally.framework}).`
+          : "The runner's test output carries no test count.",
+      ),
+    );
+  } else gateBody.push(el("p", { class: "vd-sub" }, "The runner has recorded no gate report."));
+  for (const d of p.disagreements || [])
+    gateBody.push(el("p", { class: "vd-flag" }, [ycard(16), d.message]));
+  const ran = g ? g.rows.filter((r) => r.status !== "SKIPPED").length : 0;
+  cells.push(
+    verdictCell(
+      "gates",
+      "Gates",
+      g ? (g.overall === "PASS" ? "Passed" : "Failed") : "No report",
+      g
+        ? `Gates: ${g.overall === "PASS" ? "passed" : "failed"}, ${ran} of ${g.rows.length} ran`
+        : "Gates: no report recorded",
+      gateBody,
+      g ? (g.overall === "PASS" ? "ok" : "bad") : "warn",
+    ),
+  );
+
+  // The independent tester: its verdict and what it tested, or when it comes.
+  const ts = p.tester;
+  cells.push(
+    ts
+      ? verdictCell(
+          "tester",
+          "Tester",
+          ts.verdict === "pass" ? "Passed" : "Failed",
+          `Independent tester: ${ts.verdict === "pass" ? "passed" : "failed"}${
+            ts.tested_commit ? `, tested commit ${ts.tested_commit.slice(0, 12)}` : ""
+          }`,
+          [
+            el("p", { class: "vd-sub" }, [
+              ts.tested_commit
+                ? ["Tested ", el("code", { class: "mono" }, ts.tested_commit.slice(0, 12))]
+                : "No commit recorded",
+              ts.provenance
+                ? ` · by ${ts.provenance === "agent" ? "the tester agent" : `a ${ts.provenance}`}`
+                : "",
+              ` · ${fmtTime(ts.at)}`,
+            ]),
+            el("p", { class: "vd-say" }, ts.summary),
+          ],
+          ts.verdict === "pass" ? "ok" : "bad",
+        )
+      : verdictCell(
+          "tester",
+          "Tester",
+          p.tester_expected ? "After you" : "None",
+          p.tester_expected
+            ? "Independent tester: runs after your approval"
+            : "Independent tester: not used for this ticket",
+          el(
+            "p",
+            { class: "vd-sub" },
+            p.tester_expected
+              ? "The independent tester runs once you approve, against the commit you sign."
+              : "This ticket does not go through the independent tester.",
+          ),
+        ),
+  );
+
+  // Cost and turns so far, from the usage ledger (an estimate is said as one).
+  const c = p.cost;
+  const unknown = c.ledger_status === "unreadable";
+  const untracked = c.ledger_status === "unconfigured" || c.ledger_status === "no_ticket";
+  cells.push(
+    verdictCell(
+      "cost",
+      "Cost",
+      unknown ? "Unknown" : untracked ? "Not tracked" : money(c.cost_usd),
+      unknown
+        ? "Cost: unknown, the usage ledger could not be read"
+        : untracked
+          ? "Cost: not tracked, no usage ledger"
+          : `Cost so far: ${money(c.cost_usd)} over ${plural(c.num_turns, "turn")}`,
+      el("p", { class: "vd-sub" }, [
+        unknown
+          ? "The usage ledger could not be read."
+          : untracked
+            ? "No usage ledger is configured."
+            : plural(c.num_turns, "turn"),
+        !unknown && c.estimated_usd > 0 ? ` · ${money(c.estimated_usd)} of it estimated` : "",
+        c.unknown_calls ? ` · ${plural(c.unknown_calls, "call")} unmeasured` : "",
+        c.budget_usd != null ? ` · budget ${moneyW(c.budget_usd)}` : "",
+      ]),
+      unknown ? "warn" : "",
+    ),
+  );
+
+  // Attempts and the rework history (latest three).
+  const at = p.attempts;
+  const rework = at.rework || [];
+  cells.push(
+    verdictCell(
+      "attempts",
+      "Attempt",
+      `${at.attempt_count + 1} of ${at.max_attempts}`,
+      `Attempt ${at.attempt_count + 1} of ${at.max_attempts}, sent back ${plural(rework.length, "time")}`,
+      rework.length
+        ? [
+            el(
+              "ol",
+              { class: "clean vd-rework" },
+              rework
+                .slice(-3)
+                .map((r) =>
+                  el("li", {}, [
+                    el("span", { class: "vd-when tabnum" }, fmtTime(r.at)),
+                    ` Sent back by ${reworkWho(r)}: `,
+                    el("span", { class: "vd-why" }, r.reason),
+                  ]),
+                ),
+            ),
+            rework.length > 3
+              ? el("p", { class: "vd-sub" }, `${plural(rework.length - 3, "earlier send-back")}`)
+              : null,
+          ]
+        : el("p", { class: "vd-sub" }, "First time through: nothing has sent it back."),
+      rework.length ? "warn" : "",
+    ),
+  );
+
+  // Risk: the declared level, the recorded reasons, then the diff's own flags.
+  const riskList = el("ul", { class: "clean vd-reasons" });
+  const riskSub = el("p", { class: "vd-sub" }, "Reading the diff's risk check…");
+  const riskCell = verdictCell(
+    "risk",
+    "Risk",
+    riskBadge(p.risk.level, { long: true }),
+    `Risk: ${p.risk.level}`,
+    [riskList, riskSub],
+  );
+  const paintRisk = (anns) => {
+    clear(riskList);
+    const reasons = [...p.risk.reasons, ...(anns || []).map((a) => a.detail)];
+    for (const r of reasons) riskList.appendChild(el("li", {}, r));
+    if (anns) riskSub.textContent = reasons.length ? "" : "The diff's risk check raised nothing.";
+    riskSub.hidden = !riskSub.textContent;
+    riskCell.setAttribute(
+      "aria-label",
+      `Risk: ${p.risk.level}${reasons.length ? `, ${plural(reasons.length, "reason")}` : ""}`,
+    );
+  };
+  paintRisk(null);
+  cells.push(riskCell);
+
+  // The reviewed-commit pin, when one is recorded: landing merges only that commit.
+  if (p.pin)
+    cells.push(
+      verdictCell(
+        "pin",
+        "Pinned",
+        el("code", { class: "mono" }, p.pin.sha.slice(0, 12)),
+        `Reviewed commit pinned: ${p.pin.sha.slice(0, 12)}`,
+        el("p", { class: "vd-sub" }, [
+          /^agent review/.test(p.pin.summary) ? "By the agent review" : "By a review",
+          ` · ${fmtTime(p.pin.at)}. Only this commit can land.`,
+        ]),
+      ),
+    );
+
+  const strip = el(
+    "section",
+    { class: "rv-verdict", "aria-label": "The runner's verdict" },
+    el("div", { class: "vd-cells" }, cells),
+  );
+  strip._setRisk = paintRisk;
+  return strip;
+}
+
+/**
+ * The acceptance criteria as the runner sees them: each with its check command
+ * and the runner's recorded exit code, or "no machine evidence" on a yellow card
+ * when only the agent's word (or nothing) backs it.
+ */
+function acTable(rows) {
+  return el("table", { class: "rv-ac-table" }, [
+    el("caption", { class: "sr-only" }, "Acceptance criteria and the evidence behind each"),
+    el(
+      "thead",
+      {},
+      el("tr", {}, [
+        el("th", { scope: "col" }, "Criterion"),
+        el("th", { scope: "col" }, "Check"),
+        el("th", { scope: "col" }, "Evidence"),
+      ]),
+    ),
+    el(
+      "tbody",
+      {},
+      rows.map((a) => {
+        const kind = a.evidence_kind;
+        const failed = a.check && !a.check.passed;
+        const tone = kind === "runner" || kind === "human" ? (failed ? "bad" : "ok") : "none";
+        const words = acEvidenceWords(a);
+        return el(
+          "tr",
+          {
+            class: `ac-ev ac-ev-${kind} ac-ev-${tone}`,
+            "aria-label": `${a.text}: ${String(a.status).replace(/_/g, " ")}. ${words}.`,
+          },
+          [
+            el("td", { class: "ac-ev-t" }, [
+              el("span", {}, a.text),
+              el("span", { class: "ac-state" }, String(a.status || "").replace(/_/g, " ")),
+            ]),
+            el(
+              "td",
+              { class: "ac-ev-cmd" },
+              a.check_command
+                ? el("code", { class: "mono" }, a.check_command)
+                : el("span", { class: "dim" }, "No check command"),
+            ),
+            el(
+              "td",
+              { class: "ac-ev-what" },
+              el("div", { class: "ac-ev-in" }, [
+                tone === "ok"
+                  ? el("span", { class: "dod-mark dod-pass", "aria-hidden": "true" }, "✓")
+                  : tone === "bad"
+                    ? redCard(16)
+                    : ycard(16),
+                el("span", { class: "ac-ev-word" }, [
+                  kind === "runner" || kind === "human"
+                    ? el("span", {}, [
+                        el("b", {}, kind === "runner" ? "Runner" : "Person"),
+                        ` · exit ${a.check.exit_code ?? "unknown"}`,
+                      ])
+                    : el("b", {}, "No machine evidence"),
+                  el(
+                    "small",
+                    { class: "ac-ev-by" },
+                    kind === "agent"
+                      ? `The agent's word${a.verified_by ? ` (verified by ${actorName("agent", a.verified_by)})` : ""}`
+                      : kind === "none"
+                        ? "Nothing recorded"
+                        : a.verified_by
+                          ? `verified by ${a.verified_by}`
+                          : fmtTime(a.check.at),
+                  ),
+                ]),
+              ]),
+            ),
+          ],
+        );
+      }),
+    ),
+  ]);
+}
+
 /** The change last signed off in this tab, so the clear desk can say where it went. */
 let lastSignedOff = null;
+
+/**
+ * STALE REVISION: set when an approval was refused because the branch moved after the
+ * diff was shown. The re-rendered Review view reads it once and says so above the new
+ * diff, so the human knows what they are now looking at is a different commit.
+ */
+let reviewMovedNotice = null;
+
+/** The commits a rendered diff covered: one `{ repo, sha }` per repo with a known head. */
+function shownCommits(repos) {
+  return (repos || [])
+    .filter((r) => r && typeof r.headSha === "string" && r.headSha)
+    .map((r) => ({ repo: r.repoId || r.repo, sha: r.headSha }));
+}
+
+/** True for the server's "the change moved since it was shown" refusals. */
+function isStaleRevision(e) {
+  const reason = e && e.details && e.details.reason;
+  return (
+    Boolean(e) &&
+    e.status === 409 &&
+    (reason === "stale_revision" || reason === "revision_required")
+  );
+}
 
 /**
  * The Review page with nothing waiting: the desk is clear, said on the stadium
@@ -16098,7 +16599,13 @@ async function renderReview(param) {
 
   const t = tickets[idx];
   const next = tickets[idx + 1] || (idx > 0 ? tickets[0] : null);
-  const detail = await api("GET", `/tickets/${t.id}`, undefined, { signal });
+  prunePacketCache(tickets);
+  // The detail and the review packet (one dossier read, cached per id@updated_at)
+  // in parallel; a packet that cannot be read leaves the page as it was without it.
+  const [detail, packet] = await Promise.all([
+    api("GET", `/tickets/${t.id}`, undefined, { signal }),
+    reviewPacketFor(t, signal).catch(() => null),
+  ]);
   const ac = detail.acceptance_criteria || [];
   const evidence = detail.evidence || [];
   const ticketEvents = detail.events || [];
@@ -16116,6 +16623,8 @@ async function renderReview(param) {
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
   // DISABLED and only enables once the diff loads with a real, non-empty change.
   let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // The repos (with their head commits) the diff below rendered — what Approve covers.
+  let diffRepos = [];
   // The sign-off's status line: hidden until Approve lands, then it says where the
   // change went and offers the next one as its own link (never auto-advanced).
   const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
@@ -16127,7 +16636,20 @@ async function renderReview(param) {
         toast(`Can't approve — ${diffState.reason}`, {});
         return;
       }
-      const r = await api("POST", `/tickets/${t.id}/review/approve`);
+      // Approve exactly what was shown: the head commit of every repo the diff rendered.
+      // A branch that moved since is refused (409 stale_revision) and nothing is approved.
+      let r;
+      try {
+        r = await api("POST", `/tickets/${t.id}/review/approve`, {
+          commits: shownCommits(diffRepos),
+        });
+      } catch (e) {
+        if (!isStaleRevision(e)) throw e;
+        reviewMovedNotice = { id: t.id, message: e.message };
+        toast("Not approved — the change moved since you opened it. The new diff is loaded.", {});
+        router();
+        return;
+      }
       const to = r && r.ticket && r.ticket.status;
       // AUTO_MERGE off (the default): the approval does not merge; the ticket waits in
       // Ready for merge until someone presses Merge now.
@@ -16322,6 +16844,27 @@ async function renderReview(param) {
     { class: "reopen-banner diff-block-banner", style: "display:none" },
     [icon("alert"), ""],
   );
+  // The approval just refused as stale: say the change moved, once, above the new diff.
+  const moved = reviewMovedNotice && reviewMovedNotice.id === t.id ? reviewMovedNotice : null;
+  if (moved) reviewMovedNotice = null;
+  const movedBanner = moved
+    ? el(
+        "div",
+        {
+          class: "reopen-banner diff-moved-banner",
+          role: "alert",
+          "aria-label": "The change moved since you opened it, so nothing was approved.",
+        },
+        [
+          icon("alert"),
+          el("span", {}, [
+            el("b", {}, "The change moved since you opened it. "),
+            "Nothing was approved. The diff below is the new head — review it again before you approve. ",
+            el("small", { class: "mono" }, moved.message),
+          ]),
+        ],
+      )
+    : null;
 
   // Flags: what to look at before signing. Evidence flags now; the diff's risk
   // annotations join them once the diff loads.
@@ -16355,6 +16898,12 @@ async function renderReview(param) {
         .map((g) => g.gate)
         .join(", ")}.`,
       "Raised by the runner",
+    ]);
+  for (const d of (packet && packet.disagreements) || [])
+    flagsNow.push([
+      "Test count disagrees",
+      `${d.message} The agent wrote: “${d.excerpt}”. Trust the gate output, not the summary.`,
+      "Derived from the agent's evidence and the runner's test output",
     ]);
   if (ac.length && satisfied < ac.length)
     flagsNow.push([
@@ -16413,6 +16962,7 @@ async function renderReview(param) {
   const diffAux = el("span", { class: "panel-aux" });
   const applyDiffState = (state, repos = []) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
+    diffRepos = repos;
     if (diffState.approvable) {
       diffBlockBanner.style.display = "none";
       if (approveBtn && approveLabel.textContent !== "Approved")
@@ -16425,6 +16975,7 @@ async function renderReview(param) {
       if (approveBtn) approveBtn.setAttribute("disabled", "");
     }
     const live = repos.filter((r) => !r.unavailable);
+    strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
     const outside = outsideStatedChange(evidence, live);
     paintFlags(
       live.flatMap((r) => r.riskAnnotations || []),
@@ -16445,6 +16996,9 @@ async function renderReview(param) {
       );
     }
   };
+  // The verdict strip: the runner's facts, under the title and above everything
+  // the agent wrote. Built before the diff so the diff's risk flags can join it.
+  const strip = packet ? verdictStrip(packet) : null;
   const diffBox = renderTicketDiff(
     t.id,
     canApprove ? applyDiffState : (s, r) => applyDiffState(s, r),
@@ -16480,6 +17034,7 @@ async function renderReview(param) {
       branchLine,
     ]),
   );
+  if (strip) wrap.appendChild(strip);
 
   signoff = el(
     "section",
@@ -16492,6 +17047,7 @@ async function renderReview(param) {
     [
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
+      movedBanner,
       canApprove ? diffBlockBanner : null,
       el(
         "div",
@@ -16554,7 +17110,7 @@ async function renderReview(param) {
           el("span", { class: "count" }, `${satisfied} of ${ac.length}`),
         ])
       : null,
-    ac.length ? acChecklist(ac) : null,
+    ac.length ? (packet ? acTable(packet.acceptance) : acChecklist(ac)) : null,
   ]);
 
   wrap.appendChild(

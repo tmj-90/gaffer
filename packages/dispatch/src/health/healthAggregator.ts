@@ -55,6 +55,8 @@ interface RawHealthRow {
   models?: unknown;
   estimated?: unknown;
   estimated_cost_usd?: unknown;
+  attempt_id?: unknown;
+  started_at?: unknown;
 }
 
 /** A normalised, fully-coerced health row — keeps the per-model token map. */
@@ -74,6 +76,13 @@ export interface HealthRow {
    * runner's caps count it, and reported separately as `estimated_usd`.
    */
   estimated_cost_usd?: number;
+  /**
+   * The delivery attempt this call belonged to (`<claim key>/<attempt n>`, written by
+   * the runner on delivery rows). Null on rows written before attempts were recorded.
+   */
+  attempt_id?: string | null;
+  /** When the call was spawned (ISO, written by the runner). Null on older rows. */
+  started_at?: string | null;
 }
 
 /** Spend + call count grouped by ledger `kind` (delivery, review, testing …). */
@@ -97,10 +106,32 @@ export interface DailySpendEntry {
 /** Per-ticket cost-of-rework attribution. */
 export interface ReworkCostEntry {
   ticket: number;
+  /** Times the ticket was sent back: review/tester rejections plus runner retries. */
   rework_count: number;
+  /** Of those, rejections by a reviewer or tester (in_review/in_testing → back). */
+  review_send_backs?: number;
+  /** Of those, the runner's own retries after a failed gate (rework_attempts). */
+  runner_retries?: number;
   ticket_cost_usd: number;
-  /** Wasted spend attributed to the redo attempts (see aggregateHealthRows). */
+  /** Spend on the delivery attempts that started after the first send-back. */
   rework_cost_usd: number;
+  /** Delivery attempts that started after the first send-back. */
+  rework_attempts?: number;
+  /**
+   * How `rework_cost_usd` was measured: `attempt` — every delivery row carried its
+   * attempt and start time; `timeline` — some rows predate that, so their start was
+   * taken from `ts - duration_ms`; `estimate` — no send-back timeline was supplied, so
+   * the old N/(N+1) share of delivery spend.
+   */
+  basis?: "attempt" | "timeline" | "estimate";
+}
+
+/** One time a ticket was sent back for rework. */
+export interface SendBack {
+  /** When it happened (ISO). */
+  at: string;
+  /** `review` — a reviewer or tester rejected it; `retry` — the runner retried a failed gate. */
+  source: "review" | "retry";
 }
 
 /** The honesty gap: how much of the factory's activity is actually measured. */
@@ -147,11 +178,20 @@ export interface HealthAggregate {
 /** Resolve the rework-attempt count for a ticket number (0 when none). */
 export type ReworkResolver = (ticketNumber: number) => number;
 
+/** Resolve every send-back of a ticket number (empty when none). */
+export type SendBackResolver = (ticketNumber: number) => readonly SendBack[];
+
 /** Options for {@link aggregateHealthRows}. */
 export interface HealthAggregateOptions {
   /** Count of shipped (`done`) tickets — the cost-per-shipped divisor. */
   shippedCount?: number;
-  /** Ticket-number → rework-attempt count. Defaults to "no rework". */
+  /**
+   * Ticket-number → every send-back (review/tester rejections AND runner retries,
+   * with their times). When given, rework spend is the delivery spend of the attempts
+   * that started after the first send-back. Wins over {@link resolveRework}.
+   */
+  resolveSendBacks?: SendBackResolver;
+  /** Legacy: ticket-number → rework count only (N/(N+1) estimate). Defaults to none. */
   resolveRework?: ReworkResolver;
 }
 
@@ -178,6 +218,19 @@ function isUnknownSentinel(v: unknown): boolean {
 /** Round a number to 6 decimal places (dollars) — matches costAggregator. */
 function round6(n: number): number {
   return Math.round(n * 1e6) / 1e6;
+}
+
+/**
+ * When a ledger call started, in epoch ms: the runner's `started_at`, else `ts` (the
+ * call's END) minus its measured duration, else `ts`.
+ */
+function rowStartMs(row: HealthRow): number {
+  if (row.started_at) {
+    const at = Date.parse(row.started_at);
+    if (Number.isFinite(at)) return at;
+  }
+  const end = Date.parse(row.ts);
+  return row.duration_ms > 0 ? end - row.duration_ms : end;
 }
 
 /** Parse the per-model usage map, tolerating missing / "unknown" fields. */
@@ -240,6 +293,12 @@ export function parseHealthLine(line: string): HealthRow | null {
   // Only an unmeasured row may carry the labelled estimate (never double-count).
   const estimated_cost_usd =
     !measured && r.estimated === true ? numOrZero(r.estimated_cost_usd) : 0;
+  const attempt_id =
+    typeof r.attempt_id === "string" && r.attempt_id.length > 0 ? r.attempt_id : null;
+  const started_at =
+    typeof r.started_at === "string" && !Number.isNaN(Date.parse(r.started_at))
+      ? r.started_at
+      : null;
 
   return {
     ts,
@@ -251,6 +310,8 @@ export function parseHealthLine(line: string): HealthRow | null {
     duration_ms,
     models,
     estimated_cost_usd,
+    attempt_id,
+    started_at,
   };
 }
 
@@ -277,13 +338,17 @@ export function readHealthRows(ledgerPath: string): HealthRow[] {
 /**
  * Aggregate the health/ROI view from a set of ledger rows.
  *
- * cost-of-rework: for a ticket delivered after N rework attempts, N+1 DELIVERY
- * runs were paid for and N of them were redo. Only the delivery run repeats on
- * rework — decompose/review each ran once — so we attribute `delivery_cost * N/(N+1)`
- * (the delivery-kind spend only), NOT the ticket's full cross-kind spend. Attributing
- * the full ticket cost overstated the rework share by dragging in one-shot
- * decompose/review dollars that were never redone. The share stays bounded and can
- * never exceed the ticket's delivery spend.
+ * cost-of-rework: a ticket is "sent back" when a reviewer or tester rejects it OR
+ * the runner retries it after a failed gate — both kinds count (the Health report
+ * used to count only the runner's retries, so a $1 attempt, a review rejection and a
+ * $3 correction read as $0 rework). With {@link HealthAggregateOptions.resolveSendBacks}
+ * each DELIVERY ledger row is placed on the ticket's timeline by its start time (the
+ * runner writes `started_at` and `attempt_id`; an older row's start is `ts -
+ * duration_ms`), and the rework spend is the delivery spend of every attempt that
+ * started after the FIRST send-back: the cost of correcting the ticket. Only delivery
+ * spend counts — decompose / review / clarify are not redone work. Without a timeline
+ * (legacy {@link HealthAggregateOptions.resolveRework}) the old estimate applies:
+ * `delivery_cost * N/(N+1)` for N send-backs.
  */
 export function aggregateHealthRows(
   rows: HealthRow[],
@@ -291,6 +356,7 @@ export function aggregateHealthRows(
 ): HealthAggregate {
   const shippedCount = Math.max(0, Math.trunc(options.shippedCount ?? 0));
   const resolveRework = options.resolveRework ?? (() => 0);
+  const resolveSendBacks = options.resolveSendBacks;
 
   let totalUsd = 0;
   let estimatedUsd = 0;
@@ -301,6 +367,7 @@ export function aggregateHealthRows(
 
   const byTicket = new Map<number, number>(); // ticket → total cross-kind cost
   const byTicketDelivery = new Map<number, number>(); // ticket → delivery-kind cost only
+  const deliveryRows = new Map<number, HealthRow[]>(); // ticket → its delivery rows
   const byKind = new Map<string, { cost: number; count: number }>();
   const byModel = new Map<string, ModelUsage>();
   const byDay = new Map<string, number>(); // yyyy-mm-dd → cost
@@ -326,6 +393,9 @@ export function aggregateHealthRows(
       // rework attribution never charges one-shot decompose/review spend as redo.
       if (row.kind === DELIVERY_KIND) {
         byTicketDelivery.set(row.ticket, (byTicketDelivery.get(row.ticket) ?? 0) + spend);
+        const list = deliveryRows.get(row.ticket);
+        if (list) list.push(row);
+        else deliveryRows.set(row.ticket, [row]);
       }
     }
 
@@ -373,24 +443,58 @@ export function aggregateHealthRows(
     .map(([date, cost]) => ({ date, total_cost_usd: round6(cost) }))
     .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
-  // cost-of-rework — join the ledger's per-ticket cost with the rework count.
+  // cost-of-rework — join the ledger's delivery attempts with the send-back timeline.
   let totalReworkCost = 0;
   const reworkByTicket: ReworkCostEntry[] = [];
-  for (const [ticket, cost] of byTicket.entries()) {
-    const rc = Math.max(0, Math.trunc(resolveRework(ticket)));
-    if (rc <= 0) continue;
-    // Attribute rework from the DELIVERY spend only (the kind that actually repeats),
-    // not the ticket's full cross-kind cost. `ticket_cost_usd` still reports the full
-    // ticket spend for context.
-    const deliveryCost = byTicketDelivery.get(ticket) ?? 0;
-    const reworkCost = round6((deliveryCost * rc) / (rc + 1));
-    totalReworkCost += reworkCost;
-    reworkByTicket.push({
-      ticket,
-      rework_count: rc,
-      ticket_cost_usd: round6(cost),
-      rework_cost_usd: reworkCost,
-    });
+  if (resolveSendBacks) {
+    const tickets = new Set<number>([...byTicket.keys()]);
+    for (const ticket of tickets) {
+      const sendBacks = resolveSendBacks(ticket);
+      if (sendBacks.length === 0) continue;
+      const firstMs = Math.min(...sendBacks.map((b) => Date.parse(b.at)).filter(Number.isFinite));
+      if (!Number.isFinite(firstMs)) continue;
+      const rows = deliveryRows.get(ticket) ?? [];
+      let reworkCost = 0;
+      const reworkAttempts = new Set<string>();
+      let exact = true;
+      rows.forEach((row, i) => {
+        if (!row.started_at) exact = false;
+        const startMs = rowStartMs(row);
+        if (startMs < firstMs) return;
+        reworkCost += row.total_cost_usd + (row.estimated_cost_usd ?? 0);
+        reworkAttempts.add(row.attempt_id ?? `row-${i}`);
+      });
+      reworkCost = round6(reworkCost);
+      totalReworkCost += reworkCost;
+      reworkByTicket.push({
+        ticket,
+        rework_count: sendBacks.length,
+        review_send_backs: sendBacks.filter((b) => b.source === "review").length,
+        runner_retries: sendBacks.filter((b) => b.source === "retry").length,
+        ticket_cost_usd: round6(byTicket.get(ticket) ?? 0),
+        rework_cost_usd: reworkCost,
+        rework_attempts: reworkAttempts.size,
+        basis: exact ? "attempt" : "timeline",
+      });
+    }
+  } else {
+    for (const [ticket, cost] of byTicket.entries()) {
+      const rc = Math.max(0, Math.trunc(resolveRework(ticket)));
+      if (rc <= 0) continue;
+      // Attribute rework from the DELIVERY spend only (the kind that actually repeats),
+      // not the ticket's full cross-kind cost. `ticket_cost_usd` still reports the full
+      // ticket spend for context.
+      const deliveryCost = byTicketDelivery.get(ticket) ?? 0;
+      const reworkCost = round6((deliveryCost * rc) / (rc + 1));
+      totalReworkCost += reworkCost;
+      reworkByTicket.push({
+        ticket,
+        rework_count: rc,
+        ticket_cost_usd: round6(cost),
+        rework_cost_usd: reworkCost,
+        basis: "estimate",
+      });
+    }
   }
   reworkByTicket.sort((a, b) => b.rework_cost_usd - a.rework_cost_usd);
   totalReworkCost = round6(totalReworkCost);

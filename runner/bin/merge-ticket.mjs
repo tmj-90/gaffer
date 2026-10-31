@@ -70,6 +70,13 @@
 //                When it FAILS, `applied:false` + `error` are carried here AND a
 //                prominent WARNING is logged (R-3), so a stale digest / a feature
 //                stuck at `building` is VISIBLE rather than silently swallowed.
+//   partially_merged:
+//              { "phase":"partially_merged", ticket, landed:[repo…], pending:[repo…], error }
+//              (exit 4) — PER-REPOSITORY LANDING: a multi-repo ticket lands one merge per
+//                write repo (each repo's approved commit). Some landed (recorded in
+//                dispatch), at least one did not (conflict, dirty checkout, held check):
+//                the ticket stays ready_for_merge, shown "Partly merged" in the human
+//                queue, and NOT marked done; a re-run lands only the repos still pending.
 //   conflict_resolved_pending_reapproval:
 //              { "phase":"conflict_resolved_pending_reapproval", ticket, repo, branch,
 //                defaultBranch, reapproval:{...} }
@@ -120,9 +127,10 @@
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildApplyCommands,
@@ -293,7 +301,7 @@ export function resolveTicket(dbPath, number) {
     // (the WG-002 boundary), falling back to the legacy role='primary' so older rows
     // still resolve. tr.branch_name is the per-repo delivery branch.
     const repoSql = (withStack, withPr) =>
-      "SELECT r.name AS name, r.local_path AS localPath, " +
+      "SELECT r.id AS id, r.name AS name, r.local_path AS localPath, " +
       "r.default_branch AS defaultBranch, " +
       (withStack ? "r.stack AS stack, " : "") +
       (withPr ? "tr.pr_url AS repoPrUrl, " : "") +
@@ -324,7 +332,20 @@ export function resolveTicket(dbPath, number) {
     if (lastErr) throw lastErr;
     if (!repoRow || !repoRow.localPath) return null;
 
-    const branch = String(repoRow.repoBranch || ticket.branchName || "").trim();
+    // The per-repo delivery row (ticket_repo_delivery) is where the factory records the
+    // branch for a multi-repo ticket; fall back to it the same way the review diff does.
+    let deliveryBranch = "";
+    try {
+      const d = db
+        .prepare(
+          "SELECT branch_name AS b FROM ticket_repo_delivery WHERE ticket_id = ? AND repo_id = ?",
+        )
+        .get(ticket.id, repoRow.id);
+      deliveryBranch = String(d?.b || "");
+    } catch {
+      deliveryBranch = ""; // pre-v4 schema / minimal fixture
+    }
+    const branch = String(repoRow.repoBranch || deliveryBranch || ticket.branchName || "").trim();
     if (!branch) return null;
     const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
 
@@ -332,6 +353,7 @@ export function resolveTicket(dbPath, number) {
       ticketId: String(ticket.id),
       number: ticket.number,
       repo: {
+        id: repoRow.id == null ? "" : String(repoRow.id),
         name: String(repoRow.name || ""),
         localPath: String(repoRow.localPath),
         defaultBranch: String(repoRow.defaultBranch || "main"),
@@ -758,7 +780,7 @@ export function introducedConflictMarkers(worktree, parents) {
  * show`. A schema without the columns resolves to no commands (the zero-gates rule then
  * applies); an unreadable DB returns null (the caller fails closed).
  */
-export function resolveGateCommands(dbPath, number) {
+export function resolveGateCommands(dbPath, number, repoId = null) {
   const num = parseInt(String(number ?? "").trim(), 10);
   if (!Number.isInteger(num) || num <= 0 || !existsSync(dbPath)) return null;
   let db;
@@ -767,19 +789,25 @@ export function resolveGateCommands(dbPath, number) {
     db = new DatabaseSync(dbPath, { readOnly: true });
     let row;
     try {
+      // PER-REPOSITORY: with a repo id, THAT repo's commands (a multi-repo ticket gates
+      // each repo's merge with its own gates); otherwise the ticket's primary write repo.
       row = db
         .prepare(
           "SELECT r.test_command AS test, r.lint_command AS lint FROM tickets t " +
             "JOIN ticket_repos tr ON tr.ticket_id = t.id JOIN repositories r ON r.id = tr.repo_id " +
-            "WHERE t.number = ? ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC LIMIT 1",
+            "WHERE t.number = ? " +
+            (repoId ? "AND r.id = ? " : "") +
+            "ORDER BY (tr.access = 'write') DESC, (tr.role = 'primary') DESC LIMIT 1",
         )
-        .get(num);
+        .get(...(repoId ? [num, String(repoId)] : [num]));
     } catch (e) {
       // An older / minimal schema without the columns (or tables) carries no commands;
       // the zero-gates rule then decides (fail closed unless GAFFER_ALLOW_NO_DOD=1).
       if (/no such (column|table)/i.test(String(e?.message ?? e))) return { test: "", lint: "" };
       throw e;
     }
+    // A named repo that is not on the ticket: nothing says what its gates are — fail closed.
+    if (repoId && !row) return null;
     return { test: String(row?.test ?? "").trim(), lint: String(row?.lint ?? "").trim() };
   } catch {
     return null;
@@ -1225,13 +1253,17 @@ function runMemoryCli(args) {
  * else is `X<TAB>path`. Unknown/blank statuses are ignored (best-effort).
  * Exported so a test can exercise the parsing without spawning git.
  *
+ * Renames are also returned as `renames` ({from, to}) so the new path's card can
+ * carry the old card's summary before the old card is tombstoned.
+ *
  * @param {string} diffOut Raw stdout from the diff.
- * @returns {{ refresh: string[], deletions: string[] }}
+ * @returns {{ refresh: string[], deletions: string[], renames: {from: string, to: string}[] }}
  */
 export function parseDiffStatus(diffOut) {
   const refresh = [];
   const deletions = [];
-  if (!diffOut) return { refresh, deletions };
+  const renames = [];
+  if (!diffOut) return { refresh, deletions, renames };
   for (const raw of diffOut.split("\n")) {
     const line = raw.replace(/\r$/, "");
     if (!line.trim()) continue;
@@ -1248,6 +1280,7 @@ export function parseDiffStatus(diffOut) {
       const newPath = (fields[2] ?? "").trim();
       if (oldPath) deletions.push(oldPath);
       if (newPath) refresh.push(newPath);
+      if (oldPath && newPath) renames.push({ from: oldPath, to: newPath });
     } else if (code === "C") {
       // Copy: old is unchanged, the NEW copy needs a card.
       const newPath = (fields[2] ?? "").trim();
@@ -1258,7 +1291,78 @@ export function parseDiffStatus(diffOut) {
     }
     // U (unmerged), X, B and anything else: ignore — not a clean card target.
   }
-  return { refresh, deletions };
+  return { refresh, deletions, renames };
+}
+
+/**
+ * Re-card a just-merged repo against the merged commit: diff the card watermark →
+ * the default branch's tip with rename detection, check that commit out in a
+ * throwaway detached worktree, refresh/tombstone the changed files there (a rename
+ * carries the old card's summary), and let refreshFileCards verify every stored card
+ * against the same tree before it advances the watermark. Skipped (logged) when the
+ * repo was never carded, when the local default branch is stale after a PR merge, or
+ * when the merged commit cannot be resolved or checked out. The diff is tree to tree
+ * (`watermark..tip`), so it is the right change set even when the watermark is not an
+ * ancestor of the tip (a rewritten main); the verification then catches any card the
+ * diff did not reach.
+ */
+function refreshCardsForMergedCommit(repo, landed, log) {
+  if (landed?.via === "pr" && landed.fastForwarded === false) {
+    log(
+      "card-refresh: local default branch is stale after the PR merge — skipped; the next merge re-cards it",
+    );
+    return;
+  }
+  const canonical = repoCanonical(repo.localPath);
+  const syncedCommit = readCardWatermark(canonical, repo.name);
+  if (!syncedCommit) {
+    log(
+      "card-refresh: no watermark recorded for this repo — skipping (run `gaffer onboard` to initialise)",
+    );
+    return;
+  }
+  const merged = git(repo.localPath, "rev-parse", "--verify", `refs/heads/${repo.defaultBranch}`);
+  const target = merged.status === 0 ? String(merged.stdout ?? "").trim() : "";
+  if (!target) {
+    log(`card-refresh: cannot resolve ${repo.defaultBranch} — skipped`);
+    return;
+  }
+  // -M turns a delete+add pair into a single R rename record (old→new), so the card
+  // follows the file. --name-only would miss deletions and renames entirely.
+  const diffOut = execFileSync(
+    "git",
+    ["-C", repo.localPath, "diff", "--name-status", "-M", `${syncedCommit}..${target}`],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  ).trim();
+  const { refresh, deletions, renames } = parseDiffStatus(diffOut);
+  const wt = mkdtempSync(join(tmpdir(), "gaffer-cards-"));
+  const add = git(repo.localPath, "worktree", "add", "--detach", "--quiet", wt, target);
+  if (add.status !== 0) {
+    rmSync(wt, { recursive: true, force: true });
+    log(`card-refresh: could not check out ${target.slice(0, 8)} — skipped`);
+    return;
+  }
+  try {
+    const cfg = { cliBin: MEMORY_CLI, db: CONFIG.memoryDb };
+    const rStats = refreshFileCards(wt, refresh, {
+      cfg,
+      deletions,
+      renames,
+      env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
+      log: (m) => log(`card-refresh: ${m}`),
+      repo: repo.name,
+      canonical,
+    });
+    log(
+      `card-refresh: refreshed=${rStats.refreshed} deleted=${rStats.deleted} ` +
+        `skipped=${rStats.skipped} failed=${rStats.failed} ` +
+        `watermark=${rStats.watermark ?? "held"}`,
+    );
+  } finally {
+    git(repo.localPath, "worktree", "remove", "--force", wt);
+    git(repo.localPath, "worktree", "prune");
+    rmSync(wt, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -1486,6 +1590,247 @@ function signalReapproval(ticketNumber, resolution) {
   return { ok, command, args, attempts: n };
 }
 
+/**
+ * LOCAL LANDING through the MERGE GATE, compare-and-land — the one loop every local
+ * landing runs (the primary repo and each secondary repo of a multi-repo ticket): gate the
+ * merge of `pin` onto the CURRENT target (gateProposedMerge), then land exactly the gated
+ * merge commit while the target still is the gated head (landGatedMerge); a moved target
+ * is re-gated (GAFFER_MERGE_GATE_RETRIES, default 2).
+ *   → { kind: "landed", gate } | { kind: "conflict" | "red" | "error", gate }
+ *     | { kind: "refused", code, reason }  (never lands on anything but "landed")
+ */
+function landThroughMergeGate({
+  ticketNumber,
+  repoPath,
+  repoName,
+  branch,
+  defaultBranch,
+  pin,
+  commands,
+  gateDir,
+  secondary = false,
+  trailers = [],
+}) {
+  const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
+  const where = secondary && repoName ? ` in ${repoName}` : "";
+  for (let attempt = 0; ; attempt++) {
+    const gate = gateProposedMerge({
+      repoPath,
+      branch,
+      pin,
+      targetRef: `refs/heads/${defaultBranch}`,
+      label: repoName,
+      commands,
+      gateDir,
+      // The gated merge commit is the commit that lands: it carries the trailers.
+      trailers,
+    });
+    if (gate.kind === "conflict" || gate.kind === "red" || gate.kind === "error")
+      return { kind: gate.kind, gate };
+    log(
+      gate.kind === "off"
+        ? `#${ticketNumber}: MERGE GATE OFF (GAFFER_DOD=0) — the combination was not gated`
+        : `#${ticketNumber}: MERGE GATE PASS — the merge of ${pin.slice(0, 12)} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} passes the gates`,
+    );
+    const l = landGatedMerge({
+      repoPath,
+      defaultBranch,
+      target: gate.target,
+      merge: gate.merge,
+      branch,
+      pin,
+    });
+    if (l.ok) return { kind: "landed", gate };
+    if (l.code === "moved-target" && attempt < maxTries) {
+      log(
+        `#${ticketNumber}: ${defaultBranch} moved after the merge gate${where} — re-gating (${attempt + 1}/${maxTries})`,
+      );
+      continue;
+    }
+    return { kind: "refused", code: l.code, reason: l.reason };
+  }
+}
+
+/**
+ * The red merge gate's HOLD: the gate output becomes evidence on the ticket and the ticket
+ * leaves the merge lane for the human queue (`wg ticket hold` → blocked, merge_gate_red).
+ * The target was never touched. → { held, recorded }.
+ */
+function holdMergeGateRed(ticketNumber, gate, { branch, defaultBranch, repoName = "" }) {
+  const where = repoName ? ` in ${repoName}` : "";
+  const recorded = recordEvidence(
+    ticketNumber,
+    "test_output",
+    `MERGE GATE FAILED${where}: ${gate.reason}\n\n${gate.evidence || "DoD: FAIL"}`,
+  );
+  const r = runDispatch([
+    "ticket",
+    "hold",
+    String(ticketNumber),
+    "--reason-code",
+    "merge_gate_red",
+    "--reason",
+    `The merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} fails its gates ` +
+      `(each side passed alone); ${defaultBranch} was not touched — see the merge-gate evidence. ` +
+      `Rework the branch on the current ${defaultBranch}, then re-approve.`,
+    "--as",
+    "system",
+  ]);
+  return { held: !r.error && r.status === 0, recorded };
+}
+
+/** PER-REPOSITORY LANDING: the ticket's approved revisions (`wg ticket landing`). */
+export function readLandingPlan(ticketNumber) {
+  const r = runDispatch(["ticket", "landing", String(ticketNumber)]);
+  if (r.error || r.status !== 0) return null;
+  try {
+    const j = JSON.parse(String(r.stdout || "").trim());
+    return Array.isArray(j.repos) ? j.repos : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record one repo's landing as the system actor (idempotent; logged, never fatal). */
+function recordLandingCli(ticketNumber, repoId, sha, via) {
+  if (!repoId || !sha) return;
+  const r = runDispatch([
+    "ticket",
+    "record-landing",
+    String(ticketNumber),
+    "--repo",
+    String(repoId),
+    "--commit",
+    String(sha),
+    "--via",
+    String(via || "local"),
+    "--as",
+    "system",
+  ]);
+  if (r.error || r.status !== 0)
+    log(
+      `WARNING: #${ticketNumber} could not record the landing of ${String(sha).slice(0, 12)} ` +
+        `(${(r.stderr || "").trim().slice(0, 160)}) — the done gate re-checks git`,
+    );
+}
+
+/**
+ * Land every write repo OTHER than the primary: each lands only its pinned (approved)
+ * commit, through the same landing check (`--secondary`: the tester verdict describes the
+ * primary) and the same MERGE GATE + compare-and-land as the primary (landThroughMergeGate:
+ * that repo's own gates on the merge onto its current target). A conflict, a dirty
+ * checkout, a held check or a gate that could not run stops here — the ticket stays
+ * ready_for_merge, partly merged, for a human (no resolver is spawned for a secondary
+ * repo); a RED merge gate also holds the ticket (blocked, merge_gate_red) with the gate
+ * output as evidence. Returns { ok, merged, landed, pending, reason }.
+ */
+function landSecondaryRepos(ticketNumber, primaryRepoId) {
+  const plan = readLandingPlan(ticketNumber);
+  const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
+  if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
+  // PROVENANCE TRAILERS — the same block the primary's merge commit carries.
+  const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber });
+  for (const r of plan) {
+    if (r.repoId === primaryRepoId) {
+      out.landed.push(r.repo);
+      continue;
+    }
+    if (r.landed) {
+      out.landed.push(r.repo);
+      continue;
+    }
+    const why = (reason) => {
+      out.ok = false;
+      out.pending.push(r.repo);
+      out.reason = `${r.repo}: ${reason}`;
+      log(`#${ticketNumber} PARTLY MERGED — ${r.repo} did not land: ${reason}; held for a human`);
+    };
+    if (out.ok === false) {
+      out.pending.push(r.repo);
+      continue;
+    }
+    if (!r.localPath || !existsSync(r.localPath) || !r.branch) {
+      why("its checkout or delivery branch is not available");
+      continue;
+    }
+    const tree = inspectWorkingTree(r.localPath);
+    if (tree.dirty) {
+      why(`the live checkout has uncommitted changes (${tree.summary})`);
+      continue;
+    }
+    const d = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber,
+      repoPath: r.localPath,
+      branch: r.branch,
+      repoId: r.repoId,
+      secondary: true,
+    });
+    if (!d.ok) {
+      why(`landing check ${d.kind}: ${d.reason}`);
+      continue;
+    }
+    if (d.kind === "already-landed") {
+      out.landed.push(r.repo);
+      continue;
+    }
+    const defaultBranch = r.defaultBranch || "main";
+    const res = landThroughMergeGate({
+      ticketNumber,
+      repoPath: r.localPath,
+      repoName: r.repo,
+      branch: r.branch,
+      defaultBranch,
+      pin: d.pin,
+      commands: resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId),
+      gateDir: resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`),
+      secondary: true,
+      // Each repo's gated merge commit is the commit that lands there: it carries them too.
+      trailers,
+    });
+    if (res.kind === "conflict") {
+      why(`${res.gate.reason} (merge conflict)`);
+      continue;
+    }
+    if (res.kind === "red") {
+      const h = holdMergeGateRed(ticketNumber, res.gate, {
+        branch: r.branch,
+        defaultBranch,
+        repoName: r.repo,
+      });
+      why(
+        `MERGE GATE FAILED — ${res.gate.reason}; ${defaultBranch} untouched; ` +
+          (h.held
+            ? "ticket held for a human (blocked, merge_gate_red)"
+            : "ticket left ready_for_merge (the hold could not be recorded)") +
+          (h.recorded ? "; the gate output is on the ticket as evidence" : ""),
+      );
+      continue;
+    }
+    if (res.kind === "error") {
+      why(`the merge gate could not run (${res.gate.reason}); nothing merged`);
+      continue;
+    }
+    if (res.kind !== "landed") {
+      why(`${res.reason}${res.code === "moved-target" ? " (kept moving while gated)" : ""}`);
+      continue;
+    }
+    log(
+      `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
+    );
+    recordLandingCli(ticketNumber, r.repoId, d.pin, "local");
+    out.landed.push(r.repo);
+    out.merged.push({
+      repo: r.repo,
+      localPath: r.localPath,
+      branch: r.branch,
+      defaultBranch,
+      pin: d.pin,
+    });
+  }
+  return out;
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -1613,6 +1958,7 @@ function main() {
     ticketNumber: resolved.number,
     repoPath: repo.localPath,
     branch,
+    repoId: repo.id || null,
   });
   if (!decision.ok) {
     fail(
@@ -1631,6 +1977,15 @@ function main() {
   const pin = decision.pin;
   // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
   const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
+  // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
+  // after a partial landing) — never merge it again; land the repos still pending.
+  let landed =
+    decision.kind === "already-landed"
+      ? (log(
+          `#${resolved.number}: ${repo.name} already landed ${String(pin).slice(0, 12)} — not merged again`,
+        ),
+        { via: "earlier" })
+      : null;
 
   // 1. Land the delivery. PR MODE first: when the ticket carries a pr_url (the runner
   //    opened a PR under GAFFER_CREATE_PR) and `gh` is available, merge THROUGH the PR
@@ -1641,42 +1996,27 @@ function main() {
   // GAFFER_PR_LOCAL_FALLBACK=1: the operator's explicit choice to land a PR-mode ticket
   // LOCALLY when the PR merge cannot run. Off by default — a failed PR merge holds.
   const prLocalFallback = /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
-  let landed = null;
   // MERGE GATE (every landing route): the combination of the pin and the CURRENT target
   // is what lands, so it is what is gated; a red combination is held for a human.
   let conflict = false;
-  const gateCommands = resolveGateCommands(CONFIG.dispatchDb, resolved.number);
+  const gateCommands = resolveGateCommands(CONFIG.dispatchDb, resolved.number, repo.id || null);
   const gateDir = resolve(GAFFER_DATA, "worktrees", `merge-gate-${resolved.number}`);
   const holdRed = (gate) => {
-    const recorded = recordEvidence(
-      resolved.number,
-      "test_output",
-      `MERGE GATE FAILED: ${gate.reason}\n\n${gate.evidence || "DoD: FAIL"}`,
-    );
-    const held = runDispatch([
-      "ticket",
-      "hold",
-      String(resolved.number),
-      "--reason-code",
-      "merge_gate_red",
-      "--reason",
-      `The merge of ${branch} onto ${repo.defaultBranch}@${gate.target.slice(0, 12)} fails its gates ` +
-        `(each side passed alone); ${repo.defaultBranch} was not touched — see the merge-gate evidence. ` +
-        `Rework the branch on the current ${repo.defaultBranch}, then re-approve.`,
-      "--as",
-      "system",
-    ]);
+    const h = holdMergeGateRed(resolved.number, gate, {
+      branch,
+      defaultBranch: repo.defaultBranch,
+    });
     fail(
       `refusing to merge #${resolved.number}: MERGE GATE FAILED — ${gate.reason}; ` +
         `${repo.defaultBranch} untouched; ` +
-        (!held.error && held.status === 0
+        (h.held
           ? "ticket held for a human (blocked, merge_gate_red)"
           : "ticket left ready_for_merge (the hold could not be recorded)") +
-        (recorded ? "; the gate output is on the ticket as evidence" : ""),
+        (h.recorded ? "; the gate output is on the ticket as evidence" : ""),
       4,
     );
   };
-  if (resolved.prUrl) {
+  if (!landed && resolved.prUrl) {
     if (ghAvailable(ghBin)) {
       // PR MODE: gate against the remote target as just fetched (the local default when
       // the fetch fails). GitHub merges the PR; its branch protection ("require branches
@@ -1702,7 +2042,7 @@ function main() {
       if (gate.kind === "conflict") conflict = true;
     }
   }
-  if (resolved.prUrl && !conflict) {
+  if (!landed && resolved.prUrl && !conflict) {
     if (ghAvailable(ghBin)) {
       const pr = mergeViaPr({
         repoPath: repo.localPath,
@@ -1761,65 +2101,63 @@ function main() {
     // LOCAL LANDING through the merge gate, compare-and-land: the gated merge commit
     // lands only while the target still is the gated target head; a moved target is
     // re-gated (GAFFER_MERGE_GATE_RETRIES, default 2), then left for the next run.
-    const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
-    for (let attempt = 0; ; attempt++) {
-      const gate = gateProposedMerge({
-        repoPath: repo.localPath,
-        branch,
-        pin,
-        targetRef: `refs/heads/${repo.defaultBranch}`,
-        label: repo.name,
-        commands: gateCommands,
-        gateDir,
-        // The gated merge commit is the commit that lands: it carries the trailers.
-        trailers,
-      });
-      // A conflict falls through to the resolver below (landed stays null).
-      if (gate.kind === "conflict") break;
-      if (gate.kind === "red") return holdRed(gate);
-      if (gate.kind === "error") {
-        fail(
-          `refusing to merge #${resolved.number}: the merge gate could not run (${gate.reason}); nothing merged, ticket stays ready_for_merge`,
-        );
-        return;
-      }
-      log(
-        gate.kind === "off"
-          ? `#${resolved.number}: MERGE GATE OFF (GAFFER_DOD=0) — the combination was not gated`
-          : `#${resolved.number}: MERGE GATE PASS — the merge of ${pin.slice(0, 12)} onto ${repo.defaultBranch}@${gate.target.slice(0, 12)} passes the gates`,
+    const res = landThroughMergeGate({
+      ticketNumber: resolved.number,
+      repoPath: repo.localPath,
+      repoName: repo.name,
+      branch,
+      defaultBranch: repo.defaultBranch,
+      pin,
+      commands: gateCommands,
+      gateDir,
+      // The gated merge commit is the commit that lands: it carries the trailers.
+      trailers,
+    });
+    // A conflict falls through to the resolver below (landed stays null).
+    if (res.kind === "red") return holdRed(res.gate);
+    if (res.kind === "error") {
+      fail(
+        `refusing to merge #${resolved.number}: the merge gate could not run (${res.gate.reason}); nothing merged, ticket stays ready_for_merge`,
       );
-      const l = landGatedMerge({
-        repoPath: repo.localPath,
-        defaultBranch: repo.defaultBranch,
-        target: gate.target,
-        merge: gate.merge,
-        branch,
-        pin,
-      });
-      if (l.ok) {
-        landed = { via: "local", gatedMerge: gate.merge, gatedTarget: gate.target };
-        log(
-          `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${gate.merge.slice(0, 12)}`,
-        );
-        break;
-      }
-      if (l.code === "moved-target" && attempt < maxTries) {
-        log(
-          `#${resolved.number}: ${repo.defaultBranch} moved after the merge gate — re-gating (${attempt + 1}/${maxTries})`,
-        );
-        continue;
-      }
+      return;
+    }
+    if (res.kind === "landed") {
+      landed = { via: "local", gatedMerge: res.gate.merge, gatedTarget: res.gate.target };
+      log(
+        `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
+      );
+    } else if (res.kind === "refused") {
       // Not a conflict — nothing on the branch to resolve. Refuse, leave the ticket at
       // ready_for_merge and the live checkout as it was (never spawn the resolver).
       fail(
-        `refusing to merge #${resolved.number}: ${l.reason}${l.code === "moved-target" ? " (kept moving while gated)" : ""} — ` +
+        `refusing to merge #${resolved.number}: ${res.reason}${res.code === "moved-target" ? " (kept moving while gated)" : ""} — ` +
           `live checkout left untouched; ticket stays ready_for_merge for a human`,
-        l.code === "moved-branch" ? 4 : 1,
+        res.code === "moved-branch" ? 4 : 1,
       );
       return;
     }
   }
   if (landed) {
+    // PER-REPOSITORY LANDING: record the primary repo's landing, then land every OTHER
+    // write repo's approved commit. A ticket is done only when all of them landed; one
+    // that does not land leaves the ticket HELD (ready_for_merge, "Partly merged" in the
+    // human queue) with what did land recorded, so a retry lands only the rest.
+    if (landed.via !== "earlier" && repo.id)
+      recordLandingCli(resolved.number, repo.id, pin, landed.via);
+    const others = landSecondaryRepos(resolved.number, repo.id);
+    if (!others.ok) {
+      emit(
+        {
+          phase: "partially_merged",
+          ticket: resolved.number,
+          landed: others.landed,
+          pending: others.pending,
+          error: others.reason,
+        },
+        4,
+      );
+      return;
+    }
     // Flip the ticket ready_for_merge → done now that the branch is actually merged.
     // Non-fatal: the merge already landed; a failure just leaves it in ready_for_merge
     // (a human can run `wg ticket mark-merged <n> --as system`).
@@ -1852,6 +2190,15 @@ function main() {
     )
       del = git(repo.localPath, "update-ref", "-d", `refs/heads/${branch}`, pin);
     if (del.status === 0) log(`deleted merged branch ${branch}`);
+    for (const o of others.merged) {
+      let d2 = git(o.localPath, "branch", "-d", o.branch);
+      if (
+        d2.status !== 0 &&
+        git(o.localPath, "merge-base", "--is-ancestor", o.pin, o.defaultBranch).status === 0
+      )
+        d2 = git(o.localPath, "update-ref", "-d", `refs/heads/${o.branch}`, o.pin);
+      if (d2.status === 0) log(`deleted merged branch ${o.branch} in ${o.repo}`);
+    }
     // Self-hosting seam: if we just merged into the repo that RUNS the dashboard
     // (dispatch — where DISPATCH_CLI lives), its served dist/ is now stale. Rebuild
     // it so merged UI changes show up immediately — static web assets are served from
@@ -1866,46 +2213,15 @@ function main() {
           : `dashboard rebuild failed (exit ${b.status ?? "spawn-error"}) — run \`pnpm build\` in ${repo.name} to refresh the UI`,
       );
     }
-    // Incremental card refresh: re-card files that changed in this merge so
-    // Memory stays fresh without a full re-onboard. Fail-soft: any error here
-    // is swallowed and NEVER affects the merge outcome (already landed above).
+    // Incremental card refresh: bring the cards in line with the MERGED COMMIT (the
+    // default branch's new tip), read from a throwaway worktree of that commit — never
+    // the live checkout (it can carry uncommitted edits) and never the delivery
+    // branch's own view (an overlapping ticket's rename merged since it forked would be
+    // invisible to it). refreshFileCards then verifies EVERY stored card against that
+    // tree before it records the watermark. Fail-soft: any error here is swallowed and
+    // NEVER affects the merge outcome (already landed above).
     try {
-      const canonical = repoCanonical(repo.localPath);
-      const syncedCommit = readCardWatermark(canonical, repo.name);
-      if (syncedCommit) {
-        // Diff the last carded commit → post-merge HEAD with STATUS so we see
-        // deletions and renames, not just adds/mods. `-M` turns a delete+add
-        // pair into a single R rename record (old→new). --name-only would miss
-        // both, leaving stale cards for files that no longer exist at that path.
-        const diffOut = execFileSync(
-          "git",
-          ["-C", repo.localPath, "diff", "--name-status", "-M", `${syncedCommit}..HEAD`],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-        ).trim();
-        const { refresh, deletions } = parseDiffStatus(diffOut);
-        if (refresh.length > 0 || deletions.length > 0) {
-          const cfg = { cliBin: MEMORY_CLI, db: CONFIG.memoryDb };
-          const rStats = refreshFileCards(repo.localPath, refresh, {
-            cfg,
-            deletions,
-            env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
-            log: (m) => log(`card-refresh: ${m}`),
-            repo: repo.name,
-            canonical,
-          });
-          log(
-            `card-refresh: refreshed=${rStats.refreshed} deleted=${rStats.deleted} ` +
-              `skipped=${rStats.skipped} failed=${rStats.failed} ` +
-              `watermark=${rStats.watermark ?? "none"}`,
-          );
-        } else {
-          log("card-refresh: no source-file changes — watermark already current");
-        }
-      } else {
-        log(
-          "card-refresh: no watermark recorded for this repo — skipping (run `gaffer onboard` to initialise)",
-        );
-      }
+      refreshCardsForMergedCommit(repo, landed, log);
     } catch (err) {
       log(`card-refresh: failed (${err?.message ?? err}) — skipped; merge unaffected`);
     }
@@ -1971,6 +2287,7 @@ function main() {
   // runs exactly when AUTO_MERGE is on ran outside the containment seam.
   const t0 = Date.now();
   const res = Worker.deliver({
+    kind: "merge-resolver",
     bin: CONFIG.claudeBin,
     argv,
     cwd: worktree,

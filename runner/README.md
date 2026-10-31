@@ -235,6 +235,23 @@ rejected delivery's worktree is torn down; its commits live on the ephemeral
 branch and never merge. The isolation is physical (the OS enforces it), not
 trust-based.
 
+**Leftover worktrees are removed on positive evidence only.** At the start and end of a
+run `loop.sh` sweeps worktrees a killed worker left behind (`lib/orphan-recovery.sh`).
+A worktree whose ticket status cannot be read (Dispatch down, a missing database, a
+timeout, an unknown ticket) is **kept** and named ("worktree preserved: … status is
+UNKNOWN"); a claimed, in-progress or paused ticket's worktree is kept; every other
+non-terminal ticket's worktree (draft, ready, blocked, in review, in testing, ready for
+merge) is kept and named too, even when `git status` shows it clean, because that check
+cannot see gitignored files such as a local `.env`. Only a definite terminal status
+(`done` / `failed` / `cancelled`) from a successful read removes a worktree; a ticket
+delivered again clears its own stale worktree first. `--dry-run` removes nothing and
+says what it would remove.
+
+**A dry run changes nothing, on the resume path too.** A `--dry-run` tick that finds a
+paused ticket whose Continue was pressed logs "DRY_RUN: would resume paused #N …" and
+stops before `resume-begin`: no lease is taken, the ticket stays `paused`, and the
+resume request stays queued for the next live tick (`runner/test/resume-dry-run.test.sh`).
+
 ## Model tiering
 
 Planning and implementation run on different models, configured in
@@ -268,7 +285,11 @@ an attempt that failed before its agent ran names none) under that attempt's own
 number, every other run (the attempt that passed) is listed after the failures, and an
 agent-recorded `agent_run` row is ignored. The failure of the attempt that used up the
 bounds is filed on the trail too, just before the park (`wg runner-rework --final`:
-the trail row only, no "reworking" card or event).
+the trail row only, no "reworking" card or event). Every delivery row also carries its
+`attempt_id` (a hash of the claim plus the attempt number within it, never the
+claim token) and `started_at`, so the Health report can charge the spend of the
+attempts after a send-back (a reviewer's or tester's rejection, or a retry after a
+failed gate) to rework.
 
 ## Configuration (env always wins)
 
@@ -291,7 +312,24 @@ without a restart, and the dashboard launched by `gaffer dashboard` shows its ow
 defaults as editable, not env-locked. The day caps (`MAX_TICKS_PER_DAY`,
 `GAFFER_DAILY_BUDGET_USD`) are re-read from the current config by `loop.sh` and every
 pool `worker.sh` before each admission (`gaffer_refresh_day_caps`, lib/budget.sh), so
-lowering one stops a running loop at its next tick; a cap that cannot be re-read
+lowering one stops a running loop at its next tick. **Every paid launch is admitted on
+its own, immediately before it spawns**: `lib/budget-admission.mjs` checks the daily
+(`GAFFER_DAILY_BUDGET_USD`) and lifetime (`GAFFER_BUDGET_USD`) caps against the usage
+ledger as it stands (env first, else `settings.json`; an unreadable ledger or
+settings file with a cap set refuses). It reads the ledger the writer appends to (one
+resolver, `lib/usage-ledger-path.mjs`: a relative `GAFFER_USAGE_LEDGER` lives under
+`GAFFER_DATA`), and with a cap set a ledger that is turned off
+(`GAFFER_USAGE_LEDGER=0`/`off`) or has no location refuses too: nothing would be booked
+against the cap. Both worker seams ask it — `lib/worker.sh`
+`worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
+`gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
+for Plan a build, product owner for Suggest work, onboarding analysis, the merge
+resolver; status 77) — as do `bin/spec-author.mjs` before its own spawn and the
+ambiguous-sibling inherit classifier (`lib/greenfield.sh` `_gaffer_inherit_amb_spawn`,
+kind `inherit`, after a bootstrap), which on a refusal leaves the link for a human. If
+`lib/budget.sh` was not sourced, both shell callers load it; a check that still cannot be
+asked refuses the launch. A refused
+launch spawns nothing and books nothing (`runner/test/paid-launch-admission.test.sh`); a cap that cannot be re-read
 stops the run (fail closed). A `settings.json` that exists but does not parse as a
 flat JSON object (a hand edit, a truncated copy), or that cannot be read because
 `node` is missing, never drops a cap to its default: the re-source keeps the
@@ -327,6 +365,18 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
   is applied yet.
+- **Per-repository landing.** A ticket with write access to several repositories lands
+  one merge per repository: `lib/land.sh` (the merge lane and the review pass) and
+  `bin/merge-ticket.mjs` (the dashboard's Merge, `gaffer merge`) walk the ticket's approved
+  revisions (`wg ticket landing <n>`: one review pin per repo), land each pinned commit
+  (`lib/tester-binding.mjs --repo-id`; a secondary repo lands only its pinned commit), and
+  record it (`wg ticket record-landing`, which refuses a local landing unless git shows
+  the pinned commit on the repo's default branch; the safety hook denies it to agents,
+  like `mark-merged`). `mark-merged` is refused until every approved
+  revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
+  in the human queue) with its branches kept, and a retry skips the repos that already
+  landed (`already-landed`) instead of merging them again. A secondary repo that conflicts
+  is held for a human; the resolver runs for the primary repo only.
 - **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
   spawns the resolver agent once, in a throwaway worktree of the delivery branch, then
   **re-gates** the committed resolution with `bin/dod-regate.sh` — no conflict markers
@@ -341,6 +391,22 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   each digest section with `source: "merge:#<n>"` and the feature → `shipped`. **No agent
   is spawned in the merge hot path.** If no prepared delta is present it falls back to a
   minimal deterministic freshness stamp (+ feature → `shipped` when linked).
+
+- **File cards follow the merged commit, verified before they are marked current.**
+  After every landing (the merge lane and the review pass through `lib/land.sh` →
+  `gaffer_refresh_cards` in `lib/card-refresh.sh`; the dashboard Merge button through
+  `bin/merge-ticket.mjs`), the cards are brought in line with the default branch's NEW
+  TIP, never the delivery branch's own view of it: two tickets forked from one main can
+  overlap (A renames `archive.ts` → `ledger.ts`, B edits a function in `archive.ts`; git
+  lands B's edit in `ledger.ts`, while B's branch still has `archive.ts`). The refresh
+  diffs the card watermark (or the fork point) → the merged commit with rename detection,
+  reads files from a throwaway detached worktree of that commit (a rename carries the old
+  card's summary to the new path with `card upsert --carry-from`, then drops the old
+  card), and then runs `memory card verify --fix --commit <merged sha>`: every stored
+  card's path must exist in that tree and its content hash must match, a missing card is
+  removed and a stale one re-carded, and the watermark moves to the merged commit **only
+  when that check is clean**. A refresh that is not clean holds the watermark (logged),
+  so the next merge re-diffs from there.
 
 The whole path mirrors the ledger discipline: every memory write is **gated, try/caught,
 and fully swallowed** — a memory-write failure NEVER fails or blocks a merge — and every
@@ -468,6 +534,7 @@ knob-by-knob reference is generated into [`docs/CONFIG.md`](../docs/CONFIG.md)
 - `test/run-summary.test.sh` — run-summary report validation (`bash test/run-summary.test.sh`)
 - `test/stabilisation-integration.test.sh` — end-to-end proof the hygiene + backpressure gates fire against real `tick.sh` (`bash test/stabilisation-integration.test.sh`)
 - `test/dod-gate.test.sh` — Definition-of-Done validation: a failing `test_command` fails the gate; all-pass proceeds; an un-configured gate is skipped not failed; a disabled gate is not run; an unrunnable command is a fail not a crash; `GAFFER_DOD=0` disables enforcement; and (against the **real dispatch CLI**) a DoD failure review-rejects an in_review ticket to refining with the checklist recorded as evidence (`bash test/dod-gate.test.sh`)
+- `test/dod-tally.test.sh` — the tests gate keeps the test runner's summary lines (vitest, jest, pytest, cargo, `go test -v`, `node --test`) in a `---DOD-TALLY---` block on the DoD evidence, for the Review view's "the runner saw N", and a test that prints a tab-separated `GATE` line cannot forge a gate row (`bash test/dod-tally.test.sh`)
 - `test/self-op-ban.test.sh` — self-operation ban unit tests for `gaffer_is_self_target` + tick.sh wiring (`bash test/self-op-ban.test.sh`)
 - `test/self-op-ban-integration.test.sh` — end-to-end proof the self-op ban refuses a delivery whose target is a Gaffer component, honours `GAFFER_ALLOW_SELF_DELIVERY=1`, and leaves a non-Gaffer target unaffected (`bash test/self-op-ban-integration.test.sh`)
 - `launchd/com.gaffer.factory.plist.template` — scheduled-run template with `__GAFFER_REPO__` / `__GAFFER_DATA__` placeholders (disabled by default; render with `sed` before loading)

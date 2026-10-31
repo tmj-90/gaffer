@@ -11,7 +11,9 @@
 // "whatever the branch points at by the time the merge runs"; a PR merge passes it as
 // `gh pr merge --match-head-commit`).
 //
-// Decision (`landingDecision`), read from the dispatch DB, never from agent text:
+// Decision (`landingDecision`), read from the dispatch DB, never from agent text. A
+// "tester PASS" is only the row a `ticket.tester_passed` event names (the tester pass
+// path); a verdict-shaped row the delivery agent recorded itself is not one.
 //   no tester PASS recorded   → an ordinary ticket lands (no tester involved);
 //                               an ACCEPTANCE ticket is HELD (nothing certifies it)
 //   a HUMAN PASS (waiver)     → lands, pinned to the branch head, logged as a waiver
@@ -31,8 +33,15 @@
 // is ignored.
 // Fail CLOSED: an unreadable DB, an unknown ticket or an unresolvable branch head HOLD.
 //
+// PER-REPOSITORY (multi-repo tickets): --repo-id <id> reads THAT repo's pin and reports
+// `already-landed` when its approved commit has a landing on record (a retry never
+// re-merges it); --secondary marks a non-primary write repo, which lands only its pinned
+// commit (the tester verdict describes the primary repo).
+// REQUIRED CI (readCiState): once the runner records CI results for a ticket, the pin about
+// to land must have a recorded PASS; the CI gate polls the primary repo's PR, so a
+// secondary repo's pin is held only by a non-PASS result recorded for that exact commit.
 // CLI: node lib/tester-binding.mjs landing --db <dispatch.sqlite> --ticket <n>
-//        --repo <path> --branch <name>
+//        --repo <path> --branch <name> [--repo-id <id>] [--secondary]
 //      → one JSON line { ok, pin, kind, reason, tested, reviewed, head }; exit 0 land · 4 hold.
 // =====================================================================
 import { spawnSync } from "node:child_process";
@@ -67,16 +76,19 @@ export function branchHead(repoPath, branch) {
  * only one recorded after the ticket's latest entry into in_review: a rework or a
  * conflict resolution re-enters review, which makes the old pin stale.
  */
-function readReviewPin(db, ticketId) {
+function readReviewPin(db, ticketId, repoId = null) {
   let row;
   try {
+    // PER-REPOSITORY: with a repo id, that repo's pin (or a legacy repo-less pin, which
+    // then applies to every repo — a different repo's commit can only HOLD, never land).
     row = db
       .prepare(
         "SELECT uri, created_at FROM evidence WHERE ticket_id = ? AND evidence_type = 'commit' " +
           "AND recorded_by_actor_type = 'system' AND uri LIKE 'gaffer-reviewed-commit:%' " +
+          (repoId ? "AND (repo_id = ? OR repo_id IS NULL) " : "") +
           "ORDER BY created_at DESC, rowid DESC LIMIT 1",
       )
-      .get(ticketId);
+      .get(...(repoId ? [ticketId, repoId] : [ticketId]));
   } catch {
     return null; // pre-provenance schema / minimal fixture: no pin was ever recorded
   }
@@ -99,7 +111,24 @@ function readReviewPin(db, ticketId) {
   return sha;
 }
 
-export function readTesterEvidence(dbPath, ticketNumber) {
+/** True when a SYSTEM landing of exactly `sha` is on record for this repo. */
+function readLanded(db, ticketId, repoId, sha) {
+  if (!repoId || !sha) return false;
+  try {
+    return Boolean(
+      db
+        .prepare(
+          "SELECT 1 FROM evidence WHERE ticket_id = ? AND repo_id = ? AND evidence_type = 'commit' " +
+            "AND recorded_by_actor_type = 'system' AND uri = ? LIMIT 1",
+        )
+        .get(ticketId, repoId, `gaffer-landed-commit:${sha}`),
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function readTesterEvidence(dbPath, ticketNumber, repoId = null) {
   if (!dbPath || !existsSync(dbPath))
     return { error: `dispatch DB not found (${dbPath || "unset"})` };
   let DatabaseSync;
@@ -121,23 +150,38 @@ export function readTesterEvidence(dbPath, ticketNumber) {
       t = db.prepare("SELECT id FROM tickets WHERE number = ?").get(num); // pre-v26 schema
     }
     if (!t || !t.id) return { error: `ticket #${num} not found` };
+    // TESTER VERDICT: only the row the tester pass path recorded counts, i.e. a row a
+    // `ticket.tester_passed` event on this ticket names (dispatch's testerPass writes the
+    // row and the event in one transaction; nothing else writes that event). A
+    // verdict-shaped row anyone else recorded is not a tester PASS: the delivery agent's
+    // record_ac_evidence accepts any payload, so {verdict:"pass", provenance:"human"} from
+    // it must not land as a waiver. The same rule as the Review view's packet
+    // (packages/dispatch/src/services/reviewPacketService.ts readTester).
     let pass = null;
     try {
       const row = db
         .prepare(
-          "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' " +
-            'AND payload_json LIKE \'%"verdict":"pass"%\' ORDER BY created_at DESC, rowid DESC LIMIT 1',
+          "SELECT e.payload_json FROM evidence e WHERE e.ticket_id = ? AND e.evidence_type = 'test_output' " +
+            'AND e.payload_json LIKE \'%"verdict":"pass"%\' ' +
+            "AND EXISTS (SELECT 1 FROM work_events w WHERE w.entity_type = 'ticket' " +
+            "AND w.entity_id = e.ticket_id AND w.event_type = 'ticket.tester_passed' " +
+            "AND json_extract(w.payload_json, '$.evidence_id') = e.id) " +
+            "ORDER BY e.created_at DESC, e.rowid DESC LIMIT 1",
         )
         .get(t.id);
       if (row && typeof row.payload_json === "string") pass = JSON.parse(row.payload_json);
     } catch {
-      pass = null; // no evidence table (minimal fixture) = no tester verdict
+      // No evidence or event table (a minimal fixture): no tester verdict on record. That
+      // fails closed: an acceptance ticket holds, an ordinary one is a head landing.
+      pass = null;
     }
+    const reviewed = readReviewPin(db, t.id, repoId);
     return {
       ticketId: String(t.id),
       acceptance: Number(t.acceptance || 0) === 1,
       pass,
-      reviewed: readReviewPin(db, t.id),
+      reviewed,
+      landed: readLanded(db, t.id, repoId, reviewed),
     };
   } catch (e) {
     return { error: `could not read the dispatch DB: ${e?.message ?? e}` };
@@ -196,27 +240,78 @@ export function readCiState(dbPath, ticketNumber, commit) {
 export function landingDecision(args) {
   const d = testerLandingDecision(args);
   if (!d.ok) return d;
+  // This repo's approved commit landed in an earlier, partial run: nothing lands now.
+  if (d.kind === "already-landed") return d;
   // REQUIRED CI: the commit about to land must have a recorded CI PASS when the runner
   // has been recording CI for this ticket — every landing path asks this, not only the
   // approve that preceded it.
   const ci = readCiState(args.dbPath, args.ticketNumber, d.pin);
   if (ci === null) return hold("unreadable", "the ticket's CI results could not be read");
-  if (ci.required && ci.state !== "pass")
-    return hold(
+  const red = (state) =>
+    hold(
       "ci-not-passed",
-      `required CI has ${ci.state === "fail" ? "FAILED" : "not passed"} for ${String(d.pin).slice(0, 12)} (${ci.state || "no result for this commit"})`,
+      `required CI has ${state === "fail" ? "FAILED" : "not passed"} for ${String(d.pin).slice(0, 12)} (${state || "no result for this commit"})`,
       { head: d.head },
     );
+  if (d.kind === "secondary") {
+    // A SECONDARY repo: the CI gate polls the PRIMARY repo's PR (the ticket's pr_url), so
+    // CI results name primary commits and this repo's commit is gated by its review pin
+    // and the merge gate. A result recorded for THIS exact commit still binds: anything
+    // but a PASS holds.
+    if (ci.required && ci.state !== null && ci.state !== "pass") return red(ci.state);
+    return d;
+  }
+  if (ci.required && ci.state !== "pass") return red(ci.state);
   return d;
 }
 
-function testerLandingDecision({ dbPath, ticketNumber, repoPath, branch }) {
-  const ev = readTesterEvidence(dbPath, ticketNumber);
+function testerLandingDecision({
+  dbPath,
+  ticketNumber,
+  repoPath,
+  branch,
+  repoId = null,
+  secondary = false,
+}) {
+  const ev = readTesterEvidence(dbPath, ticketNumber, repoId);
   if (ev.error) return hold("unreadable", ev.error);
+  const reviewed = ev.reviewed ?? null;
+  // PER-REPOSITORY LANDING: this repo's approved commit already landed (an earlier,
+  // partial run). Never merge it again; the caller moves on to the repos still pending.
+  if (ev.landed && reviewed)
+    return {
+      ok: true,
+      pin: reviewed,
+      kind: "already-landed",
+      reason: "this repo's approved commit already landed",
+      reviewed,
+      landed: true,
+    };
   const head = branchHead(repoPath, branch);
   if (!head) return hold("no-head", `cannot resolve the head of ${branch} in ${repoPath}`);
   const pass = ev.pass;
-  const reviewed = ev.reviewed ?? null;
+  // A SECONDARY write repo of a multi-repo ticket: the tester ran the primary repo, so its
+  // verdict does not describe this one. It lands only the exact commit the approval pinned
+  // for it — no pin, no landing.
+  if (secondary) {
+    if (!reviewed)
+      return hold("unreviewed", `no approved commit is pinned for ${branch} in ${repoPath}`, {
+        head,
+      });
+    if (head !== reviewed)
+      return hold("moved-since-review", `${branch} moved since the review approved it`, {
+        reviewed,
+        head,
+      });
+    return {
+      ok: true,
+      pin: head,
+      kind: "secondary",
+      reason: "the approved commit",
+      head,
+      reviewed,
+    };
+  }
   // A head landing (no tester / waiver / legacy) is bound to the reviewed commit when the
   // approval recorded one (the agent review or a human approve): the head must still BE it.
   const headLanding = (kind, reason) => {
@@ -276,6 +371,8 @@ function main(argv) {
     ticketNumber: opt("ticket"),
     repoPath: opt("repo"),
     branch: opt("branch"),
+    repoId: opt("repo-id") || null,
+    secondary: rest.includes("--secondary"),
   });
   process.stdout.write(JSON.stringify(d) + "\n");
   process.exit(d.ok ? 0 : 4);

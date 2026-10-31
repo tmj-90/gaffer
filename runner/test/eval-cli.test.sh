@@ -2,10 +2,10 @@
 # =====================================================================
 # `gaffer eval` — the operator's view of the eval ledger (docs/eval-harness.md).
 # Drives the REAL dispatcher + crew CLIs over a seeded temp ledger:
-#   A  help lists the subcommand
+#   A  help lists the subcommand and names the memory score gap (never 'memory lift')
 #   B  empty ledger → friendly enable-hint, exit 0
-#   C  seeded ledger → human view carries pass rate, memory lift, cost/pass
-#   D  --json emits the raw summary (parses; lift matches)
+#   C  seeded ledger → human view carries pass rate, memory score gap, cost/pass
+#   D  --json emits the raw summary (parses; gap matches)
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +28,9 @@ export GAFFER_DATA="$WORK/gd"; mkdir -p "$GAFFER_DATA"
 echo "== A. help lists eval =="
 grep -q 'gaffer eval' <<<"$(bash "$RUNNER_DIR/gaffer" help 2>/dev/null)" \
   && ok "help mentions gaffer eval" || no "help missing the eval subcommand"
+HELP="$(bash "$RUNNER_DIR/gaffer" help 2>/dev/null)"
+grep -q 'memory score gap' <<<"$HELP" && ok "help names the memory score gap" || no "help does not say 'memory score gap'"
+if grep -qi 'memory lift' <<<"$HELP"; then no "help still advertises 'memory lift'"; else ok "help never says 'memory lift'"; fi
 
 echo "== B. empty ledger =="
 OUT="$(bash "$RUNNER_DIR/gaffer" eval 2>&1)"; rc=$?
@@ -43,7 +46,10 @@ printf '{"ticketId":"2","repo":"api","memoryPresent":false,"overall":"fail","sco
 OUT="$(bash "$RUNNER_DIR/gaffer" eval 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "eval exits 0 on a seeded ledger" || no "eval failed (rc=$rc): $OUT"
 grep -q 'deliveries judged   2' <<<"$OUT" && ok "counts the judged deliveries" || no "missing count: $OUT"
-grep -q 'memory lift         +2.80' <<<"$OUT" && ok "surfaces the memory-lift headline" || no "missing memory lift: $OUT"
+grep -q 'memory score gap    +2.80' <<<"$OUT" && ok "surfaces the memory score gap under its honest name" || no "missing memory score gap: $OUT"
+grep -q 'not an uplift' <<<"$OUT" && ok "labels it as a gap on submitted work, not an uplift" || no "no 'not an uplift' label: $OUT"
+grep -q 'excludes attempts that failed before submission' <<<"$OUT" && ok "names what the judge never sees" || no "no exclusion line: $OUT"
+grep -qE 'n=[0-9]+\) vs not primed .*\(n=[0-9]+\)' <<<"$OUT" && ok "shows the sample size of each arm" || no "no sample sizes: $OUT"
 grep -q '/passing delivery' <<<"$OUT" && ok "surfaces cost-per-passing-delivery" || no "missing cost/pass: $OUT"
 
 echo "== D. --json parses and matches =="

@@ -1242,8 +1242,14 @@ console.log("== parseDiffStatus: statuses map to refresh vs deletions ==");
     "R097\tsrc/old-name.ts\tsrc/new-name.ts",
     "C080\tsrc/origin.ts\tsrc/copy.ts",
   ].join("\n");
-  const { refresh, deletions } = parseDiffStatus(diff);
+  const { refresh, deletions, renames } = parseDiffStatus(diff);
 
+  assert(
+    "rename → a {from, to} pair so the new card can carry the old summary",
+    renames.length === 1 &&
+      renames[0].from === "src/old-name.ts" &&
+      renames[0].to === "src/new-name.ts",
+  );
   assert("added file → refresh", refresh.includes("src/added.ts"));
   assert("modified file → refresh", refresh.includes("src/modified.ts"));
   assert("type-changed file → refresh", refresh.includes("src/type-changed.ts"));
@@ -1253,7 +1259,7 @@ console.log("== parseDiffStatus: statuses map to refresh vs deletions ==");
   assert("rename OLD path → deletions", deletions.includes("src/old-name.ts"));
   assert("copy NEW path → refresh", refresh.includes("src/copy.ts"));
   assert("copy ORIGIN (unchanged) NOT tombstoned", !deletions.includes("src/origin.ts"));
-  eq("empty diff → empty lists", parseDiffStatus(""), { refresh: [], deletions: [] });
+  eq("empty diff → empty lists", parseDiffStatus(""), { refresh: [], deletions: [], renames: [] });
 }
 
 // --- BOUNDARY: no direct Memory DB read remains in the Runner ------------------

@@ -3,12 +3,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
+import { ticketCostInfo } from "../runDetail.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
 import {
   addAcBody,
   addTicketDependencyBody,
+  approveReviewBody,
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
@@ -273,7 +275,14 @@ export async function routeTickets(
   if (segments.length === 4 && sub === TICKET_SUB.REVIEW && method === "POST") {
     const action = segments[3] as string;
     if (action === "approve") {
-      const result = wg.approveReview(id, apiActor());
+      // STALE REVISION (external review #2): the approval names the commit(s) the Review
+      // view rendered; the service refuses with 409 stale_revision when a branch moved
+      // since, and 409 revision_required when no commit was named.
+      const body = approveReviewBody.parse(await readJsonBody(req));
+      const result = wg.approveReview(id, apiActor(), {
+        commits: (body.commits ?? []).map((c) => ({ repo: c.repo ?? null, sha: c.sha })),
+        requireCommits: true,
+      });
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on
       // approval") is ON, fire the configured merge command (fire-and-forget; logged,
@@ -450,6 +459,16 @@ export async function routeTickets(
     if (wantsMarkdown) {
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
       res.end(wg.dossierSvc.renderMarkdown(dossier));
+      return;
+    }
+    // REVIEW PACKET (opt-in, `?include=packet`): the Review view's verdict strip and
+    // criteria table, beside the dossier and OUTSIDE its hashed subject (the cost reads
+    // the live usage ledger). The plain export stays exactly the dossier.
+    if (url.searchParams.get("include") === "packet") {
+      sendJson(res, 200, {
+        ...dossier,
+        review_packet: wg.reviewPacket(id, (n) => ticketCostInfo(n)),
+      });
       return;
     }
     sendJson(res, 200, dossier);

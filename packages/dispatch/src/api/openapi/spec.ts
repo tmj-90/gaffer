@@ -212,9 +212,19 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "List factory settings",
     description:
-      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`).",
+      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
     capability: "read",
     responses: [ok("`{ settings: SettingView[] }`.")],
+  },
+  {
+    method: "GET",
+    path: "/api/settings/secret/:key",
+    tag: T.config,
+    summary: "Read a secret setting back (admin)",
+    description:
+      "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+    capability: "full",
+    responses: [ok("`{ key, value, source }`."), notFound],
   },
   {
     method: "POST",
@@ -433,11 +443,23 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Kanban board",
     capability: "read",
-    query: { repo: { description: "Limit to one repository (name or id)." } },
+    query: {
+      repo: { description: "Limit to one repository (name or id)." },
+      limit: {
+        description:
+          "A visible window: at most this many cards per area (1..1000). Without it every card is returned.",
+      },
+      offset: { description: "With `limit`: skip this many cards in each area (default 0)." },
+      area: {
+        description:
+          "With `limit`: return only this area's window (a column, `closed` or `wontDo`); the other areas come back empty.",
+      },
+    },
     responses: [
       ok(
-        "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+        "`BoardView`: the columns plus the closed area, `counts` (every area's total, whatever the window) and `window` (the window applied, or null). With a window, Done, closed and won't-do are newest first. A card's `claim` carries `agent_display`.",
       ),
+      invalid,
     ],
   },
   {
@@ -679,9 +701,15 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Approve the review",
     description:
-      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins the approved branch head. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
     capability: "full",
-    responses: [ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"), notFound, conflict],
+    body: "approveReviewBody",
+    responses: [
+      ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"),
+      notFound,
+      conflict,
+      invalid,
+    ],
   },
   {
     method: "POST",
@@ -742,7 +770,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/diff",
     tag: T.review,
     summary: "Delivery diff",
-    description: "`git diff <default branch>...<delivery branch>` per write repository.",
+    description:
+      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve.",
     capability: "read",
     responses: [ok("`{ repos: RepoDiff[] }`."), notFound],
   },
@@ -752,16 +781,20 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery dossier",
     description:
-      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`.",
+      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
     capability: "read",
     query: {
       format: {
         description: "`markdown` for the rendered document.",
         schema: { type: "string", enum: ["json", "markdown"] },
       },
+      include: {
+        description: "`packet` adds the Review view's `review_packet` to the JSON.",
+        schema: { type: "string", enum: ["packet"] },
+      },
     },
     responses: [
-      ok("`Dossier`."),
+      ok("`Dossier` (plus `review_packet` with `?include=packet`)."),
       { status: 200, description: "The rendered dossier (`text/markdown`).", content: "markdown" },
       notFound,
     ],

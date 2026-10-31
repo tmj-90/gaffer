@@ -12,7 +12,8 @@ import {
 import { readIdleLoops, resolveCrewConfigPath, writeIdleLoops } from "../idleLoops.js";
 import { LORE_ID_RE, type MemoryReader } from "../memoryReader.js";
 import { buildOpenApiDocument } from "../openapi/spec.js";
-import { requestCapability, requestPrincipal } from "../auth.js";
+import { isAdminRequest, requestCapability, requestPrincipal } from "../auth.js";
+import { DispatchError, notFound } from "../../util/errors.js";
 import {
   autonomyPolicyBody,
   createPrincipalBody,
@@ -23,7 +24,7 @@ import {
   updateClubBody,
   updateSquadAgentBody,
 } from "../schemas.js";
-import { listSettings, writeSettings } from "../settings.js";
+import { listSettings, readSecretSetting, writeSettings } from "../settings.js";
 import { apiActor } from "./context.js";
 import { routeReadModels } from "./readModels.js";
 
@@ -66,6 +67,22 @@ export async function routeApi(
       return;
     }
     return methodNotAllowed(res);
+  }
+  // GET /api/settings/secret/:key — an ADMIN principal reads a secret-bearing setting
+  // back (external review #5). Every other principal sees only configured + host in
+  // GET /api/settings; a read token or a human principal gets 403 here.
+  if (segments.length === 4 && segments[1] === "settings" && segments[2] === "secret") {
+    if (method !== "GET") return methodNotAllowed(res);
+    if (!isAdminRequest(req)) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only an admin principal may read a secret setting back; others see whether it is configured and its host.",
+      );
+    }
+    const secret = readSecretSetting(safeDecode(segments[3] ?? "") ?? "");
+    if (!secret) throw notFound("secret setting", segments[3] ?? "");
+    sendJson(res, 200, secret);
+    return;
   }
   // GET /api/openapi.json — the REST contract, generated from the same zod schemas
   // the routes parse with (api/openapi/spec.ts). Built once per process: the

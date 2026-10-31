@@ -38,7 +38,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -55,7 +55,8 @@ import {
 } from "./worker.mjs";
 
 export { UNKNOWN, extractResultText, parseClaudeJson };
-export const LEDGER_FILENAME = "usage-ledger.jsonl";
+// The ledger path is resolved in ONE place, shared with the paid-launch admission check.
+export { LEDGER_FILENAME, resolveLedgerPath } from "./usage-ledger-path.mjs";
 export const VALID_KINDS = new Set([
   "delivery",
   "clarify",
@@ -303,23 +304,6 @@ function withUsageLimit(rec, json) {
 }
 
 /**
- * The ledger file, or null when there is none. GAFFER_USAGE_LEDGER wins; `0`, `off`,
- * `false` or `no` turn the ledger off (they used to be taken as a file name, so
- * `GAFFER_USAGE_LEDGER=0` wrote a file called `0` into whatever directory the runner
- * was in). A relative path resolves under GAFFER_DATA when that is set. Without an
- * explicit path the ledger is $GAFFER_DATA/usage-ledger.jsonl, gated on GAFFER_DATA.
- */
-export function resolveLedgerPath(env = process.env) {
-  const explicit = (env.GAFFER_USAGE_LEDGER ?? "").trim();
-  if (explicit) {
-    if (/^(0|off|false|no)$/i.test(explicit)) return null;
-    if (!isAbsolute(explicit) && env.GAFFER_DATA) return join(env.GAFFER_DATA, explicit);
-    return explicit;
-  }
-  return env.GAFFER_DATA ? join(env.GAFFER_DATA, LEDGER_FILENAME) : null;
-}
-
-/**
  * Append one record to $GAFFER_DATA/usage-ledger.jsonl (or GAFFER_USAGE_LEDGER when
  * set — mirrors GAFFER_BLOCK_LEDGER). Gated on GAFFER_DATA so the test harness
  * (which doesn't set it) is unaffected, and NON-FATAL so a logging failure can never
@@ -372,6 +356,8 @@ function parseCliArgs(argv) {
     attempt: null,
     model: null,
     claudeVersion: null,
+    attemptId: null,
+    startedAt: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -389,6 +375,26 @@ function parseCliArgs(argv) {
     else if (a === "--attempt") out.attempt = argv[++i];
     else if (a === "--model") out.model = argv[++i];
     else if (a === "--claude-version") out.claudeVersion = argv[++i];
+    // The delivery attempt this call belongs to, and when it was spawned: lets the
+    // Health report charge a correction's spend to the send-back that caused it.
+    else if (a === "--attempt-id") out.attemptId = argv[++i];
+    else if (a === "--started-at") out.startedAt = argv[++i];
+  }
+  return out;
+}
+
+/**
+ * Stamp a record with its delivery attempt (`attempt_id`, e.g. `c3f9a…/2` — a hash of
+ * the claim, never the claim token itself, and the attempt number within it) and the
+ * call's spawn time (`started_at`). Malformed values are dropped, never guessed.
+ */
+export function withAttempt(record, { attemptId, startedAt } = {}) {
+  const out = { ...record };
+  if (typeof attemptId === "string" && /^[A-Za-z0-9._:/-]{1,96}$/.test(attemptId)) {
+    out.attempt_id = attemptId;
+  }
+  if (typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))) {
+    out.started_at = new Date(Date.parse(startedAt)).toISOString();
   }
   return out;
 }
@@ -632,7 +638,7 @@ function cliMain(argv) {
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }
-  appendUsageRecord(withProvenance(record, args));
+  appendUsageRecord(withAttempt(withProvenance(record, args), args));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

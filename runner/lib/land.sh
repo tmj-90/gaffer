@@ -7,8 +7,12 @@
 # button even in autonomous mode (a live run stalled with nine dependents starving
 # behind a human-approved bootstrap). Extracted verbatim from review.sh's ship branch.
 #   gaffer_land_delivery <num> <repo_dir> <branch> <default_branch> <ticket-show-json> [who]
-#     → 0 merged + marked done; non-zero: held (conflict / dirty checkout / could not run
-#       / the MERGE GATE: the combined code failed the gates on the target),
+#     <repo_dir>/<branch>/<default_branch> name the PRIMARY repo; a multi-repo ticket lands
+#     every write repo's approved commit (the show JSON's `landing.repos`), primary first,
+#     and EVERY repo's landing goes through the MERGE GATE on that repo's current target.
+#     → 0 merged in EVERY repo + marked done; non-zero: held (conflict / dirty checkout /
+#       could not run / the MERGE GATE: the combined code failed the gates on the target /
+#       a partial landing — the landed repos are recorded, the rest retry),
 #       with the reason logged under the <who> prefix (AFK for the review pass, MERGE
 #       for the lane). Relies on tick.sh runtime globals (log, wg, jget, GAFFER_DATA,
 #       RUNNER_DIR, gaffer_auto_merge, gaffer_pr_merge, gaffer_refresh_cards, …).
@@ -22,14 +26,17 @@
 # ticket or an unresolvable branch head all HOLD. Sets _TB_KIND / _TB_REASON /
 # _TB_TESTED / _TB_REVIEWED / _TB_HEAD for the caller's log line.
 _gaffer_land_tester_binding() {
-  local num="$1" repo="$2" branch="$3" out rc=0
+  local num="$1" repo="$2" branch="$3" repo_id="${4:-}" secondary="${5:-0}" out rc=0
   _TB_PIN=""; _TB_KIND=""; _TB_REASON=""; _TB_TESTED=""; _TB_REVIEWED=""; _TB_HEAD=""
   local helper="${RUNNER_DIR:-}/lib/tester-binding.mjs"
   if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
     _TB_KIND="unavailable"; _TB_REASON="the landing check (lib/tester-binding.mjs) cannot run"
     return 1
   fi
-  out="$(node "$helper" landing --db "${DISPATCH_DB:-}" --ticket "$num" --repo "$repo" --branch "$branch" 2>/dev/null)" || rc=$?
+  local -a _xargs=()
+  [ -n "$repo_id" ] && _xargs+=( --repo-id "$repo_id" )
+  [ "$secondary" = "1" ] && _xargs+=( --secondary )
+  out="$(node "$helper" landing --db "${DISPATCH_DB:-}" --ticket "$num" --repo "$repo" --branch "$branch" ${_xargs[@]+"${_xargs[@]}"} 2>/dev/null)" || rc=$?
   _TB_PIN="$(printf '%s' "$out" | jget 'd.pin || ""' 2>/dev/null || echo '')"
   _TB_KIND="$(printf '%s' "$out" | jget 'd.kind || ""' 2>/dev/null || echo '')"
   _TB_REASON="$(printf '%s' "$out" | jget 'd.reason || ""' 2>/dev/null || echo '')"
@@ -41,13 +48,144 @@ _gaffer_land_tester_binding() {
   return 1
 }
 
+# PER-REPOSITORY LANDING (external review #3). A ticket with write access to several
+# repositories is approved as one change and lands as one merge PER repo. The plan is the
+# ticket's approved revisions (`landing.repos` on `wg ticket show`: one review pin per
+# write repo, with its checkout, default branch and delivery branch), primary repo first.
+# A legacy approval with no per-repo pins lands the one repo the caller named, as before.
+#   _gaffer_land_plan <ticket-show-json> <primary-repo-dir> <primary-branch> <primary-default>
+#     → TAB rows: repo_id  name  local_path  branch  default_branch  landed(0|1)  secondary(0|1)
+_gaffer_land_plan() {
+  local show="$1" prepo="$2" pbranch="$3" pdef="$4" rows
+  rows="$(printf '%s' "$show" | P="$prepo" jget '((d.landing && d.landing.repos) || []).filter(r => r.localPath).sort((a, b) => (b.localPath === process.env.P) - (a.localPath === process.env.P)).map(r => [r.repoId, r.repo, r.localPath, r.branch || "-", r.defaultBranch || "main", r.landed ? 1 : 0, r.localPath === process.env.P ? 0 : 1].join("\t")).join("\n")' 2>/dev/null || true)"
+  # Use the plan only when every row is well formed (7 fields, an on-disk checkout);
+  # anything else lands the named primary repo exactly as before.
+  if [ -n "$rows" ] && printf '%s\n' "$rows" | awk -F'\t' 'NF != 7 { bad = 1 } END { exit bad }' \
+     && printf '%s\n' "$rows" | { _ok=0; while IFS=$'\t' read -r _ _ _p _; do [ -d "$_p" ] || _ok=1; done; exit "$_ok"; }; then
+    printf '%s\n' "$rows"; return 0
+  fi
+  # Empty fields are the sentinel `-`: TAB is IFS whitespace, so `read` would collapse them.
+  printf -- '-\t%s\t%s\t%s\t%s\t0\t0\n' "$(basename "$prepo")" "$prepo" "$pbranch" "$pdef"
+}
+
+# Record one repo's landing in dispatch (system evidence; idempotent). A failure is
+# logged, never fatal: the done gate re-verifies a local landing from git.
+_gaffer_land_record() {
+  local num="$1" repo_id="$2" sha="$3" via="$4" who="$5"
+  [ -n "$repo_id" ] && [ -n "$sha" ] || return 0
+  if wg ticket record-landing "$num" --repo "$repo_id" --commit "$sha" --via "$via" --as system >/dev/null 2>&1; then
+    log "$who: #$num recorded the landing of ${sha:0:12} in repo $repo_id"
+  else
+    log "$who: #$num could not record the landing of ${sha:0:12} in repo $repo_id (the done gate re-checks git)"
+  fi
+}
+
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
-  local _CR_BASE _RPR _MERGED_VIA _mrc _prc _mgrc
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
+  local _plan _rid _rname _rpath _rbr _rdef _rlanded _rsec _rc=0 _n=0 _done=0 _pending="" _landed_names="" _fresh=""
+  # The plan reads the approval's per-repo pins, so read the ticket NOW: a show captured
+  # before the approve (the review pass) carries no pins and would land only one repo.
+  _fresh="$(wg ticket show "$RNUM" 2>/dev/null || true)"
+  [ -n "$_fresh" ] && RSHOW="$_fresh"
+  _plan="$(_gaffer_land_plan "$RSHOW" "$RREPO" "$RBRANCH" "$RDEFAULT")"
+  _n="$(printf '%s\n' "$_plan" | grep -c .)"
+  [ "$_n" -gt 1 ] && log "$_WHO: #$RNUM lands in $_n repositories (one merge per approved revision)"
+  local -a _LANDED_REPOS=() _LANDED_BRANCHES=() _LANDED_DEFAULTS=() _LANDED_VIA=()
+  while IFS=$'\t' read -r _rid _rname _rpath _rbr _rdef _rlanded _rsec; do
+    [ -n "$_rpath" ] || continue
+    [ "$_rid" = "-" ] && _rid=""
+    { [ -n "$_rbr" ] && [ "$_rbr" != "-" ]; } || _rbr="$RBRANCH"
+    if [ "$_rlanded" = "1" ]; then
+      log "$_WHO: #$RNUM ${_rname}: its approved commit already landed — not merged again"
+      _done=$((_done + 1)); _landed_names="${_landed_names:+$_landed_names, }$_rname"
+      _LANDED_REPOS+=("$_rpath"); _LANDED_BRANCHES+=("$_rbr"); _LANDED_DEFAULTS+=("$_rdef"); _LANDED_VIA+=("earlier")
+      continue
+    fi
+    # stdin is the plan: the landing (the merge gate runs the repo's own gate commands)
+    # must never read it, or a later repo's row would vanish from the loop.
+    _gaffer_land_one "$RNUM" "$_rpath" "$_rbr" "$_rdef" "$RSHOW" "$_WHO" "$_rid" "$_rsec" </dev/null; _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+      _pending="${_pending:+$_pending, }$_rname"
+      break
+    fi
+    _done=$((_done + 1)); _landed_names="${_landed_names:+$_landed_names, }$_rname"
+    _LANDED_REPOS+=("$_rpath"); _LANDED_BRANCHES+=("$_rbr"); _LANDED_DEFAULTS+=("$_rdef"); _LANDED_VIA+=("$_MERGED_VIA")
+  done <<EOF
+$_plan
+EOF
+  if [ "$_rc" -eq 0 ] && [ "$_done" -eq 0 ]; then
+    log "$_WHO: #$RNUM has no repository to land (empty landing plan) — nothing merged, not marked done"
+    return 2
+  fi
+  if [ "$_rc" -ne 0 ]; then
+    # A partial landing is a HELD state: the ticket stays ready_for_merge (the human queue
+    # shows it as "Partly merged"), the landed repos are recorded, and the next run lands
+    # the rest without re-merging what already landed.
+    [ "$_done" -gt 0 ] && log "$_WHO: #$RNUM PARTLY MERGED — landed in ${_landed_names}; ${_pending} did not land (rc=$_rc) — held (ready_for_merge, or the human queue when the merge gate held it); the landed repos are recorded and a retry lands the rest"
+    return "$_rc"
+  fi
+  # Every approved revision landed → done (the server re-checks every repo).
+  if wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1; then
+    if [ "$_done" -eq 1 ]; then
+      log "$_WHO: #$RNUM merged (${_LANDED_BRANCHES[0]} → $RDEFAULT, via ${_LANDED_VIA[0]}) and marked done"
+    else
+      log "$_WHO: #$RNUM merged in $_done repositories (${_landed_names}) and marked done"
+    fi
+  else
+    log "$_WHO: #$RNUM merged but mark-merged failed — verify state (wg ticket landing $RNUM)"
+  fi
+  # POST-MERGE MEMORY WORK — the SAME step the dashboard merge (merge-ticket.mjs)
+  # runs: apply the digest delta the delivery agent prepared (or stamp
+  # freshness) and advance the linked feature → shipped. Without this the
+  # unattended AFK merge left the Repo Digest stale and the feature at
+  # `building` in every autonomous mode. Best-effort, never blocks the merge.
+  if [ "${GAFFER_DIGEST_DISABLE:-0}" != "1" ]; then
+    if node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$RNUM" --apply-digest-only \
+         >>"$GAFFER_DATA/merge-digest.log" 2>&1; then
+      log "$_WHO: #$RNUM digest/feature applied post-merge (see merge-digest.log)"
+    else
+      log "$_WHO: #$RNUM digest/feature apply did not run (rc=$?) — memory not updated for this merge; see merge-digest.log"
+    fi
+  fi
+  # The delivery branches are now fully merged: drop them so branches don't pile up
+  # (mirrors merge-ticket.mjs) — only now, once EVERY repo landed, so a partial landing
+  # keeps every branch for its retry. The reviewer is done, so tear its (detached)
+  # worktree down first (idempotent; the exit trap re-runs it). `-d` refuses an
+  # unmerged branch, so this can never lose work.
+  declare -F _review_cleanup >/dev/null 2>&1 && _review_cleanup
+  local _i=0 _tip
+  while [ "$_i" -lt "${#_LANDED_REPOS[@]}" ]; do
+    if [ "${_LANDED_VIA[$_i]}" = "pr-stale" ]; then
+      log "$_WHO: merged branch ${_LANDED_BRANCHES[$_i]} left in place in ${_LANDED_REPOS[$_i]} (local default is stale — delete after pulling)"
+    elif git -C "${_LANDED_REPOS[$_i]}" branch -d "${_LANDED_BRANCHES[$_i]}" >/dev/null 2>&1 \
+         || { _tip="$(git -C "${_LANDED_REPOS[$_i]}" rev-parse --verify --quiet "refs/heads/${_LANDED_BRANCHES[$_i]}^{commit}" 2>/dev/null)" \
+              && [ -n "$_tip" ] \
+              && git -C "${_LANDED_REPOS[$_i]}" merge-base --is-ancestor "$_tip" "refs/heads/${_LANDED_DEFAULTS[$_i]}" 2>/dev/null \
+              && git -C "${_LANDED_REPOS[$_i]}" update-ref -d "refs/heads/${_LANDED_BRANCHES[$_i]}" "$_tip" >/dev/null 2>&1; }; then
+      # (`branch -d` checks "merged into HEAD"; with the target not checked out the gated
+      # landing moved only its ref — delete the branch only when its tip is in that repo's
+      # target history, compare-and-delete on that tip: nothing can be lost.)
+      log "$_WHO: deleted merged branch ${_LANDED_BRANCHES[$_i]} in ${_LANDED_REPOS[$_i]}"
+    else
+      log "$_WHO: merged branch ${_LANDED_BRANCHES[$_i]} left in place in ${_LANDED_REPOS[$_i]} (not deletable right now)"
+    fi
+    _i=$((_i + 1))
+  done
+  return 0
+}
+
+# Land ONE repository of a ticket: the landing check, the PR or local merge of the pinned
+# commit, the landing record, the card refresh and the push. Sets _MERGED_VIA.
+#   _gaffer_land_one <num> <repo_dir> <branch> <default> <show-json> <who> [repo_id] [secondary]
+#     → 0 landed · 3 dirty checkout · 4 held · 5 conflict resolved, back in review · other: not landed
+_gaffer_land_one() {
+  local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}" _RID="${7:-}" _RSEC="${8:-0}"
+  local _CR_BASE _RPR _mrc _prc _mgrc
+  _MERGED_VIA="local"
   # ACCEPTANCE GATE: never land code the tester did not run, and merge exactly the commit
   # the decision names (_TB_PIN) — see lib/tester-binding.mjs, shared with merge-ticket.mjs.
-  if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH"; then
+  if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH" "$_RID" "$_RSEC"; then
     case "$_TB_KIND" in
       moved) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict" ;;
       moved-since-review) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}${_TB_TESTED:+, tested ${_TB_TESTED:0:12}}); nobody reviewed the new commits — move it back to in_review for a re-review" ;;
@@ -56,6 +194,7 @@ gaffer_land_delivery() {
     return 4
   fi
   case "$_TB_KIND" in
+    already-landed) log "$_WHO: #$RNUM $(basename "$RREPO"): approved commit ${_TB_PIN:0:12} already landed — not merged again"; _MERGED_VIA="earlier"; return 0 ;;
     waived) log "$_WHO: #$RNUM landing on a HUMAN tester waiver (pinned ${_TB_PIN:0:12})" ;;
     legacy-unbound) log "$_WHO: #$RNUM tester PASS predates commit binding — landing the current head ${_TB_PIN:0:12}" ;;
   esac
@@ -66,12 +205,15 @@ gaffer_land_delivery() {
   # PR MODE: when the delivery opened a PR (GAFFER_CREATE_PR → pr_url on the
   # ticket), land it THROUGH the PR (gaffer_pr_merge: `gh pr merge` + a local
   # fast-forward) — a local merge left the PR open and the branch unpushed. gh
-  # failing/absent falls back to the local merge with the reason logged.
-  _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
-  _MERGED_VIA="local"; _mrc=""
-  # PROVENANCE TRAILERS on the merge commit: the ticket, the approving actor and the
-  # gate verdicts, read from the dispatch DB (lib/provenance-trailers.mjs; empty when
-  # GAFFER_PROVENANCE_TRAILERS=0). Fail-soft: no trailers never holds a landing.
+  # failing/absent falls back to the local merge with the reason logged. The ticket's
+  # pr_url belongs to its PRIMARY repo; a secondary repo lands locally.
+  _RPR=""
+  [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
+  _mrc=""
+  # PROVENANCE TRAILERS on the merge commit (this repo's gated merge commit, or its PR's
+  # merge): the ticket, the approving actor and the gate verdicts, read from the
+  # dispatch DB (lib/provenance-trailers.mjs; empty when GAFFER_PROVENANCE_TRAILERS=0).
+  # Fail-soft: no trailers never holds a landing.
   local _TRAILERS=""
   _TRAILERS="$(node "$RUNNER_DIR/lib/provenance-trailers.mjs" --db "${DISPATCH_DB:-}" --ticket "$RNUM" 2>/dev/null || true)"
   if [ -n "$_RPR" ]; then
@@ -143,9 +285,8 @@ gaffer_land_delivery() {
   fi
   case "$_mrc" in
     0)
-      wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \
-        && log "$_WHO: #$RNUM merged ($RBRANCH → $RDEFAULT, via $_MERGED_VIA) and marked done" \
-        || log "$_WHO: #$RNUM merged but mark-merged failed — verify state"
+      log "$_WHO: #$RNUM merged $RBRANCH → $RDEFAULT in $RREPO (via $_MERGED_VIA)"
+      _gaffer_land_record "$RNUM" "$_RID" "$_TB_PIN" "$_MERGED_VIA" "$_WHO"
       # MEMORY FRESHNESS: write-through the delivered change into the file cards
       # (refresh changed, add new, drop deleted, advance the watermark) so priming
       # stays current instead of decaying. Fail-soft — never blocks the merge.
@@ -154,19 +295,6 @@ gaffer_land_delivery() {
       [ "$_MERGED_VIA" = "pr-stale" ] || \
       gaffer_refresh_cards "$RREPO" "$(basename "$RREPO")" "$_CR_BASE" "$RBRANCH" \
         "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
-      # POST-MERGE MEMORY WORK — the SAME step the dashboard merge (merge-ticket.mjs)
-      # runs: apply the digest delta the delivery agent prepared (or stamp
-      # freshness) and advance the linked feature → shipped. Without this the
-      # unattended AFK merge left the Repo Digest stale and the feature at
-      # `building` in every autonomous mode. Best-effort, never blocks the merge.
-      if [ "${GAFFER_DIGEST_DISABLE:-0}" != "1" ]; then
-        if node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$RNUM" --apply-digest-only \
-             >>"$GAFFER_DATA/merge-digest.log" 2>&1; then
-          log "$_WHO: #$RNUM digest/feature applied post-merge (see merge-digest.log)"
-        else
-          log "$_WHO: #$RNUM digest/feature apply did not run (rc=$?) — memory not updated for this merge; see merge-digest.log"
-        fi
-      fi
       # A PR merge already landed upstream: nothing to push (and never push a
       # stale local default over it).
       if [ "$_MERGED_VIA" = "local" ] && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
@@ -180,23 +308,6 @@ gaffer_land_delivery() {
           2) log "$_WHO: $RDEFAULT merged locally — no origin remote, nothing to push" ;;
           *) log "$_WHO: push of $RDEFAULT failed (rejected/offline) — merged locally, left to push" ;;
         esac
-      fi
-      # The delivery branch is now fully merged: drop it so branches don't pile
-      # up (mirrors merge-ticket.mjs). The reviewer is done, so tear its (detached)
-      # worktree down first (idempotent; the exit trap re-runs it).
-      # `-d` refuses an unmerged branch, so this can never lose work.
-      declare -F _review_cleanup >/dev/null 2>&1 && _review_cleanup
-      if [ "$_MERGED_VIA" = "pr-stale" ]; then
-        log "$_WHO: merged branch $RBRANCH left in place (local $RDEFAULT is stale — delete after pulling)"
-      elif git -C "$RREPO" branch -d "$RBRANCH" >/dev/null 2>&1 \
-           || { git -C "$RREPO" merge-base --is-ancestor "$_TB_PIN" "$RDEFAULT" 2>/dev/null \
-                && git -C "$RREPO" update-ref -d "refs/heads/$RBRANCH" "$_TB_PIN" >/dev/null 2>&1; }; then
-        # (`branch -d` checks "merged into HEAD"; with the target not checked out the
-        # gated landing moved only its ref — delete the branch only if it still points at
-        # the landed pin, which is now in the target's history: nothing can be lost.)
-        log "$_WHO: deleted merged branch $RBRANCH"
-      else
-        log "$_WHO: merged branch $RBRANCH left in place (not deletable right now)"
       fi
       ;;
     3) log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes or untracked files the merge would overwrite; left in ready_for_merge for a human (never merge over live edits)" ;;
@@ -212,7 +323,10 @@ gaffer_land_delivery() {
       # sides, and reopens the ticket for RE-REVIEW of the resolved diff — never a
       # silent landing. Once per ticket; a second conflict after a resolver pass waits
       # for a human.
-      if _gaffer_land_conflict_resolve "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_WHO"; then
+      # The resolver works on the PRIMARY repo; a secondary repo's conflict is a human's.
+      if [ "$_RSEC" = "1" ]; then
+        log "$_WHO: #$RNUM merge of $RBRANCH in $(basename "$RREPO") hit a CONFLICT (a secondary repository; the resolver handles the primary only) — held for a human"
+      elif _gaffer_land_conflict_resolve "$RNUM" "$RREPO" "$RBRANCH" "$RDEFAULT" "$_WHO"; then
         _mrc=5
       else
         log "$_WHO: #$RNUM approved but merge hit a CONFLICT — left on $RBRANCH for a human"

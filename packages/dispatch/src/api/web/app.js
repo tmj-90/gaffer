@@ -949,19 +949,38 @@ function applyClub(club) {
 // --- Toast ------------------------------------------------------------------
 
 let toastTimer;
-function toast(message, { ok = false, code } = {}) {
+/**
+ * One short sentence on the scoreboard black. `link` ({ href, text }) adds the one
+ * place to go next ("Approve it in Memory"); a toast with a link stays up longer, so
+ * it can be reached, and following it puts the toast away.
+ */
+function toast(message, { ok = false, code, link } = {}) {
   const node = document.getElementById("toast");
   clear(node);
   node.className = `toast${ok ? " ok" : ""}`;
   if (code) node.appendChild(el("span", { class: "toast-code" }, code));
-  node.appendChild(document.createTextNode(message));
+  node.appendChild(el("span", { class: "toast-msg" }, message));
+  if (link)
+    node.appendChild(
+      el(
+        "a",
+        {
+          class: "toast-link",
+          href: link.href,
+          onclick: () => {
+            node.hidden = true;
+          },
+        },
+        link.text,
+      ),
+    );
   node.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(
     () => {
       node.hidden = true;
     },
-    ok ? 2600 : 5200,
+    link ? 9000 : ok ? 2600 : 5200,
   );
 }
 
@@ -15590,9 +15609,14 @@ async function renderReview(param) {
         // second replaced the first before it could be read.
         const done = wont ? `${ref} closed as won't do` : `${ref} sent back`;
         const cap = captureLore ? resp && resp.lore_capture : null;
+        // The draft waits for a human in Memory: say where, and link there.
         if (cap && cap.captured)
           toast(`${done} · reason filed as draft lore${cap.repo ? ` for ${cap.repo}` : ""}.`, {
             ok: true,
+            link: {
+              href: cap.repo ? `#/memory/${encodeURIComponent(cap.repo)}` : "#/memory",
+              text: "Approve it in Memory",
+            },
           });
         else if (cap)
           toast(`${done}, but the lore draft could not be filed (memory is unavailable).`);

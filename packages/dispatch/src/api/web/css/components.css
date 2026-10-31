@@ -1476,6 +1476,13 @@
   .toast.ok {
     box-shadow: 0 3px 0 var(--sky);
   }
+  .toast-link {
+    flex: none;
+    color: var(--sky-on-board);
+    font-weight: 700;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
   .toast-code {
     font: 700 var(--t12) var(--f-mono);
     color: var(--board-ink-2);

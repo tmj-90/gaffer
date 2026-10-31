@@ -188,7 +188,7 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
     expect(document.querySelector(".sheet.open .reject-dialog")).toBeNull();
   });
 
-  it("Send back with capture says both in ONE toast, naming the repo the draft waits in", async () => {
+  it("Send back with capture says both in ONE toast, naming and linking the repo the draft waits in", async () => {
     rejectPayload = { ok: true, lore_capture: { captured: true, id: "l1", repo: "svc" } };
     await bootReview();
     buttonByText("Send back…")!.click();
@@ -205,8 +205,13 @@ describe("web AFK P3: reject-reason chips replace window.prompt on the Review ga
     for (let i = 0; i < 4; i++) await tick();
     seen.disconnect();
     expect(rejectCalls()[0]!.body).toMatchObject({ captureLore: true });
-    expect(node.textContent).toBe("#7 sent back · reason filed as draft lore for svc.");
-    expect(new Set(shown)).toEqual(new Set(["#7 sent back · reason filed as draft lore for svc."]));
+    const msg = "#7 sent back · reason filed as draft lore for svc.";
+    expect(node.querySelector(".toast-msg")?.textContent).toBe(msg);
+    expect(new Set(shown)).toEqual(new Set([`${msg}Approve it in Memory`]));
+    // It says where the draft waits for a human, and links there.
+    const link = node.querySelector<HTMLAnchorElement>("a.toast-link")!;
+    expect(link.textContent).toBe("Approve it in Memory");
+    expect(link.getAttribute("href")).toBe("#/memory/svc");
   });
 
   it("typing a free-text reason (no chip) also submits", async () => {

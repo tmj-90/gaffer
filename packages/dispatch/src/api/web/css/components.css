@@ -1536,6 +1536,12 @@
   .movemenu-item:focus-visible {
     background: var(--sky-wash);
   }
+  /* Won't do… is an act, not a lane: a hairline sets it apart from the lanes. */
+  .movemenu-item.movemenu-wontdo {
+    border-top: 1px solid var(--rule);
+    border-radius: 0 0 var(--r) var(--r);
+    color: var(--red);
+  }
   .movemenu-dot {
     width: 10px;
     height: 10px;

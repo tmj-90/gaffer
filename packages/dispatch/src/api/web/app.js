@@ -3926,6 +3926,29 @@ function reasonSheet({
   return form;
 }
 
+/**
+ * Won't do: close a ticket without building it (-> cancelled, with a reason). The
+ * ticket page's button and a Work card's Move menu both open this one sheet; the
+ * server's guarded won't-do path decides whether the move is legal.
+ */
+function wontDoSheet(t) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  return reasonSheet({
+    title: `Won't do ${ref}`,
+    ticket: t,
+    intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
+    label: "Why not?",
+    presets: WONT_DO_PRESETS,
+    confirm: "Won't do",
+    tone: "danger",
+    onConfirm: async (reason) => {
+      await api("POST", `/tickets/${t.id}/wont-do`, { reason });
+      toast(`${ref} closed as won't do.`, { ok: true });
+      router();
+    },
+  });
+}
+
 /** Unblock: move a blocked ticket back to Ready (another go) or Refining (rewrite first). */
 function unblockSheet(t, it = {}) {
   const ref = t.number != null ? `#${t.number}` : "this ticket";
@@ -8458,6 +8481,10 @@ function legalTargetColumns(status) {
 function cardIsMovable(card) {
   return legalTargetColumns(card.status).length > 0 && !card.claim;
 }
+/** The card's Move menu: its legal lanes, plus Won't do… where that move is legal. */
+function cardHasMoveMenu(card) {
+  return !card.claim && (cardIsMovable(card) || hasTicketAction(card.status, "wont_do"));
+}
 
 // --- State-aware action sets (single source of truth) -----------------------
 //
@@ -8473,8 +8500,9 @@ function cardIsMovable(card) {
 const TICKET_ACTION_KEYS = {
   draft: ["mark_ready", "wont_do"],
   refining: ["mark_ready", "wont_do"],
-  // Live/claimed states have no human button here — work is owned by an agent.
-  ready: [],
+  // A queued ticket nobody has claimed yet can still be closed (ready -> cancelled).
+  // Claimed/live states have no human button here — work is owned by an agent.
+  ready: ["wont_do"],
   claimed: [],
   in_progress: [],
   blocked: ["unblock", "wont_do"],
@@ -8489,7 +8517,9 @@ const TICKET_ACTION_KEYS = {
   ready_for_merge: ["merge_now", "mark_merged", "rework"],
   // Terminal: reopen only where allowed (cancelled is reopenable; done is not).
   done: [],
-  failed: ["unblock"],
+  // in_testing / ready_for_merge -> cancelled are legal too, but the Review view reads
+  // this map for its sign-off buttons, so they are offered there, not added here.
+  failed: ["unblock", "wont_do"],
   cancelled: ["reopen"],
   // PAUSE-ON-CAP: a paused (cap-hit) delivery offers one-click Continue (re-enter
   // the existing worktree) or Stop (cancel; the next tick removes the worktree). The banner above the bar
@@ -8567,8 +8597,9 @@ async function performBoardMove(cardEl, card, toColumn) {
  * Escape puts focus back on the card's Move button.
  */
 function openMoveMenu(card, anchorEl) {
-  const targets = legalTargetColumns(card.status);
-  if (!targets.length) return;
+  const targets = card.claim ? [] : legalTargetColumns(card.status);
+  const wontDo = !card.claim && hasTicketAction(card.status, "wont_do");
+  if (!targets.length && !wontDo) return;
   closeMoveMenu();
   const cardNode = anchorEl.closest(".board-card");
   const name = card.number != null ? `#${card.number}` : "this ticket";
@@ -8587,6 +8618,24 @@ function openMoveMenu(card, anchorEl) {
       [glyph(col, 18), el("span", {}, BOARD_COLUMN_LABELS[col] || col)],
     ),
   );
+  // Won't do is not a lane you drop on: it asks for a reason in the shared sheet,
+  // which hands focus back to the card's Move button when it closes.
+  if (wontDo)
+    items.push(
+      el(
+        "button",
+        {
+          class: "movemenu-item movemenu-wontdo",
+          type: "button",
+          role: "menuitem",
+          onclick: () => {
+            closeMoveMenu();
+            wontDoSheet(card);
+          },
+        },
+        [glyph("cancelled", 18), el("span", {}, "Won't do…")],
+      ),
+    );
   const menu = el("div", { class: "movemenu", role: "menu", "aria-label": `Move ${name} to` }, [
     el("div", { class: "movemenu-head", "aria-hidden": "true" }, `Move ${name} to`),
     ...items,
@@ -9107,8 +9156,8 @@ function renderBoardCard(card, laneKey, needs) {
 
   const movable = cardIsMovable(card);
   // Touch/keyboard fallback: "Move" opens the lane menu, so the same moves work
-  // one-handed on phones where drag is unreliable.
-  const moveBtn = movable
+  // one-handed on phones where drag is unreliable. It also carries Won't do….
+  const moveBtn = cardHasMoveMenu(card)
     ? el(
         "button",
         {
@@ -10064,21 +10113,7 @@ async function renderTicket(id) {
           class: "btn danger",
           type: "button",
           title: "Mark this ticket won't do (won't be built)",
-          onclick: () =>
-            reasonSheet({
-              title: `Won't do ${ref}`,
-              ticket: t,
-              intro: `${ref} closes without being built and goes to Won't do. You can reopen it into Refining later.`,
-              label: "Why not?",
-              presets: WONT_DO_PRESETS,
-              confirm: "Won't do",
-              tone: "danger",
-              onConfirm: async (reason) => {
-                await api("POST", `/tickets/${t.id}/wont-do`, { reason });
-                toast(`${ref} closed as won't do.`, { ok: true });
-                router();
-              },
-            }),
+          onclick: () => wontDoSheet(t),
         },
         "Won't do",
       ),

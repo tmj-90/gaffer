@@ -1,6 +1,7 @@
 // S2 won't do, from the Ticket page and the Work board (Review's Won't do… is held
 // while the Review view is being reworked). A draft and a delivered ticket are closed
-// with a reason, both show in the Work board's Won't do area, Reopen works from the
+// with a reason from their ticket pages, a queued (ready) one from its Work card's
+// Move menu, both show in the Work board's Won't do area, Reopen works from the
 // board and from the ticket page, the delivery branch survives the close, and an
 // abandoned branch does not count against MAX_OPEN_AGENT_BRANCHES_PER_REPO.
 export default async function s2(t, L) {
@@ -44,6 +45,30 @@ export default async function s2(t, L) {
     reason,
     "the closed ticket's page shows why it will not be built",
     "the ticket page does not show the won't-do reason",
+  );
+
+  // ── a queued ticket, closed from its Work card's Move menu ────────────────
+  const queued = await L.seedTicket(t, {
+    title: `Won't-do queued (${L.tag("s2")})`,
+    acs: ["covered by a test"],
+    ready: true,
+  });
+  await t.visit("work");
+  const qCard = p.locator(`.board-card[data-id="${queued.id}"]`);
+  await qCard.locator(".card-move-btn").click();
+  await p.locator('.movemenu .movemenu-item:has-text("Won\'t do")').click();
+  await p.waitForSelector(".reject-dialog", { timeout: 10000 });
+  await p.locator(".reject-dialog .reject-reason-input").fill("Folded into another ticket");
+  const qResP = p.waitForResponse((r) => /\/wont-do$/.test(r.url()), { timeout: 15000 });
+  await p.locator(".reject-dialog .reject-submit").click();
+  const qRes = await qResP.catch(() => null);
+  t.check(
+    qRes &&
+      qRes.status() < 300 &&
+      JSON.parse(qRes.request().postData() || "{}").reason === "Folded into another ticket" &&
+      (await L.waitStatus(queued.id, ["cancelled"], 10000, 400)),
+    `Work card Move → Won't do… closed ready #${queued.number} with its reason`,
+    `card Won't do: ${qRes && qRes.status()} status=${(await L.ticketOf(queued.id)).status}`,
   );
 
   // ── a delivered ticket, closed from its ticket page with a typed reason ────

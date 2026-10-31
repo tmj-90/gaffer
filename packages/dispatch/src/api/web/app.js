@@ -14967,7 +14967,6 @@ function repoPath(p, repos) {
   }
   return shortPath(s);
 }
-/** One flag: a yellow card, a caps title, what it means, who raised it. */
 // --- Gate integrity: the delivery changed the tests that decide it is done -----
 
 /** The server's `test-modified` risk annotations across a diff's live repos. */
@@ -15104,6 +15103,7 @@ function integrityBanner(t, anns) {
   );
 }
 
+/** One flag: a yellow card, a caps title, what it means, who raised it. */
 function reviewFlag(title, body, source) {
   return el("li", { class: "flag" }, [
     ycard(22, "flag-card"),

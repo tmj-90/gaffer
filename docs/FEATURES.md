@@ -190,7 +190,10 @@ structural barrier the whole design hangs on.
   The gates' **integrity** row compares the delivery with its base and FLAGs a
   deleted or renamed test file, a new skip/focus marker (`.skip`, `.only`,
   `xit`, `it.todo`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
-  `@Disabled`, …), a rewritten gate script or a touched test-runner config. The
+  `@Disabled`, …), a changed gate script (or an added `pretest`/`posttest`, or a
+  changed script it runs) or a touched test-runner config. It compares against
+  the commit the runner recorded when it cut the branch, so moving the base
+  branch from the worktree cannot hide a change. The
   server recomputes the same check from the real diff (risk flag *Test
   modified*), the Sign-off shows a banner naming each change, the Team Sheet
   row carries a *Tests changed* chip, and an agent approve is held for a person
@@ -198,6 +201,9 @@ structural barrier the whole design hangs on.
   tests, **Allow test changes…** on the Sign-off (or
   `gaffer wg ticket allow-test-changes <n> --reason …`) records your allowance
   as an event: the row then reads PASS with a note. Only a person can set it.
+  It does not change what the gate runs: a changed gate script still runs as
+  the base has it, so to change the gate itself, change the repo's registered
+  test/lint command or merge the script change first.
   This first slice flags; it never fails a delivery.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
   recorded and its acceptance criteria reset. A **won't-do** on delivered work

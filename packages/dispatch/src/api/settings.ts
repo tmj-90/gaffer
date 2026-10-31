@@ -137,9 +137,11 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Let an agent actor approve a ticket's review (otherwise human-only). An agent " +
       "approve is still held for a person whenever the real diff's observed risk exceeds " +
       "the declared risk, and ALWAYS when the delivery changed the tests that gate it " +
-      "(deleted or renamed a test file, added a skip/only marker, rewrote a gate script or " +
-      "test config) — unless a person allowed test changes on that ticket " +
-      "(`wg ticket allow-test-changes <n>`, or Allow test changes on the Review page).",
+      "(deleted or renamed a test file, added a skip/only marker, changed a gate script, " +
+      "one of its pre/post hooks or a script it runs, or touched test config) — unless a " +
+      "person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or " +
+      "Allow test changes on the Review page). The allowance clears the hold only; the " +
+      "gate still runs the base commit's scripts.",
   },
   {
     key: "MERGE_ON_AGENT_REVIEW",

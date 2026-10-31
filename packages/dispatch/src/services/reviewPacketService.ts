@@ -261,18 +261,46 @@ function testerVerdictIds(events: WorkEvent[]): Set<string> {
 }
 
 /**
+ * When the ticket last (re)entered review, or null with no such transition on record.
+ * The tester runs after a review approval and a pin is recorded at one, so a verdict or
+ * a pin older than this is about an earlier candidate: a rework or a conflict resolution
+ * re-entered review with other code. runner/lib/tester-binding.mjs (readReviewPin) dates
+ * the landing pin by the same event and ignores an older one.
+ */
+function enteredReviewAt(ticketId: string, events: WorkEvent[]): string | null {
+  let at: string | null = null;
+  for (const e of events) {
+    if (e.event_type !== "ticket.transitioned" || e.entity_id !== ticketId) continue;
+    if (str(payloadOf(e).to) !== "in_review") continue;
+    if (at === null || e.created_at > at) at = e.created_at;
+  }
+  return at;
+}
+
+/** Recorded before `since` (a fact about an earlier candidate); same instant counts as current. */
+const before = (e: { created_at: string }, since: string | null): boolean =>
+  since !== null && since > e.created_at;
+
+/**
  * The tester's verdict: the latest `test_output` row whose id a `ticket.tester_passed`
  * or `ticket.tester_failed` event on this ticket names. Only reviewGateService's
  * testerPass/testerFail write those events, beside the row they record; a verdict-shaped
  * payload anyone else recorded (an agent's record_ac_evidence, say) is not the tester's.
+ * A verdict from before the ticket last entered review tested an earlier candidate
+ * (that round's fail is in the rework list), so it is not this delivery's.
  */
-function readTester(rows: Evidence[], events: WorkEvent[]): PacketTester | null {
+function readTester(
+  rows: Evidence[],
+  events: WorkEvent[],
+  sinceReview: string | null,
+): PacketTester | null {
   const verdictIds = testerVerdictIds(events);
   for (let i = rows.length - 1; i >= 0; i--) {
     const e = rows[i]!;
     if (e.evidence_type !== "test_output" || !verdictIds.has(e.id)) continue;
     const p = payloadOf(e);
     if (p.verdict !== "pass" && p.verdict !== "fail") continue;
+    if (before(e, sinceReview)) return null;
     return {
       verdict: p.verdict,
       provenance: str(p.provenance),
@@ -286,24 +314,36 @@ function readTester(rows: Evidence[], events: WorkEvent[]): PacketTester | null 
   return null;
 }
 
-function readPin(rows: Evidence[]): PacketPin | null {
+/** The latest review pin, unless it predates the ticket's latest entry into review (stale). */
+function readPin(rows: Evidence[], sinceReview: string | null): PacketPin | null {
   for (let i = rows.length - 1; i >= 0; i--) {
     const e = rows[i]!;
     if (e.evidence_type !== "commit" || e.recorded_by_actor_type !== RUNNER) continue;
     if (!e.uri || !e.uri.startsWith(PIN_PREFIX)) continue;
+    if (before(e, sinceReview)) return null;
     return { sha: e.uri.slice(PIN_PREFIX.length), summary: e.summary, at: e.created_at };
   }
   return null;
 }
 
-function readCriterion(ac: AcceptanceCriterion, rows: Evidence[]): PacketCriterion {
+/**
+ * One criterion's evidence. A check result from before the latest send-back ran against
+ * an earlier attempt's code (the send-back reset the criterion to pending), so only the
+ * current attempt's checks count as its machine evidence.
+ */
+function readCriterion(
+  ac: AcceptanceCriterion,
+  rows: Evidence[],
+  sentBackAt: string | null,
+): PacketCriterion {
   const mine = rows.filter((e) => e.ac_id === ac.id);
   const agentRows = mine.filter((e) => e.recorded_by_actor_type === "agent");
   const checks = mine.filter(
     (e) =>
       e.recorded_by_actor_type !== null &&
       e.recorded_by_actor_type !== "agent" &&
-      payloadOf(e).kind === "ac_check",
+      payloadOf(e).kind === "ac_check" &&
+      (sentBackAt === null || e.created_at > sentBackAt),
   );
   const lastCheck = checks[checks.length - 1];
   let check: PacketCriterion["check"] = null;
@@ -402,6 +442,7 @@ export class ReviewPacketService {
     // The tester's verdict rows are not the delivery's summary (it ran its own tests).
     const testerRows = testerVerdictIds(events);
     const sentBackAt = rework.length > 0 ? rework[rework.length - 1]!.at : null;
+    const sinceReview = enteredReviewAt(ticket.id, events);
     const claims = parseTestClaimsFrom(
       rows
         .filter(
@@ -431,7 +472,7 @@ export class ReviewPacketService {
 
     return {
       gates,
-      tester: readTester(rows, events),
+      tester: readTester(rows, events, sinceReview),
       tester_expected: safeBool(() => this.deps.testerExpected(ticket)),
       cost: { ...cost, budget_usd: ticket.delivery_budget_usd },
       attempts: {
@@ -440,8 +481,10 @@ export class ReviewPacketService {
         rework,
       },
       risk: { level: ticket.risk_level, reasons },
-      pin: readPin(rows),
-      acceptance: this.deps.acs.listForTicket(ticket.id).map((ac) => readCriterion(ac, rows)),
+      pin: readPin(rows, sinceReview),
+      acceptance: this.deps.acs
+        .listForTicket(ticket.id)
+        .map((ac) => readCriterion(ac, rows, sentBackAt)),
       disagreements,
     };
   }

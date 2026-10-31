@@ -7,7 +7,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
@@ -15,6 +15,30 @@ import type { Actor } from "../src/domain/types.js";
 import type { ReviewPacket } from "../src/services/reviewPacketService.js";
 import { TestClock } from "../src/util/clock.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+
+// Work events are dated by the wall clock and evidence by the Dispatch clock, as on a
+// live factory where both read the same time. Hold the wall clock at the TestClock's
+// start so an event is never dated months after the evidence written beside it.
+const EPOCH = "2026-01-01T00:00:00.000Z";
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(EPOCH));
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+/** A TestClock that moves the wall clock with it (event and evidence times agree). */
+class SyncedClock extends TestClock {
+  constructor() {
+    super(EPOCH);
+    vi.setSystemTime(this.nowMs());
+  }
+  override advanceSeconds(seconds: number): void {
+    super.advanceSeconds(seconds);
+    vi.setSystemTime(this.nowMs());
+  }
+}
 
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
@@ -578,6 +602,162 @@ describe("REVIEW PACKET REST surface", () => {
       expect(body.review_packet.disagreements).toHaveLength(1);
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
+      wg.db.close();
+    }
+  });
+});
+
+describe("REVIEW PACKET a reworked ticket: facts from an earlier round are not this one's", () => {
+  const reviewer: Actor = { type: "human", id: "rev" };
+  const testerAgent: Actor = { type: "agent", id: "tester-1" };
+
+  /**
+   * A testable ticket delivered once (a runner check on its criterion, the agent
+   * review's pin), then handed to `sendBack`, then delivered again with nothing
+   * recorded by the runner, the tester or a review in the new round yet.
+   */
+  function redelivered(sendBack: (wg: Dispatch, id: string) => void): {
+    wg: Dispatch;
+    id: string;
+    acId: string;
+  } {
+    const clock = new SyncedClock();
+    const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner, { testingEnabled: true });
+    wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    const t = wg.createTicket(
+      { title: "Ship it", description: "deliver the thing", policy_pack: "team_light" },
+      human,
+    );
+    wg.linkRepository(t.id, "svc", "primary", human);
+    const { ac } = wg.addAcceptanceCriterion(
+      { ticket_id: t.id, text: "Returns 200", check_command: "npm test" },
+      human,
+    );
+    wg.setTestable(t.id, true, human);
+    wg.markReady(t.id, human);
+    const agent = wg.registerAgent({ display_name: "a" }, human);
+    const deliver = () => {
+      const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor);
+      wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: t.id }, agentActor);
+    };
+    // Round 1: the runner passed the check, the delivery reached review, and the
+    // runner's agent review pinned the commit it read.
+    const claim = wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, agentActor);
+    wg.recordAcCheck({ ticket_id: t.id, ac_id: ac.id, exit_code: 0, command: "npm test" }, system);
+    wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: t.id }, agentActor);
+    giveTicketRealDelivery(wg, t.id, human);
+    wg.attachDeliveryEvidence(
+      t.id,
+      {
+        evidenceType: "commit",
+        summary: "agent review approved commit abc1234 of gaffer/ticket-1",
+        uri: "gaffer-reviewed-commit:abc1234",
+      },
+      system,
+    );
+    clock.advanceSeconds(5);
+    sendBack(wg, t.id);
+    clock.advanceSeconds(5);
+    if (wg.resolveTicket(t.id).status !== "ready") wg.markReady(t.id, human);
+    // Round 2: delivered again; nothing has run against the new code yet.
+    deliver();
+    expect(wg.resolveTicket(t.id).status).toBe("in_review");
+    return { wg, id: t.id, acId: ac.id };
+  }
+
+  const testerPassedThenReworked = (wg: Dispatch, id: string) => {
+    wg.approveReview(id, reviewer);
+    wg.testerPass(id, { summary: "12 black-box tests pass" }, testerAgent);
+    // The human changes their mind before the merge: back for rework.
+    wg.rejectReview(id, "refining", reviewer, "Docs missing the new flag");
+  };
+
+  it("the tester's pass of the earlier round is not shown as this round's", () => {
+    const { wg, id } = redelivered(testerPassedThenReworked);
+    try {
+      const p = wg.reviewPacket(id, cost);
+      expect(p.tester).toBeNull();
+      // The tester runs again once this round is approved.
+      expect(p.tester_expected).toBe(true);
+      expect(p.attempts.rework.map((r) => r.by)).toEqual(["review"]);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("the tester's fail of the earlier round is in the rework list, not the tester cell", () => {
+    const { wg, id } = redelivered((w, tid) => {
+      w.approveReview(tid, reviewer);
+      w.testerFail(tid, { summary: "POST /items returns 500" }, testerAgent);
+    });
+    try {
+      const p = wg.reviewPacket(id, cost);
+      expect(p.tester).toBeNull();
+      expect(p.attempts.rework.map((r) => r.by)).toEqual(["tester"]);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("a review pin recorded before the ticket re-entered review is not shown", () => {
+    // The landing check (runner/lib/tester-binding.mjs readReviewPin) ignores such a
+    // pin, so "only this commit can land" would be false.
+    const { wg, id } = redelivered((w, tid) =>
+      w.rejectReview(tid, "refining", reviewer, "Docs missing the new flag"),
+    );
+    try {
+      expect(wg.reviewPacket(id, cost).pin).toBeNull();
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("a runner check of the earlier round is not this round's machine evidence", () => {
+    const { wg, id, acId } = redelivered((w, tid) =>
+      w.rejectReview(tid, "refining", reviewer, "Docs missing the new flag"),
+    );
+    try {
+      const row = wg.reviewPacket(id, cost).acceptance.find((a) => a.id === acId)!;
+      expect(row.status).toBe("pending");
+      expect(row.check).toBeNull();
+      expect(row.evidence_kind).toBe("none");
+      // Once the runner checks the new round, its result is read again.
+      wg.recordAcCheck({ ticket_id: id, ac_id: acId, exit_code: 1, command: "npm test" }, system);
+      expect(wg.reviewPacket(id, cost).acceptance.find((a) => a.id === acId)).toMatchObject({
+        evidence_kind: "runner",
+        check: { exit_code: 1, passed: false },
+      });
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("a pin and a tester verdict of the current round are still read", () => {
+    const { wg, id } = redelivered((w, tid) =>
+      w.rejectReview(tid, "refining", reviewer, "Docs missing the new flag"),
+    );
+    try {
+      if (wg.clock instanceof TestClock) wg.clock.advanceSeconds(5);
+      wg.attachDeliveryEvidence(
+        id,
+        {
+          evidenceType: "commit",
+          summary: "agent review approved commit def5678 of gaffer/ticket-1",
+          uri: "gaffer-reviewed-commit:def5678",
+        },
+        system,
+      );
+      expect(wg.reviewPacket(id, cost).pin?.sha).toBe("def5678");
+      const acId = wg.reviewPacket(id, cost).acceptance[0]!.id;
+      wg.recordAcCheck({ ticket_id: id, ac_id: acId, exit_code: 0, command: "npm test" }, system);
+      expect(wg.reviewPacket(id, cost).acceptance[0]).toMatchObject({ evidence_kind: "runner" });
+      wg.approveReview(id, reviewer);
+      wg.testerPass(id, { summary: "13 black-box tests pass" }, testerAgent);
+      expect(wg.reviewPacket(id, cost).tester).toMatchObject({
+        verdict: "pass",
+        summary: "13 black-box tests pass",
+      });
+    } finally {
       wg.db.close();
     }
   });

@@ -179,7 +179,11 @@ structural barrier the whole design hangs on.
   compared, nor is a claim from an attempt that was sent back. Gate results, the test count and criterion exit codes
   come only from rows the runner recorded as the system, and the tester's verdict
   only from the row a tester pass or fail recorded; an agent-recorded row that
-  looks like a gate report or a tester verdict is ignored. It is
+  looks like a gate report or a tester verdict is ignored. On a reworked ticket
+  the strip shows only this round's facts: a tester verdict or a review pin
+  recorded before the ticket last entered review, and a criterion's check result
+  from before the latest send-back, are about earlier code and are left out (the
+  landing check ignores such a pin too). It is
   one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
   is what the test runner printed, and the tests run the delivered code, so treat
   a match as consistency, not proof. The runner keeps those summary lines with

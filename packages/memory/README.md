@@ -11,7 +11,10 @@ It holds two kinds of knowledge:
 1. **Lore** — the gated knowledge base: conventions, decisions, gotchas, and
    cross-repo boundaries. Agent proposals land as `draft` and stay invisible to
    search until a human approves them — an agent **cannot** promote its own
-   memory. This is the control that stops prompt-injected "facts" from poisoning
+   memory. In factory context (`GAFFER_FACTORY=1`) a draft is invisible to
+   agents in **every** read path: `search_lore` (even with `includeDrafts`),
+   `suggest_lore`'s duplicate feedback, `get_lore` by id (answered exactly like a
+   missing id) and `report_conflict`. This is the control that stops prompt-injected "facts" from poisoning
    future tickets.
 2. **Repo Understanding** — the *Repo Digest* (a living overview / structure /
    conventions / stack TLDR, one per repo) and the *feature ledger*

@@ -69,9 +69,15 @@ wg expire-claims >/dev/null 2>&1 || true   # reap any stale claim before polling
 # Sweep worktrees no live or paused delivery owns (a Stopped pause, a killed worker),
 # as loop.sh does at the start of every run: a factory driven only by this button
 # otherwise never reaps them. Never touches a claimed/in_progress/paused ticket's.
+# Every worktree the sweep KEPT (an UNKNOWN status from a failed dispatch read, a
+# non-terminal ticket, uncommitted work) is named with its reason, as loop.sh does — a
+# poll used to discard those notes, so a preserved worktree was silent.
 if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
-  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+  _reclaim_err="$(mktemp "${TMPDIR:-/tmp}/gaffer-reclaim.XXXXXX" 2>/dev/null || echo /dev/null)"
+  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>"$_reclaim_err" | tr '\n' ' ')"
   [ -n "${_reclaimed// /}" ] && echo "gaffer poll: reclaimed orphaned worktree(s) for ticket(s): ${_reclaimed% }"
+  [ -s "$_reclaim_err" ] && sed 's/^gaffer: orphan-recovery: /gaffer poll: worktree preserved: /; s/^gaffer poll: worktree preserved: DRY_RUN: /gaffer poll: DRY_RUN: /' "$_reclaim_err" >&2
+  [ "$_reclaim_err" = /dev/null ] || rm -f "$_reclaim_err"
 fi
 
 # Run the ONE tick under the same outer wall-clock cap as loop.sh / worker.sh (sized

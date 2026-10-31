@@ -212,9 +212,19 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "List factory settings",
     description:
-      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`).",
+      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
     capability: "read",
     responses: [ok("`{ settings: SettingView[] }`.")],
+  },
+  {
+    method: "GET",
+    path: "/api/settings/secret/:key",
+    tag: T.config,
+    summary: "Read a secret setting back (admin)",
+    description:
+      "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+    capability: "full",
+    responses: [ok("`{ key, value, source }`."), notFound],
   },
   {
     method: "POST",
@@ -691,9 +701,15 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Approve the review",
     description:
-      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins the approved branch head. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+      "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
     capability: "full",
-    responses: [ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"), notFound, conflict],
+    body: "approveReviewBody",
+    responses: [
+      ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"),
+      notFound,
+      conflict,
+      invalid,
+    ],
   },
   {
     method: "POST",
@@ -754,7 +770,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/diff",
     tag: T.review,
     summary: "Delivery diff",
-    description: "`git diff <default branch>...<delivery branch>` per write repository.",
+    description:
+      "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve.",
     capability: "read",
     responses: [ok("`{ repos: RepoDiff[] }`."), notFound],
   },

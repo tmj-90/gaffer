@@ -73,6 +73,32 @@ gaffer_dod_install_enabled() {
   esac
 }
 
+# The STRIPPED environment the pre-gate install runs in (an allowlist, never the
+# runner's env): PATH, a throwaway HOME, TMPDIR, locale, CI=1 and the egress proxy /
+# CA settings a registry fetch needs. Nothing else crosses — no DISPATCH_API_TOKEN,
+# GITHUB_TOKEN, ANTHROPIC_API_KEY, NPM_TOKEN, cloud keys. Under the docker provider
+# the image's own HOME/PATH apply (the host's do not exist inside the container).
+# Fills the named array ($1) and names the throwaway HOME in $2 (the caller removes it).
+#   gaffer_dod_install_env <array-name> <home-var-name>
+gaffer_dod_install_env() {
+  local _arr="$1" _hv="$2" _h="" _v _name
+  local -a _e=()
+  if [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ] && [ -n "${GAFFER_DOD_WRAP:-}" ]; then
+    _e+=( "HOME=${GAFFER_SANDBOX_HOME:-/root}" "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+  else
+    _h="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-dod-install-home.XXXXXX" 2>/dev/null)" || _h=""
+    _e+=( "HOME=${_h:-/nonexistent}" "PATH=${PATH:-/usr/bin:/bin}" )
+  fi
+  _e+=( "TMPDIR=${TMPDIR:-/tmp}" "CI=1" "LANG=${LANG:-C.UTF-8}" )
+  for _name in LC_ALL HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy \
+               NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do
+    eval "_v=\${$_name:-}"
+    [ -n "$_v" ] && _e+=( "$_name=$_v" )
+  done
+  eval "$_arr=(\"\${_e[@]}\")"
+  eval "$_hv=\"\$_h\""
+}
+
 # PRE-GATE ENABLER (not a gate). A fresh delivery worktree has no node_modules, so
 # the DoD test gate cannot run — the first greenfield deliveries fail "tests could
 # not run" until deps are present. This installs the worktree's dependencies IN THE
@@ -90,6 +116,8 @@ gaffer_dod_install_enabled() {
 #   <pm>                 → install succeeded (node_modules materialised)
 #   FAILED:<pm>          → install ATTEMPTED but failed (diagnostic on stderr)
 #   FAILED:timeout:<pm>  → install TIMED OUT (gaffer_timeout returned 124)
+#   SKIPPED:sandbox_unavailable:<pm>
+#                        → GAFFER_STRICT_REQUIRE=1 and no validation wrap: refused
 #   (empty)              → no-op (non-node repo, no lockfile, deps already present,
 #                          or the pm binary is unavailable)
 #   gaffer_dod_install_deps <worktree-dir>
@@ -129,13 +157,35 @@ gaffer_dod_install_deps() {
     npm)  _script='npm ci --ignore-scripts || npm install --ignore-scripts' ;;
   esac
 
+  # SAME ISOLATION BOUNDARY AS VALIDATION. An install executes repository code
+  # (a .pnpmfile.cjs, a yarn `yarnPath`, a lifecycle script a package manager runs
+  # despite --ignore-scripts), so it runs exactly where the gates run: through
+  # GAFFER_DOD_WRAP with the validation profile (no data plane, no model credential,
+  # the same write roots), in a STRIPPED environment (env -i: no operator tokens, a
+  # throwaway HOME so ~/.npmrc auth and other HOME secrets are not readable). Under
+  # GAFFER_STRICT_REQUIRE an install with no wrap FAILS CLOSED (nothing executes):
+  # the operator asserted that no repository code runs outside an OS sandbox.
+  local _wrap="${GAFFER_DOD_WRAP:-}" _profile=() _ienv=() _ihome=""
+  if [ -z "$_wrap" ]; then
+    case "${GAFFER_STRICT_REQUIRE:-0}" in
+      1|true|yes|on)
+        printf 'gaffer: dod-install: GAFFER_STRICT_REQUIRE=1 and no validation sandbox wraps the install in %s — NOT running %s install (fail closed; the test gate will surface missing deps)\n' "$dir" "$pm" >&2
+        echo "SKIPPED:sandbox_unavailable:$pm"
+        return 0 ;;
+    esac
+  else
+    _profile=( env GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BRIDGE_SOCKET= GAFFER_SANDBOX_DATA_PLANE=none )
+  fi
+  gaffer_dod_install_env _ienv _ihome
   local _out _rc
   _out="$(mktemp "${TMPDIR:-/tmp}/gaffer-dod-install.XXXXXX")" || _out="/dev/null"
   # stdin from /dev/null: the caller loops over its worktree rows on stdin, and an
   # install that reads stdin would swallow the rows for the repos after this one.
+  # shellcheck disable=SC2086  # $_wrap is a command prefix, split on purpose
   ( cd "$dir" 2>/dev/null || exit 127
-    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" bash -c "$_script" ) </dev/null >"$_out" 2>&1
+    gaffer_timeout "$GAFFER_DOD_INSTALL_TIMEOUT" ${_profile[@]+"${_profile[@]}"} $_wrap env -i "${_ienv[@]}" bash -c "$_script" ) </dev/null >"$_out" 2>&1
   _rc=$?
+  [ -n "$_ihome" ] && rm -rf "$_ihome"
 
   # Fail-soft verdict. Success = node_modules materialised → echo the pm for the
   # caller's log. Otherwise the install was ATTEMPTED but failed: surface the

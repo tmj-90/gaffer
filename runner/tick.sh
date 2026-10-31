@@ -938,6 +938,13 @@ if [ -n "$RESUME_NUM" ]; then
   REPO_PATH="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).local_path) || ""' 2>/dev/null)"
   STACK="$(echo "$SHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
   TITLE="$(echo "$SHOW" | jget 'd.ticket.title' 2>/dev/null)"
+  # PREVIEW IS PREVIEW (external review #8): a dry run reports the resume and changes
+  # NOTHING — no resume-begin, so no lease, no paused → in_progress, and the human's
+  # resume request stays queued for the live tick. Checked BEFORE the lease is taken.
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    log "DRY_RUN: would resume paused #$NUM ('$TITLE') in its existing worktree — resume-begin NOT called: no lease taken, the ticket stays paused and its resume request stays queued for the live tick"
+    result worked; exit 0
+  fi
   # The resume is LEASED to this runner (--agent/--ttl): the pause released the old
   # lease, and resume-begin takes a fresh one and prints its token. From here a resumed
   # delivery uses the same token paths as a fresh one — heartbeat, claim-gated submit,
@@ -1312,7 +1319,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       "DISPATCH_DB=$DISPATCH_DB" "MEMORY_DB=$MEMORY_DB"
     )
     _B_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
+    GAFFER_LAUNCH_KIND=bootstrap worker_deliver "$B_DIR" "$B_PROMPT" "$GAFFER_IMPL_MODEL_FLAG" "$MCP_RUNTIME" "$B_USAGE_JSON"
     brc=$?
     gaffer_usage_record bootstrap "$NUM" "$brc" "$B_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
     gaffer_record_skill_usage "$NUM" bootstrap "$STACK" "$B_SKILLS" "$B_USAGE_JSON" \
@@ -2635,7 +2642,7 @@ $_trail_q
   # (gaffer_usage_record reads both), so spend after a send-back is charged as rework.
   read -r GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT <<<"$(gaffer_delivery_attempt_stamp "$_DELIV_ATTEMPT")" || true
   export GAFFER_USAGE_ATTEMPT_ID GAFFER_USAGE_STARTED_AT
-  worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
+  GAFFER_LAUNCH_KIND=delivery worker_deliver "$PRIMARY_REPO" "$PROMPT$_REWORK_BLOCK" "$_ATTEMPT_IMPL_FLAG" "$MCP_RUNTIME" "$USAGE_JSON" "$WRAP" \
     "" ${_CALL_BUDGET_ARGS[@]+"${_CALL_BUDGET_ARGS[@]}"}
   rc=$?
   GAFFER_TICK_TIMEOUT="$_TICK_TIMEOUT_CFG"
@@ -3239,7 +3246,8 @@ $_trail_q
 
     # Pre-gate ENABLER (NOT a gate): a fresh delivery worktree has no node_modules,
     # so the test gate cannot run. Auto-install deps in EACH worktree, bounded +
-    # fail-soft, BEFORE the gate runs. This never crashes the tick and never passes
+    # fail-soft, BEFORE the gate runs — inside the SAME validation sandbox as the gates
+    # (GAFFER_DOD_WRAP, stripped env; refused under strict-require with no wrap). This never crashes the tick and never passes
     # the gate — on a failed/timed-out install the gate still runs and fails loudly
     # exactly as today. Disable with GAFFER_DOD_INSTALL=0 (or GAFFER_GREENFIELD_INSTALL=0)
     # for byte-identical-to-today behaviour. Separate loop from the row-builder above
@@ -3250,6 +3258,7 @@ $_trail_q
         git -C "$_iwt" rev-parse --git-dir >/dev/null 2>&1 || continue
         _pm="$(gaffer_dod_install_deps "$_iwt")"
         case "$_pm" in
+          SKIPPED:sandbox_unavailable:*) log "DoD-install: REFUSED — GAFFER_STRICT_REQUIRE=1 and no validation sandbox wraps the ${_pm#SKIPPED:sandbox_unavailable:} install in $_iwt (#$NUM); nothing was executed (fail closed), the test gate will surface missing deps" ;;
           FAILED:timeout:*) log "DoD-install: WARN — ${_pm#FAILED:timeout:} install TIMED OUT in $_iwt (#$NUM); test gate will surface it" ;;
           FAILED:*)         log "DoD-install: WARN — ${_pm#FAILED:} install failed in $_iwt (#$NUM); test gate will surface it" ;;
           ?*)               log "DoD-install: installed ${_iname:-repo} deps via '$_pm' in the worktree for #$NUM" ;;
@@ -3404,7 +3413,7 @@ $_trail_q
     # EVAL JUDGE (quality telemetry, GAFFER_EVAL_JUDGE=1 opt-in): score the
     # just-submitted delivery against its ACs on the crew rubric and append the
     # verdict + real spend to the eval ledger. memoryPresent = whether durable
-    # product-context primed this delivery (the memory-lift metric's arm flag).
+    # product-context primed this delivery (the memory score gap's arm flag).
     # Additive + fail-soft telemetry — never gates or delays the submitted work.
     # The judge gets the DoD checklist this delivery passed (GAFFER_EVAL_TEST_OUTPUT)
     # and the REPO NAME for the ledger record ($PRIMARY_REPO is the worktree path,

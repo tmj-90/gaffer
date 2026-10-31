@@ -14395,8 +14395,68 @@ function renderSettingRow(s, editors) {
 /** The mode the settings on screen were read under (for "from the graduated mode"). */
 let settingsModeName = "";
 
+/** Sentinel an untouched secret editor reads as (never sent: it equals `initial`). */
+const SECRET_UNCHANGED = "\u0000unchanged";
+
+/**
+ * A SECRET-BEARING setting (a webhook URL is posting authority): the server never sends
+ * its value, only whether it is set and its host. Show that, masked, with Replace (a new
+ * value is typed in, never the old one shown) and Remove. Untouched, the editor reads as
+ * the sentinel and nothing is sent.
+ */
+function renderSecretSettingInput(s, editors) {
+  const state = s.configured ? `Set${s.host ? ` · ${s.host}` : ""}` : "Not set";
+  const masked = el(
+    "span",
+    {
+      class: `setting-secret mono${s.configured ? " is-set" : ""}`,
+      "aria-label": s.configured
+        ? `${s.label} is set${s.host ? ` for ${s.host}` : ""}; the value is hidden.`
+        : `${s.label} is not set.`,
+    },
+    [s.configured ? "•••••••• " : "", state],
+  );
+  if (s.envLocked) return el("div", { class: "setting-secret-row" }, [masked]);
+  let mode = "keep"; // keep | replace | remove
+  const input = el("input", {
+    type: "password",
+    autocomplete: "off",
+    spellcheck: "false",
+    placeholder: "Paste the new URL",
+    "aria-label": `New value for ${s.label}`,
+    hidden: "",
+  });
+  const replace = el("button", { type: "button", class: "btn small ghost" }, "Replace");
+  const remove = s.configured
+    ? el("button", { type: "button", class: "btn small ghost" }, "Remove")
+    : null;
+  replace.addEventListener("click", () => {
+    mode = "replace";
+    input.hidden = false;
+    input.focus();
+  });
+  if (remove)
+    remove.addEventListener("click", () => {
+      mode = mode === "remove" ? "keep" : "remove";
+      remove.textContent = mode === "remove" ? "Keep" : "Remove";
+      masked.classList.toggle("is-removing", mode === "remove");
+      remove.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  editors.set(s.key, {
+    read: () =>
+      mode === "remove"
+        ? ""
+        : mode === "replace" && input.value.trim() !== ""
+          ? input.value.trim()
+          : SECRET_UNCHANGED,
+    initial: SECRET_UNCHANGED,
+  });
+  return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
+}
+
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
+  if (s.secret) return renderSecretSettingInput(s, editors);
   if (s.envLocked) {
     // Read-only: show the env-driven value if known, else a muted placeholder.
     // The actual env value isn't exposed by the API (it could be a secret), so we
@@ -15989,6 +16049,30 @@ function acTable(rows) {
 let lastSignedOff = null;
 
 /**
+ * STALE REVISION: set when an approval was refused because the branch moved after the
+ * diff was shown. The re-rendered Review view reads it once and says so above the new
+ * diff, so the human knows what they are now looking at is a different commit.
+ */
+let reviewMovedNotice = null;
+
+/** The commits a rendered diff covered: one `{ repo, sha }` per repo with a known head. */
+function shownCommits(repos) {
+  return (repos || [])
+    .filter((r) => r && typeof r.headSha === "string" && r.headSha)
+    .map((r) => ({ repo: r.repoId || r.repo, sha: r.headSha }));
+}
+
+/** True for the server's "the change moved since it was shown" refusals. */
+function isStaleRevision(e) {
+  const reason = e && e.details && e.details.reason;
+  return (
+    Boolean(e) &&
+    e.status === 409 &&
+    (reason === "stale_revision" || reason === "revision_required")
+  );
+}
+
+/**
  * The Review page with nothing waiting: the desk is clear, said on the stadium
  * board, with where the signed work is now (testing, to merge, full time) and
  * who is still on the pitch, so the next stop is one click away.
@@ -16261,6 +16345,8 @@ async function renderReview(param) {
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
   // DISABLED and only enables once the diff loads with a real, non-empty change.
   let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // The repos (with their head commits) the diff below rendered — what Approve covers.
+  let diffRepos = [];
   // The sign-off's status line: hidden until Approve lands, then it says where the
   // change went and offers the next one as its own link (never auto-advanced).
   const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
@@ -16272,7 +16358,20 @@ async function renderReview(param) {
         toast(`Can't approve — ${diffState.reason}`, {});
         return;
       }
-      const r = await api("POST", `/tickets/${t.id}/review/approve`);
+      // Approve exactly what was shown: the head commit of every repo the diff rendered.
+      // A branch that moved since is refused (409 stale_revision) and nothing is approved.
+      let r;
+      try {
+        r = await api("POST", `/tickets/${t.id}/review/approve`, {
+          commits: shownCommits(diffRepos),
+        });
+      } catch (e) {
+        if (!isStaleRevision(e)) throw e;
+        reviewMovedNotice = { id: t.id, message: e.message };
+        toast("Not approved — the change moved since you opened it. The new diff is loaded.", {});
+        router();
+        return;
+      }
       const to = r && r.ticket && r.ticket.status;
       // AUTO_MERGE off (the default): the approval does not merge; the ticket waits in
       // Ready for merge until someone presses Merge now.
@@ -16467,6 +16566,27 @@ async function renderReview(param) {
     { class: "reopen-banner diff-block-banner", style: "display:none" },
     [icon("alert"), ""],
   );
+  // The approval just refused as stale: say the change moved, once, above the new diff.
+  const moved = reviewMovedNotice && reviewMovedNotice.id === t.id ? reviewMovedNotice : null;
+  if (moved) reviewMovedNotice = null;
+  const movedBanner = moved
+    ? el(
+        "div",
+        {
+          class: "reopen-banner diff-moved-banner",
+          role: "alert",
+          "aria-label": "The change moved since you opened it, so nothing was approved.",
+        },
+        [
+          icon("alert"),
+          el("span", {}, [
+            el("b", {}, "The change moved since you opened it. "),
+            "Nothing was approved. The diff below is the new head — review it again before you approve. ",
+            el("small", { class: "mono" }, moved.message),
+          ]),
+        ],
+      )
+    : null;
 
   // Flags: what to look at before signing. Evidence flags now; the diff's risk
   // annotations join them once the diff loads.
@@ -16564,6 +16684,7 @@ async function renderReview(param) {
   const diffAux = el("span", { class: "panel-aux" });
   const applyDiffState = (state, repos = []) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
+    diffRepos = repos;
     if (diffState.approvable) {
       diffBlockBanner.style.display = "none";
       if (approveBtn && approveLabel.textContent !== "Approved")
@@ -16648,6 +16769,7 @@ async function renderReview(param) {
     [
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
+      movedBanner,
       canApprove ? diffBlockBanner : null,
       el(
         "div",

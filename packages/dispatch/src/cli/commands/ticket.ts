@@ -111,6 +111,63 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("diff <ref>")
+    .description(
+      "The delivery diff per write repo, with the head commit (`headSha`) it was computed " +
+        "against. --heads prints only `repo=sha` lines — the values `review approve --commit` takes.",
+    )
+    .option("--heads", "print only one repo=sha line per write repo", false)
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const d = wg.ticketDiff(wg.resolveTicket(ref).id);
+      if (opts.heads) {
+        for (const r of d.repos) if (r.headSha) process.stdout.write(`${r.repo}=${r.headSha}\n`);
+      } else {
+        printJson(d);
+      }
+      wg.db.close();
+    });
+
+  ticket
+    .command("landing <ref>")
+    .description(
+      "PER-REPOSITORY LANDING: each write repo's approved commit and whether it has landed. " +
+        "A ticket is done only when every approved revision has landed.",
+    )
+    .action((ref, _opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      printJson({ ok: true, ...wg.landingStatus(ref) });
+      wg.db.close();
+    });
+
+  ticket
+    .command("record-landing <ref>")
+    .description(
+      "PER-REPOSITORY LANDING: record that one write repo's approved commit reached its " +
+        "default branch (the merge paths call this per repo). System/admin only; idempotent.",
+    )
+    .requiredOption("--repo <repo>", "repo name or id")
+    .requiredOption("--commit <sha>", "the approved commit that landed")
+    .option(
+      "--via <how>",
+      "local | git-verified (checked against the default branch) | pr | pr-stale (upstream)",
+    )
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.recordLanding(
+        ref,
+        { repo: String(opts.repo), commit: String(opts.commit), via: opts.via },
+        actor,
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("dossier <ref>")
     .description(
       "DELIVERY-DOSSIER: assemble the tamper-evident evidence artifact for a " +

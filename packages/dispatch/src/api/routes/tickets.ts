@@ -10,6 +10,7 @@ import type { MergeRunner } from "../mergeRunner.js";
 import {
   addAcBody,
   addTicketDependencyBody,
+  approveReviewBody,
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
@@ -274,7 +275,14 @@ export async function routeTickets(
   if (segments.length === 4 && sub === TICKET_SUB.REVIEW && method === "POST") {
     const action = segments[3] as string;
     if (action === "approve") {
-      const result = wg.approveReview(id, apiActor());
+      // STALE REVISION (external review #2): the approval names the commit(s) the Review
+      // view rendered; the service refuses with 409 stale_revision when a branch moved
+      // since, and 409 revision_required when no commit was named.
+      const body = approveReviewBody.parse(await readJsonBody(req));
+      const result = wg.approveReview(id, apiActor(), {
+        commits: (body.commits ?? []).map((c) => ({ repo: c.repo ?? null, sha: c.sha })),
+        requireCommits: true,
+      });
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on
       // approval") is ON, fire the configured merge command (fire-and-forget; logged,

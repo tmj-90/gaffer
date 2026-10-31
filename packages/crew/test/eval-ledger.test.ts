@@ -71,7 +71,7 @@ describe("summarize", () => {
     expect(s.dimensionMeans.minimalism).toBeUndefined();
   });
 
-  it("MEMORY LIFT: mean score with memory minus without", () => {
+  it("memory score gap: mean judge score with memory primed minus without", () => {
     const s = summarize([
       rec({ memoryPresent: true, score: 5 }),
       rec({ memoryPresent: true, score: 4 }),
@@ -80,7 +80,22 @@ describe("summarize", () => {
     ]);
     expect(s.memoryLift.withMemory).toEqual({ count: 2, meanScore: 4.5 });
     expect(s.memoryLift.withoutMemory).toEqual({ count: 2, meanScore: 2.5 });
-    expect(s.memoryLift.lift).toBe(2); // memory is worth +2.0 here
+    expect(s.memoryLift.lift).toBe(2); // a +2.0 score GAP between the arms (not a cause)
+  });
+
+  it("the gap says what it is: judge score on submitted work, sample, exclusion, no matched number", () => {
+    const s = summarize([
+      rec({ ticketId: "t1", memoryPresent: true, score: 5 }),
+      rec({ ticketId: "t1", memoryPresent: true, score: 4 }),
+      rec({ ticketId: "t2", memoryPresent: false, score: 3 }),
+    ]);
+    expect(s.memoryLift.measure).toBe("judge_score_gap_on_submitted_work");
+    expect(s.memoryLift.label).toMatch(/submitted work/);
+    expect(s.memoryLift.label).toMatch(/not an uplift/);
+    expect(s.memoryLift.sample).toEqual({ withMemory: 2, withoutMemory: 1, distinctTickets: 2 });
+    expect(s.memoryLift.excludes).toMatch(/failed before submission/);
+    expect(s.memoryLift.matched).toBeNull();
+    expect(s.memoryLift.matchedReason).toMatch(/SAME tickets with and without memory/);
   });
 
   it("lift is null when one side has no data (not a fake 0)", () => {
@@ -190,7 +205,7 @@ describe("evalLedgerCli", () => {
     expect(unk?.costUsd).toBeUndefined();
   });
 
-  it("renderSummary parses a ledger and surfaces the memory-lift block", () => {
+  it("renderSummary parses a ledger and surfaces the memory score gap block", () => {
     const jsonl = [
       formatRecord(rec({ memoryPresent: true, score: 5 })),
       formatRecord(rec({ memoryPresent: false, score: 3 })),

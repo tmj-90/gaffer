@@ -88,6 +88,9 @@ wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --l
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
 new_ticket() { local n; n="$(wg ticket create -t "$1" -d "$2" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "helper added" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; printf '%s' "$n"; }
+# STALE REVISION: an approval names the commit(s) it reviewed — the heads `ticket diff`
+# reports, exactly what the dashboard sends.
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 branch_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.branch_name || ""'; }
 LOGF="$GAFFER_DATA/factory.log"
 
@@ -99,7 +102,7 @@ AUTO_MERGE=0 run_tick >/dev/null
 AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$DEP")" = "ready" ] && ok "A: dependent #$DEP is NOT deliverable while #$A is unmerged (the edge is real)" || fail "A: dependent status=$(st "$DEP") before the merge — the dependency edge did not hold"
 BA="$(branch_of "$A")"; [ -n "$BA" ] && ok "A: delivery branch recorded ($BA)" || fail "A: no branch_name recorded"
-wg review approve "$A" --reviewer human1 >/dev/null 2>&1
+wg review approve "$A" $(approve_heads "$A") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$A")" = "ready_for_merge" ] && ok "A: human approve → ready_for_merge (nobody has merged yet)" || fail "A: after approve status=$(st "$A")"
 MAIN0="$(git -C "$R" rev-parse main)"
 OUT="$(GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick)"
@@ -117,7 +120,7 @@ grep -q '^TICK_RESULT=worked$' <<<"$OUT" && ok "A: the tick still reports its de
 
 echo "== B. supervised: the merge gate holds; logged once per run; loop.sh resets the skip file =="
 B="$(new_ticket "Held helper" "deliver a helper")"; wg ticket ready "$B" >/dev/null 2>&1
-AUTO_MERGE=0 run_tick >/dev/null; wg review approve "$B" --reviewer human1 >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null; wg review approve "$B" $(approve_heads "$B") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$B")" = "ready_for_merge" ] && ok "B: #$B human-approved → ready_for_merge" || fail "B: status=$(st "$B")"
 AUTO_MERGE=0 GAFFER_MODE=supervised run_tick >/dev/null
 [ "$(st "$B")" = "ready_for_merge" ] && ok "B: supervised → NOT merged (held for a human)" || fail "B: status=$(st "$B")"
@@ -136,7 +139,7 @@ GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGEN
 
 echo "== C. GAFFER_MERGE_LANE=0 disables the lane =="
 C="$(new_ticket "Lane-off helper" "deliver a helper")"; wg ticket ready "$C" >/dev/null 2>&1
-AUTO_MERGE=0 run_tick >/dev/null; wg review approve "$C" --reviewer human1 >/dev/null 2>&1
+AUTO_MERGE=0 run_tick >/dev/null; wg review approve "$C" $(approve_heads "$C") --reviewer human1 >/dev/null 2>&1
 GAFFER_MERGE_LANE=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$C")" = "ready_for_merge" ] && ok "C: lane off → #$C stays ready_for_merge" || fail "C: status=$(st "$C")"
 grep -q "MERGE: #$C" "$LOGF" && fail "C: lane logged with the switch off" || ok "C: lane silent with the switch off"
@@ -149,7 +152,7 @@ AUTO_MERGE=0 run_tick >/dev/null
 BE="$(branch_of "$E")"
 # A sibling lands on main touching the SAME line region (append to src/a.js) → conflict.
 ( cd "$R" && printf 'export function mainSide() { return 3; }\n' >> src/a.js && git -c user.email=t@t -c user.name=t commit -qam "feat: mainSide" )
-wg review approve "$E" --reviewer human1 >/dev/null 2>&1
+wg review approve "$E" $(approve_heads "$E") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$E")" = "ready_for_merge" ] && ok "E: human approve → ready_for_merge" || fail "E: after approve status=$(st "$E")"
 MAIN_E="$(git -C "$R" rev-parse main)"
 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 GAFFER_MERGE_TIMEOUT_MS=60000 run_tick >/dev/null
@@ -164,7 +167,7 @@ grep -q '"kind":"merge-resolver"' "$GAFFER_DATA/usage-ledger.jsonl" 2>/dev/null 
 # SAME RUN: a resolved conflict must not sit in the run's held file (it did, live: the
 # re-approved ticket waited at ready_for_merge until the next run).
 grep -qx "$E" "$GAFFER_DATA/.merge-held-tickets" 2>/dev/null && fail "E: a resolved conflict was added to .merge-held-tickets (would not land this run)" || ok "E: resolved ticket is NOT held for the run"
-wg review approve "$E" --reviewer human1 >/dev/null 2>&1
+wg review approve "$E" $(approve_heads "$E") --reviewer human1 >/dev/null 2>&1
 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$E")" = "done" ] && ok "E: re-approved resolved branch lands → done" || fail "E: status=$(st "$E") after re-approval"
 _ME="$(git -C "$R" show main:src/a.js)"; [[ "$_ME" == *"helper$E"* ]] && [[ "$_ME" == *"mainSide"* ]] && ok "E: main carries BOTH sides after the landing" || fail "E: main lost a side: $(printf '%s' "$_ME" | tr '\n' '|')"
@@ -173,7 +176,7 @@ echo "== F. a SECOND conflict for a ticket that already had its resolver pass is
 F="$(new_ticket "Twice-conflicting helper" "deliver a helper")"; wg ticket ready "$F" >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null; BF="$(branch_of "$F")"
 ( cd "$R" && printf 'export function mainSide2() { return 4; }\n' >> src/a.js && git -c user.email=t@t -c user.name=t commit -qam "feat: mainSide2" )
-wg review approve "$F" --reviewer human1 >/dev/null 2>&1
+wg review approve "$F" $(approve_heads "$F") --reviewer human1 >/dev/null 2>&1
 echo "$F" >> "$GAFFER_DATA/.merge-conflict-resolved"   # pretend a resolver pass already happened
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
@@ -184,7 +187,7 @@ grep -q "MERGE: #$F approved but merge hit a CONFLICT — left on $BF for a huma
 G="$(new_ticket "Lane-off conflicting helper" "deliver a helper")"; wg ticket ready "$G" >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null
 ( cd "$R" && printf 'export function mainSide3() { return 5; }\n' >> src/a.js && git -c user.email=t@t -c user.name=t commit -qam "feat: mainSide3" )
-wg review approve "$G" --reviewer human1 >/dev/null 2>&1; rm -f "$GAFFER_DATA/.merge-held-tickets"
+wg review approve "$G" $(approve_heads "$G") --reviewer human1 >/dev/null 2>&1; rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_CONFLICT_RESOLVER=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$G")" = "ready_for_merge" ] && grep -q "MERGE: #$G conflict — the resolver lane is off" "$LOGF" && ok "F: GAFFER_CONFLICT_RESOLVER=0 → held, resolver never spawned" || fail "F: lane-off status=$(st "$G")"
 [ "$(resolver_turns "$G")" = "0" ] && ok "F: lane off spawned no resolver for #$G" || fail "F: resolver turns for #$G = $(resolver_turns "$G")"
@@ -195,7 +198,7 @@ echo "== G. AUTO_MERGE alone ('Auto-merge on approval') lands a HUMAN approval; 
 # `gaffer approve` under AUTO_MERGE=1 alone was logged "NOT permitted by policy" and sat.
 H="$(new_ticket "Human-approved helper" "deliver a helper")"; wg ticket ready "$H" >/dev/null 2>&1
 AUTO_MERGE=0 run_tick >/dev/null; BH="$(branch_of "$H")"
-wg review approve "$H" --reviewer human1 >/dev/null 2>&1
+wg review approve "$H" $(approve_heads "$H") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$H")" = "ready_for_merge" ] && ok "G: #$H human-approved → ready_for_merge" || fail "G: status=$(st "$H")"
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_MODE=supervised REVIEW_MODE=human AUTO_MERGE=1 MERGE_ON_AGENT_REVIEW=0 DISPATCH_ALLOW_AGENT_APPROVE=0 GAFFER_STRICT_REQUIRE=0 run_tick >/dev/null

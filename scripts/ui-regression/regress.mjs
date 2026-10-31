@@ -9,6 +9,7 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
+import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -625,6 +626,51 @@ try {
     await sleep(300);
   }
 
+  // ── 5b. STALE REVISION (external review #2): the diff names the commit it shows; a
+  //        commit pushed to the branch after the render makes Approve refuse (409
+  //        stale_revision), the view say the change moved, and reload the new diff.
+  {
+    const d = (await api("GET", `/tickets/${ticket.id}/diff`)).json;
+    const rd = (d?.repos || []).find((r) => r.headSha);
+    rd
+      ? ok(`diff endpoint names the commit it rendered (${rd.repo} @ ${rd.headSha.slice(0, 12)})`)
+      : bad("diff endpoint returned no headSha");
+    const repoPath = REPO_PATH;
+    if (rd && repoPath && rd.branch) {
+      const g = (...a) =>
+        execFileSync("git", ["-C", repoPath, "-c", "user.name=ui", "-c", "user.email=ui@x", ...a], {
+          encoding: "utf8",
+        }).trim();
+      // Advance the delivery branch WITHOUT touching the live checkout (a commit-tree on
+      // the branch tip's tree, then update-ref), so the next approval is stale.
+      const tip = g("rev-parse", `refs/heads/${rd.branch}`);
+      const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
+      g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
+      const btn = page
+        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
+        .first();
+      await waitFor(
+        async () => (!(await btn.isDisabled()) ? true : null),
+        "approve enabled",
+        30000,
+        500,
+      );
+      await btn.click();
+      await btn.click();
+      const banner = await page
+        .waitForSelector(".diff-moved-banner", { timeout: 15000 })
+        .catch(() => null);
+      banner
+        ? ok("Review: a stale approval is refused and the view says the change moved")
+        : bad("Review: no 'the change moved' banner after a stale approval");
+      const still = (await api("GET", `/tickets/${ticket.id}`)).json.ticket;
+      still?.status === "in_review"
+        ? ok("Review: the stale approval approved nothing (still in review)")
+        : bad(`Review: stale approval moved the ticket to ${still?.status}`);
+      await shot(page, "review-stale-revision");
+    } else note("stale-revision step skipped: no REPO_PATH / head to advance");
+  }
+
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
   // stream while the diff loads, and a handle taken before that detaches
   // ("Element is not attached to the DOM"). A locator re-resolves on every action.
@@ -764,6 +810,41 @@ try {
     whoJson && whoJson.capability === "read" && whoJson.actor && whoJson.actor.id === "ci-reviewer"
       ? ok("API: the minted token authenticates as principal ci-reviewer (read)")
       : bad(`API: minted token whoami unexpected: ${who.status} ${JSON.stringify(whoJson)}`);
+    // External review #5: a webhook URL is a secret — a read principal sees only whether
+    // it is set and its host, and cannot read it back.
+    {
+      await api("POST", "/api/settings", {
+        settings: { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
+      });
+      const asRead = await fetch(`${BASE}/api/settings`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      const txt = asRead.ok ? await asRead.text() : "";
+      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
+        ? ok("API: a read principal sees a webhook as configured + host only")
+        : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
+      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      back.status === 403
+        ? ok("API: a read principal is refused the secret read-back (403)")
+        : bad(`API: secret read-back answered ${back.status} to a read principal`);
+      // The page is already on #/settings, so a goto to the same hash would not re-render
+      // it: reload to read the settings as saved by the POST above.
+      await page.reload({ waitUntil: "load" });
+      await page
+        .waitForSelector("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret", { timeout: 5000 })
+        .catch(() => {});
+      await sleep(400);
+      const maskedTxt =
+        (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
+        "";
+      maskedTxt.includes("hooks.slack.com") && !maskedTxt.includes("SECRET")
+        ? ok("Settings: the Slack webhook shows masked (set · host) with Replace")
+        : bad(`Settings: the webhook field is not masked: '${maskedTxt.slice(0, 80)}'`);
+      await shot(page, "settings-secret-masked");
+      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY_SLACK_URL: "" } });
+    }
     const denied = await fetch(`${BASE}/tickets`, {
       method: "POST",
       headers: { Authorization: `Bearer ${minted}`, "content-type": "application/json" },

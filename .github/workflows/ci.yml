@@ -119,6 +119,13 @@ jobs:
       - name: Node floor admits every locked dependency
         run: node scripts/check-engines.mjs
 
+      # The Docker build context is an allow-list (.dockerignore). Evaluated with Docker's
+      # matching rules against the tree AND a list of hostile probe paths: fails when
+      # repos/, a .env, a *.sqlite, .gaffer/, .git/ or node_modules/ would enter the
+      # image, or when a build input (manifests, lockfile, packages, runner) would not.
+      - name: Docker build context holds only build inputs
+        run: node scripts/docker-context-check.mjs
+
       # Build first: cross-package imports (e.g. crew's tests import the `dispatch`
       # workspace package) resolve against each package's built dist/*.d.ts, so the
       # typecheck steps must run after the build.

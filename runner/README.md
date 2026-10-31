@@ -235,6 +235,23 @@ rejected delivery's worktree is torn down; its commits live on the ephemeral
 branch and never merge. The isolation is physical (the OS enforces it), not
 trust-based.
 
+**Leftover worktrees are removed on positive evidence only.** At the start and end of a
+run `loop.sh` sweeps worktrees a killed worker left behind (`lib/orphan-recovery.sh`).
+A worktree whose ticket status cannot be read (Dispatch down, a missing database, a
+timeout, an unknown ticket) is **kept** and named ("worktree preserved: … status is
+UNKNOWN"); a claimed, in-progress or paused ticket's worktree is kept; every other
+non-terminal ticket's worktree (draft, ready, blocked, in review, in testing, ready for
+merge) is kept and named too, even when `git status` shows it clean, because that check
+cannot see gitignored files such as a local `.env`. Only a definite terminal status
+(`done` / `failed` / `cancelled`) from a successful read removes a worktree; a ticket
+delivered again clears its own stale worktree first. `--dry-run` removes nothing and
+says what it would remove.
+
+**A dry run changes nothing, on the resume path too.** A `--dry-run` tick that finds a
+paused ticket whose Continue was pressed logs "DRY_RUN: would resume paused #N …" and
+stops before `resume-begin`: no lease is taken, the ticket stays `paused`, and the
+resume request stays queued for the next live tick (`runner/test/resume-dry-run.test.sh`).
+
 ## Model tiering
 
 Planning and implementation run on different models, configured in
@@ -275,7 +292,24 @@ without a restart, and the dashboard launched by `gaffer dashboard` shows its ow
 defaults as editable, not env-locked. The day caps (`MAX_TICKS_PER_DAY`,
 `GAFFER_DAILY_BUDGET_USD`) are re-read from the current config by `loop.sh` and every
 pool `worker.sh` before each admission (`gaffer_refresh_day_caps`, lib/budget.sh), so
-lowering one stops a running loop at its next tick; a cap that cannot be re-read
+lowering one stops a running loop at its next tick. **Every paid launch is admitted on
+its own, immediately before it spawns**: `lib/budget-admission.mjs` checks the daily
+(`GAFFER_DAILY_BUDGET_USD`) and lifetime (`GAFFER_BUDGET_USD`) caps against the usage
+ledger as it stands (env first, else `settings.json`; an unreadable ledger or
+settings file with a cap set refuses). It reads the ledger the writer appends to (one
+resolver, `lib/usage-ledger-path.mjs`: a relative `GAFFER_USAGE_LEDGER` lives under
+`GAFFER_DATA`), and with a cap set a ledger that is turned off
+(`GAFFER_USAGE_LEDGER=0`/`off`) or has no location refuses too: nothing would be booked
+against the cap. Both worker seams ask it — `lib/worker.sh`
+`worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
+`gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
+for Plan a build, product owner for Suggest work, onboarding analysis, the merge
+resolver; status 77) — as do `bin/spec-author.mjs` before its own spawn and the
+ambiguous-sibling inherit classifier (`lib/greenfield.sh` `_gaffer_inherit_amb_spawn`,
+kind `inherit`, after a bootstrap), which on a refusal leaves the link for a human. If
+`lib/budget.sh` was not sourced, both shell callers load it; a check that still cannot be
+asked refuses the launch. A refused
+launch spawns nothing and books nothing (`runner/test/paid-launch-admission.test.sh`); a cap that cannot be re-read
 stops the run (fail closed). A `settings.json` that exists but does not parse as a
 flat JSON object (a hand edit, a truncated copy), or that cannot be read because
 `node` is missing, never drops a cap to its default: the re-source keeps the
@@ -311,6 +345,18 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
   is applied yet.
+- **Per-repository landing.** A ticket with write access to several repositories lands
+  one merge per repository: `lib/land.sh` (the merge lane and the review pass) and
+  `bin/merge-ticket.mjs` (the dashboard's Merge, `gaffer merge`) walk the ticket's approved
+  revisions (`wg ticket landing <n>`: one review pin per repo), land each pinned commit
+  (`lib/tester-binding.mjs --repo-id`; a secondary repo lands only its pinned commit), and
+  record it (`wg ticket record-landing`, which refuses a local landing unless git shows
+  the pinned commit on the repo's default branch; the safety hook denies it to agents,
+  like `mark-merged`). `mark-merged` is refused until every approved
+  revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
+  in the human queue) with its branches kept, and a retry skips the repos that already
+  landed (`already-landed`) instead of merging them again. A secondary repo that conflicts
+  is held for a human; the resolver runs for the primary repo only.
 - **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
   spawns the resolver agent once, in a throwaway worktree of the delivery branch, then
   **re-gates** the committed resolution with `bin/dod-regate.sh` — no conflict markers

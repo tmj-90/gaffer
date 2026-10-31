@@ -236,13 +236,26 @@ structural barrier the whole design hangs on.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.
-- **Your approval is bound to the commit you read.** Approving (the dashboard,
-  `gaffer approve`, `wg review approve`) pins the delivery branch's head as the
-  reviewed commit, exactly as the factory's own agent review does; every landing
+- **Your approval is bound to the commit you read.** The diff names the commit it
+  shows for each repository, and Approve sends those commits back. If a branch moved
+  between the diff loading and your click, the approval is **refused** (`409
+  stale_revision`): nothing is approved, the Review view says the change moved and
+  reloads the new diff. `wg review approve` takes `--commit <repo>=<sha>` (the values
+  `wg ticket diff <n> --heads` prints), and `gaffer approve` shows the commits and asks
+  before approving them; the factory's own agent review names the commit its reviewer
+  judged and follows the same rule (a multi-repo ticket, whose other repositories the
+  reviewer did not read, waits for you). The approval pins each repository's commit
+  as the reviewed commit; every landing
   path (the Merge button, `gaffer merge`, the runner's merge lane) merges only
   that commit and **holds** a branch that moved past it ("moved since the review
   approved it") until it is re-reviewed. A tester PASS of a commit nobody
   reviewed holds the same way.
+- **A ticket that spans several repositories is done when every one landed.** Each
+  repository's approved commit is merged and recorded separately; the ticket only
+  becomes *done* once all of them are on their default branches. If one lands and
+  another cannot (a conflict, a dirty checkout), the ticket stays in *Ready for merge*
+  and shows as **Partly merged** in what needs you, naming which repositories landed;
+  the next merge lands only the rest (`wg ticket landing <n>` shows the state).
 - **Approve does not merge unless you ask it to.** With `AUTO_MERGE` off (the
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
@@ -395,10 +408,18 @@ on**:
 | `AUTO_MERGE` | Land a human-approved ticket on the default branch without a second click (off: it waits for Merge now). |
 | `MERGE_ON_AGENT_REVIEW` | Extend `AUTO_MERGE` to approvals made on an agent reviewer's verdict. Needs `AUTO_MERGE` too — alone it merges nothing (the run says so). |
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
-| `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft. |
+| `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
 
 The same panel controls the **idle loops** (background work the factory mines
-between real tickets) and the **planning-debate** depth. Every knob the factory
+between real tickets) and the **planning-debate** depth. Secret-bearing settings —
+the Slack and generic webhook URLs, which are posting authority on their own — are
+never shown back: the panel says whether one is set and names its host, with
+**Replace** and **Remove**; only an admin principal can read the value through the
+API. The **budget caps** (daily and lifetime, in dollars) are checked immediately
+before every paid agent launch — a delivery, a review, Plan a build, Suggest work,
+the tester, onboarding analysis, the merge resolver, the repo classifier that
+links a new app to its sibling tickets — so an exhausted budget starts
+nothing, wherever the work was asked for. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it
 — is listed in the generated [`CONFIG.md`](CONFIG.md).
 

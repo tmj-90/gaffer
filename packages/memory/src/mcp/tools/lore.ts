@@ -290,7 +290,13 @@ export function registerLoreTools(server: McpServer, db: Database): void {
     },
     async (args) => {
       try {
-        const lore = getLore(db, args.id);
+        const found = getLore(db, args.id);
+        // PUBLICATION STATUS (external review #7): in factory context an unapproved
+        // DRAFT does not exist for the agent — not in search, not in duplicate feedback,
+        // and not here by id (an id learned elsewhere must not fetch the text). The
+        // answer is exactly the not-found answer, so it does not even confirm the id.
+        const lore =
+          found && found.status === "draft" && scopeEnforcementActive(process.env) ? null : found;
         // R4 — restricted gate. `search_lore` already env-gates restricted
         // retrieval; without a matching gate here, an agent with an id from
         // a stale audit / CLI output / prior context can bypass the search
@@ -602,7 +608,9 @@ export function registerLoreTools(server: McpServer, db: Database): void {
             repos,
             tags: args.tags,
           },
-          { allowRestricted },
+          // PUBLICATION STATUS (external review #7): in factory context only ACTIVE
+          // records are duplicate candidates — a draft another agent filed is invisible.
+          { allowRestricted, includeDrafts: !scopeEnforcementActive(process.env) },
         );
         sanitised["possibleDuplicateCount"] = possibleDuplicates.length;
         sanitised["restrictedDuplicateCount"] = restrictedDuplicateCount;
@@ -748,6 +756,20 @@ export function registerLoreTools(server: McpServer, db: Database): void {
           }
         }
         const existing = getLore(db, args.existingId, { recordRead: false });
+        // PUBLICATION STATUS (external review #7): a draft is not addressable from a
+        // factory agent — refuse exactly as for an unknown id (no "it is a draft" tell).
+        if (existing && existing.status === "draft" && scopeEnforcementActive(process.env)) {
+          audit({ tool: "report_conflict", request: sanitised, blocked: "draft_not_visible" });
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: `report_conflict failed (unknown_existing_id): reportConflict: existingId '${args.existingId}' not found`,
+              },
+            ],
+          };
+        }
         if (shouldRefuseConflictAgainstRestricted(existing)) {
           audit({
             tool: "report_conflict",

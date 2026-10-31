@@ -6,10 +6,10 @@ import { joinAwkLines, splitAwkRecords } from "./awkText.js";
 // raw output — the failing test name(s) + the assertion/error/stack lines
 // — NOT a blind tail or the framework's summary count line.
 // ---------------------------------------------------------------------
-// PARITY: this is a byte-for-byte port of the awk. The thirteen signal
+// PARITY: this began as a byte-for-byte port of the awk. Its thirteen signal
 // regexes are ported verbatim (same order, same anchors, same case
-// sensitivity). awk `~` is an UNANCHORED partial match, so each pattern is
-// used as-is with RegExp.test() (no added ^/$). The MAX cap, the file-order
+// sensitivity); a fourteenth, TAP `not ok N - name`, was added since. awk
+// `~` is an UNANCHORED partial match, so each pattern is used as-is with RegExp.test() (no added ^/$). The MAX cap, the file-order
 // signal emission, the last-MAX-lines tail fallback for the no-signal case,
 // and the non-blank filtering all mirror the awk END block exactly. Proven
 // byte-identical by runner/test/dod-distill-parity.test.sh.
@@ -33,8 +33,9 @@ import { joinAwkLines, splitAwkRecords } from "./awkText.js";
 // entrypoint (dodDistillCli.ts) is a thin fail-soft latin1 wrapper around it.
 // =====================================================================
 
-// The thirteen signal patterns, ported VERBATIM from the awk `is_signal()`
-// (same order, same regexes) over the latin1 BYTE view (see header). Reused
+// The signal patterns: the thirteen ported VERBATIM from the awk `is_signal()`
+// (same order, same regexes), plus TAP's `not ok N - name` (added after the port:
+// node --test printed no failing test name at all, only its assertion) over the latin1 BYTE view (see header). Reused
 // across lines via RegExp.test(), which does not touch lastIndex for a
 // non-global regex — so they carry no state.
 const SIGNAL_PATTERNS: readonly RegExp[] = [
@@ -51,6 +52,7 @@ const SIGNAL_PATTERNS: readonly RegExp[] = [
   /\[ERROR\]|<<< (FAILURE|ERROR)/, //          maven surefire
   /(^|[ \t])assert/,
   /:[0-9]+:[0-9]+|:[0-9]+\)/, //               file:line stack refs
+  /^[ \t]*not ok [0-9]+ /, //                   TAP (node:test, tape): the failing test's NAME
 ];
 
 // awk `/^[ \t]*$/` — a line that is empty or only spaces/tabs.

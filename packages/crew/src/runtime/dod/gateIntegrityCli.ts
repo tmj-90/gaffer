@@ -40,12 +40,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  baseHasTestFiles,
   collectTestIntegrity,
   extraTestPathRe,
   GATE_RC_NAMES,
   gateScriptNamesOf,
   hasIntegrityFindings,
   hiddenIndexPaths,
+  isGateRcPath,
+  isTestConfigPath,
   resolveGateCommand,
   summarizeIntegrity,
   type ConfigChange,
@@ -130,13 +133,47 @@ function untrackedRcChanges(
   return out;
 }
 
+/**
+ * Test-runner (and rc) config the delivery left on disk but `.gitignore` /
+ * info/exclude keeps out of the auto-commit: vitest/jest read it all the same. An rc
+ * file is flagged on sight; a test-runner config once the base already has tests (as
+ * for a committed one). Ignored directories are listed collapsed, not walked.
+ */
+function ignoredConfigChanges(
+  git: IntegrityGit,
+  base: string,
+  seen: ReadonlySet<string>,
+): ConfigChange[] {
+  const ls = git(["ls-files", "-z", "-o", "-i", "--exclude-standard", "--directory"], {
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (ls.status !== 0) return [];
+  const cands = ls.stdout
+    .split("\0")
+    .filter((p) => p !== "" && !p.endsWith("/") && !seen.has(p) && isTestConfigPath(p));
+  if (cands.length === 0) return [];
+  let hasTests: boolean | null = null;
+  const out: ConfigChange[] = [];
+  for (const p of cands) {
+    if (!isGateRcPath(p)) {
+      hasTests ??= baseHasTestFiles(git, base, extraTestPathRe(process.env.GAFFER_TEST_PATH_RE));
+      if (!hasTests) continue;
+    }
+    out.push({ path: p, change: "added" });
+  }
+  return out;
+}
+
 function withRcOnDisk(
   f: TestIntegrityFindings,
   wt: string,
   git: IntegrityGit,
   base: string,
 ): TestIntegrityFindings {
-  const extra = untrackedRcChanges(wt, git, base, new Set(f.configs.map((c) => c.path)));
+  const seen = new Set(f.configs.map((c) => c.path));
+  const extra = untrackedRcChanges(wt, git, base, seen);
+  for (const c of extra) seen.add(c.path);
+  extra.push(...ignoredConfigChanges(git, base, seen));
   return extra.length ? { ...f, configs: [...f.configs, ...extra] } : f;
 }
 

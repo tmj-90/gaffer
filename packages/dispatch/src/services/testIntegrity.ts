@@ -615,6 +615,48 @@ export function isTestConfigPath(p: string): boolean {
 }
 
 /**
+ * Test-runner config kept in package.json under these top-level keys (jest's
+ * `testPathIgnorePatterns`, mocha's `spec`, ava's `files`, …): the same as editing a
+ * jest.config.js, so a change here is flagged the same way.
+ */
+export const PACKAGE_RUNNER_KEYS = ["jest", "mocha", "ava", "c8", "nyc", "tap"] as const;
+
+/** package.json test-runner keys changed, removed or (once the base has tests) added. Pure. */
+export function changedRunnerConfigKeys(
+  file: string,
+  baseText: string | null,
+  headText: string | null,
+  baseHasTests: boolean,
+): ConfigChange[] {
+  if (baseText === null) return [];
+  const obj = (t: string | null): Record<string, unknown> | null => {
+    if (t === null) return {};
+    try {
+      const v: unknown = JSON.parse(t);
+      return v && typeof v === "object" && !Array.isArray(v)
+        ? (v as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const base = obj(baseText);
+  const head = obj(headText);
+  if (base === null || head === null) return []; // changedGateScripts reports it
+  const out: ConfigChange[] = [];
+  for (const k of PACKAGE_RUNNER_KEYS) {
+    const b = Object.prototype.hasOwnProperty.call(base, k) ? JSON.stringify(base[k]) : undefined;
+    const h = Object.prototype.hasOwnProperty.call(head, k) ? JSON.stringify(head[k]) : undefined;
+    if (b === h) continue;
+    const path = `${file}#${k}`;
+    if (b === undefined) {
+      if (baseHasTests) out.push({ path, change: "added" });
+    } else out.push({ path, change: h === undefined ? "deleted" : "modified" });
+  }
+  return out;
+}
+
+/**
  * Package-manager rc files, at the root or in any package dir. They configure how
  * `npm test` / `pnpm run lint` / `yarn test` / `bun test` RUN — `script-shell=/bin/true`
  * or `node-options=--test-name-pattern=x` in a project `.npmrc` turns every gate into a
@@ -646,11 +688,18 @@ export interface AnalyzeInput {
   readonly gateScriptNames?: readonly string[];
   readonly extraTestPathRe?: RegExp | null;
   readonly incomplete?: readonly string[];
+  /**
+   * Does the BASE already hold test files? Then an ADDED test-runner config can only
+   * narrow what runs (`exclude`, `testPathIgnorePatterns`) and is flagged; a scaffold
+   * with no tests yet adds its first config as a matter of course. Absent ⇒ false.
+   */
+  readonly baseHasTests?: boolean;
 }
 
 /** Classify a base..head change. Pure. */
 export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings {
   const extra = input.extraTestPathRe ?? null;
+  const baseHasTests = input.baseHasTests ?? false;
   const deleted: string[] = [];
   const renamed: Array<{ from: string; to: string }> = [];
   const configs: ConfigChange[] = [];
@@ -662,17 +711,21 @@ export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings
     } else if (s === "R" && e.from !== undefined) {
       if (isTestPath(e.from, extra)) renamed.push({ from: e.from, to: e.path });
       if (isTestConfigPath(e.from)) configs.push({ path: e.from, change: "renamed" });
-      // Renaming a file INTO an rc name is adding that rc file.
-      else if (isGateRcPath(e.path)) configs.push({ path: e.path, change: "added" });
+      // Renaming a file INTO an rc name (or, once the base has tests, a test-runner
+      // config name) is adding that config.
+      else if (isGateRcPath(e.path) || (baseHasTests && isTestConfigPath(e.path)))
+        configs.push({ path: e.path, change: "added" });
     } else if (s === "M" || s === "T") {
       if (isTestConfigPath(e.path)) configs.push({ path: e.path, change: "modified" });
     } else if (s === "A" || s === "C") {
-      if (isGateRcPath(e.path)) configs.push({ path: e.path, change: "added" });
+      if (isGateRcPath(e.path) || (baseHasTests && isTestConfigPath(e.path)))
+        configs.push({ path: e.path, change: "added" });
     }
   }
   const scripts: ScriptChange[] = [];
   for (const pj of input.packageJsons ?? []) {
     scripts.push(...changedGateScripts(pj.file, pj.base, pj.head, input.gateScriptNames ?? []));
+    configs.push(...changedRunnerConfigKeys(pj.file, pj.base, pj.head, baseHasTests));
   }
   return {
     deleted,
@@ -939,6 +992,14 @@ export function collectTestIntegrity(
     };
   });
 
+  // Only an ADDED config (or a package.json, which may gain a runner key) needs to know
+  // whether the base already has tests: skip the tree walk otherwise.
+  const mayAddConfig =
+    packageJsons.length > 0 ||
+    nameStatus.some((e) => {
+      const s = e.status.charAt(0);
+      return (s === "A" || s === "C" || s === "R") && isTestConfigPath(e.path);
+    });
   return analyzeTestIntegrity({
     nameStatus,
     patch: patchText,
@@ -946,7 +1007,26 @@ export function collectTestIntegrity(
     gateScriptNames: opts.gateScriptNames ?? [],
     extraTestPathRe: extra,
     incomplete,
+    baseHasTests: mayAddConfig && baseHasTestFiles(git, base, extra),
   });
+}
+
+/** git's empty tree: the base of a bootstrap delivery (no tests by definition). */
+const EMPTY_TREE_SHAS = new Set([
+  "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+]);
+
+/**
+ * Does `base` hold at least one test file? Fails toward YES (a listing git cannot give
+ * in full counts as having tests), so an added config is flagged rather than waved
+ * through. A bootstrap's empty tree has none.
+ */
+export function baseHasTestFiles(git: IntegrityGit, base: string, extra?: RegExp | null): boolean {
+  if (EMPTY_TREE_SHAS.has(base)) return false;
+  const r = git(["ls-tree", "-r", "-z", "--name-only", base], { maxBuffer: NAMES_MAX });
+  if (r.status !== 0 || r.truncated) return true;
+  return r.stdout.split("\0").some((p) => p !== "" && isTestPath(p, extra ?? null));
 }
 
 // ---------------------------------------------------------------------------

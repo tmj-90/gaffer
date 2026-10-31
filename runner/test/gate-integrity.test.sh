@@ -28,7 +28,9 @@
 #      hides it from a branch-name base but not from the SHA; gaffer_delivery_base_sha.
 #   J  git's switches cannot hide a weakened test: a skip-worktree / assume-unchanged
 #      test changed on disk FLAGs; a .gitattributes `-diff` cannot hide an added skip;
-#      other marker spellings (bracket access, pytestmark, a Go build constraint).
+#      other marker spellings (bracket access, pytestmark, a Go build constraint);
+#      test-runner config ADDED to a repo that has tests (committed, git-ignored on
+#      disk, or a package.json `jest` key) FLAGs.
 #
 # Requires git, node and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash test/gate-integrity.test.sh      (bash 3.2-safe)
@@ -360,6 +362,25 @@ printf "it.skip('y', () => {})\n" >> "$WT/tests/attr.test.js"; commit_wt "skip b
 gates "true" "$(git -C "$WT" rev-parse HEAD~1)"
 [[ "$(col "$(row integrity)" 6)" == *"it.skip in tests/attr.test.js"* ]] \
   && ok "J3 a .gitattributes '-diff' on the tests cannot hide an added skip" || fail "J3 got: $(row integrity)"
+# Test-runner config ADDED to a repo that already has tests can only narrow what runs.
+delivery
+printf 'export default { test: { exclude: ["**/value.test.*"] } }\n' > "$WT/vitest.config.mjs"; commit_wt "add a config"
+gates "true" main
+[[ "$(col "$(row integrity)" 6)" == *"vitest.config.mjs added"* ]] \
+  && ok "J4 an added vitest config on a base that has tests FLAGs" || fail "J4 got: $(row integrity)"
+delivery
+printf 'jest.config.js\n' >> "$(git -C "$WT" rev-parse --git-path info/exclude)"
+printf 'module.exports = { testPathIgnorePatterns: ["value"] }\n' > "$WT/jest.config.js"
+gates "true" main
+[[ "$(col "$(row integrity)" 6)" == *"jest.config.js added"* ]] \
+  && ok "J5 a git-ignored jest config on disk (never committed) FLAGs" || fail "J5 got: $(row integrity)"
+sed -i.bak '/^jest.config.js$/d' "$(git -C "$WT" rev-parse --git-path info/exclude)"; rm -f "$WT/jest.config.js"
+delivery
+printf '{ "name": "fx", "private": true, "scripts": { "test": "sh tests/run.sh", "lint": "true" }, "jest": { "testPathIgnorePatterns": ["value"] } }\n' > "$WT/package.json"
+commit_wt "jest key"
+gates "true" main
+[[ "$(col "$(row integrity)" 6)" == *"package.json#jest added"* ]] \
+  && ok "J6 a jest key added to package.json FLAGs" || fail "J6 got: $(row integrity)"
 marker_case "js bracket"      test/k.test.js        "test['skip']('x', () => {})"           test.skip
 marker_case "pytestmark"      tests/test_mod.py     "pytestmark = pytest.mark.skip"         pytest.mark.skip
 marker_case "go build tag"    pkg/y_test.go         "//go:build ignore"                     "go build constraint"

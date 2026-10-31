@@ -348,6 +348,55 @@ describe("name-status: deletes, renames, config", () => {
     expect(integrityItems(f)).toContain("added package-manager config .npmrc");
   });
 
+  it("flags ADDED test-runner config once the base already has tests (not a greenfield scaffold)", () => {
+    const nameStatus = [
+      { status: "A", path: "vitest.config.mjs" },
+      { status: "A", path: "pkg/jest.config.js" },
+    ];
+    expect(analyzeTestIntegrity({ nameStatus, patch: "", baseHasTests: true }).configs).toEqual([
+      { path: "vitest.config.mjs", change: "added" },
+      { path: "pkg/jest.config.js", change: "added" },
+    ]);
+    // A scaffold with no tests yet adds its runner config as a matter of course.
+    expect(analyzeTestIntegrity({ nameStatus, patch: "", baseHasTests: false }).configs).toEqual(
+      [],
+    );
+  });
+
+  it("flags test-runner config kept in package.json (jest, mocha, ava, c8, nyc, tap keys)", () => {
+    const pj = (o: object) => JSON.stringify({ name: "x", scripts: { test: "jest" }, ...o });
+    const f = analyzeTestIntegrity({
+      nameStatus: [{ status: "M", path: "package.json" }],
+      patch: "",
+      packageJsons: [
+        {
+          file: "package.json",
+          base: pj({ jest: { roots: ["test"] }, mocha: { spec: "test" } }),
+          head: pj({
+            jest: { roots: ["test"], testPathIgnorePatterns: ["a"] },
+            ava: { files: [] },
+          }),
+        },
+      ],
+      baseHasTests: true,
+    });
+    expect(f.configs).toEqual([
+      { path: "package.json#jest", change: "modified" },
+      { path: "package.json#mocha", change: "deleted" },
+      { path: "package.json#ava", change: "added" },
+    ]);
+    // An added key on a base with no tests yet is a scaffold; an unrelated key is ignored.
+    const g = analyzeTestIntegrity({
+      nameStatus: [{ status: "M", path: "package.json" }],
+      patch: "",
+      packageJsons: [
+        { file: "package.json", base: pj({}), head: pj({ jest: {}, version: "2.0.0" }) },
+      ],
+      baseHasTests: false,
+    });
+    expect(g.configs).toEqual([]);
+  });
+
   it("a clean change has no findings and a reassuring summary", () => {
     const f = analyzeTestIntegrity({
       nameStatus: [
@@ -728,6 +777,36 @@ describe("collectTestIntegrity against a real git repo", () => {
     expect(f.deleted).toEqual(["shop/tests.py"]);
     expect(f.markers).toEqual([{ path: "blog/tests.py", marker: "@pytest.mark.skip", line: 4 }]);
     expect(f.configs).toEqual([{ path: ".npmrc", change: "added" }]);
+  });
+
+  it("an added vitest config flags when the base has tests, not in a greenfield repo", () => {
+    dir = mkdtempSync(join(tmpdir(), "gi-"));
+    sh(["init", "-q", "-b", "main"]);
+    writeFileSync(join(dir, "README.md"), "x\n");
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "empty"]);
+    const empty = sh(["rev-parse", "HEAD"]).trim();
+    mkdirSync(join(dir, "test"));
+    writeFileSync(join(dir, "test/a.test.js"), 'test("a", () => {});\n');
+    writeFileSync(join(dir, "vitest.config.mjs"), "export default {};\n");
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "scaffold"]);
+    const scaffold = sh(["rev-parse", "HEAD"]).trim();
+    // A greenfield scaffold adding its first tests and config: nothing to weaken.
+    expect(collectTestIntegrity(git, empty, scaffold).configs).toEqual([]);
+
+    sh(["rm", "-q", "vitest.config.mjs"]);
+    sh(["commit", "-qm", "base with tests"]);
+    const base = sh(["rev-parse", "HEAD"]).trim();
+    writeFileSync(
+      join(dir, "vitest.config.mjs"),
+      'export default { test: { exclude: ["**/a.test.js"] } };\n',
+    );
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "exclude the failing test"]);
+    expect(collectTestIntegrity(git, base, "HEAD").configs).toEqual([
+      { path: "vitest.config.mjs", change: "added" },
+    ]);
   });
 
   it("a .gitattributes that marks the tests binary or -diff cannot hide a skip", () => {

@@ -617,7 +617,10 @@ export class TicketService {
     const input = recordRepoDeliveryInput.parse(raw);
     // GATE INTEGRITY: the base commit is the runner's record of where the delivery was
     // cut; the delivering agent never sets it (its MCP tool does not pass it either).
-    if (input.base_sha !== undefined && actor.type === "agent") {
+    if (
+      (input.base_sha !== undefined || input.base_recut !== undefined) &&
+      actor.type === "agent"
+    ) {
       throw new DispatchError(
         "ACTOR_NOT_PERMITTED",
         "An agent cannot record a delivery's base commit; the runner records it.",
@@ -638,6 +641,22 @@ export class TicketService {
         );
       }
       const existing = this.repoDeliveries.find(ticket.id, repo.id);
+      // GATE INTEGRITY: the base commit is write-once. Replacing a stored one needs the
+      // runner's word that it cut the branch again (`base_recut`); anything else (a retry
+      // re-recording after the agent ran, whose branch tip holds the agent's commits)
+      // is refused, so the scan and the gates keep diffing from where the work started.
+      const replaceBase =
+        input.base_sha !== undefined &&
+        existing?.base_sha != null &&
+        existing.base_sha !== input.base_sha;
+      if (replaceBase && input.base_recut !== true) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Delivery for repo '${repo.name}' already records base ${existing.base_sha!.slice(0, 12)}; ` +
+            "a different base commit replaces it only when the runner cut the branch again (base_recut).",
+          { ticket_id: ticket.id, repo_id: repo.id },
+        );
+      }
       this.repoDeliveries.upsert(
         {
           ticketId: ticket.id,
@@ -645,6 +664,7 @@ export class TicketService {
           branchName: input.branch_name ?? null,
           commitSha: input.commit_sha ?? null,
           baseSha: input.base_sha ?? null,
+          replaceBaseSha: replaceBase,
           prUrl: input.pr_url ?? null,
           status: input.status ?? existing?.status ?? "not_started",
           evidenceRef: input.evidence_ref ?? null,

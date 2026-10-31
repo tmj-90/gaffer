@@ -1900,6 +1900,20 @@ $PRODUCT_CONTEXT_BLOCK}"
   # paid-for commits. A kept branch with commits is logged.
   _BRANCH_CREATED_THIS_TICK=""
   _gaffer_branch_created_here() { grep -qxF -- "$1" <<<"$_BRANCH_CREATED_THIS_TICK"; }
+  # GATE INTEGRITY: the commit each `worktree add -B` cut $WORK_BRANCH at, captured at
+  # the cut (before any agent runs), by repo path: "<path>\t<sha>" lines, the latest cut
+  # last. Reading the branch tip LATER is wrong — on an in-tick retry the tip holds the
+  # previous attempt's commits — so the recorded base comes from here, never the tip.
+  _BRANCH_CUT_SHAS=""
+  _gaffer_note_branch_cut() {
+    local _c
+    _c="$(git -C "$1" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH^{commit}" 2>/dev/null)" || _c=""
+    _BRANCH_CUT_SHAS="$(awk -F'\t' -v p="$1" '$1!=p' <<<"$_BRANCH_CUT_SHAS")"
+    [ -n "$_BRANCH_CUT_SHAS" ] && _BRANCH_CUT_SHAS+=$'\n'
+    [ -n "$_c" ] && _BRANCH_CUT_SHAS+="$1"$'\t'"$_c"$'\n'
+    return 0
+  }
+  _gaffer_branch_cut_sha() { awk -F'\t' -v p="$1" '$1==p{s=$2} END{if(s!="")print s}' <<<"$_BRANCH_CUT_SHAS"; }
   gaffer_cleanup_worktrees() {
     # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
     # tick created it (see BRANCH RETENTION above).
@@ -2026,6 +2040,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       gaffer_link_node_modules "$rpath" "$rwt"
     elif git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
       _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'   # this tick owns the branch (BRANCH RETENTION)
+      _gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY: the cut commit, now
       log "created worktree for ${rname:-repo} ($rpath) at $rwt on branch $WORK_BRANCH off $rbase for #$NUM"
       # GREENFIELD FIRST-RUN: a freshly-bootstrapped repo has a package.json+lockfile
       # but no node_modules, so the symlink below no-ops and the first ticket's test
@@ -2070,32 +2085,39 @@ $PRODUCT_CONTEXT_BLOCK}"
   # not delivery evidence). The DoD gate reads its package.json scripts from that
   # commit and the integrity scans (the runner's row and dispatch's server-side
   # `test-modified`) diff from it — never from the base branch NAME, which the agent
-  # could move from inside its worktree (`git branch -f main HEAD`). A kept or resumed
-  # branch keeps the commit recorded when it was first cut. Fail-soft: an unrecorded
+  # could move from inside its worktree (`git branch -f main HEAD`). The base is the
+  # commit captured when `worktree add -B` cut the branch (_BRANCH_CUT_SHAS); a kept or
+  # resumed branch — and every in-tick retry that did not re-cut — keeps the commit
+  # already known (stored in dispatch, else this tick's earlier pass). A stored base is
+  # write-once: dispatch replaces it only on `--base-recut`. Fail-soft: an unrecorded
   # base still pins this tick's gates; the base branch name is the last resort.
   _DELIV_BASE_SHAS=""
   _gaffer_record_delivery_bases() {
-    local rid rname rpath rbase rwt _created _stored _sha _list
+    local rid rname rpath rbase rwt _cut _prev _stored _sha _list _prev_map _recut
+    _prev_map="$_DELIV_BASE_SHAS"
     _DELIV_BASE_SHAS=""
     _list="$(wg ticket repo-delivery list "$NUM" 2>/dev/null || echo '[]')"
     while IFS=$'\t' read -r rid rname rpath rbase rwt; do
       [ -n "$rpath" ] || continue
       rbase="${rbase:-main}"
-      _created=0; _gaffer_branch_created_here "$rpath" && _created=1
+      _cut="$(_gaffer_branch_cut_sha "$rpath")"
+      _prev="$(awk -F'\t' -v p="$rpath" '$1==p{print $2; exit}' <<<"$_prev_map")"
       _stored="$(printf '%s' "$_list" | RID="$rid" RNAME="$rname" jget '(() => {
         const rows = Array.isArray(d) ? d : [];
         const r = rows.find((x) => (process.env.RID && x.repo_id === process.env.RID) || (process.env.RNAME && x.repo_name === process.env.RNAME));
         return r && typeof r.base_sha === "string" ? r.base_sha : "";
       })()' 2>/dev/null || echo '')"
-      _sha="$(gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_created" "$_stored")"
+      _sha="$(gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_cut" "$_stored" "$_prev")"
       if [ -z "$_sha" ]; then
         log "GATE INTEGRITY: could not resolve the commit $WORK_BRANCH was cut from in ${rname:-repo} ($rpath) for #$NUM — the gates fall back to the base branch $rbase"
         continue
       fi
       _DELIV_BASE_SHAS+="$rpath"$'\t'"$_sha"$'\n'
       [ "$_sha" = "$_stored" ] && continue
-      if wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha" >/dev/null 2>&1; then
-        log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base recorded: $(printf '%s' "$_sha" | cut -c1-12) (off $rbase)"
+      # Only a commit this tick cut the branch at may replace a stored base.
+      _recut=""; [ -n "$_cut" ] && [ "$_sha" = "$_cut" ] && [ -n "$_stored" ] && _recut="--base-recut"
+      if wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha" $_recut >/dev/null 2>&1; then
+        log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base recorded: $(printf '%s' "$_sha" | cut -c1-12) (off $rbase${_recut:+, branch re-cut})"
       else
         log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base $(printf '%s' "$_sha" | cut -c1-12) did not record (non-fatal; this tick's gates still use it)"
       fi
@@ -2561,8 +2583,10 @@ $_trail_q
       # are the starting point for rework. Fall back to -B off base if the branch
       # somehow vanished (defensive — it should always exist).
       if ! git -C "$rpath" worktree add "$rwt" "$WORK_BRANCH" >/dev/null 2>&1; then
-        git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1 \
-          && _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'
+        if git -C "$rpath" worktree add -B "$WORK_BRANCH" "$rwt" "$rbase" >/dev/null 2>&1; then
+          _BRANCH_CREATED_THIS_TICK+="$rpath"$'\n'
+          _gaffer_note_branch_cut "$rpath"        # re-cut off base: a new base commit
+        fi
       fi
       gaffer_link_node_modules "$rpath" "$rwt"
     done <<< "$WT_ROWS"

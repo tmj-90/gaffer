@@ -19,6 +19,11 @@
 #   5. move-base: commits a test.skip, moves `main` onto it (update-ref), commits again. The runner
 #      recorded the base commit before the agent ran, so its integrity row and
 #      dispatch's server-side scan still see the skip, and the auto-approve is held.
+#   6. retry-redirect (2 attempts): attempt 1 rewrites scripts.test and fails; attempt 2
+#      builds on that branch. Its gate still runs the ORIGINAL base script (FAIL,
+#      base-pinned) — the retry never re-records the base from attempt 1's tip.
+#   7. retry-delete (2 attempts): attempt 1 deletes the test and fails; attempt 2 passes.
+#      The integrity row and dispatch still flag the deletion from the original base.
 #
 # Requires node, git, perl and the built dispatch / memory / crew dists; SKIPs otherwise.
 # Run: bash runner/test/gate-integrity-e2e.test.sh   (KEEP=1 keeps the temp dir)
@@ -151,6 +156,63 @@ else
   fail "5: status $(st "$T5") (expected in_review: the skipped test lets DoD pass)"
 fi
 git -C "$R" update-ref refs/heads/main "$MAIN0" >/dev/null 2>&1
+retire "$T5"
+
+# In-tick RETRY: attempt 1 weakens the gate and fails DoD, attempt 2 builds on that
+# branch. The retry must not re-record the base from the branch tip (which now holds
+# attempt 1's commits): the gates and the scan keep judging from the cut commit.
+export GAFFER_MAX_DELIVERY_ATTEMPTS=2 GAFFER_TICK_TIMEOUT=240
+recorded_base() { wg ticket repo-delivery list "$1" 2>/dev/null | jget '(d[0] && d[0].base_sha) || ""'; }
+
+echo "== 6. retry: a scripts.test rewritten in attempt 1 still cannot redirect attempt 2's gate =="
+MAIN6="$(git -C "$R" rev-parse main)"
+T6="$(new_ready "Redirect then retry" "deliver a helper")"
+echo retry-redirect > "$MODE"; run_tick >/dev/null
+[ -e "$CALLS/retried-retry-redirect" ] && grep -qF "delivery for #$T6 — re-invoking agent (attempt 2/2)" "$GAFFER_DATA/factory.log" \
+  && ok "6: (the delivery was retried in the same tick)" || fail "6: no in-tick retry happened"
+[ "$(st "$T6")" != "in_review" ] && ok "6: the broken delivery did NOT reach review (status $(st "$T6"))" \
+  || fail "6: #$T6 reached in_review after a retry on a redirected test script"
+J6="$(dod_json "$T6")"
+[ "$(gate_field "$J6" tests status)" = FAIL ] && [[ "$(gate_field "$J6" tests source)" == base-pinned:*"${MAIN6:0:12}"* ]] \
+  && ok "6: attempt 2's tests gate still ran the ORIGINAL base script (base-pinned from ${MAIN6:0:12}) and FAILED" \
+  || fail "6: evidence: $J6"
+[ "$(gate_field "$J6" integrity status)" = FLAG ] && [[ "$(gate_field "$J6" integrity source)" == "base ${MAIN6:0:12} vs worktree" ]] \
+  && ok "6: attempt 2's integrity row scanned from the original base and FLAGs" || fail "6: integrity: $(gate_field "$J6" integrity status) $(gate_field "$J6" integrity source)"
+[ "$(recorded_base "$T6")" = "$MAIN6" ] && ok "6: the recorded base_sha is still the cut commit after the retry" \
+  || fail "6: recorded base_sha $(recorded_base "$T6") (want $MAIN6)"
+retire "$T6"
+
+echo "== 7. retry: a test deleted in attempt 1 is still flagged after attempt 2 =="
+MAIN7="$(git -C "$R" rev-parse main)"
+T7="$(new_ready "Delete then retry" "deliver a helper")"
+echo retry-delete > "$MODE"; run_tick >/dev/null
+[ -e "$CALLS/retried-retry-delete" ] && grep -qF "delivery for #$T7 — re-invoking agent (attempt 2/2)" "$GAFFER_DATA/factory.log" \
+  && ok "7: (attempt 1 failed DoD and the delivery was retried in the same tick)" || fail "7: no in-tick retry happened"
+[ "$(st "$T7")" = "in_review" ] && ok "7: attempt 2 passed DoD and reached review (where the FLAG holds it for a human)" \
+  || fail "7: status $(st "$T7")"
+J7="$(dod_json "$T7")"
+[ "$(gate_field "$J7" integrity status)" = FLAG ] && [[ "$(gate_field "$J7" integrity note)" == *"deleted 1 test file (test/a.test.js)"* ]] \
+  && [[ "$(gate_field "$J7" integrity source)" == "base ${MAIN7:0:12} vs worktree" ]] \
+  && ok "7: attempt 2's integrity row FLAGs the test attempt 1 deleted, from the original base" \
+  || fail "7: evidence: $J7"
+[ "$(recorded_base "$T7")" = "$MAIN7" ] && ok "7: the recorded base_sha is still the cut commit" \
+  || fail "7: recorded base_sha $(recorded_base "$T7") (want $MAIN7)"
+ANN7="$(cd "$ROOT/packages/dispatch" && node --input-type=module -e '
+  const { Dispatch } = await import("./dist/index.js");
+  const d = Dispatch.open(process.argv[1]);
+  const t = d.resolveTicket(process.argv[2]);
+  const a = d.ticketDiff(t.id).repos.flatMap((r) => r.riskAnnotations).find((x) => x.kind === "test-modified");
+  process.stdout.write(a ? `${a.severity}|${(a.items || []).join(";")}` : "none");
+  d.db.close();
+' "$DISPATCH_DB" "$T7" 2>/dev/null)"
+[[ "$ANN7" == "high|"*"test/a.test.js"* ]] && [[ "$ANN7" != *"no longer contains"* ]] \
+  && ok "7: dispatch's scan names the deleted test (not a rewritten-base excuse)" || fail "7: test-modified annotation: $ANN7"
+if ! grep -E "GATE INTEGRITY: #$T7 .*delivery base recorded" "$GAFFER_DATA/factory.log" | grep -v "${MAIN7:0:12}" >/dev/null; then
+  ok "7: the factory log never recorded a base other than the cut commit"
+else
+  fail "7: a later base was recorded: $(grep -E "GATE INTEGRITY: #$T7 " "$GAFFER_DATA/factory.log")"
+fi
+retire "$T7"
 
 echo
 echo "gate-integrity-e2e: $PASS passed, ${#FAILURES[@]} failed"

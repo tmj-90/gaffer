@@ -340,22 +340,26 @@ gaffer_run_dod_gates() {
 
 # GATE INTEGRITY: the commit a delivery branch was cut from — what the DoD rows pass as
 # base_ref and what tick.sh records on the repo delivery (`--base-sha`) for dispatch's
-# server-side scan. Computed by the RUNNER before the agent runs, so the agent cannot
-# choose it by moving the base branch:
-#   created=1 (this tick cut the branch with `worktree add -B` off the base): the
-#     branch's start point, i.e. its tip right after creation;
-#   otherwise (a kept/resumed branch): the SHA recorded when it was first cut, when it
-#     is still a commit in the repo; else the merge-base of base and branch now.
+# server-side scan. Computed by the RUNNER, never read from the branch tip after an
+# agent has run, so the agent cannot choose it (by moving the base branch, or by being
+# retried on a branch that already holds its commits):
+#   cut-sha given (this tick cut the branch with `worktree add -B` off the base and
+#     captured its start point AT THE CUT): that commit;
+#   otherwise the first known SHA (the one recorded when the branch was first cut, or
+#     this tick's earlier pass) that is still a commit in the repo;
+#   else the merge-base of base and branch now (a legacy row with nothing recorded).
 # Prints a full SHA, or nothing (then the integrity row FLAGs an unresolved base).
-#   gaffer_delivery_base_sha <repo> <base-branch> <work-branch> <created:0|1> [stored-sha]
+#   gaffer_delivery_base_sha <repo> <base-branch> <work-branch> <cut-sha|""> [known-sha...]
 gaffer_delivery_base_sha() {
-  local repo="$1" base="$2" work="$3" created="$4" stored="${5:-}" sha=""
-  if [ "$created" = "1" ]; then
-    sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$work^{commit}" 2>/dev/null)" || sha=""
-  elif [[ "$stored" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
-       && git -C "$repo" cat-file -e "$stored^{commit}" 2>/dev/null; then
-    sha="$stored"
-  else
+  local repo="$1" base="$2" work="$3" cut="$4" sha="" k
+  shift 4 2>/dev/null || shift $#
+  for k in "$cut" "$@"; do
+    if [[ "$k" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+       && git -C "$repo" cat-file -e "$k^{commit}" 2>/dev/null; then
+      sha="$k"; break
+    fi
+  done
+  if [ -z "$sha" ]; then
     sha="$(git -C "$repo" merge-base "$base" "refs/heads/$work" 2>/dev/null)" || sha=""
   fi
   [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && printf '%s\n' "$sha"

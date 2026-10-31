@@ -166,6 +166,39 @@ describe("recording the base commit", () => {
     expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(base);
     d.db.close();
   });
+
+  it("is write-once: a different base is refused unless the runner re-cut the branch", () => {
+    const { base } = repoWithDelivery();
+    const d = Dispatch.open(":memory:");
+    const id = ticketOn(d, base);
+    const repoId = d.listRepoDeliveries(id)[0]!.repo_id;
+    const tip = "d".repeat(40); // e.g. an in-tick retry re-reading the branch tip
+    let code = "";
+    try {
+      d.recordRepoDelivery({ ticket_id: id, repo_id: repoId, base_sha: tip }, human);
+    } catch (e) {
+      code = e instanceof DispatchError ? e.code : String(e);
+    }
+    expect(code).toBe("STATE_CONFLICT");
+    expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(base);
+    // The same base again is a no-op, not a conflict.
+    d.recordRepoDelivery({ ticket_id: id, repo_id: repoId, base_sha: base }, human);
+    expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(base);
+    // An agent can never claim a re-cut.
+    expect(() =>
+      d.recordRepoDelivery(
+        { ticket_id: id, repo_id: repoId, base_sha: tip, base_recut: true },
+        agent,
+      ),
+    ).toThrow(/runner records it/);
+    // The runner cut the branch again from the base: the new cut commit replaces it.
+    d.recordRepoDelivery(
+      { ticket_id: id, repo_id: repoId, base_sha: tip, base_recut: true },
+      human,
+    );
+    expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(tip);
+    d.db.close();
+  });
 });
 
 describe("gate integrity: migration v29→v30", () => {

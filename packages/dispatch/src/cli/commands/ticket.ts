@@ -592,6 +592,10 @@ export function registerTicket(program: Command): void {
       "--base-sha <sha>",
       "the commit the delivery branch was cut from (the runner records it; the gate-integrity scan diffs from it)",
     )
+    .option(
+      "--base-recut",
+      "with --base-sha: the runner cut the branch again from the base, so the new base replaces the stored one (a stored base is otherwise write-once)",
+    )
     .option("--pr <url>", "pull-request url")
     .option("--status <status>", "delivery status")
     .option("--evidence <ref>", "evidence reference")
@@ -604,6 +608,7 @@ export function registerTicket(program: Command): void {
           branch_name: opts.branch,
           commit_sha: opts.commit,
           base_sha: opts.baseSha,
+          ...(opts.baseRecut ? { base_recut: true } : {}),
           pr_url: opts.pr,
           status: opts.status,
           evidence_ref: opts.evidence,

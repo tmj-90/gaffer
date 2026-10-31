@@ -303,19 +303,31 @@ gates "true" "$(printf 'f%.0s' $(seq 1 40))"
 [ "$(col "$(row integrity)" 4)" = FLAG ] && [[ "$(col "$(row tests)" 7)" == unresolved:* ]] \
   && ok "I3 a recorded SHA that is not a commit: unresolved, integrity FLAGs" || fail "I3 got: $(cat "$RES")"
 git -C "$R" branch -q fresh main
-[ "$(gaffer_delivery_base_sha "$R" main fresh 1)" = "$MAIN0" ] \
-  && ok "I4 a branch cut this tick: its start point" || fail "I4 got: $(gaffer_delivery_base_sha "$R" main fresh 1)"
+CUT="$(git -C "$R" rev-parse fresh)"      # captured at the cut, before any agent commit
+[ "$(gaffer_delivery_base_sha "$R" main fresh "$CUT")" = "$MAIN0" ] \
+  && ok "I4 a branch cut this tick: the start point captured at the cut" || fail "I4 got: $(gaffer_delivery_base_sha "$R" main fresh "$CUT")"
 OLD="$(git -C "$R" rev-parse main~0)"
 ( cd "$R" && git checkout -q fresh && printf 'x\n' > f.txt && git add f.txt && git commit -qm f && git checkout -q main )
+[ "$(gaffer_delivery_base_sha "$R" main fresh "$CUT" "$(git -C "$R" rev-parse fresh)")" = "$CUT" ] \
+  && ok "I4b an in-tick retry: the tip now holds the agent's commit, the base is still the cut commit" \
+  || fail "I4b got: $(gaffer_delivery_base_sha "$R" main fresh "$CUT" "$(git -C "$R" rev-parse fresh)")"
 git -C "$R" update-ref refs/heads/main "$(git -C "$R" rev-parse fresh)"   # main moved onto the branch
-[ "$(gaffer_delivery_base_sha "$R" main fresh 0 "$OLD")" = "$OLD" ] \
+[ "$(gaffer_delivery_base_sha "$R" main fresh "" "$OLD")" = "$OLD" ] \
   && ok "I5 a kept branch keeps the base recorded when it was cut, whatever main now says" \
-  || fail "I5 got: $(gaffer_delivery_base_sha "$R" main fresh 0 "$OLD")"
-[ "$(gaffer_delivery_base_sha "$R" main fresh 0 "not-a-sha")" = "$(git -C "$R" rev-parse fresh)" ] \
+  || fail "I5 got: $(gaffer_delivery_base_sha "$R" main fresh "" "$OLD")"
+[ "$(gaffer_delivery_base_sha "$R" main fresh "" "" "$OLD")" = "$OLD" ] \
+  && ok "I5b nothing stored in dispatch: this tick's earlier pass is kept, not the moved main" \
+  || fail "I5b got: $(gaffer_delivery_base_sha "$R" main fresh "" "" "$OLD")"
+[ "$(gaffer_delivery_base_sha "$R" main fresh "" "not-a-sha")" = "$(git -C "$R" rev-parse fresh)" ] \
   && ok "I6 no usable stored base: the merge-base now (the legacy answer)" \
-  || fail "I6 got: $(gaffer_delivery_base_sha "$R" main fresh 0 not-a-sha)"
-[ -z "$(gaffer_delivery_base_sha "$R" main no-such-branch 1)" ] && ok "I7 nothing resolvable prints nothing" \
+  || fail "I6 got: $(gaffer_delivery_base_sha "$R" main fresh "" not-a-sha)"
+[ -z "$(gaffer_delivery_base_sha "$R" main no-such-branch "")" ] && ok "I7 nothing resolvable prints nothing" \
   || fail "I7 printed something for a missing branch"
+grep -q '_gaffer_note_branch_cut "$rpath"            # GATE INTEGRITY' "$TICK" \
+  && [ "$(grep -c '_gaffer_note_branch_cut "$rpath"' "$TICK")" -ge 2 ] \
+  && ! grep -q 'gaffer_delivery_base_sha "$rpath" "$rbase" "$WORK_BRANCH" "$_created"' "$TICK" \
+  && ok "I8 tick.sh captures the cut commit at every worktree add -B (first cut and retry re-cut), never a later tip" \
+  || fail "I8 tick.sh does not capture the cut commit at each -B"
 git -C "$R" update-ref refs/heads/main "$MAIN0"
 
 echo

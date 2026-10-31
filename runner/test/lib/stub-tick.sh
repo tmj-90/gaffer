@@ -95,6 +95,34 @@ if [ -e .git ]; then
       git update-ref refs/heads/main HEAD >/dev/null 2>&1  # (`git branch -f` refuses: main is checked out)
       printf 'export function more() { return 3; }\n' >> src/a.js
       git -c user.email=s@s -c user.name=s commit -qam "feat: more" >/dev/null 2>&1; done_json; exit 0 ;;
+    # In-tick RETRY modes (GAFFER_MAX_DELIVERY_ATTEMPTS=2): attempt 1 weakens the gate
+    # and fails DoD; attempt 2 builds on that branch. The gates must still judge the
+    # delivery from the commit the branch was cut at, not attempt 1's tip.
+    retry-redirect)
+      if [ ! -e "$CALLS/retried-$MODE" ]; then
+        touch "$CALLS/retried-$MODE"
+        printf 'export function a() { return 2; }\n' > src/a.js
+        sed -i.bak 's/"test": "node --test"/"test": "node -e 0"/' package.json && rm -f package.json.bak
+        printf 'import test from "node:test";\ntest("smoke", () => { throw new Error("x"); });\n' > test/smoke.test.js
+        git add -A >/dev/null 2>&1
+        git -c user.email=s@s -c user.name=s commit -qm "feat: redirect (attempt 1)" >/dev/null 2>&1
+      else
+        commit "attempt 2"
+      fi
+      done_json; exit 0 ;;
+    retry-delete)
+      if [ ! -e "$CALLS/retried-$MODE" ]; then
+        touch "$CALLS/retried-$MODE"
+        printf 'export function a() { return 2; }\n' > src/a.js
+        git rm -q test/a.test.js >/dev/null 2>&1; mkdir -p test   # (git rm drops the emptied dir)
+        printf 'import test from "node:test";\ntest("smoke", () => { throw new Error("x"); });\n' > test/smoke.test.js
+        git add -A >/dev/null 2>&1
+        git -c user.email=s@s -c user.name=s commit -qm "feat: delete (attempt 1)" >/dev/null 2>&1
+      else
+        printf 'import test from "node:test";\ntest("smoke", () => {});\n' > test/smoke.test.js
+        git -c user.email=s@s -c user.name=s commit -qam "fix: smoke (attempt 2)" >/dev/null 2>&1
+      fi
+      done_json; exit 0 ;;
     *) commit "$MODE"; done_json; exit 0 ;;
   esac
 fi

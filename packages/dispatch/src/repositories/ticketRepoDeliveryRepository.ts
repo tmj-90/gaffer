@@ -12,8 +12,12 @@ export interface TicketRepoDeliveryUpsert {
   repoId: string;
   branchName: string | null;
   commitSha: string | null;
-  /** Omitted/null leaves the stored base_sha untouched. */
+  /**
+   * Fills an empty base_sha. A stored base_sha is write-once: it is replaced only with
+   * `replaceBaseSha` (the runner cut the branch again); omitted/null never touches it.
+   */
   baseSha?: string | null;
+  replaceBaseSha?: boolean;
   prUrl: string | null;
   status: TicketRepoDeliveryStatus;
   evidenceRef: string | null;
@@ -42,7 +46,9 @@ export class TicketRepoDeliveryRepository {
          ON CONFLICT(ticket_id, repo_id) DO UPDATE SET
            branch_name  = COALESCE(excluded.branch_name, branch_name),
            commit_sha   = COALESCE(excluded.commit_sha, commit_sha),
-           base_sha     = COALESCE(excluded.base_sha, base_sha),
+           base_sha     = CASE WHEN @replace_base_sha = 1
+                                THEN COALESCE(excluded.base_sha, base_sha)
+                                ELSE COALESCE(base_sha, excluded.base_sha) END,
            pr_url       = COALESCE(excluded.pr_url, pr_url),
            status       = excluded.status,
            evidence_ref = COALESCE(excluded.evidence_ref, evidence_ref),
@@ -54,6 +60,7 @@ export class TicketRepoDeliveryRepository {
         branch_name: input.branchName,
         commit_sha: input.commitSha,
         base_sha: input.baseSha ?? null,
+        replace_base_sha: input.replaceBaseSha === true ? 1 : 0,
         pr_url: input.prUrl,
         status: input.status,
         evidence_ref: input.evidenceRef,

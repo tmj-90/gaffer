@@ -133,7 +133,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "autonomy",
     label: "Agents may approve reviews",
-    help: "Let an agent actor approve a ticket's review (otherwise human-only).",
+    help:
+      "Let an agent actor approve a ticket's review (otherwise human-only). Off by default; " +
+      "the autonomous, strict and lite modes turn it on.",
   },
   {
     key: "MERGE_ON_AGENT_REVIEW",
@@ -156,7 +158,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Let the memory the runner itself files go live without a human review step: the " +
       "requirement distilled from each delivered ticket, onboarding's induction lore and " +
       "`memory suggest` from the CLI. Lore a delivery agent suggests over MCP always " +
-      "stays a draft for you to approve, whatever this says.",
+      "stays a draft for you to approve, whatever this says. Off by default; the " +
+      "autonomous and strict modes turn it on.",
   },
   {
     key: "GAFFER_TESTING",

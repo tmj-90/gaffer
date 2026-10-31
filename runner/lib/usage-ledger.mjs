@@ -47,6 +47,7 @@ import { isAbsolute, join } from "node:path";
 // importers (tests, decompose.mjs, product-owner-run.mjs) are unchanged.
 import {
   UNKNOWN,
+  detectUsageLimit,
   extractResultText,
   extractUsage,
   numOrUnknown,
@@ -250,12 +251,15 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     numTurns !== UNKNOWN ||
     durationMs !== UNKNOWN;
   if (!hasAnySignal) {
-    return unknownRecord({
-      ts,
-      ticket,
-      kind,
-      reason: reason || "result JSON carried no usage block",
-    });
+    return withUsageLimit(
+      unknownRecord({
+        ts,
+        ticket,
+        kind,
+        reason: reason || "result JSON carried no usage block",
+      }),
+      json,
+    );
   }
 
   // If modelUsage is absent but top-level usage exists, synthesise a single
@@ -275,7 +279,7 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     };
   }
 
-  return {
+  const rec = {
     ts: ts || new Date().toISOString(),
     ticket: ticket ?? null,
     kind: kind || null,
@@ -286,6 +290,16 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     num_turns: numTurns,
     duration_ms: durationMs,
   };
+  return withUsageLimit(rec, json);
+}
+
+// A call the usage window / rate limit refused is labelled on its row (the SAME
+// detectUsageLimit parseResult uses, so the ledger and the scheduler agree). Absent
+// on every ordinary row, so existing rows and readers are unchanged.
+function withUsageLimit(rec, json) {
+  const limit = detectUsageLimit(json);
+  if (limit) rec.usage_limit = limit.kind;
+  return rec;
 }
 
 /**

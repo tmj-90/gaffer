@@ -9422,6 +9422,23 @@ function renderBoardCard(card, laneKey, needs) {
     ]);
   })();
 
+  // In Review, the reviewer agent's ADVISORY verdict: it asked for changes, the
+  // runner may not act on it, so the human sees it here before opening the diff.
+  const advisory = card.advisoryReview
+    ? el(
+        "p",
+        {
+          class: "card-reject card-advisory",
+          title: "The reviewer agent's verdict is advisory: you sign off on Review.",
+        },
+        [
+          el("span", { class: "card-reject-label" }, "Reviewer agent: changes requested —"),
+          " ",
+          card.advisoryReview.reason,
+        ],
+      )
+    : null;
+
   const movable = cardIsMovable(card);
   // Touch/keyboard fallback: "Move" opens the lane menu, so the same moves work
   // one-handed on phones where drag is unreliable. It also carries Won't do….
@@ -9483,6 +9500,7 @@ function renderBoardCard(card, laneKey, needs) {
       meta,
       owner,
       reject,
+      advisory,
       moveBtn || humanLaneBtn ? el("div", { class: "card-foot" }, [moveBtn, humanLaneBtn]) : null,
     ],
   );

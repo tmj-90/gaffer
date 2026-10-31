@@ -199,7 +199,18 @@ export default async function s1(t, L) {
     "the reviewer agent's CHANGES reasoning is recorded on the ticket as evidence (through its MCP record_ac_evidence)",
     "no reviewer evidence mentions the docstring",
   );
-  // The ticket page keeps the reviewer's rows in its Evidence card.
+  // The Work card says the reviewer agent asked for changes (advisory), before the
+  // human opens the diff; the ticket page keeps the reviewer's rows in its Evidence.
+  await t.visit("work");
+  const advLine =
+    (await p
+      .textContent(`.board-card[data-id="${tk.id}"] .card-advisory`, { timeout: 8000 })
+      .catch(() => "")) || "";
+  t.check(
+    /Reviewer agent: changes requested — .*docstring/.test(advLine),
+    `the Work card shows the advisory verdict ("${advLine.slice(0, 90)}")`,
+    `the in_review card shows no advisory verdict: '${advLine}'`,
+  );
   await t.visit(`ticket/${tk.id}`);
   await p
     .locator("details.tk-evidence > summary")

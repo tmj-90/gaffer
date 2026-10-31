@@ -26,6 +26,12 @@ import type { MergeRunner } from "../src/api/mergeRunner.js";
 import type { ProductOwnerRunner } from "../src/api/productOwner.js";
 import type { PlanBuildRunner } from "../src/api/planBuild.js";
 import { TestClock } from "../src/util/clock.js";
+import {
+  type FetchLogEntry,
+  realServerFetch,
+  reviewViewState,
+  waitUntil,
+} from "./helpers/jsdomRealServer.js";
 
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 const human: Actor = { type: "human", id: "tom" };
@@ -115,6 +121,7 @@ function fixture(): Fixture {
 
 const realFetch = globalThis.fetch;
 let closeServer: () => Promise<void> = async () => {};
+let fetchLog: FetchLogEntry[] = [];
 async function serve(d: Dispatch): Promise<void> {
   const po: ProductOwnerRunner = { run: () => ({ started: false, pid: null }) };
   const plan: PlanBuildRunner = { run: async () => ({ phase: "error", error: "n/a" }) };
@@ -133,10 +140,10 @@ async function serve(d: Dispatch): Promise<void> {
         r();
       });
     });
-  // The dashboard's relative API paths go to the real server.
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) =>
-    realFetch(/^https?:/.test(String(input)) ? String(input) : base + String(input), init),
-  );
+  // The dashboard's relative API paths go to the real server (helpers/jsdomRealServer.ts:
+  // JSDOM's AbortSignal kept away from Node's fetch, every request logged).
+  fetchLog = [];
+  vi.stubGlobal("fetch", realServerFetch(base, realFetch, fetchLog).fetch);
 }
 
 async function openReview(f: Fixture): Promise<void> {
@@ -151,10 +158,11 @@ async function openReview(f: Fixture): Promise<void> {
   location.hash = `#/review/${f.id}`;
   await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
   // Settled once the diff (and with it the outcome's line under the button) is on screen.
-  for (let i = 0; i < 80; i++) {
-    await new Promise((r) => setTimeout(r, 25));
-    if (document.querySelector(".signoff-next:not([hidden])")) break;
-  }
+  await waitUntil(
+    () => document.querySelector(".signoff-next:not([hidden])") !== null,
+    "the review settled",
+    () => reviewViewState(fetchLog),
+  );
   expect(document.querySelector(".signoff-next:not([hidden])"), "the review settled").toBeTruthy();
 }
 
@@ -166,125 +174,130 @@ const markedRows = () =>
 const ADVISORY = "Reviewer agent (advisory): changes requested — retry on 5xx is missing";
 const OVERSIZED = "needs_human_review: oversized_diff — 41 files / 1210 lines";
 
-describe("the sign-off's requests for a human are the current round's (real API, real git)", () => {
-  beforeEach(() => {
-    work = mkdtempSync(join(tmpdir(), "rv-asks-round-"));
-    vi.resetModules();
-  });
-  afterEach(async () => {
-    vi.unstubAllGlobals();
-    document.body.innerHTML = "";
-    await closeServer();
-    closeServer = async () => {};
-    delete process.env.GAFFER_TESTING;
-    rmSync(work, { recursive: true, force: true });
-  });
-
-  it("a reviewer's advisory CHANGES from an earlier round is history, not a current ask", async () => {
-    const f = fixture();
-    f.deliver();
-    f.runnerNote(ADVISORY);
-    f.d.rejectReview(f.id, "ready", human, "add the retry");
-    f.deliver(); // the reworked delivery: nobody has reviewed it yet
-    await openReview(f);
-    expect(band()).toBe("");
-    expect(summary()).not.toMatch(/reviewer asked for changes/i);
-    expect(summary()).toContain("Nothing flagged");
-    expect(markedRows()).toEqual([]);
-  });
-
-  it("a reviewer's advisory CHANGES in the current round stands beside the button", async () => {
-    const f = fixture();
-    f.deliver();
-    f.runnerNote(ADVISORY);
-    await openReview(f);
-    expect(band()).toContain("Reviewer asked for changes");
-    expect(band()).toContain("retry on 5xx is missing");
-    expect(summary()).not.toContain("Nothing flagged");
-    expect(markedRows().some((r) => r.includes("Reviewer agent (advisory)"))).toBe(true);
-  });
-
-  it("a runner needs_human_review (recorded as system) from an earlier attempt is not asked again", async () => {
-    const f = fixture();
-    f.deliver(() => f.runnerNote(OVERSIZED));
-    f.d.rejectReview(f.id, "ready", human, "split it up");
-    f.deliver();
-    await openReview(f);
-    expect(band()).toBe("");
-    expect(summary()).toContain("Nothing flagged");
-  });
-
-  it("a runner needs_human_review recorded during THIS attempt (before it entered review) shows", async () => {
-    const f = fixture();
-    f.deliver(() => f.runnerNote(OVERSIZED));
-    await openReview(f);
-    expect(band()).toContain("Runner asks for a human review");
-    expect(band()).toContain("oversized_diff");
-    expect(summary()).not.toContain("Nothing flagged");
-  });
-
-  it("a second attempt's own needs_human_review shows; the first attempt's does not repeat", async () => {
-    const f = fixture();
-    f.deliver(() => f.runnerNote("needs_human_review: missing smallest-change note (first)"));
-    f.d.rejectReview(f.id, "ready", human, "again");
-    f.deliver(() => f.runnerNote(OVERSIZED));
-    await openReview(f);
-    expect(band()).toContain("oversized_diff");
-    expect(band()).not.toContain("(first)");
-    expect(document.querySelectorAll(".signoff-asks-list li")).toHaveLength(1);
-  });
-
-  it("a tester FAIL that sent an earlier candidate back is not a current request", async () => {
-    process.env.GAFFER_TESTING = "1";
-    const f = fixture();
-    f.d.setTestable(f.id, true, human);
-    f.deliver();
-    f.d.approveReview(f.id, human, {
-      commits: [{ repo: null, sha: git(f.dir, "rev-parse", BRANCH) }],
+// A settle may take up to waitUntil's 30 s on a loaded runner: the test's budget covers it.
+describe(
+  "the sign-off's requests for a human are the current round's (real API, real git)",
+  { timeout: 90_000 },
+  () => {
+    beforeEach(() => {
+      work = mkdtempSync(join(tmpdir(), "rv-asks-round-"));
+      vi.resetModules();
     });
-    f.clock.advanceSeconds(5);
-    f.d.testerFail(
-      f.id,
-      { summary: "contract case 3 failed: no retry header", to: "ready" },
-      system,
-    );
-    f.deliver();
-    await openReview(f);
-    expect(band()).toBe("");
-    expect(summary()).not.toMatch(/tester asked for changes/i);
-  });
+    afterEach(async () => {
+      vi.unstubAllGlobals();
+      document.body.innerHTML = "";
+      await closeServer();
+      closeServer = async () => {};
+      delete process.env.GAFFER_TESTING;
+      rmSync(work, { recursive: true, force: true });
+    });
 
-  it("the runner's integrity FLAG on this attempt's DoD record shows", async () => {
-    const f = fixture();
-    f.deliver(() =>
-      f.runnerNote(
-        "DoD: PASS\n" +
-          JSON.stringify({
-            dod: "PASS",
-            gates: [
-              { gate: "tests", repo: "taskflow-api", status: "PASS", rc: 0, note: "pnpm test" },
-              {
-                gate: "integrity",
-                repo: "taskflow-api",
-                status: "FLAG",
-                rc: "-",
-                note: "a git-ignored .npmrc changed",
-              },
-            ],
-          }),
-        "test_output",
-      ),
-    );
-    await openReview(f);
-    expect(band()).toContain("Gate flagged: integrity");
-    expect(summary()).not.toContain("Nothing flagged");
-    // The line under the button points at what is on the page: with a clean diff there
-    // is no test-changes banner (that is the diff's test-modified finding), only the flag.
-    const line = document.querySelector(".signoff-next")?.textContent ?? "";
-    expect(line).toContain("your approval is not held by that");
-    expect(document.querySelector(".integrity-banner")).toBeNull();
-    expect(line).not.toContain("banner");
-    expect(line).toContain("the Flags below");
-    expect(document.querySelector(".rv-flags")?.textContent).toContain("Gate flagged: integrity");
-  });
-});
+    it("a reviewer's advisory CHANGES from an earlier round is history, not a current ask", async () => {
+      const f = fixture();
+      f.deliver();
+      f.runnerNote(ADVISORY);
+      f.d.rejectReview(f.id, "ready", human, "add the retry");
+      f.deliver(); // the reworked delivery: nobody has reviewed it yet
+      await openReview(f);
+      expect(band()).toBe("");
+      expect(summary()).not.toMatch(/reviewer asked for changes/i);
+      expect(summary()).toContain("Nothing flagged");
+      expect(markedRows()).toEqual([]);
+    });
+
+    it("a reviewer's advisory CHANGES in the current round stands beside the button", async () => {
+      const f = fixture();
+      f.deliver();
+      f.runnerNote(ADVISORY);
+      await openReview(f);
+      expect(band()).toContain("Reviewer asked for changes");
+      expect(band()).toContain("retry on 5xx is missing");
+      expect(summary()).not.toContain("Nothing flagged");
+      expect(markedRows().some((r) => r.includes("Reviewer agent (advisory)"))).toBe(true);
+    });
+
+    it("a runner needs_human_review (recorded as system) from an earlier attempt is not asked again", async () => {
+      const f = fixture();
+      f.deliver(() => f.runnerNote(OVERSIZED));
+      f.d.rejectReview(f.id, "ready", human, "split it up");
+      f.deliver();
+      await openReview(f);
+      expect(band()).toBe("");
+      expect(summary()).toContain("Nothing flagged");
+    });
+
+    it("a runner needs_human_review recorded during THIS attempt (before it entered review) shows", async () => {
+      const f = fixture();
+      f.deliver(() => f.runnerNote(OVERSIZED));
+      await openReview(f);
+      expect(band()).toContain("Runner asks for a human review");
+      expect(band()).toContain("oversized_diff");
+      expect(summary()).not.toContain("Nothing flagged");
+    });
+
+    it("a second attempt's own needs_human_review shows; the first attempt's does not repeat", async () => {
+      const f = fixture();
+      f.deliver(() => f.runnerNote("needs_human_review: missing smallest-change note (first)"));
+      f.d.rejectReview(f.id, "ready", human, "again");
+      f.deliver(() => f.runnerNote(OVERSIZED));
+      await openReview(f);
+      expect(band()).toContain("oversized_diff");
+      expect(band()).not.toContain("(first)");
+      expect(document.querySelectorAll(".signoff-asks-list li")).toHaveLength(1);
+    });
+
+    it("a tester FAIL that sent an earlier candidate back is not a current request", async () => {
+      process.env.GAFFER_TESTING = "1";
+      const f = fixture();
+      f.d.setTestable(f.id, true, human);
+      f.deliver();
+      f.d.approveReview(f.id, human, {
+        commits: [{ repo: null, sha: git(f.dir, "rev-parse", BRANCH) }],
+      });
+      f.clock.advanceSeconds(5);
+      f.d.testerFail(
+        f.id,
+        { summary: "contract case 3 failed: no retry header", to: "ready" },
+        system,
+      );
+      f.deliver();
+      await openReview(f);
+      expect(band()).toBe("");
+      expect(summary()).not.toMatch(/tester asked for changes/i);
+    });
+
+    it("the runner's integrity FLAG on this attempt's DoD record shows", async () => {
+      const f = fixture();
+      f.deliver(() =>
+        f.runnerNote(
+          "DoD: PASS\n" +
+            JSON.stringify({
+              dod: "PASS",
+              gates: [
+                { gate: "tests", repo: "taskflow-api", status: "PASS", rc: 0, note: "pnpm test" },
+                {
+                  gate: "integrity",
+                  repo: "taskflow-api",
+                  status: "FLAG",
+                  rc: "-",
+                  note: "a git-ignored .npmrc changed",
+                },
+              ],
+            }),
+          "test_output",
+        ),
+      );
+      await openReview(f);
+      expect(band()).toContain("Gate flagged: integrity");
+      expect(summary()).not.toContain("Nothing flagged");
+      // The line under the button points at what is on the page: with a clean diff there
+      // is no test-changes banner (that is the diff's test-modified finding), only the flag.
+      const line = document.querySelector(".signoff-next")?.textContent ?? "";
+      expect(line).toContain("your approval is not held by that");
+      expect(document.querySelector(".integrity-banner")).toBeNull();
+      expect(line).not.toContain("banner");
+      expect(line).toContain("the Flags below");
+      expect(document.querySelector(".rv-flags")?.textContent).toContain("Gate flagged: integrity");
+    });
+  },
+);

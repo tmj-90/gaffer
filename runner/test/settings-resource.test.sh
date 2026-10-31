@@ -21,6 +21,12 @@
 #      inherited caps (MAX_TICKS_PER_DAY, GAFFER_DAILY_BUDGET_USD, GAFFER_BUDGET_USD —
 #      not the default 50 / OFF), the marker is set, and a running loop (serial and
 #      pool) and the daemon stop instead of admitting against defaults.
+#   7. the file is found and read exactly as the rest of the factory finds it:
+#      an operator GAFFER_HOME with GAFFER_DATA unset reads $GAFFER_HOME/.gaffer
+#      (applied in parent and child; a truncated one sets the marker; a decoy under
+#      the runner checkout's parent is never applied), and content the dashboard's
+#      readSettingsFile accepts — empty, whitespace-only, a UTF-8 BOM — never sets
+#      the marker (a BOM-prefixed file's values are applied).
 # Run: bash test/settings-resource.test.sh   (bash 3.2 safe)
 # =====================================================================
 set -uo pipefail
@@ -265,5 +271,49 @@ ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$D" GAFFER_LOOP_SH="$WORK/l
 [ "$(grep -c '^pass' "$LOG")" = 0 ] && grep -q 'settings.json .* cannot be read — idle' <<<"$ERR" \
   && ok "the daemon runs no pass while settings.json is unreadable, with a notice" \
   || fail "daemon ran $(grep -c '^pass' "$LOG") pass(es): $ERR"
+
+echo "== 7. the file the factory reads: GAFFER_HOME, and what the dashboard accepts =="
+# 7a. GAFFER_HOME set, GAFFER_DATA unset (GAFFER_DATA is derived, not exported, so
+#     every child re-derives it). A fake runner dir (the config symlinked into it, so
+#     BASH_SOURCE's dir is the fake one) puts a DECOY settings.json at
+#     <runner>/../.gaffer — the path the strict read used to look at.
+FAKE="$WORK/fake"; mkdir -p "$FAKE/runner" "$FAKE/.gaffer" "$WORK/home/.gaffer"
+ln -s "$CFG" "$FAKE/runner/factory.config.sh"
+printf '{"MAX_TICKS_PER_DAY":"9","GAFFER_DAILY_BUDGET_USD":"99"}\n' > "$FAKE/.gaffer/settings.json"
+printf '{"MAX_TICKS_PER_DAY":"7","GAFFER_DAILY_BUDGET_USD":"3"}\n' > "$WORK/home/.gaffer/settings.json"
+OUT7="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_HOME="$WORK/home" CFG="$FAKE/runner/factory.config.sh" W="$WORK" BAD="$BAD" bash -c '
+  source "$CFG" >/dev/null 2>&1
+  printf "P:%s|%s|%s|%s\n" "${MAX_TICKS_PER_DAY:-}" "${GAFFER_DAILY_BUDGET_USD:-OFF}" "${GAFFER_DATA:-}" "${_GAFFER_SETTINGS_UNREADABLE:-0}"
+  echo "C:$(bash "$W/capprobe.sh")"
+  printf "%s" "$BAD" > "$GAFFER_HOME/.gaffer/settings.json"
+  echo "B:$(bash "$W/capprobe.sh")"
+')"
+H_P="$(sed -n 's/^P://p' <<<"$OUT7")"; H_C="$(sed -n 's/^C://p' <<<"$OUT7")"; H_B="$(sed -n 's/^B://p' <<<"$OUT7")"
+[ "$H_P" = "7|3|$WORK/home/.gaffer|0" ] && ok "GAFFER_HOME set, GAFFER_DATA unset: the parent applies \$GAFFER_HOME/.gaffer/settings.json (not the decoy)" \
+  || fail "GAFFER_HOME parent: $H_P (want 7|3|$WORK/home/.gaffer|0)"
+[ "$H_C" = "7|3|OFF|0" ] && ok "a child re-source under GAFFER_HOME reads the same file" || fail "GAFFER_HOME child: $H_C (want 7|3|OFF|0)"
+[ "$H_B" = "7|3|OFF|1" ] && ok "a truncated \$GAFFER_HOME/.gaffer/settings.json keeps the caps and sets the marker" \
+  || fail "GAFFER_HOME truncated: $H_B (want 7|3|OFF|1)"
+printf '%s' "$BAD" > "$WORK/home/.gaffer/settings.json"
+H_S="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_HOME="$WORK/home" CFG="$FAKE/runner/factory.config.sh" bash "$WORK/capprobe.sh")"
+[ "$H_S" = "50|OFF|OFF|1" ] && ok "a truncated \$GAFFER_HOME/.gaffer/settings.json at start sets the marker (the decoy is not applied)" \
+  || fail "GAFFER_HOME truncated at start: $H_S (want 50|OFF|OFF|1)"
+
+# 7b. What the dashboard's readSettingsFile accepts, the runner accepts: it trims (which
+#     also drops a UTF-8 BOM) and reads an empty or whitespace-only file as {}.
+E="$WORK/e"; mkdir -p "$E"
+probe_e() { env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$E" CFG="$CFG" bash "$WORK/capprobe.sh"; }
+: > "$E/settings.json"
+[ "$(probe_e)" = "50|OFF|OFF|0" ] && ok "an empty settings.json is {} — no marker, defaults" || fail "empty settings.json: $(probe_e)"
+printf ' \n\t \n' > "$E/settings.json"
+[ "$(probe_e)" = "50|OFF|OFF|0" ] && ok "a whitespace-only settings.json is {} — no marker" || fail "whitespace settings.json: $(probe_e)"
+printf '\357\273\277{"MAX_TICKS_PER_DAY":"7","GAFFER_DAILY_BUDGET_USD":"3"}\n' > "$E/settings.json"
+[ "$(probe_e)" = "7|3|OFF|0" ] && ok "a UTF-8 BOM before valid JSON is applied (7, \$3), no marker" || fail "BOM settings.json: $(probe_e)"
+printf '\357\273\277  \n' > "$E/settings.json"
+[ "$(probe_e)" = "50|OFF|OFF|0" ] && ok "a BOM followed by whitespace only is {} — no marker" || fail "BOM+whitespace settings.json: $(probe_e)"
+printf '\357\273\277{"MAX_TICKS_PER_DAY":"7"' > "$E/settings.json"
+[ "$(probe_e)" = "50|OFF|OFF|1" ] && ok "a BOM followed by truncated JSON is still unreadable (marker set)" || fail "BOM+truncated settings.json: $(probe_e)"
+printf '  "7"  ' > "$E/settings.json"
+[ "$(probe_e)" = "50|OFF|OFF|1" ] && ok "trimmed JSON that is not an object (\"7\") is still unreadable" || fail "string settings.json: $(probe_e)"
 
 echo; [ "${#FAILURES[@]}" -eq 0 ] && echo "settings-resource: ALL $PASS checks passed" || { echo "settings-resource: ${#FAILURES[@]} FAILURE(S)"; exit 1; }

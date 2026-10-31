@@ -150,7 +150,11 @@ flat JSON object (a hand edit, a truncated copy), or that cannot be read because
 inherited values and sets `_GAFFER_SETTINGS_UNREADABLE=1`, a running `loop.sh` / pool
 worker stops with an `ERROR` line naming the file, `gaffer run --daemon` runs no pass,
 and `tick.sh` (setup error) and Poll for work refuse new work until the file parses
-again. The run-shape knobs a loop reads once at start —
+again. The file is read the way the dashboard reads it: it lives at
+`$GAFFER_DATA/settings.json` (default `$GAFFER_HOME/.gaffer`, so an operator-set
+`GAFFER_HOME` is honoured in every process), a leading UTF-8 BOM and surrounding
+whitespace are ignored, and an empty or whitespace-only file means "nothing
+configured" (`{}`), not unreadable. The run-shape knobs a loop reads once at start —
 `MAX_TICKS`, `GAFFER_CONCURRENCY`, `TICK_SLEEP`, `EMPTY_POLL_LIMIT` — apply from the
 next loop pass (the next daemon pass, or the next run).
 

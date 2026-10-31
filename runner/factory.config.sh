@@ -32,13 +32,22 @@
 #     work on it (gaffer_refresh_day_caps → loop.sh / worker.sh stop, the daemon
 #     idles, tick.sh and poll-once.sh refuse) until the file parses again.
 # A missing settings.json is not an error (nothing was configured in the UI).
+# The path resolves EXACTLY as the RUNNER_DIR / GAFFER_HOME / GAFFER_DATA defaults
+# further down do (GAFFER_DATA := $GAFFER_HOME/.gaffer, GAFFER_HOME := $RUNNER_DIR/..),
+# so an operator-set GAFFER_HOME with GAFFER_DATA unset reads $GAFFER_HOME/.gaffer —
+# not the runner checkout's parent — in the parent and in every child.
 _gs_rd="${RUNNER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-_gs_file="${GAFFER_DATA:-$(cd "$_gs_rd/.." && pwd)/.gaffer}/settings.json"
+_gs_home="${GAFFER_HOME:-$(cd "$_gs_rd/.." && pwd)}"
+_gs_file="${GAFFER_DATA:-$_gs_home/.gaffer}/settings.json"
 _gs_out=""; _gs_bad=0
 if [ -e "$_gs_file" ]; then
   if command -v node >/dev/null 2>&1; then
     # STRICT: the file must parse as a flat JSON object; anything else exits non-zero.
-    _gs_out="$(node -e 'const fs=require("fs");let s;try{s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"))}catch{process.exit(3)}if(!s||typeof s!=="object"||Array.isArray(s))process.exit(3);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")' "$_gs_file" 2>/dev/null)" || _gs_bad=1
+    # Parsed the way the dashboard's readSettingsFile (packages/dispatch/src/api/
+    # settings.ts) reads it: a leading UTF-8 BOM is dropped and the text trimmed, and an
+    # empty or whitespace-only file is {} (nothing configured) — so the runner never
+    # halts on a file the Settings panel shows as fine. Unparseable or non-object → 3.
+    _gs_out="$(node -e 'const fs=require("fs");let s;try{const raw=fs.readFileSync(process.argv[1],"utf8").replace(/^\uFEFF/,"").trim();if(raw==="")process.exit(0);s=JSON.parse(raw)}catch{process.exit(3)}if(!s||typeof s!=="object"||Array.isArray(s))process.exit(3);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")' "$_gs_file" 2>/dev/null)" || _gs_bad=1
   else
     _gs_bad=1
   fi
@@ -66,7 +75,7 @@ else
   _GAFFER_OPERATOR_ENV=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
   export _GAFFER_OPERATOR_ENV
 fi
-unset _gs_rd _gs_file _gs_bad
+unset _gs_rd _gs_home _gs_file _gs_bad
 _GAFFER_ENV_AT_SOURCE="$_GAFFER_OPERATOR_ENV"
 # What was already exported when THIS source began (after the hygiene step): those
 # are the operator's or a parent's on purpose, never recorded as derived here.

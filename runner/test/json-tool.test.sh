@@ -120,8 +120,11 @@ grep -q "^boom$" <<<"$SUMM" && ok "summary keeps the failing output block" || no
 echo "== 8: ac-check-rows / prompt-inputs / realpath =="
 ROWS="$(printf '%s' "$SHOW" | jt ac-check-rows)"
 [ "$(printf '%s\n' "$ROWS" | wc -l | tr -d ' ')" = "2" ] && ok "ac-check-rows: two checked ACs (prose skipped)" || no "ac rows count: $ROWS"
-grep -q "^a1	npm test	AC1: first AC text that is quite long and will be cut at sixty ch$" <<<"$(sed -n 1p <<<"$ROWS")" && ok "ac-check-rows: label numbered by position, text cut at 60" || no "ac row 1: $(printf '%s\n' "$ROWS" | sed -n 1p)"
-grep -q "^a3	grep -q x y	AC3: third$" <<<"$(sed -n 2p <<<"$ROWS")" && ok "ac-check-rows: command trimmed, newline collapsed" || no "ac row 2"
+b64(){ node -e 'process.stdout.write(Buffer.from(process.argv[1], "utf8").toString("base64"))' "$1"; }
+grep -q "^a1	$(b64 'npm test')	AC1: first AC text that is quite long and will be cut at sixty ch$" <<<"$(sed -n 1p <<<"$ROWS")" && ok "ac-check-rows: label numbered by position, text cut at 60" || no "ac row 1: $(printf '%s\n' "$ROWS" | sed -n 1p)"
+# The command travels base64, byte for byte (never trimmed, newlines kept); only the label is flattened.
+R2CMD="$(sed -n 2p <<<"$ROWS" | cut -f2)"
+[ "$(node -e 'process.stdout.write(JSON.stringify(Buffer.from(process.argv[1], "base64").toString("utf8")))' "$R2CMD")" = "$(printf '%s' "$SHOW" | jt expr 'JSON.stringify(d.acceptanceCriteria[2].check_command)')" ] && ok "ac-check-rows: command carried exactly (base64), not trimmed or collapsed" || no "ac row 2: $(sed -n 2p <<<"$ROWS")"
 printf 'junk' | jt ac-check-rows >/dev/null 2>&1; [ $? -eq 3 ] && ok "ac-check-rows junk → exit 3" || no "ac rows junk"
 PI="$(GF_NUM=3 GF_TITLE=T GF_RF="$(printf '  - one\ncont\n  - two')" GF_WT_ROWS="$(printf 'id\tapp\t/r\tmain\t/wt')" GF_READ_ROOTS="$(printf '/a\n/b')" jt prompt-inputs delivery)"
 [ "$(printf '%s' "$PI" | jt expr 'd.reviewFeedbackReasons.join("|")')" = "$(printf 'one\ncont|two')" ] && ok "prompt-inputs groups multi-line reasons" || no "prompt-inputs reasons"

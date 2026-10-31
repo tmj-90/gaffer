@@ -29,8 +29,9 @@ _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
 # human review still stand. Fail-CLOSED on the checks themselves: a check that cannot
 # spawn is a FAIL (rc 127), never a skip.
 
-# Emit `<ac-id>\t<check_command>\t<label>` per checked AC (TABs/newlines in the
-# command collapsed to spaces so the row stays one line). Empty output ⇒ none.
+# Emit `<ac-id>\t<base64(check_command)>\t<label>` per checked AC. The command rides
+# base64 so the row stays one line WITHOUT rewriting it (a TAB→space collapse once
+# turned a failing criterion into a pass). Empty output ⇒ none.
 _gaffer_ac_check_rows() {
   printf '%s' "$1" | node "$_GAFFER_JSON_TOOL" ac-check-rows 2>/dev/null
 }
@@ -50,13 +51,28 @@ gaffer_run_ac_checks() {
   fi
   [ -n "$rows" ] || return 0
   [ -d "$wt" ] || { log "AC-check: WARN — worktree '$wt' missing for #$num; no acceptance checks run"; return 0; }
-  local tmpout any_fail=0 ac_id cmd label rc note t0 t1
-  if ! tmpout="$(mktemp "${TMPDIR:-/tmp}/gaffer-accheck.XXXXXX")"; then
+  local tmpout cmdfile any_fail=0 ac_id cmd cmd64 cmd_disp label rc note t0 t1
+  if ! tmpout="$(mktemp "${TMPDIR:-/tmp}/gaffer-accheck.XXXXXX")" \
+     || ! cmdfile="$(mktemp "${TMPDIR:-/tmp}/gaffer-accmd.XXXXXX")"; then
     printf 'GATE\tac-check\t-\tFAIL\t1\tcould not create a temp file for check output (mktemp failed)\n' >> "$results"
+    rm -f "${tmpout:-}"
     return 1
   fi
-  while IFS=$'\t' read -r ac_id cmd label; do
-    [ -n "$ac_id" ] && [ -n "$cmd" ] || continue
+  while IFS=$'\t' read -r ac_id cmd64 label; do
+    [ -n "$ac_id" ] && [ -n "$cmd64" ] || continue
+    # Decode to a FILE and read it back with `read -d ''` — a `$(…)` capture would drop
+    # trailing newlines; the variable then holds the stored bytes exactly (no NUL: the
+    # API refuses one). A decode failure is a FAIL for this criterion, never a skip.
+    cmd=""
+    if ! node -e 'process.stdout.write(Buffer.from(process.argv[1], "base64"))' "$cmd64" >"$cmdfile" 2>/dev/null; then
+      any_fail=1
+      printf 'GATE\tac-check\t%s\tFAIL\t1\tthe check command could not be decoded\n' "$label" >> "$results"
+      continue
+    fi
+    IFS= read -r -d '' cmd <"$cmdfile" || true
+    # DISPLAY ONLY (the GATE row is one TAB-separated line): a flattened copy for the
+    # results file. What runs and what is recorded is "$cmd", untouched.
+    cmd_disp="${cmd//[$'\t\n\r']/ }"
     t0="$(date +%s)"
     gaffer_dod_run_one "$wt" "$tmpout" "$cmd"
     rc=$?
@@ -69,13 +85,13 @@ gaffer_run_ac_checks() {
       log "AC-check: WARNING — could not record the check result for $label on #$num (rc=$rc); the done gate will hold this AC as unverified"
     fi
     if [ "$rc" -eq 0 ]; then
-      printf 'GATE\tac-check\t%s\tPASS\t0\t%s\n' "$label" "$cmd" >> "$results"
+      printf 'GATE\tac-check\t%s\tPASS\t0\t%s\n' "$label" "$cmd_disp" >> "$results"
     else
       any_fail=1
       case "$rc" in
-        124) note="timed out after ${GAFFER_DOD_TIMEOUT}s: $cmd" ;;
-        127) note="command could not be run (spawn/exit 127): $cmd" ;;
-        *)   note="exited $rc: $cmd" ;;
+        124) note="timed out after ${GAFFER_DOD_TIMEOUT}s: $cmd_disp" ;;
+        127) note="command could not be run (spawn/exit 127): $cmd_disp" ;;
+        *)   note="exited $rc: $cmd_disp" ;;
       esac
       printf 'GATE\tac-check\t%s\tFAIL\t%s\t%s\n' "$label" "$rc" "$note" >> "$results"
       printf -- '---DOD-OUTPUT ac-check@%s---\n' "$label" >> "$results"
@@ -84,6 +100,6 @@ gaffer_run_ac_checks() {
       printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
     fi
   done <<< "$rows"
-  rm -f "$tmpout"
+  rm -f "$tmpout" "$cmdfile"
   [ "$any_fail" -eq 0 ]
 }

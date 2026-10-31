@@ -469,6 +469,16 @@ export class ReviewGateService {
           { ac_id: ac.id },
         );
       }
+      // BYTE-EXACT: a result is evidence about the command that RAN. One that differs
+      // from the stored check (a TAB rewritten to a space, a trimmed line) is about a
+      // different criterion and is refused, never recorded against this one.
+      if (input.command !== ac.check_command) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "The executed command does not match this criterion's stored check_command byte for byte; the result was not recorded.",
+          { ac_id: ac.id },
+        );
+      }
       const passed = input.exit_code === 0;
       const status: AcStatus = passed ? "satisfied" : "failed";
       this.acs.setStatus(ac.id, status, AC_CHECK_VERIFIER, now);

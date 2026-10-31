@@ -4,6 +4,7 @@ import { z } from "zod";
 import "../util/zod3Compat.js";
 
 import {
+  checkCommandText,
   GIT_REF_SAFE,
   GIT_REF_SAFE_MESSAGE,
   PR_URL_SAFE,
@@ -132,7 +133,7 @@ export const addAcBody = z.object({
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().optional(),
   /** MACHINE-CHECKABLE AC: shell command the runner executes to verify this AC. */
-  check_command: z.string().trim().min(1).max(2_000).optional(),
+  check_command: checkCommandText.optional(),
 });
 export type AddAcBody = z.infer<typeof addAcBody>;
 

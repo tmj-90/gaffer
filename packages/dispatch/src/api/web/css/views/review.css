@@ -956,7 +956,7 @@
     overflow-wrap: anywhere;
   }
   .vd-when {
-    font: 600 var(--t12) / 1 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .vd-why {

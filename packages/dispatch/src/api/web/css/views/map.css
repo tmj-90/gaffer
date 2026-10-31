@@ -1077,7 +1077,7 @@
     gap: 2px;
   }
   .repo-ticket-time {
-    font: 600 var(--t12) var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
     white-space: nowrap;
   }

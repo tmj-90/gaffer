@@ -189,6 +189,9 @@ describe("web type: condensed for headlines, the body face for operational detai
       ".tag-t",
       ".mr-min",
       ".mr-day",
+      // Timestamps the review packet and a repo's ticket list print (reviewer pass).
+      ".vd-when",
+      ".repo-ticket-time",
     ];
     for (const sel of detail) {
       const rule = [...RULES]

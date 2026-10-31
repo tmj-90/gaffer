@@ -268,6 +268,21 @@ switch (cmd) {
     break;
   }
 
+  // ── ci-gate.sh ──────────────────────────────────────────────────────────────────
+  // ci-check-rows: stdin = `gh pr checks --json name,state,bucket,link` (the REAL field
+  // names) → "<name>\t<state>\t<bucket>\t<link>" per check. TABs/newlines inside a
+  // value are flattened (display fields). Unparseable / non-array → nothing.
+  case "ci-check-rows": {
+    const p = tryParse(readStdin());
+    const rows = p.ok && Array.isArray(p.value) ? p.value : [];
+    const flat = (v) => String(v ?? "").replace(/[\t\r\n]+/g, " ");
+    for (const c of rows) {
+      if (!c || typeof c !== "object") continue;
+      println([flat(c.name), flat(c.state), flat(c.bucket), flat(c.link)].join("\t"));
+    }
+    break;
+  }
+
   // ── eval-judge.sh ───────────────────────────────────────────────────────────────
   // judge-input <diff-file> <tests-file>: env SHOW_FILE (a file holding `wg ticket show`
   // JSON; else SHOW, the JSON itself), FULL_BYTES, CAP → the judge's input JSON (title

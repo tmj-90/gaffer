@@ -259,6 +259,68 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("hold <ref>")
+    .description(
+      "Hold an approved ticket for a human (ready_for_merge | in_testing -> blocked) with a " +
+        "reason code — the runner's merge gate and a late red CI result. System/admin only.",
+    )
+    .requiredOption("--reason-code <code>", "snake_case reason code (e.g. merge_gate_red, ci_red)")
+    .requiredOption("--reason <text>", "why it is held (shown in the human queue)")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.holdForHuman(
+        ref,
+        { reasonCode: String(opts.reasonCode), reason: String(opts.reason) },
+        actor,
+      );
+      printJson({ ok: true, status: res.ticket.status, event: res.eventId });
+      wg.db.close();
+    });
+
+  ticket
+    .command("ci-result <ref>")
+    .description(
+      "REQUIRED CI: record a CI result for the ticket's candidate commit (pending | pass | " +
+        "fail). A fail on an approved ticket holds it for a human. System/admin only.",
+    )
+    .requiredOption("--commit <sha>", "the commit the checks ran on")
+    .requiredOption("--state <state>", "pending | pass | fail")
+    .option("--detail <text>", "the failing check (name + url) or a note")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const state = z.enum(["pending", "pass", "fail"]).parse(String(opts.state));
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.recordCiResult(
+        ref,
+        {
+          commit: String(opts.commit),
+          state,
+          ...(opts.detail ? { detail: String(opts.detail) } : {}),
+        },
+        actor,
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
+    .command("ci-status <ref>")
+    .description("REQUIRED CI: the latest recorded CI state for a commit of the ticket")
+    .option("--commit <sha>", "the candidate commit (default: the latest result)")
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      printJson({ ok: true, ...wg.ciStatus(ref, opts.commit ? String(opts.commit) : null) });
+      wg.db.close();
+    });
+
+  ticket
     .command("mark-merged <ref>")
     .description(
       "Mark an approved-and-merging ticket actually merged (ready_for_merge -> done). " +

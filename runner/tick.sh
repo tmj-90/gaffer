@@ -3511,7 +3511,10 @@ $_trail_q
           && log "H3: auto-rejected #$NUM (in_review → refining)" \
           || log "H3: WARNING — could not auto-reject #$NUM to refining (non-fatal)"
       else
-        log "H3: ticket #$NUM is in status '$_CUR_CI_STATUS' (not in_review) — no state move needed"
+        # Not in_review any more: dispatch refuses approval without a CI PASS for the
+        # candidate, and the recorded FAIL HOLDS an already-approved ticket for a human
+        # (ready_for_merge|in_testing → blocked, reason ci_red) — never left landable.
+        log "H3: ticket #$NUM is in status '$_CUR_CI_STATUS' (not in_review) — the recorded CI failure holds it for a human (dispatch: blocked, ci_red)"
       fi
       result error; exit 0
     fi

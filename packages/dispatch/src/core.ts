@@ -1426,6 +1426,47 @@ export class Dispatch {
     return this.ticketSvc.getTestContract(ticketRef);
   }
 
+  /**
+   * HOLD FOR A HUMAN (`ready_for_merge | in_testing -> blocked`, reason-coded). The
+   * runner's merge gate (the combined code failed on the target) and a late red CI
+   * result use it; the ticket waits in the human queue with the reason. System/admin.
+   */
+  holdForHuman(
+    ref: string,
+    input: { reasonCode: string; reason: string },
+    actor: Actor,
+  ): TransitionResult {
+    const result = this.reviewGateSvc.holdForHuman(ref, input, actor);
+    this.emitGate("ticket_parked", result.ticket, { status: "blocked", detail: input.reason });
+    return result;
+  }
+
+  /** REQUIRED CI: record a CI result for a ticket's candidate commit (system/admin). */
+  recordCiResult(
+    ref: string,
+    input: { commit: string; state: "pending" | "pass" | "fail"; detail?: string },
+    actor: Actor,
+  ): { state: string; held: boolean; status: string; eventId: string } {
+    const res = this.reviewGateSvc.recordCiResult(ref, input, actor);
+    if (res.held) {
+      const ticket = this.tickets.resolveRef(ref);
+      this.emitGate("ticket_parked", ticket, {
+        status: "blocked",
+        detail: `required CI failed for ${input.commit.slice(0, 12)}`,
+      });
+    }
+    return res;
+  }
+
+  /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
+  ciStatus(
+    ref: string,
+    commit: string | null = null,
+  ): { required: boolean; state: string | null; commit: string | null } {
+    const ticket = this.resolveTicket(ref);
+    return this.reviewGateSvc.ciStatus(ticket.id, commit);
+  }
+
   markMerged(ref: string, actor: Actor): TransitionResult {
     return this.reviewGateSvc.markMerged(ref, actor);
   }

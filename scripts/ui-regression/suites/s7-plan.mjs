@@ -6,7 +6,8 @@
 // repo stamped); #/epics/:id draws it as rounds with the Final. A second plan forced
 // with "Build the tickets now" is created and readied: the ticket that depends on
 // another is not claimable until it lands, so Poll claims the first only. A
-// greenfield plan (New app) leads with a bootstrap ticket.
+// greenfield plan (New app) leads with a bootstrap ticket; its delivery (the runner
+// creating the repo under GAFFER_BOOTSTRAP_ROOT) is s7b-greenfield, on its own server.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -266,9 +267,6 @@ export default async function s7(t, L) {
     gshown && /Bootstrap the task app/.test(gtxt),
     "a New app (greenfield) plan leads with its bootstrap ticket",
     `greenfield plan: shown=${Boolean(gshown)} '${gtxt.slice(0, 160)}'`,
-  );
-  t.skip(
-    "greenfield delivery (the bootstrap scaffolding a new repo under GAFFER_REPOS_DIR) needs its own server; only the plan shape is asserted here",
   );
   await p.keyboard.press("Escape").catch(() => {});
 }

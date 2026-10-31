@@ -76,10 +76,41 @@ seed helpers, the stub-mode file) and the context `run-suites.mjs` builds
 settings.json and closes every ticket left open, so a suite never inherits
 another's queue.
 
+### Own-server suites
+
+A suite that changes the world itself — a fake `gh` on PATH, a GitHub remote, ingest
+on in crew.yaml, a greenfield root, merges that rewrite main — declares it and gets
+its own dashboard instead of the shared one:
+
+```js
+export const server = { env: { KEY: "value" }, fixtures: ["fake-gh", "pr-remote"] };
+export const onboard = false; // optional: start with no repo onboarded
+```
+
+`run-suites.sh` asks `suite-plan.mjs` which world each named suite needs, runs the
+shared ones in one world first, then builds one world per own-server suite
+(`$UI_REGRESS_OUT-<suite>`, port `$UI_REGRESS_PORT + n`) with that env exported
+before `gaffer dashboard --restart` and the named fixtures from `own-env.sh`
+(`fake-gh`, `pr-remote`, `github-origin`, `ingest-on`, `bootstrap-root`). Each world
+prints its own `UI scenarios:` line and a combined line closes the run.
+`run-suites.sh --serve <suite>` leaves that suite's world up.
+
+| suite | world | what it drives |
+| --- | --- | --- |
+| `s4b-pr-mode` | fake gh + bare origin + github.com remote | PR created on delivery, required CI pending/green/red, Approve vs CI, landing THROUGH the PR |
+| `s12b-idle-lanes` | fake gh + github.com origin + ingest on | labelled issues → drafts (labels, Source), relabel, dedup, lane rotation |
+| `s7b-greenfield` | empty factory + GAFFER_BOOTSTRAP_ROOT | New app plan → bootstrap creates the repo → Map / Work / Floor → merge |
+| `s17-conflict` | its own sample repo | conflict → resolver → re-gate → back to Review; a markers resolution held |
+
+`suites/bin/fake-gh.mjs` answers `pr create|view|checks|merge`, `run list`,
+`issue list|edit` with the real CLI's JSON field rules (an unknown `--json` field is
+refused as gh refuses it) and records every call in `$FAKE_GH_STATE/calls.jsonl`.
+
 The stub worker takes a per-ticket MODE from `$GAFFER_DATA/stub-mode.json` (the
 agent runs under `env -i`, so a STUB_* variable never reaches it): ok, fail_first,
 fail_always, changes_verdict, tester_pass, tester_fail, tester_no_verdict, clarify, slow_claim,
-pause_first, conflict. `stub-claude.sh`'s header documents each, and every call is
+pause_first, conflict (option `resolver: "markers"`). It also answers the conflict
+resolver and a greenfield bootstrap. `stub-claude.sh`'s header documents each, and every call is
 recorded (env, argv, prompt) in `$GAFFER_DATA/stub-calls.jsonl`.
 
 `run-suites.sh --serve` builds the world and leaves the dashboard up, printing the

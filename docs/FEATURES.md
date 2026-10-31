@@ -182,7 +182,10 @@ structural barrier the whole design hangs on.
   looks like a gate report or a tester verdict is ignored. It is
   one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
   is what the test runner printed, and the tests run the delivered code, so treat
-  a match as consistency, not proof.
+  a match as consistency, not proof. The runner keeps those summary lines with
+  tabs turned into spaces and drops any that start with `GATE`, `---` or
+  `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
+  so a test that prints a gate-shaped line cannot add a gate to the strip.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.

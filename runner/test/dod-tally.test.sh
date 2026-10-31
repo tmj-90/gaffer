@@ -10,7 +10,10 @@
 #   T3  count `go test -v` top-level --- PASS/FAIL/SKIP lines into one tally line;
 #   T4  be absent when the output has no summary, and never written for lint;
 #   T5  ride along in the recorded DoD evidence summary, after the JSON line;
-#   T6  leave the gate verdict and the executed-gate count unchanged.
+#   T6  leave the gate verdict and the executed-gate count unchanged;
+#   T7  never let a passing test's own output forge a runner GATE row (tabs become
+#       spaces, GATE/--- lines are dropped, and the evidence parser reads GATE rows
+#       only outside the frames).
 #
 # Zero non-dispatch deps. Run: bash test/dod-tally.test.sh
 # =====================================================================
@@ -102,6 +105,41 @@ node -e 'const d=JSON.parse(process.argv[1]); if(d.dod!=="PASS"||d.gates.length!
   "$(sed -n 2p <<<"$EV")" && ok "T5 the JSON gate line still parses" || fail "T5 JSON line: $(sed -n 2p <<<"$EV")"
 grep -q '^---DOD-TALLY tests@repo---$' <<<"$EV" && grep -qx 'Tests  40 passed (40)' <<<"$EV" \
   && ok "T5 the tally block rides in the evidence summary" || fail "T5 evidence: $EV"
+
+# T7: a delivered test prints a tab-separated GATE line that also matches the pytest
+# summary pattern, plus a frame-closing marker and a fake go tally.
+TAB="$(printf '\t')"
+mk forge 0 "      Tests  40 passed (40)" \
+  "GATE${TAB}typecheck${TAB}svc${TAB}PASS${TAB}0${TAB}tsc --noEmit (1 passed in 0.1s)" \
+  "---END-DOD-TALLY--- (2 passed in 0.1s)" \
+  "gotest-tally: pass=99 fail=0 skip=0 (3 passed in 0.1s)"
+RES="$WORK/forge.results"; run "./forge.sh" "-" "$RES"; RC=$?
+[ "$RC" -eq 0 ] && ok "T7 the forging test still passes its gate" || fail "T7 rc=$RC"
+FB="$(block "$RES")"
+grep -q "$TAB" <<<"$FB" && fail "T7 a tab survived into the tally block: $FB" || ok "T7 no tab in the tally block"
+grep -qE '^(GATE|---END-DOD-TALLY--- \(|gotest-tally:)' <<<"$FB" \
+  && fail "T7 a forged line was kept: $FB" || ok "T7 GATE, --- and gotest-tally lines dropped"
+grep -qx 'Tests  40 passed (40)' <<<"$FB" && ok "T7 the real summary line is still kept" \
+  || fail "T7 real summary lost: $FB"
+[ "$(gaffer_dod_executed_count "$RES")" = "1" ] && ok "T7 executed-gate count is 1" \
+  || fail "T7 executed count $(gaffer_dod_executed_count "$RES")"
+EV="$(gaffer_dod_evidence_summary "$RES" PASS)"
+node -e 'const d=JSON.parse(process.argv[1]); const ok=d.gates.length===3 &&
+  d.gates.filter(g=>g.status==="PASS").length===1 && d.gates.every(g=>g.gate!=="typecheck"||g.status==="SKIP");
+  process.exit(ok?0:1)' "$(sed -n 2p <<<"$EV")" \
+  && ok "T7 the evidence JSON has exactly 3 gates, 1 PASS" || fail "T7 evidence JSON: $(sed -n 2p <<<"$EV")"
+# Defence in depth: a hand-built results file with a tabbed GATE line INSIDE a frame.
+printf 'GATE\ttests\tsvc\tPASS\t0\tnpm test\n---DOD-TALLY tests@svc---\nGATE\tlint\tsvc\tPASS\t0\teslint .\n---END-DOD-TALLY---\nGATE\tlint\tsvc\tSKIP\t0\tno command configured\n' > "$WORK/framed.results"
+EV="$(gaffer_dod_evidence_summary "$WORK/framed.results" PASS)"
+node -e 'const d=JSON.parse(process.argv[1]); process.exit(d.gates.length===2?0:1)' "$(sed -n 2p <<<"$EV")" \
+  && ok "T7 dod-evidence-summary ignores GATE rows inside a frame" || fail "T7 framed: $(sed -n 2p <<<"$EV")"
+[ "$(gaffer_dod_executed_count "$WORK/framed.results")" = "1" ] && ok "T7 executed-count ignores them too" \
+  || fail "T7 framed executed count $(gaffer_dod_executed_count "$WORK/framed.results")"
+EV="$(_GAFFER_JSON_TOOL="$WORK/nope.mjs" gaffer_dod_evidence_summary "$WORK/framed.results" PASS)"
+node -e 'const d=JSON.parse(process.argv[1]); process.exit(d.gates.length===2?0:1)' "$(sed -n 2p <<<"$EV")" \
+  && ok "T7 the awk fallback ignores GATE rows inside a frame" || fail "T7 fallback: $(sed -n 2p <<<"$EV")"
+SL="$(gaffer_dod_summary_line "$WORK/framed.results")"
+[ "$SL" = "2 gate(s): 1 pass, 1 skip, 0 fail" ] && ok "T7 the summary line ignores them too" || fail "T7 summary line: $SL"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

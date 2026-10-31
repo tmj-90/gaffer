@@ -313,7 +313,10 @@ gaffer_run_dod_gates() {
 # "Tests  N passed (N)", jest "Tests: … total", pytest "N passed … in 0.1s", cargo
 # "test result: …", node --test "# tests N" / "# pass N" …; for `go test -v`, the
 # top-level --- PASS/FAIL/SKIP lines are
-# counted into one "gotest-tally: pass=N fail=M skip=K" line. Prints nothing when no
+# counted into one "gotest-tally: pass=N fail=M skip=K" line. The lines are the
+# delivered code's own output, so tabs become spaces and any line that starts with
+# GATE, --- or gotest-tally: is dropped: nothing in the block can pass for a runner
+# GATE row, close the frame early or fake the go tally. Prints nothing when no
 # summary is found. Pure text in, text out; never fails the gate.
 #   gaffer_dod_tally_block <gate-output-file> <gate> <repo-label>
 gaffer_dod_tally_block() {
@@ -325,6 +328,8 @@ gaffer_dod_tally_block() {
       line = $0
       gsub(esc "\\[[0-9;?]*[A-Za-z]", "", line)
       gsub(/\r/, "", line)
+      # A tab in a kept line could forge a GATE row: the results file is tab-separated.
+      gsub(/\t/, " ", line)
       if (line ~ /^--- PASS: /) { gp++; next }
       if (line ~ /^--- FAIL: /) { gf++; next }
       if (line ~ /^--- SKIP: /) { gs++; next }
@@ -335,6 +340,9 @@ gaffer_dod_tally_block() {
       else if (t ~ /^test result: /) keep = 1
       else if (t ~ /[0-9]+ (passed|failed).* in [0-9.]+s/) keep = 1
       else if (t ~ /^(# |ℹ )(tests|pass|fail|cancelled|skipped|todo) [0-9]+$/) keep = 1
+      # Never keep a line that reads as a runner row or frame marker (GATE …, ---…)
+      # or as the go tally this block writes itself.
+      if (t ~ /^(GATE|---|gotest-tally:)/) keep = 0
       if (keep) { buf[n % 40] = substr(t, 1, 300); n++ }
     }
     END {
@@ -391,6 +399,10 @@ gaffer_dod_evidence_summary() {
     local json
     json="$(awk -F'\t' -v OVERALL="$overall" '
       BEGIN { printf "{\"dod\":\"%s\",\"gates\":[", OVERALL }
+      # GATE rows are read only outside the framed output/tally blocks.
+      /^---DOD-(OUTPUT|TALLY) / { inframe = 1; next }
+      /^---END-DOD-(OUTPUT|TALLY)---/ { inframe = 0; next }
+      inframe { next }
       $1=="GATE" {
         if (n++) printf ","
         gsub(/\\/,"\\\\",$6); gsub(/"/,"\\\"",$6)

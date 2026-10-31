@@ -20,6 +20,13 @@
 #      rename pair, the first lands, the second exits 4 HELD, main untouched by it;
 #   4  compare-and-land: a target that moves after the gate is re-gated, never landed
 #      on the stale verdict (lib/land.sh _gaffer_land_gated → 7).
+#
+# RG2_GATE=typecheck runs the same scenarios with the failing check moved to the repo's
+# package.json `typecheck` script (test is `node -e 0`): the merge gate must run the
+# SAME auto-detected typecheck the delivery gate runs (gaffer_dod_typecheck_cmd), not
+# only an explicit GAFFER_DOD_TYPECHECK_CMD — the regression from external review 2's
+# round-1 finding (the merge gate SKIPPED typecheck, B landed, main was red).
+# e2e-release-gate-merge-typecheck.test.sh is that variant.
 # Run: bash runner/test/e2e-release-gate-merge-combination.test.sh
 # =====================================================================
 set -uo pipefail
@@ -28,6 +35,16 @@ RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 ROOT="$(cd "$RUNNER_DIR/.." && pwd)"
 [ -f "$ROOT/packages/dispatch/dist/cli/index.js" ] || { echo "SKIP: dispatch CLI not built"; exit 0; }
 [ -f "$ROOT/packages/crew/dist/runtime/context/renderPromptCli.js" ] || { echo "SKIP: crew not built"; exit 0; }
+RG2_GATE="${RG2_GATE:-test}"
+case "$RG2_GATE" in test|typecheck) : ;; *) echo "RG2_GATE must be test or typecheck"; exit 2 ;; esac
+NAME="e2e-release-gate-merge-combination"; [ "$RG2_GATE" = test ] || NAME="e2e-release-gate-merge-typecheck"
+# The one check that catches the combination: `npm test`, or the auto-detected
+# `npm run typecheck` (test then passes trivially, so typecheck is the only gate that can).
+if [ "$RG2_GATE" = typecheck ]; then
+  PKG_SCRIPTS='"test": "node -e 0", "typecheck": "node --test", "lint": "node -e 0"'
+else
+  PKG_SCRIPTS='"test": "node --test", "lint": "node -e 0"'
+fi
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
@@ -38,7 +55,7 @@ mkdir -p "$WORK/data" "$WORK/bin"
 R="$WORK/repo"; mkdir -p "$R/src" "$R/test"
 gitc() { git -c user.email=t@t -c user.name=t "$@"; }
 ( cd "$R" && git init -q -b main
-  printf '{ "name": "r", "version": "0.1.0", "private": true, "type": "module", "scripts": { "test": "node --test", "lint": "node -e 0" } }\n' > package.json
+  printf '{ "name": "r", "version": "0.1.0", "private": true, "type": "module", "scripts": { %s } }\n' "$PKG_SCRIPTS" > package.json
   printf 'export function user() {\n  return { name: "Ada", fullName: "Ada Lovelace", nick: "ada", handle: "@ada" };\n}\n' > src/user.js
   printf 'import { user } from "./user.js";\nexport function greet() {\n  return "hi " + user().name;\n}\nexport function tag() {\n  return "tag " + user().nick;\n}\n' > src/greet.js
   printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { greet, tag } from "../src/greet.js";\ntest("greet", () => { assert.match(greet(), /^hi Ada/); assert.doesNotMatch(greet(), /undefined/); });\ntest("tag", () => { assert.match(tag(), /^tag /); assert.doesNotMatch(tag(), /undefined/); });\n' > test/greet.test.js
@@ -66,6 +83,8 @@ export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_MAX_TURNS=3 GAFFER_TICK_TIMEOUT=60 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0 GAFFER_MAINTENANCE=0 GAFFER_STRICT_REQUIRE=0 GAFFER_SECURITY_REVIEW=0 GAFFER_TESTING=0 \
        MAX_OPEN_AGENT_BRANCHES_PER_REPO=10 MAX_IN_REVIEW_PER_REPO=10 GAFFER_DIGEST_DISABLE=1
+# No operator override: the typecheck gate is the one auto-detected from package.json.
+unset GAFFER_DOD_TYPECHECK_CMD
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
 wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
@@ -74,8 +93,8 @@ run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.l
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
 new_ticket() { local n; n="$(wg ticket create -t "$1" -d "$2" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "tests pass" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1; printf '%s' "$n"; }
 branch_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.branch_name || ""'; }
-main_tests() { local wt="$WORK/main-check"; git -C "$R" worktree add -q --detach "$wt" main >/dev/null 2>&1; ( cd "$wt" && npm test >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
-branch_tests() { local wt="$WORK/br-check"; git -C "$R" worktree add -q --detach "$wt" "$1" >/dev/null 2>&1; ( cd "$wt" && npm test >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
+main_tests() { local wt="$WORK/main-check"; git -C "$R" worktree add -q --detach "$wt" main >/dev/null 2>&1; ( cd "$wt" && npm run "$RG2_GATE" >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
+branch_tests() { local wt="$WORK/br-check"; git -C "$R" worktree add -q --detach "$wt" "$1" >/dev/null 2>&1; ( cd "$wt" && npm run "$RG2_GATE" >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
 LOGF="$GAFFER_DATA/factory.log"
 
 echo "== 1: two branches, each green on its own, both human-approved =="
@@ -84,7 +103,7 @@ B="$(new_ticket "Drop the unused field [drop-fullName]" "remove fullName from us
 AUTO_MERGE=0 run_tick >/dev/null; AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$A")" = "in_review" ] && [ "$(st "$B")" = "in_review" ] && ok "both delivered through their DoD gates (in_review)" || fail "statuses A=$(st "$A") B=$(st "$B")"
 BA="$(branch_of "$A")"; BB="$(branch_of "$B")"
-branch_tests "$BA" && branch_tests "$BB" && main_tests && ok "each branch passes npm test alone, and so does main" || fail "a side does not pass alone (fixture broken)"
+branch_tests "$BA" && branch_tests "$BB" && main_tests && ok "each branch passes npm run $RG2_GATE alone, and so does main" || fail "a side does not pass alone (fixture broken)"
 wg review approve "$A" --reviewer human1 >/dev/null 2>&1; wg review approve "$B" --reviewer human1 >/dev/null 2>&1
 [ "$(st "$A")" = "ready_for_merge" ] && [ "$(st "$B")" = "ready_for_merge" ] && ok "both approved by a human (ready_for_merge)" || fail "approve: A=$(st "$A") B=$(st "$B")"
 
@@ -99,6 +118,10 @@ main_tests && ok "main's tests still pass after the tick" || fail "main is RED �
 [ "$(st "$B")" = "blocked" ] && ok "B is held for a human (blocked), not done" || fail "B status=$(st "$B")"
 EV="$(wg ticket show "$B" | jget '(d.evidence || []).filter(e => (e.summary || "").startsWith("MERGE GATE FAILED")).map(e => e.summary).join("\n")' 2>/dev/null)"
 case "$EV" in *"MERGE GATE FAILED"*"DoD: FAIL"*) ok "the failing gate output is attached to B as evidence" ;; *) fail "no merge-gate evidence on B: ${EV:0:300}" ;; esac
+if [ "$RG2_GATE" = typecheck ]; then
+  grep -q "typecheck gate for repo runs the auto-detected 'npm run typecheck'" "$LOGF" && ok "the delivery gate ran the auto-detected typecheck" || fail "no auto-detected typecheck line in the delivery log"
+  case "$EV" in *'"gate":"typecheck"'*'"status":"FAIL"'*) ok "the merge gate ran the same auto-detected typecheck and it failed" ;; *) fail "merge-gate evidence has no failing typecheck gate: ${EV:0:400}" ;; esac
+fi
 grep -q "MERGE: #$B HELD for a human — the merge of" "$LOGF" && ok "the lane logged the hold with its reason" || fail "no hold line: $(grep "#$B" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
 HQ="$(node -e '
   const { Dispatch } = await import(process.argv[1]);
@@ -136,5 +159,5 @@ _gaffer_land_gated "$R" cl-target "$T0" "$(git -C "$R" rev-parse cl-branch)" cl-
 grep -q "re-gating on the new target" "$RUNNER_DIR/lib/land.sh" && grep -q "landGatedMerge" "$RUNNER_DIR/bin/merge-ticket.mjs" && ok "both landing paths re-gate a moved target" || fail "re-gate wiring missing"
 
 echo
-if [ "${#FAILURES[@]}" -eq 0 ]; then echo "e2e-release-gate-merge-combination: ALL $PASS checks passed"; exit 0; fi
-echo "e2e-release-gate-merge-combination: ${#FAILURES[@]} FAILURE(S):"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1
+if [ "${#FAILURES[@]}" -eq 0 ]; then echo "$NAME: ALL $PASS checks passed"; exit 0; fi
+echo "$NAME: ${#FAILURES[@]} FAILURE(S):"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1

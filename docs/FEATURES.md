@@ -186,7 +186,9 @@ structural barrier the whole design hangs on.
   side starts reading). So before anything lands — the merge lane, **Merge now**,
   `gaffer merge`, the agent review's ship — the factory builds the merge of the
   approved commit onto the *current* default branch in a scratch worktree and
-  runs the repo's Definition-of-Done gates on **that** merge. It lands exactly
+  runs the repo's Definition-of-Done gates on **that** merge — the same gates the
+  delivery ran: its test and lint commands and the typecheck script detected from
+  its package.json (read from the default branch first). It lands exactly
   the gated merge commit, and only while the default branch is still the commit
   it gated (compare-and-land; a branch that moved meanwhile is gated again). A
   red combination never lands: the default branch is untouched and the ticket

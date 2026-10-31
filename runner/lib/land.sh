@@ -225,7 +225,8 @@ gaffer_land_delivery() {
 # a scratch worktree (detached at the target head, nothing of the live checkout) and runs
 # the repo's DoD gates on that merge result through bin/dod-regate.sh — the conflict
 # resolution's re-gate: same gate runner, toggles, install step, sandbox and zero-gates
-# rule as the delivery gate.
+# rule as the delivery gate, and the same gates (test_command, lint_command and the
+# typecheck command gaffer_dod_typecheck_cmd resolves, detected from the target head).
 #   _gaffer_merge_gate <num> <repo> <branch> <default> <pin> <show-json> <target-ref> [who]
 #     → 0 the merge passed (or DoD is OFF — GAFFER_DOD=0, logged) · 1 the merge CONFLICTS
 #       · 4 the merge FAILS its gates · 2 the gate could not run (held, fail closed).
@@ -256,7 +257,9 @@ _gaffer_merge_gate() {
   tcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).test_command || ""' 2>/dev/null || true)"
   lcmd="$(printf '%s' "$show" | GAFFER_MG_REPO="$repo" jget '(((d.repositories||[]).find(r => r.local_path === process.env.GAFFER_MG_REPO)) || {}).lint_command || ""' 2>/dev/null || true)"
   log "$who: #$num MERGE GATE — gating the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (merge ${_MG_MERGE:0:12}) in a scratch worktree"
-  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" 2>/dev/null)"; rc=$?
+  # The gated target head is the base the typecheck script is detected from (as the
+  # delivery gate reads its base branch first): the branch cannot drop that gate.
+  out="$(bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label" "${tcmd:--}" "${lcmd:--}" "$_MG_TARGET" 2>/dev/null)"; rc=$?
   git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$wt"; git -C "$repo" worktree prune >/dev/null 2>&1 || true
   _MG_EVIDENCE="$out"
   case "$rc" in

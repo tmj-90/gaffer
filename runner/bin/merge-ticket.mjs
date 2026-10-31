@@ -804,6 +804,8 @@ export function resolveGateCommands(dbPath, number) {
  * which is discarded. Returns
  *   { ok, markers, dod: "PASS"|"FAIL"|"OFF"|"NOT_RUN", commit, evidence, reason }
  * evidence = the summary to record on the ticket. Fail CLOSED on anything unrunnable.
+ * `base` (the default branch's tip) is the ref the typecheck script is auto-detected
+ * from first, as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd).
  */
 export function regateResolution({
   repoPath,
@@ -813,6 +815,7 @@ export function regateResolution({
   label,
   commands,
   gateDir,
+  base,
   env = process.env,
 }) {
   const failed = (reason, gate = "config", extra = {}) => ({
@@ -896,7 +899,7 @@ export function regateResolution({
         "config",
         { dod: "NOT_RUN" },
       );
-    const r = gateCheckout({ gateWt, parents, label, commands, env, failed });
+    const r = gateCheckout({ gateWt, parents, label, commands, env, failed, base });
     if (residueNote) r.evidence = (r.evidence || "") + residueNote;
     return { ...r, commit, residue };
   } finally {
@@ -987,6 +990,9 @@ export function gateProposedMerge({
         label,
         commands.test || "-",
         commands.lint || "-",
+        // The gated target head: the typecheck script is auto-detected from it first,
+        // exactly as the delivery gate reads its base branch (gaffer_dod_typecheck_cmd).
+        target,
       ],
       { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
     );
@@ -1063,7 +1069,7 @@ export function landGatedMerge({ repoPath, defaultBranch, target, merge, branch,
 }
 
 /** The marker check + DoD gates on the clean gate checkout (regateResolution). */
-function gateCheckout({ gateWt, parents, label, commands, env, failed }) {
+function gateCheckout({ gateWt, parents, label, commands, env, failed, base }) {
   const mk = introducedConflictMarkers(gateWt, parents);
   if (!mk.ok || mk.markers.length > 0) {
     const reason = mk.ok
@@ -1086,6 +1092,9 @@ function gateCheckout({ gateWt, parents, label, commands, env, failed }) {
       label,
       commands.test || "-",
       commands.lint || "-",
+      // The default branch's tip: the typecheck script is auto-detected from it first
+      // (gaffer_dod_typecheck_cmd), so a resolution cannot drop that gate.
+      base || "",
     ],
     { encoding: "utf8", env, timeout: (perGate * 4 + 60) * 1000, maxBuffer: 8 * 1024 * 1024 },
   );
@@ -2066,6 +2075,7 @@ function main() {
     worktree,
     gateDir: resolve(GAFFER_DATA, "worktrees", `merge-ticket-${resolved.number}-regate`),
     parents: [preResolution, defaultTip],
+    base: defaultTip || `refs/heads/${repo.defaultBranch}`,
     label: repo.name || "repo",
     commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number),
   });

@@ -9521,8 +9521,22 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
         el("b", {}, `${statusLabel(t.status)}. `),
         "Mark it ready when its criteria are right.",
       ];
-    case "cancelled":
-      return [el("b", {}, "Won't do. "), "It will not be built."];
+    case "cancelled": {
+      // Say WHY it will not be built: the reason the closer gave (the latest move into
+      // Won't do carries it), not only that it closed.
+      const closed = events
+        .filter((e) => e.event_type === "ticket.transitioned")
+        .map((e) => parseJsonSafe(e.payload_json) || {})
+        .filter((pl) => pl.to === "cancelled")
+        .pop();
+      const why = closed && typeof closed.reason === "string" ? closed.reason.trim() : "";
+      return [
+        el("b", {}, "Won't do. "),
+        why
+          ? [`It will not be built: `, el("q", { class: "lede-why" }, why), "."]
+          : "It will not be built.",
+      ];
+    }
     default:
       return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
   }

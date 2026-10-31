@@ -9,7 +9,8 @@ import { joinAwkLines, splitAwkRecords } from "./awkText.js";
 // PARITY: this began as a byte-for-byte port of the awk. Its thirteen signal
 // regexes are ported verbatim (same order, same anchors, same case
 // sensitivity); a fourteenth, TAP `not ok N - name`, was added since. awk
-// `~` is an UNANCHORED partial match, so each pattern is used as-is with RegExp.test() (no added ^/$). The MAX cap, the file-order
+// `~` is an UNANCHORED partial match, so each pattern is used as-is with
+// RegExp.test() (no added ^/$). The MAX cap, the file-order
 // signal emission, the last-MAX-lines tail fallback for the no-signal case,
 // and the non-blank filtering all mirror the awk END block exactly. Proven
 // byte-identical by runner/test/dod-distill-parity.test.sh.

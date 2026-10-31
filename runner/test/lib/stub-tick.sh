@@ -185,4 +185,7 @@ retire() { wg wont-do "$1" --reason "test case done" >/dev/null 2>&1 || true; }
 # A background tick runs in its OWN process group (perl setpgrp — macOS has no setsid)
 # so `kill -TERM -- -$TP` signals it the way the outer per-tick timeout does: the tick
 # AND its foreground agent wrapper, not just a bash that defers the trap to the agent.
-wait_hanging() { local _; for _ in $(seq 1 300); do ls "$CALLS"/*/hanging >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }
+# Up to 180 s: a cold pool on a loaded macOS CI runner took over 60 s to spawn its
+# first stub agent (the warm case right after it passed), and the stop assertions
+# that follow are what these tests are about.
+wait_hanging() { local _; for _ in $(seq 1 900); do ls "$CALLS"/*/hanging >/dev/null 2>&1 && return 0; sleep 0.2; done; return 1; }

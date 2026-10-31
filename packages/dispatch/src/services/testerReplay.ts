@@ -11,7 +11,9 @@ import type { Db } from "../db/connection.js";
  * pass, and hold a red replay like a red merge gate. When the candidate lands, the runner
  * records WHICH tester assertions passed on WHICH landed revision: one SYSTEM `commit`
  * evidence row per landing, uri `gaffer-tester-replayed:<landed sha>`, payload
- * `{ kind: "tester_replay", tested, pin, files, via, repo }`.
+ * `{ kind: "tester_replay", tested, pin, files, via, repo, not_replayed_repos, note }`.
+ * A record with NO files says the landing ran no tester assertion (the PASS saved none, or
+ * an older PASS's tests branch did not describe it): it never counts an epic as accepted.
  *
  * That record is the one answer the merge gate, `gaffer status`, the dashboard ticket page
  * and `wg stats` (an epic is accepted only on it) give to "did the tester's assertions pass
@@ -38,6 +40,10 @@ export interface TesterReplayRecord {
   files: string[];
   via: string | null;
   repoId: string | null;
+  /** The ticket's other write repos, which the tester's assertions did not cover. */
+  notReplayedRepos: string[];
+  /** Why no (or which) tester files were replayed, as the landing path saw it. */
+  note: string | null;
   at: string;
 }
 
@@ -120,6 +126,10 @@ export function readTesterReplay(
         files: Array.isArray(p.files) ? p.files.filter((f) => typeof f === "string") : [],
         via: typeof p.via === "string" ? p.via : null,
         repoId: r.repo_id ?? null,
+        notReplayedRepos: Array.isArray(p.not_replayed_repos)
+          ? p.not_replayed_repos.filter((f) => typeof f === "string")
+          : [],
+        note: typeof p.note === "string" && p.note ? p.note : null,
         at: r.created_at,
       };
     }

@@ -38,6 +38,7 @@ import type { ClaimService } from "./claimService.js";
 import type { Clock } from "../util/clock.js";
 import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
+import { TESTER_REPLAY_PREFIX } from "./testerReplay.js";
 
 /** System delivery evidence input (no claim token). */
 export interface DeliveryEvidenceInput {
@@ -697,6 +698,14 @@ export class TicketService {
     }
     if (input.summary.trim().length === 0) {
       throw new DispatchError("VALIDATION_ERROR", "Delivery evidence summary is required.");
+    }
+    // TESTER REPLAY: the landed-revision record is written only by recordTesterReplay (the
+    // landing path, with its checks); a generic system row must never look like one.
+    if (String(input.uri ?? "").startsWith(TESTER_REPLAY_PREFIX)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `The ${TESTER_REPLAY_PREFIX} uri is reserved for the landing path's tester-replay record.`,
+      );
     }
     const now = this.clock.now();
     return inTransaction(this.db, () => {

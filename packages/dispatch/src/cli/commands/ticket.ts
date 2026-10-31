@@ -178,7 +178,8 @@ export function registerTicket(program: Command): void {
     .requiredOption("--pin <sha>", "the tested commit whose assertions were replayed")
     .option("--files-json <json>", "JSON array of the tester's test files that ran", "[]")
     .option("--repo <repo>", "repo name or id (default: the ticket's primary repo)")
-    .option("--via <how>", "local | pr | pr-stale")
+    .option("--via <how>", "local | pr")
+    .option("--note <text>", "why these (or no) tester files were replayed")
     .option("--as <actor>", "actor type: system", "system")
     .action((ref, opts, cmd) => {
       parseAs(opts.as, ["system"] as const);
@@ -200,6 +201,7 @@ export function registerTicket(program: Command): void {
           files: files as string[],
           repo: opts.repo ? String(opts.repo) : undefined,
           via: opts.via ? String(opts.via) : undefined,
+          note: opts.note ? String(opts.note) : undefined,
         },
         { type: "system" },
       );
@@ -498,6 +500,10 @@ export function registerTicket(program: Command): void {
       "--replay <state>",
       "the runner's clean replay of the tester's tests on the tested commit: passed | failed | skipped",
     )
+    .option(
+      "--tests-commit <sha|none>",
+      "the commit holding the test files this tester run saved (gaffer-tests/ticket-<n>), or none",
+    )
     .option("--as <actor>", "actor type: agent|human|admin|system", "agent")
     .action((ref, opts, cmd) => {
       const actor = testerActor(opts.as);
@@ -510,6 +516,7 @@ export function registerTicket(program: Command): void {
           ...(opts.testedCommit ? { tested_commit: String(opts.testedCommit) } : {}),
           ...(opts.contractHash ? { contract_hash: String(opts.contractHash) } : {}),
           ...(opts.replay ? { replay: String(opts.replay) } : {}),
+          ...(opts.testsCommit ? { tests_commit: String(opts.testsCommit) } : {}),
         },
         actor,
       );

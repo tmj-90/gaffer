@@ -247,7 +247,10 @@ export interface EpicAcceptance {
    *              on the revision that LANDED (a `gaffer-tester-replayed:<sha>` system row
    *              for that tested commit — see services/testerReplay.ts);
    * unreplayed — done on a bound PASS, but no record that the tester's assertions passed on
-   *              the landed revision (they were never run against what landed);
+   *              the landed revision (they were never run against what landed), or a
+   *              record that replayed NO tester test file there (the PASS saved none, or an
+   *              older PASS's tests branch described an earlier run), or the landing ran
+   *              with the replay switched off (GAFFER_TESTER_REPLAY off records nothing);
    * waived     — done on a HUMAN tester-pass (an explicit decision, shown as such — never
    *              the same evidence as a revision-bound test);
    * stale      — done, but the contract changed after the bound PASS;
@@ -284,6 +287,8 @@ export interface EpicAcceptance {
    */
   readonly replayed_commit: string | null;
   readonly replayed_files: readonly string[];
+  /** The acceptance ticket's other write repos the tester's assertions did not cover. */
+  readonly not_replayed_repos: readonly string[];
   /** Where the build lives, so a status pane can tell whether the default branch has moved past accepted_commit. */
   readonly repo_path: string | null;
   readonly default_branch: string | null;
@@ -405,7 +410,8 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       if (provenance === "human") result = "waived";
       else if (contractChanged) result = "stale";
       else if (acceptedCommit !== null && acceptedHash !== null && replay === "passed")
-        result = replayed ? "accepted" : "unreplayed";
+        // Zero tester files replayed is zero independent assertions on what landed.
+        result = replayed && replayed.files.length > 0 ? "accepted" : "unreplayed";
       else result = "unverified";
     } else if (r.status === "in_testing") result = "testing";
     else if (r.status === "refining" || r.status === "blocked" || r.status === "failed")
@@ -432,6 +438,7 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       contract_changed: contractChanged,
       replayed_commit: replayed?.commit ?? null,
       replayed_files: replayed?.files ?? [],
+      not_replayed_repos: replayed?.notReplayedRepos ?? [],
       repo_path: r.repo_path ?? null,
       default_branch: r.default_branch ?? null,
     };
@@ -499,7 +506,7 @@ export function renderStats(stats: StatsReport): string {
     );
     for (const e of a.epics) {
       lines.push(
-        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)}${e.replayed_files.length ? ` (${e.replayed_files.join(", ")})` : ""}` : ""}${e.result === "unreplayed" ? "  ← the tester's assertions were never recorded passing on the revision that landed" : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
+        `  ${e.epic_name}: implementation ${e.implementation_done}/${e.implementation_total} done · acceptance #${e.acceptance_ticket ?? "?"} ${e.acceptance_status} → ${e.result}${e.accepted_commit ? ` @ ${e.accepted_commit.slice(0, 12)}` : ""}${e.replayed_commit ? (e.replayed_files.length ? ` · tester assertions passed on landed ${e.replayed_commit.slice(0, 12)} (${e.replayed_files.join(", ")})` : ` · landed ${e.replayed_commit.slice(0, 12)} with NO tester test file replayed`) + (e.not_replayed_repos.length ? `; not replayed in ${e.not_replayed_repos.join(", ")}` : "") : ""}${e.result === "unreplayed" ? (e.replayed_commit ? "  ← no tester assertion ran on the revision that landed; re-test so the tester saves its tests" : "  ← the tester's assertions were never recorded passing on the revision that landed (a landing with GAFFER_TESTER_REPLAY off records nothing)") : ""}${e.result === "stale" ? "  ← the contract changed after the tester's PASS; re-test" : e.result === "unverified" ? "  ← no revision-bound PASS (commit + contract + clean replay); re-test, or waive: tester-pass --as human" : e.result === "waived" ? "  (human waiver — not a revision-bound test)" : e.unaccepted ? "  ← needs the tester or a human tester-pass" : ""}`,
       );
     }
   }

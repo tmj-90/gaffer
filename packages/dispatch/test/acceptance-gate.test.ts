@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { createHash } from "node:crypto";
 
-import { computeStats, contractHash } from "../src/cli/ops.js";
+import { computeStats, contractHash, renderStats } from "../src/cli/ops.js";
 import { Dispatch } from "../src/core.js";
 import { migrate } from "../src/db/connection.js";
 import { SCHEMA_VERSION } from "../src/db/schema.js";
@@ -75,13 +75,20 @@ const LANDED = "89abcdef0123456789abcdef0123456789abcdef";
 
 /**
  * TESTER REPLAY: the runner's landing path records that the tester's assertions passed on
- * the landed revision (system only). `via: "pr"` — these fixtures have no git checkout to
- * verify a local landing against (tester-replay-record.test.ts covers that check).
+ * the landed revision (system only). Recorded against the ticket's delivery repo, whose
+ * stub git (nonEmptyDiffRunner) reports every commit on the default branch — the real check
+ * is in tester-replay-record.test.ts.
  */
 function recordReplay(wg: Dispatch, ticketId: string, tested = SHA, landed = LANDED) {
   return wg.recordTesterReplay(
     ticketId,
-    { commit: landed, pin: tested, files: ["test/bb-acceptance.test.js"], via: "pr" },
+    {
+      commit: landed,
+      pin: tested,
+      files: ["test/bb-acceptance.test.js"],
+      repo: `delivery-${ticketId}`,
+      via: "local",
+    },
     systemActor,
   );
 }
@@ -298,6 +305,67 @@ describe("acceptance gate: approval always routes an acceptance ticket to the te
     expect(a.unreplayed).toBe(1);
     expect(a.accepted).toBe(0);
     expect(a.unaccepted).toBe(1);
+  });
+
+  it("TESTER REPLAY: a landing that replayed NO tester test file (stale or empty tests branch, or a PASS that saved none) reads unreplayed — zero assertions on what landed is not accepted", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: "none" }, testerAgent);
+    expect(
+      wg.recordTesterReplay(
+        accId,
+        {
+          commit: LANDED,
+          pin: SHA,
+          files: [],
+          repo: `delivery-${accId}`,
+          via: "local",
+          note: "refs/heads/gaffer-tests/ticket-3 does not descend from the tested commit",
+        },
+        systemActor,
+      ).recorded,
+    ).toBe(true);
+    wg.markMerged(accId, systemActor);
+    const a = computeStats(wg.db).acceptance;
+    expect(a.epics[0]!.result).toBe("unreplayed");
+    expect(a.epics[0]!.replayed_commit).toBe(LANDED);
+    expect(a.epics[0]!.replayed_files).toEqual([]);
+    expect(a.accepted).toBe(0);
+    expect(a.unreplayed).toBe(1);
+    expect(a.unaccepted).toBe(1);
+    expect(renderStats(computeStats(wg.db))).toContain("with NO tester test file replayed");
+  });
+
+  it("TESTER REPLAY: the PASS's tests_commit binding is validated (a sha or none)", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    wg.approveReview(accId, reviewer);
+    expectCode(
+      () => wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: "HEAD" }, testerAgent),
+      "VALIDATION_ERROR",
+    );
+    wg.testerPass(accId, { ...boundPass(wg, accId), tests_commit: LANDED }, testerAgent);
+    const row = wg.db
+      .prepare(
+        "SELECT payload_json FROM evidence WHERE ticket_id = ? AND evidence_type = 'test_output' ORDER BY rowid DESC LIMIT 1",
+      )
+      .get(accId) as { payload_json: string };
+    expect(JSON.parse(row.payload_json).tests_commit).toBe(LANDED);
+  });
+
+  it("TESTER REPLAY: a generic SYSTEM evidence row cannot carry the record's uri (attach-evidence)", () => {
+    const wg = freshWg({ testingEnabled: false });
+    const { accId } = epicToReview(wg);
+    expectCode(
+      () =>
+        wg.attachDeliveryEvidence(
+          accId,
+          { evidenceType: "commit", summary: "x", uri: `gaffer-tester-replayed:${LANDED}` },
+          systemActor,
+        ),
+      "VALIDATION_ERROR",
+    );
   });
 
   it("TESTER REPLAY: a row shaped like the record but recorded by an agent does not count the epic", () => {

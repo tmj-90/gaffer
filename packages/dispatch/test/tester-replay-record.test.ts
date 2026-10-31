@@ -164,10 +164,20 @@ describe("the tester-replay record's actor rule", () => {
     expect(
       refusal(() => d.recordTesterReplay(t.id, { commit: other, pin, files: [] }, system)).details,
     ).toMatchObject({ reason: "not_on_default_branch" });
-    // A PR landing happened upstream (possibly squashed): not checkable locally.
+    // A PR landing names the fast-forwarded local default's head (the runner checked its
+    // tree is the candidate the replay passed on): it must be on the default branch too —
+    // a scratch candidate GitHub never landed is refused.
     expect(
-      d.recordTesterReplay(t.id, { commit: other, pin, files: [], via: "pr" }, system).recorded,
-    ).toBe(true);
+      refusal(() =>
+        d.recordTesterReplay(t.id, { commit: other, pin, files: [], via: "pr" }, system),
+      ).details,
+    ).toMatchObject({ reason: "not_on_default_branch" });
+    // A PR merge whose local default was not fast-forwarded cannot show what landed.
+    expect(
+      refusal(() =>
+        d.recordTesterReplay(t.id, { commit: landed, pin, files: [], via: "pr-stale" }, system),
+      ).details,
+    ).toMatchObject({ reason: "unverifiable_landing" });
     // Malformed input.
     expect(
       refusal(() => d.recordTesterReplay(t.id, { commit: "abc", pin, files: [] }, system)).code,
@@ -182,6 +192,30 @@ describe("the tester-replay record's actor rule", () => {
     expect(
       refusal(() => d.recordTesterReplay(t.id, { commit: landed, pin, files: [] }, system)).code,
     ).toBe("ILLEGAL_TRANSITION");
+  });
+
+  it("MULTI-REPO: the record names the repo replayed and the ticket's other write repos it did not cover", () => {
+    const { d, t, repoDir, pin, landed } = testedAndLanded();
+    const b = d.registerRepository(
+      { name: "repo-b", default_branch: "main", local_path: repoDir },
+      human,
+    );
+    d.db
+      .prepare(
+        "INSERT INTO ticket_repos (ticket_id, repo_id, role, access, relation) VALUES (?, ?, 'secondary', 'write', 'confirmed')",
+      )
+      .run(t.id, b.id);
+    d.recordTesterReplay(
+      t.id,
+      { commit: landed, pin, files: ["test/bb-label.test.js"], repo: "repo" },
+      system,
+    );
+    const rec = readTesterReplay(d.db, t.id, pin);
+    expect(rec?.notReplayedRepos).toEqual(["repo-b"]);
+    const ev = d
+      .view(t.id)
+      .evidence.find((e) => String(e.uri ?? "").startsWith(TESTER_REPLAY_PREFIX));
+    expect(ev?.summary).toContain("not replayed in repo-b");
   });
 
   it("a HUMAN tester waiver has no tester assertions to replay: nothing can be recorded", () => {

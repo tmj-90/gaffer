@@ -222,7 +222,7 @@ export interface ReviewGateServiceDeps {
  * reported as `waived`, never as verified.
  */
 function validatedBinding(
-  input: { tested_commit?: string; contract_hash?: string; replay?: string },
+  input: { tested_commit?: string; contract_hash?: string; replay?: string; tests_commit?: string },
   opts: { strict: boolean; currentHash: string | null; verdict: "pass" | "fail" },
 ): VerdictBinding {
   const out: VerdictBinding = {};
@@ -251,6 +251,16 @@ function validatedBinding(
       );
     }
     out.replay = input.replay as ReplayState;
+  }
+  if (input.tests_commit !== undefined) {
+    const t = input.tests_commit.trim().toLowerCase();
+    if (t !== "none" && !/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(t)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        'tests_commit must be a full git commit id (40 or 64 hex characters) or "none".',
+      );
+    }
+    out.tests_commit = t;
   }
   if (out.contract_hash && opts.currentHash && out.contract_hash !== opts.currentHash) {
     throw new DispatchError(
@@ -731,6 +741,7 @@ export class ReviewGateService {
       files: readonly string[];
       repo?: string | undefined;
       via?: string | undefined;
+      note?: string | undefined;
     },
     actor: Actor,
   ): { ticketId: string; commit: string; tested: string; files: string[]; recorded: boolean } {
@@ -760,6 +771,19 @@ export class ReviewGateService {
       throw new DispatchError(
         "VALIDATION_ERROR",
         "files must be at most 500 single-line paths of at most 1000 characters.",
+      );
+    }
+    const note = String(input.note ?? "")
+      .replace(/[\r\n\t]+/g, " ")
+      .trim()
+      .slice(0, 500);
+    // PR-STALE: the PR merged upstream but the local default branch was not fast-forwarded,
+    // so nothing here can show which revision landed. No record: never accepted on a guess.
+    if (input.via === "pr-stale") {
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        "the landed revision of a PR merge whose local default branch was not fast-forwarded cannot be verified; no tester replay is recorded for it.",
+        { reason: "unverifiable_landing" },
       );
     }
     return inTransaction(this.db, () => {
@@ -811,11 +835,10 @@ export class ReviewGateService {
         )
         .get(ticket.id, uri);
       if (existing) return { ticketId: ticket.id, commit, tested: pin, files, recorded: false };
-      if (
-        repoId &&
-        this.landedOnDefaultResolver &&
-        !UNVERIFIABLE_LANDING_VIAS.has(input.via ?? "")
-      ) {
+      // The landed revision must be on the default branch for EVERY landing path: a PR
+      // landing records the local default's head after the fast-forward (whose tree the
+      // runner checked equals the candidate it replayed on), never the scratch candidate.
+      if (repoId && this.landedOnDefaultResolver) {
         let onDefault: boolean;
         try {
           onDefault = this.landedOnDefaultResolver(repoId, commit);
@@ -830,6 +853,23 @@ export class ReviewGateService {
           );
         }
       }
+      // MULTI-REPO: the tester ran in (and saved tests for) the replayed repo only; say which
+      // other write repos of the ticket its assertions did not cover.
+      const repoName = repoId
+        ? ((
+            this.db.prepare("SELECT name FROM repositories WHERE id = ?").get(repoId) as
+              { name: string } | undefined
+          )?.name ?? null)
+        : null;
+      const notReplayed = (
+        this.db
+          .prepare(
+            `SELECT r.name AS name FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+              WHERE tr.ticket_id = ? AND tr.access = 'write' AND tr.repo_id IS NOT ?
+              ORDER BY r.name`,
+          )
+          .all(ticket.id, repoId) as Array<{ name: string }>
+      ).map((r) => r.name);
       this.evidence.insert({
         id: newId(),
         ticket_id: ticket.id,
@@ -838,8 +878,12 @@ export class ReviewGateService {
         decision_id: null,
         evidence_type: "commit",
         summary:
-          `the independent tester's ${files.length ? `${files.length} test file(s) (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""})` : "verdict (no test files of its own; the repository's suite)"} ` +
-          `passed on the landed revision ${commit} (the merge of tested commit ${pin.slice(0, 12)})${input.via ? ` via ${input.via}` : ""}`,
+          (files.length
+            ? `the independent tester's ${files.length} test file(s) (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}) passed`
+            : "NO tester test file was replayed (the repository's own suite passed)") +
+          ` on the landed revision ${commit} (the merge of tested commit ${pin.slice(0, 12)})${input.via ? ` via ${input.via}` : ""}` +
+          (notReplayed.length ? `; not replayed in ${notReplayed.join(", ")}` : "") +
+          (note ? ` — ${note}` : ""),
         uri,
         payload_json: JSON.stringify({
           kind: "tester_replay",
@@ -847,6 +891,9 @@ export class ReviewGateService {
           pin,
           files,
           via: input.via ?? null,
+          repo: repoName,
+          not_replayed_repos: notReplayed,
+          ...(note ? { note } : {}),
           tester_evidence_id: bound.evidenceId,
         }),
         created_by: "dispatch",
@@ -1058,6 +1105,7 @@ export class ReviewGateService {
       tested_commit?: string;
       contract_hash?: string;
       replay?: string;
+      tests_commit?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -1149,6 +1197,7 @@ export class ReviewGateService {
       tested_commit?: string;
       contract_hash?: string;
       replay?: string;
+      tests_commit?: string;
     },
     actor: Actor,
   ): TransitionResult {

@@ -1447,6 +1447,7 @@ export class Dispatch {
       files: readonly string[];
       repo?: string | undefined;
       via?: string | undefined;
+      note?: string | undefined;
     },
     actor: Actor,
   ): ReturnType<ReviewGateService["recordTesterReplay"]> {
@@ -1472,6 +1473,7 @@ export class Dispatch {
       tested_commit?: string;
       contract_hash?: string;
       replay?: string;
+      tests_commit?: string;
     },
     actor: Actor,
   ): TransitionResult {
@@ -1487,6 +1489,7 @@ export class Dispatch {
       tested_commit?: string;
       contract_hash?: string;
       replay?: string;
+      tests_commit?: string;
     },
     actor: Actor,
   ): TransitionResult {

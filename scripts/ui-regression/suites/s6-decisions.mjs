@@ -1,7 +1,8 @@
 // S6 decisions asked and answered. The delivery agent (stub mode clarify) raises a
 // human_required decision through the real dispatch MCP server and parks its ticket;
 // the Team Sheet shows a Decision row; Answer… refuses an empty answer, then records
-// the human's answer; once the ticket is back in the queue the next delivery's
+// the human's answer and, the ticket being parked, offers Unblock → Ready in the
+// same sheet; once the ticket is back in the queue the next delivery's
 // prompt quotes that answer and its get_ticket (the agent's first call over MCP)
 // returns it. A second question is rejected from the Team Sheet. Then the
 // intake clarify pass (CLARIFY_DRAFTS_WHEN_IDLE, saved in Settings) files criteria and
@@ -98,11 +99,32 @@ export default async function s6(t, L) {
       "the answered Decision row left the Team Sheet",
       "the answered decision is still on the Team Sheet",
     );
+    // The agent parked the ticket on its question: the same sheet offers the Unblock.
+    const unblock = p.locator(
+      `.sheet.open button.answered-unblock:has-text("Unblock #${tk.number}")`,
+    );
+    const offered = await unblock.waitFor({ timeout: 8000 }).then(
+      () => true,
+      () => false,
+    );
+    t.check(
+      offered,
+      `after the answer the sheet offers "Unblock #${tk.number} → Ready" (the ticket is still Blocked)`,
+      `no Unblock in the sheet after answering; sheet reads '${((await p.textContent(".sheet.open").catch(() => "")) || "").slice(0, 160)}'`,
+    );
+    if (offered) {
+      await unblock.click();
+      t.check(
+        await L.waitStatus(tk.id, ["ready", "claimed", "in_progress"], 10000, 400),
+        `the sheet's Unblock moved #${tk.number} back to Ready`,
+        `after the sheet's Unblock #${tk.number} is '${(await L.ticketOf(tk.id)).status}'`,
+      );
+    }
   }
 
   // ── back in the queue, the next delivery prompt carries the answer ───────
   const tkNow = await L.ticketOf(tk.id);
-  if (tkNow.status === "blocked") await L.api("POST", `/tickets/${tk.id}/move`, { to: "ready" }); // the human unblocks it (S3 drives that button)
+  if (tkNow.status === "blocked") await L.api("POST", `/tickets/${tk.id}/move`, { to: "ready" }); // only when the sheet's Unblock above did not run
   const claim = (await L.api("GET", `/tickets/${tk.id}/claimability`)).json;
   t.check(
     claim.ready === true || (claim.blockers || []).length === 0,

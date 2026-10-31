@@ -4158,11 +4158,18 @@ function answerSheet(it, f) {
       if (answer.value.trim()) body.answer = answer.value.trim();
       if (rationale.value.trim()) body.rationale = rationale.value.trim();
       await api("POST", `/decisions/${it.decisionId}/resolve`, body);
+      // The agent that asked parked its ticket: answering does not move it back, so
+      // offer the Unblock here instead of leaving the human to find the Blocked row.
+      const parked = it.ticket && it.ticket.id ? await stillParked(it.ticket.id) : null;
+      router();
+      if (parked) {
+        answeredUnblockSheet(parked.ticket, parked.waiting, status);
+        return;
+      }
       closeSheet();
       toast(status === "accepted" ? "Answered. Agents read it next time." : "Question rejected.", {
         ok: true,
       });
-      router();
     });
   actionSheet(d.title || "Answer the decision", {
     intro: d.question || it.reason,
@@ -4183,6 +4190,67 @@ function answerSheet(it, f) {
         "Reject the question",
       ),
     ],
+  });
+}
+
+/**
+ * The ticket a just-answered decision belongs to, when it is still Blocked: its row
+ * and how many other decisions it still waits on. null when it is not blocked (or
+ * the read fails: the plain "Answered" toast is then the honest fallback).
+ */
+async function stillParked(ticketId) {
+  try {
+    const v = await api("GET", `/tickets/${ticketId}`);
+    if (!v || !v.ticket || v.ticket.status !== "blocked") return null;
+    return { ticket: v.ticket, waiting: (v.blocking_decisions || []).length };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * After an answer (or a rejected question) on a ticket the agent parked: the same
+ * sheet says the ticket is still Blocked and offers Unblock → Ready, the move the
+ * human would otherwise make from the Blocked row. A human presses it; nothing
+ * moves on its own. While other decisions still hold the ticket, it says so instead.
+ */
+function answeredUnblockSheet(t, waiting, status) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  const done = status === "accepted" ? "Your answer is recorded." : "The question is rejected.";
+  const close = el("button", { class: "btn", type: "button", onclick: closeSheet }, "Not now");
+  if (waiting > 0) {
+    actionSheet(`${ref} is still blocked`, {
+      intro: `${done} ${ref} still waits on ${plural(waiting, "more decision")}: answer ${waiting === 1 ? "it" : "them"} before you unblock it.`,
+      actions: [
+        el("a", { class: "btn", href: `#/ticket/${t.id}`, onclick: closeSheet }, "Open the ticket"),
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Done"),
+      ],
+    });
+    return;
+  }
+  const go = el(
+    "button",
+    {
+      class: "btn primary answered-unblock",
+      type: "button",
+      onclick: () =>
+        guard(async () => {
+          await api("POST", `/tickets/${t.id}/move`, { to: "ready" });
+          closeSheet();
+          toast(
+            `Unblocked ${ref}: it is Ready now${status === "accepted" ? ", with your answer in its next brief" : ""}.`,
+            { ok: true },
+          );
+          router();
+        }),
+    },
+    `Unblock ${ref} → Ready`,
+  );
+  actionSheet(`Unblock ${ref}?`, {
+    intro: `${done} ${ref} is still Blocked: the agent parked it on this question, and answering does not move it back. Unblock it to Ready and an agent delivers it again${status === "accepted" ? ", reading your answer" : ""}.`,
+    body: sheetTicket(t),
+    actions: [go, close],
+    focus: go,
   });
 }
 

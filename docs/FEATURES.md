@@ -112,7 +112,11 @@ at onboarding and editable there, because a wrong gate command is the commonest
 reason a delivery bounces or ships unverified. The typecheck gate runs the repo's
 package.json typecheck script (a `typecheck`-style script or a bare
 `tsc --noEmit`), read from the base branch so a delivery cannot delete it away;
-`GAFFER_DOD_TYPECHECK_CMD` overrides it. The repo's coverage command is stored on
+`GAFFER_DOD_TYPECHECK_CMD` overrides it. The same holds for every gate: when a
+gate command calls a package.json script (`npm test`, `pnpm run lint`), the
+script is read from the commit the delivery branched from, and a delivery that
+rewrote it runs the base script instead, so editing `package.json` cannot
+redirect its own gate. The repo's coverage command is stored on
 the same page but is **not** a Definition-of-Done gate (coverage-did-not-decrease
 needs a stored baseline and is deferred): it feeds the idle coverage scan below.
 
@@ -182,6 +186,19 @@ structural barrier the whole design hangs on.
   back to review. A resolution that fails is
   moved off the branch (`refs/gaffer/conflict-resolved/<n>`) and held for a
   human.
+- **A delivery that changed its own tests is flagged, and never auto-approved.**
+  The gates' **integrity** row compares the delivery with its base and FLAGs a
+  deleted or renamed test file, a new skip/focus marker (`.skip`, `.only`,
+  `xit`, `it.todo`, `@pytest.mark.skip`/`xfail`, `t.Skip`, `#[ignore]`,
+  `@Disabled`, …), a rewritten gate script or a touched test-runner config. The
+  server recomputes the same check from the real diff (risk flag *Test
+  modified*), the Sign-off shows a banner naming each change, the Team Sheet
+  row carries a *Tests changed* chip, and an agent approve is held for a person
+  whatever the ticket's declared risk. When the ticket really should change its
+  tests, **Allow test changes…** on the Sign-off (or
+  `gaffer wg ticket allow-test-changes <n> --reason …`) records your allowance
+  as an event: the row then reads PASS with a note. Only a person can set it.
+  This first slice flags; it never fails a delivery.
 - **Reject** loops the ticket back for rework (or abandons it), with your reason
   recorded and its acceptance criteria reset. A **won't-do** on delivered work
   keeps its branch as a record, and that branch no longer counts against the

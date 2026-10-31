@@ -170,6 +170,18 @@ Run your repo's tests afterwards; the change is on your default branch, in your 
 For hands-off runs (the agent reviewer approves, the merge lane lands) see the autonomy
 flags under **Safety** below — off by default.
 
+> **A delivery that changed its own tests waits for you.** If the agent deleted or renamed
+> a test, added a `.skip` / `.only` / `xfail`, or rewrote the `test` script, the gates'
+> **integrity** row reads FLAG, the Review view shows a banner naming each change, and an
+> agent approve is held whatever the autonomy flags say. If the ticket really should change
+> its tests (removing an obsolete suite, say), allow it before or after the delivery:
+>
+> ```bash
+> runner/gaffer wg ticket allow-test-changes 1 --reason "the v1 suite is obsolete"
+> ```
+>
+> or press **Allow test changes…** on the Review view. `--off` withdraws it.
+
 > **Readying a ticket needs a reviewer under the strict policy packs.** The default
 > policy pack is `solo_loose`, which readies freely. But tickets under
 > **`factory_strict`** or **`regulated`** — which is what the **Product Owner**

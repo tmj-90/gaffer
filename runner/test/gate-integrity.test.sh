@@ -31,6 +31,9 @@
 #      other marker spellings (bracket access, pytestmark, a Go build constraint);
 #      test-runner config ADDED to a repo that has tests (committed, git-ignored on
 #      disk, or a package.json `jest` key) FLAGs; a test file replaced by a symlink FLAGs.
+#   K  a test file emptied of its test cases, or stripped of every assertion, FLAGs
+#      with the counts ("test cases removed: 3 → 0 in test/a.test.js"), while the gate
+#      itself stays green; moved or added tests do not.
 #
 # Requires git, node and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash test/gate-integrity.test.sh      (bash 3.2-safe)
@@ -390,6 +393,45 @@ gates "true" main
 marker_case "js bracket"      test/k.test.js        "test['skip']('x', () => {})"           test.skip
 marker_case "pytestmark"      tests/test_mod.py     "pytestmark = pytest.mark.skip"         pytest.mark.skip
 marker_case "go build tag"    pkg/y_test.go         "//go:build ignore"                     "go build constraint"
+
+echo "== K: a test file emptied or gutted (no skip marker) FLAGs =="
+# A node --test fixture: emptying a test file, or stripping its assertions, leaves the
+# gate green (node --test passes a file with no tests) without any marker to find.
+R2="$WORK/repo2"
+mkdir -p "$R2/src" "$R2/test"
+( cd "$R2" && git init -q -b main
+  printf '{ "name": "fx2", "private": true, "type": "module", "scripts": { "test": "node --test" } }\n' > package.json
+  printf 'export function a() { return 1; }\n' > src/a.js
+  printf '%s\n' 'import test from "node:test"; import assert from "node:assert/strict";' 'import { a } from "../src/a.js";' \
+    'test("a is 1", () => { assert.equal(a(), 1); });' 'test("a is a number", () => { assert.equal(typeof a(), "number"); });' \
+    'test("a is positive", () => { assert.ok(a() > 0); });' > test/a.test.js
+  git add -A && git commit -qm base )
+wt2() { N=$((N+1)); WT="$WORK/wt$N"; git -C "$R2" worktree add -q -b "k$N" "$WT" main >/dev/null 2>&1; }
+wt2
+printf 'export function a() { return 2; }\n' > "$WT/src/a.js"            # broken
+printf '%s\n' '// covered elsewhere' > "$WT/test/a.test.js"                 # emptied
+commit_wt "empty the test file"
+gates "npm test" main
+I="$(row integrity)"
+[ "$RC" -eq 0 ] && [ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *"test cases removed: 3 → 0 in test/a.test.js"* ]] \
+  && ok "K1 an emptied test file: the gate still passes, and the integrity row FLAGs 'test cases removed: 3 → 0'" \
+  || fail "K1 expected rc 0 and a FLAG naming the removed cases, got rc=$RC: $I"
+wt2
+printf 'export function a() { return 2; }\n' > "$WT/src/a.js"
+sed -i.bak -e 's/assert\.equal(a(), 1);/a();/' -e 's/assert\.equal(typeof a(), "number");/a();/' -e 's/assert\.ok(a() > 0);/a();/' "$WT/test/a.test.js" && rm -f "$WT/test/a.test.js.bak"
+commit_wt "gut the assertions"
+gates "npm test" main
+I="$(row integrity)"
+[ "$RC" -eq 0 ] && [[ "$(col "$I" 6)" == *"assertions removed: 3 → 0 in test/a.test.js"* ]] \
+  && ok "K2 tests kept but every assertion removed: FLAG 'assertions removed: 3 → 0'" \
+  || fail "K2 got rc=$RC: $I"
+wt2
+git -C "$WT" mv test/a.test.js test/b.test.js; commit_wt "move the suite"
+printf '%s\n' 'import test from "node:test"; import assert from "node:assert/strict";' 'test("more", () => { assert.ok(true); });' > "$WT/test/c.test.js"
+commit_wt "add a test"
+gates "npm test" main
+I="$(row integrity)"
+[[ "$(col "$I" 6)" != *"removed:"* ]] && ok "K3 moved or added tests are not counted as removed" || fail "K3 got: $I"
 
 echo
 echo "gate-integrity: $PASS passed, ${#FAILURES[@]} failed"

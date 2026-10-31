@@ -70,6 +70,21 @@ export interface TestIntegrityFindings {
    * means "could not prove nothing was weakened" and is itself a reason to flag.
    */
   readonly incomplete: readonly string[];
+  /**
+   * Test files that lost test cases (net, across their language family, so moving tests
+   * between files does not count) or every assertion while the file still exists:
+   * emptying or gutting a test passes the gate without any marker to find. Optional so
+   * an older literal still type-checks; absent ⇒ none.
+   */
+  readonly shrunk?: readonly TestShrink[];
+}
+
+/** A test file whose test-case or assertion count fell from base to head. */
+export interface TestShrink {
+  readonly path: string;
+  readonly kind: "cases" | "assertions";
+  readonly base: number;
+  readonly head: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +270,218 @@ const MARKER_RULES: readonly MarkerRule[] = [
 export function markerCandidate(p: string, extra?: RegExp | null): boolean {
   const x = extra ?? null;
   return MARKER_RULES.some((r) => r.applies(p, x));
+}
+
+// ---------------------------------------------------------------------------
+// Test-case and assertion counts (a test file emptied or gutted)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per language family: what DEFINES a test case and what ASSERTS, matched on the code
+ * of each line (comments cut out, so a commented-out test no longer counts).
+ */
+interface TestFamily {
+  readonly name: string;
+  readonly applies: PathPred;
+  readonly defs: RegExp;
+  readonly asserts: RegExp;
+}
+
+const TEST_FAMILIES: readonly TestFamily[] = [
+  {
+    name: "js",
+    applies: JS_TEST,
+    defs: /(?:^|[^.\w$])(?:it|test|describe|suite|context|specify|bench|xit|fit|xdescribe|fdescribe|xtest|ftest)(?:\s*\.\s*[A-Za-z]\w*)*\s*[(`]/g,
+    asserts:
+      /\b(?:expect|assert)\b\s*[.(]|\.should\b|\bt\.(?:is|not|deepEqual|notDeepEqual|true|false|truthy|falsy|equal|notEqual|strictEqual|throws|throwsAsync|ok|notOk|same|match|assert|snapshot|regex)\s*\(/g,
+  },
+  {
+    name: "py",
+    applies: PY_TEST,
+    defs: /^\s*(?:async\s+)?def\s+test/g,
+    asserts: /(?:^|[^\w.])assert\b|\bself\.assert\w*\s*\(|\bpytest\.raises\s*\(|\bself\.fail\s*\(/g,
+  },
+  {
+    name: "go",
+    applies: GO_TEST,
+    defs: /^\s*func\s+(?:\([^)]*\)\s*)?(?:Test|Benchmark|Fuzz|Example)\w*\s*\(/g,
+    asserts:
+      /\b[tb]\.(?:Error|Errorf|Fatal|Fatalf|Fail|FailNow)\s*\(|\b(?:assert|require)\.\w+\s*\(/g,
+  },
+  {
+    name: "rust",
+    applies: RUST_ANY,
+    defs: /#\[\s*(?:[\w:]+::)?test\b/g,
+    asserts:
+      /\b(?:assert|assert_eq|assert_ne|assert_matches|debug_assert|debug_assert_eq|debug_assert_ne)!\s*\(|#\[\s*should_panic\b/g,
+  },
+  {
+    name: "jvm",
+    applies: JVM_TEST,
+    defs: /@(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b/g,
+    asserts: /\b(?:assert\w*|verify|fail)\s*\(|\bshould\w*\b/g,
+  },
+  {
+    name: "cs",
+    applies: CS_TEST,
+    defs: /\[\s*(?:Fact|Theory|Test|TestMethod|DataTestMethod|TestCase)\b/g,
+    asserts: /\b(?:Assert|CollectionAssert|StringAssert)\.\w+\s*\(|\.Should\(\)/g,
+  },
+  {
+    name: "rb",
+    applies: RB_TEST,
+    defs: /^\s*(?:it|specify|example|scenario|test)\b\s*(?:\(|['"]|do\b|\{)|^\s*def\s+test_/g,
+    asserts: /\bexpect\s*[({]|\bassert\w*\b|\.should\b|\bmust_\w+|\bwont_\w+|\brefute\w*\b/g,
+  },
+  {
+    name: "php",
+    applies: PHP_TEST,
+    defs: /\bfunction\s+test\w*\s*\(|#\[\s*Test\b/g,
+    asserts:
+      /(?:\$this->|self::|static::|Assert::)assert\w+\s*\(|\$this->expectException\w*\s*\(|\$this->fail\s*\(/g,
+  },
+  {
+    name: "ex",
+    applies: EX_TEST,
+    defs: /^\s*(?:test|property)\s+["']/g,
+    asserts: /\b(?:assert|refute|assert_raise|assert_receive)\b/g,
+  },
+];
+
+function familyOf(p: string, extra: RegExp | null): TestFamily | null {
+  return TEST_FAMILIES.find((f) => f.applies(p, extra)) ?? null;
+}
+
+function countMatches(re: RegExp, text: string): number {
+  if (text.trim() === "") return 0;
+  re.lastIndex = 0;
+  let n = 0;
+  while (re.exec(text) !== null) n += 1;
+  re.lastIndex = 0;
+  return n;
+}
+
+/** Test cases and assertions in a whole file's text (null: not a test file we count). */
+export function countTestShape(
+  text: string,
+  path: string,
+  extra?: RegExp | null,
+): { cases: number; asserts: number } | null {
+  const fam = familyOf(path, extra ?? null);
+  if (!fam) return null;
+  const style = commentStyleOf(path);
+  let cases = 0;
+  let asserts = 0;
+  for (const line of text.split("\n")) {
+    const code = codeOf(line, style);
+    cases += countMatches(fam.defs, code);
+    asserts += countMatches(fam.asserts, code);
+  }
+  return { cases, asserts };
+}
+
+/** Net test-case / assertion change of one file in a patch (added minus removed lines). */
+export interface TestCountDelta {
+  /** Head path. */
+  readonly path: string;
+  /** Base path (differs on a rename); null for a file new in the delivery. */
+  readonly from: string | null;
+  readonly family: string;
+  readonly cases: number;
+  readonly asserts: number;
+}
+
+/**
+ * Per counted test file in a unified diff: test definitions and assertion lines added
+ * minus removed. Deleted files are left out (a deleted test is flagged as such). Pure.
+ */
+export function testCountDeltas(patch: string, extra?: RegExp | null): TestCountDelta[] {
+  const x = extra ?? null;
+  const out: TestCountDelta[] = [];
+  let header = false;
+  let from: string | null = null;
+  let cur: {
+    path: string;
+    from: string | null;
+    fam: TestFamily;
+    cases: number;
+    asserts: number;
+  } | null = null;
+  let style: CommentStyle = commentStyleOf("");
+  const flush = (): void => {
+    if (cur && (cur.cases !== 0 || cur.asserts !== 0)) {
+      out.push({
+        path: cur.path,
+        from: cur.from,
+        family: cur.fam.name,
+        cases: cur.cases,
+        asserts: cur.asserts,
+      });
+    }
+    cur = null;
+  };
+  for (const raw of patch.split("\n")) {
+    if (raw.startsWith("diff --git ")) {
+      flush();
+      header = true;
+      from = null;
+      continue;
+    }
+    if (header) {
+      if (raw.startsWith("--- ")) {
+        const t = unquoteGitPath(raw.slice(4).replace(/\t.*$/, ""));
+        from = t === "/dev/null" ? null : t.replace(/^a\//, "");
+      } else if (raw.startsWith("+++ ")) {
+        const t = unquoteGitPath(raw.slice(4).replace(/\t.*$/, ""));
+        const path = t === "/dev/null" ? null : t.replace(/^b\//, "");
+        const fam = path ? familyOf(path, x) : null;
+        cur = path && fam ? { path, from, fam, cases: 0, asserts: 0 } : null;
+        style = path ? commentStyleOf(path) : style;
+      } else if (raw.startsWith("@@")) header = false;
+      continue;
+    }
+    if (!cur) continue;
+    const c = cur as { fam: TestFamily; cases: number; asserts: number };
+    const sign = raw.startsWith("+") ? 1 : raw.startsWith("-") ? -1 : 0;
+    if (sign === 0) continue;
+    const code = codeOf(raw.slice(1), style);
+    c.cases += sign * countMatches(c.fam.defs, code);
+    c.asserts += sign * countMatches(c.fam.asserts, code);
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The test files that SHRANK: lost test cases while their family lost cases overall
+ * (so tests moved to another file of the same language, or gained, never count), or
+ * lost every assertion while still holding test cases at base. `baseText` gives the
+ * base file (by base path) for the counts; without it the case count falls back to
+ * what the diff removed, and an assertion drop cannot be judged. Pure.
+ */
+export function shrunkTests(
+  patch: string,
+  baseText: (path: string) => string | null,
+  extra?: RegExp | null,
+): TestShrink[] {
+  const deltas = testCountDeltas(patch, extra);
+  const famNet = new Map<string, number>();
+  for (const d of deltas) famNet.set(d.family, (famNet.get(d.family) ?? 0) + d.cases);
+  const out: TestShrink[] = [];
+  for (const d of deltas) {
+    if (d.cases >= 0 && d.asserts >= 0) continue;
+    const text = d.from === null ? null : baseText(d.from);
+    const shape = text === null ? null : countTestShape(text, d.from ?? d.path, extra);
+    if (d.cases < 0 && (famNet.get(d.family) ?? 0) < 0) {
+      const base = shape ? shape.cases : -d.cases;
+      out.push({ path: d.path, kind: "cases", base, head: Math.max(0, base + d.cases) });
+    }
+    if (d.asserts < 0 && shape && shape.cases > 0 && shape.asserts > 0) {
+      const head = Math.max(0, shape.asserts + d.asserts);
+      if (head === 0) out.push({ path: d.path, kind: "assertions", base: shape.asserts, head });
+    }
+  }
+  return out;
 }
 
 /** Which comment syntaxes a file's language has (what {@link codeOf} strips). */
@@ -694,6 +921,8 @@ export interface AnalyzeInput {
    * with no tests yet adds its first config as a matter of course. Absent ⇒ false.
    */
   readonly baseHasTests?: boolean;
+  /** Base text of test files the patch removed test lines from (by base path). */
+  readonly baseFiles?: ReadonlyArray<{ readonly path: string; readonly text: string | null }>;
 }
 
 /** Classify a base..head change. Pure. */
@@ -741,6 +970,11 @@ export function analyzeTestIntegrity(input: AnalyzeInput): TestIntegrityFindings
     scripts,
     configs,
     incomplete: [...(input.incomplete ?? []), ...typeChanged],
+    shrunk: shrunkTests(
+      input.patch,
+      (p) => (input.baseFiles ?? []).find((b) => b.path === p)?.text ?? null,
+      extra,
+    ),
   };
 }
 
@@ -751,8 +985,14 @@ export function hasIntegrityFindings(f: TestIntegrityFindings): boolean {
     f.markers.length > 0 ||
     f.scripts.length > 0 ||
     f.configs.length > 0 ||
-    f.incomplete.length > 0
+    f.incomplete.length > 0 ||
+    (f.shrunk?.length ?? 0) > 0
   );
+}
+
+/** `test cases removed: 3 → 0 in test/a.test.js` */
+function shrinkLine(x: TestShrink): string {
+  return `${x.kind === "cases" ? "test cases" : "assertions"} removed: ${x.base} → ${x.head} in ${x.path}`;
 }
 
 function configKind(p: string): string {
@@ -776,6 +1016,7 @@ export function integrityItems(f: TestIntegrityFindings): string[] {
     out.push(`added ${m.marker} in ${m.path}${m.line ? `:${m.line}` : ""}`);
   for (const s of f.scripts) out.push(`${s.change} script "${s.script}" in ${s.file}`);
   for (const c of f.configs) out.push(`${c.change} ${configKind(c.path)} ${c.path}`);
+  for (const x of f.shrunk ?? []) out.push(shrinkLine(x));
   for (const r of f.incomplete) out.push(`scan incomplete: ${r}`);
   return out;
 }
@@ -830,6 +1071,8 @@ export function summarizeIntegrity(f: TestIntegrityFindings, max = 3): string {
       )})`,
     );
   }
+  const shrunk = f.shrunk ?? [];
+  if (shrunk.length) parts.push(list(shrunk.map(shrinkLine), max));
   if (f.incomplete.length) parts.push(`scan incomplete (${list([...f.incomplete], max)})`);
   return parts.length
     ? parts.join("; ")
@@ -847,6 +1090,7 @@ export function integrityPaths(f: TestIntegrityFindings): string[] {
   f.markers.forEach((m) => add(m.path));
   f.scripts.forEach((s) => add(s.file));
   f.configs.forEach((c) => add(c.path));
+  (f.shrunk ?? []).forEach((x) => add(x.path));
   return [...seen];
 }
 
@@ -999,6 +1243,12 @@ export function collectTestIntegrity(
     };
   });
 
+  // Base text of test files that lost test-case or assertion lines (for the counts).
+  const MAX_BASE_FILES = 200;
+  const baseFiles = testCountDeltas(patchText, extra)
+    .filter((d) => d.from !== null && (d.cases < 0 || d.asserts < 0))
+    .slice(0, MAX_BASE_FILES)
+    .map((d) => ({ path: d.from!, text: show(base, d.from!) }));
   // Only an ADDED config (or a package.json, which may gain a runner key) needs to know
   // whether the base already has tests: skip the tree walk otherwise.
   const mayAddConfig =
@@ -1015,6 +1265,7 @@ export function collectTestIntegrity(
     extraTestPathRe: extra,
     incomplete,
     baseHasTests: mayAddConfig && baseHasTestFiles(git, base, extra),
+    baseFiles,
   });
 }
 

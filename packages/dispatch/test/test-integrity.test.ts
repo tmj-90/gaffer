@@ -429,6 +429,109 @@ describe("name-status: deletes, renames, config", () => {
   });
 });
 
+/** A one-file patch replacing `removed` lines with `added` ones. */
+function patchReplacing(path: string, removed: string[], added: string[], from = path): string {
+  return [
+    `diff --git a/${from} b/${path}`,
+    `--- a/${from}`,
+    `+++ b/${path}`,
+    `@@ -1,${removed.length} +1,${added.length} @@`,
+    ...removed.map((l) => `-${l}`),
+    ...added.map((l) => `+${l}`),
+    "",
+  ].join("\n");
+}
+
+describe("test cases and assertions removed (a test file emptied or gutted)", () => {
+  const js3 = [
+    'test("a", () => { assert.equal(a(), 1); });',
+    'test("b", () => { assert.equal(b(), 2); });',
+    'test("c", () => { assert.ok(c()); });',
+  ];
+  const analyze = (patch: string, baseFiles: Array<{ path: string; text: string | null }>) =>
+    analyzeTestIntegrity({ nameStatus: [], patch, baseFiles });
+
+  it("flags a test file emptied of its tests, naming the counts", () => {
+    const f = analyze(patchReplacing("test/a.test.js", js3, ["// nothing to see"]), [
+      { path: "test/a.test.js", text: js3.join("\n") + "\n" },
+    ]);
+    expect(f.shrunk).toEqual([
+      { path: "test/a.test.js", kind: "cases", base: 3, head: 0 },
+      { path: "test/a.test.js", kind: "assertions", base: 3, head: 0 },
+    ]);
+    expect(hasIntegrityFindings(f)).toBe(true);
+    expect(summarizeIntegrity(f)).toContain("test cases removed: 3 → 0 in test/a.test.js");
+    expect(integrityItems(f)).toContain("test cases removed: 3 → 0 in test/a.test.js");
+  });
+
+  it("flags a commented-out test, and tests whose assertions were all removed", () => {
+    const f = analyze(patchReplacing("test/a.test.js", [js3[0]!], [`// ${js3[0]!}`]), [
+      { path: "test/a.test.js", text: js3.join("\n") },
+    ]);
+    expect(f.shrunk).toEqual([{ path: "test/a.test.js", kind: "cases", base: 3, head: 2 }]);
+    const g = analyze(
+      patchReplacing("test/a.test.js", js3, [
+        'test("a", () => { a(); });',
+        'test("b", () => { b(); });',
+        'test("c", () => { c(); });',
+      ]),
+      [{ path: "test/a.test.js", text: js3.join("\n") }],
+    );
+    expect(g.shrunk).toEqual([{ path: "test/a.test.js", kind: "assertions", base: 3, head: 0 }]);
+    expect(summarizeIntegrity(g)).toContain("assertions removed: 3 → 0 in test/a.test.js");
+  });
+
+  it.each([
+    ["tests/test_x.py", ["def test_a():", "    assert a() == 1"], "    pass"],
+    ["pkg/x_test.go", ["func TestA(t *testing.T) {", '\tif a() != 1 { t.Errorf("x") }'], "}"],
+    ["src/lib.rs", ["#[test]", "fn a() { assert_eq!(a(), 1); }"], "fn a() {}"],
+    [
+      "src/test/java/ATest.java",
+      ["  @Test", "  void a() { assertEquals(1, a()); }"],
+      "  void a() {}",
+    ],
+    ["spec/a_spec.rb", ["  it 'works' do", "    expect(a).to eq(1)"], "  end"],
+    ["tests/ATest.php", ["  public function testA() {", "    $this->assertSame(1, a());"], "  }"],
+    ["tests/ATests.cs", ["  [Fact]", "  public void A() { Assert.Equal(1, A()); }"], "  }"],
+  ])("%s: a removed test definition and its assertion flag", (path, removed, kept) => {
+    const base = [...removed, kept].join("\n");
+    const f = analyze(patchReplacing(path, removed, []), [{ path, text: base }]);
+    expect(f.shrunk).toEqual([
+      { path, kind: "cases", base: 1, head: 0 },
+      { path, kind: "assertions", base: 1, head: 0 },
+    ]);
+  });
+
+  it("does not flag added, reordered or moved tests, or a new file", () => {
+    // Gains.
+    expect(analyze(patchAdding("test/a.test.js", [js3[0]!]), []).shrunk ?? []).toEqual([]);
+    // Reordered / reformatted inside one file.
+    expect(
+      analyze(patchReplacing("test/a.test.js", js3, [...js3].reverse()), [
+        { path: "test/a.test.js", text: js3.join("\n") },
+      ]).shrunk ?? [],
+    ).toEqual([]);
+    // Moved to another file of the same family.
+    const moved = [
+      patchReplacing("test/a.test.js", js3.slice(1), []),
+      patchAdding("test/b.test.js", js3.slice(1)),
+    ].join("");
+    expect(analyze(moved, [{ path: "test/a.test.js", text: js3.join("\n") }]).shrunk ?? []).toEqual(
+      [],
+    );
+    // A greenfield file has no base to fall from.
+    expect(analyze(patchAdding("test/new.test.js", ["// todo later"]), []).shrunk ?? []).toEqual(
+      [],
+    );
+    // An assertion helper removed while the tests keep other assertions: not to zero.
+    expect(
+      analyze(patchReplacing("test/a.test.js", [js3[2]!], ['test("c", () => { c(); });']), [
+        { path: "test/a.test.js", text: js3.join("\n") },
+      ]).shrunk ?? [],
+    ).toEqual([]);
+  });
+});
+
 describe("changedGateScripts", () => {
   const base = JSON.stringify({ scripts: { test: "vitest run", lint: "eslint .", build: "tsc" } });
 
@@ -820,6 +923,26 @@ describe("collectTestIntegrity against a real git repo", () => {
     sh(["commit", "-qm", "exclude the failing test"]);
     expect(collectTestIntegrity(git, base, "HEAD").configs).toEqual([
       { path: "vitest.config.mjs", change: "added" },
+    ]);
+  });
+
+  it("finds a test file emptied of its tests (real git)", () => {
+    dir = mkdtempSync(join(tmpdir(), "gi-"));
+    sh(["init", "-q", "-b", "main"]);
+    mkdirSync(join(dir, "test"));
+    writeFileSync(
+      join(dir, "test/a.test.js"),
+      'test("a", () => { assert.equal(1, 1); });\ntest("b", () => { assert.ok(1); });\n',
+    );
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "base"]);
+    const base = sh(["rev-parse", "HEAD"]).trim();
+    writeFileSync(join(dir, "test/a.test.js"), "// emptied\n");
+    sh(["commit", "-qam", "empty it"]);
+    const f = collectTestIntegrity(git, base, "HEAD");
+    expect(f.shrunk).toEqual([
+      { path: "test/a.test.js", kind: "cases", base: 2, head: 0 },
+      { path: "test/a.test.js", kind: "assertions", base: 2, head: 0 },
     ]);
   });
 

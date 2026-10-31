@@ -1,6 +1,7 @@
 # Gaffer greenfield "create-a-repo" delivery mode (sourced by factory.config.sh).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+_GAFFER_GREENFIELD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # A `bootstrap` ticket (dispatch `ticket.bootstrap == 1`) has NO existing repo to
 # branch — it CREATES one. Today's normal flow branches an onboarded repo and
@@ -530,6 +531,22 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
   # scratch dir so no CLAUDE.md / project settings load into a one-word answer.
   local scratch rc=0 text="" t0=$SECONDS
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-inherit.XXXXXX")" || return 0
+  # BUDGET ADMISSION (external review #6): this classifier is a PAID `claude -p` (booked
+  # as kind `inherit`), and it runs right after a bootstrap delivery, the spend most
+  # likely to have just used up the cap. Ask the same check every other paid launch asks
+  # (lib/budget.sh → lib/budget-admission.mjs). If budget.sh was not sourced, load the
+  # sibling copy; if the check still cannot be asked, refuse (fail closed). A refusal
+  # echoes nothing, so the caller leaves the link for a human, as on a bad answer.
+  if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 && [ -f "$_GAFFER_GREENFIELD_LIB/budget.sh" ]; then
+    # shellcheck source=budget.sh
+    . "$_GAFFER_GREENFIELD_LIB/budget.sh"
+  fi
+  if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 || ! gaffer_paid_launch_admitted inherit; then
+    local _why="inherit: budget admission refused the paid repo classifier for #${tnum:-?}, no agent spawned; the link is left for a human"
+    if declare -F log >/dev/null 2>&1; then log "$_why"; else printf '%s\n' "$_why" >&2; fi
+    rm -rf "$scratch"
+    return 0
+  fi
   ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
     >"$scratch/out.json" 2>/dev/null || rc=$?
   if type gaffer_usage_record >/dev/null 2>&1; then

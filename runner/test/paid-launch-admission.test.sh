@@ -9,7 +9,9 @@
 #   • Node launchers through lib/worker.mjs `deliver` (tester, decompose, product owner,
 #     onboarding analysis, merge resolver) and spec-author's own spawn;
 #   • shell launchers through lib/worker.sh `worker_deliver` (delivery, bootstrap,
-#     review, clarify, eval judge) via lib/budget.sh `gaffer_paid_launch_admitted`.
+#     review, clarify, eval judge) via lib/budget.sh `gaffer_paid_launch_admitted`;
+#   • the ambiguous-sibling inherit classifier (lib/greenfield.sh, kind inherit), which
+#     asks gaffer_paid_launch_admitted directly before its own spawn.
 # A stub claude records every invocation; no real model is ever called.
 # Run: bash test/paid-launch-admission.test.sh   (bash 3.2 safe)
 # =====================================================================
@@ -144,13 +146,69 @@ grep -q 'GAFFER_LAUNCH_KIND=delivery worker_deliver' "$RUNNER_DIR/tick.sh" && gr
   && ok "tick.sh's delivery and bootstrap spawns go through the seam with their kind" || fail "tick.sh launch kinds missing"
 [ "$(grep -c 'GAFFER_LAUNCH_KIND=review worker_deliver' "$RUNNER_DIR/lib/review.sh")" = 2 ] && ok "review.sh's reviewer + security reviewer spawns name their kind" || fail "review.sh launch kinds missing"
 grep -q 'GAFFER_LAUNCH_KIND=clarify worker_deliver' "$RUNNER_DIR/lib/clarify.sh" && ok "clarify.sh names its kind" || fail "clarify.sh launch kind missing"
+# worker.sh sourced on its own (budget.sh not loaded): the seam loads the sibling check
+# rather than skipping it, so the launch is still refused.
+W_OUT="$(
+  export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude"
+  unset -f gaffer_paid_launch_admitted 2>/dev/null
+  # shellcheck source=../lib/worker.sh
+  . "$RUNNER_DIR/lib/worker.sh"
+  rm -f "$INV"; printf '{}' > "$WORK/mcp.json"
+  GAFFER_LAUNCH_KIND=delivery worker_deliver "$WORK" "prompt" "" "$WORK/mcp.json" "$WORK/out.json" 2>/dev/null; echo "rc=$? calls=$(calls)"
+)"
+case "$W_OUT" in *"rc=77 calls=0"*) ok "worker_deliver with budget.sh not sourced: the check is still asked (rc 77, no spawn)" ;; *) fail "worker.sh alone skipped the admission: $W_OUT" ;; esac
 grep -q 'gaffer_paid_launch_admitted' "$RUNNER_DIR/lib/worker.sh" && ok "worker_deliver asks gaffer_paid_launch_admitted before every spawn" || fail "worker.sh lacks the admission"
+
+echo "== the ambiguous-sibling inherit classifier (lib/greenfield.sh) refuses too =="
+# tick.sh runs gaffer_inherit_repo right after a bootstrap delivery; for an ambiguous
+# sibling it starts a paid `claude -p` booked as kind `inherit`. With the caps exhausted
+# it must not spawn, must book nothing, and must answer empty (the link stays for a human).
+INH_PLAN="{\"ambiguous\":[{\"ticket\":30,\"candidates\":[{\"repo\":\"a\"}],\"argv\":[\"-p\",\"pick\",\"--output-format\",\"json\"],\"claudeBin\":\"$WORK/claude\"}]}"
+_ledger_rows() { wc -l < "$DATA/usage-ledger.jsonl" | tr -d ' '; }
+_rows0="$(_ledger_rows)"
+rm -f "$INV"
+INH_OUT="$(
+  export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude"
+  # shellcheck source=../factory.config.sh
+  source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+  export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
+  export GAFFER_LOG="$WORK/log"
+  printf '%s' "$INH_PLAN" | _gaffer_inherit_amb_spawn 0 30 2>"$WORK/inh-err"
+)"
+[ "$(calls)" = 0 ] && ok "inherit classifier (factory.config.sh sourced): no spawn with the caps exhausted" || fail "inherit classifier SPAWNED despite exhausted caps (calls=$(calls))"
+[ -z "$INH_OUT" ] && ok "inherit classifier: a refusal answers empty (the link is left for a human)" || fail "inherit classifier answered '$INH_OUT' after a refusal"
+[ "$(_ledger_rows)" = "$_rows0" ] && ok "inherit classifier: the refused launch booked no ledger row" || fail "inherit refusal grew the ledger: $(cat "$DATA/usage-ledger.jsonl")"
+INH_ERR="$(cat "$WORK/inh-err" "$WORK/log" 2>/dev/null)"
+case "$INH_ERR" in *"budget admission refused the paid repo classifier for #30"*) ok "inherit classifier: the refusal is logged with the ticket" ;; *) fail "inherit refusal not logged ($INH_ERR)" ;; esac
+# greenfield.sh on its own (budget.sh not sourced): it loads the sibling check, never skips it.
+rm -f "$INV"
+INH_OUT="$(
+  export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude"
+  unset -f gaffer_paid_launch_admitted 2>/dev/null
+  # shellcheck source=../lib/greenfield.sh
+  . "$RUNNER_DIR/lib/greenfield.sh"
+  gaffer_timeout() { shift; "$@"; }
+  printf '%s' "$INH_PLAN" | _gaffer_inherit_amb_spawn 0 30 2>/dev/null
+)"
+[ "$(calls)" = 0 ] && [ -z "$INH_OUT" ] && ok "inherit classifier (greenfield.sh alone): the check is still asked, no spawn" || fail "greenfield.sh alone spawned past the budget (calls=$(calls), out=$INH_OUT)"
+[ "$(_ledger_rows)" = "$_rows0" ] && ok "inherit classifier (greenfield.sh alone): nothing booked" || fail "greenfield.sh alone grew the ledger"
+grep -q 'gaffer_paid_launch_admitted inherit' "$RUNNER_DIR/lib/greenfield.sh" && ok "greenfield.sh asks the shared check as kind inherit" || fail "greenfield.sh lacks the inherit admission"
 
 echo "== within budget the launch proceeds (the check is not a blanket refusal) =="
 printf '{"GAFFER_DAILY_BUDGET_USD":"100","GAFFER_BUDGET_USD":"100"}' > "$DATA/settings.json"
 rm -f "$INV"
 echo '{"brief":"a todo app"}' | _t 120 node "$RUNNER_DIR/bin/decompose.mjs" >/dev/null 2>&1
 [ "$(calls)" -ge 1 ] && ok "decompose spawns when the budget has headroom" || fail "decompose did not spawn within budget"
+rm -f "$INV"
+INH_OUT="$(
+  export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude"
+  # shellcheck source=../factory.config.sh
+  source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
+  export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
+  export GAFFER_LOG="$WORK/log"
+  printf '%s' "$INH_PLAN" | _gaffer_inherit_amb_spawn 0 30 2>/dev/null
+)"
+[ "$(calls)" = 1 ] && [ -n "$INH_OUT" ] && ok "the inherit classifier spawns (once) when the budget has headroom" || fail "inherit classifier did not spawn within budget (calls=$(calls), out=$INH_OUT)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "paid-launch-admission: ALL $PASS checks passed"; exit 0

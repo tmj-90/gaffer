@@ -210,7 +210,11 @@ against the cap. Both worker seams ask it — `lib/worker.sh`
 `worker_deliver` (delivery, bootstrap, review, clarify, eval judge, via
 `gaffer_paid_launch_admitted`, rc 77) and `lib/worker.mjs` `deliver` (tester, decompose
 for Plan a build, product owner for Suggest work, onboarding analysis, the merge
-resolver; status 77) — as does `bin/spec-author.mjs` before its own spawn. A refused
+resolver; status 77) — as do `bin/spec-author.mjs` before its own spawn and the
+ambiguous-sibling inherit classifier (`lib/greenfield.sh` `_gaffer_inherit_amb_spawn`,
+kind `inherit`, after a bootstrap), which on a refusal leaves the link for a human. If
+`lib/budget.sh` was not sourced, both shell callers load it; a check that still cannot be
+asked refuses the launch. A refused
 launch spawns nothing and books nothing (`runner/test/paid-launch-admission.test.sh`); a cap that cannot be re-read
 stops the run (fail closed). A `settings.json` that exists but does not parse as a
 flat JSON object (a hand edit, a truncated copy), or that cannot be read because

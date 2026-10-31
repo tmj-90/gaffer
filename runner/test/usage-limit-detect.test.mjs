@@ -87,6 +87,52 @@ const ROWS = [
     "usage_limit",
     "2026-11-01T11:00:00.000Z",
   ],
+  // Claude Code 2.1.316 wording (native binary): label table + ` · progress saved`.
+  [
+    errEnv("You've hit your 5-hour limit · resets 3pm (UTC)"),
+    "cc-hit-your-limit",
+    "usage_limit",
+    "2026-10-31T15:00:00.000Z",
+  ],
+  [
+    errEnv("You've hit your 5-hour limit · resets 3pm (Europe/London) · progress saved"),
+    "cc-hit-your-limit",
+    "usage_limit",
+    "2026-10-31T15:00:00.000Z",
+  ],
+  [
+    errEnv("You've hit your weekly limit · resets Nov 3, 9am (America/New_York) · progress saved"),
+    "cc-hit-your-limit",
+    "usage_limit",
+    "2026-11-03T14:00:00.000Z",
+  ],
+  [
+    errEnv("You've hit your Fable limit · resets Nov 5, 2pm (UTC)"),
+    "cc-hit-your-limit",
+    "usage_limit",
+    "2026-11-05T14:00:00.000Z",
+  ],
+  [errEnv("You've hit your Fable limit"), "cc-hit-your-limit", "usage_limit", null],
+  [
+    errEnv("You've hit your usage credit limit · resets Nov 1, 12am (UTC)"),
+    "cc-hit-your-limit",
+    "usage_limit",
+    "2026-11-01T00:00:00.000Z",
+  ],
+  [
+    errEnv("You're out of usage credits · resets 6pm (UTC) · progress saved"),
+    "cc-out-of-usage-credits",
+    "usage_limit",
+    "2026-10-31T18:00:00.000Z",
+  ],
+  [
+    errEnv("You're out of usage credits. Switch to another model to continue."),
+    "cc-out-of-usage-credits",
+    "usage_limit",
+    null,
+  ],
+  [errEnv("You've reached your Fable limit."), "cc-reached-your-limit", "usage_limit", null],
+  [errEnv("You've reached your Fable limit"), "cc-reached-your-limit", "usage_limit", null],
   [
     errEnv("You're out of extra usage · resets 6pm (Europe/Paris)"),
     "cc-out-of-extra-usage",
@@ -195,6 +241,24 @@ assert(
 assert("an unknown zone → null (the default pause applies)", at("3pm (Mars/Olympus)") === null);
 assert("garbage time → null", at("soonish (UTC)") === null && at("25pm (UTC)") === null);
 assert("no reset suffix → null", parseResetClock("You've hit your session limit", NOW) === null);
+assert(
+  "a trailing ' · progress saved' keeps a weekly reset (not the short default)",
+  iso(
+    parseResetClock(
+      "You've hit your weekly limit · resets Nov 6, 2026, 1am (UTC) · progress saved",
+      NOW,
+    ),
+  ) === "2026-11-06T01:00:00.000Z",
+);
+assert(
+  "any other trailing ' · …' segment is ignored too",
+  iso(parseResetClock("You've hit your limit · resets 3pm (UTC) · run /usage to see more", NOW)) ===
+    "2026-10-31T15:00:00.000Z",
+);
+assert(
+  "only ' · progress saved', no reset → null (default pause)",
+  parseResetClock("You've hit your 5-hour limit · progress saved", NOW) === null,
+);
 
 console.log("== 3: negative controls — ordinary replies are never a limit ==");
 const NEG = [
@@ -226,6 +290,21 @@ const NEG = [
     { type: "result", subtype: "error_max_budget_usd", is_error: true, result: "" },
   ],
   ["an auth error", errEnv("Invalid API key · Please run /login")],
+  // Spend caps and admin switches need a person to raise the cap: they are NOT a
+  // usage pause (they stay ordinary failures and park the ticket for a human).
+  ["a monthly spend cap", errEnv("You've hit your monthly spend limit · raise it at https://x")],
+  ["a team budget", errEnv("You've hit your team's shared budget · raise it at https://x")],
+  ["a seat without usage credits", errEnv("Your seat type doesn't include usage credits")],
+  ["a two-word 'reached your … limit'", errEnv("You've reached your monthly spend limit.")],
+  [
+    "2.1.316 wording on a SUCCESS envelope",
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      result: "You've hit your 5-hour limit · resets 3pm (UTC) · progress saved",
+    },
+  ],
   [
     "a mid-sentence mention on an error",
     errEnv("Failed: the upstream said You've hit your session limit"),

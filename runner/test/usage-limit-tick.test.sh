@@ -27,6 +27,11 @@
 #      GAFFER_LOCK_TIMEOUT, a delivery that commits and returns a SUCCESS envelope
 #      still reaches in_review (no usage_paused, no ticket.usage_limited event, not
 #      skip-listed): classification runs without the lock.
+#   F. 2.1.316 WORDING: the native-binary CLI prints "You've hit your 5-hour limit
+#      · resets <Mon D, Ham> (UTC) · progress saved". That is a usage pause too
+#      (usage_paused, attempt_count 0, no no-commit counter, a ticket.usage_limited
+#      event) and the trailing " · progress saved" does not cost the real reset:
+#      paused_until is the printed reset + 1 min, not the short default.
 # Requires a built workspace + git. SKIPs otherwise.
 # Run: bash runner/test/usage-limit-tick.test.sh
 # =====================================================================
@@ -241,6 +246,43 @@ ST3="$(sql 'select status from tickets where number=?' "$NUM3")"
   && ok "no ticket.usage_limited event" || fail "a ticket.usage_limited event was recorded for #$NUM3"
 grep -qx "$NUM3" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && fail "#$NUM3 was skip-listed" || ok "#$NUM3 was not skip-listed"
 [ ! -e "$GAFFER_DATA/usage-pause.json" ] && ok "no usage-pause.json was written" || fail "a pause was recorded: $(cat "$GAFFER_DATA/usage-pause.json")"
+
+echo "== F: Claude Code 2.1.316 wording (5-hour limit + ' · progress saved') pauses with its real reset =="
+node "$MJS" clear
+NUM4="$(wg ticket create -t "Add FOURTH marker" -d "Add a FOURTH.txt file at the repo root." --risk low 2>/dev/null | node "$RUNNER_DIR/lib/json-tool.mjs" expr 'd.ticket.number')"
+TID4="$(sql 'select id from tickets where number=?' "$NUM4")"
+node -e '
+const {DatabaseSync}=require("node:sqlite"); const db=new DatabaseSync(process.env.DISPATCH_DB);
+db.prepare("insert into ticket_repos(ticket_id,repo_id,role,access,relation,source) values(?,?,?,?,?,?)").run(process.argv[1],process.argv[2],"primary","write","confirmed","manual");
+db.prepare("insert into acceptance_criteria(id,ticket_id,text,sort_order) values(?,?,?,0)").run("ac-4",process.argv[1],"FOURTH.txt exists at the repo root");
+' "$TID4" "$RID"
+wg ticket ready "$NUM4" >/dev/null 2>&1
+[ "$(sql 'select status from tickets where number=?' "$NUM4")" = "ready" ] || fail "fixture ticket #$NUM4 did not reach ready"
+# A reset 3 days out, printed the way the CLI does beyond 24h ("Nov 3, 9am", with
+# the year only when it differs), in UTC.
+RESET_MS="$(node -e 'const d=new Date(Date.now()+3*86400000);d.setUTCMinutes(0,0,0);process.stdout.write(String(d.getTime()))')"
+RESET_TXT="$(node -e 'const d=new Date(Number(process.argv[1]));const o={month:"short",day:"numeric",hour:"numeric",hour12:true,timeZone:"UTC"};if(d.getUTCFullYear()!==new Date().getUTCFullYear())o.year="numeric";process.stdout.write(d.toLocaleString("en-US",o).replace(/[ \u202f]([AP]M)/i,(a,b)=>b.toLowerCase()))' "$RESET_MS")"
+CALLS4="$WORK/claude-calls-4"; : > "$CALLS4"
+cat >"$FAKE/claude-316" <<SH
+#!/bin/sh
+date +%s >> "$CALLS4"
+printf '%s\n' '{"type":"result","subtype":"success","is_error":true,"num_turns":1,"result":"You'"'"'ve hit your 5-hour limit · resets $RESET_TXT (UTC) · progress saved","stop_reason":"stop_sequence","total_cost_usd":0}'
+exit 1
+SH
+chmod +x "$FAKE/claude-316"
+CLAUDE_BIN="$FAKE/claude-316" MAX_TICKS=1 bash "$RUNNER_DIR/loop.sh" >"$WORK/loop5.log" 2>&1
+L5="$(cat "$WORK/loop5.log")"
+[ "$(wc -l < "$CALLS4" | tr -d ' ')" = "1" ] && ok "one delivery call was made" || fail "316-stub calls: $(wc -l < "$CALLS4")"
+has "$L5" "tick 1/1 → usage_paused" && ok "loop reported tick → usage_paused for the 5-hour wording" || fail "loop5: $(grep 'tick 1' "$WORK/loop5.log")"
+[ "$(sql 'select status from tickets where number=?' "$NUM4")" = "ready" ] && ok "#$NUM4 is back to ready" || fail "#$NUM4 is '$(sql 'select status from tickets where number=?' "$NUM4")'"
+[ "$(sql 'select attempt_count from tickets where number=?' "$NUM4")" = "0" ] && ok "attempt_count was NOT bumped" || fail "attempt_count=$(sql 'select attempt_count from tickets where number=?' "$NUM4")"
+[ ! -e "$GAFFER_DATA/.nocommit-failures/$NUM4" ] && ok "the no-commit counter was not touched" || fail "nocommit counter = $(cat "$GAFFER_DATA/.nocommit-failures/$NUM4")"
+[ "$(sql "select count(*) from work_events where entity_id=? and event_type='ticket.usage_limited'" "$TID4")" = "1" ] \
+  && ok "a ticket.usage_limited event was recorded" || fail "no ticket.usage_limited event for #$NUM4"
+WANT4="$(node -e 'process.stdout.write(new Date(Number(process.argv[1])+60000).toISOString())' "$RESET_MS")"
+[ "$(pf paused_until)" = "$WANT4" ] && [ "$(pf basis)" = "reset" ] \
+  && ok "paused_until = the printed reset ($RESET_TXT UTC) + 1 min despite ' · progress saved'" \
+  || fail "pause file: until=$(pf paused_until) want=$WANT4 basis=$(pf basis)"
 
 echo
 if [ "${#FAILS[@]}" -eq 0 ]; then

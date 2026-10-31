@@ -120,9 +120,14 @@ maintenance lane so it runs alongside delivery rather than only on idle ticks.
 ### When the model's usage window runs out
 
 A delivery call can come back refused by the plan's usage window or a rate limit
-(`You've hit your session limit · resets 3pm (Europe/London)`, `API Error: Rate limit
-reached`, the SDK's `error: "rate_limit"`). That is not a failed delivery, so the
-runner does not treat it as one:
+(`You've hit your session limit · resets 3pm (Europe/London)`, newer builds'
+`You've hit your 5-hour limit · resets 3pm (UTC) · progress saved`, `You're out of
+usage credits`, `API Error: Rate limit reached`, the SDK's `error: "rate_limit"`).
+That is not a failed delivery, so the runner does not treat it as one. The table
+covers both the 2.1.42 npm build's wording and the 2.1.316 native build's; a
+trailing ` · progress saved` does not hide the reset time. Spend caps and admin
+switches (`You've hit your monthly spend limit`, `…team's shared budget`) are not
+a pause: they need a person to raise the cap, so they stay ordinary failures.
 
 - `lib/worker.mjs` `parseResult` classifies it (`usageLimit`) from one table of
   matched strings, `USAGE_LIMIT_PATTERNS` / `USAGE_LIMIT_SHAPES`, each row citing

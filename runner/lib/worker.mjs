@@ -668,15 +668,30 @@ export function extractStopReason(json) {
 //     " · resets 3pm (Europe/London)" suffix), "epoch" (unix seconds in the match),
 //     "retry-after" (a retry-after seconds hint in the text). No reset → the
 //     configured default pause (usage-pause.mjs), which errs toward a longer wait.
-// Verified against Claude Code 2.1.42's cli.js (the build on the factory host):
-//   rj1(A,q)  = `You've hit your ${A}${q}`, A ∈ {session limit, weekly limit, Opus
-//               limit, Sonnet limit, usage limit, limit}; q = ` · resets ${time}`
-//               where time is j_1(resetsAt, true): "3pm" / "3:30pm" within 24h,
+// Verified against two Claude Code builds: 2.1.42's npm cli.js, and 2.1.316's
+// native binary (the CLI on PATH on the build host this was checked on; the
+// factory runs whichever build its operator installed, so BOTH wordings stay):
+//   2.1.42  rj1(A,q)  = `You've hit your ${A}${q}`, A ∈ {session limit, weekly
+//               limit, Opus limit, Sonnet limit, usage limit, limit}.
+//   2.1.316 M(e,n,_,{progressSavedSuffix}) = `You've hit your ${e}${n}` plus an
+//               optional ` · progress saved`, e from its label table {5-hour limit,
+//               weekly limit, Opus limit, Sonnet limit, Fable limit, usage credit
+//               limit} or the literals "usage limit" / "limit".
+//   Both:     n/q = ` · resets ${time}` where time is "3pm" / "3:30pm" within 24h,
 //               "Oct 9, 3pm" beyond (", 2027" added in another year), then
-//               ` (${Intl timeZone})`.
-//   b79       = `You're out of extra usage${q}` (overage disabled: out_of_credits).
-//   kw6       = `API Error: Rate limit reached` (HTTP 429 without unified-limit
+//               ` (${Intl timeZone})`. A trailing ` · progress saved` (2.1.316)
+//               follows the zone; parseResetClock ignores trailing segments.
+//   2.1.42  b79       = `You're out of extra usage${q}` (overage disabled: out_of_credits).
+//   2.1.316           = `You're out of usage credits${n}` (+ ` · progress saved`), and
+//               `You're out of usage credits. Switch to another model…`.
+//   2.1.316           = `You've reached your Fable limit` / `…limit.` (mid-session).
+//   2.1.42  kw6       = `API Error: Rate limit reached` (HTTP 429 without unified-limit
 //               headers); Qq1 (Opus high load) is also tagged error:"rate_limit".
+//   NOT matched on purpose: spend caps and admin switches ("You've hit your
+//   monthly spend limit", "…team's shared budget", "Your seat type doesn't
+//   include…", "… requires usage credits"). They do not end on their own; a
+//   human has to raise the cap, so they stay ordinary failures that park the
+//   ticket for a person instead of an open-ended run of paused re-tries.
 // The Agent SDK's assistant message carries `error: "rate_limit"`
 // (SDKAssistantMessageError); the raw Messages API 429 body is
 // {type:"error", error:{type:"rate_limit_error", message}}.
@@ -687,9 +702,25 @@ export const USAGE_LIMIT_PATTERNS = Object.freeze([
   {
     id: "cc-hit-your-limit",
     kind: "usage_limit",
-    re: /^You've hit your (?:session limit|weekly limit|Opus limit|Sonnet limit|usage limit|limit)(?=$|\s|\u00b7)/,
+    re: /^You've hit your (?:5-hour limit|session limit|weekly limit|Opus limit|Sonnet limit|Fable limit|usage credit limit|usage limit|limit)(?=$|\s|\u00b7|\.)/,
     reset: "clock",
-    source: "Claude Code 2.1.42 cli.js rj1(): `You've hit your <limit> · resets <time> (<zone>)`",
+    source:
+      "Claude Code 2.1.42 cli.js rj1() and 2.1.316 M(): `You've hit your <limit> · resets <time> (<zone>)[ · progress saved]`",
+  },
+  {
+    id: "cc-out-of-usage-credits",
+    kind: "usage_limit",
+    re: /^You're out of usage credits(?=$|\s|\u00b7|\.)/,
+    reset: "clock",
+    source:
+      "Claude Code 2.1.316 (overage out_of_credits): `You're out of usage credits · resets <time> (<zone>)[ · progress saved]`",
+  },
+  {
+    id: "cc-reached-your-limit",
+    kind: "usage_limit",
+    re: /^You've reached your (?:[A-Za-z0-9-]+ )?limit(?=$|\s|\u00b7|\.)/,
+    reset: "clock",
+    source: "Claude Code 2.1.316 (mid-session): `You've reached your Fable limit[.]`",
   },
   {
     id: "cc-out-of-extra-usage",
@@ -801,10 +832,20 @@ function zonedToday(nowMs, tz) {
  * `nowMs`. Returns null when there is no suffix, the time does not parse, or the
  * zone is unknown (the caller then uses the configured default pause). A suffix
  * without a zone is read in the host's zone (the CLI formats in its own zone).
+ * Trailing ` · …` segments after the reset (2.1.316's ` · progress saved`) are
+ * ignored, so they cannot push a weekly reset back to the short default pause.
  */
 export function parseResetClock(text, nowMs = Date.now()) {
   if (typeof text !== "string") return null;
-  const m = /(?:\u00b7|\u2219|-)\s*resets\s+(.+?)\s*(?:\(([^)]+)\))?\s*$/i.exec(text);
+  // Drop trailing ` · …` segments that carry no reset (2.1.316 appends
+  // ` · progress saved` after the zone), so the zone anchor below still holds.
+  let head = text.trim();
+  for (;;) {
+    const tail = /\s*[\u00b7\u2219]\s*([^\u00b7\u2219]*)$/.exec(head);
+    if (!tail || /\bresets\b/i.test(tail[1])) break;
+    head = head.slice(0, tail.index).trimEnd();
+  }
+  const m = /(?:\u00b7|\u2219|-)\s*resets\s+(.+?)\s*(?:\(([^)]+)\))?\s*$/i.exec(head);
   if (!m) return null;
   const when = m[1].trim();
   const tz = (m[2] || "").trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";

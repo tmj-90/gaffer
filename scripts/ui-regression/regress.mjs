@@ -936,6 +936,27 @@ try {
     await shot(page, "floor");
   }
 
+  // ── 6b. health: flow efficiency claims only agent-working time ──────────────
+  //   The merged ticket above has a transition history, so the form guide shows the
+  //   flow efficiency as working time and lists where shipped tickets waited (the
+  //   merge queue on its own) instead of counting review and the queue as work.
+  {
+    await page.goto(`${BASE}/#/health`, { waitUntil: "load" });
+    await sleep(900);
+    const bandLabel =
+      (await page.getAttribute(".form-guide .fg-eff .band", "aria-label").catch(() => "")) || "";
+    /^Flow efficiency (<1|\d+)% of lead time with an agent working on the ticket$/.test(bandLabel)
+      ? ok(`health: flow efficiency says what it measures ("${bandLabel}")`)
+      : bad(`health: flow efficiency band reads '${bandLabel}'`);
+    const waitRows = await page
+      .$$eval(".form-guide .fg-wait dt", (els) => els.map((e) => e.textContent.trim()))
+      .catch(() => []);
+    waitRows.includes("Waiting to merge") && waitRows.includes("In review or testing")
+      ? ok(`health: waiting is shown on its own (${waitRows.join(", ")})`)
+      : bad(`health: no waiting breakdown (rows: ${waitRows.join(", ") || "none"})`);
+    await shot(page, "health-flow");
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [

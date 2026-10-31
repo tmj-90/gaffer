@@ -337,6 +337,58 @@ describe("GET /api/health", () => {
     }
   });
 
+  it("serves flow efficiency with the merge queue as waiting: 11 minutes of work, a week to merge", async () => {
+    // Third external review: 11 minutes to merge-ready, then a week there, read as 100%
+    // flow efficiency ("time spent working"). The endpoint did not even carry the
+    // number, so the dashboard fell back to a WIP ratio (one shipped ticket → 100%).
+    const h = await startHarness({ MEMORY_CLI_BIN: undefined, MEMORY_DB: undefined });
+    try {
+      const nowMs = Date.parse(h.clock.now());
+      const MIN = 60_000;
+      const created = nowMs - 7 * DAY - 11 * MIN;
+      const t = h.wg.createTicket({ title: "Waited a week to merge" }, human);
+      h.wg.db
+        .prepare(`UPDATE tickets SET status='done', created_at=?, updated_at=? WHERE id=?`)
+        .run(new Date(created).toISOString(), new Date(nowMs).toISOString(), t.id);
+      let seq = 0;
+      const tx = (from: string, to: string, atMs: number) =>
+        h.wg.db
+          .prepare(
+            `INSERT INTO work_events (id, entity_type, entity_id, actor_type, event_type, payload_json, created_at)
+             VALUES (@id, 'ticket', @tid, 'agent', 'ticket.transitioned', @p, @at)`,
+          )
+          .run({
+            id: `fl-${seq++}`,
+            tid: t.id,
+            p: JSON.stringify({ from, to, reason: null }),
+            at: new Date(atMs).toISOString(),
+          });
+      tx("draft", "ready", created);
+      tx("ready", "claimed", created + MIN);
+      tx("claimed", "in_progress", created + MIN);
+      tx("in_progress", "in_review", created + 8 * MIN);
+      tx("in_review", "ready_for_merge", created + 11 * MIN);
+      tx("ready_for_merge", "done", nowMs);
+
+      const { status, body } = await get(h.baseUrl, "/api/health");
+      expect(status).toBe(200);
+      const eff = body.flow_efficiency as { median_pct: number | null; sample: number };
+      expect(eff.sample).toBe(1);
+      expect(eff.median_pct).not.toBeNull();
+      expect(eff.median_pct!).toBeLessThan(1);
+      const waiting = body.waiting as {
+        merge_wait_ms: number;
+        review_ms: number;
+        queue_pct: number;
+      };
+      expect(waiting.merge_wait_ms / DAY).toBeCloseTo(7, 2);
+      expect(waiting.review_ms).toBe(3 * MIN);
+      expect(waiting.queue_pct).toBeGreaterThan(99);
+    } finally {
+      await h.close();
+    }
+  });
+
   it("computes cost-per-shipped from the real done-ticket count and reports full coverage", async () => {
     const ledger = join(tmpDir, "usage-ledger.jsonl");
     const today = new Date().toISOString().slice(0, 10);

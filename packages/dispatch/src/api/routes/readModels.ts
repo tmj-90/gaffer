@@ -273,6 +273,7 @@ export function routeReadModels(
         updated_at: t.updated_at,
         done_at: sig?.done_at ?? null,
         active_ms: sig?.active_ms ?? null,
+        wait_ms: sig?.wait_ms ?? null,
       };
     });
 
@@ -378,6 +379,12 @@ export function routeReadModels(
       duration: health.duration,
       cycle_time: flow.cycle_time,
       throughput: flow.throughput,
+      // Flow efficiency = time an agent worked the ticket / lead time; review, testing,
+      // the merge queue and holds are WAITING, reported on their own (the transition
+      // log cannot show active review time). Never sent before, so the dashboard fell
+      // back to a WIP ratio that read 100% for one shipped ticket.
+      flow_efficiency: flow.flow_efficiency,
+      waiting: flow.waiting,
       // Governance-ROI: merge / rework / unattended-safe rates from real transitions.
       governance,
       // Skill hit-rate (selected-vs-applied). Zero-state when no telemetry.

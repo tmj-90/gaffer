@@ -152,6 +152,15 @@ usage ledger and the ticket transition log, and says only what those can show:
   Each ticket's row says how many send-backs came from review and how many from
   the runner, and whether its spend was placed by attempt or, for rows older than
   attempt ids, by the call's end time minus its duration.
+- **Flow efficiency** is the median share of a shipped ticket's lead time with
+  an agent working on it (`claimed` or `in_progress`). Everything else is
+  waiting, and the form guide lists it on its own: **waiting to merge** (approved,
+  in `ready_for_merge`, with the longest wait), **in review or testing**, **blocked
+  or paused**, and **before work started**, plus the share of lead time queued
+  after work began. Review counts as waiting because the transition log shows how
+  long a ticket sat in review, not how long anyone actively reviewed it. A ticket
+  that took 11 minutes to reach merge-ready and then waited a week reads under 1%
+  with a week's merge wait, not 100%. With nothing shipped the figure is a dash.
 
 ![The work board](img/board.png)
 

@@ -123,9 +123,15 @@ wg expire-claims >/dev/null 2>&1 \
 # this sweeps the matching stale worktree dirs. Safe even at concurrency 1 — a
 # clean data dir has none — and it NEVER touches a worktree whose ticket is still
 # claimed/in_progress (a live worker's), so it's safe to run before the pool spins.
+# POSITIVE EVIDENCE ONLY (external review #4): a worktree whose ticket status cannot be
+# read (Dispatch down, a missing DB) is KEPT and named, never treated as abandoned; one
+# with uncommitted work is kept unless its ticket is terminal; DRY_RUN removes nothing.
 if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
-  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+  _reclaim_err="$(mktemp "${TMPDIR:-/tmp}/gaffer-reclaim.XXXXXX" 2>/dev/null || echo /dev/null)"
+  _reclaimed="$(gaffer_cleanup_orphaned_worktrees 2>"$_reclaim_err" | tr '\n' ' ')"
   [ -n "${_reclaimed// /}" ] && echo "gaffer factory: reclaimed orphaned worktree(s) for ticket(s): ${_reclaimed% }"
+  [ -s "$_reclaim_err" ] && sed 's/^gaffer: orphan-recovery: /gaffer factory: worktree preserved: /; s/^gaffer factory: worktree preserved: DRY_RUN: /gaffer factory: DRY_RUN: /' "$_reclaim_err" >&2
+  [ "$_reclaim_err" = /dev/null ] || rm -f "$_reclaim_err"
 fi
 
 RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
@@ -217,7 +223,8 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   # now-unclaimed ones we can already see. NEVER touches a claimed/in_progress
   # ticket's worktree, so a (now-finished) pool leaves only genuinely-stale dirs.
   if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
-    _reclaimed_end="$(gaffer_cleanup_orphaned_worktrees 2>/dev/null | tr '\n' ' ')"
+    # Same positive-evidence rule as at start; the kept-worktree notes go to stderr.
+    _reclaimed_end="$(gaffer_cleanup_orphaned_worktrees | tr '\n' ' ')"
     [ -n "${_reclaimed_end// /}" ] && echo "gaffer factory: end-of-run reclaimed orphaned worktree(s): ${_reclaimed_end% }"
   fi
 

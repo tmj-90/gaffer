@@ -148,6 +148,15 @@ rejected delivery's worktree is torn down; its commits live on the ephemeral
 branch and never merge. The isolation is physical (the OS enforces it), not
 trust-based.
 
+**Leftover worktrees are removed on positive evidence only.** At the start and end of a
+run `loop.sh` sweeps worktrees a killed worker left behind (`lib/orphan-recovery.sh`).
+A worktree whose ticket status cannot be read (Dispatch down, a missing database, a
+timeout, an unknown ticket) is **kept** and named ("worktree preserved: … status is
+UNKNOWN"); a claimed, in-progress or paused ticket's worktree is kept; a non-terminal
+ticket's worktree with uncommitted changes is kept; only a definite terminal status
+(`done` / `failed` / `cancelled`), or a clean worktree whose commits are already on the
+branch, is removed. `--dry-run` removes nothing and says what it would remove.
+
 ## Model tiering
 
 Planning and implementation run on different models, configured in

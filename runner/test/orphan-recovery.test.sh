@@ -16,6 +16,11 @@
 #   AC4  a real git worktree is detached cleanly (the real repo loses the linked
 #        worktree, not just the directory).
 #   AC5  sweeping an empty/absent worktrees root is a no-op (never fatal).
+#   AC6  (external review #4) POSITIVE EVIDENCE ONLY: a worktree whose ticket status is
+#        UNKNOWN (dispatch error, missing DB, unknown ticket) is KEPT and named; a
+#        non-terminal ticket's worktree with UNCOMMITTED changes is kept; a clean one
+#        is swept; DRY_RUN removes nothing; and the live loop (loop.sh) with Dispatch
+#        unavailable leaves a worktree holding uncommitted work intact and says so.
 #
 # Run: bash test/orphan-recovery.test.sh
 # =====================================================================
@@ -47,7 +52,10 @@ case "$1" in
   10) echo '{"ticket":{"status":"done"}}' ;;        # terminal → sweep
   20) echo '{"ticket":{"status":"in_progress"}}' ;; # LIVE worker → keep
   30) echo '{"ticket":{"status":"claimed"}}' ;;     # claimed → keep
-  *)  echo '' ;;                                     # unknown → sweep
+  50) echo '{"ticket":{"status":"ready"}}' ;;       # ready + CLEAN worktree → sweep
+  60) echo '{"ticket":{"status":"ready"}}' ;;       # ready + UNCOMMITTED work → keep
+  70) echo 'dispatch: database not found' >&2; exit 1 ;; # a failed read → UNKNOWN → keep
+  *)  echo '' ;;                                     # no answer → UNKNOWN → keep
 esac
 EOF
 chmod +x "$WORK/wg_show.sh"
@@ -75,11 +83,17 @@ mk_real_wt 10
 mk_plain_wt 20
 # Ticket 30 (claimed) → must be kept.
 mk_plain_wt 30
-# Ticket 40 (unknown / no longer exists) → must be swept.
+# Ticket 40 (no answer) → UNKNOWN → must be KEPT (never delete on a failed read).
 mk_plain_wt 40
+# Ticket 50 (ready, clean real worktree) → swept (its commits live on the branch).
+mk_real_wt 50
+# Ticket 60 (ready, real worktree with uncommitted work) → kept.
+mk_real_wt 60; echo "uncommitted" > "$GAFFER_DATA/worktrees/ticket-60/repo/wip.txt"
+# Ticket 70 (dispatch errors) → UNKNOWN → kept.
+mk_real_wt 70; echo "uncommitted" > "$GAFFER_DATA/worktrees/ticket-70/repo/wip.txt"
 
 echo "== sweep =="
-REMOVED="$(gaffer_cleanup_orphaned_worktrees | sort | tr '\n' ' ')"
+REMOVED="$(gaffer_cleanup_orphaned_worktrees 2>"$WORK/kept.log" | sort | tr '\n' ' ')"
 echo "  removed: ${REMOVED:-<none>}"
 
 echo "== AC1/AC4: terminal-ticket worktree (#10) removed + detached =="
@@ -93,13 +107,46 @@ echo "== AC2: in_progress worktree (#20) is PROTECTED =="
 echo "== AC3: claimed worktree (#30) is PROTECTED =="
 [ -e "$GAFFER_DATA/worktrees/ticket-30" ] && ok "#30 (claimed) kept" || fail "#30 (claimed) was wrongly removed"
 
-echo "== AC1: unknown-ticket worktree (#40) removed =="
-[ ! -e "$GAFFER_DATA/worktrees/ticket-40" ] && ok "#40 (no live ticket) removed" || fail "#40 still present"
+echo "== AC6: UNKNOWN status (#40 no answer, #70 dispatch error) is KEPT and named =="
+[ -e "$GAFFER_DATA/worktrees/ticket-40" ] && ok "#40 (status unknown) kept" || fail "#40 (unknown status) was deleted"
+[ -f "$GAFFER_DATA/worktrees/ticket-70/repo/wip.txt" ] && ok "#70 (dispatch error) kept, uncommitted work intact" || fail "#70 deleted on a failed dispatch read"
+grep -q '#70 ticket status is UNKNOWN' "$WORK/kept.log" && ok "the kept worktree is named with the reason" || fail "no 'UNKNOWN — kept' note: $(cat "$WORK/kept.log")"
+
+echo "== AC6: non-terminal ticket — clean worktree swept (#50), uncommitted work kept (#60) =="
+[ ! -e "$GAFFER_DATA/worktrees/ticket-50" ] && ok "#50 (ready, clean) swept" || fail "#50 clean worktree not swept"
+[ -f "$GAFFER_DATA/worktrees/ticket-60/repo/wip.txt" ] && ok "#60 (ready, uncommitted work) kept" || fail "#60 uncommitted work deleted"
+grep -q '#60 ticket is ready and the worktree has UNCOMMITTED changes' "$WORK/kept.log" && ok "#60 kept with the reason" || fail "no uncommitted note for #60"
 
 echo "== echoed removals =="
 case " $REMOVED " in *" 10 "*) ok "echoed #10";; *) fail "did not echo #10";; esac
-case " $REMOVED " in *" 40 "*) ok "echoed #40";; *) fail "did not echo #40";; esac
+case " $REMOVED " in *" 50 "*) ok "echoed #50";; *) fail "did not echo #50";; esac
+case " $REMOVED " in *" 40 "*|*" 60 "*|*" 70 "*) fail "echoed a kept worktree ($REMOVED)";; *) ok "kept worktrees not echoed";; esac
 case " $REMOVED " in *" 20 "*) fail "wrongly echoed #20";; *) ok "did not echo #20";; esac
+
+echo "== AC6: DRY_RUN removes nothing =="
+mk_real_wt 80
+cat > "$WORK/wg_done.sh" <<'EOF2'
+#!/usr/bin/env bash
+echo '{"ticket":{"status":"done"}}'
+EOF2
+chmod +x "$WORK/wg_done.sh"
+DRY_OUT="$(DRY_RUN=1 GAFFER_WG_SHOW_CMD="$WORK/wg_done.sh" gaffer_cleanup_orphaned_worktrees 2>&1)"
+[ -e "$GAFFER_DATA/worktrees/ticket-80" ] && ok "DRY_RUN kept even a done ticket's worktree" || fail "DRY_RUN deleted a worktree"
+case "$DRY_OUT" in *"DRY_RUN: would remove the leftover worktree of #80"*) ok "DRY_RUN says what it would remove" ;; *) fail "DRY_RUN output: $DRY_OUT" ;; esac
+
+echo "== AC6: the live loop with Dispatch UNAVAILABLE keeps uncommitted work and says so =="
+LW="$WORK/loop"; mkdir -p "$LW/.gaffer/worktrees"
+git -C "$REPO" worktree add -q -b gaffer/ticket-90-x "$LW/.gaffer/worktrees/ticket-90/repo" "$BASE" >/dev/null 2>&1
+echo "uncommitted" > "$LW/.gaffer/worktrees/ticket-90/repo/wip.txt"
+printf '#!/bin/sh\necho "{\\"type\\":\\"result\\",\\"result\\":\\"stub\\"}"\n' > "$WORK/claude"; chmod +x "$WORK/claude"
+for dry in 1 0; do
+  LOUT="$(env -u GAFFER_WG_SHOW_CMD GAFFER_DATA="$LW/.gaffer" DISPATCH_DB="$LW/.gaffer/missing/dispatch.sqlite" \
+    MEMORY_DB="$LW/.gaffer/memory.sqlite" DISPATCH_AUDIT="$LW/.gaffer/audit.jsonl" CLAUDE_BIN="$WORK/claude" \
+    DRY_RUN=$dry MAX_TICKS=1 EMPTY_POLL_LIMIT=1 perl -e 'alarm shift; exec @ARGV' 120 bash "$RUNNER_DIR/loop.sh" 2>&1)"
+  [ -f "$LW/.gaffer/worktrees/ticket-90/repo/wip.txt" ] && ok "loop (DRY_RUN=$dry, no DB): the worktree with uncommitted work is intact" \
+    || fail "loop (DRY_RUN=$dry) deleted the worktree: $(printf '%s' "$LOUT" | tail -5 | tr '\n' '|')"
+  case "$LOUT" in *"worktree preserved: #90 ticket status is UNKNOWN"*) ok "loop (DRY_RUN=$dry) says the worktree was preserved and why" ;; *) fail "loop did not say so: $(printf '%s' "$LOUT" | head -8 | tr '\n' '|')" ;; esac
+done
 
 echo "== AC5: empty/absent root is a no-op =="
 rm -rf "$GAFFER_DATA/worktrees"

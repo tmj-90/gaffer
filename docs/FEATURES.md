@@ -292,7 +292,11 @@ on**:
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft. |
 
 The same panel controls the **idle loops** (background work the factory mines
-between real tickets) and the **planning-debate** depth. Every knob the factory
+between real tickets) and the **planning-debate** depth. Secret-bearing settings —
+the Slack and generic webhook URLs, which are posting authority on their own — are
+never shown back: the panel says whether one is set and names its host, with
+**Replace** and **Remove**; only an admin principal can read the value through the
+API. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it
 — is listed in the generated [`CONFIG.md`](CONFIG.md).
 

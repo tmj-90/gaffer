@@ -69,6 +69,14 @@ export interface SettingDef {
    * always allowed — it clears the override back to the built-in default).
    */
   readonly choices?: readonly string[];
+  /**
+   * SECRET-BEARING (external review #5): the value itself is a credential — a Slack or
+   * generic webhook URL is posting authority on its own. GET /api/settings never returns
+   * it to any principal: it reports `configured` and the URL's `host` only. An ADMIN
+   * principal reads the value back through GET /api/settings/secret/:key; the dashboard
+   * shows a masked field with a Replace action. New secret keys set this and inherit it.
+   */
+  readonly secret?: boolean;
 }
 
 /** One setting as reported to the UI by GET /api/settings. */
@@ -91,6 +99,12 @@ export interface SettingView {
   readonly help?: string;
   /** Allowed values for an enum setting — the UI renders these as a dropdown. */
   readonly choices?: readonly string[];
+  /** A secret-bearing key: `value`/`effective` are always "" — see `configured`/`host`. */
+  readonly secret?: true;
+  /** Secret keys only: true when a value is in force (env or file). */
+  readonly configured?: boolean;
+  /** Secret keys only: the URL's host (e.g. hooks.slack.com) when it parses, else null. */
+  readonly host?: string | null;
 }
 
 /**
@@ -338,14 +352,21 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "string",
     group: "notifications",
     label: "Webhook URL",
-    help: "POST each human-gate event as JSON to this URL (the generic integration).",
+    help:
+      "POST each human-gate event as JSON to this URL (the generic integration). The URL " +
+      "is a credential: the dashboard shows only whether it is set and its host; replace it " +
+      "to change it.",
+    secret: true,
   },
   {
     key: "GAFFER_NOTIFY_SLACK_URL",
     type: "string",
     group: "notifications",
     label: "Slack webhook URL",
-    help: "Slack incoming-webhook URL — gates arrive as a Slack message.",
+    help:
+      "Slack incoming-webhook URL — gates arrive as a Slack message. Anyone holding the URL " +
+      "can post to the channel, so it is never shown back: only whether it is set and its host.",
+    secret: true,
   },
   {
     key: "GAFFER_NOTIFY_DESKTOP",
@@ -921,7 +942,7 @@ export function listSettings(
       effective = "";
       source = "default";
     }
-    return {
+    const view = {
       key: def.key,
       value: fileValue,
       effective,
@@ -933,7 +954,51 @@ export function listSettings(
       ...(def.help !== undefined ? { help: def.help } : {}),
       ...(def.choices !== undefined ? { choices: def.choices } : {}),
     };
+    return def.secret ? redactSecretView(view) : view;
   });
+}
+
+/** The host of a URL-shaped secret, or null (never any path, query or credential). */
+export function secretHost(value: string): string | null {
+  try {
+    const u = new URL(value.trim());
+    return u.host || null;
+  } catch {
+    return null;
+  }
+}
+
+/** A secret setting as every principal sees it: whether it is set, and its host. */
+function redactSecretView(v: SettingView): SettingView {
+  return {
+    ...v,
+    value: "",
+    effective: "",
+    secret: true,
+    configured: v.effective.trim() !== "",
+    host: v.effective.trim() !== "" ? secretHost(v.effective) : null,
+  };
+}
+
+/** True when `key` is a known secret-bearing setting. */
+export function isSecretSetting(key: string): boolean {
+  return SETTING_DEFS.some((d) => d.key === key && d.secret === true);
+}
+
+/**
+ * The in-force value of ONE secret setting (env when locked, else the file), for an
+ * ADMIN principal's explicit read-back (GET /api/settings/secret/:key). Null when the
+ * key is not a known secret setting.
+ */
+export function readSecretSetting(
+  key: string,
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): { key: string; value: string; source: SettingSource } | null {
+  if (!isSecretSetting(key)) return null;
+  if (isEnvLocked(env, key)) return { key, value: env[key] ?? "", source: "env" };
+  const fileValue = readSettingsFile(path)[key] ?? "";
+  return { key, value: fileValue, source: fileValue !== "" ? "file" : "default" };
 }
 
 /** Outcome of a settings write: which keys persisted and which were rejected. */

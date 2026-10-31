@@ -13739,8 +13739,68 @@ function renderSettingRow(s, editors) {
 /** The mode the settings on screen were read under (for "from the graduated mode"). */
 let settingsModeName = "";
 
+/** Sentinel an untouched secret editor reads as (never sent: it equals `initial`). */
+const SECRET_UNCHANGED = "\u0000unchanged";
+
+/**
+ * A SECRET-BEARING setting (a webhook URL is posting authority): the server never sends
+ * its value, only whether it is set and its host. Show that, masked, with Replace (a new
+ * value is typed in, never the old one shown) and Remove. Untouched, the editor reads as
+ * the sentinel and nothing is sent.
+ */
+function renderSecretSettingInput(s, editors) {
+  const state = s.configured ? `Set${s.host ? ` · ${s.host}` : ""}` : "Not set";
+  const masked = el(
+    "span",
+    {
+      class: `setting-secret mono${s.configured ? " is-set" : ""}`,
+      "aria-label": s.configured
+        ? `${s.label} is set${s.host ? ` for ${s.host}` : ""}; the value is hidden.`
+        : `${s.label} is not set.`,
+    },
+    [s.configured ? "•••••••• " : "", state],
+  );
+  if (s.envLocked) return el("div", { class: "setting-secret-row" }, [masked]);
+  let mode = "keep"; // keep | replace | remove
+  const input = el("input", {
+    type: "password",
+    autocomplete: "off",
+    spellcheck: "false",
+    placeholder: "Paste the new URL",
+    "aria-label": `New value for ${s.label}`,
+    hidden: "",
+  });
+  const replace = el("button", { type: "button", class: "btn small ghost" }, "Replace");
+  const remove = s.configured
+    ? el("button", { type: "button", class: "btn small ghost" }, "Remove")
+    : null;
+  replace.addEventListener("click", () => {
+    mode = "replace";
+    input.hidden = false;
+    input.focus();
+  });
+  if (remove)
+    remove.addEventListener("click", () => {
+      mode = mode === "remove" ? "keep" : "remove";
+      remove.textContent = mode === "remove" ? "Keep" : "Remove";
+      masked.classList.toggle("is-removing", mode === "remove");
+      remove.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  editors.set(s.key, {
+    read: () =>
+      mode === "remove"
+        ? ""
+        : mode === "replace" && input.value.trim() !== ""
+          ? input.value.trim()
+          : SECRET_UNCHANGED,
+    initial: SECRET_UNCHANGED,
+  });
+  return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
+}
+
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
+  if (s.secret) return renderSecretSettingInput(s, editors);
   if (s.envLocked) {
     // Read-only: show the env-driven value if known, else a muted placeholder.
     // The actual env value isn't exposed by the API (it could be a secret), so we

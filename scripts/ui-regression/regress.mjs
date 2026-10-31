@@ -753,6 +753,36 @@ try {
     whoJson && whoJson.capability === "read" && whoJson.actor && whoJson.actor.id === "ci-reviewer"
       ? ok("API: the minted token authenticates as principal ci-reviewer (read)")
       : bad(`API: minted token whoami unexpected: ${who.status} ${JSON.stringify(whoJson)}`);
+    // External review #5: a webhook URL is a secret — a read principal sees only whether
+    // it is set and its host, and cannot read it back.
+    {
+      await api("POST", "/api/settings", {
+        settings: { GAFFER_NOTIFY_SLACK_URL: "https://hooks.slack.com/services/UI/REGRESS/SECRET" },
+      });
+      const asRead = await fetch(`${BASE}/api/settings`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      const txt = asRead.ok ? await asRead.text() : "";
+      txt && !txt.includes("SECRET") && txt.includes('"host":"hooks.slack.com"')
+        ? ok("API: a read principal sees a webhook as configured + host only")
+        : bad(`API: settings leaked a webhook to a read principal (${asRead.status})`);
+      const back = await fetch(`${BASE}/api/settings/secret/GAFFER_NOTIFY_SLACK_URL`, {
+        headers: { Authorization: `Bearer ${minted}` },
+      });
+      back.status === 403
+        ? ok("API: a read principal is refused the secret read-back (403)")
+        : bad(`API: secret read-back answered ${back.status} to a read principal`);
+      await page.goto(`${BASE}/#/settings`, { waitUntil: "load" });
+      await sleep(900);
+      const maskedTxt =
+        (await page.textContent("#set-GAFFER_NOTIFY_SLACK_URL .setting-secret").catch(() => "")) ||
+        "";
+      maskedTxt.includes("hooks.slack.com") && !maskedTxt.includes("SECRET")
+        ? ok("Settings: the Slack webhook shows masked (set · host) with Replace")
+        : bad(`Settings: the webhook field is not masked: '${maskedTxt.slice(0, 80)}'`);
+      await shot(page, "settings-secret-masked");
+      await api("POST", "/api/settings", { settings: { GAFFER_NOTIFY_SLACK_URL: "" } });
+    }
     const denied = await fetch(`${BASE}/tickets`, {
       method: "POST",
       headers: { Authorization: `Bearer ${minted}`, "content-type": "application/json" },

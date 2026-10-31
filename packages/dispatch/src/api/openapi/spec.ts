@@ -212,9 +212,19 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "List factory settings",
     description:
-      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`).",
+      "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
     capability: "read",
     responses: [ok("`{ settings: SettingView[] }`.")],
+  },
+  {
+    method: "GET",
+    path: "/api/settings/secret/:key",
+    tag: T.config,
+    summary: "Read a secret setting back (admin)",
+    description:
+      "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+    capability: "full",
+    responses: [ok("`{ key, value, source }`."), notFound],
   },
   {
     method: "POST",

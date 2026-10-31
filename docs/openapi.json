@@ -456,7 +456,7 @@
           "Configuration"
         ],
         "summary": "List factory settings",
-        "description": "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`).",
+        "description": "Every known setting with its file value, whether the environment locks it, and its group (`SettingView[]`). A secret-bearing key (`secret: true`, e.g. a webhook URL) never carries its value to any principal: `value` and `effective` are empty, `configured` says whether one is set and `host` names the URL's host.",
         "responses": {
           "200": {
             "description": "`{ settings: SettingView[] }`.",
@@ -546,6 +546,75 @@
           },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/api/settings/secret/{key}": {
+      "get": {
+        "operationId": "getApiSettingsSecretByKey",
+        "tags": [
+          "Configuration"
+        ],
+        "summary": "Read a secret setting back (admin)",
+        "description": "The in-force value of one secret-bearing setting, for an ADMIN principal only (the operator token, or an admin principal with full capability); 403 for a read token or a human principal.",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "key."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ key, value, source }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
             "content": {
               "application/json": {
                 "schema": {

@@ -723,10 +723,16 @@ const NODE_WRITE_PRESENCE = [
 const RUBY_WRITE_PRESENCE = [
   /\b(?:File|IO)\.write\s*\(/,
   /\bFile\.open\s*\([^)]*,\s*["'][^"']*[waWA]/,
+  // Paren-less calls (`File.write "p", "x"`, `File.open "p", "a" do …`) were missed.
+  /\b(?:File|IO)\.(?:write|binwrite)\s/,
+  /\bFile\.(?:open|new)\s[^,;]{0,1024},\s*["'][^"']*[waWA+]/,
   /\b(?:FileUtils\.(?:cp|mv|copy|move)|File\.rename)\b/,
 ];
 const PERL_WRITE_PRESENCE = [
   /\bopen\s*\([^,]*,\s*["']\+?>>?/, // open(FH, '>'|'>>', …) or open(FH, ">…")
+  // The paren-less forms (open F, ">…" / open my $f, ">>", …). Bounded quantifiers keep
+  // these linear on a 64 KiB adversarial input (an unbounded one is quadratic: ~1 s).
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?/,
 ];
 const PHP_WRITE_PRESENCE = [
   /\bfile_put_contents\s*\(/,
@@ -751,6 +757,8 @@ const NODE_WRITE_LITERALS = [
 const RUBY_WRITE_LITERALS = [
   /\b(?:File|IO)\.write\s*\(\s*(["'][^"']*["'])/,
   /\bFile\.open\s*\(\s*(["'][^"']*["'])\s*,\s*["'][^"']*[waWA]/,
+  /\b(?:File|IO)\.(?:write|binwrite)\s+(["'][^"']*["'])/,
+  /\bFile\.(?:open|new)\s+(["'][^"']*["'])\s*,\s*["'][^"']*[waWA+]/,
 ];
 const PERL_WRITE_LITERALS = [
   // 3-arg form: open(FH, '>'|'>>', 'path')  → capture the path (3rd arg).
@@ -760,6 +768,9 @@ const PERL_WRITE_LITERALS = [
   // → literal). We re-wrap in a sentinel quote so the shared stripQuotes/
   // classify path works; the leading >>? and any whitespace are dropped.
   /\bopen\s*\(\s*[^,]*,\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
+  // …and both forms without parentheses: open my $f, '>', 'path' / open F, ">path".
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?["']\s*,\s*(["'][^"']*["'])/,
+  /\bopen\s[^,;]{0,256},\s*["']\+?>>?\s*([^"'$>][^"'$]*)["']/,
 ];
 const PHP_WRITE_LITERALS = [
   /\bfile_put_contents\s*\(\s*(["'][^"']*["'])/,
@@ -2220,6 +2231,10 @@ function extractBashWriteTargets(cmd) {
     } else if (verb === "sed" && /\s-[a-z]*i/.test(segment)) {
       // `sed -i ... FILE` — in-place edit; the file is the last operand.
       if (operands.length >= 1) add(operands[operands.length - 1]);
+    } else if ((verb === "perl" || verb === "ruby") && /\s-[a-z]*i/.test(segment)) {
+      // `perl -pi -e PROG FILE…` / `ruby -i -pe PROG FILE…` — in-place edit of every
+      // operand after the program (or script): each FILE is written.
+      for (const op of operands.slice(1)) add(op);
     } else if (AWK_FAMILY.has(verb)) {
       // awk/gawk/mawk: scan the program body for `> path` redirect write targets.
       // The program is the first non-flag operand (the quoted script).

@@ -953,6 +953,33 @@ rootCase(
   WRITE_ROOT,
   "allow",
 );
+// REVIEW (skill-routing): the PAREN-LESS perl / ruby write forms and the in-place `-i`
+// edit were ALLOWED into any path — the agent could append a forged `decision: "allow"`
+// row to $GAFFER_DATA/tool-metrics.jsonl (or write anywhere else) through them.
+for (const [label, cmd] of [
+  ["perl -e paren-less 2-arg open '>>'", `perl -e 'open F,">>${OUTSIDE}/a.txt"; print F 1'`],
+  ["perl -e paren-less 3-arg open", `perl -e 'open my $f, ">>", "${OUTSIDE}/a.txt"'`],
+  ["ruby -e paren-less File.write", `ruby -e 'File.write "${OUTSIDE}/a.txt", "x"'`],
+  [
+    "ruby -e paren-less File.open 'a'",
+    `ruby -e 'File.open "${OUTSIDE}/a.txt", "a" do |f| f.puts 1 end'`,
+  ],
+  ["ruby -e paren-less IO.write", `ruby -e 'IO.write "${READ_ROOT}/a.txt", "x"'`],
+  ["perl -pi in-place edit", `perl -pi -e 's/block/allow/' ${OUTSIDE}/a.txt`],
+  ["perl -i.bak in-place edit", `perl -i.bak -pe 's/a/b/' ${READ_ROOT}/a.txt`],
+  ["ruby -i in-place edit", `ruby -i -pe 'gsub(/a/, "b")' ${OUTSIDE}/a.txt`],
+]) {
+  rootCase(`${label} OUTSIDE the write roots → DENY`, bash(cmd), ROOT_ENV, WRITE_ROOT, "deny");
+}
+for (const [label, cmd] of [
+  ["perl -e paren-less open '>' INSIDE", `perl -e 'open F,">${WRITE_ROOT}/a.txt"'`],
+  ["perl -e paren-less 3-arg open INSIDE", `perl -e 'open my $f, ">", "${WRITE_ROOT}/a.txt"'`],
+  ["ruby -e paren-less File.write INSIDE", `ruby -e 'File.write "${WRITE_ROOT}/a.txt", "x"'`],
+  ["perl -pi in-place edit INSIDE", `perl -pi -e 's/a/b/' ${WRITE_ROOT}/a.txt`],
+  ["perl -ne read-only (no -i)", `perl -ne 'print if /a/' ${WRITE_ROOT}/a.txt`],
+]) {
+  rootCase(`${label} → ALLOW`, bash(cmd), ROOT_ENV, WRITE_ROOT, "allow");
+}
 // FAIL-CLOSED: write present but destination is dynamic (no provable literal).
 rootCase(
   "node -e dynamic write dest → DENY (fail-closed)",
@@ -1575,6 +1602,18 @@ rmSync(PB_WRITE_ROOT, { recursive: true, force: true });
       { env, cwd: wt },
     );
     expect(`a Bash append to ${f} is refused (exit ${b.exitCode})`, b.exitCode === 2);
+    // …nor through an inline interpreter's paren-less write or an in-place edit.
+    for (const command of [
+      `perl -e 'open F,">>${resolve(data, f)}"; print F "{}"'`,
+      `ruby -e 'File.write "${resolve(data, f)}", "{}"'`,
+      `perl -pi -e 's/"block"/"allow"/' ${resolve(data, f)}`,
+    ]) {
+      const v = decide({ tool_name: "Bash", tool_input: { command } }, { env, cwd: wt });
+      expect(
+        `${command.split(" ")[0]} forging ${f} is refused (exit ${v.exitCode})`,
+        v.exitCode === 2,
+      );
+    }
   }
   // Without GAFFER_DATA nothing is logged and the decision is unchanged.
   const quiet = decide(

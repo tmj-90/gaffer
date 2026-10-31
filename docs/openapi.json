@@ -12924,6 +12924,17 @@
                   }
                 ]
               },
+              "repo": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The repo whose Memory page lists the draft."
+              },
               "reason": {
                 "type": "string"
               }

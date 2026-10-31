@@ -56,8 +56,16 @@ export default async function s9(t, L) {
   const cb = p.locator(".reject-dialog .reject-capture-cb");
   const hasCb = (await cb.count()) > 0;
   if (hasCb) await cb.check();
+  await L.clearToast(p);
   await p.locator(".reject-dialog .reject-submit").click();
+  // One toast says both: sent back, and where the draft waits.
+  const capToast = await L.waitToast(p, /sent back · reason filed as draft lore for/, 10000);
   await L.waitStatus(tk.id, ["refining"], 15000, 400);
+  t.check(
+    hasCb && capToast && capToast.includes(repo),
+    `one toast names the send back and the capture: "${capToast}"`,
+    `send back with capture toasted '${capToast ?? (await L.toasts(p).catch(() => ""))}'`,
+  );
   const drafted = await L.maybe(
     async () =>
       (await lore("draft")).find((l) =>

@@ -15586,14 +15586,17 @@ async function renderReview(param) {
           reason,
           captureLore,
         });
-        toast(wont ? `${ref} closed as won't do.` : `${ref} sent back to Refining.`, { ok: true });
-        if (captureLore) {
-          const cap = resp && resp.lore_capture;
-          if (cap && cap.captured)
-            toast("Filed as a lore draft — approve it in Memory's review queue.", { ok: true });
-          else if (cap)
-            toast("Sent back, but the lore draft could not be filed (memory is unavailable).", {});
-        }
+        // One toast for the act and the capture: two fired back to back, and the
+        // second replaced the first before it could be read.
+        const done = wont ? `${ref} closed as won't do` : `${ref} sent back`;
+        const cap = captureLore ? resp && resp.lore_capture : null;
+        if (cap && cap.captured)
+          toast(`${done} · reason filed as draft lore${cap.repo ? ` for ${cap.repo}` : ""}.`, {
+            ok: true,
+          });
+        else if (cap)
+          toast(`${done}, but the lore draft could not be filed (memory is unavailable).`);
+        else toast(wont ? `${done}.` : `${done} to Refining.`, { ok: true });
         router();
       },
     });

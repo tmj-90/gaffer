@@ -313,7 +313,9 @@ export async function routeTickets(
       // the highest-signal human correction compounds into memory. FAIL-SOFT — a memory
       // outage must never affect the rejection, which has already succeeded. Files via the
       // memory CLI `suggest` (a draft in the review queue), NEVER a memory-DB write.
-      let loreCapture: { captured: boolean; id?: string | null; reason?: string } | undefined;
+      let loreCapture:
+        | { captured: boolean; id?: string | null; repo?: string | null; reason?: string }
+        | undefined;
       if (body.captureLore) {
         const t = result.ticket;
         const summary = `Review rejection of #${t.number} "${t.title}": ${body.reason}`;
@@ -333,8 +335,9 @@ export async function routeTickets(
           ...(repo ? { repo } : {}),
           tags: ["review-rejection", `ticket-${t.number}`],
         });
+        // `repo` says where the draft waits, so the dashboard can name it and link there.
         loreCapture = draft.available
-          ? { captured: true, id: draft.id }
+          ? { captured: true, id: draft.id, repo: repo ?? null }
           : { captured: false, reason: draft.reason };
       }
       sendJson(res, 200, {

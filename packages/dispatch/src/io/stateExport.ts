@@ -19,9 +19,11 @@
  * (`ticket_claims.claim_token_hash`) is carried as-is — it is already a hash, and
  * round-tripping it preserves the claim/trust history. No new secret is exposed.
  */
+import type { Statement } from "better-sqlite3";
+
 import type { Db } from "../db/connection.js";
 import { backfillEventChain, EVENT_CHAIN_GENESIS, verifyEventChain } from "../events/eventChain.js";
-import { EVENT_CHAIN_SCHEMA_VERSION, migrate } from "../db/connection.js";
+import { EVENT_CHAIN_SCHEMA_VERSION, migrate, openDatabase } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { DispatchError } from "../util/errors.js";
 
@@ -175,24 +177,94 @@ function readSchemaVersion(db: Db): number {
  * Serialise the whole factory board to a deterministic {@link StateBundle}. Two
  * exports of the same DB produce byte-identical JSON (when `now` is pinned):
  * tables are emitted in a fixed order and rows are ordered by primary key.
+ *
+ * Every table (and the schema version) is read inside ONE read transaction, so the
+ * bundle is a single consistent snapshot of the board even while another process is
+ * writing. Before this, each table was read in its own implicit transaction: a writer
+ * that created an epic between the `tickets` read and the `ticket_dependencies` read
+ * left the export with dependency rows whose tickets it never saw, and the importer
+ * rejected the untouched file (the third external review's restore finding). Under
+ * WAL a read transaction sees the database as of its first read and writers carry on
+ * unblocked; under a rollback journal the shared lock held for the transaction makes
+ * writers wait. A deferred transaction takes no write lock either way.
  */
 export function exportState(db: Db, opts: ExportStateOptions = {}): StateBundle {
-  const tables: Record<string, TableRows> = {};
-  for (const table of EXPORT_TABLES) {
-    const orderBy = TABLE_ORDER_BY[table];
-    // Table/column identifiers are compile-time constants from EXPORT_TABLES /
-    // TABLE_ORDER_BY — never user input — so this interpolation is safe.
-    const rows = db.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all() as Array<
-      Record<string, unknown>
-    >;
-    tables[table] = rows;
+  const snapshot = db.transaction((): StateBundle => {
+    const tables: Record<string, TableRows> = {};
+    // Read the version first: it is the read that starts the snapshot under WAL.
+    const schemaVersion = readSchemaVersion(db);
+    for (const table of EXPORT_TABLES) {
+      const orderBy = TABLE_ORDER_BY[table];
+      // Table/column identifiers are compile-time constants from EXPORT_TABLES /
+      // TABLE_ORDER_BY — never user input — so this interpolation is safe.
+      const rows = db.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all() as Array<
+        Record<string, unknown>
+      >;
+      tables[table] = rows;
+    }
+    return {
+      format_version: STATE_FORMAT_VERSION,
+      schema_version: schemaVersion,
+      exported_at: opts.now ?? new Date().toISOString(),
+      tables,
+    };
+  });
+  // Already inside a caller's transaction, better-sqlite3 nests this as a savepoint,
+  // which reads the caller's (equally consistent) view.
+  return snapshot.deferred();
+}
+
+/** What {@link verifyBundleRestores} established about a bundle. */
+export interface BundleVerification {
+  /** Total rows the bundle restored into the scratch database. */
+  readonly rowsRestored: number;
+  /** Per-table restored-row counts. */
+  readonly byTable: Readonly<Record<string, number>>;
+}
+
+/**
+ * Prove a bundle restores before anyone relies on it: load it into a scratch
+ * in-memory database with the importer itself (the same envelope, event-chain and
+ * foreign-key checks `dispatch import` runs) and confirm every row landed. Throws an
+ * INCONSISTENT_BUNDLE {@link DispatchError} naming what failed otherwise.
+ *
+ * `dispatch export` calls this before it writes or reports anything, so a bundle the
+ * importer would reject is never reported as a successful backup while the operator
+ * still has the source database to take another copy from.
+ */
+export function verifyBundleRestores(bundle: StateBundle): BundleVerification {
+  const scratch = openDatabase(":memory:");
+  try {
+    let result: ImportStateResult;
+    try {
+      result = importState(scratch, bundle);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      const code = err instanceof DispatchError ? err.code : "INTERNAL_ERROR";
+      throw new DispatchError(
+        "INCONSISTENT_BUNDLE",
+        `Export failed its restore check, so it was not written: ${reason} ` +
+          "The source database is unchanged; run the export again.",
+        { stage: "export-verify", cause: code },
+      );
+    }
+    for (const table of EXPORT_TABLES) {
+      const expected = (bundle.tables[table] ?? []).length;
+      const restored = result.byTable[table] ?? 0;
+      if (restored !== expected) {
+        throw new DispatchError(
+          "INCONSISTENT_BUNDLE",
+          `Export failed its restore check, so it was not written: ${table} restored ` +
+            `${restored} of ${expected} row(s). The source database is unchanged; run the ` +
+            "export again.",
+          { stage: "export-verify", table, expected, restored },
+        );
+      }
+    }
+    return { rowsRestored: result.rowsInserted, byTable: result.byTable };
+  } finally {
+    scratch.close();
   }
-  return {
-    format_version: STATE_FORMAT_VERSION,
-    schema_version: readSchemaVersion(db),
-    exported_at: opts.now ?? new Date().toISOString(),
-    tables,
-  };
 }
 
 /** Serialise a bundle to a stable, pretty-printed JSON string (2-space indent). */
@@ -362,13 +434,25 @@ function orderEventsForImport(
  * (e.g. a bundle from a newer minor that added a column) would surface as a clear
  * SQLite "no column named" error rather than silent data loss.
  */
-function insertRow(db: Db, table: string, row: Record<string, unknown>): void {
+function insertRow(
+  db: Db,
+  table: string,
+  row: Record<string, unknown>,
+  cache: Map<string, Statement<unknown[]>>,
+): void {
   const cols = Object.keys(row);
   if (cols.length === 0) return;
-  const placeholders = cols.map(() => "?").join(", ");
-  const colList = cols.map((c) => `"${c}"`).join(", ");
-  const values = cols.map((c) => row[c] as never);
-  db.prepare(`INSERT INTO ${table}(${colList}) VALUES (${placeholders})`).run(...values);
+  // Rows of one table almost always share a column set: prepare each shape once
+  // (a restore, and the export's restore check, insert every row of the board).
+  const key = `${table}\u0000${cols.join("\u0000")}`;
+  let stmt = cache.get(key);
+  if (!stmt) {
+    const placeholders = cols.map(() => "?").join(", ");
+    const colList = cols.map((c) => `"${c}"`).join(", ");
+    stmt = db.prepare(`INSERT INTO ${table}(${colList}) VALUES (${placeholders})`);
+    cache.set(key, stmt);
+  }
+  stmt.run(...cols.map((c) => row[c]));
 }
 
 /**
@@ -400,6 +484,7 @@ export function importState(
 
   const byTable: Record<string, number> = {};
   let rowsInserted = 0;
+  const statements = new Map<string, Statement<unknown[]>>();
 
   // One transaction with foreign_keys OFF for the load: rows arrive in FK-safe
   // order, but toggling FK enforcement off for a bulk restore is the documented
@@ -421,7 +506,7 @@ export function importState(
           table === "work_events" ? orderEventsForImport(raw, bundle.schema_version) : raw;
         let n = 0;
         for (const row of rows) {
-          insertRow(db, table, row);
+          insertRow(db, table, row, statements);
           n++;
         }
         byTable[table] = n;

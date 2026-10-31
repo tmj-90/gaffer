@@ -261,6 +261,23 @@ signature above the approved records.*
 Memory is also usable standalone — see
 [`packages/memory/README.md`](../packages/memory/README.md).
 
+**Backing up the board.** `gaffer wg export --out board.json` writes the whole
+board (tickets, epics, scope graph, criteria, repos, decisions, reviews and
+evidence, the event log, claims) as one JSON bundle; `gaffer wg import` restores it
+into an empty database. What the export guarantees:
+
+- **One consistent snapshot.** Every table is read inside a single SQLite read
+  transaction, so an export taken while the runner, the API or another process is
+  writing holds the board exactly as it stood at one instant: never a dependency or
+  criterion whose ticket is missing. Writers are not blocked while it runs.
+- **Proven restorable before it reports success.** The export restores its own
+  bundle into a scratch in-memory database with the importer's checks (format and
+  schema version, event-log hash chain, foreign keys, every row landed) before it
+  writes the file or prints anything. If that fails it exits non-zero, writes
+  nothing and says why, while you still have the source database to copy from.
+
+Run-activity rows and API credentials are machine-local and are not exported.
+
 ---
 
 ## Control you opt into

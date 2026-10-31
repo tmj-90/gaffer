@@ -134,8 +134,13 @@ export const DANGEROUS_COMMANDS = [
     // diffs from the branch name). The agent commits on its ticket branch and never
     // moves, renames or force-resets any OTHER branch (a force-reset of a runner-owned
     // `gaffer/` branch stays allowed, as before); the runner records the base commit
-    // before the agent runs regardless. Local `push`/`fetch` into `.` is the same move.
-    re: /\bgit\b[^\n|;&]*?\s(?:update-ref|symbolic-ref)\b|\bgit\s+(?:branch\b[^\n|;&]*\s(?:-f|--force|-[mMcC]|--move|--copy)|checkout\b[^\n|;&]*\s-B|switch\b[^\n|;&]*\s(?:-C|--force-create))[ \t]+(?!gaffer\/)[^\s;&|-]|\bgit\s+(?:push|fetch)\s+(?:-[^\s]+\s+)*\.(?=\s)/,
+    // when it cuts the branch regardless. Local `push`/`fetch` into `.` is the same move.
+    // This regex is the plain-spelling first line; safety-hook-core.mjs
+    // (refRewriteReason) reads the tokens and also catches `-fq`, a flag after the
+    // arguments, global options before the subcommand, `--`, abbreviated long options,
+    // aliases and `symbolic-ref` writes (a read such as `symbolic-ref --short HEAD`
+    // stays allowed there).
+    re: /\bgit\b[^\n|;&]*?\s(?:update-ref)\b|\bgit\s+(?:branch\b[^\n|;&]*\s(?:-f|--force|-[mMcC]|--move|--copy)|checkout\b[^\n|;&]*\s-B|switch\b[^\n|;&]*\s(?:-C|--force-create))[ \t]+(?!gaffer\/)[^\s;&|-]|\bgit\s+(?:push|fetch)\s+(?:-[^\s]+\s+)*\.(?=\s)/,
     why: "branch ref rewrite (git branch -f/-m, update-ref, checkout -B, push/fetch into .) of a non-gaffer branch — the agent commits on its ticket branch and never moves the base branch",
     example: "git branch -f main HEAD",
     crewFlags: false,

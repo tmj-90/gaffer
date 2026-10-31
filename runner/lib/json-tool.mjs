@@ -929,12 +929,23 @@ switch (cmd) {
     const l = lift.lift;
     const wm = lift.withMemory;
     const wo = lift.withoutMemory;
-    const arms = `with-memory ${wm.meanScore}/5 (n=${wm.count}) vs without ${wo.meanScore}/5 (n=${wo.count})`;
+    const arms = `memory primed ${wm.meanScore}/5 (n=${wm.count}) vs not primed ${wo.meanScore}/5 (n=${wo.count})`;
     const lstr =
       l !== null && l !== undefined
         ? `${l >= 0 ? "+" : ""}${Number(l).toFixed(2)}`
         : "n/a (need both arms)";
-    println(`memory lift         ${lstr}   ${arms}`);
+    // HONEST NAME (external review #11): a judge-score GAP on submitted work across
+    // different tickets — not a memory uplift; the exclusion and the sample are shown.
+    println(`memory score gap    ${lstr}   ${arms}`);
+    println(
+      `                    judge score on SUBMITTED work only, different tickets per arm — not an uplift`,
+    );
+    println(
+      `                    excludes attempts that failed before submission (gate, park, refused submit)`,
+    );
+    println(
+      `                    honest measure: a matched-ticket comparison (docs/eval-harness.md) — not measured`,
+    );
     if (cost.costedCount) {
       const cpp = cost.costPerPass;
       const tail =

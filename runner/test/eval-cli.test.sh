@@ -43,7 +43,10 @@ printf '{"ticketId":"2","repo":"api","memoryPresent":false,"overall":"fail","sco
 OUT="$(bash "$RUNNER_DIR/gaffer" eval 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] && ok "eval exits 0 on a seeded ledger" || no "eval failed (rc=$rc): $OUT"
 grep -q 'deliveries judged   2' <<<"$OUT" && ok "counts the judged deliveries" || no "missing count: $OUT"
-grep -q 'memory lift         +2.80' <<<"$OUT" && ok "surfaces the memory-lift headline" || no "missing memory lift: $OUT"
+grep -q 'memory score gap    +2.80' <<<"$OUT" && ok "surfaces the memory score gap under its honest name" || no "missing memory score gap: $OUT"
+grep -q 'not an uplift' <<<"$OUT" && ok "labels it as a gap on submitted work, not an uplift" || no "no 'not an uplift' label: $OUT"
+grep -q 'excludes attempts that failed before submission' <<<"$OUT" && ok "names what the judge never sees" || no "no exclusion line: $OUT"
+grep -qE 'n=[0-9]+\) vs not primed .*\(n=[0-9]+\)' <<<"$OUT" && ok "shows the sample size of each arm" || no "no sample sizes: $OUT"
 grep -q '/passing delivery' <<<"$OUT" && ok "surfaces cost-per-passing-delivery" || no "missing cost/pass: $OUT"
 
 echo "== D. --json parses and matches =="

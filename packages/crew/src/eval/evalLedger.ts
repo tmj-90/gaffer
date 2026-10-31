@@ -58,11 +58,27 @@ export interface EvalSummary {
   blockRate: number; // fraction blocking
   meanScore: number;
   dimensionMeans: Partial<Record<RubricDimension, number>>;
+  /**
+   * HONEST NAME (external review #11): this is the JUDGE SCORE GAP on SUBMITTED work —
+   * the mean score of deliveries that had memory primed minus the mean of those that
+   * did not. The two arms are DIFFERENT tickets, and the judge only ever sees work that
+   * cleared every gate and was submitted, so this answers neither "does memory cause
+   * better work" nor "what does it cost". The field keeps its historical key; `measure`,
+   * `label`, `sample` and `excludes` say what it is, and `matched` is the seam for the
+   * honest measurement (docs/eval-harness.md, "Matched-ticket comparison").
+   */
   memoryLift: {
     withMemory: { count: number; meanScore: number };
     withoutMemory: { count: number; meanScore: number };
     /** withMemory.meanScore − withoutMemory.meanScore, or null if either side is empty. */
     lift: number | null;
+    measure: "judge_score_gap_on_submitted_work";
+    label: string;
+    sample: { withMemory: number; withoutMemory: number; distinctTickets: number };
+    excludes: string;
+    /** The matched-ticket comparison: not measured yet (see `matchedReason`). */
+    matched: null;
+    matchedReason: string;
   };
   /**
    * Real-cost FinOps view, over the records that carried a costUsd. The headline
@@ -77,6 +93,20 @@ export interface EvalSummary {
     costPerPass: number | null;
   };
 }
+
+/** What the memory "lift" number is, in words a reader cannot mistake for causality. */
+export const MEMORY_GAP_LABEL =
+  "Judge score on submitted work, memory primed vs not primed — different tickets in each " +
+  "arm, so a gap, not an uplift memory caused";
+/** What the judge never sees, so the gap cannot count it. */
+export const MEMORY_GAP_EXCLUDES =
+  "attempts that failed before submission (a failed DoD gate, a park, a refused submit) " +
+  "are never judged, so their spend and outcome are not in either arm";
+/** Why the matched-ticket comparison is not reported. */
+export const MATCHED_REASON =
+  "not measured: the honest comparison runs the SAME tickets with and without memory and " +
+  "counts every attempt, its spend and the human's acceptance (docs/eval-harness.md, " +
+  "Matched-ticket comparison); the ledger records judged submissions only";
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round4 = (n: number): number => Math.round(n * 10000) / 10000; // USD precision
@@ -159,6 +189,16 @@ export function summarize(records: EvalRecord[]): EvalSummary {
       withMemory: { count: withMem.length, meanScore: withMean },
       withoutMemory: { count: withoutMem.length, meanScore: withoutMean },
       lift,
+      measure: "judge_score_gap_on_submitted_work",
+      label: MEMORY_GAP_LABEL,
+      sample: {
+        withMemory: withMem.length,
+        withoutMemory: withoutMem.length,
+        distinctTickets: new Set(records.map((r) => r.ticketId)).size,
+      },
+      excludes: MEMORY_GAP_EXCLUDES,
+      matched: null,
+      matchedReason: MATCHED_REASON,
     },
     cost: {
       costedCount: costed.length,

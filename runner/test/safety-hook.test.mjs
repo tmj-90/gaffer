@@ -1253,6 +1253,15 @@ for (const [label, cmd] of [
   ["wg review reject", "wg review reject 5 --reason x"],
   ["wg mark-merged", "wg mark-merged 5"],
   ["dispatch mark-merged", "dispatch mark-merged 5"],
+  // Landing evidence is the merge lane's to record: a forged row closes a ticket early.
+  [
+    "wg ticket record-landing --as system",
+    "wg ticket record-landing 5 --repo repoB --commit abc1234 --as system",
+  ],
+  [
+    "dispatch ticket record-landing --via local",
+    "dispatch ticket record-landing 5 --repo repoB --commit abc1234 --via local",
+  ],
   ["wg approve-ready", "wg approve-ready 5"],
   ["fg approve-ready", "fg approve-ready 5"],
   ["wg repo-access grant", "wg repo-access grant some/repo"],

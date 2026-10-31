@@ -148,7 +148,10 @@ export function registerTicket(program: Command): void {
     )
     .requiredOption("--repo <repo>", "repo name or id")
     .requiredOption("--commit <sha>", "the approved commit that landed")
-    .option("--via <how>", "local | pr | git-verified")
+    .option(
+      "--via <how>",
+      "local | git-verified (checked against the default branch) | pr | pr-stale (upstream)",
+    )
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);

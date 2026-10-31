@@ -274,6 +274,13 @@ function validatedBinding(
   return out;
 }
 
+/**
+ * PER-REPOSITORY LANDING: the `via` values whose landing happened upstream (a merged PR,
+ * possibly squashed), so the local default branch cannot confirm it. Every other landing
+ * is checked against git before it is recorded.
+ */
+const UNVERIFIABLE_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale"]);
+
 export class ReviewGateService {
   private readonly db: Db;
   private readonly clock: Clock;
@@ -624,6 +631,27 @@ export class ReviewGateService {
           recorded: false,
           status: before,
         };
+      }
+      // A LOCAL landing is checkable: the merge paths merge the pinned commit itself, so
+      // it must be contained in the repo's default branch. Fail closed — a commit git
+      // cannot show there (or a check that errors) is not recorded, so a forged or
+      // mistaken row can never let markMerged close a ticket whose repo never landed.
+      // A PR landing (`pr`, `pr-stale`) happens upstream and may be squashed, so the
+      // local branch is no evidence either way; only the merge lane records one.
+      if (this.landedOnDefaultResolver && !UNVERIFIABLE_LANDING_VIAS.has(input.via ?? "")) {
+        let onDefault: boolean;
+        try {
+          onDefault = this.landedOnDefaultResolver(target.repoId, sha);
+        } catch {
+          onDefault = false;
+        }
+        if (!onDefault) {
+          throw new DispatchError(
+            "STATE_CONFLICT",
+            `${target.repo}'s default branch does not contain ${sha.slice(0, 12)}; a local landing is recorded only once git shows the approved commit there.`,
+            { reason: "not_on_default_branch", repo: target.repo, commit: sha },
+          );
+        }
       }
       this.evidence.insert({
         id: newId(),

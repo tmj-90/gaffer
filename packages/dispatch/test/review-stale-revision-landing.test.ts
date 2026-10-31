@@ -263,4 +263,23 @@ describe("a two-repo ticket is done only when both repos landed", () => {
       refusal(() => d.recordLanding(t.id, { repo: "repoA", commit: other }, agentActor)).code,
     ).toBe("ACTOR_NOT_PERMITTED");
   });
+
+  it("a local landing the default branch does not contain is refused, so markMerged stays shut", () => {
+    const { d, t, a, b } = approved();
+    git(a, "merge", "-q", "--no-ff", "-m", "land", BRANCH);
+    d.recordLanding(t.id, { repo: "repoA", commit: git(a, "rev-parse", BRANCH) }, system);
+    // repoB never merged: a forged "local" (or unlabelled) landing row is not written.
+    const pinB = git(b, "rev-parse", BRANCH);
+    for (const via of ["local", undefined, "git-verified"]) {
+      const e = refusal(() => d.recordLanding(t.id, { repo: "repoB", commit: pinB, via }, system));
+      expect(e.code).toBe("STATE_CONFLICT");
+      expect(e.details.reason).toBe("not_on_default_branch");
+    }
+    expect(refusal(() => d.markMerged(t.id, system)).details.reason).toBe("partial_landing");
+    expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
+    // A PR landing happens upstream (possibly squashed), so git here cannot confirm it.
+    expect(d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system).recorded).toBe(
+      true,
+    );
+  });
 });

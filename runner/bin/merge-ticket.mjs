@@ -144,6 +144,7 @@ import {
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
+import { mergeMessage, provenanceTrailers } from "../lib/provenance-trailers.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -378,7 +379,7 @@ export function canLand(status, { applyDigestOnly = false } = {}) {
  * spawning the resolver (there is nothing on the branch to resolve). Honoured only on
  * the live path; --dry-run never calls this.
  */
-export function attemptMerge(repoPath, branch, defaultBranch, pin = null) {
+export function attemptMerge(repoPath, branch, defaultBranch, pin = null, trailers = []) {
   const git = (...args) => spawnSync("git", ["-C", repoPath, ...args], { encoding: "utf8" });
   // ACCEPTANCE GATE: when the landing decision pinned a commit, refuse if the branch has
   // moved off it, and merge the pinned commit itself (not whatever the name resolves to).
@@ -405,9 +406,21 @@ export function attemptMerge(repoPath, branch, defaultBranch, pin = null) {
       reason: `could not checkout ${defaultBranch}: ${(co.stderr || co.stdout || "").trim().slice(0, 200)}`,
     };
   }
-  const merge = pin
-    ? git("merge", "--no-edit", "-m", `Merge branch '${branch}'`, pin)
-    : git("merge", "--no-edit", branch);
+  // PROVENANCE TRAILERS (lib/provenance-trailers.mjs): with trailers the merge is
+  // --no-ff so a merge commit exists to carry them; without, exactly as before.
+  const merge =
+    trailers && trailers.length
+      ? git(
+          "merge",
+          "--no-ff",
+          "--no-edit",
+          "-m",
+          mergeMessage(`Merge branch '${branch}'`, trailers),
+          pin || branch,
+        )
+      : pin
+        ? git("merge", "--no-edit", "-m", `Merge branch '${branch}'`, pin)
+        : git("merge", "--no-edit", branch);
   if (merge.status === 0) return { clean: true };
   // Conflict (or other merge failure): abort so the default branch is restored and the
   // delivery branch is left intact for the resolver.
@@ -439,17 +452,22 @@ export function resolvePrMergeMethod(raw) {
   return PR_MERGE_METHODS.includes(m) ? m : "merge";
 }
 
-/** The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`. */
-export function buildPrMergeArgv({ prUrl, method, matchHeadCommit }) {
+/**
+ * The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`, plus
+ * `--body <trailers>` for the merge commit (not for a rebase, which makes none).
+ */
+export function buildPrMergeArgv({ prUrl, method, matchHeadCommit, body }) {
+  const m = resolvePrMergeMethod(method);
   return [
     "pr",
     "merge",
     String(prUrl),
-    `--${resolvePrMergeMethod(method)}`,
+    `--${m}`,
     "--delete-branch",
     // ACCEPTANCE GATE: merge only if the PR head is still the commit the landing
     // decision approved — never silently merge a different PR head.
     ...(matchHeadCommit ? ["--match-head-commit", String(matchHeadCommit)] : []),
+    ...(body && m !== "rebase" ? ["--body", String(body)] : []),
   ];
 }
 
@@ -502,8 +520,9 @@ export function mergeViaPr({
   method,
   remote,
   matchHeadCommit,
+  body,
 }) {
-  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit });
+  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit, body });
   const gh = spawnSync(ghBin, argv, {
     cwd: repoPath,
     encoding: "utf8",
@@ -1435,6 +1454,8 @@ function main() {
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
   const pin = decision.pin;
+  // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
+  const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
 
   // 1. Land the delivery. PR MODE first: when the ticket carries a pr_url (the runner
   //    opened a PR under GAFFER_CREATE_PR) and `gh` is available, merge THROUGH the PR
@@ -1456,6 +1477,7 @@ function main() {
         method: process.env.GAFFER_PR_MERGE_METHOD,
         remote: process.env.GAFFER_PR_REMOTE,
         matchHeadCommit: pin,
+        body: trailers.join("\n"),
       });
       if (pr.ok) {
         landed = { via: "pr", prUrl: resolved.prUrl, fastForwarded: pr.fastForwarded };
@@ -1501,7 +1523,7 @@ function main() {
     }
   }
   if (!landed) {
-    const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch, pin);
+    const merge = attemptMerge(repo.localPath, branch, repo.defaultBranch, pin, trailers);
     if (merge.clean) {
       landed = { via: "local" };
       log(`merged #${resolved.number} (${branch} → ${repo.defaultBranch}) cleanly`);

@@ -1552,9 +1552,13 @@ console.log("== B14: pr_url + gh → merged THROUGH the PR, local default fast-f
     "gh pr merge <url> --merge --delete-branch --match-head-commit <the approved head> was the merge",
     ghCalls.some(
       (c) =>
-        c.join(" ") ===
+        c.slice(0, 7).join(" ") ===
         `pr merge ${f.prUrl} --merge --delete-branch --match-head-commit ${f.featureSha}`,
     ),
+  );
+  assert(
+    "…with the provenance trailers as the merge commit's body (gh pr merge --body)",
+    ghCalls.some((c) => c[7] === "--body" && /^Gaffer-Ticket: #7\n/.test(String(c[8]))),
   );
   assert(
     "local main is EXACTLY the branch tip (fast-forward, no local merge commit)",

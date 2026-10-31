@@ -68,8 +68,13 @@ gaffer_land_delivery() {
   # failing/absent falls back to the local merge with the reason logged.
   _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
   _MERGED_VIA="local"; _mrc=""
+  # PROVENANCE TRAILERS on the merge commit: the ticket, the approving actor and the
+  # gate verdicts, read from the dispatch DB (lib/provenance-trailers.mjs; empty when
+  # GAFFER_PROVENANCE_TRAILERS=0). Fail-soft: no trailers never holds a landing.
+  local _TRAILERS=""
+  _TRAILERS="$(node "$RUNNER_DIR/lib/provenance-trailers.mjs" --db "${DISPATCH_DB:-}" --ticket "$RNUM" 2>/dev/null || true)"
   if [ -n "$_RPR" ]; then
-    gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN"; _prc=$?
+    gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN" "$_TRAILERS"; _prc=$?
     case "$_prc" in
       0) _mrc=0; _MERGED_VIA=pr
          log "$_WHO: #$RNUM merged THROUGH its PR $_RPR (gh pr merge --${GAFFER_PR_MERGE_METHOD:-merge} --delete-branch); local $RDEFAULT fast-forwarded" ;;
@@ -90,7 +95,7 @@ gaffer_land_delivery() {
         fi ;;
     esac
   fi
-  if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN"; _mrc=$?; fi
+  if [ -z "$_mrc" ]; then gaffer_auto_merge "$RREPO" "$RBRANCH" "$RDEFAULT" "$_TB_PIN" "$_TRAILERS"; _mrc=$?; fi
   case "$_mrc" in
     0)
       wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1 \

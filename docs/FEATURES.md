@@ -195,6 +195,14 @@ structural barrier the whole design hangs on.
   "Event log" card re-derive the chain. Each event also carries the **runner
   tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
   whole trail — the runner's calls and the agent's MCP writes — reads as one.
+- **The merge commit says where it came from.** Every landing path (the Merge
+  button, `gaffer merge`, the merge lane, the AFK review pass, a PR merge) writes git
+  trailers into the merge commit, read from the dispatch DB:
+  `Gaffer-Ticket: #12`, `Gaffer-Reviewed-By: human:tom` (or `agent:<id>`) and
+  `Gaffer-Gates: DoD PASS (tests pass, lint skip); AC 3/3 satisfied; tester PASS`.
+  A local landing is then `--no-ff`, so there is a merge commit to carry them. No
+  model name is written (the usage ledger records that), and the trailers are not
+  signed. `GAFFER_PROVENANCE_TRAILERS=0` turns them off.
 - **Every attempt names its model and its CLI.** The runner records, per delivery
   attempt, the model that served the call (and the one it asked for) and the
   Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,

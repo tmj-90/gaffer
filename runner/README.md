@@ -161,7 +161,11 @@ GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflic
 An optional, size-gated, round-capped two-model **planning debate**
 (`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
-from real measurements, never invented**. Every ledger row made through the worker
+from real measurements, never invented**. Every landed delivery's merge commit carries
+`Gaffer-Ticket` / `Gaffer-Reviewed-By` / `Gaffer-Gates` trailers
+(`lib/provenance-trailers.mjs`, used by `lib/land.sh` and `bin/merge-ticket.mjs`; a
+local landing is `--no-ff` while they are on; `GAFFER_PROVENANCE_TRAILERS=0` turns them
+off). Every ledger row made through the worker
 seam also names its call: `attempt` (delivery), `model_requested` (`default` = the
 CLI's own) beside the measured `models` map, and `claude_version`
 (`lib/claude-version.mjs`: read from a native or npm install without running it,

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 135 |
+| Knobs with a runner default | 136 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
@@ -239,6 +239,12 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into $GAFFER_D |
+
+### lib/automerge.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_PROVENANCE_TRAILERS` | `1` |  | runner | 0 = land with the plain merge message (and a fast-forward when one is possible), as before |
 
 ### lib/budget.sh
 

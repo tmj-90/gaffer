@@ -280,7 +280,14 @@ docker compose logs dashboard | grep token=   # the login URL, token included
 ```
 
 State lives in the `gaffer-data` volume; repos under `./repos` appear at `/repos`
-inside the container, so onboard them by that path. The container itself is the
+inside the container, so onboard them by that path. A repository the factory creates
+for a greenfield build is created under `/repos` too (`GAFFER_BOOTSTRAP_ROOT=/repos`),
+so it lives on the host beside the others and survives `docker compose down` / `up`
+and a rebuilt image; anything under the container's home directory does not. The build
+context is an allow-list (`.dockerignore`): only the manifests, the lockfile,
+`packages/`, `runner/`, `scripts/` and the licence files reach the image, never
+`./repos`, a `.env`, a database or `.gaffer/` (`node scripts/docker-context-check.mjs`
+lists the context and checks it; CI runs it). The container itself is the
 containment boundary there, so the runner's own OS sandbox is off; on a Docker host
 running the factory natively, `docker compose --profile sandbox build` produces the
 per-ticket delivery image and egress proxy the `docker` sandbox provider uses.

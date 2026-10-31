@@ -48,7 +48,10 @@ WORKDIR /app
 COPY --from=build /app /app
 RUN mkdir -p /data /repos && chown -R node:node /app /data /repos
 USER node
+# GAFFER_BOOTSTRAP_ROOT: a greenfield repo the factory creates lives on the /repos
+# mount, so recreating the container keeps it (its registration lives in /data).
 ENV GAFFER_DATA=/data \
+    GAFFER_BOOTSTRAP_ROOT=/repos \
     SANDBOX_PROVIDER=none \
     DISPATCH_API_PORT=8787 \
     HOME=/home/node

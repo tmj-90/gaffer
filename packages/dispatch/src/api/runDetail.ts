@@ -114,7 +114,14 @@ export function parseLastRouteInfo(logText: string): RouteInfo | null {
  *   "delivery tick … finished (rc=0)" with no FAILED → "in_review" (submitted)
  *   "delivery FAILED … skipping" → "refining" (re-queued)
  */
-export type RunOutcome = "in_review" | "refining" | "FLAGGED" | "FAILED" | null;
+export type RunOutcome = "in_review" | "refining" | "FLAGGED" | "FAILED" | "REFUSED" | null;
+
+/**
+ * The line runner/bin/poll-once.sh prints when it refuses a dashboard poll BEFORE any
+ * tick runs: a per-day tick or USD cap already reached, or a setup check that fails
+ * closed (`gaffer poll: … — not polling.` / `gaffer poll: aborting — …`).
+ */
+export const POLL_REFUSAL_RE = /^gaffer poll: (?:.*— not polling\.|aborting\b.*)$/m;
 
 /**
  * Detect the settled outcome of a run from log text. Returns null when the
@@ -122,6 +129,9 @@ export type RunOutcome = "in_review" | "refining" | "FLAGGED" | "FAILED" | null;
  */
 export function detectOutcome(logText: string, runStatus: Run["status"]): RunOutcome {
   if (runStatus === "running") return null;
+
+  // A refused poll ran no tick at all — nothing else in the log applies.
+  if (POLL_REFUSAL_RE.test(logText)) return "REFUSED";
 
   // HYGIENE failure is the most specific and takes priority.
   if (/\bHYGIENE:.+delivery for #\d+ is NOT hygienic/i.test(logText)) {

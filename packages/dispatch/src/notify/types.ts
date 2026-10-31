@@ -91,6 +91,23 @@ export interface Notifier {
   notify(event: NotifyEvent): void;
   /** True when at least one sink is active (lets callers skip building events). */
   readonly enabled: boolean;
+  /**
+   * Deliver to every sink and WAIT, reporting each sink's outcome — for the setup
+   * check (`dispatch notify test`), never for a state transition (use
+   * {@link notify}). Never rejects; a sink failure is a `{ ok: false }` row.
+   */
+  notifyAndReport?(event: NotifyEvent): Promise<NotifyDeliveryReport>;
+}
+
+/** Per-sink outcome of {@link Notifier.notifyAndReport}. */
+export interface NotifyDeliveryReport {
+  /** True when the event's kind is not in GAFFER_NOTIFY_EVENTS — no sink was asked. */
+  readonly filtered: boolean;
+  readonly sinks: readonly {
+    readonly name: string;
+    readonly ok: boolean;
+    readonly error?: string;
+  }[];
 }
 
 /**

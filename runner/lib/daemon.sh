@@ -21,6 +21,48 @@
 # the same ticket forever, so the wait doubles per consecutive setup-error pass (from
 # the interval up to the ceiling) and resets on the first pass that gets past setup.
 # Reads gaffer_day_cap_ok / MAX_TICKS_PER_DAY from budget.sh when available.
+#
+# FRESH CONFIG PER PASS: with GAFFER_DAEMON_CONFIG naming factory.config.sh (`gaffer run
+# --daemon` sets it), the cap check runs in a FRESH bash that re-sources the config, so
+# a dashboard edit to MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD applies to the very
+# next pass instead of the values the daemon read when it started. (Each pass's loop.sh
+# is a child process and re-sources the config itself.) Unset, the caps are read from
+# this shell, as before (the unit test's stubbed caps).
+
+# Echo why today's caps refuse a pass and return 1, or return 0 when a pass may run.
+_gaffer_daemon_cap_check() {
+  if [ "${_GAFFER_SETTINGS_UNREADABLE:-0}" != 0 ]; then
+    # settings.json exists but does not parse (or node is missing): the caps it holds
+    # cannot be read, so no pass runs until it is fixed (factory.config.sh FAIL CLOSED).
+    printf 'gaffer daemon: settings.json (%s) cannot be read — idle until it parses again\n' "${GAFFER_DATA:-.}/settings.json"
+    return 1
+  elif declare -F gaffer_day_cap_ok >/dev/null 2>&1 && ! gaffer_day_cap_ok; then
+    printf 'gaffer daemon: per-day cap (MAX_TICKS_PER_DAY=%s) reached — idle until the next calendar day\n' "${MAX_TICKS_PER_DAY:-}"
+    return 1
+  elif declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
+    # Part B: per-UTC-day USD ceiling. Same graceful back-off as the tick-count cap
+    # — idle (no new loop pass) until the next calendar day rolls the window over.
+    printf 'gaffer daemon: per-day USD cap (GAFFER_DAILY_BUDGET_USD=%s) reached — idle until the next calendar day\n' "${GAFFER_DAILY_BUDGET_USD:-}"
+    return 1
+  elif declare -F gaffer_budget_headroom_ok >/dev/null 2>&1 && ! gaffer_budget_headroom_ok; then
+    # The lifetime ceiling never rolls over: idle until the operator raises it.
+    printf 'gaffer daemon: lifetime budget (GAFFER_BUDGET_USD=%s) exhausted — idle until it is raised\n' "${GAFFER_BUDGET_USD:-}"
+    return 1
+  fi
+  return 0
+}
+
+# Run _gaffer_daemon_cap_check against the CURRENT config (see FRESH CONFIG PER PASS).
+_gaffer_daemon_caps_ok() {
+  local cfg="${GAFFER_DAEMON_CONFIG:-}"
+  if [ -n "$cfg" ] && [ -f "$cfg" ]; then
+    # A fresh process, not a subshell: a subshell keeps this shell's unexported
+    # defaults, which would shadow a value newly saved to settings.json.
+    bash -c 'source "$1" >/dev/null 2>&1; '"$(declare -f _gaffer_daemon_cap_check)"'; _gaffer_daemon_cap_check' _ "$cfg" >&2
+  else
+    _gaffer_daemon_cap_check >&2
+  fi
+}
 
 gaffer_run_daemon() {
   local interval="${1:-30}"
@@ -33,13 +75,7 @@ gaffer_run_daemon() {
   # A stop signal finishes the current pass, then exits — graceful, never mid-delivery.
   trap '_GAFFER_DAEMON_STOP=1' INT TERM
   while [ "$_GAFFER_DAEMON_STOP" = "0" ]; do
-    if declare -F gaffer_day_cap_ok >/dev/null 2>&1 && ! gaffer_day_cap_ok; then
-      printf 'gaffer daemon: per-day cap (MAX_TICKS_PER_DAY=%s) reached — idle until the next calendar day\n' "${MAX_TICKS_PER_DAY:-}" >&2
-    elif declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
-      # Part B: per-UTC-day USD ceiling. Same graceful back-off as the tick-count cap
-      # — idle (no new loop pass) until the next calendar day rolls the window over.
-      printf 'gaffer daemon: per-day USD cap (GAFFER_DAILY_BUDGET_USD=%s) reached — idle until the next calendar day\n' "${GAFFER_DAILY_BUDGET_USD:-}" >&2
-    else
+    if _gaffer_daemon_caps_ok; then
       bash "$loop_sh"; rc=$?
       passes=$((passes + 1))
       if [ "$rc" -eq 3 ]; then setup_fails=$((setup_fails + 1)); else setup_fails=0; fi

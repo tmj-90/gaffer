@@ -125,7 +125,7 @@ Every agent tool call goes through a deterministic PreToolUse hook, [runner/safe
 
 The hook is a string analyser for bash, and a determined agent that builds paths at runtime can get further than I'd like. That's why anything that lets an agent ship work defaults `GAFFER_STRICT_REQUIRE=1`, which refuses to launch an agent without an OS sandbox. That covers the `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE` and `MEMORY_AUTO_APPROVE` flags, the modes that set them, and a per-repo policy that lets a repo ship unattended. `SANDBOX_PROVIDER=docker` gives read and egress isolation on any host with Docker. macOS `sandbox-exec` only restricts writes.
 
-Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`). There's no dollar cap until you set one: `GAFFER_DAILY_BUDGET_USD` for the day, `GAFFER_MAX_CALL_USD` for a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
+Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`). There's no dollar cap until you set one: `GAFFER_DAILY_BUDGET_USD` for the day, `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom), `GAFFER_MAX_CALL_USD` for a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
 
 ## What's rough
 

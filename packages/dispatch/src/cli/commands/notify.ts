@@ -12,15 +12,17 @@ export function registerNotify(program: Command): void {
     .command("test")
     .description(
       "Fire a synthetic human-gate event through the sinks configured via the " +
-        "GAFFER_NOTIFY_* env vars (webhook · slack · desktop). With nothing " +
-        "configured the notifier is a no-op and this reports 'disabled'.",
+        "GAFFER_NOTIFY_* env vars (webhook · slack · desktop) and wait for each. " +
+        "Reports every sink's outcome; ok is false (exit 1) when any sink failed or " +
+        "the kind is filtered out by GAFFER_NOTIFY_EVENTS. With nothing configured " +
+        "the notifier is a no-op and this reports 'disabled'.",
     )
     .option(
       "--kind <kind>",
       "gate kind: review_needed · ticket_blocked · ticket_parked · decision_pending",
       "review_needed",
     )
-    .action((opts: { kind?: string }) => {
+    .action(async (opts: { kind?: string }) => {
       const kind = opts.kind ?? "review_needed";
       if (!isNotifyKind(kind)) {
         throw new DispatchError("VALIDATION_ERROR", `Unknown notify kind: ${kind}`, {
@@ -32,14 +34,40 @@ export function registerNotify(program: Command): void {
         printJson({ ok: true, enabled: false, message: "no notify sinks configured" });
         return;
       }
-      notifier.notify({
+      const event = {
         kind,
         title: "Synthetic test event",
         status: "in_review",
         at: new Date().toISOString(),
         detail: "dispatch notify test",
+      };
+      if (!notifier.notifyAndReport) {
+        notifier.notify(event);
+        printJson({ ok: true, enabled: true, fired: kind });
+        return;
+      }
+      // Wait for every sink: a test that reports success for an event no sink
+      // delivered (e.g. desktop with no notify-send installed) is a false positive.
+      const report = await notifier.notifyAndReport(event);
+      const failed = report.sinks.filter((r) => !r.ok);
+      const ok = !report.filtered && failed.length === 0;
+      printJson({
+        ok,
+        enabled: true,
+        fired: report.filtered ? null : kind,
+        delivered: report.sinks.length - failed.length,
+        sinks: report.sinks,
+        ...(report.filtered
+          ? {
+              message: `kind '${kind}' is filtered out by GAFFER_NOTIFY_EVENTS — no sink was asked`,
+            }
+          : failed.length > 0
+            ? {
+                message: `${failed.length} of ${report.sinks.length} sink(s) failed: ${failed.map((f) => f.name).join(", ")}`,
+              }
+            : {}),
       });
-      printJson({ ok: true, enabled: true, fired: kind });
+      if (!ok) process.exitCode = 1;
     });
 
   notify

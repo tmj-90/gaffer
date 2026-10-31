@@ -187,6 +187,66 @@ gaffer_day_cap_ok() {
   [ "$(gaffer_day_count)" -lt "$MAX_TICKS_PER_DAY" ]
 }
 
+# ── LIVE CAPS: re-read the day caps from the CURRENT config ──────────────────
+# loop.sh and each pool worker.sh source factory.config.sh ONCE, at start, so the
+# day caps they admit against were frozen there: lowering MAX_TICKS_PER_DAY in the
+# dashboard did not reach a running loop (seen: cap cut 40 → 1 after the first tick,
+# the loop still admitted 4). gaffer_refresh_day_caps <config> re-derives
+# MAX_TICKS_PER_DAY and GAFFER_DAILY_BUDGET_USD in a FRESH bash that re-sources the
+# config (the same pattern as the daemon's per-pass cap check, lib/daemon.sh): a
+# subshell would keep this shell's values and shadow a newly saved settings.json.
+# The re-source hygiene in factory.config.sh still applies, so the operator's real
+# env keeps winning over the file. Call it before EVERY admission.
+#
+# FAIL CLOSED: returns 1 (and changes nothing) when the config cannot be re-read,
+# yields a cap that is not an integer, or reports settings.json UNREADABLE (it exists
+# but does not parse, or node is missing — factory.config.sh sets
+# _GAFFER_SETTINGS_UNREADABLE and keeps the inherited values rather than falling to the
+# defaults). The caller must STOP, never fall back to the stale value, a default or
+# "no cap". A cap of 0 (or less) still means unlimited, as above.
+gaffer_refresh_day_caps() {
+  local cfg="${1:-}" out line cap="" usd="" unreadable="" seen=0
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 1
+  out="$(GAFFER_DATA="${GAFFER_DATA:-}" bash -c '
+    source "$1" >/dev/null 2>&1 || true
+    printf "caps:%s\nunreadable:%s\nusd:%s\n" "${MAX_TICKS_PER_DAY:-}" "${_GAFFER_SETTINGS_UNREADABLE:-0}" "${GAFFER_DAILY_BUDGET_USD:-}"' _ "$cfg" 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      caps:*) cap="${line#caps:}"; seen=$((seen + 1)) ;;
+      unreadable:*) unreadable="${line#unreadable:}"; seen=$((seen + 1)) ;;
+      usd:*) usd="${line#usd:}"; seen=$((seen + 1)) ;;
+    esac
+  done <<<"$out"
+  [ "$seen" = 3 ] || return 1
+  if [ "$unreadable" != 0 ]; then
+    _GAFFER_SETTINGS_UNREADABLE=1; export _GAFFER_SETTINGS_UNREADABLE
+    return 1
+  fi
+  [[ "$cap" =~ ^-?[0-9]+$ ]] || return 1
+  unset _GAFFER_SETTINGS_UNREADABLE
+  _gaffer_set_live_cap MAX_TICKS_PER_DAY "$cap"
+  _gaffer_set_live_cap GAFFER_DAILY_BUDGET_USD "$usd"
+  return 0
+}
+
+# gaffer_settings_readable — 0 when settings.json was read (or there is none), 1 when
+# it exists but could not be parsed / read on the last source of factory.config.sh.
+# Every pre-spawn gate (tick.sh, poll-once.sh, the daemon) refuses paid work on 1.
+gaffer_settings_readable() {
+  [ "${_GAFFER_SETTINGS_UNREADABLE:-0}" = 0 ]
+}
+# Assign a refreshed cap in THIS shell. When the key is a value the config derived
+# and exported (it carries a _GAFFER_DV_<KEY> record), move the record with it: the
+# record is how a child's re-source (tick.sh, the next refresh) tells a stale derived
+# value from one a parent set on purpose, and a stale record would freeze the cap at
+# the refreshed value instead of re-deriving it from settings.json next time.
+_gaffer_set_live_cap() {
+  local key="$1" val="$2" rec="_GAFFER_DV_$1"
+  printf -v "$key" '%s' "$val"
+  if [ -n "${!rec+x}" ]; then printf -v "$rec" '%s' "$val"; export "${rec?}"; fi
+  return 0
+}
+
 # ── Per-UTC-day USD cap (Part B) ─────────────────────────────────────────────
 # MAX_TICKS_PER_DAY caps the tick COUNT; GAFFER_DAILY_BUDGET_USD caps the DOLLARS
 # spent in a UTC calendar day. The window spend is summed from the usage ledger —
@@ -244,6 +304,27 @@ gaffer_day_usd_spent() {
 # body) so an awk-metacharacter settings value coerces to 0 (`+0`) and reads as OFF,
 # never executes. Boundary: spent < cap ⇒ OK (proceed); spent == cap or over ⇒ NOT
 # OK (halt) — same "at the cap halts" semantics as gaffer_day_cap_ok.
+# ── Lifetime budget admission (GAFFER_BUDGET_USD) ────────────────────────────
+# GAFFER_BUDGET_USD is the factory's HARD lifetime ceiling; factory.config.sh sums the
+# ledger into GAFFER_BUDGET_REMAINING every time it is sourced (once per tick). It used
+# to be read only AFTER a delivery call (the budget_cap pause), so at $0 headroom every
+# new ready ticket still got one paid call before pausing — N tickets, N calls past the
+# "hard ceiling". This is the pre-spawn gate: 0 = the factory may start paid work,
+# 1 = it may not. Same shape and fail-closed rules as gaffer_day_usd_cap_ok: unset /
+# 0 / garbage budget ⇒ OFF; a budget that IS set but whose headroom could not be
+# computed (node or the ledger reader failed, so the config left it empty) ⇒ halt.
+gaffer_budget_headroom_ok() {
+  local budget="${GAFFER_BUDGET_USD:-}" rem="${GAFFER_BUDGET_REMAINING:-}"
+  [ -z "$budget" ] && return 0
+  command -v awk >/dev/null 2>&1 || { echo "gaffer: GAFFER_BUDGET_USD=$budget is set but awk is unavailable to compare it — halting rather than spending against an unenforceable budget" >&2; return 1; }
+  awk -v b="$budget" 'BEGIN{exit !(b+0 > 0)}' 2>/dev/null || return 0   # budget<=0/garbage ⇒ OFF
+  if [ -z "$rem" ]; then
+    echo "gaffer: GAFFER_BUDGET_USD=$budget is set but the remaining headroom cannot be established (node unavailable, or the usage ledger unreadable) — halting rather than spending against an unenforceable budget" >&2
+    return 1
+  fi
+  awk -v r="$rem" 'BEGIN{exit !(r+0 > 0)}' 2>/dev/null
+}
+
 gaffer_day_usd_cap_ok() {
   local cap="${GAFFER_DAILY_BUDGET_USD:-}"
   [ -z "$cap" ] && return 0

@@ -87,8 +87,13 @@ interface Harness {
   close: () => Promise<void>;
 }
 
-async function startHarness(runner: PollWorkRunner, seedReady = true): Promise<Harness> {
+async function startHarness(
+  runner: PollWorkRunner,
+  seedReady = true,
+  seed?: (wg: Dispatch) => void,
+): Promise<Harness> {
   const wg = Dispatch.open(":memory:");
+  seed?.(wg);
   if (seedReady) {
     // The route only fires a tick when something is actually READY; seed one so the
     // spawn / NOT_CONFIGURED paths below are exercised (empty queue is tested separately).
@@ -203,5 +208,128 @@ describe("POST /poll-work", () => {
       else process.env["CREW_CONFIG"] = prev;
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ===========================================================================
+//  Non-ready work a tick handles first: a Continue'd paused delivery, an agent
+//  review, a black-box test. Counting only `ready` made Continue + Poll a no-op.
+// ===========================================================================
+
+const human = { type: "human" as const, id: "tom" };
+
+/** A ticket driven to `paused` with a human's Continue on it (resume-requested). */
+function seedResumeRequested(wg: Dispatch): void {
+  wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+  const t = wg.createTicket({ title: "big", description: "x", policy_pack: "solo_loose" }, human);
+  wg.linkRepository(t.id, "svc", "primary", human);
+  wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
+  wg.markReady(t.id, human);
+  const agent = wg.registerAgent({ display_name: "a" }, human);
+  wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, { type: "agent", id: "runner" });
+  wg.pauseDelivery(
+    t.id,
+    {
+      reason: "cap_hit",
+      branch_name: "gaffer/ticket-1-big",
+      worktree_path: "/tmp/wt",
+      worktrees_json: "[]",
+      repo: "svc",
+      attempt: 1,
+      turns: 200,
+      spend: "$1",
+    },
+    { type: "system" },
+  );
+  wg.continuePaused(t.id, human);
+}
+
+/** A ticket sitting in `status` (set directly — the lanes only read the status). */
+function seedInStatus(status: string): (wg: Dispatch) => void {
+  return (wg) => {
+    const t = wg.createTicket({ title: `in ${status}` }, human);
+    wg.db.prepare("UPDATE tickets SET status = ? WHERE id = ?").run(status, t.id);
+  };
+}
+
+function withEnv(vars: Record<string, string | undefined>): () => void {
+  const prev = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  return () => {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+}
+
+describe("POST /poll-work — work beyond the ready queue", () => {
+  let h: Harness | undefined;
+  let restore: (() => void) | undefined;
+  afterEach(async () => {
+    if (h) await h.close();
+    h = undefined;
+    restore?.();
+    restore = undefined;
+  });
+
+  it("fires for a paused ticket a human pressed Continue on (nothing ready)", async () => {
+    restore = withEnv({ GAFFER_PAUSE_ON_CAP: undefined, CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness({ run: () => ({ started: true, pid: 3 }) }, false, seedResumeRequested);
+    const res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.polled).toBe(true);
+    expect(res.body.readyCount).toBe(0);
+    expect(res.body.pending).toMatchObject({ ready: 0, resume: 1 });
+    expect(res.body.idle).toBeUndefined();
+    expect(h.runCount()).toBe(1);
+  });
+
+  it("does not count a Continue'd ticket when pause-on-cap is off (the tick would not resume it)", async () => {
+    restore = withEnv({ GAFFER_PAUSE_ON_CAP: "0", CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness({ run: () => ({ started: true, pid: 3 }) }, false, seedResumeRequested);
+    const res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.reason).toBe("no_ready_work");
+    expect(h.runCount()).toBe(0);
+  });
+
+  it("fires for an in_review ticket when the reviewer agent is on, and not under human review", async () => {
+    restore = withEnv({ REVIEW_MODE: "agent", CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness(
+      { run: () => ({ started: true, pid: 4 }) },
+      false,
+      seedInStatus("in_review"),
+    );
+    let res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.pending).toMatchObject({ review: 1 });
+    await h.close();
+    restore();
+    restore = withEnv({ REVIEW_MODE: "human", CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness(
+      { run: () => ({ started: true, pid: 4 }) },
+      false,
+      seedInStatus("in_review"),
+    );
+    res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.polled).toBe(false);
+    expect(h.runCount()).toBe(0);
+  });
+
+  it("fires for an in_testing ticket only when the tester lane is on", async () => {
+    restore = withEnv({ GAFFER_TESTING: "1", CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness(
+      { run: () => ({ started: true, pid: 5 }) },
+      false,
+      seedInStatus("in_testing"),
+    );
+    const res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.pending).toMatchObject({ testing: 1 });
   });
 });

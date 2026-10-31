@@ -376,7 +376,7 @@ run)
   say "gaffer daemon: re-running the loop every ${_interval}s — SIGINT/SIGTERM stops cleanly (finishes the current pass); MAX_TICKS_PER_DAY caps the day"
   # shellcheck source=lib/daemon.sh
   source "$HERE/lib/daemon.sh"
-  GAFFER_LOOP_SH="$_loop_sh" DRY_RUN="$_live_dry" gaffer_run_daemon "$_interval"
+  GAFFER_LOOP_SH="$_loop_sh" GAFFER_DAEMON_CONFIG="$HERE/factory.config.sh" DRY_RUN="$_live_dry" gaffer_run_daemon "$_interval"
   ;;
 
 skills)

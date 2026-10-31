@@ -140,6 +140,21 @@ merge="$(read_count ready_for_merge)"; [ "$merge" -eq "$merge" ] 2>/dev/null || 
 # is not "build accepted". Count it toward attention so the pane never says all clear
 # over an unaccepted build.
 unaccepted="$(read_count acceptance_unaccepted)"; [ "$unaccepted" -eq "$unaccepted" ] 2>/dev/null || unaccepted=0
+# PAUSED: a delivery that hit a turn/budget/time cap is held with its worktree for a
+# human's Continue or Stop — the factory never resumes it on its own. Count it toward
+# attention, minus the ones a human already pressed Continue on (the next tick takes
+# those). Env-overridable seam (RESUME_REQ_CMD); if the resume queue cannot be read,
+# every paused ticket counts as waiting (over-report, never a false all-clear).
+paused="$(read_count paused)"; [ "$paused" -eq "$paused" ] 2>/dev/null || paused=0
+resume_req=0
+if [ "$paused" -gt 0 ]; then
+  : "${RESUME_REQ_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB ticket resume-requested}"
+  read -ra _rr_c <<<"$RESUME_REQ_CMD"
+  resume_req="$("${_rr_c[@]}" 2>/dev/null | node "$HERE/lib/json-tool.mjs" expr 'Array.isArray(d) ? d.length : 0' 2>/dev/null)"
+  [ "$resume_req" -eq "$resume_req" ] 2>/dev/null || resume_req=0
+  [ "$resume_req" -gt "$paused" ] && resume_req="$paused"
+fi
+paused_waiting=$(( paused - resume_req ))
 # What's REGISTERED: the repos the factory can deliver into (name → path → default
 # branch → stack → DoD gates). `gaffer help` promises "what's registered + what's
 # running"; a fresh operator needs the repo NAME here for `wg ticket repo-access set`.
@@ -153,7 +168,9 @@ if [ -n "$repo_lines" ]; then printf '%s\n' "$repo_lines"
 else printf "    ${c_dim}(none — \`gaffer onboard <path>\` registers one)${c_off}\n"; fi
 
 printf "\n  ${c_dim}work${c_off}\n"
-printf "    needs review: %s    blocked: %s    ready: %s\n" "$review" "$blocked" "$ready"
+printf "    needs review: %s    blocked: %s    ready: %s    paused: %s\n" "$review" "$blocked" "$ready" "$paused"
+[ "$paused_waiting" -gt 0 ] && printf "    ${c_yel}paused, waiting on you: %s${c_off}  (hit a cap with its work kept — Continue or Stop it on the board, or: gaffer wg ticket continue <n>)\n" "$paused_waiting"
+[ "$resume_req" -gt 0 ] && printf "    ${c_dim}paused, Continue pressed: %s (the next tick resumes it)${c_off}\n" "$resume_req"
 [ "$unaccepted" -gt 0 ] && printf "    ${c_yel}builds NOT accepted: %s${c_off}  (implementation merged; the acceptance ticket has no tester PASS — run the loop with the tester, or record a human verdict: wg ticket tester-pass <n> --as human)\n" "$unaccepted"
 # Per-epic acceptance: result, the commit the tester's PASS ran against, and whether the
 # repo's default branch has moved past it since (a historical acceptance, not the current build).
@@ -194,9 +211,16 @@ if [ -n "$ticks" ]; then printf '%s\n' "$ticks" | sed 's/^/    /'
 else printf "    ${c_dim}(none yet — %s)${c_off}\n" "$GAFFER_LOG"; fi
 
 echo
-# Precise running-detection: validated recorded PID, not a broad `pgrep -f`.
+# Precise running-detection: validated recorded PID, not a broad `pgrep -f`. A
+# foreground server (`gaffer dashboard --foreground`: compose, systemd, any
+# supervisor) writes no PID file — the supervisor owns it — so fall back to probing
+# the port's /healthz. That proves something answers there, not that it is THIS
+# factory's server, and the line says so.
+_dash_url="http://127.0.0.1:${DISPATCH_API_PORT:-8787}"
 if _dash_pid="$(gaffer_dashboard_pid 2>/dev/null)"; then
-  ok "dashboard running → http://127.0.0.1:${DISPATCH_API_PORT:-8787} (pid $_dash_pid)"
+  ok "dashboard running → $_dash_url (pid $_dash_pid)"
+elif command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 "${DASHBOARD_PROBE_URL:-$_dash_url/healthz}" >/dev/null 2>&1; then
+  ok "dashboard answering → $_dash_url (no pid file: a foreground/supervised server)"
 else
   warn "dashboard not running (\`gaffer dashboard\`)"
 fi
@@ -212,13 +236,14 @@ dec_req="$(printf '%s' "$HUMAN_QUEUE_JSON" | node "$HERE/lib/json-tool.mjs" stat
 
 # A ticket needing review, blocked, or approved-but-unmerged — or a blocking decision —
 # means a human is wanted → notify.
-attention=$(( review + blocked + merge + unaccepted + dec_req ))
+attention=$(( review + blocked + merge + unaccepted + dec_req + paused_waiting ))
 if [ "$attention" -gt 0 ]; then
   reasons=""; [ "$review" -gt 0 ] && reasons="$review awaiting review"
   [ "$blocked" -gt 0 ] && reasons="${reasons:+$reasons, }$blocked blocked"
   [ "$merge" -gt 0 ] && reasons="${reasons:+$reasons, }$merge approved but not merged"
   [ "$unaccepted" -gt 0 ] && reasons="${reasons:+$reasons, }$unaccepted build(s) not accepted"
   [ "$dec_req" -gt 0 ] && reasons="${reasons:+$reasons, }$dec_req decision(s) a human must answer"
+  [ "$paused_waiting" -gt 0 ] && reasons="${reasons:+$reasons, }$paused_waiting paused (Continue or Stop)"
   notify "gaffer: $reasons — a human is needed"
 elif [ "$dec_all" -gt 0 ]; then
   ok "nothing blocking — $dec_all decision(s) open (answer: gaffer wg decisions resolve <id> --answer \"…\")"

@@ -432,6 +432,15 @@ gaffer_area_for_stack() {
 # never even be launched).
 gaffer_timeout_preflight || gaffer_abort_setup SETUP "no timeout primitive — aborting tick (setup error)"
 
+# An existing settings.json that does not parse (or no node to read it) leaves every
+# setting it holds — the spend caps included — unknown: factory.config.sh kept the
+# inherited values and set _GAFFER_SETTINGS_UNREADABLE. Refuse before any claim or
+# spawn, as a setup error (the loop stops, the daemon backs off), never run on
+# defaults. DRY_RUN is not exempt: it may be one of the settings that went unread.
+if declare -F gaffer_settings_readable >/dev/null 2>&1 && ! gaffer_settings_readable; then
+  gaffer_abort_setup SETUP "settings.json ($GAFFER_DATA/settings.json) exists but cannot be parsed (or node is missing) — not starting work until it is fixed"
+fi
+
 # Part B (defense-in-depth): before this tick can claim work and spawn ANY paid
 # `claude -p`, consult the per-UTC-day USD cap. If the day's ledger spend is already
 # at/over GAFFER_DAILY_BUDGET_USD, do NOT start new paid work — halt cleanly like the
@@ -441,6 +450,15 @@ gaffer_timeout_preflight || gaffer_abort_setup SETUP "no timeout primitive — a
 if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 \
    && ! gaffer_day_usd_cap_ok; then
   log "BUDGET: UTC-day USD cap reached (spent \$$(gaffer_day_usd_spent) >= \$${GAFFER_DAILY_BUDGET_USD}) — not starting new paid work this tick"
+  result no_work; exit 0
+fi
+# The LIFETIME ceiling (GAFFER_BUDGET_USD), gated the same way before any claim or
+# spawn: at $0 headroom a new ready ticket used to get one paid delivery call and only
+# THEN pause on budget_cap — one call past the "hard ceiling" per ticket. A resume
+# (Continue) waits here too: raising GAFFER_BUDGET_USD is what lets work continue.
+if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_budget_headroom_ok >/dev/null 2>&1 \
+   && ! gaffer_budget_headroom_ok; then
+  log "BUDGET: lifetime budget exhausted (GAFFER_BUDGET_USD=\$${GAFFER_BUDGET_USD}, headroom \$${GAFFER_BUDGET_REMAINING:-unknown}) — not starting new paid work this tick; raise GAFFER_BUDGET_USD to continue"
   result no_work; exit 0
 fi
 
@@ -1517,6 +1535,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # WRITE_ROOTS. That ticket DOES have a write repo — telling the human to "set its
   # access to write" is false and an unblock just re-parks it — so it is parked as
   # no_local_repo_path with the register-or-clone instruction instead.
+  # `ready` now refuses a ticket with no confirmed write repo up front (policy
+  # WRITE_REPO_REQUIRED / SCOPE_REPO_UNCONFIRMED), so this mostly catches access
+  # that changed after the ticket was readied.
   if [ "$_WG_MARKERS" = 1 ] && [ -z "$(printf '%s' "$WRITE_ROOTS" | tr -d '[:space:]')" ]; then
     _NWR_NOPATH="$(echo "$SHOW" | jget '(d.repositories || []).filter((r) => r && ["confirmed", "implicit_single_repo"].includes(r.relation) && r.access === "write" && !String(r.local_path || "").trim()).length' 2>/dev/null || echo 0)"
     if [ "${_NWR_NOPATH:-0}" -gt 0 ] 2>/dev/null; then

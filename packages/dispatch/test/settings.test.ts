@@ -1,6 +1,7 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -10,6 +11,7 @@ import {
   listSettings,
   resetDerivedSettings,
   MODE_PRESETS,
+  presetsFor,
   readSettingsFile,
   resolveSettingsPath,
   SETTING_DEFS,
@@ -296,20 +298,93 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     expect(byKey.get("AUTO_MERGE")?.source).toBe("mode");
     expect(byKey.get("AUTO_MERGE")?.value).toBe(""); // nothing stored
     expect(byKey.get("AUTO_MERGE")?.envLocked).toBe(false);
-    // The mirror stays in step with the runner's presets for every mode.
-    for (const mode of ["autonomous", "strict", "lite", "graduated", "supervised"]) {
-      expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual(
-        [
-          "AUTO_MERGE",
-          "DISPATCH_ALLOW_AGENT_APPROVE",
-          "GAFFER_AUTO_PUSH",
-          "MEMORY_AUTO_APPROVE",
-          "MERGE_ON_AGENT_REVIEW",
-          "REVIEW_MODE",
-        ].sort(),
-      );
+    // The mirror stays in step with the runner's presets for every mode: the autonomy
+    // cluster everywhere, plus the sandbox default where autonomy is on.
+    const cluster = [
+      "AUTO_MERGE",
+      "DISPATCH_ALLOW_AGENT_APPROVE",
+      "GAFFER_AUTO_PUSH",
+      "MEMORY_AUTO_APPROVE",
+      "MERGE_ON_AGENT_REVIEW",
+      "REVIEW_MODE",
+    ];
+    for (const mode of ["graduated", "supervised"]) {
+      expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual(cluster.sort());
+    }
+    for (const mode of ["autonomous", "strict", "lite"]) {
+      expect(Object.keys(MODE_PRESETS[mode]!).sort()).toEqual([...cluster, "STRICT_MODE"].sort());
     }
   });
+
+  it("the sandbox reads as ON (from the mode) under autonomous, strict and lite — as the runner forces it", () => {
+    for (const mode of ["autonomous", "strict", "lite"]) {
+      resetDerivedSettings();
+      writeFileSync(settingsPath, JSON.stringify({ GAFFER_MODE: mode }), "utf8");
+      const env: NodeJS.ProcessEnv = {};
+      applySettingsToEnv(env, settingsPath);
+      const v = listSettings(env, settingsPath).find((x) => x.key === "STRICT_MODE");
+      expect([mode, v?.effective, v?.source]).toEqual([mode, "1", "mode"]);
+    }
+    for (const mode of ["supervised", "graduated"]) {
+      const v = listSettings({ GAFFER_MODE: mode }, settingsPath).find(
+        (x) => x.key === "STRICT_MODE",
+      );
+      expect([mode, v?.effective, v?.source]).toEqual([mode, "", "default"]);
+    }
+    // An explicit GAFFER_STRICT_REQUIRE=0 opts autonomous/lite out of the default (the
+    // runner honours it, loudly); strict always defaults it on.
+    expect(presetsFor("lite", { GAFFER_STRICT_REQUIRE: "0" })["STRICT_MODE"]).toBeUndefined();
+    expect(
+      presetsFor("autonomous", { GAFFER_STRICT_REQUIRE: "no" })["STRICT_MODE"],
+    ).toBeUndefined();
+    expect(presetsFor("strict", { GAFFER_STRICT_REQUIRE: "0" })["STRICT_MODE"]).toBe("1");
+    expect(presetsFor("lite", { GAFFER_STRICT_REQUIRE: "1" })["STRICT_MODE"]).toBe("1");
+  });
+
+  it("MODE_PRESETS matches what runner/factory.config.sh actually derives for every mode", () => {
+    const config = resolve(__dirname, "../../../runner/factory.config.sh");
+    const keys = [...new Set(Object.values(MODE_PRESETS).flatMap((p) => Object.keys(p)))].sort();
+    for (const mode of Object.keys(MODE_PRESETS)) {
+      const data = mkdtempSync(join(tmpdir(), "wg-settings-mode-"));
+      try {
+        const out = execFileSync(
+          "bash",
+          [
+            "-c",
+            'source "$1" >/dev/null 2>&1; shift; for k in "$@"; do printf "%s=%s\\n" "$k" "${!k:-}"; done',
+            "_",
+            config,
+            ...keys,
+          ],
+          {
+            encoding: "utf8",
+            env: {
+              PATH: process.env["PATH"] ?? "",
+              HOME: data,
+              GAFFER_DATA: data,
+              GAFFER_MODE: mode,
+            },
+            timeout: 60_000,
+          },
+        );
+        const runner = Object.fromEntries(
+          out
+            .trim()
+            .split("\n")
+            .map((l) => [l.slice(0, l.indexOf("=")), l.slice(l.indexOf("=") + 1)]),
+        );
+        for (const k of keys) {
+          // A key the preset leaves out must not be forced on by the runner either.
+          expect([mode, k, runner[k]]).toEqual([mode, k, MODE_PRESETS[mode]![k] ?? runner[k]]);
+          if (MODE_PRESETS[mode]![k] === undefined && k === "STRICT_MODE") {
+            expect([mode, k, runner[k] === "1"]).toEqual([mode, k, false]);
+          }
+        }
+      } finally {
+        rmSync(data, { recursive: true, force: true });
+      }
+    }
+  }, 120_000);
 
   it("an explicit stored '0' beats the mode preset (the user's choice), and clearing it restores the preset", () => {
     writeFileSync(

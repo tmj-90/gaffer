@@ -67,12 +67,13 @@ describe("board card repo cross-link", () => {
     const t = wg.createTicket({ title: "Reads only", policy_pack: "solo_loose" }, human);
     const r = wg.registerRepository({ name: "docs" }, human);
     wg.linkRepository(t.id, "docs", "primary", human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
+    wg.markReady(t.id, human);
+    // Narrowed to read AFTER readying (`ready` itself refuses a no-write-repo ticket).
     wg.setTicketRepoAccess(
       { ticket_id: t.id, repo_id: r.id, access: "read", relation: "confirmed" },
       human,
     );
-    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "AC" }, human);
-    wg.markReady(t.id, human);
     const card = cardById(wg, t.id);
     expect(card!.repos).toEqual([]);
     wg.db.close();

@@ -4,7 +4,82 @@
 # dashboard launcher uses it to tell an operator override (which locks a setting in
 # the UI) from a value this config derived (settings.json, mode preset, default) —
 # those are unset for the dashboard process so the UI can still edit them.
-_GAFFER_ENV_AT_SOURCE=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
+#
+# RE-SOURCE HYGIENE. This file is sourced by a parent (gaffer, loop.sh, a daemon pass)
+# and again by every child (tick.sh, worker.sh). The parent EXPORTS what it derived —
+# settings.json values and exported defaults — so a child used to inherit them as if
+# they were real env, and the assign-if-unset below kept the stale value: a dashboard
+# edit (daily USD cap, MAX_TICKS_PER_DAY, review mode, turn cap) never reached a
+# running `gaffer run --daemon` or loop until the operator restarted it. So:
+#   * the operator's env is captured ONCE per process tree (_GAFFER_OPERATOR_ENV is
+#     exported) — a child does not mistake its parent's derived values for overrides;
+#   * at the end of this file every variable THIS source newly exported is recorded
+#     with its value (_GAFFER_DV_<KEY>, exported; the `_GAFFER_` prefix keeps it out of
+#     the agent env, whose allow-list is `GAFFER_*`);
+#   * on a re-source, a recorded key the operator did not set and nobody has changed
+#     since (value == recorded) is unset first, so settings.json, the mode preset and
+#     the defaults derive it afresh. A value a parent script changed on purpose (e.g.
+#     `gaffer run` passing DRY_RUN=0 to loop.sh) differs from the record and is kept.
+#
+# FAIL CLOSED ON AN UNREADABLE settings.json. The unset above is only safe when the
+# file can be re-read: a settings.json that EXISTS but does not parse (a hand edit, a
+# truncated copy) or cannot be read at all (no node on PATH) would otherwise leave
+# every unset key to its default, so a running loop's MAX_TICKS_PER_DAY went back to
+# 50 and GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD went OFF mid-run. So the file is
+# read FIRST (before anything is unset) and, when it exists but cannot be parsed:
+#   * nothing is unset — inherited values (the last good settings) are kept;
+#   * _GAFFER_SETTINGS_UNREADABLE=1 is exported, and every spend gate refuses new paid
+#     work on it (gaffer_refresh_day_caps → loop.sh / worker.sh stop, the daemon
+#     idles, tick.sh and poll-once.sh refuse) until the file parses again.
+# A missing settings.json is not an error (nothing was configured in the UI).
+# The path resolves EXACTLY as the RUNNER_DIR / GAFFER_HOME / GAFFER_DATA defaults
+# further down do (GAFFER_DATA := $GAFFER_HOME/.gaffer, GAFFER_HOME := $RUNNER_DIR/..),
+# so an operator-set GAFFER_HOME with GAFFER_DATA unset reads $GAFFER_HOME/.gaffer —
+# not the runner checkout's parent — in the parent and in every child.
+_gs_rd="${RUNNER_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+_gs_home="${GAFFER_HOME:-$(cd "$_gs_rd/.." && pwd)}"
+_gs_file="${GAFFER_DATA:-$_gs_home/.gaffer}/settings.json"
+_gs_out=""; _gs_bad=0
+if [ -e "$_gs_file" ]; then
+  if command -v node >/dev/null 2>&1; then
+    # STRICT: the file must parse as a flat JSON object; anything else exits non-zero.
+    # Parsed the way the dashboard's readSettingsFile (packages/dispatch/src/api/
+    # settings.ts) reads it: a leading UTF-8 BOM is dropped and the text trimmed, and an
+    # empty or whitespace-only file is {} (nothing configured) — so the runner never
+    # halts on a file the Settings panel shows as fine. Unparseable or non-object → 3.
+    _gs_out="$(node -e 'const fs=require("fs");let s;try{const raw=fs.readFileSync(process.argv[1],"utf8").replace(/^\uFEFF/,"").trim();if(raw==="")process.exit(0);s=JSON.parse(raw)}catch{process.exit(3)}if(!s||typeof s!=="object"||Array.isArray(s))process.exit(3);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")' "$_gs_file" 2>/dev/null)" || _gs_bad=1
+  else
+    _gs_bad=1
+  fi
+fi
+if [ "$_gs_bad" = 1 ]; then
+  _GAFFER_SETTINGS_UNREADABLE=1; export _GAFFER_SETTINGS_UNREADABLE
+  _gs_out=""
+else
+  unset _GAFFER_SETTINGS_UNREADABLE
+fi
+if [ -n "${_GAFFER_OPERATOR_ENV+x}" ]; then
+  # Re-source hygiene — skipped while settings.json is unreadable (see above), so the
+  # inherited values and their records survive until the file parses again.
+  if [ "$_gs_bad" != 1 ]; then
+    while IFS= read -r _dv; do
+      [ -n "$_dv" ] || continue
+      _dk="${_dv#_GAFFER_DV_}"
+      case "$_GAFFER_OPERATOR_ENV" in *" $_dk "*) unset "$_dv"; continue ;; esac
+      if [ -n "${!_dk+x}" ] && [ "${!_dk}" = "${!_dv}" ]; then unset "$_dk"; fi
+      unset "$_dv"
+    done < <(compgen -v _GAFFER_DV_ 2>/dev/null)
+    unset _dv _dk
+  fi
+else
+  _GAFFER_OPERATOR_ENV=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
+  export _GAFFER_OPERATOR_ENV
+fi
+unset _gs_rd _gs_home _gs_file _gs_bad
+_GAFFER_ENV_AT_SOURCE="$_GAFFER_OPERATOR_ENV"
+# What was already exported when THIS source began (after the hygiene step): those
+# are the operator's or a parent's on purpose, never recorded as derived here.
+_GAFFER_EXPORTED_AT_START=" $(compgen -e 2>/dev/null | tr '\n' ' ') "
 
 # This file lives in runner/ of the Gaffer monorepo, so RUNNER_DIR is its own dir
 # and GAFFER_HOME is the mono root — which holds runner/ alongside
@@ -29,7 +104,9 @@ export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 # closes the `${...}` early and runs the trailing text. Instead: FULLY anchor the key to
 # a shell identifier, then test-and-assign with indirect expansion (`${!_sk}`) + `printf
 # -v`, neither of which re-parses $_sk or $_sv as a command.
-if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
+# The file was read (strictly) at the top of this file, into $_gs_out; an unreadable
+# one applied nothing and set _GAFFER_SETTINGS_UNREADABLE (see FAIL CLOSED above).
+if [ -n "$_gs_out" ]; then
   while IFS=$'\t' read -r _sk _sv; do
     [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
     # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
@@ -37,9 +114,10 @@ if [ -f "$GAFFER_DATA/settings.json" ] && command -v node >/dev/null 2>&1; then
     # not only this shell. Unexported, notifications/auto-approve set in the UI
     # silently never fired.
     if [ -z "${!_sk:-}" ]; then printf -v "$_sk" '%s' "$_sv"; export "${_sk?}"; fi
-  done < <(node -e 'try{const s=require(process.argv[1]);for(const[k,v]of Object.entries(s))process.stdout.write(k+"\t"+String(v).replace(/[\t\n\r]/g," ")+"\n")}catch{}' "$GAFFER_DATA/settings.json")
+  done <<<"$_gs_out"
   unset _sk _sv
 fi
+unset _gs_out
 
 # Product locations (mono layout: packages/* under the repo root)
 : "${DISPATCH_DIR:=$GAFFER_HOME/packages/dispatch}"
@@ -703,10 +781,9 @@ export GAFFER_CAP_DETECT_TURNS
 # Set to 0 to fall back to the legacy park-to-refining + teardown behaviour.
 : "${GAFFER_PAUSE_ON_CAP:=1}"        # 1 = pause+keep worktree (default); 0 = legacy park+teardown
 export GAFFER_PAUSE_ON_CAP
-# How many resume-requested paused tickets the loop re-enters per tick (≥1). Bounds
-# the per-tick resume work so a backlog of Continue presses doesn't starve new claims.
-: "${GAFFER_MAX_RESUMES_PER_TICK:=1}"
-export GAFFER_MAX_RESUMES_PER_TICK
+# (GAFFER_MAX_RESUMES_PER_TICK was removed: nothing read it. A tick delivers ONE
+# ticket, so it re-enters at most one Continue'd paused ticket — first, before any
+# new claim — and the next tick takes the next one.)
 # Dashboard base URL embedded in the cap-hit / park / loop-end notify so the operator
 # can click straight through to the ticket from their phone.
 #
@@ -2353,3 +2430,15 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # memory-lift telemetry). Always fail-soft.
 # shellcheck source=lib/eval-judge.sh
 [ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"
+
+# RE-SOURCE HYGIENE (see the top of this file): record every variable this source
+# newly exported, with its value, so a child's re-source can tell a stale derived
+# value (unchanged → derived afresh from settings.json / the mode / the defaults) from
+# one a parent changed on purpose (kept). Keep this block LAST.
+while IFS= read -r _dk; do
+  case "$_dk" in '' | _GAFFER_*) continue ;; esac
+  case "$_GAFFER_EXPORTED_AT_START" in *" $_dk "*) continue ;; esac
+  printf -v "_GAFFER_DV_$_dk" '%s' "${!_dk}"
+  export "_GAFFER_DV_$_dk"
+done < <(compgen -e 2>/dev/null)
+unset _dk _GAFFER_EXPORTED_AT_START

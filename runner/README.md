@@ -131,7 +131,7 @@ the Claude CLI; that's only for live runs.
 | `gaffer setup` | One-command bootstrap (build + init + open the dashboard). |
 | `gaffer onboard <path> [--standalone]` | Register + scan a repo, run the `claude -p` onboarding pass (real digest + feature inventory + cited lore drafts; the card-generation / card-review skills are inlined into its prompt, and its lore rules are a distillation of the memory-onboard skill's hard rules, pinned by `test/onboard-memory-rules-sync.test.mjs`), seed tags. Advanced scope mapping is done in the Factory Map dashboard tab. |
 | `gaffer dashboard [--restart\|--lan]` | Start the Dispatch control-room UI (`http://127.0.0.1:8787`). |
-| `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human. |
+| `gaffer status` | One-pane roll-up: registrations, work counts, running ticks, what needs a human (reviews, blocked, unmerged approvals, decisions, paused deliveries awaiting Continue/Stop). Finds a `--foreground` dashboard (no pid file) by probing its `/healthz`. |
 | `gaffer demo` | The Factory-Map showcase (dry-run only). |
 
 See the root [`quickstart.md`](../quickstart.md) (the canonical first run), [`ONBOARDING.md`](ONBOARDING.md),
@@ -175,7 +175,29 @@ Config resolves in this precedence — highest first:
    cost guards, model tiers, CLI helpers).
 
 So a human can tune the factory from the dashboard, but anything exported in the
-environment overrides it — and env-locked keys show read-only in the UI.
+environment overrides it — and env-locked keys show read-only in the UI. "The
+environment" means the operator's REAL environment, captured once when the first
+process sources `factory.config.sh` (`_GAFFER_OPERATOR_ENV`): the values a parent
+(gaffer, `loop.sh`, a daemon pass) derived and exported are re-derived by each child,
+so a dashboard edit reaches the next tick of a running loop or `gaffer run --daemon`
+without a restart, and the dashboard launched by `gaffer dashboard` shows its own
+defaults as editable, not env-locked. The day caps (`MAX_TICKS_PER_DAY`,
+`GAFFER_DAILY_BUDGET_USD`) are re-read from the current config by `loop.sh` and every
+pool `worker.sh` before each admission (`gaffer_refresh_day_caps`, lib/budget.sh), so
+lowering one stops a running loop at its next tick; a cap that cannot be re-read
+stops the run (fail closed). A `settings.json` that exists but does not parse as a
+flat JSON object (a hand edit, a truncated copy), or that cannot be read because
+`node` is missing, never drops a cap to its default: the re-source keeps the
+inherited values and sets `_GAFFER_SETTINGS_UNREADABLE=1`, a running `loop.sh` / pool
+worker stops with an `ERROR` line naming the file, `gaffer run --daemon` runs no pass,
+and `tick.sh` (setup error) and Poll for work refuse new work until the file parses
+again. The file is read the way the dashboard reads it: it lives at
+`$GAFFER_DATA/settings.json` (default `$GAFFER_HOME/.gaffer`, so an operator-set
+`GAFFER_HOME` is honoured in every process), a leading UTF-8 BOM and surrounding
+whitespace are ignored, and an empty or whitespace-only file means "nothing
+configured" (`{}`), not unreadable. The run-shape knobs a loop reads once at start —
+`MAX_TICKS`, `GAFFER_CONCURRENCY`, `TICK_SLEEP`, `EMPTY_POLL_LIMIT` — apply from the
+next loop pass (the next daemon pass, or the next run).
 
 ## Feature lifecycle + a fresh Repo Digest (prepare-at-delivery / apply-at-merge)
 The factory keeps the memory product's **Repo Digest** current and drives the

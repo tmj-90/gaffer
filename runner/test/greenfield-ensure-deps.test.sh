@@ -149,6 +149,11 @@ printf '{"name":"baddep","version":"1.0.0","dependencies":{"nonexistent-pkg-xyzz
   >"$BADDEP/package.json"
 printf '{"name":"baddep","version":"1.0.0","lockfileVersion":3,"packages":{}}\n' \
   >"$BADDEP/package-lock.json"
+# The prime runs npm in a STRIPPED environment (env -i, lib/greenfield.sh), so the
+# npm_config_* overrides below never reach it: without the project .npmrc, npm asks
+# the real registry, which hangs on a host with no direct egress (the test hit its
+# 120s cap). The repository's own .npmrc is read whatever the environment.
+printf 'registry=http://127.0.0.1:1/\nfetch-retries=0\n' >"$BADDEP/.npmrc"
 ERRLOG="$WORK/case6.err"
 OUT="$(npm_config_registry='http://127.0.0.1:1' npm_config_fetch_retries=0 \
   gaffer_ensure_node_modules "$BADDEP" 2>"$ERRLOG")"

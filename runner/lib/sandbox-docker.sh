@@ -245,27 +245,20 @@ _primary_checkout() {
   dirname "$_VW_COMMON"
 }
 
-# _runner_skills_link <write-root>: when <write-root>/.claude/skills is a runner skill
-# mount link (lib/skills-mount.sh, bin/tester-run.mjs) — an absolute, plain path (no
-# `..`, `.`, `:` or newline) resolving to a real directory DIRECTLY under the canonical
-# $GAFFER_DATA/skills-mounts — set _RSK_KEY to that directory's name and _RSK_AT to the
-# link text (the container path the link names) and return 0; else return 1. The link
-# lives in the writable worktree, so nothing taken from it reaches a mount or the legacy
-# mask allow-list unless it has exactly that shape, and the allow-list entry is built
-# from the resolved name, never from the link text.
-_RSK_KEY=""; _RSK_AT=""
-_runner_skills_link() {
-  local sk skc skroot
-  _RSK_KEY=""; _RSK_AT=""
-  [ -n "${GAFFER_DATA:-}" ] && [ -L "$1/.claude/skills" ] || return 1
-  sk="$(readlink "$1/.claude/skills" 2>/dev/null || true)"
-  case "$sk" in /*) ;; *) return 1 ;; esac
-  case "$sk" in *:* | *$'\n'* | */../* | */.. | */./* | */.) return 1 ;; esac
-  skc="$(_readlink_f "$1/.claude/skills" || true)"
-  skroot="$(_readlink_f "$GAFFER_DATA/skills-mounts" || true)"
-  [ -n "$skc" ] && [ -n "$skroot" ] && [ -d "$skc" ] && [ "$(dirname "$skc")" = "$skroot" ] || return 1
-  case "$(basename "$skc")" in "" | . | ..) return 1 ;; esac
-  _RSK_KEY="$(basename "$skc")"; _RSK_AT="$sk"
+# _warn_skills_links: a write root's `.claude/skills` link is never followed. The runner
+# installs skills as REAL COPIES inside the worktree (lib/skills-mount.sh,
+# lib/agent-home.mjs), which the write root's own mount already carries, and replaces an
+# older runner's link before the agent starts; it creates no `.claude/skills` link. Such
+# a link lives in the writable worktree (the repository or the agent made it), so its
+# target is never mounted and, in the legacy layout, never unmasked — not even one that
+# names $GAFFER_DATA/skills-mounts/<key>, which now holds only the host-side telemetry
+# manifest. It is named in a WARNING instead.
+_warn_skills_links() {
+  local wr
+  for wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
+    [ -L "$wr/.claude/skills" ] || continue
+    _warn "not mounting or unmasking the target of the symlink $wr/.claude/skills: skills are installed as copies inside the worktree, and a .claude/skills link is never followed"
+  done
   return 0
 }
 
@@ -358,7 +351,7 @@ done
 #               from $GAFFER_DATA and NO model credential — a gate needs neither.
 #   bridge      GAFFER_MCP_BRIDGE_SOCKET set: MCP servers on the host, only the socket.
 #   none        no --mcp-config in the argv, or GAFFER_SANDBOX_DATA_PLANE=none (an
-#               empty MCP config): no databases; the hook's ledgers + skills only.
+#               empty MCP config): no databases; the hook's ledgers only.
 #   legacy      --mcp-config present, no socket, GAFFER_MCP_BRIDGE OFF: the DB dir
 #               mounted rw + masked, servers inside (WARNED).
 #   refused     --mcp-config present, no socket, bridge ON: the caller wanted the data
@@ -390,7 +383,6 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
   #   • THIS call's bridged --mcp-config (ro; token-free: every server is `connect`);
   #   • the safety hook's two append-only ledgers (rw) — telemetry, not decision state;
   #   • the crew events log the hook appends to (rw), if it lives there;
-  #   • the agent's skills mount target (ro).
   # No database, usage ledger, settings.json, dashboard token or other worker's claim
   # token exists in the container's filesystem, and the write root (the worktree under
   # $GAFFER_DATA/worktrees/) is mounted on its own above.
@@ -412,22 +404,7 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
       "$GAFFER_DATA"/*) [ -e "$GAFFER_CREW_EVENTS" ] || : > "$GAFFER_CREW_EVENTS" 2>/dev/null || true
                         [ -f "$GAFFER_CREW_EVENTS" ] && ! _covered "$GAFFER_CREW_EVENTS" && _add_mount "$GAFFER_CREW_EVENTS" rw ;;
     esac
-    # The agent's `.claude/skills` link lives in the writable worktree, so its target is
-    # mounted only when it is one of the runner's own per-agent skill mounts
-    # ($GAFFER_DATA/skills-mounts/<key>, lib/skills-mount.sh) or already covered (the
-    # whole-library fallback points into the ro runner/ mount). Anything else: WARNED.
-    for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-      _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
-      [ -n "$_sk" ] || continue
-      _skc="$(_readlink_f "$_wr/.claude/skills" || true)"
-      [ -n "$_skc" ] && [ -d "$_skc" ] || continue
-      _covered "$_skc" && continue
-      if _runner_skills_link "$_wr"; then
-        _covered "$_RSK_AT" || _add_mount_at "$_skc" "$_RSK_AT" ro
-        continue
-      fi
-      _warn "not mounting $_skc for the symlink $_wr/.claude/skills: only a runner skill mount under $GAFFER_DATA/skills-mounts/ may be mounted there"
-    done
+    _warn_skills_links
   fi
   _BRIDGED=1
 elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ] && ! _covered "$GAFFER_DATA"; then
@@ -453,20 +430,7 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
   # The crew events log the MCP servers append to, and the safety hook's own ledgers.
   case "${GAFFER_CREW_EVENTS:-}" in "$GAFFER_DATA"/*) _keep+=( "${GAFFER_CREW_EVENTS#"$GAFFER_DATA"/}" ) ;; esac
   _keep+=( safety-blocks.jsonl tool-metrics.jsonl )
-  # The agent's per-agent skills mount (its `.claude/skills` symlink target) — links
-  # into the read-only runner/skills library, nothing secret.
-  # Only the runner-shaped link counts (_runner_skills_link): the link text is writable by
-  # the repository and the agent, and copying it here verbatim would let it unmask any
-  # entry (the dashboard token, settings.json, the sibling worktrees).
-  for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-    if _runner_skills_link "$_wr"; then
-      _keep+=( "skills-mounts/$_RSK_KEY" )
-    elif [ -L "$_wr/.claude/skills" ]; then
-      case "$(readlink "$_wr/.claude/skills" 2>/dev/null || true)" in
-        "$GAFFER_DATA"/*) _warn "not unmasking the target of the symlink $_wr/.claude/skills: only a runner skill mount under $GAFFER_DATA/skills-mounts/ stays visible" ;;
-      esac
-    fi
-  done
+  _warn_skills_links
   _kept() {  # true when top-level entry <name> is (or contains) an allowlisted path
     local b="$1" k
     for k in ${_keep[@]+"${_keep[@]}"}; do

@@ -135,8 +135,9 @@ agent spawn under the docker provider, `lib/worker.sh`:
    the real config, with its env, on the first connection for each name);
 3. exports `GAFFER_MCP_BRIDGE_SOCKET`, which `sandbox-docker.sh` reads to mount **only
    the socket** (rw), the bridged config (ro), the hook's two telemetry ledgers (rw), the
-   crew events log (rw) and the skills mount (ro) — `$GAFFER_DATA` itself is not mounted
-   and the DB env vars are not forwarded;
+   crew events log (rw) — `$GAFFER_DATA` itself is not mounted and the DB env vars are
+   not forwarded (the agent's skills are real copies inside the worktree, carried by its
+   own mount; a `.claude/skills` symlink in a write root is never followed);
 4. tears the bridge down with the agent (socket + bridged config removed).
 
 Failure to render or start the bridge is a **refusal to spawn** (rc 76), never a bare
@@ -151,8 +152,8 @@ mounted rw, masked) and logs a WARNING naming the gap. Force with `1`/`0`.
 | mode | when | what of `$GAFFER_DATA` is in the container |
 |---|---|---|
 | `validation` | `GAFFER_SANDBOX_PROFILE=validation` — the DoD gates / AC checks (`lib/dod.sh`) | nothing but the worktree; **no model credential** forwarded or mounted |
-| `bridge` | `GAFFER_MCP_BRIDGE_SOCKET` set by the launcher | the socket (rw), the bridged config (ro), the hook's telemetry ledgers, the crew events log, the skills mount |
-| `none` | no `--mcp-config` in the argv, or the launcher declared `GAFFER_SANDBOX_DATA_PLANE=none` (an empty MCP config) | the hook's telemetry ledgers, the crew events log, the skills mount |
+| `bridge` | `GAFFER_MCP_BRIDGE_SOCKET` set by the launcher | the socket (rw), the bridged config (ro), the hook's telemetry ledgers, the crew events log |
+| `none` | no `--mcp-config` in the argv, or the launcher declared `GAFFER_SANDBOX_DATA_PLANE=none` (an empty MCP config) | the hook's telemetry ledgers, the crew events log |
 | `legacy` | `--mcp-config` present, no socket, **bridge off** | the DB directory rw with every non-DB entry masked (WARNED) |
 | refused | `--mcp-config` present, no socket, bridge **on** | the wrapper exits non-zero before any container runs |
 

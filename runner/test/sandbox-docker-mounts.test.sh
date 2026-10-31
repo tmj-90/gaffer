@@ -53,6 +53,9 @@ printf '{"claim":"MINE"}\n'  > "$GAFFER_DATA/mcp-runtime.1111.json"
 printf '{"claim":"THEIRS"}\n' > "$GAFFER_DATA/mcp-runtime.2222.json"
 : > "$GAFFER_DATA/dispatch.sqlite"; : > "$GAFFER_DATA/dispatch.sqlite-wal"; : > "$GAFFER_DATA/memory.sqlite"
 : > "$GAFFER_DATA/events.jsonl"
+# An OLDER runner's `.claude/skills` link into its per-agent mount (or a forged link of
+# that exact shape): skills are now real copies inside the worktree, so this link is
+# never followed (sections (c), (d), (h) and (j) check it is neither mounted nor unmasked).
 mkdir -p "$WT/.claude"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.claude/skills"
 export GAFFER_CREW_EVENTS="$GAFFER_DATA/events.jsonl"
 export DISPATCH_DB="$GAFFER_DATA/dispatch.sqlite" MEMORY_DB="$GAFFER_DATA/memory.sqlite"
@@ -97,7 +100,8 @@ masked_file dispatch.sqlite        && fail "dispatch.sqlite masked (MCP data pla
 masked_file dispatch.sqlite-wal    && fail "dispatch.sqlite-wal masked (SQLite sibling)" || ok "dispatch.sqlite-wal (SQLite sibling) stays visible"
 masked_file memory.sqlite          && fail "memory.sqlite masked" || ok "memory.sqlite stays visible"
 masked_file events.jsonl           && fail "crew events log masked" || ok "crew events log (GAFFER_CREW_EVENTS) stays visible"
-masked_dir  skills-mounts          && fail "the agent's skills mount was masked" || ok "the agent's skills-mounts/ stays visible"
+masked_dir  skills-mounts          && ok "skills-mounts/ masked even with a runner-shaped .claude/skills link" || fail "skills-mounts/ was unmasked by the .claude/skills link"
+grep -qF -- "the symlink $WT/.claude/skills" "$WORK/stderr" && ok "legacy: WARNING names the .claude/skills link" || fail "legacy: no warning for the .claude/skills link: $(cat "$WORK/stderr")"
 # The worktree's own rw bind lands AFTER the worktrees/ tmpfs (docker sorts by depth),
 # so both must be present — the tmpfs hides the siblings, the bind restores this one.
 masked_dir worktrees && has_mount "$WT:$WT:rw" && ok "sibling worktrees hidden while this worktree is restored on top" || fail "worktree/tmpfs layering wrong"
@@ -142,7 +146,8 @@ has_mount "$BRIDGED:$BRIDGED:ro"  && ok "this call's BRIDGED --mcp-config is mou
 has_mount "$WT:$WT:rw"            && ok "delivery worktree still mounted rw" || fail "worktree rw mount missing in bridge mode"
 has_mount "$GAFFER_DATA/safety-blocks.jsonl:$GAFFER_DATA/safety-blocks.jsonl:rw" && ok "safety hook ledger mounted rw (telemetry only)" || fail "safety-blocks.jsonl mount missing"
 has_mount "$GAFFER_DATA/events.jsonl:$GAFFER_DATA/events.jsonl:rw" && ok "crew events log mounted rw" || fail "crew events mount missing"
-has_mount "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" && ok "skills mount target mounted ro" || fail "skills target mount missing"
+grep -qF -- "$GAFFER_DATA/skills-mounts" <<<"$ARGV" && fail "a .claude/skills link (runner-shaped) became a mount: $(grep -F -- skills-mounts <<<"$ARGV" | head -1)" || ok "a runner-shaped .claude/skills link is not followed: nothing under skills-mounts/ is mounted"
+grep -qF -- "the symlink $WT/.claude/skills" "$WORK/stderr.bridge" && ok "bridge: WARNING names the .claude/skills link" || fail "bridge: no warning for the .claude/skills link"
 for f in settings.json dashboard-token usage-ledger.jsonl mcp-runtime.2222.json mcp-runtime.1111.json; do
   grep -qF -- "$GAFFER_DATA/$f" <<<"$ARGV" && fail "$f is referenced in bridge mode (should be absent, not masked)" || ok "$f absent from the container (not mounted, not masked)"
 done
@@ -257,16 +262,31 @@ printf '%s\n' "$WT2" > "$WRF"
 ARGV="$(dry)"
 has_mount "$P2C/.git:$P2C/.git:ro" && ok "a genuine linked worktree still gets its repo's .git ro" || fail "genuine .git mount missing"
 
-# The agent's `.claude/skills` link (bridge / none mode) follows the same rule: only a
-# runner skill mount under $GAFFER_DATA/skills-mounts/ is ever mounted.
+# The agent's `.claude/skills` link (bridge / none mode) follows the same rule: no link
+# a write root holds chooses a mount. The runner installs skills as real copies inside
+# the worktree and creates no such link, so none is followed, whatever it names.
 rm -f "$WT/.claude/skills"; ln -s "$HOSTDIR" "$WT/.claude/skills"
 printf '%s\n' "$WT" > "$WRF"
 ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>"$WORK/stderr.sk")"
 grep -qF -- "$HOSTDIR" <<<"$ARGV" && fail "a .claude/skills link to a host directory became a mount" || ok ".claude/skills link outside the skill mounts: NOT mounted"
 grep -qF -- "$WT/.claude/skills" "$WORK/stderr.sk" && ok "WARNING names the .claude/skills link" || fail "no warning for the .claude/skills link"
 rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.claude/skills"
-ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>/dev/null)"
-grep -qF -- "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" <<<"$ARGV" && ok "the runner's own skills mount is still mounted ro" || fail "runner skills mount missing"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>"$WORK/stderr.sk")"
+grep -qF -- "$GAFFER_DATA/skills-mounts" <<<"$ARGV" && fail "a link naming a runner skill mount became a mount" || ok "a link naming \$GAFFER_DATA/skills-mounts/<key>: NOT mounted either"
+grep -qF -- "$WT/.claude/skills" "$WORK/stderr.sk" && ok "WARNING names that link too" || fail "no warning for the skills-mounts link"
+# What the runner really installs: real copies under the worktree's `.claude/skills/`.
+# They need no mount of their own (the worktree's rw mount carries them) and draw no
+# warning.
+# shellcheck source=../lib/skills-mount.sh
+SKILLS_DIR="$RUNNER_DIR/skills" source "$RUNNER_DIR/lib/skills-mount.sh"
+rm -f "$WT/.claude/skills"
+SKILLS_DIR="$RUNNER_DIR/skills" gaffer_skills_mount "$WT" "run-tests" "delivery-7"
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>"$WORK/stderr.sk")"
+[ -f "$WT/.claude/skills/run-tests/SKILL.md" ] && [ ! -L "$WT/.claude/skills" ] && has_mount "$WT:$WT:rw" \
+  && ok "the runner's real skill copies live inside the worktree's own rw mount" || fail "skill copies missing or not under the worktree mount"
+grep -qF -- "$WT/.claude/skills" <<<"$ARGV" && fail "the skill copies got a mount of their own" || ok "the skill copies need no mount of their own"
+grep -qF -- ".claude/skills" "$WORK/stderr.sk" && fail "real skill copies drew a warning: $(cat "$WORK/stderr.sk")" || ok "real skill copies draw no warning"
+rm -rf "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.claude/skills"
 
 echo "== (i) a .git SYMLINK cannot borrow another worktree's registration (independent review) =="
 # The worktree is writable, so its `.git` can be replaced by a SYMLINK to a real, registered
@@ -332,12 +352,12 @@ for _t in dashboard-token settings.json worktrees .workers "skills-mounts/../das
 done
 rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.claude/skills"
 ARGV="$(legacy)"
-masked_dir skills-mounts && fail "legacy: the runner's own skills mount got masked" || ok "legacy: the runner's own skills mount stays visible"
-masked_file dashboard-token && ok "legacy: with the runner's own link, dashboard-token is still masked" || fail "legacy: dashboard-token not masked"
-# The runner's link is recognised by where it resolves, not by how GAFFER_DATA is spelled
-# (bin/tester-run.mjs writes a resolve()d path; an operator may export a trailing slash).
+masked_dir skills-mounts && ok "legacy: a link naming skills-mounts/<key> leaves skills-mounts/ masked" || fail "legacy: a link naming skills-mounts/<key> UNMASKED skills-mounts/"
+masked_file dashboard-token && ok "legacy: with that link, dashboard-token is still masked" || fail "legacy: dashboard-token not masked"
+# However GAFFER_DATA is spelled (an operator may export a trailing slash), the link is
+# not followed.
 ARGV="$(GAFFER_DATA="$GAFFER_DATA/" GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>/dev/null)"
-grep -qF -- "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" <<<"$ARGV" && ok "bridge: GAFFER_DATA with a trailing slash still mounts the runner's skills link" || fail "bridge: trailing-slash GAFFER_DATA lost the skills mount"
+grep -qF -- "skills-mounts" <<<"$ARGV" && fail "bridge: trailing-slash GAFFER_DATA mounted the skills link" || ok "bridge: GAFFER_DATA with a trailing slash: the skills link is still not followed"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

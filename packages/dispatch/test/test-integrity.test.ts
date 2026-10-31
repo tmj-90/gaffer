@@ -113,6 +113,27 @@ describe("addedSkipMarkers: every marker class", () => {
     ["spec/user_spec.rb", "  pending 'later'", "pending"],
     ["tests/UnitTest.php", "$this->markTestSkipped('later');", "markTestSkipped"],
     ["test/thing_test.exs", "  @tag :skip", "@tag :skip"],
+    // Behind a modifier (vitest / jest).
+    ["src/a.test.ts", "it.concurrent.skip('x', async () => {})", "it.concurrent.skip"],
+    ["src/a.test.ts", "describe.sequential.only('s', () => {", "describe.sequential.only"],
+    ["src/a.test.ts", "it.runIf(false)('x', () => {})", "it.runIf"],
+    // node:test options and runtime skips (node --test is a first-class stack).
+    ["test/a.test.js", 'test("a", { skip: true }, () => {', "{ skip: … } option"],
+    ["test/a.test.js", "test('a', { todo: 'later' }, () => {", "{ todo: … } option"],
+    ["test/a.test.js", 'describe("s", { skip: !process.env.DB }, () => {', "{ skip: … } option"],
+    ["test/a.test.js", "it('a', { only: true }, () => {", "{ only: … } option"],
+    ["test/a.test.js", "  skip: true,", "{ skip: … } option"],
+    ["test/a.test.js", 'test("a", (t) => { t.skip("later"); });', "t.skip()"],
+    ["test/a.test.js", "  t.todo();", "t.todo()"],
+    ["test/a.test.js", "    this.skip();", "this.skip()"],
+    ["src/a.test.ts", "it('x', (ctx) => { ctx.skip(); })", "ctx.skip()"],
+    // Code after a comment is still code.
+    ["test/a.test.js", '/**/ test.skip("a", () => {});', "test.skip"],
+    ["test/a.test.js", '/* note */ it.only("a", () => {});', "it.only"],
+    ["test/a.test.js", ' * docs */ test.skip("a", () => {});', "test.skip"],
+    ["test/a.test.js", 'const u = "http://x"; test.skip("a", () => {});', "test.skip"],
+    ["test/a.test.js", 'const r = /[/*]/; test.skip("a", () => {});', "test.skip"],
+    ["tests/test_x.py", "x = '#'; pytest.skip('nope')", "pytest.skip()"],
   ])("%s: %s → %s", (path, line, marker) => {
     const found = addedSkipMarkers(patchAdding(path, [line], 7));
     expect(found).toEqual([{ path, marker, line: 7 }]);
@@ -134,6 +155,32 @@ describe("addedSkipMarkers: every marker class", () => {
   it("ignores comments, non-test files and look-alikes", () => {
     expect(addedSkipMarkers(patchAdding("src/a.test.ts", ["// it.skip('x')"]))).toEqual([]);
     expect(addedSkipMarkers(patchAdding("tests/test_x.py", ["# @pytest.mark.skip"]))).toEqual([]);
+    // A marker inside a comment, wherever the comment sits on the line, skips nothing.
+    expect(
+      addedSkipMarkers(
+        patchAdding("src/a.test.ts", [
+          "/* it.skip('x') */",
+          " * use test.skip sparingly",
+          "it('a', () => {}); // TODO: it.only while debugging",
+          "x(); /* test.skip */ y();",
+          "x = 1 # pytest.skip()",
+        ]),
+      ),
+    ).toEqual([]);
+    expect(addedSkipMarkers(patchAdding("tests/test_x.py", ["x = 1  # pytest.skip()"]))).toEqual(
+      [],
+    );
+    // Look-alikes: a query's numeric skip, a falsy option, another object's .skip().
+    expect(
+      addedSkipMarkers(
+        patchAdding("src/a.test.ts", [
+          "db.find({ skip: 10, take: 5 })",
+          "test('a', { skip: false }, () => {})",
+          "stream.skip(3)",
+          "cursor.t.skip(1)",
+        ]),
+      ),
+    ).toEqual([]);
     // Not a test file: a `.skip` in app code is not a test marker.
     expect(addedSkipMarkers(patchAdding("src/app.ts", ["list.skip(2)", "it.only()"]))).toEqual([]);
     // `transmit(` / `submit(` are not `xit(` / `fit(`.
@@ -516,5 +563,32 @@ describe("collectTestIntegrity against a real git repo", () => {
     const bad = collectTestIntegrity(git, "nope", "feat");
     expect(bad.incomplete).toHaveLength(1);
     expect(hasIntegrityFindings(bad)).toBe(true);
+  });
+
+  it("finds node:test option skips, runtime skips and a skip behind a comment", () => {
+    dir = mkdtempSync(join(tmpdir(), "gi-"));
+    sh(["init", "-q", "-b", "main"]);
+    mkdirSync(join(dir, "test"));
+    const body = (n: string) => `test("${n}", () => { assert.ok(true); });\n`;
+    writeFileSync(join(dir, "test/a.test.js"), body("a") + body("b") + body("c") + body("d"));
+    sh(["add", "-A"]);
+    sh(["commit", "-qm", "base"]);
+    const base = sh(["rev-parse", "HEAD"]).trim();
+    sh(["checkout", "-qb", "feat"]);
+    writeFileSync(
+      join(dir, "test/a.test.js"),
+      'test("a", { skip: true }, () => { assert.ok(true); });\n' +
+        'test("b", (t) => { t.skip(); assert.ok(true); });\n' +
+        '/**/ test.skip("c", () => { assert.ok(true); });\n' +
+        'it.concurrent.skip("d", () => { assert.ok(true); });\n',
+    );
+    sh(["commit", "-qam", "skip them"]);
+    const f = collectTestIntegrity(git, base, "feat");
+    expect(f.markers.map((m) => `${m.marker}@${m.line}`)).toEqual([
+      "{ skip: … } option@1",
+      "t.skip()@2",
+      "test.skip@3",
+      "it.concurrent.skip@4",
+    ]);
   });
 });

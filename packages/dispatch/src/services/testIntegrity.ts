@@ -149,10 +149,26 @@ interface MarkerRule {
 
 const MARKER_RULES: readonly MarkerRule[] = [
   {
-    // describe.skip / it.only / test.todo / it.skipIf(…) / test.fixme (playwright)
+    // describe.skip / it.only / test.todo / it.skipIf(…) / test.fixme (playwright), also
+    // behind modifiers: it.concurrent.skip, describe.sequential.only, test.concurrent.todo.
     applies: JS_TEST,
-    re: /\b(describe|it|test|context|suite|specify|bench)\s*\.\s*(skip|only|todo|fixme|skipIf)\b/,
-    name: (m) => `${m[1]}.${m[2]}`,
+    re: /\b(describe|it|test|context|suite|specify|bench)((?:\s*\.\s*\w+)*?)\s*\.\s*(skip|only|todo|fixme|skipIf|runIf)\b/,
+    name: (m) => `${m[1]}${(m[2] ?? "").replace(/\s+/g, "")}.${m[3]}`,
+  },
+  {
+    // node:test / vitest options: test("a", { skip: true }, …), { todo: "later" },
+    // { skip: !hasDb }, { skip: process.platform === "win32" }. A number is left alone
+    // (`{ skip: 10, take: 5 }` is a query in a test, not a test option).
+    applies: JS_TEST,
+    re: /(?:^|[{,])\s*['"]?(skip|todo|only)['"]?\s*:\s*(?:true\b|['"`]|!|process\.)/,
+    name: (m) => `{ ${m[1]}: … } option`,
+  },
+  {
+    // Runtime skips inside a test body: node:test t.skip()/t.todo(), mocha this.skip(),
+    // vitest ctx.skip()/context.skip().
+    applies: JS_TEST,
+    re: /(?:^|[^.\w$])(t|ctx|context|this)\s*\.\s*(skip|todo)\s*\(/,
+    name: (m) => `${m[1]}.${m[2]}()`,
   },
   {
     applies: JS_TEST,
@@ -190,18 +206,93 @@ export function markerCandidate(p: string, extra?: RegExp | null): boolean {
   return MARKER_RULES.some((r) => r.applies(p, x));
 }
 
+/** Which comment syntaxes a file's language has (what {@link codeOf} strips). */
+interface CommentStyle {
+  /** `//` line and `/* … *\/` block comments. */
+  readonly slash: boolean;
+  /** `#` line comments (`#[` stays code: a Rust/PHP attribute). */
+  readonly hash: boolean;
+  /** JS-family regex literals, so a `/*` or `//` inside one is not read as a comment. */
+  readonly regex: boolean;
+}
+
+function commentStyleOf(p: string): CommentStyle {
+  if (/\.(?:[cm]?[jt]sx?|vue|svelte)$/.test(p)) return { slash: true, hash: false, regex: true };
+  if (/\.php$/.test(p)) return { slash: true, hash: true, regex: false };
+  if (/\.(?:py|rb|exs?)$/.test(p)) return { slash: false, hash: true, regex: false };
+  return { slash: true, hash: false, regex: false }; // go, rust, jvm, c#
+}
+
+/** A `/` here starts a JS regex literal (not division) when the previous token is not a value. */
+function regexCanStart(prev: string): boolean {
+  return prev === "" || /[(,=:[!&|?{};+\-*%<>~^]/.test(prev);
+}
+
 /**
- * A comment line: a marker inside a comment skips nothing. `#[` stays code (a Rust
- * attribute); a Python/Ruby `#` comment does not.
+ * The CODE on one added line: comments removed, string and regex literals kept. A
+ * marker inside a comment skips nothing, but code after a comment does — `/**\/
+ * test.skip(…)` or `x; // note` must still be read — so comments are cut out of the
+ * line rather than the whole line being judged a comment. A line that continues a
+ * block comment (`* …`) is comment up to its `*\/`.
  */
-function isCommentLine(s: string): boolean {
-  const t = s.trimStart();
-  return (
-    t.startsWith("//") ||
-    t.startsWith("/*") ||
-    t.startsWith("*") ||
-    (t.startsWith("#") && !t.startsWith("#["))
-  );
+function codeOf(line: string, style: CommentStyle): string {
+  let s = line;
+  if (style.slash) {
+    const t = s.trimStart();
+    if (t.startsWith("*")) {
+      const end = t.indexOf("*/");
+      if (end < 0) return "";
+      s = t.slice(end + 2);
+    }
+  }
+  let out = "";
+  let prev = ""; // last non-space code character
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i]!;
+    const n = s[i + 1] ?? "";
+    if (c === '"' || c === "'" || c === "`") {
+      let j = i + 1;
+      while (j < s.length && s[j] !== c) j += s[j] === "\\" ? 2 : 1;
+      out += s.slice(i, j + 1);
+      prev = c;
+      i = j + 1;
+      continue;
+    }
+    if (style.slash && c === "/" && n === "/") break;
+    if (style.slash && c === "/" && n === "*") {
+      const end = s.indexOf("*/", i + 2);
+      if (end < 0) break;
+      out += " ";
+      i = end + 2;
+      continue;
+    }
+    if (style.hash && c === "#" && n !== "[") break;
+    if (style.regex && c === "/" && regexCanStart(prev)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < s.length) {
+        const r = s[j]!;
+        if (r === "\\") j += 2;
+        else if (inClass) {
+          if (r === "]") inClass = false;
+          j += 1;
+        } else if (r === "[") {
+          inClass = true;
+          j += 1;
+        } else if (r === "/") break;
+        else j += 1;
+      }
+      out += s.slice(i, j + 1);
+      prev = "/";
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    if (!/\s/.test(c)) prev = c;
+    i += 1;
+  }
+  return out;
 }
 
 /** Unquote a git C-quoted path (`"a\tb"`), or return it as-is. */
@@ -225,11 +316,13 @@ export function addedSkipMarkers(patch: string, extra?: RegExp | null): SkipMark
   let path: string | null = null;
   let rules: readonly MarkerRule[] = [];
   let lineNo: number | null = null;
+  let style: CommentStyle = commentStyleOf("");
   for (const raw of patch.split("\n")) {
     if (raw.startsWith("+++ ")) {
       const target = unquoteGitPath(raw.slice(4).replace(/\t.*$/, ""));
       path = target === "/dev/null" ? null : target.replace(/^b\//, "");
       rules = path ? MARKER_RULES.filter((r) => r.applies(path!, x)) : [];
+      style = path ? commentStyleOf(path) : style;
       lineNo = null;
       continue;
     }
@@ -246,10 +339,10 @@ export function addedSkipMarkers(patch: string, extra?: RegExp | null): SkipMark
     }
     if (!path) continue;
     if (raw.startsWith("+")) {
-      const body = raw.slice(1);
-      if (rules.length > 0 && !isCommentLine(body)) {
+      const code = rules.length > 0 ? codeOf(raw.slice(1), style) : "";
+      if (code.trim() !== "") {
         for (const rule of rules) {
-          const m = rule.re.exec(body);
+          const m = rule.re.exec(code);
           if (m) {
             out.push({ path, marker: rule.name(m), line: lineNo });
             break;

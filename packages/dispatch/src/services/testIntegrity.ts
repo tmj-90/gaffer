@@ -11,7 +11,8 @@
  *  - skip / focus markers ADDED (`.skip`, `.only`, `xit`, `it.todo`, `@pytest.mark.skip`,
  *    `xfail`, `t.Skip`, `#[ignore]`, `@Disabled`, …) on lines the delivery added;
  *  - a gate-relevant package.json script CHANGED or REMOVED (`test`, `lint`,
- *    `typecheck`, … and any script the gate commands name);
+ *    `typecheck`, … and any script the gate commands name), or anything it reaches
+ *    changed, removed or ADDED: its `pre`/`post` hooks and the scripts its body runs;
  *  - a test-runner config file MODIFIED, DELETED or RENAMED (vitest/jest/playwright/
  *    pytest.ini/conftest.py/…), which can exclude tests without touching them.
  *
@@ -48,7 +49,8 @@ export interface ScriptChange {
   /** The package.json the script lives in (repo-relative). */
   readonly file: string;
   readonly script: string;
-  readonly change: "changed" | "removed";
+  /** `added`: a script the gate now reaches that base did not have (e.g. a new `pretest`). */
+  readonly change: "changed" | "removed" | "added";
 }
 
 export interface ConfigChange {
@@ -287,12 +289,157 @@ function scriptsOf(text: string | null): Record<string, string> | null {
   }
 }
 
+/** An npm-run-all style script pattern: `*` matches within one `:` segment, `**` across. */
+function scriptPatternRe(pat: string): RegExp {
+  return new RegExp(
+    `^${pat
+      .split("**")
+      .map((x) =>
+        x
+          .split("*")
+          .map((y) => y.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+          .join("[^:]*"),
+      )
+      .join(".*")}$`,
+  );
+}
+
 /**
- * Gate-relevant scripts a delivery CHANGED or REMOVED in one package.json. Adding a
- * script is not flagged (it cannot weaken an existing gate). `gateScriptNames` adds the
- * scripts the registered gate commands name (e.g. `pnpm run verify:fast`).
- * An unparseable base or head file is reported as a change to `scripts` (fail toward
- * a human).
+ * Script names a script BODY runs, matched against `universe` (the names that exist at
+ * base or head): `npm|pnpm|yarn|bun run X`, `npm test`/`npm start`, `pnpm X`/`yarn X`,
+ * the words of `run-s`/`run-p`/`npm-run-all` (globs `x:*` / `x:**` included) and
+ * `npm:X` (concurrently). Leans inclusive: an over-match only widens what is checked.
+ */
+export function scriptRefs(body: string, universe: readonly string[]): string[] {
+  const out = new Set<string>();
+  const known = new Set(universe);
+  const addName = (n: string | undefined): void => {
+    if (n && known.has(n)) out.add(n);
+  };
+  const addPattern = (pat: string): void => {
+    if (!pat.includes("*")) return addName(pat);
+    const re = scriptPatternRe(pat);
+    for (const n of universe) if (re.test(n)) out.add(n);
+  };
+  const PM_VALUE_FLAGS = new Set([
+    "--filter",
+    "-F",
+    "-C",
+    "--dir",
+    "--prefix",
+    "--cwd",
+    "-w",
+    "--workspace",
+  ]);
+  for (const seg of body.split(/&&|\|\||[;|&()`\n]/)) {
+    const w = seg
+      .trim()
+      .split(/[ \t]+/)
+      .map((t) => t.replace(/^["']+|["']+$/g, ""))
+      .filter((t) => t !== "");
+    for (let i = 0; i < w.length; i += 1) {
+      const tok = w[i]!;
+      const npmColon = /^npm:(.+)$/.exec(tok);
+      if (npmColon) {
+        addPattern(npmColon[1]!);
+        continue;
+      }
+      const cmd = tok.replace(/^.*\//, "");
+      if (cmd === "run-s" || cmd === "run-p" || cmd === "npm-run-all") {
+        for (let j = i + 1; j < w.length; j += 1) if (!w[j]!.startsWith("-")) addPattern(w[j]!);
+        break;
+      }
+      if (cmd !== "npm" && cmd !== "pnpm" && cmd !== "yarn" && cmd !== "bun") continue;
+      let j = i + 1;
+      const skipFlags = (): void => {
+        while (j < w.length && w[j]!.startsWith("-")) {
+          j += PM_VALUE_FLAGS.has(w[j]!) ? 2 : 1;
+        }
+      };
+      skipFlags();
+      const verb = w[j];
+      if (verb === "run" || verb === "run-script") {
+        j += 1;
+        skipFlags();
+        addName(w[j]);
+      } else if (cmd === "npm" && (verb === "test" || verb === "t" || verb === "tst")) {
+        addName("test");
+      } else if (cmd === "npm" && (verb === "start" || verb === "stop" || verb === "restart")) {
+        addName(verb);
+      } else if (
+        (cmd === "pnpm" || cmd === "yarn") &&
+        verb !== undefined &&
+        !PM_BUILTINS.has(verb)
+      ) {
+        addName(verb);
+      }
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Every script a run of `roots` reaches in one scripts map: the roots, each one's
+ * `pre<name>`/`post<name>` hook, and (transitively) the scripts their bodies run
+ * ({@link scriptRefs}). Roots are kept even when absent from `scripts` (a removal).
+ * Discovery order, de-duplicated.
+ */
+export function scriptClosure(
+  scripts: Readonly<Record<string, string>>,
+  roots: readonly string[],
+  universe: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const order: string[] = [];
+  const visit = (name: string, isRoot: boolean): void => {
+    if (seen.has(name) || order.length > 500) return;
+    if (!isRoot && !(name in scripts)) return;
+    seen.add(name);
+    order.push(name);
+    if (`pre${name}` in scripts) visit(`pre${name}`, false);
+    const body = scripts[name];
+    if (body !== undefined) for (const r of scriptRefs(body, universe)) visit(r, false);
+    if (`post${name}` in scripts) visit(`post${name}`, false);
+  };
+  for (const r of roots) visit(r, true);
+  return order;
+}
+
+/**
+ * The changes inside the closure of `roots` (at base AND at head): a script that is
+ * changed, removed, or ADDED (a new `pretest`, or a new script a changed body now runs).
+ */
+function closureChanges(
+  base: Readonly<Record<string, string>>,
+  head: Readonly<Record<string, string>>,
+  roots: readonly string[],
+): Array<{ script: string; change: ScriptChange["change"] }> {
+  const universe = [...new Set([...Object.keys(base), ...Object.keys(head)])];
+  const names = [
+    ...new Set([...scriptClosure(base, roots, universe), ...scriptClosure(head, roots, universe)]),
+  ];
+  const out: Array<{ script: string; change: ScriptChange["change"] }> = [];
+  for (const n of names) {
+    const b = base[n];
+    const h = head[n];
+    if (b !== undefined && h === undefined) out.push({ script: n, change: "removed" });
+    else if (b === undefined && h !== undefined) out.push({ script: n, change: "added" });
+    else if (b !== undefined && h !== undefined && b.trim() !== h.trim())
+      out.push({ script: n, change: "changed" });
+  }
+  return out;
+}
+
+/**
+ * Gate-relevant scripts a delivery CHANGED, REMOVED or ADDED in one package.json. The
+ * gate scripts are the ones that exist at base and are gate-named by convention
+ * (`test`, `lint`, …) or named by the registered gate commands (`gateScriptNames`,
+ * e.g. `pnpm run verify:fast`). Every script they REACH is checked too — their
+ * `pre`/`post` hooks and the scripts their bodies run (`npm run unit`, `run-s a b`) —
+ * at base and at head, so an added `pretest`, or a changed `unit` behind
+ * `test: npm run unit`, is flagged. A brand-new gate script (none at base) is not
+ * flagged: it cannot weaken an existing gate. An unparseable base or head file is
+ * reported as a change to `scripts` (fail toward a human).
  */
 export function changedGateScripts(
   file: string,
@@ -306,15 +453,12 @@ export function changedGateScripts(
   if (base === null || head === null) {
     return [{ file, script: "(unparseable package.json)", change: "changed" }];
   }
-  const named = new Set(gateScriptNames);
-  const out: ScriptChange[] = [];
-  for (const [name, body] of Object.entries(base)) {
-    if (!GATE_SCRIPT_RE.test(name) && !named.has(name)) continue;
-    if (!(name in head)) out.push({ file, script: name, change: "removed" });
-    else if (head[name]!.trim() !== body.trim())
-      out.push({ file, script: name, change: "changed" });
-  }
-  return out;
+  const named = new Set(gateScriptNames.filter((n) => !n.includes("*")));
+  const patterns = gateScriptNames.filter((n) => n.includes("*")).map(scriptPatternRe);
+  const roots = Object.keys(base).filter(
+    (n) => GATE_SCRIPT_RE.test(n) || named.has(n) || patterns.some((re) => re.test(n)),
+  );
+  return closureChanges(base, head, roots).map((c) => ({ file, ...c }));
 }
 
 /** Test-runner config: a change here can exclude tests without touching a test file. */
@@ -434,10 +578,8 @@ export function summarizeIntegrity(f: TestIntegrityFindings, max = 3): string {
   }
   if (f.scripts.length) {
     parts.push(
-      `${f.scripts.some((s) => s.change === "removed") ? "changed/removed" : "changed"} gate script${
-        f.scripts.length === 1 ? "" : "s"
-      } (${list(
-        f.scripts.map((s) => `${s.script} in ${s.file}`),
+      `changed gate script${f.scripts.length === 1 ? "" : "s"} (${list(
+        f.scripts.map((s) => `${s.script} ${s.change} in ${s.file}`),
         max,
       )})`,
     );
@@ -703,6 +845,20 @@ export function gateScriptNamesOf(cmds: readonly string[]): string[] {
     )) {
       if (!PM_BUILTINS.has(m[1]!) && m[1] !== "run") out.add(m[1]!);
     }
+    // `run-s a b` / `run-p` / `npm-run-all` words (patterns like `test:*` included) and
+    // concurrently's `npm:x`.
+    for (const seg of c.split(/&&|\|\||[;|&()`\n]/)) {
+      const w = seg
+        .trim()
+        .split(/[ \t]+/)
+        .map((t) => t.replace(/^["']+|["']+$/g, ""));
+      const at = w.findIndex((t) => /^(?:.*\/)?(?:run-s|run-p|npm-run-all)$/.test(t));
+      if (at !== -1) for (const t of w.slice(at + 1)) if (t && !t.startsWith("-")) out.add(t);
+      for (const t of w) {
+        const m = /^npm:(.+)$/.exec(t);
+        if (m) out.add(m[1]!);
+      }
+    }
   }
   return [...out];
 }
@@ -718,9 +874,11 @@ export interface ResolvedGateCommand {
   /**
    * Where the command's behaviour was read from, for the evidence:
    *  - `registered`: not a package script call; runs exactly as registered.
-   *  - `base`: the script at the base commit, identical at head; runs as registered.
-   *  - `base-pinned`: the delivery changed or removed the script; the BASE commit's
-   *    script body runs instead (the agent cannot redirect the gate).
+   *  - `base`: the script, its hooks and every script it runs are identical at base and
+   *    head; runs as registered.
+   *  - `base-pinned`: the delivery changed or removed the script, ADDED or changed one
+   *    of its `pre`/`post` hooks, or changed a script it runs; the BASE commit's
+   *    expansion runs instead (the agent cannot redirect the gate).
    *  - `head`: the script is new in this delivery (no base version); runs as registered.
    *  - `unresolved`: the base commit or its package.json could not be read; runs as
    *    registered (the integrity scan flags the same condition).
@@ -730,11 +888,57 @@ export interface ResolvedGateCommand {
 }
 
 /**
+ * The BASE commit's expansion of `name`: its `pre`/`post` hooks around its body, with a
+ * body that is itself one script call (`test: npm run unit`) inlined from base too, so
+ * the whole simple chain runs as base has it. A compound body (`run-s a b`,
+ * `npm run a && npm run b`) runs as written, and the scripts IT runs are not pinned:
+ * they are returned in `reached` for the caller to report. `covered` is every name the
+ * expansion decided (inlined, or a hook it ran or left out).
+ */
+function expandFromBase(
+  base: Readonly<Record<string, string>>,
+  name: string,
+  args: readonly string[],
+  universe: readonly string[],
+  covered: Set<string>,
+  reached: Set<string>,
+  depth = 0,
+): string {
+  covered.add(name);
+  covered.add(`pre${name}`);
+  covered.add(`post${name}`);
+  const body = base[name] ?? "";
+  const inv = depth < 8 ? parseScriptInvocation(body) : null;
+  let inner: string;
+  if (inv && base[inv.script] !== undefined && !covered.has(inv.script)) {
+    inner = `( ${expandFromBase(base, inv.script, [...inv.args, ...args], universe, covered, reached, depth + 1)} )`;
+  } else {
+    const a = args.map(shq).join(" ");
+    inner = `( ${body}${a ? ` ${a}` : ""} )`;
+    for (const r of scriptRefs(body, universe)) reached.add(r);
+  }
+  const parts: string[] = [];
+  const pre = base[`pre${name}`];
+  const post = base[`post${name}`];
+  for (const hook of [pre, post]) {
+    if (hook !== undefined) for (const r of scriptRefs(hook, universe)) reached.add(r);
+  }
+  if (pre !== undefined) parts.push(`( ${pre} )`);
+  parts.push(inner);
+  if (post !== undefined) parts.push(`( ${post} )`);
+  return parts.join(" && ");
+}
+
+/**
  * Resolve a gate command against the BASE commit's package.json. `basePkg`/`headPkg`
  * are the root package.json texts (null where absent); `baseRev` names the commit in
- * the note. When the delivery changed the script, the base body runs with the
- * worktree's `node_modules/.bin` on PATH (what the package manager would add), wrapped
- * by the base's `pre<name>`/`post<name>` hooks when they exist.
+ * the note. The script counts as changed when anything a run of it reaches differs
+ * between base and head: its body, a `pre<name>`/`post<name>` hook (an ADDED hook
+ * included — npm would run it), or a script its body runs (`test: npm run unit`). Then
+ * the base expansion runs instead ({@link expandFromBase}) with the worktree's
+ * `node_modules/.bin` on PATH (what the package manager would add). A changed script
+ * reached only through a compound body cannot be pinned this way; the note names it and
+ * the integrity scan flags it.
  */
 export function resolveGateCommand(
   cmd: string,
@@ -758,32 +962,44 @@ export function resolveGateCommand(
     };
   }
   const baseBody = base?.[inv.script];
-  if (baseBody === undefined) {
+  if (base === null || baseBody === undefined) {
     return {
       command: cmd,
       source: "head",
       note: `script "${inv.script}" is new in this delivery (none at base ${short})`,
     };
   }
-  const headBody = head?.[inv.script];
-  if (headBody !== undefined && headBody.trim() === baseBody.trim()) {
+  // An unparseable head package.json: nothing at head can be trusted, so pin.
+  const headScripts = head ?? {};
+  const changes =
+    head === null
+      ? [{ script: inv.script, change: "changed" as const }]
+      : closureChanges(base, headScripts, [inv.script]);
+  if (changes.length === 0) {
     return {
       command: cmd,
       source: "base",
-      note: `script "${inv.script}" read from base ${short} (unchanged in the delivery)`,
+      note: `script "${inv.script}" read from base ${short} (it and every script it runs are unchanged in the delivery)`,
     };
   }
-  const args = inv.args.map(shq).join(" ");
-  const parts: string[] = [];
-  const pre = base?.[`pre${inv.script}`];
-  const post = base?.[`post${inv.script}`];
-  if (pre !== undefined) parts.push(`( ${pre} )`);
-  parts.push(`( ${baseBody}${args ? ` ${args}` : ""} )`);
-  if (post !== undefined) parts.push(`( ${post} )`);
-  const command = `PATH="$PWD/node_modules/.bin:$PATH"; ${parts.join(" && ")}`;
+  const universe = [...new Set([...Object.keys(base), ...Object.keys(headScripts)])];
+  const covered = new Set<string>();
+  const reached = new Set<string>();
+  const expansion = expandFromBase(base, inv.script, inv.args, universe, covered, reached);
+  const what = changes.map((c) => `${c.change} script "${c.script}"`).join(", ");
+  // What still runs from HEAD: the scripts a compound base body calls, as head has them.
+  const live = new Set(scriptClosure(headScripts, [...reached], universe));
+  const unpinned = changes
+    .filter((c) => live.has(c.script) && !covered.has(c.script))
+    .map((c) => c.script);
+  const command = `PATH="$PWD/node_modules/.bin:$PATH"; ${expansion}`;
   return {
     command,
     source: "base-pinned",
-    note: `the delivery ${headBody === undefined ? "removed" : "changed"} script "${inv.script}"; ran the base ${short} script instead`,
+    note:
+      `the delivery ${what}; ran the base ${short} "${inv.script}" instead` +
+      (unpinned.length
+        ? ` (${unpinned.join(", ")} still ran as the delivery has ${unpinned.length === 1 ? "it" : "them"}: reached through a compound script; the integrity row flags it)`
+        : ""),
   };
 }

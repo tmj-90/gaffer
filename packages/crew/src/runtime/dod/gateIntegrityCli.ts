@@ -7,15 +7,18 @@
 //   node gateIntegrityCli.js resolve --worktree <wt> --base <commit> --cmd <command>
 //     → ONE line: <source>\t<note>\t<command-to-run>
 //       The gate command's package.json script is read from the BASE commit, not
-//       the worktree, so a delivery that rewrites `scripts.test` cannot redirect the
-//       gate (source `base-pinned`: the base body runs). See resolveGateCommand.
+//       the worktree, so a delivery that rewrites `scripts.test`, adds a `pretest`, or
+//       changes a script `test` runs cannot redirect the gate (source `base-pinned`:
+//       the base expansion runs). See resolveGateCommand. <commit> is the SHA tick.sh
+//       recorded when it cut the worktree, never a movable branch name.
 //
 //   node gateIntegrityCli.js scan --worktree <wt> --base <commit> --label <repo>
 //                                 [--allow 1] [--cmd <command>]...
 //     → ONE results-file row:
 //       GATE\tintegrity\t<repo>\tPASS|FLAG\t0\t<reason>\t<source>
 //       FLAG when base..worktree deleted/renamed a test file, added a skip/only
-//       marker, changed/removed a gate script or touched test-runner config — or
+//       marker, changed/removed/added a script a gate script reaches (its hooks and
+//       the scripts it runs) or touched test-runner config — or
 //       when the scan could not see the whole change. PASS-with-note when a human
 //       set allow_test_changes on the ticket (`--allow 1`). NEVER FAIL: this slice
 //       only flags; dispatch's `test-modified` risk annotation (computed server-side

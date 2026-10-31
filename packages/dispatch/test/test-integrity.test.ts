@@ -5,7 +5,9 @@
  *  1. test paths per stack (and the additive GAFFER_TEST_PATH_RE);
  *  2. every skip/focus marker class, on ADDED lines only, not in comments;
  *  3. deleted / renamed test files and test-runner config from name-status;
- *  4. gate scripts changed or removed in package.json (added ones are fine);
+ *  4. gate scripts changed or removed in package.json, plus any change (an ADDED
+ *     pre/post hook included) in the scripts a gate script reaches; a brand-new gate
+ *     script is fine;
  *  5. gate command resolution against the base commit's package.json;
  *  6. collectTestIntegrity against a real git repo (delete, rename, skip, script).
  */
@@ -29,6 +31,7 @@ import {
   parseNameStatusZ,
   parseScriptInvocation,
   resolveGateCommand,
+  scriptRefs,
   summarizeIntegrity,
   type IntegrityGit,
 } from "../src/services/testIntegrity.js";
@@ -245,6 +248,87 @@ describe("changedGateScripts", () => {
     expect(changedGateScripts("package.json", null, h2)).toEqual([]);
   });
 
+  it("flags an ADDED pre/post hook of a gate script (npm runs it around the gate)", () => {
+    const b = JSON.stringify({ scripts: { test: "node --test" } });
+    const h = JSON.stringify({
+      scripts: {
+        pretest: "mv test/a.test.js .stash/",
+        test: "node --test",
+        posttest: "mv .stash/a.test.js test/",
+      },
+    });
+    expect(changedGateScripts("package.json", b, h)).toEqual([
+      { file: "package.json", script: "pretest", change: "added" },
+      { file: "package.json", script: "posttest", change: "added" },
+    ]);
+  });
+
+  it("flags a change anywhere in the closure of scripts the gate reaches", () => {
+    const b = JSON.stringify({
+      scripts: { test: "npm run unit", unit: "node --test", other: "x" },
+    });
+    expect(
+      changedGateScripts(
+        "package.json",
+        b,
+        JSON.stringify({ scripts: { test: "npm run unit", unit: "node -e 0", other: "y" } }),
+      ),
+    ).toEqual([{ file: "package.json", script: "unit", change: "changed" }]);
+    // run-s / npm-run-all words and globs, pnpm shorthand, an added hook on a reached script
+    const b2 = JSON.stringify({
+      scripts: {
+        check: "run-s lint:* types",
+        "lint:js": "eslint .",
+        types: "tsc",
+        verify: "pnpm build",
+        build: "tsc -b",
+      },
+    });
+    const h2 = JSON.stringify({
+      scripts: {
+        check: "run-s lint:* types",
+        "lint:js": "true",
+        "lint:extra": "echo",
+        types: "tsc",
+        pretypes: "rm -rf src",
+        verify: "pnpm build",
+        build: "true",
+      },
+    });
+    expect(
+      changedGateScripts("package.json", b2, h2)
+        .map((c) => `${c.script}:${c.change}`)
+        .sort(),
+    ).toEqual(["build:changed", "lint:extra:added", "lint:js:changed", "pretypes:added"]);
+    // a removed reached script, and a script the registered command reaches via run-p
+    const b3 = JSON.stringify({ scripts: { gate: "npm run a", a: "vitest" } });
+    expect(
+      changedGateScripts("package.json", b3, JSON.stringify({ scripts: { gate: "npm run a" } }), [
+        "gate",
+      ]),
+    ).toEqual([{ file: "package.json", script: "a", change: "removed" }]);
+    expect(gateScriptNamesOf(["run-p 'unit:*' e2e", "concurrently npm:x"]).sort()).toEqual([
+      "e2e",
+      "unit:*",
+      "x",
+    ]);
+    const b4 = JSON.stringify({ scripts: { "unit:a": "vitest a" } });
+    const h4 = JSON.stringify({ scripts: { "unit:a": "true" } });
+    expect(changedGateScripts("package.json", b4, h4, ["unit:*"])).toHaveLength(1);
+  });
+
+  it("scriptRefs reads the script calls in a body", () => {
+    const u = ["a", "b", "test", "lint:x", "lint:y", "c"];
+    expect(scriptRefs("npm run -s a && pnpm b; npm t", u).sort()).toEqual(["a", "b", "test"]);
+    expect(scriptRefs("npm-run-all --parallel 'lint:*' c", u).sort()).toEqual([
+      "c",
+      "lint:x",
+      "lint:y",
+    ]);
+    expect(scriptRefs("eslint . && tsc", u)).toEqual([]);
+    expect(scriptRefs("pnpm install && yarn c", u)).toEqual(["c"]);
+  });
+
   it("an unparseable package.json is reported, never silently passed", () => {
     expect(changedGateScripts("package.json", base, "{not json")).toEqual([
       { file: "package.json", script: "(unparseable package.json)", change: "changed" },
@@ -318,6 +402,54 @@ describe("gate command resolution against the base commit", () => {
       command: "pytest -q",
     });
     expect(resolveGateCommand("pnpm test", "{bad", head, "abc").source).toBe("unresolved");
+  });
+
+  it("an ADDED pre/post hook pins the gate to base (the delivery's hooks never run)", () => {
+    const b = JSON.stringify({ scripts: { test: "node --test" } });
+    const h = JSON.stringify({
+      scripts: {
+        pretest: "mv test/a.test.js .stash/",
+        test: "node --test",
+        posttest: "mv .stash/a.test.js test/",
+      },
+    });
+    const r = resolveGateCommand("npm test", b, h, "abc");
+    expect(r.source).toBe("base-pinned");
+    expect(r.command).toBe('PATH="$PWD/node_modules/.bin:$PATH"; ( node --test )');
+    expect(r.note).toContain('added script "pretest"');
+    // a changed base hook: the BASE hook runs
+    const b2 = JSON.stringify({ scripts: { pretest: "node gen.js", test: "vitest run" } });
+    const h2 = JSON.stringify({ scripts: { pretest: "rm -rf test", test: "vitest run" } });
+    expect(resolveGateCommand("pnpm test", b2, h2, "abc").command).toBe(
+      'PATH="$PWD/node_modules/.bin:$PATH"; ( node gen.js ) && ( vitest run )',
+    );
+  });
+
+  it("a changed script reached through a simple chain is pinned by inlining the base chain", () => {
+    const b = JSON.stringify({
+      scripts: { test: "npm run unit -- --x", unit: "node --test", preunit: "node gen.js" },
+    });
+    const h = JSON.stringify({
+      scripts: { test: "npm run unit -- --x", unit: "node -e 0", preunit: "node gen.js" },
+    });
+    const r = resolveGateCommand("npm test -- y", b, h, "abc");
+    expect(r.source).toBe("base-pinned");
+    expect(r.command).toBe(
+      'PATH="$PWD/node_modules/.bin:$PATH"; ( ( node gen.js ) && ( node --test --x y ) )',
+    );
+    expect(r.note).toContain('changed script "unit"');
+    expect(r.note).not.toContain("still ran");
+  });
+
+  it("a changed script behind a compound body is named in the note (the scan flags it)", () => {
+    const b = JSON.stringify({
+      scripts: { test: "run-s unit e2e", unit: "node --test", e2e: "x" },
+    });
+    const h = JSON.stringify({ scripts: { test: "run-s unit e2e", unit: "node -e 0", e2e: "x" } });
+    const r = resolveGateCommand("npm test", b, h, "abc");
+    expect(r.source).toBe("base-pinned");
+    expect(r.command).toBe('PATH="$PWD/node_modules/.bin:$PATH"; ( run-s unit e2e )');
+    expect(r.note).toMatch(/unit still ran as the delivery has it/);
   });
 
   it("quotes extra arguments that need it", () => {

@@ -338,6 +338,10 @@ const LIVE = (() => {
       'case "${TESTER_STUB_VERDICT:-PASS}" in\n' +
       '  PASS) printf \'{"type":"result","subtype":"success","is_error":false,"result":"PASS: every AC demonstrated\\\\n{\\\\"verdict\\\\":\\\\"PASS\\\\"}","total_cost_usd":0.01,"num_turns":3}\\n\' ;;\n' +
       '  FAIL) printf \'{"type":"result","subtype":"success","is_error":false,"result":"FAIL: AC1 POST /api/widgets returned 500, expected 201\\\\n{\\\\"verdict\\\\":\\\\"FAIL\\\\"}","total_cost_usd":0.01,"num_turns":3}\\n\' ;;\n' +
+      // LIMIT: the call is refused by the usage window (Claude Code 2.1.316's wording,
+      // is_error:true, exit 1). LIAR: the agent's own reply quotes those words.
+      '  LIMIT) printf \'{"type":"result","subtype":"success","is_error":true,"result":"You\\x27ve hit your 5-hour limit \u00b7 resets 11:58pm (UTC) \u00b7 progress saved","total_cost_usd":0,"num_turns":1}\\n\'; exit 1 ;;\n' +
+      '  LIAR) printf \'{"type":"result","subtype":"success","is_error":false,"result":"You\\x27ve hit your 5-hour limit \u00b7 resets 11:58pm (UTC)","total_cost_usd":0.01,"num_turns":4}\\n\' ;;\n' +
       '  *) printf \'{"type":"result","subtype":"success","is_error":false,"result":"I think it passes.","total_cost_usd":0.01,"num_turns":1}\\n\' ;;\n' +
       "esac\n",
   );
@@ -470,6 +474,31 @@ console.log("== AC12: no verdict token → HELD (exit 2), nothing recorded ==");
   logged === ""
     ? ok("no verdict recorded on silence (never a pass)")
     : fail(`seam was invoked: ${logged}`);
+}
+
+console.log(
+  "== AC12b: a tester REFUSED by the usage window is not a hold for a human (phase usage_limited) ==",
+);
+{
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const envOut = resolve(WORKDIR, "tester-envelope.json");
+  if (existsSync(envOut)) rmSync(envOut);
+  const { code, out, logged } = runLive("LIMIT", { GAFFER_TESTER_ENVELOPE_OUT: envOut });
+  code === 3 && out && out.phase === "usage_limited" && out.ticket === 1
+    ? ok("refused tester → phase=usage_limited, exit 3 (not held)")
+    : fail(`refused tester wrong (code=${code}, out=${JSON.stringify(out)})`);
+  out && /5-hour limit/.test(out.reason || "") && out.kind === "usage_limit"
+    ? ok("the output quotes what the CLI said and its kind")
+    : fail(`usage_limited output lacks the reason/kind: ${JSON.stringify(out)}`);
+  logged === "" ? ok("no verdict recorded on a refusal") : fail(`seam was invoked: ${logged}`);
+  existsSync(envOut) && /"is_error":true/.test(readFileSync(envOut, "utf8"))
+    ? ok("the raw envelope is written to GAFFER_TESTER_ENVELOPE_OUT for the runner's pause record")
+    : fail("no envelope at GAFFER_TESTER_ENVELOPE_OUT");
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const liar = runLive("LIAR", { GAFFER_TESTER_ENVELOPE_OUT: envOut });
+  liar.code === 2 && liar.out && liar.out.phase === "held"
+    ? ok("the same words in the agent's own reply (success envelope) → held, as before")
+    : fail(`liar wrong (code=${liar.code}, out=${JSON.stringify(liar.out)})`);
 }
 
 console.log(

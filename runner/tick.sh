@@ -1836,6 +1836,10 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "ACCEPTANCE: #$NUM is the epic's acceptance ticket — brief-level acceptance suite against the integrated build; the independent tester decides"
   fi
 
+  # A repo that ships its OWN .claude/skills keeps them: a Gaffer pack of the same name is
+  # not mounted over it, and the recommended-skills line says the repo's version wins.
+  SKILLS_NOTE="$(gaffer_skills_note "$PRIMARY_REPO" "$SKILLS, $LENSES" 2>/dev/null || true)"
+
   # The prompt TEXT — the quarantined title, the lore-reflection nudge, the
   # review-feedback block, the repo lists — is LIVE in
   # packages/crew/src/runtime/context/deliveryPrompt.ts; edit it there (and

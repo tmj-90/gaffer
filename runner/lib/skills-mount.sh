@@ -134,25 +134,55 @@ gaffer_skills_mount() {
   fi
 
   # Prepare the target dir. A Gaffer-made symlink (an older mount) is replaced; a dir
-  # Gaffer made earlier loses its previous copies.
+  # Gaffer made earlier loses its previous copies. The REPO'S OWN `.claude/skills` dir
+  # is installed INTO, beside its skills (Claude Code reads `.claude/skills/<name>/`
+  # one level deep only: the old mount linked the whole set in as
+  # `.claude/skills/<mount-key>/<name>/`, one directory too deep, where nothing loads).
+  # A repo symlink or file there is left exactly as it is, and nothing is installed:
+  # copying through a foreign link could land Gaffer's files outside `.claude/`, where
+  # the git exclude does not cover them.
   if _gsm_is_our_link "$skills"; then rm -f "$skills" 2>/dev/null || true; fi
   _gsm_remove_copies "$skills"
-  if [ -d "$skills" ] && [ ! -L "$skills" ]; then
-    # The repo's OWN .claude/skills dir: link the manifest inside it (legacy layout).
-    [ -n "$mount" ] || return 0
-    for name in $list; do ln -sfn "$SKILLS_DIR/$name" "$mount/$name" 2>/dev/null || true; done
-    ln -sfn "$mount" "$skills"
+  if [ -L "$skills" ] || { [ -e "$skills" ] && [ ! -d "$skills" ]; }; then
+    printf 'gaffer: %s is not a directory Gaffer can install into; mounting no skills there\n' "$skills" >&2
     return 0
   fi
-  [ -e "$skills" ] || [ -L "$skills" ] || { mkdir -p "$skills" 2>/dev/null && : > "$skills/$_GSM_ROOT_MARK"; } || return 0
+  [ -d "$skills" ] || { mkdir -p "$skills" 2>/dev/null && : > "$skills/$_GSM_ROOT_MARK"; } || return 0
 
   for name in $list; do
-    [ -e "$skills/$name" ] || [ -L "$skills/$name" ] && continue   # never overwrite what is there
+    # Never overwrite what is there: a repo skill of the same name WINS (the prompt says
+    # so — gaffer_skills_note), and it is not in the manifest (Gaffer did not mount it).
+    [ -e "$skills/$name" ] || [ -L "$skills/$name" ] && continue
     cp -RL "$SKILLS_DIR/$name" "$skills/$name" 2>/dev/null || { rm -rf "${skills:?}/$name" 2>/dev/null; continue; }
     printf '%s\n' "$key" > "$skills/$name/$_GSM_COPY_MARK" 2>/dev/null || true
     [ -n "$mount" ] && ln -sfn "$SKILLS_DIR/$name" "$mount/$name" 2>/dev/null
   done
   return 0
+}
+
+# gaffer_skills_shadowed <dest_dir> <selected> — the selected (∪ universal) library
+# skills the dest's OWN `.claude/skills` already holds (no Gaffer marker): the repo's
+# skill of that name wins over Gaffer's pack. Space-separated, sorted; empty when none.
+gaffer_skills_shadowed() {
+  local dest="${1:-}" selected="${2:-}" skills name out=""
+  skills="$dest/.claude/skills"
+  [ -n "$dest" ] && [ -d "$skills" ] && [ -d "${SKILLS_DIR:-}" ] || return 0
+  for name in $(printf '%s %s' "$(printf '%s' "$selected" | tr ',\n' '  ')" "$GAFFER_UNIVERSAL_SKILLS"); do
+    [ -f "$SKILLS_DIR/$name/SKILL.md" ] || continue
+    [ -e "$skills/$name" ] && [ ! -f "$skills/$name/$_GSM_COPY_MARK" ] || continue
+    case " $out " in *" $name "*) continue ;; esac
+    out="$out $name"
+  done
+  printf '%s' "$out" | tr ' ' '\n' | grep . | sort | paste -sd' ' - 2>/dev/null || true
+}
+
+# gaffer_skills_note <dest_dir> <selected> — the one prompt sentence that tells the agent
+# a repo skill shadows Gaffer's pack of the same name (empty when none does).
+gaffer_skills_note() {
+  local shadowed
+  shadowed="$(gaffer_skills_shadowed "$@")"
+  [ -n "$shadowed" ] || return 0
+  printf " (this repo has its own .claude/skills of the same name, which take precedence over Gaffer's pack: %s — follow the repo's version)" "$(printf '%s' "$shadowed" | sed 's/ /, /g')"
 }
 
 # gaffer_skills_unmount <dest_dir> — remove what gaffer_skills_mount installed into

@@ -30,6 +30,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmdirSync,
   rmSync,
   symlinkSync,
@@ -99,12 +100,27 @@ export function installSkillCopies(claudeDir, names, { skillsDir, key = "mount",
   } catch {
     st = null;
   }
-  if (st && !st.isDirectory()) rmSync(link, { force: true });
-  else if (st) {
-    removeSkillCopies(link);
-    if (isDir(link) && !existsSync(resolve(link, SKILL_ROOT_MARK))) {
-      rmSync(link, { recursive: true, force: true });
+  if (st?.isSymbolicLink()) {
+    // An older Gaffer mount (a link into the library or a manifest) is replaced; any
+    // other link is the repo's, and is left alone with nothing installed through it.
+    let target = "";
+    try {
+      target = resolve(dirname(link), readlinkSync(link));
+    } catch {
+      target = "";
     }
+    const ours =
+      target === resolve(skillsDir) ||
+      target.startsWith(resolve(skillsDir) + "/") ||
+      /\/skills-mounts?(\/|$)/.test(target);
+    if (!ours) return [];
+    rmSync(link, { force: true });
+  } else if (st && !st.isDirectory()) {
+    return []; // a file the repo owns: never replaced
+  } else if (st) {
+    // Gaffer's previous copies go; the repo's OWN skills (no marker) stay, and Gaffer's
+    // are installed beside them at `.claude/skills/<name>/` (never a level deeper).
+    removeSkillCopies(link);
   }
   if (!isDir(link)) {
     mkdirSync(link, { recursive: true });
@@ -117,6 +133,7 @@ export function installSkillCopies(claudeDir, names, { skillsDir, key = "mount",
   const installed = [];
   for (const name of names) {
     const dest = resolve(link, name);
+    // A repo skill of the same name WINS (see shadowedSkills); never overwritten.
     if (existsSync(dest) || installed.includes(name)) continue;
     try {
       cpSync(resolve(skillsDir, name), dest, { recursive: true, dereference: true });
@@ -128,6 +145,24 @@ export function installSkillCopies(claudeDir, names, { skillsDir, key = "mount",
     }
   }
   return installed;
+}
+
+/**
+ * The names whose `<claudeDir>/skills/<name>` is the REPO'S own skill (present, no Gaffer
+ * marker): the repo's version wins over Gaffer's pack of that name. Sorted.
+ */
+export function shadowedSkills(claudeDir, names) {
+  const link = resolve(claudeDir, "skills");
+  return [...new Set(names)]
+    .filter((n) => existsSync(resolve(link, n)) && !existsSync(resolve(link, n, SKILL_COPY_MARK)))
+    .sort();
+}
+
+/** The prompt sentence naming the repo skills that shadow Gaffer's packs ("" when none). */
+export function shadowNote(shadowed) {
+  return shadowed.length
+    ? ` (this repo has its own .claude/skills of the same name, which take precedence over Gaffer's pack: ${shadowed.join(", ")} — follow the repo's version)`
+    : "";
 }
 
 /** Every skill directory in the library that carries a SKILL.md. */

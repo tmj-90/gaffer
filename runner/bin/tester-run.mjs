@@ -104,7 +104,12 @@ import {
   recordKilledCall,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
-import { installSkillCopies, writeAgentSettings } from "../lib/agent-home.mjs";
+import {
+  installSkillCopies,
+  shadowedSkills,
+  shadowNote,
+  writeAgentSettings,
+} from "../lib/agent-home.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -742,7 +747,7 @@ export function replayTesterTests({
 // that cap means a validated description — the whole brief — always reaches the tester.
 const MAX_BRIEF_CHARS = 20000;
 
-export function buildTesterPrompt({ context, worktree, repoName }) {
+export function buildTesterPrompt({ context, worktree, repoName, skillsNote = "" }) {
   const acs = context.acceptanceCriteria
     .map((a, i) => `  ${i + 1}. [ac_id ${a.id}] ${a.text}`)
     .join("\n");
@@ -782,6 +787,7 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
     requirements,
     "REQUIREMENTS>>>",
     "",
+    ...(skillsNote ? [`Skills: the runner mounted yours in .claude/skills${skillsNote}.`] : []),
     `Work ONLY in this worktree (your single write root): ${worktree}`,
     "You test the implementation; you never change it. Do not edit, add or delete any file",
     "outside test directories: a run that modifies the implementation is HELD, not passed.",
@@ -929,7 +935,10 @@ function runLiveTester(context) {
     return;
   }
 
-  const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name });
+  // A repo skill of the same name as a mounted pack wins (installSkillCopies never
+  // overwrites it); the prompt says so.
+  const skillsNote = shadowNote(shadowedSkills(resolve(worktree, ".claude"), skills));
+  const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name, skillsNote });
   const argv = buildClaudeArgv({
     prompt,
     mcpConfig: mcpRuntime,

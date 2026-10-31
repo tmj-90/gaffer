@@ -177,6 +177,8 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # The lenses the reviewer must apply, named in the prompt (everything mounted that
       # is not the core procedure): the stack pack + the review/security lenses.
       _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
+      # A repo skill of the same name as a mounted pack wins (it is not mounted over).
+      _RSKILLS_NOTE="$(gaffer_skills_note "$WT" "$RSKILLS" 2>/dev/null || true)"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -235,7 +237,7 @@ for its acceptance criteria and recorded evidence; inspect the delivered change 
 \`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
 change is sound (tests, scope, quality). Review the diff in its own stack's terms and
 through the review lenses mounted for you — open the ones that apply to this diff and use
-their checklists: ${_RLENSES:-the stack conventions pack}. A lens finding counts only when
+their checklists: ${_RLENSES:-the stack conventions pack}${_RSKILLS_NOTE:-}. A lens finding counts only when
 it is a CONCRETE defect under the bar below. Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
 and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:

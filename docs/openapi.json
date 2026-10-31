@@ -1711,11 +1711,38 @@
               "type": "string"
             },
             "description": "Limit to one repository (name or id)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A visible window: at most this many cards per area (1..1000). Without it every card is returned."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "With `limit`: skip this many cards in each area (default 0)."
+          },
+          {
+            "name": "area",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "With `limit`: return only this area's window (a column, `closed` or `wontDo`); the other areas come back empty."
           }
         ],
         "responses": {
           "200": {
-            "description": "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+            "description": "`BoardView`: the columns plus the closed area, `counts` (every area's total, whatever the window) and `window` (the window applied, or null). With a window, Done, closed and won't-do are newest first. A card's `claim` carries `agent_display`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1736,6 +1763,16 @@
           },
           "403": {
             "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3812,7 +3849,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery dossier",
-        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`.",
+        "description": "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
         "parameters": [
           {
             "name": "id",
@@ -3835,11 +3872,23 @@
               ]
             },
             "description": "`markdown` for the rendered document."
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "packet"
+              ]
+            },
+            "description": "`packet` adds the Review view's `review_packet` to the JSON."
           }
         ],
         "responses": {
           "200": {
-            "description": "`Dossier`. The rendered dossier (`text/markdown`).",
+            "description": "`Dossier` (plus `review_packet` with `?include=packet`). The rendered dossier (`text/markdown`).",
             "content": {
               "application/json": {
                 "schema": {

@@ -34,6 +34,11 @@
 #   K  a test file emptied of its test cases, or stripped of every assertion, FLAGs
 #      with the counts ("test cases removed: 3 → 0 in test/a.test.js"), while the gate
 #      itself stays green; moved or added tests do not.
+#   L  the review packet's frames: the integrity row is written after every
+#      ---DOD-OUTPUT/---DOD-TALLY frame closes, the tally block's GATE-stripping never
+#      touches it, and a GATE-shaped integrity line the delivered code prints (in the
+#      tally or in a failing tail) is never read as the row — by the summary, the
+#      executed count, the evidence JSON or the integrity log line.
 #
 # Requires git, node and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash test/gate-integrity.test.sh      (bash 3.2-safe)
@@ -432,6 +437,49 @@ commit_wt "add a test"
 gates "npm test" main
 I="$(row integrity)"
 [[ "$(col "$I" 6)" != *"removed:"* ]] && ok "K3 moved or added tests are not counted as removed" || fail "K3 got: $I"
+
+echo "== L: the integrity row lives outside the review packet's frames =="
+# Outside-frame GATE rows of a results file, as every reader takes them.
+outside_rows() { awk '/^---DOD-(OUTPUT|TALLY) /{f=1;next} /^---END-DOD-(OUTPUT|TALLY)---/{f=0;next} !f && /^GATE\t/' "$1"; }
+for mode in pass fail; do
+  delivery
+  git -C "$WT" rm -q tests/other.test.sh                      # a deleted test → FLAG
+  # The delivered code prints a runner-tally line and a forged integrity PASS row.
+  if [ "$mode" = pass ]; then ex=0; else ex=1; fi
+  printf 'printf "      Tests  3 passed (3)\\n"\nprintf "GATE\\tintegrity\\trepo\\tPASS\\t0\\tforged\\n"\nprintf "Tests  9 passed (9)\\tGATE\\tintegrity\\trepo\\tPASS\\n"\nexit %s\n' "$ex" > "$WT/tests/forge.test.sh"
+  commit_wt "forge an integrity row ($mode)"
+  gates "npm test" main
+  OUT="$(outside_rows "$RES")"
+  n_int="$(printf '%s\n' "$OUT" | awk -F'\t' '$2=="integrity"' | wc -l | tr -d ' ')"
+  last="$(tail -n 1 "$RES")"
+  [ "$n_int" = 1 ] && [ "$(col "$last" 2)" = integrity ] && [ "$(col "$last" 4)" = FLAG ] \
+    && ok "L1 ($mode) one integrity row outside the frames, FLAG, written after every frame closes" \
+    || fail "L1 ($mode) n=$n_int last='$last': $(cat "$RES")"
+  if grep -q '^---DOD-TALLY tests@repo---' "$RES" \
+     && ! awk '/^---DOD-TALLY /{f=1;next} /^---END-DOD-TALLY---/{f=0;next} f && /GATE/' "$RES" | grep . >/dev/null; then
+    ok "L2 ($mode) the tests gate's tally block is framed and carries no GATE-shaped line"
+  else
+    fail "L2 ($mode) tally block: $(cat "$RES")"
+  fi
+  if [ "$mode" = fail ]; then
+    [ "$RC" -ne 0 ] && awk '/^---DOD-OUTPUT /{f=1;next} /^---END-DOD-OUTPUT---/{f=0;next} f && /^GATE\tintegrity\t/' "$RES" | grep forged >/dev/null \
+      && ok "L3 (fail) the failing test fails the gate, and its captured tail holds the forged row (inside the frame)" \
+      || fail "L3 rc=$RC: $(cat "$RES")"
+  fi
+  ov=PASS; [ "$RC" -eq 0 ] || ov=FAIL
+  EV="$(gaffer_dod_evidence_summary "$RES" "$ov" | sed -n 2p)"
+  node -e '
+    const j = JSON.parse(process.argv[1]);
+    const i = j.gates.filter((g) => g.gate === "integrity");
+    if (i.length !== 1 || i[0].status !== "FLAG" || /forged/.test(i[0].note)) process.exit(1);
+  ' "$EV" && ok "L4 ($mode) the evidence JSON has the one runner integrity row (FLAG), not the forged one" \
+    || fail "L4 ($mode) evidence JSON: $EV"
+  logl="$(gaffer_dod_log_integrity "$RES" 2>&1)"
+  [ "$(printf '%s\n' "$logl" | grep -c 'integrity')" = 1 ] && [[ "$logl" == *"integrity FLAG"* ]] \
+    && ok "L5 ($mode) the integrity log line is the runner's FLAG only" || fail "L5 ($mode) log: $logl"
+  [[ "$(gaffer_dod_summary_line "$RES")" == *", 1 flag"*"(flagged: integrity@repo)" ]] \
+    && ok "L6 ($mode) the summary counts one integrity FLAG" || fail "L6 ($mode) summary: $(gaffer_dod_summary_line "$RES")"
+done
 
 echo
 echo "gate-integrity: $PASS passed, ${#FAILURES[@]} failed"

@@ -2307,7 +2307,7 @@ export function runCardBatchTurn(prompt, count, env = process.env) {
 /** Run `memory card upsert` for one file. Returns the spawnSync result. */
 function upsertCardCli(
   cfg,
-  { canonical, repo, repoRoot, rel, head, fields, keepModel = false },
+  { canonical, repo, repoRoot, rel, head, fields, keepModel = false, carryFrom = "" },
   env = process.env,
 ) {
   const args = [
@@ -2330,6 +2330,8 @@ function upsertCardCli(
   // carries the card's existing summary forward. Without --keep-model the memory CLI
   // nulls the model half, so one failed turn on the merge path wiped a good card.
   if (keepModel && !fields) args.push("--keep-model");
+  // A rename: a mechanical-only card at the new path takes the old card's summary.
+  if (carryFrom && !fields) args.push("--carry-from", carryFrom);
   if (fields) {
     if (fields.tldr) args.push("--tldr", fields.tldr);
     if (fields.rolePrimary) args.push("--role-primary", fields.rolePrimary);
@@ -2902,6 +2904,7 @@ export function refreshFileCards(
   {
     cfg,
     deletions = [],
+    renames = [],
     env = process.env,
     log = () => {},
     repo = "",
@@ -2924,30 +2927,6 @@ export function refreshFileCards(
   const head = headCommit(repoPath);
   const secretLike =
     /(^|\/)(\.env|\.netrc|\.npmrc|id_[a-z0-9]+|.*\.pem|.*\.key|.*\.p12|secrets?|credentials?)(\.|$|\/)/i;
-
-  // ── Tombstone deleted / renamed-away cards FIRST ────────────────────────────
-  // A deleted or renamed file must not leave a stale card behind (it would
-  // mislead retrieval). We go through the memory CLI `delete-file-card` verb —
-  // NEVER writing Memory's DB directly (boundary rule). Fail-soft: a delete
-  // error is logged + counted, never thrown, but it DOES block the watermark
-  // advance (see below) so the next merge retries the tombstone.
-  for (const rel of deletions) {
-    if (!rel || !rel.trim()) continue;
-    const dres = runMemoryCli(
-      cfg,
-      ["delete-file-card", "--canonical", canonical, "--repo", repo, "--path", rel, "--json"],
-      env,
-    );
-    if (dres.error || (dres.status ?? 0) !== 0) {
-      result.failed += 1;
-      log(
-        `card delete "${rel}" failed: ${dres.error?.message ?? dres.stderr?.trim() ?? `exit ${dres.status}`}`,
-      );
-    } else {
-      result.deleted += 1;
-      log(`card deleted (stale/renamed): ${rel}`);
-    }
-  }
 
   // Refresh re-cards a small, targeted set (few files), so it stays one-file-per-call
   // — the batch amortisation only matters for the hundreds-of-files onboard pass.
@@ -2999,9 +2978,10 @@ export function refreshFileCards(
     } catch (err) {
       log(`card model turn failed for ${rel} (${err?.message ?? err}) — mechanical-only`);
     }
+    const carryFrom = renames.find((r) => r.to === rel)?.from;
     const res = upsertCardCli(
       cfg,
-      { canonical, repo, repoRoot: repoPath, rel, head, fields, keepModel: !fields },
+      { canonical, repo, repoRoot: repoPath, rel, head, fields, keepModel: !fields, carryFrom },
       env,
     );
     if (res.error || (res.status ?? 0) !== 0) {
@@ -3014,24 +2994,80 @@ export function refreshFileCards(
     }
   }
 
-  // Advance watermark to HEAD so the next refresh diff starts from here — but
+  // ── Tombstone deleted / renamed-away cards AFTER the refresh ────────────────
+  // (after, so a renamed file's new card could carry the old card's summary first).
+  // A deleted or renamed file must not leave a stale card behind (it would
+  // mislead retrieval). We go through the memory CLI `delete-file-card` verb —
+  // NEVER writing Memory's DB directly (boundary rule). Fail-soft: a delete
+  // error is logged + counted, never thrown, but it DOES block the watermark
+  // advance (see below) so the next merge retries the tombstone.
+  for (const rel of deletions) {
+    if (!rel || !rel.trim()) continue;
+    const dres = runMemoryCli(
+      cfg,
+      ["delete-file-card", "--canonical", canonical, "--repo", repo, "--path", rel, "--json"],
+      env,
+    );
+    if (dres.error || (dres.status ?? 0) !== 0) {
+      result.failed += 1;
+      log(
+        `card delete "${rel}" failed: ${dres.error?.message ?? dres.stderr?.trim() ?? `exit ${dres.status}`}`,
+      );
+    } else {
+      result.deleted += 1;
+      log(`card deleted (stale/renamed): ${rel}`);
+    }
+  }
+
+  // Advance the watermark to HEAD so the next refresh diff starts from here — but
   // ONLY when the whole batch (tombstones + refreshes) completed without a hard
-  // failure. If any delete or upsert hard-failed, we hold the watermark where it
-  // is so the NEXT merge re-diffs from the same base and retries the stragglers.
-  // A "skip" (non-source ext, oversized, secret-like) is NOT a hard failure —
-  // it's an expected no-op that must not pin the watermark.
+  // failure AND every stored card verifies against this tree. `card verify --fix
+  // --commit` checks each card's path exists here and its content hash matches,
+  // removes or re-cards what does not, and records the watermark only when the
+  // result is clean: "indexed at HEAD" is never recorded for cards that do not
+  // describe HEAD (the third external review's overlapping-merge finding). If any
+  // delete or upsert hard-failed, the watermark is held so the NEXT merge re-diffs
+  // from the same base and retries the stragglers. A "skip" (non-source ext,
+  // oversized, secret-like) is NOT a hard failure.
   if (head && result.failed === 0) {
     const wres = runMemoryCli(
       cfg,
-      ["card", "sync", "--canonical", canonical, "--repo", repo, "--commit", head],
+      [
+        "card",
+        "verify",
+        "--canonical",
+        canonical,
+        "--repo",
+        repo,
+        "--repo-root",
+        resolve(repoPath),
+        "--fix",
+        "--commit",
+        head,
+        "--json",
+      ],
       env,
     );
+    let report;
+    try {
+      report = JSON.parse(wres.stdout ?? "");
+    } catch {
+      report = null;
+    }
+    result.verification = report;
     if (wres.error || (wres.status ?? 0) !== 0) {
       log(
-        `card watermark advance failed: ${wres.error?.message ?? wres.stderr?.trim() ?? `exit ${wres.status}`}`,
+        `card verification against ${head.slice(0, 8)} not clean — watermark held: ` +
+          `${wres.error?.message ?? wres.stderr?.trim() ?? `exit ${wres.status}`}`,
       );
     } else {
       result.watermark = head;
+      if (report) {
+        log(
+          `card verification: ${report.checked} card(s) against ${head.slice(0, 8)}; fixed ` +
+            `${report.fixed?.deleted ?? 0} missing, ${report.fixed?.refreshed ?? 0} stale`,
+        );
+      }
     }
   } else if (result.failed > 0) {
     log(

@@ -246,6 +246,8 @@ gaffer_dod_run_one() {
 #        gaffer_dod_resolve_cmd; FLAG only on the integrity row) and, for a FAIL, a
 #        captured output tail framed by:
 #          ---DOD-OUTPUT name@repo---\n<tail>\n---END-DOD-OUTPUT---
+#        and, for the tests gate (pass or fail), the runner's summary lines framed by:
+#          ---DOD-TALLY tests@repo---\n<lines>\n---END-DOD-TALLY---
 #
 # RETURNS: 0 when every gate passed or was skipped; 1 when ANY gate failed. Pure:
 # moves/evidence/logging are the caller's job.
@@ -328,6 +330,9 @@ gaffer_run_dod_gates() {
           || tail -n "$GAFFER_DOD_OUTPUT_TAIL" "$tmpout" 2>/dev/null >> "$results" || true
         printf -- '\n---END-DOD-OUTPUT---\n' >> "$results"
       fi
+      # REVIEW PACKET: keep the test runner's own summary lines (pass or fail) so the
+      # Review view can say what the runner saw and flag an agent claim that disagrees.
+      [ "$gate" = "tests" ] && gaffer_dod_tally_block "$tmpout" "$gate" "$label" >> "$results"
     done
     # GATE INTEGRITY row for this repo (PASS / FLAG — never FAIL, never any_fail).
     if [ -n "$base" ]; then
@@ -439,6 +444,54 @@ gaffer_dod_integrity_row() {
   return 0
 }
 
+# REVIEW PACKET: the summary lines a test gate's output carries, framed as
+#   ---DOD-TALLY <gate>@<repo>---\n<lines>\n---END-DOD-TALLY---
+# Lines kept (ANSI stripped, each cut to 300 chars, the last 40): vitest
+# "Tests  N passed (N)", jest "Tests: … total", pytest "N passed … in 0.1s", cargo
+# "test result: …", node --test "# tests N" / "# pass N" …; for `go test -v`, the
+# top-level --- PASS/FAIL/SKIP lines are
+# counted into one "gotest-tally: pass=N fail=M skip=K" line. The lines are the
+# delivered code's own output, so tabs become spaces and any line that starts with
+# GATE, --- or gotest-tally: is dropped: nothing in the block can pass for a runner
+# GATE row, close the frame early or fake the go tally. Prints nothing when no
+# summary is found. Pure text in, text out; never fails the gate.
+#   gaffer_dod_tally_block <gate-output-file> <gate> <repo-label>
+gaffer_dod_tally_block() {
+  local infile="$1" gate="$2" label="$3" lines
+  [ -f "$infile" ] || return 0
+  lines="$(awk '
+    BEGIN { esc = sprintf("%c", 27); n = 0; gp = 0; gf = 0; gs = 0 }
+    {
+      line = $0
+      gsub(esc "\\[[0-9;?]*[A-Za-z]", "", line)
+      gsub(/\r/, "", line)
+      # A tab in a kept line could forge a GATE row: the results file is tab-separated.
+      gsub(/\t/, " ", line)
+      if (line ~ /^--- PASS: /) { gp++; next }
+      if (line ~ /^--- FAIL: /) { gf++; next }
+      if (line ~ /^--- SKIP: /) { gs++; next }
+      t = line; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t)
+      keep = 0
+      if (t ~ /^Tests[ \t]+.*[0-9]+ (passed|failed|skipped|todo).*\([0-9]+\)$/) keep = 1
+      else if (t ~ /^Tests:[ \t]+.*[0-9]+ total/) keep = 1
+      else if (t ~ /^test result: /) keep = 1
+      else if (t ~ /[0-9]+ (passed|failed).* in [0-9.]+s/) keep = 1
+      else if (t ~ /^(# |ℹ )(tests|pass|fail|cancelled|skipped|todo) [0-9]+$/) keep = 1
+      # Never keep a line that reads as a runner row or frame marker (GATE …, ---…)
+      # or as the go tally this block writes itself.
+      if (t ~ /^(GATE|---|gotest-tally:)/) keep = 0
+      if (keep) { buf[n % 40] = substr(t, 1, 300); n++ }
+    }
+    END {
+      start = (n > 40) ? n - 40 : 0
+      for (i = start; i < n; i++) print buf[i % 40]
+      if (gp + gf + gs > 0) printf "gotest-tally: pass=%d fail=%d skip=%d\n", gp, gf, gs
+    }
+  ' "$infile" 2>/dev/null)" || return 0
+  [ -n "$lines" ] || return 0
+  printf -- '---DOD-TALLY %s@%s---\n%s\n---END-DOD-TALLY---\n' "$gate" "$label" "$lines"
+}
+
 # Render a one-line human summary of a results file (for the factory log).
 #   gaffer_dod_summary_line <results-file>
 gaffer_dod_summary_line() {
@@ -483,6 +536,10 @@ gaffer_dod_evidence_summary() {
     local json
     json="$(awk -F'\t' -v OVERALL="$overall" '
       BEGIN { printf "{\"dod\":\"%s\",\"gates\":[", OVERALL }
+      # GATE rows are read only outside the framed output/tally blocks.
+      /^---DOD-(OUTPUT|TALLY) / { inframe = 1; next }
+      /^---END-DOD-(OUTPUT|TALLY)---/ { inframe = 0; next }
+      inframe { next }
       $1=="GATE" {
         if (n++) printf ","
         gsub(/\\/,"\\\\",$6); gsub(/"/,"\\\"",$6)
@@ -554,9 +611,16 @@ gaffer_dod_extract_failure() {
 # too). Uses tick.sh's `log` when defined, else stderr. Never fails.
 #   gaffer_dod_log_integrity <results-file>
 gaffer_dod_log_integrity() {
-  local results="$1" _g _name _repo _st _rc _note _src _msg
+  local results="$1" _g _name _repo _st _rc _note _src _msg _inframe=0
   [ -f "$results" ] || return 0
   while IFS=$'\t' read -r _g _name _repo _st _rc _note _src; do
+    # Only the runner's own rows, OUTSIDE the framed output/tally blocks (a GATE-shaped
+    # line inside a frame is the delivered code's output, not an integrity verdict).
+    case "$_g" in
+      ---DOD-OUTPUT\ *|---DOD-TALLY\ *) _inframe=1; continue ;;
+      ---END-DOD-OUTPUT---*|---END-DOD-TALLY---*) _inframe=0; continue ;;
+    esac
+    [ "$_inframe" -eq 0 ] || continue
     [ "$_g" = "GATE" ] && [ "$_name" = "integrity" ] || continue
     case "$_st" in
       FLAG) _msg="DoD: integrity FLAG for ${NUM:+#$NUM }($_repo) — $_note; a human must look before this ships (dispatch holds auto-approve; \`wg ticket allow-test-changes\` if intended)" ;;

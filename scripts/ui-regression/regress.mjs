@@ -530,6 +530,54 @@ try {
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
 
+  // ── 5. (review packet) the runner's verdict strip under the title ─────────
+  //   One dossier read (?include=packet) draws the gates with their commands, the
+  //   tester, cost and turns, the attempt, risk, and the criteria table: the
+  //   machine-checked AC shows the runner's exit code, not the agent's word.
+  {
+    const strip = await waitFor(
+      async () => ((await page.$(".rv-verdict .vd-cell.vd-gates")) ? true : null),
+      "the verdict strip",
+      15000,
+      500,
+    ).catch(() => null);
+    if (!strip) bad("Review: no verdict strip under the title");
+    else {
+      const gl = (await page.getAttribute(".vd-cell.vd-gates", "aria-label")) || "";
+      /^Gates: passed, \d+ of \d+ ran$/.test(gl)
+        ? ok(`Review packet: the gates cell reads the runner's DoD ("${gl}")`)
+        : bad(`Review packet: gates cell label '${gl}'`);
+      const gt = (await page.textContent(".vd-cell.vd-gates")) || "";
+      /npm test/.test(gt) && /The runner saw \d+ tests? pass \(node:test\)/.test(gt)
+        ? ok("Review packet: the tests gate names its command and the runner's own test count")
+        : bad(`Review packet: gates cell text '${gt.slice(0, 200)}'`);
+      const cells = await page.$$eval(".rv-verdict .vd-cell", (els) =>
+        els.map((e) => e.className.match(/vd-(gates|tester|cost|attempts|risk|pin)\b/)?.[1]),
+      );
+      ["gates", "tester", "cost", "attempts", "risk"].every((k) => cells.includes(k))
+        ? ok(`Review packet: the strip draws ${cells.filter(Boolean).join(", ")}`)
+        : bad(`Review packet: strip cells ${JSON.stringify(cells)}`);
+      const acRow = (await page.textContent(".rv-ac-table tr.ac-ev-runner").catch(() => "")) || "";
+      /Runner · exit 0/.test(acRow) && /npm test/.test(acRow)
+        ? ok(
+            "Review packet: the machine-checked criterion shows the runner's exit 0 and its command",
+          )
+        : bad(`Review packet: AC table runner row '${acRow.slice(0, 200)}'`);
+      // Both themes: the strip and the table under the dark kit, audited like the views.
+      await page.emulateMedia({ colorScheme: "dark" });
+      await sleep(300);
+      const bg = await page.$eval(".vd-cells", (e) => getComputedStyle(e).backgroundColor);
+      const light = /rgb\((2[3-5]\d), (2[3-5]\d), (2[3-5]\d)\)/.test(bg);
+      !light
+        ? ok(`Review packet: the strip follows the dark kit (${bg})`)
+        : bad(`Review packet: the strip stayed light under the dark kit (${bg})`);
+      await shot(page, "review-packet-dark");
+      if (AXE_SOURCE) await auditA11y(page, "review-packet-dark", "1400");
+      await page.emulateMedia({ colorScheme: "light" });
+      await sleep(200);
+    }
+  }
+
   // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
   //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
   //          Sign-off shows no "tests changed" banner. A delivery that weakened its
@@ -1028,6 +1076,59 @@ try {
     }
   } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
 
+  // ── 6a. work: the board is a visible window with whole-board counts ─────────
+  //   The Work view asks /api/board for a window per lane (?limit=), and each lane
+  //   head reads the server's total for that lane, not just the cards it loaded.
+  {
+    const boardReqs = [];
+    const onReq = (req) => {
+      if (req.url().includes("/api/board")) boardReqs.push(req.url());
+    };
+    page.on("request", onReq);
+    await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+    await sleep(900);
+    page.off("request", onReq);
+    boardReqs.some((u) => /[?&]limit=\d+/.test(u))
+      ? ok("work: the board is fetched as a visible window (?limit=)")
+      : bad(`work: board requests carry no window: ${boardReqs.join(" ") || "none"}`);
+    const windowed = (await api("GET", "/api/board?limit=1")).json;
+    const heads = await page
+      .$$eval(".board-col", (els) =>
+        els.map((e) => [e.dataset.column, e.querySelector(".board-col-count")?.textContent]),
+      )
+      .catch(() => []);
+    const wrong = heads.filter(
+      ([col, n]) => String(windowed?.counts?.columns?.[col] ?? "?") !== String(n),
+    );
+    heads.length && !wrong.length
+      ? ok(`work: every lane head equals the server's count (${heads.length} lanes)`)
+      : bad(`work: lane heads disagree with /api/board counts: ${JSON.stringify(wrong)}`);
+  }
+
+  // ── 6b. health: flow efficiency claims only agent-working time ──────────────
+  //   The merged ticket above has a transition history, so the form guide shows the
+  //   flow efficiency as working time and lists where shipped tickets waited (the
+  //   merge queue on its own) instead of counting review and the queue as work.
+  {
+    await page.goto(`${BASE}/#/health`, { waitUntil: "load" });
+    await sleep(900);
+    const bandLabel =
+      (await page.getAttribute(".form-guide .fg-eff .band", "aria-label").catch(() => "")) || "";
+    /^Flow efficiency (<1|\d+)% of lead time with an agent working on the ticket$/.test(bandLabel)
+      ? ok(`health: flow efficiency says what it measures ("${bandLabel}")`)
+      : bad(`health: flow efficiency band reads '${bandLabel}'`);
+    const waitRows = await page
+      .$$eval(".form-guide .fg-wait dt", (els) => els.map((e) => e.textContent.trim()))
+      .catch(() => []);
+    waitRows.includes("Waiting to merge") &&
+    waitRows.includes("In review or testing") &&
+    waitRows.includes("Sent back, waiting for rework") &&
+    waitRows.includes("Before work started")
+      ? ok(`health: waiting is shown on its own (${waitRows.join(", ")})`)
+      : bad(`health: no waiting breakdown (rows: ${waitRows.join(", ") || "none"})`);
+    await shot(page, "health-flow");
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [
@@ -1096,7 +1197,7 @@ try {
       { w: 1280, h: 800, views },
       { w: 1440, h: 900, views },
       { w: 360, h: 780, views: ["overview", "work", "review", "floor"] },
-      { w: 320, h: 640, views: ["overview", "work", "floor"] },
+      { w: 320, h: 640, views: ["overview", "work", "review", "floor"] },
     ];
     for (const { w, h, views: vs, axe: runAxe } of sweep) {
       const c2 = await browser.newContext({ viewport: { width: w, height: h } });

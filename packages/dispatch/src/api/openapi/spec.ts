@@ -438,11 +438,23 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Kanban board",
     capability: "read",
-    query: { repo: { description: "Limit to one repository (name or id)." } },
+    query: {
+      repo: { description: "Limit to one repository (name or id)." },
+      limit: {
+        description:
+          "A visible window: at most this many cards per area (1..1000). Without it every card is returned.",
+      },
+      offset: { description: "With `limit`: skip this many cards in each area (default 0)." },
+      area: {
+        description:
+          "With `limit`: return only this area's window (a column, `closed` or `wontDo`); the other areas come back empty.",
+      },
+    },
     responses: [
       ok(
-        "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+        "`BoardView`: the columns plus the closed area, `counts` (every area's total, whatever the window) and `window` (the window applied, or null). With a window, Done, closed and won't-do are newest first. A card's `claim` carries `agent_display`.",
       ),
+      invalid,
     ],
   },
   {
@@ -757,16 +769,20 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Delivery dossier",
     description:
-      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`.",
+      "The tamper-evident evidence artifact. JSON by default; markdown with `?format=markdown` or `Accept: text/markdown`. `?include=packet` adds `review_packet` (outside the hashed subject): the runner-verified gates, tester verdict, cost and turns, attempts and rework, risk reasons, the reviewed-commit pin, each criterion's check result or `no machine evidence`, and any test count the agent claimed that disagrees with the runner's.",
     capability: "read",
     query: {
       format: {
         description: "`markdown` for the rendered document.",
         schema: { type: "string", enum: ["json", "markdown"] },
       },
+      include: {
+        description: "`packet` adds the Review view's `review_packet` to the JSON.",
+        schema: { type: "string", enum: ["packet"] },
+      },
     },
     responses: [
-      ok("`Dossier`."),
+      ok("`Dossier` (plus `review_packet` with `?include=packet`)."),
       { status: 200, description: "The rendered dossier (`text/markdown`).", content: "markdown" },
       notFound,
     ],

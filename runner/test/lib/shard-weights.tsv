@@ -8,12 +8,20 @@
 # A test missing here counts 10s; a line for a deleted test is ignored.
 # Refresh a line when a test gets much slower or faster — an off weight only unbalances
 # the shards, it never drops or duplicates a test.
+# memory-index-after-merge, rework-cost-live, export-under-load: ESTIMATES, not CI
+# medians (refresh them from the next CI run). Linux, alone: 70s / 36s / 9s; under load
+# memory-index-after-merge took 156s where merge-lane took 249s against its 171 here,
+# and the three are scaled by that ratio (rework-cost-live rounded up).
+# e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
+# load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
 161	direct-run-isolation.test.sh
 150	gate-integrity-e2e.test.sh
 150	gate-integrity-e2e-retry.test.sh
 149	waste-controls.test.sh
 132	e2e-agent-skill-routing.test.sh
+127	e2e-release-gate-merge-typecheck.test.sh
+110	memory-index-after-merge.test.sh
 100	e2e-release-gate-merge-combination.test.sh
 86	delivery-lifecycle.test.sh
 80	e2e-release-gate-ci-required.test.sh
@@ -28,6 +36,7 @@
 60	usage-limit-tick.test.sh
 58	e2e-per-path-stack-routing.test.sh
 55	e2e-memory-routing.test.sh
+45	rework-cost-live.test.sh
 40	eval-replay.test.sh
 40	resume-abort.test.sh
 35	parallel-stop.test.sh
@@ -56,6 +65,7 @@
 12	model-routing.test.sh
 12	nocommit-crash-bound.test.sh
 12	registry-probe.test.sh
+12	export-under-load.test.sh
 11	auto-merge.test.sh
 11	gaffer-cli-args.test.sh
 10	autonomy-containment.test.sh

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Dispatch } from "../../core.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
+import { ticketCostInfo } from "../runDetail.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
@@ -467,6 +468,16 @@ export async function routeTickets(
     if (wantsMarkdown) {
       res.writeHead(200, { "content-type": "text/markdown; charset=utf-8" });
       res.end(wg.dossierSvc.renderMarkdown(dossier));
+      return;
+    }
+    // REVIEW PACKET (opt-in, `?include=packet`): the Review view's verdict strip and
+    // criteria table, beside the dossier and OUTSIDE its hashed subject (the cost reads
+    // the live usage ledger). The plain export stays exactly the dossier.
+    if (url.searchParams.get("include") === "packet") {
+      sendJson(res, 200, {
+        ...dossier,
+        review_packet: wg.reviewPacket(id, (n) => ticketCostInfo(n)),
+      });
       return;
     }
     sendJson(res, 200, dossier);

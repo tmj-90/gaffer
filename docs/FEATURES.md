@@ -108,6 +108,14 @@ Day-to-day, work lives on the board. Tickets flow through
 Every card carries a **risk badge**, a **priority**, and live
 **acceptance-criteria progress** (`2/3 satisfied`).
 
+The board stays usable on a factory with years of history. The Work view loads
+a visible window of each lane (`GET /api/board?limit=200`; Done, failed and won't-do
+newest first) and the lane heads show each lane's true size from the server's
+`counts`; the rest of a lane is one link away in the List view, which filters on
+the server. A filter typed on a windowed board applies to the loaded cards and says
+so. Without `limit` the endpoint still returns every card, and it no longer has a
+size ceiling (it used to fail at 32,767 tickets on SQLite's variable limit).
+
 An acceptance criterion can be **machine-checkable**: give it a check command
 (`npm test`, a script, an HTTP probe) and the runner executes it in the delivery
 worktree after the Definition-of-Done gates. Exit 0 marks the criterion
@@ -150,6 +158,34 @@ done today. It reads the Overview's own data and refreshes on the live stream.
 Parcels, robots and stations are links with sentence labels; the stations and
 benches are also listed as text under the drawing.
 
+**Health: what the numbers mean.** `#/health` (and `GET /api/health`) reads the
+usage ledger and the ticket transition log, and says only what those can show:
+
+- **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
+  or when the runner retries it after a failed gate; both count. Every delivery
+  ledger row carries its attempt (a hash of the claim plus the attempt number,
+  never the claim token) and the time it started, so **spent on rework** is the
+  delivery spend of the attempts that started after the ticket's first send-back.
+  A $1 attempt, a rejection and a $3 correction read as $3 on rework (75% of
+  spend), and the referee's **rework rate** as 1 of 1 merged tickets sent back.
+  Each ticket's row says how many send-backs came from review and how many from
+  the runner, and whether its spend was placed by attempt or, for rows older than
+  attempt ids, by the call's end time minus its duration.
+- **Flow efficiency** is the median share of a shipped ticket's lead time with
+  an agent working on it (`claimed` or `in_progress`). Everything else is
+  waiting, and the form guide lists it on its own: **waiting to merge** (approved,
+  in `ready_for_merge`, with the longest wait), **in review or testing**, **sent
+  back, waiting for rework** (back in draft, refining or ready after work began,
+  waiting for a human to refine it or the runner to claim it again), **blocked or
+  paused**, and **before work started** (everything before the first claim), plus
+  the share of lead time queued after work began: review, the merge queue,
+  send-backs and holds. Review counts as waiting because the transition log shows
+  how long a ticket sat in review, not how long anyone actively reviewed it. A
+  ticket that took 11 minutes to reach merge-ready and then waited a week reads
+  under 1% with a week's merge wait, not 100%. A ticket sent back to refining
+  that waited three days there shows those days as a send-back, not as time
+  before work started. With nothing shipped the figure is a dash.
+
 ![The work board](img/board.png)
 
 *Tickets spread across the lanes: the Recurring tasks drafts being shaped,
@@ -170,6 +206,37 @@ structural barrier the whole design hangs on.
 - The diff you review is the **real `git diff`**, computed server-side from the
   delivery branch against the repo's default branch — not a summary the agent
   wrote about itself.
+- **The runner's facts come first.** Under the title, a **verdict strip** shows
+  what the runner recorded, not what the agent says: each Definition-of-Done
+  gate (passed, failed or skipped, with the command it ran) and the test count
+  the runner saw in the test gate's own output (vitest, jest, pytest, cargo,
+  `go test -v`, `node --test`); the independent tester's verdict and the commit
+  it tested (or "after you" when it runs after your approval); cost and turns so
+  far from the usage ledger; the attempt and who sent it back before; the risk
+  level with its reasons (recorded, then the diff's own risk flags); and the
+  reviewed-commit pin when one is recorded. The **acceptance-criteria table**
+  shows each criterion's check command and the runner's recorded exit code, or
+  **no machine evidence** on a yellow card when only the agent's word (or
+  nothing) backs it. When the agent's evidence for the current attempt claims a
+  count for the whole suite ("all 42 tests pass", "42/42", a pasted runner line,
+  or a bare "42 tests pass" outside a criterion's evidence) or "all tests pass",
+  and the runner's output contradicts it, a flag says so: "the summary says 42,
+  the runner saw 40". A count for part of the suite ("3 new tests", "30 unit
+  tests", one criterion's or one file's "3 tests pass", "1 of 2 passing") is not
+  compared, nor is a claim from an attempt that was sent back. Gate results, the test count and criterion exit codes
+  come only from rows the runner recorded as the system, and the tester's verdict
+  only from the row a tester pass or fail recorded; an agent-recorded row that
+  looks like a gate report or a tester verdict is ignored. On a reworked ticket
+  the strip shows only this round's facts: a tester verdict or a review pin
+  recorded before the ticket last entered review, and a criterion's check result
+  from before the latest send-back, are about earlier code and are left out (the
+  landing check ignores such a pin too). It is
+  one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
+  is what the test runner printed, and the tests run the delivered code, so treat
+  a match as consistency, not proof. The runner keeps those summary lines with
+  tabs turned into spaces and drops any that start with `GATE`, `---` or
+  `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
+  so a test that prints a gate-shaped line cannot add a gate to the strip.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.
@@ -307,6 +374,11 @@ human-gated knowledge the factory works from:
   to *verify against the code* for high-stakes work, never a substitute for it.
 - **Feature ledger** — what's `backlog → building → shipped` per repo, so the
   factory knows what already exists before it proposes building it again.
+- **File cards** — one per source file (path, symbols, content hash, a short
+  summary), used to choose what to read before a ticket. After every merge they
+  are brought in line with the merged commit, renames included, and each card's
+  path and content hash is checked against that commit before memory records the
+  repo as indexed there.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
   MCP review gate, and a human approves it via the memory CLI — it is never
@@ -323,6 +395,23 @@ signature above the approved records.*
 
 Memory is also usable standalone — see
 [`packages/memory/README.md`](../packages/memory/README.md).
+
+**Backing up the board.** `gaffer wg export --out board.json` writes the whole
+board (tickets, epics, scope graph, criteria, repos, decisions, reviews and
+evidence, the event log, claims) as one JSON bundle; `gaffer wg import` restores it
+into an empty database. What the export guarantees:
+
+- **One consistent snapshot.** Every table is read inside a single SQLite read
+  transaction, so an export taken while the runner, the API or another process is
+  writing holds the board exactly as it stood at one instant: never a dependency or
+  criterion whose ticket is missing. Writers are not blocked while it runs.
+- **Proven restorable before it reports success.** The export restores its own
+  bundle into a scratch in-memory database with the importer's checks (format and
+  schema version, event-log hash chain, foreign keys, every row landed) before it
+  writes the file or prints anything. If that fails it exits non-zero, writes
+  nothing and says why, while you still have the source database to copy from.
+
+Run-activity rows and API credentials are machine-local and are not exported.
 
 ---
 

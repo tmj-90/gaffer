@@ -213,6 +213,15 @@ export interface UpsertFileCardInput {
    * field IS supplied (the caller is re-summarising and owns the model half).
    */
   readonly preserveModel?: boolean;
+  /**
+   * RENAME CARRY: the path this file was renamed FROM. When the caller supplies no
+   * model fields and the new path has no model half of its own (no row yet, or a
+   * row without preserveModel), the new card takes the old path's model half, so a
+   * `git mv` keeps the onboard summary instead of decaying to mechanical-only. The
+   * old card is left in place: the caller removes it (delete-file-card) once the new
+   * card is written.
+   */
+  readonly carryModelFrom?: string;
 }
 
 /** The model-derived half of a file_card row, as stored. */
@@ -284,6 +293,28 @@ export function upsertFileCard(db: Database, input: UpsertFileCardInput): FileCa
       .get(rk, path) as ({ rowid: number } & StoredModelHalf) | undefined;
 
     let rowid: number;
+
+    // A rename: the new path inherits the old card's model half unless it keeps its own.
+    const carryFrom = input.carryModelFrom?.trim();
+    const keepsOwnModel = existingRow !== undefined && input.preserveModel === true;
+    if (carryFrom && carryFrom !== path && !callerSuppliedModel && !keepsOwnModel) {
+      const source = db
+        .prepare(
+          `SELECT tldr, role_primary, role_tags, model_status, model, prompt_version,
+                  validation_error
+             FROM file_card WHERE repo_key = ? AND path = ?`,
+        )
+        .get(rk, carryFrom) as StoredModelHalf | undefined;
+      if (source) {
+        tldr = source.tldr;
+        rolePrimary = source.role_primary;
+        roleTagsJson = source.role_tags;
+        modelStatus = source.model_status;
+        model = source.model;
+        promptVersion = source.prompt_version;
+        validationError = source.validation_error;
+      }
+    }
 
     if (existingRow) {
       if (input.preserveModel === true && !callerSuppliedModel) {
@@ -548,6 +579,65 @@ export function listCardsForPathPrefixes(
     )
     .all(rk, ...likeArgs) as FileCardRow[];
   return rows.map(rowToFileCard);
+}
+
+// ── Verify against a tree ─────────────────────────────────────────────
+
+/** One stored card as {@link verifyFileCards} sees it. */
+export interface StoredCardHash {
+  readonly path: string;
+  readonly contentHash: string;
+}
+
+/** Every stored card for a repo (any status), path and content hash only. */
+export function listStoredCardHashes(db: Database, rk: string): StoredCardHash[] {
+  return (
+    db
+      .prepare("SELECT path, content_hash FROM file_card WHERE repo_key = ? ORDER BY path")
+      .all(rk) as Array<{ path: string; content_hash: string }>
+  ).map((r) => ({ path: r.path, contentHash: r.content_hash }));
+}
+
+/** What {@link verifyFileCards} found. */
+export interface CardVerification {
+  /** Cards checked (every stored card for the repo, any status). */
+  readonly checked: number;
+  /** Cards whose path does not exist in the tree. */
+  readonly missing: ReadonlyArray<string>;
+  /** Cards whose path exists but whose content hash differs from the tree's file. */
+  readonly stale: ReadonlyArray<string>;
+  /** True when nothing is missing or stale: the cards describe exactly this tree. */
+  readonly clean: boolean;
+}
+
+/**
+ * Check every stored card for a repo against one tree (a checkout of the commit the
+ * index claims to describe). `hashOf(path)` returns the sha256 of the file's content
+ * in that tree, or null when the path does not exist there. A card is MISSING when its
+ * path is not in the tree (a rename or delete the refresh never saw) and STALE when the
+ * file changed since it was carded. Read-only: callers fix and re-verify before they
+ * advance the watermark, so "indexed at <commit>" is only ever recorded for a card set
+ * that matches that commit.
+ */
+export function verifyFileCards(
+  db: Database,
+  rk: string,
+  hashOf: (path: string) => string | null,
+): CardVerification {
+  const missing: string[] = [];
+  const stale: string[] = [];
+  const cards = listStoredCardHashes(db, rk);
+  for (const card of cards) {
+    const actual = hashOf(card.path);
+    if (actual === null) missing.push(card.path);
+    else if (actual !== card.contentHash) stale.push(card.path);
+  }
+  return {
+    checked: cards.length,
+    missing,
+    stale,
+    clean: missing.length === 0 && stale.length === 0,
+  };
 }
 
 // ── Watermark ─────────────────────────────────────────────────────────

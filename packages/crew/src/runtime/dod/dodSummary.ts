@@ -5,15 +5,39 @@
 // extractFailure. Pure text-in → text-out, so the unit test IS the behaviour.
 //
 // A DoD "results file" is TAB-separated rows; the two functions here only read
-// the `GATE\t<gate>\t<repo>\t<status>\t<rc>\t<note>` rows (every other line —
-// the framed ---DOD-OUTPUT--- transcript blocks — is ignored, exactly as the awk
-// `$1=="GATE"` guard does). Field indices mirror the awk 1-based fields:
+// the `GATE\t<gate>\t<repo>\t<status>\t<rc>\t<note>` rows OUTSIDE the framed
+// ---DOD-OUTPUT--- / ---DOD-TALLY--- blocks (those hold the delivered code's own
+// output, so a GATE-shaped line inside one is never a runner row). Field indices
+// mirror the awk 1-based fields:
 //   parts[0] "GATE"  parts[1] gate  parts[2] repo  parts[3] status  parts[4] rc
 //
 // BYTES, NOT UNICODE: the runner's awk is mawk (byte-oriented). Callers pass the
 // file bytes decoded 1:1 (latin1) so these functions see and preserve the exact
 // bytes mawk would — see dodDistillCli.ts.
 // =====================================================================
+
+/**
+ * The runner's GATE rows, split on TAB, in file order — skipping every line inside a
+ * `---DOD-OUTPUT …` / `---DOD-TALLY …` frame up to its `---END-DOD-…---` marker.
+ */
+function gateRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let inFrame = false;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("---DOD-OUTPUT ") || line.startsWith("---DOD-TALLY ")) {
+      inFrame = true;
+      continue;
+    }
+    if (line.startsWith("---END-DOD-OUTPUT---") || line.startsWith("---END-DOD-TALLY---")) {
+      inFrame = false;
+      continue;
+    }
+    if (inFrame) continue;
+    const p = line.split("\t");
+    if (p[0] === "GATE") rows.push(p);
+  }
+  return rows;
+}
 
 /**
  * One-line human summary of a results file — byte-identical to
@@ -29,9 +53,7 @@ export function summarizeGates(text: string): string {
   let flag = 0;
   const failed: string[] = [];
   const flagged: string[] = [];
-  for (const line of text.split("\n")) {
-    const p = line.split("\t");
-    if (p[0] !== "GATE") continue;
+  for (const p of gateRows(text)) {
     total += 1;
     const status = p[3];
     if (status === "PASS") {
@@ -63,11 +85,10 @@ export function summarizeGates(text: string): string {
  */
 export function executedCount(text: string): number {
   let n = 0;
-  for (const line of text.split("\n")) {
-    const p = line.split("\t");
+  for (const p of gateRows(text)) {
     // The `integrity` row is a check ON the gates, not a gate that verified the work:
     // a delivery whose only row is integrity PASS still executed zero gates.
-    if (p[0] === "GATE" && p[1] !== "integrity" && (p[3] === "PASS" || p[3] === "FAIL")) n += 1;
+    if (p[1] !== "integrity" && (p[3] === "PASS" || p[3] === "FAIL")) n += 1;
   }
   return n;
 }

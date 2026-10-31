@@ -7348,7 +7348,9 @@ function pollWorkButton() {
             toast("Continuing the paused delivery…", { ok: true });
           } else if (p.review > 0) {
             toast("Running the reviewer agent on a ticket in Review…", { ok: true });
-          } else toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else if (p.testing > 0) {
+            toast("Running the tester on a ticket in Testing…", { ok: true });
+          } else toast("Clarifying a draft (intake pass)…", { ok: true });
           router();
           // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
           // USD cap already reached) would otherwise read as "fired". Watch the run

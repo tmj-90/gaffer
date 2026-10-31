@@ -294,8 +294,11 @@ structural barrier the whole design hangs on.
   (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
   runner's merge lane lands it: Auto-merge on and a human approval, or an earned
   merge grant), *Approved · landing* (a merge the dashboard started is running),
-  *Approved · partly landed* (some of its write repos landed), or the hold's own
-  words — *Held · moved since review*, *Held · merge gate failed*, *Held · CI red*.
+  *Approved · partly landed* (a landing is recorded for some of its write repos'
+  approved commits, not all: Merge now lands the rest and never re-merges a
+  landed one), or the hold's own words — *Held · moved since review* (naming the
+  repo whose branch moved off its review pin), *Held · merge gate failed*, *Held ·
+  CI red*.
   The server stamps it as `landing_state` on the ticket, the board cards, the
   ticket list and the Team Sheet.
 - **A request for a human is never "Nothing flagged".** The runner's

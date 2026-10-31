@@ -6,12 +6,16 @@
  * This decides, from the same facts the approve outcome and the runner's merge lane use,
  * which of these is true now:
  *
- *   held               the landing is held for a human: the branch moved since the review
- *                      approved it (the review pin is not the head), the merge gate failed
- *                      on the combination (merge_gate_red) or required CI is red (ci_red).
- *                      A ticket already parked as blocked for one of the last two says so.
+ *   held               the landing is held for a human: a write repo's branch moved since
+ *                      the review approved it (its per-repo review pin is not its head), the
+ *                      merge gate failed on the combination (merge_gate_red) or required CI
+ *                      is red (ci_red). A ticket already parked as blocked for one of the
+ *                      last two says so (and which repos had already landed).
  *   landing            a merge run the API started for this approval is still running.
- *   partly_landed      some of its write repos are recorded landed, not all.
+ *   partly_landed      some of its approved revisions have a landing on record
+ *                      (`gaffer-landed-commit:` system rows, services/landingStatus.ts), not
+ *                      all: every write repo lands through the same path, so Merge now (or
+ *                      the merge lane's retry) lands the rest and never re-merges one.
  *   lands_next_tick    the runner's merge lane will land it: an earned merge grant, or
  *                      AUTO_MERGE on and the approval was a human's (the lane's own rule).
  *   waiting_for_merge  nothing lands it until someone presses Merge now.
@@ -37,9 +41,14 @@ export interface LandingFacts {
   hold: LandingHold | null;
   /** A merge run the API started for the current approval is still running. */
   mergeRunning: boolean;
-  /** Write repos recorded landed (repo delivery status done) of all write repos. */
+  /**
+   * The approved revisions recorded landed (computeLandingStatus: a system
+   * `gaffer-landed-commit:<sha>` row per repo), of all the ticket's approved revisions.
+   */
   landedRepos: string[];
   writeRepos: string[];
+  /** The repos still to land whose branch head moved off their review pin. */
+  movedRepos?: string[];
   autoMerge: boolean;
   mergeLane: boolean;
   mergeGateEarned: boolean;
@@ -73,10 +82,28 @@ const HOLD_WORDS: Record<LandingHold, { label: string; detail: string }> = {
   },
 };
 
+/** A held multi-repo landing: which repos already landed (they stay landed). */
+function partWords(f: LandingFacts): string {
+  if (f.landedRepos.length === 0 || f.landedRepos.length >= f.writeRepos.length) return "";
+  const rest = f.writeRepos.filter((r) => !f.landedRepos.includes(r));
+  return ` Partly landed: ${f.landedRepos.join(", ")} landed; ${rest.join(", ")} held.`;
+}
+
 /** Where an approved (or held) change is now; null for any other status. */
 export function decideLandingState(f: LandingFacts): LandingState | null {
-  if (f.hold && (f.status === "ready_for_merge" || f.status === "blocked"))
-    return { kind: "held", hold: f.hold, ...HOLD_WORDS[f.hold] };
+  if (f.hold && (f.status === "ready_for_merge" || f.status === "blocked")) {
+    const words = HOLD_WORDS[f.hold];
+    const moved =
+      f.hold === "moved_since_review" && f.movedRepos && f.movedRepos.length > 0
+        ? ` Moved: ${f.movedRepos.join(", ")}.`
+        : "";
+    return {
+      kind: "held",
+      hold: f.hold,
+      label: words.label,
+      detail: words.detail + moved + partWords(f),
+    };
+  }
   if (f.status !== "ready_for_merge") return null;
   if (f.mergeRunning)
     return {
@@ -91,7 +118,9 @@ export function decideLandingState(f: LandingFacts): LandingState | null {
       kind: "partly_landed",
       hold: null,
       label: "Approved · partly landed",
-      detail: `${f.landedRepos.join(", ")} landed; ${rest.join(", ")} not yet.`,
+      detail:
+        `${f.landedRepos.join(", ")} landed; ${rest.join(", ")} not yet, still on the delivery branch. ` +
+        "Merge now lands the rest (a landed repo is never merged again); the ticket is done when every repository has landed.",
     };
   }
   const human = f.approver === "human" || f.approver === "admin";

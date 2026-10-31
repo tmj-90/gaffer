@@ -22,7 +22,7 @@ import type { ProductOwnerRunner } from "../src/api/productOwner.js";
 import type { PlanBuildRunner } from "../src/api/planBuild.js";
 import type { GitRunner } from "../src/services/diffService.js";
 import { decideLandingState, type LandingFacts } from "../src/services/landingState.js";
-import { TestClock } from "../src/util/clock.js";
+import { systemClock } from "../src/util/clock.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
@@ -93,16 +93,23 @@ afterEach(() => {
   }
 });
 
-/** A git runner whose branch head can be moved (for the review pin). */
+/** A git runner whose branch heads can be moved (for the review pins), one per branch. */
 let head = "a".repeat(40);
+const branchHead = new Map<string, string>();
 const movableHead: GitRunner = (cwd, args, opts) => {
-  if (args[0] === "rev-parse") return { status: 0, stdout: `${head}\n`, stderr: "" };
+  if (args[0] === "rev-parse") {
+    const b = /^refs\/heads\/(.+)\^\{commit\}$/.exec(String(args[3] ?? ""))?.[1] ?? "";
+    return { status: 0, stdout: `${branchHead.get(b) ?? head}\n`, stderr: "" };
+  }
   return nonEmptyDiffRunner(cwd, args, opts);
 };
 
 function freshWg(): Dispatch {
   head = "a".repeat(40);
-  return Dispatch.open(":memory:", new TestClock(), movableHead);
+  branchHead.clear();
+  // The wall clock, as in production: per-repo review pins are read against the event
+  // log's in_review entry, which is stamped by the wall clock too.
+  return Dispatch.open(":memory:", systemClock, movableHead);
 }
 
 /** A ticket a HUMAN approved: ready_for_merge with one write repo on disk. */
@@ -121,6 +128,7 @@ function approved(wg: Dispatch, opts: { extraWrite?: string } = {}) {
       { ticket_id: t.id, repo_id: r.id, access: "write", relation: "confirmed" },
       human,
     );
+    wg.recordRepoDelivery({ ticket_id: t.id, repo_id: r.id, branch_name: "feat/web" }, human);
   }
   wg.markReady(t.id, human);
   const agent = wg.registerAgent({ display_name: "a" }, human);
@@ -169,13 +177,64 @@ describe("Dispatch.landingState: from the facts the landing paths act on", () =>
     wg.db.close();
   });
 
-  it("one of two write repos recorded landed: partly landed", () => {
+  it("one of two approved revisions has a landing record: partly landed, naming each", () => {
+    const wg = freshWg();
+    const { id } = approved(wg, { extraWrite: "web-storefront" });
+    // The human approval pinned each write repo's head (one review pin per repo).
+    expect(wg.landingStatus(id).repos.map((r) => r.repo)).toEqual([
+      "billing-api",
+      "web-storefront",
+    ]);
+    expect(wg.landingState(id)?.kind).toBe("waiting_for_merge");
+    wg.recordLanding(id, { repo: "billing-api", commit: "a".repeat(40), via: "local" }, system);
+    const s = wg.landingState(id);
+    expect(s?.label).toBe("Approved · partly landed");
+    expect(s?.detail).toContain("billing-api landed; web-storefront not yet");
+    expect(s?.detail).toContain("Merge now lands the rest");
+    // Both landed: nothing partial left (the done gate takes it from here).
+    wg.recordLanding(id, { repo: "web-storefront", commit: "a".repeat(40) }, system);
+    expect(wg.landingState(id)?.kind).not.toBe("partly_landed");
+    wg.db.close();
+  });
+
+  it("a repo delivery row marked done is not a landing: only a landing record is", () => {
     const wg = freshWg();
     const { id, repoId } = approved(wg, { extraWrite: "web-storefront" });
     wg.recordRepoDelivery({ ticket_id: id, repo_id: repoId, status: "done" }, system);
+    expect(wg.landingStatus(id).landed).toBe(0);
+    expect(wg.landingState(id)?.kind).toBe("waiting_for_merge");
+    wg.db.close();
+  });
+
+  it("a secondary repo's branch moved since review: held, naming that repo", () => {
+    const wg = freshWg();
+    const { id } = approved(wg, { extraWrite: "web-storefront" });
+    expect(wg.landingState(id)?.kind).toBe("waiting_for_merge");
+    branchHead.set("feat/web", "c".repeat(40)); // only the secondary moved
     const s = wg.landingState(id);
-    expect(s?.label).toBe("Approved · partly landed");
-    expect(s?.detail).toContain("web-storefront not yet");
+    expect(s?.label).toBe("Held · moved since review");
+    expect(s?.detail).toContain("Moved: web-storefront.");
+    expect(s?.detail).not.toContain("billing-api");
+    wg.db.close();
+  });
+
+  it("a landed repo whose branch then moved or went is not held: it already landed", () => {
+    const wg = freshWg();
+    const { id } = approved(wg, { extraWrite: "web-storefront" });
+    wg.recordLanding(id, { repo: "web-storefront", commit: "a".repeat(40) }, system);
+    branchHead.set("feat/web", "d".repeat(40));
+    expect(wg.landingState(id)?.label).toBe("Approved · partly landed");
+    wg.db.close();
+  });
+
+  it("a merge gate hold on a partly landed ticket keeps the landed repos in its words", () => {
+    const wg = freshWg();
+    const { id } = approved(wg, { extraWrite: "web-storefront" });
+    wg.recordLanding(id, { repo: "billing-api", commit: "a".repeat(40) }, system);
+    wg.holdForHuman(id, { reasonCode: "merge_gate_red", reason: "red on web" }, system);
+    const s = wg.landingState(id);
+    expect(s?.label).toBe("Held · merge gate failed");
+    expect(s?.detail).toContain("Partly landed: billing-api landed; web-storefront held.");
     wg.db.close();
   });
 

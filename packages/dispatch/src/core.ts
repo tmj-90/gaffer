@@ -108,7 +108,11 @@ import {
   resolveBranchHead,
   type TicketDiff,
 } from "./services/diffService.js";
-import { computeLandingStatus, type LandingStatus } from "./services/landingStatus.js";
+import {
+  computeLandingStatus,
+  REVIEW_PIN_PREFIX,
+  type LandingStatus,
+} from "./services/landingStatus.js";
 import { DecisionService, type ResolveDecisionInput } from "./services/decisionService.js";
 import { ScopeService, type ScopeNodeView } from "./services/scopeService.js";
 import {
@@ -1679,6 +1683,10 @@ export class Dispatch {
         return { e, to: pl.to ?? "", reason: pl.reason ?? "" };
       });
     const lastInto = (st: string) => [...transitions].reverse().find((t) => t.to === st);
+    const writeLinks = () =>
+      this.repos
+        .listForTicket(ticket.id)
+        .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
     const base = {
       mergeRunning: false,
       landedRepos: [] as string[],
@@ -1690,7 +1698,14 @@ export class Dispatch {
     };
     if (ticket.status === "blocked") {
       const m = /^held:(merge_gate_red|ci_red)$/.exec(lastInto("blocked")?.reason ?? "");
-      return { ...base, status: ticket.status, hold: m ? (m[1] as LandingHold) : null };
+      if (!m) return { ...base, status: ticket.status, hold: null };
+      // A held multi-repo landing says which repos already landed (they stay landed).
+      return {
+        ...base,
+        ...this.landedAndWriteRepos(computeLandingStatus(this.db, ticket.id), writeLinks()),
+        status: ticket.status,
+        hold: m[1] as LandingHold,
+      };
     }
     // Everything after the ticket's latest entry into ready_for_merge, in log order (the
     // event log's insertion order, never a clock comparison across tables).
@@ -1719,13 +1734,36 @@ export class Dispatch {
       if (t.reason === "review_approved" || t.reason === "review_approved_to_testing")
         approver = t.e.actor_type;
     let hold: LandingHold | null = null;
-    const head = this.resolveApprovedHeads(ticket)[0] ?? null;
-    const pin = [...evidence]
-      .reverse()
-      .find((ev) => (ev.uri ?? "").startsWith("gaffer-reviewed-commit:"));
-    const pinned = pin ? (pin.uri ?? "").slice("gaffer-reviewed-commit:".length).toLowerCase() : "";
-    if (head && pinned && !head.sha.startsWith(pinned) && !pinned.startsWith(head.sha))
-      hold = "moved_since_review";
+    // PER-REPOSITORY LANDING: the approved revision of every write repo (its review pin
+    // since the ticket last entered review) and whether a landing of it is on record.
+    const landing = computeLandingStatus(this.db, ticket.id);
+    const heads = this.resolveApprovedHeads(ticket);
+    const head = heads[0] ?? null; // the primary write repo: required CI's candidate
+    // MOVED SINCE REVIEW, per repo as the landing check reads it: a repo still to land
+    // whose delivery-branch head is no longer its pinned commit. A landed repo is done
+    // (its branch may be gone). A legacy approval with no per-repo pin compares its one
+    // pin with the primary head, as before.
+    const movedRepos = landing.repos
+      .filter((r) => !r.landed)
+      .filter((r) => {
+        const h = heads.find((x) => x.repoId === r.repoId);
+        return h !== undefined && h.sha !== r.sha;
+      })
+      .map((r) => r.repo);
+    if (landing.repos.length === 0) {
+      const pin = [...evidence]
+        .reverse()
+        .find(
+          (ev) =>
+            ev.repo_id === null &&
+            ev.recorded_by_actor_type === "system" &&
+            (ev.uri ?? "").startsWith(REVIEW_PIN_PREFIX),
+        );
+      const pinned = pin ? (pin.uri ?? "").slice(REVIEW_PIN_PREFIX.length).toLowerCase() : "";
+      if (head && pinned && !head.sha.startsWith(pinned) && !pinned.startsWith(head.sha))
+        movedRepos.push(head.repo);
+    }
+    if (movedRepos.length > 0) hold = "moved_since_review";
     else if (
       evidence.some((ev) => ev.summary.startsWith("MERGE GATE FAILED") && recordedSince.has(ev.id))
     )
@@ -1747,18 +1785,14 @@ export class Dispatch {
         mergeRunning = false;
       }
     }
-    const writes = this.repos
-      .listForTicket(ticket.id)
-      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
+    const writes = writeLinks();
     const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
     return {
       status: ticket.status,
       hold,
       mergeRunning,
-      landedRepos: writes
-        .filter((l) => this.repoDeliveries.find(ticket.id, l.id)?.status === "done")
-        .map((l) => l.name),
-      writeRepos: writes.map((l) => l.name),
+      movedRepos,
+      ...this.landedAndWriteRepos(landing, writes),
       autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
       mergeLane: !["0", "false", "no", "off"].includes(lane),
       mergeGateEarned: isAutonomyAllowed(
@@ -1769,6 +1803,23 @@ export class Dispatch {
         env,
       ),
       approver,
+    };
+  }
+
+  /**
+   * The repos a landing state names: with per-repo review pins, the approved revisions
+   * and those recorded landed (`gaffer-landed-commit:` system rows, computeLandingStatus);
+   * a legacy approval with no per-repo pin names its write repos, none recorded landed.
+   */
+  private landedAndWriteRepos(
+    landing: LandingStatus,
+    writes: ReadonlyArray<{ name: string }>,
+  ): { landedRepos: string[]; writeRepos: string[] } {
+    if (landing.repos.length === 0)
+      return { landedRepos: [], writeRepos: writes.map((l) => l.name) };
+    return {
+      landedRepos: landing.repos.filter((r) => r.landed).map((r) => r.repo),
+      writeRepos: landing.repos.map((r) => r.repo),
     };
   }
 

@@ -22,7 +22,10 @@ try {
   /* best-effort */
 }
 const history = Array.isArray(req.history) ? req.history : [];
-const answered = history.some((h) => h && h.role === "user");
+// The panel sends the brief as the first user turn; an ANSWER is a user turn after
+// the assistant asked its questions.
+const asked = history.findIndex((h) => h && h.role === "assistant" && Array.isArray(h.questions));
+const answered = asked >= 0 && history.slice(asked + 1).some((h) => h && h.role === "user");
 const spec = Array.isArray(req.spec) ? req.spec : [];
 const repo = String((req.context && req.context.repo) || req.repo || "").trim();
 const out = (o) => {

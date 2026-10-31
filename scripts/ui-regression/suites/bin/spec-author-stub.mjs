@@ -17,9 +17,11 @@ try {
 } catch {
   /* best-effort */
 }
-const answered = (Array.isArray(req.history) ? req.history : []).some(
-  (h) => h && h.role === "user",
-);
+// The panel sends the brief as the first user turn; an ANSWER is a user turn after
+// the assistant asked its question.
+const history = Array.isArray(req.history) ? req.history : [];
+const asked = history.findIndex((h) => h && h.role === "assistant" && Array.isArray(h.questions));
+const answered = asked >= 0 && history.slice(asked + 1).some((h) => h && h.role === "user");
 const out = (o) => {
   process.stdout.write(JSON.stringify(o) + "\n");
   process.exit(0);

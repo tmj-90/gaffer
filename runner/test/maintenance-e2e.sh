@@ -77,6 +77,10 @@ cp "$ROOT/scripts/ui-regression/stub-claude.sh" "$WORK/bin/claude"; chmod +x "$W
 cp "$ROOT/scripts/ui-regression/stub-worker.mjs" "$WORK/bin/stub-worker.mjs"
 
 # ── factory state: dispatch + memory + crew.yaml (the same launch env the dashboard uses) ──
+# GAFFER_DATA_DIR isolates crew's repo context store (default ~/.crew) in this test's
+# tree: a stale record from an earlier run would otherwise make onboarding refuse the
+# fixture repo's name (NAME_TAKEN).
+export GAFFER_DATA_DIR="$WORK/crew-data"
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0

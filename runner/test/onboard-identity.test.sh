@@ -39,6 +39,10 @@ for d in one two; do
 done
 ln -s "$WORK/one/api" "$WORK/api-link"
 printf '#!/bin/sh\nprintf %s\n' "'{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"{}\"}'" > "$WORK/bin/claude"; chmod +x "$WORK/bin/claude"
+# GAFFER_DATA_DIR isolates crew's repo context store (default ~/.crew) in this test's
+# tree: a stale record from an earlier run would otherwise make onboarding refuse the
+# fixture repo's name (NAME_TAKEN).
+export GAFFER_DATA_DIR="$WORK/crew-data"
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" GAFFER_PLAN_MODEL=stub
 # shellcheck source=../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1

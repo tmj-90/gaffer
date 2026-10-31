@@ -5,12 +5,13 @@
 // security-review, clarify, and the headless plan / spec / product / test / merge
 // runners) capturing which skills were SELECTED (mounted for the run — the mount
 // dir is the source of truth when given, so the universal mechanics count too) and,
-// best-effort, which were APPLIED: their name appears in the agent's final output,
-// or the agent OPENED one of the skill's files (a Read / Bash target under
-// `.claude/skills/<name>/` in the safety hook's tool ledger,
-// $GAFFER_DATA/tool-metrics.jsonl). A Skill-tool invocation itself is not visible to
-// either signal (the hook does not see the Skill tool and the json envelope carries
-// no tool calls), so `applied` is a lower bound. This is the "instrument first
+// best-effort, which were APPLIED (their name appears in the agent's final output),
+// OPENED (a Read / Bash target under `.claude/skills/<name>/` that the safety hook
+// ALLOWED, per its decision-stamped tool ledger $GAFFER_DATA/tool-metrics.jsonl) or
+// REFUSED (the same, but the hook blocked it: the agent never saw the file). An open
+// is not an application: `applied` is never inferred from `opened`. A Skill-tool
+// invocation itself is not visible to either signal (the hook does not see the Skill
+// tool and the json envelope carries no tool calls), so both are lower bounds. This is the "instrument first
 // so pruning isn't blind" step: the data-driven prune of the ~50 generic skills
 // is a LATER follow-up that needs this usage trail accumulated over time.
 //
@@ -66,15 +67,20 @@ export function detectApplied(selected, outputText) {
 }
 
 /**
- * Skills the agent OPENED, from the safety hook's tool ledger (one JSON row per tool
- * call: {ts, ticket, tool, target}). A row counts when it is at or after `since` and
- * belongs to THIS run — it carries this `ticket` (delivery sets GAFFER_TICKET) or its
- * target names one of this run's `roots` (the agent's worktree / mount dir; the other
- * roles run without a ticket) — and its target is a path inside a selected skill's dir
- * (`.claude/skills/<name>/…`, the mount's `<name>/…`). Bounded to SELECTED skills.
- * Never throws.
+ * Skills the agent OPENED, and skills whose read the hook REFUSED, from the safety
+ * hook's tool ledger (one JSON row per tool call: {ts, ticket, tool, target, decision}).
+ * A row counts when it is at or after `since` and belongs to THIS run — it carries this
+ * `ticket` (delivery sets GAFFER_TICKET) or its target names one of this run's `roots`
+ * (the agent's worktree / mount dir; the other roles run without a ticket) — and its
+ * target is a path inside a selected skill's dir (`.claude/skills/<name>/…`, the
+ * mount's `<name>/…`). Bounded to SELECTED skills. Never throws.
+ *
+ * THE HOOK'S DECISION IS THE SOURCE OF TRUTH: a row is an OPEN only when the hook
+ * stamped it `decision: "allow"`. A `"block"` row is a REFUSED read (the agent tried,
+ * the hook said no — it never saw the file), and a row with no decision (a ledger
+ * written before rows were stamped) proves nothing either way, so it counts as neither.
  */
-export function detectOpened(selected, ledgerText, { ticket = "", since = "", roots = [] } = {}) {
+export function scanLedger(selected, ledgerText, { ticket = "", since = "", roots = [] } = {}) {
   const sinceMs = since ? Date.parse(since) : NaN;
   // A root matches only as a whole path: it must start at a non-path character (or the
   // start of the target) and end at `/`, a shell separator or the end. A bare substring
@@ -95,6 +101,7 @@ export function detectOpened(selected, ledgerText, { ticket = "", since = "", ro
     ),
   ]);
   const opened = new Set();
+  const refused = new Set();
   for (const line of String(ledgerText ?? "").split("\n")) {
     if (!line.trim()) continue;
     let row;
@@ -105,14 +112,25 @@ export function detectOpened(selected, ledgerText, { ticket = "", since = "", ro
     }
     const target = typeof row?.target === "string" ? row.target : "";
     if (!target) continue;
+    const into = row.decision === "allow" ? opened : row.decision === "block" ? refused : null;
+    if (!into) continue;
     if (!Number.isNaN(sinceMs) && !(Date.parse(row.ts) >= sinceMs)) continue;
     const ours =
       (ticket && row.ticket != null && String(row.ticket) === String(ticket)) ||
       scopes.some((re) => re.test(target));
     if (!ours) continue;
-    for (const [name, re] of res) if (re.test(target)) opened.add(name);
+    for (const [name, re] of res) if (re.test(target)) into.add(name);
   }
-  return selected.filter((n) => opened.has(n));
+  return {
+    opened: selected.filter((n) => opened.has(n)),
+    // A skill read once refused and later allowed was opened: report it there only.
+    refused: selected.filter((n) => refused.has(n) && !opened.has(n)),
+  };
+}
+
+/** The skills the hook let the agent OPEN (see scanLedger). */
+export function detectOpened(selected, ledgerText, opts = {}) {
+  return scanLedger(selected, ledgerText, opts).opened;
 }
 
 /** The skill names actually mounted in a per-agent mount dir ([] when unreadable). */
@@ -127,8 +145,13 @@ export function mountedNames(mountDir) {
   }
 }
 
-/** Build the telemetry record (pure — no I/O). */
-export function buildRecord({ ticket, role, stack, selected, applied, opened = [] }) {
+/**
+ * Build the telemetry record (pure — no I/O). `applied` is what the agent's output
+ * names (or an explicit --applied); `opened` is a read the hook ALLOWED; `refused` a
+ * read the hook BLOCKED. An open is not an application, so `applied` never includes a
+ * skill merely because it was opened.
+ */
+export function buildRecord({ ticket, role, stack, selected, applied, opened = [], refused = [] }) {
   return {
     ts: new Date().toISOString(),
     ticket: ticket || null,
@@ -138,6 +161,7 @@ export function buildRecord({ ticket, role, stack, selected, applied, opened = [
     selected,
     applied,
     opened,
+    refused,
   };
 }
 
@@ -212,20 +236,20 @@ export function recordFromOpts(opts) {
       scanned = [];
     }
   }
-  let opened = [];
+  let ledger = { opened: [], refused: [] };
   if (opts.toolLedger) {
     try {
-      opened = detectOpened(selected, readFileSync(opts.toolLedger, "utf8"), {
+      ledger = scanLedger(selected, readFileSync(opts.toolLedger, "utf8"), {
         ticket: opts.ticket,
         since: opts.since,
         roots: [...(opts.roots ?? []), opts.mount].filter(Boolean),
       });
     } catch {
-      opened = [];
+      ledger = { opened: [], refused: [] };
     }
   }
-  const applied = parseList([...explicit, ...scanned, ...opened].join(","));
-  return buildRecord({ ...opts, selected, applied, opened });
+  const applied = parseList([...explicit, ...scanned].join(","));
+  return buildRecord({ ...opts, selected, applied, ...ledger });
 }
 
 /**
@@ -251,16 +275,16 @@ export function recordSkillUsage({
     if (!out) return null;
     const names = parseList(Array.isArray(selected) ? selected.join(",") : selected);
     const scanned = detectApplied(names, output);
-    let opened = [];
+    let ledger = { opened: [], refused: [] };
     if (env.GAFFER_DATA) {
       try {
-        opened = detectOpened(
-          names,
-          readFileSync(`${env.GAFFER_DATA}/tool-metrics.jsonl`, "utf8"),
-          { ticket: "", since, roots: [agentDir].filter(Boolean) },
-        );
+        ledger = scanLedger(names, readFileSync(`${env.GAFFER_DATA}/tool-metrics.jsonl`, "utf8"), {
+          ticket: "",
+          since,
+          roots: [agentDir].filter(Boolean),
+        });
       } catch {
-        opened = [];
+        ledger = { opened: [], refused: [] };
       }
     }
     const record = buildRecord({
@@ -268,8 +292,8 @@ export function recordSkillUsage({
       role,
       stack,
       selected: names,
-      applied: parseList([...scanned, ...opened].join(",")),
-      opened,
+      applied: scanned,
+      ...ledger,
     });
     appendFileSync(out, JSON.stringify(record) + "\n");
     return record;

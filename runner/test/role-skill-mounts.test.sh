@@ -78,13 +78,14 @@ WT="$WORK/merge-wt"; mkdir -p "$WT"
 TOTAL="$(ls -1d "$RUNNER_DIR"/skills/*/ | wc -l | tr -d ' ')"
 OUT="$(cd "$WORK" && bound 60 node --input-type=module -e "
 import { installProjectLocalWiring } from '$RUNNER_DIR/bin/merge-ticket.mjs';
-import { readdirSync, readlinkSync } from 'node:fs';
+import { lstatSync, readdirSync } from 'node:fs';
 installProjectLocalWiring('$WT', 4242, 'pyapi', { stack: 'go' });
-const names = readdirSync('$WT/.claude/skills');
-console.log(readlinkSync('$WT/.claude/skills') + '|' + names.join(','));
+const names = readdirSync('$WT/.claude/skills').filter((n) => !n.startsWith('.'));
+const real = lstatSync('$WT/.claude/skills').isDirectory() && !lstatSync('$WT/.claude/skills/go-conventions').isSymbolicLink();
+console.log((real ? 'copies' : 'link') + '|' + names.join(','));
 " 2>&1)"
 LINK="${OUT%%|*}"; NAMES="${OUT#*|}"
-[ "$LINK" != "$RUNNER_DIR/skills" ] && ok "the resolver's .claude/skills is not the whole library" || fail "resolver still symlinks the library ($OUT)"
+[ "$LINK" = copies ] && ok "the resolver's .claude/skills holds real copies (no link into the library)" || fail "resolver mount is not copies ($OUT)"
 for want in resolve-merge-conflict run-tests go-conventions; do
   grep -q "\(^\|,\)$want\(,\|$\)" <<<"$NAMES" && ok "merge mount has $want" || fail "merge mount lacks $want ($NAMES)"
 done

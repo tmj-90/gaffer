@@ -12,6 +12,7 @@ import {
   buildRecord,
   recordFromOpts,
   detectOpened,
+  scanLedger,
   mountedNames,
   recordSkillUsage,
 } from "../bin/record-skill-usage.mjs";
@@ -166,8 +167,13 @@ check("recordFromOpts counts the mount's names as selected (universal set includ
   }
 });
 
-const ledger = (rows) => rows.map((r) => JSON.stringify(r)).join("\n") + "\n";
-check("detectOpened: a Read of .claude/skills/<name>/ in THIS run counts as applied", () => {
+// Rows as the hook writes them: stamped with its decision (default "allow" here; a test
+// that needs a refused or an unstamped row says so).
+const ledger = (rows) =>
+  rows
+    .map((r) => JSON.stringify(typeof r === "object" && !("decision" in r) ? { ...r, decision: "allow" } : r))
+    .join("\n") + "\n";
+check("detectOpened: an ALLOWED Read of .claude/skills/<name>/ in THIS run counts as opened", () => {
   const text = ledger([
     // before the run started → ignored
     {
@@ -291,7 +297,7 @@ check("detectOpened: a root matches on a path boundary, never as a bare prefix",
     "the sibling root claims its own row",
   );
 });
-check("recordFromOpts unions opened skills into applied and records them", () => {
+check("recordFromOpts records an opened skill as OPENED, never as applied", () => {
   const dir = mkdtempSync(join(tmpdir(), "skill-telem-ledger-"));
   try {
     const tl = join(dir, "tool-metrics.jsonl");
@@ -303,6 +309,7 @@ check("recordFromOpts unions opened skills into applied and records them", () =>
           ticket: "3",
           tool: "Read",
           target: "/wt/.claude/skills/run-lint/SKILL.md",
+          decision: "allow",
         },
       ]),
     );
@@ -313,7 +320,93 @@ check("recordFromOpts unions opened skills into applied and records them", () =>
       since: new Date(Date.now() - 60000).toISOString(),
     });
     eq(rec.opened, ["run-lint"], "opened");
-    eq(rec.applied, ["run-lint"], "applied includes opened");
+    eq(rec.applied, [], "an open alone is not an application");
+    eq(rec.refused, [], "nothing refused");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+// THE REVIEWER'S CASE: the hook refused the explicit Read of the mounted Java pack, and
+// the telemetry still said java-conventions was opened AND applied.
+check("a REFUSED read records refused — never opened, never applied", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-telem-refused-"));
+  try {
+    const tl = join(dir, "tool-metrics.jsonl");
+    const ts = new Date().toISOString();
+    writeFileSync(
+      tl,
+      ledger([
+        {
+          ts,
+          ticket: "12",
+          tool: "Read",
+          target: "/wt/12/.claude/skills/java-conventions/SKILL.md",
+          decision: "block",
+        },
+        { ts, ticket: "12", tool: "Bash", target: "cat .claude/skills/run-tests/SKILL.md", decision: "block" },
+      ]),
+    );
+    const rec = recordFromOpts({
+      ticket: "12",
+      role: "delivery",
+      selected: "java-conventions, run-tests, minimalism",
+      toolLedger: tl,
+      since: new Date(Date.now() - 60000).toISOString(),
+    });
+    eq(rec.opened, [], "a refused read is not an open");
+    eq(rec.applied, [], "…nor an application");
+    eq(rec.refused, ["java-conventions", "run-tests"], "it is recorded, visibly, as refused");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+check("scanLedger: an unstamped (pre-decision) row proves nothing; refused-then-allowed is opened", () => {
+  const ts = "2026-01-01T10:00:01.000Z";
+  const text = [
+    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/run-tests/SKILL.md" }),
+    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/run-lint/SKILL.md", decision: "block" }),
+    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/run-lint/SKILL.md", decision: "allow" }),
+    JSON.stringify({ ts, ticket: "5", tool: "Read", target: "/w/.claude/skills/minimalism/SKILL.md", decision: "maybe" }),
+  ].join("\n");
+  const sel = ["run-tests", "run-lint", "minimalism"];
+  eq(scanLedger(sel, text, { ticket: "5" }), { opened: ["run-lint"], refused: [] }, "scan");
+  eq(detectOpened(sel, text, { ticket: "5" }), ["run-lint"], "detectOpened agrees");
+});
+check("recordSkillUsage: a refused read in the hook ledger is refused, not applied", () => {
+  const dir = mkdtempSync(join(tmpdir(), "skill-telem-role-refused-"));
+  try {
+    const wt = join(dir, "worktrees", "tester-9");
+    writeFileSync(
+      join(dir, "tool-metrics.jsonl"),
+      ledger([
+        {
+          ts: new Date().toISOString(),
+          ticket: "9",
+          tool: "Read",
+          target: `${wt}/.claude/skills/black-box-test/SKILL.md`,
+          decision: "block",
+        },
+        {
+          ts: new Date().toISOString(),
+          ticket: "9",
+          tool: "Read",
+          target: `${wt}/.claude/skills/run-tests/SKILL.md`,
+          decision: "allow",
+        },
+      ]),
+    );
+    const rec = recordSkillUsage({
+      ticket: 9,
+      role: "test",
+      selected: ["black-box-test", "run-tests"],
+      output: "PASS",
+      agentDir: wt,
+      since: new Date(Date.now() - 60000).toISOString(),
+      env: { GAFFER_DATA: dir },
+    });
+    eq(rec.refused, ["black-box-test"], "refused");
+    eq(rec.opened, ["run-tests"], "opened");
+    eq(rec.applied, [], "applied only from the output");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

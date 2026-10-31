@@ -8,8 +8,8 @@
 // `gaffer skills install --user` (labelled optional; never done in Docker).
 //
 // makeAgentHome() creates an ephemeral directory carrying the SAME wiring
-// product-owner-run.mjs installs: a `.claude/skills` symlink to the factory's
-// skills dir and the project settings with the safety-hook path resolved for
+// product-owner-run.mjs installs: the role's skills copied into `.claude/skills`
+// and the project settings with the safety-hook path resolved for
 // THIS checkout. The caller spawns with cwd = home.dir and removes it after
 // the turn (a failed rm is swallowed — a stale temp dir is not a failure).
 //
@@ -23,10 +23,14 @@
 // gaffer_write_agent_settings (lib/agent-env.sh).
 // =====================================================================
 import {
+  cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  rmdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -46,20 +50,108 @@ const GAFFER_HOME = resolve(RUNNER_DIR, "..");
  * Lives under GAFFER_DATA (the factory's trusted workspace root) when set, else the OS
  * temp dir. Returns `{ dir, remove }`.
  */
+/** Marker file inside every skill copy Gaffer installs (holds its mount key). */
+export const SKILL_COPY_MARK = ".gaffer-mount";
+/** Marker file inside a `.claude/skills` dir Gaffer itself created. */
+export const SKILL_ROOT_MARK = ".gaffer-skills-root";
+
+function isDir(p) {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/** Remove the Gaffer-installed copies from `skillsPath` (dirs carrying SKILL_COPY_MARK). */
+export function removeSkillCopies(skillsPath) {
+  if (!isDir(skillsPath)) return;
+  for (const name of readdirSync(skillsPath)) {
+    const d = resolve(skillsPath, name);
+    if (isDir(d) && existsSync(resolve(d, SKILL_COPY_MARK))) {
+      rmSync(d, { recursive: true, force: true });
+    }
+  }
+  if (existsSync(resolve(skillsPath, SKILL_ROOT_MARK))) {
+    rmSync(resolve(skillsPath, SKILL_ROOT_MARK), { force: true });
+    try {
+      rmdirSync(skillsPath);
+    } catch {
+      /* not empty — something else lives here */
+    }
+  }
+}
+
 /**
- * Mount an agent ROLE's skill set under `<claudeDir>/skills`: a per-home mount dir of
- * symlinks to the selected `runner/skills/<name>` packs (select-skills --role), so the
- * agent's progressive-disclosure list carries only the skills its job calls for. With
- * no role, or when nothing resolves, `.claude/skills` points at the whole library (the
- * pre-role behaviour — never an empty mount). Returns the mounted skill names.
+ * Install `names` from `skillsDir` into `<claudeDir>/skills/<name>/` as REAL COPIES (each
+ * marked with SKILL_COPY_MARK), and record them as links in `manifestDir` when given (the
+ * telemetry's view of the mount). Returns the names installed.
+ *
+ * WHY COPIES: the safety hook canonicalises a Read and refuses one that resolves outside
+ * the agent's roots; a `.claude/skills` symlink into runner/skills made every explicit
+ * Read of a mounted skill a refusal. A copy resolves inside the agent's own directory.
+ */
+export function installSkillCopies(claudeDir, names, { skillsDir, key = "mount", manifestDir = "" }) {
+  const link = resolve(claudeDir, "skills");
+  let st = null;
+  try {
+    st = lstatSync(link);
+  } catch {
+    st = null;
+  }
+  if (st && !st.isDirectory()) rmSync(link, { force: true });
+  else if (st) {
+    removeSkillCopies(link);
+    if (isDir(link) && !existsSync(resolve(link, SKILL_ROOT_MARK))) {
+      rmSync(link, { recursive: true, force: true });
+    }
+  }
+  if (!isDir(link)) {
+    mkdirSync(link, { recursive: true });
+    writeFileSync(resolve(link, SKILL_ROOT_MARK), "");
+  }
+  if (manifestDir) {
+    rmSync(manifestDir, { recursive: true, force: true });
+    mkdirSync(manifestDir, { recursive: true });
+  }
+  const installed = [];
+  for (const name of names) {
+    const dest = resolve(link, name);
+    if (existsSync(dest) || installed.includes(name)) continue;
+    try {
+      cpSync(resolve(skillsDir, name), dest, { recursive: true, dereference: true });
+      writeFileSync(resolve(dest, SKILL_COPY_MARK), `${key}\n`);
+      if (manifestDir) symlinkSync(resolve(skillsDir, name), resolve(manifestDir, name), "dir");
+      installed.push(name);
+    } catch {
+      rmSync(dest, { recursive: true, force: true });
+    }
+  }
+  return installed;
+}
+
+/** Every skill directory in the library that carries a SKILL.md. */
+function libraryNames(skillsDir) {
+  try {
+    return readdirSync(skillsDir).filter((n) => existsSync(resolve(skillsDir, n, "SKILL.md")));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Mount an agent ROLE's skill set under `<claudeDir>/skills`: copies of the selected
+ * `runner/skills/<name>` packs (select-skills --role), with a manifest of links at
+ * `<claudeDir>/skills-mount`, so the agent's progressive-disclosure list carries only the
+ * skills its job calls for. With no role, or when nothing resolves, the whole library is
+ * installed (the pre-role behaviour — never an empty mount). Returns the mounted skill
+ * names ([] for the whole-library fallback).
  */
 export function mountRoleSkills(
   claudeDir,
   { role = "", stacks = [], text = "", skillsDir = process.env.SKILLS_DIR || "" } = {},
 ) {
   skillsDir = skillsDir || resolve(RUNNER_DIR, "skills");
-  const link = resolve(claudeDir, "skills");
-  rmSync(link, { recursive: true, force: true });
   let names = [];
   if (role) {
     try {
@@ -70,32 +162,18 @@ export function mountRoleSkills(
       names = [];
     }
   }
-  if (names.length === 0) {
-    try {
-      symlinkSync(skillsDir, link, "dir");
-    } catch {
-      /* skills stay invisible for this turn; the prompt still carries the contract */
+  const manifestDir = resolve(claudeDir, "skills-mount");
+  try {
+    if (names.length === 0) {
+      rmSync(manifestDir, { recursive: true, force: true });
+      installSkillCopies(claudeDir, libraryNames(skillsDir), { skillsDir, key: role || "library" });
+      return [];
     }
+    return installSkillCopies(claudeDir, names, { skillsDir, key: role, manifestDir });
+  } catch {
+    /* skills stay invisible for this turn; the prompt still carries the contract */
     return [];
   }
-  const mount = resolve(claudeDir, "skills-mount");
-  rmSync(mount, { recursive: true, force: true });
-  mkdirSync(mount, { recursive: true });
-  const mounted = [];
-  for (const name of names) {
-    try {
-      symlinkSync(resolve(skillsDir, name), resolve(mount, name), "dir");
-      mounted.push(name);
-    } catch {
-      /* duplicate or unlinkable — skip */
-    }
-  }
-  try {
-    symlinkSync(mount, link, "dir");
-  } catch {
-    /* as above */
-  }
-  return mounted;
 }
 
 /**

@@ -199,6 +199,9 @@ function canonicalize(p, depth = 0) {
 // Best-effort telemetry only — never read by the allow/block decision.
 let CURRENT_TOOL = null;
 let CURRENT_TARGET = null;
+// True once the decision has identified the tool call (payload parsed): only then is
+// the call written to the tool ledger, stamped with the verdict (see logToolCall).
+let TOOL_OBSERVED = false;
 
 // Coarse category for the block ledger, derived from the reason string so the
 // trust report can group "what the agent kept trying" without parsing prose.
@@ -267,7 +270,12 @@ function logBlock(reason) {
 // first Write, the real "unnecessary scans avoided" signal) and how many served
 // file cards were then Read. It mirrors logBlock exactly: gated on GAFFER_DATA, fully swallowed,
 // and NEVER read by the allow/block decision — it cannot weaken the hook.
-function logToolCall(tool, target) {
+//
+// DECISION-STAMPED: the row is written AFTER the decision and carries it
+// (`decision: "allow" | "block"`). Skill telemetry counts a skill as OPENED only from a
+// row this hook ALLOWED (record-skill-usage.mjs detectOpened); a refused Read of a
+// mounted skill used to be logged before the decision and so counted as use.
+function logToolCall(tool, target, allowed) {
   try {
     const dir = process.env.GAFFER_DATA;
     if (!dir) return;
@@ -286,6 +294,7 @@ function logToolCall(tool, target) {
       tool: t,
       kind,
       target: target ? String(target).slice(0, 240) : null,
+      decision: allowed ? "allow" : "block",
     });
     appendFileSync(join(dir, "tool-metrics.jsonl"), entry + "\n");
   } catch {
@@ -3199,9 +3208,10 @@ function runDecision(raw) {
       input.path ??
       input.pattern ??
       null;
-    // Chunk 2b metric: record every observed tool call (telemetry only — this runs
-    // BEFORE dispatch and never influences the allow/block outcome below).
-    logToolCall(tool, CURRENT_TARGET);
+    // Chunk 2b metric: every observed tool call is recorded (telemetry only — never
+    // read by the allow/block outcome below). decideRaw() writes the row once the
+    // verdict exists, stamped with it, so a refused call never reads as an allowed one.
+    TOOL_OBSERVED = true;
     // INPUT-SIZE CAP, part 2: every field a rule reads, before any rule reads it.
     checkInputSize(tool, input);
     switch (tool) {
@@ -3295,6 +3305,7 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     // decision's tool/target into this one's ledger entries.
     CURRENT_TOOL = null;
     CURRENT_TARGET = null;
+    TOOL_OBSERVED = false;
     STDOUT_SINK =
       stdout ??
       ((text) => {
@@ -3305,7 +3316,10 @@ export function decideRaw(raw, { env, cwd, stdout } = {}) {
     // exiting would have ended the process with exit 0.
     return verdictResult(new HookVerdict(true, undefined), collected);
   } catch (err) {
-    if (err instanceof HookVerdict) return verdictResult(err, collected);
+    if (err instanceof HookVerdict) {
+      if (TOOL_OBSERVED) logToolCall(CURRENT_TOOL, CURRENT_TARGET, err.allowed);
+      return verdictResult(err, collected);
+    }
     throw err;
   } finally {
     STDOUT_SINK = null;

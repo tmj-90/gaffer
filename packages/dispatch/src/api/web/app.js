@@ -12422,9 +12422,12 @@ async function renderHealth() {
           skillList.map((s) =>
             healthBarRow(
               s.skill,
-              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%`,
+              // A refused read (the hook blocked it: the agent never saw the skill) is
+              // shown beside the hit-rate, never counted as use.
+              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%` +
+                (s.refused ? ` · ${s.refused} refused` : ""),
               (s.hit_rate_pct || 0) / 100,
-              s.hit_rate_pct >= 50 ? "ok" : "amber",
+              s.refused ? "amber" : s.hit_rate_pct >= 50 ? "ok" : "amber",
             ),
           ),
         ),

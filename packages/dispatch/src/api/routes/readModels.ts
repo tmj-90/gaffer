@@ -378,6 +378,10 @@ export function routeReadModels(
         total_selected: skills.total_selected,
         total_applied: skills.total_applied,
         overall_hit_rate_pct: skills.overall_hit_rate_pct,
+        // Reads of a mounted skill, by the hook's own decision: opened = allowed,
+        // refused = blocked (a mount the agent could not read — never counted as use).
+        total_opened: skills.total_opened,
+        total_refused: skills.total_refused,
         by_skill: skills.by_skill.slice(0, TOP_N),
         last_record_at: skills.last_record_at,
       },

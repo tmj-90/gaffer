@@ -176,16 +176,18 @@ git -C "$REAL" worktree add -q "$RWT" gaffer/ticket-7
 
 # Mount skills into the worktree via the REAL function → creates .claude/skills.
 gaffer_skills_mount "$RWT" "run-tests" "delivery-7"
-[ -L "$RWT/.claude/skills" ] \
-  && ok "skill-mount created .claude/skills symlink in the worktree" \
+[ -f "$RWT/.claude/skills/run-tests/SKILL.md" ] \
+  && ok "skill-mount installed .claude/skills/run-tests in the worktree" \
   || fail "skill-mount did not create .claude/skills (setup wrong)"
 
-# Crash-trap ordering: the mount TARGET is dropped BEFORE the worktree teardown,
-# leaving .claude/skills DANGLING — the exact trigger for the leak.
+# Crash-trap ordering: the mount manifest is dropped BEFORE the worktree teardown. The
+# mount is real copies now, so nothing is left dangling; an OLDER mount (a symlink into
+# the manifest) was, which is the trigger the teardown below still has to survive.
 gaffer_skills_mount_cleanup "delivery-7"
-[ -L "$RWT/.claude/skills" ] && [ ! -e "$RWT/.claude/skills" ] \
-  && ok "mount cleanup left .claude/skills DANGLING (reproduces the leak trigger)" \
-  || fail "expected a dangling .claude/skills after mount-target cleanup"
+[ -f "$RWT/.claude/skills/run-tests/SKILL.md" ] && [ -z "$(find "$RWT/.claude" -type l 2>/dev/null)" ] \
+  && ok "mount cleanup leaves no dangling link in the worktree (copies, not links)" \
+  || fail "expected the copies (and no link) after mount-manifest cleanup"
+mkdir -p "$RWT/.claude/legacy"; ln -sfn "$GAFFER_DATA/skills-mounts/delivery-7" "$RWT/.claude/legacy/skills"   # an older mount's dangling link
 
 # The FIXED teardown sequence from gaffer_cleanup_worktrees: git remove, THEN rm -rf.
 git -C "$REAL" worktree remove --force "$RWT" >/dev/null 2>&1 || true

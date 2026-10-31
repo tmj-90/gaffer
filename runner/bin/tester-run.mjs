@@ -104,7 +104,7 @@ import {
   recordKilledCall,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
-import { writeAgentSettings } from "../lib/agent-home.mjs";
+import { installSkillCopies, writeAgentSettings } from "../lib/agent-home.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -810,28 +810,26 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
 export function installTesterAgentDir(worktree, ticketNumber, stack) {
   const claudeDir = resolve(worktree, ".claude");
   mkdirSync(claudeDir, { recursive: true });
-  const mountRoot = resolve(GAFFER_DATA, "skills-mounts");
-  const mount = resolve(mountRoot, `tester-${ticketNumber}`);
-  rmSync(mount, { recursive: true, force: true });
-  mkdirSync(mount, { recursive: true });
+  const mount = resolve(GAFFER_DATA, "skills-mounts", `tester-${ticketNumber}`);
   const names = selectForRole("test", {
     skillsDir: CONFIG.skillsDir,
     stacks: stack ? [stack] : [],
   }).map((s) => s.name);
-  let linked = 0;
-  for (const name of names) {
-    const src = resolve(CONFIG.skillsDir, name);
-    if (existsSync(resolve(src, "SKILL.md"))) {
-      try {
-        symlinkSync(src, resolve(mount, name), "dir");
-        linked += 1;
-      } catch {
-        /* duplicate or unlinkable — skip */
-      }
-    }
+  // Real copies in the worktree (the hook refuses a Read that resolves into the library
+  // through a symlink); the manifest at `mount` is the telemetry's view of the mount.
+  const present = names.filter((name) => existsSync(resolve(CONFIG.skillsDir, name, "SKILL.md")));
+  const key = `tester-${ticketNumber}`;
+  const installed = installSkillCopies(claudeDir, present, {
+    skillsDir: CONFIG.skillsDir,
+    key,
+    manifestDir: mount,
+  });
+  if (installed.length === 0) {
+    const all = readdirSync(CONFIG.skillsDir).filter((n) =>
+      existsSync(resolve(CONFIG.skillsDir, n, "SKILL.md")),
+    );
+    installSkillCopies(claudeDir, all, { skillsDir: CONFIG.skillsDir, key });
   }
-  rmSync(resolve(claudeDir, "skills"), { recursive: true, force: true });
-  symlinkSync(linked > 0 ? mount : CONFIG.skillsDir, resolve(claudeDir, "skills"), "dir");
   // Render AND verify the safety-hook wiring (throws "SAFETY: …" on an unwired or
   // unreadable template; the caller's fail() then refuses the spawn — fail closed).
   writeAgentSettings(claudeDir, CONFIG.claudeSettings);

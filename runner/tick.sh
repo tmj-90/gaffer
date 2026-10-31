@@ -2392,6 +2392,14 @@ $real
     local _why="rework budget"; [ "$_cost_exhausted" -eq 0 ] && _why="$_MAX_DELIVERY_ATTEMPTS attempts"
     [ "$_repeat" -eq 1 ] && _why="an identical failure on attempts $((_DELIV_ATTEMPT - 1)) and $_DELIV_ATTEMPT (not converging; $((_MAX_DELIVERY_ATTEMPTS - _DELIV_ATTEMPT)) attempt(s) not spent)"
     local _reason="$gate failed after $_why: $real (branch $WORK_BRANCH preserved)"
+    # FAILURE TRAIL: the attempt that used up the bounds failed too, so it goes on the
+    # trail like every earlier one (same numbering: the failure of attempt N is filed
+    # as N+1), BEFORE the park. `--final` appends the trail row only — no "reworking"
+    # card or event; the release below sets the parked card. Without it the ticket page
+    # read "Attempt N/N not taken" for an attempt that was tried. Fail-soft.
+    local _fshort; _fshort="$(printf '%s' "$real" | grep -v '^[[:space:]]*$' | head -1)"
+    [ "${DRY_RUN:-0}" = "1" ] || wg runner-rework "$NUM" --attempt "$((_DELIV_ATTEMPT + 1))" --max "$_MAX_DELIVERY_ATTEMPTS" \
+      --reason "${gate}: ${_fshort:-failed}" --gate "$gate" --failure "$real" --final >/dev/null 2>&1 || true
     gaffer_release_delivery blocked "$_reason" rework_exhausted "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
     # MEMORY FEEDBACK LOOP: this ticket exhausted rework and parked to blocked —
     # the knowledge served into its context did NOT help. Demote + flag it.

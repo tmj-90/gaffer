@@ -802,6 +802,11 @@ export class ClaimService {
    *    the real failing test + assertion/stack) rather than the truncated board
    *    summary in `reason`; when the runner omits it, `reason` is used as a fallback.
    *
+   * `final`: the failure of the LAST allowed attempt, recorded just before the runner
+   * parks the ticket. Only the trail row is appended: the card is not set to
+   * "reworking" and no `ticket.reworking` event is raised, since nothing is being
+   * reworked (the park's own release sets the card and the event). eventId is null.
+   *
    * It NEVER transitions the ticket and is a no-op-safe read on any status.
    * Best-effort from the runner's perspective; a failure here never aborts a
    * delivery (the runner wraps the call fail-soft).
@@ -818,12 +823,28 @@ export class ClaimService {
       distilledFailure?: string;
       /** The AC being worked toward when known. */
       acId?: string;
+      /** The last allowed attempt's failure: trail row only (see above). */
+      final?: boolean;
     },
     actor: Actor,
-  ): { eventId: string } {
+  ): { eventId: string | null } {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const ticket = this.tickets.resolveRef(input.ticket_id);
+      const row = {
+        id: newId(),
+        ticket_id: ticket.id,
+        attempt: input.attempt,
+        max_attempts: input.maxAttempts,
+        gate: input.gate ?? null,
+        distilled_failure: input.distilledFailure ?? input.reason,
+        ac_id: input.acId ?? null,
+        created_at: now,
+      };
+      if (input.final) {
+        this.reworkAttempts.insert(row);
+        return { eventId: null };
+      }
       const feedback: ReviewFeedback = {
         reason: input.reason,
         reviewer: actor.id ?? null,
@@ -836,16 +857,7 @@ export class ClaimService {
       // APPEND the full distilled failure to the durable trail (never overwrites a
       // prior attempt). Keep the full block — the operator needs the real assertion,
       // not the one-line board summary.
-      this.reworkAttempts.insert({
-        id: newId(),
-        ticket_id: ticket.id,
-        attempt: input.attempt,
-        max_attempts: input.maxAttempts,
-        gate: input.gate ?? null,
-        distilled_failure: input.distilledFailure ?? input.reason,
-        ac_id: input.acId ?? null,
-        created_at: now,
-      });
+      this.reworkAttempts.insert(row);
       const eventId = writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,

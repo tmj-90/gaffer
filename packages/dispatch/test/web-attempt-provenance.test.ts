@@ -238,6 +238,57 @@ describe("web: the attempt history names the model and the CLI", () => {
     expect(labels).toEqual(["Attempt 1/3", "Attempt 2/3", "Attempt 3/3"]);
   });
 
+  it("shows the last allowed attempt as failed, with its run, when the ticket parked", async () => {
+    // Cap 3, every attempt red. The runner files the final failure (attempt 3) on the
+    // trail too, as attempt 4 (one past the cap), just before it parks the ticket.
+    stubFetch(
+      [
+        run(1, "2026-01-02T00:00:00Z"),
+        run(2, "2026-01-02T00:10:00Z"),
+        run(3, "2026-01-02T00:20:00Z", { models_served: ["strong-m-served"] }),
+      ],
+      [
+        failure(2, "2026-01-02T00:05:00Z"),
+        failure(3, "2026-01-02T00:15:00Z"),
+        failure(4, "2026-01-02T00:25:00Z", "definition-of-done"),
+      ],
+    );
+    await boot();
+    const card = document.querySelector(".failure-history")!;
+    const rows = [...card.querySelectorAll(".failure-attempt")];
+    expect(rows).toHaveLength(3);
+    const last = rows[2]!;
+    expect(last.querySelector(".failure-attempt-num")?.textContent).toBe("Attempt 3/3");
+    expect(last.querySelector(".failure-gate")?.textContent).toBe("definition-of-done failed");
+    expect(last.querySelector(".attempt-run")?.textContent).toBe(
+      "Model strong-m-served · CLI 4.3.0 (Claude Code)",
+    );
+    // Every go is accounted for by a failure: no "not taken" kick, no orphan run row.
+    expect(card.querySelectorAll(".failure-kick-none")).toHaveLength(0);
+    expect(card.querySelectorAll(".failure-run")).toHaveLength(0);
+    expect(card.textContent).not.toContain("No failure recorded");
+    expect(card.textContent).not.toContain("not taken");
+    expect(card.querySelector("h2")?.textContent).toContain("3 of 3 used");
+  });
+
+  it("shows a last attempt that failed before its agent ran as failed, with no model", async () => {
+    stubFetch(
+      [run(1, "2026-01-02T00:00:00Z"), run(2, "2026-01-02T00:10:00Z")],
+      [
+        failure(2, "2026-01-02T00:05:00Z"),
+        failure(3, "2026-01-02T00:15:00Z"),
+        failure(4, "2026-01-02T00:17:00Z", "agent-env-install"),
+      ],
+    );
+    await boot();
+    const card = document.querySelector(".failure-history")!;
+    const last = [...card.querySelectorAll(".failure-attempt")][2]!;
+    expect(last.querySelector(".failure-attempt-num")?.textContent).toBe("Attempt 3/3");
+    expect(last.querySelector(".failure-gate")?.textContent).toBe("agent-env-install failed");
+    expect(last.querySelector(".attempt-run")).toBeNull();
+    expect(card.textContent).not.toContain("not taken");
+  });
+
   it("names no model for a failed attempt whose agent never ran", async () => {
     // Run 1 fails the tests gate (trail attempt 2). Attempt 2 fails before the agent is
     // launched (agent-env-install, trail attempt 3), so no agent-run row exists for it.

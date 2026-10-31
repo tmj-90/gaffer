@@ -205,9 +205,10 @@ also gets agent-run evidence on its ticket (`gaffer_record_agent_run`, recorded 
 system actor), which the ticket page's attempt history shows; a failure there names the
 run of the attempt that failed (the trail files it under the next attempt's number;
 an attempt that failed before its agent ran names none) under that attempt's own
-number, every other run (the attempt that passed, a parked
-ticket's last go) is listed after the failures, and an agent-recorded `agent_run` row
-is ignored.
+number, every other run (the attempt that passed) is listed after the failures, and an
+agent-recorded `agent_run` row is ignored. The failure of the attempt that used up the
+bounds is filed on the trail too, just before the park (`wg runner-rework --final`:
+the trail row only, no "reworking" card or event).
 
 ## Configuration (env always wins)
 

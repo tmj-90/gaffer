@@ -251,9 +251,10 @@ structural barrier the whole design hangs on.
   ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
   failure names the run of the attempt that failed (none when the agent never ran,
   as when its environment could not be installed) and carries that attempt's number,
-  every other run (the attempt that passed after a failure, a parked ticket's last
-  go) follows the failures on its own row, and only the runner's own rows count, so
-  an agent cannot name its own model.
+  every other run (the attempt that passed after a failure) follows the failures on
+  its own row, and only the runner's own rows count, so an agent cannot name its own
+  model. The attempt that used up the cap is on the history as a failure too
+  ("Attempt 3/3 · definition-of-done failed"), recorded before the ticket parks.
 
 ![The Gaffer's Sign-off](img/review.png)
 

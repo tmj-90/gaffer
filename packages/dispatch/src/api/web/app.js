@@ -9882,6 +9882,21 @@ async function renderTicket(id) {
                 const box = el("div", { class: "policy-result fail" }, [
                   `Mark-ready failed: ${e.message}`,
                 ]);
+                // A policy refusal names its failed checks: say WHICH, not just "denied".
+                const failed = e.details?.policy?.failures;
+                if (Array.isArray(failed) && failed.length)
+                  box.appendChild(
+                    el(
+                      "ul",
+                      { class: "policy-failures" },
+                      failed.map((f) =>
+                        el("li", {}, [
+                          f.message || f.code,
+                          f.code ? el("span", { class: "toast-code" }, ` ${f.code}`) : null,
+                        ]),
+                      ),
+                    ),
+                  );
                 if (e.code) box.appendChild(el("div", { class: "toast-code" }, e.code));
                 policyBox.appendChild(box);
                 throw e;

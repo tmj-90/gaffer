@@ -5797,8 +5797,10 @@ function wageBill(f) {
             el(
               "small",
               {},
+              // Rework = delivery spend on the attempts after a reviewer, the tester
+              // or a failed gate sent the ticket back (the ledger's attempt timeline).
               h.rework?.rework_cost_share_pct != null
-                ? `${h.rework.rework_cost_share_pct}% of spend`
+                ? `${h.rework.rework_cost_share_pct}% of spend, on attempts after a send-back`
                 : "",
             ),
           ]),
@@ -6437,10 +6439,7 @@ async function fitnessRoomPanels(healthRes) {
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
   const decisions = decisionsRes.decisions || [];
-  const inReview = byStatus.in_review || 0;
-  const blocked = summary.blocked ?? byStatus.blocked ?? 0;
   const staleClaims = summary.staleClaims || 0;
-  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
   const doneTickets = tickets.filter((t) => t.status === "done");
 
   // --- real time-series, bucketed by day from ticket + event timestamps -----
@@ -6452,15 +6451,6 @@ async function fitnessRoomPanels(healthRes) {
     const d = new Date(now - i * DAY);
     days.push({ key: d.toISOString().slice(0, 10), lbl: `${d.getDate()}/${d.getMonth() + 1}` });
   }
-  const bucket = (items, tsOf) => {
-    const m = Object.fromEntries(days.map((d) => [d.key, 0]));
-    for (const it of items) {
-      const k = String(tsOf(it)).slice(0, 10);
-      if (k in m) m[k] += 1;
-    }
-    return days.map((d) => m[d.key]);
-  };
-
   // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
   // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
   // The server reproduces the former client maths, so displayed numbers are
@@ -6478,7 +6468,6 @@ async function fitnessRoomPanels(healthRes) {
     Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
 
   // --- distinct, real per-metric daily series (each KPI gets its own shape) --
-  const createdByDay = bucket(tickets, (t) => t.created_at);
   // deployments: cumulative tickets shipped (a monotonic delivery curve)
   let depAcc = 0;
   const deploySeries = doneByDay.map((v) => (depAcc += v));
@@ -6487,14 +6476,6 @@ async function fitnessRoomPanels(healthRes) {
     const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
     return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : 0;
   });
-  // flow efficiency: 7-day trailing shipped / created (a real ratio trend, %)
-  const flowEffSeries = days.map((_, i) => {
-    const lo = Math.max(0, i - 6);
-    const shipped = doneByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
-    const opened = createdByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
-    return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
-  });
-
   // --- headline metrics -----------------------------------------------------
   // Cycle time + throughput are server-authoritative (from /api/health above).
   // cycleVals is retained ONLY to derive the Lead-time percentile below.
@@ -6512,23 +6493,45 @@ async function fitnessRoomPanels(healthRes) {
     : 0;
   const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
   const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
-  // Flow efficiency is SERVER-AUTHORITATIVE when the endpoint carries it: the median
-  // (active time / lead time) over shipped tickets, from the transition log
-  // (src/health/deliveryFlow.ts). The former client number was a WIP ratio
-  // (done / done+in-flight), which is not flow efficiency; it remains only as the
-  // fallback when the server has no shipped ticket with the signal yet.
+  // Flow efficiency is SERVER-ONLY: the median (time an agent worked the ticket /
+  // lead time) over shipped tickets, from the transition log (src/health/deliveryFlow.ts).
+  // Review, testing, the merge queue, send-backs and holds are waiting, served as
+  // `waiting`; time before work began is the backlog. There
+  // is no client fallback: the old one was a WIP ratio (done / done + in flight) that
+  // read 100% for a single shipped ticket however long it had waited to merge.
   const flowEffServer = health.flow_efficiency || {};
-  const flowEff =
-    typeof flowEffServer.median_pct === "number"
-      ? Math.round(flowEffServer.median_pct)
-      : Math.round(
-          ((byStatus.done || 0) /
-            Math.max(
-              1,
-              (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0),
-            )) *
-            100,
-        );
+  const flowEff = typeof flowEffServer.median_pct === "number" ? flowEffServer.median_pct : null;
+  const flowEffText =
+    flowEff == null ? "—" : flowEff > 0 && flowEff < 1 ? "<1" : String(Math.round(flowEff));
+  const waiting = health.waiting || {};
+  const waitRow = (label, ms, extra) =>
+    el("div", {}, [
+      el("dt", {}, label),
+      el("dd", { class: "tabnum" }, [fmtDuration(ms), extra ? el("small", {}, extra) : null]),
+    ]);
+  const waitingList =
+    waiting.sample > 0
+      ? el("dl", { class: "fg-wait", "aria-label": "Where shipped tickets waited, the median" }, [
+          waitRow(
+            "Waiting to merge",
+            waiting.merge_wait_ms,
+            waiting.merge_wait_max_ms != null
+              ? `longest ${fmtDuration(waiting.merge_wait_max_ms)}`
+              : null,
+          ),
+          waitRow("In review or testing", waiting.review_ms),
+          waitRow("Sent back, waiting for rework", waiting.requeued_ms),
+          waitRow("Blocked or paused", waiting.held_ms),
+          waitRow("Before work started", waiting.backlog_ms),
+          el("div", {}, [
+            el("dt", {}, "Queued after work began"),
+            el("dd", { class: "tabnum" }, [
+              waiting.queue_pct != null ? `${Math.round(waiting.queue_pct)}%` : "—",
+              el("small", {}, "of lead time: review, merge queue, send-backs, holds"),
+            ]),
+          ]),
+        ])
+      : el("p", { class: "section-note" }, "No shipped ticket has a transition history yet.");
   const right = el("div", { class: "fitness-panels stack" });
   const left = right;
 
@@ -6554,9 +6557,9 @@ async function fitnessRoomPanels(healthRes) {
         }),
         statCell({
           label: "Flow efficiency",
-          value: String(flowEff),
-          unit: "%",
-          series: flowEffSeries,
+          value: flowEffText,
+          unit: flowEff == null ? null : "%",
+          sub: flowEff == null ? "nothing shipped yet" : "of lead time an agent worked",
           flip: "eff",
         }),
         statCell({
@@ -6595,14 +6598,21 @@ async function fitnessRoomPanels(healthRes) {
         el("div", { class: "fg-eff flow-eff" }, [
           el("h3", { class: "fg-h" }, [
             "Flow efficiency ",
-            el("b", { class: "tabnum" }, `${flowEff}%`),
+            el("b", { class: "tabnum" }, flowEff == null ? "—" : `${flowEffText}%`),
           ]),
-          band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+          band(
+            flowEff ?? 0,
+            100,
+            flowEff == null
+              ? "Flow efficiency not measured yet"
+              : `Flow efficiency ${flowEffText}% of lead time with an agent working on the ticket`,
+          ),
           el(
             "p",
             { class: "section-note" },
-            "The share of each shipped ticket's lead time spent being worked on rather than waiting (the median).",
+            "The share of each shipped ticket's lead time with an agent working on it (claimed or in progress), the median. Review, testing, the merge queue and holds count as waiting: the transition log shows how long a ticket sat in review, not how long anyone actively reviewed it.",
           ),
+          waitingList,
         ]),
       ]),
     ]),
@@ -6682,7 +6692,7 @@ async function fitnessRoomPanels(healthRes) {
             "Rework rate",
             gov.reworkRate,
             (r) =>
-              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first, by a reviewer, the tester or a failed gate`,
           ),
           tile(
             "Unattended-safe",
@@ -8400,7 +8410,14 @@ async function renderWork() {
   // mode (list mode does not fetch the board at all). Repos + scope nodes feed the
   // "Suggest work" target picker (Feature B) and the repo filter. The human queue
   // says which cards wait on you; the claims say who is on the pitch.
-  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
+  // The board is fetched as a VISIBLE WINDOW (WORK_BOARD_WINDOW cards per lane, Done
+  // newest first) plus whole-board counts: a factory with tens of thousands of
+  // historical tickets once shipped every card to render ~60 per lane (and the
+  // unfiltered board failed outright at 32,767 tickets). The rest is one link away in
+  // the List view, which filters server-side.
+  const boardParams = new URLSearchParams({ limit: String(WORK_BOARD_WINDOW) });
+  if (workState.repo) boardParams.set("repo", workState.repo);
+  const boardQs = `?${boardParams}`;
   const listQs = new URLSearchParams();
   if (workState.status) listQs.set("status", workState.status);
   if (workState.repo) listQs.set("repo", workState.repo);
@@ -8418,9 +8435,15 @@ async function renderWork() {
     ensureSquad(),
   ]);
   const { repos, nodes } = ref;
-  const columns = (board && board.columns) || [];
+  const counts = (board && board.counts) || null;
+  // Each lane carries its TRUE size (`total`), whatever the window loaded.
+  const columns = ((board && board.columns) || []).map((c) => ({
+    ...c,
+    total: counts && counts.columns ? (counts.columns[c.column] ?? c.cards.length) : undefined,
+  }));
   const closed = (board && board.closed) || [];
   const wontDo = (board && board.wontDo) || [];
+  const totals = counts ? { closed: counts.closed, wontDo: counts.wontDo } : null;
   const tickets = (listRes && listRes.tickets) || [];
   const claims = (claimsRes && claimsRes.claims) || [];
   learnAgents(claims);
@@ -8433,7 +8456,7 @@ async function renderWork() {
   // filter on they count the matching cards (BRIEF §2: header counts equal lane
   // counts), and they are redrawn as the viewer types.
   const subText = () =>
-    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo, totals);
   const head = viewHead("Work board", subText(), [
     pollWorkButton(),
     suggestWorkButton(repos, nodes),
@@ -8452,7 +8475,9 @@ async function renderWork() {
 
   // The board or the list, rebuilt in place (no fetch) as the viewer types.
   const build = () =>
-    list ? renderWorkList(tickets, needs, claims) : renderBoard(columns, closed, wontDo, needs);
+    list
+      ? renderWorkList(tickets, needs, claims)
+      : renderBoard(columns, closed, wontDo, needs, totals);
   let main = build();
   const toolbar = renderWorkToolbar(repos, () => {
     const next = build();
@@ -8514,21 +8539,40 @@ function hashText(str) {
  *   failed  = the closed area (the board puts only `failed` tickets there)
  *   wontDo  = cancelled
  */
-function boardCounts(columns, closed = [], wontDo = []) {
+function boardCounts(columns, closed = [], wontDo = [], totals = null) {
   const by = {};
   for (const c of columns) by[c.column] = c.total ?? (c.cards || []).length;
   const live = Object.entries(by)
     .filter(([k]) => k !== "done")
     .reduce((n, [, v]) => n + v, 0);
-  return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
+  return {
+    by,
+    live,
+    shipped: by.done || 0,
+    failed: totals ? totals.closed : closed.length,
+    wontDo: totals ? totals.wontDo : wontDo.length,
+  };
 }
 
-/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+/** Cards per lane the Work board loads (the API's visible window). */
+const WORK_BOARD_WINDOW = 200;
+
+/** True when some lane holds more cards than the window loaded. */
+function boardTruncated(columns) {
+  return columns.some((c) => c.total != null && c.total > (c.cards || []).length);
+}
+
+/**
+ * The board's columns, closed and won't-do narrowed to the client-side filters.
+ * Unfiltered, a lane keeps its true size (`total`); filtered, it counts the loaded
+ * cards that match.
+ */
 function workVisible(columns, closed = [], wontDo = []) {
+  const filtered = workFiltered();
   return {
     columns: columns.map((c) => {
       const cards = (c.cards || []).filter(workMatches);
-      return { ...c, cards, total: cards.length };
+      return { ...c, cards, total: filtered ? cards.length : (c.total ?? cards.length) };
     }),
     closed: closed.filter(workMatches),
     wontDo: wontDo.filter(workMatches),
@@ -8549,10 +8593,10 @@ function workFilterWords() {
  * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
  * the line always equals the lane heads below it.
  */
-function workSummaryLine(columns, closed = [], wontDo = []) {
-  const all = boardCounts(columns, closed, wontDo);
+function workSummaryLine(columns, closed = [], wontDo = [], totals = null) {
+  const all = boardCounts(columns, closed, wontDo, totals);
   const vis = workVisible(columns, closed, wontDo);
-  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo, workFiltered() ? null : totals);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
     // A count never wraps away from its lane name ("1 / done").
@@ -9094,11 +9138,20 @@ function phoneLaneOrder(columns) {
 }
 
 /** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
-function renderBoard(columns, closed, wontDo = [], needs = null) {
+function renderBoard(columns, closed, wontDo = [], needs = null, totals = null) {
   const wrap = el("div", { class: "board-wrap" });
   const phone = isPhoneWidth();
   const total = columns.reduce((n, c) => n + (c.cards || []).length, 0);
   const shown = columns.reduce((n, c) => n + (c.cards || []).filter(workMatches).length, 0);
+  // A filter narrows only the cards the window loaded: say so, and where to search all.
+  if (workFiltered() && boardTruncated(columns)) {
+    wrap.appendChild(
+      el("p", { class: "section-note work-window-note", role: "status" }, [
+        `Filters apply to the first ${WORK_BOARD_WINDOW} cards of each lane. `,
+        el("a", { href: "#/work?mode=list" }, "The list searches every ticket."),
+      ]),
+    );
+  }
   if (!total && !closed.length && !wontDo.length && !workFiltered()) {
     wrap.appendChild(
       emptyState(
@@ -9128,13 +9181,15 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const all = (c.cards || []).filter(workMatches);
       const cards = capLane(c.column, all);
       const label = BOARD_COLUMN_LABELS[c.column] || c.column;
+      // The lane's true size: the server's count unfiltered, the matches filtered.
+      const laneTotal = workFiltered() ? all.length : (c.total ?? all.length);
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
           ? [
               ...cards.map((card) => renderBoardCard(card, c.column, needs)),
-              laneMoreLink(c.column, cards.length, all.length),
+              laneMoreLink(c.column, cards.length, laneTotal),
             ]
           : el("p", { class: "board-empty" }, "Nothing here."),
       );
@@ -9161,7 +9216,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const headBits = [
         glyph(c.column, 18),
         el("h2", { class: "board-col-title" }, label),
-        el("span", { class: "board-col-count tabnum" }, String(all.length)),
+        el("span", { class: "board-col-count tabnum" }, String(laneTotal)),
       ];
       let inner;
       if (phone && all.length) {
@@ -9189,7 +9244,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
         {
           class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
           dataset: { column: c.column, status: c.column },
-          "aria-label": `${label}: ${all.length}`,
+          "aria-label": `${label}: ${laneTotal}`,
         },
         inner,
       );
@@ -9202,32 +9257,41 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
   // Closed without merging: won't do (reversible: Reopen → refining) and failed.
   const wontDoVisible = wontDo.filter(workMatches);
   const failedVisible = closed.filter(workMatches);
+  const areaTotal = (list, key) => (!workFiltered() && totals ? totals[key] : list.length);
   if (wontDoVisible.length || failedVisible.length) {
-    const group = (cls, title, list, action) =>
-      el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${list.length}` }, [
+    const group = (cls, title, list, action, key) => {
+      const n = areaTotal(list, key);
+      return el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${n}` }, [
         el("h3", { class: "closed-head" }, [
           glyph(list[0].status, 16),
           el("span", {}, title),
-          el("span", { class: "closed-count tabnum" }, String(list.length)),
+          el("span", { class: "closed-count tabnum" }, String(n)),
         ]),
         el("ul", { class: "closed-cards" }, [
           ...list.slice(0, BOARD_CLOSED_CAP).map((t) => closedRow(t, action)),
         ]),
-        list.length > BOARD_CLOSED_CAP
-          ? el("p", { class: "section-note" }, `Showing ${BOARD_CLOSED_CAP} of ${list.length}.`)
+        n > BOARD_CLOSED_CAP
+          ? el(
+              "p",
+              { class: "section-note" },
+              `Showing ${Math.min(BOARD_CLOSED_CAP, list.length)} of ${n}.`,
+            )
           : null,
       ]);
+    };
     wrap.appendChild(
       progPage(
         "work-closed",
         null,
         "Closed without merging",
-        plural(wontDoVisible.length + failedVisible.length, "ticket"),
+        plural(areaTotal(wontDoVisible, "wontDo") + areaTotal(failedVisible, "closed"), "ticket"),
         el("div", { class: "closed-groups" }, [
           wontDoVisible.length
-            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen)
+            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen, "wontDo")
             : null,
-          failedVisible.length ? group("failed-area", "Failed", failedVisible, null) : null,
+          failedVisible.length
+            ? group("failed-area", "Failed", failedVisible, null, "closed")
+            : null,
         ]),
       ),
     );

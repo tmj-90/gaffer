@@ -120,9 +120,10 @@
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildApplyCommands,
@@ -1200,13 +1201,17 @@ function runMemoryCli(args) {
  * else is `X<TAB>path`. Unknown/blank statuses are ignored (best-effort).
  * Exported so a test can exercise the parsing without spawning git.
  *
+ * Renames are also returned as `renames` ({from, to}) so the new path's card can
+ * carry the old card's summary before the old card is tombstoned.
+ *
  * @param {string} diffOut Raw stdout from the diff.
- * @returns {{ refresh: string[], deletions: string[] }}
+ * @returns {{ refresh: string[], deletions: string[], renames: {from: string, to: string}[] }}
  */
 export function parseDiffStatus(diffOut) {
   const refresh = [];
   const deletions = [];
-  if (!diffOut) return { refresh, deletions };
+  const renames = [];
+  if (!diffOut) return { refresh, deletions, renames };
   for (const raw of diffOut.split("\n")) {
     const line = raw.replace(/\r$/, "");
     if (!line.trim()) continue;
@@ -1223,6 +1228,7 @@ export function parseDiffStatus(diffOut) {
       const newPath = (fields[2] ?? "").trim();
       if (oldPath) deletions.push(oldPath);
       if (newPath) refresh.push(newPath);
+      if (oldPath && newPath) renames.push({ from: oldPath, to: newPath });
     } else if (code === "C") {
       // Copy: old is unchanged, the NEW copy needs a card.
       const newPath = (fields[2] ?? "").trim();
@@ -1233,7 +1239,78 @@ export function parseDiffStatus(diffOut) {
     }
     // U (unmerged), X, B and anything else: ignore — not a clean card target.
   }
-  return { refresh, deletions };
+  return { refresh, deletions, renames };
+}
+
+/**
+ * Re-card a just-merged repo against the merged commit: diff the card watermark →
+ * the default branch's tip with rename detection, check that commit out in a
+ * throwaway detached worktree, refresh/tombstone the changed files there (a rename
+ * carries the old card's summary), and let refreshFileCards verify every stored card
+ * against the same tree before it advances the watermark. Skipped (logged) when the
+ * repo was never carded, when the local default branch is stale after a PR merge, or
+ * when the merged commit cannot be resolved or checked out. The diff is tree to tree
+ * (`watermark..tip`), so it is the right change set even when the watermark is not an
+ * ancestor of the tip (a rewritten main); the verification then catches any card the
+ * diff did not reach.
+ */
+function refreshCardsForMergedCommit(repo, landed, log) {
+  if (landed?.via === "pr" && landed.fastForwarded === false) {
+    log(
+      "card-refresh: local default branch is stale after the PR merge — skipped; the next merge re-cards it",
+    );
+    return;
+  }
+  const canonical = repoCanonical(repo.localPath);
+  const syncedCommit = readCardWatermark(canonical, repo.name);
+  if (!syncedCommit) {
+    log(
+      "card-refresh: no watermark recorded for this repo — skipping (run `gaffer onboard` to initialise)",
+    );
+    return;
+  }
+  const merged = git(repo.localPath, "rev-parse", "--verify", `refs/heads/${repo.defaultBranch}`);
+  const target = merged.status === 0 ? String(merged.stdout ?? "").trim() : "";
+  if (!target) {
+    log(`card-refresh: cannot resolve ${repo.defaultBranch} — skipped`);
+    return;
+  }
+  // -M turns a delete+add pair into a single R rename record (old→new), so the card
+  // follows the file. --name-only would miss deletions and renames entirely.
+  const diffOut = execFileSync(
+    "git",
+    ["-C", repo.localPath, "diff", "--name-status", "-M", `${syncedCommit}..${target}`],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+  ).trim();
+  const { refresh, deletions, renames } = parseDiffStatus(diffOut);
+  const wt = mkdtempSync(join(tmpdir(), "gaffer-cards-"));
+  const add = git(repo.localPath, "worktree", "add", "--detach", "--quiet", wt, target);
+  if (add.status !== 0) {
+    rmSync(wt, { recursive: true, force: true });
+    log(`card-refresh: could not check out ${target.slice(0, 8)} — skipped`);
+    return;
+  }
+  try {
+    const cfg = { cliBin: MEMORY_CLI, db: CONFIG.memoryDb };
+    const rStats = refreshFileCards(wt, refresh, {
+      cfg,
+      deletions,
+      renames,
+      env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
+      log: (m) => log(`card-refresh: ${m}`),
+      repo: repo.name,
+      canonical,
+    });
+    log(
+      `card-refresh: refreshed=${rStats.refreshed} deleted=${rStats.deleted} ` +
+        `skipped=${rStats.skipped} failed=${rStats.failed} ` +
+        `watermark=${rStats.watermark ?? "held"}`,
+    );
+  } finally {
+    git(repo.localPath, "worktree", "remove", "--force", wt);
+    git(repo.localPath, "worktree", "prune");
+    rmSync(wt, { recursive: true, force: true });
+  }
 }
 
 /**
@@ -1836,46 +1913,15 @@ function main() {
           : `dashboard rebuild failed (exit ${b.status ?? "spawn-error"}) — run \`pnpm build\` in ${repo.name} to refresh the UI`,
       );
     }
-    // Incremental card refresh: re-card files that changed in this merge so
-    // Memory stays fresh without a full re-onboard. Fail-soft: any error here
-    // is swallowed and NEVER affects the merge outcome (already landed above).
+    // Incremental card refresh: bring the cards in line with the MERGED COMMIT (the
+    // default branch's new tip), read from a throwaway worktree of that commit — never
+    // the live checkout (it can carry uncommitted edits) and never the delivery
+    // branch's own view (an overlapping ticket's rename merged since it forked would be
+    // invisible to it). refreshFileCards then verifies EVERY stored card against that
+    // tree before it records the watermark. Fail-soft: any error here is swallowed and
+    // NEVER affects the merge outcome (already landed above).
     try {
-      const canonical = repoCanonical(repo.localPath);
-      const syncedCommit = readCardWatermark(canonical, repo.name);
-      if (syncedCommit) {
-        // Diff the last carded commit → post-merge HEAD with STATUS so we see
-        // deletions and renames, not just adds/mods. `-M` turns a delete+add
-        // pair into a single R rename record (old→new). --name-only would miss
-        // both, leaving stale cards for files that no longer exist at that path.
-        const diffOut = execFileSync(
-          "git",
-          ["-C", repo.localPath, "diff", "--name-status", "-M", `${syncedCommit}..HEAD`],
-          { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-        ).trim();
-        const { refresh, deletions } = parseDiffStatus(diffOut);
-        if (refresh.length > 0 || deletions.length > 0) {
-          const cfg = { cliBin: MEMORY_CLI, db: CONFIG.memoryDb };
-          const rStats = refreshFileCards(repo.localPath, refresh, {
-            cfg,
-            deletions,
-            env: { ...process.env, MEMORY_DB: CONFIG.memoryDb },
-            log: (m) => log(`card-refresh: ${m}`),
-            repo: repo.name,
-            canonical,
-          });
-          log(
-            `card-refresh: refreshed=${rStats.refreshed} deleted=${rStats.deleted} ` +
-              `skipped=${rStats.skipped} failed=${rStats.failed} ` +
-              `watermark=${rStats.watermark ?? "none"}`,
-          );
-        } else {
-          log("card-refresh: no source-file changes — watermark already current");
-        }
-      } else {
-        log(
-          "card-refresh: no watermark recorded for this repo — skipping (run `gaffer onboard` to initialise)",
-        );
-      }
+      refreshCardsForMergedCommit(repo, landed, log);
     } catch (err) {
       log(`card-refresh: failed (${err?.message ?? err}) — skipped; merge unaffected`);
     }

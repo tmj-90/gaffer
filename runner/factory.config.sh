@@ -1593,12 +1593,33 @@ gaffer_usage_record() {
   # stderr to the factory log ($GAFFER_LOG) instead of dropping it. The append itself
   # stays best-effort (the trailing `|| true` keeps a ledger problem from failing the
   # tick), but the WARNING is now VISIBLE in the log.
+  # [attempt] — a DELIVERY record carries its attempt (GAFFER_USAGE_ATTEMPT_ID: a hash
+  # of the claim + the attempt number) and spawn time (GAFFER_USAGE_STARTED_AT), set by
+  # tick.sh around the delivery spawn, so the Health report can tell the first attempt
+  # from the correction that followed a send-back. Other kinds never carry them.
+  local attempt="" started=""
+  if [ "$kind" = delivery ]; then attempt="${GAFFER_USAGE_ATTEMPT_ID:-}"; started="${GAFFER_USAGE_STARTED_AT:-}"; fi
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
+}
+
+# gaffer_delivery_attempt_stamp <attempt-n> — print "<attempt-id> <iso-now-ms>" for the
+# delivery spawn about to start. The id is "c" + 12 hex of sha256(claim token) + "/<n>":
+# stable across one claim's in-tick retries, different for the next claim, and never
+# the token itself (it is read from stdin, so it is not on any argv). Tokenless (a
+# DRY_RUN or a tokenless resume): "t<ticket>-nolease/<n>". Millisecond time, because
+# a send-back and the next spawn can land in the same second.
+gaffer_delivery_attempt_stamp() {
+  printf '%s' "${CLAIM_TOKEN:-}" | node -e '
+    let tok = ""; process.stdin.on("data", (d) => (tok += d)).on("end", () => {
+      const n = process.argv[1] || "1", t = process.argv[2] || "0";
+      const key = tok ? "c" + require("crypto").createHash("sha256").update(tok).digest("hex").slice(0, 12) : `t${t}-nolease`;
+      process.stdout.write(`${key}/${n} ${new Date().toISOString()}`);
+    });' "${1:-1}" "${NUM:-0}" 2>/dev/null || true
 }
 
 # ── Autonomy MODE (single cluster selector) ──────────────────────────────────

@@ -248,7 +248,11 @@ GAFFER_IMPL_MODEL=sonnet    # fast, cheap — delivery, bootstrap, merge-conflic
 An optional, size-gated, round-capped two-model **planning debate**
 (`GAFFER_PLAN_DEBATE=1`) is OFF by default — it costs N× a single plan, and every
 turn is counted in the usage ledger. Cost and usage in summaries are **relayed
-from real measurements, never invented**.
+from real measurements, never invented**. Every delivery row also carries its
+`attempt_id` (a hash of the claim plus the attempt number within it, never the
+claim token) and `started_at`, so the Health report can charge the spend of the
+attempts after a send-back (a reviewer's or tester's rejection, or a retry after a
+failed gate) to rework.
 
 ## Configuration (env always wins)
 
@@ -321,6 +325,22 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   each digest section with `source: "merge:#<n>"` and the feature → `shipped`. **No agent
   is spawned in the merge hot path.** If no prepared delta is present it falls back to a
   minimal deterministic freshness stamp (+ feature → `shipped` when linked).
+
+- **File cards follow the merged commit, verified before they are marked current.**
+  After every landing (the merge lane and the review pass through `lib/land.sh` →
+  `gaffer_refresh_cards` in `lib/card-refresh.sh`; the dashboard Merge button through
+  `bin/merge-ticket.mjs`), the cards are brought in line with the default branch's NEW
+  TIP, never the delivery branch's own view of it: two tickets forked from one main can
+  overlap (A renames `archive.ts` → `ledger.ts`, B edits a function in `archive.ts`; git
+  lands B's edit in `ledger.ts`, while B's branch still has `archive.ts`). The refresh
+  diffs the card watermark (or the fork point) → the merged commit with rename detection,
+  reads files from a throwaway detached worktree of that commit (a rename carries the old
+  card's summary to the new path with `card upsert --carry-from`, then drops the old
+  card), and then runs `memory card verify --fix --commit <merged sha>`: every stored
+  card's path must exist in that tree and its content hash must match, a missing card is
+  removed and a stale one re-carded, and the watermark moves to the merged commit **only
+  when that check is clean**. A refresh that is not clean holds the watermark (logged),
+  so the next merge re-diffs from there.
 
 The whole path mirrors the ledger discipline: every memory write is **gated, try/caught,
 and fully swallowed** — a memory-write failure NEVER fails or blocks a merge — and every

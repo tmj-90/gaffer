@@ -6,6 +6,20 @@ itself is pre-1.0 so semver promises are best-effort.
 
 ## [Unreleased]
 
+### Added — verify the file-card index against a tree
+
+- **`memory card verify --canonical <c> --repo <r> --repo-root <abs> [--fix]
+  [--commit <sha>] [--json]`.** Checks every stored card for the repo against the
+  tree at `--repo-root`: a card whose path is not there is *missing*, one whose
+  content hash differs is *stale*. `--fix` deletes missing cards and re-cards
+  stale ones (keeping their summary), then checks again; `--commit` records the
+  watermark only when the final check is clean, and the command exits 1 while
+  problems remain. The runner's post-merge refresh ends with it, so a repo is
+  never recorded as indexed at a commit its cards do not describe (core:
+  `verifyFileCards`, `listStoredCardHashes`).
+- **`memory card upsert --carry-from <old-path>`.** A renamed file's new card
+  takes the old card's summary when the refresh is mechanical-only.
+
 ### Fixed — feature ledger and first open
 
 - **A re-added feature no longer loses ledger data.** `add_feature` / `memory

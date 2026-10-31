@@ -369,6 +369,8 @@ function parseCliArgs(argv) {
     killEstimate: null,
     killBasis: null,
     elapsedMs: null,
+    attemptId: null,
+    startedAt: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -382,6 +384,26 @@ function parseCliArgs(argv) {
     else if (a === "--kill-basis") out.killBasis = argv[++i];
     // How long the killed call ran — scales the estimate (deriveKillEstimate).
     else if (a === "--elapsed-ms") out.elapsedMs = argv[++i];
+    // The delivery attempt this call belongs to, and when it was spawned: lets the
+    // Health report charge a correction's spend to the send-back that caused it.
+    else if (a === "--attempt-id") out.attemptId = argv[++i];
+    else if (a === "--started-at") out.startedAt = argv[++i];
+  }
+  return out;
+}
+
+/**
+ * Stamp a record with its delivery attempt (`attempt_id`, e.g. `c3f9a…/2` — a hash of
+ * the claim, never the claim token itself, and the attempt number within it) and the
+ * call's spawn time (`started_at`). Malformed values are dropped, never guessed.
+ */
+export function withAttempt(record, { attemptId, startedAt } = {}) {
+  const out = { ...record };
+  if (typeof attemptId === "string" && /^[A-Za-z0-9._:/-]{1,96}$/.test(attemptId)) {
+    out.attempt_id = attemptId;
+  }
+  if (typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))) {
+    out.started_at = new Date(Date.parse(startedAt)).toISOString();
   }
   return out;
 }
@@ -535,7 +557,7 @@ function cliMain(argv) {
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }
-  appendUsageRecord(record);
+  appendUsageRecord(withAttempt(record, args));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

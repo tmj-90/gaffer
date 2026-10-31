@@ -187,20 +187,23 @@ describe("flowSignalsFromTransitions", () => {
     created_at: at(n),
   });
 
-  it("finds the LAST transition into done and sums time in active states before it", () => {
+  it("finds the LAST transition into done; only claimed/in_progress is work, the rest is waiting", () => {
     const log: FlowTransition[] = [
       tr("t1", "draft", "ready", 10), // waiting
       tr("t1", "ready", "claimed", 8), // active from day -8
       tr("t1", "claimed", "in_progress", 7.5), // still active
       tr("t1", "in_progress", "blocked", 6), // waiting (2 active days so far)
       tr("t1", "blocked", "in_progress", 5), // active again
-      tr("t1", "in_progress", "in_review", 4),
-      tr("t1", "in_review", "ready_for_merge", 3),
-      tr("t1", "ready_for_merge", "done", 2), // +3 active days → 5 total
+      tr("t1", "in_progress", "in_review", 4), // +1 work day → 3 total
+      tr("t1", "in_review", "ready_for_merge", 3), // 1 day in review: WAITING
+      tr("t1", "ready_for_merge", "done", 2), // 1 day in the merge queue: WAITING
     ];
     const sig = flowSignalsFromTransitions(log).get("t1");
     expect(sig?.done_at).toBe(at(2));
-    expect(sig?.active_ms).toBeCloseTo(5 * DAY, -3);
+    expect(sig?.active_ms).toBeCloseTo(3 * DAY, -3);
+    expect(sig?.wait_ms?.held).toBeCloseTo(DAY, -3);
+    expect(sig?.wait_ms?.review).toBeCloseTo(DAY, -3);
+    expect(sig?.wait_ms?.merge).toBeCloseTo(DAY, -3);
   });
 
   it("ignores activity after the last done (a later reopen does not count) and picks the LAST done", () => {
@@ -208,17 +211,18 @@ describe("flowSignalsFromTransitions", () => {
       tr("t2", "ready", "in_progress", 9),
       tr("t2", "in_progress", "done", 8), // first done: 1 active day
       tr("t2", "done", "in_review", 6), // reopened
-      tr("t2", "in_review", "done", 5), // last done: +1 active day
+      tr("t2", "in_review", "done", 5), // last done: +1 day in review (waiting)
       tr("t2", "done", "in_review", 1), // reopened again after the last done — ignored
     ];
     const sig = flowSignalsFromTransitions(log).get("t2");
     expect(sig?.done_at).toBe(at(5));
-    expect(sig?.active_ms).toBeCloseTo(2 * DAY, -3);
+    expect(sig?.active_ms).toBeCloseTo(DAY, -3);
+    expect(sig?.wait_ms?.review).toBeCloseTo(DAY, -3);
   });
 
   it("yields null signals for a ticket that never reached done", () => {
     const sig = flowSignalsFromTransitions([tr("t3", "ready", "in_progress", 2)]).get("t3");
-    expect(sig).toEqual({ done_at: null, active_ms: null });
+    expect(sig).toEqual({ done_at: null, active_ms: null, wait_ms: null });
   });
 
   it("tolerates an unordered log (sorts by timestamp within a ticket)", () => {
@@ -228,5 +232,154 @@ describe("flowSignalsFromTransitions", () => {
     ];
     const sig = flowSignalsFromTransitions(log).get("t4");
     expect(sig?.active_ms).toBeCloseTo(2 * DAY, -3);
+  });
+});
+
+describe("flow efficiency: the merge queue is waiting, not work (third external review)", () => {
+  const MIN = 60_000;
+  it("11 minutes to merge-ready, then a week in the merge queue → far below 100%, a week's merge wait", () => {
+    const created = NOW - 7 * DAY - 11 * MIN;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const log: FlowTransition[] = [
+      { ticket_id: "w", from_status: "draft", to_status: "ready", created_at: iso(created) },
+      {
+        ticket_id: "w",
+        from_status: "ready",
+        to_status: "claimed",
+        created_at: iso(created + MIN),
+      },
+      {
+        ticket_id: "w",
+        from_status: "claimed",
+        to_status: "in_progress",
+        created_at: iso(created + MIN),
+      },
+      {
+        ticket_id: "w",
+        from_status: "in_progress",
+        to_status: "in_review",
+        created_at: iso(created + 8 * MIN),
+      },
+      {
+        ticket_id: "w",
+        from_status: "in_review",
+        to_status: "ready_for_merge",
+        created_at: iso(created + 11 * MIN),
+      },
+      { ticket_id: "w", from_status: "ready_for_merge", to_status: "done", created_at: iso(NOW) },
+    ];
+    const sig = flowSignalsFromTransitions(log).get("w")!;
+    const flow = deliveryFlow(
+      [
+        {
+          status: "done",
+          created_at: iso(created),
+          updated_at: iso(NOW),
+          done_at: sig.done_at,
+          active_ms: sig.active_ms,
+          wait_ms: sig.wait_ms,
+        },
+      ],
+      NOW,
+    );
+    // 7 minutes of work over a week and 11 minutes of lead time.
+    expect(flow.flow_efficiency.median_pct).not.toBeNull();
+    expect(flow.flow_efficiency.median_pct!).toBeLessThan(1);
+    expect(flow.waiting.merge_wait_ms).toBeCloseTo(7 * DAY, -4);
+    expect(flow.waiting.merge_wait_max_ms).toBeCloseTo(7 * DAY, -4);
+    expect(flow.waiting.review_ms).toBeCloseTo(3 * MIN, -3);
+    expect(flow.waiting.backlog_ms).toBeCloseTo(MIN, -3);
+    expect(flow.waiting.queue_pct!).toBeGreaterThan(99);
+    expect(flow.waiting.sample).toBe(1);
+  });
+});
+
+describe("flow waiting: a send-back that waits in refining is queued after work began, not backlog", () => {
+  const HOUR = 3_600_000;
+  it("1h work, 1h review, rejected to refining, 72h there, 1h work, 1h review, 24h merge queue", () => {
+    const created = NOW - 101 * HOUR;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const step = (from: string | null, to: string, h: number): FlowTransition => ({
+      ticket_id: "s",
+      from_status: from,
+      to_status: to,
+      created_at: iso(created + h * HOUR),
+    });
+    const log: FlowTransition[] = [
+      step("draft", "ready", 0),
+      step("ready", "claimed", 0),
+      step("claimed", "in_progress", 0),
+      step("in_progress", "in_review", 1), // 1h work
+      step("in_review", "refining", 2), // 1h review, then the reviewer sends it back
+      step("refining", "ready", 74), // 72h waiting for a human to refine it
+      step("ready", "claimed", 74),
+      step("claimed", "in_progress", 74),
+      step("in_progress", "in_review", 75), // 1h work
+      step("in_review", "ready_for_merge", 76), // 1h review
+      step("ready_for_merge", "done", 100), // 24h merge queue
+    ];
+    const sig = flowSignalsFromTransitions(log).get("s")!;
+    expect(sig.active_ms).toBeCloseTo(2 * HOUR, -3);
+    expect(sig.wait_ms?.review).toBeCloseTo(2 * HOUR, -3);
+    expect(sig.wait_ms?.merge).toBeCloseTo(24 * HOUR, -3);
+    expect(sig.wait_ms?.requeued).toBeCloseTo(72 * HOUR, -3);
+    expect(sig.wait_ms?.held).toBe(0);
+    const flow = deliveryFlow(
+      [
+        {
+          status: "done",
+          created_at: iso(created),
+          updated_at: iso(created + 100 * HOUR),
+          done_at: sig.done_at,
+          active_ms: sig.active_ms,
+          wait_ms: sig.wait_ms,
+        },
+      ],
+      NOW,
+    );
+    // Nothing happened before work started; the 72h is a send-back queue.
+    expect(flow.waiting.backlog_ms).toBeCloseTo(0, -3);
+    expect(flow.waiting.requeued_ms).toBeCloseTo(72 * HOUR, -3);
+    expect(flow.waiting.queue_ms).toBeCloseTo(98 * HOUR, -3);
+    expect(flow.waiting.queue_pct).toBe(98);
+    expect(flow.flow_efficiency.median_pct).toBe(2);
+  });
+
+  it("time in draft / refining / ready (and a hold) before the first claim stays backlog", () => {
+    const created = NOW - 10 * HOUR;
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const step = (from: string | null, to: string, h: number): FlowTransition => ({
+      ticket_id: "b",
+      from_status: from,
+      to_status: to,
+      created_at: iso(created + h * HOUR),
+    });
+    const log: FlowTransition[] = [
+      step("draft", "refining", 1),
+      step("refining", "blocked", 2), // blocked on a dependency before any work
+      step("blocked", "ready", 5),
+      step("ready", "claimed", 6),
+      step("claimed", "in_review", 8), // 2h work
+      step("in_review", "done", 10), // 2h review
+    ];
+    const sig = flowSignalsFromTransitions(log).get("b")!;
+    expect(sig.active_ms).toBeCloseTo(2 * HOUR, -3);
+    expect(sig.wait_ms).toEqual({ review: 2 * HOUR, merge: 0, held: 0, requeued: 0 });
+    const flow = deliveryFlow(
+      [
+        {
+          status: "done",
+          created_at: iso(created),
+          updated_at: iso(created + 10 * HOUR),
+          done_at: sig.done_at,
+          active_ms: sig.active_ms,
+          wait_ms: sig.wait_ms,
+        },
+      ],
+      NOW,
+    );
+    expect(flow.waiting.backlog_ms).toBeCloseTo(6 * HOUR, -3);
+    expect(flow.waiting.queue_pct).toBe(20);
+    expect(flow.waiting.requeued_ms).toBe(0);
   });
 });

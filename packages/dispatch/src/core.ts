@@ -137,6 +137,7 @@ import {
   BoardService,
   resolveMoveTarget,
   type BoardView,
+  type BoardWindow,
   type DashboardSummary,
 } from "./services/boardService.js";
 import { PauseService, type PauseInput } from "./services/pauseService.js";
@@ -270,8 +271,10 @@ export type { TicketRepoAccessResult } from "./services/repoService.js";
 export type {
   BoardCard,
   BoardCardClaim,
+  BoardArea,
   BoardColumnView,
   BoardView,
+  BoardWindow,
   CycleTimeStat,
   StuckTicket,
   RepoProgress,
@@ -2338,8 +2341,8 @@ export class Dispatch {
    * @param repo Optional repository name/id — when supplied, only tickets
    *   linked to that repo are included. Omit for the full board.
    */
-  board(repo?: string): BoardView {
-    return this.boardSvc.board(repo);
+  board(repo?: string, window?: BoardWindow): BoardView {
+    return this.boardSvc.board(repo, window);
   }
 
   /**

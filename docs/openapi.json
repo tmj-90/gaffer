@@ -1711,11 +1711,38 @@
               "type": "string"
             },
             "description": "Limit to one repository (name or id)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "A visible window: at most this many cards per area (1..1000). Without it every card is returned."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "With `limit`: skip this many cards in each area (default 0)."
+          },
+          {
+            "name": "area",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "With `limit`: return only this area's window (a column, `closed` or `wontDo`); the other areas come back empty."
           }
         ],
         "responses": {
           "200": {
-            "description": "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+            "description": "`BoardView`: the columns plus the closed area, `counts` (every area's total, whatever the window) and `window` (the window applied, or null). With a window, Done, closed and won't-do are newest first. A card's `claim` carries `agent_display`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1736,6 +1763,16 @@
           },
           "403": {
             "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {

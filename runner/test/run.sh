@@ -40,7 +40,9 @@
 # small head start, as CI also gives it the macOS package tests). Within a shard
 # everything above still holds: LONG_RE caps and queue-first, strict skips, the
 # tripwire, the operator-state guard and the summary. After adding or removing a
-# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner).
+# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner),
+# and add it to LONG_RE once it weighs two thirds of its cap (80s for a .sh):
+# run-harness.test.sh H10 fails on a heavy test left on the short cap.
 #
 # Usage: runner/test/run.sh [-j N] [--strict] [-v] [--shard K/N] [--list] [--] [FILE...]
 #   -j N         parallel jobs (default: $JOBS, else the CPU count)
@@ -58,7 +60,7 @@ SELF="$HERE/run.sh"
 . "$HERE/lib/skip.sh"
 
 # Long end-to-end tests: queued first, with a roomier cap.
-LONG_RE='^(merge-lane|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+LONG_RE='^(merge-lane|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|memory-index-after-merge|rework-cost-live|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }

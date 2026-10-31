@@ -1051,6 +1051,59 @@ try {
     }
   } else note("GAFFER_DATA not set — the usage-pause Health step is skipped");
 
+  // ── 6a. work: the board is a visible window with whole-board counts ─────────
+  //   The Work view asks /api/board for a window per lane (?limit=), and each lane
+  //   head reads the server's total for that lane, not just the cards it loaded.
+  {
+    const boardReqs = [];
+    const onReq = (req) => {
+      if (req.url().includes("/api/board")) boardReqs.push(req.url());
+    };
+    page.on("request", onReq);
+    await page.goto(`${BASE}/#/work`, { waitUntil: "load" });
+    await sleep(900);
+    page.off("request", onReq);
+    boardReqs.some((u) => /[?&]limit=\d+/.test(u))
+      ? ok("work: the board is fetched as a visible window (?limit=)")
+      : bad(`work: board requests carry no window: ${boardReqs.join(" ") || "none"}`);
+    const windowed = (await api("GET", "/api/board?limit=1")).json;
+    const heads = await page
+      .$$eval(".board-col", (els) =>
+        els.map((e) => [e.dataset.column, e.querySelector(".board-col-count")?.textContent]),
+      )
+      .catch(() => []);
+    const wrong = heads.filter(
+      ([col, n]) => String(windowed?.counts?.columns?.[col] ?? "?") !== String(n),
+    );
+    heads.length && !wrong.length
+      ? ok(`work: every lane head equals the server's count (${heads.length} lanes)`)
+      : bad(`work: lane heads disagree with /api/board counts: ${JSON.stringify(wrong)}`);
+  }
+
+  // ── 6b. health: flow efficiency claims only agent-working time ──────────────
+  //   The merged ticket above has a transition history, so the form guide shows the
+  //   flow efficiency as working time and lists where shipped tickets waited (the
+  //   merge queue on its own) instead of counting review and the queue as work.
+  {
+    await page.goto(`${BASE}/#/health`, { waitUntil: "load" });
+    await sleep(900);
+    const bandLabel =
+      (await page.getAttribute(".form-guide .fg-eff .band", "aria-label").catch(() => "")) || "";
+    /^Flow efficiency (<1|\d+)% of lead time with an agent working on the ticket$/.test(bandLabel)
+      ? ok(`health: flow efficiency says what it measures ("${bandLabel}")`)
+      : bad(`health: flow efficiency band reads '${bandLabel}'`);
+    const waitRows = await page
+      .$$eval(".form-guide .fg-wait dt", (els) => els.map((e) => e.textContent.trim()))
+      .catch(() => []);
+    waitRows.includes("Waiting to merge") &&
+    waitRows.includes("In review or testing") &&
+    waitRows.includes("Sent back, waiting for rework") &&
+    waitRows.includes("Before work started")
+      ? ok(`health: waiting is shown on its own (${waitRows.join(", ")})`)
+      : bad(`health: no waiting breakdown (rows: ${waitRows.join(", ") || "none"})`);
+    await shot(page, "health-flow");
+  }
+
   // ── 7. every other view renders without console errors + passes the a11y audit ──
   if (!AXE_SOURCE) note("axe-core not installed — a11y audit skipped");
   for (const v of [

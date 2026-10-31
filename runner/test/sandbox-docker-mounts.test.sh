@@ -268,6 +268,73 @@ rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.
 ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=1 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi 2>/dev/null)"
 grep -qF -- "$GAFFER_DATA/skills-mounts/delivery-7:$GAFFER_DATA/skills-mounts/delivery-7:ro" <<<"$ARGV" && ok "the runner's own skills mount is still mounted ro" || fail "runner skills mount missing"
 
+echo "== (i) a .git SYMLINK cannot borrow another worktree's registration (independent review) =="
+# The worktree is writable, so its `.git` can be replaced by a SYMLINK to a real, registered
+# worktree's `.git` file — of another repo (OTHER above) or a sibling delivery of the same
+# repo. Following that link, git's two-way registration agrees with itself, but it is not
+# THIS write root's: nothing of the other worktree may be mounted, least of all rw.
+WT5="$WORK/wt5"; git -C "$P2" worktree add -q -b gaffer/ticket-12 "$WT5" main
+WT6="$WORK/wt6"; git -C "$P2" worktree add -q -b gaffer/ticket-13 "$WT6" main
+OTHERWTC="$(cd "$WORK/other-wt" && pwd -P)"
+rm -f "$WT5/.git"; ln -s "$WORK/other-wt/.git" "$WT5/.git"
+ln -s "$OTHER/node_modules" "$WT5/node_modules"
+printf '%s\n' "$WT5" > "$WRF"
+ARGV="$(dry)"
+grep -qF -- "$OTHERC/.git" <<<"$ARGV" && fail "a .git symlink to ANOTHER repo's worktree mounted that repo's git metadata: $(grep -F -- "$OTHERC/.git" <<<"$ARGV" | tr '\n' ' ')" || ok ".git symlink to another repo's worktree: none of its git metadata is mounted"
+grep -qF -- "$OTHERC/node_modules" <<<"$ARGV" && fail "a .git symlink let another repo's node_modules be mounted" || ok ".git symlink to another repo's worktree: its node_modules is not mounted"
+grep -qF -- "$OTHERWTC" <<<"$ARGV" && fail "the other repo's worktree became a mount" || ok ".git symlink: the other worktree itself is not mounted"
+grep -qF -- "not mounting any git metadata for $WT5" "$WORK/stderr.h" && ok "WARNING names the write root whose .git is a symlink" || fail "no warning for the .git symlink: $(cat "$WORK/stderr.h")"
+rm -f "$WT6/.git"; ln -s "$WT2/.git" "$WT6/.git"
+printf '%s\n' "$WT6" > "$WRF"
+ARGV="$(dry)"
+WT2GD="$(cd "$(git -C "$WT2" rev-parse --git-dir)" && pwd -P)"
+grep -qF -- "$WT2GD" <<<"$ARGV" && fail "a .git symlink to a SIBLING delivery mounted its private git dir: $(grep -F -- "$WT2GD" <<<"$ARGV" | head -1)" || ok ".git symlink to a sibling delivery: its private git dir is not mounted"
+
+# Path shapes that could mis-split docker's `-v src:dst:mode`: a `:` or a newline in the
+# link's path is skipped with a WARNING (never mounted, never fails the run); a primary
+# whose path has a SPACE still gets its dependencies (one argv element, no splitting).
+mkdir -p "$WT2/c:x" "$WT2/n
+l"
+ln -s "$HOSTDIR" "$WT2/c:x/node_modules"; ln -s "$HOSTDIR" "$WT2/n
+l/node_modules"
+printf '%s\n' "$WT2" > "$WRF"
+ARGV="$(dry)"; rc=$?
+[ "$rc" -eq 0 ] && ok "a ':' / newline in a link path does not fail the run" || fail "wrapper rc $rc with ':' / newline paths"
+grep -qF -- "$HOSTDIR" <<<"$ARGV" && fail "a ':' / newline link became a mount" || ok "':' and newline link paths: NOT mounted"
+grep -qF -- "$WT2/c:x/node_modules: its path contains ':'" "$WORK/stderr.h" && ok "WARNING names the ':' link" || fail "no warning for the ':' link: $(cat "$WORK/stderr.h")"
+rm -rf "$WT2/c:x" "$WT2/n
+l"
+SP="$WORK/with space/primary"; mkdir -p "$SP/node_modules/dep"; git -C "$SP" init -q -b main
+git -C "$SP" config user.email t@e; git -C "$SP" config user.name t
+printf 'node_modules\n' > "$SP/.gitignore"; git -C "$SP" add -A; git -C "$SP" commit -qm s
+SWT="$WORK/with space/wt"; git -C "$SP" worktree add -q -b t "$SWT" main
+gaffer_link_node_modules "$SP" "$SWT"
+printf '%s\n' "$SWT" > "$WRF"
+ARGV="$(dry)"
+has_mount "$SP/node_modules:$SP/node_modules:ro" && ok "a primary path with a space: its node_modules is mounted as one argument" || fail "space-path node_modules mount missing: $(grep -F node_modules <<<"$ARGV" | tr '\n' ' ')"
+has_mount "$SP/.git:$SP/.git:ro" && ok "a primary path with a space: its .git is verified and mounted" || fail "space-path .git mount missing"
+
+echo "== (j) legacy layout: the .claude/skills link cannot unmask a \$GAFFER_DATA entry (independent review) =="
+# In the legacy layout (the default on macOS) every top-level entry of the rw-mounted
+# GAFFER_DATA is masked except an allow-list, and the agent's skills link used to be
+# copied into that allow-list verbatim — so a link at the dashboard token, settings.json
+# or worktrees/ left that entry readable inside the container.
+printf '%s\n' "$WT" > "$WRF"
+legacy() { GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- \
+  claude -p hi --mcp-config "$GAFFER_DATA/mcp-runtime.1111.json" 2>"$WORK/stderr.j"; }
+for _t in dashboard-token settings.json worktrees .workers "skills-mounts/../dashboard-token"; do
+  rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/$_t" "$WT/.claude/skills"
+  ARGV="$(legacy)"
+  _top="${_t%%/*}"; [ "$_top" = skills-mounts ] && _top=dashboard-token
+  if [ -d "$GAFFER_DATA/$_top" ]; then masked_dir "$_top"; else masked_file "$_top"; fi \
+    && ok "legacy: a .claude/skills link at \$GAFFER_DATA/$_t leaves $_top masked" \
+    || fail "legacy: a .claude/skills link at \$GAFFER_DATA/$_t UNMASKED $_top"
+done
+rm -f "$WT/.claude/skills"; ln -s "$GAFFER_DATA/skills-mounts/delivery-7" "$WT/.claude/skills"
+ARGV="$(legacy)"
+masked_dir skills-mounts && fail "legacy: the runner's own skills mount got masked" || ok "legacy: the runner's own skills mount stays visible"
+masked_file dashboard-token && ok "legacy: with the runner's own link, dashboard-token is still masked" || fail "legacy: dashboard-token not masked"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "PASS: $PASS checks"

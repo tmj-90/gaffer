@@ -214,9 +214,15 @@ _git_path() {  # <worktree> <rev-parse flag> → absolute, symlink-resolved path
 # registration checks out, set _VW_COMMON / _VW_GITDIR (canonical) and return 0; else 1.
 _VW_COMMON=""; _VW_GITDIR=""
 _verified_linked_worktree() {
-  local wr="$1" back
+  local wr="$1" back wrc
   _VW_COMMON=""; _VW_GITDIR=""
+  # A `.git` SYMLINK (to a real, registered worktree's `.git` file — another repo's, or a
+  # sibling delivery's) would make the two-way check below agree with ITSELF: git follows
+  # the link and the registration points back at the link's target. git never creates one.
+  [ -L "$wr/.git" ] && return 1
   [ -f "$wr/.git" ] || return 1
+  wrc="$(_readlink_f "$wr")"
+  [ -n "$wrc" ] || return 1
   command -v git >/dev/null 2>&1 || return 1
   _VW_COMMON="$(_git_path "$wr" --git-common-dir)"
   _VW_GITDIR="$(_git_path "$wr" --git-dir)"
@@ -226,7 +232,7 @@ _verified_linked_worktree() {
   fi
   back="$(head -n 1 "$_VW_GITDIR/gitdir" 2>/dev/null || true)"
   case "$back" in "") _VW_COMMON=""; _VW_GITDIR=""; return 1 ;; /*) ;; *) back="$_VW_GITDIR/$back" ;; esac
-  if [ "$(_readlink_f "$back")" != "$(_readlink_f "$wr/.git")" ]; then
+  if [ "$(_readlink_f "$back")" != "$wrc/.git" ]; then
     _VW_COMMON=""; _VW_GITDIR=""; return 1
   fi
   return 0
@@ -239,6 +245,25 @@ _primary_checkout() {
   dirname "$_VW_COMMON"
 }
 
+# _runner_skills_key <write-root>: when <write-root>/.claude/skills is the link
+# gaffer_skills_mount (lib/skills-mount.sh) creates — literally
+# "$GAFFER_DATA/skills-mounts/<key>", resolving to a real directory directly under the
+# canonical skills-mounts dir — print <key>; otherwise print nothing. The link lives in
+# the writable worktree, so its text never reaches a mount or the legacy mask allow-list
+# unless it has exactly that shape.
+_runner_skills_key() {
+  local sk skc skroot key
+  [ -n "${GAFFER_DATA:-}" ] && [ -L "$1/.claude/skills" ] || return 0
+  sk="$(readlink "$1/.claude/skills" 2>/dev/null || true)"
+  case "$sk" in "$GAFFER_DATA"/skills-mounts/?*) ;; *) return 0 ;; esac
+  key="${sk#"$GAFFER_DATA"/skills-mounts/}"
+  case "$key" in */* | . | ..) return 0 ;; esac
+  skc="$(_readlink_f "$1/.claude/skills" || true)"
+  skroot="$(_readlink_f "$GAFFER_DATA/skills-mounts" || true)"
+  [ -n "$skc" ] && [ -n "$skroot" ] && [ -d "$skc" ] && [ "$skc" = "$skroot/$key" ] || return 0
+  printf '%s\n' "$key"
+}
+
 # Each write root's node_modules are SYMLINKS into the real checkout (tick.sh links
 # them in because installs are hook-blocked in a worktree). Mounts are path-mirrored,
 # so the link resolves inside the container ONLY if its target is mounted too — bind
@@ -246,8 +271,15 @@ _primary_checkout() {
 # Depth 4 mirrors tick.sh's workspace-package sweep (`find -maxdepth 3 -name node_modules`).
 for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   _prim="$(_primary_checkout "$_wr")"
-  while IFS= read -r _lnk; do
+  while IFS= read -r -d '' _lnk; do
     [ -n "$_lnk" ] || continue
+    # A `:` splits docker's -v spec and a newline cannot survive the argv/printf round
+    # trip: such a path is never runner-created, so skip it (WARNED) rather than let
+    # docker reject the whole run or mis-split the mount.
+    case "$_lnk" in *:* | *$'\n'*)
+      _warn "not mounting anything for the symlink $_lnk: its path contains ':' or a newline"
+      continue ;;
+    esac
     _tgt="$(_readlink_f "$_lnk")"
     [ -n "$_tgt" ] && [ -d "$_tgt" ] || continue      # dangling: nothing to mount
     _covered "$_tgt" && continue                       # already inside a chosen mount: no new host path
@@ -268,9 +300,13 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
     # the (already mounted) root or falls back to the canonical target.
     _raw="$(readlink "$_lnk" 2>/dev/null || true)"
     case "$_raw" in /*) _at="$_raw" ;; *) _at="$_tgt" ;; esac
+    case "$_at" in *:* | *$'\n'*)
+      _warn "not mounting $_tgt for the symlink $_lnk: the path it names contains ':' or a newline"
+      continue ;;
+    esac
     _covered "$_at" && continue
     _add_mount_at "$_tgt" "$_at" ro
-  done < <(find "$_wr" -maxdepth 4 -name node_modules -type l 2>/dev/null)
+  done < <(find "$_wr" -maxdepth 4 -name node_modules -type l -print0 2>/dev/null)
 done
 
 # --- the delivery worktree's git metadata (B25c) ---------------------------------------
@@ -375,19 +411,17 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
     # mounted only when it is one of the runner's own per-agent skill mounts
     # ($GAFFER_DATA/skills-mounts/<key>, lib/skills-mount.sh) or already covered (the
     # whole-library fallback points into the ro runner/ mount). Anything else: WARNED.
-    _skroot="$(_readlink_f "$GAFFER_DATA/skills-mounts" || true)"
     for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
       _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
       [ -n "$_sk" ] || continue
       _skc="$(_readlink_f "$_wr/.claude/skills" || true)"
       [ -n "$_skc" ] && [ -d "$_skc" ] || continue
       _covered "$_skc" && continue
-      case "$_sk" in
-        /*) if [ -n "$_skroot" ] && [ "$(dirname "$_skc")" = "$_skroot" ]; then
-              _covered "$_sk" || _add_mount_at "$_skc" "$_sk" ro
-              continue
-            fi ;;
-      esac
+      _skk="$(_runner_skills_key "$_wr")"
+      if [ -n "$_skk" ]; then
+        _covered "$GAFFER_DATA/skills-mounts/$_skk" || _add_mount_at "$_skc" "$GAFFER_DATA/skills-mounts/$_skk" ro
+        continue
+      fi
       _warn "not mounting $_skc for the symlink $_wr/.claude/skills: only a runner skill mount under $GAFFER_DATA/skills-mounts/ may be mounted there"
     done
   fi
@@ -417,9 +451,18 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
   _keep+=( safety-blocks.jsonl tool-metrics.jsonl )
   # The agent's per-agent skills mount (its `.claude/skills` symlink target) — links
   # into the read-only runner/skills library, nothing secret.
+  # Only the runner-shaped link counts (_runner_skills_key): the link text is writable by
+  # the repository and the agent, and copying it here verbatim would let it unmask any
+  # entry (the dashboard token, settings.json, the sibling worktrees).
   for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
-    _sk="$(readlink "$_wr/.claude/skills" 2>/dev/null || true)"
-    case "$_sk" in "$GAFFER_DATA"/*) _keep+=( "${_sk#"$GAFFER_DATA"/}" ) ;; esac
+    _skk="$(_runner_skills_key "$_wr")"
+    if [ -n "$_skk" ]; then
+      _keep+=( "skills-mounts/$_skk" )
+    elif [ -L "$_wr/.claude/skills" ]; then
+      case "$(readlink "$_wr/.claude/skills" 2>/dev/null || true)" in
+        "$GAFFER_DATA"/*) _warn "not unmasking the target of the symlink $_wr/.claude/skills: only a runner skill mount under $GAFFER_DATA/skills-mounts/ stays visible" ;;
+      esac
+    fi
   done
   _kept() {  # true when top-level entry <name> is (or contains) an allowlisted path
     local b="$1" k

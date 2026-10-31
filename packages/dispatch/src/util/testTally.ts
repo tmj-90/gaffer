@@ -262,7 +262,8 @@ export interface ClaimSource {
  * Never read: counts qualified as part of the suite ("3 new tests", "30 unit tests",
  * "Added 3 tests"), a partial "1 of 2 tests passing", and in a criterion's row
  * (`acScoped`) anything without "all". One claim per distinct passing count; a bare
- * "all tests pass" is kept only when no counted claim was found.
+ * "all tests pass" stands alone only when no counted claim was found, and otherwise
+ * makes the counted claims "all" claims.
  */
 export function parseTestClaims(text: string, scope: { acScoped?: boolean } = {}): TestClaim[] {
   return parseTestClaimsFrom([{ text, acScoped: scope.acScoped === true }]);
@@ -321,8 +322,21 @@ export function parseTestClaimsFrom(sources: readonly ClaimSource[]): TestClaim[
       }
     }
   }
-  // A bare "all pass" says less than a counted claim; keep it only when alone.
-  return out.some((c) => c.passed !== null) ? out.filter((c) => c.passed !== null) : out;
+  // A bare "all pass" says less than a counted claim, so a counted claim takes its
+  // place, but its "all" carries over: "All tests pass" beside "40 tests passing"
+  // still says every test passed, and must not hide a failure the runner saw.
+  const counted = out.filter((c) => c.passed !== null);
+  if (counted.length === 0) return out;
+  if (counted.length === out.length) return counted;
+  const merged: TestClaim[] = [];
+  const kept = new Set<number>();
+  for (const c of counted) {
+    if (kept.has(c.passed!)) continue;
+    kept.add(c.passed!);
+    const all = counted.find((x) => x.passed === c.passed && x.all);
+    merged.push(all ?? { ...c, all: true });
+  }
+  return merged;
 }
 
 const n = (k: number, word: string) => `${k} ${word}`;

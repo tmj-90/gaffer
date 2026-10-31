@@ -176,6 +176,23 @@ describe("compareTestClaims", () => {
     expect(compareTestClaims(parseTestClaims("all 42 tests pass"), null)).toEqual([]);
   });
 
+  it("a matching count beside 'all tests pass' does not hide the runner's failure", () => {
+    // The gate passed (the test script's exit code), but the runner printed a failure.
+    const failing = { ...tally, passed: 40, failed: 1 };
+    const want = "The summary says all tests pass, the runner saw 40 passing and 1 failing.";
+    for (const claims of [
+      parseTestClaims("All tests pass.\n40 tests passing"),
+      parseTestClaimsFrom([{ text: "All tests pass." }, { text: "40 tests pass" }]),
+      parseTestClaimsFrom([{ text: "All tests pass.", acScoped: true }, { text: "40 tests pass" }]),
+    ]) {
+      expect(compareTestClaims(claims, failing).map((d) => d.message)).toEqual([want]);
+    }
+    // With no failure, the same words agree with the runner.
+    expect(compareTestClaims(parseTestClaims("All tests pass.\n40 tests passing"), tally)).toEqual(
+      [],
+    );
+  });
+
   it("flags 'all pass' against a runner failure or a failed test gate", () => {
     const failing = { ...tally, passed: 39, failed: 1 };
     expect(compareTestClaims(parseTestClaims("All tests pass."), failing)[0]!.message).toBe(

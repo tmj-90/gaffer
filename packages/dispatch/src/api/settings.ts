@@ -553,6 +553,21 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help: "When the spend ceiling is hit, pause in-flight work instead of hard-stopping.",
   },
   {
+    key: "GAFFER_USAGE_PAUSE_DEFAULT_MIN",
+    type: "int",
+    group: "budget",
+    label: "Usage-limit pause (min)",
+    help:
+      "When the model refuses a call on its usage window or a rate limit, the ticket goes " +
+      "back to ready without counting an attempt and the factory pauses: no tick claims " +
+      "work, and gaffer run --daemon, the loop and a worker pool sleep until the pause " +
+      "ends. The pause lasts until the reset time the model reported, plus a minute; this " +
+      "setting is the wait when no reset time was reported. Default 60. Never less than " +
+      "10 minutes (a lower value is raised to 10; a reported reset is also held to at least " +
+      "10 minutes and at most 8 days). gaffer status and the Health view show the pause; " +
+      "it lifts on its own (or early: node runner/lib/usage-pause.mjs clear).",
+  },
+  {
     key: "GAFFER_CI_POLL_ATTEMPTS",
     type: "int",
     group: "budget",

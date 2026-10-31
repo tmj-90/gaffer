@@ -318,6 +318,18 @@ for you. Off by default.
 Confirming a brownfield epic yourself (every ticket on one existing repo) moves that
 feature to `building` too.
 
+**Usage limits pause the factory, they do not fail tickets.** When the model
+refuses a delivery call because the plan's usage window ran out or a rate limit
+hit, the ticket goes back to Ready without counting an attempt (any work the agent
+had committed stays on its branch) and the factory pauses until the window resets:
+the reset time Claude Code printed plus a minute, or the **Usage-limit pause**
+setting (`GAFFER_USAGE_PAUSE_DEFAULT_MIN`, default 60 minutes, never below 10) when
+it printed none. No tick claims work meanwhile; `gaffer run --daemon`, the loop and
+a worker pool sleep instead of spinning. `gaffer status` and the **Health** view
+show "Paused until <time>: usage limit", and the ticket's timeline records the
+refusal. The pause lifts on its own. An overnight run that hits its window no longer
+parks good tickets.
+
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected

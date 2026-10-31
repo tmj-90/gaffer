@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 133 |
-| Knobs editable in the dashboard | 56 |
+| Knobs with a runner default | 135 |
+| Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 75 |
+| Env reads in code with no default and no UI entry | 77 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -115,6 +115,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_PAUSE_ON_CAP` | `1` | yes (boolean) | dispatch, runner | When the spend ceiling is hit, pause in-flight work instead of hard-stopping. |
+| `GAFFER_USAGE_PAUSE_DEFAULT_MIN` | `60` | yes (int) | dispatch, runner | When the model refuses a call on its usage window or a rate limit, the ticket goes back to ready without counting an attempt and the factory pauses: no tick claims work, and gaffer run --daemon, the loop and a worker pool sleep until the pause ends. The pause lasts until the reset time the model reported, plus a minute; this setting is the wait when no reset time was reported. Default 60. Never less than 10 minutes (a lower value is raised to 10; a reported reset is also held to at least 10 minutes and at most 8 days). gaffer status and the Health view show the pause; it lifts on its own (or early: node runner/lib/usage-pause.mjs clear). |
 | `GAFFER_DASHBOARD_URL` | _derived_ (`http://127.0.0.1:${DISPATCH_API_PORT:-8787}`) |  | dispatch, runner |  |
 | `GAFFER_REAP_GRACE` | `30` |  | runner | FINDING-6 (b): TERM->KILL grace (seconds) for gaffer_timeout's process-group reaper. |
 
@@ -279,6 +280,12 @@ computed from other knobs at runtime.
 |---|---|---|---|---|
 | `GAFFER_UNIVERSAL_SKILLS` | `run-tests run-lint run-coverage minimalism self-review record-evidence prepare-digest-delta plan-change` |  | runner | skills mounted on every delivery (= select-skills ROLE_PROFILES.delivery.core) |
 
+### lib/usage-pause.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_USAGE_PAUSE_MJS` | _derived_ (`$_GAFFER_UP_LIB/usage-pause.mjs`) |  | runner |  |
+
 ## Dashboard-only settings
 
 These have a Settings-panel entry but no `factory.config.sh` default: the
@@ -374,6 +381,8 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_TRUST_LOCK_SLEEP_MS` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_LOCK_TRIES` |  | `runner/lib/trust-workspace.mjs` |
 | `GAFFER_TRUST_WORKTREE_ROOT` |  | `runner/lib/trust-workspace.mjs` |
+| `GAFFER_USAGE_PAUSE_FILE` | _(empty)_ | `packages/dispatch/src/health/usagePause.ts`, `runner/lib/usage-pause.mjs` |
+| `GAFFER_USAGE_PAUSE_POLL_SECS` | `60` | `runner/lib/usage-pause.sh` |
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |

@@ -117,6 +117,38 @@ maintenance lane so it runs alongside delivery rather than only on idle ticks.
    and submits for review. It never marks its own work `done`.
 5. `loop.sh` repeats until the queue drains or the stop conditions hit.
 
+### When the model's usage window runs out
+
+A delivery call can come back refused by the plan's usage window or a rate limit
+(`You've hit your session limit · resets 3pm (Europe/London)`, `API Error: Rate limit
+reached`, the SDK's `error: "rate_limit"`). That is not a failed delivery, so the
+runner does not treat it as one:
+
+- `lib/worker.mjs` `parseResult` classifies it (`usageLimit`) from one table of
+  matched strings, `USAGE_LIMIT_PATTERNS` / `USAGE_LIMIT_SHAPES`, each row citing
+  where its exact text comes from. Text rows only match an error envelope
+  (`is_error: true`), so a reply that talks about rate limiting is never misread.
+- `tick.sh` keeps any work the agent made before the refusal (a WIP checkpoint; a
+  branch with commits is kept for the next attempt), releases the claim to `ready`
+  with reason-code `usage_limit` WITHOUT counting an attempt (no `attempt_count`
+  bump, no no-commit counter, no rework row, no skip-list entry), records a
+  `ticket.usage_limited` event with `paused_until`, and reports `usage_paused`.
+  A resumed delivery goes back to `paused` with its worktree.
+- `lib/usage-pause.mjs` writes `$GAFFER_DATA/usage-pause.json`. The pause ends at the
+  reset the CLI printed plus one minute, or after `GAFFER_USAGE_PAUSE_DEFAULT_MIN`
+  (default 60) when none was printed; never sooner than 10 minutes, never later than
+  8 days, never shortened by a later refusal. A pause file that does not parse is
+  read as active for the default wait (fail closed).
+- While it holds, `tick.sh` claims and spawns nothing (`no_work`), `loop.sh` and
+  `gaffer run --daemon` sleep until it ends instead of spinning (re-reading the file
+  every `GAFFER_USAGE_PAUSE_POLL_SECS`, default 60, so an early clear is honoured), a
+  `GAFFER_CONCURRENCY>1` pool stops admitting new work, and `gaffer status` and the
+  dashboard's Health view say `paused until <time>: usage limit`. It lifts on its
+  own; `node runner/lib/usage-pause.mjs clear` lifts it early.
+- The time left in a window is not spent on maintenance work in this release (it is
+  unclear whether headless usage shares the window); `usage-pause.mjs` documents the
+  seam for a future, opt-in lane.
+
 ## Setup & the `gaffer` CLI
 
 `setup.sh` builds the three TypeScript products and initialises factory state

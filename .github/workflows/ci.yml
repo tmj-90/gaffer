@@ -24,6 +24,7 @@ concurrency:
 #             macOS runner) — split into shards per os × node, so no one job carries
 #             the whole suite.
 #   ui-regression, sandbox-containment — their own jobs, as before.
+#   ui-scenarios  the browser scenario suites (run-suites.sh), sharded by suite group.
 jobs:
   checks:
     name: checks / ubuntu-latest / node 22
@@ -419,6 +420,67 @@ jobs:
           echo "::group::results.json"
           cat "$UI_REGRESS_OUT/shots/results.json" 2>/dev/null || true
           echo "::endgroup::"
+
+  # The scenario suites (scripts/ui-regression/run-suites.sh): every product flow the
+  # dashboard can drive beyond the golden path, in a real browser against the real
+  # server and runner with the stub worker (no model call). Each shard builds its own
+  # throwaway world and runs a group of suites, sized (measured) to stay under ~8 min.
+  # Same pinned actions and Chromium install as ui-regression; shots uploaded on a FAIL.
+  ui-scenarios:
+    name: Dashboard scenario suites (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Measured locally (suite time, one shard per machine): ~4.9, ~3.8, ~4.1 and
+          # ~3.0 min. s15 leads its shard: its empty-Floor check needs a quiet factory.
+          - name: rework-blocked
+            suites: s1-rework s2-wont-do s3-blocked
+          - name: tester-decisions-settings
+            suites: s5-tester s6-decisions s12-settings s13-principals
+          - name: squad-memory-map-specs-pause
+            suites: s15-squad-floor s9-memory s14-map s8-specs s10-pause
+          - name: plan-health-autonomy-sweep
+            suites: s7-plan s11-health s4-autonomy sweep s16-review-hold s17-conflict s12b-idle-lanes
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Setup Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: Install Chromium (same version as the harness's playwright-core)
+        run: npx --yes playwright@1.63.0 install --with-deps chromium
+      - name: Scenario suites
+        shell: bash
+        env:
+          UI_REGRESS_OUT: ${{ runner.temp }}/ui-scenarios
+          UI_SUITES: ${{ matrix.suites }}
+        run: |
+          bash scripts/ui-regression/run-suites.sh
+      - name: Upload screenshots and results
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ui-scenarios-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/ui-scenarios/shots
+            ${{ runner.temp }}/ui-scenarios/data/factory.log
+            ${{ runner.temp }}/ui-scenarios/data/dashboard.log
+            ${{ runner.temp }}/ui-scenarios/data/stub-calls.jsonl
+          if-no-files-found: ignore
+          retention-days: 14
 
   # Dedicated job for the Mode-2 docker containment gate. Kept OUT of the general bash
   # suite (which runs on every OS × node and would be fragile on shared runners) so a

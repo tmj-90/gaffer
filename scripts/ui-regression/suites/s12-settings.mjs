@@ -141,7 +141,7 @@ export default async function s12(t, L) {
   }
   const cfg = path.join(L.ROOT, "runner", "factory.config.sh");
   for (const g of groups.filter((x) => !x.agentEnv)) {
-    let got = "";
+    let got;
     try {
       got = execFileSync(
         "env",

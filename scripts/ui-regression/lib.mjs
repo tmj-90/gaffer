@@ -1,4 +1,5 @@
 /* global document, window, getComputedStyle */
+/* eslint-disable @typescript-eslint/no-unused-expressions -- `cond ? ok(…) : bad(…)` is the assertion idiom of this harness */
 // Shared helpers for the scenario suites (scripts/ui-regression/suites/*.mjs), driven
 // by run-suites.mjs against the server run-suites.sh starts (the same world as the
 // golden path: setup.sh). Nothing here asserts on its own: every check a suite makes

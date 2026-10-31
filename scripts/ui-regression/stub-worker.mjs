@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unused-expressions -- `cond ? ok(…) : bad(…)` is the assertion idiom of this harness */
 // The stub worker behind stub-claude.sh (see its header for the modes). No model
 // call is ever made: every answer is canned, every git change is real.
 import { spawn, execFileSync } from "node:child_process";
@@ -287,6 +288,16 @@ async function main() {
         `Blocked on a product decision for #${t}; raised it with request_decision and stopped without code.`,
         { total_cost_usd: 0.005, num_turns: 3 },
       );
+    }
+    if (mode === "clarify" && call > 1) {
+      // As a real agent is told to: read the ticket first. Keep what get_ticket gave
+      // back so a suite can prove a human's answer reached the agent.
+      try {
+        const show = await mcpCall("dispatch", "get_ticket", { ticket_id: t });
+        writeFileSync(path.join(stateDir, `delivery-${t}.get_ticket.json`), JSON.stringify(show));
+      } catch (e) {
+        mcpLog(`delivery #${t} get_ticket failed: ${e.message}`);
+      }
     }
     const fn = `helper${t}`;
     const tasks = path.join(cwd, "src", "tasks.js");

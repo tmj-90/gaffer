@@ -1,3 +1,5 @@
+/* global document */
+/* eslint-disable @typescript-eslint/no-unused-expressions -- `cond ? ok(…) : bad(…)` is the assertion idiom of this harness */
 // Scenario-suite driver: runs the chosen suites (scripts/ui-regression/suites/*.mjs)
 // against the dashboard run-suites.sh started, one browser, one fresh page per
 // suite. Prints one summary line per suite and the overall
@@ -31,6 +33,7 @@ export const ORDER = [
   "s4-autonomy",
   "s16-review-hold",
   "s17-conflict",
+  "s12b-idle-lanes",
   "sweep",
 ];
 

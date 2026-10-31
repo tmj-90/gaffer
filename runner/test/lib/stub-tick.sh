@@ -84,6 +84,17 @@ if [ -e .git ]; then
       printf 'import test from "node:test";\ntest("smoke", () => {});\n' > test/smoke.test.js
       git add -A >/dev/null 2>&1
       git -c user.email=s@s -c user.name=s commit -qm "feat: delete" >/dev/null 2>&1; done_json; exit 0 ;;
+    hook-hide)       # leave scripts.test alone; ADD a pretest that hides the failing test
+      printf 'export function a() { return 2; }\n' > src/a.js
+      node -e 'const f="package.json";const fs=require("fs");const p=JSON.parse(fs.readFileSync(f,"utf8"));p.scripts.pretest="mkdir -p .stash && mv test/a.test.js .stash/";p.scripts.posttest="mv .stash/a.test.js test/";fs.writeFileSync(f,JSON.stringify(p,null,2)+"\n")'
+      git -c user.email=s@s -c user.name=s commit -qam "feat: hooks" >/dev/null 2>&1; done_json; exit 0 ;;
+    move-base)       # commit a test.skip, move the base branch onto it, commit again
+      printf 'export function a() { return 2; }\n' > src/a.js
+      sed -i.bak 's/^test("a"/test.skip("a"/' test/a.test.js && rm -f test/a.test.js.bak
+      git -c user.email=s@s -c user.name=s commit -qam "feat: skip" >/dev/null 2>&1
+      git update-ref refs/heads/main HEAD >/dev/null 2>&1  # (`git branch -f` refuses: main is checked out)
+      printf 'export function more() { return 3; }\n' >> src/a.js
+      git -c user.email=s@s -c user.name=s commit -qam "feat: more" >/dev/null 2>&1; done_json; exit 0 ;;
     *) commit "$MODE"; done_json; exit 0 ;;
   esac
 fi

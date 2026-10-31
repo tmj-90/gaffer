@@ -19,7 +19,13 @@
 #   E  a clean delivery: integrity PASS; the integrity row never counts as an
 #      executed gate and never fails the run; the evidence JSON carries `source`.
 #   F  fail toward a human: no base commit / no crew dist → FLAG, gates still run.
-#   G  tick.sh passes the base ref + a FRESH allow flag into the gate rows.
+#   G  tick.sh passes the base commit + a FRESH allow flag into the gate rows, and
+#      records the base commit before the agent runs.
+#   H  hooks and reached scripts: an ADDED pretest/posttest (npm would run it around
+#      the gate) and a changed script the gate reaches (`test: npm run unit`) pin the
+#      gate to the base expansion and FLAG the integrity row.
+#   I  a recorded base SHA is used as is: moving `main` onto a committed test.skip
+#      hides it from a branch-name base but not from the SHA; gaffer_delivery_base_sha.
 #
 # Requires git, node and the built crew + dispatch dists. SKIPs (exit 0) otherwise.
 # Run: bash test/gate-integrity.test.sh      (bash 3.2-safe)
@@ -60,9 +66,9 @@ mkdir -p "$R/tests" "$R/src"
 
 # A fresh delivery worktree off main; the caller's commands run in it.
 N=0
-delivery() {
+delivery() {  # [base-branch]
   N=$((N+1)); WT="$WORK/wt$N"
-  git -C "$R" worktree add -q -b "d$N" "$WT" main >/dev/null 2>&1
+  git -C "$R" worktree add -q -b "d$N" "$WT" "${1:-main}" >/dev/null 2>&1
 }
 commit_wt() { git -C "$WT" add -A >/dev/null 2>&1; git -C "$WT" commit -qm "${1:-change}" >/dev/null 2>&1; }
 # gates <test_cmd> [base] [allow] → runs the gate rows, sets RC and RES.
@@ -94,7 +100,7 @@ T="$(row tests)"
   && ok "A3 the tests row records source base-pinned ($(col "$T" 7 | cut -c1-70)…)" \
   || fail "A3 expected FAIL + base-pinned source, got: $T"
 I="$(row integrity)"
-[ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *'test in package.json'* ]] \
+[ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *'test changed in package.json'* ]] \
   && ok "A4 the integrity row FLAGs the changed gate script" \
   || fail "A4 expected an integrity FLAG naming the script, got: $I"
 
@@ -223,8 +229,9 @@ CREW_DIR="$SAVED_CREW"
 
 echo "== G: tick.sh wiring =="
 TICK="$RUNNER_DIR/tick.sh"
-grep -q '"$_dtest" "$_dtc" "$_dlint" "${rbase:--}" "$_DOD_ALLOW_TESTS"' "$TICK" \
-  && ok "G1 tick.sh passes the base ref and the allow flag into every gate row" \
+grep -q '"$_dtest" "$_dtc" "$_dlint" "${_dbase:--}" "$_DOD_ALLOW_TESTS"' "$TICK" \
+  && grep -q '_dbase="$(_gaffer_delivery_base_for "$rpath")"' "$TICK" \
+  && ok "G1 tick.sh passes the recorded base commit and the allow flag into every gate row" \
   || fail "G1 tick.sh does not pass base/allow into DOD_ROWS"
 grep -q "d.ticket.allow_test_changes === 1" "$TICK" && grep -q '_DOD_ALLOW_TESTS="$(wg ticket show "$NUM"' "$TICK" \
   && ok "G2 the allow flag is read FRESH from dispatch at gate time (fails closed to 0)" \
@@ -232,6 +239,84 @@ grep -q "d.ticket.allow_test_changes === 1" "$TICK" && grep -q '_DOD_ALLOW_TESTS
 [ "$(grep -c 'gaffer_dod_log_integrity "$DOD_RESULTS"' "$TICK")" -ge 2 ] \
   && ok "G3 tick.sh logs the integrity row on both the PASS and FAIL paths" \
   || fail "G3 tick.sh does not log integrity rows"
+
+_rec_line="$(grep -n '^  _gaffer_record_delivery_bases$' "$TICK" | head -n 1 | cut -d: -f1)"
+_env_line="$(grep -n 'log "created worktree for ' "$TICK" | head -n 1 | cut -d: -f1)"
+_spawn_line="$(grep -n '^  worker_deliver "$PRIMARY_REPO"' "$TICK" | head -n 1 | cut -d: -f1)"
+grep -q 'wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha"' "$TICK" \
+  && [ -n "$_rec_line" ] && [ -n "$_env_line" ] && [ -n "$_spawn_line" ] \
+  && [ "$_env_line" -lt "$_rec_line" ] && [ "$_rec_line" -lt "$_spawn_line" ] \
+  && ok "G4 tick.sh records each delivery's base commit (--base-sha) after cutting the worktree, before the agent is spawned" \
+  || fail "G4 tick.sh does not record the base commit before the agent runs (wt=$_env_line rec=$_rec_line spawn=$_spawn_line)"
+
+echo "== H: added hooks and scripts the gate reaches =="
+delivery
+printf 'echo 2\n' > "$WT/src/value.sh"
+printf '{ "name": "fx", "private": true, "scripts": { "pretest": "mkdir -p .stash && mv tests/value.test.sh .stash/", "test": "sh tests/run.sh", "posttest": "mv .stash/value.test.sh tests/", "lint": "true" } }\n' > "$WT/package.json"
+commit_wt "hide the failing test with an added hook"
+gates "npm test" main
+T="$(row tests)"
+[ "$RC" -ne 0 ] && [ "$(col "$T" 4)" = FAIL ] && [[ "$(col "$T" 7)" == base-pinned:*'added script "pretest"'* ]] \
+  && ok "H1 an ADDED pretest pins the gate to base (the hook never runs) and the broken delivery FAILS" \
+  || fail "H1 expected FAIL + base-pinned naming the added pretest, got rc=$RC: $T"
+I="$(row integrity)"
+[ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *"pretest added in package.json"* ]] && [[ "$(col "$I" 6)" == *"posttest added in package.json"* ]] \
+  && ok "H2 the integrity row FLAGs the added pretest and posttest" || fail "H2 got: $I"
+
+( cd "$R" && git checkout -q -b base2 main \
+  && printf '{ "name": "fx", "private": true, "scripts": { "test": "npm run unit", "unit": "sh tests/run.sh", "lint": "true" } }\n' > package.json \
+  && git commit -qam "test runs unit" && git checkout -q main )
+delivery base2
+printf 'echo 2\n' > "$WT/src/value.sh"
+printf '{ "name": "fx", "private": true, "scripts": { "test": "npm run unit", "unit": "true", "lint": "true" } }\n' > "$WT/package.json"
+commit_wt "weaken the script test reaches"
+gates "npm test" base2
+T="$(row tests)"
+[ "$RC" -ne 0 ] && [[ "$(col "$T" 7)" == base-pinned:*'changed script "unit"'* ]] \
+  && ok "H3 a changed script reached through 'npm run unit' pins the gate to the base chain; the delivery FAILS" \
+  || fail "H3 expected FAIL + base-pinned naming unit, got rc=$RC: $T"
+I="$(row integrity)"
+[ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *"unit changed in package.json"* ]] \
+  && ok "H4 the integrity row FLAGs the changed indirect script" || fail "H4 got: $I"
+delivery base2
+printf '# docs\n' > "$WT/README.md"; commit_wt "docs"
+gates "npm test" base2
+[[ "$(col "$(row tests)" 7)" == base:* ]] && [ "$(col "$(row integrity)" 4)" = PASS ] \
+  && ok "H5 an untouched chain still runs as registered (source base), integrity PASS" \
+  || fail "H5 got: $(cat "$RES")"
+
+echo "== I: a recorded base commit cannot be moved by the agent =="
+MAIN0="$(git -C "$R" rev-parse main)"
+delivery
+mkdir -p "$WT/src"; printf "it.skip('adds', () => {})\n" > "$WT/src/m.test.ts"; commit_wt "skip"
+git -C "$WT" update-ref refs/heads/main HEAD    # the agent moves the base branch onto it
+printf 'echo 1 # more\n' > "$WT/src/value.sh"; commit_wt "more"
+gates "true" main
+[ "$(col "$(row integrity)" 4)" = PASS ] && ok "I1 before: a branch-name base after the move hides the committed skip (the hole)" \
+  || fail "I1 expected the moved branch name to hide the skip, got: $(row integrity)"
+gates "true" "$MAIN0"
+I="$(row integrity)"
+[ "$(col "$I" 4)" = FLAG ] && [[ "$(col "$I" 6)" == *"it.skip in src/m.test.ts"* ]] && [[ "$(col "$I" 7)" == "base ${MAIN0:0:12} vs worktree" ]] \
+  && ok "I2 after: the recorded base SHA is used as is and the skip FLAGs" || fail "I2 got: $I"
+git -C "$R" update-ref refs/heads/main "$MAIN0"
+gates "true" "$(printf 'f%.0s' $(seq 1 40))"
+[ "$(col "$(row integrity)" 4)" = FLAG ] && [[ "$(col "$(row tests)" 7)" == unresolved:* ]] \
+  && ok "I3 a recorded SHA that is not a commit: unresolved, integrity FLAGs" || fail "I3 got: $(cat "$RES")"
+git -C "$R" branch -q fresh main
+[ "$(gaffer_delivery_base_sha "$R" main fresh 1)" = "$MAIN0" ] \
+  && ok "I4 a branch cut this tick: its start point" || fail "I4 got: $(gaffer_delivery_base_sha "$R" main fresh 1)"
+OLD="$(git -C "$R" rev-parse main~0)"
+( cd "$R" && git checkout -q fresh && printf 'x\n' > f.txt && git add f.txt && git commit -qm f && git checkout -q main )
+git -C "$R" update-ref refs/heads/main "$(git -C "$R" rev-parse fresh)"   # main moved onto the branch
+[ "$(gaffer_delivery_base_sha "$R" main fresh 0 "$OLD")" = "$OLD" ] \
+  && ok "I5 a kept branch keeps the base recorded when it was cut, whatever main now says" \
+  || fail "I5 got: $(gaffer_delivery_base_sha "$R" main fresh 0 "$OLD")"
+[ "$(gaffer_delivery_base_sha "$R" main fresh 0 "not-a-sha")" = "$(git -C "$R" rev-parse fresh)" ] \
+  && ok "I6 no usable stored base: the merge-base now (the legacy answer)" \
+  || fail "I6 got: $(gaffer_delivery_base_sha "$R" main fresh 0 not-a-sha)"
+[ -z "$(gaffer_delivery_base_sha "$R" main no-such-branch 1)" ] && ok "I7 nothing resolvable prints nothing" \
+  || fail "I7 printed something for a missing branch"
+git -C "$R" update-ref refs/heads/main "$MAIN0"
 
 echo
 echo "gate-integrity: $PASS passed, ${#FAILURES[@]} failed"

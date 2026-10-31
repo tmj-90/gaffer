@@ -231,7 +231,9 @@ gaffer_dod_run_one() {
 #   field because TAB is IFS-whitespace: `read` collapses consecutive tabs, so an
 #   empty middle field would silently shift the columns. Callers MUST pass `-`.
 #   GATE INTEGRITY (optional trailing fields; absent ⇒ today's behaviour exactly):
-#   base_ref is the branch the delivery was cut from (`-` = none) and allow is "1"
+#   base_ref is the COMMIT the delivery was cut from (a full SHA, recorded by tick.sh
+#   when it created the worktree — see gaffer_delivery_base_sha), or for older callers
+#   a branch name, whose merge-base with HEAD is used (`-` = none); allow is "1"
 #   when a human set allow_test_changes on the ticket. With a base_ref, each gate's
 #   package.json script is read from the BASE commit (gaffer_dod_resolve_cmd), and an
 #   `integrity` row is appended per repo (gaffer_dod_integrity_row): PASS or FLAG,
@@ -268,8 +270,15 @@ gaffer_run_dod_gates() {
     # GATE INTEGRITY: the commit the delivery branched from. Empty when there is no
     # base ref (callers that predate the check) or it cannot be resolved — then the
     # commands run as registered and the integrity row FLAGs the unresolved base.
+    # A recorded SHA is used AS IS: a branch name can be moved by the agent from inside
+    # its worktree (`git branch -f main HEAD`), and a merge-base taken from the moved
+    # branch would hide every commit made before the move.
     if [ -n "$base" ]; then
-      _mb="$(git -C "$wt" merge-base "$base" HEAD 2>/dev/null)" || _mb=""
+      if [[ "$base" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+        git -C "$wt" cat-file -e "$base^{commit}" 2>/dev/null && _mb="$base"
+      else
+        _mb="$(git -C "$wt" merge-base "$base" HEAD 2>/dev/null)" || _mb=""
+      fi
     fi
     for gate in tests typecheck lint; do
       case "$gate" in
@@ -327,6 +336,30 @@ gaffer_run_dod_gates() {
   done
   rm -f "$tmpout"
   [ "$any_fail" -eq 0 ]
+}
+
+# GATE INTEGRITY: the commit a delivery branch was cut from — what the DoD rows pass as
+# base_ref and what tick.sh records on the repo delivery (`--base-sha`) for dispatch's
+# server-side scan. Computed by the RUNNER before the agent runs, so the agent cannot
+# choose it by moving the base branch:
+#   created=1 (this tick cut the branch with `worktree add -B` off the base): the
+#     branch's start point, i.e. its tip right after creation;
+#   otherwise (a kept/resumed branch): the SHA recorded when it was first cut, when it
+#     is still a commit in the repo; else the merge-base of base and branch now.
+# Prints a full SHA, or nothing (then the integrity row FLAGs an unresolved base).
+#   gaffer_delivery_base_sha <repo> <base-branch> <work-branch> <created:0|1> [stored-sha]
+gaffer_delivery_base_sha() {
+  local repo="$1" base="$2" work="$3" created="$4" stored="${5:-}" sha=""
+  if [ "$created" = "1" ]; then
+    sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$work^{commit}" 2>/dev/null)" || sha=""
+  elif [[ "$stored" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+       && git -C "$repo" cat-file -e "$stored^{commit}" 2>/dev/null; then
+    sha="$stored"
+  else
+    sha="$(git -C "$repo" merge-base "$base" "refs/heads/$work" 2>/dev/null)" || sha=""
+  fi
+  [[ "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] && printf '%s\n' "$sha"
+  return 0
 }
 
 # The typed gate-integrity seam (packages/crew runtime/dod/gateIntegrityCli.js), which

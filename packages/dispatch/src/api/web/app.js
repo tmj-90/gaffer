@@ -749,9 +749,14 @@ function ensureSquad() {
       api("GET", "/api/squad").catch(() => null),
       squad.capability ? null : api("GET", "/api/whoami").catch(() => null),
     ]).then(([sq, who]) => {
+      const was = squad.capability;
       if (who && typeof who === "object") squad.capability = who.capability || "full";
       if (sq) applySquad(sq);
       else squad.loaded = null; // try again on the next view
+      paintReadOnly();
+      // Learned only now that this token is read-only: redraw the view, so it shows
+      // its switched-off controls rather than the editors it painted first.
+      if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
     });
   }
   return squad.loaded;
@@ -778,6 +783,51 @@ function refreshSquad() {
 /** May this operator change names (a full token)? Unknown counts as no: no 403 surprises. */
 function canEditSquad() {
   return squad.capability === "full";
+}
+
+// --- Read-only access ---------------------------------------------------------
+// A read token (GET /api/whoami capability "read") may look at everything and
+// change nothing: the server refuses every write. So the dashboard does not offer
+// one: every control that would change something is switched off with a title that
+// says why, and one strip under the header says so once. Unknown counts as full
+// here (the server still refuses), so a slow whoami never greys out a full token.
+const READ_ONLY_TITLE = "Read-only access: this token can look, not change anything.";
+function readOnly() {
+  return squad.capability === "read";
+}
+/** Switch one control off for a read token (disabled + a title saying why). */
+function roLock(node) {
+  if (!node || !readOnly()) return node;
+  if ("disabled" in node && node.tagName !== "A") node.disabled = true;
+  node.setAttribute("aria-disabled", "true");
+  node.classList.add("is-read-only");
+  node.title = READ_ONLY_TITLE;
+  return node;
+}
+/** Switch off every form control and button inside `root` (a whole editor). */
+function roLockAll(root) {
+  if (!root || !readOnly()) return root;
+  for (const n of root.querySelectorAll("button, input, select, textarea"))
+    if (!n.closest("[data-ro-ok]")) roLock(n);
+  return root;
+}
+/** The one read-only strip under the header. */
+function paintReadOnly() {
+  let strip = document.getElementById("ro-strip");
+  if (!strip && readOnly() && appbar) {
+    strip = el("div", { class: "ro-strip", id: "ro-strip", role: "status" }, [
+      el("div", {}, [
+        icon("lock", "", 16),
+        el("span", {}, [
+          el("b", {}, "Read-only access. "),
+          "This token can look at everything and change nothing, so the buttons that would change something are switched off. Sign in with a full token to act.",
+        ]),
+      ]),
+    ]);
+    appbar.after(strip);
+  }
+  if (strip) strip.hidden = !readOnly();
+  document.body.classList.toggle("is-read-only", readOnly());
 }
 /**
  * An agent as the squad knows it: { id, name, no, reg, role }. `name` is the
@@ -3560,6 +3610,11 @@ function whatIOwnPanel(queue, f) {
 
 /** The one action a row offers: a real button (a sheet that acts) or a real link. */
 function ownAction(it, primary, f) {
+  const act = ownActionControl(it, primary, f);
+  // A link only opens a page; a button would change something, so a read token's is off.
+  return act && act.tagName === "BUTTON" ? roLock(act) : act;
+}
+function ownActionControl(it, primary, f) {
   const t = it.ticket;
   const cls = `btn own-act${primary ? " primary" : ""}`;
   const verb = OWN_VERB[it.kind] || "Open";
@@ -7561,15 +7616,17 @@ function writeWorkStateToUrl() {
  * to the node's repos), then kicks off the headless product-owner run.
  */
 function suggestWorkButton(repos, nodes) {
-  return el(
-    "button",
-    {
-      class: "btn",
-      type: "button",
-      title: "Run the product-owner skill to propose new draft tickets",
-      onclick: () => openSuggestWorkPicker(repos, nodes),
-    },
-    "Suggest work",
+  return roLock(
+    el(
+      "button",
+      {
+        class: "btn",
+        type: "button",
+        title: "Run the product-owner skill to propose new draft tickets",
+        onclick: () => openSuggestWorkPicker(repos, nodes),
+      },
+      "Suggest work",
+    ),
   );
 }
 
@@ -7620,7 +7677,7 @@ function pollWorkButton() {
     },
     [el("span", {}, "Poll for work")],
   );
-  return btn;
+  return roLock(btn);
 }
 
 /**
@@ -8687,11 +8744,14 @@ function legalTargetColumns(status) {
   return MOVE_TARGETS_BY_STATUS[status] || [];
 }
 function cardIsMovable(card) {
-  return legalTargetColumns(card.status).length > 0 && !card.claim;
+  return legalTargetColumns(card.status).length > 0 && !card.claim && !readOnly();
 }
 /** The card's Move menu: its legal lanes, plus Won't do… where that move is legal. */
 function cardHasMoveMenu(card) {
-  return !card.claim && (cardIsMovable(card) || hasTicketAction(card.status, "wont_do"));
+  return (
+    !card.claim &&
+    (legalTargetColumns(card.status).length > 0 || hasTicketAction(card.status, "wont_do"))
+  );
 }
 
 // --- State-aware action sets (single source of truth) -----------------------
@@ -9379,9 +9439,10 @@ function renderBoardCard(card, laneKey, needs) {
         [el("span", {}, "Move"), icon("chevdown", "", 14)],
       )
     : null;
+  roLock(moveBtn);
   // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
   // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
-  const humanLaneBtn = humanLaneAction(card);
+  const humanLaneBtn = roLock(humanLaneAction(card));
 
   const node = el(
     "article",
@@ -10411,7 +10472,9 @@ async function renderTicket(id) {
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
   // runner may be held. The status ("Approved · merging") and the lede say where it is.
   const headActions = [
-    ...ticketActionKeys(t.status).map((key) => (actionButtons[key] ? actionButtons[key]() : null)),
+    ...ticketActionKeys(t.status).map((key) =>
+      actionButtons[key] ? roLock(actionButtons[key]()) : null,
+    ),
   ].filter(Boolean);
 
   // PAUSE-ON-CAP banner: when a delivery is paused on a turn/budget cap, surface WHY
@@ -10603,7 +10666,7 @@ async function renderTicket(id) {
         )
       : el("p", { class: "dim" }, "No acceptance criteria yet. Add the first below."),
     // A shipped or abandoned ticket's criteria are its record, not a to-do list.
-    t.status === "done" || t.status === "cancelled"
+    t.status === "done" || t.status === "cancelled" || readOnly()
       ? null
       : el("details", { class: "tk-add-ac", open: acList.length ? null : "" }, [
           el("summary", {}, "Add a criterion"),
@@ -10612,7 +10675,10 @@ async function renderTicket(id) {
   ]);
 
   // The boundary: which repos this ticket may write, read or test. Read-only once merged.
-  const sideRepos = renderRepoPanel(t.id, claimBox, { readOnly: t.status === "done", ticket: t });
+  const sideRepos = renderRepoPanel(t.id, claimBox, {
+    readOnly: t.status === "done" || readOnly(),
+    ticket: t,
+  });
 
   // The diff: the delivery once it is in review (or shipped), and the work in
   // progress of a parked or capped delivery when it left a branch. Files fold
@@ -10732,7 +10798,7 @@ async function renderTicket(id) {
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
   // evidence. Rendered on every ticket so a PO can mark it testable + fill the
   // contract ahead of time; the contract surfaces/render the same way in_testing.
-  const testingCard = renderTestingCard(t, view.evidence || []);
+  const testingCard = roLockAll(renderTestingCard(t, view.evidence || []));
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
@@ -11462,6 +11528,8 @@ function boundaryRef(ticketId) {
 function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null } = {}) {
   if (ticket) boundaryTickets.set(ticketId, ticket);
   const body = el("div", { class: "repo-panel-body" }, el("p", { class: "dim" }, "Loading repos…"));
+  // Read-only for two reasons: the ticket merged, or this token cannot change anything.
+  const merged = !ticket || ticket.status === "done";
   const card = el(
     "section",
     {
@@ -11469,13 +11537,18 @@ function renderRepoPanel(ticketId, claimBox, { readOnly = false, ticket = null }
       "aria-label": "The boundary",
     },
     [
-      panelHead("The boundary", readOnly ? "read-only: merged" : "where agents may play"),
+      panelHead(
+        "The boundary",
+        readOnly ? (merged ? "read-only: merged" : "read-only access") : "where agents may play",
+      ),
       el(
         "p",
         { class: "section-note dim" },
-        readOnly
+        readOnly && merged
           ? "Merged. The boundary stays as the record of where this ticket played; it can no longer change."
-          : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
+          : readOnly
+            ? "Where this ticket may write, read or test. This token can look, not change it."
+            : "Confirm which repos this ticket may write, read or test before it can go ready. Suggestions are not a boundary until you confirm them.",
       ),
       body,
     ],
@@ -12707,6 +12780,9 @@ async function renderSettings() {
     el("p", { class: "boot-unsaved" }, ["Unsaved changes: ", idxDirty]),
   );
   instructions.sync();
+  // A read token sees the room, not its switches: every editor and button in it is
+  // off (the index's search still works). The strip under the header says why.
+  roLockAll(main);
   return wrap;
 }
 
@@ -14199,6 +14275,7 @@ async function renderCreate(param) {
     { class: "btn", type: "submit", "aria-describedby": createHintId },
     "Create ticket",
   );
+  roLock(createBtn);
   const syncCreate = ({ hasWrite }) => {
     createBtn.setAttribute("aria-disabled", String(!hasWrite));
     createHint.hidden = hasWrite;
@@ -17195,6 +17272,9 @@ function renderRepoCommandsEditor(repo) {
 // click, asks in the shared sheet, then hides the repo and refreshes — it drops off the list and
 // reappears on the "Hidden repos" page.
 function hideRepoBtn(repo) {
+  return roLock(hideRepoBtnControl(repo));
+}
+function hideRepoBtnControl(repo) {
   return el(
     "button",
     {
@@ -18008,6 +18088,7 @@ async function renderRepo(id) {
         },
         "Hide repo",
       );
+  roLock(hideBtn);
 
   const lede = t ? groundCountLine(t, { where: "in this repo" }) : null;
 
@@ -18063,6 +18144,7 @@ async function renderRepo(id) {
     },
     "Edit",
   );
+  roLock(branchBtn);
   const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
   const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
     panelHead("The ground", "where the work is done", null, { kit: "claret" }),
@@ -22757,6 +22839,8 @@ function renderLoreList(res, repo, opts = {}) {
             { class: "btn small lore-reject", type: "button", "aria-label": `Reject “${l.title}”` },
             "Reject",
           );
+          roLock(approve);
+          roLock(reject);
           const actionsEl = el("div", { class: "lore-actions" }, [approve, reject]);
           // Reject asks for an optional reason in place (the memory CLI recommends
           // one: the agent that filed the draft reads it). Enter rejects, with or

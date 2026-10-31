@@ -6,7 +6,7 @@
 # JUST-SUBMITTED delivery and appends the scored verdict to the eval ledger
 # ($GAFFER_DATA/eval-ledger.jsonl, crew: evalLedgerCli). This is how the factory
 # MEASURES itself: pass rate, per-dimension quality, cost-per-passing-delivery,
-# and the memory-lift metric all aggregate from these records.
+# and the memory score gap all aggregate from these records.
 #
 # TELEMETRY, NOT A GATE (this slice): the verdict — including a `blocking`
 # judge fail — is recorded and logged, never enforced. The human review gate

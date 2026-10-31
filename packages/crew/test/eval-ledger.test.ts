@@ -71,7 +71,7 @@ describe("summarize", () => {
     expect(s.dimensionMeans.minimalism).toBeUndefined();
   });
 
-  it("MEMORY LIFT: mean score with memory minus without", () => {
+  it("memory score gap: mean judge score with memory primed minus without", () => {
     const s = summarize([
       rec({ memoryPresent: true, score: 5 }),
       rec({ memoryPresent: true, score: 4 }),
@@ -205,7 +205,7 @@ describe("evalLedgerCli", () => {
     expect(unk?.costUsd).toBeUndefined();
   });
 
-  it("renderSummary parses a ledger and surfaces the memory-lift block", () => {
+  it("renderSummary parses a ledger and surfaces the memory score gap block", () => {
     const jsonl = [
       formatRecord(rec({ memoryPresent: true, score: 5 })),
       formatRecord(rec({ memoryPresent: false, score: 3 })),

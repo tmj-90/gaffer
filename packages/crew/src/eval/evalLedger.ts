@@ -4,14 +4,18 @@
 // The delivery-quality judge (deliveryJudge.ts) scores ONE delivery. This turns
 // a stream of those verdicts into a measured quality signal over time: an
 // append-only JSONL ledger of records, plus a summary that computes pass rate,
-// mean score, per-dimension means, and — the headline metric — the MEMORY LIFT:
-// mean delivery score WITH durable memory context present minus WITHOUT it.
+// mean score, per-dimension means, cost-per-pass, and the MEMORY SCORE GAP
+// (MEMORY_GAP_LABEL): the mean judge score of submitted deliveries that had
+// durable memory primed minus the mean of those that did not.
 //
-// That last number is the whole point. Gaffer's thesis is "it builds you an
-// asset — the more you run it, the more context primes the next delivery." Until
-// now that was an assertion; memoryLift makes it falsifiable. A positive lift is
-// evidence the memory earns its keep; ~zero (or negative) says it doesn't, and
-// you should know either way.
+// That gap is NOT a measure of what memory causes. The two arms are different
+// tickets, and the judge only ever sees work that cleared every gate and was
+// submitted, so attempts that failed earlier (and their spend) are in neither
+// arm (MEMORY_GAP_EXCLUDES). The honest measure is a matched-ticket comparison —
+// the same tickets run with and without memory, counting every attempt, spend
+// and human acceptance (docs/eval-harness.md, "Matched-ticket comparison"). It
+// is not implemented; `memoryLift.matched` is its seam and stays null. The field
+// keeps its historical `memoryLift` key for compatibility.
 //
 // All functions are pure (string/array in → value out); the fs read/append and
 // the timestamp live in the CLI, so this stays fully unit-testable.
@@ -156,7 +160,7 @@ export function parseLedger(jsonl: string): EvalRecord[] {
   return out;
 }
 
-/** Aggregate records into the quality summary, including the memory-lift metric. */
+/** Aggregate records into the quality summary, including the memory score gap. */
 export function summarize(records: EvalRecord[]): EvalSummary {
   const count = records.length;
   const scores = records.map((r) => r.score);

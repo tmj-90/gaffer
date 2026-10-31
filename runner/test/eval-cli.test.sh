@@ -2,10 +2,10 @@
 # =====================================================================
 # `gaffer eval` — the operator's view of the eval ledger (docs/eval-harness.md).
 # Drives the REAL dispatcher + crew CLIs over a seeded temp ledger:
-#   A  help lists the subcommand
+#   A  help lists the subcommand and names the memory score gap (never 'memory lift')
 #   B  empty ledger → friendly enable-hint, exit 0
-#   C  seeded ledger → human view carries pass rate, memory lift, cost/pass
-#   D  --json emits the raw summary (parses; lift matches)
+#   C  seeded ledger → human view carries pass rate, memory score gap, cost/pass
+#   D  --json emits the raw summary (parses; gap matches)
 # =====================================================================
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,6 +28,9 @@ export GAFFER_DATA="$WORK/gd"; mkdir -p "$GAFFER_DATA"
 echo "== A. help lists eval =="
 grep -q 'gaffer eval' <<<"$(bash "$RUNNER_DIR/gaffer" help 2>/dev/null)" \
   && ok "help mentions gaffer eval" || no "help missing the eval subcommand"
+HELP="$(bash "$RUNNER_DIR/gaffer" help 2>/dev/null)"
+grep -q 'memory score gap' <<<"$HELP" && ok "help names the memory score gap" || no "help does not say 'memory score gap'"
+if grep -qi 'memory lift' <<<"$HELP"; then no "help still advertises 'memory lift'"; else ok "help never says 'memory lift'"; fi
 
 echo "== B. empty ledger =="
 OUT="$(bash "$RUNNER_DIR/gaffer" eval 2>&1)"; rc=$?

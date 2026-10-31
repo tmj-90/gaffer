@@ -3306,7 +3306,7 @@ $_trail_q
     # EVAL JUDGE (quality telemetry, GAFFER_EVAL_JUDGE=1 opt-in): score the
     # just-submitted delivery against its ACs on the crew rubric and append the
     # verdict + real spend to the eval ledger. memoryPresent = whether durable
-    # product-context primed this delivery (the memory-lift metric's arm flag).
+    # product-context primed this delivery (the memory score gap's arm flag).
     # Additive + fail-soft telemetry — never gates or delays the submitted work.
     # The judge gets the DoD checklist this delivery passed (GAFFER_EVAL_TEST_OUTPUT)
     # and the REPO NAME for the ledger record ($PRIMARY_REPO is the worktree path,

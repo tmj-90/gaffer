@@ -10,7 +10,7 @@
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
-#   gaffer eval [--json]              delivery-quality metrics (pass rate · memory lift · cost/pass)
+#   gaffer eval [--json]              delivery-quality metrics (pass rate · memory score gap · cost/pass)
 #   gaffer run [--dry-run] [--daemon] [--interval N]
 #                                     go live: one supervisor pass (drains the ready queue), or
 #                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM;
@@ -295,8 +295,9 @@ eval)
   if [ "${1:-}" = "replay" ]; then shift; exec bash "$HERE/eval/replay.sh" "$@"; fi
   case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval argument '$1'" ;; esac
   # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
-  # pass rate, per-dimension means, MEMORY LIFT (does the durable memory
-  # measurably improve deliveries?), and cost-per-passing-delivery.
+  # pass rate, per-dimension means, the memory score gap (judge score on
+  # submitted work, primed vs not; not an uplift — see docs/eval-harness.md),
+  # and cost-per-passing-delivery.
   _ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
   _cli="$CREW_DIR/dist/eval/evalLedgerCli.js"
   if [ ! -f "$_cli" ]; then echo "eval: crew not built — run: pnpm -C packages/crew build"; exit 1; fi

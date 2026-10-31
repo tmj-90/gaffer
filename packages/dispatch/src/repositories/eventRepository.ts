@@ -381,6 +381,28 @@ export class EventRepository {
     return row ?? null;
   }
 
+  /**
+   * True when a human UNBLOCKED the ticket into refining (a `blocked -> refining`
+   * transition) after its latest park event: the park was dealt with, so the Team
+   * Sheet must stop listing the ticket as parked even though it sits in refining.
+   */
+  unblockedToRefiningSinceLastPark(ticketId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM work_events t
+          WHERE t.entity_type = 'ticket' AND t.entity_id = @ticketId
+            AND t.event_type = 'ticket.transitioned'
+            AND json_extract(t.payload_json, '$.from') = 'blocked'
+            AND json_extract(t.payload_json, '$.to') = 'refining'
+            AND t.rowid > COALESCE((SELECT MAX(b.rowid) FROM work_events b
+                                     WHERE b.entity_type = 'ticket' AND b.entity_id = @ticketId
+                                       AND b.event_type = 'ticket.blocked'), 0)
+          LIMIT 1`,
+      )
+      .get({ ticketId });
+    return row !== undefined;
+  }
+
   /** True when the ticket has at least one work-event of the given type. */
   hasTicketEvent(ticketId: string, eventType: string): boolean {
     const row = this.db

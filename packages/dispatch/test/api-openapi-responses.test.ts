@@ -130,6 +130,11 @@ describe("OpenAPI response schemas match the live routes", () => {
     await expectContract("POST /tickets/:id/testable", `/tickets/${id}/testable`, {
       can_be_tested: true,
     });
+    await expectContract(
+      "POST /tickets/:id/allow-test-changes",
+      `/tickets/${id}/allow-test-changes`,
+      { allow_test_changes: true },
+    );
     await expectContract("POST /tickets/:id/test-contract", `/tickets/${id}/test-contract`, {
       run_command: "npm start",
     });

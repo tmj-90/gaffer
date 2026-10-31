@@ -3911,6 +3911,95 @@
         "x-capability": "full"
       }
     },
+    "/tickets/{id}/allow-test-changes": {
+      "post": {
+        "operationId": "postTicketsByIdAllowTestChanges",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Allow test changes (gate integrity)",
+        "description": "A human allows (or withdraws) this ticket's allowance to change its tests: delete or rename a test file, add a skip marker, rewrite a gate script. The runner's integrity gate row then reads PASS with a note instead of FLAG, and the `test-modified` risk annotation drops to medium so it no longer holds an auto-approve. Human or admin principals only (agent and system are refused); recorded as a `ticket.test_changes_allowed` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/allowTestChangesBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket_id, allow_test_changes, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestChangesAllowed"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
     "/tickets/{id}/test-contract": {
       "post": {
         "operationId": "postTicketsByIdTestContract",
@@ -9283,6 +9372,21 @@
           "depends_on"
         ]
       },
+      "allowTestChangesBody": {
+        "type": "object",
+        "properties": {
+          "allow_test_changes": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "allow_test_changes"
+        ]
+      },
       "assignReviewerBody": {
         "type": "object",
         "properties": {
@@ -11001,6 +11105,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -11061,6 +11169,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -11466,6 +11575,27 @@
         ],
         "additionalProperties": false
       },
+      "TestChangesAllowed": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {
+            "type": "string"
+          },
+          "allow_test_changes": {
+            "type": "boolean"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "ticket_id",
+          "allow_test_changes",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "TestContractSet": {
         "type": "object",
         "properties": {
@@ -11731,6 +11861,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -11791,6 +11925,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -12333,6 +12468,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -12393,6 +12532,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",
@@ -12580,6 +12720,10 @@
                 "acceptance": {
                   "type": "integer"
                 },
+                "allow_test_changes": {
+                  "type": "integer",
+                  "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+                },
                 "human_owner": {
                   "anyOf": [
                     {
@@ -12637,6 +12781,7 @@
                 "bootstrap",
                 "can_be_tested",
                 "acceptance",
+                "allow_test_changes",
                 "human_owner",
                 "human_delivered",
                 "delivery_budget_usd",
@@ -12836,6 +12981,10 @@
               "acceptance": {
                 "type": "integer"
               },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
               "human_owner": {
                 "anyOf": [
                   {
@@ -12896,6 +13045,7 @@
               "can_be_tested",
               "test_contract",
               "acceptance",
+              "allow_test_changes",
               "human_owner",
               "human_delivered",
               "delivery_budget_usd",

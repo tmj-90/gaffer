@@ -55,6 +55,9 @@ export const TicketRow = z
     can_be_tested: int,
     test_contract: nstr.describe("JSON-encoded test contract or null."),
     acceptance: int,
+    allow_test_changes: int.describe(
+      "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note).",
+    ),
     human_owner: nstr,
     human_delivered: nstr,
     delivery_budget_usd: z.number().nullable(),
@@ -212,6 +215,10 @@ export const TestableSet = z
     canBeTested: z.boolean().describe("Deprecated camelCase twin of can_be_tested."),
     eventId: str.describe("Deprecated camelCase twin of event_id."),
   })
+  .strict();
+
+export const TestChangesAllowed = z
+  .object({ ticket_id: str, allow_test_changes: z.boolean(), event_id: eventId })
   .strict();
 
 export const TestContractSet = z

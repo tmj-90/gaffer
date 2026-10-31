@@ -281,6 +281,27 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("allow-test-changes <ref>")
+    .description(
+      "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
+        "skip marker, rewrite a gate script) — the runner's integrity gate row then reads " +
+        "PASS with a note instead of FLAG, and an auto-approve is no longer held for it. " +
+        "--off withdraws the allowance. Human/admin only; recorded as an event.",
+    )
+    .option("--off", "withdraw the allowance (test changes are flagged again)", false)
+    .option("--reason <text>", "why this ticket may change its tests (kept on the event)")
+    .option("--admin", "act as an admin actor", false)
+    .action((ref, opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor = opts.admin
+        ? { type: "admin", id: process.env.USER ?? "cli" }
+        : cliActor();
+      const res = wg.setAllowTestChanges(ref, !opts.off, actor, opts.reason);
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("test-contract <ref>")
     .description(
       "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +

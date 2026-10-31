@@ -150,6 +150,7 @@ export class TicketService {
         can_be_tested: 0,
         test_contract: null,
         acceptance: input.acceptance ? 1 : 0,
+        allow_test_changes: 0,
         human_owner: null,
         human_delivered: null,
         delivery_budget_usd: input.delivery_budget_usd ?? null,
@@ -391,6 +392,50 @@ export class TicketService {
         payload: { can_be_tested: canBeTested },
       });
       return { ticketId: ticket.id, canBeTested, eventId };
+    });
+  }
+
+  // --- Gate integrity -------------------------------------------------------
+
+  /**
+   * GATE INTEGRITY: a HUMAN allows (or withdraws the allowance for) this ticket to
+   * change its tests. With it set, the runner's integrity gate row reads PASS-with-note
+   * instead of FLAG and the `test-modified` risk annotation no longer holds an
+   * auto-approve. Only a human or admin may set it — an agent cannot excuse its own
+   * test edits, and the runner (system) has no business deciding it either — so both
+   * are refused here, server-side, whatever surface they came through. Every change is
+   * a `ticket.test_changes_allowed` event naming who set it and the optional reason.
+   */
+  setAllowTestChanges(
+    ticketRef: string,
+    allowed: boolean,
+    actor: Actor,
+    reason?: string,
+  ): { ticketId: string; allowTestChanges: boolean; eventId: string } {
+    if (actor.type !== "human" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only a human or admin may allow test changes on a ticket; an agent cannot excuse its own test edits.",
+        { actor_type: actor.type },
+      );
+    }
+    const note = (reason ?? "").trim();
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      const now = this.clock.now();
+      this.tickets.setAllowTestChanges(ticket.id, allowed, now);
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.test_changes_allowed",
+        payload: {
+          allow_test_changes: allowed,
+          previous: ticket.allow_test_changes === 1,
+          ...(note ? { reason: note.slice(0, 500) } : {}),
+        },
+      });
+      return { ticketId: ticket.id, allowTestChanges: allowed, eventId };
     });
   }
 

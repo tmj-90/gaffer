@@ -297,6 +297,10 @@ function migrateLocked(db: Db): void {
   // tickets table — a plain additive ALTER (0/1, default 0, no CHECK to widen), so no
   // rebuild. No-op on a fresh DB (SCHEMA_SQL creates it) and idempotent afterwards.
   alterTicketsAddAcceptance(db);
+  // GATE INTEGRITY (v28→v29): add the human-set `allow_test_changes` marker column to
+  // an EXISTING tickets table — a plain additive ALTER (0/1, default 0, no CHECK), so
+  // no rebuild. No-op on a fresh DB (SCHEMA_SQL creates it) and idempotent afterwards.
+  alterTicketsAddAllowTestChanges(db);
   // SQUAD (v26→v27): add the presentation-only `squad_name` + `shirt_number` columns
   // to an EXISTING agents table — plain additive ALTERs (NULL backfill ⇒ unnamed,
   // no number), so no rebuild. Must run BEFORE SCHEMA_SQL, whose partial unique
@@ -463,6 +467,22 @@ function alterTicketsAddAcceptance(db: Db): void {
   const cols = new Set(info.map((c) => c.name));
   if (!cols.has("acceptance")) {
     db.exec("ALTER TABLE tickets ADD COLUMN acceptance INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+/**
+ * GATE INTEGRITY additive migration (v28→v29): add the `allow_test_changes` column to
+ * an EXISTING `tickets` table — the human's per-ticket "this ticket may change its
+ * tests" flag. Idempotent (skipped when the column exists). Existing rows inherit 0
+ * (no allowance), which is the safe backfill: every pre-v29 ticket stays flagged when
+ * its delivery weakens a test.
+ */
+function alterTicketsAddAllowTestChanges(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(tickets)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("allow_test_changes")) {
+    db.exec("ALTER TABLE tickets ADD COLUMN allow_test_changes INTEGER NOT NULL DEFAULT 0");
   }
 }
 

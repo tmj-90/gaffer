@@ -1393,6 +1393,16 @@ export class Dispatch {
     return this.ticketSvc.setTestContract(ticketRef, raw, actor);
   }
 
+  /** GATE INTEGRITY: a human allows this ticket to change its tests (human/admin only). */
+  setAllowTestChanges(
+    ticketRef: string,
+    allowed: boolean,
+    actor: Actor,
+    reason?: string,
+  ): { ticketId: string; allowTestChanges: boolean; eventId: string } {
+    return this.ticketSvc.setAllowTestChanges(ticketRef, allowed, actor, reason);
+  }
+
   getTestContract(ticketRef: string): TestContract | null {
     return this.ticketSvc.getTestContract(ticketRef);
   }

@@ -597,13 +597,20 @@ export class ReviewGateService {
         reasons,
         files: observed?.files ?? null,
         lines: observed?.lines ?? null,
+        ...(observed?.holds?.length ? { holds: observed.holds } : {}),
       },
     });
-    throw new DispatchError(
-      "OBSERVED_RISK_ESCALATED",
-      `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`,
-      { declared: ticket.risk_level, observed: observedLevel, reasons },
-    );
+    // GATE INTEGRITY: a hard hold (the delivery weakened its own tests) is named as such —
+    // the declared level does not matter for it, so "exceeds declared" would mislead.
+    const message = observed?.holds?.length
+      ? `Auto-approve held for human review: the delivery modified the tests that gate it (${observed.holds.join("; ")}). A human can approve, or allow test changes on the ticket.`
+      : `Auto-approve held for human review: observed risk '${observedLevel}' exceeds declared '${ticket.risk_level}'.`;
+    throw new DispatchError("OBSERVED_RISK_ESCALATED", message, {
+      declared: ticket.risk_level,
+      observed: observedLevel,
+      reasons,
+      ...(observed?.holds?.length ? { holds: observed.holds } : {}),
+    });
   }
 
   /**

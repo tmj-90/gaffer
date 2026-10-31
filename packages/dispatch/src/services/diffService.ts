@@ -2,7 +2,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
-import { computeRiskAnnotations, type RiskAnnotation } from "./riskAnnotations.js";
+import {
+  computeRiskAnnotations,
+  testModifiedAnnotation,
+  type RiskAnnotation,
+} from "./riskAnnotations.js";
+import {
+  collectTestIntegrity,
+  extraTestPathRe,
+  gateScriptNamesOf,
+  type TestIntegrityFindings,
+} from "./testIntegrity.js";
 import type { RepoRepository } from "../repositories/repoRepository.js";
 import type { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
 import type { TicketRepository } from "../repositories/ticketRepository.js";
@@ -223,6 +233,8 @@ interface DiffTarget {
   label: string;
   /** The range for error text. */
   rangeDesc: string;
+  /** The repo's registered gate commands (the integrity scan's named scripts). */
+  gateCommands: string[];
 }
 
 /**
@@ -300,6 +312,9 @@ function resolveDiffTargets(
         diffArgs: isBootstrap ? [GIT_EMPTY_TREE, "HEAD"] : [`${baseBranch}...${branch}`],
         label: isBootstrap ? "initial commit" : branch!,
         rangeDesc: isBootstrap ? "the initial commit" : `${baseBranch}...${branch}`,
+        gateCommands: [repo.test_command, repo.lint_command].filter(
+          (c): c is string => typeof c === "string" && c.trim() !== "",
+        ),
       },
     };
   });
@@ -315,6 +330,35 @@ function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
     return { ...res, stdout: cut === -1 ? "" : res.stdout.slice(0, cut + 1) };
   }
   return res;
+}
+
+/**
+ * GATE INTEGRITY for one diff target: the base..head integrity findings, read from the
+ * real repo (merge-base of the default branch and the delivery branch, so the default
+ * branch moving on does not count as the delivery deleting anything). A git failure is
+ * an `incomplete` finding — it flags, never passes silently.
+ */
+function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindings {
+  const git = (args: readonly string[], opts?: { maxBuffer?: number }): GitResult =>
+    runGit(t.localPath, args, opts);
+  const opts = {
+    gateScriptNames: gateScriptNamesOf(t.gateCommands),
+    extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
+  };
+  if (t.isBootstrap) return collectTestIntegrity(git, GIT_EMPTY_TREE, "HEAD", opts);
+  const mb = runGit(t.localPath, ["merge-base", t.baseBranch, t.branch!]);
+  const base = mb.status === 0 ? mb.stdout.trim() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(base)) {
+    return {
+      deleted: [],
+      renamed: [],
+      markers: [],
+      scripts: [],
+      configs: [],
+      incomplete: [`could not find where ${t.branch} branched from ${t.baseBranch}`],
+    };
+  }
+  return collectTestIntegrity(git, base, t.branch!, opts);
 }
 
 /**
@@ -349,7 +393,17 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
     const { files, additions, deletions, paths } = parseNumstat(stat.stdout);
     // ADVISORY risk flags for the reviewer — computed from the real changed paths +
     // deletion count. Never gates; the authoritative diff below is unchanged.
-    const riskAnnotations = computeRiskAnnotations(paths, deletions);
+    // GATE INTEGRITY adds `test-modified` (deleted/renamed tests, new skip markers, a
+    // rewritten gate script): advisory here too, but observedRisk.ts makes an unallowed
+    // one a hard hold on the auto-ship path.
+    const testAnn = testModifiedAnnotation(
+      testIntegrityFor(runGit, t),
+      ticket.allow_test_changes === 1,
+    );
+    const riskAnnotations = [
+      ...computeRiskAnnotations(paths, deletions),
+      ...(testAnn ? [testAnn] : []),
+    ];
 
     // The runner stops git once the patch passes its cap and flags `truncated`: a
     // lockfile regeneration or fixture drop is still a real diff, shown capped.

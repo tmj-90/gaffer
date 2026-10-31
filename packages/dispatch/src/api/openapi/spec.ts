@@ -82,6 +82,11 @@ const principalAdminRequired: ResponseSpec = {
     "The caller authenticated with a principal token; only the shared operator token may manage principals (`PRINCIPAL_ADMIN_REQUIRED`).",
   content: "json",
 };
+const forbidden: ResponseSpec = {
+  status: 403,
+  description: "The calling principal may not do this (`ACTOR_NOT_PERMITTED`).",
+  content: "json",
+};
 const conflict: ResponseSpec = {
   status: 409,
   description:
@@ -770,6 +775,27 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       ),
       notFound,
       invalid,
+    ],
+  },
+  {
+    method: "POST",
+    path: "/tickets/:id/allow-test-changes",
+    tag: T.review,
+    summary: "Allow test changes (gate integrity)",
+    description:
+      "A human allows (or withdraws) this ticket's allowance to change its tests: delete " +
+      "or rename a test file, add a skip marker, rewrite a gate script. The runner's " +
+      "integrity gate row then reads PASS with a note instead of FLAG, and the " +
+      "`test-modified` risk annotation drops to medium so it no longer holds an " +
+      "auto-approve. Human or admin principals only (agent and system are refused); " +
+      "recorded as a `ticket.test_changes_allowed` event.",
+    capability: "full",
+    body: "allowTestChangesBody",
+    responses: [
+      ok("`{ ticket_id, allow_test_changes, event_id }`.", "TestChangesAllowed"),
+      notFound,
+      invalid,
+      forbidden,
     ],
   },
   {

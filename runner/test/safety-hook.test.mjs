@@ -1267,6 +1267,9 @@ for (const [label, cmd] of [
   ["crew repo-access", "crew repo-access list"],
   // Gate inputs the MCP scope check guards must not be reachable through the CLI either.
   ["wg ticket set-testable --off", "wg ticket set-testable 5 --off"],
+  // GATE INTEGRITY: an agent can never excuse its own test edits.
+  ["wg ticket allow-test-changes", "wg ticket allow-test-changes 5 --reason ok"],
+  ["dispatch ticket allow-test-changes", "dispatch ticket allow-test-changes 5"],
   ["dispatch ticket test-contract", "dispatch ticket test-contract 5 --run 'npm start'"],
   ["wg ticket tester-pass", "wg ticket tester-pass 5 --summary ok"],
   ["wg ticket repo-delivery record", "wg ticket repo-delivery record 5 app --status done"],

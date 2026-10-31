@@ -195,6 +195,17 @@ export const setTestableBody = z.object({
 });
 export type SetTestableBody = z.infer<typeof setTestableBody>;
 
+/**
+ * GATE INTEGRITY: POST /tickets/:id/allow-test-changes — a human allows (true) or
+ * withdraws (false) this ticket's allowance to change its tests, with an optional reason
+ * recorded on the event.
+ */
+export const allowTestChangesBody = z.object({
+  allow_test_changes: z.boolean(),
+  reason: z.string().trim().max(500).optional(),
+});
+export type AllowTestChangesBody = z.infer<typeof allowTestChangesBody>;
+
 export const setTestContractBody = z.object({
   changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
   runtime_deps: z.array(z.string().trim().min(1).max(500)).max(100).default([]),

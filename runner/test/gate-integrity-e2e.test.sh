@@ -71,7 +71,8 @@ review_tick >/dev/null
 EV2="$(ticket_events "$T2")"
 [[ "$EV2" == *"ticket.autoship_escalated"* ]] && [[ "$EV2" == *"tests modified"* ]] \
   && ok "2: an autoship_escalated event records the test-modified hold" || fail "2: events lack the hold"
-wg review approve "$T2" >/dev/null 2>&1
+# A human approval names the commit it reviewed (an unnamed or moved revision is refused).
+wg review approve "$T2" $(wg ticket diff "$T2" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' ') >/dev/null 2>&1
 [ "$(st "$T2")" = "ready_for_merge" ] && ok "2: a human's approve is not held" || fail "2: human approve → $(st "$T2")"
 retire "$T2"
 

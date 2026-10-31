@@ -255,7 +255,8 @@ grep -q "d.ticket.allow_test_changes === 1" "$TICK" && grep -q '_DOD_ALLOW_TESTS
 
 _rec_line="$(grep -n '^  _gaffer_record_delivery_bases$' "$TICK" | head -n 1 | cut -d: -f1)"
 _env_line="$(grep -n 'log "created worktree for ' "$TICK" | head -n 1 | cut -d: -f1)"
-_spawn_line="$(grep -n '^  worker_deliver "$PRIMARY_REPO"' "$TICK" | head -n 1 | cut -d: -f1)"
+# The spawn may carry a launch label (GAFFER_LAUNCH_KIND=delivery, the paid-launch admission).
+_spawn_line="$(grep -nE '^  (GAFFER_LAUNCH_KIND=[a-z]+ )?worker_deliver "\$PRIMARY_REPO"' "$TICK" | head -n 1 | cut -d: -f1)"
 grep -q 'wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha"' "$TICK" \
   && [ -n "$_rec_line" ] && [ -n "$_env_line" ] && [ -n "$_spawn_line" ] \
   && [ "$_env_line" -lt "$_rec_line" ] && [ "$_rec_line" -lt "$_spawn_line" ] \

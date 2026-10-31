@@ -1,6 +1,7 @@
 # Gaffer greenfield "create-a-repo" delivery mode (sourced by factory.config.sh).
 # shellcheck shell=bash
 _GAFFER_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.mjs"
+_GAFFER_GREENFIELD_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # A `bootstrap` ticket (dispatch `ticket.bootstrap == 1`) has NO existing repo to
 # branch — it CREATES one. Today's normal flow branches an onboarded repo and
@@ -276,6 +277,25 @@ gaffer_ensure_node_modules() {
     return 0 # no lockfile → not a deterministic install; leave it for a human
   fi
   command -v "$pm" >/dev/null 2>&1 || return 0
+  # STRICT-REQUIRE: this prime runs on the HOST before any sandbox wrap exists, and an
+  # install executes repository code (.pnpmfile.cjs, yarnPath) despite --ignore-scripts.
+  # Under GAFFER_STRICT_REQUIRE nothing of the repository's runs outside an OS sandbox,
+  # so the host prime is refused; the delivery worktree's pre-gate install
+  # (gaffer_dod_install_deps) runs inside the validation sandbox instead.
+  case "${GAFFER_STRICT_REQUIRE:-0}" in
+    1|true|yes|on)
+      printf 'gaffer: greenfield: GAFFER_STRICT_REQUIRE=1 — not priming %s deps on the host in %s (the sandboxed pre-gate install covers the worktree)\n' "$pm" "$dir" >&2
+      return 0 ;;
+  esac
+  # A STRIPPED environment (no operator tokens, a throwaway HOME) — the same allowlist
+  # the sandboxed pre-gate install uses (lib/dod.sh gaffer_dod_install_env).
+  local -a _genv=()
+  local _ghome=""
+  if declare -F gaffer_dod_install_env >/dev/null 2>&1; then
+    GAFFER_DOD_WRAP="" gaffer_dod_install_env _genv _ghome
+  else
+    _genv=( "PATH=${PATH:-/usr/bin:/bin}" "HOME=/nonexistent" "TMPDIR=${TMPDIR:-/tmp}" "CI=1" )
+  fi
 
   # Frozen/CI install first (respects the lockfile); fall back to a plain install if
   # the lockfile is out of sync, so a hand-authored scaffold still primes. Output is
@@ -286,19 +306,20 @@ gaffer_ensure_node_modules() {
   local _out=""
   case "$pm" in
     pnpm)
-      _out="$( { (cd "$dir" && pnpm install --frozen-lockfile --ignore-scripts) ||
-        (cd "$dir" && pnpm install --ignore-scripts); } 2>&1 )" || true
+      _out="$( { (cd "$dir" && env -i "${_genv[@]}" pnpm install --frozen-lockfile --ignore-scripts) ||
+        (cd "$dir" && env -i "${_genv[@]}" pnpm install --ignore-scripts); } 2>&1 )" || true
       ;;
     yarn)
-      _out="$( { (cd "$dir" && yarn install --frozen-lockfile --ignore-scripts) ||
-        (cd "$dir" && yarn install --ignore-scripts); } 2>&1 )" || true
+      _out="$( { (cd "$dir" && env -i "${_genv[@]}" yarn install --frozen-lockfile --ignore-scripts) ||
+        (cd "$dir" && env -i "${_genv[@]}" yarn install --ignore-scripts); } 2>&1 )" || true
       ;;
     npm)
-      _out="$( { (cd "$dir" && npm ci --ignore-scripts) ||
-        (cd "$dir" && npm install --ignore-scripts); } 2>&1 )" || true
+      _out="$( { (cd "$dir" && env -i "${_genv[@]}" npm ci --ignore-scripts) ||
+        (cd "$dir" && env -i "${_genv[@]}" npm install --ignore-scripts); } 2>&1 )" || true
       ;;
   esac
 
+  [ -n "$_ghome" ] && rm -rf "$_ghome"
   # Success = node_modules materialised → echo the pm for the caller's log. Otherwise
   # the install was ATTEMPTED but failed: surface the captured reason on stderr and
   # echo a `FAILED:<pm>` sentinel so the caller logs an accurate, ticket-scoped warning
@@ -510,6 +531,22 @@ _gaffer_inherit_amb_spawn() {  # stdin: plan JSON; args: <idx> [ticket] → answ
   # scratch dir so no CLAUDE.md / project settings load into a one-word answer.
   local scratch rc=0 text="" t0=$SECONDS
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-inherit.XXXXXX")" || return 0
+  # BUDGET ADMISSION (external review #6): this classifier is a PAID `claude -p` (booked
+  # as kind `inherit`), and it runs right after a bootstrap delivery, the spend most
+  # likely to have just used up the cap. Ask the same check every other paid launch asks
+  # (lib/budget.sh → lib/budget-admission.mjs). If budget.sh was not sourced, load the
+  # sibling copy; if the check still cannot be asked, refuse (fail closed). A refusal
+  # echoes nothing, so the caller leaves the link for a human, as on a bad answer.
+  if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 && [ -f "$_GAFFER_GREENFIELD_LIB/budget.sh" ]; then
+    # shellcheck source=budget.sh
+    . "$_GAFFER_GREENFIELD_LIB/budget.sh"
+  fi
+  if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 || ! gaffer_paid_launch_admitted inherit; then
+    local _why="inherit: budget admission refused the paid repo classifier for #${tnum:-?}, no agent spawned; the link is left for a human"
+    if declare -F log >/dev/null 2>&1; then log "$_why"; else printf '%s\n' "$_why" >&2; fi
+    rm -rf "$scratch"
+    return 0
+  fi
   ( cd "$scratch" && gaffer_timeout "${GAFFER_INHERIT_AMB_TIMEOUT:-300}" "$bin" "${argv[@]}" ) \
     >"$scratch/out.json" 2>/dev/null || rc=$?
   if type gaffer_usage_record >/dev/null 2>&1; then

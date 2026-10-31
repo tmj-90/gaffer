@@ -4,6 +4,21 @@ import type { Actor } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
 import { cliActor, open, parseAs, printJson } from "../shared.js";
 
+/** `--commit repo=sha` (or a bare sha) → a shown commit; malformed input is refused. */
+export function parseCommitFlag(value: string): { repo: string | null; sha: string } {
+  const v = String(value).trim();
+  const eq = v.lastIndexOf("=");
+  const repo = eq > 0 ? v.slice(0, eq).trim() : null;
+  const sha = (eq > 0 ? v.slice(eq + 1) : v).trim();
+  if (!/^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$/.test(sha)) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      `--commit expects <repo>=<full sha> or a full sha (got "${v}").`,
+    );
+  }
+  return { repo, sha: sha.toLowerCase() };
+}
+
 export function registerReview(program: Command): void {
   // --- Review (close a ticket from in_review) --------------------------------
 
@@ -18,6 +33,13 @@ export function registerReview(program: Command): void {
       "actor type: human (default) or agent (requires DISPATCH_ALLOW_AGENT_APPROVE=1)",
       "human",
     )
+    .option(
+      "--commit <repo=sha>",
+      "the commit you reviewed, per write repo (repeat for each repo; a bare <sha> for a " +
+        "single-repo ticket). Required whenever the delivery branch resolves: the approval " +
+        "is refused (stale_revision) when a branch moved past it. `ticket diff <ref>` prints the heads.",
+      (value: string, prev: string[] = []) => [...prev, value],
+    )
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["human", "agent"] as const);
       const wg = open(cmd.optsWithGlobals());
@@ -25,7 +47,8 @@ export function registerReview(program: Command): void {
         as === "agent"
           ? { type: "agent", id: opts.reviewer ?? "agent" }
           : { type: "human", id: opts.reviewer ?? "reviewer" };
-      const res = wg.approveReview(ref, actor);
+      const commits = ((opts.commit as string[] | undefined) ?? []).map(parseCommitFlag);
+      const res = wg.approveReview(ref, actor, { commits, requireCommits: true });
       printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
       wg.db.close();
     });

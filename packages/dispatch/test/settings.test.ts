@@ -271,6 +271,25 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     expect(applied).not.toContain("REVIEW_MODE");
   });
 
+  it("GAFFER_ALLOW_UNCAPPED is environment-only: a settings.json value never reaches env", () => {
+    // A hand-edited settings.json must not lift the live-run dollar-cap requirement:
+    // the dashboard's env is what the Poll button's tick inherits.
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ GAFFER_ALLOW_UNCAPPED: "1", MAX_TICKS: "7" }),
+      "utf8",
+    );
+    const env: NodeJS.ProcessEnv = {};
+    const { applied } = applySettingsToEnv(env, settingsPath);
+    expect(env.GAFFER_ALLOW_UNCAPPED).toBeUndefined();
+    expect(applied).not.toContain("GAFFER_ALLOW_UNCAPPED");
+    expect(env.MAX_TICKS).toBe("7"); // the rest of the file still applies
+    // The operator's real environment still opts out.
+    const real: NodeJS.ProcessEnv = { GAFFER_ALLOW_UNCAPPED: "1" };
+    applySettingsToEnv(real, settingsPath);
+    expect(real.GAFFER_ALLOW_UNCAPPED).toBe("1");
+  });
+
   it("derived keys are NOT env-locked — the UI may still edit them", () => {
     writeFileSync(settingsPath, JSON.stringify({ MAX_TICKS: "7" }), "utf8");
     const env: NodeJS.ProcessEnv = { GAFFER_PLAN_DEBATE: "1" };

@@ -35,15 +35,19 @@ import {
  * which changes as the factory works, so the packet sits outside the hash.
  */
 
-/** A gate verdict as the runner recorded it. */
+/**
+ * A gate verdict as the runner recorded it. FLAG is the gate-integrity row's advisory
+ * verdict (the delivery changed the tests that gate it): never a fail, never a skip.
+ */
 export interface PacketGate {
   gate: string;
   repo: string;
-  status: "PASS" | "FAIL" | "SKIPPED";
+  status: "PASS" | "FAIL" | "FLAG" | "SKIPPED";
   rc: string | null;
   /** The command a passing gate ran (the runner records it as the note). */
   command: string | null;
-  /** A failing or skipped gate's note ("exited 1: …", "no command configured"). */
+  /** A failing, skipped or integrity gate's note ("exited 1: …", "no command configured",
+   *  "deleted 1 test file (…)"). */
   note: string | null;
 }
 
@@ -186,15 +190,24 @@ function readGates(rows: Evidence[]): PacketGates | null {
   }
   if (!parsed || !Array.isArray(parsed.gates)) return null;
   const gateRows: PacketGate[] = (parsed.gates as Array<Record<string, unknown>>).map((g) => {
-    const status = g.status === "PASS" ? "PASS" : g.status === "FAIL" ? "FAIL" : "SKIPPED";
+    const status =
+      g.status === "PASS"
+        ? "PASS"
+        : g.status === "FAIL"
+          ? "FAIL"
+          : g.status === "FLAG"
+            ? "FLAG"
+            : "SKIPPED";
     const note = str(g.note);
+    // GATE INTEGRITY: the integrity row's note is what it found, not a command it ran.
+    const ranCommand = status === "PASS" && g.gate !== "integrity";
     return {
       gate: str(g.gate) ?? "gate",
       repo: str(g.repo) ?? "-",
       status,
       rc: g.rc === undefined || g.rc === null ? null : String(g.rc),
-      command: status === "PASS" ? note : null,
-      note: status === "PASS" ? null : note,
+      command: ranCommand ? note : null,
+      note: ranCommand ? null : note,
     };
   });
   return {

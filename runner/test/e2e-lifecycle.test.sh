@@ -58,6 +58,9 @@ REPO="$WORK/repo"
 export GAFFER_DATA="$WORK"
 
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
+# STALE REVISION: an approval names the commit(s) it reviewed — the heads `ticket diff`
+# reports, exactly what the dashboard sends.
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 ac_status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.acceptanceCriteria[0].status' 2>/dev/null || echo ''; }
@@ -173,7 +176,7 @@ wg submit "$NUM" --token "$CLAIM_TOKEN" --reason "gates passed" >/dev/null 2>&1
 [ "$(active_claims "$NUM")" = "0" ] && ok "submit COMPLETED the claim — zero active claims on #$NUM" || fail "claim not completed after submit (active=$(active_claims "$NUM"))"
 
 echo "== G3 (guard): an AGENT self-approve without the opt-in is REFUSED =="
-if wg review approve "$NUM" --as agent --reviewer bot >/dev/null 2>&1; then
+if wg review approve "$NUM" $(approve_heads "$NUM") --as agent --reviewer bot >/dev/null 2>&1; then
   fail "G3: an agent self-approved without DISPATCH_ALLOW_AGENT_APPROVE"
 else
   ok "G3: agent self-approve is refused (ACTOR_NOT_PERMITTED — a human must approve)"
@@ -187,10 +190,17 @@ else
 fi
 
 echo "== REVIEW APPROVE: the human approves; the real-diff done-gate passes =="
-wg review approve "$NUM" --reviewer human1 >/dev/null 2>&1
+wg review approve "$NUM" $(approve_heads "$NUM") --reviewer human1 >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "ready_for_merge" ] && ok "#$NUM moved in_review → ready_for_merge (done-gate satisfied by the REAL git diff)" || fail "#$NUM not ready_for_merge after approve (got '$(status_of "$NUM")')"
 
 echo "== MARK-MERGED: the runner records the landed merge =="
+# `done` means the approved commit LANDED: before the merge, mark-merged is refused.
+if wg ticket mark-merged "$NUM" --as system >/dev/null 2>&1; then
+  fail "mark-merged succeeded before the approved commit reached main"
+else
+  ok "mark-merged is refused until the approved commit is on main (not_landed)"
+fi
+git -C "$REPO" merge -q --no-edit "$BRANCH" >/dev/null 2>&1   # the merge command lands it
 wg ticket mark-merged "$NUM" --as system >/dev/null 2>&1
 [ "$(status_of "$NUM")" = "done" ] && ok "#$NUM moved ready_for_merge → done (merge landed)" || fail "#$NUM not done after mark-merged (got '$(status_of "$NUM")')"
 [ "$(active_claims "$NUM")" = "0" ] && ok "no active claim remains on the completed ticket" || fail "a claim lingers on the done ticket"
@@ -209,7 +219,7 @@ git -C "$REPO" branch "$BR2" main          # branch off main with NO extra commi
 wg ticket repo-delivery record "$NUM2" demo --branch "$BR2" >/dev/null 2>&1
 wg evidence "$NUM2" --token "$TOK2" --type test_output --summary ok --ac "$AC2" >/dev/null 2>&1
 wg submit "$NUM2" --token "$TOK2" --reason "no real change" >/dev/null 2>&1
-DENY_CODES="$(wg review approve "$NUM2" --reviewer human1 2>&1 | jget 'd.details.policy.failures.map((f) => f.code)' 2>/dev/null || echo '')"
+DENY_CODES="$(wg review approve "$NUM2" $(approve_heads "$NUM2") --reviewer human1 2>&1 | jget 'd.details.policy.failures.map((f) => f.code)' 2>/dev/null || echo '')"
 case "$DENY_CODES" in
   *PR_OR_DIFF_REQUIRED*) ok "G2: approve on an EMPTY-diff delivery is DENIED (PR_OR_DIFF_REQUIRED)";;
   *) fail "G2: empty-diff approve was not denied with PR_OR_DIFF_REQUIRED (got: $DENY_CODES, status=$(status_of "$NUM2"))";;
@@ -217,7 +227,7 @@ esac
 [ "$(status_of "$NUM2")" = "in_review" ] && ok "G2: the denied ticket stayed in_review (no illegitimate advance)" || fail "G2: ticket advanced despite the denied done-gate"
 # Now give it a REAL change and re-approve → passes (the gate reads git, not prose).
 git -C "$REPO" checkout -q "$BR2"; printf '// real\n' >> "$REPO/src/x.ts"; git -C "$REPO" add -A; git -C "$REPO" commit -qm real; git -C "$REPO" checkout -q main
-wg review approve "$NUM2" --reviewer human1 >/dev/null 2>&1
+wg review approve "$NUM2" $(approve_heads "$NUM2") --reviewer human1 >/dev/null 2>&1
 [ "$(status_of "$NUM2")" = "ready_for_merge" ] && ok "G2 control: with a REAL diff the SAME ticket now approves (done-gate reads git)" || fail "G2 control: real-diff approve failed (got '$(status_of "$NUM2")')"
 
 echo "== RELEASE bookkeeping: a rework-exhausted delivery parks to VISIBLE blocked =="

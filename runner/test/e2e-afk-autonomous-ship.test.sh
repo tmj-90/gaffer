@@ -74,6 +74,9 @@ source "$RUNNER_DIR/lib/hygiene.sh"
 # Redefine wg/jget AFTER sourcing so the test always hits OUR temp DB deterministically
 # (the config's own wg would do the same, but this pins the DB explicitly).
 wg()   { node "$CLI_JS" --db "$DB" "$@"; }
+# STALE REVISION: an approval names the commit(s) it reviewed — the heads `ticket diff`
+# reports, exactly what the dashboard sends.
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 status_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo ''; }
 active_claims() {
@@ -160,7 +163,7 @@ PLAN="$(gaffer_afk_ship_plan "$V" allow allow)"
 # REVIEWER ≠ AUTHOR (server-side): the bare delivering agent id is REFUSED even under the
 # approve floor — the implementer may not approve its own delivery. Negative control first.
 ( export DISPATCH_ALLOW_AGENT_APPROVE=1
-  wg review approve "$NUM" --as agent --reviewer "$AGENT" >/dev/null 2>&1 )
+  wg review approve "$NUM" $(approve_heads "$NUM") --as agent --reviewer "$AGENT" >/dev/null 2>&1 )
 [ "$(status_of "$NUM")" = "in_review" ] \
   && ok "self-approval refused: the DELIVERING agent id cannot approve its own ticket (still in_review)" \
   || fail "#$NUM left in_review by a self-approval attempt (got '$(status_of "$NUM")')"
@@ -168,7 +171,7 @@ PLAN="$(gaffer_afk_ship_plan "$V" allow allow)"
 # A reviewer that is NOT a registered agent is refused too: the reviewer-not-author rule
 # compares registered principals, never a free string like "<agent>/reviewer".
 ( export DISPATCH_ALLOW_AGENT_APPROVE=1
-  wg review approve "$NUM" --as agent --reviewer "$AGENT/reviewer" >/dev/null 2>&1 )
+  wg review approve "$NUM" $(approve_heads "$NUM") --as agent --reviewer "$AGENT/reviewer" >/dev/null 2>&1 )
 [ "$(status_of "$NUM")" = "in_review" ] \
   && ok "unregistered reviewer string refused: an agent approver must be a registered agent (still in_review)" \
   || fail "#$NUM approved by an unregistered reviewer string (got '$(status_of "$NUM")')"
@@ -178,7 +181,7 @@ PLAN="$(gaffer_afk_ship_plan "$V" allow allow)"
 # "$REVIEWER_AGENT", floor exported).
 REVIEWER_AGENT="$(wg agent register -n "afk-test-reviewer" --max-risk high 2>/dev/null | jget 'd.agent.id')"
 ( export DISPATCH_ALLOW_AGENT_APPROVE=1
-  wg review approve "$NUM" --as agent --reviewer "$REVIEWER_AGENT" >/dev/null 2>&1 )
+  wg review approve "$NUM" $(approve_heads "$NUM") --as agent --reviewer "$REVIEWER_AGENT" >/dev/null 2>&1 )
 [ "$(status_of "$NUM")" = "ready_for_merge" ] \
   && ok "runner (reviewer principal) approved under the floor → ready_for_merge (autonomous, no human)" \
   || fail "#$NUM not ready_for_merge after agent-approve (got '$(status_of "$NUM")')"

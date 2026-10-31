@@ -157,16 +157,23 @@ function makeContext(name, repo) {
   /** Approve a delivered ticket from its Review page (two presses: arm, confirm). */
   t.approve = async (tk) => {
     const pg = t.page;
+    // Already on this Review page (e.g. it showed a hold a moment ago): going to the same
+    // URL is a no-op navigation, so reload it to read the outcome afresh.
+    if (pg.url().endsWith(`#/review/${tk.id}`)) await pg.reload({ waitUntil: "load" });
     await t.visit(`review/${tk.id}`, { label: "review/:id" });
-    const btn = pg
-      .locator('.signoff button:has-text("Approve"), .signoff button:has-text("Confirm merge")')
-      .first();
-    await L.maybe(
+    const btn = pg.locator(".signoff button.signoff-btn").first();
+    const enabled = await L.maybe(
       async () => (!(await btn.isDisabled().catch(() => true)) ? true : null),
       "approve enabled",
       30000,
       500,
     );
+    // A server-side hold (e.g. required CI not passed) keeps the button disabled: answer
+    // the ticket as it stands and what the button says, rather than clicking a dead button.
+    if (!enabled) {
+      const held = (await btn.getAttribute("aria-label").catch(() => null)) || "disabled";
+      return { ...(await L.ticketOf(tk.id)), held };
+    }
     await btn.click();
     await btn.click();
     return L.waitStatus(tk.id, ["in_testing", "ready_for_merge", "done"], 20000, 500);

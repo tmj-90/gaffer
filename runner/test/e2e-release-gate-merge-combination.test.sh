@@ -94,6 +94,8 @@ wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
 wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --lint "npm run lint" >/dev/null 2>&1
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
+# The approval names the commits the reviewer saw (the CLI requires --commit <repo>=<sha>).
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 new_ticket() { local n; n="$(wg ticket create -t "$1" -d "$2" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "tests pass" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1; printf '%s' "$n"; }
 branch_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.branch_name || ""'; }
 main_tests() { local wt="$WORK/main-check"; git -C "$R" worktree add -q --detach "$wt" main >/dev/null 2>&1; ( cd "$wt" && npm run "$RG2_GATE" >/dev/null 2>&1 ); local rc=$?; git -C "$R" worktree remove --force "$wt" >/dev/null 2>&1; return $rc; }
@@ -107,7 +109,10 @@ AUTO_MERGE=0 run_tick >/dev/null; AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$A")" = "in_review" ] && [ "$(st "$B")" = "in_review" ] && ok "both delivered through their DoD gates (in_review)" || fail "statuses A=$(st "$A") B=$(st "$B")"
 BA="$(branch_of "$A")"; BB="$(branch_of "$B")"
 branch_tests "$BA" && branch_tests "$BB" && main_tests && ok "each branch passes npm run $RG2_GATE alone, and so does main" || fail "a side does not pass alone (fixture broken)"
-wg review approve "$A" --reviewer human1 >/dev/null 2>&1; wg review approve "$B" --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$A" $(approve_heads "$A") --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$B" $(approve_heads "$B") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$A")" = "ready_for_merge" ] && [ "$(st "$B")" = "ready_for_merge" ] && ok "both approved by a human (ready_for_merge)" || fail "approve: A=$(st "$A") B=$(st "$B")"
 
 echo "== 2: the merge lane lands A and holds B — main never gets the failing combination =="
@@ -138,7 +143,10 @@ echo "== 3: the dashboard's Merge now (bin/merge-ticket.mjs) applies the same ga
 C="$(new_ticket "Tag by handle [read-handle]" "tag() reads user().handle")"
 D="$(new_ticket "Drop the unused handle [drop-handle]" "remove handle from user(); nothing reads it")"
 AUTO_MERGE=0 run_tick >/dev/null; AUTO_MERGE=0 run_tick >/dev/null
-wg review approve "$C" --reviewer human1 >/dev/null 2>&1; wg review approve "$D" --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$C" $(approve_heads "$C") --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$D" $(approve_heads "$D") --reviewer human1 >/dev/null 2>&1
 merge_now() { ( cd "$RUNNER_DIR" && DISPATCH_DB="$DISPATCH_DB" GAFFER_DATA="$GAFFER_DATA" node bin/merge-ticket.mjs --ticket "$1" ) >"$WORK/mn.out" 2>"$WORK/mn.err"; }
 merge_now "$C"; rc=$?
 [ "$rc" -eq 0 ] && [ "$(st "$C")" = "done" ] && ok "Merge now lands C (its combination passes)" || fail "Merge now C rc=$rc status=$(st "$C") $(tail -c 300 "$WORK/mn.out")"

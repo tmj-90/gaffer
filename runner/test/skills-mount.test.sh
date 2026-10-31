@@ -2,7 +2,9 @@
 # Validates the per-agent SKILL mount (lib/skills-mount.sh): an agent's
 # .claude/skills must contain ONLY the selected + universal subset — NOT the
 # whole ~66-skill library — so Claude Code doesn't auto-load every frontmatter
-# block. Also covers the fail-soft whole-library fallback and cleanup.
+# block. The skills are REAL COPIES (a symlink into the library resolved outside the
+# worktree, so the safety hook refused the agent's Read of them). Also covers the
+# fail-soft whole-library fallback and cleanup.
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,7 +30,10 @@ SEL="$(node "$RUNNER_DIR/bin/select-skills.mjs" --stack typescript --skills-dir 
 DEST="$WORK/repoA"; mkdir -p "$DEST"
 gaffer_skills_mount "$DEST" "$SEL" "delivery-1"
 MOUNTED="$(ls "$DEST/.claude/skills" 2>/dev/null | wc -l | tr -d ' ')"
-[ -L "$DEST/.claude/skills" ] && ok ".claude/skills is a symlink" || fail ".claude/skills not a symlink"
+[ -d "$DEST/.claude/skills" ] && [ ! -L "$DEST/.claude/skills" ] && ok ".claude/skills is a real directory" || fail ".claude/skills is not a real directory"
+[ -f "$DEST/.claude/skills/run-tests/SKILL.md" ] && [ ! -L "$DEST/.claude/skills/run-tests" ] && [ ! -L "$DEST/.claude/skills/run-tests/SKILL.md" ] \
+  && ok "a mounted skill is a real copy, not a link into the library" || fail "run-tests is not a real copy"
+cmp -s "$DEST/.claude/skills/run-tests/SKILL.md" "$SKILLS_DIR/run-tests/SKILL.md" && ok "the copy is byte-identical to the library" || fail "the copy differs from the library"
 [ "$MOUNTED" -gt 0 ] && [ "$MOUNTED" -lt "$LIB_COUNT" ] \
   && ok "mounted a SUBSET ($MOUNTED of $LIB_COUNT)" || fail "mounted $MOUNTED (expected 0<n<$LIB_COUNT)"
 
@@ -67,20 +72,32 @@ for d in "$DEST/.claude/skills"/*; do
 done
 [ "$bad" = 0 ] && ok "all mounted entries resolve to a SKILL.md" || fail "a mounted entry is broken"
 
-echo "== AC5: cleanup removes the per-agent mount dir =="
-gaffer_skills_mount_cleanup "delivery-1"
+echo "== AC5: a re-mount is idempotent; cleanup removes the manifest and (with a dest) the copies =="
+gaffer_skills_mount "$DEST" "python-conventions" "delivery-1"
+[ -d "$DEST/.claude/skills/python-conventions" ] && [ ! -e "$DEST/.claude/skills/typescript-conventions" ] \
+  && ok "a re-mount replaces the previous install" || fail "re-mount kept the old selection"
+mkdir -p "$DEST/.claude/agent-notes"
+gaffer_skills_mount_cleanup "delivery-1" "$DEST"
 [ ! -e "$GAFFER_DATA/skills-mounts/delivery-1" ] \
-  && ok "mount dir removed by cleanup" || fail "mount dir survived cleanup"
+  && ok "mount manifest removed by cleanup" || fail "mount manifest survived cleanup"
+[ ! -e "$DEST/.claude/skills" ] && ok "the installed copies (and the dir Gaffer made) are gone" || fail "copies survived: $(ls -A "$DEST/.claude/skills" 2>/dev/null | tr '\n' ' ')"
+[ -d "$DEST/.claude/agent-notes" ] && ok "other .claude content is left alone" || fail "cleanup removed non-Gaffer .claude content"
 
-echo "== AC6: FAIL-SOFT — with no GAFFER_DATA, fall back to the whole library =="
+echo "== AC6: with no GAFFER_DATA the subset is still installed (copies need no factory state) =="
 (
   unset GAFFER_DATA
   DEST2="$WORK/repoB"; mkdir -p "$DEST2"
   gaffer_skills_mount "$DEST2" "run-tests" "x"
-  tgt="$(readlink "$DEST2/.claude/skills" 2>/dev/null)"
-  [ "$tgt" = "$SKILLS_DIR" ]
-) && ok "fallback symlinks the whole library when GAFFER_DATA unset" \
-   || fail "fail-soft fallback did not point at the whole library"
+  [ -f "$DEST2/.claude/skills/run-tests/SKILL.md" ] && [ ! -L "$DEST2/.claude/skills" ]
+) && ok "no GAFFER_DATA: copies installed, no link into the library" \
+   || fail "no GAFFER_DATA: the subset was not installed"
+
+echo "== AC6b: an OLDER symlink mount is replaced by copies =="
+DEST5="$WORK/repoE"; mkdir -p "$DEST5/.claude"; ln -sfn "$SKILLS_DIR" "$DEST5/.claude/skills"
+gaffer_skills_mount "$DEST5" "run-tests" "delivery-5"
+[ -d "$DEST5/.claude/skills" ] && [ ! -L "$DEST5/.claude/skills" ] && [ -f "$DEST5/.claude/skills/run-tests/SKILL.md" ] \
+  && ok "the legacy library link became a dir of copies" || fail "legacy link not replaced"
+[ -d "$SKILLS_DIR/run-tests" ] && ok "the library itself is untouched" || fail "the library lost run-tests"
 
 echo "== AC7: FAIL-SOFT — an all-unknown selection still mounts the universal set =="
 DEST3="$WORK/repoC"; mkdir -p "$DEST3"
@@ -95,15 +112,20 @@ gaffer_skills_mount "$DEST4" "add-api-endpoint" "review-77"
 SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # The safety hook's tool ledger: this agent (no ticket) Read one mounted skill in ITS
 # worktree; another agent's worktree read must not count.
+# Rows are stamped with the hook's decision: the allowed read is an open, the refused
+# one (plan-change) is recorded as refused and is NOT an open or an application.
 printf '%s\n' \
-  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.500Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$DEST4/.claude/skills/add-api-endpoint/SKILL.md\"}" \
-  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.600Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$WORK/other/.claude/skills/run-tests/SKILL.md\"}" \
+  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.500Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$DEST4/.claude/skills/add-api-endpoint/SKILL.md\",\"decision\":\"allow\"}" \
+  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.550Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$DEST4/.claude/skills/plan-change/SKILL.md\",\"decision\":\"block\"}" \
+  "{\"ts\":\"$(date -u +%Y-%m-%dT%H:%M:%S.600Z)\",\"ticket\":null,\"tool\":\"Read\",\"target\":\"$WORK/other/.claude/skills/run-tests/SKILL.md\",\"decision\":\"allow\"}" \
   >> "$GAFFER_DATA/tool-metrics.jsonl"
 gaffer_record_skill_usage 77 review python "add-api-endpoint" "" "review-77" "$DEST4" "$SINCE"
 ROW="$(tail -1 "$GAFFER_DATA/skills-telemetry.jsonl" 2>/dev/null)"
 grep -q '"role":"review"' <<<"$ROW" && ok "a review row was written" || fail "no review row: $ROW"
 grep -q '"plan-change"' <<<"$ROW" && ok "selected lists the mounted universal set (plan-change)" || fail "universal set missing from selected: $ROW"
 grep -q '"opened":\["add-api-endpoint"\]' <<<"$ROW" && ok "opened = the skill read in this agent's worktree only" || fail "opened wrong: $ROW"
+grep -q '"refused":\["plan-change"\]' <<<"$ROW" && ok "refused = the read the hook blocked" || fail "refused wrong: $ROW"
+grep -q '"applied":\[\]' <<<"$ROW" && ok "applied is not inferred from an open" || fail "applied wrong: $ROW"
 # Every agent site records its run.
 for site in "tick.sh:delivery" "tick.sh:bootstrap" "lib/review.sh:review" "lib/review.sh:security-review" "lib/clarify.sh:clarify"; do
   f="${site%%:*}"; role="${site#*:}"

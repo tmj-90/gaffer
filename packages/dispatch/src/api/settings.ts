@@ -69,6 +69,14 @@ export interface SettingDef {
    * always allowed — it clears the override back to the built-in default).
    */
   readonly choices?: readonly string[];
+  /**
+   * SECRET-BEARING (external review #5): the value itself is a credential — a Slack or
+   * generic webhook URL is posting authority on its own. GET /api/settings never returns
+   * it to any principal: it reports `configured` and the URL's `host` only. An ADMIN
+   * principal reads the value back through GET /api/settings/secret/:key; the dashboard
+   * shows a masked field with a Replace action. New secret keys set this and inherit it.
+   */
+  readonly secret?: boolean;
 }
 
 /** One setting as reported to the UI by GET /api/settings. */
@@ -91,6 +99,12 @@ export interface SettingView {
   readonly help?: string;
   /** Allowed values for an enum setting — the UI renders these as a dropdown. */
   readonly choices?: readonly string[];
+  /** A secret-bearing key: `value`/`effective` are always "" — see `configured`/`host`. */
+  readonly secret?: true;
+  /** Secret keys only: true when a value is in force (env or file). */
+  readonly configured?: boolean;
+  /** Secret keys only: the URL's host (e.g. hooks.slack.com) when it parses, else null. */
+  readonly host?: string | null;
 }
 
 /**
@@ -133,7 +147,17 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "boolean",
     group: "autonomy",
     label: "Agents may approve reviews",
-    help: "Let an agent actor approve a ticket's review (otherwise human-only).",
+    help:
+      "Let an agent actor approve a ticket's review (otherwise human-only). Off by default; " +
+      "the autonomous, strict and lite modes turn it on. An agent " +
+      "approve is still held for a person whenever the real diff's observed risk exceeds " +
+      "the declared risk, and ALWAYS when the delivery changed the tests that gate it " +
+      "(deleted or renamed a test file, added a skip/only marker, changed a gate script, " +
+      "one of its pre/post hooks or a script it runs, touched test config, or added or changed a " +
+      "package-manager rc file such as .npmrc) — unless a " +
+      "person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or " +
+      "Allow test changes on the Review page). The allowance clears the hold only; the " +
+      "gate still runs the base commit's scripts.",
   },
   {
     key: "MERGE_ON_AGENT_REVIEW",
@@ -156,7 +180,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Let the memory the runner itself files go live without a human review step: the " +
       "requirement distilled from each delivered ticket, onboarding's induction lore and " +
       "`memory suggest` from the CLI. Lore a delivery agent suggests over MCP always " +
-      "stays a draft for you to approve, whatever this says.",
+      "stays a draft for you to approve, whatever this says. Off by default; the " +
+      "autonomous and strict modes turn it on.",
   },
   {
     key: "GAFFER_TESTING",
@@ -245,8 +270,12 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the " +
       "labelled estimate booked for a killed/timed-out call). Once today's spend is at " +
       "or over it, no new paid work starts until the next UTC day — the loop, every " +
-      "parallel worker, the daemon and the dashboard's Poll button all honour it. " +
-      "Empty or 0 = off.",
+      "parallel worker, the daemon and the dashboard's Poll button all honour it, and " +
+      "every paid agent launch (delivery, review, clarify, tester, Plan a build, " +
+      "Suggest work, onboarding analysis, the merge resolver) is refused right before " +
+      "it would start. Empty or 0 = off — but a live run needs a dollar cap: with " +
+      "neither this nor the budget ceiling set, `gaffer run`, the loop and Poll refuse " +
+      "to start (try 5; GAFFER_ALLOW_UNCAPPED=1 in the environment opts out).",
   },
   {
     key: "GAFFER_TICK_TIMEOUT",
@@ -274,8 +303,10 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help:
       "Total factory spend ceiling in USD (summed from the usage-ledger). As " +
       "headroom runs low the router biases cheaper; at $0 headroom no new paid work " +
-      "starts (ticks, Poll and the daemon refuse) and in-flight work pauses. " +
-      "Empty = unlimited.",
+      "starts (ticks, Poll and the daemon refuse, and every paid agent launch — " +
+      "including Plan a build and Suggest work — is refused right before it would " +
+      "start) and in-flight work pauses. Empty = unlimited, though a live run needs " +
+      "this or the daily budget set.",
   },
   {
     key: "GAFFER_BUDGET_LOW_THRESHOLD",
@@ -338,14 +369,21 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "string",
     group: "notifications",
     label: "Webhook URL",
-    help: "POST each human-gate event as JSON to this URL (the generic integration).",
+    help:
+      "POST each human-gate event as JSON to this URL (the generic integration). The URL " +
+      "is a credential: the dashboard shows only whether it is set and its host; replace it " +
+      "to change it.",
+    secret: true,
   },
   {
     key: "GAFFER_NOTIFY_SLACK_URL",
     type: "string",
     group: "notifications",
     label: "Slack webhook URL",
-    help: "Slack incoming-webhook URL — gates arrive as a Slack message.",
+    help:
+      "Slack incoming-webhook URL — gates arrive as a Slack message. Anyone holding the URL " +
+      "can post to the channel, so it is never shown back: only whether it is set and its host.",
+    secret: true,
   },
   {
     key: "GAFFER_NOTIFY_DESKTOP",
@@ -470,6 +508,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     label: "Concurrent ticks",
     help:
       "How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. " +
+      "Above 1, a red tests gate is rerun once at concurrency 1 before the attempt counts; a pass on the rerun " +
+      "is flagged flaky suspected for the reviewer (GAFFER_DOD_FLAKY_RERUN=0 turns the rerun off). " +
       "A change applies from the next loop pass.",
   },
   {
@@ -864,6 +904,14 @@ function derivedOf(env: NodeJS.ProcessEnv): Map<string, SettingSource> {
  * sees what the dashboard stores, and again after each write so a change takes
  * effect without a restart. Returns the keys it set.
  */
+/**
+ * Keys read from the operator's real environment ONLY: settings.json never sets them,
+ * in this process or in the runner (runner/factory.config.sh skips the same keys).
+ * GAFFER_ALLOW_UNCAPPED lifts the live-run dollar-cap requirement, so a hand-edited
+ * settings.json must not be able to switch it on (SECURITY.md).
+ */
+export const ENV_ONLY_KEYS: ReadonlySet<string> = new Set(["GAFFER_ALLOW_UNCAPPED"]);
+
 export function applySettingsToEnv(
   env: NodeJS.ProcessEnv = process.env,
   path: string = resolveSettingsPath(env),
@@ -873,6 +921,7 @@ export function applySettingsToEnv(
   const isReal = (k: string) =>
     Object.prototype.hasOwnProperty.call(env, k) && !derivedOf(env).has(k);
   for (const [k, v] of Object.entries(file)) {
+    if (ENV_ONLY_KEYS.has(k)) continue;
     if (isReal(k)) continue;
     if (v === "") {
       // An empty stored value means "cleared back to the default": drop any value
@@ -939,7 +988,7 @@ export function listSettings(
       effective = "";
       source = "default";
     }
-    return {
+    const view = {
       key: def.key,
       value: fileValue,
       effective,
@@ -951,7 +1000,51 @@ export function listSettings(
       ...(def.help !== undefined ? { help: def.help } : {}),
       ...(def.choices !== undefined ? { choices: def.choices } : {}),
     };
+    return def.secret ? redactSecretView(view) : view;
   });
+}
+
+/** The host of a URL-shaped secret, or null (never any path, query or credential). */
+export function secretHost(value: string): string | null {
+  try {
+    const u = new URL(value.trim());
+    return u.host || null;
+  } catch {
+    return null;
+  }
+}
+
+/** A secret setting as every principal sees it: whether it is set, and its host. */
+function redactSecretView(v: SettingView): SettingView {
+  return {
+    ...v,
+    value: "",
+    effective: "",
+    secret: true,
+    configured: v.effective.trim() !== "",
+    host: v.effective.trim() !== "" ? secretHost(v.effective) : null,
+  };
+}
+
+/** True when `key` is a known secret-bearing setting. */
+export function isSecretSetting(key: string): boolean {
+  return SETTING_DEFS.some((d) => d.key === key && d.secret === true);
+}
+
+/**
+ * The in-force value of ONE secret setting (env when locked, else the file), for an
+ * ADMIN principal's explicit read-back (GET /api/settings/secret/:key). Null when the
+ * key is not a known secret setting.
+ */
+export function readSecretSetting(
+  key: string,
+  env: NodeJS.ProcessEnv = process.env,
+  path: string = resolveSettingsPath(env),
+): { key: string; value: string; source: SettingSource } | null {
+  if (!isSecretSetting(key)) return null;
+  if (isEnvLocked(env, key)) return { key, value: env[key] ?? "", source: "env" };
+  const fileValue = readSettingsFile(path)[key] ?? "";
+  return { key, value: fileValue, source: fileValue !== "" ? "file" : "default" };
 }
 
 /** Outcome of a settings write: which keys persisted and which were rejected. */

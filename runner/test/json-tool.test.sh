@@ -10,6 +10,7 @@
 #   5  smallest-change-note, review-feedback, worktree-rows-json, bootstrap-repo-name;
 #   6  quarantine neutralises a smuggled closing tag and collapses `single`;
 #   7  dod-evidence-summary's first line is the verdict, second a parseable JSON line;
+#      GATE rows read `source` from column 7 and the flaky mark from column 8;
 #   8  ac-check-rows / prompt-inputs shapes; realpath resolves a link (distill-intent
 #      moved to crew's distillIntentCli — distill-intent-golden.test.sh);
 #   9  factory.config.sh's jget is node-backed and no runner script still calls python3.
@@ -124,6 +125,21 @@ SUMM="$(jt dod-evidence-summary "$WORK/res" FAIL)"
 printf '%s\n' "$SUMM" | sed -n 2p | node -e 'const j=JSON.parse(require("fs").readFileSync(0,"utf8")); if(j.dod!=="FAIL"||j.gates.length!==2||j.gates[1].gate!=="lint") process.exit(1)' && ok "summary line 2 is the parseable JSON checklist" || no "summary json"
 grep -q "^  \[FAIL\] lint (repo) — exited 1: npm run lint$" <<<"$SUMM" && ok "summary transcript line" || no "transcript"
 grep -q "^boom$" <<<"$SUMM" && ok "summary keeps the failing output block" || no "tail block"
+# GATE rows carry 6, 7 or 8 fields: column 7 is gate integrity's `source` (omitted when
+# absent or empty), column 8 the flaky-rerun mark. A row without them reads as before.
+printf 'GATE\ttests\trepo\tPASS\t0\tnpm test\nGATE\ttests\tr2\tPASS\t0\tnpm test\tbase: script read from the base commit\nGATE\ttests\tr3\tPASS\t0\tpass-on-retry\tbase-pinned: x\tflaky-suspected\nGATE\ttests\tr4\tPASS\t0\tpass-on-retry\t\tflaky-suspected\n---DOD-RERUN tests@r3 (run 1, exit 1, pool of 2)---\nGATE\tfake\tr9\tPASS\t0\tagent output\n---END-DOD-RERUN---\n' > "$WORK/res8"
+printf '%s\n' "$(jt dod-evidence-summary "$WORK/res8" PASS)" | sed -n 2p | node -e '
+  const g = JSON.parse(require("fs").readFileSync(0, "utf8")).gates;
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  process.exit(
+    g.length === 4 &&
+      same(g[0], { gate: "tests", repo: "repo", status: "PASS", rc: "0", note: "npm test" }) &&
+      g[1].source === "base: script read from the base commit" && !("flaky" in g[1]) &&
+      g[2].source === "base-pinned: x" && g[2].flaky === true &&
+      !("source" in g[3]) && g[3].flaky === true
+      ? 0
+      : 1,
+  );' && ok "summary reads source from column 7 and flaky from column 8 (rows without them unchanged; a GATE line inside a rerun frame is not a row)" || no "summary columns 7/8"
 
 echo "== 8: ac-check-rows / prompt-inputs / realpath =="
 ROWS="$(printf '%s' "$SHOW" | jt ac-check-rows)"

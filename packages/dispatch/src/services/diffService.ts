@@ -2,7 +2,17 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { isActiveTicketRepoRelation, type Ticket } from "../domain/types.js";
-import { computeRiskAnnotations, type RiskAnnotation } from "./riskAnnotations.js";
+import {
+  computeRiskAnnotations,
+  testModifiedAnnotation,
+  type RiskAnnotation,
+} from "./riskAnnotations.js";
+import {
+  collectTestIntegrity,
+  extraTestPathRe,
+  gateScriptNamesOf,
+  type TestIntegrityFindings,
+} from "./testIntegrity.js";
 import type { RepoRepository } from "../repositories/repoRepository.js";
 import type { TicketRepoDeliveryRepository } from "../repositories/ticketRepoDeliveryRepository.js";
 import type { TicketRepository } from "../repositories/ticketRepository.js";
@@ -61,6 +71,15 @@ export interface RepoDiff {
   message?: string;
   /** ADVISORY risk flags derived from the changed paths + line counts (never gating). */
   riskAnnotations: RiskAnnotation[];
+  /** The repository id (so an approval can name the repo it saw). */
+  repoId?: string;
+  /**
+   * The full commit id of the delivery branch head this diff was computed against
+   * (`base...<headSha>`), or null when it could not be resolved. The Review view sends it
+   * back on approve, and the server refuses the approval (`stale_revision`) when the
+   * branch has moved since: a human approves the commit they saw, never a later one.
+   */
+  headSha?: string | null;
 }
 
 /** The full diff-in-review payload: one entry per WRITE repo on the ticket. */
@@ -223,6 +242,13 @@ interface DiffTarget {
   label: string;
   /** The range for error text. */
   rangeDesc: string;
+  /** The repo's registered gate commands (the integrity scan's named scripts). */
+  gateCommands: string[];
+  /**
+   * GATE INTEGRITY: the commit the delivery was cut from, as the runner recorded it at
+   * worktree creation (null on older rows). The integrity scan diffs from it.
+   */
+  baseSha: string | null;
 }
 
 /**
@@ -242,7 +268,9 @@ function resolveDiffTargets(
   return writeRepos.map((repo) => {
     const baseBranch = repo.default_branch || "main";
     const legacyBranch = deps.repos.ticketRepoBranch(ticket.id, repo.id);
-    const deliveryBranch = deps.repoDeliveries.find(ticket.id, repo.id)?.branch_name ?? null;
+    const delivery = deps.repoDeliveries.find(ticket.id, repo.id);
+    const deliveryBranch = delivery?.branch_name ?? null;
+    const recordedBase = delivery?.base_sha ?? null;
     const branch =
       nonEmpty(legacyBranch) ?? nonEmpty(deliveryBranch) ?? nonEmpty(ticket.branch_name);
 
@@ -300,9 +328,33 @@ function resolveDiffTargets(
         diffArgs: isBootstrap ? [GIT_EMPTY_TREE, "HEAD"] : [`${baseBranch}...${branch}`],
         label: isBootstrap ? "initial commit" : branch!,
         rangeDesc: isBootstrap ? "the initial commit" : `${baseBranch}...${branch}`,
+        gateCommands: [repo.test_command, repo.lint_command].filter(
+          (c): c is string => typeof c === "string" && c.trim() !== "",
+        ),
+        baseSha: recordedBase && /^[0-9a-f]{40,64}$/.test(recordedBase) ? recordedBase : null,
       },
     };
   });
+}
+
+/**
+ * The full commit id a delivery branch points at, or null (no such branch, git error, a
+ * fake runner that does not answer rev-parse). Shared by the review diff (which diffs that
+ * exact commit) and the approval check (which compares the commit a human saw with it).
+ */
+export function resolveBranchHead(
+  runGit: GitRunner,
+  localPath: string,
+  branch: string,
+): string | null {
+  const res = runGit(localPath, [
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/heads/${branch}^{commit}`,
+  ]);
+  const sha = res.status === 0 ? res.stdout.trim().toLowerCase() : "";
+  return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha) ? sha : null;
 }
 
 /** Run `git diff --numstat` for a target; a truncated read drops its partial last line. */
@@ -315,6 +367,61 @@ function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
     return { ...res, stdout: cut === -1 ? "" : res.stdout.slice(0, cut + 1) };
   }
   return res;
+}
+
+/**
+ * GATE INTEGRITY for one diff target: the base..head integrity findings, read from the
+ * real repo. The base is the commit the runner RECORDED when it cut the delivery
+ * branch (`ticket_repo_delivery.base_sha`), never the base branch name alone: an agent
+ * can move that branch from inside its worktree (`git branch -f main HEAD`), and a
+ * merge-base taken from the moved branch would hide the commits before the move. When
+ * the base branch no longer contains the recorded commit (it was rewritten), the scan
+ * still runs from the recorded commit and the gap is an `incomplete` finding. Rows
+ * recorded before the column existed fall back to the merge-base of the default branch
+ * and the delivery branch. A git failure is an `incomplete` finding — it flags, never
+ * passes silently.
+ */
+function testIntegrityFor(runGit: GitRunner, t: DiffTarget): TestIntegrityFindings {
+  const git = (args: readonly string[], opts?: { maxBuffer?: number }): GitResult =>
+    runGit(t.localPath, args, opts);
+  const opts = {
+    gateScriptNames: gateScriptNamesOf(t.gateCommands),
+    extraTestPathRe: extraTestPathRe(process.env.GAFFER_TEST_PATH_RE),
+  };
+  if (t.isBootstrap) return collectTestIntegrity(git, GIT_EMPTY_TREE, "HEAD", opts);
+  const incompleteOnly = (why: string): TestIntegrityFindings => ({
+    deleted: [],
+    renamed: [],
+    markers: [],
+    scripts: [],
+    configs: [],
+    incomplete: [why],
+  });
+  if (t.baseSha) {
+    const short = t.baseSha.slice(0, 12);
+    if (runGit(t.localPath, ["cat-file", "-e", `${t.baseSha}^{commit}`]).status !== 0) {
+      return incompleteOnly(
+        `the commit ${t.branch} was cut from (${short}) is no longer in the repository`,
+      );
+    }
+    const extra: string[] = [];
+    const anc = runGit(t.localPath, ["merge-base", "--is-ancestor", t.baseSha, t.baseBranch]);
+    if (anc.status !== 0) {
+      extra.push(
+        anc.status === 1
+          ? `${t.baseBranch} no longer contains ${short}, the commit ${t.branch} was cut from (the base branch was rewritten)`
+          : `could not check that ${t.baseBranch} still contains ${short}, the commit ${t.branch} was cut from`,
+      );
+    }
+    const f = collectTestIntegrity(git, t.baseSha, t.branch!, opts);
+    return extra.length ? { ...f, incomplete: [...f.incomplete, ...extra] } : f;
+  }
+  const mb = runGit(t.localPath, ["merge-base", t.baseBranch, t.branch!]);
+  const base = mb.status === 0 ? mb.stdout.trim() : "";
+  if (!/^[0-9a-f]{40,64}$/.test(base)) {
+    return incompleteOnly(`could not find where ${t.branch} branched from ${t.baseBranch}`);
+  }
+  return collectTestIntegrity(git, base, t.branch!, opts);
 }
 
 /**
@@ -332,47 +439,75 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
 
   const repos: RepoDiff[] = resolveDiffTargets(deps, ticket).map((entry) => {
     if ("unavailable" in entry) return entry.unavailable;
-    const t = entry.target;
+    const resolved = entry.target;
+    // Pin the range to the branch's CURRENT commit, resolved once: the stats and the patch
+    // below then describe exactly `headSha`, and the approval can be checked against it.
+    // An unresolvable head (fake runner, odd ref) keeps the by-name range and reports null.
+    const headSha =
+      resolved.isBootstrap || !resolved.branch
+        ? null
+        : resolveBranchHead(runGit, resolved.localPath, resolved.branch);
+    const t: DiffTarget = headSha
+      ? { ...resolved, diffArgs: [`${resolved.baseBranch}...${headSha}`] }
+      : resolved;
+    const ids = { repoId: t.repoId, headSha };
+    const withIds = (r: RepoDiff): RepoDiff => ({ ...r, ...ids });
 
     // Stats first (cheap, bounded). A non-zero exit means the range can't be resolved
     // (unknown branch, not a git repo) — surface it as a git_error.
     const stat = runNumstat(runGit, t);
     if (stat.status !== 0) {
-      return unavailableRepo(
-        t.repo,
-        t.label,
-        t.baseBranch,
-        "git_error",
-        firstLine(stat.stderr) || `git could not diff ${t.rangeDesc}.`,
+      return withIds(
+        unavailableRepo(
+          t.repo,
+          t.label,
+          t.baseBranch,
+          "git_error",
+          firstLine(stat.stderr) || `git could not diff ${t.rangeDesc}.`,
+        ),
       );
     }
     const { files, additions, deletions, paths } = parseNumstat(stat.stdout);
     // ADVISORY risk flags for the reviewer — computed from the real changed paths +
     // deletion count. Never gates; the authoritative diff below is unchanged.
-    const riskAnnotations = computeRiskAnnotations(paths, deletions);
+    // GATE INTEGRITY adds `test-modified` (deleted/renamed tests, new skip markers, a
+    // rewritten gate script): advisory here too, but observedRisk.ts makes an unallowed
+    // one a hard hold on the auto-ship path.
+    const testAnn = testModifiedAnnotation(
+      testIntegrityFor(runGit, t),
+      ticket.allow_test_changes === 1,
+    );
+    const riskAnnotations = [
+      ...computeRiskAnnotations(paths, deletions),
+      ...(testAnn ? [testAnn] : []),
+    ];
 
     // The runner stops git once the patch passes its cap and flags `truncated`: a
     // lockfile regeneration or fixture drop is still a real diff, shown capped.
     const patch = runGit(t.localPath, ["diff", ...SAFE_DIFF_FLAGS, ...t.diffArgs]);
     if (patch.status !== 0) {
-      return unavailableRepo(
-        t.repo,
-        t.label,
-        t.baseBranch,
-        "git_error",
-        firstLine(patch.stderr) || `git could not diff ${t.rangeDesc}.`,
+      return withIds(
+        unavailableRepo(
+          t.repo,
+          t.label,
+          t.baseBranch,
+          "git_error",
+          firstLine(patch.stderr) || `git could not diff ${t.rangeDesc}.`,
+        ),
       );
     }
     const rawDiff = patch.stdout;
     if (rawDiff.trim() === "") {
-      return unavailableRepo(
-        t.repo,
-        t.label,
-        t.baseBranch,
-        "empty",
-        t.isBootstrap
-          ? "The bootstrap produced no committed files."
-          : `No changes between ${t.baseBranch} and ${t.branch}.`,
+      return withIds(
+        unavailableRepo(
+          t.repo,
+          t.label,
+          t.baseBranch,
+          "empty",
+          t.isBootstrap
+            ? "The bootstrap produced no committed files."
+            : `No changes between ${t.baseBranch} and ${t.branch}.`,
+        ),
       );
     }
 
@@ -390,6 +525,7 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
       deletions,
       truncated,
       riskAnnotations,
+      ...ids,
     };
   });
 

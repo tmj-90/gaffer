@@ -175,6 +175,15 @@ export class RepoService {
    * null / "" clears a gate (it is then skipped, never failed). Idempotent.
    */
   setRepoCommands(repoRef: string, raw: unknown, actor: Actor): Repository {
+    // GATE INTEGRITY: these commands ARE the Definition-of-Done gate. An agent that could
+    // rewrite them would redirect every later delivery's gate, so it never may.
+    if (actor.type === "agent") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "An agent may not change a repo's Definition-of-Done gate commands; a human sets them.",
+        { actor_type: actor.type },
+      );
+    }
     const input = setRepoCommandsInput.parse(raw);
     return inTransaction(this.db, () => {
       const repo = this.repos.findById(repoRef) ?? this.repos.findByName(repoRef);

@@ -53,9 +53,23 @@ function adoptTokenFromUrl() {
  * body (a proxy's HTML error page) becomes BAD_GATEWAY instead of a SyntaxError.
  * Every outcome is reported to the freshness tracker that drives the header's
  * "Data as of" line. `opts.signal` lets the router abort a superseded view's
- * reads; an aborted call rejects with code ABORTED and is never toasted.
+ * reads; an aborted call (in the fetch or while its body is read) rejects with
+ * code ABORTED and is never toasted.
  */
 const API_GET_TIMEOUT_MS = 15000;
+/** A fetch or body read that failed: ABORTED when the caller's signal superseded it, else NETWORK. */
+function unreachable(cause, signal) {
+  if (signal && signal.aborted) {
+    const e = new Error("Superseded");
+    e.code = "ABORTED";
+    return e;
+  }
+  freshness.fail("network");
+  const e = new Error("Can't reach the factory — retrying.");
+  e.code = "NETWORK";
+  e.cause = cause;
+  return e;
+}
 async function api(method, path, body, opts = {}) {
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
@@ -79,16 +93,7 @@ async function api(method, path, body, opts = {}) {
       signal,
     });
   } catch (cause) {
-    if (opts.signal && opts.signal.aborted) {
-      const e = new Error("Superseded");
-      e.code = "ABORTED";
-      throw e;
-    }
-    freshness.fail("network");
-    const e = new Error("Can't reach the factory — retrying.");
-    e.code = "NETWORK";
-    e.cause = cause;
-    throw e;
+    throw unreachable(cause, opts.signal);
   }
   if (res.status === 401) {
     freshness.fail("auth");
@@ -97,7 +102,16 @@ async function api(method, path, body, opts = {}) {
     e.code = "UNAUTHORIZED";
     throw e;
   }
-  const text = await res.text();
+  // The body can still be aborted after the headers arrive (the router superseding
+  // the view, or the read timing out): Chromium then rejects res.text() with a raw
+  // DOMException (AbortError, numeric code 20), which slipped past every ABORTED
+  // check and was toasted as "20 The user aborted a request.".
+  let text;
+  try {
+    text = await res.text();
+  } catch (cause) {
+    throw unreachable(cause, opts.signal);
+  }
   let data = {};
   if (text) {
     try {
@@ -1255,21 +1269,35 @@ const STATUS_LABELS = {
   blocked: "Blocked",
   in_review: "In review",
   in_testing: "In testing",
-  ready_for_merge: "Approved · merging",
+  // Never "merging": nothing merges an approval unless a landing path does. A ticket
+  // that carries the server's `landing_state` reads its truthful label instead.
+  ready_for_merge: "Approved · to merge",
   done: "Done",
   failed: "Failed",
   cancelled: "Cancelled",
   paused: "Paused",
 };
-function statusLabel(status) {
+/**
+ * A status's word. An approved (ready_for_merge) or held ticket passes the server's
+ * `landing_state`, so the word says where the landing really is ("Approved · waiting
+ * for Merge now", "Approved · lands next tick", "Approved · landing", "Approved ·
+ * partly landed", or the hold: "Held · merge gate failed").
+ */
+function statusLabel(status, landing) {
+  if (landing && landing.label && (status === "ready_for_merge" || landing.kind === "held"))
+    return landing.label;
   return STATUS_LABELS[status] || status;
 }
 /** A status: its §6 glyph + its word, together (never colour alone). */
-function statusBadge(status) {
-  return el("span", { class: `badge st status-${status}` }, [
-    glyph(status, 16),
-    el("span", {}, statusLabel(status)),
-  ]);
+function statusBadge(status, landing) {
+  return el(
+    "span",
+    {
+      class: `badge st status-${status}`,
+      title: landing && landing.detail ? landing.detail : null,
+    },
+    [glyph(status, 16), el("span", {}, statusLabel(status, landing))],
+  );
 }
 /** Risk: outlined condensed caps ("HIGH RISK" reads on its own, not by hue). */
 /** Risk chip. `long` says "high risk" (a page's meta line, where "high" alone is ambiguous). */
@@ -2890,7 +2918,7 @@ async function buildPaletteSources() {
   const ticketItems = tickets.map((t, i) => ({
     group: "Tickets",
     label: `${t.number != null ? `#${t.number} ` : ""}${t.title}`,
-    hint: statusLabel(t.status),
+    hint: statusLabel(t.status, t.landing_state),
     icon: "ticket",
     number: t.number != null ? String(t.number) : null,
     lookupOnly: i >= 60,
@@ -3112,26 +3140,31 @@ let measureCtx;
  * Break a name into at most `max` lines that each fit `width` (breaking after
  * - _ / . first); the last line is cut with an ellipsis if it still overflows.
  */
-function wrapLabel(str, size, width, max = 2) {
+function wrapLabel(str, size, width, max = 2, face = "cond") {
   const parts = String(str).match(/[^-_/.]+[-_/.]?/g) || [String(str)];
   const lines = [];
   let cur = "";
   for (const p of parts) {
-    if (cur && textWidth(cur + p, size) > width && lines.length < max - 1) {
+    if (cur && textWidth(cur + p, size, 0, face) > width && lines.length < max - 1) {
       lines.push(cur);
       cur = p;
     } else cur += p;
   }
   lines.push(cur);
   const last = lines.length - 1;
-  if (textWidth(lines[last], size) > width) {
+  if (textWidth(lines[last], size, 0, face) > width) {
     let t = lines[last];
-    while (t.length > 1 && textWidth(t + "…", size) > width) t = t.slice(0, -1);
+    while (t.length > 1 && textWidth(t + "…", size, 0, face) > width) t = t.slice(0, -1);
     lines[last] = t + "…";
   }
   return lines;
 }
-function textWidth(str, size, track = 0) {
+/**
+ * `face` is the face the label is drawn in: "cond" for the board's condensed labels
+ * (zone names, tallies), "text" for the operational detail drawn in the body face
+ * (channel labels, the tags beside a shirt), so a measured box fits what is drawn.
+ */
+function textWidth(str, size, track = 0, face = "cond") {
   if (measureCtx === undefined) {
     try {
       measureCtx = document.createElement("canvas").getContext("2d") || null;
@@ -3140,8 +3173,11 @@ function textWidth(str, size, track = 0) {
     }
   }
   const s = String(str);
-  if (!measureCtx) return s.length * size * (0.5 + track);
-  measureCtx.font = `700 ${size}px "Sofia Sans Condensed", "Arial Narrow", sans-serif`;
+  if (!measureCtx) return s.length * size * ((face === "text" ? 0.56 : 0.5) + track);
+  measureCtx.font =
+    face === "text"
+      ? `600 ${size}px "Sofia Sans", system-ui, sans-serif`
+      : `700 ${size}px "Sofia Sans Condensed", "Arial Narrow", sans-serif`;
   return measureCtx.measureText(s).width + s.length * size * track;
 }
 
@@ -3404,9 +3440,45 @@ function parkedOnTest(f, t, reason) {
 }
 
 /**
+ * A ticket's title as a headline names it: the WHOLE title (the work, in its own words),
+ * without a trailing "(…)" (a run id, a date), cut only by length, at a word boundary,
+ * with an ellipsis. Never cut at a word like "for / with / via": "Add retry with backoff"
+ * is not "Add retry". The full title stays on the element's title and accessible name.
+ */
+function headTitle(title, max = 60) {
+  const full = String(title || "").trim();
+  if (!full) return "";
+  // A trailing parenthetical (a run id, a date) is reference, not the work.
+  let short = full.replace(/\s+\([^()]*\)$/, "") || full;
+  if (short.length > max) {
+    const cut = short
+      .slice(0, max + 1)
+      .replace(/\s+\S*$/, "")
+      .replace(/[\s,;:.-]+$/, "");
+    short = `${cut || short.slice(0, max)}…`;
+  }
+  return short;
+}
+/** The ticket's number as the reference after its title: muted, never the subject. */
+function hlRef(t) {
+  return t && t.number != null ? el("span", { class: "hl-ref" }, `#${t.number}`) : null;
+}
+/** "<title> #N": the work, then its reference. */
+function hlWork(t, fallback = "A ticket") {
+  const what = t ? headTitle(t.title) : "";
+  if (!what) return [fallback];
+  const ref = hlRef(t);
+  return [el("span", { class: "hl-what" }, what), ref ? " " : "", ref];
+}
+
+/**
  * The scoreboard's headline: one specific sentence from the queue, every clause a
- * link to its object. "5 things need you. ■ Epic “Repeat orders” is blocked at #6
- * by a failing test." When nothing does, it says what the squad is doing instead.
+ * link to its object, and the WORK leads, never a ticket number: "5 things need you.
+ * ■ Webhook delivery for task events #10 is blocked by a failing test." (the number is the muted
+ * reference after the title). With nothing parked the first thing waiting leads
+ * ("Export to CSV #12 awaits your sign-off."). On a phone the count gives way to that
+ * clause: the Team Sheet says how many, once. When nothing needs you, it says what the
+ * squad is doing instead.
  */
 function matchHeadline(f) {
   const items = f.items;
@@ -3444,20 +3516,72 @@ function matchHeadline(f) {
       const t = rowTicket(f, p);
       const epic = t && f.epicOf.get(t.id);
       const test = parkedOnTest(f, t, p.reason);
-      const ref = t && t.number != null ? `#${t.number}` : "a ticket";
+      const verb = t && t.status === "blocked" ? "is blocked" : "is parked";
       lead.push(
         " ",
-        el("a", { class: "hl-block", href: t ? `#/ticket/${t.id}` : "#what-i-own" }, [
-          el("span", { class: "hl-nb" }, [glyph("blocked", 34), epic ? "Epic" : ref]),
-          " ",
-          epic
-            ? [el("q", {}, epic), ` is blocked at ${ref}`]
-            : t && t.status === "blocked"
-              ? "is blocked"
-              : "is parked",
-          test ? " by a failing test." : ".",
-        ]),
+        el(
+          "a",
+          {
+            class: "hl-block",
+            href: t ? `#/ticket/${t.id}` : "#what-i-own",
+            title: t ? t.title : null,
+          },
+          [
+            el("span", { class: "hl-nb" }, [
+              glyph("blocked", 34),
+              epic
+                ? "Epic"
+                : el("span", { class: "hl-what" }, (t && headTitle(t.title)) || "A ticket"),
+            ]),
+            " ",
+            epic
+              ? [el("q", {}, epic), " is blocked at ", ...hlWork(t)]
+              : t && t.number != null
+                ? [hlRef(t), " ", verb]
+                : verb,
+            test ? " by a failing test." : ".",
+          ],
+        ),
       );
+    }
+    // Nothing parked: the first thing waiting leads, named by its work.
+    if (!parked.length) {
+      const r0 = reviews[0] && rowTicket(f, reviews[0]);
+      const m0 = merges[0] && rowTicket(f, merges[0]);
+      if (r0)
+        lead.push(
+          " ",
+          el("a", { class: "hl-block hl-wait", href: `#/review/${r0.id}`, title: r0.title }, [
+            ...hlWork(r0),
+            " awaits your sign-off.",
+          ]),
+        );
+      else if (m0)
+        lead.push(
+          " ",
+          el("a", { class: "hl-block hl-wait", href: `#/ticket/${m0.id}`, title: m0.title }, [
+            ...hlWork(m0),
+            " is approved, not merged.",
+          ]),
+        );
+      else if (decisions.length)
+        lead.push(
+          " ",
+          el(
+            "a",
+            { class: "hl-block hl-wait", href: "#what-i-own" },
+            `${plural(decisions.length, "decision")} ${decisions.length === 1 ? "waits" : "wait"} for your answer.`,
+          ),
+        );
+      else if (others.length)
+        lead.push(
+          " ",
+          el(
+            "a",
+            { class: "hl-block hl-wait", href: "#what-i-own" },
+            `${plural(others.length, "call")} ${others.length === 1 ? "waits" : "wait"} for you.`,
+          ),
+        );
     }
     if (reviews.length) {
       const first = rowTicket(f, reviews[0]);
@@ -3471,25 +3595,47 @@ function matchHeadline(f) {
     }
     if (decisions.length)
       sub.push(el("a", { href: "#what-i-own" }, plural(decisions.length, "decision")));
-    for (const m of merges.slice(0, 2)) {
+    // The lead already names the first approved-but-unmerged change when nothing is
+    // parked or in review; the sub line names the rest, work first.
+    const leadMerge = !parked.length && !reviews.length ? 1 : 0;
+    for (const m of merges.slice(leadMerge, 2)) {
       const t = rowTicket(f, m);
-      if (t) sub.push(el("a", { href: `#/ticket/${t.id}` }, `#${t.number} approved, not merged`));
+      if (t)
+        sub.push(
+          el("a", { href: `#/ticket/${t.id}`, title: t.title }, [
+            ...hlWork(t),
+            " approved, not merged",
+          ]),
+        );
     }
     if (merges.length > 2) sub.push(`${merges.length - 2} more approved, not merged`);
     if (others.length)
       sub.push(el("a", { href: "#what-i-own" }, plural(others.length, "other call")));
     sub.push(squadLine);
   } else {
-    lead = [el("span", { class: "hl-count" }, "Nothing needs you.")];
+    lead = [el("span", { class: "hl-count hl-calm" }, "Nothing needs you.")];
+    // What the squad is on, by the work (the number after it): at most two named.
     const on = f.claims
-      .map((c) => c.ticket_number)
-      .filter((n) => n != null)
-      .sort((a, b) => a - b)
-      .map((n) => "#" + n);
+      .filter((c) => c.ticket_number != null)
+      .sort((a, b) => a.ticket_number - b.ticket_number);
+    const named = on
+      .slice(0, 2)
+      .map((c) =>
+        hlWork({ number: c.ticket_number, title: c.ticket_title || "" }, `#${c.ticket_number}`),
+      );
     const free = slots ? Math.max(0, slots - onPitch) : null;
     sub.push(
-      `${squadLine}${on.length ? `, on ${on.join(on.length === 2 ? " and " : ", ")}` : ""}` +
-        (free != null ? `; ${plural(free, "slot")} free` : ""),
+      el("span", {}, [
+        squadLine,
+        ...(named.length
+          ? [
+              ", on ",
+              ...named.flatMap((w, i) => (i ? [" and ", ...w] : w)),
+              on.length > 2 ? ` and ${on.length - 2} more` : "",
+            ]
+          : []),
+        free != null ? `; ${plural(free, "slot")} free` : "",
+      ]),
     );
   }
   if (f.summary.staleClaims > 0)
@@ -3535,6 +3681,7 @@ function overviewScoreboard(f) {
             href: "#what-i-own",
             flip: "needs",
             title: `${total} waiting for you`,
+            cls: "sc-needs",
           }),
           statCell({
             label: "On the pitch",
@@ -3801,9 +3948,16 @@ function renderOwnedItem(it, i = 0, f = null) {
   const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : null;
   const href = t ? (it.kind === "review" ? `#/review/${t.id}` : `#/ticket/${t.id}`) : null;
   const title = t && t.title ? t.title : it.kind === "decision" ? decisionTitle(it, f) : null;
-  const reason = it.reason || "(no reason given)";
+  // An approved change's row says why it waits in its landing_state's words (the ticket
+  // page's): the queue's generic "the runner held the merge gate, or a merge attempt did
+  // not land" was false for an approval nothing lands, one the merge lane lands next
+  // tick, and one landing now.
+  const landing = it.kind === "awaiting_merge" && t ? t.landing_state : null;
+  const reason = (landing && landing.detail) || it.reason || "(no reason given)";
   // Who played it: the agent on the ticket's latest claim (a change, a merge, a parked ticket).
   const by = f && t && OWN_BY_KINDS.has(it.kind) ? deliveredBy(f.details.get(t.id)?.events) : null;
+  const tFlag =
+    f && t && OWN_BY_KINDS.has(it.kind) ? integrityFlagOf(f.details.get(t.id)?.evidence) : null;
   return el("div", { class: `own-row own-row--${it.kind}`, dataset: { kind: it.kind } }, [
     el("span", { class: "own-rank", "aria-hidden": "true" }, String(i + 1)),
     el("div", { class: "own-body" }, [
@@ -3811,7 +3965,8 @@ function renderOwnedItem(it, i = 0, f = null) {
         el("span", { class: `own-kind own-kind--${it.kind}` }, [
           ycard(16, "ycard-row"),
           OWN_GLYPH[it.kind] ? glyph(OWN_GLYPH[it.kind], 16) : null,
-          OWN_WORD[it.kind] || it.label,
+          // An approved change says where its landing is (the ticket page's own words).
+          (landing && landing.label) || OWN_WORD[it.kind] || it.label,
         ]),
         ref ? el("span", { class: "own-ref" }, ref) : null,
       ]),
@@ -3831,6 +3986,18 @@ function renderOwnedItem(it, i = 0, f = null) {
               it.kind === "parked" ? "with " : "delivered by ",
               agentChip(by.id, by.name, 18),
             ])
+          : null,
+        // GATE INTEGRITY: the runner flagged that this delivery changed its own tests.
+        tFlag
+          ? el(
+              "span",
+              {
+                class: "own-flag",
+                title: String(tFlag.note || ""),
+                "aria-label": `Tests changed: ${String(tFlag.note || "this delivery changed its tests")}.`,
+              },
+              [icon("alert", "", 14), "Tests changed"],
+            )
           : null,
         // The server's structured code and its advice, as the referee's notebook:
         // one group, so the advice never wraps onto a line of its own.
@@ -3997,7 +4164,7 @@ function hideRepoSheet(repo, after) {
 function sheetTicket(t) {
   if (!t) return null;
   return el("p", { class: "rs-ticket" }, [
-    t.status ? glyph(t.status, 16, statusLabel(t.status)) : null,
+    t.status ? glyph(t.status, 16, statusLabel(t.status, t.landing_state)) : null,
     t.number != null ? el("b", { class: "rs-num tabnum" }, `#${t.number}`) : null,
     t.title ? el("span", { class: "rs-title" }, t.title) : null,
   ]);
@@ -4650,7 +4817,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     box(kx, ky, kx + ks, ky + ks, "kit");
     if (P) {
       // A phone has no room beside the kit: the name sits under it, wrapped.
-      const lines = wrapLabel(r, FS.cl, CH - 10, 2);
+      const lines = wrapLabel(r, FS.cl, CH - 10, 2, "text");
       lines.forEach((ln, i) =>
         kits.append(
           svgS(
@@ -4675,13 +4842,13 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
         svgS("rect", {
           x: x + 33,
           y: by - FS.cl * 0.82,
-          width: Math.max(0, Math.min(textWidth(r, FS.cl) + 6, zx - x - 33)),
+          width: Math.max(0, Math.min(textWidth(r, FS.cl, 0, "text") + 6, zx - x - 33)),
           height: FS.cl * 1.08,
           class: "mow-a",
         }),
         svgS("text", { x: x + 36, y: by, class: "cl halo-a", style: pxs(FS.cl) }, r),
       );
-      box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl), y + 22 + FS.cl * 0.4, "cl");
+      box(x + 34, y + 2, x + 38 + textWidth(r, FS.cl, 0, "text"), y + 22 + FS.cl * 0.4, "cl");
     }
   });
 
@@ -5030,7 +5197,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
     const run = f.runByTicket.get(t.number);
     const nm = needs.has(t.id);
     const who = claim ? agentWho(claim.agent_id, claim.agent_display_name) : null;
-    const label = `#${t.number} ${statusLabel(t.status)}${who ? `, ${who.name}${who.no ? ` (No. ${Number(who.no)})` : ""} on it` : ""}${nm ? ", needs you" : ""}: ${t.title}`;
+    const label = `#${t.number} ${statusLabel(t.status, t.landing_state)}${who ? `, ${who.name}${who.no ? ` (No. ${Number(who.no)})` : ""} on it` : ""}${nm ? ", needs you" : ""}: ${t.title}`;
     const a = svgS("a", {
       href: t.status === "in_review" ? `#/review/${t.id}` : `#/ticket/${t.id}`,
       class: `counter${claim ? " has-agent" : ""}${nm ? " needs" : ""}`,
@@ -5063,7 +5230,7 @@ function pitchBoard(f, orientation, k = orientation === "portrait" ? 2 : 1.26) {
           padX = fs * 0.45,
           padY = fs * 0.32,
           lh = fs * 1.12;
-        const w = Math.max(...lines.map((l) => textWidth(l, fs, 0.02))) + padX * 2,
+        const w = Math.max(...lines.map((l) => textWidth(l, fs, 0.02, "text"))) + padX * 2,
           h = lines.length * lh + padY * 2 - fs * 0.12;
         const top = shirt.top + SH * 0.1,
           gap = 6;
@@ -5326,7 +5493,7 @@ function tacticsBoard(f) {
               off.map((t) =>
                 el("li", {}, [
                   el("a", { href: `#/ticket/${t.id}`, class: `off-${t.status}` }, [
-                    statusBadge(t.status),
+                    statusBadge(t.status, t.landing_state),
                     el("b", {}, `#${t.number}`),
                     el("span", { class: "off-t" }, t.title),
                   ]),
@@ -5492,7 +5659,7 @@ function cupRuns(f) {
                           "a",
                           {
                             href: `#/ticket/${t.id}`,
-                            "aria-label": `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+                            "aria-label": `#${t.number} ${statusLabel(t.status, t.landing_state)}: ${t.title}`,
                           },
                           [
                             glyph(t.status, 16),
@@ -5555,7 +5722,7 @@ function injuryList(f) {
           list.map((t) =>
             el("li", {}, [
               el("p", { class: "inj-top" }, [
-                statusBadge(t.status),
+                statusBadge(t.status, t.landing_state),
                 el("a", { href: `#/ticket/${t.id}` }, `#${t.number} ${t.title}`),
               ]),
               el("p", { class: "inj-why" }, injuryWhy(f, t)),
@@ -5797,8 +5964,10 @@ function wageBill(f) {
             el(
               "small",
               {},
+              // Rework = delivery spend on the attempts after a reviewer, the tester
+              // or a failed gate sent the ticket back (the ledger's attempt timeline).
               h.rework?.rework_cost_share_pct != null
-                ? `${h.rework.rework_cost_share_pct}% of spend`
+                ? `${h.rework.rework_cost_share_pct}% of spend, on attempts after a send-back`
                 : "",
             ),
           ]),
@@ -5916,7 +6085,7 @@ function squadForm(f) {
                           t
                             ? el("a", { href: `#/ticket/${t.id}` }, `On #${claim.ticket_number}`)
                             : `On #${claim.ticket_number}`,
-                          t ? ` · ${statusLabel(t.status).toLowerCase()}` : "",
+                          t ? ` · ${statusLabel(t.status, t.landing_state).toLowerCase()}` : "",
                           run
                             ? run.num_turns
                               ? ` · ${run.phase ? run.phase + " · " : ""}${run.num_turns} turns · ${money(run.cost_usd)}`
@@ -6437,10 +6606,7 @@ async function fitnessRoomPanels(healthRes) {
   const byStatus = summary.ticketsByStatus || {};
   const tickets = ticketsRes.tickets || [];
   const decisions = decisionsRes.decisions || [];
-  const inReview = byStatus.in_review || 0;
-  const blocked = summary.blocked ?? byStatus.blocked ?? 0;
   const staleClaims = summary.staleClaims || 0;
-  const inProgress = (byStatus.in_progress || 0) + (byStatus.claimed || 0);
   const doneTickets = tickets.filter((t) => t.status === "done");
 
   // --- real time-series, bucketed by day from ticket + event timestamps -----
@@ -6452,15 +6618,6 @@ async function fitnessRoomPanels(healthRes) {
     const d = new Date(now - i * DAY);
     days.push({ key: d.toISOString().slice(0, 10), lbl: `${d.getDate()}/${d.getMonth() + 1}` });
   }
-  const bucket = (items, tsOf) => {
-    const m = Object.fromEntries(days.map((d) => [d.key, 0]));
-    for (const it of items) {
-      const k = String(tsOf(it)).slice(0, 10);
-      if (k in m) m[k] += 1;
-    }
-    return days.map((d) => m[d.key]);
-  };
-
   // AUTHORITATIVE cycle-time / throughput: read the ONE server-side definition
   // from /api/health (src/health/deliveryFlow.ts) instead of recomputing it here.
   // The server reproduces the former client maths, so displayed numbers are
@@ -6478,7 +6635,6 @@ async function fitnessRoomPanels(healthRes) {
     Array.isArray(flowThr.series) && flowThr.series.length === N ? flowThr.series : zeroSeries();
 
   // --- distinct, real per-metric daily series (each KPI gets its own shape) --
-  const createdByDay = bucket(tickets, (t) => t.created_at);
   // deployments: cumulative tickets shipped (a monotonic delivery curve)
   let depAcc = 0;
   const deploySeries = doneByDay.map((v) => (depAcc += v));
@@ -6487,14 +6643,6 @@ async function fitnessRoomPanels(healthRes) {
     const w = cycleLine.slice(Math.max(0, i - 6), i + 1).filter((x) => x > 0);
     return w.length ? +(w.reduce((a, b) => a + b, 0) / w.length).toFixed(2) : 0;
   });
-  // flow efficiency: 7-day trailing shipped / created (a real ratio trend, %)
-  const flowEffSeries = days.map((_, i) => {
-    const lo = Math.max(0, i - 6);
-    const shipped = doneByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
-    const opened = createdByDay.slice(lo, i + 1).reduce((a, b) => a + b, 0);
-    return opened > 0 ? Math.round((shipped / (shipped + opened)) * 100) : 0;
-  });
-
   // --- headline metrics -----------------------------------------------------
   // Cycle time + throughput are server-authoritative (from /api/health above).
   // cycleVals is retained ONLY to derive the Lead-time percentile below.
@@ -6512,23 +6660,45 @@ async function fitnessRoomPanels(healthRes) {
     : 0;
   const last7 = typeof flowThr.last7 === "number" ? flowThr.last7 : 0;
   const prev7 = typeof flowThr.prev7 === "number" ? flowThr.prev7 : 0;
-  // Flow efficiency is SERVER-AUTHORITATIVE when the endpoint carries it: the median
-  // (active time / lead time) over shipped tickets, from the transition log
-  // (src/health/deliveryFlow.ts). The former client number was a WIP ratio
-  // (done / done+in-flight), which is not flow efficiency; it remains only as the
-  // fallback when the server has no shipped ticket with the signal yet.
+  // Flow efficiency is SERVER-ONLY: the median (time an agent worked the ticket /
+  // lead time) over shipped tickets, from the transition log (src/health/deliveryFlow.ts).
+  // Review, testing, the merge queue, send-backs and holds are waiting, served as
+  // `waiting`; time before work began is the backlog. There
+  // is no client fallback: the old one was a WIP ratio (done / done + in flight) that
+  // read 100% for a single shipped ticket however long it had waited to merge.
   const flowEffServer = health.flow_efficiency || {};
-  const flowEff =
-    typeof flowEffServer.median_pct === "number"
-      ? Math.round(flowEffServer.median_pct)
-      : Math.round(
-          ((byStatus.done || 0) /
-            Math.max(
-              1,
-              (byStatus.done || 0) + inReview + blocked + inProgress + (byStatus.ready || 0),
-            )) *
-            100,
-        );
+  const flowEff = typeof flowEffServer.median_pct === "number" ? flowEffServer.median_pct : null;
+  const flowEffText =
+    flowEff == null ? "—" : flowEff > 0 && flowEff < 1 ? "<1" : String(Math.round(flowEff));
+  const waiting = health.waiting || {};
+  const waitRow = (label, ms, extra) =>
+    el("div", {}, [
+      el("dt", {}, label),
+      el("dd", { class: "tabnum" }, [fmtDuration(ms), extra ? el("small", {}, extra) : null]),
+    ]);
+  const waitingList =
+    waiting.sample > 0
+      ? el("dl", { class: "fg-wait", "aria-label": "Where shipped tickets waited, the median" }, [
+          waitRow(
+            "Waiting to merge",
+            waiting.merge_wait_ms,
+            waiting.merge_wait_max_ms != null
+              ? `longest ${fmtDuration(waiting.merge_wait_max_ms)}`
+              : null,
+          ),
+          waitRow("In review or testing", waiting.review_ms),
+          waitRow("Sent back, waiting for rework", waiting.requeued_ms),
+          waitRow("Blocked or paused", waiting.held_ms),
+          waitRow("Before work started", waiting.backlog_ms),
+          el("div", {}, [
+            el("dt", {}, "Queued after work began"),
+            el("dd", { class: "tabnum" }, [
+              waiting.queue_pct != null ? `${Math.round(waiting.queue_pct)}%` : "—",
+              el("small", {}, "of lead time: review, merge queue, send-backs, holds"),
+            ]),
+          ]),
+        ])
+      : el("p", { class: "section-note" }, "No shipped ticket has a transition history yet.");
   const right = el("div", { class: "fitness-panels stack" });
   const left = right;
 
@@ -6554,9 +6724,9 @@ async function fitnessRoomPanels(healthRes) {
         }),
         statCell({
           label: "Flow efficiency",
-          value: String(flowEff),
-          unit: "%",
-          series: flowEffSeries,
+          value: flowEffText,
+          unit: flowEff == null ? null : "%",
+          sub: flowEff == null ? "nothing shipped yet" : "of lead time an agent worked",
           flip: "eff",
         }),
         statCell({
@@ -6595,14 +6765,21 @@ async function fitnessRoomPanels(healthRes) {
         el("div", { class: "fg-eff flow-eff" }, [
           el("h3", { class: "fg-h" }, [
             "Flow efficiency ",
-            el("b", { class: "tabnum" }, `${flowEff}%`),
+            el("b", { class: "tabnum" }, flowEff == null ? "—" : `${flowEffText}%`),
           ]),
-          band(flowEff, 100, `Flow efficiency ${flowEff}% of lead time spent working`),
+          band(
+            flowEff ?? 0,
+            100,
+            flowEff == null
+              ? "Flow efficiency not measured yet"
+              : `Flow efficiency ${flowEffText}% of lead time with an agent working on the ticket`,
+          ),
           el(
             "p",
             { class: "section-note" },
-            "The share of each shipped ticket's lead time spent being worked on rather than waiting (the median).",
+            "The share of each shipped ticket's lead time with an agent working on it (claimed or in progress), the median. Review, testing, the merge queue and holds count as waiting: the transition log shows how long a ticket sat in review, not how long anyone actively reviewed it.",
           ),
+          waitingList,
         ]),
       ]),
     ]),
@@ -6682,7 +6859,7 @@ async function fitnessRoomPanels(healthRes) {
             "Rework rate",
             gov.reworkRate,
             (r) =>
-              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first`,
+              `${r.numerator} of ${r.denominator} merged in ${wd} days had been sent back first, by a reviewer, the tester or a failed gate`,
           ),
           tile(
             "Unattended-safe",
@@ -7079,8 +7256,20 @@ function panelHead(title, aux, link, opts = {}) {
  * an optional sparkline with its own baseline. No delta chips: a "▲100%" the data
  * cannot support is not shown. `flip` keys a digit flip on first paint/change.
  */
-function statCell({ label, value, unit, sub, series, href, flip, needs = false, title, after }) {
-  return el(href ? "a" : "div", { class: "kpi", href, title }, [
+function statCell({
+  label,
+  value,
+  unit,
+  sub,
+  series,
+  href,
+  flip,
+  needs = false,
+  title,
+  after,
+  cls,
+}) {
+  return el(href ? "a" : "div", { class: cls ? `kpi ${cls}` : "kpi", href, title }, [
     el("div", { class: "kpi-top" }, [el("span", { class: "kpi-label" }, label)]),
     el("div", { class: "kpi-figure" }, [
       el(
@@ -7704,39 +7893,158 @@ function pollWorkButton() {
         "Run one factory tick now, so ready work is picked up without waiting for the next cycle",
       onclick: () =>
         runAsyncAction(btn, "Polling…", async () => {
-          const res = await api("POST", "/poll-work");
-          if (res && res.polled === false) {
-            toast(
-              "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
-              {},
-            );
+          // A live tick needs a dollar cap (the runner refuses one without). With
+          // neither budget set, ask for one first instead of firing a refused poll.
+          if (!(await spendCapSet())) {
+            openSpendCapSheet(() => runAsyncAction(btn, "Polling…", firePoll));
             return;
           }
-          const p = (res && res.pending) || {};
-          if (res && res.idle === "maintenance") {
-            toast("No ready work — running the idle maintenance lane…", { ok: true });
-          } else if (!res || res.readyCount > 0) {
-            toast("Factory tick fired — refreshing the board…", { ok: true });
-          } else if (p.resume > 0) {
-            toast("Continuing the paused delivery…", { ok: true });
-          } else if (p.review > 0) {
-            toast("Running the reviewer agent on a ticket in Review…", { ok: true });
-          } else if (p.testing > 0) {
-            toast("Running the tester on a ticket in Testing…", { ok: true });
-          } else if (p.merge > 0) {
-            toast("Landing the approved work (merge lane)…", { ok: true });
-          } else toast("Clarifying a draft (intake pass)…", { ok: true });
-          router();
-          // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
-          // USD cap already reached) would otherwise read as "fired". Watch the run
-          // briefly — poll-once.sh refuses within a second or two — and say so.
-          const runId = res && res.run && res.run.runId;
-          if (runId) void reportPollRefusal(runId);
+          await firePoll();
         }),
     },
     [el("span", {}, "Poll for work")],
   );
   return roLock(btn);
+}
+
+/** Fire one tick (POST /poll-work) and say what it is doing. */
+async function firePoll() {
+  const res = await api("POST", "/poll-work");
+  if (res && res.polled === false) {
+    toast(
+      "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
+      {},
+    );
+    return;
+  }
+  const p = (res && res.pending) || {};
+  if (res && res.idle === "maintenance") {
+    toast("No ready work — running the idle maintenance lane…", { ok: true });
+  } else if (!res || res.readyCount > 0) {
+    toast("Factory tick fired — refreshing the board…", { ok: true });
+  } else if (p.resume > 0) {
+    toast("Continuing the paused delivery…", { ok: true });
+  } else if (p.review > 0) {
+    toast("Running the reviewer agent on a ticket in Review…", { ok: true });
+  } else if (p.testing > 0) {
+    toast("Running the tester on a ticket in Testing…", { ok: true });
+  } else if (p.merge > 0) {
+    toast("Landing the approved work (merge lane)…", { ok: true });
+  } else toast("Clarifying a draft (intake pass)…", { ok: true });
+  router();
+  // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
+  // USD cap already reached) would otherwise read as "fired". Watch the run
+  // briefly — poll-once.sh refuses within a second or two — and say so.
+  const runId = res && res.run && res.run.runId;
+  if (runId) void reportPollRefusal(runId);
+}
+
+/** The two dollar caps a live run accepts (runner/lib/budget.sh gaffer_spend_cap_ok). */
+const SPEND_CAP_KEYS = ["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"];
+
+/**
+ * Is a dollar cap in force? True when either budget is a positive figure, and
+ * also when it cannot be told (settings unreadable, or the caps are set in the
+ * environment): the runner makes the final call and its refusal is toasted.
+ */
+async function spendCapSet() {
+  let list;
+  try {
+    list = (await api("GET", "/api/settings")).settings || [];
+  } catch (x) {
+    if (x && x.code === "UNAUTHORIZED") throw x;
+    return true;
+  }
+  const rows = SPEND_CAP_KEYS.map((k) => list.find((s) => s.key === k)).filter(Boolean);
+  if (!rows.length || rows.some((s) => s.envLocked)) return true;
+  return rows.some((s) => {
+    const v = Number(s.effective ?? s.value);
+    return Number.isFinite(v) && v > 0;
+  });
+}
+
+/**
+ * The first live run's dollar cap: a daily budget prefilled at $5, saved to
+ * settings.json (the runner re-reads it before every tick), then `onSaved` runs
+ * the poll the operator asked for. Cancel leaves everything as it was.
+ */
+function openSpendCapSheet(onSaved) {
+  const input = el("input", {
+    type: "number",
+    name: "daily-budget",
+    id: "spend-cap-usd",
+    min: "0.01",
+    step: "0.01",
+    inputmode: "decimal",
+    value: "5",
+    "aria-describedby": "spend-cap-hint",
+  });
+  const err = el("p", { class: "form-error", role: "alert", hidden: "" });
+  const save = el(
+    "button",
+    { class: "btn primary spend-cap-save", type: "submit" },
+    "Save and poll",
+  );
+  const form = el(
+    "form",
+    {
+      class: "act-sheet spend-cap-form",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        err.hidden = true;
+        const v = Number(String(input.value).trim());
+        if (!Number.isFinite(v) || v <= 0) {
+          err.textContent = "Enter a daily budget above $0, for example 5.";
+          err.hidden = false;
+          input.setAttribute("aria-invalid", "true");
+          input.focus();
+          return;
+        }
+        input.removeAttribute("aria-invalid");
+        save.disabled = true;
+        try {
+          const res = await api("POST", "/api/settings", {
+            settings: { GAFFER_DAILY_BUDGET_USD: String(v) },
+          });
+          if (!(res.written || []).includes("GAFFER_DAILY_BUDGET_USD")) {
+            err.textContent =
+              "The daily budget was not saved. It may be set in the environment: check Settings → Budget & caps.";
+            err.hidden = false;
+            return;
+          }
+          closeSheet();
+          toast(`Daily budget set: ${moneyW(v)} a day.`, { ok: true });
+          onSaved();
+        } catch (x) {
+          if (x && x.code === "UNAUTHORIZED") return;
+          err.textContent = (x && x.message) || "The daily budget could not be saved.";
+          err.hidden = false;
+        } finally {
+          save.disabled = false;
+        }
+      },
+    },
+    [
+      el(
+        "p",
+        { class: "act-intro" },
+        "A live run needs a dollar cap first. Once today's spend reaches it, the factory starts no new paid work until tomorrow (UTC).",
+      ),
+      field("Daily budget (USD)", input),
+      el(
+        "p",
+        { class: "act-hint", id: "spend-cap-hint" },
+        "Change it any time in Settings → Budget & caps. A lifetime ceiling there also counts.",
+      ),
+      err,
+      el("div", { class: "btn-row act-actions" }, [
+        save,
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      ]),
+    ],
+  );
+  openSheet("Set a daily budget", form, { focus: input });
 }
 
 /**
@@ -8400,7 +8708,14 @@ async function renderWork() {
   // mode (list mode does not fetch the board at all). Repos + scope nodes feed the
   // "Suggest work" target picker (Feature B) and the repo filter. The human queue
   // says which cards wait on you; the claims say who is on the pitch.
-  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
+  // The board is fetched as a VISIBLE WINDOW (WORK_BOARD_WINDOW cards per lane, Done
+  // newest first) plus whole-board counts: a factory with tens of thousands of
+  // historical tickets once shipped every card to render ~60 per lane (and the
+  // unfiltered board failed outright at 32,767 tickets). The rest is one link away in
+  // the List view, which filters server-side.
+  const boardParams = new URLSearchParams({ limit: String(WORK_BOARD_WINDOW) });
+  if (workState.repo) boardParams.set("repo", workState.repo);
+  const boardQs = `?${boardParams}`;
   const listQs = new URLSearchParams();
   if (workState.status) listQs.set("status", workState.status);
   if (workState.repo) listQs.set("repo", workState.repo);
@@ -8418,9 +8733,15 @@ async function renderWork() {
     ensureSquad(),
   ]);
   const { repos, nodes } = ref;
-  const columns = (board && board.columns) || [];
+  const counts = (board && board.counts) || null;
+  // Each lane carries its TRUE size (`total`), whatever the window loaded.
+  const columns = ((board && board.columns) || []).map((c) => ({
+    ...c,
+    total: counts && counts.columns ? (counts.columns[c.column] ?? c.cards.length) : undefined,
+  }));
   const closed = (board && board.closed) || [];
   const wontDo = (board && board.wontDo) || [];
+  const totals = counts ? { closed: counts.closed, wontDo: counts.wontDo } : null;
   const tickets = (listRes && listRes.tickets) || [];
   const claims = (claimsRes && claimsRes.claims) || [];
   learnAgents(claims);
@@ -8433,7 +8754,7 @@ async function renderWork() {
   // filter on they count the matching cards (BRIEF §2: header counts equal lane
   // counts), and they are redrawn as the viewer types.
   const subText = () =>
-    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo, totals);
   const head = viewHead("Work board", subText(), [
     pollWorkButton(),
     suggestWorkButton(repos, nodes),
@@ -8452,7 +8773,9 @@ async function renderWork() {
 
   // The board or the list, rebuilt in place (no fetch) as the viewer types.
   const build = () =>
-    list ? renderWorkList(tickets, needs, claims) : renderBoard(columns, closed, wontDo, needs);
+    list
+      ? renderWorkList(tickets, needs, claims)
+      : renderBoard(columns, closed, wontDo, needs, totals);
   let main = build();
   const toolbar = renderWorkToolbar(repos, () => {
     const next = build();
@@ -8514,21 +8837,40 @@ function hashText(str) {
  *   failed  = the closed area (the board puts only `failed` tickets there)
  *   wontDo  = cancelled
  */
-function boardCounts(columns, closed = [], wontDo = []) {
+function boardCounts(columns, closed = [], wontDo = [], totals = null) {
   const by = {};
   for (const c of columns) by[c.column] = c.total ?? (c.cards || []).length;
   const live = Object.entries(by)
     .filter(([k]) => k !== "done")
     .reduce((n, [, v]) => n + v, 0);
-  return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
+  return {
+    by,
+    live,
+    shipped: by.done || 0,
+    failed: totals ? totals.closed : closed.length,
+    wontDo: totals ? totals.wontDo : wontDo.length,
+  };
 }
 
-/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+/** Cards per lane the Work board loads (the API's visible window). */
+const WORK_BOARD_WINDOW = 200;
+
+/** True when some lane holds more cards than the window loaded. */
+function boardTruncated(columns) {
+  return columns.some((c) => c.total != null && c.total > (c.cards || []).length);
+}
+
+/**
+ * The board's columns, closed and won't-do narrowed to the client-side filters.
+ * Unfiltered, a lane keeps its true size (`total`); filtered, it counts the loaded
+ * cards that match.
+ */
 function workVisible(columns, closed = [], wontDo = []) {
+  const filtered = workFiltered();
   return {
     columns: columns.map((c) => {
       const cards = (c.cards || []).filter(workMatches);
-      return { ...c, cards, total: cards.length };
+      return { ...c, cards, total: filtered ? cards.length : (c.total ?? cards.length) };
     }),
     closed: closed.filter(workMatches),
     wontDo: wontDo.filter(workMatches),
@@ -8549,10 +8891,10 @@ function workFilterWords() {
  * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
  * the line always equals the lane heads below it.
  */
-function workSummaryLine(columns, closed = [], wontDo = []) {
-  const all = boardCounts(columns, closed, wontDo);
+function workSummaryLine(columns, closed = [], wontDo = [], totals = null) {
+  const all = boardCounts(columns, closed, wontDo, totals);
   const vis = workVisible(columns, closed, wontDo);
-  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo, workFiltered() ? null : totals);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
     // A count never wraps away from its lane name ("1 / done").
@@ -8833,13 +9175,14 @@ const TICKET_ACTION_KEYS = {
   claimed: [],
   in_progress: [],
   blocked: ["unblock", "wont_do"],
-  // Review surface: approve takes the ticket to `ready_for_merge` (merging).
+  // Review surface: approve takes the ticket to `ready_for_merge` (or in_testing).
   in_review: ["approve", "rework", "wont_do"],
   // BBT-001: independent testing lane. The tester agent owns the verdict (pass →
   // ready_for_merge, fail → refining); a human can also record it from here when the
   // lane is off, held (no verdict token) or the operator tested by hand.
   in_testing: ["tester_pass", "tester_fail"],
-  // Approved-and-merging: the merge runner is working. A human can mark it merged
+  // Approved, not landed (its landing_state says whether anything is landing it). A
+  // human can merge it now, mark it merged
   // (admin override) or send it back for rework — but NOT "mark ready".
   ready_for_merge: ["merge_now", "mark_merged", "rework"],
   // Terminal: reopen only where allowed (cancelled is reopenable; done is not).
@@ -9094,11 +9437,20 @@ function phoneLaneOrder(columns) {
 }
 
 /** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
-function renderBoard(columns, closed, wontDo = [], needs = null) {
+function renderBoard(columns, closed, wontDo = [], needs = null, totals = null) {
   const wrap = el("div", { class: "board-wrap" });
   const phone = isPhoneWidth();
   const total = columns.reduce((n, c) => n + (c.cards || []).length, 0);
   const shown = columns.reduce((n, c) => n + (c.cards || []).filter(workMatches).length, 0);
+  // A filter narrows only the cards the window loaded: say so, and where to search all.
+  if (workFiltered() && boardTruncated(columns)) {
+    wrap.appendChild(
+      el("p", { class: "section-note work-window-note", role: "status" }, [
+        `Filters apply to the first ${WORK_BOARD_WINDOW} cards of each lane. `,
+        el("a", { href: "#/work?mode=list" }, "The list searches every ticket."),
+      ]),
+    );
+  }
   if (!total && !closed.length && !wontDo.length && !workFiltered()) {
     wrap.appendChild(
       emptyState(
@@ -9128,13 +9480,15 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const all = (c.cards || []).filter(workMatches);
       const cards = capLane(c.column, all);
       const label = BOARD_COLUMN_LABELS[c.column] || c.column;
+      // The lane's true size: the server's count unfiltered, the matches filtered.
+      const laneTotal = workFiltered() ? all.length : (c.total ?? all.length);
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
           ? [
               ...cards.map((card) => renderBoardCard(card, c.column, needs)),
-              laneMoreLink(c.column, cards.length, all.length),
+              laneMoreLink(c.column, cards.length, laneTotal),
             ]
           : el("p", { class: "board-empty" }, "Nothing here."),
       );
@@ -9152,7 +9506,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
                     { href: `#/ticket/${t.id}` },
                     t.number != null ? `#${t.number}` : t.id.slice(0, 8),
                   ),
-                  ` ${t.status === "cancelled" ? "won't do" : statusLabel(t.status).toLowerCase()}`,
+                  ` ${t.status === "cancelled" ? "won't do" : statusLabel(t.status, t.landing_state).toLowerCase()}`,
                 ]),
               closedAll.length > 6 ? `, and ${closedAll.length - 6} more` : "",
               ".",
@@ -9161,7 +9515,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const headBits = [
         glyph(c.column, 18),
         el("h2", { class: "board-col-title" }, label),
-        el("span", { class: "board-col-count tabnum" }, String(all.length)),
+        el("span", { class: "board-col-count tabnum" }, String(laneTotal)),
       ];
       let inner;
       if (phone && all.length) {
@@ -9189,7 +9543,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
         {
           class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
           dataset: { column: c.column, status: c.column },
-          "aria-label": `${label}: ${all.length}`,
+          "aria-label": `${label}: ${laneTotal}`,
         },
         inner,
       );
@@ -9202,32 +9556,41 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
   // Closed without merging: won't do (reversible: Reopen → refining) and failed.
   const wontDoVisible = wontDo.filter(workMatches);
   const failedVisible = closed.filter(workMatches);
+  const areaTotal = (list, key) => (!workFiltered() && totals ? totals[key] : list.length);
   if (wontDoVisible.length || failedVisible.length) {
-    const group = (cls, title, list, action) =>
-      el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${list.length}` }, [
+    const group = (cls, title, list, action, key) => {
+      const n = areaTotal(list, key);
+      return el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${n}` }, [
         el("h3", { class: "closed-head" }, [
           glyph(list[0].status, 16),
           el("span", {}, title),
-          el("span", { class: "closed-count tabnum" }, String(list.length)),
+          el("span", { class: "closed-count tabnum" }, String(n)),
         ]),
         el("ul", { class: "closed-cards" }, [
           ...list.slice(0, BOARD_CLOSED_CAP).map((t) => closedRow(t, action)),
         ]),
-        list.length > BOARD_CLOSED_CAP
-          ? el("p", { class: "section-note" }, `Showing ${BOARD_CLOSED_CAP} of ${list.length}.`)
+        n > BOARD_CLOSED_CAP
+          ? el(
+              "p",
+              { class: "section-note" },
+              `Showing ${Math.min(BOARD_CLOSED_CAP, list.length)} of ${n}.`,
+            )
           : null,
       ]);
+    };
     wrap.appendChild(
       progPage(
         "work-closed",
         null,
         "Closed without merging",
-        plural(wontDoVisible.length + failedVisible.length, "ticket"),
+        plural(areaTotal(wontDoVisible, "wontDo") + areaTotal(failedVisible, "closed"), "ticket"),
         el("div", { class: "closed-groups" }, [
           wontDoVisible.length
-            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen)
+            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen, "wontDo")
             : null,
-          failedVisible.length ? group("failed-area", "Failed", failedVisible, null) : null,
+          failedVisible.length
+            ? group("failed-area", "Failed", failedVisible, null, "closed")
+            : null,
         ]),
       ),
     );
@@ -9355,11 +9718,12 @@ function humanLaneAction(card) {
 }
 
 /** A status word with its glyph, at card size (for a card whose status is not its lane's). */
-function cardStatus(status) {
-  return el("span", { class: `card-status st-${status}` }, [
-    glyph(status, 14),
-    el("span", {}, statusLabel(status)),
-  ]);
+function cardStatus(status, landing) {
+  return el(
+    "span",
+    { class: `card-status st-${status}`, title: landing && landing.detail ? landing.detail : null },
+    [glyph(status, 14), el("span", {}, statusLabel(status, landing))],
+  );
 }
 
 /**
@@ -9373,7 +9737,12 @@ function renderBoardCard(card, laneKey, needs) {
 
   const top = el("div", { class: "card-top" }, [
     el("span", { class: "num" }, numText),
-    laneKey && card.status !== laneKey && card.status !== "done" ? cardStatus(card.status) : null,
+    // An approved or held card always says where its landing is (the lane cannot).
+    card.landing_state
+      ? cardStatus(card.status, card.landing_state)
+      : laneKey && card.status !== laneKey && card.status !== "done"
+        ? cardStatus(card.status)
+        : null,
     el("span", { class: "card-tags" }, [
       card.blockingCount ? badge(`${card.blockingCount} blocking`, "status-blocked") : null,
       el(
@@ -9678,7 +10047,7 @@ function renderWorkList(allTickets, needs, claims = []) {
                   t.title,
                 ),
               ]),
-              el("td", { class: "c-status" }, statusBadge(t.status)),
+              el("td", { class: "c-status" }, statusBadge(t.status, t.landing_state)),
               el("td", { class: "c-agent" }, who),
               el("td", { class: "c-risk" }, riskBadge(t.risk_level)),
               el("td", { class: "c-pri tabnum" }, `P${t.priority}`),
@@ -9939,7 +10308,13 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
     case "in_review":
       return [el("b", {}, "In review. "), "It waits for your sign-off."];
     case "ready_for_merge":
-      return [el("b", {}, "Approved. "), "It is with the merge runner now."];
+      // The server's landing_state says where the landing is; never claim a merge runs.
+      return [
+        el("b", {}, "Approved. "),
+        t.landing_state && t.landing_state.detail
+          ? t.landing_state.detail
+          : "It waits in Ready for merge until a landing path lands it.",
+      ];
     case "done":
       return [
         el("b", {}, "Done. "),
@@ -9956,7 +10331,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
     case "in_progress": {
       const by = deliveredBy(events);
       return [
-        el("b", {}, `${statusLabel(t.status)}. `),
+        el("b", {}, `${statusLabel(t.status, t.landing_state)}. `),
         by ? `${by.name} is on it.` : "An agent is on it.",
       ];
     }
@@ -9965,7 +10340,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
     case "draft":
     case "refining":
       return [
-        el("b", {}, `${statusLabel(t.status)}. `),
+        el("b", {}, `${statusLabel(t.status, t.landing_state)}. `),
         "Mark it ready when its criteria are right.",
       ];
     case "cancelled": {
@@ -9985,7 +10360,7 @@ function ticketLede(t, trail, events, doneAt, evidence = []) {
       ];
     }
     default:
-      return [el("b", {}, `${statusLabel(t.status)}. `), "An agent is on it."];
+      return [el("b", {}, `${statusLabel(t.status, t.landing_state)}. `), "An agent is on it."];
   }
 }
 
@@ -10070,14 +10445,80 @@ function failingTestCard(trail) {
 }
 
 /**
+ * The runner's per-attempt AGENT-RUN evidence (tick.sh gaffer_record_agent_run): which
+ * model served each delivery attempt and which Claude Code CLI ran it. Oldest first.
+ * Only rows the runner itself recorded (actor type system) count: a delivery agent can
+ * write a `log` row with any payload through record_ac_evidence, and its own claim
+ * about which model ran is not provenance.
+ */
+function agentRuns(evidence) {
+  const runs = [];
+  for (const e of evidence || []) {
+    if (e.evidence_type !== "log" || !e.payload_json) continue;
+    if (e.recorded_by_actor_type !== "system") continue;
+    const p = parseJsonSafe(e.payload_json);
+    if (!p || p.kind !== "agent_run") continue;
+    runs.push({ ...p, created_at: e.created_at });
+  }
+  return runs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+/**
+ * The attempt a trail entry is the failure of. The runner files a failure under the
+ * NEXT attempt's number (tick.sh `runner-rework --attempt $_next`), so trail attempt N
+ * is the failure of attempt N-1. An entry numbered below 2 was not written that way and
+ * keeps its own number; null when it has none.
+ */
+function failedAttempt(a) {
+  const n = Number(a && a.attempt);
+  if (!Number.isInteger(n)) return null;
+  return n >= 2 ? n - 1 : n;
+}
+/**
+ * The run behind a failure: the latest agent run recorded at or before the failure
+ * whose attempt is the one that failed (trail attempt N → run N-1). Time order alone is
+ * not enough: an attempt can fail before its agent is launched (agent-env-install), and
+ * the run before that failure is then the PREVIOUS attempt's, not this one's. A failure
+ * with no timestamp, or with no matching run before it, names no model rather than a
+ * guessed one.
+ */
+function runForAttempt(runs, a) {
+  if (!a || !a.created_at) return null;
+  const at = String(a.created_at);
+  const want = Number(a.attempt) >= 2 ? failedAttempt(a) : null;
+  const before = runs.filter(
+    (r) => r.created_at && String(r.created_at) <= at && (want === null || r.attempt === want),
+  );
+  return before.length ? before[before.length - 1] : null;
+}
+/** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */
+function runLine(r) {
+  const served = Array.isArray(r.models_served) && r.models_served.length ? r.models_served : null;
+  const model = served ? served.join(", ") : r.model_requested || "default";
+  return `Model ${model} · CLI ${r.claude_version || "unknown"}`;
+}
+
+/**
  * Attempts as a penalty shootout: one goal per attempt, the ball marked where the
  * delivery went wide, then the captured failure for each (collapsed: identical
- * failures are shown once above as the scoreline).
+ * failures are shown once above as the scoreline). Each attempt names the model and
+ * the CLI version that ran it, from the agent-run evidence. Every run no failure is
+ * paired with (the attempt that passed after a failed one, or the last go of a parked
+ * ticket) follows the failures as its own row, so each run's model is on the page. A
+ * ticket with runs but no failure gets the plain list of its attempts instead.
  */
-function renderFailureHistory(trail) {
+function renderFailureHistory(trail, runs = []) {
+  if ((!Array.isArray(trail) || trail.length === 0) && runs.length) return renderAgentRuns(runs);
   if (!Array.isArray(trail) || trail.length === 0) return null;
   const max = trail[trail.length - 1].max_attempts;
   const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
+  const paired = new Set();
+  for (const a of trail) {
+    const r = runForAttempt(runs, a);
+    if (r) paired.add(r);
+  }
+  // Oldest first (runs is sorted): the runs no failure accounts for.
+  const unpaired = runs.filter((r) => !paired.has(r));
+  const used = trail.length + unpaired.length;
   const goal = (i, taken = true) =>
     svgEl(
       "svg",
@@ -10114,7 +10555,15 @@ function renderFailureHistory(trail) {
     el("div", { class: "panel-head" }, [
       el("h2", { class: "panel-title" }, [
         "Attempts",
-        el("span", { class: "panel-aux" }, max ? `${trail.length} of ${max} used` : attemptsLabel),
+        el(
+          "span",
+          { class: "panel-aux" },
+          max
+            ? `${Math.min(used, Number(max) || used)} of ${max} used`
+            : used === 1
+              ? "1 attempt"
+              : `${used} attempts`,
+        ),
       ]),
     ]),
     el(
@@ -10125,40 +10574,102 @@ function renderFailureHistory(trail) {
     el(
       "ol",
       { class: "failure-trail" },
-      trail.map((a, i) => {
-        const mx =
-          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
-        return el("li", { class: "failure-attempt" }, [
-          goal(i),
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${mx}`),
-            a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
-            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+      // ONE children array: el() takes a single children argument, so rows passed as
+      // further arguments were dropped (the "not taken" kicks never showed).
+      [
+        ...trail.map((a, i) => {
+          const mx =
+            typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+          // Labelled with the attempt that FAILED (the trail files it one higher), so the
+          // number matches its run's and the rows below it.
+          const n = failedAttempt(a) ?? a.attempt;
+          return el("li", { class: "failure-attempt" }, [
+            goal(i),
+            el("div", { class: "failure-attempt-head" }, [
+              el("span", { class: "failure-attempt-num" }, `Attempt ${n}${mx}`),
+              a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
+              el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+            ]),
+            (() => {
+              const r = runForAttempt(runs, a);
+              return r ? el("p", { class: "attempt-run mono" }, runLine(r)) : null;
+            })(),
+            el("details", { class: "failure-more" }, [
+              el("summary", {}, "What it said"),
+              // Untrusted captured tool output: a text node in a focusable, named <pre>.
+              el(
+                "pre",
+                {
+                  class: "failure-detail",
+                  tabindex: "0",
+                  role: "region",
+                  "aria-label": `Attempt ${n} failure output`,
+                },
+                repoRelative(a.distilled_failure) || "(no detail captured)",
+              ),
+            ]),
+          ]);
+        }),
+        // The runs no failure was recorded for, each with its model and CLI.
+        ...unpaired.map((r) =>
+          el("li", { class: "failure-run" }, [
+            el("div", { class: "failure-attempt-head" }, [
+              el(
+                "span",
+                { class: "failure-attempt-num" },
+                r.attempt
+                  ? `Attempt ${r.attempt}${r.max_attempts ? `/${r.max_attempts}` : ""}`
+                  : "Run",
+              ),
+              r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+              el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
+            ]),
+            el("p", { class: "attempt-run mono" }, runLine(r)),
+            el("p", { class: "dim failure-run-note" }, "No failure recorded for this run."),
           ]),
-          el("details", { class: "failure-more" }, [
-            el("summary", {}, "What it said"),
-            // Untrusted captured tool output: a text node in a focusable, named <pre>.
-            el(
-              "pre",
-              {
-                class: "failure-detail",
-                tabindex: "0",
-                role: "region",
-                "aria-label": `Attempt ${a.attempt} failure output`,
-              },
-              repoRelative(a.distilled_failure) || "(no detail captured)",
-            ),
+        ),
+        // The kicks still to come (or never taken, once the runner parked it).
+        ...Array.from({ length: Math.max(0, (Number(max) || 0) - used) }, (_, k) =>
+          el("li", { class: "failure-kick-none" }, [
+            goal(used + k, false),
+            el("div", { class: "failure-attempt-head" }, [
+              el("span", { class: "failure-attempt-num" }, `Attempt ${used + k + 1}/${max}`),
+              el("span", { class: "failure-attempt-time" }, "not taken"),
+            ]),
           ]),
-        ]);
-      }),
-      // The kicks still to come (or never taken, once the runner parked it).
-      ...Array.from({ length: Math.max(0, (Number(max) || 0) - trail.length) }, (_, k) =>
-        el("li", { class: "failure-kick-none" }, [
-          goal(trail.length + k, false),
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
-            el("span", { class: "failure-attempt-time" }, "not taken"),
-          ]),
+        ),
+      ],
+    ),
+  ]);
+}
+
+/** Attempts with no failure on record: each run, its model and its CLI version. */
+function renderAgentRuns(runs) {
+  return el("section", { class: "card failure-history agent-runs" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Attempts",
+        el("span", { class: "panel-aux" }, runs.length === 1 ? "1 run" : `${runs.length} runs`),
+      ]),
+    ]),
+    el(
+      "p",
+      { class: "dim failure-history-sub" },
+      "Which model and which Claude Code CLI ran each attempt, oldest first.",
+    ),
+    el(
+      "ol",
+      { class: "agent-run-list" },
+      runs.map((r) =>
+        el("li", { class: "agent-run" }, [
+          el(
+            "span",
+            { class: "failure-attempt-num" },
+            r.attempt ? `Attempt ${r.attempt}${r.max_attempts ? `/${r.max_attempts}` : ""}` : "Run",
+          ),
+          el("span", { class: "attempt-run mono" }, runLine(r)),
+          r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+          el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
         ]),
       ),
     ),
@@ -10220,7 +10731,7 @@ async function ticketEpicCard(t, scopes) {
                   {
                     href: `#/ticket/${x.id}`,
                     "aria-current": x.id === t.id ? "page" : null,
-                    "aria-label": `#${x.number} ${statusLabel(x.status)}: ${x.title}`,
+                    "aria-label": `#${x.number} ${statusLabel(x.status, x.landing_state)}: ${x.title}`,
                   },
                   [
                     glyph(x.status, 16),
@@ -10547,7 +11058,7 @@ async function renderTicket(id) {
   };
 
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
-  // runner may be held. The status ("Approved · merging") and the lede say where it is.
+  // runner may be held. The status (its landing_state) and the lede say where it is.
   const headActions = [
     ...ticketActionKeys(t.status).map((key) =>
       actionButtons[key] ? roLock(actionButtons[key]()) : null,
@@ -10607,7 +11118,7 @@ async function renderTicket(id) {
       mark,
       el("div", { class: "tk-head-main" }, [
         el("p", { class: "tk-meta" }, [
-          statusBadge(t.status),
+          statusBadge(t.status, t.landing_state),
           repoW ? repoTag(repoW.name, 20) : null,
           riskBadge(t.risk_level, { long: true }),
           // The acceptance ticket is its campaign's Final: say so where it is named.
@@ -10879,7 +11390,7 @@ async function renderTicket(id) {
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
-  const failureHistory = renderFailureHistory(trail);
+  const failureHistory = renderFailureHistory(trail, agentRuns(view.evidence));
   const failingTest =
     OFF_PITCH.has(t.status) || t.status === "refining" ? failingTestCard(trail) : null;
   const epicCard = el("div", { class: "tk-epic-slot" });
@@ -11386,7 +11897,7 @@ function memoryPrimedPanel(t, evidence, reworkTrail) {
         : { txt: "shipped clean — no rework", cls: "ok" }
       : reworks > 0
         ? { txt: `needed ${reworks} rework${reworks === 1 ? "" : "s"}`, cls: "warn" }
-        : { txt: statusLabel(t.status).toLowerCase(), cls: "dim" };
+        : { txt: statusLabel(t.status, t.landing_state).toLowerCase(), cls: "dim" };
 
   const head = el("div", { class: "panel-head mem-primed-head" }, [
     el("h2", { class: "panel-title" }, "The scouting report"),
@@ -12422,9 +12933,12 @@ async function renderHealth() {
           skillList.map((s) =>
             healthBarRow(
               s.skill,
-              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%`,
+              // A refused read (the hook blocked it: the agent never saw the skill) is
+              // shown beside the hit-rate, never counted as use.
+              `${s.applied}/${s.selected} · ${s.hit_rate_pct}%` +
+                (s.refused ? ` · ${s.refused} refused` : ""),
               (s.hit_rate_pct || 0) / 100,
-              s.hit_rate_pct >= 50 ? "ok" : "amber",
+              s.refused ? "amber" : s.hit_rate_pct >= 50 ? "ok" : "amber",
             ),
           ),
         ),
@@ -12487,7 +13001,7 @@ async function renderHealth() {
   // The number is the sum of the lines below it (each ticket counted once).
   const lines = treatment ? [...treatment.querySelectorAll(".needs-item")] : [];
   const onTable = treatment ? Number(treatment.dataset.total || 0) : 0;
-  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-num")] : [];
+  const injured = bouncing ? [...bouncing.querySelectorAll(".bounce-row")] : [];
   const ledgerBroken = eventLog && !eventLog.chain_ok;
   const verdict = ledgerBroken
     ? "The ledger has been altered."
@@ -12509,10 +13023,14 @@ async function renderHealth() {
     }),
     injured.length
       ? el("a", { href: "#health-injuries", class: "is-injury" }, [
-          injured
-            .slice(0, 3)
-            .map((n) => n.textContent)
-            .join(", "),
+          // The work first, its number after (muted): "Webhook delivery for task events #4, …".
+          injured.slice(0, 3).flatMap((row, i) => {
+            const t = {
+              number: (row.querySelector(".bounce-num")?.textContent || "").replace(/^#/, ""),
+              title: row.querySelector(".bounce-title")?.textContent || "",
+            };
+            return [i ? ", " : "", ...hlWork(t, `#${t.number}`)];
+          }),
           injured.length > 3 ? ` and ${injured.length - 3} more` : "",
           injured.length === 1 ? " keeps coming back" : " keep coming back",
         ])
@@ -14331,8 +14849,68 @@ function renderSettingRow(s, editors) {
 /** The mode the settings on screen were read under (for "from the graduated mode"). */
 let settingsModeName = "";
 
+/** Sentinel an untouched secret editor reads as (never sent: it equals `initial`). */
+const SECRET_UNCHANGED = "\u0000unchanged";
+
+/**
+ * A SECRET-BEARING setting (a webhook URL is posting authority): the server never sends
+ * its value, only whether it is set and its host. Show that, masked, with Replace (a new
+ * value is typed in, never the old one shown) and Remove. Untouched, the editor reads as
+ * the sentinel and nothing is sent.
+ */
+function renderSecretSettingInput(s, editors) {
+  const state = s.configured ? `Set${s.host ? ` · ${s.host}` : ""}` : "Not set";
+  const masked = el(
+    "span",
+    {
+      class: `setting-secret mono${s.configured ? " is-set" : ""}`,
+      "aria-label": s.configured
+        ? `${s.label} is set${s.host ? ` for ${s.host}` : ""}; the value is hidden.`
+        : `${s.label} is not set.`,
+    },
+    [s.configured ? "•••••••• " : "", state],
+  );
+  if (s.envLocked) return el("div", { class: "setting-secret-row" }, [masked]);
+  let mode = "keep"; // keep | replace | remove
+  const input = el("input", {
+    type: "password",
+    autocomplete: "off",
+    spellcheck: "false",
+    placeholder: "Paste the new URL",
+    "aria-label": `New value for ${s.label}`,
+    hidden: "",
+  });
+  const replace = el("button", { type: "button", class: "btn small ghost" }, "Replace");
+  const remove = s.configured
+    ? el("button", { type: "button", class: "btn small ghost" }, "Remove")
+    : null;
+  replace.addEventListener("click", () => {
+    mode = "replace";
+    input.hidden = false;
+    input.focus();
+  });
+  if (remove)
+    remove.addEventListener("click", () => {
+      mode = mode === "remove" ? "keep" : "remove";
+      remove.textContent = mode === "remove" ? "Keep" : "Remove";
+      masked.classList.toggle("is-removing", mode === "remove");
+      remove.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+  editors.set(s.key, {
+    read: () =>
+      mode === "remove"
+        ? ""
+        : mode === "replace" && input.value.trim() !== ""
+          ? input.value.trim()
+          : SECRET_UNCHANGED,
+    initial: SECRET_UNCHANGED,
+  });
+  return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
+}
+
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
+  if (s.secret) return renderSecretSettingInput(s, editors);
   if (s.envLocked) {
     // Read-only: show the env-driven value if known, else a muted placeholder.
     // The actual env value isn't exposed by the API (it could be a secret), so we
@@ -15151,8 +15729,9 @@ function diffApprovability(repos) {
  */
 function renderTicketDiff(ticketId, onState, opts = {}) {
   const box = el("div", { class: "diff-box" }, [el("div", { class: "ac-meta" }, "Loading diff…")]);
-  const report = (state, repos = []) => {
-    if (typeof onState === "function") onState(state, repos);
+  // The response rides along so the sign-off can read its `approve_outcome`.
+  const report = (state, repos = [], res = null) => {
+    if (typeof onState === "function") onState(state, repos, res);
   };
   // `_settled` resolves once the diff (or its error) is on screen, so a background
   // refresh can hold the page height until then (review-scroll-jumps-to-top).
@@ -15162,7 +15741,7 @@ function renderTicketDiff(ticketId, onState, opts = {}) {
       const repos = (res && res.repos) || [];
       if (repos.length === 0) {
         box.appendChild(el("p", { class: "section-note" }, "No write repos to diff."));
-        report(diffApprovability(repos));
+        report(diffApprovability(repos), [], res);
         return;
       }
       if (repos.length > 1) {
@@ -15170,7 +15749,7 @@ function renderTicketDiff(ticketId, onState, opts = {}) {
         box.appendChild(el("div", { class: "ac-meta" }, `Diff (${repos.length} repos)`));
       }
       repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i, opts)));
-      report(diffApprovability(repos), repos);
+      report(diffApprovability(repos), repos, res);
     })
     .catch((e) => {
       clear(box);
@@ -15252,8 +15831,15 @@ function dodChecklist(evidence) {
   if (!dod) return null;
   const overall = dod.dod === "PASS" ? "PASS" : "FAIL";
   const items = dod.gates.map((g) => {
-    const status = g.status === "PASS" ? "pass" : g.status === "FAIL" ? "fail" : "skip";
-    const mark = status === "pass" ? "✓" : status === "fail" ? "✗" : "–";
+    const status =
+      g.status === "PASS"
+        ? "pass"
+        : g.status === "FAIL"
+          ? "fail"
+          : g.status === "FLAG"
+            ? "flag"
+            : "skip";
+    const mark = { pass: "✓", fail: "✗", flag: "!", skip: "–" }[status];
     const children = [
       el("span", { class: `dod-mark dod-${status}`, "aria-hidden": "true" }, mark),
       el("span", { class: "dod-gate" }, String(g.gate || "gate")),
@@ -15261,21 +15847,35 @@ function dodChecklist(evidence) {
       el(
         "span",
         { class: `dod-word dod-w-${status}` },
-        status === "pass" ? "passed" : status === "fail" ? "failed" : "skipped",
+        { pass: "passed", fail: "failed", flag: "flagged", skip: "skipped" }[status],
       ),
     ];
-    // A passing gate names the command it ran; a failing one surfaces its captured note.
-    if (status === "fail" && g.note) {
-      children.push(el("span", { class: "dod-note ac-meta" }, String(g.note)));
+    // A tests gate that passed only on its rerun at concurrency 1 (lib/dod.sh): a yellow
+    // card for the reviewer, and the note names both runs.
+    if (g.flaky === true) {
+      children.push(el("span", { class: "dod-flaky" }, "Flaky suspected"));
+      if (g.note)
+        children.push(el("span", { class: "dod-note dod-note-flaky ac-meta" }, String(g.note)));
+      if (g.source) children.push(el("span", { class: "dod-src ac-meta" }, String(g.source)));
+      return el("li", { class: `dod-item dod-i-${status} is-flaky` }, children);
+    }
+    // A passing gate names the command it ran; a failing one surfaces its captured note,
+    // and the integrity row (gate integrity) says what it found in words.
+    if ((status === "fail" || status === "flag" || g.gate === "integrity") && g.note) {
+      children.push(el("span", { class: `dod-note dod-note-${status} ac-meta` }, String(g.note)));
     } else if (g.note) {
       children.push(el("code", { class: "dod-cmd mono" }, String(g.note)));
     }
+    // Where the command's behaviour was read from (the base commit, for a script).
+    if (g.source && g.gate !== "integrity")
+      children.push(el("span", { class: "dod-src ac-meta" }, String(g.source)));
     return el("li", { class: `dod-item dod-i-${status}` }, children);
   });
   return el("div", { class: `review-dod dod-${overall === "PASS" ? "ok" : "bad"}` }, [
     el("div", { class: "ac-meta dod-cap" }, [
       "Definition of Done ",
       badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
+      dod.gates.some((g) => g.flaky === true) ? badge("flaky suspected", "no-dot") : null,
     ]),
     el("ul", { class: "clean dod-list" }, items),
   ]);
@@ -15306,7 +15906,7 @@ function evidenceKind(type) {
  * agent-reported chip) · what kind · the first line of what it says. Longer
  * captures (a DoD report, a diff stat) fold their remaining lines.
  */
-function reviewEvidenceList(evidence, acList, { repos } = {}) {
+function reviewEvidenceList(evidence, acList, { repos, asks } = {}) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
   const rows = evidence
@@ -15328,6 +15928,7 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
         (raw === "system" ? "the runner" : raw);
       const provBadge =
         ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
+      const asking = asks && asks.has(ev.id);
       const lines = String(ev.summary || "").split("\n");
       // A blocked-write note and absolute paths read as repo-relative paths.
       const say = (l) =>
@@ -15342,7 +15943,7 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
         .slice(1)
         .filter((l) => l.trim())
         .map(say);
-      return el("li", { class: "review-evi" }, [
+      return el("li", { class: asking ? "review-evi evi-asks" : "review-evi" }, [
         el(
           "time",
           {
@@ -15357,6 +15958,7 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
             el("span", { class: "evi-who" }, who),
             badge(evidenceKind(ev.evidence_type), "no-dot evi-kind"),
             provBadge,
+            asking ? badge("asks for a human", "no-dot evi-ask") : null,
           ]),
           el("p", { class: "evi-summary" }, first),
           rest.length
@@ -15559,6 +16161,145 @@ function repoPath(p, repos) {
   }
   return shortPath(s);
 }
+// --- Gate integrity: the delivery changed the tests that decide it is done -----
+
+/** The server's `test-modified` risk annotations across a diff's live repos. */
+function testModifiedAnns(repos) {
+  return (repos || [])
+    .filter((r) => !r.unavailable)
+    .flatMap((r) => (r.riskAnnotations || []).map((a) => ({ ...a, repo: r.repo })))
+    .filter((a) => a.kind === "test-modified");
+}
+
+/** The runner's integrity row from the newest DoD evidence, when it FLAGged. */
+function integrityFlagOf(evidence) {
+  const dod = parseDodEvidence(evidence);
+  if (!dod) return null;
+  return dod.gates.find((g) => g.gate === "integrity" && g.status === "FLAG") || null;
+}
+
+/**
+ * Allow (or withdraw) test changes on a ticket — a human's call, recorded as an event.
+ * With it set, the runner's integrity row reads PASS with a note and the server no
+ * longer holds an auto-approve for the test changes on their own.
+ */
+function allowTestChangesSheet(t, allow) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  const reason = el("textarea", {
+    class: "input",
+    rows: "2",
+    maxlength: "500",
+    "aria-label": "Why this ticket may change its tests",
+    placeholder: "Why this ticket may change its tests (kept on the event)",
+  });
+  actionSheet(
+    allow ? `Allow test changes on ${ref}` : `Withdraw the test-changes allowance on ${ref}`,
+    {
+      intro: allow
+        ? "Only when the ticket asked for these test changes. The gate's integrity row will read PASS with a note on its next run, and the test changes alone no longer hold an agent's approve (they still count as medium risk, so a ticket declared low stays held). You still sign the change off here."
+        : "Test changes on this ticket are flagged again, and an agent approve is held until a person looks.",
+      body: allow ? reason : null,
+      focus: allow ? reason : undefined,
+      actions: [
+        el(
+          "button",
+          {
+            class: allow ? "btn primary" : "btn danger",
+            type: "button",
+            onclick: () =>
+              guard(async () => {
+                const why = allow ? reason.value.trim() : "";
+                await api("POST", `/tickets/${t.id}/allow-test-changes`, {
+                  allow_test_changes: allow,
+                  ...(why ? { reason: why } : {}),
+                });
+                closeSheet();
+                toast(
+                  allow ? `Test changes allowed on ${ref}.` : `Allowance withdrawn on ${ref}.`,
+                  {
+                    ok: true,
+                  },
+                );
+                router();
+              }),
+          },
+          allow ? "Allow test changes" : "Withdraw allowance",
+        ),
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      ],
+    },
+  );
+}
+
+/**
+ * The Review banner for a delivery that changed its own tests: what changed (one line
+ * per finding, from the server's `test-modified` annotation), what that means for the
+ * auto-approve, and the human's allow / withdraw control. Empty when nothing changed.
+ */
+function integrityBanner(t, anns) {
+  if (!anns.length) return null;
+  const allowed = anns.every((a) => a.allowed);
+  // One line per finding; the repo leads only when more than one repo changed tests.
+  const many = new Set(anns.map((a) => a.repo)).size > 1;
+  const items = anns.flatMap((a) =>
+    (a.items && a.items.length ? a.items : [a.detail]).map((line) =>
+      many ? `${a.repo}: ${line}` : line,
+    ),
+  );
+  const shown = items.slice(0, 8);
+  return el(
+    "div",
+    {
+      class: `warn-box integrity-banner${allowed ? " is-allowed" : ""}`,
+      role: allowed ? "status" : "alert",
+      "aria-label": allowed
+        ? "Test changes are allowed on this ticket."
+        : "This delivery changed the tests that gate it.",
+    },
+    [
+      icon("alert"),
+      el("div", { class: "integrity-body" }, [
+        el(
+          "p",
+          { class: "integrity-h" },
+          allowed
+            ? "Test changes are allowed on this ticket."
+            : "This delivery changed the tests that decide it is done.",
+        ),
+        el(
+          "ul",
+          { class: "integrity-items" },
+          [
+            ...shown.map((line) => el("li", {}, line)),
+            items.length > shown.length
+              ? el("li", { class: "dim" }, `and ${items.length - shown.length} more`)
+              : null,
+          ].filter(Boolean),
+        ),
+        el(
+          "p",
+          { class: "integrity-note" },
+          allowed
+            ? "A person allowed it, so the gate reads PASS with a note from its next run. Check the changes are the ones the ticket asked for."
+            : "A green gate proves less when its own tests changed. Auto-approve is held until a person looks.",
+        ),
+        // A read token sees the control switched off (the server refuses it anyway).
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              onclick: () => allowTestChangesSheet(t, !allowed),
+            },
+            allowed ? "Withdraw allowance…" : "Allow test changes…",
+          ),
+        ),
+      ]),
+    ],
+  );
+}
+
 /** One flag: a yellow card, a caps title, what it means, who raised it. */
 function reviewFlag(title, body, source) {
   return el("li", { class: "flag" }, [
@@ -15569,6 +16310,196 @@ function reviewFlag(title, body, source) {
       source ? el("p", { class: "flag-src" }, source) : null,
     ]),
   ]);
+}
+
+/**
+ * The evidence rows (and events) that ASK FOR A HUMAN before sign-off: the runner's
+ * needs_human_review requests, a reviewer agent's CHANGES, a tester's FAIL or hold, a
+ * merge-gate hold, a DoD FLAG gate, an observed-risk escalation, anything held "for a
+ * human". The flags, the summary line and the warnings beside the button all read this
+ * one list, built from the same rows the Evidence list renders, so the sign-off can never
+ * say "Nothing flagged" over a request for a human further down the page.
+ * Returns [{ id, title, detail, source, topic? }]; `id` is the evidence row's id (null for
+ * events). `topic: "tests"` marks the GATE INTEGRITY asks (the runner's integrity FLAG, an
+ * auto-approve held because the tests changed): one finding, which the diff's
+ * `test-modified` flag and the test-changes banner say instead once the diff has loaded.
+ */
+const HUMAN_ASK_RULES = [
+  [/^needs_human_review\b[:\s]*/i, "Runner asks for a human review", "Raised by the runner"],
+  [
+    /^Reviewer agent \(advisory\): changes requested\s*[—-]?\s*/i,
+    "Reviewer asked for changes",
+    "Raised by the reviewer agent",
+  ],
+  [/^tester held:\s*/i, "Tester held it for a human", "Raised by the tester lane"],
+  [/^MERGE GATE FAILED:\s*/i, "Merge gate held it", "Raised by the merge gate"],
+  [/^agent review could not run:\s*/i, "Agent review could not run", "Raised by the runner"],
+  [/^PARKED\b[^:]*:\s*/i, "Parked for a human", "Raised by the runner"],
+];
+/**
+ * ONE ROUND: where the ticket's CURRENT delivery attempt begins in its event log (the
+ * latest claim, or a human taking it straight from Ready) and where it last entered
+ * review, as event-log positions (-1: none on record). A request for a human recorded
+ * before the attempt began was about an earlier attempt's code: that round's verdicts are
+ * in the rework history, not asks of this sign-off. Each evidence row is placed by its
+ * own `evidence.recorded` event, so the order is the log's, never a clock comparison
+ * across tables (a row with no such event falls back to its timestamp).
+ */
+function roundMarks(events) {
+  const list = events || [];
+  const payload = (e) => {
+    try {
+      return JSON.parse(e.payload_json || "{}") || {};
+    } catch {
+      return {};
+    }
+  };
+  let attempt = -1;
+  let review = -1;
+  const recordedAt = new Map();
+  list.forEach((e, i) => {
+    if (e.event_type === "evidence.recorded") {
+      const id = payload(e).evidence_id;
+      if (id) recordedAt.set(String(id), i);
+      return;
+    }
+    if (e.event_type !== "ticket.transitioned") return;
+    const p = payload(e);
+    if (p.to === "claimed" || (p.to === "in_progress" && p.from !== "claimed")) attempt = i;
+    if (p.to === "in_review") review = i;
+  });
+  /** Was evidence row `ev` recorded before the mark at log position `at`? */
+  const before = (ev, at) => {
+    if (at < 0) return false;
+    const pos = recordedAt.get(String(ev.id));
+    if (pos !== undefined) return pos < at;
+    return Boolean(ev.created_at && ev.created_at < list[at].created_at);
+  };
+  return { attempt, review, before };
+}
+function humanAsks(evidence, events, dod) {
+  const out = [];
+  // ONE ROUND: only this attempt's requests ask anything of this sign-off. A reviewer
+  // agent's advisory CHANGES is a verdict on what it reviewed, so it counts only since
+  // the ticket last entered review (the Work card's rule, boardService.advisoryReview).
+  const round = roundMarks(events);
+  for (const ev of evidence || []) {
+    const s = String(ev.summary || "");
+    const first = s.split("\n")[0];
+    const rule = HUMAN_ASK_RULES.find(([re]) => re.test(first));
+    if (round.before(ev, round.attempt)) continue;
+    if (rule && rule[1] === "Reviewer asked for changes" && round.before(ev, round.review))
+      continue;
+    let payload;
+    try {
+      payload = ev.payload_json ? JSON.parse(ev.payload_json) : null;
+    } catch {
+      payload = null;
+    }
+    if (rule) {
+      const detail = first.replace(rule[0], "").trim() || first;
+      out.push({ id: ev.id, title: rule[1], detail, source: rule[2] });
+    } else if (payload && payload.verdict === "fail") {
+      out.push({
+        id: ev.id,
+        title: "Tester asked for changes",
+        detail: first,
+        source: "Raised by the tester",
+      });
+    } else if (/\b(needs a human|held (?:[\w ]+ )?for a human)\b/i.test(first)) {
+      out.push({
+        id: ev.id,
+        title: "Held for a human",
+        detail: first,
+        source: "Raised by the runner",
+      });
+    }
+  }
+  let integrityFlag = false;
+  for (const g of (dod && dod.gates) || []) {
+    if (String(g.status || "").toUpperCase() !== "FLAG") continue;
+    const integrity = g.gate === "integrity";
+    integrityFlag = integrityFlag || integrity;
+    out.push({
+      id: null,
+      title: `Gate flagged: ${g.gate || "gate"}`,
+      detail: g.note ? String(g.note) : "The Definition of Done flagged this gate for a human.",
+      source: "Raised by the runner's gates",
+      ...(integrity ? { topic: "tests" } : {}),
+    });
+  }
+  (events || []).forEach((e, i) => {
+    if (e.event_type !== "ticket.autoship_escalated") return;
+    if (i < round.attempt) return;
+    let p;
+    try {
+      p = JSON.parse(e.payload_json || "{}") || {};
+    } catch {
+      p = {};
+    }
+    // GATE INTEGRITY: an escalation for the tests changing is that finding, not a risk level
+    // above the declared one; said once (the runner's integrity FLAG, when present, says it).
+    if (Array.isArray(p.holds) && p.holds.length) {
+      if (!integrityFlag)
+        out.push({
+          id: null,
+          title: "Auto-approve held: tests changed",
+          detail: `${p.holds.join("; ")}. An agent's or auto approval is held until a person looks; a human approval is not.`,
+          source: "Raised by the gate-integrity check",
+          topic: "tests",
+        });
+      return;
+    }
+    out.push({
+      id: null,
+      title: "Observed risk above declared",
+      detail: `The real diff reads as ${p.observed || "unknown"} risk, above the declared ${p.declared || "risk"}${
+        Array.isArray(p.reasons) && p.reasons.length ? `: ${p.reasons.join("; ")}` : ""
+      }. Auto-approve was held for a human.`,
+      source: "Raised by the observed-risk check",
+    });
+  });
+  return out;
+}
+
+/**
+ * The review packet's gate report in the DoD row's shape: the verdict strip's own rows
+ * (the server's read of the runner's DoD record), so the flags, the summary and the
+ * requests for a human never say something about the gates the strip contradicts.
+ */
+function packetDod(p) {
+  const g = p && p.gates;
+  if (!g) return null;
+  return {
+    dod: g.overall,
+    gates: (g.rows || []).map((r) => ({
+      gate: r.gate,
+      repo: r.repo,
+      status: r.status,
+      note: r.note || r.command || "",
+    })),
+  };
+}
+
+/**
+ * What an approval did when the server sent no `approve_outcome` (an older server): read
+ * the new status and the merge result. Never says a merge is running unless one started.
+ */
+function approvedFallback(to, merge) {
+  if (to === "in_testing")
+    return { done_label: "Sent to tester", sentence: "It goes to the tester next." };
+  if (merge && merge.triggered)
+    return { done_label: "Landing now", sentence: "The merge runner is landing it now." };
+  if (merge && merge.skipped === "auto_merge_off")
+    return {
+      done_label: "Waits for Merge now",
+      sentence:
+        "It waits in Ready for merge: Auto-merge on approval is off, so press Merge now to land it.",
+    };
+  return {
+    done_label: "Ready for merge",
+    sentence: "It waits in Ready for merge until the runner's merge lane or Merge now lands it.",
+  };
 }
 
 // ── The review packet: the runner's facts, above the agent's words ──────────
@@ -15591,7 +16522,7 @@ function prunePacketCache(tickets) {
   for (const id of packetCache.keys()) if (!live.has(id)) packetCache.delete(id);
 }
 
-const VD_WORD = { PASS: "passed", FAIL: "failed", SKIPPED: "skipped" };
+const VD_WORD = { PASS: "passed", FAIL: "failed", FLAG: "flagged", SKIPPED: "skipped" };
 /** One cell of the verdict strip: a caps label, the verdict, then its detail. */
 function verdictCell(key, label, value, aria, body, tone = "") {
   return el(
@@ -15644,12 +16575,20 @@ function verdictStrip(p) {
         "ul",
         { class: "clean vd-gate-list" },
         g.rows.map((r) => {
-          const st = r.status === "PASS" ? "pass" : r.status === "FAIL" ? "fail" : "skip";
+          // GATE INTEGRITY: a FLAG is the yellow "!" of the gates checklist, never a skip.
+          const st =
+            r.status === "PASS"
+              ? "pass"
+              : r.status === "FAIL"
+                ? "fail"
+                : r.status === "FLAG"
+                  ? "flag"
+                  : "skip";
           return el("li", { class: `vd-gate vd-g-${st}` }, [
             el(
               "span",
               { class: `dod-mark dod-${st}`, "aria-hidden": "true" },
-              st === "pass" ? "✓" : st === "fail" ? "✗" : "–",
+              { pass: "✓", fail: "✗", flag: "!", skip: "–" }[st],
             ),
             el("b", {}, r.gate),
             el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
@@ -15676,14 +16615,16 @@ function verdictStrip(p) {
   } else gateBody.push(el("p", { class: "vd-sub" }, "The runner has recorded no gate report."));
   for (const d of p.disagreements || [])
     gateBody.push(el("p", { class: "vd-flag" }, [ycard(16), d.message]));
-  const ran = g ? g.rows.filter((r) => r.status !== "SKIPPED").length : 0;
+  // The integrity row checks the gates; it is not one of them (it never "ran" the work).
+  const gateList = g ? g.rows.filter((r) => r.gate !== "integrity") : [];
+  const ran = gateList.filter((r) => r.status !== "SKIPPED").length;
   cells.push(
     verdictCell(
       "gates",
       "Gates",
       g ? (g.overall === "PASS" ? "Passed" : "Failed") : "No report",
       g
-        ? `Gates: ${g.overall === "PASS" ? "passed" : "failed"}, ${ran} of ${g.rows.length} ran`
+        ? `Gates: ${g.overall === "PASS" ? "passed" : "failed"}, ${ran} of ${gateList.length} ran`
         : "Gates: no report recorded",
       gateBody,
       g ? (g.overall === "PASS" ? "ok" : "bad") : "warn",
@@ -15925,6 +16866,30 @@ function acTable(rows) {
 let lastSignedOff = null;
 
 /**
+ * STALE REVISION: set when an approval was refused because the branch moved after the
+ * diff was shown. The re-rendered Review view reads it once and says so above the new
+ * diff, so the human knows what they are now looking at is a different commit.
+ */
+let reviewMovedNotice = null;
+
+/** The commits a rendered diff covered: one `{ repo, sha }` per repo with a known head. */
+function shownCommits(repos) {
+  return (repos || [])
+    .filter((r) => r && typeof r.headSha === "string" && r.headSha)
+    .map((r) => ({ repo: r.repoId || r.repo, sha: r.headSha }));
+}
+
+/** True for the server's "the change moved since it was shown" refusals. */
+function isStaleRevision(e) {
+  const reason = e && e.details && e.details.reason;
+  return (
+    Boolean(e) &&
+    e.status === 409 &&
+    (reason === "stale_revision" || reason === "revision_required")
+  );
+}
+
+/**
  * The Review page with nothing waiting: the desk is clear, said on the stadium
  * board, with where the signed work is now (testing, to merge, full time) and
  * who is still on the pitch, so the next stop is one click away.
@@ -15961,7 +16926,7 @@ async function renderClearDesk(wrap) {
       ? [
           "you signed ",
           el("a", { href: `#/ticket/${signed.id}` }, `#${signed.number}`),
-          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status).toLowerCase()} now`,
+          ` ${fmtRelative(lastSignedOff.at)}; it is ${statusLabel(signed.status, signed.landing_state).toLowerCase()} now`,
         ]
       : null,
     playing.length
@@ -16035,7 +17000,7 @@ async function renderClearDesk(wrap) {
       el("span", { class: "rv-res-no" }, `#${t.number}`),
       el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
       el("span", { class: "rv-res-st" }, [
-        statusBadge(t.status),
+        statusBadge(t.status, t.landing_state),
         signed && t.id === signed.id ? el("small", { class: "rv-res-you" }, "you signed it") : null,
       ]),
       el(
@@ -16063,7 +17028,9 @@ async function renderClearDesk(wrap) {
       el("span", { class: "rv-res-no" }, `#${t.number}`),
       el("a", { class: "rv-res-t", href: `#/ticket/${t.id}` }, t.title),
       el("span", { class: "rv-res-st" }, [
-        c && c.agent_id ? agentChip(c.agent_id, c.agent_display_name, 22) : statusBadge(t.status),
+        c && c.agent_id
+          ? agentChip(c.agent_id, c.agent_display_name, 22)
+          : statusBadge(t.status, t.landing_state),
       ]),
       el(
         "span",
@@ -16152,7 +17119,7 @@ async function renderReview(param) {
           "h1",
           { class: "rv-gone-h" },
           t
-            ? `#${t.number} is ${statusLabel(t.status).toLowerCase()} now.`
+            ? [...hlWork(t), ` is ${statusLabel(t.status, t.landing_state).toLowerCase()} now.`]
             : "That change is not in review.",
         ),
         el("p", {}, [
@@ -16190,13 +17157,28 @@ async function renderReview(param) {
   const by = deliveredBy(ticketEvents);
   const rby = reviewedBy(detail.ticket || t, ticketEvents);
   const since = sinceStatus(ticketEvents, "in_review");
-  const dod = parseDodEvidence(evidence);
+  // ONE SOURCE for the gates: with a review packet, the verdict strip's rows (the server's
+  // read of the runner's DoD record); without one (an older server), the evidence row.
+  const dod = packet ? packetDod(packet) : parseDodEvidence(evidence);
   const writes = blockedWrites(evidence);
+  // Every row below that asks for a human: the flags, the summary and the warnings
+  // beside the button read this one list.
+  const asks = humanAsks(evidence, ticketEvents, dod);
+  // Once the diff shows the tests changed, the integrity asks are that finding: the
+  // `test-modified` flag and the test-changes banner say it, never twice.
+  let shownAsks = asks;
   const prUrl = safeHttpUrl(t.pr_url);
 
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
   // DISABLED and only enables once the diff loads with a real, non-empty change.
   let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // What Approve does, as the server computes it from the settings and ticket state the
+  // approve path acts on (GET /diff's approve_outcome). Until it arrives the button just
+  // says "Approve"; it never promises a merge the click will not start.
+  let outcome = null;
+  const isApproved = () => Boolean(approveBtn && approveBtn.classList.contains("is-approved"));
+  // The repos (with their head commits) the diff below rendered — what Approve covers.
+  let diffRepos = [];
   // The sign-off's status line: hidden until Approve lands, then it says where the
   // change went and offers the next one as its own link (never auto-advanced).
   const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
@@ -16208,19 +17190,36 @@ async function renderReview(param) {
         toast(`Can't approve — ${diffState.reason}`, {});
         return;
       }
-      const r = await api("POST", `/tickets/${t.id}/review/approve`);
+      // Approve exactly what was shown: the head commit of every repo the diff rendered.
+      // A branch that moved since is refused (409 stale_revision) and nothing is approved.
+      let r;
+      try {
+        r = await api("POST", `/tickets/${t.id}/review/approve`, {
+          commits: shownCommits(diffRepos),
+        });
+      } catch (e) {
+        if (!isStaleRevision(e)) throw e;
+        reviewMovedNotice = { id: t.id, message: e.message };
+        toast("Not approved — the change moved since you opened it. The new diff is loaded.", {});
+        router();
+        return;
+      }
       const to = r && r.ticket && r.ticket.status;
-      // AUTO_MERGE off (the default): the approval does not merge; the ticket waits in
-      // Ready for merge until someone presses Merge now.
-      const heldForMerge = Boolean(r && r.merge && r.merge.skipped === "auto_merge_off");
+      // What the click actually did: the server settles its outcome against the real
+      // route (the tester, a merge started or skipped). An older server sends none, so
+      // read the status and the merge result instead.
+      const done = (r && r.approve_outcome) || approvedFallback(to, r && r.merge);
       lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
-      // Stay on the diff: the button says it is done, and moving on is its own link.
+      // Stay on the diff: the button says it is done and where the change went, and
+      // moving on is its own link.
       if (approveBtn) {
         approveBtn.setAttribute("disabled", "");
         approveBtn.classList.add("is-approved");
-        approveLabel.textContent = "Approved";
+        approveLabel.textContent = `Approved · ${done.done_label}`;
+        approveBtn.setAttribute("aria-label", `Approved #${t.number}: ${done.done_label}`);
         approveBtn.prepend(icon("check", "", 20));
       }
+      nextLine.hidden = true;
       // The yellow card is withdrawn from the title; the queue tab shows the move.
       const card = wrap.querySelector(".rv-title .rv-card");
       if (card && !prefersReducedMotion() && typeof card.animate === "function")
@@ -16241,18 +17240,23 @@ async function renderReview(param) {
         tab.appendChild(el("small", { class: "rv-tab-done" }, "approved"));
       }
       const meta = wrap.querySelector(".rv-meta .badge.st");
-      if (meta && to) meta.replaceWith(statusBadge(to));
+      // Where the landing is now, in the server's words: the approved ticket's own
+      // landing_state (what the ticket page, the board and the queue say, a usage pause
+      // included), else the approval's outcome.
+      const landed = {
+        land_now: "Approved · landing",
+        land_next_tick: "Approved · lands next tick",
+        waits_for_merge: "Approved · waiting for Merge now",
+      }[done.kind];
+      const landing =
+        (r && r.ticket && r.ticket.landing_state) ||
+        (landed ? { label: landed, detail: done.sentence } : undefined);
+      if (meta && to) meta.replaceWith(statusBadge(to, landing));
       clear(doneLine);
       doneLine.append(
         el("span", { class: "rv-done-t" }, [
           el("b", {}, `Approved #${t.number}.`),
-          ` ${
-            to === "in_testing"
-              ? "It goes to the tester next."
-              : heldForMerge
-                ? "It waits in Ready for merge: Auto-merge on approval is off, so press Merge now to land it."
-                : "It is with the merge runner now."
-          } `,
+          ` ${done.sentence} `,
         ]),
         next
           ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
@@ -16268,9 +17272,7 @@ async function renderReview(param) {
       // instead of silently swapping the next change in under the reader.
       if (!param && typeof history !== "undefined" && history.replaceState)
         history.replaceState(null, "", `#/review/${t.id}`);
-      toast(heldForMerge ? "Approved — waiting in Ready for merge" : "Approved — merging", {
-        ok: true,
-      });
+      toast(`Approved — ${done.done_label.toLowerCase()}`, { ok: true });
       updateNavBadges();
     });
   const reject = (to) => {
@@ -16318,6 +17320,13 @@ async function renderReview(param) {
   // Approve is a two-step arm→confirm, by click or by key.
   const ARM_WINDOW_MS = 3000;
   const approveLabel = el("span", {}, "Approve");
+  // One line under the button: what follows the click (the outcome's sentence).
+  const nextLine = el("p", {
+    class: "signoff-next",
+    id: `signoff-next-${t.id}`,
+    "aria-live": "polite",
+    hidden: "",
+  });
   const approveBtn = canApprove
     ? el(
         "button",
@@ -16325,15 +17334,18 @@ async function renderReview(param) {
           class: "btn primary big signoff-btn",
           type: "button",
           disabled: "",
-          "aria-label": "Approve and merge",
+          "aria-label": "Approve",
+          "aria-describedby": nextLine.id,
         },
         [approveLabel],
       )
     : null;
+  const restLabel = () => (outcome ? outcome.label : "Approve");
   // One arm for both paths: the first `a` or click raises the yellow card on the
-  // button ("Confirm merge"), rings the sign-off block and shows the 3s window
-  // draining under the buttons; a second press inside it approves. Esc, j/k,
-  // leaving the button or the window running out all put it down again.
+  // button (the outcome's confirm label: "Confirm: send to tester", "Confirm and land
+  // now"…), rings the sign-off block and shows the 3s window draining under the
+  // buttons; a second press inside it approves. Esc, j/k, leaving the button or the
+  // window running out all put it down again.
   let armed = false;
   let armedVia = null;
   let armTimer = null;
@@ -16350,9 +17362,9 @@ async function renderReview(param) {
     clear(armHint);
     if (!approveBtn) return;
     approveBtn.classList.remove("btn-armed");
-    if (approveLabel.textContent !== "Approved") {
-      approveLabel.textContent = "Approve";
-      approveBtn.setAttribute("aria-label", "Approve and merge");
+    if (!isApproved()) {
+      approveLabel.textContent = restLabel();
+      approveBtn.setAttribute("aria-label", restLabel());
     }
   };
   const arm = (via) => {
@@ -16360,17 +17372,18 @@ async function renderReview(param) {
     armed = true;
     armedVia = via;
     signoff?.classList.add("card-armed");
+    const confirm = outcome ? outcome.confirm_label : "Confirm approval";
     if (approveBtn && !approveBtn.disabled) {
       approveBtn.classList.add("btn-armed");
-      approveLabel.textContent = "Confirm merge";
-      approveBtn.setAttribute("aria-label", `Confirm merge: approve #${t.number}`);
+      approveLabel.textContent = confirm;
+      approveBtn.setAttribute("aria-label", `${confirm}: approve #${t.number}`);
     }
     armHint.append(
       el("span", { class: "rv-arm-t" }, [
         el("b", {}, "Armed. "),
         via === "key"
           ? [el("span", { class: "kbd" }, "a"), " again to approve"]
-          : "Click Confirm merge to approve",
+          : "Click again to approve",
         " · ",
         el("span", { class: "kbd" }, "Esc"),
         " puts it down",
@@ -16403,6 +17416,29 @@ async function renderReview(param) {
     { class: "reopen-banner diff-block-banner", style: "display:none" },
     [icon("alert"), ""],
   );
+  // The approval just refused as stale: say the change moved, once, above the new diff.
+  const moved = reviewMovedNotice && reviewMovedNotice.id === t.id ? reviewMovedNotice : null;
+  if (moved) reviewMovedNotice = null;
+  const movedBanner = moved
+    ? el(
+        "div",
+        {
+          class: "reopen-banner diff-moved-banner",
+          role: "alert",
+          "aria-label": "The change moved since you opened it, so nothing was approved.",
+        },
+        [
+          icon("alert"),
+          el("span", {}, [
+            el("b", {}, "The change moved since you opened it. "),
+            "Nothing was approved. The diff below is the new head — review it again before you approve. ",
+            el("small", { class: "mono" }, moved.message),
+          ]),
+        ],
+      )
+    : null;
+  // GATE INTEGRITY: filled once the diff loads, from the server's `test-modified` flag.
+  const integritySlot = el("div", { class: "integrity-slot" });
 
   // Flags: what to look at before signing. Evidence flags now; the diff's risk
   // annotations join them once the diff loads.
@@ -16450,7 +17486,11 @@ async function renderReview(param) {
       "From the ticket's criteria",
     ]);
   const paintFlags = (riskAnns, outside = []) => {
+    const testsChanged = riskAnns.some((a) => a.kind === "test-modified");
+    shownAsks = testsChanged ? asks.filter((a) => a.topic !== "tests") : asks;
+    paintAsks();
     const all = [
+      ...shownAsks.map((a) => [a.title, a.detail, a.source]),
       ...riskAnns.map((a) => [
         String(a.kind)
           .replace(/-/g, " ")
@@ -16458,7 +17498,11 @@ async function renderReview(param) {
         a.detail +
           (a.kind === "sensitive-path"
             ? ". Check it is safe to ship, and that a migration has a way back."
-            : "."),
+            : a.kind === "test-modified"
+              ? a.allowed
+                ? ". Allowed by a person; check these are the changes the ticket asked for."
+                : ". A green gate proves less when its own tests changed; auto-approve is held."
+              : "."),
         "Raised by the server's risk check",
       ]),
       ...outside.map((o) => [
@@ -16491,6 +17535,34 @@ async function renderReview(param) {
       ? `${plural(all.length, "thing")} to check before you sign: ${all.map((x) => x[0].toLowerCase()).join(", ")}. ${gates}${crit}.`
       : `Nothing flagged. ${gates}${crit}.`;
   };
+  // The requests for a human, beside the button: the reviewer sees them where they sign.
+  const asksSlot = el("div", { class: "signoff-asks-slot" });
+  function paintAsks() {
+    clear(asksSlot);
+    const list = shownAsks;
+    if (!list.length) return;
+    asksSlot.appendChild(
+      el(
+        "div",
+        {
+          class: "signoff-asks",
+          role: "status",
+          "aria-label": `${plural(list.length, "request")} for a human before you sign`,
+        },
+        [
+          el("p", { class: "signoff-asks-h" }, [
+            icon("alert", "", 18),
+            ` ${list.length === 1 ? "A human is asked for" : `${list.length} requests for a human`} before you sign`,
+          ]),
+          el(
+            "ul",
+            { class: "clean signoff-asks-list" },
+            list.map((a) => el("li", {}, [el("b", {}, a.title), el("span", {}, ` ${a.detail}`)])),
+          ),
+        ],
+      ),
+    );
+  }
   paintFlags([]);
 
   const branchLine = el("p", { class: "rv-branch" }, [
@@ -16498,12 +17570,25 @@ async function renderReview(param) {
     prUrl ? [" · ", el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR")] : null,
   ]);
   const diffAux = el("span", { class: "panel-aux" });
-  const applyDiffState = (state, repos = []) => {
+  const applyDiffState = (state, repos = [], res = null) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
+    outcome = (res && res.approve_outcome) || null;
+    // A server-side hold (required CI not passed) refuses the approval: say so instead.
+    if (outcome && !outcome.approvable && diffState.approvable)
+      diffState = { approvable: false, reason: outcome.sentence };
+    if (approveBtn && !isApproved() && !armed) {
+      approveLabel.textContent = restLabel();
+      approveBtn.setAttribute("aria-label", restLabel());
+    }
+    if (outcome && !isApproved()) {
+      nextLine.textContent = outcome.sentence;
+      nextLine.hidden = false;
+      nextLine.dataset.outcome = outcome.kind;
+    }
+    diffRepos = repos;
     if (diffState.approvable) {
       diffBlockBanner.style.display = "none";
-      if (approveBtn && approveLabel.textContent !== "Approved")
-        approveBtn.removeAttribute("disabled");
+      if (approveBtn && !isApproved()) approveBtn.removeAttribute("disabled");
     } else {
       diffBlockBanner.style.display = "";
       clear(diffBlockBanner);
@@ -16513,6 +17598,9 @@ async function renderReview(param) {
     }
     const live = repos.filter((r) => !r.unavailable);
     strip?._setRisk(live.flatMap((r) => r.riskAnnotations || []));
+    clear(integritySlot);
+    const ib = integrityBanner(t, testModifiedAnns(live));
+    if (ib) integritySlot.appendChild(ib);
     const outside = outsideStatedChange(evidence, live);
     paintFlags(
       live.flatMap((r) => r.riskAnnotations || []),
@@ -16536,10 +17624,7 @@ async function renderReview(param) {
   // The verdict strip: the runner's facts, under the title and above everything
   // the agent wrote. Built before the diff so the diff's risk flags can join it.
   const strip = packet ? verdictStrip(packet) : null;
-  const diffBox = renderTicketDiff(
-    t.id,
-    canApprove ? applyDiffState : (s, r) => applyDiffState(s, r),
-  );
+  const diffBox = renderTicketDiff(t.id, applyDiffState);
 
   // Header: the yellow card, the number, the title; then the facts in one line.
   wrap.appendChild(
@@ -16551,7 +17636,7 @@ async function renderReview(param) {
         t.title,
       ]),
       el("p", { class: "rv-meta" }, [
-        statusBadge(t.status),
+        statusBadge(t.status, t.landing_state),
         repo ? repoTag(repo.name, 20) : null,
         riskBadge(t.risk_level, { long: true }),
         by
@@ -16584,6 +17669,9 @@ async function renderReview(param) {
     [
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
+      movedBanner,
+      asksSlot,
+      integritySlot,
       canApprove ? diffBlockBanner : null,
       el(
         "div",
@@ -16606,6 +17694,7 @@ async function renderReview(param) {
             : null,
         ].filter(Boolean),
       ),
+      canApprove ? nextLine : null,
       armHint,
       el("p", { class: "rv-keys" }, [
         el("span", { class: "kbd" }, "a"),
@@ -16663,8 +17752,10 @@ async function renderReview(param) {
             "Evidence ",
             el("span", { class: "panel-aux" }, String(evidence.length)),
           ]),
-          reviewEvidenceList(evidence, ac, { repos: detail.repositories }) ||
-            el("p", { class: "dim" }, "No evidence recorded."),
+          reviewEvidenceList(evidence, ac, {
+            repos: detail.repositories,
+            asks: new Set(asks.map((a) => a.id).filter(Boolean)),
+          }) || el("p", { class: "dim" }, "No evidence recorded."),
         ]),
       ]),
       el("div", { class: "rv-right" }, [diffSection]),
@@ -16957,7 +18048,7 @@ function mapCounterHref(c) {
  */
 function mapCounter(c, { link = true } = {}) {
   const tone = mapTone(c.status);
-  const word = statusLabel(c.status);
+  const word = statusLabel(c.status, c.landing_state);
   const marks = [
     el("span", { class: "mag-n tabnum" }, String(c.number ?? "?")),
     tone === "yellow" ? ycard(12, "mag-card") : null,
@@ -17995,7 +19086,7 @@ function fixtureList(list, { empty, limit = 8, byTime = false } = {}) {
               : el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
-              statusBadge(t.status),
+              statusBadge(t.status, t.landing_state),
               t.updated_at
                 ? el(
                     "time",
@@ -18950,7 +20041,7 @@ function renderRepoTickets(repo, tickets, err) {
             el("span", { class: "num" }, t.number != null ? `#${t.number}` : t.id.slice(0, 8)),
             el("span", { class: "repo-ticket-title" }, t.title),
             el("span", { class: "repo-ticket-side" }, [
-              statusBadge(t.status),
+              statusBadge(t.status, t.landing_state),
               el(
                 "time",
                 { class: "repo-ticket-time", datetime: t.updated_at },
@@ -19635,7 +20726,7 @@ function renderEpicDag(byPhase, phases, ctx) {
     const needs = NEEDS_SIGN_OFF.has(t.status);
     const waitsOnHeld = blockers.some((b) => heldIds.has(b.depends_on_ticket_id));
     const label = [
-      `#${t.number} ${statusLabel(t.status)}: ${t.title}`,
+      `#${t.number} ${statusLabel(t.status, t.landing_state)}: ${t.title}`,
       repo ? `in ${repo}` : "",
       agent ? `${agent.name} on it` : "",
       needs ? (t.status === "in_review" ? "waits for your sign-off" : "waits for the merge") : "",
@@ -19656,7 +20747,7 @@ function renderEpicDag(byPhase, phases, ctx) {
         el("span", { class: "dn-top" }, [
           el("span", { class: "dn-num" }, t.number != null ? `#${t.number}` : "—"),
           needs ? ycard(16) : null,
-          statusBadge(t.status),
+          statusBadge(t.status, t.landing_state),
         ]),
         el("span", { class: "dn-title" }, t.title),
         el("span", { class: "dn-foot" }, [
@@ -24938,7 +26029,7 @@ function floorModel(f) {
 /** The sentence a parcel reads as: "#12 Fix the login redirect, in review, delivered by Kev (No. 9)". */
 function floorSentence(p) {
   const named = (w) => `${w.name}${w.no ? ` (No. ${Number(w.no)})` : ""}`;
-  let s = `#${p.number} ${p.title}, ${FLOOR_WORDS[p.status] || statusLabel(p.status)}`;
+  let s = `#${p.number} ${p.title}, ${FLOOR_WORDS[p.status] || statusLabel(p.status, p.landing_state)}`;
   if (p.who) s += `, ${named(p.who)} on it${p.running ? ", its run in progress" : ""}`;
   else if (p.by) s += `, delivered by ${named(p.by)}`;
   if (p.needs) s += ", needs you";
@@ -25714,7 +26805,11 @@ async function renderFloor() {
             el("li", {}, [
               agentTag(p.who.name, 22, p.who.no, agentTitle(p.who)),
               el("a", { href: `#/ticket/${p.id}` }, [el("b", {}, `#${p.number}`), " ", p.title]),
-              el("span", { class: "fl-bench-st" }, FLOOR_WORDS[p.status] || statusLabel(p.status)),
+              el(
+                "span",
+                { class: "fl-bench-st" },
+                FLOOR_WORDS[p.status] || statusLabel(p.status, p.landing_state),
+              ),
             ]),
           ),
         )

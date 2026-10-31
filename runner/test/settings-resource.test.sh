@@ -105,7 +105,7 @@ if [ "\$n" = 2 ]; then printf '%s 2\n' "\$(date +%Y-%m-%d)" > "$D/.daily-ticks";
 exit 0
 STUBSH
 chmod +x "$STUB"
-ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$D" GAFFER_LOOP_SH="$STUB" GAFFER_DAEMON_MAX_CYCLES=4 \
+ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_ALLOW_UNCAPPED=1 GAFFER_DATA="$D" GAFFER_LOOP_SH="$STUB" GAFFER_DAEMON_MAX_CYCLES=4 \
   "${BOUND[@]}" 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
 L1="$(sed -n 1p "$LOG")"; L2="$(sed -n 2p "$LOG")"; NP="$(grep -c '^pass' "$LOG")"
 [ "$L1" = "pass MAX=40 DAY=5" ] && ok "daemon pass 1 used the settings at start" || fail "pass 1: $L1"
@@ -143,7 +143,7 @@ printf '#!/usr/bin/env bash\nprintf "{}\\n"\n' > "$WORK/noop.sh"; chmod +x "$WOR
 run_loop() {
   local data="$1" seq="$2"; shift 2
   : > "$WORK/calls"; rm -f "$data/.daily-ticks" "$data/usage-ledger.jsonl"
-  env -i PATH="$PATH" HOME="$HOME" "$@" DRY_RUN=0 TICK_SLEEP=0 EMPTY_POLL_LIMIT=10 \
+  env -i PATH="$PATH" HOME="$HOME" GAFFER_ALLOW_UNCAPPED=1 "$@" DRY_RUN=0 TICK_SLEEP=0 EMPTY_POLL_LIMIT=10 \
     GAFFER_DATA="$data" GAFFER_LOG="$WORK/factory.log" GAFFER_TICK_OUTER_TIMEOUT=60 \
     DISPATCH_DIR="$WORK/nodist" DISPATCH_DB="$WORK/db.sqlite" MEMORY_DB="$WORK/mem.sqlite" \
     STUB_CALLS="$WORK/calls" SEQ="$seq" \
@@ -280,7 +280,7 @@ OUT6="$(run_loop "$L" "$S" MAX_TICKS=8 GAFFER_CONCURRENCY=2)"
 D="$WORK/d3"; mkdir -p "$D"; printf '%s' "$BAD" > "$D/settings.json"
 LOG="$WORK/passes3.log"; : > "$LOG"
 printf '#!/usr/bin/env bash\necho pass >> "%s"\n' "$LOG" > "$WORK/loop3.sh"; chmod +x "$WORK/loop3.sh"
-ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$D" GAFFER_LOOP_SH="$WORK/loop3.sh" GAFFER_DAEMON_MAX_CYCLES=2 \
+ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_ALLOW_UNCAPPED=1 GAFFER_DATA="$D" GAFFER_LOOP_SH="$WORK/loop3.sh" GAFFER_DAEMON_MAX_CYCLES=2 \
   "${BOUND[@]}" 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
 [ "$(grep -c '^pass' "$LOG")" = 0 ] && grep -q 'settings.json .* cannot be read — idle' <<<"$ERR" \
   && ok "the daemon runs no pass while settings.json is unreadable, with a notice" \

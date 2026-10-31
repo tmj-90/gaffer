@@ -21,6 +21,9 @@
 #   * claude TRIPWIRE: a `claude` stub is first on PATH and in CLAUDE_BIN. It answers
 #     `--version`; any other call is logged and exits 97, and a logged call fails the
 #     run. No test may make a real, billed model call on a contributor's machine.
+#   * dollar-cap opt-out: GAFFER_ALLOW_UNCAPPED=1 is exported, because a live run with
+#     no GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD refuses to start and every agent
+#     here is a stub (spend-cap-required.test.sh unsets it to prove the refusal).
 #   * operator-state isolation: GAFFER_DATA points at a private dir, and DISPATCH_DB /
 #     DISPATCH_AUDIT / MEMORY_DB / GAFFER_CREW_EVENTS / CLAUDE_FLAGS / MCP_CONFIG
 #     inherited from the operator's shell are cleared. Afterwards any file written
@@ -40,7 +43,9 @@
 # small head start, as CI also gives it the macOS package tests). Within a shard
 # everything above still holds: LONG_RE caps and queue-first, strict skips, the
 # tripwire, the operator-state guard and the summary. After adding or removing a
-# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner).
+# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner),
+# and add it to LONG_RE once it weighs two thirds of its cap (80s for a .sh):
+# run-harness.test.sh H10 fails on a heavy test left on the short cap.
 #
 # Usage: runner/test/run.sh [-j N] [--strict] [-v] [--shard K/N] [--list] [--] [FILE...]
 #   -j N         parallel jobs (default: $JOBS, else the CPU count)
@@ -59,7 +64,7 @@ SELF="$HERE/run.sh"
 . "$HERE/lib/skip.sh"
 
 # Long end-to-end tests: queued first, with a roomier cap.
-LONG_RE='^(merge-lane|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+LONG_RE='^(gate-integrity-e2e(-retry)?|merge-lane|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }
@@ -81,6 +86,10 @@ if [ "${1:-}" = "--one" ]; then
     unset DISPATCH_DB DISPATCH_AUDIT MEMORY_DB GAFFER_CREW_EVENTS CLAUDE_FLAGS MCP_CONFIG GAFFER_RUN_SHARD
     export GAFFER_DATA="$priv/.gaffer" GAFFER_TEST_NAME="$name"
     export PATH="$R/tripwire:$PATH" CLAUDE_BIN="$R/tripwire/claude"
+    # Every agent here is a stub, so a "live" run spends nothing: opt the suite out of
+    # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok). A test of that
+    # refusal unsets it for its own runs (spend-cap-required.test.sh).
+    export GAFFER_ALLOW_UNCAPPED=1
     exec perl -e 'alarm shift; exec @ARGV' "$cap" "$interp" "$file"
   ) >"$R/$idx.out" 2>&1 </dev/null
   rc=$?

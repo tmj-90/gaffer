@@ -236,6 +236,10 @@ export function registerAgent(program: Command): void {
       "the FULL distilled failing test + assertion/stack, appended to the durable failure trail (falls back to --reason)",
     )
     .option("--ac <id>", "the acceptance criterion being worked toward, when known")
+    .option(
+      "--final",
+      "the LAST allowed attempt's failure, recorded before the park: append the trail row only (no 'reworking' card or event)",
+    )
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const t = wg.resolveTicket(ref);
@@ -248,6 +252,7 @@ export function registerAgent(program: Command): void {
           ...(opts.gate ? { gate: String(opts.gate) } : {}),
           ...(opts.failure ? { distilledFailure: String(opts.failure) } : {}),
           ...(opts.ac ? { acId: String(opts.ac) } : {}),
+          ...(opts.final ? { final: true } : {}),
         },
         { type: "system" },
       );
@@ -320,11 +325,17 @@ export function registerAgentSystem(program: Command): void {
     .requiredOption("--type <type>", "evidence type (e.g. diff_summary, pull_request)")
     .requiredOption("--summary <text>", "evidence summary")
     .option("--uri <uri>", "evidence uri")
+    .option("--payload-json <json>", "structured detail: a JSON object (at most 4 KB)")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const res = wg.attachDeliveryEvidence(
         ref,
-        { evidenceType: opts.type, summary: opts.summary, uri: opts.uri },
+        {
+          evidenceType: opts.type,
+          summary: opts.summary,
+          uri: opts.uri,
+          payloadJson: opts.payloadJson,
+        },
         { type: "system" },
       );
       printJson({ ok: true, ...res });

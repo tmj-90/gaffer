@@ -15,7 +15,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  readlinkSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -45,16 +44,19 @@ process.env.GAFFER_DATA = DATA;
 delete process.env.SKILLS_DIR;
 delete process.env.CLAUDE_SETTINGS;
 
-console.log("== makeAgentHome: skills symlink + resolved settings, under GAFFER_DATA ==");
+console.log("== makeAgentHome: skill copies + resolved settings, under GAFFER_DATA ==");
 {
   const home = makeAgentHome("decompose-");
   assert("home dir created under GAFFER_DATA", home.dir.startsWith(DATA) && existsSync(home.dir));
   const link = resolve(home.dir, ".claude", "skills");
-  assert(".claude/skills is a symlink", existsSync(link) && lstatSync(link).isSymbolicLink());
+  // Real copies, not a link into the library: the safety hook refuses a Read that
+  // resolves outside the agent's roots, so a symlinked skill could not be read.
+  assert(".claude/skills is a real directory", existsSync(link) && lstatSync(link).isDirectory());
   assert(
-    "…pointing at the factory's skills dir (plan-build + spec-author resolve)",
-    readlinkSync(link) === resolve(RUNNER_DIR, "skills") &&
-      existsSync(resolve(link, "plan-build", "SKILL.md")) &&
+    "…holding copies of the factory's skills (plan-build + spec-author resolve)",
+    !lstatSync(resolve(link, "plan-build")).isSymbolicLink() &&
+      readFileSync(resolve(link, "plan-build", "SKILL.md"), "utf8") ===
+        readFileSync(resolve(RUNNER_DIR, "skills", "plan-build", "SKILL.md"), "utf8") &&
       existsSync(resolve(link, "spec-author", "SKILL.md")),
   );
   const settings = resolve(home.dir, ".claude", "settings.json");

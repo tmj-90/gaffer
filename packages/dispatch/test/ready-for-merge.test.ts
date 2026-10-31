@@ -263,8 +263,9 @@ describe("SPA state -> action map (single source of truth)", () => {
     expect(keys).not.toContain("approve");
   });
 
-  it("renders the 'Approved · merging' column label and the ready_for_merge move target", () => {
-    expect(appJs).toContain('ready_for_merge: "Approved · merging"');
+  it("labels ready_for_merge without claiming a merge runs (landing_state says where it is)", () => {
+    expect(appJs).toContain('ready_for_merge: "Approved · to merge"');
+    expect(appJs).not.toContain('ready_for_merge: "Approved · merging"');
   });
 });
 

@@ -25,6 +25,12 @@
 #   6. PRODUCT OWNER (headless)  — product role only (product-owner/rice/prd… + the
 #                                  marketing lens), not the whole library.
 #
+# In 1–3 the stub also makes an explicit Read of one mounted skill through the installed
+# PreToolUse hook (as Claude Code would): the hook must ALLOW it (the mount is real
+# copies inside the agent's worktree), and the skill telemetry and the dashboard's
+# Skills/Health read model must say "opened" — never "applied" from an open alone, and
+# never a refused read counted as use.
+#
 # Run: bash runner/test/e2e-agent-skill-routing.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -88,15 +94,30 @@ if [ -e .claude/skills ]; then ls -1 .claude/skills/ 2>/dev/null | sort > "$D/sk
 [ -f CLAUDE.factory.md ] && echo yes > "$D/brief" || echo no > "$D/brief"
 env | grep -E '^(GAFFER_|DISPATCH_|MEMORY_)' | sort > "$D/env"
 [ -n "$mcp" ] && [ -f "$mcp" ] && cp "$mcp" "$D/mcp.json"
+# An explicit Read of a mounted skill, decided by the SAME PreToolUse hook command the
+# installed .claude/settings.json wires (Claude Code runs it with this process's env), and
+# only on an allow does the "agent" read the file. Records "<skill> <hook exit>".
+hook_read() {
+  local cmd f rc
+  cmd="$(grep -o 'node [^"]*safety-hook.mjs' .claude/settings.json 2>/dev/null | head -1)"
+  f="$PWD/.claude/skills/$1/SKILL.md"
+  if [ -z "$cmd" ]; then echo "$1 nohook" >> "$D/hookreads"; return 0; fi
+  printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$f" | $cmd >/dev/null 2>>"$D/hook.err"; rc=$?
+  echo "$1 $rc" >> "$D/hookreads"
+  if [ "$rc" = 0 ]; then head -1 "$f" > "$D/read.$1" 2>/dev/null; fi
+  return 0
+}
 case "$prompt" in
   *"SECURITY REVIEWER"*)
     echo security > "$D/kind"
     printf '{"type":"result","subtype":"success","is_error":false,"result":"No blocking finding.\\nRECOMMEND APPROVE\\n{\\"verdict\\":\\"APPROVE\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
   *"REVIEWER agent"*)
     echo review > "$D/kind"
+    hook_read review-ticket
     printf '{"type":"result","subtype":"success","is_error":false,"result":"RECOMMEND APPROVE\\n{\\"verdict\\":\\"APPROVE\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0 ;;
   *"INDEPENDENT TESTER agent"*)
     echo tester > "$D/kind"
+    hook_read black-box-test
     if [ "$(cat "__TVERDICT__" 2>/dev/null || echo PASS)" = "FAIL" ]; then
       printf '{"type":"result","subtype":"success","is_error":false,"result":"FAIL: habit add is a no-op through the real CLI.\\n{\\"verdict\\":\\"FAIL\\"}","total_cost_usd":0.01,"num_turns":2}\n'; exit 0
     fi
@@ -110,6 +131,7 @@ case "$prompt" in
 esac
 if [ -e .git ]; then
   echo delivery > "$D/kind"
+  if [ -d .claude/skills/typescript-conventions ]; then hook_read typescript-conventions; else hook_read python-conventions; fi
   fn="helper${GAFFER_TICKET:-0}"
   if [ -f package.json ]; then
     grep -q "$fn" src/tasks.js || printf 'export function %s(l){return l;}\n' "$fn" >> src/tasks.js
@@ -165,6 +187,31 @@ assert_skills() {
   [ "${#leak[@]}" -eq 0 ] && ok "$label: does not mount ${absent}" || fail "$label: leaked skills: ${leak[*]}"
 }
 prompt_has()  { grep -qF -- "$2" "$1/prompt"; }
+# hook_rc <calldir> <skill> — the safety hook's exit for the stub's Read of that skill.
+hook_rc() { awk -v s="$2" '$1 == s { print $2 }' "$1/hookreads" 2>/dev/null | tail -1; }
+# tel <role> <ticket> <field> — that field of the run's LAST skill-telemetry row, comma-joined.
+tel() {
+  node -e '
+    const [file, role, ticket, field] = process.argv.slice(1);
+    let rows = [];
+    try { rows = require("fs").readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch {}
+    const row = rows.filter((r) => r.role === role && String(r.ticket) === ticket).pop();
+    process.stdout.write(row ? (row[field] || []).join(",") : "NO-ROW");
+  ' "$GAFFER_DATA/skills-telemetry.jsonl" "$1" "$2" "$3"
+}
+in_csv() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
+# assert_skill_read <label> <calldir> <role> <ticket> <skill> — the mounted skill was READ
+# (the hook allowed it, the stub saw its content) and the telemetry says opened — not
+# applied (an open is not an application), not refused.
+assert_skill_read() {
+  local label="$1" d="$2" role="$3" t="$4" s="$5" rc
+  rc="$(hook_rc "$d" "$s")"
+  [ "$rc" = 0 ] && ok "$label: the hook ALLOWED the explicit Read of its mounted $s" || fail "$label: the hook refused the Read of mounted $s (exit '${rc:-none}': $(head -c 300 "$d/hook.err" 2>/dev/null))"
+  [ -s "$d/read.$s" ] && ok "$label: …and the agent saw the file" || fail "$label: the agent never saw $s"
+  in_csv "$(tel "$role" "$t" opened)" "$s" && ok "$label: telemetry opened=$s" || fail "$label: telemetry opened lacks $s ($(tel "$role" "$t" opened))"
+  in_csv "$(tel "$role" "$t" applied)" "$s" && fail "$label: telemetry marks $s APPLIED from an open alone" || ok "$label: $s not marked applied from an open"
+  in_csv "$(tel "$role" "$t" refused)" "$s" && fail "$label: telemetry marks $s refused" || ok "$label: nothing refused"
+}
 
 echo "== 1. DELIVERY on alpha (Node): the TS pack + what the ticket calls for, and nothing foreign =="
 A1="$(new_ticket alpha "Add a REST API endpoint for paginated tasks" "GET /tasks returns a page of tasks with a cursor; add pagination and filtering by status." high)"
@@ -194,6 +241,8 @@ if [ -z "$D1" ]; then fail "1: no delivery agent spawn recorded"; else
   prompt_has "$D1" "minimalism" && ok "1: prompt carries the mandatory quality lenses" || fail "1: prompt lacks the quality lenses"
 fi
 
+[ -n "$D1" ] && assert_skill_read "1: delivery/alpha" "$D1" delivery "$A1" typescript-conventions
+
 echo "== 2. REVIEW: the reviewer role (lenses + TS pack), then the SECURITY second opinion =="
 review_tick >/dev/null
 R1="$(last_call review)"; S1="$(last_call security)"
@@ -209,6 +258,7 @@ if [ -z "$R1" ]; then fail "2: no primary reviewer spawn"; else
   else fail "2: reviewer had no --mcp-config"; fi
   prompt_has "$R1" "REVIEWER agent" && ok "2: reviewer prompt is the review brief" || fail "2: reviewer prompt mismatch"
   prompt_has "$R1" "security-review" && ok "2: reviewer prompt names its mounted lenses" || fail "2: reviewer prompt does not name the lenses"
+  assert_skill_read "2: reviewer/alpha" "$R1" review "$A1" review-ticket
 fi
 if [ -z "$S1" ]; then fail "2: the security reviewer did not run for a risk=high ticket"; else
   ok "2: the security second-opinion reviewer ran (risk=high)"
@@ -244,7 +294,23 @@ if [ -z "$T1" ]; then fail "3: the independent tester did not run"; else
   prompt_has "$T1" "the change is covered by a test" && ok "3: tester prompt carries the acceptance criteria" || fail "3: tester prompt lacks the ACs"
   grep -q "\"GAFFER_REVIEW_TICKET\": *\"$A1\"" "$T1/mcp.json" 2>/dev/null && ok "3: tester's MCP runtime scoped to #$A1" || fail "3: tester MCP runtime not scoped"
   [ "$(st "$A1")" = "ready_for_merge" ] && ok "3: PASS recorded → ready_for_merge" || fail "3: #$A1 is '$(st "$A1")' after the tester"
+  assert_skill_read "3: tester/alpha" "$T1" test "$A1" black-box-test
 fi
+# The dashboard's Skills / Health read model (the aggregator GET /api/health serves) sees
+# the same truth: each skill read above is an OPEN, none is refused, and an open does not
+# move the applied hit-rate.
+HEALTH_SKILLS="$(node --input-type=module -e "
+import { aggregateSkillTelemetry } from '$ROOT/packages/dispatch/dist/health/skillsTelemetryAggregator.js';
+const a = aggregateSkillTelemetry(process.env);
+const by = Object.fromEntries(a.by_skill.map((s) => [s.skill, s]));
+const pick = (n) => by[n] ? [by[n].opened, by[n].refused, by[n].applied].join('/') : 'none';
+console.log([a.total_refused, pick('typescript-conventions'), pick('review-ticket'), pick('black-box-test')].join(' '));
+" 2>&1)"
+read -r H_REFUSED H_TS H_RT H_BB <<<"$HEALTH_SKILLS"
+[ "$H_REFUSED" = 0 ] && ok "3: Health read model: no refused skill reads" || fail "3: Health read model: total_refused=$H_REFUSED ($HEALTH_SKILLS)"
+case "$H_TS" in [1-9]*/0/*) ok "3: Health read model: typescript-conventions opened, never refused ($H_TS opened/refused/applied)" ;; *) fail "3: Health read model: typescript-conventions $H_TS ($HEALTH_SKILLS)" ;; esac
+case "$H_RT" in [1-9]*/0/0) ok "3: Health read model: review-ticket opened, not applied ($H_RT)" ;; *) fail "3: Health read model: review-ticket $H_RT" ;; esac
+case "$H_BB" in [1-9]*/0/0) ok "3: Health read model: black-box-test opened, not applied ($H_BB)" ;; *) fail "3: Health read model: black-box-test $H_BB" ;; esac
 # The blocked fixture has served its purpose: retire it so the later steps' ticks (which
 # expect an EMPTY ready queue for the clarify pass) are not steered by it.
 wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true

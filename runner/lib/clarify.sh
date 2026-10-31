@@ -107,7 +107,9 @@ if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; 
       # procedure, the product-shaping packs that make good acceptance criteria
       # (user-story, prd), the security lenses, and the stack's conventions pack — not
       # the delivery mechanics (a clarify pass never branches, tests or prepares a digest).
-      CSTACK="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
+      # The union of the write repos' stacks (as delivery and review), else the first's.
+      CSTACK="$(printf '%s' "$CSHOW" | node "$RUNNER_DIR/bin/select-skills.mjs" --ticket-stacks - 2>/dev/null || true)"
+      [ -n "$CSTACK" ] || CSTACK="$(echo "$CSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
       CSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role clarify --stack "$CSTACK" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       [ -n "$CSKILLS" ] || CSKILLS="clarify, record-evidence"
       GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$CWT" "$CSKILLS" "clarify-$CNUM" \
@@ -181,7 +183,7 @@ EOF
       CLARIFY_MODEL_FLAG="${GAFFER_PLAN_MODEL_FLAG:-}"
       [ -n "$CLARIFY_MODEL" ] && CLARIFY_MODEL_FLAG="--model $CLARIFY_MODEL"
       _C_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      worker_deliver "$CWT" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON" "" \
+      GAFFER_LAUNCH_KIND=clarify worker_deliver "$CWT" "$CPROMPT" "$CLARIFY_MODEL_FLAG" "$MCP_RUNTIME" "$C_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_CLARIFY_MAX_TURNS:-40}")"
       crc=$?
       gaffer_usage_record clarify "$CNUM" "$crc" "$C_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true

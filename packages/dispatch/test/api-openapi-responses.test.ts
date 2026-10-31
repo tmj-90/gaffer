@@ -23,7 +23,13 @@ import type { Actor } from "../src/domain/types.js";
 import { TestClock } from "../src/util/clock.js";
 import { contractHash } from "../src/util/contractHash.js";
 
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { buildOpenApiDocument } from "../src/api/openapi/spec.js";
+
+import {
+  giveTicketRealDelivery,
+  nonEmptyDiffRunner,
+  testWeakeningDiffRunner,
+} from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const reviewer: Actor = { type: "human", id: "rev" };
@@ -130,6 +136,11 @@ describe("OpenAPI response schemas match the live routes", () => {
     await expectContract("POST /tickets/:id/testable", `/tickets/${id}/testable`, {
       can_be_tested: true,
     });
+    await expectContract(
+      "POST /tickets/:id/allow-test-changes",
+      `/tickets/${id}/allow-test-changes`,
+      { allow_test_changes: true },
+    );
     await expectContract("POST /tickets/:id/test-contract", `/tickets/${id}/test-contract`, {
       run_command: "npm start",
     });
@@ -142,6 +153,7 @@ describe("OpenAPI response schemas match the live routes", () => {
     wg.addAcceptanceCriterion({ ticket_id: t1.id, text: "AC" }, human);
     wg.markReady(t1.id, human);
     deliver(t1.id);
+    await expectContract("GET /tickets/:id/diff", `/tickets/${t1.id}/diff`);
     await expectContract("POST /tickets/:id/review/approve", `/tickets/${t1.id}/review/approve`);
     await expectContract("POST /tickets/:id/mark-merged", `/tickets/${t1.id}/mark-merged`);
     await expectContract(
@@ -212,6 +224,49 @@ describe("OpenAPI response schemas match the live routes", () => {
     expect(r.body).toMatchObject({ ticket_id: t.id, can_be_tested: true, ticketId: t.id });
     const m = await call("POST", `/tickets/${t.id}/mono-fallback`);
     expect(m.body).toMatchObject({ applied: false, ticket_id: t.id });
+  });
+});
+
+describe("GET /tickets/:id/diff documents its risk annotations", () => {
+  it("a live test-modified annotation validates against TicketDiff, RiskAnnotation is a component", async () => {
+    const w = Dispatch.open(":memory:", new TestClock(), testWeakeningDiffRunner, {
+      testingEnabled: false,
+    });
+    const server = createApiServer(w);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const t = w.createTicket({ title: "weaken", policy_pack: "solo_loose" }, human);
+      giveTicketRealDelivery(w, t.id, human);
+      const port = (server.address() as AddressInfo).port;
+      const res = await fetch(`http://127.0.0.1:${port}/tickets/${t.id}/diff`, {
+        headers: { authorization: `Bearer ${FULL}` },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        repos: Array<{ riskAnnotations: Array<{ kind: string }> }>;
+      };
+      const parsed = R.TicketDiff.safeParse(body);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+      expect(body.repos.flatMap((r) => r.riskAnnotations.map((a) => a.kind))).toContain(
+        "test-modified",
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      w.db.close();
+    }
+
+    const doc = buildOpenApiDocument() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+    };
+    const schemas = doc.components.schemas;
+    expect(schemas.RiskKind?.enum).toContain("test-modified");
+    expect(JSON.stringify(schemas.RepoDiff)).toContain(
+      '"$ref":"#/components/schemas/RiskAnnotation"',
+    );
+    expect(JSON.stringify(schemas.RiskAnnotation)).toContain(
+      '"$ref":"#/components/schemas/RiskKind"',
+    );
+    expect(JSON.stringify(schemas.TicketDiff)).toContain('"$ref":"#/components/schemas/RepoDiff"');
   });
 });
 

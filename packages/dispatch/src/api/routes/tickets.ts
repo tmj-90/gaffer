@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
+import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
 import { ticketCostInfo } from "../runDetail.js";
@@ -10,6 +11,7 @@ import type { MergeRunner } from "../mergeRunner.js";
 import {
   addAcBody,
   addTicketDependencyBody,
+  approveReviewBody,
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
@@ -24,6 +26,7 @@ import {
   setPrimaryScopeBody,
   setRequiredCapabilitiesBody,
   setTestableBody,
+  allowTestChangesBody,
   setTestContractBody,
   setTicketRepoAccessBody,
   stopPausedBody,
@@ -72,8 +75,33 @@ const TICKET_SUB = {
   // BBT-001: independent black-box testing handover + tester verdict.
   TESTABLE: "testable",
   TEST_CONTRACT: "test-contract",
+  // GATE INTEGRITY: the human's per-ticket "this ticket may change its tests" flag.
+  ALLOW_TEST_CHANGES: "allow-test-changes",
   TESTER: "tester",
 } as const;
+
+/** `{ landing_state }` for an approved or held ticket, else nothing (spread into a ticket). */
+function withLanding(
+  wg: Dispatch,
+  ref: string | Parameters<Dispatch["landingState"]>[0],
+): { landing_state?: NonNullable<ReturnType<Dispatch["landingState"]>> } {
+  const ls = wg.landingState(ref);
+  return ls ? { landing_state: ls } : {};
+}
+
+/** A merge the API started: noted on the ticket so its status reads "landing" meanwhile. */
+function noteMerge(
+  wg: Dispatch,
+  ticketId: string,
+  merge: { triggered: boolean; runId?: string | null } | undefined,
+): void {
+  if (!merge || !merge.triggered) return;
+  try {
+    wg.noteMergeStarted(ticketId, merge.runId ?? null, apiActor());
+  } catch {
+    // Best-effort: the merge has started; only the status word is lost.
+  }
+}
 
 export async function routeTickets(
   wg: Dispatch,
@@ -102,7 +130,12 @@ export async function routeTickets(
         { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
       );
       sendJson(res, 200, {
-        tickets: page.tickets,
+        // Approved and held tickets carry `landing_state` (their truthful status label).
+        tickets: page.tickets.map((t) =>
+          t.status === "ready_for_merge" || t.status === "blocked"
+            ? { ...t, ...withLanding(wg, t.id) }
+            : t,
+        ),
         total: page.total,
         ...(q.limit !== undefined ? { limit: q.limit, offset: q.offset ?? 0 } : {}),
       });
@@ -157,7 +190,7 @@ export async function routeTickets(
     if (method === "GET") {
       const view = wg.view(id);
       sendJson(res, 200, {
-        ticket: view.ticket,
+        ticket: { ...view.ticket, ...withLanding(wg, view.ticket) },
         acceptance_criteria: view.acceptanceCriteria,
         repositories: view.repositories,
         // `scopes` carries the ticket↔scope links (incl. its containing `epic`
@@ -274,7 +307,14 @@ export async function routeTickets(
   if (segments.length === 4 && sub === TICKET_SUB.REVIEW && method === "POST") {
     const action = segments[3] as string;
     if (action === "approve") {
-      const result = wg.approveReview(id, apiActor());
+      // STALE REVISION (external review #2): the approval names the commit(s) the Review
+      // view rendered; the service refuses with 409 stale_revision when a branch moved
+      // since, and 409 revision_required when no commit was named.
+      const body = approveReviewBody.parse(await readJsonBody(req));
+      const result = wg.approveReview(id, apiActor(), {
+        commits: (body.commits ?? []).map((c) => ({ repo: c.repo ?? null, sha: c.sha })),
+        requireCommits: true,
+      });
       // The ticket has reached `ready_for_merge` via the review-approve path (NOT
       // `done` — `done` means the merge actually landed). When AUTO_MERGE ("Auto-merge on
       // approval") is ON, fire the configured merge command (fire-and-forget; logged,
@@ -293,17 +333,43 @@ export async function routeTickets(
       // floor (envAllowsAuto('merge') = AUTO_MERGE AND MERGE_ON_AGENT_REVIEW) governs the
       // RUNNER's unattended merge of AGENT approvals, NOT this one: a human approval needs
       // only AUTO_MERGE. mergeRunner still enforces DISPATCH_MERGE_CMD.
+      //
+      // THE TESTER ROUTE starts no merge: an approval that sent the ticket to in_testing
+      // (GAFFER_TESTING on and testable, or an epic's acceptance ticket) has not reached
+      // ready_for_merge, so nothing may land it yet; the tester's PASS moves it on and the
+      // merge lane (or Merge now) lands it from there. Firing the merge runner here spawned
+      // a merge the landing refuses, under a button that said "not to merge".
       let merge: { triggered: boolean; pid: number | null; skipped?: string } | undefined;
       const number = result.ticket.number;
-      if (number !== null) {
+      if (number !== null && result.ticket.status === "ready_for_merge") {
         merge = envFlagOn(process.env[AUTO_MERGE_ENV])
           ? mergeRunner.trigger({ ticketNumber: number })
           : { triggered: false, pid: null, skipped: "auto_merge_off" };
+        noteMerge(wg, result.ticket.id, merge);
+      }
+      // What the click actually did, in the words the Review view's done band uses: the
+      // predicted outcome settled against the real route (tester, merge started/skipped).
+      // Best-effort: the approval has already happened, so a read failure here only
+      // leaves the field off (the dashboard falls back to the status and merge result).
+      let approveOutcome: ReturnType<typeof settleApproveOutcome> | undefined;
+      try {
+        approveOutcome = settleApproveOutcome(
+          wg.approveOutcomeFacts(result.ticket.id, {
+            mergeCommand: mergeRunner.configured?.() ?? false,
+            ci: false,
+          }),
+          { toStatus: result.ticket.status, merge },
+        );
+      } catch {
+        approveOutcome = undefined;
       }
       sendJson(res, 200, {
-        ticket: result.ticket,
+        // An approval that reached ready_for_merge carries its landing_state, so the
+        // Review view's status says what the ticket page and the board say.
+        ticket: { ...result.ticket, ...withLanding(wg, result.ticket) },
         event_id: result.eventId,
         ...(merge ? { merge } : {}),
+        ...(approveOutcome ? { approve_outcome: approveOutcome } : {}),
       });
       return;
     }
@@ -379,7 +445,22 @@ export async function routeTickets(
       throw new DispatchError("ILLEGAL_TRANSITION", "Ticket has no number; cannot start a merge.");
     }
     const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
+    noteMerge(wg, ticket.id, merge);
     sendJson(res, 202, { ticket, merge });
+    return;
+  }
+
+  // GATE INTEGRITY: /tickets/:id/allow-test-changes — a HUMAN allows (or withdraws the
+  // allowance for) this ticket to change its tests. The service refuses agent and
+  // system principals, so an agent token cannot excuse its own test edits.
+  if (segments.length === 3 && sub === TICKET_SUB.ALLOW_TEST_CHANGES && method === "POST") {
+    const body = allowTestChangesBody.parse(await readJsonBody(req));
+    const result = wg.setAllowTestChanges(id, body.allow_test_changes, apiActor(), body.reason);
+    sendJson(res, 200, {
+      ticket_id: result.ticketId,
+      allow_test_changes: result.allowTestChanges,
+      event_id: result.eventId,
+    });
     return;
   }
 
@@ -433,8 +514,24 @@ export async function routeTickets(
   // /tickets/:id/diff — diff-in-review: the real git diff per WRITE repo
   // (default-branch...delivery-branch) so a reviewer reads the change before
   // approving (and the resolved diff after a reopen-for-review).
+  // `approve_outcome` rides along: the first step a human Approve would certainly take
+  // now (tester · land now · next tick · waits for Merge now · held by CI), computed from
+  // the settings and ticket state the approve path acts on, so the sign-off button can
+  // name it. Only an in_review ticket can be approved, so only it carries one.
   if (segments.length === 3 && sub === TICKET_SUB.DIFF && method === "GET") {
-    sendJson(res, 200, wg.ticketDiff(id));
+    const diff = wg.ticketDiff(id);
+    const ticket = wg.resolveTicket(id);
+    sendJson(res, 200, {
+      ...diff,
+      ...(ticket.status === "in_review"
+        ? {
+            approve_outcome: wg.approveOutcome(ticket.id, {
+              mergeCommand: mergeRunner.configured?.() ?? false,
+              repos: diff.repos, // the integrity holds read the diff just computed
+            }),
+          }
+        : {}),
+    });
     return;
   }
 

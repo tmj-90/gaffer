@@ -10,14 +10,16 @@
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
-#   gaffer eval [--json]              delivery-quality metrics (pass rate · memory lift · cost/pass)
+#   gaffer eval [--json]              delivery-quality metrics (pass rate · memory score gap · cost/pass)
 #   gaffer run [--dry-run] [--daemon] [--interval N]
 #                                     go live: one supervisor pass (drains the ready queue), or
 #                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM;
 #                                     --dry-run (-n) = preview only, nothing spent
 #   gaffer wg <dispatch args…>        the dispatch CLI against THIS factory's database
 #                                     (e.g. gaffer wg ticket create -t "…" -d "…"; gaffer wg ticket show 1)
-#   gaffer approve <ticket> [--reviewer <you>]   the human review gate: approve a ticket in Review
+#   gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…   the human review gate:
+#                                     approve a ticket in Review — the commits you reviewed
+#                                     (shown and confirmed when --commit is omitted)
 #   gaffer merge <ticket>             land an APPROVED (ready_for_merge) ticket — what the dashboard's
 #                                     Merge button runs; refuses (exit 4) a ticket not yet approved
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
@@ -54,7 +56,7 @@ usage() {
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
     demo)      echo "usage: gaffer demo   (the Factory Map showcase; always DRY_RUN, nothing spent)" ;;
     eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>]" ;;
-    approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>]" ;;
+    approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
@@ -298,8 +300,9 @@ eval)
   if [ "${1:-}" = "replay" ]; then shift; exec bash "$HERE/eval/replay.sh" "$@"; fi
   case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval argument '$1'" ;; esac
   # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
-  # pass rate, per-dimension means, MEMORY LIFT (does the durable memory
-  # measurably improve deliveries?), and cost-per-passing-delivery.
+  # pass rate, per-dimension means, the memory score gap (judge score on
+  # submitted work, primed vs not; not an uplift — see docs/eval-harness.md),
+  # and cost-per-passing-delivery.
   _ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
   _cli="$CREW_DIR/dist/eval/evalLedgerCli.js"
   if [ ! -f "$_cli" ]; then echo "eval: crew not built — run: pnpm -C packages/crew build"; exit 1; fi
@@ -328,15 +331,45 @@ approve)
   _t="${1:-}"; [ -n "$_t" ] || { usage approve; exit 2; }; shift || true
   case "$_t" in -*) bad_arg approve "the ticket comes first (got option '$_t')" ;; esac
   _rev="${USER:-human}"
+  _commits=()
   while [ $# -gt 0 ]; do
     case "$1" in
       --reviewer) shift; [ -n "${1:-}" ] || bad_arg approve "--reviewer needs a name"; _rev="$1" ;;
       --reviewer=*) _rev="${1#--reviewer=}" ;;
+      --commit) shift; [ -n "${1:-}" ] || bad_arg approve "--commit needs <repo>=<sha>"; _commits+=(--commit "$1") ;;
+      --commit=*) _commits+=(--commit "${1#--commit=}") ;;
       *) bad_arg approve "unknown option '$1'" ;;
     esac
     shift || true
   done
-  exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" review approve "$_t" --reviewer "$_rev"
+  # STALE REVISION: an approval names the commit(s) you reviewed, and is refused when a
+  # branch moved past them. Without --commit, show what would be approved (the heads +
+  # a diffstat) and ask; with no terminal to ask on, print the heads and stop.
+  if [ "${#_commits[@]}" -eq 0 ]; then
+    _heads="$(node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" ticket diff "$_t" --heads 2>/dev/null || true)"
+    if [ -n "$_heads" ]; then
+      printf 'Approving ticket %s covers exactly these commits:\n' "$_t"
+      printf '%s\n' "$_heads" | sed 's/^/  /'
+      node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" ticket diff "$_t" 2>/dev/null \
+        | node "$HERE/lib/json-tool.mjs" expr '(d.repos||[]).map(r => "  " + r.repo + ": " + (r.files||0) + " file(s), +" + (r.additions||0) + " -" + (r.deletions||0)).join("\n")' 2>/dev/null || true
+      if [ -t 0 ]; then
+        printf 'Approve these commits? [y/N] '
+        read -r _yn || _yn=""
+        case "$_yn" in y|Y|yes|YES) ;; *) echo "Not approved."; exit 1 ;; esac
+        while IFS= read -r _h; do [ -n "$_h" ] && _commits+=(--commit "$_h"); done <<EOF_HEADS
+$_heads
+EOF_HEADS
+      else
+        printf 'No terminal to confirm on: re-run with the commits you reviewed, e.g.\n  gaffer approve %s' "$_t"
+        while IFS= read -r _h; do [ -n "$_h" ] && printf ' --commit %s' "$_h"; done <<EOF_HEADS
+$_heads
+EOF_HEADS
+        printf '\n'
+        exit 2
+      fi
+    fi
+  fi
+  exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" review approve "$_t" --reviewer "$_rev" ${_commits[@]+"${_commits[@]}"}
   ;;
 
 merge)
@@ -375,6 +408,13 @@ run)
   _live_dry="${_GAFFER_OP_DRY_RUN:-0}"
   [ "$_flag_dry" = 1 ] && _live_dry=1
   [ "$_live_dry" = 1 ] && warn "DRY_RUN=1 is set in your environment — this pass previews only; unset it to deliver for real"
+  # A live run needs a dollar cap (lib/budget.sh gaffer_spend_cap_ok) — said here, before
+  # the daemon starts, so `--daemon` never sits backing off a refusal. loop.sh checks
+  # again for a direct or scheduled run.
+  if [ "$_live_dry" != 1 ] && ! DRY_RUN=0 gaffer_spend_cap_ok; then
+    err "gaffer run: refusing a live run — $(gaffer_spend_cap_hint) (or preview with --dry-run)"
+    exit 3
+  fi
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
   _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
   if [ "$_daemon" = 0 ]; then exec env DRY_RUN="$_live_dry" bash "$_loop_sh"; fi

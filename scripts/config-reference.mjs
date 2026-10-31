@@ -62,8 +62,18 @@ export function parseConfigDefaults(text, { fixedSection = null } = {}) {
   const knobs = new Map();
   let section = fixedSection ?? "Locations & wiring";
   let commentBlock = [];
+  // Inside a `case` arm: is it the DEFAULT arm (`*)`)? Its fill is what a knob is when
+  // nothing selects another arm (the GAFFER_MODE presets: `*)` is supervised), so it is
+  // the default to report — not whichever arm happens to come first in the file.
+  let defaultArm = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    const arm = line.match(/^\s+([^\s#()][^#()]*)\)\s*(?:#.*)?$/);
+    if (arm) {
+      defaultArm = arm[1].trim() === "*";
+      continue;
+    }
+    if (/^\s*(?:;;|esac\b)/.test(line)) defaultArm = false;
     const sec = fixedSection ? null : line.match(SECTION_RE);
     if (sec) {
       section = sec[1].replace(/\s*\(.*?\)\s*$/, "").trim();
@@ -89,7 +99,9 @@ export function parseConfigDefaults(text, { fixedSection = null } = {}) {
     // GAFFER_MODE case branch (mode fills) or an if/else — keep the first of those
     // only while no top-level line has defined the knob, and flag it.
     const prev = knobs.get(name);
-    if (prev && (prev.topLevel || indented)) {
+    // ...except that a default-arm fill replaces an earlier non-default arm's.
+    const takeDefaultArm = prev && !prev.topLevel && !prev.defaultArm && indented && defaultArm;
+    if (prev && (prev.topLevel || indented) && !takeDefaultArm) {
       commentBlock = [];
       continue;
     }
@@ -101,6 +113,7 @@ export function parseConfigDefaults(text, { fixedSection = null } = {}) {
       section,
       line: i + 1,
       topLevel: !indented,
+      defaultArm: indented && defaultArm,
       derived: /\$\{|\$\(|\$[A-Za-z_]/.test(def),
     });
     commentBlock = [];
@@ -272,7 +285,8 @@ export function render({ knobs, defs, consumers, undocumented, defaults = new Ma
       const readBy = [...(consumers.get(k.name) ?? [])].sort().join(", ");
       const note = def?.help ? def.help : k.doc;
       let dflt = k.derived ? `_derived_ (${code(k.default)})` : code(k.default);
-      if (!k.topLevel) dflt += " _(set by branch/mode logic)_";
+      if (k.defaultArm) dflt += " _(the default; other modes/branches can set it)_";
+      else if (!k.topLevel) dflt += " _(set by branch/mode logic)_";
       out.push(`| \`${k.name}\` | ${cell(dflt)} | ${ui} | ${readBy} | ${cell(note)} |`);
     }
     out.push("");

@@ -4,14 +4,18 @@
 // The delivery-quality judge (deliveryJudge.ts) scores ONE delivery. This turns
 // a stream of those verdicts into a measured quality signal over time: an
 // append-only JSONL ledger of records, plus a summary that computes pass rate,
-// mean score, per-dimension means, and — the headline metric — the MEMORY LIFT:
-// mean delivery score WITH durable memory context present minus WITHOUT it.
+// mean score, per-dimension means, cost-per-pass, and the MEMORY SCORE GAP
+// (MEMORY_GAP_LABEL): the mean judge score of submitted deliveries that had
+// durable memory primed minus the mean of those that did not.
 //
-// That last number is the whole point. Gaffer's thesis is "it builds you an
-// asset — the more you run it, the more context primes the next delivery." Until
-// now that was an assertion; memoryLift makes it falsifiable. A positive lift is
-// evidence the memory earns its keep; ~zero (or negative) says it doesn't, and
-// you should know either way.
+// That gap is NOT a measure of what memory causes. The two arms are different
+// tickets, and the judge only ever sees work that cleared every gate and was
+// submitted, so attempts that failed earlier (and their spend) are in neither
+// arm (MEMORY_GAP_EXCLUDES). The honest measure is a matched-ticket comparison —
+// the same tickets run with and without memory, counting every attempt, spend
+// and human acceptance (docs/eval-harness.md, "Matched-ticket comparison"). It
+// is not implemented; `memoryLift.matched` is its seam and stays null. The field
+// keeps its historical `memoryLift` key for compatibility.
 //
 // All functions are pure (string/array in → value out); the fs read/append and
 // the timestamp live in the CLI, so this stays fully unit-testable.
@@ -58,11 +62,27 @@ export interface EvalSummary {
   blockRate: number; // fraction blocking
   meanScore: number;
   dimensionMeans: Partial<Record<RubricDimension, number>>;
+  /**
+   * HONEST NAME (external review #11): this is the JUDGE SCORE GAP on SUBMITTED work —
+   * the mean score of deliveries that had memory primed minus the mean of those that
+   * did not. The two arms are DIFFERENT tickets, and the judge only ever sees work that
+   * cleared every gate and was submitted, so this answers neither "does memory cause
+   * better work" nor "what does it cost". The field keeps its historical key; `measure`,
+   * `label`, `sample` and `excludes` say what it is, and `matched` is the seam for the
+   * honest measurement (docs/eval-harness.md, "Matched-ticket comparison").
+   */
   memoryLift: {
     withMemory: { count: number; meanScore: number };
     withoutMemory: { count: number; meanScore: number };
     /** withMemory.meanScore − withoutMemory.meanScore, or null if either side is empty. */
     lift: number | null;
+    measure: "judge_score_gap_on_submitted_work";
+    label: string;
+    sample: { withMemory: number; withoutMemory: number; distinctTickets: number };
+    excludes: string;
+    /** The matched-ticket comparison: not measured yet (see `matchedReason`). */
+    matched: null;
+    matchedReason: string;
   };
   /**
    * Real-cost FinOps view, over the records that carried a costUsd. The headline
@@ -77,6 +97,20 @@ export interface EvalSummary {
     costPerPass: number | null;
   };
 }
+
+/** What the memory "lift" number is, in words a reader cannot mistake for causality. */
+export const MEMORY_GAP_LABEL =
+  "Judge score on submitted work, memory primed vs not primed — different tickets in each " +
+  "arm, so a gap, not an uplift memory caused";
+/** What the judge never sees, so the gap cannot count it. */
+export const MEMORY_GAP_EXCLUDES =
+  "attempts that failed before submission (a failed DoD gate, a park, a refused submit) " +
+  "are never judged, so their spend and outcome are not in either arm";
+/** Why the matched-ticket comparison is not reported. */
+export const MATCHED_REASON =
+  "not measured: the honest comparison runs the SAME tickets with and without memory and " +
+  "counts every attempt, its spend and the human's acceptance (docs/eval-harness.md, " +
+  "Matched-ticket comparison); the ledger records judged submissions only";
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 const round4 = (n: number): number => Math.round(n * 10000) / 10000; // USD precision
@@ -126,7 +160,7 @@ export function parseLedger(jsonl: string): EvalRecord[] {
   return out;
 }
 
-/** Aggregate records into the quality summary, including the memory-lift metric. */
+/** Aggregate records into the quality summary, including the memory score gap. */
 export function summarize(records: EvalRecord[]): EvalSummary {
   const count = records.length;
   const scores = records.map((r) => r.score);
@@ -159,6 +193,16 @@ export function summarize(records: EvalRecord[]): EvalSummary {
       withMemory: { count: withMem.length, meanScore: withMean },
       withoutMemory: { count: withoutMem.length, meanScore: withoutMean },
       lift,
+      measure: "judge_score_gap_on_submitted_work",
+      label: MEMORY_GAP_LABEL,
+      sample: {
+        withMemory: withMem.length,
+        withoutMemory: withoutMem.length,
+        distinctTickets: new Set(records.map((r) => r.ticketId)).size,
+      },
+      excludes: MEMORY_GAP_EXCLUDES,
+      matched: null,
+      matchedReason: MATCHED_REASON,
     },
     cost: {
       costedCount: costed.length,

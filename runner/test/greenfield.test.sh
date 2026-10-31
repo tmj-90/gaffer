@@ -390,7 +390,7 @@ grep -q -- '--max-turns 200' "$CLAUDE_LOG" \
 
 gaffer_test_rm_work "$INH_WORK"
 
-echo "== AC11: bootstrap teardown purges the mount symlink from the PERSISTENT repo =="
+echo "== AC11: bootstrap teardown purges the skill mount from the PERSISTENT repo =="
 # A greenfield bootstrap runs the agent DIRECTLY in the new repo (no throwaway
 # worktree). gaffer_skills_mount installs a `.claude/skills` symlink there; on
 # teardown gaffer_skills_mount_cleanup drops the mount TARGET. Without passing the
@@ -421,12 +421,15 @@ git -C "$BREPO" -c user.email=t@t -c user.name=t commit -qm baseline >/dev/null 
 # untracked porcelain — isolating the dangling-symlink signal.
 gaffer_skills_mount "$BREPO" "demo-skill" "bootstrap-999"
 gaffer_exclude_runner_config "$BREPO"
-[ -L "$BREPO/.claude/skills" ] \
-  && ok "mount installed a .claude/skills symlink into the bootstrap repo" \
-  || fail "mount should install a .claude/skills symlink"
+[ -f "$BREPO/.claude/skills/demo-skill/SKILL.md" ] && [ ! -L "$BREPO/.claude/skills" ] \
+  && ok "mount installed .claude/skills/demo-skill (a real copy) into the bootstrap repo" \
+  || fail "mount should install .claude/skills/demo-skill"
 
-# Reproduce the LEGACY bug first: cleanup WITHOUT the dest arg drops the mount target
-# but leaves the symlink dangling — the detector must fire, proving the gap was real.
+# The LEGACY layout (an older runner's `.claude/skills` symlink into the mount) whose
+# target is dropped first: the detector flags the dangling link — the gap was real.
+gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"
+mkdir -p "$BREPO/.claude" "$GAFFER_DATA/skills-mounts/bootstrap-999"
+ln -sfn "$GAFFER_DATA/skills-mounts/bootstrap-999" "$BREPO/.claude/skills"
 gaffer_skills_mount_cleanup "bootstrap-999"
 # Capture the detector output to a var BEFORE grepping: `grep -q` closes the pipe on
 # first match and, under `pipefail`, the SIGPIPE'd producer would flip the pipeline
@@ -439,9 +442,12 @@ if [ -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ]; then
 else
   fail "legacy cleanup should have left a dangling .claude/skills (setup drift)"
 fi
+# …and teardown WITH the persistent dest removes that older link too.
+gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"
+[ ! -L "$BREPO/.claude/skills" ] && ok "teardown with dest removes an older mount's dangling link" || fail "the legacy link survived teardown"
 
-# Now the FIX: re-mount and tear down WITH the persistent dest → drops the mount AND
-# the symlink it left behind, so the real repo is clean.
+# Now the FIX: mount and tear down WITH the persistent dest → drops the manifest AND
+# the copies it installed, so the real repo is clean.
 gaffer_skills_mount "$BREPO" "demo-skill" "bootstrap-999"
 gaffer_skills_mount_cleanup "bootstrap-999" "$BREPO"
 [ ! -L "$BREPO/.claude/skills" ] && [ ! -e "$BREPO/.claude/skills" ] \

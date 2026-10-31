@@ -1706,8 +1706,19 @@ console.log("== refreshFileCards: changed file gets re-carded + watermark advanc
     calls.some((c) => c[0] === "card" && c[1] === "upsert" && c.includes("src/util.ts")),
   );
   assert(
-    "card sync (watermark advance) was called",
-    calls.some((c) => c[0] === "card" && c[1] === "sync" && c.includes("--commit")),
+    "card verify --fix --commit (verify-before-complete: the watermark advance) was called against the tree",
+    calls.some(
+      (c) =>
+        c[0] === "card" &&
+        c[1] === "verify" &&
+        c.includes("--fix") &&
+        c.includes("--commit") &&
+        c[c.indexOf("--repo-root") + 1] === resolve(repoDir),
+    ),
+  );
+  assert(
+    "the watermark is never set without verification (no bare card sync)",
+    !calls.some((c) => c[0] === "card" && c[1] === "sync"),
   );
   assert(
     "a refresh WITH model fields does not pass --keep-model (the new summary replaces the old)",
@@ -1876,6 +1887,74 @@ console.log("== refreshFileCards: watermark HELD when a tombstone hard-fails =="
   assert(
     "card sync was NOT called (watermark not advanced)",
     !calls.some((c) => c[0] === "card" && c[1] === "sync"),
+  );
+  assert(
+    "card verify was NOT called either (a hard failure never reaches the watermark step)",
+    !calls.some((c) => c[0] === "card" && c[1] === "verify"),
+  );
+}
+
+console.log(
+  "== refreshFileCards: watermark HELD when verification against the tree is not clean ==",
+);
+{
+  const { execSync } = await import("node:child_process");
+  const { readFileSync: readFS } = await import("node:fs");
+
+  const repoDir = gafferMkdtemp(resolve(tmpdir(), "refresh-verify-"));
+  mkdirSync(join(repoDir, "src"), { recursive: true });
+  writeFileSync(join(repoDir, "src", "ledger.ts"), "export function settleWithFees() {}\n");
+  execSync(
+    "git init -q && git add -A && git -c user.email=t@e.st -c user.name=T commit -q -m init",
+    { cwd: repoDir, stdio: "ignore" },
+  );
+  // Fake CLI: upserts and deletes succeed; `card verify` reports a card still out of
+  // step with the tree (exit 1) — e.g. a stale card its --fix could not re-read.
+  const dir = gafferMkdtemp(resolve(tmpdir(), "refresh-verify-cli-"));
+  const logFile = join(dir, "calls.jsonl");
+  const cliBin = join(dir, "fake-lg.mjs");
+  writeFileSync(
+    cliBin,
+    [
+      "import { appendFileSync } from 'node:fs';",
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,
+      "if (process.argv[2] === 'card' && process.argv[3] === 'verify') {",
+      "  process.stdout.write(JSON.stringify({ checked: 2, missing: ['src/archive.ts'], stale: [], fixed: { deleted: 0, refreshed: 0 }, clean: false, remaining: { missing: ['src/archive.ts'], stale: [] }, watermark: null }) + '\\n');",
+      "  process.exit(1);",
+      "}",
+      "process.exit(0);",
+    ].join("\n"),
+  );
+  const cfg = { cliBin, db: join(dir, "lore.sqlite") };
+  const env = { ...BASE_ENV, MEMORY_CLI_BIN: cliBin, MEMORY_DB: cfg.db };
+  const logs = [];
+  const rStats = refreshFileCards(repoDir, ["src/ledger.ts"], {
+    cfg,
+    deletions: ["src/archive.ts"],
+    renames: [{ from: "src/archive.ts", to: "src/ledger.ts" }],
+    env,
+    log: (m) => logs.push(m),
+    repo: "test-repo",
+    canonical: "file://" + repoDir,
+    runTurn: () => null,
+  });
+  const calls = readFS(logFile, "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l));
+  const upsertIdx = calls.findIndex((c) => c[0] === "card" && c[1] === "upsert");
+  const deleteIdx = calls.findIndex((c) => c[0] === "delete-file-card");
+  assert(
+    "a rename's new card carries the old card's summary (--carry-from old)",
+    upsertIdx >= 0 &&
+      calls[upsertIdx][calls[upsertIdx].indexOf("--carry-from") + 1] === "src/archive.ts",
+  );
+  assert("the old card is tombstoned AFTER the carry", deleteIdx > upsertIdx);
+  assert("no hard failure in the batch itself", rStats.failed === 0);
+  assert("watermark HELD (null) when verification is not clean", rStats.watermark === null);
+  assert(
+    "the hold is logged with the merged commit it was checked against",
+    logs.some((m) => /verification against [0-9a-f]{8} not clean — watermark held/.test(m)),
   );
 }
 

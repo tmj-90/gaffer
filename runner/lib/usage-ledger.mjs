@@ -38,7 +38,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -55,7 +55,8 @@ import {
 } from "./worker.mjs";
 
 export { UNKNOWN, extractResultText, parseClaudeJson };
-export const LEDGER_FILENAME = "usage-ledger.jsonl";
+// The ledger path is resolved in ONE place, shared with the paid-launch admission check.
+export { LEDGER_FILENAME, resolveLedgerPath } from "./usage-ledger-path.mjs";
 export const VALID_KINDS = new Set([
   "delivery",
   "clarify",
@@ -303,23 +304,6 @@ function withUsageLimit(rec, json) {
 }
 
 /**
- * The ledger file, or null when there is none. GAFFER_USAGE_LEDGER wins; `0`, `off`,
- * `false` or `no` turn the ledger off (they used to be taken as a file name, so
- * `GAFFER_USAGE_LEDGER=0` wrote a file called `0` into whatever directory the runner
- * was in). A relative path resolves under GAFFER_DATA when that is set. Without an
- * explicit path the ledger is $GAFFER_DATA/usage-ledger.jsonl, gated on GAFFER_DATA.
- */
-export function resolveLedgerPath(env = process.env) {
-  const explicit = (env.GAFFER_USAGE_LEDGER ?? "").trim();
-  if (explicit) {
-    if (/^(0|off|false|no)$/i.test(explicit)) return null;
-    if (!isAbsolute(explicit) && env.GAFFER_DATA) return join(env.GAFFER_DATA, explicit);
-    return explicit;
-  }
-  return env.GAFFER_DATA ? join(env.GAFFER_DATA, LEDGER_FILENAME) : null;
-}
-
-/**
  * Append one record to $GAFFER_DATA/usage-ledger.jsonl (or GAFFER_USAGE_LEDGER when
  * set — mirrors GAFFER_BLOCK_LEDGER). Gated on GAFFER_DATA so the test harness
  * (which doesn't set it) is unaffected, and NON-FATAL so a logging failure can never
@@ -369,6 +353,11 @@ function parseCliArgs(argv) {
     killEstimate: null,
     killBasis: null,
     elapsedMs: null,
+    attempt: null,
+    model: null,
+    claudeVersion: null,
+    attemptId: null,
+    startedAt: null,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -382,7 +371,60 @@ function parseCliArgs(argv) {
     else if (a === "--kill-basis") out.killBasis = argv[++i];
     // How long the killed call ran — scales the estimate (deriveKillEstimate).
     else if (a === "--elapsed-ms") out.elapsedMs = argv[++i];
+    // Per-attempt provenance (lib/worker.sh worker_deliver → gaffer_usage_record).
+    else if (a === "--attempt") out.attempt = argv[++i];
+    else if (a === "--model") out.model = argv[++i];
+    else if (a === "--claude-version") out.claudeVersion = argv[++i];
+    // The delivery attempt this call belongs to, and when it was spawned: lets the
+    // Health report charge a correction's spend to the send-back that caused it.
+    else if (a === "--attempt-id") out.attemptId = argv[++i];
+    else if (a === "--started-at") out.startedAt = argv[++i];
   }
+  return out;
+}
+
+/**
+ * Stamp a record with its delivery attempt (`attempt_id`, e.g. `c3f9a…/2` — a hash of
+ * the claim, never the claim token itself, and the attempt number within it) and the
+ * call's spawn time (`started_at`). Malformed values are dropped, never guessed.
+ */
+export function withAttempt(record, { attemptId, startedAt } = {}) {
+  const out = { ...record };
+  if (typeof attemptId === "string" && /^[A-Za-z0-9._:/-]{1,96}$/.test(attemptId)) {
+    out.attempt_id = attemptId;
+  }
+  if (typeof startedAt === "string" && !Number.isNaN(Date.parse(startedAt))) {
+    out.started_at = new Date(Date.parse(startedAt)).toISOString();
+  }
+  return out;
+}
+
+/** A short, printable label (a model id, a CLI version): never a log dump. */
+function provLabel(v) {
+  if (v == null) return null;
+  const s = String(v)
+    .split("\n")[0]
+    .replace(/[^A-Za-z0-9 ._()+:/@[\]-]/g, "")
+    .trim()
+    .slice(0, 80);
+  return s || null;
+}
+
+/**
+ * Stamp a ledger record with WHICH call it was: the delivery attempt, the model the
+ * call asked for (`default` = the CLI's own default; the measured `models` map still
+ * names what actually served it) and the Claude Code CLI version that ran it. Every
+ * later quality metric (per model, per CLI release) keys on these. Absent inputs add
+ * nothing, so older call sites write exactly the record they always did.
+ */
+export function withProvenance(record, { attempt, model, claudeVersion } = {}) {
+  const out = { ...record };
+  const n = attempt != null && /^\d+$/.test(String(attempt)) ? Number(attempt) : null;
+  if (n != null && n > 0) out.attempt = n;
+  const m = provLabel(model);
+  if (m) out.model_requested = m;
+  const v = provLabel(claudeVersion);
+  if (v) out.claude_version = v;
   return out;
 }
 
@@ -480,6 +522,49 @@ export function recordKilledCall({ kind, ticket, reason, elapsedMs, env = proces
   return appendUsageRecord(record, env);
 }
 
+/**
+ * The per-attempt AGENT-RUN evidence tick.sh attaches to the ticket after each
+ * delivery attempt: which model served it (the measured `modelUsage` ids, else the
+ * model the call asked for) and which Claude Code CLI ran it. Returns
+ * `{ summary, payload }` — a one-line summary for the evidence list and the
+ * structured payload the ticket page's attempt history reads.
+ */
+export function agentRunEvidence({ json, role, attempt, maxAttempts, model, claudeVersion, rc }) {
+  let served = [];
+  try {
+    const { models } = extractUsage(json || {});
+    if (models && typeof models === "object") {
+      served = Object.keys(models)
+        .filter((k) => k && k !== "(unknown-model)")
+        .map(provLabel)
+        .filter(Boolean)
+        .slice(0, 4);
+    }
+  } catch {
+    served = [];
+  }
+  const requested = provLabel(model) || "default";
+  const version = provLabel(claudeVersion) || "unknown";
+  const a = attempt != null && /^\d+$/.test(String(attempt)) ? Number(attempt) : null;
+  const m = maxAttempts != null && /^\d+$/.test(String(maxAttempts)) ? Number(maxAttempts) : null;
+  const code = rc != null && /^-?\d+$/.test(String(rc)) ? Number(rc) : null;
+  const payload = {
+    kind: "agent_run",
+    role: provLabel(role) || "delivery",
+    attempt: a,
+    max_attempts: m,
+    model_requested: requested,
+    models_served: served,
+    claude_version: version,
+    rc: code,
+  };
+  const shown = served.length ? served.join(", ") : requested;
+  const summary =
+    `Agent run${a ? `, attempt ${a}${m ? `/${m}` : ""}` : ""}: model ${shown}` +
+    `, CLI ${version}${code != null && code !== 0 ? ` (exit ${code})` : ""}`;
+  return { summary, payload };
+}
+
 function readInput(jsonFile) {
   try {
     if (jsonFile) return readFileSync(jsonFile, "utf8");
@@ -490,6 +575,24 @@ function readInput(jsonFile) {
 }
 
 function cliMain(argv) {
+  // `--agent-run-evidence`: print the agent-run evidence (line 1 the summary, line 2
+  // the payload JSON) for tick.sh to attach; writes NO ledger record.
+  if (argv.includes("--agent-run-evidence")) {
+    const a = parseCliArgs(argv.filter((x) => x !== "--agent-run-evidence"));
+    const i = argv.indexOf("--max-attempts");
+    const r = argv.indexOf("--role");
+    const { summary, payload } = agentRunEvidence({
+      json: parseClaudeJson(readInput(a.jsonFile)),
+      role: r >= 0 ? argv[r + 1] : "delivery",
+      attempt: a.attempt,
+      maxAttempts: i >= 0 ? argv[i + 1] : null,
+      model: a.model,
+      claudeVersion: a.claudeVersion,
+      rc: a.rc,
+    });
+    process.stdout.write(summary + "\n" + JSON.stringify(payload) + "\n");
+    return;
+  }
   const args = parseCliArgs(argv);
   const ticket =
     args.ticket && /^\d+$/.test(String(args.ticket)) ? Number(args.ticket) : args.ticket || null;
@@ -535,7 +638,7 @@ function cliMain(argv) {
   } else {
     record = buildUsageRecord({ json, ticket, kind });
   }
-  appendUsageRecord(record);
+  appendUsageRecord(withAttempt(withProvenance(record, args), args));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

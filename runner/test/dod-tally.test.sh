@@ -84,7 +84,8 @@ grep -q '^test result: ok. 3 passed; 0 failed; 1 ignored' <<<"$(block "$RES")" &
 printf 'import test from "node:test";\ntest("a", () => {});\ntest("b", () => {});\n' > "$WT/n.test.mjs"
 RES="$WORK/node.results"; run "node --test n.test.mjs" "-" "$RES"
 NB="$(block "$RES")"
-grep -qx '# tests 2' <<<"$NB" && grep -qx '# pass 2' <<<"$NB" && grep -qx '# fail 0' <<<"$NB" \
+# Node 22 prefixes the summary with "# ", Node 24 with "ℹ "; the collector keeps both.
+grep -qxE '(# |ℹ )tests 2' <<<"$NB" && grep -qxE '(# |ℹ )pass 2' <<<"$NB" && grep -qxE '(# |ℹ )fail 0' <<<"$NB" \
   && ok "T2 node --test counts kept" || fail "T2 node --test: $NB"
 grep -q 'duration_ms' <<<"$NB" && fail "T2 node --test: duration is not a count" || ok "T2 node --test: duration left out"
 

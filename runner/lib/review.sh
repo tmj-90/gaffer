@@ -158,14 +158,26 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # Skills mount + verified settings.json + workspace trust + the brief, through the
       # ONE shared installer (lib/agent-env.sh) every spawn site uses; any failure
       # refuses the live review (fail closed) — the same posture as the delivery site.
-      RSTACK="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
+      # MULTI-REPO STACKS: the union of every write repo's registered stack (a ticket
+      # spanning a TypeScript frontend and a Java service is reviewed with both packs),
+      # falling back to the first write repo's stack.
+      RSTACK="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/bin/select-skills.mjs" --ticket-stacks - 2>/dev/null || true)"
+      [ -n "$RSTACK" ] || RSTACK="$(echo "$RSHOW" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).stack) || ""' 2>/dev/null)"
       # PER-PATH ROUTING: the reviewer's stack is narrowed to the ecosystems the DIFF touches
       # (a .NET-only change on a .NET + React repo is reviewed with the C# pack, not the
-      # React design bar). No recognisable files → the repo's full stack, as before.
+      # React design bar). No recognisable files → the repo's full stack, as before. The
+      # paths are the delivery branch's diff in EVERY write repo that carries it, so a
+      # change touching .ts in one repo and .java in another keeps both packs.
       _RPATHS="$(mktemp "${TMPDIR:-/tmp}/review-paths.XXXXXX")"
       git -C "$RREPO" diff --name-only "$RDEFAULT...$RBRANCH" -- > "$_RPATHS" 2>/dev/null || : > "$_RPATHS"
+      while IFS="$(printf '\t')" read -r _rp _rd; do
+        [ -n "$_rp" ] && [ -d "$_rp" ] && [ "$_rp" != "$RREPO" ] || continue
+        git -C "$_rp" diff --name-only "${_rd:-main}...$RBRANCH" -- >> "$_RPATHS" 2>/dev/null || true
+      done <<<"$(echo "$RSHOW" | jget '(d.repositories||[]).filter(r => r && r.access === "write" && r.local_path).map(r => r.local_path + "\t" + (r.default_branch || "main")).join("\n")' 2>/dev/null || true)"
       RSKILLS="$(node "$RUNNER_DIR/bin/select-skills.mjs" --role review --stack "$RSTACK" --paths-file "$_RPATHS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       rm -f "$_RPATHS"
+      # Name each write repo's conventions pack when the stacks differ.
+      _RPACK_NOTE="$(printf '%s' "$RSHOW" | node "$RUNNER_DIR/bin/select-skills.mjs" --ticket-pack-note - --selected "$RSKILLS" --skills-dir "$SKILLS_DIR" 2>/dev/null || true)"
       [ -n "$RSKILLS" ] || RSKILLS="review-ticket, adversarial-reviewer, record-evidence"
       if ! GAFFER_UNIVERSAL_SKILLS="" gaffer_install_agent_dir "$WT" "$RSKILLS" "review-$RNUM"; then
         log "SAFETY: reviewer agent env install failed for #$RNUM — refusing live review (fail closed)"
@@ -177,6 +189,8 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       # The lenses the reviewer must apply, named in the prompt (everything mounted that
       # is not the core procedure): the stack pack + the review/security lenses.
       _RLENSES="$(printf '%s' "$RSKILLS" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -vE '^(review-ticket|adversarial-reviewer|record-evidence)$' | paste -sd, - | sed 's/,/, /g')"
+      # A repo skill of the same name as a mounted pack wins (it is not mounted over).
+      _RSKILLS_NOTE="${_RPACK_NOTE:-}$(gaffer_skills_note "$WT" "$RSKILLS" 2>/dev/null || true)"
       MCP_RUNTIME="$GAFFER_DATA/mcp-runtime.$$.json"
       gaffer_assert_db_vars || { log "DB-VARS: DISPATCH_DB/MEMORY_DB empty — refusing live review (fail closed)"; result error; exit 1; }
       # Reviewer/clarify agents hold no delivery claim, so GAFFER_CLAIM_TOKEN is
@@ -235,7 +249,7 @@ for its acceptance criteria and recorded evidence; inspect the delivered change 
 \`git diff $RDEFAULT...HEAD\` in $WT; judge whether each AC is genuinely met and the
 change is sound (tests, scope, quality). Review the diff in its own stack's terms and
 through the review lenses mounted for you — open the ones that apply to this diff and use
-their checklists: ${_RLENSES:-the stack conventions pack}. A lens finding counts only when
+their checklists: ${_RLENSES:-the stack conventions pack}${_RSKILLS_NOTE:-}. A lens finding counts only when
 it is a CONCRETE defect under the bar below. Then RECORD YOUR VERDICT as evidence via the
 dispatch MCP record_ac_evidence (one entry per AC: PASS/FAIL + the specific reasoning),
 and finish with a one-line overall recommendation. Apply THIS BAR EXACTLY — never raise it:
@@ -294,7 +308,7 @@ EOF
       # 200-turn delivery cap: a read-and-judge pass that loops is stopped early. A cap
       # hit is named in the hold reason below.
       _R_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-      worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
+      GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$RPROMPT" "$REVIEW_MODEL_FLAG" "$MCP_RUNTIME" "$R_USAGE_JSON" "" \
         "$(gaffer_role_turns "${GAFFER_REVIEW_MAX_TURNS:-60}")"
       rrc=$?
       gaffer_usage_record review "$RNUM" "$rrc" "$R_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
@@ -395,7 +409,7 @@ EOF
         # Role turn cap: GAFFER_SECURITY_REVIEW_MAX_TURNS, else the reviewer's cap,
         # clamped to GAFFER_MAX_TURNS.
         _S_SKILL_SINCE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
+        GAFFER_LAUNCH_KIND=review worker_deliver "$WT" "$SPROMPT" "$SEC_MODEL_FLAG" "$MCP_RUNTIME" "$S_USAGE_JSON" "" \
           "$(gaffer_role_turns "${GAFFER_SECURITY_REVIEW_MAX_TURNS:-${GAFFER_REVIEW_MAX_TURNS:-40}}")"
         src=$?
         gaffer_usage_record security-review "$RNUM" "$src" "$S_USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
@@ -535,8 +549,13 @@ EOF
           # flag is an UNexported shell var) so autonomous still passes; a graduated earned row
           # passes via the DB policy with the floor off; an unearned ticket the server REFUSES.
           _AP_ERR=""
+          # STALE REVISION: the approval names the commit the reviewer judged (RSHA, of the
+          # primary write repo). The server refuses it when the branch moved since, and —
+          # because this reviewer read only the primary repo — when the ticket writes to
+          # another repo too: a multi-repo ticket is held for a HUMAN approval of every repo.
+          _RREPO_NAME="$(echo "$RSHOW" | jget '((((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || "")' 2>/dev/null || echo '')"
           if _AP_ERR="$( ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
-               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" 2>&1 >/dev/null ) )"; then
+               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" --commit "${_RREPO_NAME:+$_RREPO_NAME=}$RSHA" 2>&1 >/dev/null ) )"; then
             log "AFK: runner (reviewer principal $REVIEWER_AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
             # LITE self-instrumentation: mark auto-approved-trivial tickets so the gate-skip
             # is measurable — if a lite-auto-approved ticket later needs rework/revert, the

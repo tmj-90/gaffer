@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 137 |
+| Knobs with a runner default | 143 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 78 |
@@ -53,7 +53,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
-| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse) and in-flight work pauses. Empty = unlimited. |
+| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse, and every paid agent launch — including Plan a build and Suggest work — is refused right before it would start) and in-flight work pauses. Empty = unlimited, though a live run needs this or the daily budget set. |
 | `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
@@ -80,6 +80,7 @@ computed from other knobs at runtime.
 | `GAFFER_DOD_TYPECHECK` | `1` |  | crew, runner | 1 = run the typecheck gate (auto-detected command) |
 | `GAFFER_DOD_TYPECHECK_CMD` | _(empty)_ |  | crew, runner | override the auto-detected typecheck command |
 | `GAFFER_DOD_TIMEOUT` | `900` |  | crew, runner | wall-clock cap (seconds) per gate and per AC check command |
+| `GAFFER_TEST_PATH_RE` | _(empty)_ |  | crew, dispatch | extra test-path regex for the gate-integrity check (additive) |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
 | `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the wor |
@@ -154,13 +155,13 @@ computed from other knobs at runtime.
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. A change applies from the next loop pass. |
 | `MAX_TICKS_PER_DAY` | `50` | yes (int) | crew, dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. A running loop re-reads it before every tick. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
-| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
+| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it, and every paid agent launch (delivery, review, clarify, tester, Plan a build, Suggest work, onboarding analysis, the merge resolver) is refused right before it would start. Empty or 0 = off — but a live run needs a dollar cap: with neither this nor the budget ceiling set, `gaffer run`, the loop and Poll refuse to start (try 5; GAFFER_ALLOW_UNCAPPED=1 in the environment opts out). |
 
 ### Parallel ticket execution
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_CONCURRENCY` | `1` | yes (int) | crew, dispatch, runner | How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. A change applies from the next loop pass. |
+| `GAFFER_CONCURRENCY` | `1` | yes (int) | crew, dispatch, runner | How many tickets run in parallel, each in its own git worktree. 1 = strictly serial (safest); >1 fans out. Above 1, a red tests gate is rerun once at concurrency 1 before the attempt counts; a pass on the rerun is flagged flaky suspected for the reviewer (GAFFER_DOD_FLAKY_RERUN=0 turns the rerun off). A change applies from the next loop pass. |
 | `MAX_CONCURRENT_TICKETS_PER_REPO` | `1` | yes (int) | dispatch, runner | Cap on tickets worked at once within one repo. |
 | `MAX_CANDIDATES` | `25` | yes (int) | dispatch, runner | Upper bound on ready tickets the scheduler considers each tick. |
 
@@ -176,8 +177,8 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODE` | `supervised` | yes (string: supervised / lite / graduated / autonomous / strict) | dispatch, runner | Preset that sets the whole autonomy cluster at once (review mode, agent approval, auto-merge, auto-push, memory auto-approve): supervised · lite · graduated · autonomous · strict. supervised (default) keeps a human on every merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, no sensitive path) that passed every gate + earned an APPROVE from the reviewer agent — and still leaves a human to MERGE (never auto-merges); non-trivial tickets hold for you. (Because auto-approve drops the human quality gate, lite requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) graduated ships what each repo has EARNED at its risk level and holds everything else for you (the reviewer agent runs, but the per-repo/risk autonomy policy is the sole allow-path — set grants in the per-repo policy editor); autonomous lets agents approve and auto-merges + pushes approved work; strict adds OS-level sandbox containment on top of autonomous, chosen by SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on a non-macOS host strict has no OS containment beyond the deterministic hook — set GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. Picking a mode prevents a half-configured autonomy posture. The individual knobs below still override the mode — an explicitly-set flag always wins. |
-| `DISPATCH_ALLOW_AGENT_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). |
-| `MEMORY_AUTO_APPROVE` | `1` _(set by branch/mode logic)_ | yes (boolean) | crew, dispatch, memory, runner | Let the memory the runner itself files go live without a human review step: the requirement distilled from each delivered ticket, onboarding's induction lore and `memory suggest` from the CLI. Lore a delivery agent suggests over MCP always stays a draft for you to approve, whatever this says. |
+| `DISPATCH_ALLOW_AGENT_APPROVE` | `0` _(the default; other modes/branches can set it)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). Off by default; the autonomous, strict and lite modes turn it on. An agent approve is still held for a person whenever the real diff's observed risk exceeds the declared risk, and ALWAYS when the delivery changed the tests that gate it (deleted or renamed a test file, added a skip/only marker, changed a gate script, one of its pre/post hooks or a script it runs, touched test config, or added or changed a package-manager rc file such as .npmrc) — unless a person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or Allow test changes on the Review page). The allowance clears the hold only; the gate still runs the base commit's scripts. |
+| `MEMORY_AUTO_APPROVE` | `0` _(the default; other modes/branches can set it)_ | yes (boolean) | crew, dispatch, memory, runner | Let the memory the runner itself files go live without a human review step: the requirement distilled from each delivered ticket, onboarding's induction lore and `memory suggest` from the CLI. Lore a delivery agent suggests over MCP always stays a draft for you to approve, whatever this says. Off by default; the autonomous and strict modes turn it on. |
 
 ### Autonomy REQUIRES containment
 
@@ -242,6 +243,18 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into $GAFFER_D |
 
+### lib/automerge.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_PROVENANCE_TRAILERS` | `1` |  | runner | 0 = land with the plain merge message (and a fast-forward when one is possible), as before |
+
+### lib/budget.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_ALLOW_UNCAPPED` | _(empty)_ |  | dispatch, runner | 1 = let a live run start with neither GAFFER_DAILY_BUDGET_USD nor GAFFER_BUDGET_USD set (default: refuse; dry runs are never refused) |
+
 ### lib/claude-auth.sh
 
 | Variable | Default | UI | Read by | Notes |
@@ -260,6 +273,8 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_DOD_INSTALL_TIMEOUT` | _derived_ (`${GAFFER_DOD_TIMEOUT:-900}`) |  | runner | Max wall-clock seconds for the PRE-GATE dependency install (see gaffer_dod_install_deps). |
+| `GAFFER_DOD_FLAKY_RERUN` | `1` |  | dispatch, runner | ── FLAKY-TEST RERUN (a red TEST gate under a parallel pool) ────────────────── With GAFFER_CONCURRENCY>1 several deliveries' suites share the machine, and a test that races for a port, a temp dir or CPU can go red on cod |
+| `GAFFER_DOD_RERUN_WAIT` | `120` |  | runner | max seconds the rerun waits for the other workers' in-flight gate runs to finish |
 | `GAFFER_DOD_FEEDBACK_LINES` | _derived_ (`${GAFFER_DOD_OUTPUT_TAIL:-40}`) |  | crew, runner | How many lines of distilled failure to keep per gate. |
 
 ### lib/pr-create.sh
@@ -288,6 +303,12 @@ computed from other knobs at runtime.
 | `GAFFER_USAGE_PAUSE_MJS` | _derived_ (`$_GAFFER_UP_LIB/usage-pause.mjs`) |  | runner |  |
 | `GAFFER_USAGE_WORKER_MJS` | _derived_ (`$_GAFFER_UP_LIB/worker.mjs`) |  | runner | The classifier (parse-result usage-limit). |
 
+### lib/worker.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_CLAUDE_VERSION` | _(empty)_ |  | runner | pin the Claude Code CLI version recorded per call (e.g. a docker image's CLI); empty = read it from the binary |
+
 ## Dashboard-only settings
 
 These have a Settings-panel entry but no `factory.config.sh` default: the
@@ -298,8 +319,8 @@ consuming component applies its own default when the variable is unset.
 | `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). Only tickets carrying the testable flag are routed (`wg ticket set-testable <n>`; the planner does not set it) — the rest go straight from approval to merge, as does everything when this is off. |
 | `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch, runner | When idle, pull one `backlog` feature from the factory's memory ledger and plan it as an epic. Each idle tick (before the maintenance lane) claims one `backlog` feature, moves it to `building`, makes ONE paid plan call (the runner's own bin/decompose.mjs, run unattended with --force-plan so it plans without asking questions; counted against the day cap) and files the epic as drafts (or ready tickets if the idle-loop mode says so). A failed plan releases the feature back to `backlog`, and after `loops.idle_feature_backlog.max_plan_failures` (default 2) failed plans in a row idle ticks stop claiming it; plan it from the dashboard. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
 | `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
-| `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). |
-| `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. |
+| `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). The URL is a credential: the dashboard shows only whether it is set and its host; replace it to change it. |
+| `GAFFER_NOTIFY_SLACK_URL` | string | notifications | dispatch, runner | Slack incoming-webhook URL — gates arrive as a Slack message. Anyone holding the URL can post to the channel, so it is never shown back: only whether it is set and its host. |
 | `GAFFER_NOTIFY_DESKTOP` | boolean | notifications | dispatch, runner | Fire a native desktop banner on each human gate (macOS: terminal-notifier or osascript; Linux: notify-send, which must be installed). Check it with `gaffer wg notify test` — it reports each sink and fails when one did not deliver. |
 | `GAFFER_NOTIFY_EVENTS` | csv | notifications | dispatch | Comma-separated allow-list of gate kinds to notify on (review_needed · ticket_blocked · ticket_parked · decision_pending). Empty = all gates. |
 | `GAFFER_NOTIFY_FULL_PAYLOAD` | boolean | notifications | dispatch | Outbound notifications are REDACTED by default (kind · ticket number · status · dashboard URL). The free-text ticket title/detail can be prompt-injection-influenced, so they never leave the box unless you opt in here. Enable ONLY when the webhook/Slack endpoint is inside your trust boundary. |

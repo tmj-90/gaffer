@@ -72,6 +72,34 @@ ok(
   "file order preserved, no duplicates",
 );
 
+console.log("== parser: a case statement's default arm (*) is the reported default ==");
+const modes = parseConfigDefaults(`case "$GAFFER_MODE" in
+  autonomous|strict)
+    : "\${AGENT_APPROVE:=1}"
+    ;;
+  lite)
+    : "\${AGENT_APPROVE:=1}"
+    ;;
+  *)   # supervised (default)
+    : "\${AGENT_APPROVE:=0}"
+    ;;
+esac
+case "$X" in
+  a)
+    : "\${NO_DEFAULT_ARM:=on}"
+    ;;
+esac
+`);
+const mb = Object.fromEntries(modes.map((k) => [k.name, k]));
+ok(
+  mb.AGENT_APPROVE?.default === "0" && mb.AGENT_APPROVE.defaultArm === true,
+  "the `*)` arm's fill (supervised: off) wins over the earlier autonomous arm",
+);
+ok(
+  mb.NO_DEFAULT_ARM?.default === "on" && mb.NO_DEFAULT_ARM.defaultArm === false,
+  "with no default arm the first branch is kept and flagged",
+);
+
 console.log("== read-site defaults ==");
 const sh = 'x="${GAFFER_DOD_TIMEOUT:-900}"; y="${GAFFER_NONE}"';
 ok(

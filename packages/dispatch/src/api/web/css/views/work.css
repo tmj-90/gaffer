@@ -175,7 +175,7 @@
   }
   .lane-foot {
     padding: 2px 12px 14px;
-    font: 600 var(--t14) / 1.35 var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .lane-foot a {
@@ -365,7 +365,7 @@
     align-items: center;
     gap: 6px;
     flex-wrap: wrap;
-    font: 600 var(--t12) / 1.2 var(--f-cond);
+    font: 600 var(--t13) / 1.3 var(--f-detail);
     color: var(--ink);
   }
   /* The claret dot stays beside "By hand · …"; the words wrap, never the dot. */
@@ -517,7 +517,7 @@
     align-items: center;
     gap: 6px 10px;
     flex-wrap: wrap;
-    font: 600 var(--t12) var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
   }
   .closed-meta .repo {
     font-size: var(--t12);
@@ -576,7 +576,7 @@
   }
   .cl-lease,
   .cl-beat {
-    font: 600 var(--t14) / 1.2 var(--f-cond);
+    font: 500 var(--t14) / 1.3 var(--f-detail);
     white-space: nowrap;
   }
   .cl-stale {
@@ -678,7 +678,7 @@
     color: var(--ink-2);
   }
   .wl-time {
-    font: 600 var(--t14) / 1.2 var(--f-cond);
+    font: 500 var(--t14) / 1.3 var(--f-detail);
     color: var(--ink-2);
     white-space: nowrap;
   }

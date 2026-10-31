@@ -32,6 +32,7 @@ const HEALTH = {
 };
 
 let tickets: unknown[] = [];
+let bouncing: unknown[] = [];
 function stubFetch(summary: Record<string, unknown>): void {
   vi.stubGlobal(
     "fetch",
@@ -55,7 +56,7 @@ function stubFetch(summary: Record<string, unknown>): void {
             { key: "GAFFER_DAILY_BUDGET_USD", effective: "25" },
           ],
         });
-      if (url.includes("/api/rework/bouncing")) return json({ bouncing: [] });
+      if (url.includes("/api/rework/bouncing")) return json({ bouncing });
       if (url.includes("/api/runs")) return json({ active: [], recent: [] });
       if (url.includes("/tickets")) return json({ tickets });
       return json({});
@@ -93,6 +94,26 @@ describe("web: Health — the physio room", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
+    bouncing = [];
+  });
+
+  it("names a recurring injury by its work, the number after it (fix 2 of the UI review)", async () => {
+    bouncing = [
+      {
+        ticket_id: "tk-4",
+        number: 4,
+        title: "Webhook delivery for task events",
+        status: "refining",
+        rework_count: 3,
+        top_gate: "tests",
+        top_gate_count: 3,
+      },
+    ];
+    stubFetch({ ticketsByStatus: {}, staleClaims: 0, blocked: 0, openDecisions: 0 });
+    await loadApp();
+    const injury = document.querySelector(".health-view a.is-injury") as HTMLElement;
+    expect(injury?.textContent).toBe("Webhook delivery for task events #4 keeps coming back");
+    expect(injury.querySelector(".hl-ref")?.textContent).toBe("#4");
   });
 
   it("reads the fitness test from claims, settings, cost and health", async () => {

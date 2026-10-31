@@ -95,6 +95,8 @@ wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
 wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --lint "npm run lint" >/dev/null 2>&1
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
+# The approval names the commits the reviewer saw (the CLI requires --commit <repo>=<sha>).
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 new_ticket() { local n; n="$(wg ticket create -t "$1" -d "deliver $1" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "line added" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1; printf '%s' "$n"; }
 wait_for() { local i; for i in $(seq 1 120); do eval "$1" && return 0; perl -e 'select(undef,undef,undef,0.5)'; done; return 1; }
 
@@ -105,7 +107,8 @@ TICK_PID=$!
 if wait_for '[ "$(st "$A")" = "in_review" ] && [ "$(wg ticket ci-status "$A" 2>/dev/null | jget "d.state")" = "pending" ]'; then
   ok "#$A delivered, PR opened, CI recorded PENDING for the candidate (poll open)"
 else fail "#$A never reached in_review with CI pending (status=$(st "$A"), ci=$(wg ticket ci-status "$A" 2>/dev/null | tr -d '\n' | cut -c1-200))"; fi
-if wg review approve "$A" --reviewer human1 >"$WORK/approve.out" 2>&1; then fail "a CLI approve went through while CI was pending: $(head -c 300 "$WORK/approve.out")"
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+if wg review approve "$A" $(approve_heads "$A") --reviewer human1 >"$WORK/approve.out" 2>&1; then fail "a CLI approve went through while CI was pending: $(head -c 300 "$WORK/approve.out")"
 else grep -q "Required CI has not passed" "$WORK/approve.out" && ok "the CLI approve is refused: required CI has not passed for the candidate" || fail "refused for another reason: $(head -c 300 "$WORK/approve.out")"; fi
 [ "$(st "$A")" = "in_review" ] && ok "#$A stays in_review (not ready_for_merge)" || fail "#$A status=$(st "$A") after the refused approve"
 echo fail > "$WORK/ci-state"
@@ -118,7 +121,8 @@ echo pass > "$WORK/ci-state"
 B="$(new_ticket "Green then red")"
 GAFFER_CI_POLL_ATTEMPTS=3 run_tick >/dev/null
 [ "$(st "$B")" = "in_review" ] && [ "$(wg ticket ci-status "$B" | jget 'd.state')" = "pass" ] && ok "#$B delivered with CI PASS recorded for its candidate" || fail "#$B status=$(st "$B") ci=$(wg ticket ci-status "$B" | tr -d '\n' | cut -c1-200)"
-wg review approve "$B" --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$B" $(approve_heads "$B") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$B")" = "ready_for_merge" ] && ok "with CI green, the human approve goes through (ready_for_merge)" || fail "#$B after approve: $(st "$B")"
 echo fail > "$WORK/ci-state"
 MAIN0="$(git -C "$R" rev-parse main)"

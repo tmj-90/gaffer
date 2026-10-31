@@ -10,7 +10,8 @@
 #   T1  a failing auto-detected typecheck fails the re-gate (rc 1, typecheck FAIL);
 #   T2  a typecheck-only repo whose script passes PASSES (one gate executed, rc 0);
 #   T3  the script is detected from the BASE ref first (5th argument): a branch that
-#       deletes it still runs it (and fails loudly), as the delivery gate does;
+#       deletes it still runs it — the BASE body (gate integrity: source base-pinned),
+#       so it fails when the code fails it — as the delivery gate does;
 #   T4  GAFFER_DOD_TYPECHECK_CMD still overrides the detected script;
 #   T5  GAFFER_DOD_TYPECHECK=0 still disables the gate (zero gates → fail closed);
 #   T6  gateProposedMerge (bin/merge-ticket.mjs) passes the gated target as the base,
@@ -56,9 +57,15 @@ case "$out" in "DoD: PASS"*'"gate":"typecheck"'*'"status":"PASS"'*) ok "typechec
 echo "== T3: detected from the base ref first =="
 gitc -C "$R" checkout -q -b drop
 printf '{ "name": "r", "private": true, "scripts": {} }\n' > "$R/package.json"; gitc -C "$R" commit -qam "drop typecheck"
+touch "$R/bad"
 out="$(regate "$R" repo - - main)"; rc=$?
-[ "$rc" -eq 1 ] && case "$out" in *'"gate":"typecheck"'*'"status":"FAIL"'*) true ;; *) false ;; esac \
-  && ok "the base's typecheck script still runs on a branch that deleted it (and fails)" || fail "rc=$rc out=${out:0:400}"
+[ "$rc" -eq 1 ] && case "$out" in *'"gate":"typecheck"'*'"status":"FAIL"'*'"source":"base-pinned'*) true ;; *) false ;; esac \
+  && ok "the base's typecheck script still runs on a branch that deleted it (the base body, and it fails)" || fail "rc=$rc out=${out:0:400}"
+rm -f "$R/bad"
+out="$(regate "$R" repo - - main)"; rc=$?
+[ "$rc" -eq 0 ] && case "$out" in *'"gate":"typecheck"'*'"status":"PASS"'*'"source":"base-pinned'*) true ;; *) false ;; esac \
+  && ok "the base body is what runs: it passes when the code passes it (one gate executed)" || fail "rc=$rc out=${out:0:400}"
+case "$out" in *'"gate":"integrity"'*'"status":"FLAG"'*) ok "the deleted gate script FLAGs the integrity row" ;; *) fail "no integrity FLAG: ${out:0:600}" ;; esac
 out="$(regate "$R" repo - -)"; rc=$?
 [ "$rc" -eq 1 ] && case "$out" in *"zero DoD gates"*) true ;; *) false ;; esac \
   && ok "control: with no base the branch has no typecheck script (zero gates → fail closed)" || fail "rc=$rc out=${out:0:400}"

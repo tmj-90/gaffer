@@ -67,7 +67,7 @@ INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$RUNNER_DIR/tick.sh" || true)"
 # invariant is unchanged — count across tick.sh + the two extracted passes.
 ROUTED=0
 for _rf in "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh"; do
-  ROUTED=$(( ROUTED + $(grep -cE '^[[:space:]]*worker_deliver ' "$_rf" 2>/dev/null || true) ))
+  ROUTED=$(( ROUTED + $(grep -cE '^[[:space:]]*(GAFFER_LAUNCH_KIND=[a-z-]+ )?worker_deliver ' "$_rf" 2>/dev/null || true) ))
 done
 [ "$ROUTED" -ge 4 ] && ok "tick.sh + review/clarify libs route $ROUTED turns through worker_deliver (>=4)" \
   || fail "expected >=4 worker_deliver routes across tick.sh + review/clarify libs (got $ROUTED)"

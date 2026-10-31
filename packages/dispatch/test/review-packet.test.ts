@@ -288,6 +288,73 @@ describe("REVIEW PACKET runner tally on a failing tests gate", () => {
   });
 });
 
+describe("REVIEW PACKET gate integrity row", () => {
+  it("an integrity FLAG stays FLAG (never SKIPPED) and its finding is a note, not a command", () => {
+    const clock = new TestClock();
+    const wg = Dispatch.open(":memory:", clock, nonEmptyDiffRunner);
+    try {
+      const { id } = ticketInReview(wg);
+      clock.advanceSeconds(60); // the flagged run is the latest DoD row
+      const row = (status: string, note: string) =>
+        [
+          `DoD: PASS`,
+          JSON.stringify({
+            dod: "PASS",
+            gates: [
+              { gate: "tests", repo: "svc", status: "PASS", rc: "0", note: "npm test" },
+              {
+                gate: "integrity",
+                repo: "svc",
+                status,
+                rc: "0",
+                note,
+                source: "base abc vs worktree",
+              },
+            ],
+          }),
+          "",
+          "---DOD-TALLY tests@svc---",
+          "      Tests  39 passed (39)",
+          "---END-DOD-TALLY---",
+        ].join("\n");
+      wg.attachDeliveryEvidence(
+        id,
+        { evidenceType: "test_output", summary: row("FLAG", "deleted 1 test file (a.test.ts)") },
+        system,
+      );
+      const p = wg.reviewPacket(id, cost);
+      expect(p.gates?.overall).toBe("PASS");
+      expect(p.gates?.rows.map((g) => [g.gate, g.status, g.command, g.note])).toEqual([
+        ["tests", "PASS", "npm test", null],
+        ["integrity", "FLAG", null, "deleted 1 test file (a.test.ts)"],
+      ]);
+      expect(p.gates?.tally).toMatchObject({ passed: 39 });
+      // An allowed (PASS) integrity row still carries what it found as the note.
+      clock.advanceSeconds(60);
+      wg.attachDeliveryEvidence(
+        id,
+        {
+          evidenceType: "test_output",
+          summary: row(
+            "PASS",
+            "test changes allowed on this ticket by a human: deleted 1 test file",
+          ),
+        },
+        system,
+      );
+      const q = wg.reviewPacket(id, cost);
+      expect(q.gates?.rows[1]).toMatchObject({
+        gate: "integrity",
+        status: "PASS",
+        command: null,
+        note: "test changes allowed on this ticket by a human: deleted 1 test file",
+      });
+    } finally {
+      wg.db.close();
+    }
+  });
+});
+
 describe("REVIEW PACKET runner tally: a block opener inside another gate's output", () => {
   it("a failing lint run's captured tail cannot start a tests tally", () => {
     const clock = new TestClock();

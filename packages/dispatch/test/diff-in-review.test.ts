@@ -17,7 +17,13 @@ function scriptedGit(
   const runGit: GitRunner = (cwd, args) => {
     calls.push({ cwd, args });
     const key = args.join(" ");
-    const hit = script[key] ?? { status: 0, stdout: "" };
+    // GATE INTEGRITY resolves the merge-base before its scan; an unscripted one answers a
+    // fixed commit so the scan reads (empty) output instead of flagging "incomplete".
+    const fallback: { status: number | null; stdout?: string; stderr?: string } =
+      args[0] === "merge-base"
+        ? { status: 0, stdout: `${"b".repeat(40)}\n` }
+        : { status: 0, stdout: "" };
+    const hit = script[key] ?? fallback;
     return { status: hit.status, stdout: hit.stdout ?? "", stderr: hit.stderr ?? "" };
   };
   return { runGit, calls };

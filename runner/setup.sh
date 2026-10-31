@@ -69,4 +69,5 @@ echo "  $HERE/gaffer status                       # what's registered + running"
 echo "  $HERE/gaffer wg ticket create -t \"<title>\" -d \"<what + why>\"   # your first ticket (then: ac add · repo-access set · ready — see quickstart §4)"
 echo "  $HERE/gaffer skills install --user        # (optional) add the $(find "$HERE/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d " ") skills to your own Claude Code"
 echo
-echo "  go live when ready:  $HERE/gaffer run   # one pass, delivers the ready queue to Review (review preflight.sh first; --daemon to keep going)"
+echo "  go live when ready:  GAFFER_DAILY_BUDGET_USD=5 $HERE/gaffer run   # one pass, delivers the ready queue to Review"
+echo "                      #   (a live run needs a dollar cap; review preflight.sh first; --daemon to keep going)"

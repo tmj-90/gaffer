@@ -23,6 +23,10 @@
 #       flag and the env var, a K/N out of range (or malformed) is a usage error, a
 #       sharded run runs only its shard and names it in the banner, and an outer
 #       GAFFER_RUN_SHARD (a CI shard job running this file) never leaks into a test
+#   H10 caps vs weights: every real test whose lib/shard-weights.tsv weight is at
+#       least two thirds of the .sh/.mjs cap matches LONG_RE (so it gets CAP_LONG,
+#       not a cap a loaded CI runner kills it under), and every LONG_RE test has a
+#       weight line (an unlisted one counts 10s and unbalances the shards)
 # Run: bash runner/test/run-harness.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -185,6 +189,30 @@ mk shard-leak.test.sh '[ -z "${GAFFER_RUN_SHARD:-}" ] || { echo "FAIL: inherited
 env -u GITHUB_STEP_SUMMARY -u GITHUB_ACTIONS -u GAFFER_TEST_STRICT GAFFER_RUN_STATE_ROOT="$WORK/root" GAFFER_RUN_SHARD=1/1 \
   bash "$HERE/run.sh" -j 1 "$T/shard-leak.test.sh" >"$WORK/out" 2>&1; rc=$?
 [ "$rc" -eq 0 ] && ok "H9 a test never inherits the run's GAFFER_RUN_SHARD" || fail "H9 GAFFER_RUN_SHARD leaked into a test: $(grep FAIL "$WORK/out" | head -1)"
+
+echo "== H10: long tests get the long cap and a shard weight =="
+# The values run.sh actually uses: its LONG_RE and default caps, read from its source.
+unset GAFFER_RUN_CAP_SH GAFFER_RUN_CAP_MJS GAFFER_RUN_CAP_LONG
+eval "$(grep -E '^(LONG_RE|CAP_SH)=' "$HERE/run.sh")"
+W="$HERE/lib/shard-weights.tsv"
+short_heavy=""; long_unweighted=""
+while IFS= read -r f; do
+  b="$(basename "$f")"
+  w="$(awk -F'\t' -v f="$b" '$2 == f { print $1; exit }' "$W")"
+  case "$b" in *.mjs) cap="$CAP_MJS" ;; *) cap="$CAP_SH" ;; esac
+  if [[ "$b" =~ $LONG_RE ]]; then
+    [ -n "$w" ] || long_unweighted="$long_unweighted $b"
+  elif [ -n "$w" ] && [ $((w * 3)) -ge $((cap * 2)) ]; then
+    short_heavy="$short_heavy $b(${w}s, cap ${cap}s)"
+  fi
+done <"$WORK/all"
+[ -z "$short_heavy" ] && ok "H10 no test weighing 2/3 of its cap or more runs under the short cap" \
+  || fail "H10 add to LONG_RE in run.sh:$short_heavy"
+[ -z "$long_unweighted" ] && ok "H10 every LONG_RE test has a line in lib/shard-weights.tsv" \
+  || fail "H10 LONG_RE tests with no shard weight:$long_unweighted"
+for t in memory-index-after-merge.test.sh rework-cost-live.test.sh; do
+  [[ "$t" =~ $LONG_RE ]] && ok "H10 $t (several live ticks) gets the long cap" || fail "H10 $t is not in LONG_RE"
+done
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

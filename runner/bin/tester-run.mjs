@@ -89,7 +89,7 @@ import { fileURLToPath } from "node:url";
 
 import { resolveTicket } from "./merge-ticket.mjs";
 import { agentChildEnv, buildClaudeArgv, renderPoMcpRuntime } from "./product-owner-run.mjs";
-import { selectForRole } from "./select-skills.mjs";
+import { selectForRole, stackPackNote, ticketStacks } from "./select-skills.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
 import {
   detectUsageLimit,
@@ -104,7 +104,12 @@ import {
   recordKilledCall,
   unknownRecord,
 } from "../lib/usage-ledger.mjs";
-import { writeAgentSettings } from "../lib/agent-home.mjs";
+import {
+  installSkillCopies,
+  shadowedSkills,
+  shadowNote,
+  writeAgentSettings,
+} from "../lib/agent-home.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -742,7 +747,7 @@ export function replayTesterTests({
 // that cap means a validated description — the whole brief — always reaches the tester.
 const MAX_BRIEF_CHARS = 20000;
 
-export function buildTesterPrompt({ context, worktree, repoName }) {
+export function buildTesterPrompt({ context, worktree, repoName, skills = [], skillsNote = "" }) {
   const acs = context.acceptanceCriteria
     .map((a, i) => `  ${i + 1}. [ac_id ${a.id}] ${a.text}`)
     .join("\n");
@@ -782,6 +787,11 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
     requirements,
     "REQUIREMENTS>>>",
     "",
+    ...(skills.length || skillsNote
+      ? [
+          `Skills mounted for you in .claude/skills (open the ones that apply): ${skills.join(", ") || "see .claude/skills"}${skillsNote}.`,
+        ]
+      : []),
     `Work ONLY in this worktree (your single write root): ${worktree}`,
     "You test the implementation; you never change it. Do not edit, add or delete any file",
     "outside test directories: a run that modifies the implementation is HELD, not passed.",
@@ -806,32 +816,43 @@ export function buildTesterPrompt({ context, worktree, repoName }) {
   ].join("\n");
 }
 
+/**
+ * The stacks the tester's skills are selected for: the union of every write repo's
+ * registered stack (resolveTicket's writeRepos), else the delivered repo's. The first
+ * write repo's stack alone left a two-repo ticket's second language unmounted.
+ */
+export function testerStacks(resolved) {
+  const stacks = ticketStacks((resolved?.writeRepos ?? []).map((r) => ({ ...r, access: "write" })));
+  return stacks.length ? stacks : [resolved?.repo?.stack || ""].filter(Boolean);
+}
+
 /** Install the tester's agent wiring into the worktree: role-selected skills, settings, brief. */
 export function installTesterAgentDir(worktree, ticketNumber, stack) {
+  // `stack` is one label or a list: a ticket spanning repos on different stacks mounts
+  // every write repo's packs (see testerStacks).
+  const stacks = (Array.isArray(stack) ? stack : [stack]).filter(Boolean);
   const claudeDir = resolve(worktree, ".claude");
   mkdirSync(claudeDir, { recursive: true });
-  const mountRoot = resolve(GAFFER_DATA, "skills-mounts");
-  const mount = resolve(mountRoot, `tester-${ticketNumber}`);
-  rmSync(mount, { recursive: true, force: true });
-  mkdirSync(mount, { recursive: true });
+  const mount = resolve(GAFFER_DATA, "skills-mounts", `tester-${ticketNumber}`);
   const names = selectForRole("test", {
     skillsDir: CONFIG.skillsDir,
-    stacks: stack ? [stack] : [],
+    stacks,
   }).map((s) => s.name);
-  let linked = 0;
-  for (const name of names) {
-    const src = resolve(CONFIG.skillsDir, name);
-    if (existsSync(resolve(src, "SKILL.md"))) {
-      try {
-        symlinkSync(src, resolve(mount, name), "dir");
-        linked += 1;
-      } catch {
-        /* duplicate or unlinkable — skip */
-      }
-    }
+  // Real copies in the worktree (the hook refuses a Read that resolves into the library
+  // through a symlink); the manifest at `mount` is the telemetry's view of the mount.
+  const present = names.filter((name) => existsSync(resolve(CONFIG.skillsDir, name, "SKILL.md")));
+  const key = `tester-${ticketNumber}`;
+  const installed = installSkillCopies(claudeDir, present, {
+    skillsDir: CONFIG.skillsDir,
+    key,
+    manifestDir: mount,
+  });
+  if (installed.length === 0) {
+    const all = readdirSync(CONFIG.skillsDir).filter((n) =>
+      existsSync(resolve(CONFIG.skillsDir, n, "SKILL.md")),
+    );
+    installSkillCopies(claudeDir, all, { skillsDir: CONFIG.skillsDir, key });
   }
-  rmSync(resolve(claudeDir, "skills"), { recursive: true, force: true });
-  symlinkSync(linked > 0 ? mount : CONFIG.skillsDir, resolve(claudeDir, "skills"), "dir");
   // Render AND verify the safety-hook wiring (throws "SAFETY: …" on an unwired or
   // unreadable template; the caller's fail() then refuses the spawn — fail closed).
   writeAgentSettings(claudeDir, CONFIG.claudeSettings);
@@ -906,8 +927,7 @@ function runLiveTester(context) {
   let skills;
   let mcpRuntime;
   try {
-    const stack = repo.stack || "";
-    skills = installTesterAgentDir(worktree, n, stack);
+    skills = installTesterAgentDir(worktree, n, testerStacks(resolved));
     const rendered = renderPoMcpRuntime(readFileSync(CONFIG.mcpConfig, "utf8"), {
       dispatchDb: CONFIG.dispatchDb,
       memoryDb: CONFIG.memoryDb,
@@ -931,7 +951,15 @@ function runLiveTester(context) {
     return;
   }
 
-  const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name });
+  // A repo skill of the same name as a mounted pack wins (installSkillCopies never
+  // overwrites it); the prompt says so.
+  const skillsNote =
+    stackPackNote(
+      (resolved.writeRepos ?? []).map((r) => ({ ...r, access: "write" })),
+      skills,
+      { skillsDir: CONFIG.skillsDir },
+    ) + shadowNote(shadowedSkills(resolve(worktree, ".claude"), skills));
+  const prompt = buildTesterPrompt({ context, worktree, repoName: repo.name, skills, skillsNote });
   const argv = buildClaudeArgv({
     prompt,
     mcpConfig: mcpRuntime,
@@ -941,6 +969,7 @@ function runLiveTester(context) {
   log(`testing #${n} (${repo.name} @ ${branch}) in ${worktree}; skills: ${skills.join(", ")}`);
   const t0 = Date.now();
   const res = Worker.deliver({
+    kind: "tester",
     bin: CONFIG.claudeBin,
     argv,
     cwd: worktree,
@@ -959,10 +988,12 @@ function runLiveTester(context) {
   recordSkillUsage({
     ticket: n,
     role: "test",
-    stack: repo.stack || "",
+    stack: testerStacks(resolved).join(","),
     selected: skills,
     output: res.stdout || "",
     agentDir: worktree,
+    // The manifest of what Gaffer installed: a repo skill shadowing a pack is not an open.
+    mount: resolve(GAFFER_DATA, "skills-mounts", `tester-${n}`),
     since: new Date(t0).toISOString(),
   });
   try {

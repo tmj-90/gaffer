@@ -11,7 +11,7 @@
 // Run: node test/skills-hook-claims.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -92,8 +92,70 @@ for (const dir of readdirSync(SKILLS_DIR).sort()) {
     }
   }
 }
-rmSync(WORK, { recursive: true, force: true });
 check("found the install claims the skills make (the parser still sees them)", claims >= 10);
+
+// EVERY skill Gaffer can mount is readable by the agent it is mounted for. The REAL hook
+// (a subprocess, as Claude Code runs it) decides a Read of each mounted SKILL.md with the
+// worktree as the only root, then a Read of the same file through the OLD symlink layout,
+// which resolves into the library and must stay refused. The decision-stamped ledger row
+// the hook writes is what the skill telemetry reads.
+const { installSkillCopies } = await import("../lib/agent-home.mjs");
+const WT = gafferMkdtemp(join(tmpdir(), "skills-hook-mounted-"));
+const DATA = gafferMkdtemp(join(tmpdir(), "skills-hook-data-"));
+const names = readdirSync(SKILLS_DIR).filter((n) => {
+  try {
+    return readFileSync(join(SKILLS_DIR, n, "SKILL.md"), "utf8").length > 0;
+  } catch {
+    return false;
+  }
+});
+const installed = installSkillCopies(join(WT, ".claude"), names, {
+  skillsDir: SKILLS_DIR,
+  key: "claims",
+});
+check(
+  `every library skill installs as a copy (${installed.length} of ${names.length})`,
+  installed.length === names.length,
+);
+const readRc = (file, cwd) =>
+  spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ tool_name: "Read", tool_input: { file_path: file } }),
+    cwd,
+    encoding: "utf8",
+    timeout: 20000,
+    env: {
+      ...process.env,
+      GAFFER_WRITE_ROOTS: cwd,
+      GAFFER_READ_ROOTS: "",
+      GAFFER_DATA: DATA,
+      GAFFER_TICKET: "",
+    },
+  }).status;
+const unreadable = installed.filter(
+  (n) => readRc(join(WT, ".claude", "skills", n, "SKILL.md"), WT) !== 0,
+);
+check(
+  `every mounted skill is readable through the hook (refused: ${unreadable.join(", ")})`,
+  unreadable.length === 0,
+);
+const OLD = gafferMkdtemp(join(tmpdir(), "skills-hook-oldlayout-"));
+mkdirSync(join(OLD, ".claude"));
+symlinkSync(SKILLS_DIR, join(OLD, ".claude", "skills"), "dir");
+check(
+  "a skill reached through a symlink into the library stays refused (no read widening)",
+  readRc(join(OLD, ".claude", "skills", "run-tests", "SKILL.md"), OLD) === 2,
+);
+const rows = readFileSync(join(DATA, "tool-metrics.jsonl"), "utf8")
+  .trim()
+  .split("\n")
+  .map((l) => JSON.parse(l));
+check(
+  "the hook stamped every Read with its own decision",
+  rows.length === installed.length + 1 &&
+    rows.slice(0, -1).every((r) => r.decision === "allow") &&
+    rows.at(-1).decision === "block",
+);
+for (const d of [WORK, WT, DATA, OLD]) rmSync(d, { recursive: true, force: true });
 
 if (failures.length) {
   console.error(`skills-hook-claims: ${passed} passed, ${failures.length} FAILED`);

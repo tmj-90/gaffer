@@ -126,15 +126,19 @@ wg ticket ready "$IMPL" >/dev/null 2>&1; wg ticket ready "$ACC" >/dev/null 2>&1
 echo "== 3: deliver, approve and land the implementation; deliver and approve the acceptance =="
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
+# The approval names the commits the reviewer saw (the CLI requires --commit <repo>=<sha>).
+approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
 AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$IMPL")" = "in_review" ] && ok "#$IMPL delivered through its gates" || fail "#$IMPL status=$(st "$IMPL")"
-wg review approve "$IMPL" --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$IMPL" $(approve_heads "$IMPL") --reviewer human1 >/dev/null 2>&1
 GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
 [ "$(st "$IMPL")" = "done" ] && ok "#$IMPL landed (merge gate passed)" || fail "#$IMPL status=$(st "$IMPL") $(grep "#$IMPL" "$GAFFER_DATA/factory.log" | tail -2 | tr '\n' '|' | cut -c1-300)"
 [ "$(st "$ACC")" = "in_review" ] || AUTO_MERGE=0 run_tick >/dev/null
 [ "$(st "$ACC")" = "in_review" ] && ok "acceptance #$ACC delivered on the integrated main" || fail "acceptance status=$(st "$ACC") $(grep "#$ACC" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
 [ -s "$WORK/prompts/acceptance-delivery.txt" ] && ok "the acceptance delivery agent got the acceptance block (it reads the criteria, the agreed one included, through get_ticket)" || fail "the acceptance delivery prompt lacks the acceptance block"
-wg review approve "$ACC" --reviewer human1 >/dev/null 2>&1
+# shellcheck disable=SC2046  # one --commit <repo>=<sha> word pair per head
+wg review approve "$ACC" $(approve_heads "$ACC") --reviewer human1 >/dev/null 2>&1
 [ "$(st "$ACC")" = "in_testing" ] && ok "approved acceptance → in_testing (acceptance always goes to the tester)" || fail "acceptance after approve: $(st "$ACC")"
 
 echo "== 4: the independent tester launches, hears the agreed requirement, and records a verdict =="

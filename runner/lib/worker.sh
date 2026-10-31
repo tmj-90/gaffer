@@ -1,5 +1,6 @@
 # Gaffer worker seam — the ONE headless `claude -p` invocation for the bash runner.
 # shellcheck shell=bash
+_GAFFER_WORKER_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # WHAT THIS IS (Spec 3 / Phase 1 — consolidate the invocation, zero behaviour change)
 # -----------------------------------------------------------------------------------
@@ -107,6 +108,36 @@ _worker_mcp_bridge_on() {
   esac
 }
 
+# ── Per-call provenance: which model was asked for and which CLI ran it ─────
+# gaffer_model_from_flag "<model flag>" → the id after `--model` (or `--model=`), or ""
+# when the call runs on the CLI's default model (worker_deliver records that as
+# `default`).
+gaffer_model_from_flag() {
+  local prev="" w
+  # shellcheck disable=SC2086  # the flag string is word-split exactly as the spawn splits it
+  for w in $1; do
+    case "$w" in --model=*) printf '%s' "${w#--model=}"; return 0 ;; esac
+    [ "$prev" = "--model" ] && { printf '%s' "$w"; return 0; }
+    prev="$w"
+  done
+  return 0
+}
+# gaffer_claude_version <bin> → the CLI version (lib/claude-version.mjs), read once per
+# process per binary. GAFFER_CLAUDE_VERSION pins it (an image whose CLI the host cannot
+# inspect). Never fails: an unreadable version is `unknown`.
+: "${GAFFER_CLAUDE_VERSION:=}"   # pin the Claude Code CLI version recorded per call (e.g. a docker image's CLI); empty = read it from the binary
+_GAFFER_CLAUDE_VERSION_BIN=""; _GAFFER_CLAUDE_VERSION_VAL=""
+gaffer_claude_version() {
+  local bin="${1:-${CLAUDE_BIN:-claude}}"
+  if [ -n "${GAFFER_CLAUDE_VERSION:-}" ]; then printf '%s' "$GAFFER_CLAUDE_VERSION"; return 0; fi
+  if [ "$_GAFFER_CLAUDE_VERSION_BIN" != "$bin" ] || [ -z "$_GAFFER_CLAUDE_VERSION_VAL" ]; then
+    _GAFFER_CLAUDE_VERSION_VAL="$(node "${RUNNER_DIR:-.}/lib/claude-version.mjs" "$bin" 2>/dev/null | head -1)"
+    [ -n "$_GAFFER_CLAUDE_VERSION_VAL" ] || _GAFFER_CLAUDE_VERSION_VAL="unknown"
+    _GAFFER_CLAUDE_VERSION_BIN="$bin"
+  fi
+  printf '%s' "$_GAFFER_CLAUDE_VERSION_VAL"
+}
+
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
   # Per-call turn cap: a role passes its own (already clamped to GAFFER_MAX_TURNS by
@@ -128,12 +159,34 @@ worker_deliver() {
   # killed call's cost estimate scales with its run time. Reset first: a refused
   # spawn below must not inherit the previous call's figure.
   WORKER_LAST_ELAPSED_MS=0
+  # Which model this call asks for ("" = the CLI default) and which CLI version runs
+  # it, read by gaffer_usage_record (the ledger row) and the delivery's agent-run
+  # evidence. Reset with the elapsed time, so a refused spawn inherits nothing.
+  WORKER_LAST_MODEL="$(gaffer_model_from_flag "$model_flag")"
+  [ -n "$WORKER_LAST_MODEL" ] || WORKER_LAST_MODEL="default"
+  WORKER_LAST_CLAUDE_VERSION=""
   # The MCP config the AGENT is handed. Under the docker provider with the bridge on,
   # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
   # real servers — and their env, including the claim token — run host-side in `serve`.
   local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _bridge_dir="" _rc=0
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     claude-code)
+      # ── BUDGET ADMISSION (external review #6): the ONE check before EVERY paid launch
+      # (lib/budget.sh → lib/budget-admission.mjs, shared with the Node seam). Daily or
+      # lifetime budget exhausted, or the spend unknowable with a cap set ⇒ NO spawn:
+      # rc 77, empty envelope, nothing booked. GAFFER_LAUNCH_KIND names the launcher.
+      # If budget.sh was not sourced, load the sibling copy; if the check still cannot
+      # be asked, the launch is refused (fail closed), never waved through.
+      if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 && [ -f "$_GAFFER_WORKER_LIB/budget.sh" ]; then
+        # shellcheck source=budget.sh
+        . "$_GAFFER_WORKER_LIB/budget.sh"
+      fi
+      if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
+         || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}"; then
+        : > "$out_json"
+        printf 'worker: budget admission refused the paid %s launch — no agent spawned\n' "${GAFFER_LAUNCH_KIND:-worker}" >&2
+        return 77
+      fi
       # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──
       # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).
       # Populated here so the scrub is byte-identical for every site (each site called
@@ -169,8 +222,11 @@ worker_deliver() {
       # the credentials file is mounted). Substitute ONLY when a docker wrap is active;
       # the per-call env layers on top of the allowlist, so these win over host values.
       local _sbx_claude_bin="$CLAUDE_BIN" _sbx_env=()
+      WORKER_LAST_CLAUDE_VERSION="$(gaffer_claude_version "$CLAUDE_BIN")"
       if [ -n "$wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
         _sbx_claude_bin="${GAFFER_SANDBOX_CLAUDE_BIN:-claude}"
+        # The image's CLI, not the host's: unknown unless the operator pinned it.
+        WORKER_LAST_CLAUDE_VERSION="${GAFFER_CLAUDE_VERSION:-unknown (sandbox image)}"
         _sbx_env=( "HOME=${GAFFER_SANDBOX_HOME:-/root}"
                    "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
         # ── MCP DATA PLANE ON THE HOST (external review, finding 2) ──────────────

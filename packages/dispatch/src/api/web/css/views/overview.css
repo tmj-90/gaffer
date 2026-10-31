@@ -25,6 +25,28 @@
   .hl-nb {
     white-space: nowrap;
   }
+  /* The work leads; a long title may wrap (the glyph stays with its first word). */
+  .hl-nb .hl-what {
+    white-space: normal;
+  }
+  /* The ticket number is the reference after the work: muted and smaller, so the
+     headline reads as the work at a glance. */
+  .hl-ref {
+    color: var(--board-ink-2);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .hl .hl-ref {
+    font-size: 0.62em;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    vertical-align: 0.12em;
+  }
+  /* Off the dark board (the Review page's "moved on" card) it is ink on paper. */
+  .rv-gone-h .hl-ref {
+    color: var(--ink-2);
+    font-size: 0.62em;
+  }
   .hl q {
     quotes: "\201C" "\201D";
   }
@@ -73,7 +95,7 @@
     gap: 4px 16px;
   }
   .sb-clock {
-    font: 600 var(--t12) var(--f-cond);
+    font: 600 var(--t13) / var(--lh-detail) var(--f-detail);
     letter-spacing: 0.04em;
     color: var(--board-ink-2);
   }
@@ -214,7 +236,7 @@
     gap: 4px 12px;
     align-items: baseline;
     margin-top: 2px;
-    font: 600 var(--t12) / 1.35 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .own-code {
@@ -288,7 +310,7 @@
   }
   .tb-note {
     color: var(--board-ink-2);
-    font: 600 var(--t14) / 1.3 var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     min-width: 0;
     flex: 1 1 260px;
   }
@@ -369,7 +391,7 @@
     stroke-width: 2;
   }
   .cl {
-    font: 700 17px var(--f-cond);
+    font: 600 17px var(--f-detail);
     fill: var(--chalk);
   }
   .kit-chalk {
@@ -398,7 +420,7 @@
     stroke-opacity: 0.55;
   }
   .tag-t {
-    font: 700 16px var(--f-cond);
+    font: 600 16px var(--f-detail);
     fill: #fff;
     letter-spacing: 0.02em;
   }
@@ -492,7 +514,7 @@
     flex-wrap: wrap;
     gap: 8px 18px;
     padding: 10px 2px 0;
-    font: 600 var(--t14) var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .pitch-key li {
@@ -548,7 +570,7 @@
   }
   .prog .quiet.small {
     padding-top: 0;
-    font: 600 var(--t12) / 1.35 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
   }
   .campaigns {
     grid-column: span 8;
@@ -823,7 +845,7 @@
   }
   .wage-note {
     padding: 4px 16px 0;
-    font: 600 var(--t12) / 1.35 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .wage-facts {
@@ -843,7 +865,7 @@
   }
   .wage-facts small {
     display: block;
-    font: 600 var(--t12) / 1.3 var(--f-cond);
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   .kind-bar {
@@ -915,6 +937,21 @@
     gap: 4px;
     min-width: 0;
   }
+  /* Gate integrity: the delivery changed its own tests (the runner's FLAG). */
+  .own-flag {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 6px;
+    border-radius: var(--r);
+    border: 1px solid var(--ycard-edge);
+    background: var(--yellow);
+    color: var(--on-yellow);
+    font: 700 var(--t12) / 1.3 var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    white-space: nowrap;
+  }
   .own-by .agent {
     font: inherit;
     color: var(--ink);
@@ -984,7 +1021,7 @@
     border-radius: var(--r);
   }
   .res-list time {
-    font: 600 var(--t14) var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
     white-space: nowrap;
   }
@@ -1000,7 +1037,7 @@
     text-decoration: underline;
   }
   .res-cost {
-    font: 600 var(--t14) var(--f-cond);
+    font: 500 var(--t14) / var(--lh-detail) var(--f-detail);
     color: var(--ink-2);
   }
   /* A fixture: the ready glyph, the ticket, and what it waits on, on one line. */
@@ -1055,14 +1092,14 @@
   .mr-day {
     display: block;
     margin-bottom: 2px;
-    font: 700 var(--t12) / 1.2 var(--f-cond);
+    font: 600 var(--t13) / 1.3 var(--f-detail);
     letter-spacing: 0.02em;
     white-space: nowrap;
     color: var(--ink-2);
   }
   .mr-min {
     display: block;
-    font: 800 var(--t20) / 1 var(--f-display);
+    font: 700 var(--t16) / 1.2 var(--f-detail);
     color: var(--ink);
   }
   .mr-say {
@@ -1099,7 +1136,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: 600 var(--t12) / 1.2 var(--f-cond);
+    font: 600 var(--t13) / 1.3 var(--f-detail);
     color: var(--ink-2);
     white-space: nowrap;
   }
@@ -1154,6 +1191,18 @@
     }
   }
   @media (max-width: 760px) {
+    /* Said once on a phone: the Team Sheet carries how many need you, so the
+       headline leads with the work and the scoreboard keeps the three counters
+       not already on screen (the pitch, today's deliveries, the wage bill). */
+    .hl:has(.hl-block) > .hl-count {
+      display: none;
+    }
+    .sb-cells .kpi.sc-needs {
+      display: none;
+    }
+    .sb-cells:has(.sc-needs) {
+      grid-template-columns: 0.9fr 0.9fr 1.3fr;
+    }
     .own-more {
       min-height: 44px;
     }

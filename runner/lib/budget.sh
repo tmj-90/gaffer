@@ -341,3 +341,56 @@ gaffer_day_usd_cap_ok() {
   fi
   awk -v s="$spent" -v c="$cap" 'BEGIN{exit !(s+0 < c+0)}' 2>/dev/null
 }
+
+# ── A dollar cap is REQUIRED before a live run ───────────────────────────────
+# Out of the box only MAX_TICKS_PER_DAY bounds an unattended factory: a tick count is
+# not a dollar figure, and cost drain is the top reason people abandon an agent
+# factory. So a LIVE run (`gaffer run`, loop.sh, the dashboard's Poll button) refuses
+# to start until GAFFER_DAILY_BUDGET_USD or GAFFER_BUDGET_USD holds a positive dollar
+# figure. A dry run never spends and is never refused. GAFFER_ALLOW_UNCAPPED=1 is the
+# documented opt-out (a key metered elsewhere, the stub-agent test suites); it never
+# lifts a cap that IS set.
+: "${GAFFER_ALLOW_UNCAPPED:=}"   # 1 = let a live run start with neither GAFFER_DAILY_BUDGET_USD nor GAFFER_BUDGET_USD set (default: refuse; dry runs are never refused)
+
+# gaffer_spend_cap_ok → 0 when a live run may start, 1 when it must refuse. Pure: reads
+# DRY_RUN, GAFFER_ALLOW_UNCAPPED and the two caps; a value <=0 or non-numeric is OFF
+# (the same reading gaffer_day_usd_cap_ok / gaffer_budget_headroom_ok give it).
+gaffer_spend_cap_ok() {
+  [ "${DRY_RUN:-1}" = 1 ] && return 0
+  [ "${GAFFER_ALLOW_UNCAPPED:-}" = 1 ] && return 0
+  local c
+  for c in "${GAFFER_DAILY_BUDGET_USD:-}" "${GAFFER_BUDGET_USD:-}"; do
+    [ -n "$c" ] || continue
+    # FAIL CLOSED: with no awk to read the figure, treat it as no cap.
+    awk -v c="$c" 'BEGIN{exit !(c+0 > 0)}' 2>/dev/null && return 0
+  done
+  return 1
+}
+
+# The one-line fix every refusal prints after its own prefix.
+gaffer_spend_cap_hint() {
+  printf '%s' "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one"
+}
+
+# ── THE paid-launch admission check (external review #6) ─────────────────────
+# gaffer_paid_launch_admitted [kind] — 0 when a PAID worker launch may start NOW, 1 when
+# it may not (the reason on stderr). Called immediately before every paid spawn by the
+# shell worker seam (lib/worker.sh worker_deliver: delivery, bootstrap, review, clarify,
+# eval judge); the Node seam (lib/worker.mjs deliver: tester, decompose, product owner,
+# onboarding analysis, merge resolver) and spec-author ask the SAME module,
+# lib/budget-admission.mjs, so one rule governs every launcher: the daily
+# (GAFFER_DAILY_BUDGET_USD) and lifetime (GAFFER_BUDGET_USD) caps, read fresh from the
+# ledger at the moment of the launch, fail closed on an unknowable spend. Without node
+# the spend cannot be measured: refused when a cap is set, admitted when none is.
+gaffer_paid_launch_admitted() {
+  local kind="${1:-worker}" mod
+  mod="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/budget-admission.mjs"
+  if ! command -v node >/dev/null 2>&1 || [ ! -f "$mod" ]; then
+    if [ -n "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
+      echo "gaffer: budget: a budget cap is set but the admission check cannot run (node or lib/budget-admission.mjs missing) — refusing the paid $kind launch (fail closed)" >&2
+      return 1
+    fi
+    return 0
+  fi
+  node "$mod" check --kind "$kind" >/dev/null
+}

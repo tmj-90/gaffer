@@ -750,6 +750,7 @@ function main() {
   // NOT the registered repo — the agent writes only via the dispatch MCP.
   const t0 = Date.now();
   const res = Worker.deliver({
+    kind: "product-owner",
     bin: CONFIG.claudeBin,
     argv,
     cwd: agentHome,

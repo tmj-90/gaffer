@@ -145,6 +145,29 @@ export type AddAcBody = z.infer<typeof addAcBody>;
  *  - `cancelled` — abandon to the won't-do bucket in one step.
  * In every case the ticket's acceptance criteria are reset to not-satisfied.
  */
+/**
+ * Body for POST /tickets/:id/review/approve — the commit(s) the reviewer SAW. The Review
+ * view sends one entry per write repo from the diff endpoint's `repoId` + `headSha`; the
+ * server refuses (409, details.reason `stale_revision`) when any branch head moved since,
+ * so an approval can never cover a commit nobody looked at.
+ */
+export const approveReviewBody = z.object({
+  commits: z
+    .array(
+      z.object({
+        /** Repo id or name; omit for a single-repo ticket. */
+        repo: z.string().trim().min(1).max(500).optional(),
+        sha: z
+          .string()
+          .trim()
+          .regex(/^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$/, "sha must be a full git commit id"),
+      }),
+    )
+    .max(100)
+    .optional(),
+});
+export type ApproveReviewBody = z.infer<typeof approveReviewBody>;
+
 export const rejectReviewBody = z.object({
   to: z.enum(["ready", "refining", "cancelled"]),
   reason: z.string().trim().min(1).max(20_000),
@@ -196,6 +219,17 @@ export const setTestableBody = z.object({
   can_be_tested: z.boolean(),
 });
 export type SetTestableBody = z.infer<typeof setTestableBody>;
+
+/**
+ * GATE INTEGRITY: POST /tickets/:id/allow-test-changes — a human allows (true) or
+ * withdraws (false) this ticket's allowance to change its tests, with an optional reason
+ * recorded on the event.
+ */
+export const allowTestChangesBody = z.object({
+  allow_test_changes: z.boolean(),
+  reason: z.string().trim().max(500).optional(),
+});
+export type AllowTestChangesBody = z.infer<typeof allowTestChangesBody>;
 
 export const setTestContractBody = z.object({
   changed_surfaces: z.array(z.string().trim().min(1).max(500)).max(100).default([]),

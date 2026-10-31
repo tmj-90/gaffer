@@ -199,6 +199,18 @@ export default async function s1(t, L) {
     "the reviewer agent's CHANGES reasoning is recorded on the ticket as evidence (through its MCP record_ac_evidence)",
     "no reviewer evidence mentions the docstring",
   );
+  // The ticket page keeps the reviewer's rows in its Evidence card.
+  await t.visit(`ticket/${tk.id}`);
+  await p
+    .locator("details.tk-evidence > summary")
+    .click()
+    .catch(() => {});
+  const evTxt = (await p.textContent("details.tk-evidence").catch(() => "")) || "";
+  t.check(
+    /docstring/.test(evTxt) && /Reported by agents|Recorded by the runner/.test(evTxt),
+    "the ticket page's Evidence card lists the reviewer's rows by who recorded them",
+    `the ticket page's Evidence card reads '${evTxt.slice(0, 160)}'`,
+  );
   t.skip(
     "where Review shows the reviewer agent's advisory verdict (its evidence rows) is HELD until the review-packet change lands",
   );

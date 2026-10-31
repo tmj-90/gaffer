@@ -10817,6 +10817,10 @@ async function renderTicket(id) {
   // The runner's logs for this ticket: live while it is on the pitch, else the record.
   const runs = ticketRunsPanel(t, events);
 
+  // The evidence trail (reviewer-agent notes, the DoD checklist, AC check output…)
+  // by who recorded it, so a ticket that left Review keeps it in view.
+  const evidenceCard = ticketEvidenceCard(view.evidence || [], acList, view.repositories || []);
+
   const live = ["claimed", "in_progress"].includes(t.status);
   const main =
     t.status === "in_testing"
@@ -10827,16 +10831,18 @@ async function renderTicket(id) {
           failingTest,
           failureHistory,
           diffCard,
+          evidenceCard,
           sideRepos,
           memoryPrimed,
         ]
       : live
-        ? [runs, yourMove, failureHistory, sideRepos, testingCard, memoryPrimed]
+        ? [runs, yourMove, failureHistory, evidenceCard, sideRepos, testingCard, memoryPrimed]
         : [
             yourMove,
             failingTest,
             failureHistory,
             diffCard,
+            evidenceCard,
             runs,
             sideRepos,
             memoryPrimed,
@@ -10858,6 +10864,55 @@ async function renderTicket(id) {
     ]),
   );
   return wrap;
+}
+
+/** Who recorded an evidence row, as the ticket page groups the trail. */
+const EVIDENCE_PROVENANCE = [
+  { id: "agent", label: "Reported by agents", note: "self-reported: weigh it against the diff" },
+  { id: "system", label: "Recorded by the runner", note: "gates, checks and verdicts" },
+  { id: "human", label: "Recorded by people", note: null },
+  { id: "unknown", label: "Recorder not recorded", note: "older rows" },
+];
+function evidenceProvenance(ev) {
+  if (ev.recorded_by_agent === true || ev.recorded_by_actor_type === "agent") return "agent";
+  if (ev.recorded_by_actor_type === "system") return "system";
+  if (ev.recorded_by_actor_type === "human" || ev.recorded_by_actor_type === "admin")
+    return "human";
+  return "unknown";
+}
+
+/**
+ * The ticket page's Evidence: every recorded row (reviewer-agent notes, the DoD
+ * checklist, AC check output, test output…), grouped by who recorded it, oldest
+ * first in each group. Folded by default: it is the record, not the next move. Only
+ * Review showed it before, so a ticket that left Review lost the visible trail.
+ */
+function ticketEvidenceCard(evidence, acList, repos) {
+  if (!evidence.length) return null;
+  const groups = EVIDENCE_PROVENANCE.map((g) => ({
+    ...g,
+    rows: evidence.filter((ev) => evidenceProvenance(ev) === g.id),
+  })).filter((g) => g.rows.length);
+  return el("details", { class: "card panel tk-evidence" }, [
+    el("summary", { class: "tk-evidence-sum" }, [
+      el("span", { class: "panel-title" }, "Evidence"),
+      el(
+        "span",
+        { class: "panel-aux" },
+        `${plural(evidence.length, "row")} · ${groups.map((g) => `${g.rows.length} ${g.id === "unknown" ? "unattributed" : g.id === "system" ? "runner" : g.id}`).join(" · ")}`,
+      ),
+    ]),
+    ...groups.map((g) =>
+      el("section", { class: "tk-evidence-group", dataset: { provenance: g.id } }, [
+        el("h3", { class: "tk-evidence-h" }, [
+          g.label,
+          el("span", { class: "count" }, String(g.rows.length)),
+          g.note ? el("span", { class: "dim tk-evidence-note" }, g.note) : null,
+        ]),
+        reviewEvidenceList(g.rows, acList, { repos }),
+      ]),
+    ),
+  ]);
 }
 
 /**

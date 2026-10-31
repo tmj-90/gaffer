@@ -53,9 +53,23 @@ function adoptTokenFromUrl() {
  * body (a proxy's HTML error page) becomes BAD_GATEWAY instead of a SyntaxError.
  * Every outcome is reported to the freshness tracker that drives the header's
  * "Data as of" line. `opts.signal` lets the router abort a superseded view's
- * reads; an aborted call rejects with code ABORTED and is never toasted.
+ * reads; an aborted call (in the fetch or while its body is read) rejects with
+ * code ABORTED and is never toasted.
  */
 const API_GET_TIMEOUT_MS = 15000;
+/** A fetch or body read that failed: ABORTED when the caller's signal superseded it, else NETWORK. */
+function unreachable(cause, signal) {
+  if (signal && signal.aborted) {
+    const e = new Error("Superseded");
+    e.code = "ABORTED";
+    return e;
+  }
+  freshness.fail("network");
+  const e = new Error("Can't reach the factory — retrying.");
+  e.code = "NETWORK";
+  e.cause = cause;
+  return e;
+}
 async function api(method, path, body, opts = {}) {
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
@@ -79,16 +93,7 @@ async function api(method, path, body, opts = {}) {
       signal,
     });
   } catch (cause) {
-    if (opts.signal && opts.signal.aborted) {
-      const e = new Error("Superseded");
-      e.code = "ABORTED";
-      throw e;
-    }
-    freshness.fail("network");
-    const e = new Error("Can't reach the factory — retrying.");
-    e.code = "NETWORK";
-    e.cause = cause;
-    throw e;
+    throw unreachable(cause, opts.signal);
   }
   if (res.status === 401) {
     freshness.fail("auth");
@@ -97,7 +102,16 @@ async function api(method, path, body, opts = {}) {
     e.code = "UNAUTHORIZED";
     throw e;
   }
-  const text = await res.text();
+  // The body can still be aborted after the headers arrive (the router superseding
+  // the view, or the read timing out): Chromium then rejects res.text() with a raw
+  // DOMException (AbortError, numeric code 20), which slipped past every ABORTED
+  // check and was toasted as "20 The user aborted a request.".
+  let text;
+  try {
+    text = await res.text();
+  } catch (cause) {
+    throw unreachable(cause, opts.signal);
+  }
   let data = {};
   if (text) {
     try {
@@ -7879,39 +7893,158 @@ function pollWorkButton() {
         "Run one factory tick now, so ready work is picked up without waiting for the next cycle",
       onclick: () =>
         runAsyncAction(btn, "Polling…", async () => {
-          const res = await api("POST", "/poll-work");
-          if (res && res.polled === false) {
-            toast(
-              "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
-              {},
-            );
+          // A live tick needs a dollar cap (the runner refuses one without). With
+          // neither budget set, ask for one first instead of firing a refused poll.
+          if (!(await spendCapSet())) {
+            openSpendCapSheet(() => runAsyncAction(btn, "Polling…", firePoll));
             return;
           }
-          const p = (res && res.pending) || {};
-          if (res && res.idle === "maintenance") {
-            toast("No ready work — running the idle maintenance lane…", { ok: true });
-          } else if (!res || res.readyCount > 0) {
-            toast("Factory tick fired — refreshing the board…", { ok: true });
-          } else if (p.resume > 0) {
-            toast("Continuing the paused delivery…", { ok: true });
-          } else if (p.review > 0) {
-            toast("Running the reviewer agent on a ticket in Review…", { ok: true });
-          } else if (p.testing > 0) {
-            toast("Running the tester on a ticket in Testing…", { ok: true });
-          } else if (p.merge > 0) {
-            toast("Landing the approved work (merge lane)…", { ok: true });
-          } else toast("Clarifying a draft (intake pass)…", { ok: true });
-          router();
-          // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
-          // USD cap already reached) would otherwise read as "fired". Watch the run
-          // briefly — poll-once.sh refuses within a second or two — and say so.
-          const runId = res && res.run && res.run.runId;
-          if (runId) void reportPollRefusal(runId);
+          await firePoll();
         }),
     },
     [el("span", {}, "Poll for work")],
   );
   return roLock(btn);
+}
+
+/** Fire one tick (POST /poll-work) and say what it is doing. */
+async function firePoll() {
+  const res = await api("POST", "/poll-work");
+  if (res && res.polled === false) {
+    toast(
+      "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
+      {},
+    );
+    return;
+  }
+  const p = (res && res.pending) || {};
+  if (res && res.idle === "maintenance") {
+    toast("No ready work — running the idle maintenance lane…", { ok: true });
+  } else if (!res || res.readyCount > 0) {
+    toast("Factory tick fired — refreshing the board…", { ok: true });
+  } else if (p.resume > 0) {
+    toast("Continuing the paused delivery…", { ok: true });
+  } else if (p.review > 0) {
+    toast("Running the reviewer agent on a ticket in Review…", { ok: true });
+  } else if (p.testing > 0) {
+    toast("Running the tester on a ticket in Testing…", { ok: true });
+  } else if (p.merge > 0) {
+    toast("Landing the approved work (merge lane)…", { ok: true });
+  } else toast("Clarifying a draft (intake pass)…", { ok: true });
+  router();
+  // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
+  // USD cap already reached) would otherwise read as "fired". Watch the run
+  // briefly — poll-once.sh refuses within a second or two — and say so.
+  const runId = res && res.run && res.run.runId;
+  if (runId) void reportPollRefusal(runId);
+}
+
+/** The two dollar caps a live run accepts (runner/lib/budget.sh gaffer_spend_cap_ok). */
+const SPEND_CAP_KEYS = ["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"];
+
+/**
+ * Is a dollar cap in force? True when either budget is a positive figure, and
+ * also when it cannot be told (settings unreadable, or the caps are set in the
+ * environment): the runner makes the final call and its refusal is toasted.
+ */
+async function spendCapSet() {
+  let list;
+  try {
+    list = (await api("GET", "/api/settings")).settings || [];
+  } catch (x) {
+    if (x && x.code === "UNAUTHORIZED") throw x;
+    return true;
+  }
+  const rows = SPEND_CAP_KEYS.map((k) => list.find((s) => s.key === k)).filter(Boolean);
+  if (!rows.length || rows.some((s) => s.envLocked)) return true;
+  return rows.some((s) => {
+    const v = Number(s.effective ?? s.value);
+    return Number.isFinite(v) && v > 0;
+  });
+}
+
+/**
+ * The first live run's dollar cap: a daily budget prefilled at $5, saved to
+ * settings.json (the runner re-reads it before every tick), then `onSaved` runs
+ * the poll the operator asked for. Cancel leaves everything as it was.
+ */
+function openSpendCapSheet(onSaved) {
+  const input = el("input", {
+    type: "number",
+    name: "daily-budget",
+    id: "spend-cap-usd",
+    min: "0.01",
+    step: "0.01",
+    inputmode: "decimal",
+    value: "5",
+    "aria-describedby": "spend-cap-hint",
+  });
+  const err = el("p", { class: "form-error", role: "alert", hidden: "" });
+  const save = el(
+    "button",
+    { class: "btn primary spend-cap-save", type: "submit" },
+    "Save and poll",
+  );
+  const form = el(
+    "form",
+    {
+      class: "act-sheet spend-cap-form",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        err.hidden = true;
+        const v = Number(String(input.value).trim());
+        if (!Number.isFinite(v) || v <= 0) {
+          err.textContent = "Enter a daily budget above $0, for example 5.";
+          err.hidden = false;
+          input.setAttribute("aria-invalid", "true");
+          input.focus();
+          return;
+        }
+        input.removeAttribute("aria-invalid");
+        save.disabled = true;
+        try {
+          const res = await api("POST", "/api/settings", {
+            settings: { GAFFER_DAILY_BUDGET_USD: String(v) },
+          });
+          if (!(res.written || []).includes("GAFFER_DAILY_BUDGET_USD")) {
+            err.textContent =
+              "The daily budget was not saved. It may be set in the environment: check Settings → Budget & caps.";
+            err.hidden = false;
+            return;
+          }
+          closeSheet();
+          toast(`Daily budget set: ${moneyW(v)} a day.`, { ok: true });
+          onSaved();
+        } catch (x) {
+          if (x && x.code === "UNAUTHORIZED") return;
+          err.textContent = (x && x.message) || "The daily budget could not be saved.";
+          err.hidden = false;
+        } finally {
+          save.disabled = false;
+        }
+      },
+    },
+    [
+      el(
+        "p",
+        { class: "act-intro" },
+        "A live run needs a dollar cap first. Once today's spend reaches it, the factory starts no new paid work until tomorrow (UTC).",
+      ),
+      field("Daily budget (USD)", input),
+      el(
+        "p",
+        { class: "act-hint", id: "spend-cap-hint" },
+        "Change it any time in Settings → Budget & caps. A lifetime ceiling there also counts.",
+      ),
+      err,
+      el("div", { class: "btn-row act-actions" }, [
+        save,
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      ]),
+    ],
+  );
+  openSheet("Set a daily budget", form, { focus: input });
 }
 
 /**
@@ -10312,14 +10445,80 @@ function failingTestCard(trail) {
 }
 
 /**
+ * The runner's per-attempt AGENT-RUN evidence (tick.sh gaffer_record_agent_run): which
+ * model served each delivery attempt and which Claude Code CLI ran it. Oldest first.
+ * Only rows the runner itself recorded (actor type system) count: a delivery agent can
+ * write a `log` row with any payload through record_ac_evidence, and its own claim
+ * about which model ran is not provenance.
+ */
+function agentRuns(evidence) {
+  const runs = [];
+  for (const e of evidence || []) {
+    if (e.evidence_type !== "log" || !e.payload_json) continue;
+    if (e.recorded_by_actor_type !== "system") continue;
+    const p = parseJsonSafe(e.payload_json);
+    if (!p || p.kind !== "agent_run") continue;
+    runs.push({ ...p, created_at: e.created_at });
+  }
+  return runs.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+}
+/**
+ * The attempt a trail entry is the failure of. The runner files a failure under the
+ * NEXT attempt's number (tick.sh `runner-rework --attempt $_next`), so trail attempt N
+ * is the failure of attempt N-1. An entry numbered below 2 was not written that way and
+ * keeps its own number; null when it has none.
+ */
+function failedAttempt(a) {
+  const n = Number(a && a.attempt);
+  if (!Number.isInteger(n)) return null;
+  return n >= 2 ? n - 1 : n;
+}
+/**
+ * The run behind a failure: the latest agent run recorded at or before the failure
+ * whose attempt is the one that failed (trail attempt N → run N-1). Time order alone is
+ * not enough: an attempt can fail before its agent is launched (agent-env-install), and
+ * the run before that failure is then the PREVIOUS attempt's, not this one's. A failure
+ * with no timestamp, or with no matching run before it, names no model rather than a
+ * guessed one.
+ */
+function runForAttempt(runs, a) {
+  if (!a || !a.created_at) return null;
+  const at = String(a.created_at);
+  const want = Number(a.attempt) >= 2 ? failedAttempt(a) : null;
+  const before = runs.filter(
+    (r) => r.created_at && String(r.created_at) <= at && (want === null || r.attempt === want),
+  );
+  return before.length ? before[before.length - 1] : null;
+}
+/** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */
+function runLine(r) {
+  const served = Array.isArray(r.models_served) && r.models_served.length ? r.models_served : null;
+  const model = served ? served.join(", ") : r.model_requested || "default";
+  return `Model ${model} · CLI ${r.claude_version || "unknown"}`;
+}
+
+/**
  * Attempts as a penalty shootout: one goal per attempt, the ball marked where the
  * delivery went wide, then the captured failure for each (collapsed: identical
- * failures are shown once above as the scoreline).
+ * failures are shown once above as the scoreline). Each attempt names the model and
+ * the CLI version that ran it, from the agent-run evidence. Every run no failure is
+ * paired with (the attempt that passed after a failed one, or the last go of a parked
+ * ticket) follows the failures as its own row, so each run's model is on the page. A
+ * ticket with runs but no failure gets the plain list of its attempts instead.
  */
-function renderFailureHistory(trail) {
+function renderFailureHistory(trail, runs = []) {
+  if ((!Array.isArray(trail) || trail.length === 0) && runs.length) return renderAgentRuns(runs);
   if (!Array.isArray(trail) || trail.length === 0) return null;
   const max = trail[trail.length - 1].max_attempts;
   const attemptsLabel = trail.length === 1 ? "1 attempt" : `${trail.length} attempts`;
+  const paired = new Set();
+  for (const a of trail) {
+    const r = runForAttempt(runs, a);
+    if (r) paired.add(r);
+  }
+  // Oldest first (runs is sorted): the runs no failure accounts for.
+  const unpaired = runs.filter((r) => !paired.has(r));
+  const used = trail.length + unpaired.length;
   const goal = (i, taken = true) =>
     svgEl(
       "svg",
@@ -10356,7 +10555,15 @@ function renderFailureHistory(trail) {
     el("div", { class: "panel-head" }, [
       el("h2", { class: "panel-title" }, [
         "Attempts",
-        el("span", { class: "panel-aux" }, max ? `${trail.length} of ${max} used` : attemptsLabel),
+        el(
+          "span",
+          { class: "panel-aux" },
+          max
+            ? `${Math.min(used, Number(max) || used)} of ${max} used`
+            : used === 1
+              ? "1 attempt"
+              : `${used} attempts`,
+        ),
       ]),
     ]),
     el(
@@ -10367,40 +10574,102 @@ function renderFailureHistory(trail) {
     el(
       "ol",
       { class: "failure-trail" },
-      trail.map((a, i) => {
-        const mx =
-          typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
-        return el("li", { class: "failure-attempt" }, [
-          goal(i),
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${a.attempt}${mx}`),
-            a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
-            el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+      // ONE children array: el() takes a single children argument, so rows passed as
+      // further arguments were dropped (the "not taken" kicks never showed).
+      [
+        ...trail.map((a, i) => {
+          const mx =
+            typeof a.max_attempts === "number" && a.max_attempts > 0 ? `/${a.max_attempts}` : "";
+          // Labelled with the attempt that FAILED (the trail files it one higher), so the
+          // number matches its run's and the rows below it.
+          const n = failedAttempt(a) ?? a.attempt;
+          return el("li", { class: "failure-attempt" }, [
+            goal(i),
+            el("div", { class: "failure-attempt-head" }, [
+              el("span", { class: "failure-attempt-num" }, `Attempt ${n}${mx}`),
+              a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
+              el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
+            ]),
+            (() => {
+              const r = runForAttempt(runs, a);
+              return r ? el("p", { class: "attempt-run mono" }, runLine(r)) : null;
+            })(),
+            el("details", { class: "failure-more" }, [
+              el("summary", {}, "What it said"),
+              // Untrusted captured tool output: a text node in a focusable, named <pre>.
+              el(
+                "pre",
+                {
+                  class: "failure-detail",
+                  tabindex: "0",
+                  role: "region",
+                  "aria-label": `Attempt ${n} failure output`,
+                },
+                repoRelative(a.distilled_failure) || "(no detail captured)",
+              ),
+            ]),
+          ]);
+        }),
+        // The runs no failure was recorded for, each with its model and CLI.
+        ...unpaired.map((r) =>
+          el("li", { class: "failure-run" }, [
+            el("div", { class: "failure-attempt-head" }, [
+              el(
+                "span",
+                { class: "failure-attempt-num" },
+                r.attempt
+                  ? `Attempt ${r.attempt}${r.max_attempts ? `/${r.max_attempts}` : ""}`
+                  : "Run",
+              ),
+              r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+              el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
+            ]),
+            el("p", { class: "attempt-run mono" }, runLine(r)),
+            el("p", { class: "dim failure-run-note" }, "No failure recorded for this run."),
           ]),
-          el("details", { class: "failure-more" }, [
-            el("summary", {}, "What it said"),
-            // Untrusted captured tool output: a text node in a focusable, named <pre>.
-            el(
-              "pre",
-              {
-                class: "failure-detail",
-                tabindex: "0",
-                role: "region",
-                "aria-label": `Attempt ${a.attempt} failure output`,
-              },
-              repoRelative(a.distilled_failure) || "(no detail captured)",
-            ),
+        ),
+        // The kicks still to come (or never taken, once the runner parked it).
+        ...Array.from({ length: Math.max(0, (Number(max) || 0) - used) }, (_, k) =>
+          el("li", { class: "failure-kick-none" }, [
+            goal(used + k, false),
+            el("div", { class: "failure-attempt-head" }, [
+              el("span", { class: "failure-attempt-num" }, `Attempt ${used + k + 1}/${max}`),
+              el("span", { class: "failure-attempt-time" }, "not taken"),
+            ]),
           ]),
-        ]);
-      }),
-      // The kicks still to come (or never taken, once the runner parked it).
-      ...Array.from({ length: Math.max(0, (Number(max) || 0) - trail.length) }, (_, k) =>
-        el("li", { class: "failure-kick-none" }, [
-          goal(trail.length + k, false),
-          el("div", { class: "failure-attempt-head" }, [
-            el("span", { class: "failure-attempt-num" }, `Attempt ${trail.length + k + 1}/${max}`),
-            el("span", { class: "failure-attempt-time" }, "not taken"),
-          ]),
+        ),
+      ],
+    ),
+  ]);
+}
+
+/** Attempts with no failure on record: each run, its model and its CLI version. */
+function renderAgentRuns(runs) {
+  return el("section", { class: "card failure-history agent-runs" }, [
+    el("div", { class: "panel-head" }, [
+      el("h2", { class: "panel-title" }, [
+        "Attempts",
+        el("span", { class: "panel-aux" }, runs.length === 1 ? "1 run" : `${runs.length} runs`),
+      ]),
+    ]),
+    el(
+      "p",
+      { class: "dim failure-history-sub" },
+      "Which model and which Claude Code CLI ran each attempt, oldest first.",
+    ),
+    el(
+      "ol",
+      { class: "agent-run-list" },
+      runs.map((r) =>
+        el("li", { class: "agent-run" }, [
+          el(
+            "span",
+            { class: "failure-attempt-num" },
+            r.attempt ? `Attempt ${r.attempt}${r.max_attempts ? `/${r.max_attempts}` : ""}` : "Run",
+          ),
+          el("span", { class: "attempt-run mono" }, runLine(r)),
+          r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+          el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
         ]),
       ),
     ),
@@ -11121,7 +11390,7 @@ async function renderTicket(id) {
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
-  const failureHistory = renderFailureHistory(trail);
+  const failureHistory = renderFailureHistory(trail, agentRuns(view.evidence));
   const failingTest =
     OFF_PITCH.has(t.status) || t.status === "refining" ? failingTestCard(trail) : null;
   const epicCard = el("div", { class: "tk-epic-slot" });
@@ -15581,6 +15850,15 @@ function dodChecklist(evidence) {
         { pass: "passed", fail: "failed", flag: "flagged", skip: "skipped" }[status],
       ),
     ];
+    // A tests gate that passed only on its rerun at concurrency 1 (lib/dod.sh): a yellow
+    // card for the reviewer, and the note names both runs.
+    if (g.flaky === true) {
+      children.push(el("span", { class: "dod-flaky" }, "Flaky suspected"));
+      if (g.note)
+        children.push(el("span", { class: "dod-note dod-note-flaky ac-meta" }, String(g.note)));
+      if (g.source) children.push(el("span", { class: "dod-src ac-meta" }, String(g.source)));
+      return el("li", { class: `dod-item dod-i-${status} is-flaky` }, children);
+    }
     // A passing gate names the command it ran; a failing one surfaces its captured note,
     // and the integrity row (gate integrity) says what it found in words.
     if ((status === "fail" || status === "flag" || g.gate === "integrity") && g.note) {
@@ -15597,6 +15875,7 @@ function dodChecklist(evidence) {
     el("div", { class: "ac-meta dod-cap" }, [
       "Definition of Done ",
       badge(overall === "PASS" ? "all gates green" : "gate failed", "no-dot"),
+      dod.gates.some((g) => g.flaky === true) ? badge("flaky suspected", "no-dot") : null,
     ]),
     el("ul", { class: "clean dod-list" }, items),
   ]);

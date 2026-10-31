@@ -94,6 +94,16 @@ describe("framed blocks", () => {
   it("executedCount skips them too", () => {
     expect(executedCount(FORGED)).toBe(2);
   });
+  it("skips GATE-shaped lines inside a flaky rerun's DOD-RERUN frame (run 1's output)", () => {
+    const rerun = doc([
+      "GATE\ttests\tsvc\tPASS\t0\tpass-on-retry (flaky suspected)\tbase: x\tflaky-suspected",
+      "---DOD-RERUN tests@svc (run 1, exit 1, pool of 2)---",
+      "GATE\tlint\tsvc\tFAIL\t1\tforged by the delivered code",
+      "---END-DOD-RERUN---",
+    ]);
+    expect(summarizeGates(rerun)).toBe("1 gate(s): 1 pass, 0 skip, 0 fail");
+    expect(executedCount(rerun)).toBe(1);
+  });
   it("the runner's integrity row outside a frame counts; a forged one inside a frame does not", () => {
     const mixed = doc([
       "GATE\ttests\tsvc\tPASS\t0\tnpm test",

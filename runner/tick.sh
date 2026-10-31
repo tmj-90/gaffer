@@ -2513,6 +2513,14 @@ $real
     local _why="rework budget"; [ "$_cost_exhausted" -eq 0 ] && _why="$_MAX_DELIVERY_ATTEMPTS attempts"
     [ "$_repeat" -eq 1 ] && _why="an identical failure on attempts $((_DELIV_ATTEMPT - 1)) and $_DELIV_ATTEMPT (not converging; $((_MAX_DELIVERY_ATTEMPTS - _DELIV_ATTEMPT)) attempt(s) not spent)"
     local _reason="$gate failed after $_why: $real (branch $WORK_BRANCH preserved)"
+    # FAILURE TRAIL: the attempt that used up the bounds failed too, so it goes on the
+    # trail like every earlier one (same numbering: the failure of attempt N is filed
+    # as N+1), BEFORE the park. `--final` appends the trail row only — no "reworking"
+    # card or event; the release below sets the parked card. Without it the ticket page
+    # read "Attempt N/N not taken" for an attempt that was tried. Fail-soft.
+    local _fshort; _fshort="$(printf '%s' "$real" | grep -v '^[[:space:]]*$' | head -1)"
+    [ "${DRY_RUN:-0}" = "1" ] || wg runner-rework "$NUM" --attempt "$((_DELIV_ATTEMPT + 1))" --max "$_MAX_DELIVERY_ATTEMPTS" \
+      --reason "${gate}: ${_fshort:-failed}" --gate "$gate" --failure "$real" --final >/dev/null 2>&1 || true
     gaffer_release_delivery blocked "$_reason" rework_exhausted "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
     # MEMORY FEEDBACK LOOP: this ticket exhausted rework and parked to blocked —
     # the knowledge served into its context did NOT help. Demote + flag it.
@@ -2732,6 +2740,9 @@ $_trail_q
   # ledger removes $USAGE_JSON on either the pause or normal path.
   gaffer_record_skill_usage "$NUM" delivery "${SKILL_STACKS:-$STACK}" "$SKILLS, $LENSES" "$USAGE_JSON" \
     "delivery-$NUM" "$PRIMARY_REPO" "$_SKILL_SINCE"
+  # PROVENANCE: which model served this attempt and which CLI ran it, as the ticket's
+  # agent-run evidence (the ticket page's attempt history reads it). Fail-soft.
+  gaffer_record_agent_run "$NUM" "$USAGE_JSON" "$rc" "$_DELIV_ATTEMPT" "$_MAX_DELIVERY_ATTEMPTS"
   # RESUME REPORT: the resume prompt tells the agent to END its message with the AC ->
   # test lines and the smallest-change note (written for the tokenless resume, whose
   # record_ac_evidence calls are refused; a leased resume's evidence writes now land
@@ -2847,7 +2858,7 @@ $_trail_q
     _PAUSE_REASON="cap_hit"
     [ "$_TIMEOUT_HIT" = "1" ] && _PAUSE_REASON="timeout"
     [ "$_BUDGET_HIT" = "1" ] && _PAUSE_REASON="budget_cap"
-    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
     rm -f "$USAGE_JSON"
     # Serialise the full worktree map (one entry per write repo) so a multi-repo
     # delivery resumes EVERY worktree, not just the primary. WT_ROWS is the runner's
@@ -2880,7 +2891,7 @@ $_trail_q
   # Capture the attempt's REAL spend before the envelope is removed — the eval
   # judge attaches it to the quality record at submit time (cost-per-pass metric).
   _DELIVERY_SPEND_USD="$(gaffer_delivery_spend "$USAGE_JSON" 2>/dev/null || true)"
-  gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+  gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" "" "$_DELIV_ATTEMPT" >>"$GAFFER_LOG" 2>/dev/null || true
   rm -f "$USAGE_JSON"
   GAFFER_USAGE_ATTEMPT_ID=""; GAFFER_USAGE_STARTED_AT=""
   log "delivery tick for #$NUM finished (rc=$rc)"
@@ -3386,6 +3397,13 @@ $_trail_q
         [ -n "$_DOD_EV" ] && wg attach-evidence "$NUM" --type test_output \
           --summary "$_DOD_EV" >/dev/null 2>&1 \
           && log "DoD: recorded PASS checklist evidence on #$NUM" || true
+        # FLAKY RERUN (lib/dod.sh): a tests gate that went red under the pool and passed
+        # at concurrency 1 did not cost an attempt — flag it for the reviewer.
+        if grep -q $'\tflaky-suspected$' "$DOD_RESULTS" 2>/dev/null; then
+          log "DoD: #$NUM tests passed only on the rerun at concurrency 1 — flaky suspected; flagging needs_human_review"
+          wg attach-evidence "$NUM" --type manual_note \
+            --summary "needs_human_review: flaky tests suspected — the tests gate failed under a parallel pool and passed when rerun at concurrency 1 (both runs are in the DoD evidence)" >/dev/null 2>&1 || true
+        fi
         _DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS" 2>/dev/null || true)"
         rm -f "$DOD_RESULTS"
       else

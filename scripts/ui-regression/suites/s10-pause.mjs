@@ -112,6 +112,9 @@ export default async function s10(t, L) {
     ready: true,
   });
   const refusedPoll = async (key, value, re, what) => {
+    // Put the setting back as it was, not blank: the world's daily budget is what
+    // lets every later poll run (a live tick needs a dollar cap).
+    const prev = L.readSettingsFile()[key] ?? "";
     await t.visit("settings");
     await t.setSetting(key, value);
     const sv = await t.saveSettings();
@@ -135,7 +138,7 @@ export default async function s10(t, L) {
       `${what}: toast=${toast} agent calls ${before}→${after} status=${st}`,
     );
     await t.visit("settings");
-    await t.setSetting(key, "");
+    await t.setSetting(key, prev);
     await t.saveSettings();
   };
   await refusedPoll(

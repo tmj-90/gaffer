@@ -8,10 +8,10 @@ A concise map of how the system fits together.
 
 | Component | Package | Role |
 |---|---|---|
-| **Dispatch** | `packages/dispatch` | Control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard (7 views) + CLI. |
+| **Dispatch** | `packages/dispatch` | Control plane — tickets, epics, scopes, per-repo access, the review gate. REST API + MCP server + web dashboard (11 views) + CLI. |
 | **Crew** | `packages/crew` | Factory runtime — MCP tool server, hooks engine, idle loops (draft work, ingest issues, self-improve), repo onboarding. |
 | **Memory** | `packages/memory` | Durable, human-gated knowledge — lore knowledge base, Repo Digest, feature ledger, grounded lore drafts. Also usable standalone as `memory-mcp`. |
-| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, ~70-skill library (`runner/skills/`), deterministic safety hook, git-worktree isolation, model tiering. |
+| **Runner** | `runner/` | Bash orchestrator — spawns a `claude -p` agent per ticket, 118-skill library (`runner/skills/`), deterministic safety hook, git-worktree isolation, model tiering. |
 
 All four live in a single pnpm monorepo. The runner derives every path from its own location (`runner/factory.config.sh`) so any checkout root works.
 

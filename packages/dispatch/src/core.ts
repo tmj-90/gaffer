@@ -2249,9 +2249,10 @@ export class Dispatch {
       gate?: string;
       distilledFailure?: string;
       acId?: string;
+      final?: boolean;
     },
     actor: Actor,
-  ): { eventId: string } {
+  ): { eventId: string | null } {
     return this.claims.recordReworkAttempt(input, actor);
   }
 

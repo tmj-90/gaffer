@@ -152,6 +152,7 @@ import {
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
+import { mergeMessage, provenanceTrailers } from "../lib/provenance-trailers.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -484,17 +485,22 @@ export function resolvePrMergeMethod(raw) {
   return PR_MERGE_METHODS.includes(m) ? m : "merge";
 }
 
-/** The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`. */
-export function buildPrMergeArgv({ prUrl, method, matchHeadCommit }) {
+/**
+ * The exact `gh` argv the PR path runs: `pr merge <url> --<method> --delete-branch`, plus
+ * `--body <trailers>` for the merge commit (not for a rebase, which makes none).
+ */
+export function buildPrMergeArgv({ prUrl, method, matchHeadCommit, body }) {
+  const m = resolvePrMergeMethod(method);
   return [
     "pr",
     "merge",
     String(prUrl),
-    `--${resolvePrMergeMethod(method)}`,
+    `--${m}`,
     "--delete-branch",
     // ACCEPTANCE GATE: merge only if the PR head is still the commit the landing
     // decision approved — never silently merge a different PR head.
     ...(matchHeadCommit ? ["--match-head-commit", String(matchHeadCommit)] : []),
+    ...(body && m !== "rebase" ? ["--body", String(body)] : []),
   ];
 }
 
@@ -547,8 +553,9 @@ export function mergeViaPr({
   method,
   remote,
   matchHeadCommit,
+  body,
 }) {
-  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit });
+  const argv = buildPrMergeArgv({ prUrl, method, matchHeadCommit, body });
   const gh = spawnSync(ghBin, argv, {
     cwd: repoPath,
     encoding: "utf8",
@@ -990,6 +997,7 @@ export function gateProposedMerge({
   label,
   commands,
   gateDir,
+  trailers = [],
   env = process.env,
 }) {
   const out = (kind, extra = {}) => ({
@@ -1031,9 +1039,26 @@ export function gateProposedMerge({
   try {
     const hasIdentity = git(repoPath, "config", "user.email").status === 0;
     const ids = hasIdentity ? [] : ["-c", "user.name=gaffer", "-c", "user.email=gaffer@localhost"];
+    // PROVENANCE TRAILERS (lib/provenance-trailers.mjs): the gated merge commit is the
+    // commit that lands, so it carries them; with trailers it is --no-ff so a merge
+    // commit exists to carry them (without, a fast-forward stays possible, as before).
+    const withTrailers = Array.isArray(trailers) && trailers.length > 0;
     const m = spawnSync(
       "git",
-      ["-C", wt, ...ids, "merge", "--quiet", "--no-edit", "-m", `Merge branch '${branch}'`, pin],
+      [
+        "-C",
+        wt,
+        ...ids,
+        "merge",
+        "--quiet",
+        "--no-edit",
+        ...(withTrailers ? ["--no-ff"] : []),
+        "-m",
+        withTrailers
+          ? mergeMessage(`Merge branch '${branch}'`, trailers)
+          : `Merge branch '${branch}'`,
+        pin,
+      ],
       { encoding: "utf8" },
     );
     if (m.status !== 0) {
@@ -1623,6 +1648,7 @@ function landThroughMergeGate({
   commands,
   gateDir,
   secondary = false,
+  trailers = [],
 }) {
   const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
   const where = secondary && repoName ? ` in ${repoName}` : "";
@@ -1635,6 +1661,8 @@ function landThroughMergeGate({
       label: repoName,
       commands,
       gateDir,
+      // The gated merge commit is the commit that lands: it carries the trailers.
+      trailers,
     });
     if (gate.kind === "conflict" || gate.kind === "red" || gate.kind === "error")
       return { kind: gate.kind, gate };
@@ -1739,6 +1767,8 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
   const plan = readLandingPlan(ticketNumber);
   const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
   if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
+  // PROVENANCE TRAILERS — the same block the primary's merge commit carries.
+  const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber });
   for (const r of plan) {
     if (r.repoId === primaryRepoId) {
       out.landed.push(r.repo);
@@ -1794,6 +1824,8 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
       commands: resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId),
       gateDir: resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`),
       secondary: true,
+      // Each repo's gated merge commit is the commit that lands there: it carries them too.
+      trailers,
     });
     if (res.kind === "conflict") {
       why(`${res.gate.reason} (merge conflict)`);
@@ -1982,6 +2014,8 @@ function main() {
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
   const pin = decision.pin;
+  // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
+  const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
   // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
   // after a partial landing) — never merge it again; land the repos still pending.
   let landed =
@@ -2057,6 +2091,7 @@ function main() {
         method: process.env.GAFFER_PR_MERGE_METHOD,
         remote: process.env.GAFFER_PR_REMOTE,
         matchHeadCommit: pin,
+        body: trailers.join("\n"),
       });
       if (pr.ok) {
         landed = { via: "pr", prUrl: resolved.prUrl, fastForwarded: pr.fastForwarded };
@@ -2114,6 +2149,8 @@ function main() {
       pin,
       commands: gateCommands,
       gateDir,
+      // The gated merge commit is the commit that lands: it carries the trailers.
+      trailers,
     });
     // A conflict falls through to the resolver below (landed stays null).
     if (res.kind === "red") return holdRed(res.gate);

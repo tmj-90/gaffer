@@ -33,11 +33,13 @@ const TICKET = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
+// The runner's real numbering (tick.sh `wg runner-rework --attempt $_next`): the
+// failure of attempt N is filed as trail attempt N+1, so these are attempts 1 and 2.
 const REWORK_TRAIL = [
   {
     id: "rw1",
     ticket_id: TICKET.id,
-    attempt: 1,
+    attempt: 2,
     max_attempts: 3,
     gate: "tests",
     distilled_failure:
@@ -48,7 +50,7 @@ const REWORK_TRAIL = [
   {
     id: "rw2",
     ticket_id: TICKET.id,
-    attempt: 2,
+    attempt: 3,
     max_attempts: 3,
     gate: "lint",
     distilled_failure: "src/add.ts:2:7  error  'y' is assigned a value but never used",

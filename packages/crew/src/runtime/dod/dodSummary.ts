@@ -6,7 +6,7 @@
 //
 // A DoD "results file" is TAB-separated rows; the two functions here only read
 // the `GATE\t<gate>\t<repo>\t<status>\t<rc>\t<note>` rows OUTSIDE the framed
-// ---DOD-OUTPUT--- / ---DOD-TALLY--- blocks (those hold the delivered code's own
+// ---DOD-OUTPUT--- / ---DOD-RERUN--- / ---DOD-TALLY--- blocks (those hold the delivered code's own
 // output, so a GATE-shaped line inside one is never a runner row). Field indices
 // mirror the awk 1-based fields:
 //   parts[0] "GATE"  parts[1] gate  parts[2] repo  parts[3] status  parts[4] rc
@@ -18,17 +18,26 @@
 
 /**
  * The runner's GATE rows, split on TAB, in file order — skipping every line inside a
- * `---DOD-OUTPUT …` / `---DOD-TALLY …` frame up to its `---END-DOD-…---` marker.
+ * `---DOD-OUTPUT …` / `---DOD-RERUN …` / `---DOD-TALLY …` frame up to its
+ * `---END-DOD-…---` marker.
  */
 function gateRows(text: string): string[][] {
   const rows: string[][] = [];
   let inFrame = false;
   for (const line of text.split("\n")) {
-    if (line.startsWith("---DOD-OUTPUT ") || line.startsWith("---DOD-TALLY ")) {
+    if (
+      line.startsWith("---DOD-OUTPUT ") ||
+      line.startsWith("---DOD-RERUN ") ||
+      line.startsWith("---DOD-TALLY ")
+    ) {
       inFrame = true;
       continue;
     }
-    if (line.startsWith("---END-DOD-OUTPUT---") || line.startsWith("---END-DOD-TALLY---")) {
+    if (
+      line.startsWith("---END-DOD-OUTPUT---") ||
+      line.startsWith("---END-DOD-RERUN---") ||
+      line.startsWith("---END-DOD-TALLY---")
+    ) {
       inFrame = false;
       continue;
     }

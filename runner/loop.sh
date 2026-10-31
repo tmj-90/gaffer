@@ -103,6 +103,16 @@ command -v node >/dev/null 2>&1 || {
   exit 3
 }
 
+# DOLLAR CAP REQUIRED (lib/budget.sh gaffer_spend_cap_ok): a LIVE run with neither
+# GAFFER_DAILY_BUDGET_USD nor GAFFER_BUDGET_USD set has nothing but a tick count
+# between it and the operator's bill, so it does not start. Exit 3 (a setup error), so
+# lib/daemon.sh backs off instead of re-running the refusal every interval. A dry run
+# is never refused; GAFFER_ALLOW_UNCAPPED=1 is the documented opt-out.
+if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
+  echo "gaffer factory: refusing a live run — $(gaffer_spend_cap_hint)." >&2
+  exit 3
+fi
+
 # R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. If
 # this rm fails, a prior run's markers could wrongly suppress work this run — so
 # surface it rather than letting the run proceed on a dirty slate.

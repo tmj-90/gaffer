@@ -12,6 +12,7 @@
 # medians (refresh them from the next CI run). Linux, alone: 70s / 36s / 9s; under load
 # memory-index-after-merge took 156s where merge-lane took 249s against its 171 here,
 # and the three are scaled by that ratio (rework-cost-live rounded up).
+# rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
@@ -36,6 +37,7 @@
 60	usage-limit-tick.test.sh
 58	e2e-per-path-stack-routing.test.sh
 55	e2e-memory-routing.test.sh
+52	rework-final-trail.test.sh
 45	rework-cost-live.test.sh
 40	eval-replay.test.sh
 40	resume-abort.test.sh

@@ -1,4 +1,14 @@
-# Spec-Driven Development — build plan (in progress on `feat/ui-redesign-terminal`)
+# Spec-Driven Development — build plan (shipped)
+
+> **Status: shipped.** All three phases are on the main line: the `specs` object and
+> `runner/bin/spec-author.mjs` (Phase 1), spec → decompose with clause provenance on
+> acceptance criteria and frozen clauses seeded as lore (Phase 2), and the coverage read
+> model (`GET /specs/:id/coverage`) with the Specs dashboard view (Phase 3). The
+> spec-coverage DoD signal is wired but deliberately non-enforcing and off by default
+> (`GAFFER_SPEC_COVERAGE_GATE`, `packages/dispatch/src/policy/specCoverageGate.ts`).
+> Tests: `runner/test/spec-author.test.sh`, `decompose-spec.test.mjs`,
+> `spec-freeze-seeds-lore.test.sh`, `e2e-spec-to-done.test.sh`. The plan below is kept
+> as the design record.
 
 A **spec** is AI-drafted from a brief, human-edited, **frozen**, then fed into the existing
 `decompose` engine as one extra input. It never forks the pipeline — it sits in front of it.

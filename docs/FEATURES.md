@@ -392,6 +392,36 @@ structural barrier the whole design hangs on.
   "Event log" card re-derive the chain. Each event also carries the **runner
   tick** that wrote it (the ticket timeline shows a `tick …` chip), so one tick's
   whole trail — the runner's calls and the agent's MCP writes — reads as one.
+- **A flaky test does not burn an attempt.** With a worker pool
+  (`GAFFER_CONCURRENCY` above 1) a red tests gate is rerun once at concurrency 1
+  (one rerun at a time across the pool, after the other workers' gate runs finish)
+  before the attempt counts. Only the tests gate, only once. A pass on the rerun is
+  a green gate marked **Flaky suspected** on the Review card, its note naming both
+  runs, with the first run's output kept in the DoD evidence and a
+  `needs_human_review` note on the ticket; a second red is the failure, naming both
+  exit codes. `GAFFER_DOD_FLAKY_RERUN=0` turns it off.
+- **The merge commit says where it came from.** Every landing path (the Merge
+  button, `gaffer merge`, the merge lane, the AFK review pass, a PR merge) writes git
+  trailers into the merge commit, read from the dispatch DB:
+  `Gaffer-Ticket: #12`, `Gaffer-Reviewed-By: human:tom` (or `agent:<id>`) and
+  `Gaffer-Gates: DoD PASS (tests pass, lint skip); AC 3/3 satisfied; tester PASS`.
+  The tester part comes from the tester's own verdict transition since the latest
+  approval, never from evidence an agent could record.
+  The merge gate's gated merge commit, which is the commit that lands, carries
+  them, and it is then `--no-ff`, so there is a merge commit to carry them. No
+  model name is written (the usage ledger records that), and the trailers are not
+  signed. `GAFFER_PROVENANCE_TRAILERS=0` turns them off.
+- **Every attempt names its model and its CLI.** The runner records, per delivery
+  attempt, the model that served the call (and the one it asked for) and the
+  Claude Code CLI version that ran it — on the usage-ledger row (`attempt`,
+  `model_requested`, `claude_version`) and as agent-run evidence on the ticket. The
+  ticket page's **Attempts** history shows "Model … · CLI …" on each attempt: a
+  failure names the run of the attempt that failed (none when the agent never ran,
+  as when its environment could not be installed) and carries that attempt's number,
+  every other run (the attempt that passed after a failure) follows the failures on
+  its own row, and only the runner's own rows count, so an agent cannot name its own
+  model. The attempt that used up the cap is on the history as a failure too
+  ("Attempt 3/3 · definition-of-done failed"), recorded before the ticket parks.
 
 ![The Gaffer's Sign-off](img/review.png)
 
@@ -496,6 +526,13 @@ on**:
 | `MERGE_ON_AGENT_REVIEW` | Extend `AUTO_MERGE` to approvals made on an agent reviewer's verdict. Needs `AUTO_MERGE` too — alone it merges nothing (the run says so). |
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft, and a draft is invisible to other agents (search, duplicate hints, fetch by id) until you approve it. |
+
+**A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
+the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`
+or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
+Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
+then polls. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
+opts out (a value in `settings.json` is ignored).
 
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Secret-bearing settings —

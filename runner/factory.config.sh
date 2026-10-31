@@ -109,6 +109,11 @@ export GAFFER_CREW_EVENTS="${GAFFER_CREW_EVENTS:-$GAFFER_DATA/events.jsonl}"
 if [ -n "$_gs_out" ]; then
   while IFS=$'\t' read -r _sk _sv; do
     [[ "$_sk" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue   # whole-key anchor (^…$)
+    # ENVIRONMENT-ONLY keys are never taken from the file. GAFFER_ALLOW_UNCAPPED lifts
+    # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok); a hand-edited or
+    # otherwise written settings.json must not be able to switch that off. Only the
+    # operator's real environment can (SECURITY.md).
+    [ "$_sk" = GAFFER_ALLOW_UNCAPPED ] && continue
     # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
     # processes that read it (the dispatch CLI's notifier, the memory server, crew),
     # not only this shell. Unexported, notifications/auto-approve set in the UI
@@ -1546,8 +1551,11 @@ export GAFFER_CONCURRENCY MAX_CONCURRENT_TICKETS_PER_REPO MAX_CANDIDATES
 # ledger: best-effort, gated on GAFFER_DATA, fully swallowed — a ledger failure
 # NEVER fails or alters a tick. A call that can't be measured (timeout / crash /
 # missing/unparseable JSON / no usage field) is recorded as "unknown", never 0,
-# so a partial run can't read as "cheap". run-summary.sh renders the run-scoped
-# Usage section. Override the ledger PATH here (mirrors GAFFER_BLOCK_LEDGER's
+# so a partial run can't read as "cheap". Each record also names the call: the
+# delivery `attempt`, the `model_requested` (`default` = the CLI's own) beside the
+# measured `models` map, and the `claude_version` that ran it (lib/worker.sh), and
+# every delivery attempt gets matching agent-run evidence on its ticket.
+# run-summary.sh renders the run-scoped Usage section. Override the ledger PATH here (mirrors GAFFER_BLOCK_LEDGER's
 # run-summary default); empty/unset → $GAFFER_DATA/usage-ledger.jsonl.
 : "${GAFFER_USAGE_LEDGER:=$GAFFER_DATA/usage-ledger.jsonl}"
 export GAFFER_USAGE_LEDGER
@@ -1590,6 +1598,15 @@ gaffer_usage_record() {
   # call's estimate (usage-ledger.mjs deriveKillEstimate); a measured call ignores it.
   local elapsed="${5:-${WORKER_LAST_ELAPSED_MS:-}}"
   WORKER_LAST_ELAPSED_MS=""
+  # [attempt] — the delivery attempt this call was (tick.sh passes it). The model the
+  # call asked for and the CLI version that ran it come from the last worker_deliver
+  # (lib/worker.sh) and are consumed here like the elapsed time.
+  local attempt_n="${6:-}" model="${WORKER_LAST_MODEL:-}" cliver="${WORKER_LAST_CLAUDE_VERSION:-}"
+  WORKER_LAST_MODEL=""; WORKER_LAST_CLAUDE_VERSION=""
+  local -a prov=()
+  [ -n "$attempt_n" ] && prov+=(--attempt "$attempt_n")
+  [ -n "$model" ] && prov+=(--model "$model")
+  [ -n "$cliver" ] && prov+=(--claude-version "$cliver")
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
   # R-4: an append failure used to be doubly hidden — node stderr went to /dev/null
@@ -1598,18 +1615,37 @@ gaffer_usage_record() {
   # stderr to the factory log ($GAFFER_LOG) instead of dropping it. The append itself
   # stays best-effort (the trailing `|| true` keeps a ledger problem from failing the
   # tick), but the WARNING is now VISIBLE in the log.
-  # [attempt] — a DELIVERY record carries its attempt (GAFFER_USAGE_ATTEMPT_ID: a hash
-  # of the claim + the attempt number) and spawn time (GAFFER_USAGE_STARTED_AT), set by
-  # tick.sh around the delivery spawn, so the Health report can tell the first attempt
+  # [attempt] — a DELIVERY record also carries its attempt id (GAFFER_USAGE_ATTEMPT_ID: a
+  # hash of the claim + the attempt number) and spawn time (GAFFER_USAGE_STARTED_AT), set
+  # by tick.sh around the delivery spawn, so the Health report can tell the first attempt
   # from the correction that followed a send-back. Other kinds never carry them.
   local attempt="" started=""
   if [ "$kind" = delivery ]; then attempt="${GAFFER_USAGE_ATTEMPT_ID:-}"; started="${GAFFER_USAGE_STARTED_AT:-}"; fi
   if declare -F gaffer_with_lock >/dev/null 2>&1; then
     gaffer_with_lock "$GAFFER_DATA/.ledger.lock" \
-      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+      node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   else
-    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
+    node "$mod" --kind "$kind" ${ticket:+--ticket "$ticket"} --rc "$rc" --kill-estimate "${GAFFER_KILL_ESTIMATE_USD:-0}" ${elapsed:+--elapsed-ms "$elapsed"} ${prov[@]+"${prov[@]}"} ${attempt:+--attempt-id "$attempt"} ${started:+--started-at "$started"} --json-file "$jsonfile" 2>>"$GAFFER_LOG" || true
   fi
+}
+
+# gaffer_record_agent_run <ticket> <usage-json> <rc> <attempt> <max-attempts> [role]
+# Attach the per-attempt AGENT-RUN evidence: the model that served the call (the
+# measured modelUsage ids, else the one it asked for), the Claude Code CLI version
+# and the attempt number (usage-ledger.mjs agentRunEvidence). Reads the model/version
+# the last worker_deliver recorded WITHOUT consuming them — gaffer_usage_record does
+# that. Best-effort: a failure here never touches the delivery.
+gaffer_record_agent_run() {
+  local ticket="$1" jsonfile="$2" rc="${3:-}" attempt="${4:-}" max="${5:-}" role="${6:-delivery}"
+  local mod="$RUNNER_DIR/lib/usage-ledger.mjs" out summary payload
+  [ -n "$ticket" ] && [ -f "$mod" ] || return 0
+  out="$(node "$mod" --agent-run-evidence --json-file "$jsonfile" --role "$role" \
+    ${rc:+--rc "$rc"} ${attempt:+--attempt "$attempt"} ${max:+--max-attempts "$max"} \
+    --model "${WORKER_LAST_MODEL:-default}" --claude-version "${WORKER_LAST_CLAUDE_VERSION:-unknown}" 2>/dev/null)" || return 0
+  { IFS= read -r summary; IFS= read -r payload; } <<<"$out"
+  [ -n "$summary" ] && [ -n "$payload" ] || return 0
+  wg attach-evidence "$ticket" --type log --summary "$summary" --payload-json "$payload" >/dev/null 2>&1 || true
+  return 0
 }
 
 # gaffer_delivery_attempt_stamp <attempt-n> — print "<attempt-id> <iso-now-ms>" for the

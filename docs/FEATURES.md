@@ -180,6 +180,28 @@ structural barrier the whole design hangs on.
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
   `MERGE_ON_AGENT_REVIEW`, or an earned per-repo grant).
+- **The button says what the click does.** The server works out the first step
+  an approval will certainly take from the settings and ticket state the approve
+  path itself reads, and the sign-off button names it: **Approve and send to
+  tester** (the testing lane, or an epic's acceptance ticket), **Approve and land
+  now** (Auto-merge on with a merge command: the landing check and the merge gate
+  run at once, through the PR in PR mode), **Approve, lands on next tick**
+  (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
+  the landing), **Approve, waits for Merge now** (Auto-merge off), or **Approve
+  held: CI not passed** (required CI has no PASS for the commit, so the server
+  would refuse). A line under the button says what follows; a multi-repo ticket
+  names the repos no landing path merges, and under Review mode *both* the line
+  says this click is the human confirmation. The armed button only says it lands
+  when it does ("Confirm and land now"); after approval the button and the band
+  under it say where the change went (`GET /tickets/:id/diff` carries
+  `approve_outcome`).
+- **A request for a human is never "Nothing flagged".** The runner's
+  `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
+  a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read
+  from the same evidence rows the Evidence list shows. They head the flags, count
+  in the summary line, sit in a yellow band beside the button (a live status for
+  screen readers), and the evidence row they came from is marked *asks for a
+  human*.
 - **"Done" means the combined code passed the gates on the target.** A branch
   that passed its gates and a default branch that passed its gates can still
   merge cleanly into something that fails (one side renames the field the other

@@ -580,9 +580,7 @@ try {
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live
   // stream while the diff loads, and a handle taken before that detaches
   // ("Element is not attached to the DOM"). A locator re-resolves on every action.
-  const approveBtn = page
-    .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
-    .first();
+  const approveBtn = page.locator("button.signoff-btn").first();
   if ((await approveBtn.count()) === 0) bad("no Approve button on the review view");
   else {
     const disabled = await approveBtn.isDisabled();
@@ -593,11 +591,29 @@ try {
       30000,
       500,
     );
+    // The button names what the click does (the server's approve_outcome), and the line
+    // under it says what follows. AUTO_MERGE is off here, so nothing may promise a merge.
+    const restLabel = ((await approveBtn.textContent()) || "").trim();
+    const nextLine = (
+      (await page
+        .locator(".signoff-next")
+        .textContent()
+        .catch(() => "")) || ""
+    ).trim();
+    /^Approve\b/.test(restLabel) && !/land now/i.test(restLabel)
+      ? ok(`Approve names its outcome: '${restLabel}'`)
+      : bad(`Approve does not name its outcome (label='${restLabel}')`);
+    nextLine
+      ? ok(`a line under Approve says what follows: '${nextLine.slice(0, 80)}…'`)
+      : bad("no line under Approve saying what follows");
     await approveBtn.click();
-    const armedLabel = await approveBtn.textContent();
+    const armedLabel = ((await approveBtn.textContent()) || "").trim();
     /confirm/i.test(armedLabel)
-      ? ok("Approve is a two-step control: first click ARMS ('Confirm merge')")
+      ? ok(`Approve is a two-step control: first click ARMS ('${armedLabel}')`)
       : bad(`first click did not arm (label='${armedLabel}')`);
+    !/confirm merge/i.test(armedLabel)
+      ? ok("the armed button promises no merge the click will not start")
+      : bad(`the armed button says '${armedLabel}' with Auto-merge on approval off`);
     await approveBtn.click();
     ok("Approve confirmed");
   }

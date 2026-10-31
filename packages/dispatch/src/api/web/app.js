@@ -15090,8 +15090,9 @@ function diffApprovability(repos) {
  */
 function renderTicketDiff(ticketId, onState, opts = {}) {
   const box = el("div", { class: "diff-box" }, [el("div", { class: "ac-meta" }, "Loading diff…")]);
-  const report = (state, repos = []) => {
-    if (typeof onState === "function") onState(state, repos);
+  // The response rides along so the sign-off can read its `approve_outcome`.
+  const report = (state, repos = [], res = null) => {
+    if (typeof onState === "function") onState(state, repos, res);
   };
   // `_settled` resolves once the diff (or its error) is on screen, so a background
   // refresh can hold the page height until then (review-scroll-jumps-to-top).
@@ -15101,7 +15102,7 @@ function renderTicketDiff(ticketId, onState, opts = {}) {
       const repos = (res && res.repos) || [];
       if (repos.length === 0) {
         box.appendChild(el("p", { class: "section-note" }, "No write repos to diff."));
-        report(diffApprovability(repos));
+        report(diffApprovability(repos), [], res);
         return;
       }
       if (repos.length > 1) {
@@ -15109,7 +15110,7 @@ function renderTicketDiff(ticketId, onState, opts = {}) {
         box.appendChild(el("div", { class: "ac-meta" }, `Diff (${repos.length} repos)`));
       }
       repos.forEach((rd, i) => box.appendChild(repoDiffSection(rd, i, opts)));
-      report(diffApprovability(repos), repos);
+      report(diffApprovability(repos), repos, res);
     })
     .catch((e) => {
       clear(box);
@@ -15242,7 +15243,7 @@ function evidenceKind(type) {
  * agent-reported chip) · what kind · the first line of what it says. Longer
  * captures (a DoD report, a diff stat) fold their remaining lines.
  */
-function reviewEvidenceList(evidence, acList, { repos } = {}) {
+function reviewEvidenceList(evidence, acList, { repos, asks } = {}) {
   if (!evidence || evidence.length === 0) return null;
   const acText = new Map((acList || []).map((a) => [a.id, a.text]));
   const rows = evidence
@@ -15264,6 +15265,7 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
         (raw === "system" ? "the runner" : raw);
       const provBadge =
         ev.recorded_by_agent === true ? badge("agent-reported", "no-dot prov-agent") : null;
+      const asking = asks && asks.has(ev.id);
       const lines = String(ev.summary || "").split("\n");
       // A blocked-write note and absolute paths read as repo-relative paths.
       const say = (l) =>
@@ -15278,7 +15280,7 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
         .slice(1)
         .filter((l) => l.trim())
         .map(say);
-      return el("li", { class: "review-evi" }, [
+      return el("li", { class: asking ? "review-evi evi-asks" : "review-evi" }, [
         el(
           "time",
           {
@@ -15293,6 +15295,7 @@ function reviewEvidenceList(evidence, acList, { repos } = {}) {
             el("span", { class: "evi-who" }, who),
             badge(evidenceKind(ev.evidence_type), "no-dot evi-kind"),
             provBadge,
+            asking ? badge("asks for a human", "no-dot evi-ask") : null,
           ]),
           el("p", { class: "evi-summary" }, first),
           rest.length
@@ -15505,6 +15508,108 @@ function reviewFlag(title, body, source) {
       source ? el("p", { class: "flag-src" }, source) : null,
     ]),
   ]);
+}
+
+/**
+ * The evidence rows (and events) that ASK FOR A HUMAN before sign-off: the runner's
+ * needs_human_review requests, a reviewer agent's CHANGES, a tester's FAIL or hold, a
+ * merge-gate hold, a DoD FLAG gate, an observed-risk escalation, anything held "for a
+ * human". The flags, the summary line and the warnings beside the button all read this
+ * one list, built from the same rows the Evidence list renders, so the sign-off can never
+ * say "Nothing flagged" over a request for a human further down the page.
+ * Returns [{ id, title, detail, source }]; `id` is the evidence row's id (null for events).
+ */
+const HUMAN_ASK_RULES = [
+  [/^needs_human_review\b[:\s]*/i, "Runner asks for a human review", "Raised by the runner"],
+  [
+    /^Reviewer agent \(advisory\): changes requested\s*[—-]?\s*/i,
+    "Reviewer asked for changes",
+    "Raised by the reviewer agent",
+  ],
+  [/^tester held:\s*/i, "Tester held it for a human", "Raised by the tester lane"],
+  [/^MERGE GATE FAILED:\s*/i, "Merge gate held it", "Raised by the merge gate"],
+  [/^agent review could not run:\s*/i, "Agent review could not run", "Raised by the runner"],
+  [/^PARKED\b[^:]*:\s*/i, "Parked for a human", "Raised by the runner"],
+];
+function humanAsks(evidence, events, dod) {
+  const out = [];
+  for (const ev of evidence || []) {
+    const s = String(ev.summary || "");
+    const first = s.split("\n")[0];
+    const rule = HUMAN_ASK_RULES.find(([re]) => re.test(first));
+    let payload;
+    try {
+      payload = ev.payload_json ? JSON.parse(ev.payload_json) : null;
+    } catch {
+      payload = null;
+    }
+    if (rule) {
+      const detail = first.replace(rule[0], "").trim() || first;
+      out.push({ id: ev.id, title: rule[1], detail, source: rule[2] });
+    } else if (payload && payload.verdict === "fail") {
+      out.push({
+        id: ev.id,
+        title: "Tester asked for changes",
+        detail: first,
+        source: "Raised by the tester",
+      });
+    } else if (/\b(needs a human|held (?:[\w ]+ )?for a human)\b/i.test(first)) {
+      out.push({
+        id: ev.id,
+        title: "Held for a human",
+        detail: first,
+        source: "Raised by the runner",
+      });
+    }
+  }
+  for (const g of (dod && dod.gates) || []) {
+    if (String(g.status || "").toUpperCase() !== "FLAG") continue;
+    out.push({
+      id: null,
+      title: `Gate flagged: ${g.gate || "gate"}`,
+      detail: g.note ? String(g.note) : "The Definition of Done flagged this gate for a human.",
+      source: "Raised by the runner's gates",
+    });
+  }
+  for (const e of events || []) {
+    if (e.event_type !== "ticket.autoship_escalated") continue;
+    let p;
+    try {
+      p = JSON.parse(e.payload_json || "{}") || {};
+    } catch {
+      p = {};
+    }
+    out.push({
+      id: null,
+      title: "Observed risk above declared",
+      detail: `The real diff reads as ${p.observed || "unknown"} risk, above the declared ${p.declared || "risk"}${
+        Array.isArray(p.reasons) && p.reasons.length ? `: ${p.reasons.join("; ")}` : ""
+      }. Auto-approve was held for a human.`,
+      source: "Raised by the observed-risk check",
+    });
+  }
+  return out;
+}
+
+/**
+ * What an approval did when the server sent no `approve_outcome` (an older server): read
+ * the new status and the merge result. Never says a merge is running unless one started.
+ */
+function approvedFallback(to, merge) {
+  if (to === "in_testing")
+    return { done_label: "Sent to tester", sentence: "It goes to the tester next." };
+  if (merge && merge.triggered)
+    return { done_label: "Landing now", sentence: "The merge runner is landing it now." };
+  if (merge && merge.skipped === "auto_merge_off")
+    return {
+      done_label: "Waits for Merge now",
+      sentence:
+        "It waits in Ready for merge: Auto-merge on approval is off, so press Merge now to land it.",
+    };
+  return {
+    done_label: "Ready for merge",
+    sentence: "It waits in Ready for merge until the runner's merge lane or Merge now lands it.",
+  };
 }
 
 /** The change last signed off in this tab, so the clear desk can say where it went. */
@@ -15772,11 +15877,19 @@ async function renderReview(param) {
   const since = sinceStatus(ticketEvents, "in_review");
   const dod = parseDodEvidence(evidence);
   const writes = blockedWrites(evidence);
+  // Every row below that asks for a human: the flags, the summary and the warnings
+  // beside the button read this one list.
+  const asks = humanAsks(evidence, ticketEvents, dod);
   const prUrl = safeHttpUrl(t.pr_url);
 
   // Fix 4: a human must not approve a change they couldn't see. Approve starts
   // DISABLED and only enables once the diff loads with a real, non-empty change.
   let diffState = { approvable: false, reason: "Loading the delivery diff…" };
+  // What Approve does, as the server computes it from the settings and ticket state the
+  // approve path acts on (GET /diff's approve_outcome). Until it arrives the button just
+  // says "Approve"; it never promises a merge the click will not start.
+  let outcome = null;
+  const isApproved = () => Boolean(approveBtn && approveBtn.classList.contains("is-approved"));
   // The sign-off's status line: hidden until Approve lands, then it says where the
   // change went and offers the next one as its own link (never auto-advanced).
   const doneLine = el("p", { class: "rv-done", role: "status", tabindex: "-1", hidden: "" });
@@ -15790,17 +15903,21 @@ async function renderReview(param) {
       }
       const r = await api("POST", `/tickets/${t.id}/review/approve`);
       const to = r && r.ticket && r.ticket.status;
-      // AUTO_MERGE off (the default): the approval does not merge; the ticket waits in
-      // Ready for merge until someone presses Merge now.
-      const heldForMerge = Boolean(r && r.merge && r.merge.skipped === "auto_merge_off");
+      // What the click actually did: the server settles its outcome against the real
+      // route (the tester, a merge started or skipped). An older server sends none, so
+      // read the status and the merge result instead.
+      const done = (r && r.approve_outcome) || approvedFallback(to, r && r.merge);
       lastSignedOff = { id: t.id, number: t.number, at: new Date().toISOString() };
-      // Stay on the diff: the button says it is done, and moving on is its own link.
+      // Stay on the diff: the button says it is done and where the change went, and
+      // moving on is its own link.
       if (approveBtn) {
         approveBtn.setAttribute("disabled", "");
         approveBtn.classList.add("is-approved");
-        approveLabel.textContent = "Approved";
+        approveLabel.textContent = `Approved · ${done.done_label}`;
+        approveBtn.setAttribute("aria-label", `Approved #${t.number}: ${done.done_label}`);
         approveBtn.prepend(icon("check", "", 20));
       }
+      nextLine.hidden = true;
       // The yellow card is withdrawn from the title; the queue tab shows the move.
       const card = wrap.querySelector(".rv-title .rv-card");
       if (card && !prefersReducedMotion() && typeof card.animate === "function")
@@ -15826,13 +15943,7 @@ async function renderReview(param) {
       doneLine.append(
         el("span", { class: "rv-done-t" }, [
           el("b", {}, `Approved #${t.number}.`),
-          ` ${
-            to === "in_testing"
-              ? "It goes to the tester next."
-              : heldForMerge
-                ? "It waits in Ready for merge: Auto-merge on approval is off, so press Merge now to land it."
-                : "It is with the merge runner now."
-          } `,
+          ` ${done.sentence} `,
         ]),
         next
           ? el("a", { class: "rv-next-link", href: `#/review/${next.id}` }, [
@@ -15848,9 +15959,7 @@ async function renderReview(param) {
       // instead of silently swapping the next change in under the reader.
       if (!param && typeof history !== "undefined" && history.replaceState)
         history.replaceState(null, "", `#/review/${t.id}`);
-      toast(heldForMerge ? "Approved — waiting in Ready for merge" : "Approved — merging", {
-        ok: true,
-      });
+      toast(`Approved — ${done.done_label.toLowerCase()}`, { ok: true });
       updateNavBadges();
     });
   const reject = (to) => {
@@ -15898,6 +16007,13 @@ async function renderReview(param) {
   // Approve is a two-step arm→confirm, by click or by key.
   const ARM_WINDOW_MS = 3000;
   const approveLabel = el("span", {}, "Approve");
+  // One line under the button: what follows the click (the outcome's sentence).
+  const nextLine = el("p", {
+    class: "signoff-next",
+    id: `signoff-next-${t.id}`,
+    "aria-live": "polite",
+    hidden: "",
+  });
   const approveBtn = canApprove
     ? el(
         "button",
@@ -15905,15 +16021,18 @@ async function renderReview(param) {
           class: "btn primary big signoff-btn",
           type: "button",
           disabled: "",
-          "aria-label": "Approve and merge",
+          "aria-label": "Approve",
+          "aria-describedby": nextLine.id,
         },
         [approveLabel],
       )
     : null;
+  const restLabel = () => (outcome ? outcome.label : "Approve");
   // One arm for both paths: the first `a` or click raises the yellow card on the
-  // button ("Confirm merge"), rings the sign-off block and shows the 3s window
-  // draining under the buttons; a second press inside it approves. Esc, j/k,
-  // leaving the button or the window running out all put it down again.
+  // button (the outcome's confirm label: "Confirm: send to tester", "Confirm and land
+  // now"…), rings the sign-off block and shows the 3s window draining under the
+  // buttons; a second press inside it approves. Esc, j/k, leaving the button or the
+  // window running out all put it down again.
   let armed = false;
   let armedVia = null;
   let armTimer = null;
@@ -15930,9 +16049,9 @@ async function renderReview(param) {
     clear(armHint);
     if (!approveBtn) return;
     approveBtn.classList.remove("btn-armed");
-    if (approveLabel.textContent !== "Approved") {
-      approveLabel.textContent = "Approve";
-      approveBtn.setAttribute("aria-label", "Approve and merge");
+    if (!isApproved()) {
+      approveLabel.textContent = restLabel();
+      approveBtn.setAttribute("aria-label", restLabel());
     }
   };
   const arm = (via) => {
@@ -15940,17 +16059,18 @@ async function renderReview(param) {
     armed = true;
     armedVia = via;
     signoff?.classList.add("card-armed");
+    const confirm = outcome ? outcome.confirm_label : "Confirm approval";
     if (approveBtn && !approveBtn.disabled) {
       approveBtn.classList.add("btn-armed");
-      approveLabel.textContent = "Confirm merge";
-      approveBtn.setAttribute("aria-label", `Confirm merge: approve #${t.number}`);
+      approveLabel.textContent = confirm;
+      approveBtn.setAttribute("aria-label", `${confirm}: approve #${t.number}`);
     }
     armHint.append(
       el("span", { class: "rv-arm-t" }, [
         el("b", {}, "Armed. "),
         via === "key"
           ? [el("span", { class: "kbd" }, "a"), " again to approve"]
-          : "Click Confirm merge to approve",
+          : "Click again to approve",
         " · ",
         el("span", { class: "kbd" }, "Esc"),
         " puts it down",
@@ -16025,6 +16145,7 @@ async function renderReview(param) {
     ]);
   const paintFlags = (riskAnns, outside = []) => {
     const all = [
+      ...asks.map((a) => [a.title, a.detail, a.source]),
       ...riskAnns.map((a) => [
         String(a.kind)
           .replace(/-/g, " ")
@@ -16067,17 +16188,52 @@ async function renderReview(param) {
   };
   paintFlags([]);
 
+  // The requests for a human, beside the button: the reviewer sees them where they sign.
+  const asksBox = asks.length
+    ? el(
+        "div",
+        {
+          class: "signoff-asks",
+          role: "status",
+          "aria-label": `${plural(asks.length, "request")} for a human before you sign`,
+        },
+        [
+          el("p", { class: "signoff-asks-h" }, [
+            icon("alert", "", 18),
+            ` ${asks.length === 1 ? "A human is asked for" : `${asks.length} requests for a human`} before you sign`,
+          ]),
+          el(
+            "ul",
+            { class: "clean signoff-asks-list" },
+            asks.map((a) => el("li", {}, [el("b", {}, a.title), el("span", {}, ` ${a.detail}`)])),
+          ),
+        ],
+      )
+    : null;
+
   const branchLine = el("p", { class: "rv-branch" }, [
     t.branch_name ? el("code", { class: "mono" }, t.branch_name) : null,
     prUrl ? [" · ", el("a", { href: prUrl, target: "_blank", rel: "noopener" }, "PR")] : null,
   ]);
   const diffAux = el("span", { class: "panel-aux" });
-  const applyDiffState = (state, repos = []) => {
+  const applyDiffState = (state, repos = [], res = null) => {
     diffState = state || { approvable: false, reason: "The diff state is unknown." };
+    outcome = (res && res.approve_outcome) || null;
+    // A server-side hold (required CI not passed) refuses the approval: say so instead.
+    if (outcome && !outcome.approvable && diffState.approvable)
+      diffState = { approvable: false, reason: outcome.sentence };
+    if (approveBtn && !isApproved() && !armed) {
+      approveLabel.textContent = restLabel();
+      approveBtn.setAttribute("aria-label", restLabel());
+    }
+    if (outcome && !isApproved()) {
+      nextLine.textContent = outcome.sentence;
+      nextLine.hidden = false;
+      nextLine.dataset.outcome = outcome.kind;
+    }
     if (diffState.approvable) {
       diffBlockBanner.style.display = "none";
-      if (approveBtn && approveLabel.textContent !== "Approved")
-        approveBtn.removeAttribute("disabled");
+      if (approveBtn && !isApproved()) approveBtn.removeAttribute("disabled");
     } else {
       diffBlockBanner.style.display = "";
       clear(diffBlockBanner);
@@ -16106,10 +16262,7 @@ async function renderReview(param) {
       );
     }
   };
-  const diffBox = renderTicketDiff(
-    t.id,
-    canApprove ? applyDiffState : (s, r) => applyDiffState(s, r),
-  );
+  const diffBox = renderTicketDiff(t.id, applyDiffState);
 
   // Header: the yellow card, the number, the title; then the facts in one line.
   wrap.appendChild(
@@ -16153,6 +16306,7 @@ async function renderReview(param) {
     [
       panelHead("The gaffer's sign-off", null, null, { kit: "claret" }),
       summary,
+      asksBox,
       canApprove ? diffBlockBanner : null,
       el(
         "div",
@@ -16175,6 +16329,7 @@ async function renderReview(param) {
             : null,
         ].filter(Boolean),
       ),
+      canApprove ? nextLine : null,
       armHint,
       el("p", { class: "rv-keys" }, [
         el("span", { class: "kbd" }, "a"),
@@ -16232,8 +16387,10 @@ async function renderReview(param) {
             "Evidence ",
             el("span", { class: "panel-aux" }, String(evidence.length)),
           ]),
-          reviewEvidenceList(evidence, ac, { repos: detail.repositories }) ||
-            el("p", { class: "dim" }, "No evidence recorded."),
+          reviewEvidenceList(evidence, ac, {
+            repos: detail.repositories,
+            asks: new Set(asks.map((a) => a.id).filter(Boolean)),
+          }) || el("p", { class: "dim" }, "No evidence recorded."),
         ]),
       ]),
       el("div", { class: "rv-right" }, [diffSection]),

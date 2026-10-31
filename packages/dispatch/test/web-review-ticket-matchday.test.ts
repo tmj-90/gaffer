@@ -9,7 +9,7 @@
 //    (the old greedy match took "[write-roots: …]" for the target).
 //  - An edit outside the agent's smallest-change note is flagged, and says it is derived.
 //  - After Approve, a second press does nothing and the page stays on the change.
-//  - The first `a` (or click) arms the button itself ("Confirm merge") and shows the
+//  - The first `a` (or click) arms the button itself (its confirm label) and shows the
 //    3s window; once approved, the done band is the sign-off's foot (no key hint).
 //  - An empty queue is the clear desk: the board's counts and where the work went.
 
@@ -293,18 +293,18 @@ describe("web: Match Day review + ticket", () => {
     const hint = document.querySelector(".rv-arm") as HTMLElement;
     expect(hint.hidden).toBe(true);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
-    expect(btn.textContent).toContain("Confirm merge");
+    expect(btn.textContent).toContain("Confirm approval");
     expect(btn.classList.contains("btn-armed")).toBe(true);
     expect(document.querySelector(".signoff")?.classList.contains("card-armed")).toBe(true);
     expect(hint.hidden).toBe(false);
     expect(hint.textContent).toContain("again to approve");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(btn.textContent).toBe("Approve");
-    expect(btn.getAttribute("aria-label")).toBe("Approve and merge");
+    expect(btn.getAttribute("aria-label")).toBe("Approve");
     expect(hint.hidden).toBe(true);
     // A click-arm is put down by Esc too (it used to wait out the timer).
     btn.click();
-    expect(btn.textContent).toContain("Confirm merge");
+    expect(btn.textContent).toContain("Confirm approval");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     expect(btn.textContent).toBe("Approve");
     expect(posts.filter((p) => p.includes("/review/approve"))).toHaveLength(0);

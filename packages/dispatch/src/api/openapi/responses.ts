@@ -12,6 +12,10 @@ import {
   type Ticket,
 } from "../../domain/types.js";
 import type { PrincipalView } from "../../repositories/principalRepository.js";
+import {
+  APPROVE_OUTCOME_KINDS,
+  type ApproveOutcome as ApproveOutcomeType,
+} from "../../services/approveOutcome.js";
 import type { AgentDisplay } from "../../services/squadService.js";
 
 /**
@@ -189,14 +193,44 @@ export const TicketTransition = z
   })
   .strict();
 
+/**
+ * What a human Approve does, said as the first step that will certainly happen (see
+ * services/approveOutcome.ts). On GET /tickets/:id/diff it is the prediction for an
+ * in_review ticket; on review/approve it is what the click actually did.
+ */
+export const ApproveOutcome = z
+  .object({
+    kind: z.enum(APPROVE_OUTCOME_KINDS),
+    approvable: z.boolean().describe("False only when the server would refuse (held_ci)."),
+    to_status: z.enum(["in_testing", "ready_for_merge"]).nullable(),
+    label: str.describe('The sign-off button, e.g. "Approve and send to tester".'),
+    confirm_label: str.describe("The armed button (the second press approves)."),
+    done_label: str.describe("The button once approved."),
+    sentence: str.describe("One line under the button: what follows the click."),
+    via: z.enum(["pr", "local"]).nullable(),
+    pr_url: nstr,
+    lands_repo: nstr.describe("The write repo a landing merges."),
+    not_landed_repos: z.array(str).describe("Write repos no landing path merges."),
+    review_mode: z.enum(["human", "agent", "both"]),
+  })
+  .strict() satisfies ZodType<ApproveOutcomeType>;
+
 export const ReviewApproved = z
   .object({
     ticket: TicketRow,
     event_id: eventId,
     merge: z
-      .object({ triggered: z.boolean(), pid: int.nullable(), skipped: str.optional() })
+      .object({
+        triggered: z.boolean(),
+        pid: int.nullable(),
+        skipped: str.optional(),
+        runId: nstr.optional(),
+      })
       .optional()
       .describe("The auto-merge command, when one is configured."),
+    approve_outcome: ApproveOutcome.optional().describe(
+      "What the approval did: the tester, a landing now, the merge lane's next tick, or a wait for Merge now.",
+    ),
   })
   .strict();
 

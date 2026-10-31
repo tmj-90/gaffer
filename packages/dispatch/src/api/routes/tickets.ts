@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
+import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
 import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
@@ -299,10 +300,27 @@ export async function routeTickets(
           ? mergeRunner.trigger({ ticketNumber: number })
           : { triggered: false, pid: null, skipped: "auto_merge_off" };
       }
+      // What the click actually did, in the words the Review view's done band uses: the
+      // predicted outcome settled against the real route (tester, merge started/skipped).
+      // Best-effort: the approval has already happened, so a read failure here only
+      // leaves the field off (the dashboard falls back to the status and merge result).
+      let approveOutcome: ReturnType<typeof settleApproveOutcome> | undefined;
+      try {
+        approveOutcome = settleApproveOutcome(
+          wg.approveOutcomeFacts(result.ticket.id, {
+            mergeCommand: mergeRunner.configured?.() ?? false,
+            ci: false,
+          }),
+          { toStatus: result.ticket.status, merge },
+        );
+      } catch {
+        approveOutcome = undefined;
+      }
       sendJson(res, 200, {
         ticket: result.ticket,
         event_id: result.eventId,
         ...(merge ? { merge } : {}),
+        ...(approveOutcome ? { approve_outcome: approveOutcome } : {}),
       });
       return;
     }
@@ -432,8 +450,23 @@ export async function routeTickets(
   // /tickets/:id/diff — diff-in-review: the real git diff per WRITE repo
   // (default-branch...delivery-branch) so a reviewer reads the change before
   // approving (and the resolved diff after a reopen-for-review).
+  // `approve_outcome` rides along: the first step a human Approve would certainly take
+  // now (tester · land now · next tick · waits for Merge now · held by CI), computed from
+  // the settings and ticket state the approve path acts on, so the sign-off button can
+  // name it. Only an in_review ticket can be approved, so only it carries one.
   if (segments.length === 3 && sub === TICKET_SUB.DIFF && method === "GET") {
-    sendJson(res, 200, wg.ticketDiff(id));
+    const diff = wg.ticketDiff(id);
+    const ticket = wg.resolveTicket(id);
+    sendJson(res, 200, {
+      ...diff,
+      ...(ticket.status === "in_review"
+        ? {
+            approve_outcome: wg.approveOutcome(ticket.id, {
+              mergeCommand: mergeRunner.configured?.() ?? false,
+            }),
+          }
+        : {}),
+    });
     return;
   }
 

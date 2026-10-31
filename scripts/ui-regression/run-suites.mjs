@@ -187,9 +187,7 @@ function makeContext(name, repo) {
   t.approve = async (tk) => {
     const pg = t.page;
     await t.visit(`review/${tk.id}`, { label: "review/:id" });
-    const btn = pg
-      .locator('.signoff button:has-text("Approve"), .signoff button:has-text("Confirm merge")')
-      .first();
+    const btn = pg.locator(".signoff button.signoff-btn").first();
     await L.maybe(
       async () => (!(await btn.isDisabled().catch(() => true)) ? true : null),
       "approve enabled",

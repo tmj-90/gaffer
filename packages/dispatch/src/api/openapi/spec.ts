@@ -681,7 +681,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description:
       "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins the approved branch head. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
     capability: "full",
-    responses: [ok("`{ ticket, event_id, merge? }`.", "ReviewApproved"), notFound, conflict],
+    responses: [
+      ok("`{ ticket, event_id, merge?, approve_outcome? }`.", "ReviewApproved"),
+      notFound,
+      conflict,
+    ],
   },
   {
     method: "POST",
@@ -742,9 +746,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/diff",
     tag: T.review,
     summary: "Delivery diff",
-    description: "`git diff <default branch>...<delivery branch>` per write repository.",
+    description:
+      "`git diff <default branch>...<delivery branch>` per write repository. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on.",
     capability: "read",
-    responses: [ok("`{ repos: RepoDiff[] }`."), notFound],
+    responses: [ok("`{ ticketId, repos: RepoDiff[], approve_outcome? }`."), notFound],
   },
   {
     method: "GET",

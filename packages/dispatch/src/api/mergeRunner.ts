@@ -38,6 +38,12 @@ export interface MergeTriggerResult {
 export interface MergeRunner {
   /** Trigger the merge for an approved ticket (by its number). */
   trigger(input: { ticketNumber: number }): MergeTriggerResult;
+  /**
+   * True when a merge command is configured, so a trigger actually starts a merge. The
+   * Review view's "what happens on approve" reads it; a runner without it is treated as
+   * unconfigured (never promise a merge that may not start).
+   */
+  configured?(): boolean;
 }
 
 /** A logger seam so tests can assert the logged outcome without stderr noise. */
@@ -100,6 +106,7 @@ export function createMergeRunner(
   tracker?: RunTracker,
 ): MergeRunner {
   return {
+    configured: () => parseCommand(env[MERGE_CMD_ENV] ?? "").length > 0,
     trigger({ ticketNumber }) {
       const tokens = parseCommand(env[MERGE_CMD_ENV] ?? "");
       if (tokens.length === 0) {

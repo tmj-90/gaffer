@@ -3322,7 +3322,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ ticket, event_id, merge? }`.",
+            "description": "`{ ticket, event_id, merge?, approve_outcome? }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3743,7 +3743,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<delivery branch>` per write repository.",
+        "description": "`git diff <default branch>...<delivery branch>` per write repository. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge` or `held_ci` — computed from the settings and ticket state the approve path acts on.",
         "parameters": [
           {
             "name": "id",
@@ -3757,7 +3757,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ repos: RepoDiff[] }`.",
+            "description": "`{ ticketId, repos: RepoDiff[], approve_outcome? }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11186,6 +11186,16 @@
               },
               "skipped": {
                 "type": "string"
+              },
+              "runId": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -11193,6 +11203,121 @@
               "pid"
             ],
             "description": "The auto-merge command, when one is configured."
+          },
+          "approve_outcome": {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "held_ci",
+                  "to_tester",
+                  "land_now",
+                  "land_next_tick",
+                  "waits_for_merge"
+                ]
+              },
+              "approvable": {
+                "type": "boolean",
+                "description": "False only when the server would refuse (held_ci)."
+              },
+              "to_status": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "in_testing",
+                      "ready_for_merge"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "label": {
+                "type": "string",
+                "description": "The sign-off button, e.g. \"Approve and send to tester\"."
+              },
+              "confirm_label": {
+                "type": "string",
+                "description": "The armed button (the second press approves)."
+              },
+              "done_label": {
+                "type": "string",
+                "description": "The button once approved."
+              },
+              "sentence": {
+                "type": "string",
+                "description": "One line under the button: what follows the click."
+              },
+              "via": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "pr",
+                      "local"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lands_repo": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The write repo a landing merges."
+              },
+              "not_landed_repos": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Write repos no landing path merges."
+              },
+              "review_mode": {
+                "type": "string",
+                "enum": [
+                  "human",
+                  "agent",
+                  "both"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "approvable",
+              "to_status",
+              "label",
+              "confirm_label",
+              "done_label",
+              "sentence",
+              "via",
+              "pr_url",
+              "lands_repo",
+              "not_landed_repos",
+              "review_mode"
+            ],
+            "additionalProperties": false,
+            "description": "What the approval did: the tester, a landing now, the merge lane's next tick, or a wait for Merge now."
           }
         },
         "required": [

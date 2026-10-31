@@ -209,6 +209,14 @@ export class RepoRepository {
    * ticket's top-level `branch_name` when this is null. Returns undefined when no
    * link exists for the pair.
    */
+  /** The PR recorded on the ticket_repos link (the merge lands through it), or null. */
+  ticketRepoPrUrl(ticketId: string, repoId: string): string | null {
+    const row = this.db
+      .prepare(`SELECT pr_url FROM ticket_repos WHERE ticket_id = ? AND repo_id = ?`)
+      .get(ticketId, repoId) as { pr_url: string | null } | undefined;
+    return row?.pr_url ?? null;
+  }
+
   ticketRepoBranch(ticketId: string, repoId: string): string | null | undefined {
     const row = this.db
       .prepare(`SELECT branch_name FROM ticket_repos WHERE ticket_id = ? AND repo_id = ?`)

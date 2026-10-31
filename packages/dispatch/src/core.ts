@@ -149,7 +149,18 @@ import {
   type AutonomyPolicyView,
   type AutonomyMode,
 } from "./repositories/autonomyPolicyRepository.js";
-import { isAutonomyAllowed, policyGrantsAuto } from "./services/autonomyPolicyService.js";
+import {
+  AUTO_MERGE_ENV,
+  envFlagOn,
+  isAutonomyAllowed,
+  policyGrantsAuto,
+} from "./services/autonomyPolicyService.js";
+import {
+  decideApproveOutcome,
+  type ApproveOutcome,
+  type ApproveOutcomeFacts,
+  type ReviewMode,
+} from "./services/approveOutcome.js";
 import {
   PrincipalRepository,
   type PrincipalActorType,
@@ -1471,6 +1482,63 @@ export class Dispatch {
   ): { required: boolean; state: string | null; commit: string | null } {
     const ticket = this.resolveTicket(ref);
     return this.reviewGateSvc.ciStatus(ticket.id, commit);
+  }
+
+  /**
+   * WHAT HAPPENS ON APPROVE: the facts a HUMAN approve of this ticket acts on, read from
+   * the same predicates the approve path uses — the tester route and the CI hold come from
+   * ReviewGateService (the code approveReview runs), AUTO_MERGE as the approve route reads
+   * it, the merge gate as the runner's merge lane asks it (the autonomyGateDecision predicate), and the
+   * landing repo as every landing path resolves it (the first write repo with a local
+   * path; the others are not merged). `mergeCommand` is whether the API's merge runner
+   * has a command to start (the caller holds the runner). `ci: false` skips the CI read
+   * (it runs git) for an approval that already happened.
+   */
+  approveOutcomeFacts(
+    ref: string,
+    opts: { mergeCommand: boolean; ci?: boolean; env?: NodeJS.ProcessEnv },
+  ): ApproveOutcomeFacts {
+    const env = opts.env ?? process.env;
+    const ticket = this.resolveTicket(ref);
+    const writes = this.repos
+      .listForTicket(ticket.id)
+      .filter((l) => isActiveTicketRepoRelation(l.relation) && l.access === "write");
+    const lands = writes.find((l) => l.local_path) ?? null;
+    const mode = (env.REVIEW_MODE ?? "human").trim().toLowerCase();
+    const method = (env.GAFFER_PR_MERGE_METHOD ?? "").trim().toLowerCase();
+    const lane = (env.GAFFER_MERGE_LANE ?? "1").trim().toLowerCase();
+    return {
+      ciHold: opts.ci === false ? null : this.reviewGateSvc.approveCiHold(ticket),
+      toTester: this.reviewGateSvc.approveRoutesToTesting(ticket),
+      acceptance: ticket.acceptance === 1,
+      autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
+      mergeCommand: opts.mergeCommand,
+      mergeLane: !["0", "false", "no", "off"].includes(lane),
+      mergeGateEarned: isAutonomyAllowed(
+        this.autonomyPolicy,
+        this.writeRepoIdsForTicket(ticket),
+        ticket.risk_level,
+        "merge",
+        env,
+      ),
+      reviewMode: (["human", "agent", "both"].includes(mode) ? mode : "human") as ReviewMode,
+      prMode: envFlagOn(env.GAFFER_CREATE_PR),
+      prUrl: lands
+        ? this.repos.ticketRepoPrUrl(ticket.id, lands.id) || ticket.pr_url || null
+        : ticket.pr_url || null,
+      prMergeMethod: ["merge", "squash", "rebase"].includes(method) ? method : "merge",
+      landsRepo: lands ? lands.name : null,
+      baseBranch: lands ? lands.default_branch || null : null,
+      otherWriteRepos: writes.filter((l) => l !== lands).map((l) => l.name),
+    };
+  }
+
+  /** The first step a human approve of this ticket will certainly take (see approveOutcome.ts). */
+  approveOutcome(
+    ref: string,
+    opts: { mergeCommand: boolean; env?: NodeJS.ProcessEnv },
+  ): ApproveOutcome {
+    return decideApproveOutcome(this.approveOutcomeFacts(ref, opts));
   }
 
   markMerged(ref: string, actor: Actor): TransitionResult {

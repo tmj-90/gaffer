@@ -166,6 +166,34 @@
     font-size: var(--t16);
     line-height: 1.45;
   }
+  /* The requests for a human, beside the button: a yellow-card band in the
+     sign-off block, so a reviewer reads them where they sign. */
+  .signoff-asks {
+    display: grid;
+    gap: 6px;
+    padding: 10px 12px 12px;
+    background: var(--mark-wash);
+    border-left: 6px solid var(--yellow);
+    border-radius: var(--r);
+    font: 400 var(--t14) / 1.45 var(--f-text);
+  }
+  .signoff-asks-h {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+    font-weight: 700;
+  }
+  .signoff-asks-list {
+    display: grid;
+    gap: 4px;
+  }
+  /* One line under the button: what the click does next. */
+  .signoff-next:not([hidden]) {
+    margin: calc(-1 * var(--s2)) 0 0;
+    color: var(--ink-2);
+    font: 400 var(--t14) / 1.45 var(--f-text);
+  }
   .review-card-actions {
     align-items: center;
   }
@@ -349,6 +377,13 @@
   }
   .review-evi:first-child {
     border-top: 0;
+  }
+  /* A row that asks for a human carries the same yellow edge as the band
+     beside the button, so the two read as one thing. */
+  .review-evi.evi-asks {
+    box-shadow: inset 6px 0 0 var(--yellow);
+    margin-left: calc(-1 * var(--s4));
+    padding-left: var(--s4);
   }
   .evi-time {
     font: 700 var(--t14) var(--f-cond);

@@ -308,7 +308,10 @@ pnpm -C .. -r build   # build all three packages from the repo root
 #     headless-claude command, or the idle-scan it WOULD run.
 
 # 3. Go live (only after reviewing) — claims real tickets and runs Claude.
-#    `gaffer run` is LIVE by default (only --dry-run / DRY_RUN=1 keeps it a preview).
+#    `gaffer run` is LIVE by default (only --dry-run / DRY_RUN=1 keeps it a preview),
+#    and refuses to start (exit 3) until a dollar cap is set — GAFFER_DAILY_BUDGET_USD or
+#    GAFFER_BUDGET_USD (lib/budget.sh gaffer_spend_cap_ok; GAFFER_ALLOW_UNCAPPED=1 opts out).
+export GAFFER_DAILY_BUDGET_USD=5
 ./gaffer run
 
 # 4. Unattended: render + install the launchd agent (every 15 min, keep DRY_RUN=1 first).

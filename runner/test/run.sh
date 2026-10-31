@@ -21,6 +21,9 @@
 #   * claude TRIPWIRE: a `claude` stub is first on PATH and in CLAUDE_BIN. It answers
 #     `--version`; any other call is logged and exits 97, and a logged call fails the
 #     run. No test may make a real, billed model call on a contributor's machine.
+#   * dollar-cap opt-out: GAFFER_ALLOW_UNCAPPED=1 is exported, because a live run with
+#     no GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD refuses to start and every agent
+#     here is a stub (spend-cap-required.test.sh unsets it to prove the refusal).
 #   * operator-state isolation: GAFFER_DATA points at a private dir, and DISPATCH_DB /
 #     DISPATCH_AUDIT / MEMORY_DB / GAFFER_CREW_EVENTS / CLAUDE_FLAGS / MCP_CONFIG
 #     inherited from the operator's shell are cleared. Afterwards any file written
@@ -80,6 +83,10 @@ if [ "${1:-}" = "--one" ]; then
     unset DISPATCH_DB DISPATCH_AUDIT MEMORY_DB GAFFER_CREW_EVENTS CLAUDE_FLAGS MCP_CONFIG GAFFER_RUN_SHARD
     export GAFFER_DATA="$priv/.gaffer" GAFFER_TEST_NAME="$name"
     export PATH="$R/tripwire:$PATH" CLAUDE_BIN="$R/tripwire/claude"
+    # Every agent here is a stub, so a "live" run spends nothing: opt the suite out of
+    # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok). A test of that
+    # refusal unsets it for its own runs (spend-cap-required.test.sh).
+    export GAFFER_ALLOW_UNCAPPED=1
     exec perl -e 'alarm shift; exec @ARGV' "$cap" "$interp" "$file"
   ) >"$R/$idx.out" 2>&1 </dev/null
   rc=$?

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 133 |
+| Knobs with a runner default | 134 |
 | Knobs editable in the dashboard | 56 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 75 |
@@ -53,7 +53,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
-| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse) and in-flight work pauses. Empty = unlimited. |
+| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse) and in-flight work pauses. Empty = unlimited, though a live run needs this or the daily budget set. |
 | `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
 | `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
@@ -153,7 +153,7 @@ computed from other knobs at runtime.
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. A change applies from the next loop pass. |
 | `MAX_TICKS_PER_DAY` | `50` | yes (int) | crew, dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. A running loop re-reads it before every tick. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
-| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off. |
+| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it. Empty or 0 = off — but a live run needs a dollar cap: with neither this nor the budget ceiling set, `gaffer run`, the loop and Poll refuse to start (try 5; GAFFER_ALLOW_UNCAPPED=1 in the environment opts out). |
 
 ### Parallel ticket execution
 
@@ -239,6 +239,12 @@ computed from other knobs at runtime.
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
 | `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into $GAFFER_D |
+
+### lib/budget.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_ALLOW_UNCAPPED` | _(empty)_ |  | dispatch, runner | 1 = let a live run start with neither GAFFER_DAILY_BUDGET_USD nor GAFFER_BUDGET_USD set (default: refuse; dry runs are never refused) |
 
 ### lib/claude-auth.sh
 

@@ -246,7 +246,9 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "labelled estimate booked for a killed/timed-out call). Once today's spend is at " +
       "or over it, no new paid work starts until the next UTC day — the loop, every " +
       "parallel worker, the daemon and the dashboard's Poll button all honour it. " +
-      "Empty or 0 = off.",
+      "Empty or 0 = off — but a live run needs a dollar cap: with neither this nor the " +
+      "budget ceiling set, `gaffer run`, the loop and Poll refuse to start (try 5; " +
+      "GAFFER_ALLOW_UNCAPPED=1 in the environment opts out).",
   },
   {
     key: "GAFFER_TICK_TIMEOUT",
@@ -275,7 +277,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "Total factory spend ceiling in USD (summed from the usage-ledger). As " +
       "headroom runs low the router biases cheaper; at $0 headroom no new paid work " +
       "starts (ticks, Poll and the daemon refuse) and in-flight work pauses. " +
-      "Empty = unlimited.",
+      "Empty = unlimited, though a live run needs this or the daily budget set.",
   },
   {
     key: "GAFFER_BUDGET_LOW_THRESHOLD",

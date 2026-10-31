@@ -7323,35 +7323,154 @@ function pollWorkButton() {
         "Run one factory tick now, so ready work is picked up without waiting for the next cycle",
       onclick: () =>
         runAsyncAction(btn, "Polling…", async () => {
-          const res = await api("POST", "/poll-work");
-          if (res && res.polled === false) {
-            toast(
-              "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
-              {},
-            );
+          // A live tick needs a dollar cap (the runner refuses one without). With
+          // neither budget set, ask for one first instead of firing a refused poll.
+          if (!(await spendCapSet())) {
+            openSpendCapSheet(() => runAsyncAction(btn, "Polling…", firePoll));
             return;
           }
-          const p = (res && res.pending) || {};
-          if (res && res.idle === "maintenance") {
-            toast("No ready work — running the idle maintenance lane…", { ok: true });
-          } else if (!res || res.readyCount > 0) {
-            toast("Factory tick fired — refreshing the board…", { ok: true });
-          } else if (p.resume > 0) {
-            toast("Continuing the paused delivery…", { ok: true });
-          } else if (p.review > 0) {
-            toast("Running the reviewer agent on a ticket in Review…", { ok: true });
-          } else toast("Running the tester on a ticket in Testing…", { ok: true });
-          router();
-          // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
-          // USD cap already reached) would otherwise read as "fired". Watch the run
-          // briefly — poll-once.sh refuses within a second or two — and say so.
-          const runId = res && res.run && res.run.runId;
-          if (runId) void reportPollRefusal(runId);
+          await firePoll();
         }),
     },
     [el("span", {}, "Poll for work")],
   );
   return btn;
+}
+
+/** Fire one tick (POST /poll-work) and say what it is doing. */
+async function firePoll() {
+  const res = await api("POST", "/poll-work");
+  if (res && res.polled === false) {
+    toast(
+      "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
+      {},
+    );
+    return;
+  }
+  const p = (res && res.pending) || {};
+  if (res && res.idle === "maintenance") {
+    toast("No ready work — running the idle maintenance lane…", { ok: true });
+  } else if (!res || res.readyCount > 0) {
+    toast("Factory tick fired — refreshing the board…", { ok: true });
+  } else if (p.resume > 0) {
+    toast("Continuing the paused delivery…", { ok: true });
+  } else if (p.review > 0) {
+    toast("Running the reviewer agent on a ticket in Review…", { ok: true });
+  } else toast("Running the tester on a ticket in Testing…", { ok: true });
+  router();
+  // The tick runs detached, so a poll the runner REFUSES (a per-day tick or
+  // USD cap already reached) would otherwise read as "fired". Watch the run
+  // briefly — poll-once.sh refuses within a second or two — and say so.
+  const runId = res && res.run && res.run.runId;
+  if (runId) void reportPollRefusal(runId);
+}
+
+/** The two dollar caps a live run accepts (runner/lib/budget.sh gaffer_spend_cap_ok). */
+const SPEND_CAP_KEYS = ["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"];
+
+/**
+ * Is a dollar cap in force? True when either budget is a positive figure, and
+ * also when it cannot be told (settings unreadable, or the caps are set in the
+ * environment): the runner makes the final call and its refusal is toasted.
+ */
+async function spendCapSet() {
+  let list;
+  try {
+    list = (await api("GET", "/api/settings")).settings || [];
+  } catch (x) {
+    if (x && x.code === "UNAUTHORIZED") throw x;
+    return true;
+  }
+  const rows = SPEND_CAP_KEYS.map((k) => list.find((s) => s.key === k)).filter(Boolean);
+  if (!rows.length || rows.some((s) => s.envLocked)) return true;
+  return rows.some((s) => {
+    const v = Number(s.effective ?? s.value);
+    return Number.isFinite(v) && v > 0;
+  });
+}
+
+/**
+ * The first live run's dollar cap: a daily budget prefilled at $5, saved to
+ * settings.json (the runner re-reads it before every tick), then `onSaved` runs
+ * the poll the operator asked for. Cancel leaves everything as it was.
+ */
+function openSpendCapSheet(onSaved) {
+  const input = el("input", {
+    type: "number",
+    name: "daily-budget",
+    id: "spend-cap-usd",
+    min: "0.01",
+    step: "0.01",
+    inputmode: "decimal",
+    value: "5",
+    "aria-describedby": "spend-cap-hint",
+  });
+  const err = el("p", { class: "form-error", role: "alert", hidden: "" });
+  const save = el(
+    "button",
+    { class: "btn primary spend-cap-save", type: "submit" },
+    "Save and poll",
+  );
+  const form = el(
+    "form",
+    {
+      class: "act-sheet spend-cap-form",
+      novalidate: "",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        err.hidden = true;
+        const v = Number(String(input.value).trim());
+        if (!Number.isFinite(v) || v <= 0) {
+          err.textContent = "Enter a daily budget above $0, for example 5.";
+          err.hidden = false;
+          input.setAttribute("aria-invalid", "true");
+          input.focus();
+          return;
+        }
+        input.removeAttribute("aria-invalid");
+        save.disabled = true;
+        try {
+          const res = await api("POST", "/api/settings", {
+            settings: { GAFFER_DAILY_BUDGET_USD: String(v) },
+          });
+          if (!(res.written || []).includes("GAFFER_DAILY_BUDGET_USD")) {
+            err.textContent =
+              "The daily budget was not saved. It may be set in the environment: check Settings → Budget & caps.";
+            err.hidden = false;
+            return;
+          }
+          closeSheet();
+          toast(`Daily budget set: ${moneyW(v)} a day.`, { ok: true });
+          onSaved();
+        } catch (x) {
+          if (x && x.code === "UNAUTHORIZED") return;
+          err.textContent = (x && x.message) || "The daily budget could not be saved.";
+          err.hidden = false;
+        } finally {
+          save.disabled = false;
+        }
+      },
+    },
+    [
+      el(
+        "p",
+        { class: "act-intro" },
+        "A live run needs a dollar cap first. Once today's spend reaches it, the factory starts no new paid work until tomorrow (UTC).",
+      ),
+      field("Daily budget (USD)", input),
+      el(
+        "p",
+        { class: "act-hint", id: "spend-cap-hint" },
+        "Change it any time in Settings → Budget & caps. A lifetime ceiling there also counts.",
+      ),
+      err,
+      el("div", { class: "btn-row act-actions" }, [
+        save,
+        el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+      ]),
+    ],
+  );
+  openSheet("Set a daily budget", form, { focus: input });
 }
 
 /**

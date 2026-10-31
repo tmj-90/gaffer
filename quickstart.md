@@ -139,11 +139,19 @@ When you're ready to let it deliver for real, read **`runner/preflight.sh`** fir
 
 ```bash
 bash runner/preflight.sh              # verify the environment
+export GAFFER_DAILY_BUDGET_USD=5      # a dollar cap: a live run refuses to start without one
 runner/gaffer run                     # go live — ONE pass: drains the ready queue, then exits
                                       #   (the same as DRY_RUN=0 bash runner/loop.sh)
 runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (Linux + macOS),
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
+
+A live run needs a dollar cap. With neither `GAFFER_DAILY_BUDGET_USD` (per UTC day) nor
+`GAFFER_BUDGET_USD` (lifetime) set, `gaffer run`, `loop.sh` and the dashboard's **Poll for
+work** refuse to start and print the fix. In the dashboard, the first **Poll for work**
+asks for a daily budget (prefilled at $5) and saves it to Settings → Budget & caps before
+it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` opts out (for a key you
+cap somewhere else).
 
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a
 `gaffer/ticket-1-…` branch in a throwaway worktree, runs the Definition-of-Done gates and

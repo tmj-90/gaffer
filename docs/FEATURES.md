@@ -278,6 +278,13 @@ on**:
 | `REVIEW_MODE=both` | The agent screens first (a CHANGES verdict can bounce the delivery to rework) but a human still confirms every approval. |
 | `MEMORY_AUTO_APPROVE` | Let the memory the runner itself files (the requirement distilled from each delivered ticket, onboarding induction lore, CLI `memory suggest`) go live without a human review step. Lore a delivery agent suggests over MCP always stays a draft. |
 
+**A dollar cap before the first live run.** A live run (`gaffer run`, `loop.sh`,
+the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_USD`
+or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
+Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
+then polls. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
+opts out.
+
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it

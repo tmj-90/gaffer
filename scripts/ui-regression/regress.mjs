@@ -460,6 +460,32 @@ try {
   await page.waitForSelector('button:has-text("Poll for work")', { timeout: 15000 });
   await shot(page, "work-board-ready");
   await page.click('button:has-text("Poll for work")');
+  // First live run: no dollar cap is set yet, so the poll asks for a daily budget
+  // (prefilled $5) and saves it before firing — the runner refuses an uncapped live
+  // tick (runner/lib/budget.sh gaffer_spend_cap_ok).
+  const capSheet = await page
+    .waitForSelector('.sheet.open:has-text("Set a daily budget")', { timeout: 8000 })
+    .catch(() => null);
+  if (capSheet) {
+    const capVal = await page.inputValue("#spend-cap-usd");
+    capVal === "5"
+      ? ok("first poll: the daily-budget sheet opens, prefilled at $5")
+      : bad(`daily-budget sheet prefilled '${capVal}', not 5`);
+    await shot(page, "first-run-daily-budget");
+    if (AXE_SOURCE) await auditA11y(page, "first-run-daily-budget", "1400");
+    await page.click('button:has-text("Save and poll")');
+    const capSaved = await waitFor(
+      async () => {
+        const rows = (await api("GET", "/api/settings")).json.settings || [];
+        const r = rows.find((x) => x.key === "GAFFER_DAILY_BUDGET_USD");
+        return r && Number(r.value) === 5 ? r : null;
+      },
+      "daily budget saved",
+      10000,
+      500,
+    );
+    capSaved && ok("first poll: GAFFER_DAILY_BUDGET_USD=5 saved to settings.json, then polled");
+  } else bad("first poll with no dollar cap did not ask for a daily budget");
   ok("Work view: 'Poll for work' clicked (spawns one live tick)");
   const delivered = await waitFor(
     async () => {

@@ -5333,7 +5333,7 @@ function injuryWhy(f, t) {
   if (trail.length) {
     const last = trail[trail.length - 1];
     const first =
-      String(last.distilled_failure || "")
+      repoRelative(last.distilled_failure)
         .split("\n")
         .find((l) => l.trim()) || "";
     return `Failed the ${last.gate} gate${first ? `: ${first.slice(0, 140)}` : "."}`;
@@ -9600,8 +9600,21 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
  * the parts the page draws: file, test name, expected, received, where, counts.
  * Anything it cannot read stays null and the raw text is shown instead.
  */
+/**
+ * A captured failure with its worktree paths made repo-relative. The runner checks
+ * each repo out at $GAFFER_DATA/worktrees/ticket-<N>/<repo key>/ (review and
+ * clarify worktrees at worktrees/review-wt-<N>/, clarify-wt-<N>/), so a stack reads
+ * "/…/data/worktrees/ticket-1/<uuid>/test/tasks.test.js:7:1"; the reviewer wants
+ * "test/tasks.test.js:7:1". Paths outside a worktree are left alone.
+ */
+const WORKTREE_PREFIX_RE =
+  /(?:file:\/\/)?(?:\/[^\s/:"'()<>]+)*\/worktrees\/(?:ticket-\d+\/[^\s/:"'()<>]+|(?:review|clarify)-wt-\d+)\//g;
+function repoRelative(text) {
+  return String(text || "").replace(WORKTREE_PREFIX_RE, "");
+}
+
 function parseFailure(text) {
-  const s = String(text || "");
+  const s = repoRelative(text);
   const out = { file: null, name: null, expected: null, received: null, at: null, counts: null };
   const fail = s.match(/^\s*(?:FAIL|✗|×|FAILED)\s+(\S+?)\s+(?:>|›|::)\s+(.+)$/m);
   if (fail) {
@@ -9623,7 +9636,8 @@ function parseFailure(text) {
       out.expected = unq(m[2]);
     }
   }
-  const at = s.match(/(?:❯|at)\s+((?:[\w./-]+\/)?[\w.-]+\.\w+:\d+(?::\d+)?)/);
+  // The location line names file:line; the column is noise to a reviewer.
+  const at = s.match(/(?:❯|at)\s+((?:[\w./-]+\/)?[\w.-]+\.\w+:\d+)(?::\d+)?/);
   if (at) out.at = at[1];
   const counts = s.match(/^\s*Tests\s+(.+?)(?:\s+\[attempt[^\]]*\])?\s*$/m);
   if (counts) out.counts = counts[1].replace(/\s{2,}/g, " ").trim();
@@ -9824,7 +9838,7 @@ function failingTestCard(trail) {
           role: "region",
           "aria-label": "The failure, as captured",
         },
-        last.distilled_failure,
+        repoRelative(last.distilled_failure),
       ),
     );
   return el("section", { class: "card panel failing-test" }, [head, ...body]);
@@ -9907,7 +9921,7 @@ function renderFailureHistory(trail) {
                 role: "region",
                 "aria-label": `Attempt ${a.attempt} failure output`,
               },
-              a.distilled_failure || "(no detail captured)",
+              repoRelative(a.distilled_failure) || "(no detail captured)",
             ),
           ]),
         ]);

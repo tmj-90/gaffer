@@ -75,6 +75,16 @@ export default async function s1(t, L) {
     "the failure history quotes the failing test's name and its assertion as the runner captured them",
     `the failure history does not quote stubFailFirst${tk.number}: '${histTxt.slice(0, 200)}'`,
   );
+  // The captured stack names the repo's files, not the runner's worktree dir.
+  const histShown = await p
+    .locator(".failure-history")
+    .innerText()
+    .catch(() => "");
+  t.check(
+    !/\/worktrees\//.test(histShown),
+    "the failure history shows paths relative to the repo root (no worktree prefix)",
+    `the failure history still carries a worktree path: '${(histShown.match(/\S*\/worktrees\/\S*/) || [""])[0]}'`,
+  );
   const trail = (await L.api("GET", `/tickets/${tk.id}/rework-trail`)).json;
   const rows = trail.trail || trail.attempts || trail.rework_trail || [];
   t.check(

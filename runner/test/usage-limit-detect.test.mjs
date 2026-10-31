@@ -239,9 +239,40 @@ assert(
   parseResult("not json {", { nowMs: NOW }).usageLimit === null,
 );
 assert(
-  "a legacy whole-string refusal is read even without is_error",
-  detectUsageLimit({ result: "Claude AI usage limit reached|1793451600" }, NOW)?.id ===
+  "the legacy whole-string form on a success envelope (the agent's own reply) → null",
+  detectUsageLimit(
+    {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 9,
+      total_cost_usd: 0.5,
+      result: "Claude AI usage limit reached|1793451600",
+    },
+    NOW,
+  ) === null,
+);
+assert(
+  "the legacy whole-string form with no is_error at all → null",
+  detectUsageLimit({ result: "Claude AI usage limit reached|1793451600" }, NOW) === null,
+);
+assert(
+  "the legacy whole-string form on an error envelope is still read",
+  detectUsageLimit(errEnv("Claude AI usage limit reached|1793451600"), NOW)?.id ===
     "cc-legacy-usage-limit",
+);
+assert(
+  "parseResult: an agent reply carrying the legacy string is not a usage limit",
+  parseResult(
+    JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 9,
+      result: "Claude AI usage limit reached|1793451600",
+    }),
+    { nowMs: NOW },
+  ).usageLimit === null,
 );
 
 console.log("== 4: parseResult, the CLI, and ledger parity ==");

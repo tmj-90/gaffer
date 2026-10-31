@@ -658,8 +658,10 @@ export function extractStopReason(json) {
 //   • Text rows match ONLY on an ERROR envelope (is_error:true, an error_* subtype,
 //     or type:"error"): an agent whose ordinary reply talks about rate limiting
 //     (a ticket that adds a rate limiter) is never misread as a limit hit.
-//     The one exception is the legacy whole-string form, which is anchored at both
-//     ends and carries a unix timestamp, so no real reply has that shape.
+//     There is NO exception, the legacy whole-string form included: `.result` on a
+//     success envelope is the agent's own final reply, which a misbehaving or
+//     prompt-injected agent controls. Honouring it would let the agent release its
+//     ticket with no attempt counted on every pass and never be parked for a human.
 //   • Text rows are anchored at the start of the string (`^`) and checked against
 //     the envelope's `.result` and each `errors[]` string.
 //   • `reset` names how the reset time is read when present: "clock" (the CLI's
@@ -701,7 +703,6 @@ export const USAGE_LIMIT_PATTERNS = Object.freeze([
     kind: "usage_limit",
     re: /^Claude AI usage limit reached\|(\d{9,11})\s*$/,
     reset: "epoch",
-    anyEnvelope: true,
     source:
       "Claude Code 1.x print mode: `Claude AI usage limit reached|<unix seconds>` (absent from 2.1.42)",
   },
@@ -883,7 +884,7 @@ export function detectUsageLimit(json, nowMs = Date.now()) {
   }
   for (const text of texts) {
     for (const p of USAGE_LIMIT_PATTERNS) {
-      if (!isErr && !p.anyEnvelope) continue;
+      if (!isErr) continue;
       const m = p.re.exec(text);
       if (!m) continue;
       let resetsAtMs = null;

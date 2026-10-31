@@ -17,6 +17,12 @@
 #   C. RESUME: loop.sh started during a (short, test-written) pause sleeps until it
 #      ends — no claude call meanwhile — then delivers the same ticket on the SAME
 #      branch (the pre-refusal commit is kept) to in_review, attempt_count still 0.
+#   D. NOT A REFUSAL: a SUCCESS envelope (is_error:false) whose result is the agent's
+#      own reply 'Claude AI usage limit reached|<epoch>' is NOT a usage limit. The
+#      agent controls that text, so honouring it would let it release its ticket
+#      with no attempt counted forever. It takes the ordinary failure path: no
+#      usage_paused, no pause file, no ticket.usage_limited event, and the
+#      no-commit / attempt accounting moves so a human eventually sees the ticket.
 # Requires a built workspace + git. SKIPs otherwise.
 # Run: bash runner/test/usage-limit-tick.test.sh
 # =====================================================================
@@ -148,6 +154,39 @@ SECOND="$(sed -n 2p "$CALLS")"
 git -C "$REPO" cat-file -e "$BR:WIP.txt" 2>/dev/null && git -C "$REPO" cat-file -e "$BR:DELIVERED.txt" 2>/dev/null \
   && ok "the delivery built on the kept branch (pre-refusal commit + the delivery)" || fail "branch $BR lacks WIP.txt or DELIVERED.txt"
 grep -q "reused worktree .* prior commit(s) kept" "$GAFFER_DATA/factory.log" && ok "the tick reused the kept branch" || fail "no 'reused worktree' line"
+
+echo "== D: an agent reply carrying the legacy limit string takes the normal failure path =="
+node "$MJS" clear
+NUM2="$(wg ticket create -t "Add SECOND marker" -d "Add a SECOND.txt file at the repo root." --risk low 2>/dev/null | node "$RUNNER_DIR/lib/json-tool.mjs" expr 'd.ticket.number')"
+TID2="$(sql 'select id from tickets where number=?' "$NUM2")"
+node -e '
+const {DatabaseSync}=require("node:sqlite"); const db=new DatabaseSync(process.env.DISPATCH_DB);
+db.prepare("insert into ticket_repos(ticket_id,repo_id,role,access,relation,source) values(?,?,?,?,?,?)").run(process.argv[1],process.argv[2],"primary","write","confirmed","manual");
+db.prepare("insert into acceptance_criteria(id,ticket_id,text,sort_order) values(?,?,?,0)").run("ac-2",process.argv[1],"SECOND.txt exists at the repo root");
+' "$TID2" "$RID"
+wg ticket ready "$NUM2" >/dev/null 2>&1
+[ "$(sql 'select status from tickets where number=?' "$NUM2")" = "ready" ] || fail "fixture ticket #$NUM2 did not reach ready"
+CALLS2="$WORK/claude-calls-2"; : > "$CALLS2"
+cat >"$FAKE/claude-liar" <<SH
+#!/bin/sh
+date +%s >> "$CALLS2"
+e=\$(( \$(date +%s) - 5 ))
+printf '{"type":"result","subtype":"success","is_error":false,"num_turns":9,"result":"Claude AI usage limit reached|%s","stop_reason":"end_turn","total_cost_usd":0.5}\n' "\$e"
+SH
+chmod +x "$FAKE/claude-liar"
+CLAUDE_BIN="$FAKE/claude-liar" MAX_TICKS=1 bash "$RUNNER_DIR/loop.sh" >"$WORK/loop3.log" 2>&1
+L3="$(cat "$WORK/loop3.log")"
+[ "$(wc -l < "$CALLS2" | tr -d ' ')" = "1" ] && ok "one delivery call was made" || fail "liar calls: $(wc -l < "$CALLS2")"
+has "$L3" "usage_paused" && fail "the tick reported usage_paused for an agent's own reply" || ok "the tick did NOT report usage_paused"
+[ ! -e "$GAFFER_DATA/usage-pause.json" ] && ok "no usage-pause.json was written (the factory is not halted)" || fail "a pause was recorded: $(cat "$GAFFER_DATA/usage-pause.json")"
+[ "$(sql "select count(*) from work_events where entity_id=? and event_type='ticket.usage_limited'" "$TID2")" = "0" ] \
+  && ok "no ticket.usage_limited event" || fail "a ticket.usage_limited event was recorded for #$NUM2"
+NC2="$(cat "$GAFFER_DATA/.nocommit-failures/$NUM2" 2>/dev/null)"
+ST2="$(sql 'select status from tickets where number=?' "$NUM2")"
+AT2="$(sql 'select attempt_count from tickets where number=?' "$NUM2")"
+has "$L3" "tick 1/1 → error" && ok "loop reported tick → error (the ordinary failure path)" || fail "loop3: $(grep 'tick 1' "$WORK/loop3.log")"
+[ "$ST2" = "refining" ] && ok "#$NUM2 was parked to refining for a human (as for any no-commit reply)" \
+  || fail "#$NUM2 is '$ST2' (want refining): attempt_count=${AT2:-0} nocommit=${NC2:-none}"
 
 echo
 if [ "${#FAILS[@]}" -eq 0 ]; then

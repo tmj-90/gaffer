@@ -128,6 +128,9 @@ runner does not treat it as one:
   matched strings, `USAGE_LIMIT_PATTERNS` / `USAGE_LIMIT_SHAPES`, each row citing
   where its exact text comes from. Text rows only match an error envelope
   (`is_error: true`), so a reply that talks about rate limiting is never misread.
+  There is no exception: on a success envelope `.result` is the agent's own reply,
+  so an agent that answers `Claude AI usage limit reached|<epoch>` takes the normal
+  failure path (no-commit counter, park for a human), not a free release.
 - `tick.sh` keeps any work the agent made before the refusal (a WIP checkpoint; a
   branch with commits is kept for the next attempt), releases the claim to `ready`
   with reason-code `usage_limit` WITHOUT counting an attempt (no `attempt_count`

@@ -523,8 +523,13 @@ EOF
           # flag is an UNexported shell var) so autonomous still passes; a graduated earned row
           # passes via the DB policy with the floor off; an unearned ticket the server REFUSES.
           _AP_ERR=""
+          # STALE REVISION: the approval names the commit the reviewer judged (RSHA, of the
+          # primary write repo). The server refuses it when the branch moved since, and —
+          # because this reviewer read only the primary repo — when the ticket writes to
+          # another repo too: a multi-repo ticket is held for a HUMAN approval of every repo.
+          _RREPO_NAME="$(echo "$RSHOW" | jget '((((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).name) || "")' 2>/dev/null || echo '')"
           if _AP_ERR="$( ( export DISPATCH_ALLOW_AGENT_APPROVE="${DISPATCH_ALLOW_AGENT_APPROVE:-0}"; \
-               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" 2>&1 >/dev/null ) )"; then
+               wg review approve "$RNUM" --as agent --reviewer "$REVIEWER_AGENT" --commit "${_RREPO_NAME:+$_RREPO_NAME=}$RSHA" 2>&1 >/dev/null ) )"; then
             log "AFK: runner (reviewer principal $REVIEWER_AGENT) approved #$RNUM on a clean verdict + earned approve grant (→ ready_for_merge)"
             # LITE self-instrumentation: mark auto-approved-trivial tickets so the gate-skip
             # is measurable — if a lite-auto-approved ticket later needs rework/revert, the

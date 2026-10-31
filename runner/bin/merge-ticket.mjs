@@ -70,6 +70,13 @@
 //                When it FAILS, `applied:false` + `error` are carried here AND a
 //                prominent WARNING is logged (R-3), so a stale digest / a feature
 //                stuck at `building` is VISIBLE rather than silently swallowed.
+//   partially_merged:
+//              { "phase":"partially_merged", ticket, landed:[repo…], pending:[repo…], error }
+//              (exit 4) — PER-REPOSITORY LANDING: a multi-repo ticket lands one merge per
+//                write repo (each repo's approved commit). Some landed (recorded in
+//                dispatch), at least one did not (conflict, dirty checkout, held check):
+//                the ticket stays ready_for_merge, shown "Partly merged" in the human
+//                queue, and NOT marked done; a re-run lands only the repos still pending.
 //   conflict_resolved_pending_reapproval:
 //              { "phase":"conflict_resolved_pending_reapproval", ticket, repo, branch,
 //                defaultBranch, reapproval:{...} }
@@ -292,7 +299,7 @@ export function resolveTicket(dbPath, number) {
     // (the WG-002 boundary), falling back to the legacy role='primary' so older rows
     // still resolve. tr.branch_name is the per-repo delivery branch.
     const repoSql = (withStack, withPr) =>
-      "SELECT r.name AS name, r.local_path AS localPath, " +
+      "SELECT r.id AS id, r.name AS name, r.local_path AS localPath, " +
       "r.default_branch AS defaultBranch, " +
       (withStack ? "r.stack AS stack, " : "") +
       (withPr ? "tr.pr_url AS repoPrUrl, " : "") +
@@ -323,7 +330,20 @@ export function resolveTicket(dbPath, number) {
     if (lastErr) throw lastErr;
     if (!repoRow || !repoRow.localPath) return null;
 
-    const branch = String(repoRow.repoBranch || ticket.branchName || "").trim();
+    // The per-repo delivery row (ticket_repo_delivery) is where the factory records the
+    // branch for a multi-repo ticket; fall back to it the same way the review diff does.
+    let deliveryBranch = "";
+    try {
+      const d = db
+        .prepare(
+          "SELECT branch_name AS b FROM ticket_repo_delivery WHERE ticket_id = ? AND repo_id = ?",
+        )
+        .get(ticket.id, repoRow.id);
+      deliveryBranch = String(d?.b || "");
+    } catch {
+      deliveryBranch = ""; // pre-v4 schema / minimal fixture
+    }
+    const branch = String(repoRow.repoBranch || deliveryBranch || ticket.branchName || "").trim();
     if (!branch) return null;
     const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
 
@@ -331,6 +351,7 @@ export function resolveTicket(dbPath, number) {
       ticketId: String(ticket.id),
       number: ticket.number,
       repo: {
+        id: repoRow.id == null ? "" : String(repoRow.id),
         name: String(repoRow.name || ""),
         localPath: String(repoRow.localPath),
         defaultBranch: String(repoRow.defaultBranch || "main"),
@@ -1292,6 +1313,111 @@ function signalReapproval(ticketNumber, resolution) {
   return { ok, command, args, attempts: n };
 }
 
+/** PER-REPOSITORY LANDING: the ticket's approved revisions (`wg ticket landing`). */
+export function readLandingPlan(ticketNumber) {
+  const r = runDispatch(["ticket", "landing", String(ticketNumber)]);
+  if (r.error || r.status !== 0) return null;
+  try {
+    const j = JSON.parse(String(r.stdout || "").trim());
+    return Array.isArray(j.repos) ? j.repos : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record one repo's landing as the system actor (idempotent; logged, never fatal). */
+function recordLandingCli(ticketNumber, repoId, sha, via) {
+  if (!repoId || !sha) return;
+  const r = runDispatch([
+    "ticket",
+    "record-landing",
+    String(ticketNumber),
+    "--repo",
+    String(repoId),
+    "--commit",
+    String(sha),
+    "--via",
+    String(via || "local"),
+    "--as",
+    "system",
+  ]);
+  if (r.error || r.status !== 0)
+    log(
+      `WARNING: #${ticketNumber} could not record the landing of ${String(sha).slice(0, 12)} ` +
+        `(${(r.stderr || "").trim().slice(0, 160)}) — the done gate re-checks git`,
+    );
+}
+
+/**
+ * Land every write repo OTHER than the primary: each lands only its pinned (approved)
+ * commit, through the same landing check (`--secondary`: the tester verdict describes the
+ * primary) and the same conflict-safe local merge. A conflict, a dirty checkout or a held
+ * check stops here — the ticket stays ready_for_merge, partly merged, for a human (no
+ * resolver is spawned for a secondary repo). Returns { ok, merged, landed, pending, reason }.
+ */
+function landSecondaryRepos(ticketNumber, primaryRepoId) {
+  const plan = readLandingPlan(ticketNumber);
+  const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
+  if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
+  for (const r of plan) {
+    if (r.repoId === primaryRepoId) {
+      out.landed.push(r.repo);
+      continue;
+    }
+    if (r.landed) {
+      out.landed.push(r.repo);
+      continue;
+    }
+    const why = (reason) => {
+      out.ok = false;
+      out.pending.push(r.repo);
+      out.reason = `${r.repo}: ${reason}`;
+      log(`#${ticketNumber} PARTLY MERGED — ${r.repo} did not land: ${reason}; held for a human`);
+    };
+    if (out.ok === false) {
+      out.pending.push(r.repo);
+      continue;
+    }
+    if (!r.localPath || !existsSync(r.localPath) || !r.branch) {
+      why("its checkout or delivery branch is not available");
+      continue;
+    }
+    const tree = inspectWorkingTree(r.localPath);
+    if (tree.dirty) {
+      why(`the live checkout has uncommitted changes (${tree.summary})`);
+      continue;
+    }
+    const d = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber,
+      repoPath: r.localPath,
+      branch: r.branch,
+      repoId: r.repoId,
+      secondary: true,
+    });
+    if (!d.ok) {
+      why(`landing check ${d.kind}: ${d.reason}`);
+      continue;
+    }
+    if (d.kind === "already-landed") {
+      out.landed.push(r.repo);
+      continue;
+    }
+    const m = attemptMerge(r.localPath, r.branch, r.defaultBranch || "main", d.pin);
+    if (!m.clean) {
+      why(m.reason || "merge conflict");
+      continue;
+    }
+    log(
+      `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${r.defaultBranch || "main"}) cleanly`,
+    );
+    recordLandingCli(ticketNumber, r.repoId, d.pin, "local");
+    out.landed.push(r.repo);
+    out.merged.push({ repo: r.repo, localPath: r.localPath, branch: r.branch });
+  }
+  return out;
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -1419,6 +1545,7 @@ function main() {
     ticketNumber: resolved.number,
     repoPath: repo.localPath,
     branch,
+    repoId: repo.id || null,
   });
   if (!decision.ok) {
     fail(
@@ -1435,6 +1562,15 @@ function main() {
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
   const pin = decision.pin;
+  // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
+  // after a partial landing) — never merge it again; land the repos still pending.
+  let landed =
+    decision.kind === "already-landed"
+      ? (log(
+          `#${resolved.number}: ${repo.name} already landed ${String(pin).slice(0, 12)} — not merged again`,
+        ),
+        { via: "earlier" })
+      : null;
 
   // 1. Land the delivery. PR MODE first: when the ticket carries a pr_url (the runner
   //    opened a PR under GAFFER_CREATE_PR) and `gh` is available, merge THROUGH the PR
@@ -1445,8 +1581,7 @@ function main() {
   // GAFFER_PR_LOCAL_FALLBACK=1: the operator's explicit choice to land a PR-mode ticket
   // LOCALLY when the PR merge cannot run. Off by default — a failed PR merge holds.
   const prLocalFallback = /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
-  let landed = null;
-  if (resolved.prUrl) {
+  if (!landed && resolved.prUrl) {
     if (ghAvailable(ghBin)) {
       const pr = mergeViaPr({
         repoPath: repo.localPath,
@@ -1516,6 +1651,26 @@ function main() {
     }
   }
   if (landed) {
+    // PER-REPOSITORY LANDING: record the primary repo's landing, then land every OTHER
+    // write repo's approved commit. A ticket is done only when all of them landed; one
+    // that does not land leaves the ticket HELD (ready_for_merge, "Partly merged" in the
+    // human queue) with what did land recorded, so a retry lands only the rest.
+    if (landed.via !== "earlier" && repo.id)
+      recordLandingCli(resolved.number, repo.id, pin, landed.via);
+    const others = landSecondaryRepos(resolved.number, repo.id);
+    if (!others.ok) {
+      emit(
+        {
+          phase: "partially_merged",
+          ticket: resolved.number,
+          landed: others.landed,
+          pending: others.pending,
+          error: others.reason,
+        },
+        4,
+      );
+      return;
+    }
     // Flip the ticket ready_for_merge → done now that the branch is actually merged.
     // Non-fatal: the merge already landed; a failure just leaves it in ready_for_merge
     // (a human can run `wg ticket mark-merged <n> --as system`).
@@ -1540,6 +1695,10 @@ function main() {
     // we just merged into), so an unmerged branch is never lost.
     const del = git(repo.localPath, "branch", "-d", branch);
     if (del.status === 0) log(`deleted merged branch ${branch}`);
+    for (const o of others.merged) {
+      const d2 = git(o.localPath, "branch", "-d", o.branch);
+      if (d2.status === 0) log(`deleted merged branch ${o.branch} in ${o.repo}`);
+    }
     // Self-hosting seam: if we just merged into the repo that RUNS the dashboard
     // (dispatch — where DISPATCH_CLI lives), its served dist/ is now stale. Rebuild
     // it so merged UI changes show up immediately — static web assets are served from

@@ -9,6 +9,7 @@
 // work (stub delivery) → review + approve → merge → done → suggest work (product
 // owner) → every view renders → SSE live refresh. Captures console errors + failed
 // requests + screenshots. Exits 1 on any hard failure.
+import { execFileSync } from "node:child_process";
 import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
@@ -566,6 +567,51 @@ try {
         );
     await page.setViewportSize({ width: 1400, height: 1000 });
     await sleep(300);
+  }
+
+  // ── 5b. STALE REVISION (external review #2): the diff names the commit it shows; a
+  //        commit pushed to the branch after the render makes Approve refuse (409
+  //        stale_revision), the view say the change moved, and reload the new diff.
+  {
+    const d = (await api("GET", `/tickets/${ticket.id}/diff`)).json;
+    const rd = (d?.repos || []).find((r) => r.headSha);
+    rd
+      ? ok(`diff endpoint names the commit it rendered (${rd.repo} @ ${rd.headSha.slice(0, 12)})`)
+      : bad("diff endpoint returned no headSha");
+    const repoPath = REPO_PATH;
+    if (rd && repoPath && rd.branch) {
+      const g = (...a) =>
+        execFileSync("git", ["-C", repoPath, "-c", "user.name=ui", "-c", "user.email=ui@x", ...a], {
+          encoding: "utf8",
+        }).trim();
+      // Advance the delivery branch WITHOUT touching the live checkout (a commit-tree on
+      // the branch tip's tree, then update-ref), so the next approval is stale.
+      const tip = g("rev-parse", `refs/heads/${rd.branch}`);
+      const moved = g("commit-tree", `${tip}^{tree}`, "-p", tip, "-m", "late commit (ui-regress)");
+      g("update-ref", `refs/heads/${rd.branch}`, moved, tip);
+      const btn = page
+        .locator('button:has-text("Approve"), button:has-text("Confirm merge")')
+        .first();
+      await waitFor(
+        async () => (!(await btn.isDisabled()) ? true : null),
+        "approve enabled",
+        30000,
+        500,
+      );
+      await btn.click();
+      await btn.click();
+      const banner = await page
+        .waitForSelector(".diff-moved-banner", { timeout: 15000 })
+        .catch(() => null);
+      banner
+        ? ok("Review: a stale approval is refused and the view says the change moved")
+        : bad("Review: no 'the change moved' banner after a stale approval");
+      const still = (await api("GET", `/tickets/${ticket.id}`)).json.ticket;
+      still?.status === "in_review"
+        ? ok("Review: the stale approval approved nothing (still in review)")
+        : bad(`Review: stale approval moved the ticket to ${still?.status}`);
+      await shot(page, "review-stale-revision");
+    } else note("stale-revision step skipped: no REPO_PATH / head to advance");
   }
 
   // A LOCATOR, not an ElementHandle: the review list re-renders under the live

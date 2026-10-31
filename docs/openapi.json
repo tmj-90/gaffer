@@ -3239,7 +3239,7 @@
           "Review & delivery"
         ],
         "summary": "Approve the review",
-        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins the approved branch head. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
+        "description": "Moves the ticket to ready_for_merge (or in_testing on the tester lane) and pins, per write repository, the commit the reviewer saw. `commits` names them (the diff endpoint's `repoId` + `headSha`); 409 with `details.reason` `stale_revision` when any branch head moved since it was shown (nothing is approved), `revision_required` when no commit is named. Triggers the merge runner only when AUTO_MERGE is on; otherwise `merge.skipped` is `auto_merge_off` and the ticket waits for POST /tickets/:id/merge. The reviewer may not be the delivering agent.",
         "parameters": [
           {
             "name": "id",
@@ -3251,6 +3251,16 @@
             "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/approveReviewBody"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "`{ ticket, event_id, merge? }`.",
@@ -3294,6 +3304,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3674,7 +3694,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<delivery branch>` per write repository.",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve.",
         "parameters": [
           {
             "name": "id",
@@ -9282,6 +9302,32 @@
         "required": [
           "depends_on"
         ]
+      },
+      "approveReviewBody": {
+        "type": "object",
+        "properties": {
+          "commits": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 500
+                },
+                "sha": {
+                  "type": "string",
+                  "pattern": "^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"
+                }
+              },
+              "required": [
+                "sha"
+              ]
+            },
+            "maxItems": 100
+          }
+        }
       },
       "assignReviewerBody": {
         "type": "object",

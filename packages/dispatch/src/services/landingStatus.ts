@@ -1,0 +1,125 @@
+import type { Db } from "../db/connection.js";
+
+/**
+ * PER-REPOSITORY LANDING (external review #3). A ticket that writes to several
+ * repositories is approved as one change but lands as several merges: one per write
+ * repo. Every approval records a REVIEW PIN per repo (a SYSTEM `commit` evidence row,
+ * uri `gaffer-reviewed-commit:<sha>`, `repo_id` set) and every landing path records a
+ * LANDING per repo (uri `gaffer-landed-commit:<sha>`, same repo). This module reads the
+ * two and answers "which approved revisions have landed?" — the done gate (markMerged)
+ * refuses while any is pending, the merge paths skip a repo that already landed (a retry
+ * after a partial merge never re-merges it), and the human queue shows a partial landing
+ * as its own held state.
+ *
+ * Only SYSTEM rows count (agents record evidence as `agent` and cannot forge either kind),
+ * and only pins recorded since the ticket last entered in_review (a rework or a conflict
+ * resolution re-enters review, which makes older pins describe an older candidate). A
+ * legacy pin with no repo (recorded before per-repo pins existed) imposes no per-repo
+ * requirement here; the landing check still applies it.
+ */
+
+export const REVIEW_PIN_PREFIX = "gaffer-reviewed-commit:";
+export const LANDING_PREFIX = "gaffer-landed-commit:";
+
+export interface LandingRepoState {
+  repoId: string;
+  repo: string;
+  /** The approved commit (the current review pin) for this repo. */
+  sha: string;
+  /** True when a landing of exactly that commit is on record. */
+  landed: boolean;
+  /** Where to land it: the repo's checkout, default branch and delivery branch. */
+  localPath: string | null;
+  defaultBranch: string;
+  branch: string | null;
+}
+
+export interface LandingStatus {
+  repos: LandingRepoState[];
+  landed: number;
+  pending: number;
+  /** At least one repo landed and at least one did not: a held, visible state. */
+  partial: boolean;
+}
+
+const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+function shaOf(uri: unknown, prefix: string): string | null {
+  const s = String(uri ?? "");
+  if (!s.startsWith(prefix)) return null;
+  const sha = s.slice(prefix.length).toLowerCase();
+  return SHA_RE.test(sha) ? sha : null;
+}
+
+/** The current per-repo review pins and whether each has landed. Pure read. */
+export function computeLandingStatus(db: Db, ticketId: string): LandingStatus {
+  const entered = db
+    .prepare(
+      `SELECT created_at AS at FROM work_events
+       WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+         AND json_extract(payload_json, '$.to') = 'in_review'
+       ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(ticketId) as { at: string } | undefined;
+  const pins = db
+    .prepare(
+      `SELECT e.repo_id AS repo_id, r.name AS repo, e.uri AS uri, e.created_at AS created_at,
+              r.local_path AS local_path, r.default_branch AS default_branch,
+              COALESCE(NULLIF(tr.branch_name, ''), NULLIF(d.branch_name, ''), t.branch_name)
+                AS branch
+       FROM evidence e JOIN repositories r ON r.id = e.repo_id
+       JOIN tickets t ON t.id = e.ticket_id
+       LEFT JOIN ticket_repos tr ON tr.ticket_id = e.ticket_id AND tr.repo_id = e.repo_id
+       LEFT JOIN ticket_repo_delivery d ON d.ticket_id = e.ticket_id AND d.repo_id = e.repo_id
+       WHERE e.ticket_id = ? AND e.evidence_type = 'commit'
+         AND e.recorded_by_actor_type = 'system' AND e.repo_id IS NOT NULL
+         AND e.uri LIKE '${REVIEW_PIN_PREFIX}%'
+       ORDER BY e.created_at DESC, e.rowid DESC`,
+    )
+    .all(ticketId) as Array<{
+    repo_id: string;
+    repo: string;
+    uri: string;
+    created_at: string;
+    local_path: string | null;
+    default_branch: string | null;
+    branch: string | null;
+  }>;
+  const landings = db
+    .prepare(
+      `SELECT repo_id, uri FROM evidence
+       WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system'
+         AND repo_id IS NOT NULL AND uri LIKE '${LANDING_PREFIX}%'`,
+    )
+    .all(ticketId) as Array<{ repo_id: string; uri: string }>;
+  const landedKeys = new Set(
+    landings
+      .map((l) => {
+        const sha = shaOf(l.uri, LANDING_PREFIX);
+        return sha ? `${l.repo_id}\u0000${sha}` : null;
+      })
+      .filter((k): k is string => k !== null),
+  );
+  const seen = new Set<string>();
+  const repos: LandingRepoState[] = [];
+  for (const p of pins) {
+    if (seen.has(p.repo_id)) continue; // the latest pin per repo is the approved revision
+    seen.add(p.repo_id);
+    if (entered && String(entered.at) > String(p.created_at)) continue; // stale candidate
+    const sha = shaOf(p.uri, REVIEW_PIN_PREFIX);
+    if (!sha) continue;
+    repos.push({
+      repoId: p.repo_id,
+      repo: p.repo,
+      sha,
+      landed: landedKeys.has(`${p.repo_id}\u0000${sha}`),
+      localPath: p.local_path ?? null,
+      defaultBranch: p.default_branch || "main",
+      branch: p.branch ?? null,
+    });
+  }
+  repos.sort((a, b) => a.repo.localeCompare(b.repo));
+  const landed = repos.filter((r) => r.landed).length;
+  const pending = repos.length - landed;
+  return { repos, landed, pending, partial: landed > 0 && pending > 0 };
+}

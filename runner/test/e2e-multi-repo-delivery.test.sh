@@ -20,7 +20,12 @@
 #     with a branch for EACH repo);
 #   • ONE submission completes the ticket: it holds exactly ONE claim across the whole
 #     multi-repo delivery, and a single `wg submit` moves it claimed → in_review with the
-#     claim completed (zero active claims) — not a submit-per-repo.
+#     claim completed (zero active claims) — not a submit-per-repo;
+#   • (external review #2/#3) the approval names BOTH repos' head commits (a stale or
+#     commit-less approval is refused), and the ticket is done only when BOTH default
+#     branches carry their change — a partial landing is held, and a retry lands the
+#     remaining repo without re-merging the landed one (dashboard Merge path, then the
+#     merge lane's lib/land.sh path for a second ticket).
 #
 # Requires the dispatch CLI built + git. SKIPs (exit 0) otherwise.
 # Run: bash test/e2e-multi-repo-delivery.test.sh    (also green under /bin/bash 3.2)
@@ -172,6 +177,90 @@ wg submit "$NUM" --token "$TOKEN" --reason "both repos delivered + gated" >/dev/
 [ "$(active_claims "$NUM")" = "0" ] \
   && ok "the single submission completed the claim (zero active claims)" \
   || fail "claim not completed after submit (active=$(active_claims "$NUM"))"
+
+# ── External review #2 + #3: approve what was shown, land EVERY repo ──────────
+# The steelman: one extension through approval exposes a ticket marked done after ONE
+# repo's merge. The landing path here is bin/merge-ticket.mjs (the dashboard's Merge,
+# `gaffer merge`), then lib/land.sh (the merge lane / AFK review pass) for a second ticket.
+echo "== APPROVE: the approval names the head commit of BOTH repos =="
+HEADS="$(wg ticket diff "$NUM" --heads 2>/dev/null)"
+[ "$(printf '%s\n' "$HEADS" | grep -c '=')" = "2" ] \
+  && ok "ticket diff reports one head per write repo" || fail "expected two heads, got: $HEADS"
+OLD_A="$(git -C "$REPO_A" rev-parse "$BRANCH")"
+# A commit lands on repoA's branch AFTER the heads were read: the approval is refused.
+( cd "$WT_A" && printf '// late\n' >> src/mod.ts && git add -A && git commit -qm "late, unreviewed" )
+STALE_ERR="$(wg review approve "$NUM" --reviewer human1 --commit "repoA=$OLD_A" --commit "repoB=$(git -C "$REPO_B" rev-parse "$BRANCH")" 2>&1 >/dev/null)"
+case "$STALE_ERR" in *stale_revision*) ok "an approval of a commit the branch moved past is refused (stale_revision)" ;; *) fail "stale approval not refused: $STALE_ERR" ;; esac
+[ "$(status_of "$NUM")" = "in_review" ] && ok "the refused approval approved nothing (still in_review)" || fail "status after stale approve: $(status_of "$NUM")"
+NOCOMMIT_ERR="$(wg review approve "$NUM" --reviewer human1 2>&1 >/dev/null)"
+case "$NOCOMMIT_ERR" in *revision_required*) ok "an approval that names no commit is refused (revision_required)" ;; *) fail "commit-less approval not refused: $NOCOMMIT_ERR" ;; esac
+HA="$(git -C "$REPO_A" rev-parse "$BRANCH")"; HB="$(git -C "$REPO_B" rev-parse "$BRANCH")"
+wg review approve "$NUM" --reviewer human1 --commit "repoA=$HA" --commit "repoB=$HB" >/dev/null 2>&1
+[ "$(status_of "$NUM")" = "ready_for_merge" ] && ok "approving the current heads of both repos → ready_for_merge" || fail "approve failed (status $(status_of "$NUM"))"
+PINS="$(wg ticket landing "$NUM" 2>/dev/null | jget '(d.repos||[]).length')"
+[ "$PINS" = "2" ] && ok "the approval pinned BOTH repos' commits" || fail "expected 2 approved revisions, got $PINS"
+
+echo "== LAND (dashboard Merge path): repoB's checkout is dirty → PARTLY MERGED, held =="
+git -C "$REPO_A" worktree remove --force "$WT_A" >/dev/null 2>&1; git -C "$REPO_B" worktree remove --force "$WT_B" >/dev/null 2>&1
+printf 'operator edit\n' >> "$REPO_B/src/mod.ts"   # an uncommitted edit in repoB's live checkout
+MT() { env DISPATCH_DB="$DB" GAFFER_DATA="$WORK" CLAUDE_BIN=/bin/false node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$NUM" 2>>"$WORK/merge.log"; }
+OUT1="$(MT)"; RC1=$?
+[ "$RC1" -eq 4 ] && [ "$(printf '%s' "$OUT1" | jget 'd.phase')" = "partially_merged" ] \
+  && ok "the merge lands repoA, refuses repoB, and reports partially_merged (exit 4)" || fail "first merge: rc=$RC1 out=$OUT1"
+git -C "$REPO_A" merge-base --is-ancestor "$HA" main && ok "repoA's main carries its approved change" || fail "repoA main lacks $HA"
+git -C "$REPO_B" merge-base --is-ancestor "$HB" main && fail "repoB landed despite the dirty checkout" || ok "repoB's main does not have it yet"
+[ "$(status_of "$NUM")" = "ready_for_merge" ] && ok "a partial landing is NOT done: the ticket stays ready_for_merge" || fail "ticket after partial landing: $(status_of "$NUM")"
+QLABEL="$(wg human-queue --json 2>/dev/null | N="$NUM" jget '((d.items||[]).find(i => i.ticket && String(i.ticket.number) === process.env.N) || {}).label || ""')"
+[ "$QLABEL" = "Partly merged" ] && ok "the human queue shows the ticket as 'Partly merged'" || fail "human queue label: '$QLABEL'"
+LABEL="$(wg ticket landing "$NUM" 2>/dev/null | jget 'd.partial ? "partial" : "not-partial"')"
+[ "$LABEL" = "partial" ] && ok "the landing status reads partial (repoA landed, repoB pending)" || fail "landing status: $LABEL"
+MM_ERR="$(wg ticket mark-merged "$NUM" --as system 2>&1 >/dev/null)"
+case "$MM_ERR" in *partial_landing*) ok "mark-merged is refused while repoB has not landed" ;; *) fail "mark-merged was not refused: $MM_ERR" ;; esac
+A_MERGES="$(git -C "$REPO_A" rev-list --merges --count main)"
+
+echo "== RETRY: the operator cleans repoB; a second run lands ONLY repoB =="
+git -C "$REPO_B" checkout -q -- src/mod.ts
+OUT2="$(MT)"; RC2=$?
+[ "$RC2" -eq 0 ] && [ "$(printf '%s' "$OUT2" | jget 'd.phase')" = "merged" ] && ok "the retry merges and reports merged" || fail "retry: rc=$RC2 out=$OUT2"
+git -C "$REPO_B" merge-base --is-ancestor "$HB" main && ok "repoB's main now carries its approved change" || fail "repoB main lacks $HB"
+git -C "$REPO_A" merge-base --is-ancestor "$HA" main && ok "repoA's main still carries its change" || fail "repoA main lost $HA"
+[ "$(git -C "$REPO_A" rev-list --merges --count main)" = "$A_MERGES" ] && ok "repoA was NOT merged a second time" || fail "repoA re-merged on the retry"
+[ "$(status_of "$NUM")" = "done" ] && ok "with BOTH repos landed the ticket is done" || fail "ticket after full landing: $(status_of "$NUM")"
+
+echo "== LAND (merge lane path, lib/land.sh): a second two-repo ticket lands in both repos =="
+N2="$(wg ticket create -t "second spanning ticket" --description "lane path" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+AC2="$(wg ac add "$N2" -t "both" 2>/dev/null | jget 'd.ac_id')"
+wg ticket repo-access set "$N2" repoA --access write --relation confirmed >/dev/null 2>&1
+wg ticket repo-access set "$N2" repoB --access write --relation confirmed >/dev/null 2>&1
+wg ticket ready "$N2" >/dev/null 2>&1
+TOK2="$(wg claim-ticket "$N2" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
+BR2="gaffer/t$N2"
+git -C "$REPO_A" worktree add -q -b "$BR2" "$WORK/wt2A" main; git -C "$REPO_B" worktree add -q -b "$BR2" "$WORK/wt2B" main
+( export WT="$WORK/wt2A" TICKET="$N2" AC_ID="$AC2" CLI_JS DB GAFFER_CLAIM_TOKEN="$TOK2" MARK="laneA"; "$STUB" -p x >/dev/null 2>&1 )
+( export WT="$WORK/wt2B" TICKET="$N2" AC_ID="$AC2" CLI_JS DB GAFFER_CLAIM_TOKEN="$TOK2" MARK="laneB"; "$STUB" -p x >/dev/null 2>&1 )
+git -C "$REPO_A" worktree remove --force "$WORK/wt2A" >/dev/null 2>&1; git -C "$REPO_B" worktree remove --force "$WORK/wt2B" >/dev/null 2>&1
+wg ticket repo-delivery record "$N2" repoA --branch "$BR2" >/dev/null 2>&1
+wg ticket repo-delivery record "$N2" repoB --branch "$BR2" >/dev/null 2>&1
+wg submit "$N2" --token "$TOK2" --reason "both" >/dev/null 2>&1
+H2A="$(git -C "$REPO_A" rev-parse "$BR2")"; H2B="$(git -C "$REPO_B" rev-parse "$BR2")"
+# shellcheck disable=SC2046
+wg review approve "$N2" --reviewer human1 $(wg ticket diff "$N2" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
+LANE_LOG="$WORK/lane.log"
+(
+  log() { printf '%s\n' "$*" >> "$LANE_LOG"; }
+  gaffer_refresh_cards() { :; }
+  _gaffer_flag_on() { case "${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+  export DISPATCH_DB="$DB" GAFFER_DIGEST_DISABLE=1 RUNNER_DIR
+  # shellcheck source=../lib/automerge.sh
+  source "$RUNNER_DIR/lib/automerge.sh"
+  # shellcheck source=../lib/land.sh
+  source "$RUNNER_DIR/lib/land.sh"
+  gaffer_land_delivery "$N2" "$REPO_A" "$BR2" main "$(wg ticket show "$N2" 2>/dev/null)" MERGE
+) ; LRC=$?
+[ "$LRC" -eq 0 ] && ok "gaffer_land_delivery returned 0 (landed)" || fail "lane landing rc=$LRC: $(tr '\n' '|' < "$LANE_LOG")"
+git -C "$REPO_A" merge-base --is-ancestor "$H2A" main && git -C "$REPO_B" merge-base --is-ancestor "$H2B" main \
+  && ok "the merge lane landed the change on BOTH repos' default branches" || fail "lane landing missed a repo: $(tr '\n' '|' < "$LANE_LOG")"
+[ "$(status_of "$N2")" = "done" ] && ok "the lane marked the two-repo ticket done only after both landed" || fail "lane ticket status: $(status_of "$N2")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

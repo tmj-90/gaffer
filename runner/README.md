@@ -220,6 +220,16 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   diff — runs the **`prepare-digest-delta`** skill to record ONE inert evidence row
   (`GAFFER_DIGEST_DELTA_V1 {…}`): the digest section deltas + the feature note. Nothing
   is applied yet.
+- **Per-repository landing.** A ticket with write access to several repositories lands
+  one merge per repository: `lib/land.sh` (the merge lane and the review pass) and
+  `bin/merge-ticket.mjs` (the dashboard's Merge, `gaffer merge`) walk the ticket's approved
+  revisions (`wg ticket landing <n>`: one review pin per repo), land each pinned commit
+  (`lib/tester-binding.mjs --repo-id`; a secondary repo lands only its pinned commit), and
+  record it (`wg ticket record-landing`). `mark-merged` is refused until every approved
+  revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
+  in the human queue) with its branches kept, and a retry skips the repos that already
+  landed (`already-landed`) instead of merging them again. A secondary repo that conflicts
+  is held for a human; the resolver runs for the primary repo only.
 - **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
   spawns the resolver agent once, in a throwaway worktree of the delivery branch, then
   **re-gates** the committed resolution with `bin/dod-regate.sh` — no conflict markers

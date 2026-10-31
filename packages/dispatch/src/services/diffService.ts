@@ -61,6 +61,15 @@ export interface RepoDiff {
   message?: string;
   /** ADVISORY risk flags derived from the changed paths + line counts (never gating). */
   riskAnnotations: RiskAnnotation[];
+  /** The repository id (so an approval can name the repo it saw). */
+  repoId?: string;
+  /**
+   * The full commit id of the delivery branch head this diff was computed against
+   * (`base...<headSha>`), or null when it could not be resolved. The Review view sends it
+   * back on approve, and the server refuses the approval (`stale_revision`) when the
+   * branch has moved since: a human approves the commit they saw, never a later one.
+   */
+  headSha?: string | null;
 }
 
 /** The full diff-in-review payload: one entry per WRITE repo on the ticket. */
@@ -305,6 +314,26 @@ function resolveDiffTargets(
   });
 }
 
+/**
+ * The full commit id a delivery branch points at, or null (no such branch, git error, a
+ * fake runner that does not answer rev-parse). Shared by the review diff (which diffs that
+ * exact commit) and the approval check (which compares the commit a human saw with it).
+ */
+export function resolveBranchHead(
+  runGit: GitRunner,
+  localPath: string,
+  branch: string,
+): string | null {
+  const res = runGit(localPath, [
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/heads/${branch}^{commit}`,
+  ]);
+  const sha = res.status === 0 ? res.stdout.trim().toLowerCase() : "";
+  return /^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha) ? sha : null;
+}
+
 /** Run `git diff --numstat` for a target; a truncated read drops its partial last line. */
 function runNumstat(runGit: GitRunner, t: DiffTarget): GitResult {
   const res = runGit(t.localPath, ["diff", "--numstat", ...SAFE_DIFF_FLAGS, ...t.diffArgs], {
@@ -332,18 +361,32 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
 
   const repos: RepoDiff[] = resolveDiffTargets(deps, ticket).map((entry) => {
     if ("unavailable" in entry) return entry.unavailable;
-    const t = entry.target;
+    const resolved = entry.target;
+    // Pin the range to the branch's CURRENT commit, resolved once: the stats and the patch
+    // below then describe exactly `headSha`, and the approval can be checked against it.
+    // An unresolvable head (fake runner, odd ref) keeps the by-name range and reports null.
+    const headSha =
+      resolved.isBootstrap || !resolved.branch
+        ? null
+        : resolveBranchHead(runGit, resolved.localPath, resolved.branch);
+    const t: DiffTarget = headSha
+      ? { ...resolved, diffArgs: [`${resolved.baseBranch}...${headSha}`] }
+      : resolved;
+    const ids = { repoId: t.repoId, headSha };
+    const withIds = (r: RepoDiff): RepoDiff => ({ ...r, ...ids });
 
     // Stats first (cheap, bounded). A non-zero exit means the range can't be resolved
     // (unknown branch, not a git repo) — surface it as a git_error.
     const stat = runNumstat(runGit, t);
     if (stat.status !== 0) {
-      return unavailableRepo(
-        t.repo,
-        t.label,
-        t.baseBranch,
-        "git_error",
-        firstLine(stat.stderr) || `git could not diff ${t.rangeDesc}.`,
+      return withIds(
+        unavailableRepo(
+          t.repo,
+          t.label,
+          t.baseBranch,
+          "git_error",
+          firstLine(stat.stderr) || `git could not diff ${t.rangeDesc}.`,
+        ),
       );
     }
     const { files, additions, deletions, paths } = parseNumstat(stat.stdout);
@@ -355,24 +398,28 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
     // lockfile regeneration or fixture drop is still a real diff, shown capped.
     const patch = runGit(t.localPath, ["diff", ...SAFE_DIFF_FLAGS, ...t.diffArgs]);
     if (patch.status !== 0) {
-      return unavailableRepo(
-        t.repo,
-        t.label,
-        t.baseBranch,
-        "git_error",
-        firstLine(patch.stderr) || `git could not diff ${t.rangeDesc}.`,
+      return withIds(
+        unavailableRepo(
+          t.repo,
+          t.label,
+          t.baseBranch,
+          "git_error",
+          firstLine(patch.stderr) || `git could not diff ${t.rangeDesc}.`,
+        ),
       );
     }
     const rawDiff = patch.stdout;
     if (rawDiff.trim() === "") {
-      return unavailableRepo(
-        t.repo,
-        t.label,
-        t.baseBranch,
-        "empty",
-        t.isBootstrap
-          ? "The bootstrap produced no committed files."
-          : `No changes between ${t.baseBranch} and ${t.branch}.`,
+      return withIds(
+        unavailableRepo(
+          t.repo,
+          t.label,
+          t.baseBranch,
+          "empty",
+          t.isBootstrap
+            ? "The bootstrap produced no committed files."
+            : `No changes between ${t.baseBranch} and ${t.branch}.`,
+        ),
       );
     }
 
@@ -390,6 +437,7 @@ export function computeTicketDiff(deps: DiffServiceDeps, ticketRef: string): Tic
       deletions,
       truncated,
       riskAnnotations,
+      ...ids,
     };
   });
 

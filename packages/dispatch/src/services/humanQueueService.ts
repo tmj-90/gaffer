@@ -4,6 +4,7 @@ import type { TicketDependencyRepository } from "../repositories/ticketDependenc
 import type { EventRepository } from "../repositories/eventRepository.js";
 import type { TicketRepository } from "../repositories/ticketRepository.js";
 import type { Clock } from "../util/clock.js";
+import type { LandingStatus } from "./landingStatus.js";
 
 /**
  * What KIND of thing the human owns. Each maps to a distinct action the operator
@@ -94,6 +95,8 @@ export interface HumanQueueServiceDeps {
   readonly tickets: TicketRepository;
   readonly events: EventRepository;
   readonly dependencies: TicketDependencyRepository;
+  /** PER-REPOSITORY LANDING: per-repo landed/pending state of an approved ticket. */
+  readonly landingStatus?: ((ticketId: string) => LandingStatus) | undefined;
 }
 
 const REVIEW_REASON_FALLBACK = "Delivered by the agent — awaiting your review sign-off.";
@@ -135,6 +138,7 @@ export class HumanQueueService {
   private readonly tickets: TicketRepository;
   private readonly events: EventRepository;
   private readonly dependencies: TicketDependencyRepository;
+  private readonly landingStatus: HumanQueueServiceDeps["landingStatus"];
 
   constructor(deps: HumanQueueServiceDeps) {
     this.clock = deps.clock;
@@ -142,6 +146,7 @@ export class HumanQueueService {
     this.tickets = deps.tickets;
     this.events = deps.events;
     this.dependencies = deps.dependencies;
+    this.landingStatus = deps.landingStatus;
   }
 
   /** Build the human-owned queue, oldest-waited first (the operator's priority). */
@@ -278,12 +283,29 @@ export class HumanQueueService {
     // only board action marked them done WITHOUT merging any code. Surface them.
     for (const t of this.tickets.list("ready_for_merge")) {
       const since = t.updated_at;
+      // PER-REPOSITORY LANDING: a multi-repo ticket whose change reached SOME default
+      // branches is a held state of its own — say which repos landed and which did not.
+      let landing: LandingStatus | null;
+      try {
+        landing = this.landingStatus ? this.landingStatus(t.id) : null;
+      } catch {
+        landing = null;
+      }
+      const partial = landing !== null && landing.partial;
       items.push({
         kind: "awaiting_merge",
-        label: "Approved, not merged",
-        reason:
-          "Approved, but the delivery branch has not been merged (the runner held the merge " +
-          "gate, or a merge attempt did not land). Merge now, or mark merged if you merged it by hand.",
+        label: partial ? "Partly merged" : "Approved, not merged",
+        reason: partial
+          ? `Landed in ${landing!.repos
+              .filter((r) => r.landed)
+              .map((r) => r.repo)
+              .join(", ")}; ${landing!.repos
+              .filter((r) => !r.landed)
+              .map((r) => r.repo)
+              .join(", ")} still on the delivery branch. Merge now lands the rest; the ticket ` +
+            "is done only when every repository has landed."
+          : "Approved, but the delivery branch has not been merged (the runner held the merge " +
+            "gate, or a merge attempt did not land). Merge now, or mark merged if you merged it by hand.",
         ticket: { id: t.id, number: t.number, title: t.title, status: t.status },
         decisionId: null,
         severity: null,

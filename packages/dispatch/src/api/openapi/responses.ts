@@ -178,7 +178,12 @@ export const TicketTransition = z
     ticket: TicketRow,
     event_id: eventId,
     lore_capture: z
-      .object({ captured: z.boolean(), id: nstr.optional(), reason: str.optional() })
+      .object({
+        captured: z.boolean(),
+        id: nstr.optional(),
+        repo: nstr.optional().describe("The repo whose Memory page lists the draft."),
+        reason: str.optional(),
+      })
       .optional()
       .describe("review/reject with captureLore only."),
   })

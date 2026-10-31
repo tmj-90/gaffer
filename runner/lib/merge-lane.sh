@@ -54,6 +54,20 @@ _gaffer_merge_lane() {
       log "MERGE: #$_n approved but auto-merge NOT permitted by policy (merge gate held) — left in ready_for_merge for a human"
       _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"; continue
     fi
+    # REQUIRED CI, re-read before landing: a result that turned red after the approval (a
+    # re-run, a late check) is recorded, and dispatch HOLDS the ticket for a human
+    # (blocked, ci_red) instead of it landing on the earlier green.
+    if declare -F gaffer_ci_check_once >/dev/null 2>&1 && gaffer_ci_gate_enabled \
+       && ! { declare -F gaffer_ci_gate_needs_pr >/dev/null 2>&1 && gaffer_ci_gate_needs_pr; } \
+       && [ "$(wg ticket ci-status "$_n" 2>/dev/null | jget 'd.required ? "1" : ""' 2>/dev/null)" = "1" ]; then
+      gaffer_ci_check_once "$_n" "$_repo" "$_branch"; _rc=$?
+      case "$_rc" in
+        2) log "MERGE: #$_n required CI is RED for $_branch (re-checked before landing) — HELD for a human (blocked, ci_red); nothing merged"
+           _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"; continue ;;
+        1) log "MERGE: #$_n required CI has no current PASS for $_branch (pending or unreadable) — not landing this run" ;;
+      esac
+      # rc 1 falls through: the landing decision refuses a pin without a recorded PASS.
+    fi
     log "MERGE: #$_n ready_for_merge + $_via → landing $_branch → $_def in $_repo"
     gaffer_land_delivery "$_n" "$_repo" "$_branch" "$_def" "$_show" MERGE; _rc=$?
     # rc 5 = a conflict the resolver just fixed ON the branch; the ticket is back in

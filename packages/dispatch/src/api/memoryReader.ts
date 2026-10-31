@@ -161,6 +161,60 @@ export interface MemoryReader {
   approveLore(id: string): MemoryResult<{ id: string; status: "active" }>;
   /** Drop a draft: `memory reject <id> [--reason …]`. Same contract as approveLore. */
   rejectLore(id: string, reason?: string): MemoryResult<{ id: string; status: "rejected" }>;
+  /**
+   * A record's version history (`memory history <id> --json`): the current head and
+   * every earlier snapshot, newest first — the dashboard's per-row History. A read:
+   * an unknown id or an unreachable Memory is `{ available:false, reason }`.
+   */
+  loreHistory(id: string): MemoryResult<LoreHistory>;
+}
+
+/** One version of a lore record, as `memory history --json` prints it. */
+export interface LoreVersionSummary {
+  readonly version: number;
+  readonly status: string;
+  /** When this version was written. */
+  readonly at: string;
+  readonly title: string;
+  readonly summary: string;
+}
+
+/** {@link MemoryReader.loreHistory}: the head and the earlier versions, newest first. */
+export interface LoreHistory {
+  readonly id: string;
+  readonly current: LoreVersionSummary;
+  readonly versions: readonly LoreVersionSummary[];
+}
+
+/** Parse `memory history <id> --json`; null when it is not that shape. */
+export function parseLoreHistory(stdout: string): LoreHistory | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const ver = (v: unknown): LoreVersionSummary | null => {
+    if (!v || typeof v !== "object") return null;
+    const x = v as Record<string, unknown>;
+    if (typeof x.version !== "number") return null;
+    return {
+      version: x.version,
+      status: String(x.status ?? ""),
+      at: String(x.at ?? ""),
+      title: String(x.title ?? ""),
+      summary: String(x.summary ?? ""),
+    };
+  };
+  const current = ver(o.current);
+  if (typeof o.id !== "string" || !current || !Array.isArray(o.versions)) return null;
+  return {
+    id: o.id,
+    current,
+    versions: o.versions.map(ver).filter((v): v is LoreVersionSummary => v !== null),
+  };
 }
 
 /** Filters + page for {@link MemoryReader.listLore}. */
@@ -571,6 +625,18 @@ export function createMemoryReader(env: NodeJS.ProcessEnv = process.env): Memory
       const outcome = runCli(env, args);
       if (!outcome.ok) return unavailable(outcome.reason);
       return { available: true, id, status: "rejected" };
+    },
+    loreHistory(id) {
+      if (!LORE_ID_RE.test(id)) return unavailable(`"${id}" is not a memory lore id.`);
+      const outcome = runCli(env, ["history", id, "--json"]);
+      if (!outcome.ok) return unavailable(outcome.reason);
+      const history = parseLoreHistory(outcome.stdout);
+      if (!history) {
+        return unavailable(
+          "Memory CLI `history --json` returned no parsable history — is the memory package up to date?",
+        );
+      }
+      return { available: true, ...history };
     },
     digest(repo) {
       const outcome = runCli(env, ["digest", repo]);

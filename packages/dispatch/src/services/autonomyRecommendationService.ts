@@ -142,11 +142,30 @@ export function computeRecommendations(
   rows: readonly ReviewDecisionRow[],
 ): AutonomyRecommendation[] {
   const buckets = new Map<string, Bucket>();
-  for (const row of rows) {
-    if (!GROUND_TRUTH_ACTORS.has(row.actorType)) continue; // only human/admin evidence.
-    if (!isRiskLevel(row.riskLevel)) continue;
+  // B3 — cross-repo per-RISK aggregation. At solo volume no single repo×risk bucket
+  // reaches MIN_SAMPLES, so the engine was DORMANT; aggregate per RISK across all repos.
+  // Its sample is DISTINCT human decisions: one approval of a ticket that writes to ten
+  // repositories yields ten rows (one per repository history) and was summed to
+  // "approved 10/10 across all repos". It informs each repository's history once and
+  // stays ONE observation here.
+  const perRisk = new Map<string, Bucket>();
+  const perRiskSeen = new Map<string, Set<string>>();
+  const tally = (bucket: Bucket, outcome: DecisionOutcome, row: ReviewDecisionRow): void => {
+    if (outcome === "approved") {
+      bucket.approvals += 1;
+      if (row.approvedUnchanged !== null) {
+        bucket.unchangedKnown += 1;
+        if (row.approvedUnchanged) bucket.unchanged += 1;
+      }
+    } else {
+      bucket.rejections += 1;
+    }
+  };
+  rows.forEach((row, index) => {
+    if (!GROUND_TRUTH_ACTORS.has(row.actorType)) return; // only human/admin evidence.
+    if (!isRiskLevel(row.riskLevel)) return;
     const outcome = classifyDecision(row);
-    if (outcome === "other") continue;
+    if (outcome === "other") return;
     const key = `${row.repoId}\u0000${row.riskLevel}`;
     let bucket = buckets.get(key);
     if (!bucket) {
@@ -161,26 +180,14 @@ export function computeRecommendations(
       };
       buckets.set(key, bucket);
     }
-    if (outcome === "approved") {
-      bucket.approvals += 1;
-      if (row.approvedUnchanged !== null) {
-        bucket.unchangedKnown += 1;
-        if (row.approvedUnchanged) bucket.unchanged += 1;
-      }
-    } else {
-      bucket.rejections += 1;
-    }
-  }
+    tally(bucket, outcome, row);
 
-  // B3 — cross-repo per-RISK aggregation. At solo volume no single repo×risk bucket
-  // reaches MIN_SAMPLES, so the engine was DORMANT. Aggregate the same buckets per RISK
-  // across all repos, and record which risks already have STRONG same-repo evidence so
-  // the (weaker) cross-repo prior is suppressed there.
-  const perRisk = new Map<string, Bucket>();
-  const strongApprove = new Set<string>();
-  const strongMerge = new Set<string>();
-  for (const b of buckets.values()) {
-    let r = perRisk.get(b.riskLevel);
+    let seen = perRiskSeen.get(row.riskLevel);
+    if (!seen) perRiskSeen.set(row.riskLevel, (seen = new Set<string>()));
+    const decision = row.decisionId ?? `row:${index}`;
+    if (seen.has(decision)) return; // the same decision, another repository's row.
+    seen.add(decision);
+    let r = perRisk.get(row.riskLevel);
     if (!r) {
       r = {
         // `"*"` is a SYNTHETIC marker (never a real repo id) meaning "this risk tier,
@@ -190,18 +197,22 @@ export function computeRecommendations(
         // literally named "*". Same-repo recommendations always carry a real repoId.
         repoId: "*",
         repoName: "all repos",
-        riskLevel: b.riskLevel,
+        riskLevel: row.riskLevel,
         approvals: 0,
         rejections: 0,
         unchanged: 0,
         unchangedKnown: 0,
       };
-      perRisk.set(b.riskLevel, r);
+      perRisk.set(row.riskLevel, r);
     }
-    r.approvals += b.approvals;
-    r.rejections += b.rejections;
-    r.unchanged += b.unchanged;
-    r.unchangedKnown += b.unchangedKnown;
+    tally(r, outcome, row);
+  });
+
+  // Record which risks already have STRONG same-repo evidence so the (weaker)
+  // cross-repo prior is suppressed there.
+  const strongApprove = new Set<string>();
+  const strongMerge = new Set<string>();
+  for (const b of buckets.values()) {
     const bt = b.approvals + b.rejections;
     if (bt >= MIN_SAMPLES && b.approvals / bt >= AGREEMENT_THRESHOLD) {
       strongApprove.add(b.riskLevel);

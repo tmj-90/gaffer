@@ -320,6 +320,25 @@
     gap: 10px;
     align-items: center;
   }
+  /* Read-only strip: a read token looks, never changes; it says so once. */
+  .ro-strip {
+    background: var(--sky-wash);
+    color: var(--ink);
+    border-bottom: 1px solid var(--rule);
+    font: 600 var(--t14) / 1.35 var(--f-text);
+  }
+  .ro-strip > div {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 8px var(--gut);
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+  .ro-strip .ico {
+    flex: none;
+    margin-top: 2px;
+  }
   body.is-offline #app .btn.primary,
   body.is-offline #app .btn.ok,
   body.is-offline #app .btn.danger {

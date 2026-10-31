@@ -112,7 +112,9 @@ wg() { printf 'wg %s\n' "$*" >> "$CALLS"; }
 jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 gaffer_refresh_cards() { :; }
 _gaffer_flag_on() { case "${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
-export GAFFER_DATA="$WORK/data" DISPATCH_DB="$DB" RUNNER_DIR GAFFER_DIGEST_DISABLE=1; mkdir -p "$GAFFER_DATA"
+# The fixture repo registers no gate commands; the merge gate (the combined code is gated
+# before it lands) then needs the zero-gates waiver — this suite is about the tester binding.
+export GAFFER_DATA="$WORK/data" DISPATCH_DB="$DB" RUNNER_DIR GAFFER_DIGEST_DISABLE=1 GAFFER_ALLOW_NO_DOD=1; mkdir -p "$GAFFER_DATA"
 # shellcheck source=../lib/automerge.sh
 source "$RUNNER_DIR/lib/automerge.sh"
 # shellcheck source=../lib/land.sh

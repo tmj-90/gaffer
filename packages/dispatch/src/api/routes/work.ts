@@ -183,7 +183,7 @@ export async function routeWork(
     // Continue + Poll a no-op whenever no daemon was running.
     const pending = pollablePending(wg, process.env);
     const readyCount = pending.ready;
-    const otherWork = pending.resume + pending.review + pending.testing;
+    const otherWork = pending.resume + pending.review + pending.testing + pending.clarify;
     const maintenanceOn = readIdleLoops(resolveCrewConfigPath()).maintenance.enabled;
     if (readyCount === 0 && otherWork === 0 && !maintenanceOn) {
       sendJson(res, 200, { polled: false, reason: "no_ready_work", readyCount: 0, pending });
@@ -218,12 +218,18 @@ export interface PollablePending {
   review: number;
   /** in_testing tickets the black-box tester takes (GAFFER_TESTING on). */
   testing: number;
+  /**
+   * Drafts the intake clarify pass would take (CLARIFY_DRAFTS_WHEN_IDLE on): those
+   * linked to a repo with a local checkout — the pass skips a repo-less draft.
+   */
+  clarify: number;
 }
 
 /**
  * Count the work a tick would pick up, with the same switches the runner reads:
  * resumes need GAFFER_PAUSE_ON_CAP (default on), agent review REVIEW_MODE=agent|both
- * (default human), the tester lane GAFFER_TESTING (default off). The dashboard's env
+ * (default human), the tester lane GAFFER_TESTING (default off), the intake clarify
+ * pass CLARIFY_DRAFTS_WHEN_IDLE (default off; it runs only when nothing is ready). The dashboard's env
  * carries the operator's real overrides plus settings.json and the mode preset
  * (applySettingsToEnv), so these agree with what the spawned tick will see.
  */
@@ -239,5 +245,11 @@ export function pollablePending(wg: Dispatch, env: NodeJS.ProcessEnv): PollableP
   const testing = flagOn(env["GAFFER_TESTING"])
     ? wg.listTickets({ status: "in_testing" }).length
     : 0;
-  return { ready, resume, review, testing };
+  const clarify =
+    flagOn(env["CLARIFY_DRAFTS_WHEN_IDLE"]) && ready === 0
+      ? wg
+          .listTickets({ status: "draft" })
+          .filter((t) => wg.view(t.id).repositories.some((r) => Boolean(r.local_path))).length
+      : 0;
+  return { ready, resume, review, testing, clarify };
 }

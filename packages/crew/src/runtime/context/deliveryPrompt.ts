@@ -42,6 +42,16 @@ export interface PromptWriteRepo {
   name: string;
 }
 
+/** A human's answer to a decision raised on this ticket (get_ticket's
+ *  resolved_decisions, via json-tool.mjs resolved-decisions). */
+export interface PromptResolvedDecision {
+  title: string;
+  question: string;
+  /** "accepted" — answered; "rejected" — the human declined the question. */
+  status: string;
+  answer: string;
+}
+
 /** Inputs for the delivery prompt render. All values are PRE-RESOLVED by the
  *  caller (scope resolution / worktree creation are P4; skill selection stays
  *  in the runner) — this module only renders. */
@@ -58,6 +68,9 @@ export interface DeliveryPromptInputs {
    *  (tick.sh's `_RF`, via json-tool.mjs review-feedback). [] → empty block
    *  (an empty prompt line). */
   reviewFeedbackReasons: string[];
+  /** The human's answers to decisions on this ticket, oldest first (tick.sh's
+   *  `_RD`). Absent or [] → no block, and the prompt is byte-identical to before. */
+  resolvedDecisions?: PromptResolvedDecision[];
   /** Rendered file-cards block ("" when none) — see contextPrimer.ts. */
   fileCardsBlock: string;
   /** Rendered product-context block ("" when none) — see contextPrimer.ts. */
@@ -107,6 +120,36 @@ ${quarantined}
 `;
 }
 
+/**
+ * The HUMAN ANSWERS block: each decision a human resolved on this ticket, its
+ * question and the answer, inside ONE quarantined <untrusted-decision-answers>
+ * envelope (the question may have been written by an intake agent, the answer is
+ * free text). [] → "" so a ticket without answers renders exactly as before. It
+ * sits on the review-feedback line, so it adds no line of its own when empty.
+ */
+export function renderResolvedDecisionsBlock(decisions: PromptResolvedDecision[] = []): string {
+  if (decisions.length === 0) return "";
+  const one = (s: string) => s.replace(/\s+/g, " ").trim();
+  const body = decisions
+    .map((d) => {
+      const q = [one(d.title), one(d.question)].filter(Boolean).join(": ") || "(no question text)";
+      const a =
+        d.status === "rejected"
+          ? `the human REJECTED the question${d.answer.trim() ? `: ${d.answer.trim()}` : ""}`
+          : d.answer.trim() || "(accepted with no answer text)";
+      // A multi-line answer keeps its lines, indented under its "A:".
+      return `  - Q: ${q}\n    A: ${a.replace(/\n/g, "\n       ")}`;
+    })
+    .join("\n");
+  const quarantined = quarantine("decision-answers", body);
+  return `
+HUMAN ANSWERS — a human has answered decisions raised on this ticket. Each entry inside
+the envelope below is a question and the human's answer: build to the answer, and do
+NOT raise the same question again (get_ticket's resolved_decisions carries the same).
+${quarantined}
+`;
+}
+
 /** WRITE_LIST rows: worktree path + display name + branch.
  *  NOTE: the branch is UNQUOTED here — the single quotes around $WORK_BRANCH
  *  in the awk program are shell quoting (a quote-splice), not output text. */
@@ -143,7 +186,11 @@ export function renderDeliveryPrompt(i: DeliveryPromptInputs): string {
   }
 
   const titleQ = quarantine("ticket-title", i.title, "single");
-  const reviewFeedbackBlock = renderReviewFeedbackBlock(i.reviewFeedbackReasons);
+  // The human's decision answers ride on the review-feedback line: with none, both
+  // blocks are "" and the prompt is byte-identical to the goldens.
+  const reviewFeedbackBlock =
+    renderReviewFeedbackBlock(i.reviewFeedbackReasons) +
+    renderResolvedDecisionsBlock(i.resolvedDecisions);
   const writeList = renderWriteList(i.writeRepos, i.workBranch);
   const readList = renderReadList(i.readRoots);
 

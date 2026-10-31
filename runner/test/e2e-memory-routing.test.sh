@@ -127,6 +127,10 @@ echo other > "$D/kind"; printf '{"type":"result","subtype":"success","is_error":
 STUB
 sed -i.bak "s|__CALLS__|$CALLS|; s|__ANALYSIS__|$ANALYSIS|" "$WORK/bin/claude" && rm -f "$WORK/bin/claude.bak"; chmod +x "$WORK/bin/claude"
 
+# GAFFER_DATA_DIR isolates crew's repo context store (default ~/.crew) in this test's
+# tree: a stale record from an earlier run would otherwise make onboarding refuse the
+# fixture repo's name (NAME_TAKEN).
+export GAFFER_DATA_DIR="$WORK/crew-data"
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=60 GAFFER_MAX_TURNS=10 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0 GAFFER_MAINTENANCE=0 AUTO_MERGE=0 GAFFER_STRICT_REQUIRE=0 GAFFER_SECURITY_REVIEW=0

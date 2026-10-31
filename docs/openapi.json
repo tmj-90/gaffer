@@ -1438,6 +1438,75 @@
         "x-capability": "read"
       }
     },
+    "/api/memory/lore/{id}/history": {
+      "get": {
+        "operationId": "getApiMemoryLoreByIdHistory",
+        "tags": [
+          "Memory"
+        ],
+        "summary": "A lore record's version history",
+        "description": "Read server-side through `memory history <id> --json`: the current head and every earlier version (each update snapshots the previous row), newest first. Answers `{ available, id, current, versions }`, or `{ available: false, reason }` with 200 when the record is unknown or the memory product is unavailable.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The history, or `{ available: false }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
     "/api/memory/lore/{id}/approve": {
       "post": {
         "operationId": "postApiMemoryLoreByIdApprove",
@@ -9300,8 +9369,8 @@
           },
           "check_command": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "description": "Additional validation rule applies (not expressible in JSON Schema). Additional validation rule applies (not expressible in JSON Schema)."
           }
         },
         "required": [
@@ -9447,11 +9516,37 @@
               },
               "acceptance": {
                 "type": "boolean"
+              },
+              "agreed_requirements": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "question": {
+                      "type": "string",
+                      "maxLength": 4000
+                    },
+                    "answer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 4000
+                    }
+                  },
+                  "required": [
+                    "answer"
+                  ]
+                },
+                "maxItems": 50
               }
             },
             "required": [
               "name"
             ]
+          },
+          "plan_session_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           },
           "tickets": {
             "type": "array",
@@ -12960,6 +13055,17 @@
                     "type": "null"
                   }
                 ]
+              },
+              "repo": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The repo whose Memory page lists the draft."
               },
               "reason": {
                 "type": "string"

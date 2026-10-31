@@ -25,6 +25,8 @@ export function registerEpic(program: Command): void {
         epic_node_id: res.epicNodeId,
         ticket_numbers: res.ticketNumbers,
         deferred_repo_links: res.deferredRepoLinks,
+        acceptance_ticket_number: res.acceptanceTicketNumber,
+        agreed_requirements: res.agreedRequirements,
       });
       wg.db.close();
     });

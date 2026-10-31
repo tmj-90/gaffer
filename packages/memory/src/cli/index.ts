@@ -80,7 +80,7 @@ COMMANDS
                             --no-record-reads (bookkeeping lookups: don't
                             count the hits as reads in memory stats)
   show <id>                 Print the full record (body included).
-  history <id>              List the record's earlier versions (every update
+  history <id> [--json]     List the record's earlier versions (every update
                             snapshots the previous row), newest first.
   list [--repo X] [--status draft,active] [--kind K] [--limit N] [--offset N] [--json]
                             Recent records across all lifecycle states; the flags

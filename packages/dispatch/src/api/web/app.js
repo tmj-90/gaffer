@@ -14088,18 +14088,36 @@ async function renderCreate(param) {
     ...RISK_LEVELS.map((r) => el("option", { value: r }, r)),
   ]);
 
+  const validationMsg = el("p", { class: "form-error", role: "alert", hidden: "" });
+  // Create waits for a write repo: aria-disabled (not disabled) keeps it focusable,
+  // and the line under it says what is missing before anyone presses it.
+  const createHintId = `create-hint-${++fieldSeq}`;
+  const createHint = el("p", { class: "act-hint create-hint", id: createHintId });
+  const createBtn = el(
+    "button",
+    { class: "btn", type: "submit", "aria-describedby": createHintId },
+    "Create ticket",
+  );
+  const syncCreate = ({ hasWrite }) => {
+    createBtn.setAttribute("aria-disabled", String(!hasWrite));
+    createHint.hidden = hasWrite;
+    createHint.textContent = hasWrite
+      ? ""
+      : "Attach a write repo first: Create needs somewhere to deliver.";
+    if (hasWrite) validationMsg.hidden = true;
+  };
+
   // Feature A: the shared repo + scope selector. Suggestions re-populate when the
   // title/description/scope change (debounced), so the picker reflects the draft.
   const selector = renderRepoScopeSelector({
     nodes,
     allRepos,
     getDraft: () => ({ title: title.value.trim(), description: desc.value.trim() }),
+    onChange: (state) => syncCreate(state),
   });
   const debouncedSuggest = debounce(() => selector.refreshSuggestions(), 500);
   title.addEventListener("input", debouncedSuggest);
   desc.addEventListener("input", debouncedSuggest);
-
-  const validationMsg = el("p", { class: "form-error", role: "alert", hidden: "" });
 
   const form = el(
     "form",
@@ -14143,9 +14161,8 @@ async function renderCreate(param) {
       ]),
       selector.node,
       validationMsg,
-      el("div", { class: "btn-row" }, [
-        el("button", { class: "btn", type: "submit" }, "Create ticket"),
-      ]),
+      el("div", { class: "btn-row" }, [createBtn]),
+      createHint,
     ],
   );
 
@@ -14194,8 +14211,11 @@ async function renderCreate(param) {
  *   getSelection()      — { repoIds: [{repo_id, access}], scopeNodeIds: [] }
  *   hasWriteRepo()      — true iff ≥1 attached repo has write access
  *   refreshSuggestions()— re-query suggestions from the current draft + scopes
+ *
+ * `onChange({ hasWrite })` runs after every change to the attached repos (and once
+ * on the first render), so a form can hold its submit until there is a write repo.
  */
-function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
+function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
   // repo id → access ("write"|"read"|"test"). Insertion order is render order.
   const attached = new Map();
   const scopeNodeIds = new Set();
@@ -14331,6 +14351,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft }) {
     writeHint.textContent = hasWrite
       ? "✓ This ticket has a write target — it can be delivered."
       : "Needs at least one write repo, so the factory has somewhere to deliver.";
+    if (onChange) onChange({ hasWrite });
   }
 
   // --- suggestion population ------------------------------------------------

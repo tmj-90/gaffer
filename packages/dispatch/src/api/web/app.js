@@ -3934,7 +3934,12 @@ function renderOwnedItem(it, i = 0, f = null) {
   const ref = t ? (t.number != null ? `#${t.number}` : t.id.slice(0, 8)) : null;
   const href = t ? (it.kind === "review" ? `#/review/${t.id}` : `#/ticket/${t.id}`) : null;
   const title = t && t.title ? t.title : it.kind === "decision" ? decisionTitle(it, f) : null;
-  const reason = it.reason || "(no reason given)";
+  // An approved change's row says why it waits in its landing_state's words (the ticket
+  // page's): the queue's generic "the runner held the merge gate, or a merge attempt did
+  // not land" was false for an approval nothing lands, one the merge lane lands next
+  // tick, and one landing now.
+  const landing = it.kind === "awaiting_merge" && t ? t.landing_state : null;
+  const reason = (landing && landing.detail) || it.reason || "(no reason given)";
   // Who played it: the agent on the ticket's latest claim (a change, a merge, a parked ticket).
   const by = f && t && OWN_BY_KINDS.has(it.kind) ? deliveredBy(f.details.get(t.id)?.events) : null;
   const tFlag =
@@ -3947,9 +3952,7 @@ function renderOwnedItem(it, i = 0, f = null) {
           ycard(16, "ycard-row"),
           OWN_GLYPH[it.kind] ? glyph(OWN_GLYPH[it.kind], 16) : null,
           // An approved change says where its landing is (the ticket page's own words).
-          (it.kind === "awaiting_merge" && t && t.landing_state && t.landing_state.label) ||
-            OWN_WORD[it.kind] ||
-            it.label,
+          (landing && landing.label) || OWN_WORD[it.kind] || it.label,
         ]),
         ref ? el("span", { class: "own-ref" }, ref) : null,
       ]),

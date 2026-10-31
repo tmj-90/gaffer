@@ -284,12 +284,12 @@ describe("the sign-off and what Approve does agree (real API, real git, JSDOM)",
     expect(page.ticket.landing_state?.label).toBe("Approved · lands next tick");
     // The human queue the Team Sheet reads, from the real API.
     const q = (await (await realFetch(`${base}/api/human-queue`)).json()) as {
-      items: Array<{ kind: string; reason: string; ticket: { id: string } | null }>;
+      items: Array<{ kind: string; ticket: { id: string } | null }>;
     };
-    const item = q.items.find((i) => i.ticket?.id === id);
+    const item = q.items.find((i) => i.ticket?.id === id) as
+      { kind: string; ticket: { landing_state?: { label: string } } } | undefined;
     expect(item?.kind).toBe("awaiting_merge");
-    expect(item?.reason).not.toMatch(/runner held the merge gate|did not land/);
-    expect(item?.reason).toContain("merge lane lands");
+    expect(item?.ticket.landing_state?.label).toBe("Approved · lands next tick");
     // The Overview's Team Sheet row.
     location.hash = "#/";
     let row: Element | null = null;

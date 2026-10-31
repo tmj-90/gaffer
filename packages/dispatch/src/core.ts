@@ -2833,16 +2833,7 @@ export class Dispatch {
         const t = it.ticket;
         if (!t || (t.status !== "ready_for_merge" && t.status !== "blocked")) return it;
         const ls = this.landingState(t.id);
-        if (!ls) return it;
-        // An approved change's row says why it waits in the landing_state's own words:
-        // the generic "the runner held the merge gate, or a merge attempt did not land"
-        // was false for an approval nothing lands (AUTO_MERGE off), one the merge lane
-        // lands next tick, and one landing now.
-        return {
-          ...it,
-          ...(it.kind === "awaiting_merge" ? { reason: ls.detail } : {}),
-          ticket: { ...t, landing_state: ls },
-        };
+        return ls ? { ...it, ticket: { ...t, landing_state: ls } } : it;
       }),
     };
   }

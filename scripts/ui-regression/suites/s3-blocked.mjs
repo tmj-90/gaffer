@@ -1,7 +1,8 @@
 // S3 blocked / unblock, the Team Sheet's one-action rows, the human lane, revoking
 // a live claim, and the command palette. A delivery that exhausts its rework budget
 // parks to blocked and is unblocked from the Team Sheet (to Refining, then Ready); an
-// approved-but-unmerged ticket is closed with "I merged it by hand"; a ready ticket is
+// approved-but-unmerged ticket is closed with "I merged it by hand" once its branch is
+// merged by hand (pressed before the merge it is refused: not landed); a ready ticket is
 // taken by hand and handed back from its Work card; a live agent claim is revoked with
 // the two-press button; the palette finds a ticket by number.
 export default async function s3(t, L) {
@@ -117,7 +118,25 @@ export default async function s3(t, L) {
     );
     if (seen) {
       await mbtn.click();
-      await p.locator('.sheet.open button:has-text("I merged it by hand")').click();
+      const byHand = p.locator('.sheet.open button:has-text("I merged it by hand")');
+      // `done` means the approved revision landed: pressed before the merge, it is
+      // refused (the ticket stays ready_for_merge and the toast says what has not landed).
+      await L.clearToast(p);
+      await byHand.click();
+      const early = await L.waitToast(p, /not landed/, 5000);
+      t.check(
+        early && (await L.ticketOf(appr.id)).status === "ready_for_merge",
+        `"I merged it by hand" before the merge is refused: #${appr.number} stays ready_for_merge (toast "${early}")`,
+        `early mark-merged: status=${(await L.ticketOf(appr.id)).status} toast=${early}`,
+      );
+      // The operator merges the delivery branch by hand, then says so.
+      const branch = (await L.ticketOf(appr.id)).branch_name;
+      L.git(L.REPO_PATH, "merge", "--no-ff", "-q", "-m", `Merge ${branch} (by hand)`, branch);
+      await L.clearToast(p);
+      if (!(await byHand.isVisible().catch(() => false))) {
+        await mbtn.click();
+      }
+      await byHand.click();
       const done = await L.waitStatus(appr.id, ["done"], 15000, 500);
       const tst = await L.waitToast(p, /marked merged/, 5000);
       t.check(

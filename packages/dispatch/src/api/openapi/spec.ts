@@ -423,11 +423,23 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Kanban board",
     capability: "read",
-    query: { repo: { description: "Limit to one repository (name or id)." } },
+    query: {
+      repo: { description: "Limit to one repository (name or id)." },
+      limit: {
+        description:
+          "A visible window: at most this many cards per area (1..1000). Without it every card is returned.",
+      },
+      offset: { description: "With `limit`: skip this many cards in each area (default 0)." },
+      area: {
+        description:
+          "With `limit`: return only this area's window (a column, `closed` or `wontDo`); the other areas come back empty.",
+      },
+    },
     responses: [
       ok(
-        "`BoardView`: the columns plus the closed area. A card's `claim` carries `agent_display`.",
+        "`BoardView`: the columns plus the closed area, `counts` (every area's total, whatever the window) and `window` (the window applied, or null). With a window, Done, closed and won't-do are newest first. A card's `claim` carries `agent_display`.",
       ),
+      invalid,
     ],
   },
   {

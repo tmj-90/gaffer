@@ -8023,7 +8023,14 @@ async function renderWork() {
   // mode (list mode does not fetch the board at all). Repos + scope nodes feed the
   // "Suggest work" target picker (Feature B) and the repo filter. The human queue
   // says which cards wait on you; the claims say who is on the pitch.
-  const boardQs = workState.repo ? `?repo=${encodeURIComponent(workState.repo)}` : "";
+  // The board is fetched as a VISIBLE WINDOW (WORK_BOARD_WINDOW cards per lane, Done
+  // newest first) plus whole-board counts: a factory with tens of thousands of
+  // historical tickets once shipped every card to render ~60 per lane (and the
+  // unfiltered board failed outright at 32,767 tickets). The rest is one link away in
+  // the List view, which filters server-side.
+  const boardParams = new URLSearchParams({ limit: String(WORK_BOARD_WINDOW) });
+  if (workState.repo) boardParams.set("repo", workState.repo);
+  const boardQs = `?${boardParams}`;
   const listQs = new URLSearchParams();
   if (workState.status) listQs.set("status", workState.status);
   if (workState.repo) listQs.set("repo", workState.repo);
@@ -8041,9 +8048,15 @@ async function renderWork() {
     ensureSquad(),
   ]);
   const { repos, nodes } = ref;
-  const columns = (board && board.columns) || [];
+  const counts = (board && board.counts) || null;
+  // Each lane carries its TRUE size (`total`), whatever the window loaded.
+  const columns = ((board && board.columns) || []).map((c) => ({
+    ...c,
+    total: counts && counts.columns ? (counts.columns[c.column] ?? c.cards.length) : undefined,
+  }));
   const closed = (board && board.closed) || [];
   const wontDo = (board && board.wontDo) || [];
+  const totals = counts ? { closed: counts.closed, wontDo: counts.wontDo } : null;
   const tickets = (listRes && listRes.tickets) || [];
   const claims = (claimsRes && claimsRes.claims) || [];
   learnAgents(claims);
@@ -8056,7 +8069,7 @@ async function renderWork() {
   // filter on they count the matching cards (BRIEF §2: header counts equal lane
   // counts), and they are redrawn as the viewer types.
   const subText = () =>
-    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo);
+    list ? workListSummary(tickets, needs) : workSummaryLine(columns, closed, wontDo, totals);
   const head = viewHead("Work board", subText(), [
     pollWorkButton(),
     suggestWorkButton(repos, nodes),
@@ -8075,7 +8088,9 @@ async function renderWork() {
 
   // The board or the list, rebuilt in place (no fetch) as the viewer types.
   const build = () =>
-    list ? renderWorkList(tickets, needs, claims) : renderBoard(columns, closed, wontDo, needs);
+    list
+      ? renderWorkList(tickets, needs, claims)
+      : renderBoard(columns, closed, wontDo, needs, totals);
   let main = build();
   const toolbar = renderWorkToolbar(repos, () => {
     const next = build();
@@ -8137,21 +8152,40 @@ function hashText(str) {
  *   failed  = the closed area (the board puts only `failed` tickets there)
  *   wontDo  = cancelled
  */
-function boardCounts(columns, closed = [], wontDo = []) {
+function boardCounts(columns, closed = [], wontDo = [], totals = null) {
   const by = {};
   for (const c of columns) by[c.column] = c.total ?? (c.cards || []).length;
   const live = Object.entries(by)
     .filter(([k]) => k !== "done")
     .reduce((n, [, v]) => n + v, 0);
-  return { by, live, shipped: by.done || 0, failed: closed.length, wontDo: wontDo.length };
+  return {
+    by,
+    live,
+    shipped: by.done || 0,
+    failed: totals ? totals.closed : closed.length,
+    wontDo: totals ? totals.wontDo : wontDo.length,
+  };
 }
 
-/** The board's columns, closed and won't-do narrowed to the client-side filters. */
+/** Cards per lane the Work board loads (the API's visible window). */
+const WORK_BOARD_WINDOW = 200;
+
+/** True when some lane holds more cards than the window loaded. */
+function boardTruncated(columns) {
+  return columns.some((c) => c.total != null && c.total > (c.cards || []).length);
+}
+
+/**
+ * The board's columns, closed and won't-do narrowed to the client-side filters.
+ * Unfiltered, a lane keeps its true size (`total`); filtered, it counts the loaded
+ * cards that match.
+ */
 function workVisible(columns, closed = [], wontDo = []) {
+  const filtered = workFiltered();
   return {
     columns: columns.map((c) => {
       const cards = (c.cards || []).filter(workMatches);
-      return { ...c, cards, total: cards.length };
+      return { ...c, cards, total: filtered ? cards.length : (c.total ?? cards.length) };
     }),
     closed: closed.filter(workMatches),
     wontDo: wontDo.filter(workMatches),
@@ -8172,10 +8206,10 @@ function workFilterWords() {
  * With a filter on: "4 of 25 tickets match “refund”: 1 draft · 1 blocked …", so
  * the line always equals the lane heads below it.
  */
-function workSummaryLine(columns, closed = [], wontDo = []) {
-  const all = boardCounts(columns, closed, wontDo);
+function workSummaryLine(columns, closed = [], wontDo = [], totals = null) {
+  const all = boardCounts(columns, closed, wontDo, totals);
   const vis = workVisible(columns, closed, wontDo);
-  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo);
+  const counts = boardCounts(vis.columns, vis.closed, vis.wontDo, workFiltered() ? null : totals);
   const parts = columns
     .filter((c) => counts.by[c.column] > 0)
     // A count never wraps away from its lane name ("1 / done").
@@ -8688,11 +8722,20 @@ function phoneLaneOrder(columns) {
 }
 
 /** Board (kanban) — mown lanes by status; filters narrow the cards client-side. */
-function renderBoard(columns, closed, wontDo = [], needs = null) {
+function renderBoard(columns, closed, wontDo = [], needs = null, totals = null) {
   const wrap = el("div", { class: "board-wrap" });
   const phone = isPhoneWidth();
   const total = columns.reduce((n, c) => n + (c.cards || []).length, 0);
   const shown = columns.reduce((n, c) => n + (c.cards || []).filter(workMatches).length, 0);
+  // A filter narrows only the cards the window loaded: say so, and where to search all.
+  if (workFiltered() && boardTruncated(columns)) {
+    wrap.appendChild(
+      el("p", { class: "section-note work-window-note", role: "status" }, [
+        `Filters apply to the first ${WORK_BOARD_WINDOW} cards of each lane. `,
+        el("a", { href: "#/work?mode=list" }, "The list searches every ticket."),
+      ]),
+    );
+  }
   if (!total && !closed.length && !wontDo.length && !workFiltered()) {
     wrap.appendChild(
       emptyState(
@@ -8722,13 +8765,15 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const all = (c.cards || []).filter(workMatches);
       const cards = capLane(c.column, all);
       const label = BOARD_COLUMN_LABELS[c.column] || c.column;
+      // The lane's true size: the server's count unfiltered, the matches filtered.
+      const laneTotal = workFiltered() ? all.length : (c.total ?? all.length);
       const body = el(
         "div",
         { class: "board-col-body" },
         cards.length
           ? [
               ...cards.map((card) => renderBoardCard(card, c.column, needs)),
-              laneMoreLink(c.column, cards.length, all.length),
+              laneMoreLink(c.column, cards.length, laneTotal),
             ]
           : el("p", { class: "board-empty" }, "Nothing here."),
       );
@@ -8755,7 +8800,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
       const headBits = [
         glyph(c.column, 18),
         el("h2", { class: "board-col-title" }, label),
-        el("span", { class: "board-col-count tabnum" }, String(all.length)),
+        el("span", { class: "board-col-count tabnum" }, String(laneTotal)),
       ];
       let inner;
       if (phone && all.length) {
@@ -8783,7 +8828,7 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
         {
           class: `board-col col-${c.column} ${laneIdx % 2 ? "lane-b" : "lane-a"}`,
           dataset: { column: c.column, status: c.column },
-          "aria-label": `${label}: ${all.length}`,
+          "aria-label": `${label}: ${laneTotal}`,
         },
         inner,
       );
@@ -8796,32 +8841,41 @@ function renderBoard(columns, closed, wontDo = [], needs = null) {
   // Closed without merging: won't do (reversible: Reopen → refining) and failed.
   const wontDoVisible = wontDo.filter(workMatches);
   const failedVisible = closed.filter(workMatches);
+  const areaTotal = (list, key) => (!workFiltered() && totals ? totals[key] : list.length);
   if (wontDoVisible.length || failedVisible.length) {
-    const group = (cls, title, list, action) =>
-      el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${list.length}` }, [
+    const group = (cls, title, list, action, key) => {
+      const n = areaTotal(list, key);
+      return el("section", { class: `closed-area ${cls}`, "aria-label": `${title}: ${n}` }, [
         el("h3", { class: "closed-head" }, [
           glyph(list[0].status, 16),
           el("span", {}, title),
-          el("span", { class: "closed-count tabnum" }, String(list.length)),
+          el("span", { class: "closed-count tabnum" }, String(n)),
         ]),
         el("ul", { class: "closed-cards" }, [
           ...list.slice(0, BOARD_CLOSED_CAP).map((t) => closedRow(t, action)),
         ]),
-        list.length > BOARD_CLOSED_CAP
-          ? el("p", { class: "section-note" }, `Showing ${BOARD_CLOSED_CAP} of ${list.length}.`)
+        n > BOARD_CLOSED_CAP
+          ? el(
+              "p",
+              { class: "section-note" },
+              `Showing ${Math.min(BOARD_CLOSED_CAP, list.length)} of ${n}.`,
+            )
           : null,
       ]);
+    };
     wrap.appendChild(
       progPage(
         "work-closed",
         null,
         "Closed without merging",
-        plural(wontDoVisible.length + failedVisible.length, "ticket"),
+        plural(areaTotal(wontDoVisible, "wontDo") + areaTotal(failedVisible, "closed"), "ticket"),
         el("div", { class: "closed-groups" }, [
           wontDoVisible.length
-            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen)
+            ? group("wont-do-area", "Won't do", wontDoVisible, wontDoReopen, "wontDo")
             : null,
-          failedVisible.length ? group("failed-area", "Failed", failedVisible, null) : null,
+          failedVisible.length
+            ? group("failed-area", "Failed", failedVisible, null, "closed")
+            : null,
         ]),
       ),
     );

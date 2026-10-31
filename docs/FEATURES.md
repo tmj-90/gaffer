@@ -101,6 +101,14 @@ Day-to-day, work lives on the board. Tickets flow through
 Every card carries a **risk badge**, a **priority**, and live
 **acceptance-criteria progress** (`2/3 satisfied`).
 
+The board stays usable on a factory with years of history. The Work view loads
+a visible window of each lane (`GET /api/board?limit=200`; Done, failed and won't-do
+newest first) and the lane heads show each lane's true size from the server's
+`counts`; the rest of a lane is one link away in the List view, which filters on
+the server. A filter typed on a windowed board applies to the loaded cards and says
+so. Without `limit` the endpoint still returns every card, and it no longer has a
+size ceiling (it used to fail at 32,767 tickets on SQLite's variable limit).
+
 An acceptance criterion can be **machine-checkable**: give it a check command
 (`npm test`, a script, an HTTP probe) and the runner executes it in the delivery
 worktree after the Definition-of-Done gates. Exit 0 marks the criterion

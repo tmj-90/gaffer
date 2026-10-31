@@ -17,7 +17,9 @@ import {
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
 import { aggregateHealth, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
+import { isBoardArea } from "../../services/boardService.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
+import { DispatchError } from "../../util/errors.js";
 import { errorBody, methodNotAllowed, safeDecode, sendJson } from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import { buildRunDetail } from "../runDetail.js";
@@ -108,11 +110,38 @@ export function routeReadModels(
   // filtered, paged read through `memory list --json` with mutating siblings.
 
   // /api/board — tickets grouped into kanban columns (+ closed area).
-  // Accepts optional ?repo= to restrict the board to one repository.
+  // Accepts optional ?repo= to restrict the board to one repository, and a visible
+  // WINDOW: ?limit=N (cards per area, 1..1000) [&offset=M] [&area=<column|closed|wontDo>]
+  // returns at most N cards per area from M (only that area with ?area=), while
+  // `counts` always carries every area's total. Without ?limit every card is returned.
   if (segments.length === 2 && segments[1] === "board") {
     if (method !== "GET") return methodNotAllowed(res);
     const repoFilter = url.searchParams.get("repo") ?? undefined;
-    sendJson(res, 200, wg.board(repoFilter));
+    const rawLimit = url.searchParams.get("limit");
+    if (rawLimit === null) {
+      sendJson(res, 200, wg.board(repoFilter));
+      return;
+    }
+    const limit = Number.parseInt(rawLimit, 10);
+    const offset = Number.parseInt(url.searchParams.get("offset") ?? "0", 10);
+    const area = url.searchParams.get("area") ?? undefined;
+    if (
+      !Number.isFinite(limit) ||
+      limit < 1 ||
+      limit > 1000 ||
+      !Number.isFinite(offset) ||
+      offset < 0
+    ) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "limit must be 1..1000 and offset a non-negative integer.",
+        { limit: rawLimit, offset: url.searchParams.get("offset") },
+      );
+    }
+    if (area !== undefined && !isBoardArea(area)) {
+      throw new DispatchError("VALIDATION_ERROR", `'${area}' is not a board area.`, { area });
+    }
+    sendJson(res, 200, wg.board(repoFilter, { limit, offset, ...(area ? { area } : {}) }));
     return;
   }
 

@@ -36,6 +36,7 @@ const card = (n: number, status: string, extra: Card = {}): Card => ({
 });
 
 let board: unknown;
+const boardUrls: string[] = [];
 
 function json(obj: unknown): Response {
   return new Response(JSON.stringify(obj), {
@@ -48,7 +49,10 @@ function stubFetch(): void {
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes("/api/board")) return json(board);
+      if (url.includes("/api/board")) {
+        boardUrls.push(url);
+        return json(board);
+      }
       if (url.includes("/repositories")) return json({ repositories: [] });
       if (url.includes("/scope/nodes")) return json({ nodes: [] });
       if (url.includes("/claims")) return json({ claims: [] });
@@ -94,6 +98,7 @@ describe("web: Work board counts and bounds", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     document.body.innerHTML = "";
+    boardUrls.length = 0;
   });
 
   it("counts Shipped from the Done lane and Failed from the closed area", async () => {
@@ -203,5 +208,80 @@ describe("web: Work board counts and bounds", () => {
       "ready_for_merge",
       "in_testing",
     ]);
+  });
+
+  it("asks for a visible window and keeps every lane's TRUE size from the server counts", async () => {
+    // Third external review: the unfiltered board shipped every historical ticket
+    // (and failed outright at 32,767). Work now asks for a window per lane; the lane
+    // heads, the header line and the closed area count from `counts`.
+    const done = Array.from({ length: 200 }, (_, i) => card(40_000 - i, "done"));
+    const ready = Array.from({ length: 200 }, (_, i) => card(1 + i, "ready"));
+    const wontDo = Array.from({ length: 200 }, (_, i) => card(30_000 + i, "cancelled"));
+    board = {
+      columns: columns({ done, ready }),
+      closed: [],
+      wontDo,
+      counts: {
+        columns: {
+          draft: 0,
+          ready: 5_000,
+          in_progress: 0,
+          blocked: 0,
+          in_review: 0,
+          in_testing: 0,
+          ready_for_merge: 0,
+          done: 20_000,
+        },
+        closed: 0,
+        wontDo: 5_000,
+      },
+      window: { limit: 200, offset: 0 },
+    };
+    await loadApp();
+    expect(boardUrls.some((u) => /\/api\/board\?limit=200\b/.test(u))).toBe(true);
+    const doneLane = document.querySelector('[data-column="done"]')!;
+    expect(doneLane.querySelector(".board-col-count")?.textContent).toBe("20000");
+    expect(doneLane.getAttribute("aria-label")).toBe("Done: 20000");
+    expect(doneLane.querySelectorAll(".board-card").length).toBe(25);
+    expect(doneLane.querySelector("a.lane-more")?.textContent).toBe(
+      "Showing 25 of 20000 — see all in the list",
+    );
+    const readyLane = document.querySelector('[data-column="ready"]')!;
+    expect(readyLane.querySelector(".board-col-count")?.textContent).toBe("5000");
+    const sub = document.querySelector(".view-work .view-sub")?.textContent || "";
+    expect(sub).toContain("25000 tickets in lanes");
+    expect(sub).toContain("5000 won't do");
+    expect(document.querySelector(".work-window-note")).toBeNull();
+  });
+
+  it("with a filter on a windowed board, says the filter covers the loaded window", async () => {
+    const ready = Array.from({ length: 200 }, (_, i) => card(1 + i, "ready"));
+    board = {
+      columns: columns({ ready }),
+      closed: [],
+      wontDo: [],
+      counts: {
+        columns: {
+          draft: 0,
+          ready: 5_000,
+          in_progress: 0,
+          blocked: 0,
+          in_review: 0,
+          in_testing: 0,
+          ready_for_merge: 0,
+          done: 0,
+        },
+        closed: 0,
+        wontDo: 0,
+      },
+      window: { limit: 200, offset: 0 },
+    };
+    location.hash = "#/work?q=Ticket%2012";
+    await loadApp();
+    const note = document.querySelector(".work-window-note");
+    expect(note?.textContent).toBe(
+      "Filters apply to the first 200 cards of each lane. The list searches every ticket.",
+    );
+    expect(note?.querySelector("a")?.getAttribute("href")).toBe("#/work?mode=list");
   });
 });

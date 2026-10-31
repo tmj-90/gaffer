@@ -1368,9 +1368,18 @@ describe("CLI — stats --roi (retrieval-ROI report)", () => {
     expect(rec.bounceCorrelated).toBe(false);
     // The never-used lore surfaces as a pruning candidate.
     expect(report.neverRetrievedTotal).toBeGreaterThanOrEqual(1);
-    // Honesty: no percentage/ratio field in the raw JSON.
-    expect(out.toLowerCase()).not.toContain("pct");
-    expect(out.toLowerCase()).not.toContain("percent");
-    expect(out.toLowerCase()).not.toContain("effectiveness");
+    // Honesty: no percentage/ratio field in the raw JSON. Check the KEYS, not the
+    // whole text: a random record id once contained "pct".
+    const keys = new Set<string>();
+    const walk = (v: unknown): void => {
+      if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === "object")
+        for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+          keys.add(k.toLowerCase());
+          walk(x);
+        }
+    };
+    walk(report);
+    for (const k of keys) expect(k).not.toMatch(/pct|percent|effectiveness/);
   });
 });

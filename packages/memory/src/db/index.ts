@@ -44,7 +44,20 @@ export function openDb(path: string = defaultDbPath()): Database {
     }
   }
   db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  db.pragma("journal_mode = WAL");
+  // Switching the journal mode needs an exclusive lock that busy_timeout does not
+  // always wait for: two processes opening a FRESH database together can get
+  // SQLITE_BUSY here (seen on a CI runner). Retry briefly; a second opener finds
+  // WAL already set and the pragma is a no-op.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      db.pragma("journal_mode = WAL");
+      break;
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      if (code !== "SQLITE_BUSY" || attempt >= 40) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+  }
   db.pragma("foreign_keys = ON");
   db.pragma("synchronous = NORMAL");
   // Overwrite freed pages on delete, so a deleted / rejected record's text (and

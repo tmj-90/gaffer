@@ -122,7 +122,13 @@ cat > "$FAKE/tick.sh" <<'TICKSH'
 #!/usr/bin/env bash
 echo "tick MAX=${MAX_TICKS_PER_DAY:-}" >> "${STUB_CALLS:?}"
 n="$(grep -c '^tick' "$STUB_CALLS")"
-[ -f "$SEQ/$n.json" ] && cp "$SEQ/$n.json" "$GAFFER_DATA/settings.json"
+# Apply every edit due by now, not only the one numbered exactly n: two pool
+# workers can both append before either counts, so neither sees n=1 and the
+# edit is never applied. Idempotent: the highest due edit wins, as in sequence.
+i=1; while [ "$i" -le "$n" ]; do
+  [ -f "$SEQ/$i.json" ] && cp "$SEQ/$i.json" "$GAFFER_DATA/settings.json"
+  i=$((i + 1))
+done
 # STUB_COST: each tick "spends" this many dollars in today's usage ledger.
 [ -n "${STUB_COST:-}" ] && printf '{"ts":"%s","kind":"delivery","measured":true,"total_cost_usd":%s}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$STUB_COST" >> "$GAFFER_DATA/usage-ledger.jsonl"

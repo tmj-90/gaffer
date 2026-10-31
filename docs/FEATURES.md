@@ -329,8 +329,11 @@ it printed none. No tick claims work meanwhile; `gaffer run --daemon`, the loop 
 a worker pool sleep instead of spinning. `gaffer status` and the **Health** view
 show "Paused until <time>: usage limit", and the ticket's timeline records the
 refusal. The pause lifts on its own. An overnight run that hits its window no longer
-parks good tickets. A spend cap or an admin switch is not a pause: it needs someone
-to raise the cap, so those tickets are parked for a person as before.
+parks good tickets. The same holds when the refused call was a new repo's
+scaffold, the independent tester or the agent reviewer: the factory pauses and the
+ticket waits where it was, rather than being parked or held for a person. A spend
+cap or an admin switch is not a pause: it needs someone to raise the cap, so those
+tickets are parked for a person as before.
 
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to

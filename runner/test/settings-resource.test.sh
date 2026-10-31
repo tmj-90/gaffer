@@ -30,6 +30,9 @@
 # Run: bash test/settings-resource.test.sh   (bash 3.2 safe)
 # =====================================================================
 set -uo pipefail
+# macOS has no coreutils `timeout`; perl's alarm is the portable bound (a binary, so it
+# works inside `env -i …` too).
+if command -v timeout >/dev/null 2>&1; then BOUND=(timeout); else BOUND=(perl -e 'alarm shift; exec @ARGV'); fi
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 command -v node >/dev/null 2>&1 || { echo "SKIP: node required"; exit 0; }
@@ -100,7 +103,7 @@ exit 0
 STUBSH
 chmod +x "$STUB"
 ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$D" GAFFER_LOOP_SH="$STUB" GAFFER_DAEMON_MAX_CYCLES=4 \
-  timeout 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
+  "${BOUND[@]}" 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
 L1="$(sed -n 1p "$LOG")"; L2="$(sed -n 2p "$LOG")"; NP="$(grep -c '^pass' "$LOG")"
 [ "$L1" = "pass MAX=40 DAY=5" ] && ok "daemon pass 1 used the settings at start" || fail "pass 1: $L1"
 [ "$L2" = "pass MAX=40 DAY=0.5" ] && ok "daemon pass 2 saw the edited daily USD cap without a restart" || fail "pass 2 stale: $L2"
@@ -136,7 +139,7 @@ run_loop() {
     DISPATCH_DIR="$WORK/nodist" DISPATCH_DB="$WORK/db.sqlite" MEMORY_DB="$WORK/mem.sqlite" \
     STUB_CALLS="$WORK/calls" SEQ="$seq" \
     LOOP_STATS_CMD="$WORK/noop.sh" LOOP_HQ_CMD="$WORK/noop.sh" LOOP_NOTIFY_EMIT_CMD="$WORK/noop.sh" \
-    timeout 120 bash "$FAKE/loop.sh" 2>&1
+    "${BOUND[@]}" 120 bash "$FAKE/loop.sh" 2>&1
 }
 ticks_run() { local n; n="$(grep -c '^tick' "$WORK/calls" 2>/dev/null)"; echo "${n:-0}"; }
 day_used() { awk '{print $2}' "$1/.daily-ticks" 2>/dev/null || echo 0; }
@@ -254,9 +257,11 @@ printf '%s' "$BAD" > "$L/settings.json"
 OUT6="$(run_loop "$L" "$S" MAX_TICKS=3)"
 [ "$(ticks_run)" = 0 ] && ok "a settings.json that is unreadable at start runs no tick" || fail "ran $(ticks_run) tick(s) on defaults: $(tail -3 <<<"$OUT6")"
 
-# 6e. Pool path: each worker stops on the unreadable file.
+# 6e. Pool path: each worker stops on the unreadable file. The day cap sits well
+#     above the worker count so the only stop reason is the broken file (at cap 2,
+#     two workers admitted together hit the day cap first and the check raced).
 L="$WORK/l10"; S="$WORK/s10"; mkdir -p "$L" "$S"
-printf '{"MAX_TICKS_PER_DAY":"2"}\n' > "$L/settings.json"; printf '%s' "$BAD" > "$S/1.json"
+printf '{"MAX_TICKS_PER_DAY":"20"}\n' > "$L/settings.json"; printf '%s' "$BAD" > "$S/1.json"
 OUT6="$(run_loop "$L" "$S" MAX_TICKS=8 GAFFER_CONCURRENCY=2)"
 [ "$(ticks_run)" -le 2 ] && grep -q 'worker .*settings.json exists but cannot be parsed' <<<"$OUT6" \
   && ok "a running pool stops on the unreadable settings.json ($(ticks_run) tick(s), at most one per worker; was 8)" \
@@ -267,7 +272,7 @@ D="$WORK/d3"; mkdir -p "$D"; printf '%s' "$BAD" > "$D/settings.json"
 LOG="$WORK/passes3.log"; : > "$LOG"
 printf '#!/usr/bin/env bash\necho pass >> "%s"\n' "$LOG" > "$WORK/loop3.sh"; chmod +x "$WORK/loop3.sh"
 ERR="$(env -i PATH="$PATH" HOME="$HOME" GAFFER_DATA="$D" GAFFER_LOOP_SH="$WORK/loop3.sh" GAFFER_DAEMON_MAX_CYCLES=2 \
-  timeout 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
+  "${BOUND[@]}" 90 bash "$RUNNER_DIR/gaffer" run --daemon --interval 0 2>&1 >/dev/null)"
 [ "$(grep -c '^pass' "$LOG")" = 0 ] && grep -q 'settings.json .* cannot be read — idle' <<<"$ERR" \
   && ok "the daemon runs no pass while settings.json is unreadable, with a notice" \
   || fail "daemon ran $(grep -c '^pass' "$LOG") pass(es): $ERR"

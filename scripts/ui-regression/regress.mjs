@@ -606,9 +606,23 @@ try {
     // AUTO_MERGE is off by default: a human approval waits in Ready for merge until
     // someone presses Merge now. The ticket page's action is the way in.
     ok("Auto-merge on approval is off: the approval waits in Ready for merge");
+    // Let the review page finish its own approve handler first (it pins the address
+    // to #/review/<id> after the API answers); navigating under it lost the ticket
+    // page to that late replaceState on a slow runner.
+    await page.waitForSelector(".rv-done-t", { timeout: 15000 }).catch(() => null);
     await page.goto(`${BASE}/#/ticket/${ticket.id}`, { waitUntil: "load" });
-    await page.waitForSelector('button:has-text("Merge now")', { timeout: 15000 });
-    await page.click('button:has-text("Merge now")');
+    const mergeNow = 'button:has-text("Merge now")';
+    const seen = await page.waitForSelector(mergeNow, { timeout: 15000 }).catch(() => null);
+    if (!seen) {
+      // Diagnose before retrying: what did the page show instead?
+      const head = (await page.textContent(".view").catch(() => "")) || "";
+      note(
+        `ticket page had no Merge now after 15s (url=${page.url()}); view head: ${head.slice(0, 160)}`,
+      );
+      await page.reload({ waitUntil: "load" });
+      await page.waitForSelector(mergeNow, { timeout: 15000 });
+    }
+    await page.click(mergeNow);
     ok("Ticket page: Merge now pressed (runs the merge runner)");
   }
   const done = await waitFor(

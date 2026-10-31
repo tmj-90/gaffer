@@ -57,6 +57,29 @@ adm && fail "an unparseable settings.json admitted" || ok "an unparseable settin
 printf '{}' > "$DATA/settings.json"
 GAFFER_DAILY_BUDGET_USD=10 GAFFER_BUDGET_USD=10 adm && ok "within both caps (env) ⇒ admitted" || fail "within budget refused"
 
+echo "== the check reads the ledger the writer appends to =="
+# A RELATIVE GAFFER_USAGE_LEDGER is booked under GAFFER_DATA (lib/usage-ledger.mjs), so
+# it must be read there too — not from the cwd, where it read as "spent 0, admitted".
+printf '{"GAFFER_DAILY_BUDGET_USD":"1"}' > "$DATA/settings.json"
+printf '%s\n' "{\"ts\":\"$TODAY\",\"total_cost_usd\":5}" > "$DATA/my-ledger.jsonl"
+mkdir -p "$WORK/elsewhere"
+_rel_out="$(cd "$WORK/elsewhere" && GAFFER_USAGE_LEDGER=my-ledger.jsonl node "$RUNNER_DIR/lib/budget-admission.mjs" check --kind test 2>/dev/null)"; _rel_rc=$?
+[ "$_rel_rc" = 3 ] && ok "relative GAFFER_USAGE_LEDGER is read under GAFFER_DATA ⇒ exhausted cap refused" || fail "relative ledger path admitted (rc=$_rel_rc: $_rel_out)"
+case "$_rel_out" in *'"spent":5'*) ok "the refusal reports the \$5 booked under GAFFER_DATA" ;; *) fail "relative ledger: spend not read from GAFFER_DATA ($_rel_out)" ;; esac
+# The same writer resolver, cross-checked: appendUsageRecord books where the check reads.
+_xpath="$(GAFFER_USAGE_LEDGER=my-ledger.jsonl node --input-type=module -e "import { resolveLedgerPath } from '$RUNNER_DIR/lib/usage-ledger.mjs'; process.stdout.write(String(resolveLedgerPath()))" 2>/dev/null)"
+[ "$_xpath" = "$DATA/my-ledger.jsonl" ] && ok "writer and check resolve the same file" || fail "writer resolves '$_xpath', expected $DATA/my-ledger.jsonl"
+# A ledger that is turned off, or has no location, books nothing: with a cap set the
+# spend is unknowable, so the launch is refused (fail closed) — never "spent 0".
+for _off in 0 off false no OFF; do
+  GAFFER_USAGE_LEDGER="$_off" adm && fail "GAFFER_USAGE_LEDGER=$_off with a cap set admitted" || ok "GAFFER_USAGE_LEDGER=$_off with a cap set ⇒ refused"
+done
+_nod_rc=0; (cd "$WORK/elsewhere" && env -u GAFFER_DATA -u GAFFER_USAGE_LEDGER HOME="$WORK/elsewhere" GAFFER_DAILY_BUDGET_USD=1 node "$RUNNER_DIR/lib/budget-admission.mjs" check --kind test >/dev/null 2>&1) || _nod_rc=$?
+[ "$_nod_rc" = 3 ] && ok "a cap with no ledger location (no GAFFER_DATA) ⇒ refused" || fail "a cap with no ledger location admitted (rc=$_nod_rc)"
+printf '{}' > "$DATA/settings.json"
+GAFFER_USAGE_LEDGER=0 adm && ok "no cap configured ⇒ a disabled ledger still admits" || fail "a disabled ledger with no cap refused"
+rm -f "$DATA/my-ledger.jsonl"
+
 # Exhausted from here on: settings.json caps (what the dashboard writes), ledger above both.
 printf '{"GAFFER_DAILY_BUDGET_USD":"1","GAFFER_BUDGET_USD":"2"}' > "$DATA/settings.json"
 ledger "{\"ts\":\"$TODAY\",\"kind\":\"delivery\",\"total_cost_usd\":5}"

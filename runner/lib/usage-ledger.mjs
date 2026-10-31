@@ -38,7 +38,7 @@
  */
 import { appendFileSync } from "node:fs";
 import { readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 // Spec 3 / Phase 2: the claude-JSON envelope schema is owned by the worker seam.
 // This module keeps the LEDGER-RECORD shaping + honesty rules, but the raw parse +
@@ -54,7 +54,8 @@ import {
 } from "./worker.mjs";
 
 export { UNKNOWN, extractResultText, parseClaudeJson };
-export const LEDGER_FILENAME = "usage-ledger.jsonl";
+// The ledger path is resolved in ONE place, shared with the paid-launch admission check.
+export { LEDGER_FILENAME, resolveLedgerPath } from "./usage-ledger-path.mjs";
 export const VALID_KINDS = new Set([
   "delivery",
   "clarify",
@@ -286,23 +287,6 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     num_turns: numTurns,
     duration_ms: durationMs,
   };
-}
-
-/**
- * The ledger file, or null when there is none. GAFFER_USAGE_LEDGER wins; `0`, `off`,
- * `false` or `no` turn the ledger off (they used to be taken as a file name, so
- * `GAFFER_USAGE_LEDGER=0` wrote a file called `0` into whatever directory the runner
- * was in). A relative path resolves under GAFFER_DATA when that is set. Without an
- * explicit path the ledger is $GAFFER_DATA/usage-ledger.jsonl, gated on GAFFER_DATA.
- */
-export function resolveLedgerPath(env = process.env) {
-  const explicit = (env.GAFFER_USAGE_LEDGER ?? "").trim();
-  if (explicit) {
-    if (/^(0|off|false|no)$/i.test(explicit)) return null;
-    if (!isAbsolute(explicit) && env.GAFFER_DATA) return join(env.GAFFER_DATA, explicit);
-    return explicit;
-  }
-  return env.GAFFER_DATA ? join(env.GAFFER_DATA, LEDGER_FILENAME) : null;
 }
 
 /**

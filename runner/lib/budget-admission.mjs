@@ -18,8 +18,10 @@
 //   • lifetime: the whole ledger's spend must be BELOW the budget;
 //   • spend = measured total_cost_usd, else the labelled estimated_cost_usd (killed
 //     and timed-out calls count);
+//   • the ledger is the file the writer appends to (lib/usage-ledger-path.mjs, shared);
 //   • FAIL CLOSED: with a cap set, a ledger that exists but cannot be read, or holds a
-//     line that is not a JSON object, is an UNKNOWN spend and refuses the launch.
+//     line that is not a JSON object, is an UNKNOWN spend and refuses the launch; so
+//     is a ledger that is turned off or has no location (nothing would be booked).
 // Caps come from the environment (the operator's env, or what factory.config.sh
 // exported from settings.json); a Node launcher spawned by the dashboard's API has no
 // such env, so settings.json ($GAFFER_DATA/settings.json) is read as the fallback. A
@@ -32,6 +34,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ledgerDisabled, resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 export const BUDGET_REFUSED_STATUS = 77;
 
@@ -67,16 +70,26 @@ export function readBudgetCaps(env = process.env) {
   };
 }
 
-function ledgerPath(env) {
-  if (env.GAFFER_USAGE_LEDGER) return env.GAFFER_USAGE_LEDGER;
-  const data = String(env.GAFFER_DATA ?? "").trim();
-  return data !== "" ? join(data, "usage-ledger.jsonl") : "";
-}
-
-/** `{ today, lifetime }` USD spend from the ledger (strict), or `{ unknown: reason }`. */
+/**
+ * `{ today, lifetime }` USD spend from the ledger (strict), or `{ unknown: reason }`.
+ * The path comes from the SAME resolver the writer uses (lib/usage-ledger-path.mjs), so
+ * a relative GAFFER_USAGE_LEDGER is read under GAFFER_DATA exactly where the calls are
+ * booked. Only called with a cap set, so a ledger that is turned off
+ * (GAFFER_USAGE_LEDGER=0/off/false/no) or has no location (no GAFFER_DATA) is an
+ * UNKNOWN spend, never "nothing spent": no call would ever be booked against the cap.
+ */
 export function ledgerSpend(env = process.env, now = new Date()) {
-  const p = ledgerPath(env);
-  if (!p || !existsSync(p)) return { today: 0, lifetime: 0 }; // nothing spent yet
+  const raw = String(env.GAFFER_USAGE_LEDGER ?? "").trim();
+  if (ledgerDisabled(raw))
+    return {
+      unknown: `the usage ledger is turned off (GAFFER_USAGE_LEDGER=${raw}), so no spend is recorded`,
+    };
+  const p = resolveLedgerPath(env);
+  if (!p)
+    return {
+      unknown: "the usage ledger has no location (GAFFER_DATA and GAFFER_USAGE_LEDGER are unset)",
+    };
+  if (!existsSync(p)) return { today: 0, lifetime: 0 }; // nothing spent yet
   let text;
   try {
     text = readFileSync(p, "utf8");

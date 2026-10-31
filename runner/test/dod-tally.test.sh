@@ -6,7 +6,7 @@
 # block after the tests gate (pass or fail) so the Review view can say what the
 # runner saw ("the summary says 42, the runner saw 40"). The block must:
 #   T1  carry a vitest summary line on a PASSING tests gate, ANSI stripped;
-#   T2  carry jest, pytest and cargo summary lines;
+#   T2  carry jest, pytest, cargo and node --test summary lines;
 #   T3  count `go test -v` top-level --- PASS/FAIL/SKIP lines into one tally line;
 #   T4  be absent when the output has no summary, and never written for lint;
 #   T5  ride along in the recorded DoD evidence summary, after the JSON line;
@@ -74,6 +74,14 @@ grep -q '12 passed, 1 skipped in 0.12s' <<<"$(block "$RES")" && ok "T2 pytest su
 RES="$WORK/cargo.results"; run "./cargo.sh" "-" "$RES"
 grep -q '^test result: ok. 3 passed; 0 failed; 1 ignored' <<<"$(block "$RES")" && ok "T2 cargo summary kept" \
   || fail "T2 cargo: $(block "$RES")"
+
+# node --test, for real: the runner a plain Node repo uses.
+printf 'import test from "node:test";\ntest("a", () => {});\ntest("b", () => {});\n' > "$WT/n.test.mjs"
+RES="$WORK/node.results"; run "node --test n.test.mjs" "-" "$RES"
+NB="$(block "$RES")"
+grep -qx '# tests 2' <<<"$NB" && grep -qx '# pass 2' <<<"$NB" && grep -qx '# fail 0' <<<"$NB" \
+  && ok "T2 node --test counts kept" || fail "T2 node --test: $NB"
+grep -q 'duration_ms' <<<"$NB" && fail "T2 node --test: duration is not a count" || ok "T2 node --test: duration left out"
 
 RES="$WORK/go.results"; run "./gotest.sh" "-" "$RES"; RC=$?
 [ "$RC" -ne 0 ] && ok "T6 a failing go test still fails the gate" || fail "T6 go rc=$RC"

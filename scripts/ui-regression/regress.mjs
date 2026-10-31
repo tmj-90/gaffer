@@ -521,6 +521,54 @@ try {
     : bad("Review view never rendered the diff");
   await shot(page, "review-diff");
 
+  // ── 5. (review packet) the runner's verdict strip under the title ─────────
+  //   One dossier read (?include=packet) draws the gates with their commands, the
+  //   tester, cost and turns, the attempt, risk, and the criteria table: the
+  //   machine-checked AC shows the runner's exit code, not the agent's word.
+  {
+    const strip = await waitFor(
+      async () => ((await page.$(".rv-verdict .vd-cell.vd-gates")) ? true : null),
+      "the verdict strip",
+      15000,
+      500,
+    ).catch(() => null);
+    if (!strip) bad("Review: no verdict strip under the title");
+    else {
+      const gl = (await page.getAttribute(".vd-cell.vd-gates", "aria-label")) || "";
+      /^Gates: passed, \d+ of \d+ ran$/.test(gl)
+        ? ok(`Review packet: the gates cell reads the runner's DoD ("${gl}")`)
+        : bad(`Review packet: gates cell label '${gl}'`);
+      const gt = (await page.textContent(".vd-cell.vd-gates")) || "";
+      /npm test/.test(gt) && /The runner saw \d+ tests? pass \(node:test\)/.test(gt)
+        ? ok("Review packet: the tests gate names its command and the runner's own test count")
+        : bad(`Review packet: gates cell text '${gt.slice(0, 200)}'`);
+      const cells = await page.$$eval(".rv-verdict .vd-cell", (els) =>
+        els.map((e) => e.className.match(/vd-(gates|tester|cost|attempts|risk|pin)\b/)?.[1]),
+      );
+      ["gates", "tester", "cost", "attempts", "risk"].every((k) => cells.includes(k))
+        ? ok(`Review packet: the strip draws ${cells.filter(Boolean).join(", ")}`)
+        : bad(`Review packet: strip cells ${JSON.stringify(cells)}`);
+      const acRow = (await page.textContent(".rv-ac-table tr.ac-ev-runner").catch(() => "")) || "";
+      /Runner · exit 0/.test(acRow) && /npm test/.test(acRow)
+        ? ok(
+            "Review packet: the machine-checked criterion shows the runner's exit 0 and its command",
+          )
+        : bad(`Review packet: AC table runner row '${acRow.slice(0, 200)}'`);
+      // Both themes: the strip and the table under the dark kit, audited like the views.
+      await page.emulateMedia({ colorScheme: "dark" });
+      await sleep(300);
+      const bg = await page.$eval(".vd-cells", (e) => getComputedStyle(e).backgroundColor);
+      const light = /rgb\((2[3-5]\d), (2[3-5]\d), (2[3-5]\d)\)/.test(bg);
+      !light
+        ? ok(`Review packet: the strip follows the dark kit (${bg})`)
+        : bad(`Review packet: the strip stayed light under the dark kit (${bg})`);
+      await shot(page, "review-packet-dark");
+      if (AXE_SOURCE) await auditA11y(page, "review-packet-dark", "1400");
+      await page.emulateMedia({ colorScheme: "light" });
+      await sleep(200);
+    }
+  }
+
   // ── 5a. review-scroll-jumps-to-top: a background refresh must not throw the
   //        reader back to the top of the diff they are reading. On a short
   //        viewport, scroll to the bottom of the queue, then make the factory emit
@@ -999,7 +1047,7 @@ try {
       { w: 1280, h: 800, views },
       { w: 1440, h: 900, views },
       { w: 360, h: 780, views: ["overview", "work", "review", "floor"] },
-      { w: 320, h: 640, views: ["overview", "work", "floor"] },
+      { w: 320, h: 640, views: ["overview", "work", "review", "floor"] },
     ];
     for (const { w, h, views: vs, axe: runAxe } of sweep) {
       const c2 = await browser.newContext({ viewport: { width: w, height: h } });

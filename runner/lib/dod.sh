@@ -309,9 +309,10 @@ gaffer_run_dod_gates() {
 
 # REVIEW PACKET: the summary lines a test gate's output carries, framed as
 #   ---DOD-TALLY <gate>@<repo>---\n<lines>\n---END-DOD-TALLY---
-# Lines kept (ANSI stripped, each cut to 300 chars, the last 20): vitest
+# Lines kept (ANSI stripped, each cut to 300 chars, the last 40): vitest
 # "Tests  N passed (N)", jest "Tests: … total", pytest "N passed … in 0.1s", cargo
-# "test result: …"; for `go test -v`, the top-level --- PASS/FAIL/SKIP lines are
+# "test result: …", node --test "# tests N" / "# pass N" …; for `go test -v`, the
+# top-level --- PASS/FAIL/SKIP lines are
 # counted into one "gotest-tally: pass=N fail=M skip=K" line. Prints nothing when no
 # summary is found. Pure text in, text out; never fails the gate.
 #   gaffer_dod_tally_block <gate-output-file> <gate> <repo-label>
@@ -333,11 +334,12 @@ gaffer_dod_tally_block() {
       else if (t ~ /^Tests:[ \t]+.*[0-9]+ total/) keep = 1
       else if (t ~ /^test result: /) keep = 1
       else if (t ~ /[0-9]+ (passed|failed).* in [0-9.]+s/) keep = 1
-      if (keep) { buf[n % 20] = substr(t, 1, 300); n++ }
+      else if (t ~ /^(# |ℹ )(tests|pass|fail|cancelled|skipped|todo) [0-9]+$/) keep = 1
+      if (keep) { buf[n % 40] = substr(t, 1, 300); n++ }
     }
     END {
-      start = (n > 20) ? n - 20 : 0
-      for (i = start; i < n; i++) print buf[i % 20]
+      start = (n > 40) ? n - 40 : 0
+      for (i = start; i < n; i++) print buf[i % 40]
       if (gp + gf + gs > 0) printf "gotest-tally: pass=%d fail=%d skip=%d\n", gp, gf, gs
     }
   ' "$infile" 2>/dev/null)" || return 0

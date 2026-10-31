@@ -159,6 +159,24 @@ structural barrier the whole design hangs on.
 - The diff you review is the **real `git diff`**, computed server-side from the
   delivery branch against the repo's default branch — not a summary the agent
   wrote about itself.
+- **The runner's facts come first.** Under the title, a **verdict strip** shows
+  what the runner recorded, not what the agent says: each Definition-of-Done
+  gate (passed, failed or skipped, with the command it ran) and the test count
+  the runner saw in the test gate's own output (vitest, jest, pytest, cargo,
+  `go test -v`, `node --test`); the independent tester's verdict and the commit
+  it tested (or "after you" when it runs after your approval); cost and turns so
+  far from the usage ledger; the attempt and who sent it back before; the risk
+  level with its reasons (recorded, then the diff's own risk flags); and the
+  reviewed-commit pin when one is recorded. The **acceptance-criteria table**
+  shows each criterion's check command and the runner's recorded exit code, or
+  **no machine evidence** on a yellow card when only the agent's word (or
+  nothing) backs it. When the agent's evidence claims a test count or "all tests
+  pass" that the runner's output contradicts, a flag says so: "the summary says
+  42, the runner saw 40". Only rows the runner recorded as the system count as
+  its word; an agent-recorded row that looks like a gate report is ignored. It is
+  one read (`GET /tickets/:id/dossier?include=packet`), no model call. The count
+  is what the test runner printed, and the tests run the delivered code, so treat
+  a match as consistency, not proof.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.

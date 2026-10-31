@@ -8,6 +8,9 @@
  *  - {@link parseTestClaims} reads what the delivery agent SAID about its tests
  *    ("all 42 tests pass", "12/12 tests passing", a pasted vitest line).
  *
+ * node --test (`# tests N` / `# pass N` lines) is read too: it is the runner a
+ * plain Node repo uses.
+ *
  * {@link compareTestClaims} puts the two side by side and reports only a real
  * disagreement. It never guesses: a text it cannot read yields nothing, and a claim
  * with no runner count to compare against is not flagged.
@@ -137,7 +140,8 @@ function readSummaryLine(raw: string): Partial | null {
 /**
  * The counts a runner's own output reports, summed across every summary line found
  * (a monorepo prints one vitest line per package; cargo one per test binary). Raw
- * `--- PASS: / --- FAIL:` lines from `go test -v` count too, top-level tests only.
+ * `--- PASS: / --- FAIL:` lines from `go test -v` count too, top-level tests only,
+ * and node --test's per-line counts are grouped into one summary per run.
  * Null when no summary is found — the caller then has no runner count, never zero.
  */
 export function parseRunnerTally(text: string): TestTally | null {
@@ -145,8 +149,34 @@ export function parseRunnerTally(text: string): TestTally | null {
   let goPass = 0;
   let goFail = 0;
   let goSkip = 0;
+  // node --test prints one count per line ("# tests 3", "# pass 3", …; "ℹ" under the
+  // spec reporter); a repeated key starts the next run's group.
+  let node: Map<string, number> | null = null;
+  const nodeLines: string[] = [];
+  const flushNode = () => {
+    if (!node) return;
+    const k = (w: string) => node!.get(w) ?? 0;
+    parts.push({
+      framework: "node:test",
+      passed: k("pass"),
+      failed: k("fail") + k("cancelled"),
+      skipped: k("skipped") + k("todo"),
+      total: node.has("tests") ? k("tests") : null,
+      line: nodeLines.join(" · "),
+    });
+    node = null;
+    nodeLines.length = 0;
+  };
   for (const raw of String(text || "").split(/\r?\n/)) {
     const plain = raw.replace(ANSI_RE, "").replace(/\r/g, "");
+    const nm = plain.trim().match(/^(?:#|ℹ)\s+(tests|pass|fail|cancelled|skipped|todo)\s+(\d+)$/);
+    if (nm) {
+      if (node && node.has(nm[1]!)) flushNode();
+      node ??= new Map();
+      node.set(nm[1]!, Number(nm[2]));
+      nodeLines.push(`${nm[1]} ${nm[2]}`);
+      continue;
+    }
     const go = plain.match(/^--- (PASS|FAIL|SKIP): \S/);
     if (go) {
       if (go[1] === "PASS") goPass += 1;
@@ -157,6 +187,7 @@ export function parseRunnerTally(text: string): TestTally | null {
     const p = readSummaryLine(raw);
     if (p) parts.push(p);
   }
+  flushNode();
   if (goPass + goFail + goSkip > 0) {
     parts.push({
       framework: "go",

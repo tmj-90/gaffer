@@ -73,6 +73,27 @@ describe("parseRunnerTally: the usual runner summaries", () => {
     ).toMatchObject({ framework: "cargo", passed: 12, failed: 1, skipped: 1, total: 14 });
   });
 
+  it("node --test (tap and spec reporters; one group per run)", () => {
+    const tap = [
+      "# tests 3",
+      "# suites 0",
+      "# pass 2",
+      "# fail 1",
+      "# cancelled 0",
+      "# skipped 0",
+      "# todo 0",
+      "# duration_ms 4.2",
+    ];
+    expect(parseRunnerTally(tap.join("\n"))).toMatchObject({
+      framework: "node:test",
+      passed: 2,
+      failed: 1,
+      total: 3,
+    });
+    const twoRuns = [...tap, "ℹ tests 5", "ℹ pass 5", "ℹ fail 0"].join("\n");
+    expect(parseRunnerTally(twoRuns)).toMatchObject({ passed: 7, failed: 1, total: 8 });
+  });
+
   it("no summary ⇒ null (never zero)", () => {
     expect(parseRunnerTally("all good\nDone in 3s")).toBeNull();
     expect(parseRunnerTally("")).toBeNull();

@@ -26,10 +26,17 @@
 #   → 0 reachable · 1 unreachable (GAFFER_REGISTRY_PROBE_CODE = npm error code, e.g.
 #     SELF_SIGNED_CERT_IN_CHAIN / ENOTFOUND / ECONNREFUSED / E407 / timeout / rc=N;
 #     GAFFER_REGISTRY_PROBE_DETAIL = the first `npm error` line) · 2 skipped
-#     (GAFFER_REGISTRY_PROBE=0, npm not installed, or gaffer_agent_env unavailable).
+#     (GAFFER_REGISTRY_PROBE=0, npm not installed, or gaffer_agent_env unavailable)
+#   · 3 OFFLINE WITH A WARM CACHE: the failure is offline-shaped (no DNS, no route,
+#     refused) and the agent's npm cache already holds packages
+#     (GAFFER_REGISTRY_PROBE_CACHE = that cache dir). The caller goes ahead with
+#     npm_config_prefer_offline=true instead of parking, so an offline machine needs
+#     no GAFFER_REGISTRY_PROBE=0. A TLS / auth failure or a timeout is never offline:
+#     those still return 1, because a warm cache would only hide a misconfiguration
+#     and a hung registry is the 30-minute stall this probe exists to prevent.
 gaffer_registry_probe() {
   local secs="${1:-${GAFFER_REGISTRY_PROBE_TIMEOUT:-45}}"
-  GAFFER_REGISTRY_PROBE_CODE=""; GAFFER_REGISTRY_PROBE_DETAIL=""
+  GAFFER_REGISTRY_PROBE_CODE=""; GAFFER_REGISTRY_PROBE_DETAIL=""; GAFFER_REGISTRY_PROBE_CACHE=""
   [ "${GAFFER_REGISTRY_PROBE:-1}" = "1" ] || { GAFFER_REGISTRY_PROBE_CODE="skipped"; return 2; }
   command -v npm >/dev/null 2>&1 || { GAFFER_REGISTRY_PROBE_CODE="no-npm"; return 2; }
   declare -F gaffer_agent_env >/dev/null 2>&1 || { GAFFER_REGISTRY_PROBE_CODE="no-agent-env"; return 2; }
@@ -60,7 +67,30 @@ gaffer_registry_probe() {
     [ -n "$GAFFER_REGISTRY_PROBE_CODE" ] || GAFFER_REGISTRY_PROBE_CODE="$(printf '%s\n' "$out" | grep -o -m1 -E 'SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_[A-Z_]+|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|E40[0-9]|E5[0-9][0-9]' || true)"
     [ -n "$GAFFER_REGISTRY_PROBE_CODE" ] || GAFFER_REGISTRY_PROBE_CODE="rc=$rc"
   fi
+  case "$GAFFER_REGISTRY_PROBE_CODE" in
+    ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED)
+      local _cache
+      _cache="$(gaffer_registry_probe_warm_cache)"
+      if [ -n "$_cache" ]; then
+        # shellcheck disable=SC2034  # read by tick.sh / preflight.sh after the call
+        GAFFER_REGISTRY_PROBE_CACHE="$_cache"
+        return 3
+      fi ;;
+  esac
   return 1
+}
+
+# The agent env's npm cache dir when it already holds packages (a content index
+# entry under _cacache/index-v5), else nothing. Asked of npm itself in the agent's
+# exact env, so a ~/.npmrc or npm_config_cache override is honoured; no network.
+gaffer_registry_probe_warm_cache() {
+  local _dir _entry=""
+  _dir="$(env -i ${GAFFER_AGENT_ENV[@]+"${GAFFER_AGENT_ENV[@]}"} npm_config_update_notifier=false \
+    npm config get cache 2>/dev/null </dev/null | tail -1)"
+  [ -n "$_dir" ] && [ -d "$_dir/_cacache/index-v5" ] || return 0
+  _entry="$(find "$_dir/_cacache/index-v5" -type f 2>/dev/null | head -1)"
+  [ -n "$_entry" ] && printf '%s\n' "$_dir"
+  return 0
 }
 
 # gaffer_registry_probe_hint <code> → one line an operator can act on.
@@ -77,7 +107,7 @@ gaffer_registry_probe_hint() {
     E401|E403)
       printf '%s' "the registry refused the request (auth / allowlist): check npm_config_registry and its token" ;;
     *)
-      printf '%s' "run \`npm ping\` from a shell with the agent's env (runner/preflight.sh prints this probe); GAFFER_REGISTRY_PROBE=0 skips it for an offline machine with a warm cache" ;;
+      printf '%s' "run \`npm ping\` from a shell with the agent's env (runner/preflight.sh prints this probe); GAFFER_REGISTRY_PROBE=0 skips it for a registry that rejects ping" ;;
   esac
 }
 
@@ -85,7 +115,9 @@ gaffer_registry_probe_hint() {
 # runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by
 # GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry parks the bootstrap
 # to blocked at once with the npm error code and a fix hint, spending no model call.
-# 0 = skip (offline with a warm npm cache, or a registry that rejects ping).
+# An offline machine whose npm cache is warm needs nothing: an offline-shaped failure
+# with a warm cache goes ahead with npm_config_prefer_offline=true.
+# 0 = skip (a registry that rejects ping).
 : "${GAFFER_REGISTRY_PROBE:=1}"
 # Seconds the registry probe may take before it counts as unreachable ("timeout").
 : "${GAFFER_REGISTRY_PROBE_TIMEOUT:=45}"

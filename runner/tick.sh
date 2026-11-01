@@ -1246,6 +1246,12 @@ if [ "$READY_COUNT" -gt 0 ]; then
       *)
         if declare -F gaffer_registry_probe >/dev/null 2>&1; then
           _PROBE_RC=0; gaffer_registry_probe || _PROBE_RC=$?
+          if [ "$_PROBE_RC" -eq 3 ]; then
+            # Offline, but the agent's npm cache is warm: go ahead and install from it
+            # (the npm_config_ prefix carries this into the agent's env).
+            export npm_config_prefer_offline=true
+            log "BOOTSTRAP: #$NUM the npm registry is unreachable (${GAFFER_REGISTRY_PROBE_CODE:-offline}) but the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE:-?} is warm — going ahead offline (npm_config_prefer_offline=true)"
+          fi
           if [ "$_PROBE_RC" -eq 1 ]; then
             _PROBE_WHY="environment: the npm registry is unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE:-unknown}) — $(gaffer_registry_probe_hint "${GAFFER_REGISTRY_PROBE_CODE:-}"). No model call was spent; fix the environment (runner/preflight.sh runs the same probe) and move #$NUM back to ready."
             log "BOOTSTRAP: #$NUM parked before spawning — $_PROBE_WHY${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}"

@@ -59,6 +59,7 @@ if declare -F gaffer_registry_probe >/dev/null 2>&1; then
   _prc=0; gaffer_registry_probe || _prc=$?
   case "$_prc" in
     0) ok "npm registry reachable from the agent env (npm ping)" ;;
+    3) wn "npm registry unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE}), but the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE} is warm: a greenfield bootstrap installs from it offline" ;;
     1) no "npm registry UNREACHABLE from the agent env (${GAFFER_REGISTRY_PROBE_CODE}) — $(gaffer_registry_probe_hint "$GAFFER_REGISTRY_PROBE_CODE")${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}" ;;
     *) wn "npm registry probe skipped (${GAFFER_REGISTRY_PROBE_CODE}) — a greenfield bootstrap's install is unverified" ;;
   esac

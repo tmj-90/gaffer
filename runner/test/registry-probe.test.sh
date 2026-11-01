@@ -14,6 +14,11 @@
 #   7. preflight.sh prints ✓ on success and ✗ + code + hint on failure
 #   8. WIRING: tick.sh gates the bootstrap on the probe, parks to blocked with
 #      env_registry_unreachable BEFORE gaffer_bootstrap_init
+#  10. OFFLINE WITH A WARM CACHE: an offline-shaped failure (no DNS / no route /
+#      refused) while the agent's npm cache holds packages → rc 3 (go ahead offline),
+#      not a park; a cold cache, a TLS failure or a timeout still park
+#  11. BEHAVIOUR: the real tick, offline + a warm cache → the bootstrap agent runs,
+#      with npm_config_prefer_offline=true in its env; no GAFFER_REGISTRY_PROBE=0
 # Run: bash runner/test/registry-probe.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -34,6 +39,8 @@ mkdir -p "$WORK/bin"
 cat > "$WORK/bin/npm" <<'STUB'
 #!/usr/bin/env bash
 env > "${STUB_ENV_DUMP_FILE:-/dev/null}" 2>/dev/null || true
+# `npm config get cache` answers from a file (check 10: the agent's npm cache dir).
+if [ "${1:-}" = "config" ]; then cat "__CACHE_FILE__" 2>/dev/null; exit 0; fi
 mode="$(cat "$STUB_MODE_FILE" 2>/dev/null || echo ok)"
 case "$mode" in
   ok)   echo "npm notice PONG 12ms"; exit 0 ;;
@@ -45,11 +52,11 @@ case "$mode" in
 esac
 STUB
 chmod +x "$WORK/bin/npm"
-MODE="$WORK/mode"; DUMP="$WORK/env.dump"
+MODE="$WORK/mode"; DUMP="$WORK/env.dump"; CACHE_FILE="$WORK/npm-cache-path"
 # STUB_* must reach the stub THROUGH the agent allowlist → ride the GAFFER_ prefix?
 # No: the allowlist is the thing under test, so the stub reads them from files
 # named by absolute paths baked in here instead.
-sed -i.bak "s|\${STUB_MODE_FILE}|$MODE|; s|\${STUB_ENV_DUMP_FILE:-/dev/null}|$DUMP|; s|\$STUB_MODE_FILE|$MODE|" "$WORK/bin/npm" && rm -f "$WORK/bin/npm.bak"
+sed -i.bak "s|\${STUB_MODE_FILE}|$MODE|; s|\${STUB_ENV_DUMP_FILE:-/dev/null}|$DUMP|; s|\$STUB_MODE_FILE|$MODE|; s|__CACHE_FILE__|$CACHE_FILE|" "$WORK/bin/npm" && rm -f "$WORK/bin/npm.bak"
 
 export PATH="$WORK/bin:$PATH"
 export HOME="$WORK/home"; mkdir -p "$HOME"
@@ -174,6 +181,52 @@ JS
   echo ok > "$MODE"
 else
   gaffer_skip_part "check 9 — crew not built or git missing"
+fi
+
+echo "== 10: offline with a warm npm cache goes ahead; everything else still parks =="
+CACHE="$WORK/npm-cache"; mkdir -p "$CACHE/_cacache/index-v5/aa"
+printf '%s\n' "$CACHE" > "$CACHE_FILE"
+echo dns > "$MODE"
+gaffer_registry_probe 5; rc=$?
+[ "$rc" -eq 1 ] && ok "offline + an EMPTY npm cache → rc 1 (parks: nothing to install from)" || fail "offline + empty cache → rc $rc (want 1)"
+printf 'entry\n' > "$CACHE/_cacache/index-v5/aa/entry"
+gaffer_registry_probe 5; rc=$?
+[ "$rc" -eq 3 ] && ok "offline (ENOTFOUND) + a warm npm cache → rc 3: go ahead offline, no park" || fail "offline + warm cache → rc $rc code=$GAFFER_REGISTRY_PROBE_CODE (want 3)"
+[ "$GAFFER_REGISTRY_PROBE_CODE" = "ENOTFOUND" ] && ok "the npm code is still reported (ENOTFOUND)" || fail "code='$GAFFER_REGISTRY_PROBE_CODE'"
+[ "${GAFFER_REGISTRY_PROBE_CACHE:-}" = "$CACHE" ] && ok "the warm cache is named (GAFFER_REGISTRY_PROBE_CACHE)" || fail "cache='${GAFFER_REGISTRY_PROBE_CACHE:-}'"
+echo tls > "$MODE"
+gaffer_registry_probe 5; rc=$?
+[ "$rc" -eq 1 ] && ok "a TLS failure with a warm cache still parks (rc 1: a misconfigured trust store, not offline)" || fail "tls + warm → rc $rc"
+echo hang > "$MODE"
+gaffer_registry_probe 2; rc=$?
+[ "$rc" -eq 1 ] && ok "a hung registry with a warm cache still parks (rc 1: the 30-minute hang the probe exists for)" || fail "hang + warm → rc $rc"
+echo ok > "$MODE"
+
+echo "== 11: BEHAVIOUR — the real tick, offline with a warm cache: the bootstrap goes ahead =="
+if [ -f "$ROOT_DIR/packages/crew/dist/runtime/context/renderPromptCli.js" ] && command -v git >/dev/null 2>&1; then
+  : > "$WG_CALLS"; rm -f "$MARKER"; rm -rf "$BOOT_ROOT"
+  # A fresh data dir: check 9 put #7 on this run's skip list.
+  GDATA="$WORK/data-offline"; mkdir -p "$GDATA"
+  CLAUDE_ENV_DUMP="$WORK/claude-env.dump"; STUB_CLAUDE2="$WORK/stub-claude-env.sh"
+  printf '#!/usr/bin/env bash\nenv > "%s"\n: > "%s"\nprintf "%%s\\n" "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"scaffolded\"}"\n' "$CLAUDE_ENV_DUMP" "$MARKER" > "$STUB_CLAUDE2"; chmod +x "$STUB_CLAUDE2"
+  echo dns > "$MODE"
+  OUT="$(env WG_CALLS="$WG_CALLS" RUNNER_DIR="$RUNNER_DIR" GAFFER_DATA="$GDATA" DISPATCH_DIR="$DISPATCH_DIR" \
+        GAFFER_BOOTSTRAP_ROOT="$BOOT_ROOT" CLAUDE_BIN="$STUB_CLAUDE2" CLAUDE_FLAGS="" GAFFER_DAILY_BUDGET_USD=5 \
+        DRY_RUN=0 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=0 GAFFER_TESTING=0 GAFFER_MAINTENANCE=0 \
+        STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_TICK_TIMEOUT=120 GAFFER_REGISTRY_PROBE_TIMEOUT=5 \
+        ${BOUND[@]+"${BOUND[@]}"} bash "$RUNNER_DIR/tick.sh" 2>&1)"
+  grep -q 'env_registry_unreachable' "$WG_CALLS" && fail "offline + warm cache still parked the bootstrap env_registry_unreachable" \
+    || ok "no env_registry_unreachable park (no GAFFER_REGISTRY_PROBE=0 needed)"
+  grep -q 'BOOTSTRAP: #7 the npm registry is unreachable (ENOTFOUND) but the npm cache' <<<"$OUT" \
+    && ok "tick logs that it goes ahead offline from the warm cache" \
+    || fail "no offline line (got: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|registry|TICK_RESULT' | tail -4 | tr '\n' ' ' | cut -c1-400))"
+  [ -e "$MARKER" ] && ok "the bootstrap agent was spawned" || fail "the bootstrap agent never ran: $(printf "%s" "$OUT" | tail -8 | tr "\n" " " | cut -c1-900)"
+  grep -q '^npm_config_prefer_offline=true$' "$CLAUDE_ENV_DUMP" 2>/dev/null \
+    && ok "the agent's npm is told prefer-offline (installs come from the warm cache)" \
+    || fail "npm_config_prefer_offline=true missing from the agent env"
+  echo ok > "$MODE"
+else
+  gaffer_skip_part "check 11 — crew not built or git missing"
 fi
 
 echo

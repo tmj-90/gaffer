@@ -30,6 +30,7 @@ import {
 } from "../src/services/approveOutcome.js";
 import { TestClock } from "../src/util/clock.js";
 import {
+  FAKE_HEAD,
   giveTicketRealDelivery,
   nonEmptyDiffRunner,
   testWeakeningDiffRunner,
@@ -58,6 +59,54 @@ const FACTS: ApproveOutcomeFacts = {
 const facts = (o: Partial<ApproveOutcomeFacts> = {}): ApproveOutcomeFacts => ({ ...FACTS, ...o });
 
 describe("decideApproveOutcome: one outcome per approve path", () => {
+  it("a write repo is unavailable: approve is held and disabled, never 'land now' (external review #7)", () => {
+    const missing = [
+      { repo: "web-storefront", why: "its delivery branch feat/web cannot be resolved" },
+    ];
+    for (const extra of [
+      { autoMerge: true, mergeCommand: true },
+      { autoMerge: true, mergeCommand: false },
+      { toTester: true },
+      {},
+    ]) {
+      const o = decideApproveOutcome(
+        facts({ ...extra, alsoLandsRepos: ["web-storefront"], unavailableRepos: missing }),
+      );
+      expect(o.kind).toBe("held_repo_unavailable");
+      expect(o.approvable).toBe(false);
+      expect(o.to_status).toBeNull();
+      expect(o.label).toBe("Approve held: web-storefront unavailable");
+      expect(o.confirm_label).toBe(o.label);
+      expect(o.label).not.toMatch(/land/i);
+      expect(o.sentence).not.toContain("lands after it");
+      expect(o.sentence).toContain(
+        "web-storefront: its delivery branch feat/web cannot be resolved",
+      );
+      expect(o.sentence).toContain("covers every repository this ticket writes to");
+      expect(o.also_lands_repos).toEqual([]);
+    }
+    // An agent or auto approval is held the same way.
+    expect(decideApproveOutcome(facts({ approver: "agent", unavailableRepos: missing })).kind).toBe(
+      "held_repo_unavailable",
+    );
+    // Two repos: both named.
+    expect(
+      decideApproveOutcome(
+        facts({
+          unavailableRepos: [
+            ...missing,
+            { repo: "ios", why: "it has no checkout on this machine" },
+          ],
+        }),
+      ).label,
+    ).toBe("Approve held: web-storefront and ios unavailable");
+    // Once approved (settle), the hold no longer applies.
+    expect(
+      settleApproveOutcome(facts({ unavailableRepos: missing }), { toStatus: "ready_for_merge" })
+        .kind,
+    ).toBe("waits_for_merge");
+  });
+
   it("testing lane: approve sends it to the tester, never to merge", () => {
     const o = decideApproveOutcome(facts({ toTester: true, autoMerge: true, mergeCommand: true }));
     expect(o.kind).toBe("to_tester");
@@ -310,6 +359,8 @@ function inReview(
       { ticket_id: t.id, repo_id: r.id, access: "write", relation: "confirmed" },
       human,
     );
+    if (opts.extraOnDisk)
+      wg.recordRepoDelivery({ ticket_id: t.id, repo_id: r.id, branch_name: "feat/web" }, human);
   }
   wg.markReady(t.id, human);
   const agent = wg.registerAgent({ display_name: "a" }, human);
@@ -389,14 +440,14 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
     // approval while CI is pending (the button would only earn a POLICY_DENIED toast).
     const wg = freshWg();
     const { id } = inReview(wg);
-    wg.recordCiResult(id, { commit: "abc1234", state: "pending" }, { type: "system" });
+    wg.recordCiResult(id, { commit: FAKE_HEAD, state: "pending" }, { type: "system" });
     const held = wg.approveOutcome(id, { mergeCommand: true });
     expect(held.kind).toBe("held_ci");
     expect(held.approvable).toBe(false);
     expect(held.sentence).toContain("(pending)");
     expect(() => wg.approveReview(id, human)).toThrow(/Required CI has not passed.*pending/);
     expect(wg.view(id).ticket.status).toBe("in_review");
-    wg.recordCiResult(id, { commit: "abc1234", state: "pass" }, { type: "system" });
+    wg.recordCiResult(id, { commit: FAKE_HEAD, state: "pass" }, { type: "system" });
     const open = wg.approveOutcome(id, { mergeCommand: true });
     expect(open.kind).toBe("waits_for_merge");
     expect(open.approvable).toBe(true);
@@ -416,15 +467,25 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
     wg.db.close();
   });
 
-  it("a write repo with no checkout on this machine is the one no landing path merges", () => {
+  it("a write repo with no checkout on this machine holds the approval: no landing path could land it (external review #7)", () => {
     process.env.AUTO_MERGE = "1";
     const wg = freshWg();
     const { id } = inReview(wg, { extraWrite: "web-storefront" });
     const o = wg.approveOutcome(id, { mergeCommand: true });
-    expect(o.lands_repo).toBe("billing-api");
-    expect(o.also_lands_repos).toEqual([]);
-    expect(o.not_landed_repos).toEqual(["web-storefront"]);
-    expect(o.sentence).toContain("web-storefront has no checkout on this machine");
+    expect(o.kind).toBe("held_repo_unavailable");
+    expect(o.approvable).toBe(false);
+    expect(o.label).toBe("Approve held: web-storefront unavailable");
+    expect(o.sentence).toContain("web-storefront: it has no checkout on this machine");
+    expect(o.lands_repo).toBeNull();
+    // …and the server refuses exactly that approval.
+    let reason = "";
+    try {
+      wg.approveReview(id, human);
+    } catch (e) {
+      reason = String((e as { details?: { reason?: string } }).details?.reason ?? "");
+    }
+    expect(reason).toBe("repo_unavailable");
+    expect(wg.view(id).ticket.status).toBe("in_review");
     wg.db.close();
   });
 
@@ -534,6 +595,19 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
   afterEach(async () => {
     await close();
   });
+  /** POST review/approve naming the commits the diff showed (as the Review view does). */
+  const approve = async (id: string) => {
+    const diff = (await (await fetch(`${baseUrl}/tickets/${id}/diff`)).json()) as {
+      repos: Array<{ repoId: string; headSha: string }>;
+    };
+    return fetch(`${baseUrl}/tickets/${id}/review/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        commits: diff.repos.map((r) => ({ repo: r.repoId, sha: r.headSha })),
+      }),
+    });
+  };
 
   it("an in_review ticket's diff carries approve_outcome; the approve answers it", async () => {
     process.env.AUTO_MERGE = "1";
@@ -543,7 +617,7 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
     };
     expect(diff.approve_outcome?.kind).toBe("land_now");
     expect(diff.approve_outcome?.label).toBe("Approve and land now");
-    const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
+    const res = await approve(id);
     const body = (await res.json()) as { approve_outcome?: { kind: string; done_label: string } };
     expect(res.status).toBe(200);
     expect(body.approve_outcome?.kind).toBe("land_now");
@@ -557,7 +631,7 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
     process.env.AUTO_MERGE = "1";
     configured = false;
     const { id } = inReview(wg);
-    const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
+    const res = await approve(id);
     const body = (await res.json()) as { approve_outcome?: { kind: string } };
     expect(body.approve_outcome?.kind).toBe("land_next_tick");
   });
@@ -574,7 +648,7 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
       approve_outcome?: { kind: string };
     };
     expect(diff.approve_outcome?.kind).toBe("to_tester");
-    const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
+    const res = await approve(id);
     const body = (await res.json()) as {
       ticket: { status: string };
       merge?: { triggered: boolean };
@@ -594,7 +668,7 @@ describe("routes: GET /diff predicts, review/approve says what happened", () => 
     process.env.AUTO_MERGE = "1";
     const { id } = inReview(wg);
     wg.db.prepare("UPDATE tickets SET acceptance = 1 WHERE id = ?").run(id);
-    const res = await fetch(`${baseUrl}/tickets/${id}/review/approve`, { method: "POST" });
+    const res = await approve(id);
     const body = (await res.json()) as { ticket: { status: string } };
     expect(body.ticket.status).toBe("in_testing");
     expect(triggers).toEqual([]);

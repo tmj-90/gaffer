@@ -17,6 +17,8 @@
 # or an earned `auto` merge row). A ticket the policy holds is logged ONCE
 # per run and left for a human ("ship what you've earned, hold the rest"); one whose
 # landing fails (conflict, dirty checkout) is logged and skipped for the rest of the run.
+# A PARTLY LANDED ticket (some write repos landed, some not) is always merge work: the
+# lane lands the remaining repos (the landing already started under the approval).
 # Never exits the tick: merging is bookkeeping, the tick goes on to deliver.
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
@@ -34,9 +36,24 @@ _gaffer_merge_lane() {
     _repo="$(echo "$_show" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).local_path) || ""' 2>/dev/null)"
     _def="$(echo "$_show" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' 2>/dev/null)"
     _branch="$(echo "$_show" | jget 'd.ticket.branch_name || ""' 2>/dev/null)"
-    if [ -z "$_repo" ] || [ ! -d "$_repo" ] || [ -z "$_branch" ] \
-       || ! git -C "$_repo" rev-parse --verify -q "refs/heads/$_branch" >/dev/null 2>&1; then
+    # PARTLY LANDED (external review #7): some write repos' approved commits landed, some
+    # did not (a dirty checkout, an unavailable branch, a held repo). The landing started
+    # under an approval the landing paths acted on, so finishing it is merge work: the
+    # remaining repos land through the same landing check and merge gate (a landed repo is
+    # never merged again). Poll for work used to report no_work here while `gaffer merge`
+    # would finish the ticket. The primary repo's branch may be gone once it landed, so the
+    # plan's per-repo branches are what is checked.
+    _partial="$(printf '%s' "$_show" | jget '(d.landing && d.landing.partial) ? "1" : ""' 2>/dev/null || echo '')"
+    if [ "$_partial" = "1" ]; then
+      [ -n "$_branch" ] || _branch="$(printf '%s' "$_show" | jget '(((d.landing && d.landing.repos) || []).find(r => !r.landed && r.branch) || {}).branch || ""' 2>/dev/null || echo '')"
+    fi
+    if [ "$_partial" != "1" ] && { [ -z "$_repo" ] || [ ! -d "$_repo" ] || [ -z "$_branch" ] \
+       || ! git -C "$_repo" rev-parse --verify -q "refs/heads/$_branch" >/dev/null 2>&1; }; then
       log "MERGE: #$_n is ready_for_merge but its delivery branch cannot be resolved (repo='${_repo:-?}', branch='${_branch:-?}') — a human merges"
+      _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"; continue
+    fi
+    if [ "$_partial" = "1" ] && { [ -z "$_repo" ] || [ -z "$_branch" ]; }; then
+      log "MERGE: #$_n is partly landed but no repository is left to land from (repo='${_repo:-?}', branch='${_branch:-?}') — a human merges"
       _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"; continue
     fi
     if [ "${DRY_RUN:-0}" = "1" ]; then log "DRY_RUN: MERGE would ask the merge gate for #$_n and land $_branch → $_def in $_repo"; continue; fi
@@ -49,6 +66,9 @@ _gaffer_merge_lane() {
       case "$(printf '%s' "$_show" | gaffer_json approval-actor 2>/dev/null)" in
         human|admin) _dec=allow; _via="human-approved + AUTO_MERGE on" ;;
       esac
+    fi
+    if [ "$_dec" != "allow" ] && [ "$_partial" = "1" ]; then
+      _dec=allow; _via="partly landed: finishing the approved landing (the remaining repositories)"
     fi
     if [ "$_dec" != "allow" ]; then
       log "MERGE: #$_n approved but auto-merge NOT permitted by policy (merge gate held) — left in ready_for_merge for a human"
@@ -75,6 +95,9 @@ _gaffer_merge_lane() {
     # It must not be held for the run — that stranded a resolved ticket at
     # ready_for_merge until the next run while its dependents starved (seen live).
     case "$_rc" in 0|5) ;; *) _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n" ;; esac
+    # The tick reports `merged` (not no_work) when the lane landed something and nothing
+    # else ran (tick.sh result): a landing is work, and Poll for work must say so.
+    [ "$_rc" -eq 0 ] && _GAFFER_MERGE_LANE_LANDED=$(( ${_GAFFER_MERGE_LANE_LANDED:-0} + 1 ))
   done
   return 0
 }

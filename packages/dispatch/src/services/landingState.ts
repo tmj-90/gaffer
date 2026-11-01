@@ -9,8 +9,12 @@
  *   held               the landing is held for a human: a write repo's branch moved since
  *                      the review approved it (its per-repo review pin is not its head), the
  *                      merge gate failed on the combination (merge_gate_red) or required CI
- *                      is red (ci_red). A ticket already parked as blocked for one of the
- *                      last two says so (and which repos had already landed).
+ *                      is red (ci_red), or a write repo has no approved commit at all
+ *                      (unpinned_repo: the approval did not cover it — approveReview now
+ *                      refuses that, see approveOutcome.ts held_repo_unavailable — so the
+ *                      ticket can never be done until every write repo is approved and
+ *                      lands). A ticket already parked as blocked for merge_gate_red or
+ *                      ci_red says so (and which repos had already landed).
  *   landing            a merge run the API started for this approval is still running.
  *   partly_landed      some of its approved revisions have a landing on record
  *                      (`gaffer-landed-commit:` system rows, services/landingStatus.ts), not
@@ -35,7 +39,12 @@ export const LANDING_KINDS = [
 ] as const;
 export type LandingKind = (typeof LANDING_KINDS)[number];
 
-export const LANDING_HOLDS = ["moved_since_review", "merge_gate_red", "ci_red"] as const;
+export const LANDING_HOLDS = [
+  "moved_since_review",
+  "unpinned_repo",
+  "merge_gate_red",
+  "ci_red",
+] as const;
 export type LandingHold = (typeof LANDING_HOLDS)[number];
 
 export interface LandingFacts {
@@ -52,6 +61,8 @@ export interface LandingFacts {
   writeRepos: string[];
   /** The repos still to land whose branch head moved off their review pin. */
   movedRepos?: string[];
+  /** Write repos the approval did not pin (computeLandingStatus `unpinned`). */
+  unpinnedRepos?: string[];
   /** The runner's usage-window pause, while active (readUsagePause): no tick runs. */
   pause?: { until: string; kind: "usage_limit" | "rate_limit" } | null;
   autoMerge: boolean;
@@ -77,6 +88,11 @@ const HOLD_WORDS: Record<LandingHold, { label: string; detail: string }> = {
     label: "Held · moved since review",
     detail:
       "The branch moved since the review approved it; no landing path merges commits nobody reviewed. Move it back to review.",
+  },
+  unpinned_repo: {
+    label: "Held · approval does not cover every repository",
+    detail:
+      "A write repository on this ticket has no approved commit (its delivery head could not be read when the ticket was approved), so no landing path can land it and the ticket can never be done as approved. Move it back to review and approve every repository together.",
   },
   merge_gate_red: {
     label: "Held · merge gate failed",
@@ -104,7 +120,9 @@ export function decideLandingState(f: LandingFacts): LandingState | null {
     const moved =
       f.hold === "moved_since_review" && f.movedRepos && f.movedRepos.length > 0
         ? ` Moved: ${f.movedRepos.join(", ")}.`
-        : "";
+        : f.hold === "unpinned_repo" && f.unpinnedRepos && f.unpinnedRepos.length > 0
+          ? ` Not approved: ${f.unpinnedRepos.join(", ")}.`
+          : "";
     return {
       kind: "held",
       hold: f.hold,

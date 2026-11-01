@@ -24,7 +24,27 @@ import type { GitRunner } from "../../src/services/diffService.js";
 /** A fixed merge-base the fakes report (the gate-integrity scan resolves one). */
 export const FAKE_MERGE_BASE = "a".repeat(40);
 
+/**
+ * The delivery-branch head the fakes report (`rev-parse --verify refs/heads/<b>^{commit}`):
+ * a real branch has one, and an approval pins it — an approval is refused while a write
+ * repo's head cannot be resolved (external review #7, repo_unavailable).
+ */
+export const FAKE_HEAD = "a".repeat(40);
+
+/** The fakes' answer to a branch-head lookup, or null for any other git call. */
+function fakeBranchHead(
+  args: readonly string[],
+): { status: number; stdout: string; stderr: string } | null {
+  if (args[0] !== "rev-parse") return null;
+  const last = String(args[args.length - 1] ?? "");
+  return /^refs\/heads\/.+\^\{commit\}$/.test(last)
+    ? { status: 0, stdout: `${FAKE_HEAD}\n`, stderr: "" }
+    : null;
+}
+
 export const nonEmptyDiffRunner: GitRunner = (_cwd, args) => {
+  const branchHead = fakeBranchHead(args);
+  if (branchHead) return branchHead;
   const joined = args.join(" ");
   if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
   // GATE INTEGRITY: the name-status scan sees one modified source file (no test touched).
@@ -51,6 +71,8 @@ export const nonEmptyDiffRunner: GitRunner = (_cwd, args) => {
  * (non-empty patch). Used to exercise the observed-vs-declared escalation.
  */
 export const highRiskDiffRunner: GitRunner = (_cwd, args) => {
+  const branchHead = fakeBranchHead(args);
+  if (branchHead) return branchHead;
   const joined = args.join(" ");
   if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
   if (joined.startsWith("diff --name-status")) {
@@ -75,6 +97,8 @@ export const highRiskDiffRunner: GitRunner = (_cwd, args) => {
 
 /** A git runner that always reports an EMPTY diff (no changes in the range). */
 export const emptyDiffRunner: GitRunner = (_cwd, args) => {
+  const branchHead = fakeBranchHead(args);
+  if (branchHead) return branchHead;
   const joined = args.join(" ");
   if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
   if (joined.startsWith("diff")) return { status: 0, stdout: "", stderr: "" };
@@ -103,6 +127,17 @@ export function giveTicketRealDelivery(
     actor,
   );
   wg.recordRepoDelivery({ ticket_id: ticketId, repo_id: repo.id, branch_name: branch }, actor);
+  // EVERY WRITE REPO (external review #7): an approval pins a head for every active write
+  // repo on the ticket and is refused while one cannot be resolved. The fixtures' other
+  // write repos (a bare `svc` linked for readiness) get the same real delivery here: a
+  // checkout on disk and a delivery branch, so their head resolves too.
+  for (const r of wg.view(ticketId).repositories) {
+    if (r.id === repo.id || r.access !== "write") continue;
+    if (!["confirmed", "implicit_single_repo"].includes(String(r.relation))) continue;
+    if (!r.local_path)
+      wg.db.prepare("UPDATE repositories SET local_path = ? WHERE id = ?").run(process.cwd(), r.id);
+    wg.recordRepoDelivery({ ticket_id: ticketId, repo_id: r.id, branch_name: branch }, actor);
+  }
   return { repoId: repo.id, branch };
 }
 
@@ -112,6 +147,8 @@ export function giveTicketRealDelivery(
  * `test-modified` hard hold.
  */
 export const testWeakeningDiffRunner: GitRunner = (_cwd, args) => {
+  const branchHead = fakeBranchHead(args);
+  if (branchHead) return branchHead;
   const joined = args.join(" ");
   if (args[0] === "merge-base") return { status: 0, stdout: `${FAKE_MERGE_BASE}\n`, stderr: "" };
   if (joined.startsWith("diff --numstat")) {
@@ -146,3 +183,20 @@ export const testWeakeningDiffRunner: GitRunner = (_cwd, args) => {
   }
   return { status: 0, stdout: "", stderr: "" };
 };
+
+/**
+ * The commits the Review view would send on approve (the diff endpoint's `repoId` +
+ * `headSha` per write repo): the REST and CLI entry points require them once a head
+ * resolves, and the fakes above resolve one.
+ */
+export function shownCommits(
+  wg: Dispatch,
+  ticketId: string,
+): { commits: Array<{ repo: string; sha: string }> } {
+  return {
+    commits: wg
+      .ticketDiff(ticketId)
+      .repos.filter((r) => r.repoId && r.headSha)
+      .map((r) => ({ repo: r.repoId!, sha: r.headSha! })),
+  };
+}

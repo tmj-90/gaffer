@@ -215,7 +215,7 @@ export const ApproveOutcome = z
     approvable: z
       .boolean()
       .describe(
-        "False only when the server would refuse (held_ci, or held_test_modified for an agent).",
+        "False only when the server would refuse (held_ci, held_repo_unavailable, or held_test_modified for an agent).",
       ),
     to_status: z.enum(["in_testing", "ready_for_merge"]).nullable(),
     label: str.describe('The sign-off button, e.g. "Approve and send to tester".'),

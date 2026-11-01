@@ -227,7 +227,10 @@ export interface PollablePending {
   /**
    * Approved (ready_for_merge) tickets the merge lane lands at the start of a tick:
    * counted when the lane is on (GAFFER_MERGE_LANE, default on) and AUTO_MERGE is on —
-   * the operator's standing instruction to land what was approved.
+   * the operator's standing instruction to land what was approved — and, whatever
+   * AUTO_MERGE says, a PARTLY LANDED ticket (some write repos landed, some pending): its
+   * landing already started, and the lane lands the remaining repos (external review #7:
+   * Poll for work reported no_work while `gaffer merge` would finish the second repo).
    */
   merge: number;
 }
@@ -237,7 +240,8 @@ export interface PollablePending {
  * resumes need GAFFER_PAUSE_ON_CAP (default on), agent review REVIEW_MODE=agent|both
  * (default human), the tester lane GAFFER_TESTING (default off), the intake clarify
  * pass CLARIFY_DRAFTS_WHEN_IDLE (default off; it runs only when nothing is ready), the
- * merge lane AUTO_MERGE (default off; GAFFER_MERGE_LANE=0 turns the lane off). The dashboard's env
+ * merge lane AUTO_MERGE (default off) or a partly landed ticket (GAFFER_MERGE_LANE=0
+ * turns the lane off). The dashboard's env
  * carries the operator's real overrides plus settings.json and the mode preset
  * (applySettingsToEnv), so these agree with what the spawned tick will see.
  */
@@ -262,7 +266,17 @@ export function pollablePending(wg: Dispatch, env: NodeJS.ProcessEnv): PollableP
   const laneOn = !["0", "false", "no", "off"].includes(
     (env["GAFFER_MERGE_LANE"] ?? "1").trim().toLowerCase(),
   );
-  const merge =
-    laneOn && flagOn(env["AUTO_MERGE"]) ? wg.listTickets({ status: "ready_for_merge" }).length : 0;
+  const partlyLanded = (id: string): boolean => {
+    try {
+      return wg.landingStatus(id).partial;
+    } catch {
+      return false;
+    }
+  };
+  const merge = laneOn
+    ? wg
+        .listTickets({ status: "ready_for_merge" })
+        .filter((t) => flagOn(env["AUTO_MERGE"]) || partlyLanded(t.id)).length
+    : 0;
   return { ready, resume, review, testing, clarify, merge };
 }

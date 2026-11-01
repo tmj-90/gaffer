@@ -1,4 +1,5 @@
 import type { Db } from "../db/connection.js";
+import { TICKET_REPO_ACTIVE_RELATIONS } from "../domain/types.js";
 
 /**
  * PER-REPOSITORY LANDING (external review #3). A ticket that writes to several
@@ -16,6 +17,13 @@ import type { Db } from "../db/connection.js";
  * resolution re-enters review, which makes older pins describe an older candidate). A
  * legacy pin with no repo (recorded before per-repo pins existed) imposes no per-repo
  * requirement here; the landing check still applies it.
+ *
+ * EVERY WRITE REPO (external review #7). A per-repo approval covers every write repo on
+ * the ticket — approveReview refuses while any write repo's head cannot be read. A write
+ * repo with NO current pin under a per-repo approval (an approval made before that rule,
+ * or a write repo added after it) is listed here too, `pinned: false` and never landed: it
+ * keeps the ticket out of done (markMerged's partial_landing names it) and the landing
+ * paths hold on it instead of merging the other repos and calling the ticket done.
  */
 
 export const REVIEW_PIN_PREFIX = "gaffer-reviewed-commit:";
@@ -24,8 +32,10 @@ export const LANDING_PREFIX = "gaffer-landed-commit:";
 export interface LandingRepoState {
   repoId: string;
   repo: string;
-  /** The approved commit (the current review pin) for this repo. */
+  /** The approved commit (the current review pin) for this repo; "" when unpinned. */
   sha: string;
+  /** False for a write repo the approval did not pin (it can never land as approved). */
+  pinned: boolean;
   /** True when a landing of exactly that commit is on record. */
   landed: boolean;
   /** Where to land it: the repo's checkout, default branch and delivery branch. */
@@ -40,6 +50,8 @@ export interface LandingStatus {
   pending: number;
   /** At least one repo landed and at least one did not: a held, visible state. */
   partial: boolean;
+  /** Write repos with no current review pin under a per-repo approval (never landed). */
+  unpinned: string[];
 }
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
@@ -112,14 +124,53 @@ export function computeLandingStatus(db: Db, ticketId: string): LandingStatus {
       repoId: p.repo_id,
       repo: p.repo,
       sha,
+      pinned: true,
       landed: landedKeys.has(`${p.repo_id}\u0000${sha}`),
       localPath: p.local_path ?? null,
       defaultBranch: p.default_branch || "main",
       branch: p.branch ?? null,
     });
   }
+  // EVERY WRITE REPO: under a per-repo approval, a write repo without a current pin is
+  // pending too (it was never approved, so it can never land as approved).
+  const unpinned: string[] = [];
+  if (repos.length > 0) {
+    const writes = db
+      .prepare(
+        `SELECT r.id AS repo_id, r.name AS repo, r.local_path AS local_path,
+                r.default_branch AS default_branch,
+                COALESCE(NULLIF(tr.branch_name, ''), NULLIF(d.branch_name, ''), t.branch_name)
+                  AS branch
+         FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+         JOIN tickets t ON t.id = tr.ticket_id
+         LEFT JOIN ticket_repo_delivery d ON d.ticket_id = tr.ticket_id AND d.repo_id = tr.repo_id
+         WHERE tr.ticket_id = ? AND tr.access = 'write'
+           AND tr.relation IN (${TICKET_REPO_ACTIVE_RELATIONS.map(() => "?").join(", ")})`,
+      )
+      .all(ticketId, ...TICKET_REPO_ACTIVE_RELATIONS) as Array<{
+      repo_id: string;
+      repo: string;
+      local_path: string | null;
+      default_branch: string | null;
+      branch: string | null;
+    }>;
+    for (const w of writes) {
+      if (repos.some((r) => r.repoId === w.repo_id)) continue;
+      unpinned.push(w.repo);
+      repos.push({
+        repoId: w.repo_id,
+        repo: w.repo,
+        sha: "",
+        pinned: false,
+        landed: false,
+        localPath: w.local_path ?? null,
+        defaultBranch: w.default_branch || "main",
+        branch: w.branch ?? null,
+      });
+    }
+  }
   repos.sort((a, b) => a.repo.localeCompare(b.repo));
   const landed = repos.filter((r) => r.landed).length;
   const pending = repos.length - landed;
-  return { repos, landed, pending, partial: landed > 0 && pending > 0 };
+  return { repos, landed, pending, partial: landed > 0 && pending > 0, unpinned: unpinned.sort() };
 }

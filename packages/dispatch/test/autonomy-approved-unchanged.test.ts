@@ -130,7 +130,8 @@ describe("approveReview records approved_unchanged", () => {
   });
 
   it("records UNKNOWN (null) when no delivery SHA was recorded", () => {
-    const d = Dispatch.open(":memory:", undefined, scriptedRunner("deadbeef"));
+    // A full commit id: an approval pins every write repo's head (external review #7).
+    const d = Dispatch.open(":memory:", undefined, scriptedRunner("deadbeef".repeat(5)));
     const ticketId = buildInReview(d); // no commit_sha recorded.
     d.approveReview(ticketId, human);
     expect(approvedUnchangedOf(d, ticketId)).toBeNull();
@@ -145,15 +146,17 @@ describe("approveReview records approved_unchanged", () => {
 
 describe("reviewDecisions — one ticket = one sample (primary-repo scoping)", () => {
   it("attributes an approval to the primary write repo; a secondary write repo accrues no borrowed sample [negative control]", () => {
-    const d = Dispatch.open(":memory:", undefined, scriptedRunner("deadbeef"));
+    const d = Dispatch.open(":memory:", undefined, scriptedRunner("deadbeef".repeat(5)));
     const ticketId = buildInReview(d); // links "svc" as the primary write repo.
     // A SECOND write repo on the same ticket, role='secondary' (linkRepository
     // defaults access='write'). Pre-fix this borrowed the primary's approval.
-    d.registerRepository(
+    const libs = d.registerRepository(
       { name: "libs", default_branch: "main", local_path: process.cwd() },
       human,
     );
     d.linkRepository(ticketId, "libs", "secondary", human);
+    // Delivered too: an approval covers every write repo (external review #7).
+    d.recordRepoDelivery({ ticket_id: ticketId, repo_id: libs.id, branch_name: "feat/t1" }, human);
 
     d.approveReview(ticketId, human);
 

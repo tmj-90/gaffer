@@ -368,6 +368,67 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     }
   });
 
+  it("fires for a PARTLY LANDED ticket even with AUTO_MERGE off: the lane lands the rest (external review #7)", async () => {
+    // Two write repos, both approved (one review pin each); repoA's landing is recorded,
+    // repoB's is not: the landing started, so the merge lane finishes it.
+    const partlyLanded = (wg: Dispatch) => {
+      const t = wg.createTicket({ title: "spans two repos" }, human);
+      const sha = (c: string) => c.repeat(40);
+      const ins = wg.db.prepare(
+        "INSERT INTO evidence (id, ticket_id, ac_id, repo_id, decision_id, evidence_type, summary, uri, payload_json, created_by, recorded_by_actor_type, created_at) VALUES (?, ?, NULL, ?, NULL, 'commit', 's', ?, '{}', 'dispatch', 'system', ?)",
+      );
+      for (const [name, c] of [
+        ["repoA", "a"],
+        ["repoB", "b"],
+      ] as const) {
+        const r = wg.registerRepository({ name, default_branch: "main" }, human);
+        wg.setTicketRepoAccess(
+          { ticket_id: t.id, repo_id: r.id, access: "write", relation: "confirmed" },
+          human,
+        );
+        ins.run(
+          `pin-${name}`,
+          t.id,
+          r.id,
+          `gaffer-reviewed-commit:${sha(c)}`,
+          "2026-01-01T00:00:00Z",
+        );
+        if (name === "repoA")
+          ins.run(
+            `land-${name}`,
+            t.id,
+            r.id,
+            `gaffer-landed-commit:${sha(c)}`,
+            "2026-01-01T00:01:00Z",
+          );
+      }
+      wg.db.prepare("UPDATE tickets SET status = 'ready_for_merge' WHERE id = ?").run(t.id);
+    };
+    restore = withEnv({
+      AUTO_MERGE: "0",
+      GAFFER_MERGE_LANE: undefined,
+      CREW_CONFIG: "/nonexistent/crew.yaml",
+    });
+    h = await startHarness({ run: () => ({ started: true, pid: 8 }) }, false, partlyLanded);
+    let res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.polled).toBe(true);
+    expect(res.body.pending).toMatchObject({ ready: 0, merge: 1 });
+    expect(h.runCount()).toBe(1);
+    // The lane off: nothing would land it.
+    await h.close();
+    restore();
+    restore = withEnv({
+      AUTO_MERGE: "0",
+      GAFFER_MERGE_LANE: "0",
+      CREW_CONFIG: "/nonexistent/crew.yaml",
+    });
+    h = await startHarness({ run: () => ({ started: true, pid: 8 }) }, false, partlyLanded);
+    res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.polled).toBe(false);
+  });
+
   it("fires for a draft with a local repo when clarify-when-idle is on, not for a repo-less one", async () => {
     const draftWithRepo = (local: boolean) => (wg: Dispatch) => {
       const t = wg.createTicket({ title: local ? "vague draft" : "repo-less draft" }, human);

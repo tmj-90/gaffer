@@ -26,6 +26,15 @@
 #     branches carry their change — a partial landing is held, and a retry lands the
 #     remaining repo without re-merging the landed one (dashboard Merge path, then the
 #     merge lane's lib/land.sh path for a second ticket).
+#   • (external review #7, the reviewer's sequence, through BOTH landing paths and the
+#     dashboard's Poll for work) with B's delivery branch temporarily deleted, the Review
+#     button used to offer "Approve and land now … repoB lands after it", the approval
+#     pinned only A, the landing marked the ticket done with B's change on its branch, and
+#     Poll reported no_work. Now: the button reads "Approve held: repoB unavailable"
+#     (disabled) and the approval is refused (repo_unavailable); restored, the approval
+#     pins BOTH; A lands while B cannot (its checkout is dirty), the ticket stays
+#     ready_for_merge "partly landed"; the dashboard's Poll counts it as merge work, and
+#     the poll's tick runs the merge lane, which lands B and marks the ticket done.
 #
 # Requires the dispatch CLI built + git. SKIPs (exit 0) otherwise.
 # Run: bash test/e2e-multi-repo-delivery.test.sh    (also green under /bin/bash 3.2)
@@ -374,6 +383,126 @@ SHOW3="$(wg ticket show "$N3" 2>/dev/null)"
 case "$SHOW3" in *merge_gate_red*) ok "the hold names merge_gate_red" ;; *) fail "no merge_gate_red on #$N3" ;; esac
 MM3_ERR="$(wg ticket mark-merged "$N3" --as system 2>&1 >/dev/null)"
 [ "$(status_of "$N3")" != "done" ] && ok "mark-merged cannot finish a ticket whose secondary repo never landed" || fail "mark-merged finished #$N3: $MM3_ERR"
+
+echo "== EXTERNAL REVIEW #7: B unavailable at approval → refused; approve both; A lands; Poll lands B =="
+DIST="$ROOT/packages/dispatch/dist"
+# The Review screen's sign-off (GET /tickets/:id/diff's approve_outcome), with AUTO_MERGE on
+# and a merge command configured (the reviewer's "Approve and land now").
+outcome() {
+  AUTO_MERGE=1 node --input-type=module -e '
+    const { Dispatch } = await import(process.argv[1] + "/core.js");
+    const d = Dispatch.open(process.argv[2]);
+    const o = d.approveOutcome(process.argv[3], { mergeCommand: true });
+    process.stdout.write(`${o.kind}|${o.approvable}|${o.label}|${o.sentence}`);' "$DIST" "$DB" "$1" 2>/dev/null
+}
+# The dashboard's Poll for work decides from pollablePending (POST /poll-work): with
+# nothing claimable it answers polled:false / no_ready_work unless some lane has work.
+poll_merge_work() {
+  AUTO_MERGE=0 node --input-type=module -e '
+    const { Dispatch } = await import(process.argv[1] + "/core.js");
+    const { pollablePending } = await import(process.argv[1] + "/api/routes/work.js");
+    const d = Dispatch.open(process.argv[2]);
+    process.stdout.write(String(pollablePending(d, { ...process.env, AUTO_MERGE: "0" }).merge));' "$DIST" "$DB" 2>/dev/null
+}
+# The ticket's status label (landing_state, as GET /tickets/:id and the board carry it).
+landing_label() {
+  node --input-type=module -e '
+    const { Dispatch } = await import(process.argv[1] + "/core.js");
+    const d = Dispatch.open(process.argv[2]);
+    process.stdout.write(String((d.landingState(process.argv[3]) || {}).label || ""));' "$DIST" "$DB" "$1" 2>/dev/null
+}
+# poll-once.sh — what the Poll button spawns — runs ONE real tick (the merge lane first).
+poll_once() {
+  ( cd "$RUNNER_DIR" && env DISPATCH_DB="$DB" GAFFER_DATA="$WORK" MEMORY_DB="$WORK/memory.sqlite" \
+      CLAUDE_BIN="$STUB" CLAUDE_FLAGS="" DRY_RUN=0 REVIEW_MODE=human GAFFER_TESTING=0 AUTO_MERGE=0 \
+      GAFFER_MODE=supervised GAFFER_MAINTENANCE=0 GAFFER_DIGEST_DISABLE=1 GAFFER_AUTO_PUSH=0 \
+      GAFFER_STRICT_REQUIRE=0 GAFFER_SECURITY_REVIEW=0 CLARIFY_DRAFTS_WHEN_IDLE=0 \
+      bash ./bin/poll-once.sh 2>>"$WORK/poll.err" )
+}
+# One two-repo ticket delivered into both repos and submitted for review.
+two_repo_in_review() {  # $1 title $2 mark → prints the ticket number
+  local n ac tok br
+  n="$(wg ticket create -t "$1" --description "review 7" --policy team_light --risk low 2>/dev/null | jget 'd.ticket.number')"
+  ac="$(wg ac add "$n" -t "both" 2>/dev/null | jget 'd.ac_id')"
+  wg ticket repo-access set "$n" repoA --access write --relation confirmed >/dev/null 2>&1
+  wg ticket repo-access set "$n" repoB --access write --relation confirmed >/dev/null 2>&1
+  wg ticket ready "$n" >/dev/null 2>&1
+  tok="$(wg claim-ticket "$n" --agent "$AGENT" --ttl 900 2>/dev/null | jget 'd.claimToken')"
+  br="gaffer/t$n"
+  git -C "$REPO_A" worktree add -q -b "$br" "$WORK/wt$n-A" main; git -C "$REPO_B" worktree add -q -b "$br" "$WORK/wt$n-B" main
+  ( export WT="$WORK/wt$n-A" TICKET="$n" AC_ID="$ac" CLI_JS DB GAFFER_CLAIM_TOKEN="$tok" MARK="$2-A"; "$STUB" -p x >/dev/null 2>&1 )
+  ( export WT="$WORK/wt$n-B" TICKET="$n" AC_ID="$ac" CLI_JS DB GAFFER_CLAIM_TOKEN="$tok" MARK="$2-B"; "$STUB" -p x >/dev/null 2>&1 )
+  git -C "$REPO_A" worktree remove --force "$WORK/wt$n-A" >/dev/null 2>&1; git -C "$REPO_B" worktree remove --force "$WORK/wt$n-B" >/dev/null 2>&1
+  wg ticket repo-delivery record "$n" repoA --branch "$br" >/dev/null 2>&1
+  wg ticket repo-delivery record "$n" repoB --branch "$br" >/dev/null 2>&1
+  wg submit "$n" --token "$tok" --reason "both" >/dev/null 2>&1
+  printf '%s' "$n"
+}
+# The reviewer's steps up to "approved with both pins", for ticket $1.
+review7_approve() {
+  local n="$1" br="gaffer/t$1" hb ha out err
+  hb="$(git -C "$REPO_B" rev-parse "$br")"; ha="$(git -C "$REPO_A" rev-parse "$br")"
+  git -C "$REPO_B" branch -q -D "$br"   # B's delivery branch is temporarily unavailable
+  out="$(outcome "$n")"
+  case "$out" in
+    "held_repo_unavailable|false|Approve held: repoB unavailable|"*) ok "#$n: the Review button reads 'Approve held: repoB unavailable' (disabled), never 'land now'" ;;
+    *) fail "#$n: the Review button offered: ${out:0:300}" ;;
+  esac
+  err="$(wg review approve "$n" --reviewer human1 --commit "repoA=$ha" 2>&1 >/dev/null)"
+  case "$err" in *repo_unavailable*repoB*) ok "#$n: approving with only repoA's head is refused (repo_unavailable, naming repoB)" ;; *) fail "#$n: the approval with B unavailable was not refused: ${err:0:300}" ;; esac
+  [ "$(status_of "$n")" = "in_review" ] && [ "$(wg ticket landing "$n" 2>/dev/null | jget '(d.repos||[]).length')" = "0" ] \
+    && ok "#$n: nothing approved, nothing pinned (still in_review)" || fail "#$n after the refused approval: $(status_of "$n") $(wg ticket landing "$n" 2>/dev/null)"
+  git -C "$REPO_B" branch -q "$br" "$hb"   # restore B
+  # shellcheck disable=SC2046
+  wg review approve "$n" --reviewer human1 $(wg ticket diff "$n" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
+  [ "$(status_of "$n")" = "ready_for_merge" ] && [ "$(wg ticket landing "$n" 2>/dev/null | jget '(d.repos||[]).filter(r => r.pinned !== false).length')" = "2" ] \
+    && ok "#$n: B restored — the approval pins BOTH repos" || fail "#$n approve after restoring B: $(status_of "$n") $(wg ticket landing "$n" 2>/dev/null)"
+}
+# After A landed and B did not: partly landed, not done; Poll for work lands B.
+review7_poll_finishes() {
+  local n="$1" hb a_merges res
+  hb="$(git -C "$REPO_B" rev-parse "gaffer/t$n")"
+  [ "$(status_of "$n")" = "ready_for_merge" ] && ok "#$n: A landed, B did not — NOT done (ready_for_merge)" || fail "#$n after the partial landing: $(status_of "$n")"
+  case "$(landing_label "$n")" in
+    "Approved · partly landed") ok "#$n: the ticket reads 'Approved · partly landed'" ;;
+    *) fail "#$n landing_state: $(landing_label "$n")" ;;
+  esac
+  git -C "$REPO_B" checkout -q -- src/mod.ts   # the operator cleans B
+  [ "$(poll_merge_work)" -ge 1 ] && ok "#$n: the dashboard's Poll for work counts the partly landed ticket as merge work (AUTO_MERGE off)" \
+    || fail "#$n: Poll for work would answer no_ready_work (merge=$(poll_merge_work))"
+  a_merges="$(git -C "$REPO_A" rev-list --merges --count main)"
+  res="$(poll_once | sed -n 's/^TICK_RESULT=//p' | tail -1)"
+  [ "$res" != "no_work" ] && [ -n "$res" ] && ok "#$n: poll-once's tick does not report no_work ($res)" || fail "#$n: poll-once reported '${res:-nothing}': $(tail -5 "$WORK/factory.log" 2>/dev/null | tr '\n' '|' | cut -c1-500)"
+  git -C "$REPO_B" merge-base --is-ancestor "$hb" main && ok "#$n: the poll's merge lane landed B" || fail "#$n: B not on repoB's main after the poll: $(grep "#$n" "$WORK/factory.log" 2>/dev/null | tail -4 | tr '\n' '|' | cut -c1-600)"
+  [ "$(git -C "$REPO_A" rev-list --merges --count main)" = "$a_merges" ] && ok "#$n: A was not merged a second time" || fail "#$n: repoA re-merged by the poll"
+  [ "$(status_of "$n")" = "done" ] && ok "#$n: with both repos landed, the ticket is done" || fail "#$n after the poll: $(status_of "$n")"
+}
+
+echo "-- dashboard Merge path (bin/merge-ticket.mjs) --"
+N5="$(two_repo_in_review "review seven, dashboard" r7d)"
+review7_approve "$N5"
+printf 'operator edit\n' >> "$REPO_B/src/mod.ts"   # B cannot land yet
+OUT5="$(env DISPATCH_DB="$DB" GAFFER_DATA="$WORK" CLAUDE_BIN=/bin/false node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$N5" 2>>"$WORK/merge.log")"; RC5=$?
+[ "$RC5" -eq 4 ] && [ "$(printf '%s' "$OUT5" | jget 'd.phase')" = "partially_merged" ] && ok "#$N5: Merge now landed repoA and reports partially_merged" || fail "#$N5 merge: rc=$RC5 out=${OUT5:0:300}"
+review7_poll_finishes "$N5"
+
+echo "-- merge lane path (lib/land.sh) --"
+N6="$(two_repo_in_review "review seven, lane" r7l)"
+review7_approve "$N6"
+printf 'operator edit\n' >> "$REPO_B/src/mod.ts"
+(
+  log() { printf '%s\n' "$*" >> "$WORK/lane6.log"; }
+  gaffer_refresh_cards() { :; }
+  _gaffer_flag_on() { case "${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+  export DISPATCH_DB="$DB" GAFFER_DIGEST_DISABLE=1 RUNNER_DIR
+  # shellcheck source=../lib/automerge.sh
+  source "$RUNNER_DIR/lib/automerge.sh"
+  # shellcheck source=../lib/land.sh
+  source "$RUNNER_DIR/lib/land.sh"
+  gaffer_land_delivery "$N6" "$REPO_A" "gaffer/t$N6" main "$(wg ticket show "$N6" 2>/dev/null)" MERGE
+) ; L6RC=$?
+[ "$L6RC" -ne 0 ] && grep -q "PARTLY MERGED" "$WORK/lane6.log" && ok "#$N6: the merge lane landed repoA and held the rest (PARTLY MERGED)" || fail "#$N6 lane rc=$L6RC: $(tr '\n' '|' < "$WORK/lane6.log" | cut -c1-400)"
+review7_poll_finishes "$N6"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

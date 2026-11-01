@@ -6,7 +6,7 @@ import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner, shownCommits } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "agent-runner" };
@@ -117,7 +117,12 @@ describe("BBT-001 REST surface", () => {
     const ticketId = inReviewTicket(h.wg);
     await call(h.baseUrl, "POST", `/tickets/${ticketId}/testable`, { can_be_tested: true });
 
-    const approve = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+    const approve = await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
     expect(approve.status).toBe(200);
     expect((approve.body.ticket as { status: string }).status).toBe("in_testing");
 
@@ -133,7 +138,12 @@ describe("BBT-001 REST surface", () => {
     h = await startHarness(true);
     const ticketId = inReviewTicket(h.wg);
     await call(h.baseUrl, "POST", `/tickets/${ticketId}/testable`, { can_be_tested: true });
-    await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+    await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
 
     const fail = await call(h.baseUrl, "POST", `/tickets/${ticketId}/tester`, {
       verdict: "fail",
@@ -147,7 +157,12 @@ describe("BBT-001 REST surface", () => {
     h = await startHarness(false);
     const ticketId = inReviewTicket(h.wg);
     await call(h.baseUrl, "POST", `/tickets/${ticketId}/testable`, { can_be_tested: true });
-    const approve = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+    const approve = await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
     expect((approve.body.ticket as { status: string }).status).toBe("ready_for_merge");
   });
 });

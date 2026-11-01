@@ -10,7 +10,7 @@ import type { ProductOwnerRunner } from "../src/api/productOwner.js";
 import type { PlanBuildRunner } from "../src/api/planBuild.js";
 import { TestClock } from "../src/util/clock.js";
 import { DispatchError } from "../src/util/errors.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner, shownCommits } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 const admin: Actor = { type: "admin", id: "boss" };
@@ -224,7 +224,12 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
     process.env.AUTO_MERGE = "1";
     try {
       const { ticketId, number } = inReviewViaWg(h.wg);
-      const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+      const res = await call(
+        h.baseUrl,
+        "POST",
+        `/tickets/${ticketId}/review/approve`,
+        shownCommits(h.wg, ticketId),
+      );
       expect(res.status).toBe(200);
       expect(h.merges).toEqual([{ ticketNumber: number }]);
       expect((res.body.merge as { triggered: boolean }).triggered).toBe(true);
@@ -244,7 +249,12 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
       else process.env.AUTO_MERGE = value;
       try {
         const { ticketId } = inReviewViaWg(h.wg);
-        const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+        const res = await call(
+          h.baseUrl,
+          "POST",
+          `/tickets/${ticketId}/review/approve`,
+          shownCommits(h.wg, ticketId),
+        );
         expect(res.status).toBe(200);
         expect(h.merges).toEqual([]);
         expect(res.body.merge).toEqual({ triggered: false, pid: null, skipped: "auto_merge_off" });
@@ -262,7 +272,12 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
 
   it("POST /tickets/:id/reopen-for-review re-opens a merging ticket and is re-reviewable", async () => {
     const { ticketId } = inReviewViaWg(h.wg);
-    await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+    await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
     // Approve now lands in ready_for_merge (the merge runner is doing the merge).
     expect(h.wg.view(ticketId).ticket.status).toBe("ready_for_merge");
 
@@ -279,7 +294,12 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
 
   it("POST /tickets/:id/mark-merged closes an approved ticket (ready_for_merge -> done)", async () => {
     const { ticketId } = inReviewViaWg(h.wg);
-    await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+    await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
     expect(h.wg.view(ticketId).ticket.status).toBe("ready_for_merge");
 
     const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/mark-merged`);
@@ -290,7 +310,12 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
 
   it("POST /tickets/:id/reopen-for-review 422s without a resolution", async () => {
     const { ticketId } = inReviewViaWg(h.wg);
-    await call(h.baseUrl, "POST", `/tickets/${ticketId}/review/approve`);
+    await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
     const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/reopen-for-review`, {
       reason: "r",
     });

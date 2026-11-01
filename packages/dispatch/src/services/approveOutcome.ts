@@ -8,6 +8,12 @@
  *
  *   held_ci          GAFFER_REQUIRE_CI has recorded CI for this ticket and the candidate
  *                    commit has no PASS: approveReview refuses (POLICY_DENIED).
+ *   held_repo_unavailable
+ *                    a write repo's delivery head cannot be read now (no checkout here, an
+ *                    unreadable path, a missing delivery branch): approveReview refuses
+ *                    (STATE_CONFLICT, repo_unavailable) for every approver, because an
+ *                    approval pins every write repo and the ticket is done only when each
+ *                    one landed. The button names the repo; it never says "land now".
  *   held_test_modified
  *                    GATE INTEGRITY, for an AGENT or auto approval only: the delivery
  *                    changed the tests that gate it (an unallowed `test-modified` finding,
@@ -40,6 +46,7 @@
 
 export const APPROVE_OUTCOME_KINDS = [
   "held_ci",
+  "held_repo_unavailable",
   "held_test_modified",
   "to_tester",
   "land_now",
@@ -62,6 +69,11 @@ export interface ApproveOutcomeFacts {
   testModifiedHolds?: string[];
   /** The required-CI hold approveReview would raise now, or null (no CI recorded / PASS). */
   ciHold: { state: string | null; commit: string | null } | null;
+  /**
+   * EVERY WRITE REPO: the write repos whose delivery head cannot be read now — the same
+   * list approveReview refuses on (repo_unavailable). Empty or absent when all resolve.
+   */
+  unavailableRepos?: Array<{ repo: string; why: string }>;
   /** approveReview routes this ticket to the independent tester (in_testing). */
   toTester: boolean;
   /** …because it is an epic's acceptance ticket (the toggle does not apply). */
@@ -100,7 +112,7 @@ export interface ApproveOutcomeFacts {
 
 export interface ApproveOutcome {
   kind: ApproveOutcomeKind;
-  /** False only when the server would refuse the approval (held_ci). */
+  /** False only when the server would refuse the approval (a held_* kind). */
   approvable: boolean;
   /** Where the click moves the ticket (null when it is refused). */
   to_status: "in_testing" | "ready_for_merge" | null;
@@ -236,6 +248,28 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       not_landed_repos: [],
     };
   }
+  const missing = f.unavailableRepos ?? [];
+  if (missing.length > 0) {
+    const names = missing.map((m) => m.repo);
+    const label = `Approve held: ${andList(names)} unavailable`;
+    return {
+      ...base,
+      kind: "held_repo_unavailable",
+      approvable: false,
+      to_status: null,
+      label,
+      confirm_label: label,
+      done_label: "Approve held",
+      sentence:
+        `${missing.map((m) => `${m.repo}: ${m.why}`).join("; ")}. An approval covers every repository this ticket writes to ` +
+        `(one approved commit each, and the ticket is done only when every one has landed), so the server refuses it until ` +
+        `${names.length === 1 ? "that repository's" : "each repository's"} delivery head can be read. Restore the checkout or the delivery branch and review again, or remove the repository from the ticket.`,
+      via: null,
+      lands_repo: null,
+      also_lands_repos: [],
+      not_landed_repos: [],
+    };
+  }
   if (agent && hold) {
     return {
       ...base,
@@ -338,7 +372,7 @@ export function settleApproveOutcome(
     merge?: { triggered: boolean; skipped?: string | undefined } | undefined;
   },
 ): ApproveOutcome {
-  const free = { ...facts, ciHold: null };
+  const free = { ...facts, ciHold: null, unavailableRepos: [] };
   if (actual.toStatus === "in_testing") return decideApproveOutcome({ ...free, toTester: true });
   const predicted = decideApproveOutcome({ ...free, toTester: false });
   const m = actual.merge;

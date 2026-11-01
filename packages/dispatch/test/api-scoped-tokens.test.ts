@@ -13,7 +13,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { createApiServer } from "../src/api/server.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner, shownCommits } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 
@@ -213,7 +213,13 @@ describe("scoped API tokens — read tier browses, is 403 on mutations", () => {
       expect(h.wg.view(id).ticket.status).toBe("in_review");
 
       // The full token approves it (unchanged behaviour, backward compat).
-      const ok = await send(h.baseUrl, "POST", `/tickets/${id}/review/approve`, FULL);
+      const ok = await send(
+        h.baseUrl,
+        "POST",
+        `/tickets/${id}/review/approve`,
+        FULL,
+        shownCommits(h.wg, id),
+      );
       expect(ok.status).toBe(200);
       expect(h.wg.view(id).ticket.status).toBe("ready_for_merge");
     } finally {

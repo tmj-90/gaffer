@@ -11,6 +11,14 @@
  *    landed: markMerged refuses after one landing (partial_landing, a "Partly merged"
  *    item in the human queue) and accepts once the second repo's commit is on its
  *    default branch (verified from git, recorded as a landing).
+ *
+ * #7 APPROVAL COVERS EVERY WRITE REPO — with B's delivery branch deleted (or B's checkout
+ *    unreadable) the approval used to go through with only A pinned, and the landing then
+ *    marked the ticket done with B's change still on its branch. approveReview now refuses
+ *    (STATE_CONFLICT, repo_unavailable, naming B) for a human and an agent alike, records
+ *    no pin and leaves the ticket in review; once B is back the approval pins both. A
+ *    ticket approved the old way (one write repo unpinned) is never done: markMerged's
+ *    partial_landing names the unpinned repo.
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -281,5 +289,111 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     expect(d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system).recorded).toBe(
       true,
     );
+  });
+});
+
+describe("an approval covers every write repo (external review #7)", () => {
+  const prevAgent = process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+  afterEach(() => {
+    if (prevAgent === undefined) delete process.env.DISPATCH_ALLOW_AGENT_APPROVE;
+    else process.env.DISPATCH_ALLOW_AGENT_APPROVE = prevAgent;
+  });
+
+  it("B's delivery branch is gone: approve is refused (repo_unavailable) for a human and an agent", () => {
+    const a = makeRepo("a");
+    const b = makeRepo("b");
+    const d = Dispatch.open(":memory:");
+    const t = twoRepoInReview(d, a, b);
+    const shaB = git(b, "rev-parse", BRANCH);
+    git(b, "branch", "-q", "-D", BRANCH); // temporarily unavailable at approval time
+    const onlyA = d.ticketDiff(t.id).repos.filter((r) => r.headSha);
+    expect(onlyA.map((r) => r.repo)).toEqual(["repoA"]); // the diff can show only A
+    const shown = onlyA.map((r) => ({ repo: r.repoId!, sha: r.headSha! }));
+    const e = refusal(() => d.approveReview(t.id, human, { commits: shown, requireCommits: true }));
+    expect(e.code).toBe("STATE_CONFLICT");
+    expect(e.details.reason).toBe("repo_unavailable");
+    expect(e.message).toContain("Approve held: repoB is unavailable");
+    expect(JSON.stringify(e.details.repos)).toContain("repoB");
+    expect(JSON.stringify(e.details.repos)).not.toContain("repoA");
+    // The library path without named commits is refused too (it used to pin A only).
+    expect(refusal(() => d.approveReview(t.id, human)).details.reason).toBe("repo_unavailable");
+    process.env.DISPATCH_ALLOW_AGENT_APPROVE = "1";
+    const reviewer: Actor = { type: "agent", id: "reviewer-x" };
+    expect(
+      refusal(() => d.approveReview(t.id, reviewer, { commits: shown, requireCommits: true }))
+        .details.reason,
+    ).toBe("repo_unavailable");
+    expect(d.view(t.id).ticket.status).toBe("in_review");
+    expect(reviewPins(d, t.id)).toHaveLength(0);
+    // The Review button names the hold and never offers to land.
+    process.env.AUTO_MERGE = "1";
+    try {
+      const o = d.approveOutcome(t.id, { mergeCommand: true });
+      expect(o.kind).toBe("held_repo_unavailable");
+      expect(o.approvable).toBe(false);
+      expect(o.label).toBe("Approve held: repoB unavailable");
+      expect(o.sentence).toContain("repoB: its delivery branch gaffer/t1 cannot be resolved");
+    } finally {
+      delete process.env.AUTO_MERGE;
+    }
+    // B restored: the approval pins BOTH repos.
+    git(b, "branch", "-q", BRANCH, shaB);
+    const both = d.ticketDiff(t.id).repos.map((r) => ({ repo: r.repoId!, sha: r.headSha! }));
+    expect(
+      d.approveReview(t.id, human, { commits: both, requireCommits: true }).ticket.status,
+    ).toBe("ready_for_merge");
+    expect(new Set(reviewPins(d, t.id).map((p) => p.repo_id)).size).toBe(2);
+  });
+
+  it("B's checkout is unreadable: the same refusal, naming the path", () => {
+    const a = makeRepo("a");
+    const b = makeRepo("b");
+    const d = Dispatch.open(":memory:");
+    const t = twoRepoInReview(d, a, b);
+    const shown = d.ticketDiff(t.id).repos.map((r) => ({ repo: r.repoId!, sha: r.headSha! }));
+    const moved = `${b}.away`;
+    execFileSync("mv", [b, moved]);
+    try {
+      const e = refusal(() =>
+        d.approveReview(t.id, human, { commits: shown, requireCommits: true }),
+      );
+      expect(e.details.reason).toBe("repo_unavailable");
+      expect(e.message).toContain(`repoB: its checkout ${b} cannot be read`);
+      expect(d.view(t.id).ticket.status).toBe("in_review");
+    } finally {
+      execFileSync("mv", [moved, b]);
+    }
+  });
+
+  it("an approval that pinned only A (the old rule) never makes the ticket done", () => {
+    const a = makeRepo("a");
+    const b = makeRepo("b");
+    const d = Dispatch.open(":memory:");
+    const t = twoRepoInReview(d, a, b);
+    const shown = d.ticketDiff(t.id).repos.map((r) => ({ repo: r.repoId!, sha: r.headSha! }));
+    d.approveReview(t.id, human, { commits: shown, requireCommits: true });
+    // What the old approval recorded: no pin for repoB.
+    const repoB = d.view(t.id).repositories.find((r) => r.name === "repoB")!;
+    d.db
+      .prepare(
+        "DELETE FROM evidence WHERE ticket_id = ? AND repo_id = ? AND uri LIKE 'gaffer-reviewed-commit:%'",
+      )
+      .run(t.id, repoB.id);
+    const st = d.landingStatus(t.id);
+    expect(st.unpinned).toEqual(["repoB"]);
+    expect(st.repos.map((r) => [r.repo, r.pinned, r.landed])).toEqual([
+      ["repoA", true, false],
+      ["repoB", false, false],
+    ]);
+    git(a, "merge", "-q", "--no-ff", "-m", "land", BRANCH);
+    d.recordLanding(t.id, { repo: "repoA", commit: git(a, "rev-parse", BRANCH) }, system);
+    const e = refusal(() => d.markMerged(t.id, system));
+    expect(e.details.reason).toBe("partial_landing");
+    expect(e.message).toContain("repoB (not covered by the approval)");
+    expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
+    const ls = d.landingState(t.id);
+    expect(ls?.hold).toBe("unpinned_repo");
+    expect(ls?.detail).toContain("Not approved: repoB.");
+    expect(ls?.detail).toContain("Partly landed: repoA landed; repoB held.");
   });
 });

@@ -111,6 +111,34 @@ function readReviewPin(db, ticketId, repoId = null) {
   return sha;
 }
 
+/**
+ * EVERY WRITE REPO (external review #7): true when the approval on record pinned some OTHER
+ * repo of this ticket (a current per-repo review pin) while `repoId` has none — the
+ * approval did not cover this repo, so it must not land on a head nobody approved.
+ */
+function readOtherRepoPinned(db, ticketId, repoId) {
+  if (!repoId) return false;
+  try {
+    const entered = db
+      .prepare(
+        "SELECT created_at FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
+          "AND event_type = 'ticket.transitioned' AND json_extract(payload_json, '$.to') = 'in_review' " +
+          "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+      )
+      .get(ticketId);
+    const row = db
+      .prepare(
+        "SELECT 1 FROM evidence WHERE ticket_id = ? AND evidence_type = 'commit' " +
+          "AND recorded_by_actor_type = 'system' AND uri LIKE 'gaffer-reviewed-commit:%' " +
+          "AND repo_id IS NOT NULL AND repo_id <> ? AND created_at >= ? LIMIT 1",
+      )
+      .get(ticketId, repoId, entered ? String(entered.created_at) : "");
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
 /** True when a SYSTEM landing of exactly `sha` is on record for this repo. */
 function readLanded(db, ticketId, repoId, sha) {
   if (!repoId || !sha) return false;
@@ -182,6 +210,7 @@ export function readTesterEvidence(dbPath, ticketNumber, repoId = null) {
       pass,
       reviewed,
       landed: readLanded(db, t.id, repoId, reviewed),
+      otherRepoPinned: reviewed ? false : readOtherRepoPinned(db, t.id, repoId),
     };
   } catch (e) {
     return { error: `could not read the dispatch DB: ${e?.message ?? e}` };
@@ -289,6 +318,14 @@ function testerLandingDecision({
     };
   const head = branchHead(repoPath, branch);
   if (!head) return hold("no-head", `cannot resolve the head of ${branch} in ${repoPath}`);
+  // EVERY WRITE REPO: the approval pinned the ticket's other repos but not this one (an
+  // approval made before every write repo had to resolve): nothing approved this head.
+  if (!reviewed && ev.otherRepoPinned)
+    return hold(
+      "unreviewed",
+      `the approval pinned this ticket's other repositories but no commit of ${branch} in ${repoPath} — move it back to review and approve every repository together`,
+      { head },
+    );
   const pass = ev.pass;
   // A SECONDARY write repo of a multi-repo ticket: the tester ran the primary repo, so its
   // verdict does not describe this one. It lands only the exact commit the approval pinned

@@ -6,7 +6,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { createApiServer } from "../src/api/server.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner, shownCommits } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 
@@ -127,7 +127,12 @@ describe("API: human REST surface", () => {
     expect((events.body.events as unknown[]).length).toBeGreaterThan(0);
 
     // Approve review -> ready_for_merge (the merge runner then marks it merged).
-    const approved = await call(h.baseUrl, "POST", `/tickets/${ticket.id}/review/approve`);
+    const approved = await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticket.id}/review/approve`,
+      shownCommits(h.wg, ticket.id),
+    );
     expect(approved.status).toBe(200);
     expect((approved.body.ticket as { status: string }).status).toBe("ready_for_merge");
 
@@ -474,7 +479,12 @@ describe("API: human REST approve auto-merge is byte-identical (merge floor is i
     const agent = h.wg.registerAgent({ display_name: "claude" }, human);
     const claim = h.wg.claimNextTicket({ agentId: agent.id, ttlSeconds: 600 }, human);
     h.wg.submitForReview({ claimToken: claim!.claimToken, ticket_id: ticket.id }, human);
-    return call(h.baseUrl, "POST", `/tickets/${ticket.id}/review/approve`);
+    return call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticket.id}/review/approve`,
+      shownCommits(h.wg, ticket.id),
+    );
   }
 
   it("fires the merge trigger with the AFK merge floor OFF (the regression-risk case)", async () => {

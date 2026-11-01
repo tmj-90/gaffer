@@ -76,20 +76,7 @@ grep -Eq 'failed-safe:.*1 blocked' <<<"$OUT" && ok "failed-safe = 1 blocked" || 
 grep -Eq 'parked:.*1 refining' <<<"$OUT" && ok "parked = 1 refining" || fail "parked wrong"
 grep -Eq 're-queued:.*1 ready' <<<"$OUT" && ok "re-queued = 1 ready" || fail "re-queued wrong"
 
-echo "== AC1b: landed counts only this run's landings (exploratory finding cli-runner/F-20) =="
-run_with_before() {  # run_with_before <SUMMARY_DONE_BEFORE value>
-  ( trap - EXIT; env GAFFER_DATA="$WORK/.gaffer" DISPATCH_DB="$WORK/wg.sqlite" \
-    SUMMARY_LIST_CMD="$WORK/list.sh" SUMMARY_SHOW_CMD="$WORK/show.sh" \
-    GAFFER_BP_FILE="$WORK/.gaffer/.backpressure-repos" SUMMARY_DONE_BEFORE="$1" \
-    bash "$RUNNER_DIR/run-summary.sh" 2>&1 )
-}
-grep -Eq 'landed:.*1 this run \(2 done in all\)' <<<"$(run_with_before "1 ")" \
-  && ok "one ticket done before the run → landed = 1 this run (2 in all)" || fail "landed this run: $(run_with_before "1 " | grep landed)"
-grep -Eq 'landed:.*0 this run' <<<"$(run_with_before "1 2 ")" \
-  && ok "every done ticket predates the run → landed = 0 this run" || fail "landed none: $(run_with_before "1 2 " | grep landed)"
-grep -Eq 'landed:.*2 this run' <<<"$(run_with_before "")" \
-  && ok "nothing done before the run → both count" || fail "landed empty-before: $(run_with_before "" | grep landed)"
-grep -Eq 'landed:.*2 done \(all time\)' <<<"$OUT" && ok "without a run snapshot the count is labelled all-time" || fail "unlabelled all-time count"
+grep -Eq 'landed:.*2 done \(all time\)' <<<"$OUT" && ok "without SUMMARY_SINCE the count is labelled all-time" || fail "unlabelled all-time count"
 
 echo "== AC2: parked reasons =="
 grep -qi 'hygiene violation' <<<"$OUT" && ok "parked ticket surfaces its hygiene park reason" || fail "park reason missing"

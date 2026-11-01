@@ -20,7 +20,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
-c_grn='\033[1;32m'; c_cya='\033[1;36m'; c_yel='\033[1;33m'; c_red='\033[1;31m'; c_dim='\033[2m'; c_off='\033[0m'
+# No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
 say()  { printf "${c_cya}gaffer${c_off} %s\n" "$*"; }
 line() { printf "  %-16s %s\n" "$1" "$2"; }
 
@@ -32,9 +35,16 @@ sum_list_raw() {
   if [ -n "${SUMMARY_LIST_CMD:-}" ]; then local -a c; read -ra c <<<"$SUMMARY_LIST_CMD"; "${c[@]}" "$1"
   else wg ticket list -s "$1"; fi
 }
-sum_show() {
+sum_show_raw() {
   if [ -n "${SUMMARY_SHOW_CMD:-}" ]; then local -a c; read -ra c <<<"$SUMMARY_SHOW_CMD"; "${c[@]}" "$1"
   else wg ticket show "$1"; fi
+}
+# One `ticket show` per ticket per report: the landed count, the oversized scan and the
+# cleanup scan all read the done tickets (cached next to the list cache below).
+sum_show() {
+  local f="$_LIST_CACHE_DIR/show-$1"
+  [ -f "$f" ] || sum_show_raw "$1" 2>/dev/null > "$f"
+  cat "$f"
 }
 
 # Per-status list cache. sum_list <status> is asked for the same status repeatedly
@@ -106,22 +116,22 @@ oversized_flagged() {
   [ "$found" = "0" ] && printf "    ${c_dim}(none)${c_off}\n"
 }
 
-say "run summary"
-
-# LANDED THIS RUN (exploratory finding cli-runner/F-20): "landed: N done" counted every
-# done ticket the factory ever had. loop.sh hands over the done tickets it saw at the
-# start of the run (SUMMARY_DONE_BEFORE, space-separated numbers; set even when empty),
-# so the line counts only this run's landings; without it (a standalone summary) the
-# all-time count is shown and labelled so.
+# Landed THIS run: a done ticket whose last update (the move to done) is at or after
+# SUMMARY_SINCE, the run start loop.sh passes. "landed: 1 done" used to count every done
+# ticket ever, so a run that landed nothing read as a success. Without SUMMARY_SINCE
+# (run directly) it says all-time.
 landed_line() {
-  local all; all="$(count_status 'done')"
-  if [ -z "${SUMMARY_DONE_BEFORE+x}" ]; then printf '%s done (all time)' "$all"; return 0; fi
-  local n now=0
+  local total n ua k=0
+  total="$(count_status 'done')"
+  if [ -z "${SUMMARY_SINCE:-}" ]; then printf '%s done (all time)' "$total"; return 0; fi
   for n in $(status_numbers 'done'); do
-    case " ${SUMMARY_DONE_BEFORE} " in *" $n "*) ;; *) now=$((now + 1)) ;; esac
+    ua="$(sum_show "$n" | grep -o '"updated_at"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+    [ -n "$ua" ] && [ ! "$ua" \< "$SUMMARY_SINCE" ] && k=$((k + 1))
   done
-  printf '%s this run (%s done in all)' "$now" "$all"
+  printf '%s this run (%s done in all)' "$k" "$total"
 }
+
+say "run summary"
 
 printf "\n  ${c_dim}outcomes${c_off}\n"
 line "landed:"      "$(landed_line)"

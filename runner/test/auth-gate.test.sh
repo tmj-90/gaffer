@@ -12,10 +12,7 @@
 #       and GAFFER_CLAUDE_AUTH_PROBE=0 each let the run start
 #   G3. `gaffer run` refuses before the loop; the dashboard Poll refuses with
 #       "— not polling."
-#   G4. a delivery whose agent call fails on auth (real tick.sh, stub agent):
-#       TICK_RESULT=auth_error, the ticket goes back to ready, attempt_count and the
-#       no-commit counter untouched; three such ticks never park it
-#   G5. loop.sh stops the run on that result (exit 3) with the /login hint
+#   (G4/G5, an auth failure DURING a delivery: auth-gate-delivery.test.sh)
 # Run: bash runner/test/auth-gate.test.sh
 # =====================================================================
 set -uo pipefail
@@ -83,29 +80,6 @@ out="$( ( "${NOCRED[@]}" GAFFER_ALLOW_UNCAPPED=1 GAFFER_LOOP_SH="$WORK/loop-stub
 out="$( ( "${NOCRED[@]}" DRY_RUN=0 GAFFER_ALLOW_UNCAPPED=1 GAFFER_POLL_TICK_SH="$FAKE/tick.sh" bash "$RUNNER_DIR/bin/poll-once.sh" 2>&1 ) )"
 has "$out" "claude is not logged in" && has "$out" "— not polling." && [ "$(ticks)" = 0 ] \
   && ok "G3: the Poll refuses with '— not polling.' and runs no tick" || fail "G3 poll: ticks=$(ticks): $out"
-
-echo "== G4. an auth failure during a delivery is not an attempt =="
-echo auth-error > "$MODE"
-T="$(new_ready "Add helper auth" "add a helper")"
-for i in 1 2 3; do   # three separate runs (each starts with an empty skip list)
-  rm -f "$GAFFER_DATA/.failed-tickets"
-  R1="$(GAFFER_MAX_DELIVERY_ATTEMPTS=3 run_tick)"
-done
-[ "$R1" = "TICK_RESULT=auth_error" ] && ok "G4: the tick reports auth_error" || fail "G4: $R1"
-[ "$(st "$T")" = ready ] && ok "G4: after three auth failures #$T is still ready (not parked)" || fail "G4: #$T is $(st "$T")"
-[ "$(sqlv 'select attempt_count from tickets where number=?' "$T")" = 0 ] && ok "G4: attempt_count is 0" || fail "G4: attempt_count=$(sqlv 'select attempt_count from tickets where number=?' "$T")"
-[ ! -e "$GAFFER_DATA/.nocommit-failures/$T" ] && ok "G4: the no-commit counter was not touched" || fail "G4: nocommit=$(cat "$GAFFER_DATA/.nocommit-failures/$T")"
-grep -q 'claude is not logged in' "$GAFFER_DATA/factory.log" && ok "G4: the log names the cause" || fail "G4: no auth line in factory.log"
-[ -z "$(branch_of "$T")" ] && ok "G4: no empty branch left behind" || fail "G4: branch $(branch_of "$T") left"
-
-echo "== G5. loop.sh stops the run on an auth failure =="
-rm -f "$GAFFER_DATA/.failed-tickets"
-out="$( ( cd "$RUNNER_DIR" && GAFFER_ALLOW_UNCAPPED=1 MAX_TICKS=3 TICK_SLEEP=0 EMPTY_POLL_LIMIT=3 \
-  LOOP_STATS_CMD="$WORK/noop.sh" LOOP_HQ_CMD="$WORK/noop.sh" LOOP_NOTIFY_EMIT_CMD="$WORK/noop.sh" bash ./loop.sh 2>&1 ) )"; rc=$?
-[ "$rc" = 3 ] && ok "G5: loop.sh exits 3" || fail "G5: rc=$rc"
-has "$out" "done after 1 tick(s)" && ok "G5: the run stopped after the first auth failure" || fail "G5: $(printf '%s' "$out" | grep -E '^tick|done after' | tr '\n' ' ')"
-has "$out" 'claude /login' && ok "G5: the run says to log in" || fail "G5: $out"
-retire "$T"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

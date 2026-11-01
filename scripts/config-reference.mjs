@@ -121,11 +121,192 @@ export function parseConfigDefaults(text, { fixedSection = null } = {}) {
   return [...knobs.values()];
 }
 
-function firstSentence(block) {
+/** A description longer than this is cut, at a word, and marked with an ellipsis. */
+const DOC_LIMIT = 220;
+/**
+ * The first sentence of a comment block, for the Notes column. A first sentence
+ * longer than DOC_LIMIT is cut at the last word that fits and marked "…" (it used
+ * to be sliced at character 220, so six descriptions stopped mid-word).
+ */
+export function firstSentence(block) {
   const text = block.join(" ").replace(/\s+/g, " ").trim();
   if (!text) return "";
-  const m = text.match(/^(.{0,220}?[.!?])(\s|$)/);
-  return (m ? m[1] : text.slice(0, 220)).trim();
+  const m = text.match(new RegExp(`^(.{0,${DOC_LIMIT}}?[.!?])(\\s|$)`));
+  if (m) return m[1].trim();
+  if (text.length <= DOC_LIMIT) return text;
+  const head = text.slice(0, DOC_LIMIT + 1);
+  const space = head.lastIndexOf(" ");
+  const cut = space > 0 ? head.slice(0, space) : text.slice(0, DOC_LIMIT);
+  return `${cut.replace(/[\s,;:(—-]+$/, "")}…`;
+}
+
+/**
+ * Knobs the code reads where it uses them, with no `: "${X:=…}"` default line and
+ * no Settings entry, so the scan above cannot find them: either the runner assigns
+ * them itself as well (an internal seam an operator can still export), or they are
+ * not factory-prefixed (credentials, the demo path). Each names the file whose read
+ * site holds the default; generate() fails if the name is no longer read there or
+ * if that file's inline default (`${X:-v}` / `?? v`) no longer matches.
+ * `verify: false` marks a default that is another variable, not a literal.
+ */
+export const EXTRA_KNOBS = [
+  {
+    group: "Safety and containment",
+    name: "GAFFER_STRICT_REQUIRE",
+    default: "0",
+    file: "runner/lib/sandbox.sh",
+    doc: "1 = refuse to launch an agent without an OS sandbox (fail closed). Unset, factory.config.sh turns it on whenever an autonomy flag, an autonomous/strict/lite mode or an `auto` policy row is on; set 0 explicitly only if you contain the whole runner yourself (a VM or container).",
+  },
+  {
+    group: "Safety and containment",
+    name: "GAFFER_SANDBOX_IMAGE",
+    default: "gaffer-sandbox:latest",
+    file: "runner/lib/sandbox-docker.sh",
+    doc: "The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it).",
+  },
+  {
+    group: "Safety and containment",
+    name: "GAFFER_SANDBOX_PROFILE",
+    default: "",
+    file: "runner/lib/sandbox-docker.sh",
+    doc: "Set by the runner, not by you: `validation` runs the DoD gates and criterion checks in the docker sandbox with no data plane. Empty is the agent profile.",
+  },
+  {
+    group: "Definition of Done",
+    name: "GAFFER_DOD",
+    default: "1",
+    file: "runner/lib/dod.sh",
+    doc: "0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (the merge gate is off too).",
+  },
+  {
+    group: "Definition of Done",
+    name: "GAFFER_DOD_INSTALL",
+    default: "1",
+    file: "runner/lib/dod.sh",
+    doc: "1 = install the delivery worktree's dependencies (from its lockfile) before the test gate; a no-op when node_modules exists. 0 to manage dependencies yourself.",
+  },
+  {
+    group: "Definition of Done",
+    name: "GAFFER_GREENFIELD_INSTALL",
+    default: "1",
+    file: "runner/lib/greenfield.sh",
+    doc: "0 = skip the dependency install in a new greenfield repo; also turns GAFFER_DOD_INSTALL off.",
+  },
+  {
+    group: "Definition of Done",
+    name: "GAFFER_ALLOW_NO_DOD",
+    default: "0",
+    file: "runner/tick.sh",
+    doc: "1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks.",
+  },
+  {
+    group: "Definition of Done",
+    name: "GAFFER_CI_TIMEOUT_POLICY",
+    default: "block",
+    file: "runner/lib/ci-gate.sh",
+    doc: "With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note.",
+  },
+  {
+    group: "Delivery and landing",
+    name: "GAFFER_KEEP_DELIVERY_BRANCH",
+    default: "0",
+    file: "runner/tick.sh",
+    doc: "Raised by the tick once a delivery's branch is review-visible, so cleanup removes the worktree but never the branch. Exporting 1 keeps every delivery branch (debugging only).",
+  },
+  {
+    group: "Delivery and landing",
+    name: "GAFFER_PAUSE_KEEP_WORKTREE",
+    default: "0",
+    file: "runner/tick.sh",
+    doc: "Raised by the tick when a delivery pauses on a cap, so its worktree and branch survive for Continue. Exporting 1 keeps every worktree (debugging only).",
+  },
+  {
+    group: "Delivery and landing",
+    name: "GAFFER_DIGEST_DISABLE",
+    default: "0",
+    file: "runner/lib/land.sh",
+    doc: "1 = skip the repo digest and feature-ledger refresh after a merge lands.",
+  },
+  {
+    group: "Delivery and landing",
+    name: "GAFFER_MEMORY_AUTO_PROMOTE",
+    default: "MEMORY_AUTO_APPROVE",
+    verify: false,
+    file: "runner/tick.sh",
+    doc: "1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE.",
+  },
+  {
+    group: "Onboarding and demo",
+    name: "GAFFER_VERBOSE",
+    default: "",
+    file: "runner/bin/onboard-run.mjs",
+    doc: "1 = `gaffer onboard` prints its full log instead of the summary (the log is always in $GAFFER_DATA/onboard.log).",
+  },
+  {
+    group: "Onboarding and demo",
+    name: "DEMO_DIR",
+    default: "",
+    file: "runner/demo.sh",
+    doc: "Where `gaffer demo` builds its throwaway showcase factory. Empty = a fresh temp dir per run. A named dir must be empty or a previous demo's (it is cleared); anything else is refused.",
+  },
+  {
+    group: "Credentials",
+    name: "ANTHROPIC_API_KEY",
+    default: "",
+    file: "runner/preflight.sh",
+    doc: "An API key for the worker CLI (`claude`). One of this, CLAUDE_CODE_OAUTH_TOKEN or a logged-in CLAUDE_CONFIG_DIR is needed for a live run; the container reads only these two variables.",
+  },
+  {
+    group: "Credentials",
+    name: "CLAUDE_CODE_OAUTH_TOKEN",
+    default: "",
+    file: "runner/preflight.sh",
+    doc: "The subscription token `claude setup-token` prints, used instead of an API key.",
+  },
+  {
+    group: "Credentials",
+    name: "CLAUDE_CONFIG_DIR",
+    default: "$HOME/.claude",
+    file: "runner/lib/claude-auth.sh",
+    doc: "Where the worker CLI keeps its login (`.credentials.json`); preflight looks there for a credential.",
+  },
+];
+
+/** Fail when an EXTRA_KNOBS entry no longer matches the code it names. */
+export function verifyExtraKnobs(root = ROOT, extras = EXTRA_KNOBS) {
+  const problems = [];
+  for (const k of extras) {
+    const file = path.join(root, k.file);
+    if (!existsSync(file)) {
+      problems.push(`${k.name}: ${k.file} does not exist`);
+      continue;
+    }
+    const text = readFileSync(file, "utf8");
+    if (!new RegExp(`\\b${k.name}\\b`).test(text)) {
+      problems.push(`${k.name}: no longer read in ${k.file}`);
+      continue;
+    }
+    if (k.verify === false) continue;
+    const isShell = !/\.(mjs|js|ts)$/.test(k.file);
+    const re = isShell
+      ? new RegExp(`\\$\\{${k.name}:-`, "g")
+      : new RegExp(`(?:process\\.)?env(?:\\.${k.name}\\b|\\[["']${k.name}["']\\])`, "g");
+    const seen = new Set();
+    for (const m of text.matchAll(re)) {
+      const d = readSiteDefault(text, m.index, k.name, isShell);
+      if (d !== null) seen.add(d);
+    }
+    if (seen.size > 0 && !seen.has(k.default)) {
+      problems.push(
+        `${k.name}: documented default ${JSON.stringify(k.default)} but ${k.file} falls back to ${[...seen].map((v) => JSON.stringify(v)).join(" / ")}`,
+      );
+    }
+  }
+  if (problems.length > 0) {
+    throw new Error(
+      `EXTRA_KNOBS in scripts/config-reference.mjs drifted from the code:\n  ${problems.join("\n  ")}`,
+    );
+  }
 }
 
 /** Walk a tree collecting source files (no tests, dist, node_modules). */
@@ -228,7 +409,14 @@ function cell(s) {
     .replace(/\n/g, " ");
 }
 
-export function render({ knobs, defs, consumers, undocumented, defaults = new Map() }) {
+export function render({
+  knobs,
+  defs,
+  consumers,
+  undocumented,
+  defaults = new Map(),
+  extras = [],
+}) {
   const defByKey = new Map(defs.map((d) => [d.key, d]));
   const knobByName = new Map(knobs.map((k) => [k.name, k]));
   const out = [];
@@ -292,6 +480,31 @@ export function render({ knobs, defs, consumers, undocumented, defaults = new Ma
     out.push("");
   }
 
+  if (extras.length > 0) {
+    out.push("## Read where they are used", "");
+    out.push(
+      "These have no `factory.config.sh` default line: the code that uses each one",
+      "applies the default below at its read site (the file named under **Read in**).",
+      "Some are seams the runner also sets for itself; the notes say which.",
+      "",
+    );
+    const groups = [];
+    for (const k of extras) {
+      let g = groups.find((x) => x.title === k.group);
+      if (!g) groups.push((g = { title: k.group, knobs: [] }));
+      g.knobs.push(k);
+    }
+    for (const g of groups) {
+      out.push(`### ${g.title}`, "");
+      out.push("| Variable | Default | Read in | Notes |", "|---|---|---|---|");
+      for (const k of g.knobs) {
+        const dflt = k.verify === false ? `_follows_ \`${k.default}\`` : code(k.default);
+        out.push(`| \`${k.name}\` | ${cell(dflt)} | \`${k.file}\` | ${cell(k.doc)} |`);
+      }
+      out.push("");
+    }
+  }
+
   out.push("## Dashboard-only settings", "");
   out.push(
     "These have a Settings-panel entry but no `factory.config.sh` default: the",
@@ -343,9 +556,19 @@ export async function generate(root = ROOT) {
     }
   }
   const defs = await loadSettingDefs();
-  const names = [...new Set([...knobs.map((k) => k.name), ...defs.map((d) => d.key)])];
+  verifyExtraKnobs(root);
+  const extras = EXTRA_KNOBS.filter(
+    (k) => !seen.has(k.name) && !defs.some((d) => d.key === k.name),
+  );
+  const names = [
+    ...new Set([
+      ...knobs.map((k) => k.name),
+      ...defs.map((d) => d.key),
+      ...extras.map((k) => k.name),
+    ]),
+  ];
   const { consumers, undocumented, defaults } = scanConsumers(root, names);
-  return render({ knobs, defs, consumers, undocumented, defaults });
+  return render({ knobs, defs, consumers, undocumented, defaults, extras });
 }
 
 async function main(argv) {

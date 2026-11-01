@@ -1675,8 +1675,10 @@ gaffer_delivery_attempt_stamp() {
 #                                  per-repo/risk autonomy POLICY is the sole allow-path,
 #                                  so the runner ships only what each repo has EARNED at
 #                                  its risk level and holds everything else for a human.
-#   autonomous  (walk-away / AFK) — agents approve; approved work auto-merges + pushes
-#   strict      (autonomous + OS-level sandbox containment)
+#   autonomous  (walk-away / AFK) — agents approve; approved work auto-merges + pushes;
+#                                  the OS sandbox is required (containment block below)
+#   strict      (same flags as autonomous; the one difference is that STRICT_MODE
+#                                  stays on even with an explicit GAFFER_STRICT_REQUIRE=0)
 #
 # PRECEDENCE (highest wins):
 #   real env var  >  explicit settings.json key  >  mode default  >  config default
@@ -1744,6 +1746,12 @@ case "$GAFFER_MODE" in
     : "${MEMORY_AUTO_APPROVE:=0}"
     ;;
   *)   # supervised (default) — and any unrecognised value → safe posture
+    # A typo (`yolo`, `autonomus`) used to fall back to supervised in silence: say so,
+    # once per process tree (the config is re-sourced by every child script).
+    if [ "$GAFFER_MODE" != supervised ] && [ "${_GAFFER_MODE_WARNED:-}" != "$GAFFER_MODE" ]; then
+      printf "gaffer: GAFFER_MODE='%s' is not a mode (supervised, graduated, lite, autonomous, strict) — using supervised: a human approves every merge\n" "$GAFFER_MODE" >&2
+      export _GAFFER_MODE_WARNED="$GAFFER_MODE"
+    fi
     : "${REVIEW_MODE:=human}"
     : "${DISPATCH_ALLOW_AGENT_APPROVE:=0}"
     : "${MERGE_ON_AGENT_REVIEW:=0}"
@@ -1752,7 +1760,9 @@ case "$GAFFER_MODE" in
     : "${MEMORY_AUTO_APPROVE:=0}"
     ;;
 esac
-# strict = the autonomous cluster PLUS OS-level sandbox containment.
+# strict = the autonomous cluster with STRICT_MODE pinned on. autonomous gets STRICT_MODE=1
+# too (from GAFFER_STRICT_REQUIRE, below), so the two differ only when the operator sets
+# GAFFER_STRICT_REQUIRE=0: strict still wraps the agent in the sandbox where one exists.
 if [ "$GAFFER_MODE" = "strict" ]; then
   : "${STRICT_MODE:=1}"
 fi

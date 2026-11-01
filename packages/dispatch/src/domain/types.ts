@@ -910,7 +910,9 @@ export type RunKind = (typeof RUN_KINDS)[number];
  * The lifecycle status of a {@link Run}:
  *  - `running`   — the child is live (recorded on spawn);
  *  - `succeeded` — the child exited 0;
- *  - `failed`    — the child exited non-zero (or its exit code was unknown);
+ *  - `failed`    — the child exited non-zero (or its exit code was unknown), or it was
+ *    a dashboard poll the runner refused before any tick ran (exit 0, detail
+ *    `refused: <the runner's reason>`);
  *  - `unknown`   — the run was `running` but its pid is no longer alive when the
  *    API swept stale rows on startup (the API restarted mid-run, so the exit
  *    listener never fired and we can't know the outcome).

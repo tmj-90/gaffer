@@ -166,13 +166,6 @@ if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
 fi
 
 RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
-# The done tickets at the start of the run, so the closing summary's "landed" counts
-# only THIS run's landings (run-summary.sh SUMMARY_DONE_BEFORE). A listing that fails
-# leaves it unset, and the summary falls back to the labelled all-time count.
-if _done_json="$(wg ticket list -s done 2>/dev/null)"; then
-  export SUMMARY_DONE_BEFORE
-  SUMMARY_DONE_BEFORE="$(printf '%s' "$_done_json" | grep -o '"number"[[:space:]]*:[[:space:]]*[0-9][0-9]*' | sed 's/.*:[[:space:]]*//' | tr '\n' ' ')"
-fi
 
 # SETUP ERROR (tick.sh gaffer_abort_setup): a fail-closed setup check refused before any
 # agent launched — a systemic fault (an unbuilt CLI, a broken template, a missing hook)
@@ -374,6 +367,7 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # and each inner claude -p already carries its own GAFFER_TICK_TIMEOUT, so the
   # inner per-call timeouts still fire first (and are logged with context) before
   # this outer backstop reaps the tick.
+  _log_mark="$(wc -l < "$GAFFER_LOG" 2>/dev/null | tr -d ' ')"
   out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
   res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   # R-1 (counting): a tick that may have spent (invoked claude -p) is persisted to the
@@ -392,7 +386,21 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
     gaffer_refund_day_tick "$_day_rsv_on" || true
   fi
-  echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"
+  # A delivery the gates PARKED (held for a human, worktree cleaned, branch kept) used to
+  # end its tick with TICK_RESULT=error, which printed "tick → error" for a clean,
+  # intended outcome. tick.sh now reports TICK_RESULT=parked for a release to blocked /
+  # refining (exploratory finding cli-runner/F-20); an older tick's error with a
+  # "delivery PARKED" line reads the same. The ticket is named from the tick's own
+  # factory.log lines; the day cap and the daemon treat a park like the error it was.
+  _shown="${res:-unknown}"
+  if [ "$res" = parked ]; then
+    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE '(delivery PARKED for|released claim on|transitioned) #[0-9]+ → (blocked|refining)|delivery PARKED for #[0-9]+' | grep -oE '#[0-9]+' | tail -1)"
+    _shown="parked${_parked:+ $_parked} — held for a human (see gaffer status)"
+  elif [ "$res" = error ]; then
+    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE 'delivery PARKED for #[0-9]+' | tail -1)"
+    [ -n "$_parked" ] && _shown="parked ${_parked##* } — held for a human (see gaffer status)"
+  fi
+  echo "tick $ticks/$MAX_TICKS → $_shown"
 
   if [ "$res" = "setup_error" ]; then
     _setup_error=1

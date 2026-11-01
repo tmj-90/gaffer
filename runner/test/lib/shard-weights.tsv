@@ -17,6 +17,7 @@
 # added two repos' worth of deliveries to each (Linux, -j 2: 391s / 172s) and the
 # reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
 # rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
+# dashboard-lifecycle, gaffer-colour, demo-isolation: ESTIMATES (Linux, -j 2: 37s / 13s / 48s).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
@@ -44,7 +45,9 @@
 58	e2e-per-path-stack-routing.test.sh
 55	e2e-memory-routing.test.sh
 52	rework-final-trail.test.sh
+48	demo-isolation.test.sh
 45	rework-cost-live.test.sh
+40	dashboard-lifecycle.test.sh
 40	eval-replay.test.sh
 40	resume-abort.test.sh
 60	parallel-stop.test.sh
@@ -70,6 +73,7 @@
 15	merge-ticket.test.mjs
 15	settings-resource.test.sh
 14	day-cap-no-work.test.sh
+13	gaffer-colour.test.sh
 12	mktemp-failure-safe.test.sh
 12	model-routing.test.sh
 12	nocommit-crash-bound.test.sh
@@ -86,6 +90,7 @@
 9	dashboard-deeplink.test.sh
 9	dod-gate.test.sh
 9	e2e-lifecycle.test.sh
+8	run-summary-wording.test.sh
 8	boundary-integration.test.mjs
 8	e2e-spec-to-done.test.sh
 8	onboard-analyze.test.mjs
@@ -94,6 +99,7 @@
 8	safety-hook.test.mjs
 8	skills-install.test.sh
 8	tick-unrecoverable-claim-release.test.sh
+7	status-posture.test.sh
 7	ac-checks.test.sh
 7	bootstrap-hook-fail-closed.test.sh
 7	claude-auth.test.sh
@@ -107,6 +113,7 @@
 6	loop-end-ping.test.sh
 6	parallel-lock.test.sh
 6	status-human-queue.test.sh
+5	next-step-hints.test.sh
 5	autonomy-flag-parsing.test.sh
 70	e2e-multi-repo-delivery.test.sh
 5	epic-feature-live.test.sh
@@ -143,6 +150,7 @@
 3	tester-held.test.sh
 3	ticket-intent-distill.test.sh
 3	worker-mcp-bridge.test.sh
+2	onboard-usage.test.sh
 2	acceptance-lane.test.sh
 2	autonomy-mode.test.sh
 2	card-refresh.test.sh

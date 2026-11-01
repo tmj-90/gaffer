@@ -1136,7 +1136,9 @@ console.log("== AC10: --dry-run is BOUNDED — timeout-ms reported ==");
   assert("timeout-ms reported", code === 0 && out && out.timeoutMs === 4321);
 }
 
-console.log("== AC11: unknown / unresolvable ticket is REFUSED (exit 1, error JSON) ==");
+// An unknown ticket is a ticket that is not approved: exit 4, the code `gaffer merge`'s
+// help promises (it was exit 1 "could not resolve", exploratory fresh-user F-11).
+console.log("== AC11: unknown ticket is REFUSED (exit 4, error JSON) ==");
 {
   const db = makeDb([
     {
@@ -1152,8 +1154,8 @@ console.log("== AC11: unknown / unresolvable ticket is REFUSED (exit 1, error JS
   ]);
   const r1 = runCli({ DISPATCH_DB: db }, ["--ticket", "999"]);
   assert(
-    "unknown ticket → exit 1 + error",
-    r1.code === 1 && r1.out && r1.out.phase === "error" && /could not resolve/.test(r1.out.error),
+    "unknown ticket → exit 4 + error",
+    r1.code === 4 && r1.out && r1.out.phase === "error" && /no ticket #999/.test(r1.out.error),
   );
   const r2 = runCli({ DISPATCH_DB: db }, []);
   assert(
@@ -1922,6 +1924,75 @@ console.log("== APPROVAL GATE: canLand + live refusals for unapproved tickets ==
   assert(
     "ready_for_merge (control): mark-merged was called",
     existsSync(CALLS) && readFileSync(CALLS, "utf8").includes("mark-merged"),
+  );
+
+  // `gaffer merge` on a ticket with no landable delivery: an unknown ticket, or a ready /
+  // blocked one (no branch recorded yet), exited 1 "could not resolve ticket … no recorded
+  // branch" although the help promises exit 4 for a ticket not approved; a done ticket was
+  // told to "approve it first". (exploratory fresh-user F-11, cli-wg F-18)
+  const bare = (ticket, rows) => {
+    rmSync(CALLS, { force: true });
+    const res = spawnSync(process.execPath, [HELPER, "--ticket", String(ticket)], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        DISPATCH_DB: makeDb(rows),
+        GAFFER_DATA: resolve(WORKDIR, `gate-data-bare-${ticket}`),
+        CLAUDE_BIN: FAKE,
+        DISPATCH_CLI: SPY,
+        GAFFER_DIGEST_DISABLE: "1",
+        SANDBOX_PROVIDER: "none",
+      },
+    });
+    let out = null;
+    try {
+      out = JSON.parse(res.stdout.trim().split("\n").pop());
+    } catch {
+      /* leave null */
+    }
+    return { code: res.status, out, stderr: res.stderr };
+  };
+  const row = (status, extra = {}) => ({
+    ticketId: `tb-${status}`,
+    number: 7,
+    repoId: `rb-${status}`,
+    repoName: "demo",
+    localPath: WORKDIR,
+    status,
+    ...extra,
+  });
+  const unknown = bare(99, [row("ready")]);
+  assert("unknown ticket: exit 4", unknown.code === 4);
+  assert(
+    "unknown ticket: says there is no such ticket",
+    /no ticket #99 in this factory/.test(String(unknown.out?.error)),
+  );
+  for (const status of ["ready", "blocked"]) {
+    const r = bare(7, [row(status)]);
+    assert(`${status}, no branch yet: exit 4 (not approved), not 1`, r.code === 4);
+    assert(
+      `${status}, no branch yet: names the status and the approve step`,
+      String(r.out?.error).includes(`ticket is ${status}, not ready_for_merge`) &&
+        String(r.out?.error).includes("gaffer approve 7"),
+    );
+  }
+  const doneBare = bare(7, [row("done")]);
+  const doneRepo = gateCase("done", { status: "done" });
+  for (const [label, r] of [
+    ["done, no branch", doneBare],
+    ["done, branch recorded", doneRepo],
+  ]) {
+    assert(`${label}: exit 0 (nothing to do)`, r.code === 0);
+    assert(`${label}: phase already_merged`, r.out?.phase === "already_merged");
+    assert(`${label}: no dispatch call`, !existsSync(CALLS));
+  }
+  assert(
+    "done: says it is already merged, not 'approve it first'",
+    /already merged/.test(doneBare.stderr) && !/approve it first/.test(doneBare.stderr),
+  );
+  assert(
+    "done (branch recorded): main HEAD unchanged",
+    git(doneRepo.repo, "rev-parse", "main").stdout.trim() === doneRepo.mainBefore,
   );
 }
 

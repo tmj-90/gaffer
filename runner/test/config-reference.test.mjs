@@ -2,15 +2,22 @@
 // scripts/config-reference.mjs — the generated docs/CONFIG.md must be derived
 // from the code, not hand-maintained. Pin the parser rules that make the
 // reference honest, then prove the committed file is current.
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
-const { parseConfigDefaults, generate, readSiteDefault } = await import(
-  path.join(ROOT, "scripts", "config-reference.mjs")
-);
+const {
+  parseConfigDefaults,
+  generate,
+  readSiteDefault,
+  firstSentence,
+  verifyExtraKnobs,
+  EXTRA_KNOBS,
+} = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
 let passed = 0;
 function ok(cond, msg) {
@@ -165,5 +172,133 @@ ok(
   !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),
   "a variable the config assigns itself is not reported as undocumented",
 );
+
+// Exploratory finding fresh-user/CONFIG drift: knobs read only where they are used
+// (no default line) were missing, a description was cut mid-word at 220 characters,
+// and two rows described the wrong behaviour.
+console.log("== descriptions end on a word, not mid-word ==");
+ok(typeof firstSentence === "function", "firstSentence is exported for the test");
+const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ") + ".";
+const cut = firstSentence([long]);
+ok(cut.length <= 222 && cut.endsWith("…"), "a sentence over the limit is cut and marked with …");
+ok(
+  /word\d+…$/.test(cut) && long.includes(cut.slice(0, -1) + " "),
+  "the cut falls on a word boundary",
+);
+ok(
+  firstSentence(["Short one (see a.b: c). Second."]) === "Short one (see a.b: c).",
+  "a short first sentence is kept whole",
+);
+const rows = text.split("\n").filter((l) => l.startsWith("| `"));
+const cutMid = rows.filter((l) => {
+  const notes = l.split(" | ").at(-1).replace(/ \|$/, "").trim();
+  return notes.length >= 200 && !/[.!?)`"':…]$/.test(notes);
+});
+ok(
+  cutMid.length === 0,
+  `no long description stops mid-word (${cutMid.map((l) => l.split(" | ")[0]).join(", ")})`,
+);
+
+console.log("== knobs read where they are used are documented ==");
+for (const name of [
+  "GAFFER_STRICT_REQUIRE",
+  "GAFFER_DOD",
+  "GAFFER_DOD_INSTALL",
+  "GAFFER_GREENFIELD_INSTALL",
+  "GAFFER_ALLOW_NO_DOD",
+  "GAFFER_KEEP_DELIVERY_BRANCH",
+  "GAFFER_CI_TIMEOUT_POLICY",
+  "GAFFER_MEMORY_AUTO_PROMOTE",
+  "GAFFER_SANDBOX_IMAGE",
+  "GAFFER_SANDBOX_PROFILE",
+  "GAFFER_DIGEST_DISABLE",
+  "GAFFER_PAUSE_KEEP_WORKTREE",
+  "GAFFER_VERBOSE",
+  "DEMO_DIR",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CONFIG_DIR",
+]) {
+  ok(new RegExp(`^\\| \`${name}\` \\|`, "m").test(text), `${name} has a row`);
+}
+ok(/\| `GAFFER_DOD_INSTALL` \| `1` \|/.test(text), "GAFFER_DOD_INSTALL shows its real default (1)");
+ok(
+  /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` \|/.test(text),
+  "GAFFER_CI_TIMEOUT_POLICY defaults to block",
+);
+// demo.sh makes a fresh temp dir per run when DEMO_DIR is empty (no fixed shared path).
+ok(
+  /\| `DEMO_DIR` \| _\(empty\)_ \| .*fresh temp dir/.test(text),
+  "DEMO_DIR shows the demo's default (a fresh temp dir)",
+);
+
+console.log("== the read-site table fails when it drifts from the code ==");
+ok(verifyExtraKnobs(ROOT) === undefined, "every EXTRA_KNOBS entry matches its read site today");
+const drift = gafferMkdtemp(path.join(os.tmpdir(), "config-ref-drift-"));
+try {
+  mkdirSync(path.join(drift, "lib"), { recursive: true });
+  writeFileSync(path.join(drift, "lib", "a.sh"), 'x="${KNOB_A:-block}"\n');
+  writeFileSync(path.join(drift, "lib", "b.mjs"), 'const v = process.env.KNOB_B ?? "1";\n');
+  const extras = [
+    { name: "KNOB_A", default: "block", file: "lib/a.sh" },
+    { name: "KNOB_B", default: "1", file: "lib/b.mjs" },
+  ];
+  const throws = (list) => {
+    try {
+      verifyExtraKnobs(drift, list);
+      return "";
+    } catch (err) {
+      return err.message;
+    }
+  };
+  ok(throws(extras) === "", "a table that matches its fixture passes");
+  ok(
+    /KNOB_A: documented default "proceed" but lib\/a\.sh falls back to "block"/.test(
+      throws([{ ...extras[0], default: "proceed" }]),
+    ),
+    "a shell default that changed is reported",
+  );
+  ok(
+    /KNOB_B: documented default "0" but lib\/b\.mjs falls back to "1"/.test(
+      throws([{ ...extras[1], default: "0" }]),
+    ),
+    "a JS default that changed is reported",
+  );
+  ok(
+    /KNOB_C: no longer read in lib\/a\.sh/.test(
+      throws([{ name: "KNOB_C", default: "", file: "lib/a.sh" }]),
+    ),
+    "a knob its file no longer reads is reported",
+  );
+  ok(
+    /lib\/gone\.sh does not exist/.test(
+      throws([{ name: "KNOB_A", default: "block", file: "lib/gone.sh" }]),
+    ),
+    "a read site that moved is reported",
+  );
+} finally {
+  rmSync(drift, { recursive: true, force: true });
+}
+ok(
+  EXTRA_KNOBS.every((k) => new RegExp(`^\\| \`${k.name}\` \\|`, "m").test(text)),
+  "every EXTRA_KNOBS entry has a row in docs/CONFIG.md",
+);
+
+console.log("== rows describe the behaviour ==");
+const row = (k) => rows.find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";
+ok(
+  !/on top of autonomous/i.test(row("GAFFER_MODE")),
+  "GAFFER_MODE does not say strict adds a sandbox on top",
+);
+ok(
+  /same flags/i.test(row("GAFFER_MODE")),
+  "GAFFER_MODE says strict and autonomous set the same flags",
+);
+const attempts = row("GAFFER_MAX_DELIVERY_ATTEMPTS");
+ok(
+  /gate/i.test(attempts) && /GAFFER_MAX_NOCOMMIT_FAILURES/.test(attempts),
+  "MAX_DELIVERY_ATTEMPTS: gate rework + the no-commit cap",
+);
+ok(/identical/i.test(attempts), "MAX_DELIVERY_ATTEMPTS: the two-identical-failures early stop");
 
 console.log(`\nconfig-reference: ALL ${passed} checks passed`);

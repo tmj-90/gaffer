@@ -6,9 +6,10 @@
 # (blocked, branch kept, the reason recorded) exactly as designed, yet the tick
 # reported TICK_RESULT=error and the run printed "tick 1/1 → error". Driven through
 # the REAL tick.sh / loop.sh with a stub agent (lib/stub-tick.sh):
-#   K1. a DoD failure at GAFFER_MAX_DELIVERY_ATTEMPTS=1 parks the ticket (blocked) and
-#       the tick reports TICK_RESULT=parked
-#   K2. loop.sh prints "tick 1/1 → parked"
+#   K1. a DoD failure at GAFFER_MAX_DELIVERY_ATTEMPTS=1 parks the ticket (blocked)
+#   K2. the tick reports TICK_RESULT=parked: loop.sh prints "tick 1/1 → parked #N —
+#       held for a human" (the park is named by the result, not only by a
+#       "delivery PARKED" log line)
 # Run: bash runner/test/tick-parked-result.test.sh
 # =====================================================================
 set -uo pipefail
@@ -27,21 +28,14 @@ source "$HERE/lib/stub-tick.sh"
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 printf '#!/usr/bin/env bash\nprintf "{}\\n"\n' > "$WORK/noop.sh"; chmod +x "$WORK/noop.sh"
 
-echo "== K1. a DoD failure on the last attempt parks, and says parked =="
+echo "== K1. a DoD failure on the last attempt parks, and the run says parked =="
 echo break-test > "$MODE"
 T1="$(new_ready "Break helper" "change helper a")"
-R="$(GAFFER_MAX_DELIVERY_ATTEMPTS=1 run_tick)"
-[ "$(st "$T1")" = blocked ] && ok "K1: #$T1 was parked (blocked)" || fail "K1: #$T1 is $(st "$T1")"
-[ "$R" = "TICK_RESULT=parked" ] && ok "K1: the tick reports TICK_RESULT=parked" || fail "K1: $R"
-retire "$T1"
-
-echo "== K2. loop.sh says parked =="
-T2="$(new_ready "Break helper again" "change helper a again")"
-rm -f "$GAFFER_DATA/.failed-tickets"
 OUT="$( ( cd "$RUNNER_DIR" && GAFFER_MAX_DELIVERY_ATTEMPTS=1 MAX_TICKS=1 TICK_SLEEP=0 EMPTY_POLL_LIMIT=1 GAFFER_ALLOW_UNCAPPED=1 \
   LOOP_STATS_CMD="$WORK/noop.sh" LOOP_HQ_CMD="$WORK/noop.sh" LOOP_NOTIFY_EMIT_CMD="$WORK/noop.sh" bash ./loop.sh 2>&1 ) )"
-has "$OUT" "tick 1/1 → parked" && ok "K2: loop.sh prints 'tick 1/1 → parked'" || fail "K2: $(printf '%s' "$OUT" | grep '^tick')"
-retire "$T2"
+[ "$(st "$T1")" = blocked ] && ok "K1: #$T1 was parked (blocked)" || fail "K1: #$T1 is $(st "$T1")"
+has "$OUT" "tick 1/1 → parked #$T1 — held for a human" && ok "K2: loop.sh prints 'tick 1/1 → parked #$T1 — held for a human'" || fail "K2: $(printf '%s' "$OUT" | grep '^tick')"
+retire "$T1"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

@@ -52,8 +52,12 @@ export type SettingGroup =
   | "sandbox"
   | "notifications";
 
-/** The value type a setting carries, so the UI renders the right control. */
-export type SettingType = "boolean" | "int" | "csv" | "string";
+/**
+ * The value type a setting carries, so the UI renders the right control: `int` is a
+ * whole number of 0 or more (or `min`), `number` a decimal of 0 or more (a dollar
+ * figure such as 2.50).
+ */
+export type SettingType = "boolean" | "int" | "number" | "csv" | "string";
 
 /** Static descriptor for one known setting. */
 export interface SettingDef {
@@ -69,6 +73,8 @@ export interface SettingDef {
    * always allowed — it clears the override back to the built-in default).
    */
   readonly choices?: readonly string[];
+  /** The lowest value an `int` setting accepts (default 0). */
+  readonly min?: number;
   /**
    * SECRET-BEARING (external review #5): the value itself is a credential — a Slack or
    * generic webhook URL is posting authority on its own. GET /api/settings never returns
@@ -99,6 +105,8 @@ export interface SettingView {
   readonly help?: string;
   /** Allowed values for an enum setting — the UI renders these as a dropdown. */
   readonly choices?: readonly string[];
+  /** The lowest value an `int` setting accepts, when it is above 0. */
+  readonly min?: number;
   /** A secret-bearing key: `value`/`effective` are always "" — see `configured`/`host`. */
   readonly secret?: true;
   /** Secret keys only: true when a value is in force (env or file). */
@@ -132,12 +140,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "graduated ships what each repo has EARNED at its risk level and holds " +
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
-      "autonomous lets agents approve and auto-merges + pushes approved work; " +
-      "strict adds OS-level sandbox containment on top of autonomous, chosen by " +
-      "SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress " +
-      "isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on " +
-      "a non-macOS host strict has no OS containment beyond the deterministic hook — set " +
-      "GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. " +
+      "autonomous lets agents approve and auto-merges + pushes approved work, and " +
+      "because that removes the human gate it also requires the OS sandbox " +
+      "(GAFFER_STRICT_REQUIRE and STRICT_MODE default on: no sandbox, no agent). " +
+      "strict sets the same flags as autonomous; the one difference is that strict " +
+      "keeps STRICT_MODE on even when you set GAFFER_STRICT_REQUIRE=0 (the sandbox is " +
+      "still used where available, just not required). SANDBOX_PROVIDER picks the " +
+      "sandbox: docker (any host with Docker) gives real read + egress isolation; " +
+      "sandbox-exec (macOS) is a write-only sandbox. " +
       "Picking a mode prevents a " +
       "half-configured autonomy posture. The individual knobs below still " +
       "override the mode — an explicitly-set flag always wins.",
@@ -263,7 +273,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   },
   {
     key: "GAFFER_DAILY_BUDGET_USD",
-    type: "string",
+    type: "number",
     group: "budget",
     label: "Daily budget (USD)",
     help:
@@ -297,7 +307,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   // --- Cost-as-control (Track 3a): spend steers routing, not just reporting ---
   {
     key: "GAFFER_BUDGET_USD",
-    type: "string",
+    type: "number",
     group: "budget",
     label: "Budget ceiling (USD)",
     help:
@@ -310,7 +320,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   },
   {
     key: "GAFFER_BUDGET_LOW_THRESHOLD",
-    type: "string",
+    type: "number",
     group: "budget",
     label: "Budget-low threshold (USD)",
     help:
@@ -504,6 +514,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   {
     key: "GAFFER_CONCURRENCY",
     type: "int",
+    min: 1,
     group: "execution",
     label: "Concurrent ticks",
     help:
@@ -551,7 +562,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "budget",
     label: "Max delivery attempts",
-    help: "How many times a ticket may be re-worked after a rejected review before it parks to blocked.",
+    help:
+      "How many agent runs one delivery gets inside a tick: a failed gate (tests, " +
+      "typecheck, lint or a criterion's check) is fed back and the agent reworks the " +
+      "same branch, up to this many runs, then the ticket parks to blocked with its " +
+      "branch kept. A run that fails exactly as the one before (two identical " +
+      "failures) parks it early instead of spending the rest. It is also the default " +
+      "for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across " +
+      "runs) and DISPATCH_MAX_ATTEMPTS (review rejections).",
   },
   {
     key: "DISPATCH_MAX_ATTEMPTS",
@@ -578,7 +596,7 @@ export const SETTING_DEFS: readonly SettingDef[] = [
   },
   {
     key: "GAFFER_REWORK_BUDGET_USD",
-    type: "string",
+    type: "number",
     group: "budget",
     label: "Per-ticket rework budget (USD)",
     help:
@@ -999,6 +1017,7 @@ export function listSettings(
       label: def.label,
       ...(def.help !== undefined ? { help: def.help } : {}),
       ...(def.choices !== undefined ? { choices: def.choices } : {}),
+      ...(def.min !== undefined ? { min: def.min } : {}),
     };
     return def.secret ? redactSecretView(view) : view;
   });
@@ -1094,29 +1113,9 @@ export function writeSettings(
       rejected.push(key);
       continue;
     }
-    // Enum settings only accept a listed choice. An empty value is always
-    // allowed — it clears the override back to the built-in default.
-    if (def.choices !== undefined && value !== "" && !def.choices.includes(value)) {
+    if (settingValueProblem(def, value, env) !== null) {
       invalid.push(key);
       continue;
-    }
-    // Typed values must parse: an `int` is a non-negative integer literal; a `boolean`
-    // is 0/1/true/false/yes/no. Previously any string was persisted for any type, so a
-    // typo'd cap silently became "unset" at runtime (bash `[ "$x" -ge … ]` on "abc").
-    if (value !== "" && !valueFitsType(def.type, value)) {
-      invalid.push(key);
-      continue;
-    }
-    // Outbound URLs (notify webhook / Slack) must pass the notify URL policy: http(s)
-    // only and no loopback / link-local / private destination unless the env opts in.
-    // The dashboard token would otherwise let anyone aim the factory's POSTs at an
-    // internal service (SSRF) from the settings panel.
-    if (value !== "" && key.endsWith("_URL")) {
-      const problem = notifyUrlProblem(value, { allowPrivate: notifyAllowsPrivate(env) });
-      if (problem !== null) {
-        invalid.push(key);
-        continue;
-      }
     }
     merged[key] = value;
     written.push(key);
@@ -1148,16 +1147,82 @@ export function writeSettings(
   return { written, rejected, ignored, invalid };
 }
 
-/** Does `value` parse as the setting's declared type? (Empty is handled by the caller.) */
-function valueFitsType(type: SettingType, value: string): boolean {
-  switch (type) {
-    case "int":
-      return /^\d+$/.test(value.trim());
-    case "boolean":
-      return /^(0|1|true|false|yes|no)$/i.test(value.trim());
-    default:
-      return true;
+/** One value {@link writeSettings} would refuse, with the reason in words. */
+export interface SettingProblem {
+  readonly key: string;
+  readonly label: string;
+  readonly problem: string;
+}
+
+/**
+ * Why `value` cannot be stored for `def`, or null when it can. An empty value is
+ * always allowed: it clears the override back to the built-in default.
+ *   - an enum only accepts a listed choice;
+ *   - an `int` is a whole number of at least `min` (0 unless the setting says), a
+ *     `number` a decimal of 0 or more, a `boolean` 0/1/true/false/yes/no. Previously
+ *     any string was persisted for any type, so a typo'd cap silently became "unset"
+ *     at runtime (bash `[ "$x" -ge … ]` on "abc"), and a non-numeric daily budget
+ *     satisfied the "a live run needs a dollar cap" guard while every cap check read
+ *     it as off;
+ *   - an outbound URL (notify webhook / Slack) must pass the notify URL policy: http(s)
+ *     only and no loopback / link-local / private destination unless the env opts in.
+ *     The dashboard token would otherwise let anyone aim the factory's POSTs at an
+ *     internal service (SSRF) from the settings panel.
+ */
+export function settingValueProblem(
+  def: SettingDef,
+  value: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (value === "") return null;
+  if (def.choices !== undefined) {
+    return def.choices.includes(value) ? null : `must be one of ${def.choices.join(", ")}`;
   }
+  const v = value.trim();
+  switch (def.type) {
+    case "int": {
+      const min = def.min ?? 0;
+      if (!/^\d+$/.test(v) || Number(v) < min)
+        return min > 0 ? `must be a whole number of ${min} or more` : "must be a whole number";
+      break;
+    }
+    case "number":
+      // Plain decimal only (what the runner's awk reads): no sign, exponent, unit or
+      // currency symbol, and no surrounding spaces.
+      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value))
+        return "must be a number of 0 or more, such as 5 or 2.50";
+      break;
+    case "boolean":
+      if (!/^(0|1|true|false|yes|no)$/i.test(v)) return "must be on or off (1 or 0)";
+      break;
+    default:
+      break;
+  }
+  if (def.key.endsWith("_URL")) {
+    const problem = notifyUrlProblem(value, { allowPrivate: notifyAllowsPrivate(env) });
+    if (problem !== null) return "is not an allowed webhook address";
+  }
+  return null;
+}
+
+/**
+ * Every value in `updates` that {@link writeSettings} would refuse as invalid (unknown
+ * and env-locked keys are not problems: they are ignored / rejected as before). POST
+ * /api/settings refuses the whole write with a 422 naming these, so one bad field is
+ * never half-saved beside the good ones.
+ */
+export function settingProblems(
+  updates: Record<string, string>,
+  env: NodeJS.ProcessEnv = process.env,
+): SettingProblem[] {
+  const out: SettingProblem[] = [];
+  for (const [key, value] of Object.entries(updates)) {
+    const def = DEF_BY_KEY.get(key);
+    if (def === undefined || isEnvLocked(env, key)) continue;
+    const problem = settingValueProblem(def, value, env);
+    if (problem !== null) out.push({ key, label: def.label, problem });
+  }
+  return out;
 }
 
 /** Serialise `data` to `path` atomically (temp file in the same dir + rename). */

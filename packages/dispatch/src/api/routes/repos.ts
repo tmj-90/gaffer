@@ -2,13 +2,14 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendJson } from "../http.js";
-import type { OnboardRunner } from "../onboard.js";
+import { onboardTargetProblem, type OnboardRunner } from "../onboard.js";
 import {
   onboardRepoBody,
   setRepoCommandsBody,
   setRepoDefaultBranchBody,
   setRepoHiddenBody,
 } from "../schemas.js";
+import { DispatchError } from "../../util/errors.js";
 import { apiActor } from "./context.js";
 
 /**
@@ -60,6 +61,13 @@ export async function routeRepos(
       return true;
     }
     const body = onboardRepoBody.parse(await readJsonBody(req));
+    // A root, the home directory or a folder outside any git checkout is refused
+    // here, with a reason, before a run is spawned (never a stack in its log).
+    const problem = onboardTargetProblem(body.repo, (key) => {
+      const repo = wg.listRepositories(true).find((r) => r.name === key || r.id === key);
+      return repo?.local_path ?? null;
+    });
+    if (problem !== null) throw new DispatchError("VALIDATION_ERROR", problem, { repo: body.repo });
     const result = onboardRunner.run({ repo: body.repo });
     sendJson(res, 202, { onboarding: true, repo: body.repo, run: result });
     return true;

@@ -972,7 +972,10 @@ export const AUTH_ERROR_PATTERNS = Object.freeze([
   { id: "cc-not-logged-in", re: /^Not logged in(?=$|\s|\u00b7|\.)/ },
   { id: "cc-oauth-expired", re: /^OAuth token has expired(?=$|\s|\.)/ },
   { id: "cc-api-401", re: /^API Error: 401(?=$|\s)/ },
-  { id: "cc-auth-failed", re: /^(?:API Error: )?(?:Failed to authenticate|Authentication failed)(?=$|\s|\.|:)/ },
+  {
+    id: "cc-auth-failed",
+    re: /^(?:API Error: )?(?:Failed to authenticate|Authentication failed)(?=$|\s|\.|:)/,
+  },
 ]);
 
 /**

@@ -24,11 +24,13 @@ _GAFFER_GCO_JSON_TOOL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/json-tool.m
 _GAFFER_OWN_CLAIM_ID="${_GAFFER_OWN_CLAIM_ID:-}"
 _GCO_WHY=""
 
+# stdin is /dev/null: the teardown calls this inside a loop that reads its repo rows
+# from stdin, and nothing here may consume a later repo's row.
 _gco_wg_show() {
   if [ -n "${GAFFER_WG_SHOW_CMD:-}" ]; then
-    local -a c; read -ra c <<<"$GAFFER_WG_SHOW_CMD"; "${c[@]}" "$1"
+    local -a c; read -ra c <<<"$GAFFER_WG_SHOW_CMD"; "${c[@]}" "$1" </dev/null
   else
-    wg ticket show "$1"
+    wg ticket show "$1" </dev/null
   fi
 }
 

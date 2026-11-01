@@ -7591,25 +7591,30 @@ function devFlowPanel(_tickets, byStatus, _now) {
         el("time", { datetime: new Date().toISOString() }, clockTime(Date.now())),
       ]),
     ]),
+    // A real list: each stage an <li> holding its link (role=listitem on the <a>
+    // took the link's own role away, and axe flagged aria-allowed-role).
     el(
-      "div",
-      { class: "pipeline", role: "list", "aria-label": "Development flow stages" },
+      "ol",
+      { class: "pipeline", "aria-label": "Development flow stages" },
       nodes.map((n) => {
         const active = n.count > 0;
         return el(
-          "a",
-          {
-            class: `pl-node ${active ? "active" : "dim"}`,
-            href: n.href,
-            role: "listitem",
-            "aria-label": `${n.label}: ${n.count}`,
-          },
-          [
-            el("span", { class: "pl-label" }, n.label),
-            el("span", { class: "pl-disc" }, glyph(n.glyph, 20)),
-            el("span", { class: "pl-count tabnum" }, String(n.count)),
-            el("span", { class: "pl-zone" }, n.zone),
-          ],
+          "li",
+          { class: "pl-stage" },
+          el(
+            "a",
+            {
+              class: `pl-node ${active ? "active" : "dim"}`,
+              href: n.href,
+              "aria-label": `${n.label}: ${n.count}`,
+            },
+            [
+              el("span", { class: "pl-label" }, n.label),
+              el("span", { class: "pl-disc" }, glyph(n.glyph, 20)),
+              el("span", { class: "pl-count tabnum" }, String(n.count)),
+              el("span", { class: "pl-zone" }, n.zone),
+            ],
+          ),
         );
       }),
     ),

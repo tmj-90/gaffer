@@ -1,7 +1,7 @@
 /* global document, window, getComputedStyle */
 /* eslint-disable @typescript-eslint/no-unused-expressions -- `cond ? ok(…) : bad(…)` is the assertion idiom of this harness */
-// S19 layout and keyboard with a busy world (exploratory findings
-// ui-explore/F-02, F-06, F-10 to F-12 and F-14). The world holds what broke the pages: a live
+// S19 layout, keyboard and contrast with a busy world (exploratory findings
+// ui-explore/F-02, F-06, F-08 to F-14). The world holds what broke the pages: a live
 // claim (the Work board's On-the-pitch table), an agent with a 39-character name (the
 // Match report), a 200-character title (a board card), a delivered ticket in review
 // (the verdict strip's gates) and one approved and waiting for Merge now (its card's
@@ -11,7 +11,10 @@
 //     title on its link;
 //   - the Search palette keeps focus inside it and Esc closes it wherever focus is;
 //   - the header's More menu closes when keyboard focus leaves it;
-//   - Tab on the Floor walks the stations in lifecycle order.
+//   - Tab on the Floor walks the stations in lifecycle order;
+//   - a `.btn-link` is no native grey button and reads at 4.5:1 in both kits;
+//   - the Health flow strip is a list of links (no role=listitem on a link);
+//   - a passing gate's note is not red and a gate's note never breaks mid-word.
 import { revokeHeld, seedWorld } from "./s18-read-only.mjs";
 
 const VIEWS = (w, t) =>
@@ -33,6 +36,19 @@ const VIEWS = (w, t) =>
     ["settings", "settings"],
     [`repo/${encodeURIComponent(t.repo.id)}`, "repo/:id"],
   ].filter(Boolean);
+
+/** Relative luminance contrast of two rgb() strings (alpha ignored). */
+function contrast(a, b) {
+  const lum = (s) => {
+    const [r, g, bl] = (s.match(/[\d.]+/g) || [0, 0, 0]).slice(0, 3).map((v) => {
+      const c = Number(v) / 255;
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
 
 export default async function s19(t, L) {
   const w = await seedWorld(t, L, "s19", { approved: true });
@@ -213,6 +229,89 @@ export default async function s19(t, L) {
     `Floor Tab order: ${seq.join(" → ").slice(0, 400)}`,
   );
 
+  // ── .btn-link in both kits (F-08) ──────────────────────────────────────────
+  const btnLink = [];
+  for (const scheme of ["light", "dark"]) {
+    const pg = await L.openPage(t.browser, { width: 1280, height: 800 });
+    await pg.emulateMedia({ colorScheme: scheme });
+    await pg.goto(`${L.BASE}/#/overview`, { waitUntil: "load" });
+    await L.sleep(900);
+    const st = await pg.evaluate(() => {
+      // A sentence on a programme page, where the Cup runs' "Plan a build" sits.
+      const host =
+        document.querySelector(".prog.campaigns p") ||
+        document.querySelector("#app .card p.quiet, #app .card p");
+      const b = document.createElement("button");
+      b.className = "btn-link";
+      b.textContent = "Plan a build";
+      host.appendChild(b);
+      const cs = getComputedStyle(b);
+      let n = b;
+      let bg = "rgba(0, 0, 0, 0)";
+      while (n && /rgba\(0, 0, 0, 0\)|transparent/.test(bg)) {
+        bg = getComputedStyle(n).backgroundColor;
+        n = n.parentElement;
+      }
+      const out = { own: cs.backgroundColor, color: cs.color, bg };
+      b.remove();
+      return out;
+    });
+    btnLink.push({ scheme, ...st, ratio: contrast(st.color, st.bg) });
+    await pg.context().close();
+  }
+  t.check(
+    btnLink.every((b) => /rgba\(0, 0, 0, 0\)|transparent/.test(b.own) && b.ratio >= 4.5),
+    `a .btn-link has no button face and reads at ${btnLink.map((b) => `${b.ratio.toFixed(1)}:1 (${b.scheme})`).join(", ")}`,
+    `.btn-link: ${btnLink.map((b) => `${b.scheme} face ${b.own}, text ${b.color} on ${b.bg} = ${b.ratio.toFixed(2)}:1`).join("; ")}`,
+  );
+
+  // ── Health: the flow strip is a list of links (F-09) ───────────────────────
+  await p.goto(`${L.BASE}/#/health`, { waitUntil: "load" });
+  await p.waitForSelector(".pipeline", { timeout: 15000 }).catch(() => null);
+  await L.sleep(600);
+  const flow = await p.evaluate(() => {
+    const strip = document.querySelector(".pipeline");
+    return {
+      tag: strip?.tagName,
+      roleOnLinks: document.querySelectorAll("a[role=listitem]").length,
+      items: strip ? strip.querySelectorAll(":scope > li > a").length : 0,
+    };
+  });
+  t.check(
+    flow.roleOnLinks === 0 && /^(OL|UL)$/.test(flow.tag || "") && flow.items > 0,
+    `the Health flow strip is a <${(flow.tag || "").toLowerCase()}> of ${flow.items} <li><a>, no link carries role=listitem`,
+    `Health flow strip: <${flow.tag}> with ${flow.items} li>a, ${flow.roleOnLinks} link(s) with role=listitem`,
+  );
+
+  // ── Review: gate notes (F-13) ──────────────────────────────────────────────
+  await p.setViewportSize({ width: 1280, height: 900 });
+  await p.goto(`${L.BASE}/#/review/${w.review.id}`, { waitUntil: "load" });
+  await p.waitForSelector(".vd-gate, .dod-item", { timeout: 20000 }).catch(() => null);
+  await L.sleep(1200);
+  const gates = await p.evaluate(() => {
+    const red = getComputedStyle(document.documentElement).getPropertyValue("--red").trim();
+    const probe = document.createElement("span");
+    probe.style.color = red || "red";
+    document.body.appendChild(probe);
+    const redRgb = getComputedStyle(probe).color;
+    probe.remove();
+    const passNotes = [...document.querySelectorAll(".dod-note-pass")].map(
+      (n) => getComputedStyle(n).color,
+    );
+    // A note squeezed into a column a few characters wide wraps every few letters.
+    const narrow = [...document.querySelectorAll(".vd-cmd, .vd-note")]
+      .filter((n) => n.getBoundingClientRect().width > 0)
+      .filter((n) => n.getBoundingClientRect().width < 120 && n.textContent.length > 12)
+      .map(
+        (n) => `${n.textContent.slice(0, 30)} (${Math.round(n.getBoundingClientRect().width)}px)`,
+      );
+    return { redRgb, passNotes, narrow, rows: document.querySelectorAll(".vd-gate").length };
+  });
+  t.check(
+    gates.rows > 0 && gates.narrow.length === 0 && gates.passNotes.every((c) => c !== gates.redRgb),
+    `the sign-off's ${gates.rows} gate rows give each note room (none squeezed), and a passing gate's note is not red (${gates.passNotes.length} checked)`,
+    `gate notes: squeezed=${gates.narrow.join(" | ")} pass-note colours=${gates.passNotes.join(",")} (red ${gates.redRgb}) rows=${gates.rows}`,
+  );
   await L.shot(p, "s19-review-gates");
   await p.context().close();
   await revokeHeld(L, w);

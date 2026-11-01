@@ -476,6 +476,16 @@ export class ClaimService {
           { ticket_id: ticket.id, status: ticket.status, human_owner: ticket.human_owner },
         );
       }
+      // OWNER ONLY (exploratory finding cli-wg/F-13): a person hands back their OWN by-hand
+      // ticket. Another person's release took it off its owner silently; an admin (the
+      // CLI's --admin, the dashboard operator) may still hand anyone's back.
+      if (actor.type === "human" && (actor.id ?? "human") !== ticket.human_owner) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          `Ticket '${ticket.number ?? ticket.id}' is being done by hand by ${ticket.human_owner}; only they can hand it back (or an admin: human-release --admin).`,
+          { ticket_id: ticket.id, human_owner: ticket.human_owner, actor_id: actor.id ?? null },
+        );
+      }
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,

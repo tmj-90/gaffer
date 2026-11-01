@@ -34,6 +34,16 @@ export function apiActor(): Actor {
 }
 
 /**
+ * True when the request runs as the shared operator token (or outside any request), not
+ * as a named principal. Decided by identity, not by id: a principal whose actor id
+ * happens to be the operator's ("dispatch-api") is still that principal.
+ */
+export function isSharedOperator(): boolean {
+  const a = requestActor.getStore();
+  return a === undefined || a === API_ACTOR;
+}
+
+/**
  * The actor for the system/admin-only machine callbacks a full-capability REST caller
  * may drive (mark-merged, reopen-for-review). A human principal — or the shared
  * token's operator — acts as ADMIN under its own id, so the event names who acted

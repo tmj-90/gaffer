@@ -644,6 +644,8 @@ export class Dispatch {
       unavailableWriteReposResolver: (ticket) => this.writeRepoHeads(ticket).unavailable,
       // PER-REPOSITORY LANDING: git ancestry as positive evidence of a landing.
       landedOnDefaultResolver: (repoId, sha) => this.commitOnDefaultBranch(repoId, sha),
+      // PR LANDINGS: the approved change carried by the default branch (or its remote copy).
+      changeOnRefsResolver: (repoId, sha, refs) => this.changeOnRefs(repoId, sha, refs),
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
       // ORs with the env flag — true iff a mode='auto' approve policy covers every
       // write repo at this ticket's risk. NO env read here (that stays in the gate).
@@ -876,6 +878,54 @@ export class Dispatch {
     return res.status === 0;
   }
 
+  /**
+   * PR LANDINGS (exploratory finding cli-wg/F-01): does any of `refs` carry the change of
+   * `sha`? "default" is the local default branch, "remote-default" every remote-tracking
+   * ref of it. A ref carries it when `sha` is its ancestor (a merge commit) or when merging
+   * `sha` into it changes nothing (`git merge-tree --write-tree` gives the ref's own tree:
+   * a squash or rebase merge of that change already applied). → null when none of the
+   * refs exists here (or the checkout is missing), else true/false.
+   */
+  private changeOnRefs(
+    repoId: string,
+    sha: string,
+    refs: ReadonlyArray<"default" | "remote-default">,
+  ): boolean | null {
+    const repo = this.repos.findById(repoId);
+    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return null;
+    const cwd = repo.local_path;
+    const runGit = this.gitRunner ?? defaultGitRunner;
+    const def = repo.default_branch || "main";
+    const names: string[] = [];
+    for (const r of refs) {
+      if (r === "default") names.push(`refs/heads/${def}`);
+      else {
+        const listed = runGit(cwd, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]);
+        if (listed.status === 0)
+          for (const line of listed.stdout.split("\n")) {
+            const name = line.trim();
+            if (name.endsWith(`/${def}`) && name.split("/").length === 4) names.push(name);
+          }
+      }
+    }
+    let anyRef = false;
+    for (const ref of names) {
+      const tip = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      if (tip.status !== 0 || tip.stdout.trim() === "") continue;
+      anyRef = true;
+      if (runGit(cwd, ["merge-base", "--is-ancestor", sha, ref]).status === 0) return true;
+      const tree = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]);
+      const merged = runGit(cwd, ["merge-tree", "--write-tree", ref, sha]);
+      if (
+        tree.status === 0 &&
+        merged.status === 0 &&
+        merged.stdout.split("\n")[0]?.trim() === tree.stdout.trim()
+      )
+        return true;
+    }
+    return anyRef ? false : null;
+  }
+
   // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------
 
   /**
@@ -1021,6 +1071,20 @@ export class Dispatch {
     const capability = input.capability ?? "full";
     const actorType = input.actorType ?? "human";
     const actorId = String(input.actorId ?? name).trim() || name;
+    // IDENTITY COLLISION (exploratory finding api/F8): a principal (human or admin) may not
+    // speak as a registered agent's id. One recorded "human/<agent id>" approval on that agent's
+    // own delivery, and the dashboard showed the delivering agent as its own approver.
+    // Case-insensitively: an agent id in capitals is the same id to a reader.
+    const agentWithId = this.db
+      .prepare("SELECT id FROM agents WHERE lower(id) = lower(?) LIMIT 1")
+      .get(actorId) as { id: string } | undefined;
+    if (agentWithId) {
+      throw new DispatchError(
+        "DUPLICATE",
+        `actor_id '${actorId}' is a registered agent's id; a ${actorType} principal needs its own identity (pick another actor_id). Nothing was created.`,
+        { reason: "actor_id_is_agent", actor_id: actorId, actor_type: actorType },
+      );
+    }
     const token = mintPrincipalToken();
     const now = this.clock.now();
     const principal = inTransaction(this.db, () => {
@@ -1955,6 +2019,32 @@ export class Dispatch {
       const ls = this.landingState(t);
       return ls ? { ...t, landing_state: ls } : t;
     });
+  }
+
+  /**
+   * IN-FLIGHT GUARD (exploratory finding api/F1): true while a merge run the API started
+   * for this ticket (its latest `ticket.merge_started` event) is still `running` in the
+   * run registry. The merge route refuses a second merge then (409 MERGE_IN_FLIGHT).
+   */
+  mergeInFlight(ref: string): boolean {
+    const ticket = this.resolveTicket(ref);
+    const ev = this.db
+      .prepare(
+        `SELECT payload_json FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.merge_started'
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticket.id) as { payload_json: string | null } | undefined;
+    if (!ev) return false;
+    try {
+      const runId = (JSON.parse(ev.payload_json || "{}") as { run_id?: string }).run_id;
+      if (!runId) return false;
+      const row = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
+        { status: string } | undefined;
+      return row?.status === "running";
+    } catch {
+      return false;
+    }
   }
 
   /**

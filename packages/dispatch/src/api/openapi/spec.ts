@@ -188,7 +188,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       principalAdminRequired,
       {
         status: 409,
-        description: "A principal with that name exists (`DUPLICATE`).",
+        description:
+          "A principal with that name exists, or its `actor_id` is a registered agent's id (`DUPLICATE`, `details.reason: actor_id_is_agent`).",
         content: "json",
       },
     ],
@@ -679,9 +680,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/human-release",
     tag: T.tickets,
     summary: "Hand a by-hand ticket back to the queue",
+    description:
+      "A named principal hands back only a ticket it took by hand itself (403 `ACTOR_NOT_PERMITTED` for anyone else's); the shared operator token acts as admin and may hand back any.",
     capability: "full",
     body: "humanClaimBody",
-    responses: [ok("`{ ticket_id, status, event_id }`."), notFound, conflict],
+    responses: [ok("`{ ticket_id, status, event_id }`."), notFound, forbidden, conflict],
   },
   {
     method: "POST",
@@ -734,7 +737,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Reject the review",
     description:
-      "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store.",
+      "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store. A ticket whose change already landed in some repository is not re-queued: it is held for a person (`blocked`, park reason code `partly_landed`), and `to: cancelled` is refused (409 `PARTLY_LANDED`).",
     capability: "full",
     body: "rejectReviewBody",
     responses: [
@@ -750,9 +753,18 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Merge an approved ticket that has not landed",
     description:
-      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge.",
+      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge, and 409 `MERGE_IN_FLIGHT` while a merge this server started for the ticket is still running (nothing new is started).",
     capability: "full",
-    responses: [ok("`{ ticket, merge }` — the merge run was started (202)."), notFound, conflict],
+    responses: [
+      ok("`{ ticket, merge }` — the merge run was started (202)."),
+      notFound,
+      {
+        status: 409,
+        description:
+          "Not in ready_for_merge (`ILLEGAL_TRANSITION`), or a merge of this ticket is already running (`MERGE_IN_FLIGHT`).",
+        content: "json",
+      },
+    ],
   },
   {
     method: "POST",
@@ -882,12 +894,19 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/wont-do",
     tag: T.tickets,
     summary: "Mark won't-do",
+    description:
+      "Cancels the ticket. Refused (409 `PARTLY_LANDED`) once any of its repositories has a landing on record, whatever happened to the approval since (a send-back or a reopen withdraws the approval, not the merge): such a ticket can only be finished, so land the rest.",
     capability: "full",
     body: "wontDoBody",
     responses: [
       ok("`{ ticket, event_id }` (cancelled).", "TicketTransition"),
       notFound,
-      conflict,
+      {
+        status: 409,
+        description:
+          "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
+        content: "json",
+      },
       invalid,
     ],
   },

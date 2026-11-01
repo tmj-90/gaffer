@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
+import type { Actor } from "../../domain/types.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -41,7 +42,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { apiActor, operatorActor } from "./context.js";
+import { API_ACTOR, apiActor, isSharedOperator, operatorActor } from "./context.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -287,7 +288,12 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.HUMAN_RELEASE && method === "POST") {
     humanClaimBody.parse(await readJsonBody(req));
     const ticket = wg.resolveTicket(id);
-    const result = wg.humanReleaseTicket(ticket.id, apiActor());
+    // OWNER ONLY (cli-wg/F-13): a named principal hands back only its own by-hand ticket;
+    // the dashboard's operator (the shared token) acts as admin and may hand back any.
+    const releaser: Actor = isSharedOperator()
+      ? { type: "admin", id: API_ACTOR.id ?? "dispatch-api" }
+      : apiActor();
+    const result = wg.humanReleaseTicket(ticket.id, releaser);
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       status: result.status,
@@ -451,7 +457,19 @@ export async function routeTickets(
     if (ticket.number === null) {
       throw new DispatchError("ILLEGAL_TRANSITION", "Ticket has no number; cannot start a merge.");
     }
+    // IN-FLIGHT GUARD: one merge per ticket at a time. The check, the spawn and the
+    // merge_started note run without an await between them, so two parallel requests
+    // cannot both pass it.
+    const inFlight = (): never => {
+      throw new DispatchError(
+        "MERGE_IN_FLIGHT",
+        `A merge of #${ticket.number} is already running; nothing new was started. Wait for it to finish (its status reads "landing" meanwhile).`,
+        { ticket_number: ticket.number },
+      );
+    };
+    if (wg.mergeInFlight(ticket.id)) inFlight();
     const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
+    if (merge.skipped === "in_flight") inFlight();
     noteMerge(wg, ticket.id, merge);
     sendJson(res, 202, { ticket, merge });
     return;

@@ -275,7 +275,7 @@
             }
           },
           "409": {
-            "description": "A principal with that name exists (`DUPLICATE`).",
+            "description": "A principal with that name exists, or its `actor_id` is a registered agent's id (`DUPLICATE`, `details.reason: actor_id_is_agent`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3231,6 +3231,7 @@
           "Tickets"
         ],
         "summary": "Hand a by-hand ticket back to the queue",
+        "description": "A named principal hands back only a ticket it took by hand itself (403 `ACTOR_NOT_PERMITTED` for anyone else's); the shared operator token acts as admin and may hand back any.",
         "parameters": [
           {
             "name": "id",
@@ -3274,7 +3275,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3674,7 +3675,7 @@
           "Review & delivery"
         ],
         "summary": "Reject the review",
-        "description": "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store.",
+        "description": "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store. A ticket whose change already landed in some repository is not re-queued: it is held for a person (`blocked`, park reason code `partly_landed`), and `to: cancelled` is refused (409 `PARTLY_LANDED`).",
         "parameters": [
           {
             "name": "id",
@@ -3783,7 +3784,7 @@
           "Review & delivery"
         ],
         "summary": "Merge an approved ticket that has not landed",
-        "description": "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge.",
+        "description": "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge, and 409 `MERGE_IN_FLIGHT` while a merge this server started for the ticket is still running (nothing new is started).",
         "parameters": [
           {
             "name": "id",
@@ -3837,7 +3838,7 @@
             }
           },
           "409": {
-            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "description": "Not in ready_for_merge (`ILLEGAL_TRANSITION`), or a merge of this ticket is already running (`MERGE_IN_FLIGHT`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4622,6 +4623,7 @@
           "Tickets"
         ],
         "summary": "Mark won't-do",
+        "description": "Cancels the ticket. Refused (409 `PARTLY_LANDED`) once any of its repositories has a landing on record, whatever happened to the approval since (a send-back or a reopen withdraws the approval, not the merge): such a ticket can only be finished, so land the rest.",
         "parameters": [
           {
             "name": "id",
@@ -4685,7 +4687,7 @@
             }
           },
           "409": {
-            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "description": "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
             "content": {
               "application/json": {
                 "schema": {

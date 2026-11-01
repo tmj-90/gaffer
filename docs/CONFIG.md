@@ -388,7 +388,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 |---|---|---|
 | `DISPATCH_AGENT_ID` | `mcp-agent` | `packages/dispatch/src/mcp/server.ts` |
 | `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
-| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
+| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/main.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
 | `DISPATCH_AUDIT` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_AUDIT_OFF` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
@@ -397,7 +397,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |
 | `DISPATCH_ONBOARD_NAME` | _(empty)_ | `runner/bin/onboard-run.mjs` |
-| `DISPATCH_PID_FILE` | _(empty)_ | `packages/dispatch/src/api/bin.ts` |
+| `DISPATCH_PID_FILE` | _(empty)_ | `packages/dispatch/src/api/main.ts` |
 | `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |

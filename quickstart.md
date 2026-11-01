@@ -245,21 +245,37 @@ flags under **Safety** below — off by default.
 > (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`), or merge the script change
 > to the base branch first.
 
-> **Readying a ticket needs a reviewer under the strict policy packs.** The default
-> policy pack is `solo_loose`, which readies freely. But tickets under
-> **`factory_strict`** or **`regulated`** — which is what the **Product Owner**
-> ("Suggest work") drafts, and what you'll use for anything you actually gate —
-> **must have a reviewer assigned first**, or **Mark ready** fails with
-> `POLICY_DENIED … REVIEWER_REQUIRED`. Assign one from the CLI (the dashboard
-> button for this is planned):
+> **Readying a ticket under the stricter policy packs.** The default policy pack is
+> `solo_loose`, which readies freely. The stricter packs each add gates to **Mark ready**,
+> and the **Product Owner** ("Suggest work") drafts its tickets under `factory_strict`.
+> A ticket that misses one fails with `POLICY_DENIED` and the code below:
+>
+> - **`team_light`** and up: a description (`DESCRIPTION_REQUIRED`) and a repo with
+>   write access (`REPO_REQUIRED`, `WRITE_REPO_REQUIRED`).
+> - **`factory_strict`** adds: every acceptance criterion has a verification method
+>   (`AC_VERIFICATION_REQUIRED`; `--check` alone does not count, so pass `--verify`
+>   too), a reviewer (`REVIEWER_REQUIRED`), no open blocking decision, and a primary
+>   scope if the repo is mapped into the Factory Map (a single unmapped repo is fine).
+> - **`regulated`** adds a human ready-approval (`HUMAN_APPROVAL_REQUIRED`).
+>
+> All of them, from the start:
 >
 > ```bash
-> # use the ticket number (#n) or the full id; the 8-char short ref on cards won't resolve
-> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name> --admin
+> runner/gaffer wg ticket create -p factory_strict -t "Add listNotes" \
+>   -d "Export listNotes(notes) from src/notes.js, newest first, input untouched."
+> runner/gaffer wg ac add <n> -t "listNotes returns a new array sorted newest-first" --verify "unit test"
+> runner/gaffer wg ac add <n> -t "the test suite passes" --verify "npm test" --check "npm test"
+> runner/gaffer wg ticket repo-access set <n> <repo-name>
+> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>
+> runner/gaffer wg ticket approve-ready <n>      # regulated only (or Approve… on the Team sheet)
+> runner/gaffer wg ticket ready <n>
 > ```
 >
-> Then **Mark ready** succeeds, and the ticket flows plan → implement → test →
-> review as normal. (The reviewer is *who owns the gate*; the agent still cannot
+> Use the ticket number (`<n>`) or the full id; the 8-character short ref on cards won't
+> resolve. A ticket that is missing a reviewer shows on the Team sheet with an
+> **Assign…** row; assigning one is CLI-only for now. Criteria can be edited later with
+> `runner/gaffer wg ac edit` where your version has it, which is how a criterion created
+> without `--verify` gets one. (The reviewer is *who owns the gate*; the agent still cannot
 > approve or merge its own work.)
 
 ---

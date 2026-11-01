@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 143 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 78 |
+| Env reads in code with no default and no UI entry | 79 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -347,7 +347,7 @@ Some are seams the runner also sets for itself; the notes say which.
 | Variable | Default | Read in | Notes |
 |---|---|---|---|
 | `GAFFER_VERBOSE` | _(empty)_ | `runner/bin/onboard-run.mjs` | 1 = `gaffer onboard` prints its full log instead of the summary (the log is always in $GAFFER_DATA/onboard.log). |
-| `DEMO_DIR` | `/tmp/gaffer-showcase` | `runner/demo.sh` | Where `gaffer demo` builds its throwaway showcase repo (it deletes that directory first). |
+| `DEMO_DIR` | _(empty)_ | `runner/demo.sh` | Where `gaffer demo` builds its throwaway showcase factory. Empty = a fresh temp dir per run. A named dir must be empty or a previous demo's (it is cleared); anything else is refused. |
 
 ### Credentials
 
@@ -387,7 +387,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 |---|---|---|
 | `DISPATCH_AGENT_ID` | `mcp-agent` | `packages/dispatch/src/mcp/server.ts` |
 | `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
-| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/status.sh` |
+| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
 | `DISPATCH_AUDIT` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_AUDIT_OFF` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
@@ -407,6 +407,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_DASHBOARD_START_TIMEOUT` | `30` | `runner/gaffer` |
 | `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |

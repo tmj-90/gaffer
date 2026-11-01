@@ -1,5 +1,5 @@
 import type { LandingState } from "./landingState.js";
-import type { DecisionSeverity, TicketStatus } from "../domain/types.js";
+import type { DecisionSeverity, PausedDelivery, TicketStatus } from "../domain/types.js";
 import type { DecisionRepository } from "../repositories/decisionRepository.js";
 import type { TicketDependencyRepository } from "../repositories/ticketDependencyRepository.js";
 import type { EventRepository } from "../repositories/eventRepository.js";
@@ -18,7 +18,14 @@ import type { LandingStatus } from "./landingStatus.js";
  *                            REVIEWER_REQUIRED profile set);
  *  - `parked`              — a runner/human PARKED ticket (`blocked`, or `refining`
  *                            that carries a runner park reason_code) waiting on a
- *                            human to unpark/refine/cancel it.
+ *                            human to unpark/refine/cancel it;
+ *  - `paused`              — a delivery that hit a cap (turns, budget, wall clock)
+ *                            and waits, worktree kept, for the human's Continue or
+ *                            Stop (not once Continue was pressed: then the factory
+ *                            owns it again);
+ *  - `lore_drafts`         — lore drafts awaiting the human's approval in Memory
+ *                            (added by the API route, which reads the memory store;
+ *                            one row for all of them, `loreDrafts` says how many).
  */
 export type HumanQueueKind =
   | "decision"
@@ -28,7 +35,11 @@ export type HumanQueueKind =
   | "parked"
   | "dependency_cancelled"
   /** Approved but not merged: the merge runner did not (or could not) land it. */
-  | "awaiting_merge";
+  | "awaiting_merge"
+  /** A delivery paused at a cap: Continue or Stop is the human's. */
+  | "paused"
+  /** Lore drafts awaiting approval in Memory (one row; see `loreDrafts`). */
+  | "lore_drafts";
 
 /** The ticket a human-queue item concerns (null for a decision with no link). */
 export interface HumanQueueTicketRef {
@@ -65,7 +76,9 @@ export interface HumanQueueItem {
   /** Parked items only: the structured runner park reason_code (null = none recorded). */
   reasonCode?: string | null;
   /** Parked items only: advisory next action — "unpark" | "refine" | "cancel". */
-  suggestedAction?: "unpark" | "refine" | "cancel" | null;
+  suggestedAction?: "unpark" | "refine" | "cancel" | "continue" | null;
+  /** `lore_drafts` only: how many drafts await approval. */
+  loreDrafts?: number;
   /** When the wait started (ISO instant). */
   since: string;
   /** How long the item has waited, in ms, relative to the service clock. */
@@ -82,6 +95,10 @@ export interface HumanQueueCounts {
   parked: number;
   /** Tickets blocked by a dependency that was cancelled/failed (can never self-clear). */
   dependencyCancelled: number;
+  /** Paused deliveries waiting for Continue or Stop. */
+  paused: number;
+  /** Lore drafts awaiting approval (set by the API route; 0 when Memory is not read). */
+  loreDrafts: number;
 }
 
 /** The aggregated human-owned queue: everything waiting on the OPERATOR. */
@@ -100,6 +117,8 @@ export interface HumanQueueServiceDeps {
   readonly dependencies: TicketDependencyRepository;
   /** PER-REPOSITORY LANDING: per-repo landed/pending state of an approved ticket. */
   readonly landingStatus?: ((ticketId: string) => LandingStatus) | undefined;
+  /** PAUSE-ON-CAP: a paused ticket's resume context (why it paused, Continue pressed?). */
+  readonly pausedDelivery?: ((ticketId: string) => PausedDelivery | undefined) | undefined;
 }
 
 const REVIEW_REASON_FALLBACK = "Delivered by the agent — awaiting your review sign-off.";
@@ -108,6 +127,19 @@ const READY_APPROVAL_REASON =
 const REVIEWER_ASSIGNMENT_REASON =
   "Policy gate (factory_strict/regulated) — assign a reviewer before it can be made ready.";
 const PARKED_NO_CODE_LABEL = "blocked (no reason recorded)";
+/** A paused delivery's reason, in the ticket page's words. */
+function pausedReason(p: PausedDelivery | undefined): string {
+  const spend = p && p.spend ? `, ${p.spend} spent so far` : "";
+  const why =
+    p?.reason === "budget_cap"
+      ? "hit the budget cap"
+      : p?.reason === "timeout"
+        ? "hit the wall-clock timeout"
+        : p?.reason === "cap_hit"
+          ? `hit the turn cap${p.turns != null ? ` after ${p.turns} turns` : ""}`
+          : "paused";
+  return `The delivery ${why} mid-way${spend}; its worktree is kept. Continue resumes it where it stopped, Stop abandons it.`;
+}
 // The structured runner park reason_codes the factory runner writes onto a
 // `ticket.blocked` event (via runnerRelease): rework_exhausted, bootstrap_failed,
 // strict_require_unavailable, budget_exhausted, no_write_repo, no_local_repo_path. Any non-null reason_code is a
@@ -142,6 +174,7 @@ export class HumanQueueService {
   private readonly events: EventRepository;
   private readonly dependencies: TicketDependencyRepository;
   private readonly landingStatus: HumanQueueServiceDeps["landingStatus"];
+  private readonly pausedDelivery: HumanQueueServiceDeps["pausedDelivery"];
 
   constructor(deps: HumanQueueServiceDeps) {
     this.clock = deps.clock;
@@ -150,6 +183,7 @@ export class HumanQueueService {
     this.events = deps.events;
     this.dependencies = deps.dependencies;
     this.landingStatus = deps.landingStatus;
+    this.pausedDelivery = deps.pausedDelivery;
   }
 
   /** Build the human-owned queue, oldest-waited first (the operator's priority). */
@@ -322,6 +356,26 @@ export class HumanQueueService {
       });
     }
 
+    // PAUSED AT A CAP. The delivery stopped mid-way (turns, budget, wall clock) and
+    // keeps its worktree; nothing runs it again until a human presses Continue (or
+    // Stop abandons it). Once Continue is pressed the factory owns it again.
+    for (const t of this.tickets.list("paused")) {
+      const p = this.pausedDelivery ? this.pausedDelivery(t.id) : undefined;
+      if (p && p.resume_requested) continue;
+      const since = this.events.enteredStatusAt(t.id, "paused")?.at ?? t.updated_at;
+      items.push({
+        kind: "paused",
+        label: "Paused",
+        reason: pausedReason(p),
+        ticket: { id: t.id, number: t.number, title: t.title, status: t.status },
+        decisionId: null,
+        severity: null,
+        suggestedAction: "continue",
+        since,
+        waitedMs: waited(since),
+      });
+    }
+
     for (const row of this.dependencies.listBlockedByTerminalDependency()) {
       const depRef = row.dep_number !== null ? `#${row.dep_number}` : row.depends_on_ticket_id;
       items.push({
@@ -354,6 +408,8 @@ export class HumanQueueService {
       reviewerAssignments: items.filter((i) => i.kind === "reviewer_assignment").length,
       parked: items.filter((i) => i.kind === "parked").length,
       dependencyCancelled: items.filter((i) => i.kind === "dependency_cancelled").length,
+      paused: items.filter((i) => i.kind === "paused").length,
+      loreDrafts: 0,
     };
 
     return { items, counts, generatedAt: now };

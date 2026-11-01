@@ -489,8 +489,10 @@
   .dod-w-flag {
     color: var(--ink);
   }
-  .dod-note-flag,
-  .dod-note-pass {
+  /* Two classes: the plain .dod-note (red, a failing gate's output) comes later in
+     the sheet, and one class each let it paint a passing gate's note red. */
+  .dod-note.dod-note-flag,
+  .dod-note.dod-note-pass {
     color: var(--ink);
   }
   .dod-src {
@@ -948,11 +950,14 @@
   .vd-w-flag {
     color: var(--ink);
   }
+  /* The command or note gets a line of its own under the gate: squeezed into the
+     fourth column of a narrow cell it broke mid-word ("no comman / d configure / d"). */
   .vd-cmd,
   .vd-note {
+    grid-column: 2 / -1;
     min-width: 0;
     color: var(--ink-2);
-    overflow-wrap: anywhere;
+    overflow-wrap: break-word;
   }
   .vd-flag {
     display: flex;

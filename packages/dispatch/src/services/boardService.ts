@@ -218,7 +218,7 @@ export interface RepoProgress {
 export interface DashboardSummary {
   /** Ticket counts keyed by status (every status present, zero-filled). */
   ticketsByStatus: Record<TicketStatus, number>;
-  /** Tickets delivered (→in_review/done) since the start of today (UTC). */
+  /** Tickets that landed (→done) since the start of today (UTC). */
   deliveredToday: number;
   /** Tickets currently blocked. */
   blocked: number;

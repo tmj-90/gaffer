@@ -189,7 +189,11 @@ const CONTENT_SECURITY_POLICY = [
 export function applySecurityHeaders(res: ServerResponse, loopbackBind: boolean): void {
   res.setHeader("Content-Security-Policy", CONTENT_SECURITY_POLICY);
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  // no-referrer, not strict-origin-when-cross-origin: the latter sends the FULL URL
+  // same-origin, so after a `?token=` login (the QR / printed login URL) every
+  // stylesheet, font and script the shell loaded carried the token in its Referer,
+  // into any proxy or access log in front of the dashboard. Nothing here needs one.
+  res.setHeader("Referrer-Policy", "no-referrer");
   res.setHeader("X-Frame-Options", "DENY");
   if (!loopbackBind) {
     res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");

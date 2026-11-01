@@ -148,6 +148,22 @@ Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
 renames an agent in place; a taken shirt number is refused with the holder's
 name, and a read-only token sees no editors.
 
+**Read-only access.** A read-scoped token (Settings → Access, `wg principal
+create <name> --read`, or `print-read-token` with the dashboard's `GAFFER_DATA`
+for its own token's twin) sees one "Read-only access" strip and every control that would
+change something switched off with a title saying why, on every view: Review's
+sign-off, Revoke and Reopen, the Map, ground and repo editors, Onboard, Author a
+spec and Freeze, and the whole Plan a build composer. The page never sends such a
+token's write, so nothing comes back as a 403; the `s18-read-only` browser suite
+walks 23 views to keep it so. The login gate sends no data call until a token is
+there: `/healthz` says whether one is wanted, and a stored token is checked once.
+
+**The Team sheet** lists everything waiting on you, one action a row: decisions,
+sign-offs, approved changes to merge, blocked tickets, a delivery paused at a cap
+(Continue… offers Continue and Stop) and one row for the lore drafts awaiting
+approval (it opens Memory). *Delivered today* counts the tickets that landed
+since midnight UTC and opens the Floor, whose lorry shows the same ones.
+
 **The headline names the work.** The Overview's scoreboard headline leads with
 the ticket's title, the number kept as a muted reference after it: "Webhook
 delivery #10 is blocked by a failing test.", never "#10 is blocked." With nothing

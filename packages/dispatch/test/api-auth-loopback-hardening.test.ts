@@ -165,6 +165,9 @@ describe("loopback read-auth hardening (over a bound server)", () => {
     // boot and adopt the token; they carry no board data.
     const health = await rawGet(h.port, "/healthz");
     expect(health.status).toBe(200);
+    // It says a token is wanted, so the login gate draws itself without a 401
+    // (exploratory finding ui-explore/F-05); it says nothing about which token.
+    expect(JSON.parse(health.body)).toEqual({ status: "ok", auth: true });
     const shell = await rawGet(h.port, "/");
     expect(shell.status).toBe(200);
     expect(shell.body).toContain("<!doctype html");

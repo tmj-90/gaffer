@@ -57,7 +57,7 @@ describe("P1-C: security response headers", () => {
     expect(csp).toContain("frame-ancestors 'none'");
 
     expect(res.headers.get("x-content-type-options")).toBe("nosniff");
-    expect(res.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
+    expect(res.headers.get("referrer-policy")).toBe("no-referrer");
     expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 
@@ -67,6 +67,24 @@ describe("P1-C: security response headers", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("content-security-policy")).toBeTruthy();
     expect(res.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  // Exploratory finding ui-explore/F-07: after a `?token=` login every stylesheet,
+  // font and script the first document loaded carried `Referer: …/?token=<FULL
+  // TOKEN>` (strict-origin-when-cross-origin sends the full URL same-origin), so the
+  // token reached any proxy or access log in front of the dashboard.
+  it("sends Referrer-Policy: no-referrer on the HTML shell, so a ?token= login never rides a Referer", async () => {
+    h = await startHarness();
+    for (const path of ["/", "/?token=abc", "/index.html"]) {
+      const res = await fetch(`${h.baseUrl}${path}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    }
+    for (const path of ["/app.js", "/css/tokens.css"]) {
+      const res = await fetch(`${h.baseUrl}${path}`);
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+    }
   });
 
   it("allows NO third-party style or font origin in the CSP (fonts are self-hosted)", async () => {

@@ -14,7 +14,11 @@
 #   C. an UNREGISTERED stale review-wt directory likewise;
 #   D. a SYSTEMIC refusal (the MCP runtime cannot be rendered) still errors and skips
 #      nothing (skipping would walk every ticket without reviewing any);
-#   E. a live review claim held by another lane is respected (no double review).
+#   E. a live review claim held by another lane is respected (no double review);
+#   F. a ticket that writes to SEVERAL repos is held for a human before the reviewer runs
+#      (external review #7: the reviewer reads one repo and dispatch refuses an approval
+#      that does not cover every repo, so each run spent a review call on a refusal seen
+#      only in the log): a note on the ticket, no reviewer call, still in_review.
 # Real dispatch + real tick.sh with a stub `claude`. Run: bash runner/test/review-wedge.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -131,6 +135,27 @@ OUT5="$(REVIEW_MODE=agent MCP_CONFIG="$WORK/no-such-mcp.json" run_tick)"
 grep -qx "$N4" "$GAFFER_DATA/.reviewed-tickets" 2>/dev/null && fail "D: #$N4 skip-listed on a systemic failure" || ok "D: nothing skip-listed"
 OUT6="$(REVIEW_MODE=agent run_tick)"
 [ "$OUT6" = "TICK_RESULT=reviewed" ] && [ "$(reviewed "$N4")" -ge 1 ] && ok "D: with the fault gone (dead claim reaped) #$N4 is reviewed" || fail "D: tick → $OUT6, #$N4 reviewed=$(reviewed "$N4")"
+
+echo "== F. a ticket that writes to several repositories is held for a human before any review spend =="
+R2="$WORK/repo2"; mkdir -p "$R2"
+( cd "$R2" && git init -q -b main && printf 'x\n' > README.md && git -c user.email=t@t -c user.name=t add -A && git -c user.email=t@t -c user.name=t commit -qm init )
+wg repo add -n repo2 --path "$R2" --branch main >/dev/null 2>&1
+echo deliver > "$MODE_FILE"
+N5="$(wg ticket create -t "Wedge five" -d "deliver then review" 2>/dev/null | jget 'd.ticket.number')"
+wg ac add "$N5" -t "helper added" >/dev/null 2>&1
+wg ticket repo-access set "$N5" repo --access write --relation confirmed >/dev/null 2>&1
+wg ticket ready "$N5" >/dev/null 2>&1
+run_tick >/dev/null
+[ "$(st "$N5")" = "in_review" ] && ok "F: setup: #$N5 delivered → in_review" || fail "F: setup: #$N5 is '$(st "$N5")'"
+wg ticket repo-access set "$N5" repo2 --access write --relation confirmed >/dev/null 2>&1
+echo approve > "$MODE_FILE"
+OUT7="$(REVIEW_MODE=agent run_tick)"
+[ "$(reviewed "$N5")" -eq 0 ] && ok "F: no reviewer call for #$N5 ($OUT7)" || fail "F: the reviewer ran on #$N5 ($(reviewed "$N5") times): $(grep "#$N5" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
+grep -q "REVIEW-HELD: #$N5 cannot be agent-reviewed — it writes to several repositories (repo, repo2)" "$GAFFER_DATA/factory.log" \
+  && ok "F: logged REVIEW-HELD naming both repositories" || fail "F: no REVIEW-HELD line: $(grep "#$N5" "$GAFFER_DATA/factory.log" | tail -3 | tr '\n' '|' | cut -c1-400)"
+grep -q "agent review could not run: it writes to several repositories" <<<"$(wg ticket show "$N5" 2>/dev/null)" && ok "F: a note on the ticket says why" || fail "F: no note on #$N5"
+[ "$(st "$N5")" = "in_review" ] && grep -qx "$N5" "$GAFFER_DATA/.reviewed-tickets" 2>/dev/null \
+  && ok "F: #$N5 stays in_review for a human, skipped for the run (no loop)" || fail "F: #$N5 is '$(st "$N5")'"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

@@ -118,6 +118,18 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       if [ -z "${RBRANCH:-}" ]; then
         _review_hold_ticket "no delivery branch recorded"; return 0
       fi
+      # SEVERAL WRITE REPOS (external review #7): an approval covers EVERY write repo, and
+      # this reviewer reads only the primary one, so dispatch refuses its approval (it names
+      # one commit). Running the reviewer anyway spent a model call on every run for a
+      # verdict that could never land, and the refusal was only in the log. Hold it for a
+      # human BEFORE any spend: a note on the ticket says why, it is skipped for the run and
+      # stays in_review (the human queue's review item) for a person to approve every repo.
+      _RWRITES="$(echo "$RSHOW" | jget '((d.repositories||[]).filter(r => r.access === "write" && (!r.relation || r.relation === "confirmed" || r.relation === "implicit_single_repo")).map(r => r.name)).join(", ")' 2>/dev/null || echo '')"
+      case "$_RWRITES" in
+        *", "*)
+          _review_hold_ticket "it writes to several repositories ($_RWRITES) and the agent reviewer reads only the primary one — an approval must cover every repository, so a person reviews and approves them together"
+          return 0 ;;
+      esac
       if ! mkdir "$_RCLAIM" 2>/dev/null; then
         _rowner="$(cat "$_RCLAIM/pid" 2>/dev/null || true)"
         if [ -n "$_rowner" ] && kill -0 "$_rowner" 2>/dev/null; then

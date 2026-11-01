@@ -409,7 +409,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_USAGE_PAUSE_POLL_SECS` | `60` | `runner/lib/usage-pause.sh` |
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
-| `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |
+| `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/cleanup-ownership.sh`, `runner/lib/orphan-recovery.sh` |
 | `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
 | `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |

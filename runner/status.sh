@@ -25,7 +25,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
-c_grn='\033[1;32m'; c_cya='\033[1;36m'; c_yel='\033[1;33m'; c_red='\033[1;31m'; c_dim='\033[2m'; c_off='\033[0m'
+# No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
 say()  { printf "${c_cya}gaffer${c_off} %s\n" "$*"; }
 ok()   { printf "  ${c_grn}✓${c_off} %s\n" "$*"; }
 warn() { printf "  ${c_yel}!${c_off} %s\n" "$*"; }
@@ -105,12 +108,45 @@ notify() {
 
 say "factory status"
 
+# NO FACTORY HERE: a GAFFER_DATA that was never set up (no dispatch db, no crew.yaml).
+# The doctors used to run anyway — creating dispatch.sqlite + memory.sqlite as a side
+# effect, printing crew's raw CONFIG_NOT_FOUND JSON and a "MISMATCH" warning — and
+# the pane exited 0. Say what is wrong, create nothing, exit 1. Only on a real run
+# (a test that stubs the doctors has no factory either).
+if [ "$_REAL_DOCTORS" = 1 ] && [ ! -f "$DISPATCH_DB" ] && [ ! -f "$CREW_CONFIG" ]; then
+  bad "no factory here (GAFFER_DATA=$GAFFER_DATA): run \`runner/gaffer setup\` first, or point GAFFER_DATA at an existing factory" >&2
+  exit 1
+fi
+
 # DB-path footgun: onboards land in the wrong place if these disagree.
 fg_sqlite="$(grep -E '^[[:space:]]*sqlite_path:' "$CREW_CONFIG" 2>/dev/null | head -1 | sed 's/.*sqlite_path:[[:space:]]*//')"
 printf "  %-20s %s\n" "Factory DB:" "$DISPATCH_DB"
 printf "  %-20s %s\n" "Crew config:" "$CREW_CONFIG"
 if [ "$fg_sqlite" = "$DISPATCH_DB" ]; then printf "  %-20s ${c_grn}same db ✓${c_off}\n" "  → reads:"
 else printf "  %-20s ${c_yel}%s  (MISMATCH — onboards land elsewhere!)${c_off}\n" "  → reads:" "${fg_sqlite:-?}"; fi
+
+# POSTURE: what this factory will do on its own — the effective GAFFER_MODE (a typo
+# falls back to supervised: say so), who reviews, whether approved work lands by
+# itself, the dollar caps a live run needs, and whether the OS sandbox is mandatory.
+# All from the config this script sourced, so it is what a run here would use.
+_on_off() { if _gaffer_flag_on "${1:-0}"; then echo on; else echo off; fi; }
+case "${GAFFER_MODE:-supervised}" in
+  supervised|graduated|lite|autonomous|strict) _mode="${GAFFER_MODE:-supervised}" ;;
+  *) _mode="supervised  (GAFFER_MODE='$GAFFER_MODE' is not a mode — supervised, graduated, lite, autonomous, strict)" ;;
+esac
+if [ -n "${GAFFER_DAILY_BUDGET_USD:-}" ]; then _cap="\$${GAFFER_DAILY_BUDGET_USD} a day (GAFFER_DAILY_BUDGET_USD)"
+else _cap="none"; fi
+[ -n "${GAFFER_BUDGET_USD:-}" ] && _cap="$_cap · lifetime \$${GAFFER_BUDGET_USD} (GAFFER_BUDGET_USD)"
+if [ -z "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
+  if [ "${GAFFER_ALLOW_UNCAPPED:-}" = 1 ]; then _cap="none (GAFFER_ALLOW_UNCAPPED=1: live runs start uncapped)"
+  else _cap="none — a live run refuses to start until GAFFER_DAILY_BUDGET_USD or GAFFER_BUDGET_USD is set"; fi
+fi
+if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}"; then _sbx="required (GAFFER_STRICT_REQUIRE=1: no OS sandbox, no agent run)"
+elif _gaffer_flag_on "${STRICT_MODE:-0}"; then _sbx="used when available (STRICT_MODE=1), not required"
+else _sbx="not required"; fi
+printf "\n  ${c_dim}posture${c_off}\n"
+printf "    %-12s %s\n" "mode:" "$_mode" "review:" "${REVIEW_MODE:-human}" "auto-merge:" "$(_on_off "${AUTO_MERGE:-0}")" \
+  "day cap:" "$_cap" "ticks/day:" "${MAX_TICKS_PER_DAY:-0}" "sandbox:" "$_sbx"
 
 # Pre-build short-circuit: if the products were never built, the bundled doctor
 # CLIs (dist/cli/index.js, MEMORY_CLI_BIN) don't exist and each roll_doctor would
@@ -208,6 +244,29 @@ if [ -n "$acc_rows" ]; then
   done <<<"$acc_rows"
 fi
 
+# WAITING ON YOU, by ticket: the counts above said "1 awaiting review" without the
+# number or what to type. One line per ticket (up to 8 per kind) with its command.
+# Env-overridable seam (STATUS_TICKETS_CMD, the status is appended) like the others.
+_tl_seam=0; [ -n "${STATUS_TICKETS_CMD:-}" ] && _tl_seam=1
+: "${STATUS_TICKETS_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB ticket list -s}"
+read -ra _tl_c <<<"$STATUS_TICKETS_CMD"
+waiting_lines() {  # waiting_lines <status> <command prefix> [suffix]
+  # The default reads the factory db; never let a `--db` on a missing file create one.
+  [ "$_tl_seam" = 1 ] || [ -f "$DISPATCH_DB" ] || return 0
+  "${_tl_c[@]}" "$1" 2>/dev/null | CMD="$2" SUF="${3:-}" node "$HERE/lib/json-tool.mjs" expr \
+    '(Array.isArray(d) ? d : []).slice(0, 8).map((t) => "    #" + t.number + " " + String(t.title || "").slice(0, 48) + "  →  " + process.env.CMD + " " + t.number + process.env.SUF).join("\n")' 2>/dev/null
+}
+_wait=""
+[ "$review" -gt 0 ] 2>/dev/null && _wait="$_wait$(waiting_lines in_review "gaffer approve")"$'\n'
+[ "$merge" -gt 0 ] && _wait="$_wait$(waiting_lines ready_for_merge "gaffer merge")"$'\n'
+[ "$blocked" -gt 0 ] 2>/dev/null && _wait="$_wait$(waiting_lines blocked "gaffer wg ticket show" "   (why it stopped; retry: gaffer wg ticket ready <n>)")"$'\n'
+[ "$paused_waiting" -gt 0 ] && _wait="$_wait$(waiting_lines paused "gaffer wg ticket continue")"$'\n'
+_wait="$(printf '%s' "$_wait" | grep -v '^[[:space:]]*$')"
+if [ -n "$_wait" ]; then
+  printf "\n  ${c_dim}waiting on you${c_off}\n"
+  printf '%s\n' "$_wait"
+fi
+
 # What the HUMAN owns: pending decisions the agent delegated, WITH their reasons
 # (why the agent needs a human) — not just a count. Env-overridable seam
 # (HUMAN_QUEUE_CMD) so this stays testable without the real CLI/DB; it degrades
@@ -229,7 +288,19 @@ if [ -n "$replay_lines" ]; then
 fi
 
 printf "\n  ${c_dim}recent ticks${c_off}\n"
-ticks="$(grep -hE 'delivering #|delivery tick for #' "$GAFFER_LOG" 2>/dev/null | tail -n "$STATUS_TICKS")"
+# A delivery's agent call ends with "delivery tick for #N finished (rc=0)", and its
+# outcome comes after the gates: PARKED / PAUSED / FAILED / FLAGGED, or "submitted #N
+# for review". Show the outcome in place of the bare "finished (rc=0)" — a parked
+# delivery used to read as finished, with the PARKED line never shown.
+ticks="$(grep -hE 'delivering #|delivery tick for #|delivery (PARKED|PAUSED|FAILED|FLAGGED)|submitted #[0-9]+ for review' "$GAFFER_LOG" 2>/dev/null \
+  | awk '
+      function num(s,   m) { if (match(s, /#[0-9]+/)) return substr(s, RSTART + 1, RLENGTH - 1); return "" }
+      { line[NR] = $0; n = num($0) }
+      /delivery tick for #[0-9]+ finished/ { fin[n] = NR; next }
+      /delivery (PARKED|PAUSED|FAILED|FLAGGED)|submitted #[0-9]+ for review/ { if (n in fin) { drop[fin[n]] = 1; delete fin[n] } next }
+      /delivering #/ { delete fin[n] }
+      END { for (i = 1; i <= NR; i++) if (!(i in drop)) print line[i] }' \
+  | tail -n "$STATUS_TICKS")"
 if [ -n "$ticks" ]; then printf '%s\n' "$ticks" | sed 's/^/    /'
 else printf "    ${c_dim}(none yet — %s)${c_off}\n" "$GAFFER_LOG"; fi
 
@@ -238,14 +309,29 @@ echo
 # foreground server (`gaffer dashboard --foreground`: compose, systemd, any
 # supervisor) writes no PID file — the supervisor owns it — so fall back to probing
 # the port's /healthz. That proves something answers there, not that it is THIS
-# factory's server, and the line says so.
+# factory's server; the line names the pid holding the port when the OS says, and
+# what the PID file really holds (missing, or a stale value) instead of guessing.
 _dash_url="http://127.0.0.1:${DISPATCH_API_PORT:-8787}"
+_pf_state="$(gaffer_dashboard_pidfile_state 2>/dev/null || echo missing)"
+case "$_pf_state" in
+  "running "*) _pf_note="" ;;
+  missing) _pf_note="no pid file" ;;
+  "stale "*) _pf_note="the pid file is stale: it names '${_pf_state#stale }', not a running dashboard" ;;
+esac
 if _dash_pid="$(gaffer_dashboard_pid 2>/dev/null)"; then
   ok "dashboard running → $_dash_url (pid $_dash_pid)"
 elif command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 "${DASHBOARD_PROBE_URL:-$_dash_url/healthz}" >/dev/null 2>&1; then
-  ok "dashboard answering → $_dash_url (no pid file: a foreground/supervised server)"
+  _port_pid="$(gaffer_port_listener_pid "${DISPATCH_API_PORT:-8787}" 2>/dev/null || true)"
+  if [ "$_pf_state" = missing ]; then
+    ok "dashboard answering → $_dash_url (${_port_pid:+pid $_port_pid, }no pid file: a foreground/supervised server, or one whose pid file was lost)"
+  else
+    warn "dashboard answering → $_dash_url${_port_pid:+ (pid $_port_pid)}, but $_pf_note — \`gaffer dashboard --restart\` replaces it with one this factory tracks"
+  fi
 else
-  warn "dashboard not running (\`gaffer dashboard\`)"
+  case "$_pf_state" in
+    "stale "*) warn "dashboard not running (\`gaffer dashboard\`) — $_pf_note" ;;
+    *) warn "dashboard not running (\`gaffer dashboard\`)" ;;
+  esac
 fi
 
 # Pending decisions, from the human-queue already fetched. A human_required one blocks

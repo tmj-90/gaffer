@@ -245,9 +245,9 @@ export const EXTRA_KNOBS = [
   {
     group: "Onboarding and demo",
     name: "DEMO_DIR",
-    default: "/tmp/gaffer-showcase",
+    default: "",
     file: "runner/demo.sh",
-    doc: "Where `gaffer demo` builds its throwaway showcase repo (it deletes that directory first).",
+    doc: "Where `gaffer demo` builds its throwaway showcase factory. Empty = a fresh temp dir per run. A named dir must be empty or a previous demo's (it is cleared); anything else is refused.",
   },
   {
     group: "Credentials",

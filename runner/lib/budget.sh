@@ -367,9 +367,24 @@ gaffer_spend_cap_ok() {
   return 1
 }
 
-# The one-line fix every refusal prints after its own prefix.
+# The one-line fix every refusal prints after its own prefix. It names what is wrong
+# with a cap that IS set: GAFFER_DAILY_BUDGET_USD=0 is $0 of headroom (README: "no new
+# paid work starts at $0 headroom"), and "abc" is not a number — both used to read "no
+# dollar cap is set", which sent the operator looking for a setting they had made.
 gaffer_spend_cap_hint() {
-  printf '%s' "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one"
+  local fix="set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one"
+  local k v why=""
+  for k in GAFFER_DAILY_BUDGET_USD GAFFER_BUDGET_USD; do
+    v="${!k:-}"
+    [ -n "$v" ] || continue
+    if grep -Eq '^[[:space:]]*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)[[:space:]]*$' <<<"$v"; then
+      why="${why:+$why; }$k=$v is \$0 headroom: no paid work starts"
+    else
+      why="${why:+$why; }$k='$v' is not a number"
+    fi
+  done
+  if [ -n "$why" ]; then printf '%s' "$why — $fix"
+  else printf '%s' "no dollar cap is set: $fix"; fi
 }
 
 # ── THE paid-launch admission check (external review #6) ─────────────────────

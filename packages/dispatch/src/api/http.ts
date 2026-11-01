@@ -20,6 +20,8 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   NOT_FOUND: 404,
   FILE_NOT_FOUND: 404,
   VALIDATION_ERROR: 422,
+  // A request body over the limit (readJsonBody).
+  PAYLOAD_TOO_LARGE: 413,
   INVALID_EDGE: 422,
   INVALID_DEPENDENCY: 422,
   ADVANCED_RELATION_REQUIRED: 422,
@@ -103,32 +105,137 @@ export function sendCreated(res: ServerResponse, location: string, payload: unkn
   sendJson(res, 201, payload);
 }
 
-/** Read and JSON-parse a request body. Empty bodies resolve to `{}`. */
+/** A strict decoder: a body that is not valid UTF-8 throws instead of turning into U+FFFD. */
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
+/** The largest request body the REST surface reads (bytes). */
+export const MAX_BODY_BYTES = 1_000_000;
+/**
+ * How much of an over-limit upload is read (and thrown away) before the 413 is
+ * written, so the client has finished sending when the answer arrives instead of
+ * getting a reset; past this the socket is destroyed.
+ */
+const OVERFLOW_DRAIN_BYTES = 16 * MAX_BODY_BYTES;
+/** How long a refused upload may go quiet before the 413 is written anyway. */
+const DRAIN_IDLE_MS = 5000;
+
+/**
+ * Read and JSON-parse a request body. Empty bodies resolve to `{}`.
+ *
+ * A body over {@link MAX_BODY_BYTES} throws PAYLOAD_TOO_LARGE (a JSON 413). The
+ * stream used to be destroyed before the throw, so the answer was never sent and
+ * every client saw a reset connection. Now nothing more is kept: the rest of the
+ * upload is read and discarded, up to {@link OVERFLOW_DRAIN_BYTES} (then the socket
+ * is destroyed), BEFORE the 413 goes out with `connection: close`, so the close
+ * never races the client's own writes and the socket is never reused mid-upload.
+ */
 export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
-  const MAX_BYTES = 1_000_000;
-  for await (const chunk of req) {
+  let overflow = false;
+  // destroyOnReturn: false — leaving the loop early must not destroy the request
+  // (that resets the socket before the 413 is written). The loop is left first so
+  // the iterator releases the stream; only then can the drain below read from it.
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > MAX_BYTES) {
-      // Stop consuming an over-limit (possibly hostile/unbounded) upload before
-      // rejecting — draining it to the end would read attacker-controlled data, and
-      // leaving it undrained resets the keep-alive connection. Destroy the stream so
-      // the socket closes deterministically instead of dangling mid-read.
-      req.destroy();
-      throw new DispatchError("VALIDATION_ERROR", "Request body too large.");
+    if (size > MAX_BODY_BYTES) {
+      overflow = true;
+      break;
     }
     chunks.push(buf);
   }
+  if (overflow) {
+    await discardRest(req, size);
+    throw new DispatchError(
+      "PAYLOAD_TOO_LARGE",
+      `Request body too large (the limit is ${MAX_BODY_BYTES} bytes).`,
+      { limit_bytes: MAX_BODY_BYTES },
+    );
+  }
   if (chunks.length === 0) return {};
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
-  if (raw === "") return {};
+  // Fatal decoding: invalid UTF-8 is refused, never stored lossily as U+FFFD.
+  let raw: string;
   try {
-    return JSON.parse(raw);
+    raw = UTF8.decode(Buffer.concat(chunks)).trim();
+  } catch {
+    throw new DispatchError("VALIDATION_ERROR", "Request body is not valid UTF-8.");
+  }
+  if (raw === "") return {};
+  let parsed: unknown;
+  // JSON's \uD800-style escapes can spell half a surrogate pair in valid UTF-8 bytes;
+  // stored, it turns into U+FFFD just like an invalid byte, so it is refused the same way.
+  let unpaired = false;
+  try {
+    parsed = JSON.parse(raw, (key: string, value: unknown) => {
+      if (LONE_SURROGATE.test(key) || (typeof value === "string" && LONE_SURROGATE.test(value)))
+        unpaired = true;
+      return value;
+    });
   } catch {
     throw new DispatchError("VALIDATION_ERROR", "Request body is not valid JSON.");
   }
+  if (unpaired) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "Request body is not valid UTF-8 (a \\u escape names half a surrogate pair).",
+    );
+  }
+  return parsed;
+}
+
+/** A UTF-16 surrogate that is not half of a pair (the `u` flag reads a pair as one code point). */
+const LONE_SURROGATE = /\p{Cs}/u;
+
+/**
+ * Read the body of a route that takes none (ready-approval, mono-fallback, POST
+ * /plan-sessions): empty or `{}`. It goes through {@link readJsonBody} like every
+ * other body, so broken JSON, invalid UTF-8 or an over-limit upload is refused, and
+ * a field is a 422 instead of being silently ignored.
+ */
+export async function readNoBody(req: IncomingMessage): Promise<void> {
+  NO_BODY.parse(await readJsonBody(req));
+}
+const NO_BODY = z.object({}).strict();
+
+/** Keep reading an over-limit upload into nothing, up to a bound, then cut it off. */
+function discardRest(req: IncomingMessage, seen: number): Promise<void> {
+  // Resolve only once the upload has ended (or the drain cap is hit, or the client
+  // has gone quiet for DRAIN_IDLE_MS). Writing the 413 before the client has finished
+  // sending makes the close race the client's writes: on macOS the client then sees
+  // EPIPE/ECONNRESET instead of the answer, where Linux buffers enough to hide it.
+  return new Promise<void>((resolve) => {
+    let read = seen;
+    let done = false;
+    let idle: NodeJS.Timeout | undefined;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      if (idle) clearTimeout(idle);
+      req.off("data", onData);
+      resolve();
+    };
+    const armIdle = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, DRAIN_IDLE_MS);
+      idle.unref();
+    };
+    const onData = (b: Buffer): void => {
+      read += b.length;
+      if (read > OVERFLOW_DRAIN_BYTES) {
+        req.destroy();
+        finish();
+        return;
+      }
+      armIdle();
+    };
+    req.on("data", onData);
+    req.once("end", finish);
+    req.once("close", finish);
+    req.on("error", finish);
+    armIdle();
+    req.resume();
+  });
 }
 
 /** Translate a thrown error into a structured JSON response. */
@@ -144,6 +251,8 @@ export function handleError(res: ServerResponse, err: unknown): void {
     return;
   }
   if (err instanceof DispatchError) {
+    // The rest of an over-limit upload is never read, so this socket is not reused.
+    if (err.code === "PAYLOAD_TOO_LARGE" && !res.headersSent) res.setHeader("connection", "close");
     sendJson(res, statusForCode(err.code), errorBody(err.code, err.message, err.details));
     return;
   }

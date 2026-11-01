@@ -14,7 +14,10 @@
 #   • every subcommand answers --help with its usage and does nothing else
 #     (`onboard --help` was "no such directory", `merge --help` reached merge-ticket);
 #   • `onboard --standalone` is accepted, an unknown onboard option is refused;
-#   • `skills <bad>` exits 2.
+#   • `skills <bad>` exits 2;
+#   • gaffer run through a symlink on PATH (absolute, relative, a chain of two, a
+#     directory with a space) finds its own runner dir (it used to die with
+#     "RUNNER_DIR: unbound variable").
 # Run: bash test/gaffer-cli-args.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -99,7 +102,7 @@ echo "== onboard / merge / approve / dashboard / skills reject bad arguments =="
 gx onboard --bogus "$WORK"
 [ "$RC" -eq 2 ] && [[ "$OUT" == *"unknown option '--bogus'"* ]] && ok "onboard --bogus: exit 2" || fail "onboard --bogus: rc=$RC out=$OUT"
 gx onboard "$WORK/absent" --standalone
-[ "$RC" -eq 1 ] && [[ "$OUT" == *"no such directory: $WORK/absent"* ]] \
+[ "$RC" -eq 2 ] && [[ "$OUT" == *"no such directory: $WORK/absent"* ]] \
   && ok "onboard <path> --standalone: --standalone accepted (reaches the path check)" || fail "onboard --standalone: rc=$RC out=$OUT"
 gx merge 3 4
 [ "$RC" -eq 2 ] && ok "merge 3 4: exit 2 (one ticket)" || fail "merge 3 4: rc=$RC"
@@ -117,6 +120,21 @@ gx demo --bogus
 [ "$RC" -eq 2 ] && ok "demo --bogus: exit 2 (demo not run)" || fail "demo --bogus: rc=$RC"
 gx eval --bogus
 [ "$RC" -eq 2 ] && ok "eval --bogus: exit 2" || fail "eval --bogus: rc=$RC"
+
+echo "== gaffer through a symlink (an install on PATH) =="
+WANT_VER="gaffer $(node -p 'require(process.argv[1]).version' "$RUNNER_DIR/../package.json")"
+mkdir -p "$WORK/bin" "$WORK/with space/bin" "$WORK/chain"
+ln -s "$G" "$WORK/bin/gaffer"                                   # absolute target
+ln -s "../../chain/gaffer-mid" "$WORK/with space/bin/gaffer"    # relative, into a chain
+ln -s "$G" "$WORK/chain/gaffer-mid"
+for link in "$WORK/bin/gaffer" "$WORK/with space/bin/gaffer"; do
+  RC=0; OUT="$(cd "$WORK" && PATH="$(dirname "$link"):$PATH" gaffer --version 2>&1)" || RC=$?
+  [ "$RC" -eq 0 ] && [ "$OUT" = "$WANT_VER" ] && ok "via $(basename "$(dirname "$(dirname "$link")")")/bin/gaffer: --version works" \
+    || fail "via $link: rc=$RC out=$(printf '%s' "$OUT" | head -3)"
+  RC=0; OUT="$(cd "$WORK" && PATH="$(dirname "$link"):$PATH" gaffer status --help 2>&1)" || RC=$?
+  [ "$RC" -eq 0 ] && [[ "$OUT" == "usage: gaffer status"* ]] && ok "via $(basename "$(dirname "$(dirname "$link")")")/bin/gaffer: a subcommand runs" \
+    || fail "via $link status --help: rc=$RC out=$(printf '%s' "$OUT" | head -3)"
+done
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

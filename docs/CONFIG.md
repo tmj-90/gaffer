@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 143 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 78 |
+| Env reads in code with no default and no UI entry | 80 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -53,9 +53,9 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_MODEL_REGISTRY` | _derived_ (`$RUNNER_DIR/model-registry.json`) |  | runner | The static GAFFER_PLAN_MODEL / GAFFER_IMPL_MODEL tiers above give EVERY ticket the same model regardless of risk/complexity/history. |
-| `GAFFER_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse, and every paid agent launch — including Plan a build and Suggest work — is refused right before it would start) and in-flight work pauses. Empty = unlimited, though a live run needs this or the daily budget set. |
+| `GAFFER_BUDGET_USD` | _(empty)_ | yes (number) | dispatch, runner | Total factory spend ceiling in USD (summed from the usage-ledger). As headroom runs low the router biases cheaper; at $0 headroom no new paid work starts (ticks, Poll and the daemon refuse, and every paid agent launch — including Plan a build and Suggest work — is refused right before it would start) and in-flight work pauses. Empty = unlimited, though a live run needs this or the daily budget set. |
 | `GAFFER_MAX_CALL_USD` | _(empty)_ |  | runner | GAFFER_MAX_CALL_USD — a HARD per-call dollar cap, passed to `claude --max-budget-usd` so ONE runaway call is stopped while it runs (every other guard acts only between calls). |
-| `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (string) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
+| `GAFFER_BUDGET_LOW_THRESHOLD` | `0` | yes (number) | dispatch, runner | USD headroom at/under which routing biases one tier CHEAPER. Empty auto-derives ~20% of the budget ceiling; set explicitly to override. |
 | `GAFFER_CHEAP_PHASES` | _(empty)_ | yes (csv) | dispatch, runner | Comma-separated phases whose work is biased to the cheap model tier. Only 'implement' is routed through the model router today, so 'implement' is the only value with any effect; other phase names are inert until their call sites are routed. High/critical-risk work is never cheapened. |
 | `GAFFER_PLAN_DEBATE` | `0` | yes (boolean) | dispatch, runner | Run a multi-model debate over the plan before decomposing. |
 | `GAFFER_PLAN_DEBATE_MODELS` | `opus,sonnet` | yes (csv) | dispatch, runner | Comma-separated model ids that take part in the debate. |
@@ -102,7 +102,7 @@ computed from other knobs at runtime.
 | `GAFFER_TICK_DEADLINE_GUARD` | `1` |  | runner | TICK DEADLINE GUARD (tick.sh): the outer bound above counts only agent calls, but a tick also spends merge-lane resolver time and every attempt's DoD install, gates and AC checks. |
 | `GAFFER_TICK_DEADLINE_MARGIN` | `60` |  | runner | seconds kept back for record / release / teardown |
 | `GAFFER_REWORK_STRONG_MODEL` | _derived_ (`${GAFFER_PLAN_MODEL:-opus}`) |  | runner | ESCALATION: the model the FINAL rework attempt escalates to (stronger reasoning for the hardest cases before a human is pulled in). |
-| `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (string) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop, counting every agent call booked to the ticket (delivery, review, security review, clarify, eval judge). Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
+| `GAFFER_REWORK_BUDGET_USD` | _derived_ (`${GAFFER_BUDGET_USD:-}`) | yes (number) | dispatch, runner | Cumulative spend ceiling for one ticket's rework loop, counting every agent call booked to the ticket (delivery, review, security review, clarify, eval judge). Delivery stops at whichever hits first — this or Max delivery attempts — then parks to blocked. Defaults to the factory Budget ceiling; empty = no per-ticket cap (attempts alone bound it). |
 | `GAFFER_MAX_NOCOMMIT_FAILURES` | _derived_ (`${GAFFER_MAX_DELIVERY_ATTEMPTS:-3}`) | yes (int) | dispatch, runner | Cross-run bound on deliveries that crash before committing. After this many no-commit/wrong-branch failures the ticket parks visibly to blocked instead of being re-picked (and re-billed) every run. Defaults to Max delivery attempts. |
 
 ### Ask-on-cap guard
@@ -149,13 +149,13 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `DRY_RUN` | `1` |  | runner | DRY_RUN=1 prints what it WOULD do and never invokes Claude or mutates a repo. |
+| `DRY_RUN` | `1` |  | dispatch, runner | DRY_RUN=1 prints what it WOULD do and never invokes Claude or mutates a repo. |
 | `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. A change applies from the next loop pass. |
 | `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls before the run (or a pool worker) stops: a no_work tick, or an idle maintenance tick whose scans filed nothing (they call no model, so they do not keep the run alive or consume the day cap). A change applies from the next loop pass. |
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. A change applies from the next loop pass. |
 | `MAX_TICKS_PER_DAY` | `50` | yes (int) | crew, dispatch, runner | Daily ceiling on factory ticks that did (or may have done) paid work — a no-work poll does not count. A running loop re-reads it before every tick. 0 = unlimited. |
 | `DAILY_COUNTER_FILE` | _derived_ (`$GAFFER_DATA/.daily-ticks`) |  | runner |  |
-| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (string) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it, and every paid agent launch (delivery, review, clarify, tester, Plan a build, Suggest work, onboarding analysis, the merge resolver) is refused right before it would start. Empty or 0 = off — but a live run needs a dollar cap: with neither this nor the budget ceiling set, `gaffer run`, the loop and Poll refuse to start (try 5; GAFFER_ALLOW_UNCAPPED=1 in the environment opts out). |
+| `GAFFER_DAILY_BUDGET_USD` | _(empty)_ | yes (number) | dispatch, runner | Per-UTC-day spend ceiling, summed from the usage ledger (measured cost plus the labelled estimate booked for a killed/timed-out call). Once today's spend is at or over it, no new paid work starts until the next UTC day — the loop, every parallel worker, the daemon and the dashboard's Poll button all honour it, and every paid agent launch (delivery, review, clarify, tester, Plan a build, Suggest work, onboarding analysis, the merge resolver) is refused right before it would start. Empty or 0 = off — but a live run needs a dollar cap: with neither this nor the budget ceiling set, `gaffer run`, the loop and Poll refuse to start (try 5; GAFFER_ALLOW_UNCAPPED=1 in the environment opts out). |
 
 ### Parallel ticket execution
 
@@ -347,7 +347,7 @@ Some are seams the runner also sets for itself; the notes say which.
 | Variable | Default | Read in | Notes |
 |---|---|---|---|
 | `GAFFER_VERBOSE` | _(empty)_ | `runner/bin/onboard-run.mjs` | 1 = `gaffer onboard` prints its full log instead of the summary (the log is always in $GAFFER_DATA/onboard.log). |
-| `DEMO_DIR` | `/tmp/gaffer-showcase` | `runner/demo.sh` | Where `gaffer demo` builds its throwaway showcase repo (it deletes that directory first). |
+| `DEMO_DIR` | _(empty)_ | `runner/demo.sh` | Where `gaffer demo` builds its throwaway showcase factory. Empty = a fresh temp dir per run. A named dir must be empty or a previous demo's (it is cleared); anything else is refused. |
 
 ### Credentials
 
@@ -387,7 +387,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 |---|---|---|
 | `DISPATCH_AGENT_ID` | `mcp-agent` | `packages/dispatch/src/mcp/server.ts` |
 | `DISPATCH_ALLOWED_HOSTS` | _(empty)_ | `packages/dispatch/src/api/security.ts` |
-| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/status.sh` |
+| `DISPATCH_API_PORT` | `8787` | `packages/dispatch/src/api/bin.ts`, `runner/gaffer`, `runner/setup.sh`, `runner/status.sh` |
 | `DISPATCH_AUDIT` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_AUDIT_OFF` |  | `packages/dispatch/src/audit/audit.ts` |
 | `DISPATCH_CLI` |  | `runner/bin/merge-ticket.mjs` |
@@ -396,6 +396,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |
 | `DISPATCH_ONBOARD_NAME` | _(empty)_ | `runner/bin/onboard-run.mjs` |
+| `DISPATCH_PID_FILE` | _(empty)_ | `packages/dispatch/src/api/bin.ts` |
 | `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
@@ -407,6 +408,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_CARD_SNIPPET_CHARS` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CLAIM_TOKEN` | _(empty)_ | `packages/dispatch/src/mcp/tools.ts`, `runner/lib/clarify.sh`, `runner/lib/review.sh` |
 | `GAFFER_CONTEXT_DUMP_DIR` | _(empty)_ | `runner/tick.sh` |
+| `GAFFER_DASHBOARD_START_TIMEOUT` | `30` | `runner/gaffer` |
 | `GAFFER_DECOMPOSE_AGENT_MAX_TURNS` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_MOCK` | _(empty)_ | `runner/bin/decompose.mjs` |
 | `GAFFER_DECOMPOSE_TIMEOUT_MS` |  | `packages/dispatch/src/api/planBuild.ts` |

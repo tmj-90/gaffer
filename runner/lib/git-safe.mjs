@@ -166,7 +166,7 @@ export function repoOverrides(dir) {
  * operator) are kept in front; calling it again rebuilds only Gaffer's own entries.
  */
 export function hardenGitEnv(env = process.env, repos = []) {
-  const base = Number.parseInt(env._GAFFER_GIT_SAFE_BASE ?? env.GIT_CONFIG_COUNT ?? "0", 10) || 0;
+  const base = Number.parseInt(env.GIT_CONFIG_GAFFER_BASE ?? env.GIT_CONFIG_COUNT ?? "0", 10) || 0;
   const prevCount = Number.parseInt(env.GIT_CONFIG_COUNT ?? "0", 10) || 0;
   for (let i = base; i < Math.max(prevCount, base); i++) {
     delete env[`GIT_CONFIG_KEY_${i}`];
@@ -175,7 +175,7 @@ export function hardenGitEnv(env = process.env, repos = []) {
   const seen = new Map();
   for (const [k, v] of STATIC_GIT_OVERRIDES) seen.set(k.toLowerCase(), [k, v]);
   // Repositories hardened earlier in this process stay hardened.
-  const known = (env._GAFFER_GIT_SAFE_REPOS ?? "").split("\n").filter(Boolean);
+  const known = (env.GIT_CONFIG_GAFFER_REPOS ?? "").split("\n").filter(Boolean);
   const all = [...new Set([...known, ...repos.filter(Boolean).map((r) => path.resolve(r))])];
   for (const r of all) for (const [k, v] of repoOverrides(r)) seen.set(k, [k, v]);
   let n = base;
@@ -185,8 +185,8 @@ export function hardenGitEnv(env = process.env, repos = []) {
     n++;
   }
   env.GIT_CONFIG_COUNT = String(n);
-  env._GAFFER_GIT_SAFE_BASE = String(base);
-  if (all.length) env._GAFFER_GIT_SAFE_REPOS = all.join("\n");
+  env.GIT_CONFIG_GAFFER_BASE = String(base);
+  if (all.length) env.GIT_CONFIG_GAFFER_REPOS = all.join("\n");
   return env;
 }
 
@@ -214,7 +214,7 @@ if (isMain) {
       if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(k) && !(k in env)) lines.push(`unset ${k}`);
     }
     for (const [k, v] of Object.entries(env)) {
-      if (!/^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)|_GAFFER_GIT_SAFE_(BASE|REPOS))$/.test(k))
+      if (!/^(GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)|GIT_CONFIG_GAFFER_(BASE|REPOS))$/.test(k))
         continue;
       if (before[k] === v) continue;
       lines.push(`export ${k}=${shq(v)}`);

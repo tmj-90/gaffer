@@ -328,30 +328,69 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
    `draft → ready` (drag on the board, or `runner/gaffer wg ticket ready <n>` for each).
    Phase 1 is the bootstrap; the rest are gated behind it.
 3. **Deliver.** Run the loop (`runner/gaffer run`, or `--daemon`). The bootstrap ticket
-   creates the new repo at `<repo-parent>/<slug>`, the factory registers + onboards it,
-   and the dependent tickets deliver into it in dependency order.
+   creates the new repo at `$GAFFER_BOOTSTRAP_ROOT/<slug>` (`~/git/<slug>` unless you set
+   it; `/repos/<slug>` in the container), the factory registers + onboards it, and the
+   dependent tickets deliver into it in dependency order.
 
 > **The loop delivers to `in_review`; it does not merge.** Approve each ticket in the
 > **Review** view or with `runner/gaffer approve <n>` + `runner/gaffer merge <n>` (or
 > enable the opt-in autonomy flags below for hands-off runs). The bootstrap ticket has
 > no delivery branch — approving it marks it merged directly.
 
-### Greenfield gotchas (things you currently have to do)
+### What Gaffer does on a greenfield run
 
-- **The DoD test gate's worktree dependencies now install automatically.** A feature
-  ticket runs its test command in a **fresh throwaway worktree that has no `node_modules`**.
-  Before the Definition-of-Done gate runs, the factory now auto-installs that worktree's
-  dependencies (detecting the package manager from the lockfile — `pnpm-lock.yaml` → pnpm,
-  `package-lock.json` → npm, `yarn.lock` → yarn) so the tests can actually run. It is a
-  no-op when `node_modules` already exists or the repo is not a node project, is bounded by
-  a timeout, and is fail-soft — a failed install never crashes the tick and never passes the
-  gate (the gate still runs and fails loudly). This is **on by default** (`GAFFER_DOD_INSTALL=1`);
-  set `GAFFER_DOD_INSTALL=0` (or `GAFFER_GREENFIELD_INSTALL=0`) to manage deps yourself. The
-  old workaround of setting `GAFFER_ALLOW_NO_DOD=1` for the first greenfield pass is no longer
-  needed just to get past missing deps.
-- **Hands-off delivery is opt-in, and it needs an OS sandbox.** Without it, the loop
-  stops at `in_review` and waits for you. For an unattended greenfield run, set the whole
-  autonomy group with one variable and give it a sandbox:
+Nothing has to be set up before the first greenfield run beyond what any live run needs
+(a dollar cap). These are the things the factory handles on its own, and the few
+moments it stops to ask you.
+
+- **Dependencies for the test gate.** Each feature ticket runs its tests in a fresh
+  worktree with no `node_modules`, so before the Definition-of-Done gate the factory
+  installs that worktree's dependencies, picking the package manager from the lockfile
+  (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`). It is bounded by a timeout, a
+  no-op for a repo that is not a node project or already has its modules, and a failed
+  install never passes the gate (the gate still runs and fails loudly).
+  `GAFFER_DOD_INSTALL=0` turns it off if you manage dependencies yourself.
+- **The package registry.** Before the bootstrap spawns its agent, the factory runs
+  `npm ping` from inside the agent's environment. A proxy whose CA the agent does not
+  trust, or a registry that does not answer, parks the ticket as `blocked`
+  (`env_registry_unreachable`) with the npm error code and the fix, before any model
+  call. A machine that is simply offline but has packages in its npm cache goes ahead
+  and installs from the cache (`npm_config_prefer_offline=true`). `runner/preflight.sh`
+  runs the same probe.
+- **Behind a corporate / TLS-intercepting proxy.** The proxy route and trust store
+  (`HTTPS_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+  `GIT_SSL_CAINFO`, …) are passed through to the agent; credentials are not. Exporting
+  them for the runner is all it takes: when you exported the bundle for curl, git or
+  python but not `NODE_EXTRA_CA_CERTS`, the agent's npm and the gate's install are
+  handed that bundle as `NODE_EXTRA_CA_CERTS`, which npm honours. TLS verification is
+  never turned off.
+- **The tester lane.** With the independent tester on (`GAFFER_TESTING=1`), the tickets
+  a planned build creates are marked testable, all but the bootstrap, so each goes
+  through the tester on approval. `runner/gaffer wg ticket set-testable <n> --off`
+  unmarks one (and `set-testable <n>` marks a ticket you wrote yourself). With the lane
+  off nothing is marked and approved work goes straight to merge.
+  **The epic's Acceptance ticket is always tested**, whatever `GAFFER_TESTING` says.
+  Until the tester passes it, `gaffer status`, the loop's closing report and `wg stats`
+  say the build is **not accepted**, even with every other ticket merged. A tester PASS
+  is bound to the exact commit and contract it tested: the merge lane will not land a
+  branch that moved after the PASS, an accepted build whose acceptance ticket was edited
+  afterwards reads **stale**, and `gaffer status` says when the default branch has moved
+  past the tested commit. A tester that changes implementation files is held, not
+  passed, and a tester PASS only counts after the runner re-runs the tester's tests
+  itself on a clean checkout of the tested commit (the repo's registered test command).
+  `wg stats` reports a build as **accepted** only when that bound, replayed PASS exists;
+  a human `tester-pass --as human` is reported as **waived**, and a done acceptance
+  ticket without either as **unverified**. To waive or decide by hand, record the
+  verdict yourself: `runner/gaffer wg ticket tester-pass <n> --as human --summary
+  "<why>"` (or `tester-fail`), which is kept as evidence.
+- **A repo with no remote, in PR mode.** The bootstrap creates the repo locally. With PR
+  mode on (`GAFFER_CREATE_PR=1`) it files one decision on the Team sheet asking you to
+  add a remote, with the commands, and the epic's tickets for that repo wait until you
+  answer it. With PR mode off nothing is asked: work merges into the local repo, and
+  `GAFFER_AUTO_PUSH` has nothing to push until you add an `origin`.
+- **Hands-off runs and the sandbox.** By default every ticket stops at `in_review` for
+  you; that is the supervised setting, and running unattended is your choice. If you
+  choose it, `GAFFER_MODE=autonomous` sets the whole group:
 
   ```bash
   export GAFFER_MODE=autonomous            # agents review, approve, merge and push
@@ -367,49 +406,23 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   (the merge lane lands agent-approved work through the merge gate), `GAFFER_AUTO_PUSH=1`
   (pushes the landed default branch to `origin`) and `MEMORY_AUTO_APPROVE=1` (agent lore
   goes live without review). With no human left in the loop it also defaults
-  `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`: when no OS sandbox is available the
-  runner fails closed, parking the ticket as `blocked` (`strict_require_unavailable`)
-  instead of launching an agent. Set `GAFFER_STRICT_REQUIRE=0` only when the whole runner
-  already runs inside a VM or container you trust. Setting `DISPATCH_ALLOW_AGENT_APPROVE=1`
-  on its own does not make a run hands-off: `REVIEW_MODE` stays `human`, so no reviewer
-  runs and every ticket waits in `in_review`, while the sandbox is still required. Any
-  single flag you export overrides the mode (`AUTO_MERGE=0` keeps merges for you).
-  The docker provider is experimental: its containment is red-team tested in CI, but a
-  full live delivery inside its container hasn't been proven yet (see
-  [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.
+  `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`, so no agent runs without an OS sandbox.
+  When the host has none, the factory parks the ticket as `blocked`
+  (`strict_require_unavailable`) before it creates anything, the bootstrap included, and
+  the Team sheet row says what to do for your provider (start the docker daemon and
+  build its images, or pick a provider), or that you can run supervised, or set
+  `GAFFER_STRICT_REQUIRE=0` when the whole runner already runs inside a VM or container
+  you trust. Setting `DISPATCH_ALLOW_AGENT_APPROVE=1` on its own does not make a run
+  hands-off: `REVIEW_MODE` stays `human`, so no reviewer runs and every ticket waits in
+  `in_review`, while the sandbox is still required. Any single flag you export overrides
+  the mode (`AUTO_MERGE=0` keeps merges for you). The docker provider is experimental:
+  its containment is red-team tested in CI, but a full live delivery inside its
+  container hasn't been proven yet (see [`SECURITY.md`](SECURITY.md)), so watch the
+  first few tickets before you walk away.
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
   From the terminal, `runner/gaffer wg unblock <n>` does the same, and
   `runner/gaffer wg block <n> --reason "…"` parks a draft, refining or ready ticket yourself.
-- **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
-  that carry the testable flag, and the planner does not set it. Mark the ones you want
-  black-box tested with `runner/gaffer wg ticket set-testable <n>` before readying them (and
-  optionally record a `test-contract`, any time before the ticket reaches testing); unmarked
-  tickets go straight from approval to merge.
-  **The exception is the epic's Acceptance ticket:** it is always testable and always goes
-  through the independent tester on approval, whatever `GAFFER_TESTING` says. Until the
-  tester passes it, `gaffer status`, the loop's closing report and `wg stats` say the build
-  is **not accepted**, even with every other ticket merged. A tester PASS is bound to the
-  exact commit and contract it tested: the merge lane will not land a branch that moved
-  after the PASS, an accepted build whose acceptance ticket was edited afterwards reads
-  **stale**, and `gaffer status` says when the default branch has moved past the tested
-  commit. A tester that changes implementation files is held, not passed, and a tester
-  PASS only counts after the runner re-runs the tester's tests itself on a clean checkout
-  of the tested commit (the repo's registered test command). `wg stats` reports a build as
-  **accepted** only when that bound, replayed PASS exists; a human `tester-pass --as human`
-  is reported as **waived**, and a done acceptance ticket without either as **unverified**. To waive or decide by hand,
-  record the verdict yourself: `runner/gaffer wg ticket tester-pass <n> --as human
-  --summary "<why>"` (or `tester-fail`), which is kept as evidence.
-- **Behind a corporate / TLS-intercepting proxy.** The agent runs in an allowlisted
-  environment. The proxy route and trust store (`HTTPS_PROXY`, `NO_PROXY`,
-  `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`, `GIT_SSL_CAINFO`, …) are passed
-  through, so exporting them for the runner is enough; credentials are not. npm reads its
-  CA from its own config, so for a custom CA also run `npm config set cafile <bundle>`.
-  `runner/preflight.sh` proves it: it runs `npm ping` from inside the agent's environment
-  and prints the npm error code with the fix when the registry is unreachable. A greenfield
-  bootstrap runs the same probe before it spawns an agent and parks the ticket at once
-  (`blocked`, reason `env_registry_unreachable`) instead of spending a tick on install
-  retries. `GAFFER_REGISTRY_PROBE=0` skips it for an offline machine with a warm cache.
 
 ---
 

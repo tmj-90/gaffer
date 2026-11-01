@@ -67,6 +67,20 @@ existing repo:
 | **Greenfield** | "New app", no target repo | Exactly **one bootstrap ticket** (`git init` + scaffold, no dependencies); every other ticket transitively depends on it. A one-liner becomes a brand-new, structured repo. |
 | **Brownfield** | "Extend existing", a target repo/scope is chosen | **Zero bootstrap tickets** — there's nothing to scaffold. Every ticket is stamped with the target repo, so the plan *extends* what's already there. |
 
+On a greenfield run the factory sets the new repo up itself. The bootstrap ticket
+creates it under `GAFFER_BOOTSTRAP_ROOT` (`~/git` unless set), registers and onboards
+it with the stack, test and lint commands it detects from the scaffold, and links the
+epic's other tickets to it. Before the bootstrap agent starts it probes the package
+registry from the agent's environment (an offline machine with a warm npm cache
+installs from the cache) and, under `GAFFER_STRICT_REQUIRE`, the OS sandbox; a problem
+with either parks the ticket with the fix on the Team sheet before anything is
+created. A CA bundle exported as `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+`REQUESTS_CA_BUNDLE` or `GIT_SSL_CAINFO` reaches the agent's npm as
+`NODE_EXTRA_CA_CERTS`. With the independent tester on (`GAFFER_TESTING`), the plan's
+tickets are created testable (all but the bootstrap; a plan ticket can say
+`testable` either way). In PR mode, a new repo with no remote gets one decision asking
+where it lives, which holds its tickets until you answer.
+
 The TaskFlow example above is brownfield: "add recurring tasks" to the existing
 `taskflow-mini` / `taskflow-web` repos — the data model first, then the API,
 then the next-occurrence logic and the repeat picker in parallel, and finally

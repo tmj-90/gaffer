@@ -219,6 +219,14 @@ if [ -n "$hq_lines" ]; then
   printf "\n  ${c_dim}decisions awaiting you${c_off}\n"
   printf '%s\n' "$hq_lines"
 fi
+# TESTER REPLAY holds: a landing held because the tester's assertions failed on the merge
+# candidate, or because a tester file shows no evidence it ran there (the reason names the
+# files that did not run) — nothing landed and no acceptance was recorded.
+replay_lines="$(printf '%s' "$HUMAN_QUEUE_JSON" | node "$HERE/lib/json-tool.mjs" status-replay-holds 2>/dev/null)"
+if [ -n "$replay_lines" ]; then
+  printf "\n  ${c_dim}landings held by the tester replay${c_off}\n"
+  printf "${c_yel}%s${c_off}\n" "$replay_lines"
+fi
 
 printf "\n  ${c_dim}recent ticks${c_off}\n"
 ticks="$(grep -hE 'delivering #|delivery tick for #' "$GAFFER_LOG" 2>/dev/null | tail -n "$STATUS_TICKS")"

@@ -173,6 +173,8 @@ describe("observed-risk escalation at the auto-ship gate", () => {
     // configured ceiling holds anything at/above medium.
     const manyFiles: GitRunner = (_cwd, args) => {
       const joined = args.join(" ");
+      // The branch head resolves (an approval needs every write repo's head).
+      if (args[0] === "rev-parse") return { status: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" };
       if (joined.startsWith("diff --numstat")) {
         // 12 changed files, small line counts ⇒ size maps to medium, no sensitive path.
         const lines = Array.from({ length: 12 }, (_v, i) => `2\t1\tsrc/f${i}.ts`).join("\n");

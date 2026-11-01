@@ -116,6 +116,43 @@ export interface ReviewedHead {
 }
 
 /**
+ * A write repo on the ticket whose delivery head cannot be resolved right now: no
+ * checkout on this machine, an unreadable path, no delivery branch name, or a branch git
+ * cannot find (see unavailableWriteReposResolver).
+ */
+export interface UnavailableWriteRepo {
+  repoId: string;
+  repo: string;
+  why: string;
+  /** Which read failed (drives the remedy the refusal names); absent → "unknown". */
+  kind?: "no_checkout" | "unreadable_checkout" | "no_branch" | "branch_missing" | "unknown";
+}
+
+/**
+ * What the human can do about an unavailable write repo (the refusal and the Review
+ * button say it): attach the checkout / restore the branch, or — when this ticket should
+ * not change that repository — take its write access away (a read-only repo never blocks).
+ */
+export function unavailableRepoRemedy(
+  m: UnavailableWriteRepo,
+  ticketNumber: number | null,
+): string {
+  const n = ticketNumber ?? "<ticket>";
+  const readOnly = `or, if this ticket should not change ${m.repo}, make it read-only on the ticket (\`runner/gaffer wg ticket repo-access set ${n} ${m.repo} --access read\`)`;
+  switch (m.kind) {
+    case "no_checkout":
+      return `attach ${m.repo}'s checkout on this machine (register the repository with its local path, \`runner/gaffer wg repo add -n ${m.repo} --path <dir>\`), ${readOnly}`;
+    case "unreadable_checkout":
+      return `restore ${m.repo}'s checkout at its registered path (or register the path it lives at now), ${readOnly}`;
+    case "no_branch":
+    case "branch_missing":
+      return `restore ${m.repo}'s delivery branch (or deliver to it again), ${readOnly}`;
+    default:
+      return `make ${m.repo}'s delivery head readable again, ${readOnly}`;
+  }
+}
+
+/**
  * A commit the approver SAW (the Review view sends the `headSha` the diff endpoint
  * returned; the CLI takes `--commit <repo>=<sha>`). `repo` is the repo id or name; null
  * means "the ticket's only repo" and is refused for a multi-repo ticket.
@@ -182,6 +219,17 @@ export interface ReviewGateServiceDeps {
    * gate requires to have landed. `undefined` (the default) or `[]` records no pin.
    */
   readonly reviewedHeadsResolver?: (ticket: Ticket) => readonly ReviewedHead[];
+  /**
+   * APPROVAL COVERS EVERY WRITE REPO (external review #7): the ticket's active write repos
+   * whose delivery head cannot be resolved now. An approval pins one commit per write repo
+   * and `done` needs every pinned commit landed — a repo whose head could not be read at
+   * approve time used to be left out of the pins, so the landing merged the others, marked
+   * the ticket done and left that repo's change on its branch. approveReview refuses
+   * (STATE_CONFLICT, details.reason `repo_unavailable`, naming each repo) while any is
+   * listed, for every actor and every entry point. `undefined` (library fixtures without
+   * git) lists none.
+   */
+  readonly unavailableWriteReposResolver?: (ticket: Ticket) => readonly UnavailableWriteRepo[];
   /**
    * PER-REPOSITORY LANDING: true when `sha` is already contained in the repo's default
    * branch (`git merge-base --is-ancestor`). markMerged uses it as POSITIVE evidence for a
@@ -312,6 +360,7 @@ export class ReviewGateService {
     ((ticket: import("../domain/types.js").Ticket, detail: string) => void) | undefined;
   private readonly approvalShaResolver: ApprovalShaResolver | undefined;
   private readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];
+  private readonly unavailableWriteReposResolver: ReviewGateServiceDeps["unavailableWriteReposResolver"];
   private readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
@@ -332,6 +381,7 @@ export class ReviewGateService {
     this.onTicketParked = deps.onTicketParked;
     this.approvalShaResolver = deps.approvalShaResolver;
     this.reviewedHeadsResolver = deps.reviewedHeadsResolver;
+    this.unavailableWriteReposResolver = deps.unavailableWriteReposResolver;
     this.landedOnDefaultResolver = deps.landedOnDefaultResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
     this.observedRiskResolver = deps.observedRiskResolver;
@@ -381,7 +431,17 @@ export class ReviewGateService {
     // human: throw before any transition runs, so the ticket stays `in_review` — the
     // identical mechanism as the P0 deny above. This can ONLY convert an auto-ship into a
     // human-hold; it never grants an approval and never weakens the manual gate.
+    // APPROVAL COVERS EVERY WRITE REPO (external review #7), for every actor: an approval
+    // pins one head per write repo, so while a write repo's head cannot be read the
+    // approval is refused (repo_unavailable, naming it) — never approved as a subset. The
+    // read runs git, so it is taken here, outside the write lock. An agent's auto-ship
+    // gate reads the diff, which an unavailable repo cannot show, so for an agent the
+    // refusal comes first; a human's approval keeps its policy refusals (unresolved ACs,
+    // no delivery diff) and the coverage refusal is the last gate before the pins.
+    const covered = this.ticketSvc.resolveTicket(ticketRef);
+    const unavailable = this.unavailableWriteRepos(covered);
     if (agentApproveAllowed) {
+      this.assertWriteReposAvailable(covered, unavailable);
       this.enforceObservedRiskCeiling(ticketRef, actor);
     }
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
@@ -433,7 +493,7 @@ export class ReviewGateService {
     // HUMAN approval pins the current heads, as before; an agent approval without commits
     // is pinned by the runner (lib/review.sh) only.
     const heads = this.resolveReviewedHeads(ticket);
-    const pins = this.checkShownCommits(ticket, heads, actor, opts);
+    const pins = this.checkShownCommits(ticket, heads, actor, opts, unavailable);
     // BBT-001: when the testing lane is ON and this ticket is eligible, route
     // through the independent tester (`in_review -> in_testing`) instead of
     // straight to merge. testerVerdict:true guards this transition.
@@ -452,6 +512,7 @@ export class ReviewGateService {
           testerVerdict: true,
           approvedUnchanged,
         });
+        this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
         writeEvent(this.db, {
           entity_type: "ticket",
           entity_id: ticket.id,
@@ -476,6 +537,7 @@ export class ReviewGateService {
         reviewApprove: true, // reached the merge-ready state through the guarded approve path
         deliveryDiff,
       });
+      this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
       this.recordApprovalPins(ticket, actor, pins);
       return result;
     });
@@ -516,6 +578,53 @@ export class ReviewGateService {
     return this.resolveReviewedHeads(ticket)[0] ?? null;
   }
 
+  /**
+   * APPROVAL COVERS EVERY WRITE REPO: the write repos whose delivery head cannot be read
+   * now (the same read the Review button's outcome names). A resolver throw is read as
+   * "unknown", and an unknown cannot be approved either: it fails toward the human.
+   */
+  unavailableWriteRepos(ticket: Ticket): readonly UnavailableWriteRepo[] {
+    if (!this.unavailableWriteReposResolver) return [];
+    try {
+      return this.unavailableWriteReposResolver(ticket);
+    } catch (e) {
+      return [
+        {
+          repoId: "",
+          repo: "(unknown)",
+          why: `the ticket's write repositories could not be read (${e instanceof Error ? e.message : String(e)})`,
+        },
+      ];
+    }
+  }
+
+  /** Refuse an approval that would leave a write repo without a pin (repo_unavailable). */
+  private assertWriteReposAvailable(
+    ticket: Ticket,
+    missing: readonly UnavailableWriteRepo[],
+  ): void {
+    if (missing.length === 0) return;
+    const names = missing.map((m) => m.repo);
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      `Approve held: ${names.join(", ")} ${names.length === 1 ? "is" : "are"} unavailable — ` +
+        missing.map((m) => `${m.repo}: ${m.why}`).join("; ") +
+        ". An approval covers every repository this ticket writes to, and nothing was approved. To approve: " +
+        missing.map((m) => unavailableRepoRemedy(m, ticket.number)).join("; ") +
+        "; then review again.",
+      {
+        reason: "repo_unavailable",
+        ticket_number: ticket.number,
+        repos: missing.map((m) => ({
+          repo: m.repo,
+          repo_id: m.repoId,
+          why: m.why,
+          remedy: unavailableRepoRemedy(m, ticket.number),
+        })),
+      },
+    );
+  }
+
   /** Best-effort head lookup (a throw resolves no head: nothing to compare or pin). */
   private resolveReviewedHeads(ticket: Ticket): readonly ReviewedHead[] {
     try {
@@ -537,6 +646,7 @@ export class ReviewGateService {
     heads: readonly ReviewedHead[],
     actor: Actor,
     opts: ApproveReviewOptions,
+    unavailable: readonly UnavailableWriteRepo[] = [],
   ): readonly ReviewedHead[] {
     const commits = opts.commits;
     if (commits === undefined || commits.length === 0) {
@@ -566,8 +676,12 @@ export class ReviewGateService {
       const sha = shown ? shown.sha.trim().toLowerCase() : null;
       if (sha !== h.sha) moved.push({ repo: h.repo, shown: sha, current: h.sha });
     }
+    // A shown repo that is UNAVAILABLE now is the coverage refusal's to name
+    // (repo_unavailable), not a stale revision.
+    const isUnavailable = (c: ShownCommit): boolean =>
+      c.repo !== null && unavailable.some((u) => u.repoId === c.repo || u.repo === c.repo);
     for (const c of commits) {
-      if (!heads.some((h) => matches(c, h)))
+      if (!heads.some((h) => matches(c, h)) && !isUnavailable(c))
         moved.push({
           repo: c.repo ?? "(unnamed)",
           shown: c.sha.trim().toLowerCase(),
@@ -1350,7 +1464,7 @@ export class ReviewGateService {
     if (landing.pending > 0 && this.landedOnDefaultResolver) {
       // Git is the truth for a local landing: record what is verifiably on the default
       // branch already (as SYSTEM evidence, via "git-verified"), then re-read.
-      for (const r of landing.repos.filter((x) => !x.landed)) {
+      for (const r of landing.repos.filter((x) => !x.landed && x.pinned)) {
         let onDefault: boolean;
         try {
           onDefault = this.landedOnDefaultResolver(r.repoId, r.sha);
@@ -1368,15 +1482,26 @@ export class ReviewGateService {
     }
     if (landing.pending > 0) {
       const pending = landing.repos.filter((r) => !r.landed);
+      // EVERY WRITE REPO: an unpinned write repo is pending too, and says why.
+      const unpinned = pending.filter((r) => !r.pinned);
       throw new DispatchError(
         "STATE_CONFLICT",
-        `#${ticket.number} is not done: ${pending.map((r) => `${r.repo} (${r.sha.slice(0, 12)})`).join(", ")} ` +
+        `#${ticket.number} is not done: ${pending
+          .map((r) =>
+            r.pinned
+              ? `${r.repo} (${r.sha.slice(0, 12)})`
+              : `${r.repo} (not covered by the approval)`,
+          )
+          .join(", ")} ` +
           `${pending.length === 1 ? "has" : "have"} not landed yet` +
           (landing.landed > 0 ? ` (${landing.landed} of ${landing.repos.length} landed)` : "") +
-          ". Merge the remaining repositories; the ticket is done when every approved revision has landed.",
+          ". Merge the remaining repositories; the ticket is done when every write repository has landed." +
+          (unpinned.length > 0
+            ? ` ${unpinned.map((r) => r.repo).join(", ")} ${unpinned.length === 1 ? "has" : "have"} no approved commit: move the ticket back to review and approve every repository together.`
+            : ""),
         {
           reason: landing.partial ? "partial_landing" : "not_landed",
-          pending: pending.map((r) => ({ repo: r.repo, sha: r.sha })),
+          pending: pending.map((r) => ({ repo: r.repo, sha: r.sha, pinned: r.pinned })),
           landed: landing.repos.filter((r) => r.landed).map((r) => ({ repo: r.repo, sha: r.sha })),
         },
       );

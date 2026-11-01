@@ -2,7 +2,8 @@
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
 # Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|maintenance_drafted|
-# maintenance_ran|no_work|error|setup_error` line (setup_error: a fail-closed setup check
+# maintenance_ran|merged|no_work|error|setup_error` line (merged: nothing else to do, but
+# the merge lane landed approved work; setup_error: a fail-closed setup check
 # refused before any agent launched). On an idle tick: maintenance_drafted / idle_drafted =
 # it FILED work (drafts, ingested issues, an epic, lore suggestions); maintenance_ran = it
 # ran a model-backed step (feature-backlog planning) but filed nothing — counted against
@@ -378,7 +379,17 @@ _gaffer_skip_ticket_unlocked() { echo "$1" >> "$SKIP_FILE"; }
 _gaffer_append_line() { echo "$2" >> "$1"; }
 # Locked backpressure-report append: _gaffer_bp_record <file> <repo> <triple> <reason>.
 _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
-result() { echo "TICK_RESULT=$1"; }
+# MERGE LANE (lib/merge-lane.sh): a tick that found nothing else to do but landed approved
+# work reports `merged`, never no_work — a landing is work (it frees dependents), and the
+# dashboard's Poll for work must not call it empty (external review #7). loop.sh counts it
+# as a non-empty poll; worker.sh as reviewed.
+_GAFFER_MERGE_LANE_LANDED=0
+result() {
+  if [ "$1" = "no_work" ] && [ "${_GAFFER_MERGE_LANE_LANDED:-0}" -gt 0 ]; then
+    echo "TICK_RESULT=merged"; return 0
+  fi
+  echo "TICK_RESULT=$1"
+}
 # SETUP ERROR: one exit for every fail-closed SETUP failure (no agent launched: the
 # dispatch CLI unbuilt, no timeout primitive, an unregistrable agent, the safety hook /
 # agent env / DB vars / MCP or prompt render refusing). These used to `exit 1` with

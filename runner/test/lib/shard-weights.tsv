@@ -13,12 +13,14 @@
 # memory-index-after-merge took 156s where merge-lane took 249s against its 171 here,
 # and the three are scaled by that ratio (rework-cost-live rounded up).
 # land-tester-replay, e2e-release-gate-tester-replay: ESTIMATES (Linux under shared load:
-# 290s / 98s while other suites ran; refresh from the next CI run).
+# 290s / 98s while other suites ran; refresh from the next CI run). External review #7
+# added two repos' worth of deliveries to each (Linux, -j 2: 391s / 172s) and the
+# reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
 # rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
-200	land-tester-replay.test.sh
+270	land-tester-replay.test.sh
 161	direct-run-isolation.test.sh
 150	gate-integrity-e2e.test.sh
 150	gate-integrity-e2e-retry.test.sh
@@ -27,7 +29,7 @@
 127	e2e-release-gate-merge-typecheck.test.sh
 110	memory-index-after-merge.test.sh
 100	e2e-release-gate-merge-combination.test.sh
-95	e2e-release-gate-tester-replay.test.sh
+165	e2e-release-gate-tester-replay.test.sh
 86	delivery-lifecycle.test.sh
 80	e2e-release-gate-ci-required.test.sh
 75	e2e-release-gate-epic-verdict.test.sh
@@ -106,7 +108,7 @@
 6	parallel-lock.test.sh
 6	status-human-queue.test.sh
 5	autonomy-flag-parsing.test.sh
-15	e2e-multi-repo-delivery.test.sh
+70	e2e-multi-repo-delivery.test.sh
 5	epic-feature-live.test.sh
 5	graduated-autonomy.test.sh
 5	human-claim-skip.test.sh

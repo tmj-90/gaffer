@@ -1136,6 +1136,35 @@ switch (cmd) {
     }
     break;
   }
+  // status-replay-holds: the landings the TESTER REPLAY held (human-queue JSON on stdin):
+  // one line per parked ticket whose hold is tester_replay_unverified (a tester file the
+  // replay could not show ran — the reason names the files) or tester_replay_red. The
+  // reason is shown whole (up to 400 chars) so the files that did not run are named.
+  case "status-replay-holds": {
+    const p = tryParse(readStdin());
+    if (!p.ok) process.exit(0);
+    const holds = ((p.value && p.value.items) || []).filter(
+      (i) =>
+        i &&
+        i.kind === "parked" &&
+        (i.reasonCode === "tester_replay_unverified" || i.reasonCode === "tester_replay_red"),
+    );
+    for (const i of holds) {
+      const t = i.ticket;
+      const num = t && t.number !== null && t.number !== undefined ? `#${t.number} ` : "";
+      let reason = String(i.reason || "")
+        .split(/\s+/)
+        .filter(Boolean)
+        .join(" ");
+      if (reason.length > 400) reason = `${reason.slice(0, 399).trimEnd()}…`;
+      const what =
+        i.reasonCode === "tester_replay_unverified"
+          ? "tester replay UNVERIFIED (held)"
+          : "tester replay FAILED (held)";
+      println(`    ${num}${what}: ${reason}`);
+    }
+    break;
+  }
   // status-hq-count all|required: pending decisions in the human-queue JSON (required =
   // severity human_required, the ones that block a ticket — hasUnresolvedHumanRequired).
   case "status-hq-count": {

@@ -169,6 +169,9 @@ while ! _should_stop && _reserve_run_tick; do
   case "${res:-unknown}" in
     worked)            worked=$((worked + 1)); empties=0 ;;
     reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
+    # MERGE LANE: the tick found nothing else to do but landed approved work (tick.sh
+    # reports `merged` instead of no_work) — productive: a landing frees dependents.
+    merged)            reviewed=$((reviewed + 1)); empties=0 ;;
     clarified)         clarified=$((clarified + 1)); empties=0 ;;
     idle_drafted)      idle=$((idle + 1)); empties=0 ;;
     # BUG 5 fix: the maintenance lane's results are idle results, not errors.

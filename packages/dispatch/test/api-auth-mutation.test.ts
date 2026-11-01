@@ -10,7 +10,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { createApiServer } from "../src/api/server.js";
 import { TestClock } from "../src/util/clock.js";
-import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
+import { giveTicketRealDelivery, nonEmptyDiffRunner, shownCommits } from "./helpers/realDiff.js";
 
 const human: Actor = { type: "human", id: "tom" };
 
@@ -178,7 +178,12 @@ describe("REST approval/mutation endpoints require the token by default", () => 
       expect(h.wg.view(t.id).ticket.status).toBe("in_review");
 
       // The operator, holding the token, approves.
-      const ok = await post(h.baseUrl, `/tickets/${t.id}/review/approve`, TOKEN);
+      const ok = await post(
+        h.baseUrl,
+        `/tickets/${t.id}/review/approve`,
+        TOKEN,
+        shownCommits(h.wg, t.id),
+      );
       expect(ok.status).toBe(200);
       expect(h.wg.view(t.id).ticket.status).toBe("ready_for_merge");
     } finally {

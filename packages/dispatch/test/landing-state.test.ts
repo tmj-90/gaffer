@@ -90,6 +90,19 @@ describe("decideLandingState", () => {
       f({ autoMerge: true, hold: "ci_red", pause: { until, kind: "usage_limit" } })?.kind,
     ).toBe("held");
   });
+  it("a write repo the approval did not pin: held, naming it, never 'lands next tick'", () => {
+    const s = f({
+      hold: "unpinned_repo",
+      autoMerge: true,
+      writeRepos: ["api", "web"],
+      landedRepos: ["api"],
+      unpinnedRepos: ["web"],
+    });
+    expect(s?.kind).toBe("held");
+    expect(s?.label).toBe("Held · approval does not cover every repository");
+    expect(s?.detail).toContain("Not approved: web.");
+    expect(s?.detail).toContain("Partly landed: api landed; web held.");
+  });
   it("a hold says the merge gate and CI hold every landing path", () => {
     expect(f({ hold: "merge_gate_red" })?.detail).toContain("every landing path");
     expect(f({ hold: "ci_red" })?.detail).toContain("no landing path merges it");

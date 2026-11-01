@@ -66,9 +66,14 @@ fi
 # primitive, and so does the outer bound below.
 gaffer_timeout_preflight || { echo "gaffer poll: aborting — no timeout primitive (setup error)." >&2; echo "TICK_RESULT=error"; exit 1; }
 
-# Fresh poll: nothing skipped from a prior run (mirrors what loop.sh clears).
+# Fresh poll: nothing skipped from a prior run (mirrors what loop.sh clears). That
+# includes the merge lane's per-run held list: a ticket whose landing was held earlier
+# (one repo landed, another's checkout was dirty or its branch unavailable) is merge work
+# again for this poll — the lane lands its remaining repos (external review #7: Poll for
+# work reported no_work while `gaffer merge` would finish the second repo).
 rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" \
       "$GAFFER_DATA/.clarified-tickets" "$GAFFER_DATA/.backpressure-repos" \
+      "$GAFFER_DATA/.merge-held-tickets" \
       "$GAFFER_DATA/.ci-gate-needs-pr-warned" "$GAFFER_DATA/.autonomy-policy-inert-warned" \
       "$GAFFER_DATA/.merge-config-half-warned"
 wg expire-claims >/dev/null 2>&1 || true   # reap any stale claim before polling

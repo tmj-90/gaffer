@@ -28,6 +28,7 @@ import { buildOpenApiDocument } from "../src/api/openapi/spec.js";
 import {
   giveTicketRealDelivery,
   nonEmptyDiffRunner,
+  shownCommits,
   testWeakeningDiffRunner,
 } from "./helpers/realDiff.js";
 
@@ -154,7 +155,11 @@ describe("OpenAPI response schemas match the live routes", () => {
     wg.markReady(t1.id, human);
     deliver(t1.id);
     await expectContract("GET /tickets/:id/diff", `/tickets/${t1.id}/diff`);
-    await expectContract("POST /tickets/:id/review/approve", `/tickets/${t1.id}/review/approve`);
+    await expectContract(
+      "POST /tickets/:id/review/approve",
+      `/tickets/${t1.id}/review/approve`,
+      shownCommits(wg, t1.id),
+    );
     await expectContract("POST /tickets/:id/mark-merged", `/tickets/${t1.id}/mark-merged`);
     await expectContract(
       "POST /tickets/:id/reopen-for-review",

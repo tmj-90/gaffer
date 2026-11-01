@@ -155,7 +155,9 @@ import {
   type ApprovalShas,
   type ApproveReviewOptions,
   type ReviewedHead,
+  type UnavailableWriteRepo,
   ReviewGateService,
+  unavailableRepoRemedy,
 } from "./services/reviewGateService.js";
 import {
   type ObservedRisk,
@@ -638,6 +640,8 @@ export class Dispatch {
       // repo's delivery-branch head at approve time), recorded as system evidence so every
       // landing path holds a branch that moved past it. Pure read; null when unknown.
       reviewedHeadsResolver: (ticket) => this.resolveApprovedHeads(ticket),
+      // APPROVAL COVERS EVERY WRITE REPO: the write repos whose head cannot be read now.
+      unavailableWriteReposResolver: (ticket) => this.writeRepoHeads(ticket).unavailable,
       // PER-REPOSITORY LANDING: git ancestry as positive evidence of a landing.
       landedOnDefaultResolver: (repoId, sha) => this.commitOnDefaultBranch(repoId, sha),
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
@@ -818,20 +822,44 @@ export class Dispatch {
    * not resolve yields no entry (nothing to compare, pin or land). Pure read.
    */
   private resolveApprovedHeads(ticket: Ticket): ReviewedHead[] {
+    return this.writeRepoHeads(ticket).heads;
+  }
+
+  /**
+   * Every ACTIVE write repo's delivery head, and the write repos whose head cannot be read
+   * now (no checkout on this machine, an unreadable path, no delivery branch, a branch git
+   * cannot find). The approval pins the heads and is refused while any repo is unavailable
+   * (an approval covers every write repo); the Review button's outcome reads the same list.
+   */
+  writeRepoHeads(ticket: Ticket): { heads: ReviewedHead[]; unavailable: UnavailableWriteRepo[] } {
     const runGit = this.gitRunner ?? defaultGitRunner;
-    const out: ReviewedHead[] = [];
+    const heads: ReviewedHead[] = [];
+    const unavailable: UnavailableWriteRepo[] = [];
     for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
       if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
-      if (!repo.local_path || !existsSync(repo.local_path)) continue;
+      const miss = (kind: NonNullable<UnavailableWriteRepo["kind"]>, why: string) =>
+        unavailable.push({ repoId: repo.id, repo: repo.name, why, kind });
+      if (!repo.local_path) {
+        miss("no_checkout", "it has no checkout on this machine");
+        continue;
+      }
+      if (!existsSync(repo.local_path)) {
+        miss("unreadable_checkout", `its checkout ${repo.local_path} cannot be read`);
+        continue;
+      }
       const branch =
         this.repos.ticketRepoBranch(ticket.id, repo.id) ??
         this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
         ticket.branch_name;
-      if (!branch || branch.trim() === "") continue;
+      if (!branch || branch.trim() === "") {
+        miss("no_branch", "it has no delivery branch");
+        continue;
+      }
       const sha = resolveBranchHead(runGit, repo.local_path, branch);
-      if (sha) out.push({ repoId: repo.id, repo: repo.name, branch, sha });
+      if (sha) heads.push({ repoId: repo.id, repo: repo.name, branch, sha });
+      else miss("branch_missing", `its delivery branch ${branch} cannot be resolved`);
     }
-    return out;
+    return { heads, unavailable };
   }
 
   /** True when `sha` is contained in the repo's default branch (a verified landing). */
@@ -1689,6 +1717,15 @@ export class Dispatch {
       approver: opts.approver ?? "human",
       testModifiedHolds,
       ciHold: opts.ci === false ? null : this.reviewGateSvc.approveCiHold(ticket),
+      // EVERY WRITE REPO: the same read approveReview refuses on (repo_unavailable).
+      unavailableRepos:
+        opts.ci === false
+          ? []
+          : this.reviewGateSvc.unavailableWriteRepos(ticket).map((m) => ({
+              repo: m.repo,
+              why: m.why,
+              fix: unavailableRepoRemedy(m, ticket.number),
+            })),
       toTester: this.reviewGateSvc.approveRoutesToTesting(ticket),
       acceptance: ticket.acceptance === 1,
       autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),
@@ -1817,7 +1854,7 @@ export class Dispatch {
     // (its branch may be gone). A legacy approval with no per-repo pin compares its one
     // pin with the primary head, as before.
     const movedRepos = landing.repos
-      .filter((r) => !r.landed)
+      .filter((r) => !r.landed && r.pinned)
       .filter((r) => {
         const h = heads.find((x) => x.repoId === r.repoId);
         return h !== undefined && h.sha !== r.sha;
@@ -1837,6 +1874,7 @@ export class Dispatch {
         movedRepos.push(head.repo);
     }
     if (movedRepos.length > 0) hold = "moved_since_review";
+    else if (landing.unpinned.length > 0) hold = "unpinned_repo";
     else if (
       evidence.some((ev) => ev.summary.startsWith("MERGE GATE FAILED") && recordedSince.has(ev.id))
     )
@@ -1865,6 +1903,7 @@ export class Dispatch {
       hold,
       mergeRunning,
       movedRepos,
+      unpinnedRepos: [...landing.unpinned],
       ...this.landedAndWriteRepos(landing, writes),
       pause: usagePauseFact(env),
       autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),

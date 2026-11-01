@@ -98,10 +98,17 @@ describe("approveReview pins the commit a HUMAN approved", () => {
     expect(String(p[0]!.created_at) >= String(entered!.created_at)).toBe(true);
   });
 
-  it("records no pin when the branch head cannot be resolved (the landing check then falls back)", () => {
+  it("refuses the approval when the branch head cannot be resolved: nothing approved, no pin (external review #7)", () => {
     const d = Dispatch.open(":memory:", undefined, runner(null));
     const ticketId = inReview(d);
-    expect(d.approveReview(ticketId, human).ticket.status).toBe("ready_for_merge");
+    let reason = "";
+    try {
+      d.approveReview(ticketId, human);
+    } catch (e) {
+      reason = String((e as { details?: { reason?: string } }).details?.reason ?? "");
+    }
+    expect(reason).toBe("repo_unavailable");
+    expect(d.view(ticketId).ticket.status).toBe("in_review");
     expect(pins(d, ticketId)).toHaveLength(0);
   });
 

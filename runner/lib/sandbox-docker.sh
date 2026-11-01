@@ -471,7 +471,10 @@ _envs=()
 # The validation profile forwards NO model credential (a test suite never needs one)
 # and no data-plane vars; only the legacy layout forwards the DB paths + server bins.
 case "$_MODE" in
-  validation) _fwd=( GAFFER_FACTORY ) ;;
+  # GAFFER_REPLAY_PROOF_KEY: the tester replay's node:test reporter signs its events with
+  # it (lib/tester-replay.mjs); it is set only for a replay run and deleted from the
+  # runner's environment before any test file starts.
+  validation) _fwd=( GAFFER_FACTORY GAFFER_REPLAY_PROOF_KEY ) ;;
   legacy)     _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY DISPATCH_DB MEMORY_DB DISPATCH_MCP_BIN MEMORY_MCP_BIN ) ;;
   *)          _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY ) ;;
 esac

@@ -307,7 +307,10 @@ export class HumanQueueService {
               .join(", ")}; ${landing!.repos
               .filter((r) => !r.landed)
               .map((r) => r.repo)
-              .join(", ")} still on the delivery branch. Merge now lands the rest; the ticket ` +
+              .join(
+                ", ",
+              )} still on the delivery branch (pending). Merge now lands the rest (the merge lane ` +
+            "does too while the merge policy that allowed the first landing still holds); the ticket " +
             "is done only when every repository has landed."
           : "Approved, but the delivery branch has not been merged (the runner held the merge " +
             "gate, or a merge attempt did not land). Merge now, or mark merged if you merged it by hand.",

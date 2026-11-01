@@ -114,6 +114,8 @@ In the dashboard:
 - **Health** — ROI and factory honesty: what the factory cost, what it delivered, where it failed.
 - **Specs** — the spec library: frozen statements of product intent, each clause traced to acceptance criteria, with the coverage gaps.
 - **Memory** — pick your repo to read its digest, feature ledger, and lore. The **Onboard a repo** button does step 2 from the UI.
+- **Squad**: every agent with its shirt number, name, role and when it was last seen; **Rename** gives one a display name and number.
+- **Floor**: the factory drawn as a live isometric floor: every open ticket a parcel at its station, every live claim a robot in its agent's shirt.
 - **Settings** — every operator knob, grouped: **autonomy**, the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, **idle loops**, **budget & caps**, the **planning debate**, **quality gates**, the strict **sandbox**, and **notifications** — all editable, persisted to `settings.json` (a real env var always wins, and shows read-only when set).
 
 ```bash

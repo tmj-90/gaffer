@@ -347,6 +347,42 @@ describe("principal scopes (REST)", () => {
     );
   });
 
+  it("the live event stream carries only the scoped principal's tickets", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    const tok = await mint(base, { name: "app-feed", repos: ["app"] });
+    const ac = new AbortController();
+    const res = await fetch(`${base}/api/events/stream?since=0`, {
+      headers: { authorization: `Bearer ${tok}` },
+      signal: ac.signal,
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    let text = "";
+    const until = Date.now() + 3000;
+    while (Date.now() < until && !text.includes(w.onApp.id)) {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<{ value?: undefined }>((r) => setTimeout(() => r({}), 500)),
+      ]);
+      if (chunk.value) text += new TextDecoder().decode(chunk.value);
+    }
+    // Let a few more polls pass so anything else would have arrived too.
+    const settle = Date.now() + 600;
+    while (Date.now() < settle) {
+      const chunk = await Promise.race([
+        reader.read(),
+        new Promise<{ value?: undefined }>((r) => setTimeout(() => r({}), 200)),
+      ]);
+      if (chunk.value) text += new TextDecoder().decode(chunk.value);
+    }
+    ac.abort();
+    expect(text).toContain(w.onApp.id);
+    for (const other of [w.onSvc.id, w.onBoth.id, w.onNone.id, w.app.id]) {
+      expect(text).not.toContain(other);
+    }
+  });
+
   it("read-only + scope = scoped reads", async () => {
     const { base, wg } = await start();
     const w = world(wg);

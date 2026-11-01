@@ -200,6 +200,20 @@ console.log("== UI F-15: how to get a read-only token ==");
 check("README names print-read-token", /print-read-token/.test(readme));
 check("README names `principal create … --read`", /principal create \S+ --read/.test(readme));
 check("README names Settings → Access", /Settings → Access/.test(readme));
+// print-read-token derives from $GAFFER_DATA/dashboard-token (~/.gaffer without it,
+// not the checkout's .gaffer), so every command shown for it must set GAFFER_DATA.
+for (const [f, text] of [
+  ["README.md", readme],
+  ["SECURITY.md", security],
+  ["quickstart.md", quick],
+]) {
+  const uses = [...text.matchAll(/`([^`]*print-read-token[^`]*)`/g)].map((m) => m[1]);
+  check(
+    `${f}: every print-read-token command sets GAFFER_DATA`,
+    uses.every((u) => u === "print-read-token" || /GAFFER_DATA=/.test(u)),
+    uses.join(" | "),
+  );
+}
 
 console.log();
 if (fails.length === 0) {

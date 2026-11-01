@@ -176,3 +176,68 @@ describe("cli-wg/F-10: ticket landing shows no approved pin once the approval is
     wg2.db.close();
   });
 });
+
+describe("api/F1: two parallel Merge requests start one merge", () => {
+  it("the second POST /tickets/:id/merge is 409 MERGE_IN_FLIGHT and starts nothing", async () => {
+    const { createApiServer } = await import("../src/api/server.js");
+    const { createMergeRunner } = await import("../src/api/mergeRunner.js");
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const runs = mkdtempSync(join(tmpdir(), "merge-in-flight-"));
+    process.env.GAFFER_DATA = runs;
+    const wg = freshWg();
+    const { id } = approved(wg);
+    // A merge command that stays alive long enough for the second request to arrive.
+    const { writeFileSync } = await import("node:fs");
+    const slow = join(runs, "slow-merge.cjs");
+    writeFileSync(slow, "setTimeout(() => {}, 4000);\n");
+    const env = { ...process.env, DISPATCH_MERGE_CMD: JSON.stringify([process.execPath, slow]) };
+    const runner = createMergeRunner(env, () => {}, wg);
+    const noopPo = { run: () => ({ started: false, pid: null }) };
+    const noopPlan = { run: async () => ({ phase: "error", error: "n/a" }) };
+    const server = createApiServer(wg, noopPo as never, noopPlan as never, runner);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    try {
+      const fire = () => fetch(`http://127.0.0.1:${port}/tickets/${id}/merge`, { method: "POST" });
+      const [a, b] = await Promise.all([fire(), fire()]);
+      const statuses = [a.status, b.status].sort();
+      expect(statuses).toEqual([202, 409]);
+      const refused = (await (a.status === 409 ? a : b).json()) as { error: { code: string } };
+      expect(refused.error.code).toBe("MERGE_IN_FLIGHT");
+      const started = wg.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM work_events WHERE entity_id = ? AND event_type = 'ticket.merge_started'",
+        )
+        .get(id) as { n: number };
+      expect(started.n).toBe(1);
+      // A third request while it still runs is refused the same way (the run registry).
+      expect((await fire()).status).toBe(409);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      wg.db.close();
+      rmSync(runs, { recursive: true, force: true });
+    }
+  });
+
+  it("the merge runner itself spawns one merge per ticket while the first is alive", async () => {
+    const { createMergeRunner } = await import("../src/api/mergeRunner.js");
+    const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "merge-runner-"));
+    const slow = join(dir, "slow-merge.cjs");
+    writeFileSync(slow, "setTimeout(() => {}, 3000);\n");
+    const env = { ...process.env, DISPATCH_MERGE_CMD: JSON.stringify([process.execPath, slow]) };
+    const runner = createMergeRunner(env, () => {});
+    const first = runner.trigger({ ticketNumber: 41 });
+    const second = runner.trigger({ ticketNumber: 41 });
+    const other = runner.trigger({ ticketNumber: 42 });
+    expect(first.triggered).toBe(true);
+    expect(second).toMatchObject({ triggered: false, skipped: "in_flight" });
+    expect(other.triggered).toBe(true);
+    for (const p of [first.pid, other.pid]) if (p) process.kill(p);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

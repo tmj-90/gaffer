@@ -452,7 +452,19 @@ export async function routeTickets(
 
   // GATE INTEGRITY: /tickets/:id/allow-test-changes — a HUMAN allows (or withdraws the
   // allowance for) this ticket to change its tests. The service refuses agent and
+    // IN-FLIGHT GUARD: one merge per ticket at a time. The check, the spawn and the
+    // merge_started note run without an await between them, so two parallel requests
+    // cannot both pass it.
+    const inFlight = (): never => {
+      throw new DispatchError(
+        "MERGE_IN_FLIGHT",
+        `A merge of #${ticket.number} is already running; nothing new was started. Wait for it to finish (its status reads "landing" meanwhile).`,
+        { ticket_number: ticket.number },
+      );
+    };
+    if (wg.mergeInFlight(ticket.id)) inFlight();
   // system principals, so an agent token cannot excuse its own test edits.
+    if (merge.skipped === "in_flight") inFlight();
   if (segments.length === 3 && sub === TICKET_SUB.ALLOW_TEST_CHANGES && method === "POST") {
     const body = allowTestChangesBody.parse(await readJsonBody(req));
     const result = wg.setAllowTestChanges(id, body.allow_test_changes, apiActor(), body.reason);

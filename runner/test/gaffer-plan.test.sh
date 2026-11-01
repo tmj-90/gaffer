@@ -285,6 +285,15 @@ ga "$A" plan "$GOAL"
 [ "$RC" -eq 75 ] && has "$OUT" "usage window" && [ "$(calls "$A")" = "$before" ] \
   && ok "P9: paused on the usage window: exit 75, no model call" || fail "P9: pause rc=$RC calls=$(calls "$A") out=$OUT"
 rm -f "$A/usage-pause.json" "$A/plan-draft.json"
+# The dashboard's planner (POST /plan-build → decompose.mjs → lib/worker.mjs deliver)
+# honours the same pause: an error turn that names it, and no model call.
+bbefore="$(calls "$B")"
+node -e 'const u=Date.now()+3600e3;process.stdout.write(JSON.stringify({paused_until:new Date(u).toISOString(),until_ms:u,kind:"usage_limit",basis:"default",message:"stub limit",ticket:null,lane:"delivery",recorded_at:new Date().toISOString()}))' > "$B/usage-pause.json"
+RP="$(api POST /plan-build "{\"brief\":\"$GOAL\",\"history\":[{\"role\":\"user\",\"answer\":\"$GOAL\"}]}")"
+has "$RP" '"phase":"error"' && has "$RP" "paused until" && [ "$(calls "$B")" = "$bbefore" ] \
+  && ok "P9: the dashboard's POST /plan-build while paused: an error turn naming the pause, no model call" \
+  || fail "P9: dashboard plan-build while paused: calls $bbefore -> $(calls "$B") resp=$RP"
+rm -f "$B/usage-pause.json"
 
 echo "== P10. at a terminal: EOF at a prompt keeps the draft and creates nothing =="
 nt="$(tickets "$A")"

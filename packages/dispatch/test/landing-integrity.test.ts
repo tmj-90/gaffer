@@ -348,6 +348,71 @@ describe("cli-wg/F-13: human-release hands back only your own by-hand ticket", (
   });
 });
 
+describe("cli-wg/F-13 and cli-runner/F-02 over REST", () => {
+  const FULL = "shared-full-token-for-landing-integrity-0123456789";
+  let closeServer: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    await closeServer?.();
+    closeServer = undefined;
+    const { setPrincipalResolver } = await import("../src/api/auth.js");
+    setPrincipalResolver(null);
+    delete process.env.DISPATCH_API_TOKEN;
+  });
+  async function serve(wg: Dispatch) {
+    const { createApiServer } = await import("../src/api/server.js");
+    process.env.DISPATCH_AUDIT_OFF = "1";
+    process.env.DISPATCH_API_TOKEN = FULL;
+    const server = createApiServer(wg);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    closeServer = () => new Promise<void>((resolve) => server.close(() => resolve()));
+    const { port } = server.address() as { port: number };
+    return (path: string, token: string, body: unknown = {}) =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+  }
+  function byHand(wg: Dispatch, owner: string, repoName: string): string {
+    const t = wg.createTicket({ title: "By hand", description: "x" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
+    giveTicketRealDelivery(wg, t.id, human, { repoName });
+    wg.markReady(t.id, human);
+    wg.humanClaimTicket(t.id, { type: "human", id: owner });
+    return t.id;
+  }
+
+  it("human-release: a named principal only its own; the shared token any", async () => {
+    const wg = freshWg();
+    const post = await serve(wg);
+    const carol = wg.createPrincipal({ name: "carol" }, system).token;
+    // A principal that merely carries the shared operator's actor id is still a principal.
+    const lookalike = wg.createPrincipal({ name: "dispatch-api" }, system).token;
+    const alice = wg.createPrincipal({ name: "alice" }, system).token;
+    const a = byHand(wg, "alice", "repo-a");
+    expect((await post(`/tickets/${a}/human-release`, carol)).status).toBe(403);
+    expect((await post(`/tickets/${a}/human-release`, lookalike)).status).toBe(403);
+    expect((await post(`/tickets/${a}/human-release`, alice)).status).toBe(200);
+    const b = byHand(wg, "alice", "repo-b");
+    expect((await post(`/tickets/${b}/human-release`, FULL)).status).toBe(200);
+    wg.db.close();
+  });
+
+  it("a partly landed ticket: wont-do is 409 PARTLY_LANDED, a rework send-back parks it", async () => {
+    const wg = freshWg();
+    const post = await serve(wg);
+    const { id } = approved(wg, { extraWrite: "web-storefront" });
+    wg.recordLanding(id, { repo: "billing-api", commit: head, via: "local" }, system);
+    const w = await post(`/tickets/${id}/wont-do`, FULL, { reason: "drop" });
+    expect(w.status).toBe(409);
+    expect(((await w.json()) as { error: { code: string } }).error.code).toBe("PARTLY_LANDED");
+    const r = await post(`/tickets/${id}/review/reject`, FULL, { to: "refining", reason: "redo" });
+    expect(r.status).toBe(200);
+    expect(wg.view(id).ticket.status).toBe("blocked");
+    wg.db.close();
+  });
+});
+
 describe("cli-wg/F-11: ci-result accepts only a commit of the ticket", () => {
   it("a foreign sha is refused (not_ticket_commit); ci-status reports the ticket's own result", () => {
     const wg = freshWg();

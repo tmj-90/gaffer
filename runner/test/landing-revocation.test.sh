@@ -9,8 +9,9 @@
 # (`wg ticket landing-begin`), and land NOTHING once the delivery was revoked.
 #   A/B  `gaffer merge` (bin/merge-ticket.mjs): cancel / CI fail while the gate waits
 #   C/D  the Poll path (lib/land.sh gaffer_land_delivery): the same two revocations
-#   E    a revocation that arrives after one repo already landed: the revocation reports
-#        that landing (landed_already + a WARNING naming it); the other repo never lands
+#   E    a revocation that arrives after one repo already landed: a cancellation is refused
+#        naming that landing (the partly-landed guard); a failed CI result is acknowledged
+#        and reports it (landedAlready + a WARNING naming it); the other repo never lands
 # Ported from the reviewer's landing/run.mjs fixture: real git, the real Dispatch CLI, a
 # registered test command that waits on a file barrier; no model, no network.
 # Run: bash test/landing-revocation.test.sh   (bash 3.2 safe)
@@ -135,7 +136,7 @@ for path in merge poll; do
   done
 done
 
-echo "== merge: a cancellation after one repo landed reports that landing; the rest never lands =="
+echo "== merge: a revocation after one repo landed reports that landing; the rest never lands =="
 world after-first 2
 land_via merge
 if wait_inside; then
@@ -143,15 +144,21 @@ if wait_inside; then
   if [ "$(g repoA rev-parse main)" != "$MAIN_A" ]; then landed_first=repoA; other=repoB; fi
   if [ "$(g repoB rev-parse main)" != "$MAIN_B" ]; then landed_first=repoB; other=repoA; fi
   [ -n "$landed_first" ] && ok "the first repo ($landed_first) landed before the revocation" || fail "no repo landed before the second gate"
-  out="$(cancel)"
-  [ "$(printf '%s' "$out" | jf '(d.landed_already || []).filter(l => l.landed).map(l => l.repo).join(",")')" = "$landed_first" ] \
-    && ok "reject --to cancelled reports the landing that already happened ($landed_first)" || fail "the revocation did not report the landing: $out"
+  # A cancellation of a partly landed ticket is refused outright, naming the landing
+  # (the partly-landed guard); nothing is acknowledged, so it stops nothing.
+  out="$(cancel)"; crc=$?
+  [ "$crc" -ne 0 ] && grep -q "PARTLY_LANDED" "$D/revoke.err" && grep -q "already landed in $landed_first" "$D/revoke.err" \
+    && ok "reject --to cancelled is refused and says $landed_first already landed" || fail "cancel after a landing: rc=$crc $out $(cat "$D/revoke.err")"
+  # A red required check IS acknowledged (the ticket is held) and reports the landing.
+  out="$(redci)"
+  [ "$(printf '%s' "$out" | jf '(d.landedAlready || []).filter(l => l.landed).map(l => l.repo).join(",")')" = "$landed_first" ] \
+    && ok "the failed CI result reports the landing that already happened ($landed_first)" || fail "the revocation did not report the landing: $out"
   grep -q "a landing had already started" "$D/revoke.err" && grep -q "$landed_first" "$D/revoke.err" \
     && ok "the revocation WARNs on stderr, naming the landing" || fail "no WARNING on stderr: $(cat "$D/revoke.err")"
   touch "$D/release"; wait "$LAND_PID"; rc=$?
   if [ "$other" = repoA ]; then o_main="$MAIN_A"; else o_main="$MAIN_B"; fi
-  [ "$(g "$other" rev-parse main)" = "$o_main" ] && ok "$other never landed after the acknowledged cancellation" || fail "$other landed after the cancellation"
-  [ "$(status)" = cancelled ] && [ "$rc" -ne 0 ] && ok "the ticket stays cancelled and the merge exits non-zero (rc=$rc)" || fail "status=$(status) rc=$rc"
+  [ "$(g "$other" rev-parse main)" = "$o_main" ] && ok "$other never landed after the acknowledged CI failure" || fail "$other landed after the CI failure"
+  [ "$(status)" = blocked ] && [ "$rc" -ne 0 ] && ok "the ticket stays blocked and the merge exits non-zero (rc=$rc)" || fail "status=$(status) rc=$rc"
   grep -q "not landed:" "$D/land.log" && ok "the merge says 'not landed' for $other" || fail "no 'not landed' line: $(tail -3 "$D/land.log")"
 else
   fail "the second repo's gate was never reached: $(tail -5 "$D/land.log")"

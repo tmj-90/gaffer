@@ -384,7 +384,9 @@ structural barrier the whole design hangs on.
   for the red check). If a landing had already started, the cancellation or the
   failed check says so on the spot (`landed_already` in its output and a
   warning naming the repository and commit): it stops every landing that had not
-  started and cannot undo one that had.
+  started and cannot undo one that had. Once a repository's landing is on
+  record, a cancellation is refused outright and names it; land the rest or
+  revert it first.
 - **Every recorded pull request lands upstream.** A repository whose delivery
   record carries a PR lands only through that PR, secondary repositories
   included: the merge gate runs on its freshly fetched remote default, then the

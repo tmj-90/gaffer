@@ -12,6 +12,8 @@
 # the shards, it never drops or duplicates a test), and refresh the whole table from a
 # green main run's logs now and then: every runner shard's log has one
 # "::group::<file> — PASS (<n>s)" line per test.
+# ESTIMATES until the next refresh (the test changed after that run):
+#   delivery-lifecycle: 100 - 60, the two TICK_SLEEP=30 pauses it no longer sleeps (Linux alone: 95s -> 36s).
 334	land-tester-replay.test.sh
 297	merge-lane.test.sh
 252	land-tester-replay-proof.test.sh
@@ -32,7 +34,6 @@
 120	cleanup-ownership.test.sh
 119	usage-limit-tick.test.sh
 107	security-review-lane.test.sh
-100	delivery-lifecycle.test.sh
 99	branch-switch-recovery.test.sh
 97	secondary-pr-landing.test.sh
 97	tick-deadline.test.sh
@@ -58,6 +59,7 @@
 43	tick-dead-assignments.test.sh
 42	eval-replay.test.sh
 42	resume-dry-run.test.sh
+40	delivery-lifecycle.test.sh
 40	stabilisation-integration.test.sh
 39	demo-isolation.test.sh
 38	dashboard-lifecycle.test.sh

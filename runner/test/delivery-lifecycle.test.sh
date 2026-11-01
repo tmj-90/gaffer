@@ -128,10 +128,14 @@ chmod +x "$FAKE/claude"
 # --- 5. Run ONE real delivery tick with the fake agent. ----------------------
 # Supervised mode (no STRICT_MODE) → the agent runs unwrapped (no OS sandbox), so
 # the fake binary drives the real tick.sh delivery deterministically. Bounded.
+# The loop's pacing is the test world's: no TICK_SLEEP between ticks (the default 30s
+# was slept twice, after the delivery and after the first empty poll, ~60s of the
+# test's ~95s) and it stops at the first empty poll. loop.sh still runs the delivery
+# tick and then the empty one that ends the run.
 echo "== running one tick.sh delivery with the fake agent =="
 export CLAUDE_BIN="$FAKE/claude"
 export GAFFER_PLAN_MODEL=none GAFFER_IMPL_MODEL=none
-DRY_RUN=0 GAFFER_MAX_TICKETS=1 GAFFER_TICK_TIMEOUT=120 \
+DRY_RUN=0 TICK_SLEEP=0 EMPTY_POLL_LIMIT=1 GAFFER_TICK_TIMEOUT=120 \
   bash "$RUNNER_DIR/loop.sh" >"$WORK/loop.log" 2>&1 || true
 
 STATUS="$(node -e 'const{DatabaseSync}=require("node:sqlite");const db=new DatabaseSync(process.env.DISPATCH_DB);const r=db.prepare("select status from tickets where id=?").get(process.argv[1]);process.stdout.write(r?r.status:"gone")' "$TID")"

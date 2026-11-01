@@ -62,8 +62,12 @@ node "$CREW_DIR/dist/cli/index.js" init -d "$GAFFER_DATA" -n showcase >/dev/null
 echo "  ticket #1 ready, linked to repo 'demo' (node)"
 
 line "3 ▸ The two MCP servers are real (live stdio handshake)"
-printf '  dispatch-mcp: %s\n' "$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" --names)"
-printf '  memory-mcp: %s\n' "$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" --names)"
+# Each handshake is assigned first: a failure inside printf's arguments would not stop
+# the demo (set -e ignores it), and an empty "dispatch-mcp:" line would pass for proof.
+_ping_d="$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" --names)"
+printf '  dispatch-mcp: %s\n' "$_ping_d"
+_ping_m="$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" --names)"
+printf '  memory-mcp: %s\n' "$_ping_m"
 
 line "4 ▸ One factory tick (DRY-RUN — nothing is invoked or mutated)"
 bash "$HERE/tick.sh" 2>&1 | sed 's/^[0-9T:-]* //; s#'"$HERE"'#runner#g' | grep -vE '^TICK_RESULT'

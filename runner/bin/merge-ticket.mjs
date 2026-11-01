@@ -250,19 +250,6 @@ function fail(reason, code = 1) {
 }
 
 /**
- * Resolve a ticket NUMBER → the repo it delivers into and the delivery branch, via
- * the dispatch sqlite DB (read-only, zero deps — node:sqlite ships with Node 22+).
- *
- * It joins tickets → ticket_repos → repositories, picking the WRITE-access repo (the
- * one the change lands in). The delivery branch is the per-repo `ticket_repos.branch_name`
- * when present, else the ticket-level `tickets.branch_name` (matching tick.sh, which
- * trusts the recorded branch_name over a git grep).
- *
- * Returns { ticketId, number, repo:{name,localPath,defaultBranch}, branch } or null
- * when the ticket / its repo / its branch can't be resolved. Side-effect-free and
- * import()-able so tests can exercise it.
- */
-/**
  * The bare status of ticket #number, for the refusal when resolveTicket finds no
  * landable delivery: `{ exists: false }` for no such ticket (or no readable db),
  * `{ exists: true, status }` otherwise. Read-only; never throws. Exported for tests.
@@ -300,6 +287,19 @@ export function notLandableReason(number, status) {
   );
 }
 
+/**
+ * Resolve a ticket NUMBER → the repo it delivers into and the delivery branch, via
+ * the dispatch sqlite DB (read-only, zero deps — node:sqlite ships with Node 22+).
+ *
+ * It joins tickets → ticket_repos → repositories, picking the WRITE-access repo (the
+ * one the change lands in). The delivery branch is the per-repo `ticket_repos.branch_name`
+ * when present, else the ticket-level `tickets.branch_name` (matching tick.sh, which
+ * trusts the recorded branch_name over a git grep).
+ *
+ * Returns { ticketId, number, repo:{name,localPath,defaultBranch}, branch } or null
+ * when the ticket / its repo / its branch can't be resolved. Side-effect-free and
+ * import()-able so tests can exercise it.
+ */
 export function resolveTicket(dbPath, number) {
   const num = parseInt(String(number ?? "").trim(), 10);
   if (!Number.isInteger(num) || num <= 0) return null;

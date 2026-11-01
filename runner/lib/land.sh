@@ -407,8 +407,9 @@ _gaffer_land_one() {
 #       (held, fail closed).
 #     Sets _MG_TARGET (the gated target head), _MG_MERGE (the gated merge commit),
 #     _MG_EVIDENCE (the gate's checklist), _MG_REASON, _MG_KIND (merge_gate_red |
-#     tester_replay_red on a red gate) and, for the replay record, _MG_REPLAY_RECORD (1 when
-#     a bound tester PASS's tests passed on _MG_MERGE), _MG_REPLAY_FILES (JSON array) and
+#     tester_replay_red | tester_replay_unverified on a held gate) and, for the replay
+#     record, _MG_REPLAY_RECORD (1 when a bound tester PASS's tests ran and passed on
+#     _MG_MERGE), _MG_REPLAY_FILES (JSON array: the files proven to have run) and
 #     _MG_REPLAY_COUNT.
 _gaffer_merge_gate() {
   local num="$1" repo="$2" branch="$3" def="$4" pin="$5" show="$6" target_ref="$7" who="${8:-MERGE}" trailers="${9:-}" secondary="${10:-0}"
@@ -469,18 +470,27 @@ _gaffer_merge_gate() {
 # bound tester PASS of exactly <pin> is why this lands, and checks the tester's test files
 # (only those it added or changed on gaffer-tests/ticket-<n>, never its wiring) out into
 # <wt>'s working tree — the gated merge COMMIT is unchanged, so the tester's files are
-# run, never landed. The repo's test command then runs there through bin/dod-regate.sh
-# (tests only; the same runner, sandbox and timeouts as the merge gate).
-#   → 0 passed, or nothing to replay (no tester PASS on record: the ticket was not in the
-#     testing lane) · 4 the tester's tests FAIL on the candidate (red; _MG_KIND
-#     tester_replay_red) · 2 the replay could not be prepared (held, fail closed).
+# run, never landed. PROOF OF EXECUTION (external review #7): the files run explicitly
+# with the stack's runner where a file-scoped invocation is well defined (`node --test
+# <files…>`, vitest/jest by path, pytest, go, cargo), else the registered command runs, in
+# both cases through bin/dod-regate.sh (tests only; the same runner, sandbox and timeouts
+# as the merge gate); then the runner's own per-file evidence is read. A registered
+# `node --test test/label.test.mjs` never executed the tester's file, the run passed and
+# the record named that file as passed: now a file with no proof HOLDS the landing.
+#   → 0 passed and every file proven, or nothing to replay (no tester PASS on record: the
+#     ticket was not in the testing lane) · 4 the tester's tests FAIL on the candidate
+#     (red; _MG_KIND tester_replay_red) or a file shows no evidence it ran (_MG_KIND
+#     tester_replay_unverified, the files named) · 2 the replay could not be prepared
+#     (held, fail closed).
 _gaffer_merge_gate_tester_replay() {
   local num="$1" repo="$2" pin="$3" wt="$4" label="$5" tcmd="$6" def="$7" who="$8" dodrc="${9:-0}"
   local helper="${RUNNER_DIR:-}/lib/tester-replay.mjs" out rc run record files reason rout rrc
+  local inv icmd irunner imode iout inodeopt proof unproven ran
   if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
     _MG_REASON="the tester replay (lib/tester-replay.mjs) cannot run"; return 2
   fi
-  out="$(node "$helper" apply --db "${DISPATCH_DB:-}" --ticket "$num" --repo "$repo" --pin "$pin" --worktree "$wt" 2>/dev/null)"; rc=$?
+  out="$(node "$helper" apply --db "${DISPATCH_DB:-}" --ticket "$num" --repo "$repo" --pin "$pin" --worktree "$wt" \
+           --test-cmd "${tcmd:--}" --base "${_MG_TARGET:-}" 2>/dev/null)"; rc=$?
   reason="$(printf '%s' "$out" | jget 'd.reason || ""' 2>/dev/null || echo '')"
   if [ "$rc" -ne 0 ]; then
     _MG_REASON="the tester's tests could not be prepared for a replay on the merge (${reason:-rc=$rc})"; return 2
@@ -505,29 +515,60 @@ _gaffer_merge_gate_tester_replay() {
     _MG_EVIDENCE="DoD: FAIL (no test command to replay the tester's tests)"
     return 4
   fi
-  log "$who: #$num TESTER REPLAY — running the tester's $_MG_REPLAY_COUNT test file(s) ($files) on the merge candidate ${_MG_MERGE:0:12}"
-  local -a _renv=(GAFFER_DOD=1 GAFFER_DOD_TESTS=1 GAFFER_DOD_TYPECHECK=0 GAFFER_DOD_LINT=0)
+  inv="$(printf '%s' "$out" | jget 'JSON.stringify(d.invocation || null)' 2>/dev/null || echo 'null')"
+  icmd="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.command) || ""' 2>/dev/null || echo '')"
+  irunner="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.runner) || ""' 2>/dev/null || echo '')"
+  imode="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.mode) || ""' 2>/dev/null || echo '')"
+  iout="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.proof && d.invocation.proof.output) || ""' 2>/dev/null || echo '')"
+  inodeopt="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.env && d.invocation.env.NODE_OPTIONS) || ""' 2>/dev/null || echo '')"
+  if [ -z "$icmd" ] || [ -z "$iout" ]; then
+    _MG_REASON="the tester replay produced no invocation for the tester's tests ($files)"; return 2
+  fi
+  log "$who: #$num TESTER REPLAY — running the tester's $_MG_REPLAY_COUNT test file(s) ($files) on the merge candidate ${_MG_MERGE:0:12} ($irunner, $([ "$imode" = files ] && echo "by path" || echo "the registered command"))"
+  local -a _renv=(GAFFER_DOD=1 GAFFER_DOD_TESTS=1 GAFFER_DOD_TYPECHECK=0 GAFFER_DOD_LINT=0 "GAFFER_DOD_TESTS_OUTPUT=$iout")
+  [ -n "$inodeopt" ] && _renv+=("NODE_OPTIONS=$inodeopt")
   # The merge gate already installed this worktree's dependencies.
   [ "$dodrc" = "0" ] && _renv+=(GAFFER_DOD_INSTALL=0)
-  rout="$(env "${_renv[@]}" bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$tcmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
-  if [ "$rrc" -eq 0 ]; then
-    log "$who: #$num TESTER REPLAY PASS — the tester's tests ($files) pass on the merge candidate ${_MG_MERGE:0:12}"
-    _MG_REPLAY_RECORD=1; return 0
+  rout="$(env "${_renv[@]}" bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$icmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
+  if [ "$rrc" -ne 0 ]; then
+    _MG_KIND="tester_replay_red"
+    _MG_EVIDENCE="$rout"
+    _MG_REASON="the independent tester's tests ($files) fail on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (the repo's own gates pass)"
+    return 4
   fi
-  _MG_KIND="tester_replay_red"
-  _MG_EVIDENCE="$rout"
-  _MG_REASON="the independent tester's tests ($files) fail on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12} (the repo's own gates pass)"
-  return 4
+  # PROOF: every tester file must show the runner's own evidence that it ran. Unreadable
+  # proof proves nothing (every file unproven).
+  proof="$(node "$helper" proof --worktree "$wt" --invocation "$inv" --files-json "$_MG_REPLAY_FILES" 2>/dev/null)" \
+    || proof=""
+  unproven="$(printf '%s' "$proof" | jget '(d.unproven || []).join(", ")' 2>/dev/null || echo '')"
+  ran="$(printf '%s' "$proof" | jget 'JSON.stringify(d.ran || [])' 2>/dev/null || echo '[]')"
+  [ -n "$proof" ] || { unproven="$files"; ran="[]"; }
+  if [ -n "$unproven" ]; then
+    _MG_KIND="tester_replay_unverified"
+    _MG_EVIDENCE="$rout"
+    _MG_REASON="the independent tester's test file(s) did not run in the replay on the merge of ${pin:0:12} onto $def@${_MG_TARGET:0:12}: $unproven (no evidence from the runner that they executed; replayed with $irunner, $([ "$imode" = files ] && echo "by path" || echo "the registered test command"))"
+    return 4
+  fi
+  # The record lists only the files proven to have run (and the run passed).
+  _MG_REPLAY_FILES="$ran"
+  _MG_REPLAY_COUNT="$(printf '%s' "$ran" | jget 'String(d.length)' 2>/dev/null || echo 0)"
+  log "$who: #$num TESTER REPLAY PASS — the tester's tests ($files) ran and pass on the merge candidate ${_MG_MERGE:0:12}"
+  _MG_REPLAY_RECORD=1; return 0
 }
 
 # The red merge gate's HOLD: the gate output becomes evidence on the ticket and the
 # ticket leaves the merge lane for the human queue (ready_for_merge → blocked, reason
-# merge_gate_red). The target was never touched.
+# merge_gate_red | tester_replay_red | tester_replay_unverified). The target was never
+# touched.
 _gaffer_merge_gate_hold() {
   local num="$1" branch="$2" def="$3" who="${4:-MERGE}" code="${_MG_KIND:-merge_gate_red}" head why
   if [ "$code" = "tester_replay_red" ]; then
     head="TESTER REPLAY FAILED"
     why="The independent tester's tests fail on the merge of $branch onto $def@${_MG_TARGET:0:12} ($_MG_REASON); $def was not touched — see the tester-replay evidence. Rework the branch on the current $def, then re-approve."
+  elif [ "$code" = "tester_replay_unverified" ]; then
+    # PROOF OF EXECUTION: a tester file the replay cannot show ran is not a pass.
+    head="TESTER REPLAY UNVERIFIED"
+    why="Tester replay unverified: $_MG_REASON. Nothing landed and no replay record was written; $def was not touched. Make the repo's test command run the tester's files (or register one whose runner gaffer can run by path), then re-approve."
   else
     code="merge_gate_red"; head="MERGE GATE FAILED"
     why="The merge of $branch onto $def@${_MG_TARGET:0:12} fails its gates (each side passed alone); $def was not touched — see the merge-gate evidence. Rework the branch on the current $def, then re-approve."

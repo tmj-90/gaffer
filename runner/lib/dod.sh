@@ -360,6 +360,15 @@ gaffer_dod_rerun_serial() {
   return "$rc"
 }
 
+# TESTER REPLAY (lib/tester-replay.mjs): the replay reads the runner's own per-file
+# evidence from the tests gate's FULL output, so GAFFER_DOD_TESTS_OUTPUT=<file> keeps a
+# copy of it (the run that decided the gate). Unset: nothing is kept (every other caller).
+_gaffer_dod_keep_tests_output() {
+  [ -n "${GAFFER_DOD_TESTS_OUTPUT:-}" ] || return 0
+  cp "$1" "$GAFFER_DOD_TESTS_OUTPUT" 2>/dev/null || true
+  return 0
+}
+
 # Run the enabled DoD gates across every write repo and emit a structured verdict.
 #
 # INPUT (stdin): one TAB-separated row per write repo —
@@ -457,6 +466,7 @@ gaffer_run_dod_gates() {
       gaffer_dod_run_one "$wt" "$tmpout" "$run_cmd"
       local rc=$?
       [ "$_pool" -gt 1 ] && _gaffer_dod_unmark
+      [ "$gate" = tests ] && _gaffer_dod_keep_tests_output "$tmpout"
       # FLAKY RERUN: a red tests gate under a pool runs once more at concurrency 1.
       local _rerun_note=""
       if [ "$rc" -ne 0 ] && [ "$gate" = tests ] && gaffer_dod_rerun_eligible; then
@@ -465,6 +475,7 @@ gaffer_run_dod_gates() {
         [ -n "$_first_out" ] && cp "$tmpout" "$_first_out" 2>/dev/null
         # The rerun runs the SAME resolved command (gate integrity: the base's script).
         gaffer_dod_rerun_serial "$wt" "$tmpout" "$run_cmd"; local _rrc=$?
+        [ "$_rrc" -eq 75 ] || _gaffer_dod_keep_tests_output "$tmpout"
         if [ "$_rrc" -eq 0 ]; then
           # Column 7 is the command's source (empty when unresolved); column 8 the mark.
           printf 'GATE\t%s\t%s\tPASS\t0\tpass-on-retry (flaky suspected): run 1 exited %s under a pool of %s; run 2 at concurrency 1 passed: %s\t%s\tflaky-suspected\n' \

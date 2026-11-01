@@ -152,7 +152,13 @@ import {
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
 import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
-import { applyTesterTests, replayPlan } from "../lib/tester-replay.mjs";
+import {
+  applyTesterTests,
+  prepareReplayProof,
+  replayInvocation,
+  replayPlan,
+  replayProof,
+} from "../lib/tester-replay.mjs";
 import { mergeMessage, provenanceTrailers } from "../lib/provenance-trailers.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
@@ -1145,8 +1151,10 @@ export function gateProposedMerge({
  * at the gated merge). Mirrors lib/land.sh _gaffer_merge_gate_tester_replay: the replay
  * plan (lib/tester-replay.mjs) reads the bound tester PASS and the tester's test files on
  * gaffer-tests/ticket-<n>; those files are checked out into the working tree (the gated
- * merge commit is unchanged — they run, they never land) and the repo's test command runs
- * through bin/dod-regate.sh (tests only).
+ * merge commit is unchanged — they run, they never land) and run through
+ * bin/dod-regate.sh (tests only): by path with the stack's runner where that is well
+ * defined, else the registered command; a file without the runner's own evidence that it
+ * ran is "red" with `code: "tester_replay_unverified"` (the landing holds, no record).
  *   → { kind: "pass", replay: { record, files } } | { kind: "red" | "error", code, reason, evidence }
  */
 function replayOnMergeCandidate({
@@ -1197,8 +1205,23 @@ function replayOnMergeCandidate({
       evidence: "",
       reason: `the tester's tests could not be prepared for a replay on the merge (${a.reason})`,
     };
+  // PROOF OF EXECUTION (external review #7): the tester's files run by path with the
+  // stack's runner where that is well defined, else the registered command; then each
+  // file must show the runner's own evidence that it ran (lib/tester-replay.mjs).
+  const inv = replayInvocation({ worktree: wt, base: target, testCommand, files: plan.files });
+  try {
+    prepareReplayProof(inv);
+  } catch (e) {
+    return {
+      kind: "error",
+      code: "",
+      evidence: "",
+      reason: `the replay's proof directory could not be created (${e.message})`,
+    };
+  }
+  const how = inv.mode === "files" ? `${inv.runner}, by path` : "the registered test command";
   log(
-    `#${ticketNumber}: TESTER REPLAY — running the tester's ${plan.files.length} test file(s) (${list}) on the merge candidate ${merge.slice(0, 12)}`,
+    `#${ticketNumber}: TESTER REPLAY — running the tester's ${plan.files.length} test file(s) (${list}) on the merge candidate ${merge.slice(0, 12)} (${how})`,
   );
   const perGate = Math.max(1, parseInt(env.GAFFER_DOD_TIMEOUT ?? "", 10) || 900);
   const r = spawnSync(
@@ -1207,7 +1230,7 @@ function replayOnMergeCandidate({
       resolve(RUNNER_DIR, "bin", "dod-regate.sh"),
       wt,
       `${label}:tester-replay`,
-      testCommand,
+      inv.command,
       "-",
       target,
     ],
@@ -1215,10 +1238,12 @@ function replayOnMergeCandidate({
       encoding: "utf8",
       env: {
         ...env,
+        ...inv.env,
         GAFFER_DOD: "1",
         GAFFER_DOD_TESTS: "1",
         GAFFER_DOD_TYPECHECK: "0",
         GAFFER_DOD_LINT: "0",
+        GAFFER_DOD_TESTS_OUTPUT: inv.proof.output,
         ...(installed ? { GAFFER_DOD_INSTALL: "0" } : {}),
       },
       timeout: (perGate * 2 + 60) * 1000,
@@ -1226,12 +1251,6 @@ function replayOnMergeCandidate({
     },
   );
   const evidence = (r.stdout || "").trim();
-  if (!r.error && r.status === 0) {
-    log(
-      `#${ticketNumber}: TESTER REPLAY PASS — the tester's tests (${list}) pass on the merge candidate ${merge.slice(0, 12)}`,
-    );
-    return { kind: "pass", replay: { record: true, files: plan.files, note: plan.reason } };
-  }
   if (r.error)
     return {
       kind: "error",
@@ -1239,12 +1258,29 @@ function replayOnMergeCandidate({
       evidence,
       reason: `the tester replay could not run (${r.error.code === "ETIMEDOUT" ? "timed out" : (r.error.message ?? r.error)})`,
     };
-  return {
-    kind: "red",
-    code: "tester_replay_red",
-    evidence,
-    reason: `the independent tester's tests (${list}) fail on ${at} (the repo's own gates pass)`,
-  };
+  if (r.status !== 0)
+    return {
+      kind: "red",
+      code: "tester_replay_red",
+      evidence,
+      reason: `the independent tester's tests (${list}) fail on ${at} (the repo's own gates pass)`,
+    };
+  const proof = replayProof({ inv, files: plan.files, worktree: wt });
+  if (proof.unproven.length > 0)
+    return {
+      kind: "red",
+      code: "tester_replay_unverified",
+      evidence,
+      unproven: proof.unproven,
+      reason:
+        `the independent tester's test file(s) did not run in the replay on ${at}: ${proof.unproven.join(", ")} ` +
+        `(no evidence from the runner that they executed; replayed with ${how})`,
+    };
+  log(
+    `#${ticketNumber}: TESTER REPLAY PASS — the tester's tests (${list}) ran and pass on the merge candidate ${merge.slice(0, 12)}`,
+  );
+  // The record lists only the files proven to have run (and the run passed).
+  return { kind: "pass", replay: { record: true, files: proof.ran, note: plan.reason } };
 }
 
 /**
@@ -1894,6 +1930,13 @@ function landThroughMergeGate({
   }
 }
 
+/** The evidence headline of a held gate (lib/land.sh _gaffer_merge_gate_hold's words). */
+function holdHeadline(code) {
+  if (code === "tester_replay_red") return "TESTER REPLAY FAILED";
+  if (code === "tester_replay_unverified") return "TESTER REPLAY UNVERIFIED";
+  return "MERGE GATE FAILED";
+}
+
 /**
  * The red merge gate's HOLD: the gate output becomes evidence on the ticket and the ticket
  * leaves the merge lane for the human queue (`wg ticket hold` → blocked, merge_gate_red).
@@ -1903,11 +1946,13 @@ function holdMergeGateRed(ticketNumber, gate, { branch, defaultBranch, repoName 
   const where = repoName ? ` in ${repoName}` : "";
   // TESTER REPLAY: a red replay of the tester's tests holds exactly like a red gate, under
   // its own reason code, naming the files.
-  const code = gate.code === "tester_replay_red" ? "tester_replay_red" : "merge_gate_red";
+  const code = ["tester_replay_red", "tester_replay_unverified"].includes(gate.code)
+    ? gate.code
+    : "merge_gate_red";
   const recorded = recordEvidence(
     ticketNumber,
     "test_output",
-    `${code === "tester_replay_red" ? "TESTER REPLAY FAILED" : "MERGE GATE FAILED"}${where}: ${gate.reason}\n\n${gate.evidence || "DoD: FAIL"}`,
+    `${holdHeadline(code)}${where}: ${gate.reason}\n\n${gate.evidence || "DoD: FAIL"}`,
   );
   const r = runDispatch([
     "ticket",
@@ -1916,12 +1961,16 @@ function holdMergeGateRed(ticketNumber, gate, { branch, defaultBranch, repoName 
     "--reason-code",
     code,
     "--reason",
-    (code === "tester_replay_red"
-      ? `The independent tester's tests fail on the merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} ` +
-        `(${gate.reason}); ${defaultBranch} was not touched — see the tester-replay evidence. `
-      : `The merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} fails its gates ` +
-        `(each side passed alone); ${defaultBranch} was not touched — see the merge-gate evidence. `) +
-      `Rework the branch on the current ${defaultBranch}, then re-approve.`,
+    code === "tester_replay_unverified"
+      ? `Tester replay unverified: ${gate.reason}. Nothing landed and no replay record was written; ` +
+        `${defaultBranch} was not touched. Make the repo's test command run the tester's files ` +
+        `(or register one whose runner gaffer can run by path), then re-approve.`
+      : (code === "tester_replay_red"
+          ? `The independent tester's tests fail on the merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} ` +
+            `(${gate.reason}); ${defaultBranch} was not touched — see the tester-replay evidence. `
+          : `The merge of ${branch} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} fails its gates ` +
+            `(each side passed alone); ${defaultBranch} was not touched — see the merge-gate evidence. `) +
+        `Rework the branch on the current ${defaultBranch}, then re-approve.`,
     "--as",
     "system",
   ]);
@@ -2259,7 +2308,7 @@ function main() {
       defaultBranch: repo.defaultBranch,
     });
     fail(
-      `refusing to merge #${resolved.number}: ${h.code === "tester_replay_red" ? "TESTER REPLAY FAILED" : "MERGE GATE FAILED"} — ${gate.reason}; ` +
+      `refusing to merge #${resolved.number}: ${holdHeadline(h.code)} — ${gate.reason}; ` +
         `${repo.defaultBranch} untouched; ` +
         (h.held
           ? `ticket held for a human (blocked, ${h.code})`

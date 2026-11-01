@@ -17,8 +17,18 @@ no()   { printf "  ${c_red}✗${c_off} %s\n" "$*"; fail=$((fail+1)); }
 
 echo "Gaffer factory preflight"
 
-# Toolchain
-command -v node >/dev/null && ok "node $(node -v)" || no "node missing"
+# Toolchain. Node is held to the SAME floor setup.sh enforces (engines.node in the root
+# package.json, via scripts/check-engines.mjs): preflight used to tick a Node that
+# setup then refused.
+if ! command -v node >/dev/null; then no "node missing"
+else
+  _floor="$(node -p 'require(process.argv[1]).engines.node' "$GAFFER_HOME/package.json" 2>/dev/null || echo '?')"
+  if node "$HERE/../scripts/check-engines.mjs" --runtime --root "$GAFFER_HOME" >/dev/null 2>&1; then
+    ok "node $(node -v) (Gaffer needs $_floor)"
+  else
+    no "node $(node -v) is below Gaffer's floor ($_floor, engines.node in $GAFFER_HOME/package.json) — setup refuses it; install a newer Node (nvm install 22, or Node 24)"
+  fi
+fi
 command -v pnpm >/dev/null && ok "pnpm $(pnpm -v)" || wn "pnpm missing (needed for setup/builds)"
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi

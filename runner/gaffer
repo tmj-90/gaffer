@@ -424,7 +424,10 @@ status)
 setup)
   # nothing → running: build everything, init state (with the right config), open the UI.
   [ $# -eq 0 ] || bad_arg setup "setup takes no arguments (got '$1')"
-  bash "$HERE/setup.sh" || { err "setup failed — see the reason above (install/build output: $GAFFER_DATA/setup.log)"; exit 1; }
+  # setup.sh says why it stopped, and names $GAFFER_DATA/setup.log itself when it wrote
+  # one: an early refusal (pnpm or node missing, Node below the floor) happens before
+  # the data dir exists, so pointing at that log sent people to a file that was not there.
+  bash "$HERE/setup.sh" || { err "setup failed — see the reason above"; exit 1; }
   "$HERE/gaffer" dashboard
   printf "\n${c_grn}Ready.${c_off} Onboard a repo:  ${c_cya}gaffer onboard /path/to/your/repo${c_off}\n"
   ;;

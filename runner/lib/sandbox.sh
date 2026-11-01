@@ -133,6 +133,24 @@ _sandbox_strict_required() {
   case "${GAFFER_STRICT_REQUIRE:-0}" in 1 | true | yes | on) return 0 ;; *) return 1 ;; esac
 }
 
+# One line a person can act on when GAFFER_STRICT_REQUIRE refused to launch an agent
+# because this host has no OS sandbox: the fix for the configured provider, then the
+# two alternatives that stay the person's call (run supervised, or vouch for the VM
+# the runner already runs in). Shown as the parked ticket's reason on the Team sheet.
+#   gaffer_sandbox_unavailable_hint → the line (never empty)
+gaffer_sandbox_unavailable_hint() {
+  local fix
+  case "${SANDBOX_PROVIDER:-sandbox-exec}" in
+    docker)
+      fix="the docker sandbox needs a running docker daemon and its images, built once with \`docker compose --profile sandbox build sandbox-image egress-proxy\`" ;;
+    sandbox-exec)
+      fix="sandbox-exec is macOS-only; on Linux set SANDBOX_PROVIDER=docker and build its images once with \`docker compose --profile sandbox build sandbox-image egress-proxy\`" ;;
+    *)
+      fix="set SANDBOX_PROVIDER=docker (any host with Docker; build its images once with \`docker compose --profile sandbox build sandbox-image egress-proxy\`) or sandbox-exec (macOS)" ;;
+  esac
+  printf '%s' "hands-off delivery needs an OS sandbox and this host has none: $fix. Or run supervised (unset GAFFER_MODE and the autonomy flags), or set GAFFER_STRICT_REQUIRE=0 only when the runner already runs inside a VM or container you trust. Then move the ticket back to ready."
+}
+
 sandbox_wrap_cmd() {
   local write_roots="${1:-}"
   local read_roots="${2:-}"   # accepted for symmetry; unused by sandbox-exec (reads broad)

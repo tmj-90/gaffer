@@ -1236,6 +1236,21 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail closed: never run a live agent without the deterministic safety hook.
     gaffer_assert_safety_hook || gaffer_abort_setup SAFETY "refusing live bootstrap (fail closed)"
 
+    # SANDBOX REQUIREMENT, before anything is created. Under GAFFER_STRICT_REQUIRE (every
+    # autonomy flag defaults it) the worker seam refuses to spawn without an OS sandbox.
+    # Asked only there, the bootstrap had already git-init'd the new repo and parked as a
+    # generic "bootstrap failed (rc=75)". Ask the provider now, and park the way a normal
+    # delivery does, with the fix on the card. The wrap files a docker/sandbox-exec probe
+    # writes carry this tick's PID, so the exit cleanup sweeps them.
+    if _sandbox_strict_required && ! sandbox_wrap_cmd "$B_DIR" "" >/dev/null 2>>"$GAFFER_LOG"; then
+      _B_SBX_WHY="$(gaffer_sandbox_unavailable_hint)"
+      log "STRICT_REQUIRE: bootstrap #$NUM parked before creating $B_DIR — $_B_SBX_WHY"
+      wg attach-evidence "$NUM" --type manual_note \
+        --summary "PARKED (strict_require_unavailable): $_B_SBX_WHY" >/dev/null 2>&1 || true
+      gaffer_release_delivery blocked "$_B_SBX_WHY" strict_require_unavailable
+      gaffer_skip_ticket "$NUM"; result error; exit 0
+    fi
+
     # EXECUTION PREFLIGHT (lib/registry-probe.sh): the bootstrap's one permitted
     # install needs the package registry from INSIDE the agent's allowlisted env.
     # Probe it there first — bounded, no model call. A dead registry used to surface
@@ -2440,7 +2455,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)" >/dev/null 2>&1 || true
-      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available — fail closed, agent not launched" strict_require_unavailable
+      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available, agent not launched: $(gaffer_sandbox_unavailable_hint)" strict_require_unavailable
       gaffer_skip_ticket "$NUM"
       result error; exit 0
     fi

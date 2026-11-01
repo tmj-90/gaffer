@@ -29,8 +29,8 @@ import { apiPrincipal } from "./routes/context.js";
  *   - everything else                     → a factory-wide write.
  * READS (GET/HEAD) — only for a SCOPED principal (an unscoped one reads what it reads today):
  *   - `/tickets/:ref/…`                   → a read of that ticket;
- *   - `/tickets`, `/api/board`, `/api/human-queue`, `/claims`, `/decisions`
- *                                         → filtered to its tickets by the route;
+ *   - `/tickets`, `/api/board`, `/api/human-queue`, `/claims`, `/decisions`,
+ *     `/api/events/stream`                → filtered to its tickets by the route;
  *   - `/decisions/:id`                    → a read of its ticket(s);
  *   - `/api/whoami`, `/api/squad`, `/api/club`, `/api/openapi.json`, `/repositories`,
  *     `/agents`                           → no ticket content: open;
@@ -73,6 +73,8 @@ export async function authorizePrincipalRequest(
         ) {
           return;
         }
+        // The live feed: filtered to its tickets' events by the route.
+        if (segments.length === 3 && second === "events" && third === "stream") return;
         break;
       default:
         break;

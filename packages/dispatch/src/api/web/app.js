@@ -84,6 +84,16 @@ async function api(method, path, body, opts = {}) {
       throw e;
     }
   }
+  // A scoped token (a principal with a repo or ticket scope) sees only its tickets:
+  // the server refuses a factory-wide read or write with 403 SCOPE_DENIED, so the page
+  // never sends one (the view shows what it has; a control that slipped through gets
+  // this refusal at once, and the console no 403).
+  if (scopeRefuses(method, path)) {
+    const e = new Error(scopeTitle());
+    e.code = "SCOPE_DENIED";
+    e.status = 403;
+    throw e;
+  }
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
@@ -734,6 +744,8 @@ const squad = {
   agents: [], // SquadAgentView[], in registration order
   byId: new Map(), // agent_id → AgentDisplay (+ registration facts once the squad loads)
   capability: null, // "full" | "read" from /api/whoami; null until known
+  scope: null, // { repos, tickets } from /api/whoami for a scoped principal; null: unscoped
+  admin: false, // the whoami actor is an admin (repo-level writes inside its scope)
   loaded: null, // the in-flight or settled first read
   whoamiFailed: false, // the gate's whoami failed (not 401): the first squad read skips it
 };
@@ -793,11 +805,16 @@ function ensureSquad() {
 /** Take a whoami answer (null: still unknown) and paint what it means. */
 function learnCapability(who) {
   const was = squad.capability;
-  if (who && typeof who === "object") squad.capability = who.capability || "full";
+  const wasScoped = scoped();
+  if (who && typeof who === "object") learnWhoami(who);
   paintReadOnly();
-  // Learned only now that this token is read-only: redraw the view, so it shows
-  // its switched-off controls rather than the editors it painted first.
-  if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
+  // Learned only now that this token is read-only (or scoped): redraw the view, so it
+  // shows its switched-off controls rather than the editors it painted first.
+  if (
+    ((was !== "read" && squad.capability === "read") || (!wasScoped && scoped())) &&
+    app.firstElementChild
+  )
+    router();
 }
 /**
  * The live stream said the club or a name changed: read the squad again, repaint
@@ -820,7 +837,7 @@ function refreshSquad() {
 }
 /** May this operator change names (a full token)? Unknown counts as no: no 403 surprises. */
 function canEditSquad() {
-  return squad.capability === "full";
+  return squad.capability === "full" && !scoped();
 }
 
 // --- Read-only access ---------------------------------------------------------
@@ -833,20 +850,93 @@ const READ_ONLY_TITLE = "Read-only access: this token can look, not change anyth
 function readOnly() {
   return squad.capability === "read";
 }
-/** Switch one control off for a read token (disabled + a title saying why). */
-function roLock(node) {
-  if (!node || !readOnly()) return node;
+/** Take a whoami answer: the capability, and a scoped principal's scope. */
+function learnWhoami(who) {
+  if (who.capability) squad.capability = who.capability;
+  else if (!squad.capability) squad.capability = "full";
+  squad.scope = who.scope && (who.scope.repos || who.scope.tickets) ? who.scope : null;
+  squad.admin = Boolean(who.actor && who.actor.type === "admin");
+}
+
+// --- Scoped access --------------------------------------------------------------
+// A principal minted with a repo or ticket scope sees only its tickets, and the server
+// refuses everything factory-wide (403 SCOPE_DENIED). So the dashboard shows the
+// board, the tickets and the review of what it holds, switches every factory-wide
+// control off with a title naming the scope, and says so in one strip under the
+// header. The ticket controls on a ticket it holds stay live: they are in scope.
+function scoped() {
+  return squad.scope !== null;
+}
+/** "repos app, svc and tickets #4" — the scope in words. */
+function scopeWords() {
+  const sc = squad.scope || {};
+  const parts = [];
+  if (sc.repos && sc.repos.length)
+    parts.push(
+      `${sc.repos.length === 1 ? "repo" : "repos"} ${sc.repos.map((r) => r.name || r.id).join(", ")}`,
+    );
+  if (sc.tickets && sc.tickets.length)
+    parts.push(
+      `${sc.tickets.length === 1 ? "ticket" : "tickets"} ${sc.tickets.map((t) => "#" + (t.number ?? t.id)).join(", ")}`,
+    );
+  return parts.join(" and ") || "nothing";
+}
+function scopeTitle() {
+  return `Scoped access: this token can change only the tickets in its scope (${scopeWords()}).`;
+}
+/** Would the server refuse this call for the scoped token? Mirrors api/scopeGate.ts. */
+function scopeRefuses(method, path) {
+  if (!scoped()) return false;
+  const seg = String(path).split("?")[0].split("/").filter(Boolean);
+  const [head, second, third] = seg;
+  if (method === "GET" || method === "HEAD") {
+    if (head === "tickets" || head === "claims" || head === "decisions") return false;
+    if ((head === "repositories" || head === "agents") && seg.length === 1) return false;
+    if (
+      head === "api" &&
+      seg.length === 2 &&
+      ["whoami", "squad", "club", "openapi.json", "board", "human-queue"].includes(second)
+    )
+      return false;
+    if (head === "api" && second === "events" && third === "stream") return false;
+    return true;
+  }
+  if (head === "tickets") {
+    if (["repo-access", "work-repos", "mono-fallback"].includes(third)) return !squad.admin;
+    return false;
+  }
+  if (head === "claims" || head === "decisions") return false;
+  if (head === "repos" && second && second !== "onboard" && squad.admin) {
+    return !(squad.scope.repos || []).some((r) => r.id === second || r.name === second);
+  }
+  return true;
+}
+/** Why a control is switched off for this token (null: it is not). */
+function lockReason(kind) {
+  if (readOnly()) return READ_ONLY_TITLE;
+  if (scoped() && kind !== "ticket") return scopeTitle();
+  return null;
+}
+/**
+ * Switch one control off (disabled + a title saying why) for a read token, or for a
+ * scoped token when the control is factory-wide. `kind` "ticket" marks a control that
+ * acts on the one ticket in view: a scoped token only ever sees tickets in its scope,
+ * so those stay live for it.
+ */
+function roLock(node, kind) {
+  const why = node ? lockReason(kind) : null;
+  if (!why) return node;
   if ("disabled" in node && node.tagName !== "A") node.disabled = true;
   node.setAttribute("aria-disabled", "true");
-  node.classList.add("is-read-only");
-  node.title = READ_ONLY_TITLE;
+  node.classList.add(readOnly() ? "is-read-only" : "is-scope-locked");
+  node.title = why;
   return node;
 }
 /** Switch off every form control and button inside `root` (a whole editor). */
-function roLockAll(root) {
-  if (!root || !readOnly()) return root;
+function roLockAll(root, kind) {
+  if (!root || !lockReason(kind)) return root;
   for (const n of root.querySelectorAll("button, input, select, textarea"))
-    if (!n.closest("[data-ro-ok]")) roLock(n);
+    if (!n.closest("[data-ro-ok]")) roLock(n, kind);
   return root;
 }
 /** The one read-only strip under the header. */
@@ -866,6 +956,25 @@ function paintReadOnly() {
   }
   if (strip) strip.hidden = !readOnly();
   document.body.classList.toggle("is-read-only", readOnly());
+  let sstrip = document.getElementById("scope-strip");
+  if (!sstrip && scoped() && !readOnly() && appbar) {
+    sstrip = el("div", { class: "ro-strip", id: "scope-strip", role: "status" }, [
+      el("div", {}, [icon("lock", "", 16), el("span", { class: "scope-strip-text" })]),
+    ]);
+    (document.getElementById("ro-strip") || appbar).after(sstrip);
+  }
+  if (sstrip) {
+    sstrip.hidden = !scoped() || readOnly();
+    const text = sstrip.querySelector(".scope-strip-text");
+    if (text && scoped()) {
+      clear(text);
+      text.append(
+        el("b", {}, "Scoped access. "),
+        `This token sees and changes only ${scopeWords()}. Factory-wide controls (polling, planning, the map, settings) are switched off.`,
+      );
+    }
+  }
+  document.body.classList.toggle("is-scoped", scoped());
 }
 /**
  * An agent as the squad knows it: { id, name, no, reg, role }. `name` is the
@@ -1848,7 +1957,13 @@ function loadErrorPage(e) {
 }
 
 async function router() {
-  const { view, param } = parseHash();
+  const parsed = parseHash();
+  // A scoped token reads no factory-wide overview: its front page is the Work board
+  // (its own tickets), wherever the Overview would have opened.
+  const { view, param } =
+    scoped() && (parsed.view === "overview" || !(location.hash || "").startsWith("#/"))
+      ? { view: "work", param: undefined }
+      : parsed;
   // Aliases are resolved in parseHash. An address under #/ that names no view is
   // a 404 page (one link back); a bare fragment that is not a section on this
   // page still opens the Overview, as it always has.
@@ -3946,7 +4061,7 @@ function whatIOwnPanel(queue, f) {
 function ownAction(it, primary, f) {
   const act = ownActionControl(it, primary, f);
   // A link only opens a page; a button would change something, so a read token's is off.
-  return act && act.tagName === "BUTTON" ? roLock(act) : act;
+  return act && act.tagName === "BUTTON" ? roLock(act, "ticket") : act;
 }
 function ownActionControl(it, primary, f) {
   const t = it.ticket;
@@ -8835,7 +8950,11 @@ async function workReference() {
   if (workRefCache && Date.now() - workRefCache.at < WORK_REF_TTL_MS) return workRefCache;
   const [reposRes, nodesRes] = await Promise.all([
     api("GET", "/repositories"),
-    api("GET", "/scope/nodes"),
+    // A scoped token does not read the map (factory-wide): no nodes, the board still draws.
+    api("GET", "/scope/nodes").catch((e) => {
+      if (e && e.code === "SCOPE_DENIED") return { nodes: [] };
+      throw e;
+    }),
   ]);
   workRefCache = {
     at: Date.now(),
@@ -9859,6 +9978,7 @@ function wontDoReopen(card) {
       },
       "Reopen",
     ),
+    "ticket",
   );
 }
 
@@ -10113,10 +10233,10 @@ function renderBoardCard(card, laneKey, needs) {
         [el("span", {}, "Move"), icon("chevdown", "", 14)],
       )
     : null;
-  roLock(moveBtn);
+  roLock(moveBtn, "ticket");
   // TRACK-2b dashboard actions: a READY card offers "I'll do this by hand" (human-
   // claim); a human-owned in_progress card offers "Hand back" (release to the queue).
-  const humanLaneBtn = roLock(humanLaneAction(card));
+  const humanLaneBtn = roLock(humanLaneAction(card), "ticket");
 
   const node = el(
     "article",
@@ -10384,6 +10504,7 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
             },
             "Revoke",
           ),
+          "ticket",
         ),
       ),
     ]);
@@ -11307,7 +11428,7 @@ async function renderTicket(id) {
   // runner may be held. The status (its landing_state) and the lede say where it is.
   const headActions = [
     ...ticketActionKeys(t.status).map((key) =>
-      actionButtons[key] ? roLock(actionButtons[key]()) : null,
+      actionButtons[key] ? roLock(actionButtons[key](), "ticket") : null,
     ),
   ].filter(Boolean);
 
@@ -11632,7 +11753,7 @@ async function renderTicket(id) {
   // test_contract (surfaces / deps / env / run / harness), and the tester's verdict
   // evidence. Rendered on every ticket so a PO can mark it testable + fill the
   // contract ahead of time; the contract surfaces/render the same way in_testing.
-  const testingCard = roLockAll(renderTestingCard(t, view.evidence || []));
+  const testingCard = roLockAll(renderTestingCard(t, view.evidence || []), "ticket");
 
   // FAILURE-DIAGNOSIS: the "why did #N fail" history — the full ordered rework
   // trail (attempt 1 → 2 → …) with the distilled failing test + assertion for each.
@@ -14538,9 +14659,21 @@ function autonomyPoliciesPanel(policies, { inert = false } = {}) {
  * revoke actions. A minted token is shown ONCE in a read-only field; only its
  * hash exists server-side, so it cannot be shown again.
  */
+/** A principal's scope in words ("" for an unscoped one). */
+function principalScopeWords(scope) {
+  if (!scope) return "";
+  const parts = [];
+  if (scope.repos) parts.push(`repos ${scope.repos.map((r) => r.name || r.id).join(", ")}`);
+  if (scope.tickets)
+    parts.push(`tickets ${scope.tickets.map((t) => "#" + (t.number ?? t.id)).join(", ")}`);
+  return parts.join(" and ");
+}
+
 function accessPanel(whoami, principals) {
   const cap = whoami && whoami.capability ? whoami.capability : "full";
-  const canManage = cap === "full";
+  // Principals are minted and revoked with the shared operator token only (the server
+  // refuses a principal token), so a principal's session lists them and changes none.
+  const canManage = cap === "full" && !(whoami && whoami.principal);
   const actorId = whoami && whoami.actor ? whoami.actor.id || whoami.actor.type : "—";
   const via =
     whoami && whoami.principal
@@ -14558,7 +14691,7 @@ function accessPanel(whoami, principals) {
     el("p", { class: "access-whoami", "data-testid": "access-whoami" }, [
       "Signed in as ",
       el("strong", {}, actorId),
-      ` (${cap}) via ${via}.`,
+      ` (${cap}) via ${via}${whoami && whoami.scope ? `, scoped to ${principalScopeWords(whoami.scope)}` : ""}.`,
     ]),
   ]);
 
@@ -14575,6 +14708,9 @@ function accessPanel(whoami, principals) {
         el("span", { class: "access-name" }, p.name),
         el("span", { class: "ap-mode" }, p.capability),
         el("span", { class: "ar-repo" }, actorName(p.actor_type, p.actor_id)),
+        p.scope
+          ? el("span", { class: "access-scope" }, `scoped: ${principalScopeWords(p.scope)}`)
+          : null,
         revoked ? el("span", { class: "access-status" }, "revoked") : null,
       ]),
       el(
@@ -14644,6 +14780,26 @@ function accessPanel(whoami, principals) {
       maxlength: "200",
       autocomplete: "off",
     });
+    const typeSelect = el("select", { name: "principal-actor-type" }, [
+      el("option", { value: "human" }, "human"),
+      el("option", { value: "admin" }, "admin — may change repositories and settings"),
+    ]);
+    // PRINCIPAL SCOPES: optional. A scoped credential reaches only tickets on these
+    // repos (every write repo inside) and these tickets; everything else is refused.
+    const reposInput = el("input", {
+      type: "text",
+      name: "principal-repos",
+      placeholder: "every repo (or: app, svc)",
+      maxlength: "2000",
+      autocomplete: "off",
+    });
+    const ticketsInput = el("input", {
+      type: "text",
+      name: "principal-tickets",
+      placeholder: "every ticket (or: 12, 14)",
+      maxlength: "2000",
+      autocomplete: "off",
+    });
     const submit = el("button", { class: "btn small", type: "submit" }, [
       icon("plus"),
       el("span", {}, "Create credential"),
@@ -14654,8 +14810,18 @@ function accessPanel(whoami, principals) {
       el("div", { class: "access-form-row" }, [
         field("Name", nameInput),
         field("Capability", capSelect),
+        field("Acts as", typeSelect),
         field("Actor id", actorInput),
       ]),
+      el("div", { class: "access-form-row" }, [
+        field("Repo scope", reposInput),
+        field("Ticket scope", ticketsInput),
+      ]),
+      el(
+        "p",
+        { class: "section-note dim" },
+        "Leave both scopes empty for a credential that reaches everything. With a scope it sees and changes only tickets whose write repos are all in its repo scope, and the tickets you name.",
+      ),
       el("div", { class: "btn-row" }, [submit]),
       tokenOut,
     ]);
@@ -14665,7 +14831,17 @@ function accessPanel(whoami, principals) {
       if (!name) return;
       runAsyncAction(submit, "Creating…", async () => {
         const body = { name, capability: capSelect.value };
+        if (typeSelect.value === "admin") body.actor_type = "admin";
         if (actorInput.value.trim()) body.actor_id = actorInput.value.trim();
+        const words = (v) =>
+          v
+            .split(/[\s,]+/)
+            .map((x) => x.trim().replace(/^#/, ""))
+            .filter(Boolean);
+        const repos = words(reposInput.value);
+        const tickets = words(ticketsInput.value).map((x) => (/^\d+$/.test(x) ? Number(x) : x));
+        if (repos.length) body.repos = repos;
+        if (tickets.length) body.tickets = tickets;
         const res = await api("POST", "/api/principals", body);
         const tok = el("input", {
           type: "text",
@@ -14688,6 +14864,8 @@ function accessPanel(whoami, principals) {
         toast(`Created “${res.principal.name}”. The token is shown once below.`, { ok: true });
         nameInput.value = "";
         actorInput.value = "";
+        reposInput.value = "";
+        ticketsInput.value = "";
         // Refresh the list without dropping the one-time token from view.
         const fresh = await api("GET", "/api/principals").catch(() => null);
         if (fresh && Array.isArray(fresh.principals)) {
@@ -16690,6 +16868,7 @@ function integrityBanner(t, anns) {
             },
             allowed ? "Withdraw allowance…" : "Allow test changes…",
           ),
+          "ticket",
         ),
       ]),
     ],
@@ -17736,7 +17915,7 @@ async function renderReview(param) {
         [approveLabel],
       )
     : null;
-  roLock(approveBtn);
+  roLock(approveBtn, "ticket");
   const restLabel = () => (outcome ? outcome.label : "Approve");
   // One arm for both paths: the first `a` or click raises the yellow card on the
   // button (the outcome's confirm label: "Confirm: send to tester", "Confirm and land
@@ -18083,6 +18262,7 @@ async function renderReview(param) {
                   { class: "btn", type: "button", onclick: () => reject("refining") },
                   "Send back…",
                 ),
+                "ticket",
               )
             : null,
           hasTicketAction(t.status, "wont_do")
@@ -18092,6 +18272,7 @@ async function renderReview(param) {
                   { class: "btn danger", type: "button", onclick: () => reject("cancelled") },
                   "Won't do…",
                 ),
+                "ticket",
               )
             : null,
         ].filter(Boolean),
@@ -27415,7 +27596,7 @@ async function passGate() {
   }
   try {
     const who = await api("GET", "/api/whoami");
-    if (who && typeof who === "object" && who.capability) squad.capability = who.capability;
+    if (who && typeof who === "object" && who.capability) learnWhoami(who);
   } catch (e) {
     if (e && e.code === "UNAUTHORIZED") return false; // api() drew the gate already
     // Slow, failing or unreachable: start anyway (unknown counts as full; the server

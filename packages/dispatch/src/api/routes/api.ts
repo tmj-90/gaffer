@@ -25,7 +25,7 @@ import {
   updateSquadAgentBody,
 } from "../schemas.js";
 import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
-import { apiActor } from "./context.js";
+import { apiActor, apiPrincipal } from "./context.js";
 import { forgetLoreDrafts, routeReadModels } from "./readModels.js";
 
 /**
@@ -474,6 +474,9 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   // credential before every write, so revoking a principal (or rotating the token)
   // cuts off a live feed at once instead of when the connection happens to drop.
   // A named frame tells the client why, so it does not read it as a network blip.
+  // PRINCIPAL SCOPES: a scoped principal's feed carries only the events of its tickets
+  // (the cursor still moves past the rest, so nothing is replayed).
+  const principal = apiPrincipal();
   const stillAuthorised = (): boolean => {
     if (requestCapability(req) !== null) return true;
     if (!res.writableEnded) res.write("event: auth_revoked\ndata: {}\n\n");
@@ -490,8 +493,10 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
       stop();
       return;
     }
+    const visible = principal ? wg.ticketVisibility(principal) : null;
     for (const row of rows) {
       cursor = row.seq;
+      if (visible && !(row.entity_type === "ticket" && visible(row.entity_id))) continue;
       res.write(`id: ${row.seq}\nevent: work_event\ndata: ${JSON.stringify(row)}\n\n`);
     }
   };

@@ -27,7 +27,7 @@
 _gaffer_merge_lane() {
   case "$(printf '%s' "${GAFFER_MERGE_LANE:-1}" | tr '[:upper:]' '[:lower:]')" in 0|false|no|off) return 0 ;; esac
   declare -F gaffer_land_delivery >/dev/null 2>&1 || return 0
-  local _HELD_FILE="$GAFFER_DATA/.merge-held-tickets"; touch "$_HELD_FILE"
+  local _HELD_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.merge-held-tickets"; touch "$_HELD_FILE"
   local _MJSON _MNUMS _n _show _repo _branch _def _dec _rc _via _partial _pl
   _MJSON="$(wg ticket list -s ready_for_merge 2>/dev/null || echo '[]')"
   _MNUMS="$(printf '%s' "$_MJSON" | jget '(d.tickets || d || []).map(t => t.number).filter(Boolean).join(" ")' 2>/dev/null || echo '')"

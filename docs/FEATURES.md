@@ -774,6 +774,14 @@ answers `polled: false`, `reason: no_budget_cap` with the runner's fix and start
 nothing; a poll the runner refuses once it has started (a cap already reached) is
 recorded as a `failed` run whose detail is the runner's reason, never `succeeded`.
 
+**One Poll at a time, each run with its own lists.** A live **Poll for work** pressed
+while the previous Poll is still running waits for it to finish (the run log says so),
+then polls; after `GAFFER_POLL_WAIT_TIMEOUT` seconds it gives up with a refusal instead.
+Every run (a Poll, a `gaffer run` pass) keeps the lists that only mean something for
+that run, such as the tickets that failed delivery this run, in its own directory under
+`$GAFFER_DATA/run-state/`, removed when the run ends, so a Poll beside a daemon pass
+never clears or reads the pass's lists.
+
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Secret-bearing settings —
 the Slack and generic webhook URLs, which are posting authority on their own — are

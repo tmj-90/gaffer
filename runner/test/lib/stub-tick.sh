@@ -64,6 +64,14 @@ if [ -e .git ]; then
   done_json() { printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: helper.","total_cost_usd":0.02,"num_turns":1}\n'; }
   case "$MODE" in
     hang) touch "$D/hanging"; sleep 60; exit 0 ;;
+    # An EMPTY delivery held at a barrier (poll-overlap-run-state.test.sh): the test
+    # releases it by creating $CALLS/release (bounded: 120 s), and no commit is made.
+    # The MCP config is kept so the test can act on the claim as the agent would
+    # (request_decision blocks the agent's own claim).
+    hold-empty) _mc=""; _pv=""; for a in "$@"; do [ "$_pv" = "--mcp-config" ] && _mc="$a"; _pv="$a"; done
+      [ -n "$_mc" ] && cp "$_mc" "$D/mcp.json" 2>/dev/null; touch "$D/holding"; _w=0
+      while [ ! -e "$CALLS/release" ] && [ "$_w" -lt 600 ]; do sleep 0.2; _w=$((_w + 1)); done
+      done_json; exit 0 ;;
     # A delivery that breaks the repo's test (tick-parked-result.test.sh): the DoD gate fails.
     break-test) printf 'export function a() { return 2; }\n' > src/a.js
       git -c user.email=s@s -c user.name=s commit -qam "feat: break a" >/dev/null 2>&1; done_json; exit 0 ;;

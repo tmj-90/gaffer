@@ -18,7 +18,7 @@
 # below is false and the function returns immediately (supervised = no-op).
 _gaffer_agent_review_pass() {
 if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
-  REVIEWED_FILE="$GAFFER_DATA/.reviewed-tickets"; touch "$REVIEWED_FILE"
+  REVIEWED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.reviewed-tickets"; touch "$REVIEWED_FILE"
   RJSON="$(wg ticket list -s in_review 2>/dev/null || echo '[]')"
   # FINDING B-M2: pass the skip-file path via the environment, not interpolated into
   # the single-quoted Python literal — a path containing a `'` would break the string

@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 144 |
+| Knobs with a runner default | 145 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 80 |
@@ -291,6 +291,12 @@ computed from other knobs at runtime.
 | `GAFFER_REGISTRY_PROBE` | `1` |  | runner | REGISTRY PROBE: 1 = before a greenfield bootstrap spawns its agent (and in runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry… |
 | `GAFFER_REGISTRY_PROBE_TIMEOUT` | `45` |  | runner | Seconds the registry probe may take before it counts as unreachable ("timeout"). |
 
+### lib/run-state.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_POLL_WAIT_TIMEOUT` | _derived_ (`$(( ${GAFFER_TICK_OUTER_TIMEOUT:-5520} + 60 ))`) |  | runner | Seconds a live Poll waits for the Poll already running before it refuses. |
+
 ### lib/skills-mount.sh
 
 | Variable | Default | UI | Read by | Notes |
@@ -402,7 +408,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
 | `GAFFER_BLOCK_LEDGER` | `$GAFFER_DATA/safety-blocks.jsonl` | `runner/bin/build-log.mjs`, `runner/run-summary.sh` |
-| `GAFFER_BP_FILE` | `$GAFFER_DATA/.backpressure-repos` | `runner/run-summary.sh` |
+| `GAFFER_BP_FILE` | `$GAFFER_RUN_STATE_DIR/.backpressure-repos` | `runner/run-summary.sh` |
 | `GAFFER_BUDGET_LOW_FRACTION` | `0.20` | `runner/factory.config.sh` |
 | `GAFFER_CARD_BATCH` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |

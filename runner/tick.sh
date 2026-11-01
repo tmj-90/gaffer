@@ -947,7 +947,7 @@ declare -F _gaffer_merge_lane >/dev/null 2>&1 && _gaffer_merge_lane
 _RESUMING=0
 RESUME_NUM=""
 if [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ]; then
-  SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
+  SKIP_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.failed-tickets"; touch "$SKIP_FILE"
   RESUME_NUM="$(wg ticket resume-requested 2>/dev/null | gaffer_json resume-pick "$SKIP_FILE" 2>/dev/null || echo '')"
   # A dry run previews a resume once per run, like a ready ticket.
   [ -n "$RESUME_NUM" ] && gaffer_dry_previewed "$RESUME_NUM" && RESUME_NUM=""
@@ -1018,8 +1018,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   if [ "$_RESUMING" != "1" ]; then
   # Skip tickets that already failed delivery THIS run so one bad ticket can't
   # starve the queue (otherwise the loop re-claims the same first ready ticket
-  # forever). loop.sh clears the skip file at the start of a run.
-  SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
+  # forever). The skip file is the RUN's own (lib/run-state.sh: loop.sh and
+  # poll-once.sh give each run a fresh dir), never another run's.
+  SKIP_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.failed-tickets"; touch "$SKIP_FILE"
 
   # ── Stabilisation gate 0: per-repo BACKPRESSURE (skip new claims) ───────────
   # Walk ready candidates (least-recently-failed first) and pick the FIRST whose
@@ -1029,7 +1030,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # + in_review tickets + active claims) hits ANY per-repo cap; we then SKIP new
   # claims for it this tick so the loop never piles up more than the cap.
   # Backpressured repos are recorded in a
-  # per-run file (cleared by loop.sh) for the run-summary report. With every ready
+  # per-run file (the run's own state dir) for the run-summary report. With every ready
   # repo backpressured, the tick yields no_work and the loop prioritises
   # review/merge/cleanup elsewhere instead of claiming more.
   #
@@ -1038,7 +1039,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # below is taken under .bp.lock so a concurrent worker never tears a half-written
   # line; the per-tick truncate is a single atomic syscall. At concurrency 1 there
   # is one writer so this is byte-identical to before.
-  BP_FILE="$GAFFER_DATA/.backpressure-repos"; : > "$BP_FILE"
+  BP_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.backpressure-repos"; : > "$BP_FILE"
   NUM=""; SHOW=""; REPO_PATH=""; STACK=""; TITLE=""
   # SCHEDULER: walk CLAIMABLE work (every dependency done), so MAX_CANDIDATES bounds the
   # tickets a claim can take. Walking the raw ready list let 25 higher-priority dependants

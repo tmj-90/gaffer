@@ -28,10 +28,13 @@
 # file passed run.sh's 600s long cap on ubuntu (CI run 41322221909). ESTIMATES: the old
 # 270 scaled by the ~25% the cleanup-ownership checks and the auth probe added, shared
 # by the split's measured ratio (Linux, both at once under shared load: 875s / 748s).
+# poll-overlap-run-state: ESTIMATE (Linux alone under shared load: 90s, two real Polls
+# and a loop pass; refresh from the next CI run).
 # Refreshed 2026-11-01 from CI run 41333739591 (macOS node 24 shard 2/2, -j 3) for every file it ran;
 # the files added at the end with no CI sample yet are ESTIMATES: auth-gate-delivery, budget-refused-delivery,
 # daemon-sigint, multi-repo-landing-preflight, usage-limit-lanes, tick-parked-result, paid-launch-cap-required and the small docs/docker/provenance checks.
 171	merge-lane.test.sh
+90	poll-overlap-run-state.test.sh
 110	landing-revocation.test.sh
 29	landing-revocation-window.test.sh
 110	secondary-pr-landing.test.sh

@@ -11,6 +11,9 @@
 #   E  FAIL-SOFT: a dead judge turn (worker rc 70, empty envelope) records
 #      NOTHING (an infra failure must not poison the metric) and exits 0
 #   F  empty diff → no-op (never spawns the worker)
+#   J  the verdict is recorded on the ticket (`wg ticket eval-score`) against a real
+#      dispatch: `wg ticket show` carries it, `wg judge-agreement` pairs it once with
+#      its ledger copy, and a refused record is fail-soft (the ledger keeps it)
 #   I  the judge grades on REAL input: the ticket title from `wg ticket show`'s
 #      nested {ticket:{title}} shape, the evidence the delivery recorded (read
 #      fresh), the DoD checklist tick.sh hands over (GAFFER_EVAL_TEST_OUTPUT; its
@@ -249,7 +252,8 @@ chmod +x "$WORK/claude-stub"
   # shellcheck source=../lib/worker.sh
   source "$RUNNER_DIR/lib/worker.sh"
   log() { :; }
-  export GAFFER_EVAL_JUDGE=1 DRY_RUN=0 CLAUDE_BIN="$WORK/claude-stub" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
+  # A paid launch needs a dollar cap (budget admission refuses one without): give it one.
+  export GAFFER_EVAL_JUDGE=1 DRY_RUN=0 CLAUDE_BIN="$WORK/claude-stub" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0 GAFFER_DAILY_BUDGET_USD=5
   CLAUDE_FLAGS="--permission-mode acceptEdits"
   WORKER_CALL_ENV=("GAFFER_WRITE_ROOTS=$REPO" "DISPATCH_DB=$WORK/d.sqlite" "MEMORY_DB=$WORK/m.sqlite" "GAFFER_TICKET=9")
   gaffer_eval_judge_delivery 9 "$REPO" main gaffer/ticket-9 0 ''
@@ -301,6 +305,49 @@ _dod_blk="$(awk '/_DOD_EV="\$\(gaffer_dod_evidence_summary "\$DOD_RESULTS" PASS\
 grep -q '_DOD_JUDGE_TESTS="$(tail -c 20000 "$DOD_RESULTS"' <<<"$_dod_blk" \
   && ok "tick.sh keeps the PASS checklist BEFORE removing the results file" \
   || no "tick.sh removes the DoD results before the judge can see them"
+
+echo "== J. the verdict reaches the ticket: show, judge-agreement, fail-soft refusal =="
+# (worker_deliver is still section G's stub: a five-dimension grading with reasons.)
+DISPATCH_CLI="$ROOT/packages/dispatch/dist/cli/index.js"
+if [ -f "$DISPATCH_CLI" ]; then
+  JDB="$WORK/dispatch.sqlite"
+  wg() { node "$DISPATCH_CLI" --db "$JDB" "$@"; }
+  wg init >/dev/null 2>&1
+  wg ticket create -t "Rotate the constant" -p solo_loose >/dev/null 2>&1
+  rm -f "$LEDGER"
+  gaffer_eval_judge_delivery 1 "$REPO" main gaffer/ticket-9 1 '$0.1234' demo-repo; rc=$?
+  [ "$rc" -eq 0 ] && ok "judge run against a real dispatch exits 0" || no "judge run failed (rc=$rc)"
+  SHOWN="$(wg ticket show 1 2>/dev/null)"
+  node -e '
+    const v = JSON.parse(process.argv[1]).evalJudgment;
+    if (!v || !["pass", "borderline", "fail"].includes(v.overall) || typeof v.score !== "number") process.exit(1);
+    if (v.recorded_by !== "system" || Object.keys(v.rationale).length !== 5) process.exit(1);
+    if (v.memory_present !== true || v.cost_usd !== 0.1234) process.exit(1);
+  ' "$SHOWN" && ok "wg ticket show carries the verdict (system-recorded, with reasons, memory flag, spend)" \
+    || no "wg ticket show has no evalJudgment: $(printf '%s' "$SHOWN" | tail -c 400)"
+  [ -s "$LEDGER" ] && ok "the ledger still gets its record" || no "ledger record missing"
+  AGR="$(wg judge-agreement --json --ledger "$LEDGER" 2>/dev/null)"
+  node -e '
+    const r = JSON.parse(process.argv[1]);
+    if (r.judgments !== 1 || r.fromEvents !== 1 || r.fromLedger !== 0 || r.pending !== 1) process.exit(1);
+  ' "$AGR" && ok "judge-agreement counts the event and its ledger copy once (pending: no decision yet)" \
+    || no "judge-agreement wrong: $(printf '%s' "$AGR" | head -c 400)"
+  # The operator's front door: `gaffer eval agreement` over this factory's database.
+  OUT="$(DISPATCH_DB="$JDB" bash "$RUNNER_DIR/gaffer" eval agreement 2>&1)"; rc=$?
+  [ "$rc" -eq 0 ] && grep -q 'judged deliveries: 1 (1 on the ticket, 0 from the ledger only)' <<<"$OUT" \
+    && grep -q 'reading: Not enough decided deliveries to tell' <<<"$OUT" \
+    && ok "gaffer eval agreement prints the pairing and its reading" || no "gaffer eval agreement wrong (rc=$rc): $OUT"
+  DISPATCH_DB="$JDB" bash "$RUNNER_DIR/gaffer" eval agreement --bogus >/dev/null 2>&1; rc=$?
+  [ "$rc" -eq 2 ] && ok "an unknown eval agreement option exits 2" || no "expected rc 2, got $rc"
+  # FAIL-SOFT: dispatch refuses (no ticket 42): the ledger still records, rc 0.
+  rm -f "$LEDGER"
+  gaffer_eval_judge_delivery 42 "$REPO" main gaffer/ticket-9 0 '' demo-repo; rc=$?
+  [ "$rc" -eq 0 ] && [ -s "$LEDGER" ] && ok "a refused ticket record is fail-soft: rc 0, the ledger keeps the verdict" \
+    || no "a refused ticket record broke the judge (rc=$rc)"
+  unset -f wg
+else
+  echo "  skip dispatch not built (pnpm -C packages/dispatch build)"
+fi
 
 echo ""
 echo "eval-judge: $pass passed, $fail failed"

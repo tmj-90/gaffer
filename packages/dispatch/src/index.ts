@@ -90,3 +90,29 @@ export {
   type NotifyLogger,
 } from "./notify/index.js";
 export { mcpToolInput, toZod3Issues, zod3JsonSchema, type Zod3Issue } from "./util/zod3Compat.js";
+export {
+  EVAL_JUDGED_EVENT,
+  JUDGE_DIMENSIONS,
+  normalizeJudgment,
+  readJudgments,
+  currentJudgment,
+  type EvalJudgment,
+  type RecordedEvalJudgment,
+  type JudgeDimension,
+  type JudgeOverall,
+} from "./services/evalJudgment.js";
+export {
+  judgeAgreement,
+  readJudgeAgreement,
+  renderJudgeAgreement,
+  outcomeAfter,
+  aucOf,
+  coverageOf,
+  mergeJudgments,
+  parseLedgerJudgments,
+  THRESHOLDS as JUDGE_AGREEMENT_THRESHOLDS,
+  type JudgeAgreementReport,
+  type JudgmentPoint,
+  type TransitionPoint,
+  type PairedJudgment,
+} from "./health/judgeAgreement.js";

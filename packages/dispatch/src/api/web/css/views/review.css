@@ -972,7 +972,8 @@
     flex: none;
   }
   .vd-rework li,
-  .vd-reasons li {
+  .vd-reasons li,
+  .vd-judge-dim {
     padding: 2px 0;
     overflow-wrap: anywhere;
   }

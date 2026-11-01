@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
+
 import type { Command } from "commander";
 
 import { Dispatch } from "../../core.js";
 import { DatabaseOpenError, DatabaseTooNewError } from "../../db/connection.js";
+import { readJudgeAgreement, renderJudgeAgreement } from "../../health/judgeAgreement.js";
+import { DispatchError } from "../../util/errors.js";
 import { assertCliDbExists, resolveDbPath } from "../../util/paths.js";
 import { computeStats, renderDoctor, renderHumanQueue, renderStats, runDoctor } from "../ops.js";
 import { cliActor, open, printJson } from "../shared.js";
@@ -144,6 +148,41 @@ export function registerDiagnostics(program: Command): void {
         const stats = computeStats(wg.db);
         if (opts.json) printJson(stats);
         else process.stdout.write(`${renderStats(stats)}\n`);
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  program
+    .command("judge-agreement")
+    .description(
+      "EVAL JUDGE: is the judge's score worth having? Pairs every judged delivery with what " +
+        "happened next (accepted, sent back, cancelled, pending; by a person, the agent " +
+        "review or the tester) and reports how well the score separated them, with a reading " +
+        "against fixed thresholds. Read-only. See docs/eval-harness.md.",
+    )
+    .option(
+      "--ledger <path>",
+      "also read eval-ledger.jsonl (judgments recorded before they reached the ticket)",
+    )
+    .option("--json", "emit machine-readable JSON", false)
+    .action((opts, cmd) => {
+      let ledgerJsonl: string | undefined;
+      if (opts.ledger) {
+        try {
+          ledgerJsonl = readFileSync(String(opts.ledger), "utf8");
+        } catch (err) {
+          // A missing ledger is "no older judgments", not an error: the judge may never
+          // have run, or this factory records them on the ticket only.
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT")
+            throw new DispatchError("VALIDATION_ERROR", `cannot read the ledger ${opts.ledger}`);
+        }
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const report = readJudgeAgreement(wg.db, ledgerJsonl ? { ledgerJsonl } : {});
+        if (opts.json) printJson(report);
+        else process.stdout.write(`${renderJudgeAgreement(report)}\n`);
       } finally {
         wg.db.close();
       }

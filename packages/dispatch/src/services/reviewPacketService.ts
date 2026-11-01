@@ -8,6 +8,7 @@ import type {
   WorkEvent,
 } from "../domain/types.js";
 import { listEvents } from "../events/eventWriter.js";
+import { currentJudgment, type RecordedEvalJudgment } from "./evalJudgment.js";
 import { AC_CHECK_VERIFIER } from "../policy/policy.js";
 import type { AcRepository } from "../repositories/acRepository.js";
 import type { EvidenceRepository } from "../repositories/evidenceRepository.js";
@@ -138,6 +139,12 @@ export interface ReviewPacket {
   pin: PacketPin | null;
   acceptance: PacketCriterion[];
   disagreements: TestDisagreement[];
+  /**
+   * EVAL JUDGE (the runner's opt-in judge): the quality judge's grade of this delivery, or null
+   * when none was recorded for it. NOT a runner fact like the rest of the packet: it is a
+   * model's opinion of the diff, advisory, read by no gate. The Review view says so.
+   */
+  judge: RecordedEvalJudgment | null;
 }
 
 /** Reads one ticket's usage from the ledger. */
@@ -280,7 +287,7 @@ function testerVerdictIds(events: WorkEvent[]): Set<string> {
  * re-entered review with other code. runner/lib/tester-binding.mjs (readReviewPin) dates
  * the landing pin by the same event and ignores an older one.
  */
-function enteredReviewAt(ticketId: string, events: WorkEvent[]): string | null {
+export function enteredReviewAt(ticketId: string, events: readonly WorkEvent[]): string | null {
   let at: string | null = null;
   for (const e of events) {
     if (e.event_type !== "ticket.transitioned" || e.entity_id !== ticketId) continue;
@@ -499,6 +506,7 @@ export class ReviewPacketService {
         .listForTicket(ticket.id)
         .map((ac) => readCriterion(ac, rows, sentBackAt)),
       disagreements,
+      judge: currentJudgment(events, sinceReview),
     };
   }
 }

@@ -406,7 +406,8 @@ export const DANGEROUS_COMMANDS = [
     // revision; a forged row would count an epic as accepted on assertions that never ran.
     // And the required-CI record (`ci-result`): only the runner's CI gate records what CI
     // said about the ticket's commit; a forged PASS would satisfy required CI for approval
-    // and landing on checks that never ran.
+    // and landing on checks that never ran. And the eval judge's verdict (`eval-score`):
+    // the runner records the judge's grade of a delivery; an agent never grades itself.
     // And `attach-evidence`, which writes a SYSTEM evidence row with any type and uri: the
     // runner's to call (gate output, the review pin gaffer-reviewed-commit:<sha>); an agent
     // records evidence as itself through the MCP, never as the system. And
@@ -415,7 +416,7 @@ export const DANGEROUS_COMMANDS = [
     // GATE INTEGRITY allowance (`ticket allow-test-changes`): only a human may excuse a
     // delivery's test edits (dispatch also refuses an agent actor server-side), and the
     // repo's registered DoD commands (`repo set-commands`): they ARE the gate.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set)\b/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,

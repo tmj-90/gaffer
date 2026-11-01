@@ -429,4 +429,56 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     expect(document.querySelector(".rv-verdict")).toBeNull();
     expect(document.querySelector(".signoff")).not.toBeNull();
   });
+
+  // EVAL JUDGE: the judge's grade, when one was recorded for this delivery, with the
+  // reasons for its weak dimensions; said as a model's grade that nothing gates on.
+  it("shows the eval judge's score and the reasons for its weak dimensions when recorded", async () => {
+    packet = {
+      ...PACKET,
+      judge: {
+        overall: "borderline",
+        score: 3.4,
+        blocking: false,
+        dims: { ac_coverage: 5, correctness: 4, minimalism: 2, test_adequacy: 3, security: 5 },
+        rationale: {
+          minimalism: "re-implements addTask as appendTask",
+          test_adequacy: "one happy-path test",
+          security: "nothing risky",
+        },
+        summary: "Works, but duplicates an existing helper.",
+        judge_model: "judge-model-x",
+        memory_present: true,
+        cost_usd: 0.42,
+        attempt: 0,
+        at: "2026-10-30T09:58:40Z",
+        event_id: "e1",
+        recorded_by: "system",
+      },
+    };
+    await boot();
+    const cell = document.querySelector(".vd-cell.vd-judge");
+    expect(cell).not.toBeNull();
+    expect(cell!.classList.contains("vd-warn")).toBe(true);
+    expect(text(".vd-cell.vd-judge .vd-v")).toBe("Borderline 3.4/5");
+    expect(label(".vd-cell.vd-judge")).toBe(
+      "Quality judge, advisory: borderline, 3.4 of 5, 2 weak dimensions",
+    );
+    const dims = [...document.querySelectorAll(".vd-judge-dim")].map((li) =>
+      li.textContent!.replace(/\s+/g, " "),
+    );
+    // Lowest first; a dimension above 3 is not listed.
+    expect(dims).toEqual([
+      "Smallest change 2/5: re-implements addTask as appendTask",
+      "Tests 3/5: one happy-path test",
+    ]);
+    expect(text(".vd-cell.vd-judge")).toContain("Works, but duplicates an existing helper.");
+    expect(text(".vd-cell.vd-judge")).toContain("not a check: nothing gates on it");
+    expect(text(".vd-cell.vd-judge")).toContain("judge-model-x");
+  });
+
+  it("draws no judge cell when the judge recorded nothing for this delivery", async () => {
+    await boot();
+    expect(document.querySelector(".rv-verdict")).not.toBeNull();
+    expect(document.querySelector(".vd-cell.vd-judge")).toBeNull();
+  });
 });

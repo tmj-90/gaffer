@@ -4,7 +4,9 @@
 # ---------------------------------------------------------------------
 # Runs the independent delivery-quality judge (crew: deliveryJudgeCli) over a
 # JUST-SUBMITTED delivery and appends the scored verdict to the eval ledger
-# ($GAFFER_DATA/eval-ledger.jsonl, crew: evalLedgerCli). This is how the factory
+# ($GAFFER_DATA/eval-ledger.jsonl, crew: evalLedgerCli) and to the ticket (a system
+# `ticket.eval_judged` event: the Review view shows it, `wg judge-agreement` pairs it
+# with the review outcome to say whether the score is worth having). This is how the factory
 # MEASURES itself: pass rate, per-dimension quality, cost-per-passing-delivery,
 # and the memory score gap all aggregate from these records.
 #
@@ -16,7 +18,8 @@
 # Discipline (runner/CLAUDE.md): additive + FAIL-SOFT. Every failure path —
 # missing crew dist, judge model error, unparseable reply, full disk — returns 0
 # and at most logs one line. A delivery must never park/fail because judging it
-# failed. Opt-in via GAFFER_EVAL_JUDGE=1 (default OFF for a soak cycle);
+# failed. Opt-in via GAFFER_EVAL_JUDGE=1 (default OFF: one extra paid model call per
+# delivery; `gaffer eval agreement` says whether it earns it on a factory);
 # DRY_RUN is always a no-op.
 #
 # The judge's model turn goes through worker_deliver — the factory's SINGLE
@@ -182,6 +185,14 @@ gaffer_eval_judge_delivery() (
   judge_model="$(printf '%s' "$judge_flag" | sed -n -E 's/.*--model[= ]+([^ ]+).*/\1/p')"
   VJ="$verdict_json" NUM="$num" REPO="$repo_name" MEM="$mem" SPEND="$spend" JMODEL="$judge_model" \
     node "$_GAFFER_JSON_TOOL" judge-record > "$tmp/record.json" 2>/dev/null || return 0
+  # ON THE TICKET TOO: the verdict is recorded as a system event (`wg ticket eval-score`),
+  # so the Review view's verdict strip and `wg ticket show` carry it next to the review,
+  # and `wg judge-agreement` can pair it with what the reviewer then did. Fail-soft like
+  # the rest: the ledger below still has it when dispatch refuses or is unreachable.
+  if type wg >/dev/null 2>&1; then
+    wg ticket eval-score "$num" --as system --file "$tmp/record.json" >/dev/null 2>&1 \
+      || { type log >/dev/null 2>&1 && log "EVAL: could not record the verdict on #$num (the ledger still has it)" || true; }
+  fi
   # The ledger is a shared append under GAFFER_CONCURRENCY>1 (N workers, one
   # $GAFFER_DATA). Route through the runner's append lock like every other
   # shared append so two ticks can't interleave a multi-KB JSONL line; log (not

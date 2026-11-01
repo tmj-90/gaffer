@@ -89,6 +89,7 @@
 9	dashboard-deeplink.test.sh
 9	dod-gate.test.sh
 9	e2e-lifecycle.test.sh
+8	run-summary-wording.test.sh
 8	boundary-integration.test.mjs
 8	e2e-spec-to-done.test.sh
 8	onboard-analyze.test.mjs

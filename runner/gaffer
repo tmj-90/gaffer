@@ -578,7 +578,7 @@ run)
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
   _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
   if [ "$_daemon" = 0 ]; then exec env DRY_RUN="$_live_dry" bash "$_loop_sh"; fi
-  say "gaffer daemon: re-running the loop every ${_interval}s — SIGINT/SIGTERM stops cleanly (finishes the current pass); MAX_TICKS_PER_DAY caps the day"
+  say "daemon: re-running the loop every ${_interval}s — SIGINT/SIGTERM stops cleanly (finishes the current pass); MAX_TICKS_PER_DAY caps the day"
   # shellcheck source=lib/daemon.sh
   source "$HERE/lib/daemon.sh"
   GAFFER_LOOP_SH="$_loop_sh" GAFFER_DAEMON_CONFIG="$HERE/factory.config.sh" DRY_RUN="$_live_dry" gaffer_run_daemon "$_interval"

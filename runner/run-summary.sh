@@ -35,9 +35,16 @@ sum_list_raw() {
   if [ -n "${SUMMARY_LIST_CMD:-}" ]; then local -a c; read -ra c <<<"$SUMMARY_LIST_CMD"; "${c[@]}" "$1"
   else wg ticket list -s "$1"; fi
 }
-sum_show() {
+sum_show_raw() {
   if [ -n "${SUMMARY_SHOW_CMD:-}" ]; then local -a c; read -ra c <<<"$SUMMARY_SHOW_CMD"; "${c[@]}" "$1"
   else wg ticket show "$1"; fi
+}
+# One `ticket show` per ticket per report: the landed count, the oversized scan and the
+# cleanup scan all read the done tickets (cached next to the list cache below).
+sum_show() {
+  local f="$_LIST_CACHE_DIR/show-$1"
+  [ -f "$f" ] || sum_show_raw "$1" 2>/dev/null > "$f"
+  cat "$f"
 }
 
 # Per-status list cache. sum_list <status> is asked for the same status repeatedly
@@ -109,10 +116,25 @@ oversized_flagged() {
   [ "$found" = "0" ] && printf "    ${c_dim}(none)${c_off}\n"
 }
 
+# Landed THIS run: a done ticket whose last update (the move to done) is at or after
+# SUMMARY_SINCE, the run start loop.sh passes. "landed: 1 done" used to count every done
+# ticket ever, so a run that landed nothing read as a success. Without SUMMARY_SINCE
+# (run directly) it says all-time.
+landed_line() {
+  local total n ua k=0
+  total="$(count_status 'done')"
+  if [ -z "${SUMMARY_SINCE:-}" ]; then printf '%s done (all time)' "$total"; return 0; fi
+  for n in $(status_numbers 'done'); do
+    ua="$(sum_show "$n" | grep -o '"updated_at"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+    [ -n "$ua" ] && [ ! "$ua" \< "$SUMMARY_SINCE" ] && k=$((k + 1))
+  done
+  printf '%s this run (%s done in all)' "$k" "$total"
+}
+
 say "run summary"
 
 printf "\n  ${c_dim}outcomes${c_off}\n"
-line "landed:"      "$(count_status 'done') done"
+line "landed:"      "$(landed_line)"
 line "failed-safe:" "$(count_status blocked) blocked"
 line "parked:"      "$(count_status refining) refining"
 line "re-queued:"   "$(count_status ready) ready"

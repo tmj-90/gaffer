@@ -557,7 +557,8 @@ export function registerTicket(program: Command): void {
     .command("test-contract <ref>")
     .description(
       "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +
-        "independent tester reads to stand the system up (never the diff).",
+        "independent tester reads to stand the system up (never the diff). Refused once " +
+        "the ticket is in testing (CONTRACT_FROZEN).",
     )
     .option("--surface <surface...>", "changed boundary surface(s): API/endpoint/CLI/page", [])
     .option("--dep <dep...>", "runtime dependency to stand up (e.g. 'Postgres 16')", [])

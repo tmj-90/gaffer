@@ -53,7 +53,8 @@ pnpm cli -- decisions list
 
 A ticket's contract (title, description, policy, criteria, check commands) is editable
 in draft, refining, ready and blocked; from claimed on every contract edit, `ac add`
-included, is refused with `CONTRACT_FROZEN`.
+included, is refused with `CONTRACT_FROZEN`. The test contract (`ticket test-contract`)
+stays editable through `in_review` and is frozen from `in_testing` on.
 
 Agent / claim / evidence flow (the same operations the MCP tools expose):
 

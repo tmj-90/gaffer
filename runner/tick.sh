@@ -1067,6 +1067,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
       fi
       CLAIM_TOKEN="$_CLAIM_TOK"
       log "claimed #$_cand for delivery (runner holds the claim; ttl=${GAFFER_CLAIM_TTL}s)"
+      # CONTRACT FREEZE: a ready ticket's contract is editable until this claim, so a
+      # person may have changed it since the scan read it. Re-read it now that it is
+      # frozen, so the prompt carries the contract the review and the tester hold it to.
+      _cshow_frozen="$(wg ticket show "$_cand" 2>/dev/null || true)"
+      [ -n "$_cshow_frozen" ] && _cshow="$_cshow_frozen"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
     STACK="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"

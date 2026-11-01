@@ -376,7 +376,8 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
 - **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
   that carry the testable flag, and the planner does not set it. Mark the ones you want
   black-box tested with `runner/gaffer wg ticket set-testable <n>` before readying them (and
-  optionally record a `test-contract`); unmarked tickets go straight from approval to merge.
+  optionally record a `test-contract`, any time before the ticket reaches testing); unmarked
+  tickets go straight from approval to merge.
   **The exception is the epic's Acceptance ticket:** it is always testable and always goes
   through the independent tester on approval, whatever `GAFFER_TESTING` says. Until the
   tester passes it, `gaffer status`, the loop's closing report and `wg stats` say the build

@@ -99,6 +99,12 @@ const frozen: ResponseSpec = {
     "The ticket's contract is frozen (`CONTRACT_FROZEN`: it is claimed or further on), or the edit would make a ready ticket fail its ready gate (`POLICY_DENIED`).",
   content: "json",
 };
+const testContractFrozen: ResponseSpec = {
+  status: 409,
+  description:
+    "The ticket is in testing or further on (`CONTRACT_FROZEN`): the tester is bound to the test contract from in_testing.",
+  content: "json",
+};
 const invalid: ResponseSpec = {
   status: 422,
   description: "The body or query failed validation (`VALIDATION_ERROR`).",
@@ -896,9 +902,16 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/test-contract",
     tag: T.review,
     summary: "Record the testing handover contract",
+    description:
+      "Replaces the whole contract. Part of the tester's contract hash, so it is editable until the tester takes the ticket (draft through in_review, and blocked) and refused with 409 `CONTRACT_FROZEN` from in_testing on.",
     capability: "full",
     body: "setTestContractBody",
-    responses: [ok("`{ test_contract }`.", "TestContractSet"), notFound, invalid],
+    responses: [
+      ok("`{ test_contract }`.", "TestContractSet"),
+      notFound,
+      testContractFrozen,
+      invalid,
+    ],
   },
   {
     method: "POST",

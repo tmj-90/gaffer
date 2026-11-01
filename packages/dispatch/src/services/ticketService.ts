@@ -107,6 +107,21 @@ export const CONTRACT_EDITABLE_STATUSES: readonly TicketStatus[] = [
   "blocked",
 ];
 
+/**
+ * The test contract (the testing handover the independent tester reads) is part of the
+ * tester's contract hash (util/contractHash). It is written by whoever hands the
+ * ticket to the tester: the implementer while it delivers, or the reviewer while it
+ * reviews, so it stays editable through `claimed`, `in_progress` and `in_review`. From
+ * `in_testing` on the tester is bound to it (its verdict carries the hash, and a PASS
+ * reads stale once it changes), so a write there is refused with CONTRACT_FROZEN.
+ */
+export const TEST_CONTRACT_EDITABLE_STATUSES: readonly TicketStatus[] = [
+  ...CONTRACT_EDITABLE_STATUSES,
+  "claimed",
+  "in_progress",
+  "in_review",
+];
+
 /** A create-time warning: the ticket was created, but its pack will refuse it at ready. */
 export interface TicketWarning {
   code: string;
@@ -870,6 +885,20 @@ export class TicketService {
       writeEvent(this.db, {
         entity_type: "ticket",
         entity_id: ticket.id,
+      if (!TEST_CONTRACT_EDITABLE_STATUSES.includes(ticket.status)) {
+        throw new DispatchError(
+          "CONTRACT_FROZEN",
+          `Cannot set the test contract: ticket #${ticket.number ?? ticket.id} is ` +
+            `'${ticket.status}', and the tester is bound to the contract from in_testing ` +
+            "on. Send it back for rework first, or set it while it is " +
+            `${TEST_CONTRACT_EDITABLE_STATUSES.join(", ")}.`,
+          {
+            ticket_id: ticket.id,
+            status: ticket.status,
+            editable_statuses: TEST_CONTRACT_EDITABLE_STATUSES,
+          },
+        );
+      }
         actor,
         event_type: "ticket.test_contract_set",
         payload: {

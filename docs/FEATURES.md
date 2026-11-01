@@ -126,7 +126,9 @@ contract (title, description, policy, criteria, check commands) is editable in
 draft, refining, ready and blocked. From claimed on it is frozen, because the
 review and the tester are held to the contract the delivery saw: every contract
 edit, `ac add` included and over MCP too, is refused with `CONTRACT_FROZEN` (409)
-until the ticket comes back for rework. An edit to a ready ticket must keep it
+until the ticket comes back for rework. The test contract the independent tester
+reads is held the same way once the tester has it: editable up to `in_review`,
+`CONTRACT_FROZEN` from `in_testing` on. An edit to a ready ticket must keep it
 passing its ready gate. Each edit is an event on the ticket (`ticket.edited`,
 `ac.edited`, `ac.removed`), and an edited criterion goes back to pending.
 

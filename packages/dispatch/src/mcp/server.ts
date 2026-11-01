@@ -217,7 +217,8 @@ export const TOOL_DESCRIPTIONS: Record<keyof typeof toolSchemas, string> = {
     "MySQL)'), `env_vars[]`, `run_command` (how to bring the system up / invoke the " +
     "surface), and `harness_ready` (whether a black-box harness already exists). The " +
     "tester gets THIS operational contract + the acceptance criteria — and probes " +
-    "from the outside; it must never be handed the diff.",
+    "from the outside; it must never be handed the diff. Write it before testing starts: " +
+    "from `in_testing` on it is frozen (CONTRACT_FROZEN).",
   create_epic:
     "**Create a whole dependency-ordered plan in one atomic call: an `epic` scope " +
     "node that groups N draft tickets, with their acceptance criteria, per-ticket " +

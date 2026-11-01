@@ -109,3 +109,24 @@ describe("GET /tickets paging", () => {
     expect((await list(base, "?fields=everything")).status).toBe(422);
   });
 });
+
+describe("GET /tickets order", () => {
+  it("same-millisecond tickets come back in ticket-number order, however they were stored (exploratory finding api-robustness/F15)", async () => {
+    // TestClock never advances: all 25 share one created_at, as tickets created in one
+    // burst (or imported) do. Ties came back in storage order, so #12/#13 swapped after
+    // an import. Move #1 and #2 to the end of the table's storage order.
+    const { wg, base } = await start();
+    wg.db.prepare("UPDATE tickets SET rowid = 10000 + number WHERE number IN (1, 2)").run();
+    const expected = Array.from({ length: N }, (_, i) => i + 1);
+    const all = await list(base, "");
+    expect(all.body.tickets.map((t) => t.number)).toEqual(expected);
+    const paged = [
+      ...(await list(base, "?limit=10")).body.tickets,
+      ...(await list(base, "?limit=10&offset=10")).body.tickets,
+      ...(await list(base, "?limit=10&offset=20")).body.tickets,
+    ];
+    expect(paged.map((t) => t.number)).toEqual(expected);
+    expect(wg.listTickets({ status: "draft" }).map((t) => t.number)).toEqual(expected);
+    expect(wg.listTickets({}).map((t) => t.number)).toEqual(expected);
+  });
+});

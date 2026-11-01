@@ -83,6 +83,14 @@ SPA shell and `/healthz` are tokenless). Loopback-only by default — a bind gua
 non-loopback hosts unless you pass `--unsafe-bind` (or `DISPATCH_UNSAFE_BIND=1`). Run it
 backgrounded with `nohup … &` to keep it up across shells.
 
+`runner/gaffer dashboard` refuses a port that something else holds and names its pid.
+`--restart` stops the running server (the one its pid file names, or the port's
+listener when that is this factory's dashboard), rotates the login token and starts a
+new one; `--stop` stops it. A server that does not answer within
+`GAFFER_DASHBOARD_START_TIMEOUT` seconds (30 by default) is stopped and its output kept
+in `.gaffer/dashboard-failed.log`; `.gaffer/dashboard.log` is only replaced once a new
+server is up.
+
 **Named credentials.** The shared token acts as one operator identity. To give each
 person (or CI job) their own credential whose writes are attributed to them in the
 event log, mint a principal — from Settings → Access in the dashboard, or:

@@ -322,6 +322,19 @@ export class FakeDispatchClient implements DispatchClient {
     return { decisionId, title: p.title, question: p.question, severity, status };
   }
 
+  listOpenDecisions(): DecisionRequestResult[] {
+    // Mirror Dispatch's pending set: not yet resolved (no answer recorded).
+    return this.decisions
+      .filter((d) => d.status === "human_required" || d.status === "requested")
+      .map((d) => ({
+        decisionId: d.decisionId,
+        title: d.title,
+        question: d.question,
+        severity: d.severity,
+        status: d.status,
+      }));
+  }
+
   /** Test helper: model a human answering a raised decision in the UI/CLI. */
   answerDecision(decisionId: string, answer: string): void {
     const decision = this.decisions.find((d) => d.decisionId === decisionId);

@@ -395,14 +395,20 @@ gaffer_spend_cap_hint() {
 # onboarding analysis, merge resolver) and spec-author ask the SAME module,
 # lib/budget-admission.mjs, so one rule governs every launcher: the daily
 # (GAFFER_DAILY_BUDGET_USD) and lifetime (GAFFER_BUDGET_USD) caps, read fresh from the
-# ledger at the moment of the launch, fail closed on an unknowable spend. Without node
-# the spend cannot be measured: refused when a cap is set, admitted when none is.
+# ledger at the moment of the launch, fail closed on an unknowable spend, and NO cap at
+# all refuses like a live run (GAFFER_ALLOW_UNCAPPED=1 opts out). Without node the spend
+# cannot be measured: refused when a cap is set; with no cap, the same no-cap rule.
 gaffer_paid_launch_admitted() {
   local kind="${1:-worker}" mod
   mod="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/budget-admission.mjs"
   if ! command -v node >/dev/null 2>&1 || [ ! -f "$mod" ]; then
     if [ -n "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
       echo "gaffer: budget: a budget cap is set but the admission check cannot run (node or lib/budget-admission.mjs missing) — refusing the paid $kind launch (fail closed)" >&2
+      return 1
+    fi
+    # No cap at all: refused like a live run unless the operator opted out.
+    if [ "${GAFFER_ALLOW_UNCAPPED:-}" != 1 ]; then
+      echo "gaffer: budget: a paid $kind launch refuses to start without a dollar cap, like a live run — $(gaffer_spend_cap_hint)" >&2
       return 1
     fi
     return 0

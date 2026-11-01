@@ -622,7 +622,9 @@ console.log(
   const SPY_WG = resolve(WORKDIR, "spy-wg.js");
   writeFileSync(
     SPY_WG,
-    `require("node:fs").writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\nprocess.stdout.write('{"ok":true}\\n');\n`,
+    // Only the re-approval signal (reopen-for-review) marks; the merge's own reads (the
+    // landing plan and the approval it acts on) are not a signal.
+    `if (process.argv.includes("reopen-for-review")) require("node:fs").writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\nprocess.stdout.write('{"ok":true}\\n');\n`,
   );
   const gaveUp = runLive({
     GAFFER_STRICT_REQUIRE: "0",
@@ -734,10 +736,18 @@ exit 3
   });
   assert("sandbox off (control): the resolver WAS spawned through the seam", existsSync(MARKER));
   assert(
-    "sandbox off (control): exit 0 with conflict_resolved_pending_reapproval",
-    spawned.code === 0 &&
+    // Exploratory finding cli-runner/F-10: nothing landed, so `gaffer merge` must not
+    // report success — exit 4 (held) and say how to re-approve.
+    "sandbox off (control): exit 4 (not landed) with conflict_resolved_pending_reapproval",
+    spawned.code === 4 &&
       spawned.out &&
       spawned.out.phase === "conflict_resolved_pending_reapproval",
+  );
+  assert(
+    "sandbox off (control): stderr says 'not merged: conflict resolved, re-approve with gaffer approve N --commit …'",
+    /not merged: conflict resolved .*re-approve with `gaffer approve 7 --commit [^`=]+=[0-9a-f]{7,}`/.test(
+      spawned.stderr,
+    ),
   );
   assert(
     "sandbox off (control): the resolution was re-gated (DoD PASS on the resolved head, fresh evidence recorded)",
@@ -898,7 +908,7 @@ console.log("== AC9c: the RE-GATE — a resolution is re-tested before it goes b
     const waived = runRegate(repo, dbFor(repo), { CLAUDE_BIN: GOOD, GAFFER_ALLOW_NO_DOD: "1" });
     assert(
       "no gate commands + GAFFER_ALLOW_NO_DOD=1: reopened for re-review",
-      waived.code === 0 &&
+      waived.code === 4 &&
         waived.out?.phase === "conflict_resolved_pending_reapproval" &&
         existsSync(SPY_MARK),
     );
@@ -912,7 +922,7 @@ console.log("== AC9c: the RE-GATE — a resolution is re-tested before it goes b
     });
     assert(
       "GAFFER_DOD=0: reopened, regate.dod OFF (markers still checked)",
-      r.code === 0 &&
+      r.code === 4 &&
         r.out?.phase === "conflict_resolved_pending_reapproval" &&
         r.out?.regate?.dod === "OFF",
     );
@@ -1065,7 +1075,7 @@ console.log("== AC9c: the RE-GATE — a resolution is re-tested before it goes b
       const ev = existsSync(EVLOG) ? readFileSync(EVLOG, "utf8") : "";
       assert(
         "committed fix (control): reopened with dod PASS",
-        r.code === 0 &&
+        r.code === 4 &&
           r.out?.phase === "conflict_resolved_pending_reapproval" &&
           r.out?.regate?.dod === "PASS" &&
           existsSync(SPY_MARK),
@@ -1651,7 +1661,9 @@ console.log(
     ["--ticket", "7"],
   );
   assert("merged (exit 0)", code === 0 && out && out.phase === "merged");
-  assert("via:local", out && out.via === "local");
+  // Recorded as the operator's explicit fallback: the one local landing Dispatch counts
+  // for a repository with a PR (external review #8).
+  assert("via:local-fallback", out && out.via === "local-fallback");
   assert(
     "the fallback and its reason are logged",
     /falling back to a LOCAL merge/.test(err) && /not mergeable/.test(err),

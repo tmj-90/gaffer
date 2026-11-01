@@ -432,7 +432,7 @@ gaffer_route_model() {
     # so a 40 KB diff measured that way reads as ~60 B and NEVER crosses the
     # HIGH_DIFF_BYTES difficulty mark — "big diff → route stronger" would never fire.
     _db="$(git -C "$worktree" diff HEAD 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
-    _fc="$(git -C "$worktree" diff --name-only HEAD 2>/dev/null | grep -c . || echo 0)"
+    _fc="$(git -C "$worktree" diff --name-only HEAD 2>/dev/null | grep -c . || true)"
   fi
   # FINDING-9: on a REWORK attempt the worktree does not exist yet at routing time
   # (tick.sh routes BEFORE worktree creation) — and even when it does, `git diff HEAD`
@@ -445,7 +445,7 @@ gaffer_route_model() {
      && command -v git >/dev/null 2>&1 \
      && git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" >/dev/null 2>&1; then
     _db="$(git -C "$repo" diff "$base...$branch" -- 2>/dev/null | wc -c | tr -d ' ' || echo 0)"
-    _fc="$(git -C "$repo" diff --name-only "$base...$branch" -- 2>/dev/null | grep -c . || echo 0)"
+    _fc="$(git -C "$repo" diff --name-only "$base...$branch" -- 2>/dev/null | grep -c . || true)"
   fi
   [ "${_db:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--diff-bytes "$_db")
   [ "${_fc:-0}" -gt 0 ] 2>/dev/null && _diff_args+=(--file-count "$_fc")
@@ -1810,6 +1810,9 @@ _gaffer_autonomy_on() {
   _gaffer_flag_on "${MERGE_ON_AGENT_REVIEW:-0}" && return 0
   _gaffer_flag_on "${AUTO_MERGE:-0}" && return 0
   _gaffer_flag_on "${MEMORY_AUTO_APPROVE:-0}" && return 0
+  # GAFFER_AUTO_PUSH pushes landed agent work to origin with no person in the loop: a
+  # ship flag like the four above (exploratory docs audit: it alone left the sandbox off).
+  _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}" && return 0
   case "$GAFFER_MODE" in autonomous | strict) return 0 ;; esac
   _gaffer_autonomy_policy_active && return 0
   return 1
@@ -2442,6 +2445,12 @@ gaffer_review_reason() {
 # stale per-ticket worktrees left by killed workers (A-1 parallel execution).
 # shellcheck source=lib/orphan-recovery.sh
 [ -f "$RUNNER_DIR/lib/orphan-recovery.sh" ] && source "$RUNNER_DIR/lib/orphan-recovery.sh"
+
+# Cleanup ownership (defines gaffer_note_own_claim / gaffer_cleanup_owned): a tick's
+# teardown removes a worktree or branch only while this run still owns it (external
+# review #8: a stopped or expired worker deleted its replacement's submitted branch).
+# shellcheck source=lib/cleanup-ownership.sh
+[ -f "$RUNNER_DIR/lib/cleanup-ownership.sh" ] && source "$RUNNER_DIR/lib/cleanup-ownership.sh"
 
 # Dashboard process tracking (defines gaffer_dashboard_pid / _pidfile / _write_pid):
 # precise running-detection via a recorded+validated PID instead of a broad pgrep.

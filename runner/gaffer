@@ -21,14 +21,18 @@
 #                                     go live: one supervisor pass (drains the ready queue), or
 #                                     --daemon = re-run it every N seconds until SIGINT/SIGTERM;
 #                                     --dry-run (-n) = preview only, nothing spent
+#                                     exit 0 done · 3 refused (no dollar cap, setup error) ·
+#                                     75 paused on the usage window (one-shot; --daemon waits it out)
 #   gaffer wg <dispatch args…>        the dispatch CLI against THIS factory's database
 #                                     (e.g. gaffer wg ticket create -t "…" -d "…"; gaffer wg ticket show 1)
 #   gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…   the human review gate:
 #                                     approve a ticket in Review — the commits you reviewed
 #                                     (shown and confirmed when --commit is omitted)
 #   gaffer merge <ticket>             land an APPROVED (ready_for_merge) ticket — what the dashboard's
-#                                     Merge button runs; refuses (exit 4) a ticket not yet approved
-#                                     or unknown; a done ticket is "already merged" (exit 0)
+#                                     Merge button runs. exit 0 landed (a done ticket is "already
+#                                     merged") · 4 held / not landed, with the reason (not approved or
+#                                     unknown, partly merged, a conflict resolved and sent back for
+#                                     re-approval) · 1 a hard failure
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer help | --version
 #
@@ -82,7 +86,7 @@ usage() {
     demo)      echo "usage: gaffer demo   (one dry tick over a showcase repo in a fresh temp dir, or DEMO_DIR; always DRY_RUN, nothing spent)" ;;
     eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>]" ;;
     approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
-    merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)" ;;
+    merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
   esac
@@ -596,7 +600,13 @@ run)
   case "$_interval" in ''|*[!0-9]*) bad_arg run "--interval needs a whole number of seconds (got '$_interval')" ;; esac
   _live_dry="${_GAFFER_OP_DRY_RUN:-0}"
   [ "$_flag_dry" = 1 ] && _live_dry=1
-  [ "$_live_dry" = 1 ] && warn "DRY_RUN=1 is set in your environment — this pass previews only; unset it to deliver for real"
+  # Name where the preview came from: the flag, or DRY_RUN=1 in the caller's environment
+  # (exploratory finding fresh-user/F-17: the flag used to be blamed on the environment).
+  if [ "$_flag_dry" = 1 ]; then
+    warn "--dry-run: this pass previews each ready ticket once; nothing is claimed or spent"
+  elif [ "$_live_dry" = 1 ]; then
+    warn "DRY_RUN=1 is set in your environment — this pass previews only; unset it to deliver for real"
+  fi
   # A live run needs a dollar cap (lib/budget.sh gaffer_spend_cap_ok) — said here, before
   # the daemon starts, so `--daemon` never sits backing off a refusal. loop.sh checks
   # again for a direct or scheduled run.
@@ -604,10 +614,14 @@ run)
     err "gaffer run: refusing a live run — $(gaffer_spend_cap_hint) (or preview with --dry-run)"
     exit 3
   fi
+  if [ "$_live_dry" != 1 ] && declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! DRY_RUN=0 gaffer_claude_auth_gate; then
+    err "gaffer run: refusing a live run — $(gaffer_claude_auth_hint) (or preview with --dry-run)"
+    exit 3
+  fi
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
   _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
   if [ "$_daemon" = 0 ]; then exec env DRY_RUN="$_live_dry" bash "$_loop_sh"; fi
-  say "daemon: re-running the loop every ${_interval}s — SIGINT/SIGTERM stops cleanly (finishes the current pass); MAX_TICKS_PER_DAY caps the day"
+  say "daemon: re-running the loop every ${_interval}s — Ctrl-C/SIGTERM stops cleanly (finishes the current pass; a second Ctrl-C stops it now); MAX_TICKS_PER_DAY caps the day"
   # shellcheck source=lib/daemon.sh
   source "$HERE/lib/daemon.sh"
   GAFFER_LOOP_SH="$_loop_sh" GAFFER_DAEMON_CONFIG="$HERE/factory.config.sh" DRY_RUN="$_live_dry" gaffer_run_daemon "$_interval"

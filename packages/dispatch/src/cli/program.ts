@@ -40,6 +40,7 @@ export const RUNNER_INTERNAL_COMMANDS: Readonly<Record<string, readonly string[]
     "expire-claims",
   ],
   ticket: [
+    "landing-begin",
     "record-landing",
     "record-tester-replay",
     "auto-decision",

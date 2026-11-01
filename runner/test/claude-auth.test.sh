@@ -40,7 +40,7 @@ EOF
 mkclaude claude-401 "echo 'Invalid API key · Please run /login' >&2; exit 1"
 mkclaude claude-iserr "printf '%s\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"OAuth token has expired\"}'; exit 0"
 mkclaude claude-good "printf '%s\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\"}'; exit 0"
-NOCRED=(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CONFIG_DIR)
+NOCRED=(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u CLAUDE_CONFIG_DIR -u ANTHROPIC_BASE_URL -u GAFFER_CLAUDE_AUTH_CHECKED -u GAFFER_CLAUDE_AUTH_PROBE -u DRY_RUN -u SANDBOX_PROVIDER -u STRICT_MODE -u GAFFER_STRICT_REQUIRE -u GAFFER_WORKER_PROVIDER)
 probe() { "${NOCRED[@]}" "$@" bash -c 'source "$1"; gaffer_claude_auth_probe; rc=$?; echo "$rc|$GAFFER_CLAUDE_AUTH_SOURCE"' _ "$RUNNER_DIR/lib/claude-auth.sh"; }
 
 echo "== gaffer_claude_auth_probe: is a credential visible? =="
@@ -60,6 +60,50 @@ r="$(probe HOME="$HC")"
 [ "$r" = "0|$HC/.claude/.credentials.json" ] && ok "~/.claude/.credentials.json → visible" || fail "cred file: $r"
 r="$(probe HOME="$H" CLAUDE_CONFIG_DIR="$HC/.claude")"
 [ "${r%%|*}" = "0" ] && ok "CLAUDE_CONFIG_DIR is honoured" || fail "config dir: $r"
+HK="$WORK/home-helper"; mkdir -p "$HK/.claude"; echo '{"apiKeyHelper":"/usr/local/bin/key"}' > "$HK/.claude/settings.json"
+r="$(probe HOME="$HK")"
+[ "${r%%|*}" = "0" ] && ok "an apiKeyHelper in ~/.claude/settings.json → visible" || fail "apiKeyHelper: $r"
+# Every other place the CLI takes a login from is a credential too (never refuse a
+# working setup): the Foundry provider, a Console key in the global config, an auth
+# `env` entry in settings.json; and with no HOME at all there is nowhere to look.
+r="$(probe HOME="$H" CLAUDE_CODE_USE_FOUNDRY=1)"
+[ "${r%%|*}" = "0" ] && ok "CLAUDE_CODE_USE_FOUNDRY → visible" || fail "foundry: $r"
+HJ="$WORK/home-json"; mkdir -p "$HJ"; echo '{"primaryApiKey":"sk-x"}' > "$HJ/.claude.json"
+r="$(probe HOME="$HJ")"
+[ "$r" = "0|$HJ/.claude.json (primaryApiKey)" ] && ok "a primaryApiKey in ~/.claude.json → visible" || fail "primaryApiKey: $r"
+HE="$WORK/home-env"; mkdir -p "$HE/.claude"; echo '{"env":{"ANTHROPIC_AUTH_TOKEN":"t"}}' > "$HE/.claude/settings.json"
+r="$(probe HOME="$HE")"
+[ "${r%%|*}" = "0" ] && ok "an auth env entry in ~/.claude/settings.json → visible" || fail "settings env: $r"
+HN="$WORK/home-noauth"; mkdir -p "$HN/.claude"; echo '{"model":"x","env":{"FOO":"1"}}' > "$HN/.claude/settings.json"
+if [ "$(uname -s)" != "Darwin" ] && [ ! -s /etc/claude-code/managed-settings.json ]; then
+  r="$(probe HOME="$HN")"
+  [ "${r%%|*}" = "1" ] && ok "a settings.json with no auth entry is not a credential" || fail "settings no auth: $r"
+fi
+r="$("${NOCRED[@]}" -u HOME bash -c 'source "$1"; gaffer_claude_auth_probe; echo "$?"' _ "$RUNNER_DIR/lib/claude-auth.sh")"
+[ "$r" = 2 ] && ok "no HOME and no CLAUDE_CONFIG_DIR → unknown, not a refusal" || fail "no HOME: $r"
+
+echo "== gaffer_claude_auth_gate: never refuses on doubt =="
+gate() { "${NOCRED[@]}" HOME="$H" CLAUDE_BIN=claude "$@" bash -c 'source "$1"; source "$2"; source "$3"; gaffer_claude_auth_gate; echo "$?"' _ "$RUNNER_DIR/lib/sandbox.sh" "$RUNNER_DIR/lib/worker.sh" "$RUNNER_DIR/lib/claude-auth.sh" 2>/dev/null; }
+if [ "$(uname -s)" != "Darwin" ]; then
+  [ "$(gate)" = 1 ] && ok "gate: nothing visible → refuse" || fail "gate none: $(gate)"
+fi
+for c in "DRY_RUN=1" "GAFFER_CLAUDE_AUTH_PROBE=0" "CLAUDE_BIN=/opt/wrapper/claude" "GAFFER_WORKER_PROVIDER=other" \
+         "ANTHROPIC_BASE_URL=http://gateway.invalid" "SANDBOX_PROVIDER=docker STRICT_MODE=1" "SANDBOX_PROVIDER=docker GAFFER_STRICT_REQUIRE=1"; do
+  # shellcheck disable=SC2086
+  [ "$(gate $c)" = 0 ] && ok "gate: $c → go ahead" || fail "gate $c: $(gate $c)"
+done
+
+echo "== detectAuthError keys on the CLI's own error, not agent text =="
+det() { printf '%s' "$1" > "$WORK/env.json"; node "$RUNNER_DIR/lib/worker.mjs" parse-result auth-error --json-file "$WORK/env.json" >/dev/null 2>&1 && echo yes || echo no; }
+[ "$(det '{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Please run /login"}')" = yes ] && ok "detect: the CLI's 'Invalid API key' error envelope" || fail "detect: real auth error missed"
+[ "$(det '{"type":"result","subtype":"success","is_error":false,"result":"Invalid API key · Please run /login"}')" = no ] && ok "detect: an agent REPLY saying 'Invalid API key' is a normal outcome" || fail "detect: agent reply read as auth"
+[ "$(det '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Invalid API key · Please run /login"}')" = no ] && ok "detect: a turn-cap stop carrying that text is not an auth failure" || fail "detect: max-turns read as auth"
+[ "$(det '{"type":"result","subtype":"success","is_error":true,"result":"Tests failed: Invalid API key in fixture"}')" = no ] && ok "detect: the text must START the CLI's error" || fail "detect: mid-text match"
+
+if [ "$(uname -s)" != "Darwin" ]; then
+  r="$(probe HOME="$H" ANTHROPIC_BASE_URL=http://gateway.invalid)"
+  [ "${r%%|*}" = "2" ] && ok "ANTHROPIC_BASE_URL alone → unknown (a gateway may authenticate), not a refusal" || fail "base url: $r"
+fi
 
 echo "== gaffer_claude_live_probe (GAFFER_PREFLIGHT_LIVE=1) =="
 for b in claude-401 claude-iserr; do

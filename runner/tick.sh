@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
-# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|maintenance_drafted|
-# maintenance_ran|merged|no_work|error|setup_error` line (merged: nothing else to do, but
+# Prints a final `TICK_RESULT=worked|previewed|reviewed|clarified|idle_drafted|maintenance_drafted|
+# maintenance_ran|merged|parked|no_work|error|setup_error` line (parked: the delivery
+# ended with its ticket parked for a human — blocked / refining — on purpose) (previewed: a DRY_RUN tick
+# described one delivery and changed nothing) (merged: nothing else to do, but
 # the merge lane landed approved work; setup_error: a fail-closed setup check
 # refused before any agent launched). On an idle tick: maintenance_drafted / idle_drafted =
 # it FILED work (drafts, ingested issues, an epic, lore suggestions); maintenance_ran = it
 # ran a model-backed step (feature-backlog planning) but filed nothing — counted against
 # the day cap but an empty poll for draining; no_work = nothing claimable and nothing new
 # (the deterministic scans cost nothing, so a scan that finds nothing new is no_work);
+# auth_error = the delivery call could not authenticate (logged out / a rejected key):
+# the claim went back to `ready` without counting an attempt and the run stops;
 # usage_paused = the delivery call was refused by the plan's usage window or a rate
 # limit: the claim went back to `ready` without counting an attempt and the factory is
 # paused until the window resets (lib/usage-pause.mjs).
@@ -384,11 +388,31 @@ _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 # dashboard's Poll for work must not call it empty (external review #7). loop.sh counts it
 # as a non-empty poll; worker.sh as reviewed.
 _GAFFER_MERGE_LANE_LANDED=0
+# PARKED (exploratory finding cli-runner/F-20): a tick that ended by parking its ticket
+# for a human (released to blocked / refining: attempts spent, an empty delivery, a gate
+# that holds) reports `parked`, not `error` — the park is the designed outcome, and
+# "tick → error" sent operators hunting a crash. gaffer_release_delivery sets the flag.
+_GAFFER_TICK_PARKED=0
 result() {
   if [ "$1" = "no_work" ] && [ "${_GAFFER_MERGE_LANE_LANDED:-0}" -gt 0 ]; then
     echo "TICK_RESULT=merged"; return 0
   fi
+  if [ "$1" = "error" ] && [ "${_GAFFER_TICK_PARKED:-0}" = 1 ]; then
+    echo "TICK_RESULT=parked"; return 0
+  fi
   echo "TICK_RESULT=$1"
+}
+
+# DRY RUN preview list (loop.sh exports GAFFER_DRY_PREVIEWED_FILE and empties it at the
+# start of a dry run): a ticket previewed once this run is not previewed again.
+# Unset (a hand-run dry tick, a dashboard Poll) → no list, every tick previews.
+gaffer_dry_previewed() {
+  [ "${DRY_RUN:-0}" = "1" ] && [ -n "${GAFFER_DRY_PREVIEWED_FILE:-}" ] && [ -f "$GAFFER_DRY_PREVIEWED_FILE" ] \
+    && grep -qxF -- "$1" "$GAFFER_DRY_PREVIEWED_FILE"
+}
+gaffer_dry_mark_previewed() {
+  [ -n "${GAFFER_DRY_PREVIEWED_FILE:-}" ] || return 0
+  printf '%s\n' "$1" >> "$GAFFER_DRY_PREVIEWED_FILE" 2>/dev/null || true
 }
 # SETUP ERROR: one exit for every fail-closed SETUP failure (no agent launched: the
 # dispatch CLI unbuilt, no timeout primitive, an unregistrable agent, the safety hook /
@@ -552,6 +576,7 @@ gaffer_release_delivery() {
       local _suffix=""; [ "$_try" -gt 1 ] && _suffix=" after $_try attempts"
       log "$_verb #$NUM → $to ($reason)$_suffix"
       GAFFER_CLAIM_RESOLVED=1
+      case "$to" in blocked|refining) _GAFFER_TICK_PARKED=1 ;; esac
       return 0
     fi
     [ "$_try" -lt 3 ] && sleep "$_try"
@@ -920,6 +945,8 @@ RESUME_NUM=""
 if [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ]; then
   SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
   RESUME_NUM="$(wg ticket resume-requested 2>/dev/null | gaffer_json resume-pick "$SKIP_FILE" 2>/dev/null || echo '')"
+  # A dry run previews a resume once per run, like a ready ticket.
+  [ -n "$RESUME_NUM" ] && gaffer_dry_previewed "$RESUME_NUM" && RESUME_NUM=""
 fi
 
 # How many tickets are claimable? DISTINGUISH a real dispatch failure from a genuinely
@@ -954,7 +981,8 @@ if [ -n "$RESUME_NUM" ]; then
   # resume request stays queued for the live tick. Checked BEFORE the lease is taken.
   if [ "${DRY_RUN:-0}" = "1" ]; then
     log "DRY_RUN: would resume paused #$NUM ('$TITLE') in its existing worktree — resume-begin NOT called: no lease taken, the ticket stays paused and its resume request stays queued for the live tick"
-    result worked; exit 0
+    gaffer_dry_mark_previewed "$NUM"
+    result previewed; exit 0
   fi
   # The resume is LEASED to this runner (--agent/--ttl): the pause released the old
   # lease, and resume-begin takes a fresh one and prints its token. From here a resumed
@@ -964,6 +992,7 @@ if [ -n "$RESUME_NUM" ]; then
   if _RESUME_JSON="$(wg ticket resume-begin "$NUM" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null)"; then
     CLAIM_TOKEN="$(printf '%s' "$_RESUME_JSON" | jget 'd.claim_token ?? ""' 2>/dev/null || echo '')"
     [ -n "$CLAIM_TOKEN" ] || log "RESUME: WARNING — resume-begin returned no lease token for #$NUM; continuing tokenless"
+    declare -F gaffer_note_own_claim >/dev/null 2>&1 && gaffer_note_own_claim "$NUM"
     _RESUMING=1
     # Keep the (existing) worktree alive even if THIS resumed tick crashes mid-way —
     # the partial work must never be torn down by the trap. A clean success still tears
@@ -1019,6 +1048,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "candidate scan: the claimable listing failed — walking the full ready list"
     CANDIDATES="$(echo "$READY_JSON" | gaffer_json pick-unskipped "$SKIP_FILE" --all)"
   fi
+  # DRY RUN: a ticket this run already previewed is not previewed again (loop.sh keeps
+  # the list), so a preview pass shows each ready ticket once and then ends.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${GAFFER_DRY_PREVIEWED_FILE:-}" ] && [ -s "$GAFFER_DRY_PREVIEWED_FILE" ]; then
+    CANDIDATES="$(printf '%s\n' "$CANDIDATES" | grep -vxF -f "$GAFFER_DRY_PREVIEWED_FILE" || true)"
+  fi
   # A-1: bound the candidate scan. Each candidate costs a `ticket show` + pressure
   # probe; with a per-repo cap (MAX_CONCURRENT_TICKETS_PER_REPO) in force, a tick
   # may legitimately skip several capped repos before finding a free one, so the
@@ -1072,6 +1106,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # frozen, so the prompt carries the contract the review and the tester hold it to.
       _cshow_frozen="$(wg ticket show "$_cand" 2>/dev/null || true)"
       [ -n "$_cshow_frozen" ] && _cshow="$_cshow_frozen"
+      # CLEANUP OWNERSHIP: remember WHICH claim is this run's (lib/cleanup-ownership.sh).
+      declare -F gaffer_note_own_claim >/dev/null 2>&1 && gaffer_note_own_claim "$_cand"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
     STACK="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
@@ -1083,6 +1119,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "all deliverable ready tickets are in repos under BACKPRESSURE — skipping new claims; prioritising review/merge/cleanup"
     elif [ -n "${_CLAIMABLE_JSON:-}" ] && [ "$(printf '%s' "$_CLAIMABLE_JSON" | jget 'Array.isArray(d) ? d.length : -1' 2>/dev/null)" = "0" ]; then
       log "every ready ticket waits on an unfinished dependency or an open blocking decision — nothing claimable this tick"
+    elif [ "${DRY_RUN:-0}" = "1" ] && [ -s "${GAFFER_DRY_PREVIEWED_FILE:-/nonexistent}" ]; then
+      log "DRY_RUN: every deliverable ready ticket has been previewed this run"
     else
       log "all ready tickets failed delivery this run — nothing deliverable"
     fi
@@ -1642,7 +1680,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     MULTI_REPO=0
   else
     # Count write repos to label the plan (mono-fallback = 1, mapped multi = >1).
-    WRITE_REPO_COUNT="$(printf '%s\n' "$WRITE_ROOTS" | grep -c . || echo 0)"
+    WRITE_REPO_COUNT="$(printf '%s\n' "$WRITE_ROOTS" | grep -c . || true)"
     [ "${WRITE_REPO_COUNT:-0}" -gt 1 ] && MULTI_REPO=1 || MULTI_REPO=0
   fi
 
@@ -1824,12 +1862,18 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # is exported ONLY for the delivery prime (not review/clarify) so memory logs
   # the read-event edge for the items that actually fed the delivered work.
   RECALL_REPO_NAME="$_CARD_REPO_NAME"
-  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$NUM" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  # A DRY_RUN prime is a preview: no recall ticket, so memory logs no read events and
+  # no memory_primed evidence lands on the ticket (exploratory finding cli-runner/F-06).
+  _RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"
+  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$_RECALL_FOR" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
   if [ -n "$FILE_CARDS_BLOCK" ]; then
     PRIME_CONTEXT_CALLED=true
     # Count card lines only: the recalled-lore section that may follow the cards
     # uses the same "  - [kind]" bullet, so it is cut off before counting.
-    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | sed '/Recalled lore for this scope (conventions \/ gotchas):$/,$d' | grep -c "^  - \[" 2>/dev/null || echo 0)"
+    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | sed '/Recalled lore for this scope (conventions \/ gotchas):$/,$d' | grep -c "^  - \[" 2>/dev/null || true)"
+    # `grep -c` exits 1 on a zero count, so `|| echo 0` captured "0⏎0" (exploratory
+    # finding fresh-user/F-18); `|| true` keeps grep's own "0".
+    CARDS_SERVED="${CARDS_SERVED:-0}"
     log "cards: primed delivery #$NUM with ${CARDS_SERVED} file card(s)"
   else
     log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"
@@ -1841,7 +1885,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET. The
   # end-of-run summary (run-summary.sh → json-tool summary-retrieval) joins the two:
   # reads before the first write, and how many served cards the agent then Read.
-  if [ -n "${GAFFER_DATA:-}" ]; then
+  if [ -n "${GAFFER_DATA:-}" ] && [ "${DRY_RUN:-0}" != "1" ]; then
     {
       printf '%s\n' "$FILE_CARDS_BLOCK" \
         | node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
@@ -1890,6 +1934,9 @@ $PRODUCT_CONTEXT_BLOCK}"
 
   if [ "$_RESUMING" = "1" ]; then
     log "resume=#$NUM → re-entering delivery for paused #$NUM ('$TITLE') in $PRIMARY_REPO [stack=$STACK]"
+  elif [ "${DRY_RUN:-0}" = "1" ]; then
+    # Not "delivering": `gaffer status` lists this line as a dry-run preview.
+    log "ready=$READY_COUNT → DRY_RUN: previewed #$NUM ('$TITLE') in $PRIMARY_REPO (nothing claimed, nothing spent) [stack=$STACK]"
   elif [ "$MULTI_REPO" = "1" ]; then
     log "ready=$READY_COUNT → delivering #$NUM ('$TITLE') across $WRITE_REPO_COUNT write repos (multi-repo) [stack=$STACK]"
   else
@@ -1954,7 +2001,8 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "DRY_RUN: on failure, would remove the worktrees AND delete branch $WORK_BRANCH so the real repo stays 100% clean"
     log "DRY_RUN: recommended skills = $SKILLS"
     log "DRY_RUN: routed implement model = ${DELIVERY_MODEL:-<claude default>} (see the ROUTE #$NUM line above for the decision)"
-    result worked; exit 0
+    gaffer_dry_mark_previewed "$NUM"
+    result previewed; exit 0
   fi
 
   # ── Worktree delivery setup (replaces in-place branching) ───────────────────
@@ -2006,11 +2054,22 @@ $PRODUCT_CONTEXT_BLOCK}"
     # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
     # tick created it (see BRANCH RETENTION above).
     local drop_branch="${1:-}"
-    local _rid _rname _rpath _rbase _rwt _kept
+    local _rid _rname _rpath _rbase _rwt _kept _tip
+    # CLEANUP OWNERSHIP (external review #8): every destructive step below first checks
+    # that this run still owns the ticket's resources (lib/cleanup-ownership.sh) — a
+    # stopped or expired attempt must never remove its replacement's worktree or branch.
+    _gco_owned() {
+      declare -F gaffer_cleanup_owned >/dev/null 2>&1 || return 0
+      gaffer_cleanup_owned "${NUM:-}" "$1" && return 0
+      log "CLEANUP: #${NUM:-?} $1 ${2:-} KEPT — the resources belong to another attempt or ownership is unknown (${_GCO_WHY:-no reason}); this run removes only its own"
+      return 1
+    }
     while IFS=$'\t' read -r _rid _rname _rpath _rbase _rwt; do
       [ -n "$_rpath" ] || continue
-      git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && rm -rf "$_rwt"; continue; }
-      if [ -n "$_rwt" ] && [ -e "$_rwt" ]; then
+      git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && _gco_owned worktree "$_rwt" && rm -rf "$_rwt"; continue; }
+      if [ -n "$_rwt" ] && [ -e "$_rwt" ] && ! _gco_owned worktree "$_rwt"; then
+        :
+      elif [ -n "$_rwt" ] && [ -e "$_rwt" ]; then
         # `git worktree remove --force` deregisters the worktree but REFUSES to
         # delete untracked residue — notably the `.claude/` the skill-mount installs.
         # Once gaffer_skills_mount_cleanup drops the mount target, that worktree's
@@ -2019,12 +2078,20 @@ $PRODUCT_CONTEXT_BLOCK}"
         # (broken symlink: .claude/skills). Always `rm -rf` the worktree path after
         # the git remove so teardown leaves NOTHING behind, dangling links included.
         git -C "$_rpath" worktree remove --force "$_rwt" >/dev/null 2>&1 || true
-        rm -rf "$_rwt" 2>/dev/null || true
+        # (Re-checked: the git call can be slow, and a replacement may have re-created
+        # the worktree at this path meanwhile.)
+        if [ -e "$_rwt" ] && _gco_owned worktree "$_rwt"; then rm -rf "$_rwt" 2>/dev/null || true; fi
       fi
       git -C "$_rpath" worktree prune >/dev/null 2>&1 || true
       if [ "$drop_branch" = "drop-branch" ]; then
         if _gaffer_branch_created_here "$_rpath"; then
-          git -C "$_rpath" branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+          # Compare-and-delete: only the tip read right after the ownership check.
+          _tip="$(git -C "$_rpath" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH^{commit}" 2>/dev/null || true)"
+          # (`branch -D` refused a branch checked out in a worktree; so does this.)
+          if [ -n "$_tip" ] && _gco_owned branch "$WORK_BRANCH in ${_rname:-repo}" \
+             && ! grep -qxF "branch refs/heads/$WORK_BRANCH" <<<"$(git -C "$_rpath" worktree list --porcelain 2>/dev/null)"; then
+            git -C "$_rpath" update-ref -d "refs/heads/$WORK_BRANCH" "$_tip" >/dev/null 2>&1 || true
+          fi
         else
           _kept="$(git -C "$_rpath" rev-list --count "${_rbase:-main}..$WORK_BRANCH" 2>/dev/null || echo 0)"
           [ "${_kept:-0}" -gt 0 ] 2>/dev/null \
@@ -2817,6 +2884,60 @@ $_trail_q
     fi
     log "USAGE: #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready without counting an attempt ($_UL_BRANCH); $_UL_LINE"
     result usage_paused; exit 0
+  fi
+  # ── CLAUDE AUTH: a call that could not authenticate is NOT a failed delivery ──
+  # The CLI was logged out or its key rejected ("Invalid API key · Please run /login";
+  # lib/worker.mjs detectAuthError, error envelopes only), so the agent never worked.
+  # Read as a failure it counted toward the no-commit park and GAFFER_MAX_DELIVERY_
+  # ATTEMPTS, and three runs parked a good ticket (exploratory finding fresh-user/F-06).
+  # Release the claim to `ready` WITHOUT counting an attempt (the branch kept only when
+  # it already had commits), say how to log in, and report auth_error: loop.sh and
+  # worker.sh stop the run there. A resumed delivery goes back to `paused`.
+  _AUTH_MSG=""
+  if [ "${DRY_RUN:-0}" != "1" ] && [ -f "$USAGE_JSON" ] \
+     && _AUTH_MSG="$(node "$RUNNER_DIR/lib/worker.mjs" parse-result auth-error --json-file "$USAGE_JSON" 2>/dev/null)"; then
+    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    rm -f "$USAGE_JSON"
+    _AUTH_HINT="$(gaffer_claude_auth_hint 2>/dev/null || echo 'claude is not logged in: run `claude /login`')"
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "claude_auth: ${_AUTH_MSG:-authentication failed}"
+      log "AUTH: resumed #$NUM could not authenticate (${_AUTH_MSG:-authentication failed}) — re-paused with its worktree; $_AUTH_HINT"
+      result auth_error; exit 0
+    fi
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
+    gaffer_release_delivery ready "claude could not authenticate: ${_AUTH_MSG:-authentication failed}; not counted as an attempt" claude_auth
+    log "AUTH: #$NUM — ${_AUTH_MSG:-authentication failed}: $_AUTH_HINT; released to ready without counting an attempt"
+    result auth_error; exit 0
+  fi
+  # ── BUDGET ADMISSION REFUSED: no agent was spawned, so it is not an attempt ──
+  # worker_deliver asks lib/budget-admission.mjs right before the launch; a refusal
+  # (a daily or lifetime cap reached since the run admitted this tick, a rework attempt
+  # past it, no dollar cap at all on a tick run by hand) returns 77 with nothing spent.
+  # Read as a failure it counted a no-commit failure and parked a good ticket. Release
+  # it to `ready` uncounted (the branch kept only with commits), skip it for this run,
+  # and report no_work: nothing was spent, and the loop's own cap check ends the run.
+  if [ "${DRY_RUN:-0}" != "1" ] && [ "${WORKER_LAST_BUDGET_REFUSED:-0}" = 1 ]; then
+    rm -f "$USAGE_JSON"
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "budget_refused: the paid launch was refused by the budget admission"
+      log "BUDGET: resumed #$NUM — the paid launch was refused by the budget admission (see the line above) — re-paused with its worktree"
+      result no_work; exit 0
+    fi
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
+    gaffer_release_delivery ready "the paid delivery launch was refused by the budget admission (no agent ran); not counted as an attempt" budget_refused
+    gaffer_skip_ticket "$NUM"
+    log "BUDGET: #$NUM — the paid delivery launch was refused by the budget admission (see the line above); released to ready without counting an attempt"
+    result no_work; exit 0
   fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
   # If the agent hit the TURN cap (num_turns at/over the cap, or a max-turns stop

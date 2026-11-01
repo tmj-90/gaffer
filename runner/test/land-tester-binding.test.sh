@@ -164,7 +164,13 @@ source "$RUNNER_DIR/lib/automerge.sh"
 # shellcheck source=../lib/land.sh
 source "$RUNNER_DIR/lib/land.sh"
 bash_land() { : > "$LOGF"; : > "$CALLS"; gaffer_land_delivery 9 "$R" gaffer/ticket-9-x main '{"ticket":{"number":9}}' MERGE; }
-node_land() { DISPATCH_DB="$DB" GAFFER_DATA="$WORK/data" GAFFER_DIGEST_DISABLE=1 node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket 9 2>"$WORK/node.err"; }
+# The fixture DB is hand-rolled (no Dispatch schema), so the real Dispatch CLI cannot open
+# it: a stand-in answers the one call the landing cannot do without — the pre-landing
+# revocation re-check (`ticket landing-begin`, external review #8; its own suite is
+# dispatch's revocation-safe-landing) — and fails every other call, as the real CLI did.
+STUB_DISPATCH="$WORK/dispatch-stub.mjs"
+printf '%s\n' 'if (process.argv.includes("landing-begin")) { console.log("{\"ok\":true}"); } else { process.exit(1); }' > "$STUB_DISPATCH"
+node_land() { DISPATCH_CLI="$STUB_DISPATCH" DISPATCH_DB="$DB" GAFFER_DATA="$WORK/data" GAFFER_DIGEST_DISABLE=1 node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket 9 2>"$WORK/node.err"; }
 
 echo "== B: the SAME moved candidate is refused by BOTH landing paths =="
 set_pass "{\"verdict\":\"pass\",\"provenance\":\"agent\",\"tested_commit\":\"$TESTED\"}"

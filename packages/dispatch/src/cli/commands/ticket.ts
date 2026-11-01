@@ -14,6 +14,7 @@ import {
   printJson,
   testerActor,
   validateTtl,
+  warnLandedAlready,
 } from "../shared.js";
 import { RULES } from "../limits.js";
 
@@ -210,7 +211,41 @@ export function registerTicket(program: Command): void {
     )
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson({ ok: true, ...wg.landingStatus(ref) });
+      // `approval`: the approval a landing acts on (REVOCATION-SAFE LANDING) — the merge
+      // runner reads it before its gates and hands it back to landing-begin.
+      printJson({ ok: true, ...wg.landingStatus(ref), approval: wg.landingApproval(ref) });
+      wg.db.close();
+    });
+
+  ticket
+    .command("landing-begin <ref>")
+    .description(
+      "Immediately before a default branch moves, re-check that the " +
+        "ticket is still ready_for_merge on the same approval with green required CI, and record " +
+        "the landing as started. Refuses (STATE_CONFLICT) when it was revoked meanwhile: land " +
+        "nothing. The merge paths call this per repo. System/admin only.",
+    )
+    .requiredOption("--repo <repo>", "repo name or id")
+    .requiredOption("--commit <sha>", "the approved commit about to land")
+    .option("--approval <id>", "the approval the landing started on (`ticket landing` .approval)")
+    .option("--via <how>", "local | pr")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.beginLanding(
+        ref,
+        {
+          repo: String(opts.repo),
+          commit: String(opts.commit),
+          ...(opts.approval ? { approval: String(opts.approval) } : {}),
+          ...(opts.via ? { via: String(opts.via) } : {}),
+        },
+        actor,
+      );
+      printJson({ ok: true, ...res });
       wg.db.close();
     });
 
@@ -494,6 +529,7 @@ export function registerTicket(program: Command): void {
         },
         actor,
       );
+      warnLandedAlready(res.landedAlready, `CI failure for ${String(opts.commit).slice(0, 12)}`);
       printJson({ ok: true, ...res });
       wg.db.close();
     });

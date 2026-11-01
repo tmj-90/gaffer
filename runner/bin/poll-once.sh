@@ -40,7 +40,19 @@ if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
   echo "gaffer poll: $(gaffer_spend_cap_hint) — not polling." >&2
   echo "TICK_RESULT=no_work"; exit 0
 fi
+# CLAUDE AUTH (lib/claude-auth.sh): no visible credential → refuse before any claim.
+if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_gate; then
+  echo "gaffer poll: $(gaffer_claude_auth_hint) — not polling." >&2
+  echo "TICK_RESULT=no_work"; exit 0
+fi
 if [ "$DRY_RUN" != "1" ]; then
+  # USAGE WINDOW (lib/usage-pause.sh): refuse at once, like a one-shot `gaffer run`
+  # (exploratory finding fresh-user/F-13). The tick's own gate would also refuse, but
+  # only after a day-cap slot was reserved and with no line the dashboard toasts.
+  if declare -F gaffer_usage_pause_active >/dev/null 2>&1 && _up_line="$(gaffer_usage_pause_active)"; then
+    echo "gaffer poll: $_up_line — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2
     echo "TICK_RESULT=no_work"; exit 0
@@ -100,6 +112,13 @@ trap 'rm -f "${_POLL_OUT:-}"' EXIT
 gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$GAFFER_POLL_TICK_SH" | tee "${_POLL_OUT:-/dev/null}"
 rc="${PIPESTATUS[0]}"
 res="$(sed -n 's/^TICK_RESULT=//p' "${_POLL_OUT:-/dev/null}" 2>/dev/null | tail -1)"
+# CLAUDE AUTH: the delivery call could not authenticate (a key that is visible but
+# rejected gets past the gate above). Say so on the line the dashboard reads as a
+# refused run and toasts (POLL_REFUSAL_RE), or the poll read as a success while the
+# ticket went quietly back to ready (exploratory finding fresh-user/F-06).
+if [ "$res" = auth_error ]; then
+  echo "gaffer poll: aborting — claude could not authenticate: $(gaffer_claude_auth_hint 2>/dev/null || echo 'run `claude /login`'); the ticket went back to ready, no attempt counted" >&2
+fi
 
 # Persist the day count for a tick that may have spent — the same rule as loop.sh
 # (gaffer_tick_counts_toward_day_cap: a no_work poll is exempt). A failed bump is

@@ -98,7 +98,7 @@ describe("cli-wg F-23: help content", () => {
 
   it("shows no internal tracker codes", () => {
     const codes =
-      /\b(?:WG|BBT|TRACK|EP|FG|SDD|H)-\d+[a-z]?\b|\bFG-|RUNNER-OWNED|PER-REPOSITORY LANDING|I3 lint|DELIVERY-DOSSIER|GRADUATED-AUTONOMY|TESTER REPLAY:|REQUIRED CI:|GATE INTEGRITY:|PAUSE-ON-CAP|MACHINE-CHECKABLE:/;
+      /\b(?:WG|BBT|TRACK|EP|FG|SDD|H)-\d+[a-z]?\b|\bFG-|RUNNER-OWNED|PER-REPOSITORY LANDING|I3 lint|DELIVERY-DOSSIER|GRADUATED-AUTONOMY|TESTER REPLAY:|REQUIRED CI:|GATE INTEGRITY:|PAUSE-ON-CAP|MACHINE-CHECKABLE:|\b[A-Z]{2,}(?:[- ][A-Z]{2,})+:/;
     const hits = helpTexts(program)
       .filter(([, text]) => codes.test(text))
       .map(([path, text]) => `${path}: ${text.match(codes)![0]}`);

@@ -242,7 +242,10 @@ describe("web: Memory view", () => {
     expect(badges.length).toBe(2); // the per-record badge + the "N flagged" header badge
     const text = document.body.textContent || "";
     expect(text).toContain("1 flagged"); // header count
-    expect(text).toContain("memory review"); // the curate-via-CLI hint on the flagged row
+    // The curate-via-CLI hint on the flagged row names the front door (`gaffer lore`), not
+    // the memory CLI's draft triage (`memory review` lists drafts; a flagged record is active).
+    expect(text).toContain("gaffer lore show l2");
+    expect(text).not.toContain("memory review");
     // The healthy record must NOT carry the hint (degrades to a quiet neutral state).
     const rows = Array.from(document.querySelectorAll(".lore-row"));
     const healthy = rows.find((r) => (r.textContent || "").includes("Hash with argon2id"))!;

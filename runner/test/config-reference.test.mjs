@@ -2,10 +2,11 @@
 // scripts/config-reference.mjs — the generated docs/CONFIG.md must be derived
 // from the code, not hand-maintained. Pin the parser rules that make the
 // reference honest, then prove the committed file is current.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gafferMkdtemp } from "./lib/tmpdir.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
@@ -233,7 +234,7 @@ ok(
 
 console.log("== the read-site table fails when it drifts from the code ==");
 ok(verifyExtraKnobs(ROOT) === undefined, "every EXTRA_KNOBS entry matches its read site today");
-const drift = mkdtempSync(path.join(os.tmpdir(), "config-ref-drift-"));
+const drift = gafferMkdtemp(path.join(os.tmpdir(), "config-ref-drift-"));
 try {
   mkdirSync(path.join(drift, "lib"), { recursive: true });
   writeFileSync(path.join(drift, "lib", "a.sh"), 'x="${KNOB_A:-block}"\n');

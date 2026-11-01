@@ -1800,6 +1800,9 @@ _gaffer_autonomy_on() {
   _gaffer_flag_on "${MERGE_ON_AGENT_REVIEW:-0}" && return 0
   _gaffer_flag_on "${AUTO_MERGE:-0}" && return 0
   _gaffer_flag_on "${MEMORY_AUTO_APPROVE:-0}" && return 0
+  # GAFFER_AUTO_PUSH pushes landed agent work to origin with no person in the loop: a
+  # ship flag like the four above (exploratory docs audit: it alone left the sandbox off).
+  _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}" && return 0
   case "$GAFFER_MODE" in autonomous | strict) return 0 ;; esac
   _gaffer_autonomy_policy_active && return 0
   return 1

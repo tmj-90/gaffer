@@ -19,6 +19,9 @@
 #     lacks, minus the branch's rewrite of addTask), commits ON the branch;
 #   • greenfield bootstrap (cwd is the fresh repo the runner made: a git repo with no
 #     package.json): scaffolds package.json + src/tasks.js + one passing test, commits;
+#   • planner (runner/bin/decompose.mjs, for Plan a build and `gaffer plan`): two
+#     clarifying questions until the conversation answers them (or the prompt forces a
+#     plan), then a fixed three-ticket plan (a bootstrap ticket first when greenfield);
 #   • everything else (onboard analysis, product owner, judge): a bare "ok" envelope —
 #     the product-owner run therefore ends "failed: filed 0 drafts", which is the honest
 #     classification and is asserted as "run recorded", not "drafts filed".

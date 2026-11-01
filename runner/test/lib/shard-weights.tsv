@@ -317,3 +317,4 @@
 6	tester-replay-proof.test.mjs
 25	tick-parked-result.test.sh
 40	usage-limit-lanes.test.sh
+40	gaffer-plan-lore.test.sh

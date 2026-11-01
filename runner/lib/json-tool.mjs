@@ -1054,6 +1054,48 @@ switch (cmd) {
   }
 
   // ── gaffer / status.sh / loop.sh ────────────────────────────────────────────────
+  // lore-drafts: stdin = `memory list --status draft --json` (the page the dashboard's
+  // Memory view reads) → what `gaffer lore review` prints: each draft with the fields a
+  // Memory row shows (kind, title, flags, summary, repos, tags, confidence, source).
+  case "lore-drafts": {
+    const page = parseStdin();
+    const items = Array.isArray(page.items) ? page.items : [];
+    const total = Number(page.total) || items.length;
+    const offset = Number(page.offset) || 0;
+    if (!items.length) {
+      println(
+        total ? `No drafts on this page (${total} in all).` : "No lore drafts are waiting for you.",
+      );
+      break;
+    }
+    println(
+      `${total} lore draft(s) awaiting review (agents can't see a draft until you approve it):`,
+    );
+    for (const l of items) {
+      const marks = [l.stale ? "stale" : null, l.flaggedForReview || l.flagged ? "flagged" : null]
+        .filter(Boolean)
+        .join(", ");
+      println("");
+      println(`${l.id}  ${l.kind ? `[${l.kind}] ` : ""}${l.title}${marks ? `  (${marks})` : ""}`);
+      if (l.summary) println(`  ${String(l.summary).split("\n").join("\n  ")}`);
+      const meta = [
+        Array.isArray(l.repos) && l.repos.length ? `repos ${l.repos.join(", ")}` : null,
+        Array.isArray(l.tags) && l.tags.length ? `tags ${l.tags.join(", ")}` : null,
+        l.confidence ? `${l.confidence} confidence` : null,
+        l.source ? `source ${l.source}` : null,
+      ].filter(Boolean);
+      if (meta.length) println(`  ${meta.join(" · ")}`);
+    }
+    println("");
+    if (offset + items.length < total)
+      println(
+        `Showing ${offset + 1}-${offset + items.length} of ${total}: gaffer lore review --offset ${offset + items.length} for the next page.`,
+      );
+    println(
+      'Read one: gaffer lore show <id> · approve: gaffer lore approve <id> · reject: gaffer lore reject <id> --reason "…"',
+    );
+    break;
+  }
   // eval-summary: stdin = evalLedgerCli summarize JSON → the human table `gaffer eval` prints.
   case "eval-summary": {
     const s = parseStdin();

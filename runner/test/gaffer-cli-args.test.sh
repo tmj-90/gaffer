@@ -14,7 +14,8 @@
 #   • every subcommand answers --help with its usage and does nothing else
 #     (`onboard --help` was "no such directory", `merge --help` reached merge-ticket);
 #   • `onboard --standalone` is accepted, an unknown onboard option is refused;
-#   • `skills <bad>` exits 2;
+#   • `skills <bad>` exits 2; `plan --bogus`, `lore <bad>` and `lore approve` with no id
+#     exit 2, and `plan <goal> --yes --help` plans nothing;
 #   • gaffer run through a symlink on PATH (absolute, relative, a chain of two, a
 #     directory with a space) finds its own runner dir (it used to die with
 #     "RUNNER_DIR: unbound variable").
@@ -90,7 +91,7 @@ gx --version
 [ "$RC" -eq 0 ] && [ "$OUT" = "gaffer $WANT" ] && ok "gaffer --version → 'gaffer $WANT'" || fail "--version: rc=$RC out=$OUT"
 
 echo "== every subcommand answers --help with usage and does nothing else =="
-for c in onboard dashboard status setup demo eval approve merge run skills; do
+for c in onboard dashboard status setup demo eval approve merge run skills plan lore; do
   gx "$c" --help
   [ "$RC" -eq 0 ] && [[ "$OUT" == "usage: gaffer $c"* ]] && ok "$c --help: usage, exit 0" || fail "$c --help: rc=$RC out=${OUT:0:200}"
 done
@@ -120,6 +121,15 @@ gx demo --bogus
 [ "$RC" -eq 2 ] && ok "demo --bogus: exit 2 (demo not run)" || fail "demo --bogus: rc=$RC"
 gx eval --bogus
 [ "$RC" -eq 2 ] && ok "eval --bogus: exit 2" || fail "eval --bogus: rc=$RC"
+gx plan --bogus
+[ "$RC" -eq 2 ] && [[ "$OUT" == *"unknown option '--bogus'"* ]] && ok "plan --bogus: exit 2 (no planner turn)" || fail "plan --bogus: rc=$RC out=$OUT"
+gx plan "a goal" --yes --help
+[ "$RC" -eq 0 ] && [[ "$OUT" == "usage: gaffer plan"* ]] && [ ! -e "$WORK/data/plan-draft.json" ] \
+  && ok "plan <goal> --yes --help: usage only, nothing planned" || fail "plan --yes --help: rc=$RC out=$OUT"
+gx lore nosuch
+[ "$RC" -eq 2 ] && ok "lore nosuch: exit 2" || fail "lore nosuch: rc=$RC"
+gx lore approve
+[ "$RC" -eq 2 ] && ok "lore approve (no id): exit 2" || fail "lore approve: rc=$RC"
 
 echo "== gaffer through a symlink (an install on PATH) =="
 WANT_VER="gaffer $(node -p 'require(process.argv[1]).version' "$RUNNER_DIR/../package.json")"

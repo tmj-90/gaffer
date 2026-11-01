@@ -9,7 +9,7 @@
 #   C2  nightly.yml runs the macOS node 24 cell (3 shards, the package tests on
 #       shard 1) on a schedule and on workflow_dispatch, with GAFFER_TEST_EXHAUSTIVE
 #   C3  both callers run their shards through runner-shard.yml, which runs run.sh
-#       with GAFFER_TEST_STRICT=1, and a cell's shards share one head start (the
+#       with GAFFER_TEST_STRICT=1 and fixed caps, and a cell's shards share one head start (the
 #       shard split must be identical for every shard of a cell)
 #   C4  every `uses:` is a local workflow or an action pinned by a full commit sha
 #   C5  every scenario suite (scripts/ui-regression/suites/*.mjs) is in exactly one
@@ -73,6 +73,7 @@ if [ -f "$RS" ]; then
   grep -qE '^ *GAFFER_TEST_STRICT: "1"' "$RS" && grep -qE '^ *run: bash runner/test/run.sh$' "$RS" \
     && ok "C3 runner-shard.yml runs run.sh strict" || fail "C3 runner-shard.yml does not run run.sh with GAFFER_TEST_STRICT=1"
   grep -qE 'GAFFER_RUN_SHARD1_HEAD_START: \$\{\{ inputs\.head_start \}\}' "$RS" && ok "C3 the head start reaches shard.mjs" || fail "C3 head_start is not passed as GAFFER_RUN_SHARD1_HEAD_START"
+  grep -qE '^ *GAFFER_RUN_CAP_SCALE: "1"' "$RS" && ok "C3 CI keeps the caps fixed (GAFFER_RUN_CAP_SCALE=1)" || fail "C3 runner-shard.yml does not fix GAFFER_RUN_CAP_SCALE=1"
 else
   fail "C3 no .github/workflows/runner-shard.yml"
 fi

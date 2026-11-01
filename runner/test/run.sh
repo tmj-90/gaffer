@@ -10,6 +10,11 @@
 #     .sh 120s, .mjs 300s. The long end-to-end tests (LONG_RE: ~70-110s alone,
 #     about twice that under -j load) get 600s and are queued FIRST, so they never
 #     hit a cap sized for a quiet machine and never form a serial tail at the end.
+#     On a machine that is already busy when the run starts (1-minute load average
+#     above the CPU count: other builds, other agents' runs) every cap is scaled by
+#     load / CPUs, at most 2x, so "timed out under load, passes alone" stops being a
+#     failure. GAFFER_RUN_CAP_SCALE=<1..2> fixes the factor instead (CI sets 1, so a
+#     hang is reported well inside the job's timeout); the banner prints the factor.
 #   * has its output buffered to a file and printed whole when it ends (a GitHub
 #     ::group:: in CI; locally only a failing test's output), so -j never
 #     interleaves logs.
@@ -189,6 +194,35 @@ if [ ${#FILES[@]} -eq 0 ]; then
 fi
 command -v perl >/dev/null 2>&1 || { echo "run.sh: perl is required (the per-test cap)" >&2; exit 2; }
 
+# Cap scale: GAFFER_RUN_CAP_SCALE (a number, clamped to 1..2), else the 1-minute load
+# average when the run starts divided by the CPU count, clamped to 1..2. Read before
+# any test starts, so it measures what else is running, not this run. Linux has
+# /proc/loadavg, macOS `sysctl -n vm.loadavg` ("{ 1.23 1.10 0.98 }"); anything
+# unreadable counts as 1. GAFFER_RUN_LOADAVG stands in for the reading (tests).
+# awk does the decimal arithmetic: bash 3.2 has integers only.
+NUM_RE='^[0-9]+([.][0-9]+)?$'
+CAP_SCALE="${GAFFER_RUN_CAP_SCALE:-}" CAP_WHY=""
+if [ -n "$CAP_SCALE" ]; then
+  [[ "$CAP_SCALE" =~ $NUM_RE ]] || { echo "run.sh: GAFFER_RUN_CAP_SCALE must be a number from 1 to 2 (got '$CAP_SCALE')" >&2; exit 2; }
+  CAP_WHY="GAFFER_RUN_CAP_SCALE"
+else
+  LOAD1="${GAFFER_RUN_LOADAVG:-}"
+  if [ -z "$LOAD1" ]; then
+    if [ -r /proc/loadavg ]; then LOAD1="$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)"
+    else LOAD1="$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')"; fi
+  fi
+  NCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+  if [[ "$LOAD1" =~ $NUM_RE ]] && [[ "$NCPU" =~ ^[1-9][0-9]*$ ]]; then
+    CAP_SCALE="$(awk -v l="$LOAD1" -v c="$NCPU" 'BEGIN { printf "%.2f", l / c }')"
+    CAP_WHY="load $LOAD1 on $NCPU CPUs"
+  else
+    CAP_SCALE=1 CAP_WHY="load unknown"
+  fi
+fi
+CAP_SCALE="$(awk -v f="$CAP_SCALE" 'BEGIN { if (f < 1) f = 1; if (f > 2) f = 2; printf "%.2f", f }')"
+scale_cap() { awk -v c="$1" -v f="$CAP_SCALE" 'BEGIN { printf "%d", c * f + 0.5 }'; }
+CAP_SH="$(scale_cap "$CAP_SH")" CAP_MJS="$(scale_cap "$CAP_MJS")" CAP_LONG="$(scale_cap "$CAP_LONG")"
+
 RES="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-run.XXXXXX")"
 gaffer_test_check_tmp "$RES" || exit 70
 trap 'gaffer_test_rm_work "$RES"' EXIT
@@ -226,7 +260,7 @@ for f in "${FILES[@]}"; do
   case "$f" in *.mjs) echo "$CAP_MJS" >"$RES/$i.cap" ;; *) echo "$CAP_SH" >"$RES/$i.cap" ;; esac
   if [[ "$(basename "$f")" =~ $LONG_RE ]]; then echo "$CAP_LONG" >"$RES/$i.cap"; LONG+=("$i"); else REST+=("$i"); fi
 done
-echo "run.sh: ${SHARD_DESC:-${#FILES[@]}} test file(s), -j $JOBS (${#LONG[@]} long, queued first)$([ "${GAFFER_TEST_STRICT:-0}" = 1 ] && echo ', strict')"
+echo "run.sh: ${SHARD_DESC:-${#FILES[@]}} test file(s), -j $JOBS (${#LONG[@]} long, queued first)$([ "${GAFFER_TEST_STRICT:-0}" = 1 ] && echo ', strict'), caps x$CAP_SCALE ($CAP_WHY: ${CAP_SH}s / ${CAP_MJS}s / long ${CAP_LONG}s)"
 T0="$(date +%s)"
 { [ ${#LONG[@]} -gt 0 ] && printf '%s\n' "${LONG[@]}"; [ ${#REST[@]} -gt 0 ] && printf '%s\n' "${REST[@]}"; } | xargs -n1 -P "$JOBS" bash "$SELF" --one
 WALL=$(($(date +%s) - T0))

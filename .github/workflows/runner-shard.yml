@@ -104,6 +104,9 @@ jobs:
           GAFFER_RUN_SHARD1_HEAD_START: ${{ inputs.head_start }}
           GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
           GAFFER_TEST_EXHAUSTIVE: ${{ inputs.exhaustive && '1' || '0' }}
+          # Fixed caps in CI: a load-scaled LONG cap (up to 1200s) could outlast the
+          # job's timeout and hide the TIMED OUT line. run.sh scales them locally.
+          GAFFER_RUN_CAP_SCALE: "1"
         run: bash runner/test/run.sh
 
       # Forensics for a failing runner test that left evidence (e.g. the

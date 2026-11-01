@@ -6,8 +6,9 @@
 # To actually loop unattended it must be RE-RUN — on macOS a launchd/AFK path did that,
 # but on Linux nothing did, so "walk away" was broken there. gaffer_run_daemon is a
 # platform-agnostic supervisor: re-run the loop every N seconds, honouring the same
-# per-day cap, until a stop signal — SIGINT/SIGTERM finish the CURRENT pass (never kill
-# a delivery mid-flight) and then exit cleanly.
+# per-day cap, until a stop signal — SIGINT (Ctrl-C, to the whole terminal group
+# included)/SIGTERM/SIGHUP finish the CURRENT pass (never kill a delivery mid-flight)
+# and then exit cleanly; a second one stops the pass now (see CTRL-C FINISHES THE PASS).
 #
 # Env / knobs:
 #   $1                       sleep seconds between passes (default 30)
@@ -65,6 +66,46 @@ _gaffer_daemon_cap_check() {
   return 0
 }
 
+# CTRL-C FINISHES THE PASS (exploratory finding cli-runner/F-12): a terminal's Ctrl-C
+# sends SIGINT to the whole foreground process group, so a pass run in the daemon's own
+# group (loop.sh, its tick, the agent) was killed mid-delivery while the banner promised
+# "finishes the current pass". Each pass now runs in a process group of its OWN
+# (perl setpgrp: macOS has no setsid), so the terminal's SIGINT reaches only the
+# daemon, which marks the stop and waits for the pass to end. A SECOND stop signal
+# sends TERM to the pass's group: loop.sh's own stop path (the in-flight tick is ended
+# and its claim released). Without perl the pass runs in the daemon's group as before.
+_GAFFER_DAEMON_PASS_PID=""
+_gaffer_daemon_on_signal() {
+  if [ "$_GAFFER_DAEMON_STOP" = "1" ]; then
+    if [ -n "$_GAFFER_DAEMON_PASS_PID" ] && kill -0 "$_GAFFER_DAEMON_PASS_PID" 2>/dev/null; then
+      printf 'gaffer daemon: second stop signal — stopping the current pass now (its in-flight tick is ended and its claim released)\n' >&2
+      kill -TERM -- "-$_GAFFER_DAEMON_PASS_PID" 2>/dev/null || kill -TERM "$_GAFFER_DAEMON_PASS_PID" 2>/dev/null
+    fi
+    return 0
+  fi
+  _GAFFER_DAEMON_STOP=1
+  if [ -n "$_GAFFER_DAEMON_PASS_PID" ] && kill -0 "$_GAFFER_DAEMON_PASS_PID" 2>/dev/null; then
+    printf 'gaffer daemon: stop requested — finishing the current pass, then exiting (Ctrl-C again stops it now)\n' >&2
+  fi
+}
+# Run one pass ($1) in its own process group and wait for it; returns its exit code.
+_gaffer_daemon_pass() {
+  local rc=0
+  if command -v perl >/dev/null 2>&1; then
+    perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' bash "$1" &
+  else
+    bash "$1" &
+  fi
+  _GAFFER_DAEMON_PASS_PID=$!
+  # A trapped signal makes `wait` return early (>128) while the pass is still running.
+  while :; do
+    wait "$_GAFFER_DAEMON_PASS_PID"; rc=$?
+    kill -0 "$_GAFFER_DAEMON_PASS_PID" 2>/dev/null || break
+  done
+  _GAFFER_DAEMON_PASS_PID=""
+  return "$rc"
+}
+
 # Run _gaffer_daemon_cap_check against the CURRENT config (see FRESH CONFIG PER PASS).
 _gaffer_daemon_caps_ok() {
   local cfg="${GAFFER_DAEMON_CONFIG:-}"
@@ -85,8 +126,9 @@ gaffer_run_daemon() {
   backoff_max="${GAFFER_DAEMON_SETUP_BACKOFF_MAX:-1800}"
   case "$backoff_max" in ''|*[!0-9]*) backoff_max=1800 ;; esac
   _GAFFER_DAEMON_STOP=0
-  # A stop signal finishes the current pass, then exits — graceful, never mid-delivery.
-  trap '_GAFFER_DAEMON_STOP=1' INT TERM
+  # A stop signal finishes the current pass, then exits — graceful, never mid-delivery
+  # (a second one stops the pass now). HUP (the terminal closed) is a stop request too.
+  trap '_gaffer_daemon_on_signal' INT TERM HUP
   _gaffer_daemon_stopping() { [ "$_GAFFER_DAEMON_STOP" = "1" ]; }
   local _up_line
   while [ "$_GAFFER_DAEMON_STOP" = "0" ]; do
@@ -100,7 +142,7 @@ gaffer_run_daemon() {
       continue
     fi
     if _gaffer_daemon_caps_ok; then
-      bash "$loop_sh"; rc=$?
+      _gaffer_daemon_pass "$loop_sh"; rc=$?
       passes=$((passes + 1))
       if [ "$rc" -eq 3 ]; then setup_fails=$((setup_fails + 1)); else setup_fails=0; fi
     fi

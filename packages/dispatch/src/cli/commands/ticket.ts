@@ -186,13 +186,18 @@ export function registerTicket(program: Command): void {
     .command("record-landing <ref>")
     .description(
       "PER-REPOSITORY LANDING: record that one write repo's approved commit reached its " +
-        "default branch (the merge paths call this per repo). System/admin only; idempotent.",
+        "default branch (the merge paths call this per repo). System/admin only; idempotent. " +
+        "Recorded only when it can be shown, so done means landed: local / git-verified need " +
+        "the commit in the local default branch's history; pr needs a PR on record for that " +
+        "repo and the change in the local default branch (its history, or after a squash or " +
+        "rebase merge, merging the commit changes nothing); pr-stale needs the PR and is " +
+        "checked against the default branch's remote-tracking copy when the checkout has one.",
     )
     .requiredOption("--repo <repo>", "repo name or id")
     .requiredOption("--commit <sha>", "the approved commit that landed")
     .option(
       "--via <how>",
-      "local | git-verified (checked against the default branch) | pr | pr-stale (upstream)",
+      "local | git-verified (checked against the default branch) | pr (a recorded PR, merged and pulled) | pr-stale (a recorded PR, merged; local default not updated)",
     )
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
@@ -379,12 +384,19 @@ export function registerTicket(program: Command): void {
   ticket
     .command("reopen-for-review <ref>")
     .description(
-      "Re-open a done ticket for review (done -> in_review) after the auto-merge " +
-        "resolver fixed a conflict on the branch — records the resolution for re-review",
+      "Send an approved (ready_for_merge) or done ticket back to review (-> in_review). Two " +
+        "cases: a write repo's branch moved since the review approved it, so every landing " +
+        "path refuses it (`gaffer merge` prints this command with the values filled in; " +
+        "`ticket move <n> in_review` cannot do this); or the auto-merge resolver fixed a " +
+        "conflict on the branch. The approval's review pins stop counting; review the new " +
+        "heads and approve again (`gaffer approve <n>`). As yourself: --as admin.",
     )
-    .requiredOption("--reason <reason>", "short why the ticket is being reopened")
-    .requiredOption("--resolution <summary>", "resolver's summary of what was reconciled")
-    .option("--as <actor>", "actor type: system|admin", "system")
+    .requiredOption("--reason <reason>", 'short why, e.g. "repoB moved since review"')
+    .requiredOption(
+      "--resolution <summary>",
+      'what the re-review is about, e.g. "re-review the new commits on repoB" (the resolver writes its summary here)',
+    )
+    .option("--as <actor>", "actor type: system|admin (admin records you, $USER)", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
@@ -426,9 +438,11 @@ export function registerTicket(program: Command): void {
     .command("ci-result <ref>")
     .description(
       "REQUIRED CI: record a CI result for the ticket's candidate commit (pending | pass | " +
-        "fail). A fail on an approved ticket holds it for a human. System/admin only.",
+        "fail). A fail on an approved ticket holds it for a human. System/admin only. The " +
+        "commit must be one of the ticket's own: a write repo's delivery head, a recorded " +
+        "delivery commit or an approved revision; any other commit is refused (not_ticket_commit).",
     )
-    .requiredOption("--commit <sha>", "the commit the checks ran on")
+    .requiredOption("--commit <sha>", "the ticket's commit the checks ran on")
     .requiredOption("--state <state>", "pending | pass | fail")
     .option("--detail <text>", "the failing check (name + url) or a note")
     .option("--as <actor>", "actor type: system|admin", "system")

@@ -127,7 +127,15 @@
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -151,7 +159,7 @@ import {
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
-import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
+import { branchHead, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
 import {
   applyTesterTests,
   prepareReplayProof,
@@ -1089,6 +1097,18 @@ export function gateProposedMerge({
       { encoding: "utf8" },
     );
     if (m.status !== 0) {
+      // A conflict leaves unmerged paths. A merge that failed WITHOUT any (the scratch
+      // checkout vanished under it, a lock, a disk error) is not a conflict: reading it as
+      // one spawned the resolver on a branch with nothing to resolve and sent an approved
+      // ticket back to review (exploratory finding api/F1). It is an error: nothing lands.
+      const unmerged = git(wt, "ls-files", "--unmerged");
+      if (unmerged.status !== 0 || !(unmerged.stdout || "").trim()) {
+        git(wt, "merge", "--abort");
+        return out("error", {
+          target,
+          reason: `the merge in the scratch checkout failed without a conflict (${(m.stderr || m.stdout || "").trim().slice(0, 200) || `exit ${m.status}`})`,
+        });
+      }
       git(wt, "merge", "--abort");
       return out("conflict", {
         target,
@@ -2353,6 +2373,138 @@ function landSecondaryPr({
 }
 
 /**
+ * ONE MERGE PER TICKET (exploratory finding api/F1): an exclusive lock under GAFFER_DATA
+ * held for the whole live merge. Two runs on one ticket (two Merge clicks, `gaffer merge`
+ * beside the dashboard's) used to share the ticket's merge-gate scratch checkout: the
+ * second removed the first's while it was merging, the first read the failure as a
+ * conflict, and the resolver path sent an approved ticket back to review. The lock is a
+ * directory (mkdir is atomic) holding the owner's pid; a lock whose pid is gone is stale
+ * and taken over. Returns { ok: true, release } or { ok: false, pid }.
+ */
+export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA) {
+  const dir = resolve(dataDir, "locks", `merge-ticket-${ticketNumber}.lock`);
+  mkdirSync(dirname(dir), { recursive: true });
+  const release = () => {
+    try {
+      if (readFileSync(resolve(dir, "pid"), "utf8").trim() === String(process.pid))
+        rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* already gone */
+    }
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(dir);
+      writeFileSync(resolve(dir, "pid"), String(process.pid));
+      process.on("exit", release);
+      return { ok: true, release };
+    } catch {
+      let pid;
+      try {
+        pid = parseInt(readFileSync(resolve(dir, "pid"), "utf8"), 10) || 0;
+      } catch {
+        pid = 0;
+      }
+      let held;
+      if (pid > 0) {
+        try {
+          process.kill(pid, 0);
+          held = true;
+        } catch (e) {
+          held = e?.code === "EPERM"; // alive, someone else's
+        }
+      } else {
+        // No pid yet: a lock being created right now (mkdir, then the pid file).
+        held = Date.now() - statMtime(dir) < 10_000;
+      }
+      if (held) return { ok: false, pid };
+      rmSync(dir, { recursive: true, force: true }); // stale: its owner is gone
+    }
+  }
+  return { ok: false, pid: 0 };
+}
+
+function statMtime(p) {
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * LANDING PREFLIGHT (exploratory finding cli-runner/F-01): before the FIRST merge of a
+ * multi-repo ticket, every write repo still to land must pass what can be known without
+ * landing anything: it has an approved commit, its checkout and delivery branch are here,
+ * and its landing check holds nothing (its branch is still the commit the review pinned,
+ * required CI is not red for it). One that fails refuses the WHOLE ticket, so nothing is
+ * merged and the ticket is never left partly landed for a fault that was visible up
+ * front. Partly merged stays for what only landing can find (a conflict, a dirty
+ * checkout, a red merge gate). Returns null (all clear) or { repo, kind, reason, reviewed,
+ * head }. The primary repo's own landing check runs in main() before this.
+ */
+export function preflightSecondaryRepos(
+  ticketNumber,
+  primaryRepoId,
+  plan = readLandingPlan(ticketNumber),
+) {
+  if (!plan) return null; // legacy approval (no per-repo pins): the primary was the change
+  for (const r of plan) {
+    if (r.repoId === primaryRepoId || r.landed) continue;
+    if (r.pinned === false)
+      return {
+        repo: r.repo,
+        kind: "unreviewed",
+        reason: `${r.repo} is a write repository with no approved commit (the approval did not cover it)`,
+      };
+    if (!r.localPath || !existsSync(r.localPath) || !r.branch)
+      return {
+        repo: r.repo,
+        kind: "unavailable",
+        reason: `${r.repo}'s checkout or delivery branch is not available here`,
+      };
+    const d = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber,
+      repoPath: r.localPath,
+      branch: r.branch,
+      repoId: r.repoId,
+      secondary: true,
+    });
+    if (!d.ok)
+      return {
+        repo: r.repo,
+        kind: d.kind,
+        reason:
+          d.kind === "moved-since-review"
+            ? `${r.repo}: ${r.branch} moved since the review approved it`
+            : `${r.repo}: landing check ${d.kind}: ${d.reason}`,
+        reviewed: d.reviewed || "",
+        head: d.head || "",
+      };
+  }
+  return null;
+}
+
+/** The refusal line for a preflight hold: what, which repo, and what to run next. */
+export function preflightRefusal(ticketNumber, hold) {
+  const commits =
+    hold.reviewed && hold.head
+      ? ` (reviewed ${String(hold.reviewed).slice(0, 12)}, head is now ${String(hold.head).slice(0, 12)})`
+      : "";
+  const next =
+    hold.kind === "moved-since-review" || hold.kind === "unreviewed"
+      ? ` — ${reReviewCommand(ticketNumber, hold.repo)}`
+      : hold.kind === "unavailable"
+        ? ` — attach its checkout or restore the branch, then run gaffer merge ${ticketNumber} again`
+        : "";
+  return (
+    `refusing to merge #${ticketNumber}: ${hold.reason}${commits}; nothing merged in any repository, ` +
+    `ticket left ready_for_merge${next}`
+  );
+}
+
+/**
  * Land every write repo OTHER than the primary: each lands only its pinned (approved)
  * commit, through the same landing check (`--secondary`: the tester verdict describes the
  * primary) and the same MERGE GATE + compare-and-land as the primary (landThroughMergeGate:
@@ -2646,6 +2798,18 @@ function main() {
     return;
   }
 
+  // ONE MERGE PER TICKET: a second run while one is landing this ticket does nothing.
+  const lock = acquireMergeLock(resolved.number);
+  if (!lock.ok) {
+    fail(
+      `refusing to merge #${resolved.number}: another merge of it is already running` +
+        (lock.pid ? ` (pid ${lock.pid})` : "") +
+        `; nothing done — wait for it to finish`,
+      4,
+    );
+    return;
+  }
+
   // Fail CLOSED: never run a live agent without the deterministic safety hook.
   if (!existsSync(resolve(RUNNER_DIR, "safety-hook.mjs"))) {
     fail(
@@ -2686,11 +2850,25 @@ function main() {
         (decision.kind === "moved"
           ? ` (tested ${String(decision.tested).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — re-test the branch or record a human verdict`
           : decision.kind === "moved-since-review"
-            ? ` (reviewed ${String(decision.reviewed).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — move it back to in_review for a re-review`
+            ? ` (reviewed ${String(decision.reviewed).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)})`
             : "") +
-        `; ticket left ready_for_merge, nothing merged`,
+        `; ticket left ready_for_merge, nothing merged` +
+        (decision.kind === "moved-since-review"
+          ? ` — ${reReviewCommand(resolved.number, repo.name)}`
+          : ""),
       4,
     );
+    return;
+  }
+  // LANDING PREFLIGHT: every OTHER write repo must be landable as approved before the
+  // first merge (a moved branch, a missing approval or checkout refuses the whole ticket).
+  // (A single-write-repo ticket has no other repo: nothing to read.)
+  const preHold =
+    (resolved.writeRepos || []).length > 1
+      ? preflightSecondaryRepos(resolved.number, repo.id || null)
+      : null;
+  if (preHold) {
+    fail(preflightRefusal(resolved.number, preHold), 4);
     return;
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);

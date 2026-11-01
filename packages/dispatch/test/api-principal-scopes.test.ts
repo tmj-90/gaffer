@@ -398,3 +398,168 @@ describe("principal scopes (REST)", () => {
     expect(who.body).toMatchObject({ capability: "read", scope: { repos: [{ name: "app" }] } });
   });
 });
+
+/**
+ * Adversarial review of the scope gate (exploratory finding rough-scopes-review/*):
+ * reads and writes on an in-scope ticket that reach another ticket.
+ */
+describe("principal scopes: a ticket in scope does not open the tickets around it", () => {
+  it("R1: a dependency names only tickets in scope; titles of the rest stay hidden", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    // The operator makes the in-scope ticket wait on one outside the scope.
+    wg.addDependency({ ticket: w.onApp.id, depends_on: w.onSvc.id }, human);
+    const tok = await mint(base, { name: "one", tickets: [w.onApp.number] });
+
+    // Adding or removing an edge to a ticket outside the scope is refused, so a
+    // dependency cannot be used to read another ticket's title and status by number.
+    const add = await call(base, "POST", `/tickets/${w.onApp.id}/dependencies`, tok, {
+      depends_on: String(w.onBoth.number),
+    });
+    expect(add.status).toBe(403);
+    expect(add.body.error?.code).toBe("SCOPE_DENIED");
+    expect(add.body.error?.details).toMatchObject({ ticket: w.onBoth.number });
+    const rm = await call(
+      base,
+      "DELETE",
+      `/tickets/${w.onApp.id}/dependencies/${w.onSvc.number}`,
+      tok,
+    );
+    expect(rm.status).toBe(403);
+    expect(wg.listDependencies(w.onApp.id)).toHaveLength(1);
+
+    // The operator's edge is shown by number and status, without the other ticket's title.
+    const deps = await call(base, "GET", `/tickets/${w.onApp.id}/dependencies`, tok);
+    expect(deps.status).toBe(200);
+    expect(deps.body.dependencies).toEqual([
+      expect.objectContaining({
+        number: w.onSvc.number,
+        title: null,
+        outside_scope: true,
+      }),
+    ]);
+    const view = await call(base, "GET", `/tickets/${w.onApp.id}`, tok);
+    expect(JSON.stringify(view.body)).not.toContain("on svc");
+    expect(view.body.dependencies).toEqual([
+      expect.objectContaining({ number: w.onSvc.number, title: null, outside_scope: true }),
+    ]);
+    // The operator still sees the title.
+    const full = await call(base, "GET", `/tickets/${w.onApp.id}/dependencies`, FULL);
+    expect(full.body.dependencies).toEqual([expect.objectContaining({ title: "on svc" })]);
+  });
+
+  it("R2: a new ticket may name only repos in scope, for reading as well as writing", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    const tok = await mint(base, { name: "app-bot", repos: ["app"] });
+    const before = wg.list().length;
+    // Write app, READ svc: the delivery agent would read svc for a principal that may not.
+    const r = await call(base, "POST", "/tickets", tok, {
+      title: "reads svc",
+      repoIds: [
+        { repo_id: w.app.id, access: "write" },
+        { repo_id: w.svc.id, access: "read" },
+      ],
+    });
+    expect(r.status).toBe(403);
+    expect(r.body.error?.details).toMatchObject({
+      reason: "outside_repo_scope",
+      outside_repos: ["svc"],
+    });
+    expect(wg.list().length).toBe(before);
+  });
+
+  it("R3: epic and map membership is the operator's; a scoped principal cannot change it", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    const epic = wg.createScopeNode({ name: "Launch", type: "epic" }, human);
+    wg.linkTicketScope({ ticket_id: w.onApp.id, scope_node_id: epic.id }, human);
+    wg.linkTicketScope({ ticket_id: w.onSvc.id, scope_node_id: epic.id }, human);
+    const tok = await mint(base, { name: "app-bot", repos: ["app"] });
+    // Leaving or joining an epic rewires its acceptance ticket (another ticket).
+    const rm = await call(base, "DELETE", `/tickets/${w.onApp.id}/scopes/${epic.id}`, tok);
+    expect(rm.status).toBe(403);
+    expect(rm.body.error?.details).toMatchObject({ reason: "factory_wide" });
+    const link = await call(base, "POST", `/tickets/${w.onApp.id}/scopes`, tok, {
+      scope_node_id: epic.id,
+      relation: "primary",
+    });
+    expect(link.status).toBe(403);
+    const primary = await call(base, "PUT", `/tickets/${w.onApp.id}/primary-scope`, tok, {
+      scope_node_id: epic.id,
+    });
+    expect(primary.status).toBe(403);
+    const created = await call(base, "POST", "/tickets", tok, {
+      title: "into the epic",
+      repoIds: [{ repo_id: w.app.id, access: "write" }],
+      scopeNodeIds: [epic.id],
+    });
+    expect(created.status).toBe(403);
+    // Reading its ticket's scopes is still fine, and the operator can change them.
+    expect((await call(base, "GET", `/tickets/${w.onApp.id}/scopes`, tok)).status).toBe(200);
+    expect(
+      (await call(base, "DELETE", `/tickets/${w.onApp.id}/scopes/${epic.id}`, FULL)).status,
+    ).toBe(200);
+  });
+
+  it("R4: the human queue holds a decision only when /decisions would show it", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    const span = wg.createDecision(
+      { title: "span", question: "both?", ticketId: w.onApp.id },
+      human,
+    );
+    wg.db
+      .prepare(
+        "INSERT INTO ticket_decisions (ticket_id, decision_id, relation) VALUES (?, ?, 'informs')",
+      )
+      .run(w.onSvc.id, span.id);
+    const own = wg.createDecision({ title: "own", question: "app?", ticketId: w.onApp.id }, human);
+    const tok = await mint(base, { name: "one", tickets: [w.onApp.number] });
+    const listed = (
+      (await call(base, "GET", "/decisions", tok)).body.decisions as Array<{ id: string }>
+    ).map((d) => d.id);
+    expect(listed).toEqual([own.id]);
+    const q = await call(base, "GET", "/api/human-queue", tok);
+    const queued = (q.body.items as Array<{ kind: string; decisionId?: string }>)
+      .filter((i) => i.kind === "decision")
+      .map((i) => i.decisionId);
+    expect(queued).toEqual([own.id]);
+    expect((q.body.counts as { decisions: number }).decisions).toBe(1);
+  });
+
+  it("R5: scope is judged per request on the ticket's repos now, and linking cannot widen it", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    const tok = await mint(base, { name: "app-bot", repos: ["app"] });
+    const adminApp = await mint(base, { name: "app-admin", repos: ["app"], actor_type: "admin" });
+    const see = async (t: { id: string }, k = tok) =>
+      (await call(base, "GET", `/tickets/${t.id}`, k)).status;
+    expect(await see(w.onSvc)).toBe(403);
+    // The operator moves the ticket's delivery to app: in scope from the next request.
+    wg.setTicketRepoAccess({ ticket_id: w.onSvc.id, repo_id: w.svc.id, access: "read" }, human);
+    wg.setTicketRepoAccess({ ticket_id: w.onSvc.id, repo_id: w.app.id, access: "write" }, human);
+    expect(await see(w.onSvc)).toBe(200);
+    // ...and back out again when it writes svc too.
+    wg.setTicketRepoAccess({ ticket_id: w.onSvc.id, repo_id: w.svc.id, access: "write" }, human);
+    expect(await see(w.onSvc)).toBe(403);
+    // A ticket with no repo is outside a repo scope, and neither a human nor a scoped
+    // admin principal can link one in: the link is a write to a ticket it cannot reach.
+    for (const k of [tok, adminApp]) {
+      const link = await call(base, "PUT", `/tickets/${w.onNone.id}/repo-access`, k, {
+        repo_id: w.app.id,
+        access: "write",
+      });
+      expect(link.status).toBe(403);
+    }
+    expect(await see(w.onNone, adminApp)).toBe(403);
+    // A scoped admin linking another repo to its own ticket only narrows: refused for a
+    // repo outside its scope.
+    const out = await call(base, "PUT", `/tickets/${w.onApp.id}/repo-access`, adminApp, {
+      repo_id: w.svc.id,
+      access: "read",
+    });
+    expect(out.status).toBe(403);
+    expect(out.body.error?.details).toMatchObject({ outside_repos: ["svc"] });
+  });
+});

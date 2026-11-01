@@ -913,6 +913,8 @@ function scopeRefuses(method, path) {
   }
   if (head === "tickets") {
     if (["repo-access", "work-repos", "mono-fallback"].includes(third)) return !squad.admin;
+    // Epic and map membership is the operator's (it rewires the epic's other tickets).
+    if (third === "scopes" || third === "primary-scope") return true;
     return false;
   }
   if (head === "claims" || head === "decisions") return false;
@@ -11754,11 +11756,19 @@ async function renderTicket(id) {
           deps.map((d) =>
             el("li", { class: `st-${d.status}` }, [
               glyph(d.status, 16),
-              el("a", { href: `#/ticket/${d.depends_on_ticket_id}` }, [
-                el("b", {}, `#${d.number}`),
-                " ",
-                d.title,
-              ]),
+              // A ticket outside a scoped token's scope comes without its title (the
+              // server leaves it out), and its page would be refused, so no link.
+              d.outside_scope
+                ? el("span", { title: scopeTitle() }, [
+                    el("b", {}, `#${d.number}`),
+                    " ",
+                    el("span", { class: "dim" }, "outside this token's scope"),
+                  ])
+                : el("a", { href: `#/ticket/${d.depends_on_ticket_id}` }, [
+                    el("b", {}, `#${d.number}`),
+                    " ",
+                    d.title,
+                  ]),
               el("span", { class: "ac-state" }, statusLabel(d.status)),
             ]),
           ),

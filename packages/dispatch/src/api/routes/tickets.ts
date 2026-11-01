@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
+import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -232,7 +233,7 @@ export async function routeTickets(
         // new endpoint. The data is already computed by `view()`.
         scopes: view.scopes,
         blocking_decisions: view.blockingDecisions,
-        dependencies: view.dependencies,
+        dependencies: hideOutOfScopeDependencies(view.dependencies, requestTicketFilter(wg)),
         evidence: view.evidence,
         events: view.events,
         // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
@@ -807,7 +808,9 @@ export async function routeTickets(
   // /tickets/:id/dependencies — GET this ticket's dependencies, POST to add one.
   if (segments.length === 3 && sub === TICKET_SUB.DEPENDENCIES) {
     if (method === "GET") {
-      sendJson(res, 200, { dependencies: wg.listDependencies(id) });
+      sendJson(res, 200, {
+        dependencies: hideOutOfScopeDependencies(wg.listDependencies(id), requestTicketFilter(wg)),
+      });
       return;
     }
     if (method === "POST") {

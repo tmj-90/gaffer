@@ -202,3 +202,21 @@ export function describeDenial(
       return `This credential is scoped to ${labels.scope}; ${t} is not one of them.`;
   }
 }
+
+/**
+ * A dependency on a ticket outside the scope, as a scoped holder sees it: its number
+ * and status (the edge is the operator's, and the in-scope ticket waits on it), but not
+ * the other ticket's title. `visible` is the holder's ticket filter; null (unscoped)
+ * returns the list unchanged.
+ */
+export function hideOutOfScopeDependencies<
+  T extends { depends_on_ticket_id: string; title: string },
+>(
+  deps: readonly T[],
+  visible: ((ticketId: string) => boolean) | null,
+): Array<T | (Omit<T, "title"> & { title: null; outside_scope: true })> {
+  if (!visible) return [...deps];
+  return deps.map((d) =>
+    visible(d.depends_on_ticket_id) ? d : { ...d, title: null, outside_scope: true as const },
+  );
+}

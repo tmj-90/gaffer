@@ -20,7 +20,10 @@ import { apiPrincipal } from "./routes/context.js";
  * WRITES (every non-GET):
  *   - `/tickets/:ref/…`                  → a write to that ticket;
  *   - `/tickets/:ref/repo-access|work-repos|mono-fallback` → also a repo link (admin);
- *   - `POST /tickets`                     → a new ticket on the repos its body names;
+ *   - `/tickets/:ref/dependencies[/:other]` → also a read of the other ticket;
+ *   - `/tickets/:ref/scopes|primary-scope` → also factory-wide when scoped (epic wiring);
+ *   - `POST /tickets`                     → a new ticket on every repo its body names
+ *                                           (read or write); with scope nodes, as above;
  *   - `/claims/:id/…`                     → a write to the claim's ticket;
  *   - `POST /decisions` with a ticket, `/decisions/:id/…` → a write to its ticket(s);
  *   - `/repos/:id/…`                      → a repo-level write to that repo (admin);
@@ -48,6 +51,9 @@ export async function authorizePrincipalRequest(
     check({ kind, ticket: wg.scopeTicket(ref) });
   const [head, second, third] = segments;
   const read = method === "GET" || method === "HEAD";
+  const scopeLink = (): void => {
+    if (isScoped(principalScope(principal))) check({ kind: "write_factory" });
+  };
 
   if (read) {
     if (!isScoped(principalScope(principal))) return;
@@ -90,17 +96,42 @@ export async function authorizePrincipalRequest(
         const body = (await readJsonBody(req)) as {
           repo?: unknown;
           repoIds?: Array<{ repo_id?: unknown; access?: unknown }>;
+          scopeNodeIds?: unknown;
         };
+        // Every repo it names, read access included: the delivery agent reads a read
+        // repo, so a ticket on an in-scope repo that reads another would carry that
+        // repo's code to a principal that may not see it.
         const names: string[] = [];
         if (typeof body.repo === "string") names.push(body.repo);
         if (Array.isArray(body.repoIds)) {
           for (const r of body.repoIds) {
-            if (r && typeof r.repo_id === "string" && r.access === "write") names.push(r.repo_id);
+            if (r && typeof r.repo_id === "string") names.push(r.repo_id);
           }
         }
-        return check({ kind: "create_ticket", repos: names.map((n) => repoId(wg, n)) });
+        check({ kind: "create_ticket", repos: names.map((n) => repoId(wg, n)) });
+        // Placing it on the map or in an epic is the operator's (see scope links below).
+        if (Array.isArray(body.scopeNodeIds) && body.scopeNodeIds.length > 0) {
+          return scopeLink();
+        }
+        return;
       }
       ticket(second, "write_ticket");
+      // A ticket's place on the map and in an epic: joining or leaving an epic rewires
+      // its acceptance ticket's dependencies (another ticket), so it is a factory-wide
+      // change for a scoped principal (an unscoped one is unaffected).
+      if (third === "scopes" || third === "primary-scope") return scopeLink();
+      // A dependency names a second ticket: it must be one the principal may see, or an
+      // edge would read another ticket's title and status by number (and removing the
+      // operator's edge would let its ticket start before one it cannot see).
+      if (third === "dependencies") {
+        const other =
+          segments[3] ??
+          (((await readJsonBody(req)) as { depends_on?: unknown }).depends_on as unknown);
+        if (typeof other === "string" || typeof other === "number") {
+          ticket(String(other), "read_ticket");
+        }
+        return;
+      }
       if (third === "repo-access" || third === "work-repos" || third === "mono-fallback") {
         const body = (await readJsonBody(req)) as { repo_id?: unknown; repos?: unknown };
         const named: string[] = [];

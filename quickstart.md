@@ -275,10 +275,11 @@ flags under **Safety** below — off by default.
 >
 > Use the ticket number (`<n>`) or the full id; the 8-character short ref on cards won't
 > resolve. A ticket that is missing a reviewer shows on the Team sheet with an
-> **Assign…** row; assigning one is CLI-only for now. Criteria can be edited later with
-> `runner/gaffer wg ac edit` where your version has it, which is how a criterion created
-> without `--verify` gets one. (The reviewer is *who owns the gate*; the agent still cannot
-> approve or merge its own work.)
+> **Assign…** row; assigning one is CLI-only for now. Give every criterion `--verify` when
+> you add it: if `runner/gaffer wg ac --help` lists `edit`, `runner/gaffer wg ac edit <n>
+> <ac-id> --verify "…"` adds one later; without it a criterion can't be changed, and the
+> ticket can't be readied under `factory_strict` or `regulated`. (The reviewer is *who owns
+> the gate*; the agent still cannot approve or merge its own work.)
 
 ---
 
@@ -332,7 +333,7 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   ```bash
   export GAFFER_MODE=autonomous            # agents review, approve, merge and push
   export SANDBOX_PROVIDER=docker           # Linux: the docker provider (macOS can keep sandbox-exec)
-  docker compose --profile sandbox build   # once: the delivery image and egress proxy it uses
+  docker compose --profile sandbox build sandbox-image egress-proxy   # once: the images it runs
   export GAFFER_DAILY_BUDGET_USD=5
   runner/gaffer run --daemon
   ```
@@ -350,6 +351,9 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   on its own does not make a run hands-off: `REVIEW_MODE` stays `human`, so no reviewer
   runs and every ticket waits in `in_review`, while the sandbox is still required. Any
   single flag you export overrides the mode (`AUTO_MERGE=0` keeps merges for you).
+  The docker provider is experimental: its containment is red-team tested in CI, but a
+  full live delivery inside its container hasn't been proven yet (see
+  [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
 - **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets

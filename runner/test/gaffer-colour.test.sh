@@ -9,16 +9,18 @@
 #   1  on a tty (a python pty) the marks ARE coloured — the rule is not "never";
 #   2  piped (stdout not a tty) there is no escape byte, stdout or stderr;
 #   3  NO_COLOR=1 on a tty: none;  4  TERM=dumb on a tty: none.
+# The pty is python3's pty module, else script(1) (util-linux or BSD/macOS); with
+# neither, the pipe checks still run and the tty checks are a counted SKIP.
 # Run: bash runner/test/gaffer-colour.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
+. "$(dirname "${BASH_SOURCE[0]}")/lib/skip.sh"
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$(cd "$HERE/.." && pwd)"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 required for the pty"; exit 0; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-colour.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
 trap 'gaffer_test_rm_work "$WORK"' EXIT
@@ -44,7 +46,17 @@ while True:
 p.wait()
 sys.stdout.buffer.write(out)
 PY
-on_tty() { python3 -I "$WORK/ttyrun.py" "$@"; }
+TTY=1; SCRIPT_VER="$(script --version 2>/dev/null || true)"
+if command -v python3 >/dev/null 2>&1 && python3 -I -c 'import pty' >/dev/null 2>&1; then
+  on_tty() { python3 -I "$WORK/ttyrun.py" "$@"; }
+elif case "$SCRIPT_VER" in *util-linux*) true ;; *) false ;; esac; then
+  on_tty() { script -qec "$(printf '%q ' "$@")" /dev/null </dev/null; }
+elif command -v script >/dev/null 2>&1 && script -q /dev/null true </dev/null >/dev/null 2>&1; then
+  on_tty() { script -q /dev/null "$@" </dev/null; }
+else
+  TTY=0; on_tty() { return 1; }
+  gaffer_skip_part "no pty helper (python3's pty module or script(1)): the on-a-tty checks are not run"
+fi
 has_esc() { case "$1" in *$'\033'*) return 0 ;; *) return 1 ;; esac; }
 
 # Stub data sources so status.sh / run-summary.sh run hermetically (status.test.sh's seams).
@@ -62,10 +74,13 @@ SUMMARY_ENV=(env SUMMARY_LIST_CMD="$WORK/list.sh" SUMMARY_SHOW_CMD="$WORK/empty.
 check() {  # check <label> <cmd…>
   local label="$1"; shift
   local out
-  out="$(on_tty "$@" 2>&1)"
-  has_esc "$out" && ok "$label: coloured on a tty" || fail "$label: no colour on a tty: $(printf '%s' "$out" | head -3)"
   out="$("$@" 2>&1 | cat)"
   has_esc "$out" && fail "$label: escape codes in a pipe: $(printf '%s' "$out" | grep -m1 $'\033' | cat -v)" || ok "$label: plain text in a pipe"
+  out="$(NO_COLOR=1 "$@" 2>&1 | cat)"
+  has_esc "$out" && fail "$label: escape codes under NO_COLOR=1 in a pipe" || ok "$label: plain under NO_COLOR=1 in a pipe"
+  [ "$TTY" = 1 ] || return 0
+  out="$(on_tty "$@" 2>&1)"
+  has_esc "$out" && ok "$label: coloured on a tty" || fail "$label: no colour on a tty: $(printf '%s' "$out" | head -3)"
   out="$(NO_COLOR=1 on_tty "$@" 2>&1)"
   has_esc "$out" && fail "$label: escape codes under NO_COLOR=1: $(printf '%s' "$out" | grep -m1 $'\033' | cat -v)" || ok "$label: plain under NO_COLOR=1"
   out="$(TERM=dumb on_tty "$@" 2>&1)"
@@ -77,8 +92,10 @@ check "gaffer skills list" bash "$RUNNER_DIR/gaffer" skills list
 echo "== gaffer err() on stderr =="
 out="$(bash "$RUNNER_DIR/gaffer" no-such-command 2>&1 | cat)"
 has_esc "$out" && fail "gaffer error on stderr carries escape codes in a pipe" || ok "gaffer error on stderr: plain text in a pipe"
-out="$(on_tty bash "$RUNNER_DIR/gaffer" no-such-command)"
-has_esc "$out" && ok "gaffer error on a tty stderr is coloured" || fail "gaffer error on a tty: no colour"
+if [ "$TTY" = 1 ]; then
+  out="$(on_tty bash "$RUNNER_DIR/gaffer" no-such-command)"
+  has_esc "$out" && ok "gaffer error on a tty stderr is coloured" || fail "gaffer error on a tty: no colour"
+fi
 echo "== status.sh =="
 check "gaffer status" "${STATUS_ENV[@]}" bash "$RUNNER_DIR/status.sh"
 echo "== run-summary.sh (+ json-tool's safety report) =="

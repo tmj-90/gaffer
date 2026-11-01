@@ -279,7 +279,8 @@ structural barrier the whole design hangs on.
   in *Ready for merge* and shows as **Partly merged** in what needs you, naming which
   repositories landed (it cannot be cancelled then: `wg wont-do` and a cancelling send-back
   are refused with `PARTLY_LANDED`, so land the rest or revert the landed merge first);
-  the next merge lands only the rest. A landing is recorded only when it can be shown:
+  the next merge lands only the rest. A landing (`wg ticket record-landing`, which every
+  landing path calls per repository) is recorded only when it can be shown:
   `--via local` needs the approved commit in the default branch's history; `--via pr`
   needs a pull request on record for that repository and the change in the local default
   branch (its history, or, after a squash or rebase merge, merging the commit into it

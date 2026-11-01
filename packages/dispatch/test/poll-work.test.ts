@@ -368,9 +368,11 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     }
   });
 
-  it("fires for a PARTLY LANDED ticket even with AUTO_MERGE off: the lane lands the rest (external review #7)", async () => {
+  it("a PARTLY LANDED ticket is merge work under the lane's own policy: not with AUTO_MERGE off, yes with it on (external review #7)", async () => {
     // Two write repos, both approved (one review pin each); repoA's landing is recorded,
-    // repoB's is not: the landing started, so the merge lane finishes it.
+    // repoB's is not. The merge lane lands the rest only when the policy that let it land
+    // the first still holds (AUTO_MERGE for this approval); with AUTO_MERGE off the ticket
+    // stays partly landed for a human's Merge now, so Poll for work has nothing to run.
     const partlyLanded = (wg: Dispatch) => {
       const t = wg.createTicket({ title: "spans two repos" }, human);
       const sha = (c: string) => c.repeat(40);
@@ -411,6 +413,19 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     });
     h = await startHarness({ run: () => ({ started: true, pid: 8 }) }, false, partlyLanded);
     let res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.polled).toBe(false);
+    expect(h.runCount()).toBe(0);
+    await h.close();
+    restore();
+    // AUTO_MERGE back on: the lane would land the remaining repo.
+    restore = withEnv({
+      AUTO_MERGE: "1",
+      GAFFER_MERGE_LANE: undefined,
+      CREW_CONFIG: "/nonexistent/crew.yaml",
+    });
+    h = await startHarness({ run: () => ({ started: true, pid: 8 }) }, false, partlyLanded);
+    res = await call(h.baseUrl, "POST", "/poll-work");
     expect(res.status).toBe(202);
     expect(res.body.polled).toBe(true);
     expect(res.body.pending).toMatchObject({ ready: 0, merge: 1 });
@@ -419,7 +434,7 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     await h.close();
     restore();
     restore = withEnv({
-      AUTO_MERGE: "0",
+      AUTO_MERGE: "1",
       GAFFER_MERGE_LANE: "0",
       CREW_CONFIG: "/nonexistent/crew.yaml",
     });

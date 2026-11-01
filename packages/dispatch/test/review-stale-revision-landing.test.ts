@@ -404,6 +404,24 @@ describe("an approval covers every write repo (external review #7)", () => {
     expect(d.landingStatus(t.id).repos.map((r) => r.repo)).toEqual(["repoA"]);
   });
 
+  it("partly landed: the status says whether the merge lane finishes it or a person must", () => {
+    const a = makeRepo("a");
+    const b = makeRepo("b");
+    const d = Dispatch.open(":memory:");
+    const t = twoRepoInReview(d, a, b);
+    const shown = d.ticketDiff(t.id).repos.map((r) => ({ repo: r.repoId!, sha: r.headSha! }));
+    d.approveReview(t.id, human, { commits: shown, requireCommits: true });
+    git(a, "merge", "-q", "--no-ff", "-m", "land", BRANCH);
+    d.recordLanding(t.id, { repo: "repoA", commit: git(a, "rev-parse", BRANCH) }, system);
+    const off = d.landingState(t.id, { ...process.env, AUTO_MERGE: "0" });
+    expect(off?.kind).toBe("partly_landed");
+    expect(off?.detail).toContain("repoA landed; repoB not yet landed (pending");
+    expect(off?.detail).toContain("Nothing lands the rest on its own");
+    const on = d.landingState(t.id, { ...process.env, AUTO_MERGE: "1" });
+    expect(on?.kind).toBe("partly_landed");
+    expect(on?.detail).toContain("merge lane lands the rest on its next tick");
+  });
+
   it("an approval that pinned only A (the old rule) never makes the ticket done", () => {
     const a = makeRepo("a");
     const b = makeRepo("b");

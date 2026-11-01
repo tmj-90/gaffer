@@ -138,19 +138,25 @@ export function decideLandingState(f: LandingFacts): LandingState | null {
       label: "Approved · landing",
       detail: "The merge runner is landing it now.",
     };
+  const human = f.approver === "human" || f.approver === "admin";
+  const laneLands = f.mergeLane && (f.mergeGateEarned || (f.autoMerge && human));
   if (f.landedRepos.length > 0 && f.landedRepos.length < f.writeRepos.length) {
     const rest = f.writeRepos.filter((r) => !f.landedRepos.includes(r));
+    // The merge lane finishes it only under the SAME policy that lets it land any approval
+    // (external review #7): otherwise it stays partly landed until a person presses Merge now.
+    const who = laneLands
+      ? "The runner's merge lane lands the rest on its next tick (the merge gate and the tester replay run per repository), or Merge now lands the rest at once"
+      : "Nothing lands the rest on its own (the merge policy holds this approval now): Merge now lands the rest";
     return {
       kind: "partly_landed",
       hold: null,
       label: "Approved · partly landed",
       detail:
-        `${f.landedRepos.join(", ")} landed; ${rest.join(", ")} not yet, still on the delivery branch. ` +
-        "Merge now lands the rest (a landed repo is never merged again); the ticket is done when every repository has landed.",
+        `${f.landedRepos.join(", ")} landed; ${rest.join(", ")} not yet landed (pending, still on the delivery branch). ` +
+        `${who}; a landed repo is never merged again, and the ticket is done when every repository has landed.`,
     };
   }
-  const human = f.approver === "human" || f.approver === "admin";
-  if (f.mergeLane && (f.mergeGateEarned || (f.autoMerge && human))) {
+  if (laneLands) {
     const why = f.mergeGateEarned
       ? "An earned merge grant covers it: the runner's merge lane lands it on its next tick."
       : "Auto-merge on approval is on: the runner's merge lane lands this human approval on its next tick.";

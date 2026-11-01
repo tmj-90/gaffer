@@ -17,8 +17,10 @@
 # or an earned `auto` merge row). A ticket the policy holds is logged ONCE
 # per run and left for a human ("ship what you've earned, hold the rest"); one whose
 # landing fails (conflict, dirty checkout) is logged and skipped for the rest of the run.
-# A PARTLY LANDED ticket (some write repos landed, some not) is always merge work: the
-# lane lands the remaining repos (the landing already started under the approval).
+# A PARTLY LANDED ticket (some write repos landed, some not) is merge work under the SAME
+# policy: the lane lands the remaining repos only while the decision that lets it land
+# this approval still holds (the approver, AUTO_MERGE / the merge gate); otherwise it stays
+# partly landed, visible as such, for a human's Merge now (external review #7).
 # Never exits the tick: merging is bookkeeping, the tick goes on to deliver.
 # shellcheck shell=bash
 # shellcheck disable=SC2154  # globals provided by tick.sh at call time
@@ -26,7 +28,7 @@ _gaffer_merge_lane() {
   case "$(printf '%s' "${GAFFER_MERGE_LANE:-1}" | tr '[:upper:]' '[:lower:]')" in 0|false|no|off) return 0 ;; esac
   declare -F gaffer_land_delivery >/dev/null 2>&1 || return 0
   local _HELD_FILE="$GAFFER_DATA/.merge-held-tickets"; touch "$_HELD_FILE"
-  local _MJSON _MNUMS _n _show _repo _branch _def _dec _rc _via
+  local _MJSON _MNUMS _n _show _repo _branch _def _dec _rc _via _partial _pl
   _MJSON="$(wg ticket list -s ready_for_merge 2>/dev/null || echo '[]')"
   _MNUMS="$(printf '%s' "$_MJSON" | jget '(d.tickets || d || []).map(t => t.number).filter(Boolean).join(" ")' 2>/dev/null || echo '')"
   [ -n "${_MNUMS// /}" ] || return 0
@@ -37,12 +39,13 @@ _gaffer_merge_lane() {
     _def="$(echo "$_show" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || {}).default_branch) || "main"' 2>/dev/null)"
     _branch="$(echo "$_show" | jget 'd.ticket.branch_name || ""' 2>/dev/null)"
     # PARTLY LANDED (external review #7): some write repos' approved commits landed, some
-    # did not (a dirty checkout, an unavailable branch, a held repo). The landing started
-    # under an approval the landing paths acted on, so finishing it is merge work: the
-    # remaining repos land through the same landing check and merge gate (a landed repo is
-    # never merged again). Poll for work used to report no_work here while `gaffer merge`
-    # would finish the ticket. The primary repo's branch may be gone once it landed, so the
-    # plan's per-repo branches are what is checked.
+    # did not (a dirty checkout, an unavailable branch, a held repo). Finishing it is merge
+    # work, decided exactly like any approval below: the remaining repos land (through the
+    # same landing check, merge gate and tester replay; a landed repo is never merged again)
+    # only when the policy that lets the lane land this approval holds NOW — never because
+    # an earlier landing happened (AUTO_MERGE turned off, or an agent's merge grant
+    # withdrawn, since). Held, it stays partly landed for a human's Merge now. The primary
+    # repo's branch may be gone once it landed, so the plan's per-repo branches are checked.
     _partial="$(printf '%s' "$_show" | jget '(d.landing && d.landing.partial) ? "1" : ""' 2>/dev/null || echo '')"
     if [ "$_partial" = "1" ]; then
       [ -n "$_branch" ] || _branch="$(printf '%s' "$_show" | jget '(((d.landing && d.landing.repos) || []).find(r => !r.landed && r.branch) || {}).branch || ""' 2>/dev/null || echo '')"
@@ -68,7 +71,9 @@ _gaffer_merge_lane() {
       esac
     fi
     if [ "$_dec" != "allow" ] && [ "$_partial" = "1" ]; then
-      _dec=allow; _via="partly landed: finishing the approved landing (the remaining repositories)"
+      _pl="$(printf '%s' "$_show" | jget '(((d.landing && d.landing.repos) || []).filter(r => r.landed).map(r => r.repo).join(", ")) + " landed; " + (((d.landing && d.landing.repos) || []).filter(r => !r.landed).map(r => r.repo).join(", ")) + " pending"' 2>/dev/null || echo 'some repositories pending')"
+      log "MERGE: #$_n is PARTLY LANDED ($_pl) but the merge policy now holds it (merge gate not earned, and not a human approval under AUTO_MERGE) — left partly landed for a human: Merge now lands the rest"
+      _gaffer_locked .skip.lock _gaffer_append_line "$_HELD_FILE" "$_n"; continue
     fi
     if [ "$_dec" != "allow" ]; then
       log "MERGE: #$_n approved but auto-merge NOT permitted by policy (merge gate held) — left in ready_for_merge for a human"

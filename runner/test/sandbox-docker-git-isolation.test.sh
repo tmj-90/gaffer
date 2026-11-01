@@ -160,6 +160,36 @@ OUT="$(cd "$WT" && PATH="$BIN:$PATH" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$
 [ "$(git -C "$REPO" rev-parse gaffer/ticket-1)" = "$MAIN0" ] && ok "the host's newer ref value was kept" || fail "the import overwrote a ref that moved on the host"
 grep -q 'moved on the host' <<<"$OUT" && ok "the refusal names the reason" || fail "no reason given: $OUT"
 
+echo "== (2d) the host never writes through a link the container left in its private git dir =="
+# The private dir was writable from inside. Before the import the host rewrites its
+# config and alternates; a symlink planted there must not turn that rewrite into a write
+# to a host file, and an import from a private dir holding links is refused.
+VICTIM="$WORK/operator-file"; printf 'ORIGINAL\n' > "$VICTIM"
+TIP2="$(git -C "$REPO" rev-parse gaffer/ticket-1)"
+LINKPAY="echo l > l.txt && git add l.txt && git -c user.email=s@x -c user.name=s commit -qm linked && gd=\$(git rev-parse --absolute-git-dir) && rm -f \"\$gd/config\" && ln -s '$VICTIM' \"\$gd/config\" && rm -rf \"\$gd/objects/info\" && mkdir -p '$WORK/elsewhere' && ln -s '$WORK/elsewhere' \"\$gd/objects/info\" && echo LINK_DONE"
+OUT="$(cd "$WT" && PATH="$BIN:$PATH" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$LINKPAY" 2>&1)"; RC=$?
+grep -q LINK_DONE <<<"$OUT" && ok "the link payload ran" || fail "link payload did not run: $OUT"
+[ "$(cat "$VICTIM")" = ORIGINAL ] && ok "a host file named by a planted config link was not written" || fail "the host wrote through the planted link: $(head -c 200 "$VICTIM")"
+[ ! -e "$WORK/elsewhere/alternates" ] && ok "a host dir named by a planted objects/info link was not written" || fail "the host wrote alternates into a linked dir"
+[ "$RC" != 0 ] && ok "wrapper reports the refused import (exit $RC)" || fail "an import from a private dir with links exited 0"
+[ "$(git -C "$REPO" rev-parse gaffer/ticket-1)" = "$TIP2" ] && ok "nothing imported from a private dir holding links" || fail "the ticket branch moved from a private dir holding links"
+git -C "$WT" reset -q --hard "$TIP2" 2>/dev/null; rm -f "$WT/l.txt"
+
+echo "== (2e) the import never follows a .git pointer the container rewrote =="
+# The worktree's .git FILE is in the writable worktree. Pointed at another repository
+# whose ticket branch has the same tip (a clone), an import that followed it would move
+# that repository's branch and reset its index.
+OTHER="$WORK/other"; git clone -q "$REPO" "$OTHER"
+TIP3="$(git -C "$REPO" rev-parse gaffer/ticket-1)"
+git -C "$OTHER" update-ref refs/heads/gaffer/ticket-1 "$TIP3"
+REDIR="echo p > p.txt && git add p.txt && git -c user.email=s@x -c user.name=s commit -qm redirected && printf 'gitdir: %s\\n' '$OTHER/.git' > .git && echo REDIR_DONE"
+OUT="$(cd "$WT" && PATH="$BIN:$PATH" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$REDIR" 2>&1)"; RC=$?
+grep -q REDIR_DONE <<<"$OUT" && ok "the redirect payload ran" || fail "redirect payload did not run: $OUT"
+[ "$(git -C "$OTHER" rev-parse gaffer/ticket-1)" = "$TIP3" ] && ok "another repository's branch was not moved through a rewritten .git file" || fail "the import moved $OTHER's gaffer/ticket-1"
+[ "$(git -C "$REPO" rev-parse gaffer/ticket-1)" = "$TIP3" ] && ok "nothing imported through a rewritten .git file" || fail "imported despite a rewritten .git file"
+[ "$RC" != 0 ] && ok "wrapper reports the refused import (exit $RC)" || fail "an import through a rewritten .git file exited 0"
+printf 'gitdir: %s\n' "$GITDIR" > "$WT/.git"; rm -f "$WT/p.txt"; git -C "$WT" reset -q --hard "$TIP3" 2>/dev/null
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0; fi
 echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"; exit 1

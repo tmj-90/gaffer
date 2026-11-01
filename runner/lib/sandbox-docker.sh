@@ -357,9 +357,13 @@ _shadow_config() {  # <host-worktree> <private-git-dir>: the ONLY config the pri
       case "$v" in *$'\n'* | *'"'* | *'\'*) continue ;; esac
       printf '[%s]\n\t%s = "%s"\n' "${k%%.*}" "${k#*.}" "$v"
     done
-  } > "$sd/config"
+  } > "$sd/config.gaffer-new"
+  # Replace, never write through: unlinking first breaks a hard link the container may
+  # have left (a symlink or other special file is refused before this runs on import).
+  mv -f "$sd/config.gaffer-new" "$sd/config"
   mkdir -p "$sd/objects/info" "$sd/refs/heads" "$sd/refs/tags" "$sd/info"
   rm -rf "$sd/hooks" "$sd/commondir" "$sd/worktrees" "$sd/gitdir" 2>/dev/null || true
+  rm -f "$sd/objects/info/alternates" "$sd/objects/info/http-alternates" 2>/dev/null || true
   printf '%s\n' "$_common/objects" > "$sd/objects/info/alternates"
 }
 _GIT_PRIV_BASE="${GAFFER_DATA:-${TMPDIR:-/tmp}}"
@@ -397,7 +401,7 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   done
   [ -d "$_common/objects" ] && ! _covered "$_common/objects" && _add_mount "$_common/objects" ro
   _add_mount_at "$_sd" "$_gitdir" rw
-  _SHADOWS+=( "$_wr"$'\t'"$_sd"$'\t'"$_ref"$'\t'"$_old"$'\t'"$_common" )
+  _SHADOWS+=( "$_wr"$'\t'"$_sd"$'\t'"$_ref"$'\t'"$_old"$'\t'"$_common"$'\t'"$_gitdir" )
 done
 
 # _import_private_git: after the container exits, bring each worktree's OWN ref back from
@@ -407,33 +411,49 @@ done
 # must be a commit, and the host ref moves only from the value it had when the container
 # started (compare-and-swap). Returns non-zero (and says why) when an import fails.
 _import_private_git() {
-  local row wr sd ref old tip tmpref rc=0
+  local row wr sd ref old gd tip tmpref rc=0
   for row in ${_SHADOWS[@]+"${_SHADOWS[@]}"}; do
-    IFS=$'\t' read -r wr sd ref old _common <<<"$row"
+    IFS=$'\t' read -r wr sd ref old _common gd <<<"$row"
+    # The worktree's `.git` FILE is in the writable worktree: the container could point it
+    # at another repository. Re-check the two-way registration, and run every host git
+    # command below against the git dir recorded at start, never the pointer.
+    if ! _verified_linked_worktree "$wr" || [ "$_VW_GITDIR" != "$gd" ] || [ "$_VW_COMMON" != "$_common" ]; then
+      printf 'sandbox-docker: import: the .git file of %s no longer names its registered git dir %s; nothing imported\n' "$wr" "$gd" >&2
+      rc=1; continue
+    fi
+    # The container could write anything here. A symlink (or a FIFO, socket, device) in
+    # the private dir would make the host's rewrite below, or the git commands reading
+    # it, follow a path the container chose to a host file; git never creates such
+    # entries in a git dir, so their presence refuses the import.
+    if [ -L "$sd" ] || [ ! -d "$sd" ] || [ -n "$(find "$sd" ! -type f ! -type d -print 2>/dev/null | head -n 1)" ]; then
+      printf 'sandbox-docker: import: the private repository for %s holds a symlink or special file (%s); nothing imported\n' \
+        "$wr" "$(find "$sd" ! -type f ! -type d -print 2>/dev/null | head -n 1)" >&2
+      rc=1; continue
+    fi
     _shadow_config "$wr" "$sd"
     tip="$(GIT_DIR="$sd" "${_HOSTGIT[@]}" rev-parse -q --verify "$ref^{commit}" 2>/dev/null || true)"
     [ -n "$tip" ] || { printf 'sandbox-docker: import: the private repository for %s has no commit at %s; nothing imported\n' "$wr" "$ref" >&2; continue; }
     [ "$tip" = "$old" ] && continue
     tmpref="refs/gaffer-sandbox/import-$$"
-    if ! "${_HOSTGIT[@]}" -C "$wr" fetch -q --no-tags --no-write-fetch-head --no-recurse-submodules \
+    if ! "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" fetch -q --no-tags --no-write-fetch-head --no-recurse-submodules \
          "$sd" "+$ref:$tmpref" >/dev/null 2>&1; then
       printf 'sandbox-docker: import: could not fetch %s from the private repository of %s\n' "$ref" "$wr" >&2
       rc=1; continue
     fi
-    if [ "$("${_HOSTGIT[@]}" -C "$wr" rev-parse -q --verify "$tmpref^{commit}" 2>/dev/null)" != "$tip" ]; then
+    if [ "$("${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" rev-parse -q --verify "$tmpref^{commit}" 2>/dev/null)" != "$tip" ]; then
       printf 'sandbox-docker: import: fetched tip for %s does not match the private repository (%s)\n' "$wr" "$tip" >&2
-      "${_HOSTGIT[@]}" -C "$wr" update-ref -d "$tmpref" >/dev/null 2>&1 || true
+      "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref -d "$tmpref" >/dev/null 2>&1 || true
       rc=1; continue
     fi
     if [ "$ref" = "HEAD" ]; then
-      "${_HOSTGIT[@]}" -C "$wr" update-ref --no-deref -m "gaffer: import sandbox commits" HEAD "$tip" "$old" >/dev/null 2>&1
+      "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref --no-deref -m "gaffer: import sandbox commits" HEAD "$tip" "$old" >/dev/null 2>&1
     else
-      "${_HOSTGIT[@]}" -C "$wr" update-ref -m "gaffer: import sandbox commits" "$ref" "$tip" "$old" >/dev/null 2>&1
+      "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref -m "gaffer: import sandbox commits" "$ref" "$tip" "$old" >/dev/null 2>&1
     fi || { printf 'sandbox-docker: import: %s moved on the host while the container ran; not importing %s\n' "$ref" "$tip" >&2; rc=1; }
-    "${_HOSTGIT[@]}" -C "$wr" update-ref -d "$tmpref" >/dev/null 2>&1 || true
+    "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref -d "$tmpref" >/dev/null 2>&1 || true
     # The host index still describes the old tip; reset it to the imported commit (the
     # working tree is the shared mount and already matches).
-    "${_HOSTGIT[@]}" -C "$wr" read-tree HEAD >/dev/null 2>&1 || true
+    "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" read-tree HEAD >/dev/null 2>&1 || true
   done
   return "$rc"
 }

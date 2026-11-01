@@ -403,7 +403,10 @@ structural barrier the whole design hangs on.
   and `wg stats`, which counts an epic as **accepted** only when its acceptance
   ticket has it (*unreplayed* otherwise). A held replay keeps the epic out; a
   repaired, re-tested retry that lands counts it once. A ticket the tester never
-  saw runs nothing extra.
+  saw runs nothing extra. If a merge is interrupted after it landed but before it
+  wrote that record, the next `gaffer merge` (or the merge lane) replays the
+  tester's files on the revision that landed and writes it; when that cannot run,
+  the ticket stays *Ready for merge* with `replay missing: … run gaffer merge <n>`.
 - **An epic is accepted on its current scope, once.** A ticket you add to an epic
   after planning (a primary or secondary scope link) makes the epic's acceptance
   ticket wait for it, like the planned ones. If the acceptance ticket finishes

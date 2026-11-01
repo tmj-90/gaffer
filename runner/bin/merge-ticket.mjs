@@ -222,6 +222,13 @@ function parseArgs(argv) {
       case "--dry-run":
         opts.dryRun = true;
         break;
+      case "--recover-replay":
+        // REPLAY RECOVERY (external review #8): the approved commit already landed but the
+        // tester replay record was never written (the merger was interrupted between the
+        // landing record and the replay record). Regenerate it on the landed revision, or
+        // exit 4 with a targeted "replay missing" hold. lib/land.sh calls this on a retry.
+        opts.recoverReplay = true;
+        break;
       case "--apply-digest-only":
         // The merge ALREADY landed elsewhere (the runner's unattended AFK merge in
         // review.sh): skip git + claude and run only the post-merge memory work —
@@ -1287,6 +1294,159 @@ function replayOnMergeCandidate({
   return { kind: "pass", replay: { record: true, files: proof.ran, note: plan.reason } };
 }
 
+/** TESTER REPLAY: is a replay record on file for `pin` (a system row, any landed revision)? */
+export function replayRecordOnFile(dbPath, ticketNumber, pin) {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return null;
+  }
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const t = db.prepare("SELECT id FROM tickets WHERE number = ?").get(Number(ticketNumber));
+    if (!t) return null;
+    const row = db
+      .prepare(
+        "SELECT 1 AS hit FROM evidence WHERE ticket_id = ? AND recorded_by_actor_type = 'system' " +
+          "AND uri LIKE 'gaffer-tester-replayed:%' AND lower(json_extract(payload_json, '$.tested')) = ? LIMIT 1",
+      )
+      .get(t.id, String(pin).toLowerCase());
+    return Boolean(row);
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* closed */
+    }
+  }
+}
+
+/**
+ * The revision on `defaultBranch` that landed `pin`: the oldest first-parent commit of the
+ * default branch that contains it (the gated merge commit; `pin` itself after a
+ * fast-forward). "" when `pin` is not on the default branch.
+ */
+export function landedRevisionOf(repoPath, defaultBranch, pin) {
+  const ref = `refs/heads/${defaultBranch}`;
+  if (git(repoPath, "merge-base", "--is-ancestor", pin, ref).status !== 0) return "";
+  const fp = git(repoPath, "rev-list", "--first-parent", ref).stdout.trim().split("\n");
+  if (fp.includes(pin)) return pin;
+  const desc = git(repoPath, "rev-list", "--first-parent", "--ancestry-path", `${pin}..${ref}`)
+    .stdout.trim()
+    .split("\n")
+    .filter(Boolean);
+  return desc.length > 0 ? desc[desc.length - 1] : "";
+}
+
+/**
+ * REPLAY RECOVERY (external review #8). Interrupting the merger after git and the landing
+ * record succeeded but before the tester replay record was written left the acceptance
+ * ticket landed (a retry skips the landed repo) and its epic never replayed: it read
+ * "unreplayed" for good. On a retry of an already-landed repo this regenerates the missing
+ * evidence: the tester's test files are replayed on the revision that LANDED (a scratch
+ * checkout of it, the same replay and proof of execution as the merge gate's) and the
+ * record names that revision. → { ok: true, recorded, reason } when nothing is missing
+ * any more (or nothing needed recording); { ok: false, reason } is a targeted hold — the
+ * caller leaves the ticket at ready_for_merge and says "replay missing: run …".
+ */
+export function recoverMissingReplay({ ticketNumber, repo, pin, commands }) {
+  const plan = replayPlan({
+    dbPath: CONFIG.dispatchDb,
+    ticketNumber,
+    repoPath: repo.localPath,
+    pin,
+  });
+  if (!plan.ok) return { ok: false, reason: `the replay could not be planned (${plan.reason})` };
+  if (!plan.record) return { ok: true, recorded: false, reason: plan.reason };
+  const onFile = replayRecordOnFile(CONFIG.dispatchDb, ticketNumber, pin);
+  if (onFile === null) return { ok: false, reason: "the replay record could not be read" };
+  if (onFile) return { ok: true, recorded: false, reason: "the replay record is on file" };
+  const landedRev = landedRevisionOf(repo.localPath, repo.defaultBranch, pin);
+  if (!landedRev)
+    return {
+      ok: false,
+      reason: `the landed revision of ${String(pin).slice(0, 12)} is not on the local ${repo.defaultBranch} (a PR landing not pulled yet?)`,
+    };
+  log(
+    `#${ticketNumber}: REPLAY RECOVERY — ${repo.name} landed ${String(pin).slice(0, 12)} as ${landedRev.slice(0, 12)} but no tester replay was recorded; replaying the tester's tests on it`,
+  );
+  const wt = resolve(GAFFER_DATA, "worktrees", `replay-recovery-${ticketNumber}`);
+  mkdirSync(dirname(wt), { recursive: true });
+  const cleanup = () => {
+    git(repo.localPath, "worktree", "remove", "--force", wt);
+    rmSync(wt, { recursive: true, force: true });
+    git(repo.localPath, "worktree", "prune");
+  };
+  cleanup();
+  const add = git(
+    repo.localPath,
+    "worktree",
+    "add",
+    "--quiet",
+    "--detach",
+    "--force",
+    wt,
+    landedRev,
+  );
+  if (add.status !== 0) {
+    cleanup();
+    return { ok: false, reason: "a scratch checkout of the landed revision could not be created" };
+  }
+  try {
+    const parent = git(
+      repo.localPath,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${landedRev}^1`,
+    ).stdout.trim();
+    const rp = replayOnMergeCandidate({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber,
+      repoPath: repo.localPath,
+      wt,
+      pin,
+      target: parent || landedRev,
+      merge: landedRev,
+      label: repo.name,
+      testCommand: commands?.test || "",
+      installed: false,
+      env: process.env,
+    });
+    if (rp.kind !== "pass")
+      return {
+        ok: false,
+        reason: `the replay on the landed revision ${landedRev.slice(0, 12)} did not pass (${rp.reason})`,
+      };
+    const recorded = recordTesterReplayCli(
+      ticketNumber,
+      repo.id || null,
+      landedRev,
+      pin,
+      rp.replay.files,
+      "local",
+      `regenerated on a merge retry: the earlier landing was interrupted before its replay record${rp.replay.note ? `; ${rp.replay.note}` : ""}`,
+    );
+    if (recorded === false)
+      return { ok: false, reason: "the regenerated replay could not be recorded" };
+    return { ok: true, recorded: true, reason: `replayed on ${landedRev.slice(0, 12)}` };
+  } finally {
+    cleanup();
+  }
+}
+
+/** The targeted hold line when the replay evidence is missing and could not be regenerated. */
+function replayMissing(ticketNumber, reason) {
+  return (
+    `replay missing: #${ticketNumber} landed but its tester replay record is missing and could not be regenerated (${reason}); ` +
+    `the ticket stays ready_for_merge (not done) — fix the cause, then run \`gaffer merge ${ticketNumber}\` to regenerate it`
+  );
+}
+
 /**
  * TESTER REPLAY: the revision that landed, for the replay record — `gatedMerge` itself for
  * a local landing (compare-and-land landed exactly it); for a PR landing, the local default
@@ -1335,15 +1495,17 @@ function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via,
     "--as",
     "system",
   ]);
-  if (r.error || r.status !== 0)
+  if (r.error || r.status !== 0) {
     log(
       `WARNING: #${ticketNumber} could not record the tester replay on ${String(landedSha).slice(0, 12)} ` +
         `(${(r.stderr || "").trim().slice(0, 160)}) — the epic is not counted as accepted until it is`,
     );
-  else
-    log(
-      `#${ticketNumber}: recorded the tester replay — ${(files || []).length} tester test file(s) passed on the landed revision ${String(landedSha).slice(0, 12)}`,
-    );
+    return false;
+  }
+  log(
+    `#${ticketNumber}: recorded the tester replay — ${(files || []).length} tester test file(s) passed on the landed revision ${String(landedSha).slice(0, 12)}`,
+  );
+  return true;
 }
 
 /**
@@ -2385,6 +2547,41 @@ function main() {
     return;
   }
 
+  if (opts.recoverReplay) {
+    // REPLAY RECOVERY only (lib/land.sh, on a retry of an already-landed primary repo).
+    const d0 = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber: resolved.number,
+      repoPath: repo.localPath,
+      branch,
+      repoId: repo.id || null,
+    });
+    if (!d0.ok || d0.kind !== "already-landed") {
+      emit({ phase: "replay-recovery", ticket: resolved.number, skipped: "not landed yet" }, 0);
+      return;
+    }
+    const rec = recoverMissingReplay({
+      ticketNumber: resolved.number,
+      repo,
+      pin: d0.pin,
+      commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number, repo.id || null),
+    });
+    if (!rec.ok) {
+      fail(replayMissing(resolved.number, rec.reason), 4);
+      return;
+    }
+    emit(
+      {
+        phase: "replay-recovery",
+        ticket: resolved.number,
+        recorded: rec.recorded,
+        reason: rec.reason,
+      },
+      0,
+    );
+    return;
+  }
+
   if (opts.applyDigestOnly) {
     // review.sh's AFK path merged + mark-merged already; this is the SAME post-merge
     // memory step the dashboard merge runs below (digest delta / stamp + feature →
@@ -2693,6 +2890,20 @@ function main() {
     // human queue) with what did land recorded, so a retry lands only the rest.
     if (landed.via !== "earlier" && repo.id)
       recordLandingCli(resolved.number, repo.id, pin, landed.via);
+    // REPLAY RECOVERY (external review #8): a retry of an already-landed repo regenerates
+    // the tester replay record an interrupted landing never wrote — or holds, targeted.
+    if (landed.via === "earlier") {
+      const rec = recoverMissingReplay({
+        ticketNumber: resolved.number,
+        repo,
+        pin,
+        commands: gateCommands,
+      });
+      if (!rec.ok) {
+        fail(replayMissing(resolved.number, rec.reason), 4);
+        return;
+      }
+    }
     // TESTER REPLAY: which tester assertions passed on which landed revision. A local
     // landing lands exactly the gated merge. A PR landing lands what GitHub made of the PR
     // (merge, squash or rebase, on the remote default as it stood then): the record names

@@ -2488,6 +2488,12 @@ function main() {
   // another run took the lock, landed the ticket (or sent it back to review) and let go
   // would otherwise carry on from that stale read.
   const current = resolveTicket(CONFIG.dispatchDb, opts.ticket);
+  if (current?.status === "done" && !opts.applyDigestOnly) {
+    // The other run landed it: the same answer as `gaffer merge` on a done ticket.
+    log(notLandableReason(resolved.number, "done"));
+    emit({ phase: "already_merged", ticket: resolved.number }, 0);
+    return;
+  }
   if (!current || !canLand(current.status, { applyDigestOnly: opts.applyDigestOnly })) {
     fail(
       `refusing to merge #${resolved.number}: another merge finished first; the ticket is now ` +

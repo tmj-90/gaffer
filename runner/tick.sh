@@ -2887,6 +2887,31 @@ $_trail_q
     log "AUTH: #$NUM — ${_AUTH_MSG:-authentication failed}: $_AUTH_HINT; released to ready without counting an attempt"
     result auth_error; exit 0
   fi
+  # ── BUDGET ADMISSION REFUSED: no agent was spawned, so it is not an attempt ──
+  # worker_deliver asks lib/budget-admission.mjs right before the launch; a refusal
+  # (a daily or lifetime cap reached since the run admitted this tick, a rework attempt
+  # past it, no dollar cap at all on a tick run by hand) returns 77 with nothing spent.
+  # Read as a failure it counted a no-commit failure and parked a good ticket. Release
+  # it to `ready` uncounted (the branch kept only with commits), skip it for this run,
+  # and report no_work: nothing was spent, and the loop's own cap check ends the run.
+  if [ "${DRY_RUN:-0}" != "1" ] && [ "${WORKER_LAST_BUDGET_REFUSED:-0}" = 1 ]; then
+    rm -f "$USAGE_JSON"
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "budget_refused: the paid launch was refused by the budget admission"
+      log "BUDGET: resumed #$NUM — the paid launch was refused by the budget admission (see the line above) — re-paused with its worktree"
+      result no_work; exit 0
+    fi
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
+    gaffer_release_delivery ready "the paid delivery launch was refused by the budget admission (no agent ran); not counted as an attempt" budget_refused
+    gaffer_skip_ticket "$NUM"
+    log "BUDGET: #$NUM — the paid delivery launch was refused by the budget admission (see the line above); released to ready without counting an attempt"
+    result no_work; exit 0
+  fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
   # If the agent hit the TURN cap (num_turns at/over the cap, or a max-turns stop
   # reason) OR the BUDGET cap (GAFFER_BUDGET_REMAINING exhausted) mid-delivery AND it

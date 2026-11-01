@@ -97,6 +97,53 @@ describe("outcomeAfter: what happened to the judged delivery", () => {
     expect(o).toMatchObject({ outcome: "sent_back", reason: "wrong behaviour" });
   });
 
+  it("required CI's own send-back after the submit is a gate's verdict, not a reviewer's", () => {
+    // tick.sh: CI went red -> `wg review reject --to refining --as system` (reason H3: ...).
+    const o = outcomeAfter(jp("t1", 1, "fail", 1.8), [
+      tr("t1", 2, "in_review", "refining", "system", "H3: CI checks failed on branch gaffer/x"),
+      tr("t1", 3, "refining", "ready", "human"),
+      tr("t1", 4, "ready", "claimed", "agent"),
+      tr("t1", 5, "claimed", "in_progress", "agent"),
+      tr("t1", 6, "in_progress", "in_review", "agent"),
+      tr("t1", 7, "in_review", "ready_for_merge", "human"),
+    ]);
+    expect(o).toMatchObject({ outcome: "gated", decidedBy: "system" });
+    expect(o.reason).toMatch(/^H3: CI checks failed/);
+  });
+
+  it("a held ticket: what the person does with it is the decision, never the next delivery's", () => {
+    const held = [
+      tr("t1", 2, "in_review", "in_testing", "human"),
+      tr("t1", 3, "in_testing", "blocked", "system", "held:tester_no_verdict"),
+    ];
+    // Back to work from the hold: sent back (the reworked delivery's approval is not this one's).
+    const back = outcomeAfter(jp("t1", 1, "pass", 4.6), [
+      ...held,
+      tr("t1", 4, "blocked", "refining", "human", "the tester could not run it"),
+      tr("t1", 8, "in_progress", "in_review", "agent"),
+      tr("t1", 9, "in_review", "ready_for_merge", "human"),
+    ]);
+    expect(back).toMatchObject({ outcome: "sent_back", decidedBy: "human" });
+    // Won't do from the hold: cancelled, not pending forever.
+    const gone = outcomeAfter(jp("t1", 1, "fail", 1), [
+      ...held,
+      tr("t1", 4, "blocked", "cancelled", "human", "won't do"),
+    ]);
+    expect(gone).toMatchObject({ outcome: "cancelled", reason: "won't do" });
+  });
+
+  it("a new delivery entering review before any decision ends the search", () => {
+    // An undecided exit the state machine does not name today; the next delivery's
+    // approval must not be credited to this judgment.
+    const o = outcomeAfter(jp("t1", 1, "fail", 1), [
+      tr("t1", 2, "in_review", "paused", "system"),
+      tr("t1", 3, "paused", "in_progress", "system"),
+      tr("t1", 4, "in_progress", "in_review", "agent"),
+      tr("t1", 5, "in_review", "ready_for_merge", "human"),
+    ]);
+    expect(o.outcome).toBe("pending");
+  });
+
   it("closed from review without landing is cancelled; no decision yet is pending", () => {
     expect(
       outcomeAfter(jp("t1", 1, "fail", 1), [tr("t1", 2, "in_review", "cancelled", "human")])
@@ -155,13 +202,16 @@ describe("judgeAgreement: the figures and the reading", () => {
     expect(r.warning.rejectedRate).toBe(0.6);
     expect(r.warning.precision).toBe(0.67);
     expect(r.warning.recall).toBe(0.67);
-    expect(r.warning.lift).toBe(1.12);
+    expect(r.warning.lift).toBe(1.11);
+    // The pass verdicts: 1 of 2 rejected; 0.67 / 0.5 = 1.33.
+    expect(r.warning.rejectedAfterPass).toBe(0.5);
+    expect(r.warning.relativeRisk).toBe(1.33);
     expect(r.meanScore).toEqual({ accepted: 4.2, rejected: 3.2 });
     // 4.6 beats all three rejected scores, 3.8 beats two of them: 5 of 6 pairs.
     expect(r.auc).toBe(0.83);
     expect(r.dimensionMeans.test_adequacy).toEqual({ accepted: 4, rejected: 2.33, gap: 1.67 });
     expect(r.misses).toEqual([
-      { ticketNumber: 3, score: 4.2, reason: "copied a helper", at: T(1) },
+      { ticketNumber: 3, score: 4.2, outcome: "sent_back", reason: "copied a helper", at: T(1) },
     ]);
     expect(r.falseAlarms).toMatchObject([
       { ticketNumber: 5, overall: "borderline", weakest: "test_adequacy 3/5" },
@@ -202,12 +252,88 @@ describe("judgeAgreement: the figures and the reading", () => {
     expect(judgeAgreement([], []).reading.status).toBe("no_judgments");
   });
 
+  it("a perfect judge separates even where most work is rejected (lift is capped there)", () => {
+    // 5 accepted (pass 4.6), 15 rejected (fail 2.0): the base rate is 75%, so the lift of
+    // a perfect warning is 1 / 0.75 = 1.33 and could never reach 1.5.
+    const js: JudgmentPoint[] = [];
+    const ts: TransitionPoint[] = [];
+    for (let i = 0; i < 20; i++) {
+      const rejected = i >= 5;
+      js.push(jp(`t${i}`, 1, rejected ? "fail" : "pass", rejected ? 2 : 4.6));
+      ts.push(tr(`t${i}`, 5, "in_review", rejected ? "refining" : "ready_for_merge"));
+    }
+    const r = judgeAgreement(js, ts);
+    expect(r.auc).toBe(1);
+    expect(r.warning).toMatchObject({ rejectedRate: 0.75, lift: 1.33, rejectedAfterPass: 0 });
+    expect(r.warning.relativeRisk).toBeNull();
+    expect(r.reading.status).toBe("separates");
+  });
+
+  it("the thresholds compare the unrounded AUC: 0.698 is below 0.7, though it prints as 0.7", () => {
+    // accepted: one 3 (borderline), five 5s (pass); rejected: nine 3s, seven 5s.
+    // AUC = (1 x 4.5 + 5 x 12.5) / (6 x 16) = 67 / 96 = 0.698; relative risk 0.9 / 0.58 = 1.54.
+    const js: JudgmentPoint[] = [];
+    const ts: TransitionPoint[] = [];
+    const add = (n: number, score: number, rejected: boolean): void => {
+      for (let k = 0; k < n; k++) {
+        const id = `t${js.length}`;
+        js.push(jp(id, 1, score === 5 ? "pass" : "borderline", score));
+        ts.push(tr(id, 5, "in_review", rejected ? "refining" : "ready_for_merge"));
+      }
+    };
+    add(1, 3, false);
+    add(5, 5, false);
+    add(9, 3, true);
+    add(7, 5, true);
+    const r = judgeAgreement(js, ts);
+    expect(r.decided).toBe(22);
+    expect(r.auc).toBe(0.7);
+    expect(r.warning.relativeRisk).toBe(1.54);
+    expect(r.reading.status).toBe("does_not_separate");
+  });
+
+  it("insufficient data counts decided deliveries only: pending and gated ones do not count", () => {
+    const js: JudgmentPoint[] = [];
+    const ts: TransitionPoint[] = [];
+    for (let i = 0; i < 19; i++) {
+      const rejected = i % 2 === 1;
+      js.push(jp(`t${i}`, 1, rejected ? "fail" : "pass", rejected ? 1.5 : 4.8));
+      ts.push(tr(`t${i}`, 5, "in_review", rejected ? "refining" : "ready_for_merge"));
+    }
+    js.push(jp("t90", 1, "pass", 5)); // still in review
+    js.push(jp("t91", 1, "fail", 1)); // CI sent it back before any review
+    ts.push(tr("t91", 2, "in_review", "refining", "system", "H3: CI checks failed"));
+    const r = judgeAgreement(js, ts);
+    expect(r).toMatchObject({ judgments: 21, decided: 19, pending: 1, gated: 1 });
+    expect(r.table.fail).toEqual({ accepted: 0, rejected: 9, pending: 0 });
+    expect(r.reading.status).toBe("insufficient_data");
+    expect(r.reading.text).toContain("19 decided (10 accepted, 9 rejected)");
+    expect(renderJudgeAgreement(r)).toContain(
+      "sent back by a runner gate before review (not counted): 1",
+    );
+  });
+
+  it("a delivery judged pass and then cancelled is a miss that says cancelled", () => {
+    const r = judgeAgreement(
+      [jp("t4", 1, "pass", 4.4)],
+      [tr("t4", 2, "in_review", "cancelled", "human", "not needed after all")],
+    );
+    expect(r.misses).toMatchObject([{ outcome: "cancelled" }]);
+    expect(renderJudgeAgreement(r)).toContain(
+      "miss: #4 judged pass 4.4, then cancelled: not needed after all",
+    );
+  });
+
   it("coverage counts review entries from the first judged one, so a quiet judge failure shows", () => {
     const ts = [
       tr("t0", 0, "claimed", "in_review", "system"), // before the judge was on
       tr("t1", 10, "claimed", "in_review", "system"),
-      tr("t2", 20, "claimed", "in_review", "system"), // the judge failed for this one
-      tr("t1", 30, "refining", "in_review", "system"), // attempt 2, judged
+      tr("t2", 20, "in_progress", "in_review", "agent"), // the judge failed for this one
+      tr("t1", 30, "in_progress", "in_review", "agent"), // attempt 2, judged
+      // Not runner deliveries, never judged, not counted: a conflict reopen and a
+      // delivery a person made by hand.
+      tr("t1", 40, "ready_for_merge", "in_review", "system", "conflict resolved"),
+      tr("t3", 50, "in_progress", "in_review", "human"),
     ];
     const cov = coverageOf([jp("t1", 11, "pass", 4), jp("t1", 31, "pass", 4)], ts);
     expect(cov).toEqual({ reviewEntries: 3, judged: 2, rate: 0.67 });

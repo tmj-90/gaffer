@@ -11,11 +11,16 @@
  *     ready_for_merge or done (through the tester, when the ticket uses one);
  *   - sent_back: a reviewer, the agent review or the tester sent it back to work
  *     (or the retry cap parked it after a rejection);
- *   - cancelled: it was closed from review without landing (won't do);
- *   - pending: still waiting for a decision.
+ *   - cancelled: it was closed from review without landing (won't do), or from a hold
+ *     it was parked in after review;
+ *   - gated: a runner gate sent it back after the submit, before any review decision
+ *     (required CI went red): a gate's verdict, not a reviewer's, so it is counted
+ *     apart and left out of every agreement figure;
+ *   - pending: no decision on record for it yet.
  *
  * and reports how well the grade separated the two: a confusion table by verdict, the
- * precision / recall / lift of a non-pass verdict as a warning of a send-back, the AUC of
+ * precision / recall / lift of a non-pass verdict as a warning of a send-back and its
+ * relative risk against a pass verdict, the AUC of
  * the score against acceptance, per-dimension means per outcome, the misses (the judge
  * passed it, then it was sent back, with the reason) and the false alarms, and how many
  * review entries the judge covered at all. A reading with fixed thresholds says whether
@@ -51,7 +56,7 @@ export interface TransitionPoint {
   at: string;
 }
 
-export type Outcome = "accepted" | "sent_back" | "cancelled" | "pending";
+export type Outcome = "accepted" | "sent_back" | "cancelled" | "gated" | "pending";
 /** Who made the decision: a person, the agent review, the independent tester, the runner. */
 export type Decider = "human" | "agent" | "tester" | "system";
 
@@ -59,7 +64,7 @@ export interface PairedJudgment extends JudgmentPoint {
   outcome: Outcome;
   decidedBy: Decider | null;
   decidedAt: string | null;
-  /** The send-back's recorded reason (sent_back / cancelled), else null. */
+  /** The send-back's recorded reason (sent_back / cancelled / gated), else null. */
   reason: string | null;
   /** Every send-back of this ticket after the judgment (this delivery's and later ones'). */
   laterSendBacks: number;
@@ -74,19 +79,31 @@ export interface JudgeAgreementReport {
   judgments: number;
   fromEvents: number;
   fromLedger: number;
+  /** Accepted, sent back or cancelled: the deliveries the figures are computed over. */
   decided: number;
   pending: number;
-  /** Review entries since the first judgment, and how many of them were judged. */
+  /** Sent back by a runner gate (required CI) before any review decision; not in the figures. */
+  gated: number;
+  /** Runner deliveries into review since the first judged one, and how many were judged. */
   coverage: { reviewEntries: number; judged: number; rate: number | null };
   /** Verdict x outcome. `rejected` is sent_back + cancelled. */
   table: Record<JudgeOverall, { accepted: number; rejected: number; pending: number }>;
   byDecider: Record<Decider, { accepted: number; rejected: number }>;
-  /** A non-pass verdict read as a warning that the delivery will be rejected. */
+  /**
+   * A non-pass verdict read as a warning that the delivery will be rejected: the
+   * rejection rate overall, after a warning (precision) and after a pass; the share of
+   * rejections that were warned of (recall); lift = precision / overall rate (at most
+   * 1 / overall rate, so it cannot reach 1.5 once two thirds of the work is rejected);
+   * relativeRisk = precision / the rate after a pass (null when no pass was rejected,
+   * or a verdict was never given).
+   */
   warning: {
     rejectedRate: number | null;
     precision: number | null;
+    rejectedAfterPass: number | null;
     recall: number | null;
     lift: number | null;
+    relativeRisk: number | null;
   };
   meanScore: { accepted: number | null; rejected: number | null };
   /** P(an accepted delivery scored above a rejected one), ties count half. 0.5 = no signal. */
@@ -95,7 +112,13 @@ export interface JudgeAgreementReport {
     JudgeDimension,
     { accepted: number | null; rejected: number | null; gap: number | null }
   >;
-  misses: Array<{ ticketNumber: number | null; score: number; reason: string | null; at: string }>;
+  misses: Array<{
+    ticketNumber: number | null;
+    score: number;
+    outcome: "sent_back" | "cancelled";
+    reason: string | null;
+    at: string;
+  }>;
   falseAlarms: Array<{
     ticketNumber: number | null;
     score: number;
@@ -111,18 +134,25 @@ export interface JudgeAgreementReport {
 /**
  * The rule of thumb the reading applies (docs/eval-harness.md). Below the sample sizes the
  * report says it cannot tell; above them the judge "separates" when its score ranks
- * accepted work above rejected work clearly (AUC) AND a non-pass verdict raises the
- * chance of a rejection well above the base rate (lift).
+ * accepted work above rejected work clearly (AUC) AND work it warned of was rejected
+ * clearly more often than work it passed (relative risk). The comparison is against the
+ * pass verdicts, not the base rate: a lift over the base rate is capped at 1 / that rate,
+ * so on a factory that rejects most deliveries even a perfect judge could not reach it.
+ * Both are compared unrounded; the report shows them to two places.
  */
 export const THRESHOLDS = {
   minDecided: 20,
   minEachOutcome: 5,
   minAuc: 0.7,
-  minLift: 1.5,
+  minRelativeRisk: 1.5,
 } as const;
 
 const REVIEW_STATES = new Set(["in_review", "in_testing", "ready_for_merge"]);
+/** The states a sent-back ticket waits in before its next delivery. */
+const WORK_STATES = new Set(["draft", "refining", "ready", "claimed", "in_progress"]);
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+const pct = (v: number | null): string => (v === null ? "n/a" : `${Math.round(v * 100)}%`);
+const num = (v: number | null): string => (v === null ? "n/a" : String(v));
 const ratio = (a: number, b: number): number | null => (b > 0 ? round2(a / b) : null);
 const meanOf = (xs: number[]): number | null =>
   xs.length ? round2(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
@@ -136,8 +166,12 @@ function deciderOf(t: TransitionPoint): Decider {
 
 /**
  * What happened to the delivery judged at `j.at`: the first decision on the ticket after
- * it. An approval to in_testing waits for the tester; a hold (blocked for CI, a merge gate)
- * is not a quality decision and is skipped.
+ * it. An approval to in_testing waits for the tester. A hold after review (blocked: the
+ * tester gave no verdict, CI went red on an approved ticket) is not a decision; what the
+ * person does with the held ticket is (back to work: sent back; won't do: cancelled). A
+ * send-back the runner itself makes out of review (required CI went red after the submit)
+ * is a gate's, not a reviewer's: `gated`. A new delivery entering review before any
+ * decision ends the search, so a judgment is never paired with a later delivery's outcome.
  */
 export function outcomeAfter(
   j: Pick<JudgmentPoint, "ticketId" | "at">,
@@ -146,60 +180,59 @@ export function outcomeAfter(
   const mine = transitions
     .filter((t) => t.ticketId === j.ticketId && t.at >= j.at)
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
-  const laterSendBacks = mine.filter((t) =>
+  const sendBack = (t: TransitionPoint): boolean =>
     isReviewSendBack({
       ticketId: t.ticketId,
       fromStatus: t.from,
       toStatus: t.to,
       reason: t.reason,
       at: t.at,
-    }),
-  ).length;
-  for (const t of mine) {
-    const sendBack = isReviewSendBack({
-      ticketId: t.ticketId,
-      fromStatus: t.from,
-      toStatus: t.to,
-      reason: t.reason,
-      at: t.at,
     });
-    if (sendBack)
-      return {
-        outcome: "sent_back",
-        decidedBy: deciderOf(t),
-        decidedAt: t.at,
-        reason: t.reason,
-        laterSendBacks,
-      };
-    if (t.to === "cancelled" && REVIEW_STATES.has(t.from ?? ""))
-      return {
-        outcome: "cancelled",
-        decidedBy: deciderOf(t),
-        decidedAt: t.at,
-        reason: t.reason,
-        laterSendBacks,
-      };
-    if (t.to === "ready_for_merge" || t.to === "done")
-      return {
-        outcome: "accepted",
-        decidedBy: deciderOf(t),
-        decidedAt: t.at,
-        reason: null,
-        laterSendBacks,
-      };
-    // A judgment made before the delivery re-entered work (it graded an attempt the
-    // gates later bounced inside the tick) is followed by in_progress/claimed moves:
-    // keep reading until a review decision.
+  const laterSendBacks = mine.filter(sendBack).length;
+  const decided = (t: TransitionPoint, outcome: Outcome): ReturnType<typeof outcomeAfter> => ({
+    outcome,
+    decidedBy: deciderOf(t),
+    decidedAt: t.at,
+    reason: outcome === "accepted" ? null : t.reason,
+    laterSendBacks,
+  });
+  let held = false;
+  let leftReview = false;
+  for (const t of mine) {
+    const from = t.from ?? "";
+    const to = t.to ?? "";
+    if (sendBack(t))
+      return decided(t, from === "in_review" && deciderOf(t) === "system" ? "gated" : "sent_back");
+    if (to === "cancelled" && (REVIEW_STATES.has(from) || (held && from === "blocked")))
+      return decided(t, "cancelled");
+    if (to === "ready_for_merge" || to === "done") return decided(t, "accepted");
+    if (held && from === "blocked" && WORK_STATES.has(to)) return decided(t, "sent_back");
+    if (held && from === "blocked" && REVIEW_STATES.has(to)) {
+      // Released from the hold back to review: the same delivery, still undecided.
+      held = false;
+      leftReview = false;
+      continue;
+    }
+    if (to === "blocked" && REVIEW_STATES.has(from)) held = true;
+    if (REVIEW_STATES.has(from) && !REVIEW_STATES.has(to)) leftReview = true;
+    // The judged delivery left review undecided and another one came in: stop here.
+    if (to === "in_review" && leftReview && !REVIEW_STATES.has(from)) break;
   }
   return { outcome: "pending", decidedBy: null, decidedAt: null, reason: null, laterSendBacks };
 }
 
-/** The Mann-Whitney AUC: P(score of an accepted > score of a rejected), ties half. */
-export function aucOf(accepted: readonly number[], rejected: readonly number[]): number | null {
+/** P(score of an accepted > score of a rejected), ties half, unrounded; null without both. */
+function aucRaw(accepted: readonly number[], rejected: readonly number[]): number | null {
   if (!accepted.length || !rejected.length) return null;
   let wins = 0;
   for (const a of accepted) for (const r of rejected) wins += a > r ? 1 : a === r ? 0.5 : 0;
-  return round2(wins / (accepted.length * rejected.length));
+  return wins / (accepted.length * rejected.length);
+}
+
+/** The Mann-Whitney AUC: P(score of an accepted > score of a rejected), ties half. */
+export function aucOf(accepted: readonly number[], rejected: readonly number[]): number | null {
+  const v = aucRaw(accepted, rejected);
+  return v === null ? null : round2(v);
 }
 
 /**
@@ -227,7 +260,10 @@ export function mergeJudgments(
   return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 }
 
-function readingOf(r: Omit<JudgeAgreementReport, "reading" | "thresholds">): AgreementReading {
+function readingOf(
+  r: Omit<JudgeAgreementReport, "reading" | "thresholds">,
+  raw: { auc: number | null; warns: boolean },
+): AgreementReading {
   if (r.judgments === 0)
     return {
       status: "no_judgments",
@@ -249,27 +285,29 @@ function readingOf(r: Omit<JudgeAgreementReport, "reading" | "thresholds">): Agr
         `rejected); the reading needs at least ${THRESHOLDS.minDecided}, with ` +
         `${THRESHOLDS.minEachOutcome} of each.`,
     };
-  const lift = r.warning.lift;
-  if (r.auc !== null && r.auc >= THRESHOLDS.minAuc && lift !== null && lift >= THRESHOLDS.minLift)
+  const w = r.warning;
+  const rates =
+    `${pct(w.precision)} of the work it warned of was rejected, against ` +
+    `${pct(w.rejectedAfterPass)} of the work it passed`;
+  if (raw.auc !== null && raw.auc >= THRESHOLDS.minAuc && raw.warns)
     return {
       status: "separates",
       text:
-        `The judge separates accepted from rejected work here: AUC ${r.auc}, and a non-pass ` +
-        `verdict was followed by a rejection ${lift}x as often as the base rate. Its grade is ` +
-        "worth showing to the reviewer.",
+        `The judge separates accepted from rejected work here: AUC ${r.auc}, and ${rates}. ` +
+        "Its grade is worth showing to the reviewer.",
     };
   return {
     status: "does_not_separate",
     text:
-      `The judge does not separate accepted from rejected work here (AUC ${r.auc ?? "n/a"}, ` +
-      `lift ${lift ?? "n/a"}; it needs AUC >= ${THRESHOLDS.minAuc} and lift >= ` +
-      `${THRESHOLDS.minLift}). Its model call is not paying for itself on this factory; read ` +
-      "the misses before changing the judge model or turning it off.",
+      `The judge does not separate accepted from rejected work here (AUC ${r.auc ?? "n/a"}; ` +
+      `${rates}; it needs AUC >= ${THRESHOLDS.minAuc} and warned work rejected at least ` +
+      `${THRESHOLDS.minRelativeRisk}x as often as passed work). Its model call is not paying ` +
+      "for itself on this factory; read the misses before changing the judge model or turning it off.",
   };
 }
 
 /**
- * How many entries into review the judge covered, counted from the first entry it judged:
+ * How many runner deliveries into review the judge covered, counted from the first it judged:
  * an entry is judged when a judgment on that ticket falls between it and the ticket's next
  * entry into review. A low rate means the judge is failing quietly (an unbuilt crew, a
  * dead model turn, a refusal), and the agreement figures describe a sample, not the run.
@@ -278,8 +316,17 @@ export function coverageOf(
   pairs: readonly Pick<JudgmentPoint, "ticketId" | "at">[],
   transitions: readonly TransitionPoint[],
 ): JudgeAgreementReport["coverage"] {
+  // Only the runner's deliveries (a submit out of work, not by a person): the judge never
+  // grades a conflict reopen (ready_for_merge or done back to review) or a delivery a
+  // person made by hand, and counting those would read as the judge failing.
   const entries = transitions
-    .filter((t) => t.to === "in_review")
+    .filter(
+      (t) =>
+        t.to === "in_review" &&
+        (t.from === "in_progress" || t.from === "claimed") &&
+        t.actorType !== "human" &&
+        t.actorType !== "admin",
+    )
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   const judgedFlags = entries.map((e, i) => {
     const next = entries.slice(i + 1).find((n) => n.ticketId === e.ticketId);
@@ -302,7 +349,7 @@ export function judgeAgreement(
   const pairs: PairedJudgment[] = judgments.map((j) => ({ ...j, ...outcomeAfter(j, transitions) }));
   const isRej = (p: PairedJudgment): boolean =>
     p.outcome === "sent_back" || p.outcome === "cancelled";
-  const decidedPairs = pairs.filter((p) => p.outcome !== "pending");
+  const decidedPairs = pairs.filter((p) => p.outcome !== "pending" && p.outcome !== "gated");
   const accepted = decidedPairs.filter((p) => p.outcome === "accepted");
   const rejected = decidedPairs.filter(isRej);
 
@@ -318,6 +365,7 @@ export function judgeAgreement(
     system: { accepted: 0, rejected: 0 },
   };
   for (const p of pairs) {
+    if (p.outcome === "gated") continue;
     const row = table[p.overall];
     if (p.outcome === "pending") row.pending++;
     else if (p.outcome === "accepted") row.accepted++;
@@ -328,12 +376,32 @@ export function judgeAgreement(
     }
   }
 
+  // Every rate from the counts, never from an already-rounded rate.
   const warned = decidedPairs.filter((p) => p.overall !== "pass");
+  const passed = decidedPairs.filter((p) => p.overall === "pass");
   const warnedRejected = warned.filter(isRej).length;
+  const passedRejected = passed.filter(isRej).length;
   const rejectedRate = ratio(rejected.length, decidedPairs.length);
   const precision = ratio(warnedRejected, warned.length);
+  const rejectedAfterPass = ratio(passedRejected, passed.length);
   const recall = ratio(warnedRejected, rejected.length);
-  const lift = precision !== null && rejectedRate ? round2(precision / rejectedRate) : null;
+  const lift =
+    warned.length > 0 && rejected.length > 0
+      ? round2((warnedRejected / warned.length) * (decidedPairs.length / rejected.length))
+      : null;
+  const relativeRisk =
+    warned.length > 0 && passedRejected > 0
+      ? round2((warnedRejected / warned.length) * (passed.length / passedRejected))
+      : null;
+  // The reading's test, unrounded: warned work rejected at least minRelativeRisk times as
+  // often as passed work (any rejection after a warning beats none after a pass).
+  const warns =
+    warned.length > 0 &&
+    passed.length > 0 &&
+    (passedRejected === 0
+      ? warnedRejected > 0
+      : (warnedRejected / warned.length) * (passed.length / passedRejected) >=
+        THRESHOLDS.minRelativeRisk);
 
   const dimensionMeans = {} as JudgeAgreementReport["dimensionMeans"];
   for (const d of JUDGE_DIMENSIONS) {
@@ -360,11 +428,12 @@ export function judgeAgreement(
     fromEvents: pairs.filter((p) => p.source === "event").length,
     fromLedger: pairs.filter((p) => p.source === "ledger").length,
     decided: decidedPairs.length,
-    pending: pairs.length - decidedPairs.length,
+    pending: pairs.filter((p) => p.outcome === "pending").length,
+    gated: pairs.filter((p) => p.outcome === "gated").length,
     coverage,
     table,
     byDecider,
-    warning: { rejectedRate, precision, recall, lift },
+    warning: { rejectedRate, precision, rejectedAfterPass, recall, lift, relativeRisk },
     meanScore: {
       accepted: meanOf(accepted.map((p) => p.score)),
       rejected: meanOf(rejected.map((p) => p.score)),
@@ -376,7 +445,13 @@ export function judgeAgreement(
     dimensionMeans,
     misses: rejected
       .filter((p) => p.overall === "pass")
-      .map((p) => ({ ticketNumber: p.ticketNumber, score: p.score, reason: p.reason, at: p.at })),
+      .map((p) => ({
+        ticketNumber: p.ticketNumber,
+        score: p.score,
+        outcome: p.outcome === "cancelled" ? ("cancelled" as const) : ("sent_back" as const),
+        reason: p.reason,
+        at: p.at,
+      })),
     falseAlarms: accepted
       .filter((p) => p.overall !== "pass")
       .map((p) => ({
@@ -388,7 +463,14 @@ export function judgeAgreement(
       })),
     pairs,
   };
-  return { ...base, thresholds: THRESHOLDS, reading: readingOf(base) };
+  const raw = {
+    auc: aucRaw(
+      accepted.map((p) => p.score),
+      rejected.map((p) => p.score),
+    ),
+    warns,
+  };
+  return { ...base, thresholds: THRESHOLDS, reading: readingOf(base, raw) };
 }
 
 /**
@@ -501,9 +583,6 @@ export function readJudgeAgreement(
   return judgeAgreement(mergeJudgments(events, ledger), transitions);
 }
 
-const pct = (v: number | null): string => (v === null ? "n/a" : `${Math.round(v * 100)}%`);
-const num = (v: number | null): string => (v === null ? "n/a" : String(v));
-
 /** The text report `wg judge-agreement` prints. */
 export function renderJudgeAgreement(r: JudgeAgreementReport): string {
   const out: string[] = [];
@@ -511,10 +590,13 @@ export function renderJudgeAgreement(r: JudgeAgreementReport): string {
   out.push(
     `  judged deliveries: ${r.judgments} (${r.fromEvents} on the ticket, ${r.fromLedger} from the ledger only)`,
   );
-  out.push(`  decided: ${r.decided}, still pending: ${r.pending}`);
+  out.push(
+    `  decided: ${r.decided}, still pending: ${r.pending}` +
+      (r.gated > 0 ? `, sent back by a runner gate before review (not counted): ${r.gated}` : ""),
+  );
   if (r.coverage.reviewEntries > 0)
     out.push(
-      `  coverage: ${r.coverage.judged} of ${r.coverage.reviewEntries} review entries since the first judgment were judged (${pct(r.coverage.rate)})`,
+      `  coverage: ${r.coverage.judged} of ${r.coverage.reviewEntries} runner deliveries into review since the first judgment were judged (${pct(r.coverage.rate)})`,
     );
   if (r.judgments > 0) {
     out.push("  verdict      accepted  rejected  pending");
@@ -525,7 +607,7 @@ export function renderJudgeAgreement(r: JudgeAgreementReport): string {
       );
     }
     out.push(
-      `  rejected overall: ${pct(r.warning.rejectedRate)}; after a non-pass verdict: ${pct(r.warning.precision)} (lift ${num(r.warning.lift)}); rejections the judge warned of: ${pct(r.warning.recall)}`,
+      `  rejected overall: ${pct(r.warning.rejectedRate)}; after a non-pass verdict: ${pct(r.warning.precision)} (lift ${num(r.warning.lift)}); after a pass: ${pct(r.warning.rejectedAfterPass)} (relative risk ${num(r.warning.relativeRisk)}); rejections the judge warned of: ${pct(r.warning.recall)}`,
     );
     out.push(
       `  mean score: accepted ${num(r.meanScore.accepted)}, rejected ${num(r.meanScore.rejected)}; AUC ${num(r.auc)} (0.5 = no signal)`,
@@ -540,7 +622,7 @@ export function renderJudgeAgreement(r: JudgeAgreementReport): string {
     );
     for (const m of r.misses.slice(0, 5))
       out.push(
-        `  miss: #${m.ticketNumber ?? "?"} judged pass ${m.score}, then sent back: ${(m.reason ?? "no reason").slice(0, 160)}`,
+        `  miss: #${m.ticketNumber ?? "?"} judged pass ${m.score}, then ${m.outcome === "cancelled" ? "cancelled" : "sent back"}: ${(m.reason ?? "no reason").slice(0, 160)}`,
       );
     for (const f of r.falseAlarms.slice(0, 5))
       out.push(

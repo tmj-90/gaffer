@@ -174,7 +174,12 @@ fields) pairs every judged delivery with what happened to that delivery next, fr
 the factory's own records: *accepted* (approved, and nothing sent it back before it
 reached Ready for merge, through the tester when the ticket uses one), *sent back* (by
 you, the agent review, or the tester), *cancelled* from review, or *pending*. A CI or
-merge-gate hold is not a quality decision and is skipped. It reads the judgments on
+merge-gate hold is not a quality decision and is skipped; what you then do with the held
+ticket is (back to work counts as sent back, won't do as cancelled). When required CI
+goes red after the submit, the runner itself sends the delivery back before anyone
+reviews it: that is a gate's verdict, not a reviewer's, so it is counted apart as
+*gated* and left out of every figure. A judgment is never paired with a later
+delivery's outcome. It reads the judgments on
 the tickets and, for judgments recorded before they reached the ticket, the eval
 ledger (paired by ticket number and time; a ledger line with a matching ticket event
 is counted once). It reports:
@@ -183,24 +188,31 @@ is counted once). It reports:
   / pending), and who decided each (people, the agent review, the tester: the agent
   review is a model too, so read agreement with people first);
 - the rejection rate, the share of non-pass verdicts that were then rejected
-  (precision) and its *lift* over the base rate, and the share of rejections the
-  judge warned of (recall);
+  (precision) and its *lift* over the base rate, the share of pass verdicts that were
+  then rejected and the *relative risk* (the first over the second), and the share of
+  rejections the judge warned of (recall);
 - the mean score of accepted and rejected work and the AUC (the chance an accepted
   delivery scored above a rejected one; 0.5 is no signal), and the same gap per
   dimension, which says which part of the rubric carries the signal;
 - the *misses* (judged pass, then sent back, with the reviewer's reason) and the
   *false alarms* (judged short of pass, then accepted, with the weakest dimension):
   the cases to read before changing anything;
-- *coverage*: how many entries into review since the first judged one were judged
-  at all, so a judge failing quietly (an unbuilt crew, a dead turn, a refusal) shows
-  instead of shrinking the sample unseen.
+- *coverage*: how many of the runner's deliveries into review since the first judged
+  one were judged at all (a conflict reopen or a delivery you made by hand is never
+  judged and is not counted), so a judge failing quietly (an unbuilt crew, a dead
+  turn, a refusal) shows instead of shrinking the sample unseen.
 
 **The reading** applies a fixed rule: below 20 decided deliveries, or fewer than 5
 accepted or 5 rejected, it says there is not enough data to tell. Above that, the
-judge *separates* when the AUC is at least 0.7 and a non-pass verdict raises the
-chance of a rejection to at least 1.5 times the base rate; otherwise it *does not
-separate*, and its call is not paying for itself on that factory. The thresholds are
-in the report (`thresholds`) so a reading can always be checked.
+judge *separates* when the AUC is at least 0.7 and the work it warned of was rejected
+at least 1.5 times as often as the work it passed (any rejection after a warning
+counts when nothing it passed was rejected); otherwise it *does not separate*, and its
+call is not paying for itself on that factory. The comparison is with the pass
+verdicts, not the base rate, because a lift over the base rate can be at most one over
+that rate: on a factory that sends back two thirds of its deliveries, even a judge
+that warned of every rejection and nothing else would read a lift of 1.5 at best. The
+figures are compared unrounded (the report prints them to two places), and the
+thresholds are in the report (`thresholds`) so a reading can always be checked.
 
 **The decision.** The judge stays off by default: it costs one extra model call per
 delivery (booked in the usage ledger as kind `eval-judge`, so the budget caps and the

@@ -40,10 +40,12 @@
 # the file names and lib/shard-weights.tsv, never on the machine. lib/shard.mjs
 # balances them by expected duration (LPT: heaviest file first, onto the lightest
 # shard; a file missing from the weights table counts 10s; shard 1 starts with a
-# small head start, as CI also gives it the macOS package tests). Within a shard
+# head start, 300 weight-seconds unless GAFFER_RUN_SHARD1_HEAD_START says otherwise:
+# CI sets it per cell, identically for every shard of that cell, because only the
+# macOS cells' shard 1 also runs the package tests). Within a shard
 # everything above still holds: LONG_RE caps and queue-first, strict skips, the
 # tripwire, the operator-state guard and the summary. After adding or removing a
-# slow test, refresh its line in lib/shard-weights.tsv (seconds on a macOS runner),
+# slow test, refresh its line in lib/shard-weights.tsv (its slowest CI cell, seconds),
 # and add it to LONG_RE once it weighs two thirds of its cap (80s for a .sh):
 # run-harness.test.sh H10 fails on a heavy test left on the short cap.
 #
@@ -63,8 +65,12 @@ SELF="$HERE/run.sh"
 # shellcheck source=lib/skip.sh
 . "$HERE/lib/skip.sh"
 
-# Long end-to-end tests: queued first, with a roomier cap.
-LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof)?|parallel-stop(-live)?|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
+# Long end-to-end tests: queued first, with a roomier cap. A test belongs here once
+# its observed CI time (lib/shard-weights.tsv, the slowest of the four cells) reaches
+# two thirds of the short cap; run-harness.test.sh H10 fails when one is missing.
+# usage-limit-tick (119 s), tick-deadline (97 s) and resume-abort (89 s) were left on
+# the 120 s cap until CI run 41338925244 showed them that close to it.
+LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof)?|parallel-stop(-live)?|waste-controls|delivery-lifecycle|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|usage-limit-tick|tick-deadline|resume-abort|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 
 in_ci() { [ "${GITHUB_ACTIONS:-}" = "true" ]; }

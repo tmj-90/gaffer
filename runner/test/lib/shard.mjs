@@ -8,21 +8,26 @@
 // never on the machine (glob order, locale collation, CPU count). Balanced by
 // expected duration with LPT: heaviest file first, each onto the currently lightest
 // shard (ties: the lower shard number); files of equal weight go in basename order.
-// Shard 1 starts with a head start (SHARD1_HEAD_START, below).
+// Shard 1 starts with a head start (SHARD1_HEAD_START, below; env override).
 //
 // WEIGHTS is a TSV of `seconds<TAB>basename` (# comments allowed) — observed CI
-// durations on macOS, the slowest platform. A file missing from it weighs
+// durations, the slowest of the four os x node cells. A file missing from it weighs
 // DEFAULT_WEIGHT; a stale entry for a deleted file is ignored.
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 
 const DEFAULT_WEIGHT = 10;
 // Shard 1 (when N > 1) starts with this many weight-seconds already on it: in CI,
-// shard 1 of each macOS cell also runs the package tests (~2 min of wall before its
-// runner tests start), so it takes ~100s x 3 cores less of the suite. Capped at half
-// a shard's mean load, so a small FILE set never leaves shard 1 empty. Fixed, never
-// per machine: every shard of one K/N must compute the same split.
-const SHARD1_HEAD_START = 300;
+// shard 1 of each macOS cell also runs the package tests (2-4 min of wall before its
+// runner tests start), so it should take that wall time x its -j less of the suite.
+// GAFFER_RUN_SHARD1_HEAD_START overrides the default (ci.yml / nightly.yml set it per
+// cell: 0 where shard 1 runs nothing extra). Capped at half a shard's mean load, so a
+// small FILE set never leaves shard 1 empty. Never derived from the machine: every
+// shard of one K/N must compute the same split, so a cell sets ONE value for all of
+// its shards.
+const HEAD_START_ENV = process.env.GAFFER_RUN_SHARD1_HEAD_START;
+const SHARD1_HEAD_START =
+  HEAD_START_ENV === undefined || HEAD_START_ENV === "" ? 300 : Number(HEAD_START_ENV);
 
 function die(msg) {
   process.stderr.write(`shard.mjs: ${msg}\n`);
@@ -35,6 +40,8 @@ const n = Number(nArg);
 if (!Number.isInteger(n) || n < 1) die(`N must be a positive integer (got '${nArg}')`);
 if (!Number.isInteger(k) || k < 1 || k > n) die(`K must be in 1..${n} (got '${kArg}')`);
 if (!weightsPath) die("usage: shard.mjs K N WEIGHTS FILE...");
+if (!Number.isFinite(SHARD1_HEAD_START) || SHARD1_HEAD_START < 0)
+  die(`GAFFER_RUN_SHARD1_HEAD_START must be a number >= 0 (got '${HEAD_START_ENV}')`);
 
 const weights = new Map();
 for (const line of readFileSync(weightsPath, "utf8").split("\n")) {

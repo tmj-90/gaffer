@@ -230,6 +230,41 @@ describe("web: Match Day review + ticket", () => {
     );
   });
 
+  it("Match footage says a run that parked the ticket parked it as blocked (exploratory finding ui-workflows/F5)", async () => {
+    // It read "succeeded · implement · ended in review" beside "Blocked. It failed the
+    // acceptance-check gate…" because the run detail had no blocked outcome.
+    const at = "2026-10-29T18:32:47Z";
+    stubFetch({
+      ticket: { status: "blocked" },
+      events: [{ id: "e1", event_type: "claim.created", created_at: at, actor_type: "agent" }],
+      runs: {
+        active: [],
+        recent: [
+          {
+            id: "run-7",
+            kind: "poll_work",
+            status: "succeeded",
+            started_at: at,
+            ended_at: "2026-10-29T18:34:00Z",
+          },
+        ],
+      },
+      runDetail: {
+        ticket_number: 16,
+        phase: "implement",
+        num_turns: 0,
+        cost_usd: 0,
+        outcome: "blocked",
+        run: { status: "succeeded" },
+      },
+    });
+    mount(`#/ticket/${T.id}`);
+    await boot();
+    const footage = document.querySelector(".tk-runs")?.textContent ?? "";
+    expect(footage).toContain("parked as blocked");
+    expect(footage).not.toContain("ended in review");
+  });
+
   it("says so when a delivering ticket has no live run", async () => {
     stubFetch({
       ticket: { status: "in_progress" },

@@ -1,10 +1,13 @@
 #!/usr/bin/env node
+import { readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+
 import { Command } from "commander";
 
 import { authConfigured, deriveReadToken, describeApiToken, ensureApiToken } from "./auth.js";
 import { Dispatch } from "../core.js";
 import { resolveDbPath } from "../util/paths.js";
-import { DEFAULT_API_PORT, assertSafeBind, createApiServer } from "./server.js";
+import { DEFAULT_API_PORT, assertSafeBind, createApiServer, endEventStreams } from "./server.js";
 import { applySettingsToEnv } from "./settings.js";
 
 /**
@@ -30,6 +33,36 @@ function resolvePort(explicit?: string): number {
   }
   return parsed;
 }
+
+/**
+ * The pid file the launcher records this server in: `DISPATCH_PID_FILE`, else
+ * `$GAFFER_DATA/dashboard.pid` (what `runner/gaffer dashboard` writes,
+ * runner/lib/dashboard.sh). Null when neither is known.
+ */
+function resolvePidFile(env: NodeJS.ProcessEnv = process.env): string | null {
+  const explicit = (env.DISPATCH_PID_FILE ?? "").trim();
+  if (explicit !== "") return explicit;
+  const data = (env.GAFFER_DATA ?? "").trim();
+  return data !== "" ? join(data, "dashboard.pid") : null;
+}
+
+/**
+ * Remove the pid file on the way out, but only when it names THIS process: a newer
+ * launch may already have recorded its own server there (`gaffer dashboard
+ * --restart`), and that record must survive the old server's exit. Best-effort.
+ */
+function removeOwnPidFile(): void {
+  const file = resolvePidFile();
+  if (file === null) return;
+  try {
+    if (readFileSync(file, "utf8").trim() === String(process.pid)) unlinkSync(file);
+  } catch {
+    // No pid file (a server not started by the launcher) or not ours to remove.
+  }
+}
+
+/** How long a graceful stop waits for in-flight requests before it drops them (ms). */
+const SHUTDOWN_GRACE_MS = 1500;
 
 const program = new Command();
 program
@@ -87,11 +120,24 @@ program
       process.stdout.write(describeApiToken(ensured));
     });
 
+    // A graceful stop that finishes within ~2 s: end the live event streams (each
+    // would otherwise hold server.close() open for up to an hour), drop idle
+    // keep-alive sockets, give in-flight requests a short grace, then drop the rest.
+    // The pid file the launcher wrote is removed when it names this process.
+    let stopping = false;
     const shutdown = (): void => {
+      if (stopping) return;
+      stopping = true;
+      removeOwnPidFile();
       server.close(() => {
         wg.db.close();
         process.exit(0);
       });
+      endEventStreams();
+      server.closeIdleConnections();
+      // A just-ended stream's keep-alive socket goes idle a beat later.
+      setTimeout(() => server.closeIdleConnections(), 100).unref();
+      setTimeout(() => server.closeAllConnections(), SHUTDOWN_GRACE_MS).unref();
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);

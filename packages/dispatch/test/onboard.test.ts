@@ -1,4 +1,7 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -8,6 +11,7 @@ import {
   createOnboardRunner,
   ONBOARD_CMD_ENV,
   ONBOARD_REPO_ENV,
+  onboardTargetProblem,
   type OnboardRunner,
 } from "../src/api/onboard.js";
 
@@ -213,6 +217,95 @@ describe("POST /repos/onboard", () => {
     const res = await call(h.baseUrl, "GET", "/repos/onboard");
     expect(res.status).toBe(405);
     expect(h.runs).toHaveLength(0);
+  });
+
+  it("refuses an existing directory that is not a git repository, and a symlink to one (exploratory finding api-robustness/F7)", async () => {
+    // /etc and a symlink to it used to be registered as repos (default branch main, a
+    // Memory digest written) and then accepted as a write target.
+    const dir = mkdtempSync(join(tmpdir(), "wg-onboard-nogit-"));
+    try {
+      const plain = join(dir, "plain");
+      mkdirSync(plain);
+      symlinkSync(plain, join(dir, "link"));
+      h = await startHarness({ run: () => ({ started: true, pid: 1 }) });
+      for (const target of [plain, join(dir, "link")]) {
+        const res = await call(h.baseUrl, "POST", "/repos/onboard", { repo: target });
+        expect(res.status, target).toBe(422);
+        const err = res.body.error as { code: string; message: string };
+        expect(err.code).toBe("VALIDATION_ERROR");
+        expect(err.message).toMatch(/not a git repository/);
+      }
+      expect(h.runs).toHaveLength(0);
+      // The same folder once it is a git checkout onboards as before.
+      mkdirSync(join(plain, ".git"));
+      const ok = await call(h.baseUrl, "POST", "/repos/onboard", { repo: plain });
+      expect(ok.status).toBe(202);
+      expect(h.runs).toEqual([{ repo: plain }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses the filesystem root and the home directory with a clear 422, no stack (exploratory finding api-robustness/F7)", async () => {
+    // Onboarding "/" used to print a raw ZodError + stack into the run log.
+    h = await startHarness({ run: () => ({ started: true, pid: 1 }) });
+    for (const target of ["/", "/.", homedir()]) {
+      const res = await call(h.baseUrl, "POST", "/repos/onboard", { repo: target });
+      expect(res.status, target).toBe(422);
+      const err = res.body.error as { code: string; message: string };
+      expect(err.message).toMatch(/filesystem root|home directory/);
+      expect(JSON.stringify(res.body)).not.toMatch(/ZodError|at \w+ \(/);
+    }
+    expect(h.runs).toHaveLength(0);
+  });
+
+  it("a repo NAME is never checked against the server's own working directory", async () => {
+    // A target that is not an existing directory (a registered repo's name, one with no
+    // local path, or a name the runner resolves) used to fall back to resolve(""), the
+    // server's cwd: a dashboard started from $HOME refused every such onboard as "your
+    // home directory", and one started outside a checkout as "not a git repository".
+    const home = mkdtempSync(join(tmpdir(), "wg-onboard-cwd-"));
+    const prev = process.cwd();
+    try {
+      process.chdir(home);
+      for (const name of ["sample-repo", "acme/widgets", "https://github.com/acme/widgets"]) {
+        expect(onboardTargetProblem(name), name).toBeNull();
+        expect(
+          onboardTargetProblem(name, () => null),
+          name,
+        ).toBeNull();
+        expect(
+          onboardTargetProblem(name, () => ""),
+          name,
+        ).toBeNull();
+      }
+      h = await startHarness({ run: () => ({ started: true, pid: 1 }) });
+      const res = await call(h.baseUrl, "POST", "/repos/onboard", { repo: "sample-repo" });
+      expect(res.status).toBe(202);
+      expect(h.runs).toEqual([{ repo: "sample-repo" }]);
+    } finally {
+      process.chdir(prev);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("a bare repository is refused as bare, a worktree and a subfolder of a checkout are not", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wg-onboard-bare-"));
+    try {
+      const bare = join(dir, "bare.git");
+      for (const sub of ["objects", "refs"]) mkdirSync(join(bare, sub), { recursive: true });
+      writeFileSync(join(bare, "HEAD"), "ref: refs/heads/main\n");
+      expect(onboardTargetProblem(bare)).toMatch(/is a bare git repository/);
+      // A linked worktree's .git is a file, not a directory.
+      const wt = join(dir, "wt");
+      mkdirSync(join(wt, "src"), { recursive: true });
+      writeFileSync(join(wt, ".git"), `gitdir: ${join(dir, "x")}\n`);
+      expect(onboardTargetProblem(wt)).toBeNull();
+      expect(onboardTargetProblem(`${wt}/`)).toBeNull();
+      expect(onboardTargetProblem(join(wt, "src"))).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("env-based repo passing is exercised end-to-end via the real runner", async () => {

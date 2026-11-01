@@ -2701,13 +2701,17 @@ export class Dispatch {
 
   /**
    * Mark a tracked run ended. Derives status from the child's exit code: 0 ⇒
-   * `succeeded`, any other value (or a null/unknown code) ⇒ `failed`. A no-op if
+   * `succeeded`, any other value (or a null/unknown code) ⇒ `failed`, unless the
+   * caller states it (a poll the runner refused exits 0 and is `failed`). A no-op if
    * the run was already swept to `unknown` (the first writer wins — see
    * {@link RunRepository.markEnd}), so a late exit listener never resurrects a
    * reconciled row.
    */
-  markRunEnd(id: string, input: { exit_code: number | null; detail?: string | null }): void {
-    const status: Run["status"] = input.exit_code === 0 ? "succeeded" : "failed";
+  markRunEnd(
+    id: string,
+    input: { exit_code: number | null; detail?: string | null; status?: Run["status"] },
+  ): void {
+    const status: Run["status"] = input.status ?? (input.exit_code === 0 ? "succeeded" : "failed");
     this.runs.markEnd({
       id,
       status,

@@ -4,7 +4,7 @@ import type { Dispatch } from "../../core.js";
 import { methodNotAllowed, readJsonBody, sendJson } from "../http.js";
 import { readIdleLoops, resolveCrewConfigPath } from "../idleLoops.js";
 import type { PlanBuildRunner } from "../planBuild.js";
-import type { PollWorkRunner } from "../pollWork.js";
+import { spendCapRefusal, type PollWorkRunner } from "../pollWork.js";
 import type { ProductOwnerRunner, ProductOwnerRunResult } from "../productOwner.js";
 import { planBuildBody, runProductOwnerBody, specBuildBody } from "../schemas.js";
 import type { SpecAuthorRunner } from "../specAuthor.js";
@@ -190,6 +190,20 @@ export async function routeWork(
       sendJson(res, 200, { polled: false, reason: "no_ready_work", readyCount: 0, pending });
       return true;
     }
+    // The runner refuses a live poll with no dollar cap before any tick runs
+    // (bin/poll-once.sh). Spawning it anyway answered "polled" and recorded a
+    // "succeeded" run that did nothing, so refuse it here, with the runner's own fix.
+    const capRefusal = spendCapRefusal(process.env);
+    if (capRefusal !== null) {
+      sendJson(res, 200, {
+        polled: false,
+        reason: "no_budget_cap",
+        message: capRefusal,
+        readyCount,
+        pending,
+      });
+      return true;
+    }
     const result = pollWorkRunner.run();
     sendJson(res, 202, {
       polled: true,
@@ -217,7 +231,10 @@ export interface PollablePending {
   resume: number;
   /** in_review tickets the reviewer agent takes (REVIEW_MODE agent | both). */
   review: number;
-  /** in_testing tickets the black-box tester takes (GAFFER_TESTING on). */
+  /**
+   * in_testing tickets the black-box tester takes: all of them with GAFFER_TESTING on,
+   * an epic's acceptance ticket whatever GAFFER_TESTING says.
+   */
   testing: number;
   /**
    * Drafts the intake clarify pass would take (CLARIFY_DRAFTS_WHEN_IDLE on): those
@@ -238,7 +255,8 @@ export interface PollablePending {
 /**
  * Count the work a tick would pick up, with the same switches the runner reads:
  * resumes need GAFFER_PAUSE_ON_CAP (default on), agent review REVIEW_MODE=agent|both
- * (default human), the tester lane GAFFER_TESTING (default off), the intake clarify
+ * (default human), the tester lane GAFFER_TESTING (default off; an epic's acceptance
+ * ticket is tested with it off too), the intake clarify
  * pass CLARIFY_DRAFTS_WHEN_IDLE (default off; it runs only when nothing is ready), the
  * merge lane AUTO_MERGE (default off; GAFFER_MERGE_LANE=0 turns the lane off), partly
  * landed tickets included. The dashboard's env
@@ -254,9 +272,13 @@ export function pollablePending(wg: Dispatch, env: NodeJS.ProcessEnv): PollableP
     reviewMode === "agent" || reviewMode === "both"
       ? wg.listTickets({ status: "in_review" }).length
       : 0;
+  // The tester lane takes every in_testing ticket when GAFFER_TESTING is on. With it off
+  // the runner still tests an epic's ACCEPTANCE ticket (runner/lib/tester.sh: acceptance
+  // is a gate, not an option), so that one always counts.
+  const inTesting = wg.listTickets({ status: "in_testing" });
   const testing = flagOn(env["GAFFER_TESTING"])
-    ? wg.listTickets({ status: "in_testing" }).length
-    : 0;
+    ? inTesting.length
+    : inTesting.filter((t) => t.acceptance === 1).length;
   const clarify =
     flagOn(env["CLARIFY_DRAFTS_WHEN_IDLE"]) && ready === 0
       ? wg

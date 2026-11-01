@@ -30,18 +30,32 @@ fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dashboard-qr-test.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
 WORK="$(cd "$WORK" && pwd -P)"
-cleanup() { gaffer_test_rm_work "$WORK"; }
+# The fake server stays up (the launcher now confirms the process it started is alive
+# and logged its own "listening" line): stop whatever the runs recorded.
+cleanup() {
+  local f p
+  for f in "$WORK"/data-*/dashboard.pid; do
+    [ -f "$f" ] || continue; p="$(cat "$f" 2>/dev/null)"
+    case "$p" in ''|*[!0-9]*) ;; *) kill "$p" 2>/dev/null || true ;; esac
+  done
+  gaffer_test_rm_work "$WORK"
+}
 trap cleanup EXIT
 
 # Shared fakes (node + curl) — kept in their OWN dir so the qrencode fake can be
 # added for AC1 and left out for AC2 without dragging node/curl along.
 FAKES="$WORK/fakes"; mkdir -p "$FAKES"
 
-# Fake node: the dashboard server launch is a no-op success (we only care about
-# what the front door PRINTS, not the server). Every other node call is a silent
-# success too (factory.config's settings reader).
+# Fake node: launched as the dashboard server (argv carries the api bin) it behaves
+# like one that bound its port — prints the server's "listening" line and stays up (a
+# bounded sleep, so nothing lingers past the test). We only care about what the front
+# door PRINTS. Every other node call is a silent success (factory.config's settings
+# reader, the launcher's port probe).
 cat > "$FAKES/node" <<'EOF'
 #!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in */dist/api/bin.js) echo "dispatch-api listening on http://0.0.0.0:8787 (fake)"; exec sleep 30 ;; esac
+done
 exit 0
 EOF
 chmod +x "$FAKES/node"

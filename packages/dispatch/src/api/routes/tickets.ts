@@ -5,7 +5,14 @@ import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
 import { ticketCostInfo } from "../runDetail.js";
-import { errorBody, methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
+import {
+  errorBody,
+  methodNotAllowed,
+  readJsonBody,
+  readNoBody,
+  sendCreated,
+  sendJson,
+} from "../http.js";
 import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
 import {
@@ -627,6 +634,7 @@ export async function routeTickets(
 
   // /tickets/:id/ready-approval — grant the regulated-pack human ready-approval.
   if (segments.length === 3 && sub === TICKET_SUB.READY_APPROVAL && method === "POST") {
+    await readNoBody(req);
     const result = wg.grantReadyApproval(id, apiActor());
     sendJson(res, 200, { ticket_id: result.ticketId, event_id: result.eventId });
     return;
@@ -785,6 +793,7 @@ export async function routeTickets(
 
   // /tickets/:id/mono-fallback — POST to promote a single unmapped repo to write.
   if (segments.length === 3 && sub === TICKET_SUB.MONO_FALLBACK && method === "POST") {
+    await readNoBody(req);
     const result = wg.applyMonoFallback(id, apiActor()) as {
       applied: boolean;
       ticketId: string;

@@ -57,6 +57,7 @@ import { serveStatic } from "./static.js";
 // Re-exported for the bin layer and the bind-guard tests, which import these
 // from the public server entrypoint. The definitions live in ./security.
 export { DEFAULT_API_PORT, assertSafeBind, isLoopbackHost } from "./security.js";
+export { endEventStreams } from "./routes/api.js";
 
 /**
  * Build the request handler. Exposed separately from {@link createApiServer} so

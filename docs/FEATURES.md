@@ -596,7 +596,10 @@ the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_U
 or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
 Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
 then polls. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
-opts out (a value in `settings.json` is ignored).
+opts out (a value in `settings.json` is ignored). With no cap, `POST /poll-work`
+answers `polled: false`, `reason: no_budget_cap` with the runner's fix and starts
+nothing; a poll the runner refuses once it has started (a cap already reached) is
+recorded as a `failed` run whose detail is the runner's reason, never `succeeded`.
 
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Secret-bearing settings —
@@ -607,7 +610,10 @@ API. The **budget caps** (daily and lifetime, in dollars) are checked immediatel
 before every paid agent launch — a delivery, a review, Plan a build, Suggest work,
 the tester, onboarding analysis, the merge resolver, the repo classifier that
 links a new app to its sibling tickets — so an exhausted budget starts
-nothing, wherever the work was asked for. Every knob the factory
+nothing, wherever the work was asked for. A value that does not fit its setting
+(a dollar cap that is not a number of 0 or more, Concurrent ticks below 1) is not
+saved: the panel marks the field and says which one holds Save back, and the API
+refuses the whole write with a 422 that names it. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it
 — is listed in the generated [`CONFIG.md`](CONFIG.md).
 

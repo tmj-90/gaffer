@@ -203,6 +203,47 @@ describe("settings module: enum choices + value validation", () => {
     expect(ok.written).toEqual(["MAX_TICKS"]);
   });
 
+  it("the dollar caps are non-negative numbers: 'abc' is refused, 2.50 persists (exploratory finding ui-workflows/F2)", () => {
+    // A non-numeric daily budget used to persist as typed: the uncapped-run guard read
+    // it as set (non-empty) while every cap check read it as off, so paid work ran
+    // with no cap at all.
+    for (const key of [
+      "GAFFER_DAILY_BUDGET_USD",
+      "GAFFER_BUDGET_USD",
+      "GAFFER_BUDGET_LOW_THRESHOLD",
+      "GAFFER_REWORK_BUDGET_USD",
+    ]) {
+      expect(SETTING_DEFS.find((d) => d.key === key)?.type, key).toBe("number");
+      for (const bad of ["abc", "five dollars", "-1", "$5", "1e3", "5 "]) {
+        expect(writeSettings({ [key]: bad }, {}, settingsPath).invalid, `${key}=${bad}`).toEqual([
+          key,
+        ]);
+      }
+    }
+    expect(readSettingsFile(settingsPath)).toEqual({});
+    const ok = writeSettings(
+      { GAFFER_DAILY_BUDGET_USD: "2.50", GAFFER_BUDGET_USD: "0" },
+      {},
+      settingsPath,
+    );
+    expect(ok.written).toEqual(["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"]);
+  });
+
+  it("GAFFER_CONCURRENCY is at least 1 (exploratory finding ui-workflows/F11)", () => {
+    const def = SETTING_DEFS.find((d) => d.key === "GAFFER_CONCURRENCY");
+    expect(def?.min).toBe(1);
+    expect(listSettings({}, settingsPath).find((v) => v.key === "GAFFER_CONCURRENCY")?.min).toBe(1);
+    expect(writeSettings({ GAFFER_CONCURRENCY: "0" }, {}, settingsPath).invalid).toEqual([
+      "GAFFER_CONCURRENCY",
+    ]);
+    expect(writeSettings({ GAFFER_CONCURRENCY: "-3" }, {}, settingsPath).invalid).toEqual([
+      "GAFFER_CONCURRENCY",
+    ]);
+    expect(writeSettings({ GAFFER_CONCURRENCY: "2" }, {}, settingsPath).written).toEqual([
+      "GAFFER_CONCURRENCY",
+    ]);
+  });
+
   it("rejects a notify URL that fails the SSRF policy (loopback / link-local / private / non-http)", () => {
     for (const bad of [
       "http://127.0.0.1:8787/api/tickets",

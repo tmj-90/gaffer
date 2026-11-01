@@ -2603,8 +2603,11 @@ async function startLiveStream() {
         let isEvent = false;
         let data = "";
         for (const line of frame.split("\n")) {
-          if (line.startsWith("id: ")) liveStreamSeq = Number(line.slice(4)) || liveStreamSeq;
-          else if (line.startsWith("event: work_event")) isEvent = true;
+          // A seq of 0 counts: the server's `reset` frame moves a stale cursor back to it.
+          if (line.startsWith("id: ")) {
+            const seq = line.slice(4).trim();
+            if (/^\d+$/.test(seq)) liveStreamSeq = Number(seq);
+          } else if (line.startsWith("event: work_event")) isEvent = true;
           else if (line.startsWith("data: ")) data += line.slice(6);
         }
         if (isEvent) {
@@ -8123,6 +8126,11 @@ function pollWorkButton() {
 /** Fire one tick (POST /poll-work) and say what it is doing. */
 async function firePoll() {
   const res = await api("POST", "/poll-work");
+  // The server refused for the runner (no dollar cap): say why, in the runner's words.
+  if (res && res.polled === false && res.reason !== "no_ready_work" && res.message) {
+    toast(`Poll refused — ${res.message}`, {});
+    return;
+  }
   if (res && res.polled === false) {
     toast(
       "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",
@@ -12064,7 +12072,9 @@ function ticketRunsPanel(t, events) {
               ? el(
                   "span",
                   { class: "run-detail-chip" },
-                  `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
+                  d.outcome === "blocked"
+                    ? "parked as blocked"
+                    : `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
                 )
               : null,
           ];
@@ -13519,7 +13529,9 @@ async function renderSettings() {
   // edit registry: key → { def, read() } for non-locked inputs, so Save collects
   // only the values the operator can actually change.
   const editors = new Map();
-  const form = el("form", { class: "settings-form", id: "settings-form" });
+  // novalidate: Save checks every field itself and says which one is wrong (the
+  // browser's own bubble blocked Save for every field and named none of them).
+  const form = el("form", { class: "settings-form", id: "settings-form", novalidate: "" });
 
   for (const grp of SETTINGS_GROUPS) {
     const inGroup = all.filter((s) => s.group === grp.id);
@@ -13687,6 +13699,34 @@ async function renderSettings() {
     for (const [key, ed] of editors) {
       const v = ed.read();
       if (ed.initial === undefined || v !== ed.initial) payload[key] = v;
+    }
+    // A value the server would refuse is shown on its own row, and Save says which
+    // field holds it back; nothing is posted until it is fixed (or put back).
+    const bad = [];
+    for (const [key, ed] of editors) {
+      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
+      if (ed.input) ed.input.removeAttribute("aria-invalid");
+      const problem = key in payload && ed.check ? ed.check() : null;
+      if (!problem) continue;
+      const label = labelOf.get(key);
+      bad.push(`${label} ${problem}`);
+      if (ed.input) ed.input.setAttribute("aria-invalid", "true");
+      if (ed.row) {
+        const ctl = ed.row.querySelector(".setting-control") || ed.row;
+        ctl.appendChild(
+          el("p", { class: "form-error setting-error", role: "alert" }, `${label} ${problem}.`),
+        );
+        const grp = ed.row.closest("details");
+        if (grp) grp.open = true;
+      }
+    }
+    if (bad.length) {
+      toast(`Not saved: ${bad.join("; ")}.`, {});
+      const first = [...editors.values()].find(
+        (ed) => ed.input && ed.input.getAttribute("aria-invalid") === "true",
+      );
+      if (first) first.input.focus();
+      return;
     }
     // A submit is the intent (the primary only rests disabled while clean).
     saveBtn.disabled = false;
@@ -15202,6 +15242,23 @@ function renderSecretSettingInput(s, editors) {
   return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
 }
 
+/**
+ * Why `value` cannot be saved for setting `s`, or null when it can: the same rules
+ * POST /api/settings applies (api/settings.ts settingValueProblem), so Save can say
+ * which field is wrong instead of posting a value the server refuses. Empty clears.
+ */
+function settingValueProblem(s, value) {
+  if (value === "") return null;
+  if (s.type === "int") {
+    const min = s.min || 0;
+    if (!/^\d+$/.test(value) || Number(value) < min)
+      return min > 0 ? `must be a whole number of ${min} or more` : "must be a whole number";
+  }
+  if (s.type === "number" && !/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value))
+    return "must be a number of 0 or more, such as 5 or 2.50";
+  return null;
+}
+
 /** Build the right-hand control for a setting (or a read-only value when locked). */
 function renderSettingInput(s, editors) {
   if (s.secret) return renderSecretSettingInput(s, editors);
@@ -15250,12 +15307,40 @@ function renderSettingInput(s, editors) {
       type: "number",
       inputmode: "numeric",
       step: "1",
-      min: "0",
+      min: String(s.min || 0),
       value: s.value,
       placeholder: s.effective && s.effective !== s.value ? s.effective : "default",
       "aria-label": s.label,
     });
-    editors.set(s.key, { read: () => input.value.trim(), initial: s.value });
+    editors.set(s.key, {
+      read: () => input.value.trim(),
+      initial: s.value,
+      input,
+      // A number box reads "" for text it cannot parse ("1e", "--"): that is not a clear.
+      check: () =>
+        input.validity && input.validity.badInput
+          ? settingValueProblem(s, "x")
+          : settingValueProblem(s, input.value.trim()),
+    });
+    return input;
+  }
+
+  // A dollar figure: a text box (so what was typed is what is checked, never a
+  // browser-sanitised "") with the decimal keypad, checked like the server checks it.
+  if (s.type === "number") {
+    const input = el("input", {
+      type: "text",
+      inputmode: "decimal",
+      value: s.value,
+      placeholder: s.effective && s.effective !== s.value ? s.effective : "default",
+      "aria-label": s.label,
+    });
+    editors.set(s.key, {
+      read: () => input.value.trim(),
+      initial: s.value,
+      input,
+      check: () => settingValueProblem(s, input.value.trim()),
+    });
     return input;
   }
 

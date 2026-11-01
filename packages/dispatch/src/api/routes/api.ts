@@ -24,7 +24,7 @@ import {
   updateClubBody,
   updateSquadAgentBody,
 } from "../schemas.js";
-import { listSettings, readSecretSetting, writeSettings } from "../settings.js";
+import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
 import { apiActor } from "./context.js";
 import { forgetLoreDrafts, routeReadModels } from "./readModels.js";
 
@@ -56,6 +56,16 @@ export async function routeApi(
     }
     if (method === "POST") {
       const body = settingsBody.parse(await readJsonBody(req));
+      // One invalid value refuses the whole write (422 naming each field and why), so
+      // a bad field is never half-saved beside good ones and never silently dropped.
+      const problems = settingProblems(body.settings);
+      if (problems.length > 0) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `Not saved: ${problems.map((p) => `${p.label} ${p.problem}`).join("; ")}.`,
+          { invalid: problems },
+        );
+      }
       const result = writeSettings(body.settings);
       sendJson(res, 200, {
         settings: listSettings(),
@@ -386,6 +396,21 @@ const STREAM_MAX_CLIENTS = 16;
  */
 const STREAM_MAX_LIFETIME_MS = 60 * 60 * 1000;
 let streamClients = 0;
+/** How to end each open stream (see {@link endEventStreams}). */
+const openStreams = new Set<(note: string) => void>();
+
+/**
+ * End every open event stream with a final comment frame. server.close() waits for
+ * every open connection, and a stream lives up to {@link STREAM_MAX_LIFETIME_MS}, so a
+ * SIGTERM used to free the port and leave the process (and its database) running for
+ * up to an hour. The dashboard reconnects with ?since=<last seq> and loses nothing.
+ * Returns how many streams were ended.
+ */
+export function endEventStreams(note = "server shutting down"): number {
+  const stops = [...openStreams];
+  for (const stop of stops) stop(note);
+  return stops.length;
+}
 
 function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerResponse): void {
   if (streamClients >= STREAM_MAX_CLIENTS) {
@@ -393,10 +418,26 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
     return;
   }
   const rawSince = url.searchParams.get("since");
-  const parsedSince = rawSince === null ? Number.NaN : Number.parseInt(rawSince, 10);
-  // Default: start from NOW (only new events); ?since=0 replays the whole log.
-  let cursor =
-    Number.isFinite(parsedSince) && parsedSince >= 0 ? parsedSince : wg.events.latestSeq();
+  // Default: start from NOW (only new events); ?since=0 replays the whole log. A since
+  // that is not a whole number is refused rather than silently read as "now".
+  if (rawSince !== null && !/^\d+$/.test(rawSince.trim())) {
+    sendJson(
+      res,
+      422,
+      errorBody("VALIDATION_ERROR", "since must be a whole-number event seq (0 replays the log).", {
+        since: rawSince,
+      }),
+    );
+    return;
+  }
+  const latest = wg.events.latestSeq();
+  const requested = rawSince === null ? latest : Number.parseInt(rawSince, 10);
+  // A cursor past the end of the log (one kept from before a restore or an import)
+  // would wait for seqs that already went by: every new event is below it, so the
+  // stream stayed open and silent forever. Start from the latest instead, and say so
+  // in a `reset` frame whose id moves the client's cursor back.
+  const beyond = requested > latest;
+  let cursor = beyond ? latest : requested;
 
   streamClients += 1;
   res.writeHead(200, {
@@ -406,17 +447,25 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
     "x-accel-buffering": "no",
   });
   res.write(`retry: 3000\n: connected seq=${cursor}\n\n`);
+  if (beyond) {
+    res.write(
+      `: since=${requested} is past the latest event seq ${latest}; resuming from ${latest}\n` +
+        `id: ${latest}\nevent: reset\ndata: ${JSON.stringify({ requested, latest })}\n\n`,
+    );
+  }
 
   let closed = false;
-  const stop = (): void => {
+  const stop = (note?: string): void => {
     if (closed) return;
     closed = true;
     streamClients -= 1;
+    openStreams.delete(stop);
     clearInterval(poll);
     clearInterval(beat);
     clearTimeout(lifetime);
-    if (!res.writableEnded) res.end();
+    if (!res.writableEnded) res.end(note ? `: ${note}\n\n` : undefined);
   };
+  openStreams.add(stop);
   // The bearer gate ran once, when the stream opened. Re-resolve the SAME request's
   // credential before every write, so revoking a principal (or rotating the token)
   // cuts off a live feed at once instead of when the connection happens to drop.
@@ -446,14 +495,14 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   const beat = setInterval(() => {
     if (!closed && stillAuthorised()) res.write(": ping\n\n");
   }, STREAM_HEARTBEAT_MS);
-  const lifetime = setTimeout(stop, STREAM_MAX_LIFETIME_MS);
+  const lifetime = setTimeout(() => stop(), STREAM_MAX_LIFETIME_MS);
   // Timers must never keep the process alive on their own (tests, shutdown).
   poll.unref?.();
   beat.unref?.();
   lifetime.unref?.();
-  req.on("close", stop);
-  res.on("close", stop);
-  res.on("error", stop);
+  req.on("close", () => stop());
+  res.on("close", () => stop());
+  res.on("error", () => stop());
   tick();
 }
 

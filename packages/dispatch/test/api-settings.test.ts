@@ -48,7 +48,13 @@ async function startHarness(): Promise<Harness> {
 describe("API: GET/POST /api/settings", () => {
   let h: Harness;
   const savedEnv: Record<string, string | undefined> = {};
-  const TOUCHED = ["GAFFER_DATA", "GAFFER_PLAN_DEBATE", "MAX_TICKS"];
+  const TOUCHED = [
+    "GAFFER_DATA",
+    "GAFFER_PLAN_DEBATE",
+    "MAX_TICKS",
+    "GAFFER_DAILY_BUDGET_USD",
+    "GAFFER_CONCURRENCY",
+  ];
 
   beforeEach(async () => {
     for (const k of TOUCHED) savedEnv[k] = process.env[k];
@@ -113,5 +119,36 @@ describe("API: GET/POST /api/settings", () => {
     const body = (await res.json()) as { rejected: string[]; written: string[] };
     expect(body.rejected).toContain("GAFFER_PLAN_DEBATE");
     expect(body.written).not.toContain("GAFFER_PLAN_DEBATE");
+  });
+
+  it("POST refuses an invalid value with a 422 that names the field, and writes nothing (exploratory finding ui-workflows/F2)", async () => {
+    // "abc" as the daily budget used to be saved (200, written) and then read as no cap.
+    // A payload with one bad value is refused whole, so a valid key beside it is not
+    // half-applied either.
+    const res = await fetch(`${h.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        settings: { MAX_TICKS: "7", GAFFER_DAILY_BUDGET_USD: "abc", GAFFER_CONCURRENCY: "0" },
+      }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as {
+      error: { code: string; message: string; details?: { invalid?: { key: string }[] } };
+    };
+    expect(body.error.code).toBe("VALIDATION_ERROR");
+    expect(body.error.message).toMatch(/Daily budget \(USD\)/);
+    expect(body.error.message).toMatch(/Concurrent ticks/);
+    expect((body.error.details?.invalid ?? []).map((i) => i.key).sort()).toEqual([
+      "GAFFER_CONCURRENCY",
+      "GAFFER_DAILY_BUDGET_USD",
+    ]);
+    expect(() => readFileSync(h.settingsPath, "utf8")).toThrow();
+    const ok = await fetch(`${h.baseUrl}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { GAFFER_DAILY_BUDGET_USD: "5" } }),
+    });
+    expect(ok.status).toBe(200);
   });
 });

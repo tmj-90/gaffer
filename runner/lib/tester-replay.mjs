@@ -531,21 +531,23 @@ function relSpellings(worktree, p) {
     return out;
   }
   add(worktree, abs);
-  let rw = worktree;
-  try {
-    rw = realpathSync(worktree);
-  } catch {
-    rw = worktree;
-  }
-  let ra = abs;
-  try {
-    ra = realpathSync(abs);
-  } catch {
-    ra = abs;
-  }
-  add(rw, ra);
+  const real = (x) => {
+    try {
+      return realpathSync(x);
+    } catch {
+      return x;
+    }
+  };
+  const rw = real(worktree);
+  add(rw, real(abs));
   add(rw, abs);
   return out;
+}
+
+/** A runner output line without its terminal colour codes. */
+const ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, "g");
+function stripAnsi(line) {
+  return String(line).replace(ANSI_RE, "");
 }
 
 const OUTPUT_FILE_LINE = [
@@ -586,12 +588,13 @@ export function replayProof({ inv, files, worktree }) {
     }
   }
   if (runner === "vitest" || runner === "jest") {
-    let rep = null;
-    try {
-      rep = JSON.parse(readText(inv.proof.report) || "null");
-    } catch {
-      rep = null;
-    }
+    const rep = (() => {
+      try {
+        return JSON.parse(readText(inv.proof.report) || "null");
+      } catch {
+        return null;
+      }
+    })();
     for (const r of (rep && Array.isArray(rep.testResults) && rep.testResults) || []) {
       const ran = (r.assertionResults || []).some(
         (a) => a && (a.status === "passed" || a.status === "failed"),
@@ -601,13 +604,13 @@ export function replayProof({ inv, files, worktree }) {
   }
   if (runner === "pytest" || runner === "registered") {
     for (const line of output.split("\n")) {
-      const m = OUTPUT_FILE_LINE[1].exec(line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""));
+      const m = OUTPUT_FILE_LINE[1].exec(stripAnsi(line));
       if (m) mark(m[1]);
     }
   }
   if (runner === "registered") {
     for (const line of output.split("\n")) {
-      const m = OUTPUT_FILE_LINE[0].exec(line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ""));
+      const m = OUTPUT_FILE_LINE[0].exec(stripAnsi(line));
       if (m) mark(m[1]);
     }
   }
@@ -655,14 +658,15 @@ function main(argv) {
   };
   if (cmd === "proof") {
     // Which tester files the replay proved ran (see replayProof) → { ran, unproven, reason }.
-    let inv = null;
-    let files = null;
-    try {
-      inv = JSON.parse(opt("invocation") || "null");
-      files = JSON.parse(opt("files-json") || "null");
-    } catch {
-      inv = null;
-    }
+    const parse = (v) => {
+      try {
+        return JSON.parse(v || "null");
+      } catch {
+        return null;
+      }
+    };
+    const inv = parse(opt("invocation"));
+    const files = parse(opt("files-json"));
     if (!inv || !inv.proof || !Array.isArray(files) || !opt("worktree")) {
       process.stdout.write(
         JSON.stringify({ ran: [], unproven: files || [], reason: "no replay invocation to read" }) +

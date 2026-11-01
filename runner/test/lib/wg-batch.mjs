@@ -16,9 +16,11 @@
 // numbers are too); each step runs on its own and a refused step is reported on stderr
 // and does not stop the next, as the shell sequence with `2>/dev/null` did. Prints one
 // ticket number per line, in order (an empty line where the create itself failed, and
-// then exits 1).
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+// then exits 1). It refuses (exit 2, nothing written) a DB outside ${TMPDIR:-/tmp}, a
+// file that is not an initialised dispatch DB, and a set GAFFER_PRINCIPAL_TOKEN.
+import { existsSync, realpathSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -62,6 +64,49 @@ while (argv.length) {
 
 // The CLI refuses a database that does not exist (it never creates one by accident).
 if (!existsSync(db)) die(`no database at ${db} (wg init first)`);
+// A test helper writes only a test's own database: one inside the temp dir the test
+// made it in (${TMPDIR:-/tmp}, as lib/tmpdir.sh does), already a dispatch database
+// (`wg init` ran), never a SQLite file Dispatch.open would migrate into one. A guessed
+// path once wrote two tickets into someone else's initialised database.
+const real = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+const tmpRoot = real(process.env.TMPDIR || "/tmp").replace(/\/+$/, "");
+const dbReal = real(db);
+if (!dbReal.startsWith(tmpRoot + sep))
+  die(
+    `refusing ${db}: not inside the temp dir (${tmpRoot}); this helper only sets up a test's own database`,
+  );
+{
+  let version = null;
+  try {
+    const probe = new DatabaseSync(dbReal, { readOnly: true });
+    try {
+      const meta = probe
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_meta'")
+        .get();
+      const tickets = probe
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'tickets'")
+        .get();
+      if (meta && tickets)
+        version = probe.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get();
+    } finally {
+      probe.close();
+    }
+  } catch {
+    version = null;
+  }
+  if (!version) die(`refusing ${db}: not a dispatch database (wg init first)`);
+}
+// The CLI acts as a principal when GAFFER_PRINCIPAL_TOKEN is set (its identity, its
+// scope); this helper only knows the operator's actor, so it refuses rather than
+// write under a different identity than the CLI sequence would.
+if ((process.env.GAFFER_PRINCIPAL_TOKEN ?? "").trim())
+  die("refusing: GAFFER_PRINCIPAL_TOKEN is set; this helper acts as the operator ($USER) only");
 const { Dispatch } = await import(CORE);
 // The CLI's open(): an existing DB, the same option the CLI passes.
 const wg = Dispatch.open(db, undefined, undefined, { requireRegisteredAgentApprover: true });

@@ -738,9 +738,18 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Merge an approved ticket that has not landed",
     description:
-      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge.",
+      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge, and 409 `MERGE_IN_FLIGHT` while a merge this server started for the ticket is still running (nothing new is started).",
     capability: "full",
-    responses: [ok("`{ ticket, merge }` — the merge run was started (202)."), notFound, conflict],
+    responses: [
+      ok("`{ ticket, merge }` — the merge run was started (202)."),
+      notFound,
+      {
+        status: 409,
+        description:
+          "Not in ready_for_merge (`ILLEGAL_TRANSITION`), or a merge of this ticket is already running (`MERGE_IN_FLIGHT`).",
+        content: "json",
+      },
+    ],
   },
   {
     method: "POST",

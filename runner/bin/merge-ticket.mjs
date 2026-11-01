@@ -127,7 +127,15 @@
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -1078,6 +1086,18 @@ export function gateProposedMerge({
       { encoding: "utf8" },
     );
     if (m.status !== 0) {
+      // A conflict leaves unmerged paths. A merge that failed WITHOUT any (the scratch
+      // checkout vanished under it, a lock, a disk error) is not a conflict: reading it as
+      // one spawned the resolver on a branch with nothing to resolve and sent an approved
+      // ticket back to review (exploratory finding api/F1). It is an error: nothing lands.
+      const unmerged = git(wt, "ls-files", "--unmerged");
+      if (unmerged.status !== 0 || !(unmerged.stdout || "").trim()) {
+        git(wt, "merge", "--abort");
+        return out("error", {
+          target,
+          reason: `the merge in the scratch checkout failed without a conflict (${(m.stderr || m.stdout || "").trim().slice(0, 200) || `exit ${m.status}`})`,
+        });
+      }
       git(wt, "merge", "--abort");
       return out("conflict", {
         target,
@@ -2013,6 +2033,66 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
 }
 
 /**
+ * ONE MERGE PER TICKET (exploratory finding api/F1): an exclusive lock under GAFFER_DATA
+ * held for the whole live merge. Two runs on one ticket (two Merge clicks, `gaffer merge`
+ * beside the dashboard's) used to share the ticket's merge-gate scratch checkout: the
+ * second removed the first's while it was merging, the first read the failure as a
+ * conflict, and the resolver path sent an approved ticket back to review. The lock is a
+ * directory (mkdir is atomic) holding the owner's pid; a lock whose pid is gone is stale
+ * and taken over. Returns { ok: true, release } or { ok: false, pid }.
+ */
+export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA) {
+  const dir = resolve(dataDir, "locks", `merge-ticket-${ticketNumber}.lock`);
+  mkdirSync(dirname(dir), { recursive: true });
+  const release = () => {
+    try {
+      if (readFileSync(resolve(dir, "pid"), "utf8").trim() === String(process.pid))
+        rmSync(dir, { recursive: true, force: true });
+    } catch {
+      /* already gone */
+    }
+  };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      mkdirSync(dir);
+      writeFileSync(resolve(dir, "pid"), String(process.pid));
+      process.on("exit", release);
+      return { ok: true, release };
+    } catch {
+      let pid;
+      try {
+        pid = parseInt(readFileSync(resolve(dir, "pid"), "utf8"), 10) || 0;
+      } catch {
+        pid = 0;
+      }
+      let held;
+      if (pid > 0) {
+        try {
+          process.kill(pid, 0);
+          held = true;
+        } catch (e) {
+          held = e?.code === "EPERM"; // alive, someone else's
+        }
+      } else {
+        // No pid yet: a lock being created right now (mkdir, then the pid file).
+        held = Date.now() - statMtime(dir) < 10_000;
+      }
+      if (held) return { ok: false, pid };
+      rmSync(dir, { recursive: true, force: true }); // stale: its owner is gone
+    }
+  }
+  return { ok: false, pid: 0 };
+}
+
+function statMtime(p) {
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * LANDING PREFLIGHT (exploratory finding cli-runner/F-01): before the FIRST merge of a
  * multi-repo ticket, every write repo still to land must pass what can be known without
  * landing anything: it has an approved commit, its checkout and delivery branch are here,
@@ -2292,6 +2372,18 @@ function main() {
         ...(landable ? {} : { refused: notApproved }),
       },
       0,
+    );
+    return;
+  }
+
+  // ONE MERGE PER TICKET: a second run while one is landing this ticket does nothing.
+  const lock = acquireMergeLock(resolved.number);
+  if (!lock.ok) {
+    fail(
+      `refusing to merge #${resolved.number}: another merge of it is already running` +
+        (lock.pid ? ` (pid ${lock.pid})` : "") +
+        `; nothing done — wait for it to finish`,
+      4,
     );
     return;
   }

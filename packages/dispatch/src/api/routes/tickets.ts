@@ -444,7 +444,19 @@ export async function routeTickets(
     if (ticket.number === null) {
       throw new DispatchError("ILLEGAL_TRANSITION", "Ticket has no number; cannot start a merge.");
     }
+    // IN-FLIGHT GUARD: one merge per ticket at a time. The check, the spawn and the
+    // merge_started note run without an await between them, so two parallel requests
+    // cannot both pass it.
+    const inFlight = (): never => {
+      throw new DispatchError(
+        "MERGE_IN_FLIGHT",
+        `A merge of #${ticket.number} is already running; nothing new was started. Wait for it to finish (its status reads "landing" meanwhile).`,
+        { ticket_number: ticket.number },
+      );
+    };
+    if (wg.mergeInFlight(ticket.id)) inFlight();
     const merge = mergeRunner.trigger({ ticketNumber: ticket.number });
+    if (merge.skipped === "in_flight") inFlight();
     noteMerge(wg, ticket.id, merge);
     sendJson(res, 202, { ticket, merge });
     return;

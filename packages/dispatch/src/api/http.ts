@@ -54,6 +54,7 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   AMBIGUOUS_REF: 409,
   INCOMPATIBLE_BUNDLE: 409,
   INCONSISTENT_BUNDLE: 409,
+  MERGE_IN_FLIGHT: 409,
   ACTOR_NOT_PERMITTED: 403,
   NOT_CONFIGURED: 503,
   // Genuine server-side failures (UNSAFE_BIND is startup-only).

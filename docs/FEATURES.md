@@ -326,7 +326,9 @@ structural barrier the whole design hangs on.
   (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
   runner's merge lane lands it: Auto-merge on and a human approval, or an earned
   merge grant; *(paused: usage limit)* with the time while the usage window has
-  paused the runner), *Approved · landing* (a merge the dashboard started is running),
+  paused the runner), *Approved · landing* (a merge the dashboard started is running;
+  a second **Merge now** meanwhile is refused with `MERGE_IN_FLIGHT` and starts nothing,
+  and `gaffer merge` beside it exits 4),
   *Approved · partly landed* (a landing is recorded for some of its write repos'
   approved commits, not all: Merge now lands the rest and never re-merges a
   landed one), or the hold's own words — *Held · moved since review* (naming the

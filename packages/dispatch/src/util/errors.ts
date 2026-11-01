@@ -39,6 +39,8 @@ export const DISPATCH_ERROR_CODES = [
   "AMBIGUOUS_REF",
   "INCOMPATIBLE_BUNDLE",
   "INCONSISTENT_BUNDLE",
+  // A merge the API started for this ticket is still running (a second one would race it).
+  "MERGE_IN_FLIGHT",
   "FILE_NOT_FOUND",
   "IO_ERROR",
   "UNSAFE_BIND",

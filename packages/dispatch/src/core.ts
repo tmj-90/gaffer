@@ -1958,6 +1958,32 @@ export class Dispatch {
   }
 
   /**
+   * IN-FLIGHT GUARD (exploratory finding api/F1): true while a merge run the API started
+   * for this ticket (its latest `ticket.merge_started` event) is still `running` in the
+   * run registry. The merge route refuses a second merge then (409 MERGE_IN_FLIGHT).
+   */
+  mergeInFlight(ref: string): boolean {
+    const ticket = this.resolveTicket(ref);
+    const ev = this.db
+      .prepare(
+        `SELECT payload_json FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.merge_started'
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticket.id) as { payload_json: string | null } | undefined;
+    if (!ev) return false;
+    try {
+      const runId = (JSON.parse(ev.payload_json || "{}") as { run_id?: string }).run_id;
+      if (!runId) return false;
+      const row = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
+        { status: string } | undefined;
+      return row?.status === "running";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Record that the API started a merge run for an approved ticket, so its status can say
    * "landing" while that run is running (the runs table does not carry the ticket).
    */

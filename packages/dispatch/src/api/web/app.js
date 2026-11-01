@@ -2689,6 +2689,10 @@ function ticketSignature(view) {
       ((view && view.acceptance_criteria) || []).map((a) => [a.id, a.status, a.text]),
       ((view && view.blocking_decisions) || []).map((d) => [d.id, d.status]),
       ((view && view.rework_trail) || []).length,
+      // A repo linked in another tab (the ready gate reads it, so Mark ready may switch
+      // on) and a dependency that finished change the page too.
+      ((view && view.repositories) || []).map((r) => [r.id, r.access, r.relation]),
+      ((view && view.dependencies) || []).map((d) => [d.depends_on_ticket_id, d.status]),
     ]),
   );
 }

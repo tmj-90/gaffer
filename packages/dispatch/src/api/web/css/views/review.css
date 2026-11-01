@@ -235,7 +235,7 @@
     gap: 2px;
     font-weight: 700;
   }
-  /* The button names the outcome ("Approve, waits for Merge now"): on a narrow
+  /* The button names the outcome ("Approve, merge is a separate click"): on a narrow
      phone it wraps onto two lines rather than push the page sideways. */
   .signoff-btn {
     white-space: normal;

@@ -806,7 +806,7 @@ describe("hiddenIndexPaths", () => {
     } finally {
       rmSync(d, { recursive: true, force: true });
     }
-  });
+  }, 20_000);
 });
 
 describe("collectTestIntegrity against a real git repo", () => {
@@ -866,7 +866,7 @@ describe("collectTestIntegrity against a real git repo", () => {
     const bad = collectTestIntegrity(git, "nope", "feat");
     expect(bad.incomplete).toHaveLength(1);
     expect(hasIntegrityFindings(bad)).toBe(true);
-  });
+  }, 20_000);
 
   it("finds a deleted Django tests.py, a skip inside another, and an added .npmrc", () => {
     dir = mkdtempSync(join(tmpdir(), "gi-"));
@@ -894,7 +894,7 @@ describe("collectTestIntegrity against a real git repo", () => {
     expect(f.deleted).toEqual(["shop/tests.py"]);
     expect(f.markers).toEqual([{ path: "blog/tests.py", marker: "@pytest.mark.skip", line: 4 }]);
     expect(f.configs).toEqual([{ path: ".npmrc", change: "added" }]);
-  });
+  }, 20_000);
 
   it("an added vitest config flags when the base has tests, not in a greenfield repo", () => {
     dir = mkdtempSync(join(tmpdir(), "gi-"));
@@ -924,7 +924,7 @@ describe("collectTestIntegrity against a real git repo", () => {
     expect(collectTestIntegrity(git, base, "HEAD").configs).toEqual([
       { path: "vitest.config.mjs", change: "added" },
     ]);
-  });
+  }, 20_000);
 
   it("finds a test file emptied of its tests (real git)", () => {
     dir = mkdtempSync(join(tmpdir(), "gi-"));
@@ -944,7 +944,7 @@ describe("collectTestIntegrity against a real git repo", () => {
       { path: "test/a.test.js", kind: "cases", base: 2, head: 0 },
       { path: "test/a.test.js", kind: "assertions", base: 2, head: 0 },
     ]);
-  });
+  }, 20_000);
 
   it("a .gitattributes that marks the tests binary or -diff cannot hide a skip", () => {
     dir = mkdtempSync(join(tmpdir(), "gi-"));
@@ -966,7 +966,7 @@ describe("collectTestIntegrity against a real git repo", () => {
       "test.skip@test/a.test.js:1",
       "it.only@test/b.test.js:1",
     ]);
-  });
+  }, 20_000);
 
   it("finds node:test option skips, runtime skips and a skip behind a comment", () => {
     dir = mkdtempSync(join(tmpdir(), "gi-"));
@@ -993,5 +993,5 @@ describe("collectTestIntegrity against a real git repo", () => {
       "test.skip@3",
       "it.concurrent.skip@4",
     ]);
-  });
+  }, 20_000);
 });

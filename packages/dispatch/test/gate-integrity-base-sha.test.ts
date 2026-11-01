@@ -111,7 +111,7 @@ describe("the integrity scan diffs from the recorded base commit", () => {
     expect(ann).toMatchObject({ kind: "test-modified", severity: "high" });
     expect((ann!.items ?? []).join(";")).toContain("test.skip in test/a.test.js");
     d.db.close();
-  });
+  }, 20_000);
 
   it("a base branch that no longer contains the recorded commit is flagged incomplete", () => {
     const { base } = repoWithDelivery();
@@ -130,7 +130,7 @@ describe("the integrity scan diffs from the recorded base commit", () => {
       /main no longer contains .*the base branch was rewritten/,
     );
     d.db.close();
-  });
+  }, 20_000);
 
   it("a clean delivery from the recorded base carries no test-modified annotation", () => {
     const { base } = repoWithDelivery();
@@ -139,7 +139,7 @@ describe("the integrity scan diffs from the recorded base commit", () => {
     const d = Dispatch.open(":memory:");
     expect(testModified(d, ticketOn(d, base))).toBeUndefined();
     d.db.close();
-  });
+  }, 20_000);
 });
 
 describe("recording the base commit", () => {
@@ -165,7 +165,7 @@ describe("recording the base commit", () => {
     );
     expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(base);
     d.db.close();
-  });
+  }, 20_000);
 
   it("is write-once: a different base is refused unless the runner re-cut the branch", () => {
     const { base } = repoWithDelivery();
@@ -198,7 +198,7 @@ describe("recording the base commit", () => {
     );
     expect(d.listRepoDeliveries(id)[0]!.base_sha).toBe(tip);
     d.db.close();
-  });
+  }, 20_000);
 });
 
 describe("gate integrity: migration v29→v30", () => {

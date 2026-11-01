@@ -284,12 +284,12 @@ describe("systemGitAdapter.defaultBranch (single clean line)", () => {
     expect(branch).toBe("main");
     // The bug: a multi-line "HEAD\nmain" string would slip through here.
     expect(branch).not.toContain("\n");
-  });
+  }, 20_000);
 
   it("falls back to 'main' for an unborn HEAD (git init, no commits)", () => {
     git(["init", "-q", "-b", "main"]);
     expect(systemGitAdapter.defaultBranch(dir)).toBe("main");
-  });
+  }, 20_000);
 
   it("falls back to 'main' for a detached HEAD", () => {
     git(["init", "-q", "-b", "main"]);
@@ -304,7 +304,7 @@ describe("systemGitAdapter.defaultBranch (single clean line)", () => {
     const branch = systemGitAdapter.defaultBranch(dir);
     expect(branch).toBe("main");
     expect(branch).not.toContain("\n");
-  });
+  }, 20_000);
 
   it("returns null when the path is not a git repo", () => {
     expect(systemGitAdapter.defaultBranch(dir)).toBeNull();

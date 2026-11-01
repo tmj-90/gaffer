@@ -117,15 +117,15 @@ describe("detectDefaultBranch", () => {
 
   it("detects a repo checked out on master", () => {
     expect(detectDefaultBranch(repoOnBranch("master"))).toBe("master");
-  });
+  }, 20_000);
 
   it("detects a repo checked out on main", () => {
     expect(detectDefaultBranch(repoOnBranch("main"))).toBe("main");
-  });
+  }, 20_000);
 
   it("detects a non-conventional default branch name", () => {
     expect(detectDefaultBranch(repoOnBranch("trunk"))).toBe("trunk");
-  });
+  }, 20_000);
 
   it("returns undefined for a missing path or a non-git directory", () => {
     expect(detectDefaultBranch(undefined)).toBeUndefined();

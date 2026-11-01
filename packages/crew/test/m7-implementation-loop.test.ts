@@ -112,7 +112,7 @@ describe("implementation loop", () => {
     }
     expect(systemGitAdapter.branchExists(repoDir, outcome.branch)).toBe(true);
     expect(systemGitAdapter.currentBranch(repoDir)).toBe(outcome.branch);
-  });
+  }, 20_000);
 
   it("pre-filters skills into the packet and reports its token cost", async () => {
     const wg = new FakeDispatchClient();

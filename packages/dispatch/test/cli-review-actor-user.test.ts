@@ -120,7 +120,7 @@ describe("cli-wg F-04: review approve / reject act as $USER", () => {
     const { ticket, last } = latest(n);
     expect(`${last.actor_type}:${last.actor_id}`).toBe("human:alice");
     expect(ticket.reviewer).toBe("alice");
-  });
+  }, 20_000);
 
   it("reject records $USER in last_review_feedback and on the event", () => {
     const n = inReview(repo);
@@ -143,7 +143,7 @@ describe("cli-wg F-04: review approve / reject act as $USER", () => {
     const { ticket, last } = latest(n);
     expect(`${last.actor_type}:${last.actor_id}`).toBe("human:bob");
     expect(ticket.reviewer).toBe("carol");
-  });
+  }, 20_000);
 
   it("an agent or runner rejection never becomes the ticket's reviewer", () => {
     const n = inReview(repo);

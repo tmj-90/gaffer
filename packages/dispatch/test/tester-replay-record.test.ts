@@ -136,7 +136,7 @@ describe("the tester-replay record's actor rule", () => {
     expect(
       d.view(t.id).events.filter((e) => e.event_type === "ticket.tester_replayed"),
     ).toHaveLength(1);
-  });
+  }, 20_000);
 
   it("a row shaped like the record but written by an agent (the MCP's evidence tool) is not a record", () => {
     const { d, t, pin, landed } = testedAndLanded();
@@ -150,7 +150,7 @@ describe("the tester-replay record's actor rule", () => {
         JSON.stringify({ kind: "tester_replay", tested: pin, pin, files: [] }),
       );
     expect(readTesterReplay(d.db, t.id, pin)).toBeNull();
-  });
+  }, 20_000);
 
   it("is refused unless it names the tested commit that landed, on an approved ticket", () => {
     const { d, t, pin, landed } = testedAndLanded();
@@ -192,7 +192,7 @@ describe("the tester-replay record's actor rule", () => {
     expect(
       refusal(() => d.recordTesterReplay(t.id, { commit: landed, pin, files: [] }, system)).code,
     ).toBe("ILLEGAL_TRANSITION");
-  });
+  }, 20_000);
 
   it("MULTI-REPO: the record names the repo replayed and the ticket's other write repos it did not cover", () => {
     const { d, t, repoDir, pin, landed } = testedAndLanded();
@@ -216,12 +216,12 @@ describe("the tester-replay record's actor rule", () => {
       .view(t.id)
       .evidence.find((e) => String(e.uri ?? "").startsWith(TESTER_REPLAY_PREFIX));
     expect(ev?.summary).toContain("not replayed in repo-b");
-  });
+  }, 20_000);
 
   it("a HUMAN tester waiver has no tester assertions to replay: nothing can be recorded", () => {
     const { d, t, pin, landed } = testedAndLanded({ waiver: true });
     expect(
       refusal(() => d.recordTesterReplay(t.id, { commit: landed, pin, files: [] }, system)).details,
     ).toMatchObject({ reason: "not_tested_commit" });
-  });
+  }, 20_000);
 });

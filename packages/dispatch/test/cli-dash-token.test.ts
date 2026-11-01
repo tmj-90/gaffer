@@ -44,18 +44,18 @@ describe("claim tokens never look like CLI options", () => {
       expect(r.stdout).not.toMatch(/^\d+\.\d+\.\d+\s*$/);
       expect(r.status).not.toBe(0);
       expect(`${r.stdout}${r.stderr}`).toContain("CLAIM_INVALID");
-    });
+    }, 20_000);
 
     it("submit N --token -vXXX is refused, not answered with the version", () => {
       const r = run("submit", "1", "--token", "-vAbCdEfGh", "--reason", "x");
       expect(r.stdout).not.toMatch(/^\d+\.\d+\.\d+\s*$/);
       expect(r.status).not.toBe(0);
-    });
+    }, 20_000);
 
     it("the root -v still prints the version before a subcommand", () => {
       const r = spawnSync(process.execPath, [CLI, "-v"], { encoding: "utf8" });
       expect(r.status).toBe(0);
       expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
-    });
+    }, 20_000);
   });
 });

@@ -93,9 +93,11 @@ if [ -f "$DIST" ] && [ -f "$RUNNER_DIR/../packages/crew/dist/cli/index.js" ] && 
   printf '{"name":"g","engines":{"node":">=18"}}\n' > "$HOME_REAL/package.json"
   ln -s "$(cd "$RUNNER_DIR/../packages" && pwd)" "$HOME_REAL/packages"
   printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/okbin/pnpm"; chmod +x "$WORK/okbin/pnpm"
-  RC=0; OUT="$(env PATH="$WORK/okbin:$PATH" GAFFER_HOME="$HOME_REAL" GAFFER_DATA="$WORK/data-ok" DISPATCH_API_PORT=9471 bash "$RUNNER_DIR/setup.sh" 2>&1)" || RC=$?
+  # Any port: setup only prints it. GAFFER_TEST_PORT_BASE, else random, never a fixed one.
+  PORT="${GAFFER_TEST_PORT_BASE:-$(( 20000 + RANDOM % 20000 ))}"
+  RC=0; OUT="$(env PATH="$WORK/okbin:$PATH" GAFFER_HOME="$HOME_REAL" GAFFER_DATA="$WORK/data-ok" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/setup.sh" 2>&1)" || RC=$?
   [ "$RC" -eq 0 ] && ok "setup completes against the stub install" || fail "setup rc=$RC: $(printf '%s' "$OUT" | tail -5)"
-  [[ "$OUT" == *"http://127.0.0.1:9471"* ]] && [[ "$OUT" != *":8787"* ]] && ok "the footer prints the configured port, not :8787" || fail "footer port: $(printf '%s' "$OUT" | grep -n 'dashboard')"
+  [[ "$OUT" == *"http://127.0.0.1:$PORT"* ]] && [[ "$OUT" != *":8787"* ]] && ok "the footer prints the configured port, not :8787" || fail "footer port: $(printf '%s' "$OUT" | grep -n 'dashboard')"
   [[ "$OUT" == *"one dry tick over a showcase repo"* ]] && ok "the footer describes demo as one dry tick" || fail "demo line: $(printf '%s' "$OUT" | grep demo)"
 else
   echo "SKIP: dispatch/crew/memory not built (pnpm -r build)"

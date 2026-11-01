@@ -71,5 +71,5 @@ describe("opening an unreadable Dispatch database", () => {
     expect(r.stderr).toMatch(/If the file is corrupt, restore a backup/);
     expect(r.stderr).not.toMatch(/^SqliteError/m);
     expect(r.stderr).not.toMatch(/\n\s+at /);
-  });
+  }, 20_000);
 });

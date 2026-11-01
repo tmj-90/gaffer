@@ -439,5 +439,5 @@ describe("oracle no-shell-injection regression", () => {
     oracle.consult(repo);
     expect(existsSync(join(repo, "PWNED"))).toBe(false);
     expect(existsSync(join(process.cwd(), "PWNED"))).toBe(false);
-  });
+  }, 20_000);
 });

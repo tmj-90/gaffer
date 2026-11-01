@@ -831,15 +831,42 @@ export class ReviewGateService {
     }
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ref);
-      if (ticket.status !== "ready_for_merge") {
+      // REVOCATION-SAFE LANDING: a landing that STARTED (landing-begin) on the approval the
+      // ticket had, before a revocation moved it off ready_for_merge, cannot be stopped by
+      // it; once git shows it, it is recorded all the same, so the ticket's record says
+      // what its default branches carry (and the partly-landed guards see it).
+      const startedBefore =
+        ticket.status === "ready_for_merge"
+          ? null
+          : this.startedOnApproval(ticket.id, input.repo, sha);
+      if (ticket.status !== "ready_for_merge" && !startedBefore) {
         throw new DispatchError(
           "ILLEGAL_TRANSITION",
-          "A landing can only be recorded for an approved ticket (ready_for_merge).",
+          "A landing can only be recorded for an approved ticket (ready_for_merge), or for a landing that started before its approval was revoked.",
           { status: ticket.status },
         );
       }
       const before = computeLandingStatus(this.db, ticket.id);
-      const target = before.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
+      if (startedBefore) {
+        const already = this.db
+          .prepare(
+            `SELECT 1 AS hit FROM evidence WHERE ticket_id = ? AND repo_id = ? AND uri = ?
+               AND evidence_type = 'commit' AND recorded_by_actor_type = 'system' LIMIT 1`,
+          )
+          .get(ticket.id, startedBefore.repoId, `${LANDING_PREFIX}${sha}`);
+        if (already) {
+          return {
+            ticketId: ticket.id,
+            repo: startedBefore.repo,
+            commit: sha,
+            recorded: false,
+            status: before,
+          };
+        }
+      }
+      const target = startedBefore
+        ? { ...startedBefore, sha, landed: false }
+        : before.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
       if (!target || target.sha !== sha) {
         throw new DispatchError(
           "STATE_CONFLICT",
@@ -1054,6 +1081,37 @@ export class ReviewGateService {
         eventId,
       };
     });
+  }
+
+  /**
+   * REVOCATION-SAFE LANDING: the `ticket.landing_started` of `sha` in `repo` (id or name)
+   * on the ticket's current approval (approvalRef), as { repoId, repo }, or null.
+   */
+  private startedOnApproval(
+    ticketId: string,
+    repo: string,
+    sha: string,
+  ): { repoId: string; repo: string } | null {
+    const approval = this.approvalRef(ticketId);
+    if (!approval) return null;
+    const row = this.db
+      .prepare(
+        `SELECT json_extract(payload_json, '$.repo_id') AS repo_id,
+                json_extract(payload_json, '$.repo') AS repo
+           FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.landing_started'
+            AND json_extract(payload_json, '$.approval') = ?
+            AND lower(json_extract(payload_json, '$.commit')) = ?
+            AND (json_extract(payload_json, '$.repo_id') = ? OR json_extract(payload_json, '$.repo') = ?)
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticketId, approval, sha, repo, repo) as
+      { repo_id: string | null; repo: string | null } | undefined;
+    if (!row?.repo_id) return null;
+    const known = this.db
+      .prepare(`SELECT id, name FROM repositories WHERE id = ?`)
+      .get(row.repo_id) as { id: string; name: string } | undefined;
+    return known ? { repoId: known.id, repo: known.name } : null;
   }
 
   /**
@@ -2279,10 +2337,23 @@ export class ReviewGateService {
    * reverted merge still has its landing on record; such a ticket ends as done.
    */
   private refuseCancelOfLanded(ticket: Ticket): void {
-    const landed = recordedLandingRepos(this.db, ticket.id);
+    // REVOCATION-SAFE LANDING: a landing that started on the current approval and that git
+    // already shows on the default branch counts as well. Its record is written a moment
+    // after git moves; a cancellation in that gap used to be accepted, the record was then
+    // refused (the ticket was cancelled) and the merge read as a clean success.
+    const landed = [
+      ...new Set([
+        ...recordedLandingRepos(this.db, ticket.id),
+        ...this.landingsStarted(ticket.id)
+          .filter((l) => l.landed)
+          .map((l) => l.repo),
+      ]),
+    ].sort();
     if (landed.length === 0) return;
     const current = computeLandingStatus(this.db, ticket.id);
-    const pending = current.repos.filter((r) => !r.landed).map((r) => r.repo);
+    const pending = current.repos
+      .filter((r) => !r.landed && !landed.includes(r.repo))
+      .map((r) => r.repo);
     const n = ticket.number ?? "<n>";
     throw new DispatchError(
       "PARTLY_LANDED",

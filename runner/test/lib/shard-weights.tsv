@@ -22,8 +22,10 @@
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 # landing-revocation, secondary-pr-landing, cleanup-ownership, replay-recovery: ESTIMATES
 # (external review #8; Linux alone: 77s / 81s / 169s / 34s, scaled like the others).
+# landing-revocation-window: ESTIMATE (Linux alone: 40s, scaled like the others).
 171	merge-lane.test.sh
 110	landing-revocation.test.sh
+57	landing-revocation-window.test.sh
 110	secondary-pr-landing.test.sh
 200	cleanup-ownership.test.sh
 45	replay-recovery.test.mjs

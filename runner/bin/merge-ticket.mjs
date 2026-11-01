@@ -3244,6 +3244,20 @@ function main() {
       );
       return;
     }
+    // REVOCATION-SAFE LANDING: a revocation acknowledged after a landing started (its
+    // last check passed) cannot stop it, and the revocation said so. Say it here too:
+    // this is not a clean merge, and the ticket stays as Dispatch has it (not done).
+    const after = ticketStatusOf(CONFIG.dispatchDb, resolved.number);
+    if (after.exists && after.status !== "ready_for_merge") {
+      fail(
+        `LANDED AFTER A REVOCATION: #${resolved.number} became ${after.status} while its landing was under way ` +
+          `(the revocation was recorded after the last pre-landing check passed); ${repo.name}'s ` +
+          `${repo.defaultBranch} carries the merge, nothing else was landed and the ` +
+          `ticket is left ${after.status}, not done — revert it by hand if it must not ship`,
+        4,
+      );
+      return;
+    }
     // Flip the ticket ready_for_merge → done now that the branch is actually merged.
     // Non-fatal: the merge already landed; a failure just leaves it in ready_for_merge
     // (a human can run `wg ticket mark-merged <n> --as system`).

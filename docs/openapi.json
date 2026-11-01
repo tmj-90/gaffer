@@ -3675,7 +3675,7 @@
           "Review & delivery"
         ],
         "summary": "Reject the review",
-        "description": "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store. A ticket whose change already landed in some repository is not re-queued: it is held for a person (`blocked`, park reason code `partly_landed`), and `to: cancelled` is refused (409 `PARTLY_LANDED`).",
+        "description": "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store. A ticket whose change already landed in some repository is not re-queued: it is held for a person (`blocked`, park reason code `partly_landed`), and `to: cancelled` is refused (409 `PARTLY_LANDED`). A rejection recorded after a landing started (the merge runner's last check passed) cannot stop that landing: the response lists it in `landed_already`.",
         "parameters": [
           {
             "name": "id",
@@ -3699,7 +3699,7 @@
         },
         "responses": {
           "200": {
-            "description": "`{ ticket, event_id, lore_capture? }`.",
+            "description": "`{ ticket, event_id, lore_capture?, landed_already? }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4623,7 +4623,7 @@
           "Tickets"
         ],
         "summary": "Mark won't-do",
-        "description": "Cancels the ticket. Refused (409 `PARTLY_LANDED`) once any of its repositories has a landing on record, whatever happened to the approval since (a send-back or a reopen withdraws the approval, not the merge): such a ticket can only be finished, so land the rest.",
+        "description": "Cancels the ticket. Refused (409 `PARTLY_LANDED`) once any of its repositories has a landing on record, whatever happened to the approval since (a send-back or a reopen withdraws the approval, not the merge): such a ticket can only be finished, so land the rest. A landing that started before the won't-do is listed in `landed_already`.",
         "parameters": [
           {
             "name": "id",
@@ -4647,7 +4647,7 @@
         },
         "responses": {
           "200": {
-            "description": "`{ ticket, event_id }` (cancelled).",
+            "description": "`{ ticket, event_id, landed_already? }` (cancelled).",
             "content": {
               "application/json": {
                 "schema": {
@@ -14275,6 +14275,50 @@
               "captured"
             ],
             "description": "review/reject with captureLore only."
+          },
+          "landed_already": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "repoId": {
+                  "type": "string"
+                },
+                "commit": {
+                  "type": "string"
+                },
+                "landed": {
+                  "type": "boolean",
+                  "description": "false: the landing had started and may still be moving."
+                },
+                "via": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "repoId",
+                "commit",
+                "landed",
+                "via",
+                "at"
+              ],
+              "additionalProperties": false
+            },
+            "description": "review/reject and wont-do: landings that had already started on the approval this revocation withdrew. It stops every landing not yet started and does not undo these."
           }
         },
         "required": [

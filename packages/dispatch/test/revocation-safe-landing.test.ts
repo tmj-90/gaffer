@@ -178,3 +178,67 @@ describe("a revocation after a landing started reports it", () => {
     expect(wg.rejectReview(id, "cancelled", human, "changed my mind").landedAlready).toEqual([]);
   });
 });
+
+// The gap between landing-begin and the landing's record (adversarial review of #8): a
+// cancellation there was accepted, the record was then refused (the ticket was no longer
+// ready_for_merge) and the change sat on main with no landing on record.
+describe("a landing that started before a revocation stays on record", () => {
+  it("a cancellation once git shows the started landing is refused (partly landed)", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system);
+    onDefault = true; // git moved; the record is not written yet
+    const r = refusal(() => wg.rejectReview(id, "cancelled", human, "too late"));
+    expect(r.code).toBe("PARTLY_LANDED");
+    expect(r.message).toContain("already landed in repoA");
+    expect(refusal(() => wg.wontDo(id, human, "too late")).code).toBe("PARTLY_LANDED");
+    expect(wg.view(id).ticket.status).toBe("ready_for_merge");
+  });
+
+  it("a landing in progress when the ticket was cancelled is recorded once git shows it", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system);
+    const w = wg.wontDo(id, human, "stop");
+    expect(w.ticket.status).toBe("cancelled");
+    expect(w.landedAlready).toEqual([
+      expect.objectContaining({ repo: "repoA", commit: FAKE_HEAD, landed: false }),
+    ]);
+    // git has not moved: still refused (a local landing needs git to show it).
+    expect(
+      refusal(() =>
+        wg.recordLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system),
+      ).reason,
+    ).toBe("not_on_default_branch");
+    onDefault = true;
+    const rec = wg.recordLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system);
+    expect(rec.recorded).toBe(true);
+    // Idempotent, and the cancelled ticket now counts as partly landed.
+    expect(
+      wg.recordLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system).recorded,
+    ).toBe(false);
+    expect(wg.view(id).events.some((e) => e.event_type === "ticket.repo_landed")).toBe(true);
+  });
+
+  it("a landing that never started is not recorded on a revoked ticket", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    wg.rejectReview(id, "cancelled", human, "stop");
+    onDefault = true;
+    expect(
+      refusal(() =>
+        wg.recordLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system),
+      ).code,
+    ).toBe("ILLEGAL_TRANSITION");
+  });
+
+  it("a board move back to rework reports a started landing on the trail", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    wg.beginLanding(id, { repo: "repoA", commit: FAKE_HEAD, via: "local" }, system);
+    wg.moveTicket(id, "refining", human);
+    expect(wg.view(id).events.some((e) => e.event_type === "ticket.revoked_after_landing")).toBe(
+      true,
+    );
+  });
+});

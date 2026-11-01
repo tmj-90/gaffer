@@ -109,7 +109,13 @@ export function registerReview(program: Command): void {
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
       const res = wg.wontDo(ref, cliActor(), opts.reason);
-      printJson({ ok: true, status: res.ticket.status, event: res.eventId });
+      warnLandedAlready(res.landedAlready, "won't do");
+      printJson({
+        ok: true,
+        status: res.ticket.status,
+        event: res.eventId,
+        ...(res.landedAlready.length > 0 ? { landed_already: res.landedAlready } : {}),
+      });
       wg.db.close();
     });
 

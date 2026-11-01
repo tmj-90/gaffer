@@ -254,6 +254,15 @@ EOF
     [ "$_done" -gt 0 ] && log "$_WHO: #$RNUM PARTLY MERGED — landed in ${_landed_names}; ${_pending} did not land (rc=$_rc) — held (ready_for_merge, or the human queue when the merge gate held it); the landed repos are recorded and a retry lands the rest"
     return "$_rc"
   fi
+  # REVOCATION-SAFE LANDING: a revocation acknowledged after a landing started cannot
+  # stop it (the revocation said so); this is not a clean merge, and the ticket stays as
+  # Dispatch has it, not done.
+  local _after_st
+  _after_st="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status || ""' 2>/dev/null || true)"
+  if [ -n "$_after_st" ] && [ "$_after_st" != "ready_for_merge" ]; then
+    log "$_WHO: #$RNUM LANDED AFTER A REVOCATION — it became $_after_st while its landing was under way (recorded after the last pre-landing check passed); landed in ${_landed_names:-$(basename "$RREPO")}; nothing else landed and the ticket is left $_after_st, not done — revert by hand if it must not ship"
+    return 4
+  fi
   # Every approved revision landed → done (the server re-checks every repo).
   if wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1; then
     if [ "$_done" -eq 1 ]; then

@@ -1602,7 +1602,8 @@ export class Dispatch {
       (ticket.status === "in_review" || ticket.status === "ready_for_merge") &&
       (toStatus === "ready" || toStatus === "refining")
     ) {
-      return this.reviewGateSvc.rejectReview(ticket.id, toStatus, actor, "board_move");
+      // (Through this.rejectReview: a landing already started is reported on the trail.)
+      return this.rejectReview(ticket.id, toStatus, actor, "board_move");
     }
     return inTransaction(this.db, () => {
       // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
@@ -2195,8 +2196,16 @@ export class Dispatch {
     return this.ticketSvc.resetAcceptanceCriteria(ref, actor);
   }
 
-  wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
-    return this.reviewGateSvc.wontDo(ref, actor, reason);
+  wontDo(
+    ref: string,
+    actor: Actor,
+    reason?: string,
+  ): TransitionResult & { landedAlready: LandingStarted[] } {
+    const res = this.reviewGateSvc.wontDo(ref, actor, reason);
+    // REVOCATION-SAFE LANDING: the dashboard's Won't do is a cancellation too; a landing
+    // that had already started is reported exactly as a rejection reports it.
+    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, "wont_do");
+    return { ...res, landedAlready };
   }
 
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {

@@ -28,13 +28,17 @@
 #                                     merged") · 4 held / not landed, with the reason (not approved or
 #                                     unknown, partly merged, a conflict resolved and sent back for
 #                                     re-approval) · 1 a hard failure
-#   gaffer plan "<goal>" [--repo <name>] [--now] [--yes]
-#                                     plan a build: what the dashboard's Plan a build does. The
-#                                     planner may ask questions first (answer with --answer "…",
-#                                     or --now to plan with what it has); the proposed epic and
-#                                     tickets are shown and created as drafts only on --yes or a
-#                                     typed y. Also --file <path>, --show, --discard, --list
-#   gaffer lore [review | show <id> | approve <id> | reject <id> [--reason "…"]]
+#   gaffer plan "<goal>" [--repo <name>] [--now]   then   gaffer plan --yes
+#                                     plan a build: what the dashboard's Plan a build does. Each
+#                                     planner turn is a paid model call (a dollar cap is needed).
+#                                     The planner may ask questions first (answer with --answer
+#                                     "…", or --now to plan with what it has); the proposed epic
+#                                     and tickets are shown, and only a later `gaffer plan --yes`
+#                                     (or a y typed at the prompt) creates them, as drafts. Also
+#                                     --file <path>, --show, --discard, --list. exit 0 created ·
+#                                     4 nothing created yet (questions, a proposal, or a no) ·
+#                                     75 paused on the usage window
+#   gaffer lore [review [--json] | show <id> | approve <id> | reject <id> [--reason "…"]]
 #                                     the lore drafts waiting for you, as the Memory view lists
 #                                     them, and the approve / reject it does
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
@@ -93,8 +97,8 @@ usage() {
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
-    plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now] [--yes]  ·  gaffer plan --answer \"<text>\" | --now | --yes | --show | --discard | --list   (nothing is created without --yes or a typed y; tickets land as draft)" ;;
-    lore)      echo "usage: gaffer lore [review [--repo <name>] [--offset <n>] | show <id> | approve <id> | reject <id> [--reason \"<why>\"]]" ;;
+    plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer \"<text>\" | --now  ·  gaffer plan --yes | --show | --discard | --list   (each turn is a paid planner call; only --yes on its own, or a typed y, creates the proposal you were shown, as draft tickets; exit 4 nothing created yet)" ;;
+    lore)      echo "usage: gaffer lore [review [--repo <name>] [--offset <n>] [--json] | show <id> | approve <id> | reject <id> [--reason \"<why>\"]]" ;;
   esac
 }
 # wants_help "$@" — true when any argument asks for help. Checked before a command
@@ -653,13 +657,14 @@ lore)
   [ -f "$MEMORY_CLI_BIN" ] || { err "the memory CLI is not built ($MEMORY_CLI_BIN): run pnpm -r build"; exit 1; }
   case "$_sub" in
     review|list)
-      _repo=""; _off=""
+      _repo=""; _off=""; _json=0
       while [ $# -gt 0 ]; do
         case "$1" in
           --repo) shift; [ -n "${1:-}" ] || bad_arg lore "--repo needs a repo name"; _repo="$1" ;;
           --repo=*) _repo="${1#--repo=}" ;;
-          --offset) shift; _off="${1:-}" ;;
-          --offset=*) _off="${1#--offset=}" ;;
+          --offset) shift; [ -n "${1:-}" ] || bad_arg lore "--offset needs a whole number"; _off="$1" ;;
+          --offset=*) _off="${1#--offset=}"; [ -n "$_off" ] || bad_arg lore "--offset needs a whole number" ;;
+          --json) _json=1 ;;
           *) bad_arg lore "unknown option '$1'" ;;
         esac
         shift || true
@@ -667,11 +672,18 @@ lore)
       case "$_off" in *[!0-9]*) bad_arg lore "--offset needs a whole number (got '$_off')" ;; esac
       _page="$(_mem list --status draft --json --limit 200 ${_repo:+--repo "$_repo"} ${_off:+--offset "$_off"})" \
         || { err "could not read the lore drafts from $MEMORY_DB"; exit 1; }
+      # --json: the page itself ({ total, limit, offset, items }), what the Memory view reads.
+      if [ "$_json" = 1 ]; then printf '%s\n' "$_page"; exit 0; fi
       printf '%s' "$_page" | node "$HERE/lib/json-tool.mjs" lore-drafts
       ;;
     show|approve|reject)
       _id="${1:-}"; [ -n "$_id" ] || bad_arg lore "$_sub needs a lore id (gaffer lore review lists them)"
       case "$_id" in -*) bad_arg lore "the lore id comes first (got option '$_id')" ;; esac
+      # The dashboard's shape check (LORE_ID_RE: 8 of a-z2-9; its routes answer 422).
+      case "$_id" in
+        ????????) case "$_id" in *[!abcdefghijklmnopqrstuvwxyz23456789]*) bad_arg lore "'$_id' is not a lore id (8 characters, a-z and 2-9)" ;; esac ;;
+        *) bad_arg lore "'$_id' is not a lore id (8 characters, a-z and 2-9)" ;;
+      esac
       shift
       _why=()
       while [ $# -gt 0 ]; do

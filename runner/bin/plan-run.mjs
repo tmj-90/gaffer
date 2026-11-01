@@ -17,17 +17,24 @@
 //     hook. Nothing is readied and no autonomy setting changes.
 // Nothing is created without --yes or a "y" typed at the prompt. The conversation
 // and the last proposal are kept in $GAFFER_DATA/plan-draft.json (0600) between runs,
-// so `gaffer plan --yes` creates the plan you were shown, never a fresh one.
+// so `gaffer plan --yes` creates the plan you were shown, never a fresh one: --yes runs
+// on its own (with a goal, --answer or --now it would pay for a turn and create what
+// came back unseen), a new answer drops the proposal it supersedes, and the draft names
+// the factory it was planned for (its data dir and dispatch database), so a draft copied
+// elsewhere or run against another DISPATCH_DB is refused, not created there.
 //
 // INVOCATION (runner/gaffer plan passes its arguments through):
-//   plan-run.mjs "<goal>" | --file <path>  [--repo <name>] [--now] [--yes]
-//   plan-run.mjs --answer "<text>" [--yes]     answer the planner's questions
-//   plan-run.mjs --now [--yes]                 plan now from what it has
-//   plan-run.mjs --yes                         create the proposal on screen
+//   plan-run.mjs "<goal>" | --file <path>  [--repo <name>] [--now]
+//   plan-run.mjs --answer "<text>"             answer the planner's questions
+//   plan-run.mjs --now                         plan now from what it has
+//   plan-run.mjs --yes                         create the proposal on screen (on its own)
 //   plan-run.mjs --show | --discard | --list
-// EXIT: 0 done (a proposal shown, questions asked, or the epic created) · 1 the
-//   planner or the create failed (the reason is printed) · 2 a usage error.
-import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+// EXIT: 0 the epic was created (or --show / --discard / --list) · 4 nothing created
+//   yet, waiting for you (the planner asked questions, the proposal is shown and needs
+//   --yes, or you said no) · 1 the planner or the create failed, or the draft belongs
+//   to another factory (the reason is printed) · 2 a usage error · 75 paused on the
+//   usage window (no planner turn was run; `gaffer run` uses the same code).
+import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +45,16 @@ const DISPATCH_DIR = process.env.DISPATCH_DIR || join(GAFFER_HOME, "packages", "
 const dist = (p) => join(DISPATCH_DIR, "dist", p);
 
 const USAGE =
-  'usage: gaffer plan "<goal>" | --file <path> [--repo <name>] [--now] [--yes]  ·  gaffer plan --answer "<text>" | --now | --yes | --show | --discard | --list';
+  'usage: gaffer plan "<goal>" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer "<text>" | --now  ·  gaffer plan --yes | --show | --discard | --list';
+// Nothing created yet: questions asked, a proposal shown, or a "no" at the prompt.
+const HELD = 4;
+// The factory is paused on the usage window (lib/usage-pause.mjs); `gaffer run`'s code.
+const PAUSED = 75;
+// A closed stdout (`gaffer plan --show | head`) ends the run quietly, not with a stack.
+process.stdout.on("error", (e) => {
+  if (e && e.code === "EPIPE") process.exit(process.exitCode ?? 0);
+  throw e;
+});
 
 function out(line = "") {
   process.stdout.write(`${line}\n`);
@@ -77,6 +93,13 @@ function parseArgs(argv) {
     else if (o.goal) usageError(`one goal only (quote it): got '${o.goal}' and '${a}'`);
     else o.goal = a;
   }
+  // HUMAN IN THE LOOP: --yes creates the proposal already on screen, so it never rides
+  // with a turn (a goal, --answer, --now): that would pay for a plan and create it unseen.
+  if (o.yes && (o.goal || o.file || o.repo || o.answers.length || o.now))
+    usageError(
+      "--yes runs on its own: it creates the proposal you were already shown. Plan first " +
+        '(gaffer plan "<goal>", --answer, --now), read the proposal, then run gaffer plan --yes',
+    );
   const modes = [o.show, o.discard, o.list].filter(Boolean).length;
   if (modes > 1) usageError("--show, --discard and --list each run on their own");
   if (modes === 1 && (o.goal || o.file || o.repo || o.answers.length || o.now || o.yes))
@@ -103,6 +126,32 @@ function parseArgs(argv) {
 // ── the saved conversation ──────────────────────────────────────────────────
 const DATA = process.env.GAFFER_DATA || "";
 const DRAFT = DATA ? join(DATA, "plan-draft.json") : "";
+
+// The factory a draft was planned for: its data dir and dispatch database, resolved.
+const real = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+function thisFactory() {
+  return { gaffer_data: real(DATA), dispatch_db: real(process.env.DISPATCH_DB || "") };
+}
+/** Why `d` may not be continued or created HERE (null when it may). */
+function foreignDraft(d) {
+  const here = thisFactory();
+  const f = d && d.factory;
+  if (f && f.gaffer_data === here.gaffer_data && f.dispatch_db === here.dispatch_db) return null;
+  const was = f
+    ? `data ${f.gaffer_data || "?"}, dispatch db ${f.dispatch_db || "?"}`
+    : "a factory it does not name";
+  return (
+    `this draft plan belongs to another factory (${was}); this one is data ${here.gaffer_data}, ` +
+    `dispatch db ${here.dispatch_db}. Nothing was created or asked. Plan it here: ` +
+    'gaffer plan "<goal>" (gaffer plan --discard drops the draft)'
+  );
+}
 
 function loadDraft() {
   if (!DRAFT || !existsSync(DRAFT)) return null;
@@ -149,11 +198,18 @@ async function planTurn(draft, forcePlan) {
 /** The answers given to the planner's questions (the brief is not one): planClarifications. */
 async function agreedRequirements(draft) {
   const { agreedRequirementsFromTurns } = await load("util/planClarifications.js");
+  // An assistant turn is a clarify turn only when it asked questions; a failed turn
+  // (error) is not, so the answer after it answers nothing (the panel's
+  // planAgreedRequirements resets on it the same way).
   const turns = draft.history.map((h) =>
     h.role === "assistant"
       ? {
           role: "assistant",
-          content: JSON.stringify({ phase: "clarify", questions: h.questions || [] }),
+          content: JSON.stringify(
+            Array.isArray(h.questions)
+              ? { phase: "clarify", questions: h.questions }
+              : { phase: "error" },
+          ),
         }
       : { role: "user", content: String(h.brief ?? h.answer ?? "") },
   );
@@ -295,9 +351,35 @@ async function create(draft) {
 // ── the interactive bits (a person at a terminal only) ──────────────────────
 const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 let rl = null;
+/** The typed line, or null on EOF (Ctrl-D): the caller treats that as "stop, keep it". */
 function ask(q) {
-  rl = rl || createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise((res) => rl.question(q, (a) => res(a)));
+  if (!rl) {
+    rl = createInterface({ input: process.stdin, output: process.stdout });
+    // Ctrl-C at a prompt stops here (readline would otherwise only pause and hang).
+    rl.on("SIGINT", () => {
+      out("");
+      out("Stopped. Nothing was created; the draft is kept.");
+      process.exit(130);
+    });
+  }
+  const r = rl;
+  return new Promise((res) => {
+    let settled = false;
+    const onClose = () => {
+      if (settled) return;
+      settled = true;
+      rl = null;
+      out("");
+      res(null);
+    };
+    r.once("close", onClose);
+    r.question(q, (a) => {
+      if (settled) return;
+      settled = true;
+      r.off("close", onClose);
+      res(a);
+    });
+  });
 }
 function closeAsk() {
   if (rl) rl.close();
@@ -305,7 +387,22 @@ function closeAsk() {
 }
 
 // ── one round: ask the planner, record its answer, show it ──────────────────
+// USAGE WINDOW: while the factory is paused on it (lib/usage-pause.mjs, what tick and
+// `gaffer run` honour), a planner turn is not started; it would only be refused. Checked
+// before a turn changes the draft, and again before each turn of an interactive run.
+async function refuseWhilePaused() {
+  const { readPause, pauseLine } = await import(join(HERE, "..", "lib", "usage-pause.mjs"));
+  const pause = readPause(process.env);
+  if (!pause) return;
+  process.stderr.write(
+    `  ✗ the factory is paused on the usage window (${pauseLine(pause)}); no planner turn was run ` +
+      "and the draft is unchanged. It lifts on its own; node runner/lib/usage-pause.mjs clear lifts it now.\n",
+  );
+  process.exit(PAUSED);
+}
+
 async function round(draft, forcePlan) {
+  await refuseWhilePaused();
   out(forcePlan ? "Planning with what it has…" : "Asking the planner…");
   const res = await planTurn(draft, forcePlan);
   if (res.phase === "clarify") {
@@ -325,8 +422,8 @@ async function round(draft, forcePlan) {
   failWith(`the planner failed: ${why}`);
 }
 
-async function converse(draft, o) {
-  let state = await round(draft, o.now);
+async function converse(draft, forcePlan) {
+  let state = await round(draft, forcePlan);
   for (;;) {
     if (state === "clarify") {
       showQuestions(draft.history[draft.history.length - 1].questions);
@@ -335,32 +432,36 @@ async function converse(draft, o) {
         out(
           'Answer them: gaffer plan --answer "<your answer>"   or plan with what it has: gaffer plan --now',
         );
+        process.exitCode = HELD;
         return;
       }
-      const a = (
-        await ask("Your answer (Enter alone plans with what it has, q stops and keeps the draft): ")
-      ).trim();
+      const typed = await ask(
+        "Your answer (Enter alone plans with what it has, q stops and keeps the draft): ",
+      );
+      const a = typed === null ? "q" : typed.trim();
       if (a === "q") {
         out('Kept the draft: gaffer plan --answer "…" or --now carries on.');
+        process.exitCode = HELD;
         return;
       }
       if (a) draft.history.push({ role: "user", answer: a });
       state = await round(draft, !a);
       continue;
     }
-    await showPlan(draft, { creating: o.yes });
-    if (o.yes) return create(draft);
+    await showPlan(draft);
     if (!interactive) {
       out(
         'Create it as shown: gaffer plan --yes   (or answer more: gaffer plan --answer "…"; start over: gaffer plan --discard)',
       );
+      process.exitCode = HELD;
       return;
     }
-    const yn = (await ask(`Create these as draft tickets? [y/N] `)).trim().toLowerCase();
+    const yn = ((await ask(`Create these as draft tickets? [y/N] `)) ?? "").trim().toLowerCase();
     if (yn === "y" || yn === "yes") return create(draft);
     out(
       "Not created. The proposal is kept: gaffer plan --yes creates it, gaffer plan --discard drops it.",
     );
+    process.exitCode = HELD;
     return;
   }
 }
@@ -393,6 +494,8 @@ async function main() {
   }
   if (o.show) {
     if (!saved) return out('No draft plan. Start one: gaffer plan "<goal>"');
+    const foreign = foreignDraft(saved);
+    if (foreign) out(`(${foreign})`);
     const last = saved.history[saved.history.length - 1];
     if (saved.plan) await showPlan(saved);
     else if (last && last.role === "assistant" && Array.isArray(last.questions)) {
@@ -402,6 +505,7 @@ async function main() {
     return;
   }
 
+  if (o.goal || o.answers.length || o.now) await refuseWhilePaused();
   // A new plan: the brief is the first user turn (the dashboard's first message).
   if (o.goal) {
     // Extend an existing repo: it must be registered (the panel only offers registered
@@ -421,23 +525,29 @@ async function main() {
     }
     if (saved) out(`(replacing the earlier draft plan for: ${saved.brief.split("\n")[0]})`);
     const draft = {
-      version: 1,
+      version: 2,
+      factory: thisFactory(),
       brief: o.goal,
       ...(o.repo ? { context: { mode: "extend", repo: o.repo } } : {}),
       history: [{ role: "user", brief: o.goal }],
       plan: null,
     };
     saveDraft(draft);
-    return converse(draft, o);
+    return converse(draft, o.now);
   }
-  // Carry on with the saved conversation.
+  // Carry on with the saved conversation, in the factory it was planned for only.
   if (!saved) usageError('no draft plan to continue: start one with gaffer plan "<goal>"');
+  const foreign = foreignDraft(saved);
+  if (foreign && (o.answers.length || o.now || o.yes)) failWith(foreign);
   if (o.answers.length) {
     for (const a of o.answers) saved.history.push({ role: "user", answer: a.trim() });
+    // An answer supersedes the proposal on screen: --yes must not create that one now,
+    // even when the turn that answer starts fails.
+    saved.plan = null;
     saveDraft(saved);
-    return converse(saved, o);
+    return converse(saved, false);
   }
-  if (o.now) return converse(saved, o);
+  if (o.now) return converse(saved, true);
   if (o.yes) {
     if (!saved.plan)
       usageError(

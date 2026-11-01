@@ -14,8 +14,9 @@
 #   • every subcommand answers --help with its usage and does nothing else
 #     (`onboard --help` was "no such directory", `merge --help` reached merge-ticket);
 #   • `onboard --standalone` is accepted, an unknown onboard option is refused;
-#   • `skills <bad>` exits 2; `plan --bogus`, `lore <bad>` and `lore approve` with no id
-#     exit 2, and `plan <goal> --yes --help` plans nothing;
+#   • `skills <bad>` exits 2; `plan --bogus`, bare `plan`, `plan <goal> --yes`, `lore <bad>`,
+#     `lore approve` with no id or a malformed one exit 2, and `plan <goal> --yes --help`
+#     plans nothing;
 #   • gaffer run through a symlink on PATH (absolute, relative, a chain of two, a
 #     directory with a space) finds its own runner dir (it used to die with
 #     "RUNNER_DIR: unbound variable").
@@ -126,6 +127,13 @@ gx plan --bogus
 gx plan "a goal" --yes --help
 [ "$RC" -eq 0 ] && [[ "$OUT" == "usage: gaffer plan"* ]] && [ ! -e "$WORK/data/plan-draft.json" ] \
   && ok "plan <goal> --yes --help: usage only, nothing planned" || fail "plan --yes --help: rc=$RC out=$OUT"
+gx plan
+[ "$RC" -eq 2 ] && [[ "$OUT" == *"usage: gaffer plan"* ]] && ok "plan (no goal, no draft): usage, exit 2" || fail "plan (bare): rc=$RC out=$OUT"
+gx plan "a goal" --yes
+[ "$RC" -eq 2 ] && [[ "$OUT" == *"--yes runs on its own"* ]] && [ ! -e "$WORK/data/plan-draft.json" ] \
+  && ok "plan <goal> --yes: exit 2, nothing planned (--yes only creates a proposal already shown)" || fail "plan <goal> --yes: rc=$RC out=$OUT"
+gx lore approve 'not-an-id'
+[ "$RC" -eq 2 ] && [[ "$OUT" == *"is not a lore id"* ]] && ok "lore approve <bad id>: exit 2" || fail "lore approve bad id: rc=$RC out=$OUT"
 gx lore nosuch
 [ "$RC" -eq 2 ] && ok "lore nosuch: exit 2" || fail "lore nosuch: rc=$RC"
 gx lore approve

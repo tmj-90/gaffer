@@ -323,7 +323,8 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
    **From a terminal instead:** `runner/gaffer plan "a full-stack calculator: …"` asks the
    same planner. Answer its questions with `runner/gaffer plan --answer "…"` (or skip them
    with `--now`); it prints the proposed tickets and creates them as drafts only when you
-   type y or run `runner/gaffer plan --yes`. Then ready them as in step 2.
+   type y or run `runner/gaffer plan --yes` on its own afterwards. Then ready them as in
+   step 2.
    The plan always ends with one ticket the factory adds itself: **Acceptance: <epic>**.
    It depends on every other ticket, runs last against the integrated build, and carries
    the brief as its contract plus cross-cutting criteria (persistence, concurrent writers,

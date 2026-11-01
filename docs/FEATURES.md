@@ -75,6 +75,15 @@ dashboard turn would be.
   confirm: a repo that doesn't exist yet rides on `source` for the bootstrap, the
   brief and the agreed answers ride on the epic, and the same `createEpic` makes
   draft tickets plus the Final. Nothing is readied.
+- `--yes` runs on its own. With a goal, `--answer` or `--now` it is refused before
+  any model call, so a plan is never made and created in one step you didn't see.
+  A new answer drops the proposal it supersedes, so a failed turn after it leaves
+  nothing to create, and the draft names the factory it was planned in (its data
+  dir and dispatch database): a draft copied elsewhere, or `--yes` against another
+  `DISPATCH_DB`, is refused. While the factory is paused on the usage window a
+  turn isn't started (exit 75). It exits 0 when the epic is created and 4 while
+  nothing is created yet (questions asked, a proposal waiting for `--yes`, or a no
+  or Ctrl-D at the prompt).
 - `--repo <name>` extends a registered repo (brownfield), `--file <path>` reads
   the brief from a file, `--show` prints the pending proposal, `--discard` drops
   it, and `--list` lists the epics. The conversation between runs is kept in
@@ -675,7 +684,10 @@ human-gated knowledge the factory works from:
   MCP review gate, and a human approves it in the Memory view or from the
   terminal (`gaffer lore review` lists the drafts the Memory view lists,
   `gaffer lore show <id>` prints one, `gaffer lore approve <id>` and
-  `gaffer lore reject <id> --reason "…"` decide). It is never
+  `gaffer lore reject <id> --reason "…"` decide; `gaffer lore review --json`
+  prints the page the Memory view reads). An agent shell can't run these, or the
+  memory CLI's `approve` / `reject` / `review` / `add` and the verbs that change
+  ratified lore: the safety hook denies them. It is never
   silently rewritten. Every edit snapshots the previous version
   (`memory history <id>`), so a change is diffable and reversible.
 

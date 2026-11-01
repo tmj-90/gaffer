@@ -45,7 +45,8 @@
 /** @typedef {{ re: RegExp, why: string, install?: boolean, example: string, crewFlags: boolean }} DangerousCommandRule */
 
 // COMMAND POSITION prefix shared by the command-name rules below: line start or after
-// ; & | ( ` { ! $( then/do/else, or the start of a shell's `-c "…"` body, followed by
+// ; & | ( ` { ! $( then/do/else, or the start of a shell's `-c "…"` body or of a quoted
+// `eval "…"` / `eval '…'` body (eval runs its words as a command line), followed by
 // any env assignments and transparent wrappers (env [-u X] [-i], command, nice, nohup,
 // setsid, time, timeout [-s SIG] N, exec, xargs, eval, …) and an optional path qualifier
 // (`/usr/bin/gh`, `./bin/x`). A wrapper may itself be path-qualified (`/usr/bin/env gh`)
@@ -63,7 +64,7 @@ const PATH_QUAL = String.raw`(?:[^\s;&|()<>\`"'\\]*\/)?`;
 const WRAPPERS =
   "env|command|nice|nohup|stdbuf|setsid|time|timeout|ionice|doas|builtin|exec|xargs|eval";
 const cmdPos = (wrappers = WRAPPERS) =>
-  String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|${PATH_QUAL}(?:${wrappers}))[ \t]+(?:-[A-Za-z][ \t]+(?![-0-9])(?!${PATH_QUAL}(?:${wrappers})[ \t])[^\s;&|()<>\`"'\\=]+[ \t]+|-${TOK}[ \t]+|[0-9]+(?:\.[0-9]+)?[smhd]?[ \t]+)*)*${PATH_QUAL}`;
+  String.raw`(?:^|[\n;&|(\`{!]|\$\(|\b(?:then|do|else)\b|\beval[ \t]+["']|(?:\b(?:ba|da|k|z)?sh|\bsu|\bscript|\$\{?SHELL\}?)(?:[ \t]+(?:-[-A-Za-z]+|pipefail)){0,4}[ \t]+-[A-Za-z]*c[ \t]+(?:--[ \t]+)?["'])[ \t]*(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\$\([^()]*\)|[^\s;&|()<>\`"'\\])*|${PATH_QUAL}(?:${wrappers}))[ \t]+(?:-[A-Za-z][ \t]+(?![-0-9])(?!${PATH_QUAL}(?:${wrappers})[ \t])[^\s;&|()<>\`"'\\=]+[ \t]+|-${TOK}[ \t]+|[0-9]+(?:\.[0-9]+)?[smhd]?[ \t]+)*)*${PATH_QUAL}`;
 const CMD_POS = cmdPos();
 // End of a command word: whitespace, a separator, a closing quote/paren, or EOL.
 const WORD_END = String.raw`(?=$|[\s;&|)\`"'<>])`;
@@ -443,6 +444,21 @@ export const DANGEROUS_COMMANDS = [
     ),
     why: "a factory runner entry point (merge-ticket / tester-run / product-owner-run / plan-run / … .mjs) — lands work or spawns agents outside the gates",
     example: "node runner/bin/merge-ticket.mjs --ticket 3",
+    crewFlags: false,
+  },
+  {
+    // The memory CLI's HUMAN verbs: approving, rejecting or triaging (`review`) a lore
+    // draft is the human trust gate on what delivery agents are told; `add` writes ACTIVE
+    // lore past it; supersede / deprecate / delete / update change ratified lore. The
+    // dashboard's Memory view and `gaffer lore` are the person's way in; an agent proposes
+    // lore through the memory MCP, as a draft. Command position only (also through npx /
+    // pnpm exec / yarn, and `node …/memory.js`), so `git add memory.ts` or a commit
+    // message that says "memory approve" are unaffected; `memory search|show|list` stay.
+    re: new RegExp(
+      String.raw`(?:\bnode\b[^\n;&|]*[\s/]memory(?:\.js)?|${CMD_POS}(?:(?:npx|bunx|pnpx)(?:[ \t]+-${TOK})*[ \t]+|(?:pnpm|npm|yarn)(?:[ \t]+-${TOK})*[ \t]+(?:(?:exec|dlx|x)[ \t]+(?:-${TOK}[ \t]+)*)?)?memory)[ \t]+["']?(?:approve|reject|review|add|supersede|deprecate|delete|update)["']?${WORD_END}`,
+    ),
+    why: "the memory CLI's human verbs (approve / reject / review / add / supersede / deprecate / delete / update) — ratifying lore is the human's job; an agent proposes lore as a draft through the memory MCP",
+    example: "node packages/memory/dist/bin/memory.js approve 7vk3qm9b",
     crewFlags: false,
   },
   {

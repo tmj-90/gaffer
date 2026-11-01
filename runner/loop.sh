@@ -76,6 +76,11 @@ gaffer_loop_end_ping() {
   [ "$decisions" -eq "$decisions" ] 2>/dev/null || decisions=0
   [ "$merge" -eq "$merge" ] 2>/dev/null || merge=0
 
+  # A DRY RUN previews; it never wakes the operator (exploratory finding cli-runner/F-07).
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "gaffer factory: dry run — no closing ping."
+    return 0
+  fi
   if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ] && [ "$merge" -eq 0 ] && [ "$unaccepted" -eq 0 ]; then
     echo "gaffer factory: all clear — nothing awaiting a human; no closing ping."
     return 0
@@ -112,6 +117,14 @@ if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
   echo "gaffer factory: refusing a live run — $(gaffer_spend_cap_hint)." >&2
   exit 3
 fi
+# CLAUDE AUTH (lib/claude-auth.sh gaffer_claude_auth_gate): a live run with no visible
+# claude credential refuses before it claims anything, so no attempt is spent on a
+# logged-out CLI (exploratory findings fresh-user/F-04, F-06). One free check per run,
+# cached in the environment for the run's ticks and workers. Exit 3 like the cap.
+if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_gate; then
+  echo "gaffer factory: refusing a live run — $(gaffer_claude_auth_hint)." >&2
+  exit 3
+fi
 
 # R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. If
 # this rm fails, a prior run's markers could wrongly suppress work this run — so
@@ -121,6 +134,13 @@ rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_D
       "$GAFFER_DATA/.backpressure-repos" "$GAFFER_DATA/.ci-gate-needs-pr-warned" \
       "$GAFFER_DATA/.autonomy-policy-inert-warned" "$GAFFER_DATA/.merge-config-half-warned" "$GAFFER_DATA/.setup-error" \
   || echo "gaffer factory: WARNING — could not clear stale run markers in $GAFFER_DATA; this run may wrongly skip work." >&2
+# DRY RUN: the tickets this run has previewed (tick.sh skips them), so a preview pass
+# shows each ready ticket ONCE and then ends, instead of re-previewing the first ready
+# ticket MAX_TICKS times (exploratory findings cli-runner/F-07, fresh-user/F-15).
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  export GAFFER_DRY_PREVIEWED_FILE="$GAFFER_DATA/.previewed-tickets"
+  : > "$GAFFER_DRY_PREVIEWED_FILE" 2>/dev/null || true
+fi
 
 echo "gaffer factory: starting (DRY_RUN=$DRY_RUN, max_ticks=$MAX_TICKS, stop_after_empty=$EMPTY_POLL_LIMIT, max_ticks_per_day=$MAX_TICKS_PER_DAY)"
 # R-1 (expire-claims): reap stale claims from a prior interrupted run. Non-fatal
@@ -241,6 +261,18 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
 
   _pool_setup_error=0
   [ -s "$GAFFER_DATA/.setup-error" ] && { _pool_setup_error=1; gaffer_setup_error_line; }
+  if [ -f "$WORKERS_DIR/auth-error" ]; then
+    _pool_setup_error=1
+    echo "gaffer factory: $(gaffer_claude_auth_hint) — the pool stopped (the ticket went back to ready; no attempt counted)."
+  fi
+  # USAGE WINDOW: a worker that sees a pause stops admitting and exits (worker.sh), so
+  # the pool ends like the serial pass: "paused until <time>", exit 75, no sleep.
+  _pool_usage_paused=0
+  if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
+     && _up_line="$(gaffer_usage_pause_active)"; then
+    _pool_usage_paused=1
+    echo "gaffer factory: $_up_line — the pool stopped admitting work (exit 75). \`gaffer run --daemon\` waits out a pause; lift it early: node $HERE/lib/usage-pause.mjs clear"
+  fi
   echo "gaffer factory: done after $ticks tick(s)."
   if [ -f "$HERE/run-summary.sh" ]; then
     echo
@@ -248,6 +280,7 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   fi
   gaffer_loop_end_ping || true
   [ "$_pool_setup_error" = 1 ] && exit 3
+  [ "$_pool_usage_paused" = 1 ] && exit 75
   exit 0
 fi
 
@@ -265,6 +298,8 @@ fi
 ticks=0
 empties=0
 _setup_error=0
+_usage_paused=0
+_auth_error=0
 # A stop signal ends the run after the current tick (the tick runs in the foreground,
 # so bash runs this trap once it returns; Ctrl-C also reaches the tick's own wrapper).
 # Without it bash carried on to the next tick whenever the reaped tick exited normally.
@@ -273,20 +308,16 @@ trap '_loop_stop=1' INT TERM HUP
 _loop_stopping() { [ "$_loop_stop" = 1 ]; }
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # USAGE WINDOW (lib/usage-pause.sh): a model call was refused by the plan's usage
-  # window / a rate limit and $GAFFER_DATA/usage-pause.json says when it resets. Sleep
-  # until then instead of spinning ticks into the refusal; no tick is admitted, so the
-  # day cap, MAX_TICKS and the empty-poll count are untouched while it waits. A stop
-  # signal ends the wait at once; a human who clears the pause early is honoured
-  # within GAFFER_USAGE_PAUSE_POLL_SECS.
+  # window / a rate limit and $GAFFER_DATA/usage-pause.json says when it resets. No tick
+  # is admitted while it holds. This pass ENDS here with exit 75 (EX_TEMPFAIL: try again
+  # after <time>) instead of sleeping: a one-shot `gaffer run` (or a scheduled run)
+  # used to sit for hours (exploratory finding fresh-user/F-13). Waiting out the window
+  # is the daemon's job (lib/daemon.sh reads the same pause before its next pass).
   if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
      && _up_line="$(gaffer_usage_pause_active)"; then
-    echo "gaffer factory: $_up_line — sleeping until then, no new work admitted (lift it early: node $HERE/lib/usage-pause.mjs clear)"
-    if ! gaffer_usage_pause_wait _loop_stopping; then
-      echo "gaffer factory: stop signal — not starting another tick."
-      break
-    fi
-    echo "gaffer factory: usage pause over — admitting work again."
-    continue
+    echo "gaffer factory: $_up_line — stopping this pass, no new work admitted (exit 75). \`gaffer run --daemon\` waits out a pause; lift it early: node $HERE/lib/usage-pause.mjs clear"
+    _usage_paused=1
+    break
   fi
   # LIVE CAPS: the day caps are re-read from the CURRENT config before every
   # admission, so a dashboard edit (lower MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD)
@@ -355,17 +386,31 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
     gaffer_refund_day_tick "$_day_rsv_on" || true
   fi
-  # A PARKED delivery ends its tick with TICK_RESULT=error, which printed "tick → error"
-  # for a clean, intended outcome. Name it from the tick's own factory.log lines, and say
-  # which park it was: the gates park (rework used up → blocked, branch kept) is held for
-  # a human; an EMPTY delivery (no change produced) goes back to refining. The result code
-  # (and what the day cap and the daemon make of it) is unchanged.
+  # A PARKED delivery used to end its tick with TICK_RESULT=error, which printed
+  # "tick → error" for a clean, intended outcome. tick.sh now reports TICK_RESULT=parked
+  # for a release to blocked / refining (exploratory finding cli-runner/F-20); an error
+  # with a "delivery PARKED" line reads the same. Name the ticket from the tick's own
+  # factory.log lines, and say which park it was: the gates park (rework used up →
+  # blocked, branch kept) is held for a human; an EMPTY delivery (no change produced)
+  # goes back to refining. The day cap and the daemon treat a park like an error.
   _shown="${res:-unknown}"
-  if [ "$res" = error ]; then
-    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE 'delivery PARKED for #[0-9]+( — empty)?' | tail -1)"
+  if [ "$res" = parked ] || [ "$res" = error ]; then
+    _since_mark="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null)"
+    _parked="$(printf '%s\n' "$_since_mark" | grep -oE 'delivery PARKED for #[0-9]+( — empty)?' | tail -1)"
     case "$_parked" in
       *" — empty") _pn="${_parked% — empty}"; _shown="parked ${_pn##* } — empty delivery, back to refining (see gaffer status)" ;;
       ?*) _shown="parked ${_parked##* } — held for a human (see gaffer status)" ;;
+      *)
+        if [ "$res" = parked ]; then
+          # A park without a "delivery PARKED" line (a refused bootstrap, a held gate):
+          # name it from the release line.
+          _rel="$(printf '%s\n' "$_since_mark" | grep -oE '(released claim on|transitioned) #[0-9]+ → (blocked|refining)' | tail -1)"
+          _rn="$(printf '%s' "$_rel" | grep -oE '#[0-9]+')"
+          case "$_rel" in
+            *refining) _shown="parked${_rn:+ $_rn} — back to refining (see gaffer status)" ;;
+            *) _shown="parked${_rn:+ $_rn} — held for a human (see gaffer status)" ;;
+          esac
+        fi ;;
     esac
   fi
   echo "tick $ticks/$MAX_TICKS → $_shown"
@@ -373,6 +418,13 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if [ "$res" = "setup_error" ]; then
     _setup_error=1
     gaffer_setup_error_line
+    break
+  fi
+  # CLAUDE AUTH: the delivery call failed to authenticate; the ticket went back to
+  # ready without an attempt counted. Every next tick would fail the same way.
+  if [ "$res" = "auth_error" ]; then
+    _auth_error=1
+    echo "gaffer factory: $(gaffer_claude_auth_hint) — stopping this run (the ticket went back to ready; no attempt counted)."
     break
   fi
   if [ "$_loop_stop" = 1 ]; then
@@ -383,6 +435,12 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # An idle maintenance_ran (a paid planning step that filed nothing) counts against
   # the day cap above but is an EMPTY poll here, like no_work: a failing planner must
   # not keep the run alive and spending.
+  # A DRY RUN ends at its first empty poll: every ready ticket has been previewed and
+  # a preview of the idle lanes changes nothing on a second look.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ "$res" = "no_work" ]; then
+    echo "gaffer factory: dry run — nothing left to preview; stopping."
+    break
+  fi
   if [ "$res" = "no_work" ] || [ "$res" = "maintenance_ran" ]; then
     empties=$((empties + 1))
     if [ "$empties" -ge "$EMPTY_POLL_LIMIT" ]; then
@@ -393,7 +451,8 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     empties=0
   fi
 
-  [ "$ticks" -lt "$MAX_TICKS" ] && { sleep "$TICK_SLEEP" & wait "$!" 2>/dev/null; }
+  # No pacing between previews: a dry tick spends nothing and waits on nothing.
+  [ "$ticks" -lt "$MAX_TICKS" ] && [ "${DRY_RUN:-0}" != "1" ] && { sleep "$TICK_SLEEP" & wait "$!" 2>/dev/null; }
   [ "$_loop_stop" = 1 ] && { echo "gaffer factory: stop signal — not starting another tick."; break; }
 done
 trap - INT TERM HUP
@@ -408,4 +467,6 @@ if [ -f "$HERE/run-summary.sh" ]; then
 fi
 gaffer_loop_end_ping || true
 [ "$_setup_error" = 1 ] && exit 3
+[ "$_auth_error" = 1 ] && exit 3
+[ "$_usage_paused" = 1 ] && exit 75
 exit 0

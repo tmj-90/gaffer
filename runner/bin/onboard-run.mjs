@@ -66,6 +66,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyzeAndWrite } from "../lib/onboard-analyze.mjs";
+import { paidLaunchAdmission } from "../lib/budget-admission.mjs";
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -401,6 +402,11 @@ export function buildOnboardSummary({ stdout, exit, analysis, logFile, refusal =
   lines.push(`✓ registered: ${name}   (${bits.join(" · ")})`);
   if (!analysis || !analysis.ran) {
     lines.push("! model analysis skipped (memory CLI not configured) — mechanical digest only");
+  } else if (analysis.modelSkipped) {
+    lines.push(
+      `! model analysis skipped (${analysis.modelSkipped}) — mechanical digest + cards only; ` +
+        "set a dollar cap and re-run the onboard for the model analysis",
+    );
   } else if (analysis.usedModel) {
     const st = analysis.stats ?? {};
     const cs = analysis.cardStats;
@@ -558,7 +564,19 @@ function main() {
         name: facts.name ?? facts.repoId ?? opts.repo,
         ...facts,
       };
-      analysis = analyzeAndWrite(repoPath, scan, { log: (m) => log(`analysis: ${m}`) });
+      // DOLLAR CAP (exploratory finding fresh-user/F-09): the analysis is a paid launch,
+      // so it needs a cap like a live run. Asked ONCE here: refused, the whole model
+      // half is skipped (no call per file either) and the onboard still writes the
+      // mechanical digest and cards, saying why.
+      const admission = paidLaunchAdmission({
+        kind: "onboarding-analysis",
+        env: { ...process.env, GAFFER_DATA },
+      });
+      analysis = analyzeAndWrite(repoPath, scan, {
+        log: (m) => log(`analysis: ${m}`),
+        ...(admission.ok ? {} : { skipModel: admission.reason }),
+      });
+      if (analysis?.modelSkipped) log(`WARNING: model analysis skipped: ${analysis.modelSkipped}`);
       // The onboard still succeeds (mechanical digest + cards), but say loudly WHY the
       // model half is missing — it used to read as a silent, degraded success.
       if (analysis?.modelError) {

@@ -117,13 +117,15 @@
 //              — `refused` carries the approval-gate refusal a live run would exit 4 on.
 //   error:     { "phase":"error", error }   (exit 1)
 //
-// EXIT: 0 on merged / conflict_resolved_pending_reapproval / dry-run; 1 on any hard
+// EXIT: 0 on merged / dry-run; 1 on any hard
 //   failure (missing repo/branch/safety hook, spawn error, timeout, a re-approval that
 //   could not be signalled, a REFUSED merge: the
 //   live checkout has uncommitted changes, or the default branch could not be checked
 //   out — neither is a conflict, so the resolver is never spawned for them); 4 when a
 //   gate holds the merge: the ticket is not approved (not ready_for_merge), or the
-//   landing check (tester binding) refuses — nothing is merged either way.
+//   landing check (tester binding) refuses — nothing is merged either way — and on
+//   conflict_resolved_pending_reapproval (nothing landed: the resolution waits for a
+//   re-review; stderr prints the `gaffer approve N --commit <repo>=<sha>` to run).
 // =====================================================================
 
 import { spawnSync, execFileSync } from "node:child_process";
@@ -3617,6 +3619,14 @@ function main() {
           `${regate.evidence}\n\nconflict resolution re-gate: the DoD gates were re-run on a clean checkout of the resolved head ${(regate.commit || "").slice(0, 12)} (no conflict markers)`,
         )
       : false;
+  // NOT LANDED (exploratory finding cli-runner/F-10): the resolution sits on the branch
+  // waiting for a re-review, so `gaffer merge` must not exit 0 as if it had merged.
+  // Exit 4 (held, nothing landed) with the exact re-approval command.
+  process.stderr.write(
+    `not merged: conflict resolved on ${branch} and sent back for re-review; ` +
+      `re-approve with \`gaffer approve ${resolved.number} --commit ${repo.name}=${String(regate.commit || resolvedHead || "<resolved-head>")}\`, ` +
+      "then merge again\n",
+  );
   emit(
     {
       phase: "conflict_resolved_pending_reapproval",
@@ -3627,7 +3637,7 @@ function main() {
       reapproval,
       regate: { markers: [], dod: regate.dod, evidence_recorded: regateRecorded },
     },
-    0,
+    4,
   );
 }
 

@@ -193,6 +193,12 @@ export function requestOnboardingClarifications(
  * non-goals, its key decisions), not just the code-adjacent ones, so the durable
  * capture is aimed at intent. The answers land as DRAFT lore via
  * {@link buildClarificationSuggestions} (human-gated). Nothing here auto-promotes.
+ *
+ * IDEMPOTENT: a re-onboard of a repo whose intake decision is still OPEN reuses that
+ * decision (the same single review item) instead of filing another; a duplicate per
+ * onboard used to pile up on the Team Sheet (exploratory findings cli-runner/F-14,
+ * fresh-user/F-05, ui-workflows/F3). Once the intake was answered, a re-onboard asks
+ * again with a fresh one.
  */
 export function onboardClarifications(
   scan: OnboardingScanResult,
@@ -210,12 +216,18 @@ export function onboardClarifications(
     `(answers are drafted for review, never auto-applied):\n\n` +
     questions.map((q, i) => `${i + 1}. [${q.topic}] ${q.question}`).join("\n\n");
 
-  const decision = deps.dispatch.requestDecision({
-    title: `Onboarding intake for '${ctx.name}' (${questions.length} questions)`,
-    question: bundledQuestion,
-    severity: "human_required",
-    ...(opts.ticketId ? { ticketId: opts.ticketId } : {}),
-  });
+  const titlePrefix = `Onboarding intake for '${ctx.name}' (`;
+  const open = (deps.dispatch.listOpenDecisions?.() ?? []).find((d) =>
+    d.title.startsWith(titlePrefix),
+  );
+  const decision =
+    open ??
+    deps.dispatch.requestDecision({
+      title: `${titlePrefix}${questions.length} questions)`,
+      question: bundledQuestion,
+      severity: "human_required",
+      ...(opts.ticketId ? { ticketId: opts.ticketId } : {}),
+    });
 
   // Every authored question maps to the ONE bundled decision.
   return questions.map((q) => ({ ...q, decisionId: decision.decisionId }));

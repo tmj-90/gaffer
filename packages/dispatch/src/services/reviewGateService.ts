@@ -124,6 +124,32 @@ export interface UnavailableWriteRepo {
   repoId: string;
   repo: string;
   why: string;
+  /** Which read failed (drives the remedy the refusal names); absent → "unknown". */
+  kind?: "no_checkout" | "unreadable_checkout" | "no_branch" | "branch_missing" | "unknown";
+}
+
+/**
+ * What the human can do about an unavailable write repo (the refusal and the Review
+ * button say it): attach the checkout / restore the branch, or — when this ticket should
+ * not change that repository — take its write access away (a read-only repo never blocks).
+ */
+export function unavailableRepoRemedy(
+  m: UnavailableWriteRepo,
+  ticketNumber: number | null,
+): string {
+  const n = ticketNumber ?? "<ticket>";
+  const readOnly = `or, if this ticket should not change ${m.repo}, make it read-only on the ticket (\`runner/gaffer wg ticket repo-access set ${n} ${m.repo} --access read\`)`;
+  switch (m.kind) {
+    case "no_checkout":
+      return `attach ${m.repo}'s checkout on this machine (register the repository with its local path, \`runner/gaffer wg repo add -n ${m.repo} --path <dir>\`), ${readOnly}`;
+    case "unreadable_checkout":
+      return `restore ${m.repo}'s checkout at its registered path (or register the path it lives at now), ${readOnly}`;
+    case "no_branch":
+    case "branch_missing":
+      return `restore ${m.repo}'s delivery branch (or deliver to it again), ${readOnly}`;
+    default:
+      return `make ${m.repo}'s delivery head readable again, ${readOnly}`;
+  }
 }
 
 /**
@@ -583,12 +609,18 @@ export class ReviewGateService {
       "STATE_CONFLICT",
       `Approve held: ${names.join(", ")} ${names.length === 1 ? "is" : "are"} unavailable — ` +
         missing.map((m) => `${m.repo}: ${m.why}`).join("; ") +
-        ". An approval covers every repository this ticket writes to, and nothing was approved. " +
-        "Restore the checkout or the delivery branch and review again, or remove the repository from the ticket.",
+        ". An approval covers every repository this ticket writes to, and nothing was approved. To approve: " +
+        missing.map((m) => unavailableRepoRemedy(m, ticket.number)).join("; ") +
+        "; then review again.",
       {
         reason: "repo_unavailable",
         ticket_number: ticket.number,
-        repos: missing.map((m) => ({ repo: m.repo, repo_id: m.repoId, why: m.why })),
+        repos: missing.map((m) => ({
+          repo: m.repo,
+          repo_id: m.repoId,
+          why: m.why,
+          remedy: unavailableRepoRemedy(m, ticket.number),
+        })),
       },
     );
   }

@@ -73,7 +73,7 @@ export interface ApproveOutcomeFacts {
    * EVERY WRITE REPO: the write repos whose delivery head cannot be read now — the same
    * list approveReview refuses on (repo_unavailable). Empty or absent when all resolve.
    */
-  unavailableRepos?: Array<{ repo: string; why: string }>;
+  unavailableRepos?: Array<{ repo: string; why: string; fix?: string }>;
   /** approveReview routes this ticket to the independent tester (in_testing). */
   toTester: boolean;
   /** …because it is an epic's acceptance ticket (the toggle does not apply). */
@@ -263,7 +263,10 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
       sentence:
         `${missing.map((m) => `${m.repo}: ${m.why}`).join("; ")}. An approval covers every repository this ticket writes to ` +
         `(one approved commit each, and the ticket is done only when every one has landed), so the server refuses it until ` +
-        `${names.length === 1 ? "that repository's" : "each repository's"} delivery head can be read. Restore the checkout or the delivery branch and review again, or remove the repository from the ticket.`,
+        `${names.length === 1 ? "that repository's" : "each repository's"} delivery head can be read. ` +
+        (missing.every((m) => m.fix)
+          ? `To approve: ${missing.map((m) => m.fix).join("; ")}; then review again.`
+          : "Restore the checkout or the delivery branch and review again, or make the repository read-only on the ticket."),
       via: null,
       lands_repo: null,
       also_lands_repos: [],

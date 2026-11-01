@@ -365,6 +365,45 @@ describe("an approval covers every write repo (external review #7)", () => {
     }
   });
 
+  it("B has no checkout on this machine: refused, and the refusal says what a person can do", () => {
+    const a = makeRepo("a");
+    const b = makeRepo("b");
+    const d = Dispatch.open(":memory:");
+    const t = twoRepoInReview(d, a, b);
+    const shown = d.ticketDiff(t.id).repos.map((r) => ({ repo: r.repoId!, sha: r.headSha! }));
+    d.db.prepare("UPDATE repositories SET local_path = NULL WHERE name = 'repoB'").run();
+    const e = refusal(() => d.approveReview(t.id, human, { commits: shown, requireCommits: true }));
+    expect(e.details.reason).toBe("repo_unavailable");
+    expect(e.message).toContain("repoB: it has no checkout on this machine");
+    // Actionable: attach the checkout, or take the repo's write access away.
+    expect(e.message).toContain("attach repoB's checkout on this machine");
+    expect(e.message).toContain(`wg ticket repo-access set ${t.number} repoB --access read`);
+    expect(JSON.stringify(e.details.repos)).toContain("remedy");
+    process.env.AUTO_MERGE = "1";
+    try {
+      const o = d.approveOutcome(t.id, { mergeCommand: true });
+      expect(o.kind).toBe("held_repo_unavailable");
+      expect(o.sentence).toContain("To approve: attach repoB's checkout on this machine");
+      expect(o.sentence).toContain("--access read");
+    } finally {
+      delete process.env.AUTO_MERGE;
+    }
+    // The person makes repoB read-only on this ticket: a read-only repo never blocks.
+    const rb = d.view(t.id).repositories.find((r) => r.name === "repoB")!;
+    d.setTicketRepoAccess(
+      { ticket_id: t.id, repo_id: rb.id, access: "read", relation: "confirmed" },
+      human,
+    );
+    const onlyA = d.ticketDiff(t.id).repos.filter((r) => r.headSha);
+    expect(
+      d.approveReview(t.id, human, {
+        commits: onlyA.map((r) => ({ repo: r.repoId!, sha: r.headSha! })),
+        requireCommits: true,
+      }).ticket.status,
+    ).toBe("ready_for_merge");
+    expect(d.landingStatus(t.id).repos.map((r) => r.repo)).toEqual(["repoA"]);
+  });
+
   it("an approval that pinned only A (the old rule) never makes the ticket done", () => {
     const a = makeRepo("a");
     const b = makeRepo("b");

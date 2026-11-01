@@ -157,6 +157,7 @@ import {
   type ReviewedHead,
   type UnavailableWriteRepo,
   ReviewGateService,
+  unavailableRepoRemedy,
 } from "./services/reviewGateService.js";
 import {
   type ObservedRisk,
@@ -836,13 +837,14 @@ export class Dispatch {
     const unavailable: UnavailableWriteRepo[] = [];
     for (const repo of this.repos.accessLinksForTicket(ticket.id)) {
       if (!isActiveTicketRepoRelation(repo.relation) || repo.access !== "write") continue;
-      const miss = (why: string) => unavailable.push({ repoId: repo.id, repo: repo.name, why });
+      const miss = (kind: NonNullable<UnavailableWriteRepo["kind"]>, why: string) =>
+        unavailable.push({ repoId: repo.id, repo: repo.name, why, kind });
       if (!repo.local_path) {
-        miss("it has no checkout on this machine");
+        miss("no_checkout", "it has no checkout on this machine");
         continue;
       }
       if (!existsSync(repo.local_path)) {
-        miss(`its checkout ${repo.local_path} cannot be read`);
+        miss("unreadable_checkout", `its checkout ${repo.local_path} cannot be read`);
         continue;
       }
       const branch =
@@ -850,12 +852,12 @@ export class Dispatch {
         this.repoDeliveries.find(ticket.id, repo.id)?.branch_name ??
         ticket.branch_name;
       if (!branch || branch.trim() === "") {
-        miss("it has no delivery branch");
+        miss("no_branch", "it has no delivery branch");
         continue;
       }
       const sha = resolveBranchHead(runGit, repo.local_path, branch);
       if (sha) heads.push({ repoId: repo.id, repo: repo.name, branch, sha });
-      else miss(`its delivery branch ${branch} cannot be resolved`);
+      else miss("branch_missing", `its delivery branch ${branch} cannot be resolved`);
     }
     return { heads, unavailable };
   }
@@ -1719,9 +1721,11 @@ export class Dispatch {
       unavailableRepos:
         opts.ci === false
           ? []
-          : this.reviewGateSvc
-              .unavailableWriteRepos(ticket)
-              .map((m) => ({ repo: m.repo, why: m.why })),
+          : this.reviewGateSvc.unavailableWriteRepos(ticket).map((m) => ({
+              repo: m.repo,
+              why: m.why,
+              fix: unavailableRepoRemedy(m, ticket.number),
+            })),
       toTester: this.reviewGateSvc.approveRoutesToTesting(ticket),
       acceptance: ticket.acceptance === 1,
       autoMerge: envFlagOn(env[AUTO_MERGE_ENV]),

@@ -1,6 +1,7 @@
 import type { LoreKind, LoreSuggestionInput } from "../memory/client.js";
 import type { DispatchClient } from "../dispatch/client.js";
 import type { OnboardingScanResult } from "./onboardScan.js";
+import { redactRemoteUrl } from "../safety/repoBoundary.js";
 
 /**
  * Agent-authored onboarding clarifying questions (Ticket #9, extended for
@@ -83,7 +84,7 @@ export function authorOnboardingQuestions(
   const stack = scan.stack ?? "an unknown stack";
   const infra =
     scan.riskSignals.length > 0 ? scan.riskSignals.join(", ") : "no infra signals detected";
-  const origin = scan.remoteUrl ?? "no remote (local-only)";
+  const origin = redactRemoteUrl(scan.remoteUrl) ?? "no remote (local-only)";
 
   return [
     // ── PRODUCT INTENT (the "why") — the context that evaporates if never asked.

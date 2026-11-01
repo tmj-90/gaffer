@@ -225,8 +225,9 @@ export function readTesterEvidence(dbPath, ticketNumber, repoId = null) {
 
 /**
  * REQUIRED CI: the CI results the runner recorded for this ticket (`ticket.ci_result`
- * events, newest first) → { required, state } for `commit`. No result ever recorded ⇒ CI
- * is not required for this ticket. Unreadable ⇒ null (the caller holds).
+ * events, newest first) → { required, state } for `commit`. No result ever recorded and no
+ * `ticket.ci_required` mark ⇒ CI is not required for this ticket. Unreadable ⇒ null (the
+ * caller holds).
  */
 export function readCiState(dbPath, ticketNumber, commit) {
   let db;
@@ -248,7 +249,22 @@ export function readCiState(dbPath, ticketNumber, commit) {
     } catch {
       return { required: false, state: null }; // no event log (minimal fixture)
     }
-    if (!rows.length) return { required: false, state: null };
+    if (!rows.length) {
+      // The requirement recorded before review (external review #9): CI is required
+      // although nothing has reported yet, so nothing lands on it.
+      let mark = null;
+      try {
+        mark = db
+          .prepare(
+            "SELECT 1 AS x FROM work_events WHERE entity_type = 'ticket' AND entity_id = ? " +
+              "AND event_type = 'ticket.ci_required' LIMIT 1",
+          )
+          .get(t.id);
+      } catch {
+        mark = null;
+      }
+      return mark ? { required: true, state: null } : { required: false, state: null };
+    }
     const want = String(commit ?? "").toLowerCase();
     const hit = rows.find((r) => {
       const c = String(r.c ?? "").toLowerCase();

@@ -24,8 +24,10 @@
 #
 # Usage:
 #   gaffer_ci_gate <ticket_num> <repo_dir> <branch> <pr_url_or_empty>
-#     → 0  CI passed (or gate is off / timed out — proceed to review).
-#     → 2  CI failed — caller should auto-reject back to rework.
+#     → 0  CI passed (or gate is off; or GAFFER_CI_TIMEOUT_POLICY=proceed and CI timed
+#          out or cannot be read, with approval still refused until a PASS is recorded).
+#     → 2  CI failed, or (strict) CI timed out / cannot be read (no gh, no GitHub remote)
+#          — caller should auto-reject back to rework.
 #
 # KNOBS:
 #   GAFFER_REQUIRE_CI=0              off by default; set to 1 to opt in. REQUIRES
@@ -103,6 +105,22 @@ gaffer_ci_record() {
     || log "H3: WARNING — could not record CI $state for #$num ($commit) — approval stays refused until a result is recorded"
 }
 
+# REQUIRED CI, recorded before any result (external review #9): marks the ticket in
+# dispatch as needing a CI PASS for its candidate commit. Called by tick.sh before the
+# delivery is submitted for review (when CI gates it: GAFFER_REQUIRE_CI with PR creation
+# on) and by the gate itself when CI cannot be read. Idempotent server-side; a failed
+# record is logged (the gate's own pending/fail records still require CI).
+gaffer_ci_require_mark() {
+  local num="$1" why="${2:-GAFFER_REQUIRE_CI is on: a CI pass for the reviewed commit is required}" force="${3:-0}"
+  gaffer_ci_gate_enabled || return 0
+  if [ "$force" != 1 ] && declare -F gaffer_pr_create_enabled >/dev/null 2>&1 && ! gaffer_pr_create_enabled; then
+    return 0   # the needs-PR skip (gaffer_ci_gate_warn_needs_pr): no CI gates this run
+  fi
+  wg ticket ci-required "$num" --detail "$why" --as system >/dev/null 2>&1 \
+    || log "H3: WARNING — could not record that #$num requires CI (dispatch); the gate's own results still bind"
+  return 0
+}
+
 # Parse the checks rows into a verdict.
 # Returns on stdout one of: "pass", "fail:<name>|<url>", "pending", "unknown".
 # Rows are `<name> <TAB> <state> <TAB> <bucket> <TAB> <url>` (gaffer_ci_checks_rows);
@@ -137,14 +155,30 @@ gaffer_ci_gate() {
     return 0
   fi
 
+  # REQUIRED MEANS REQUIRED (external review #9, finding 4): a gate that cannot read CI
+  # at all (no gh, no GitHub remote) used to return success, and a human approval then
+  # moved the ticket to ready_for_merge with no CI pass. The requirement is recorded
+  # first (dispatch then refuses approval until a PASS for the candidate is recorded),
+  # and the strict policy fails the delivery back to rework like any unreadable signal.
+  local _no_ci=""
   if ! command -v "$GAFFER_GH_BIN" >/dev/null 2>&1; then
-    log "H3: '$GAFFER_GH_BIN' not found — CI gate skipped for #$num (no-op)"
-    return 0
+    _no_ci="'$GAFFER_GH_BIN' not found, so CI cannot be read"
+  elif ! gaffer_has_github_remote "$repo_dir"; then
+    _no_ci="the repository has no GitHub remote, so CI cannot be read"
   fi
-
-  if ! gaffer_has_github_remote "$repo_dir"; then
-    log "H3: no GitHub remote — CI gate skipped for #$num (no-op)"
-    return 0
+  if [ -n "$_no_ci" ]; then
+    gaffer_ci_require_mark "$num" "$_no_ci" 1
+    log "H3: CI REQUIRED but UNAVAILABLE for #$num — $_no_ci; approval stays refused until a CI pass is recorded for the candidate"
+    if gaffer_ci_timeout_proceed; then
+      wg attach-evidence "$num" --type manual_note \
+        --summary "H3: $_no_ci — GAFFER_CI_TIMEOUT_POLICY=proceed; proceeding to review, approval held until a CI pass is recorded (CI required: not reported)" \
+        >/dev/null 2>&1 || true
+      return 0
+    fi
+    wg attach-evidence "$num" --type test_output \
+      --summary "H3 CI BLOCKED (strict): $_no_ci — install/authenticate gh or turn GAFFER_REQUIRE_CI off" \
+      >/dev/null 2>&1 || true
+    return 2
   fi
 
   local max_attempts="${GAFFER_CI_POLL_ATTEMPTS:-20}"

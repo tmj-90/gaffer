@@ -101,7 +101,13 @@ import {
 import { paidLaunchAdmission } from "../lib/budget-admission.mjs";
 import { makeAgentHome } from "../lib/agent-home.mjs";
 import { recordSkillUsage } from "./record-skill-usage.mjs";
-import { roleTurnCap, withCallBudget } from "../lib/worker.mjs";
+import {
+  DEFAULT_WORKER_PROVIDER,
+  Worker,
+  roleTurnCap,
+  withCallBudget,
+  workerProvider,
+} from "../lib/worker.mjs";
 import { extractLastJsonBlock as extractJson, quarantine } from "../lib/agent-io.mjs";
 
 // The agent turn spawns from a throwaway agent home (lib/agent-home.mjs), so this
@@ -502,14 +508,30 @@ function runClaudeTurn(prompt, opts) {
   let res;
   const t0 = Date.now();
   try {
-    res = spawnSync(claudeBin, args, {
+    const spawnOpts = {
       cwd: home.dir,
       encoding: "utf8",
       timeout: opts.timeoutMs,
       maxBuffer: 16 * 1024 * 1024,
       // never hand the agent DISPATCH_API_TOKEN (or any *_TOKEN/*_SECRET/*_KEY).
       env: { ...agentChildEnv(), GAFFER_WRITE_ROOTS: home.dir },
-    });
+    };
+    // Another worker provider goes through the ONE worker seam, so the spec author
+    // honours GAFFER_WORKER_PROVIDER like every other launcher: `command` runs the
+    // operator's program under its contract and containment rule, an unknown value
+    // refuses (status 70, no spawn). claude-code keeps this direct spawn unchanged.
+    res =
+      workerProvider() === DEFAULT_WORKER_PROVIDER
+        ? spawnSync(claudeBin, args, spawnOpts)
+        : Worker.deliver({
+            kind: "spec-author",
+            bin: claudeBin,
+            argv: args,
+            cwd: spawnOpts.cwd,
+            timeoutMs: spawnOpts.timeout,
+            maxBuffer: spawnOpts.maxBuffer,
+            env: spawnOpts.env,
+          });
   } finally {
     home.remove();
   }

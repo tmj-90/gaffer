@@ -18,6 +18,7 @@
 # reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
 # rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
 # dashboard-lifecycle, gaffer-colour, demo-isolation: ESTIMATES (Linux, -j 2: 37s / 13s / 48s).
+# sandbox-docker-delivery-seam: ESTIMATE (Linux, alone: 35s; one real tick like branch-retention).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 # landing-revocation, secondary-pr-landing, cleanup-ownership, replay-recovery: ESTIMATES
@@ -33,8 +34,10 @@
 # Refreshed 2026-11-01 from CI run 41333739591 (macOS node 24 shard 2/2, -j 3) for every file it ran;
 # the files added at the end with no CI sample yet are ESTIMATES: auth-gate-delivery, budget-refused-delivery,
 # daemon-sigint, multi-repo-landing-preflight, usage-limit-lanes, tick-parked-result, paid-launch-cap-required and the small docs/docker/provenance checks.
+# worker-command: ESTIMATE (four tick.sh runs and the seam checks; Linux alone under shared load: 145s).
 171	merge-lane.test.sh
 90	poll-overlap-run-state.test.sh
+100	worker-command.test.sh
 110	landing-revocation.test.sh
 29	landing-revocation-window.test.sh
 110	secondary-pr-landing.test.sh
@@ -259,7 +262,10 @@
 1	safety-hook-installs.test.mjs
 1	safety-hook-secret-precision.test.mjs
 1	sandbox-docker-containment.test.sh
+70	sandbox-docker-delivery-seam.test.sh
+1	sandbox-docker-delivery.test.sh
 9	sandbox-docker-mounts.test.sh
+3	sandbox-docker-git-isolation.test.sh
 1	security-md-planning-agents.test.mjs
 1	select-skills.test.mjs
 1	self-op-ban.test.sh
@@ -289,6 +295,9 @@
 1	worktree-key-golden.test.sh
 39	resume-dry-run.test.sh
 20	paid-launch-admission.test.sh
+45	git-hooks-host.test.sh
+20	onboard-boundary.test.sh
+100	land-ignored-file.test.sh
 7	ac-check-bytes.test.sh
 24	attempt-provenance.test.sh
 90	auth-gate-delivery.test.sh

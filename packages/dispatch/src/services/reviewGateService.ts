@@ -617,8 +617,9 @@ export class ReviewGateService {
    * approveReview's assertCiPassed raises), or null when approval is not held by CI.
    */
   approveCiHold(ticket: Ticket): { state: string | null; commit: string | null } | null {
-    const ci = this.ciStatus(ticket.id, this.approveCiCandidate(ticket));
-    if (!ci.required || ci.state === "pass") return null;
+    const candidate = this.approveCiCandidate(ticket);
+    const ci = this.ciStatus(ticket.id, candidate);
+    if (!ci.required || (candidate !== null && ci.state === "pass")) return null;
     return { state: ci.state, commit: ci.commit };
   }
 
@@ -2074,6 +2075,46 @@ export class ReviewGateService {
   }
 
   /**
+   * REQUIRED CI, recorded BEFORE any result (external review #9, finding 4): the runner
+   * marks the ticket as needing CI when it submits a delivery that CI will gate
+   * (GAFFER_REQUIRE_CI with PR creation on), so the requirement exists before the ticket
+   * is exposed for review. Until a PASS is recorded for the candidate commit, approval
+   * and a tester PASS are refused ("CI required: not reported"), whether the gate then
+   * runs, fails, or never reports (no gh, no GitHub remote). System/admin only;
+   * idempotent (one requirement per ticket is enough, later calls record nothing new).
+   */
+  recordCiRequired(
+    ticketRef: string,
+    input: { detail?: string },
+    actor: Actor,
+  ): { required: true; eventId: string | null } {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner (system) or an admin may record that a ticket requires CI.",
+        { actor_type: actor.type },
+      );
+    }
+    const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    const already = this.db
+      .prepare(
+        `SELECT 1 FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.ci_required' LIMIT 1`,
+      )
+      .get(ticket.id);
+    if (already) return { required: true, eventId: null };
+    const detail = (input.detail ?? "").trim().slice(0, 2_000);
+    const eventId = writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.ci_required",
+      payload: detail ? { detail } : {},
+    });
+    return { required: true, eventId };
+  }
+
+  /**
    * REQUIRED CI: every commit a CI result may be recorded for: each write repo's current
    * delivery head (git), each recorded per-repo delivery commit, and each review pin
    * (an approved revision). Lower-case full or abbreviated ids, deduplicated.
@@ -2115,7 +2156,17 @@ export class ReviewGateService {
           ORDER BY rowid DESC`,
       )
       .all(ticketId) as Array<{ commit_sha: string | null; state: string | null }>;
-    if (rows.length === 0) return { required: false, state: null, commit };
+    // A recorded requirement (recordCiRequired) makes CI required before any result.
+    const requiredMark =
+      rows.length > 0 ||
+      this.db
+        .prepare(
+          `SELECT 1 FROM work_events
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.ci_required' LIMIT 1`,
+        )
+        .get(ticketId) !== undefined;
+    if (!requiredMark) return { required: false, state: null, commit };
+    if (rows.length === 0) return { required: true, state: null, commit };
     const c = commit ? commit.toLowerCase() : null;
     const hit = c
       ? rows.find((r) => {
@@ -2126,17 +2177,23 @@ export class ReviewGateService {
     return { required: true, state: hit?.state ?? null, commit: c ?? rows[0]?.commit_sha ?? null };
   }
 
-  /** REQUIRED CI: refuse (POLICY_DENIED) unless the candidate commit's CI passed. */
+  /**
+   * REQUIRED CI: refuse (POLICY_DENIED) unless the candidate commit's CI passed. A
+   * candidate that cannot be resolved has no result of its own, so it is held too (the
+   * latest result overall may be another commit's PASS).
+   */
   private assertCiPassed(ticket: Ticket, candidate: string | null): void {
     const ci = this.ciStatus(ticket.id, candidate);
-    if (!ci.required || ci.state === "pass") return;
+    if (!ci.required || (candidate !== null && ci.state === "pass")) return;
     const at = ci.commit ? ` for ${String(ci.commit).slice(0, 12)}` : "";
     throw new DispatchError(
       "POLICY_DENIED",
       ci.state === "fail"
         ? `Required CI failed${at}; the ticket cannot advance to merge.`
-        : `Required CI has not passed${at} (${ci.state ?? "no result for this commit"}); approval waits for a passing CI result for the candidate commit.`,
-      { ci_state: ci.state, commit: ci.commit },
+        : ci.state === null
+          ? `CI required: not reported${at}; approval waits for a passing CI result for the candidate commit.`
+          : `Required CI has not passed${at} (${ci.state}); approval waits for a passing CI result for the candidate commit.`,
+      { ci_state: ci.state, commit: ci.commit, reason: "ci_required" },
     );
   }
 

@@ -252,13 +252,16 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     numTurns !== UNKNOWN ||
     durationMs !== UNKNOWN;
   if (!hasAnySignal) {
-    return withUsageLimit(
-      unknownRecord({
-        ts,
-        ticket,
-        kind,
-        reason: reason || "result JSON carried no usage block",
-      }),
+    return withWorkerProvider(
+      withUsageLimit(
+        unknownRecord({
+          ts,
+          ticket,
+          kind,
+          reason: reason || "result JSON carried no usage block",
+        }),
+        json,
+      ),
       json,
     );
   }
@@ -291,7 +294,27 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     num_turns: numTurns,
     duration_ms: durationMs,
   };
-  return withUsageLimit(rec, json);
+  return withWorkerProvider(withUsageLimit(rec, json), json);
+}
+
+// A call served by a non-default worker provider names it on its row, with how its
+// cost is known: `reported` (the worker said, relayed verbatim), `floor` (the worker
+// reported less than the per-call floor, or nothing: total_cost_usd is the floor and
+// reported_cost_usd keeps the worker's own figure) or `unreported` (no floor applies, the
+// operator set GAFFER_WORKER_COMMAND_COST_USD=0: total_cost_usd stays "unknown" and counts
+// $0). The envelope stamps come from the command provider's parser adapter
+// (lib/worker.mjs normalizeCommandEnvelope). claude-code rows are unchanged.
+function withWorkerProvider(rec, json) {
+  const p = json && typeof json === "object" ? json.gaffer_worker_provider : null;
+  if (typeof p !== "string" || !p) return rec;
+  const out = { ...rec, worker_provider: provLabel(p) };
+  if (["reported", "unreported", "floor"].includes(json.gaffer_cost_basis))
+    out.cost_basis = json.gaffer_cost_basis;
+  if (json.gaffer_cost_basis === "floor") {
+    const r = json.gaffer_reported_cost_usd;
+    out.reported_cost_usd = typeof r === "number" && Number.isFinite(r) && r >= 0 ? r : UNKNOWN;
+  }
+  return out;
 }
 
 // A call the usage window / rate limit refused is labelled on its row (the SAME
@@ -375,6 +398,7 @@ function parseCliArgs(argv) {
     else if (a === "--attempt") out.attempt = argv[++i];
     else if (a === "--model") out.model = argv[++i];
     else if (a === "--claude-version") out.claudeVersion = argv[++i];
+    else if (a === "--worker-provider") out.workerProvider = argv[++i];
     // The delivery attempt this call belongs to, and when it was spawned: lets the
     // Health report charge a correction's spend to the send-back that caused it.
     else if (a === "--attempt-id") out.attemptId = argv[++i];
@@ -417,8 +441,12 @@ function provLabel(v) {
  * later quality metric (per model, per CLI release) keys on these. Absent inputs add
  * nothing, so older call sites write exactly the record they always did.
  */
-export function withProvenance(record, { attempt, model, claudeVersion } = {}) {
+export function withProvenance(record, { attempt, model, claudeVersion, workerProvider } = {}) {
   const out = { ...record };
+  // The worker provider that ran the call, when it is not the default claude-code (the
+  // rows of a claude-code factory stay exactly as they were).
+  const wp = provLabel(workerProvider);
+  if (wp && wp !== "claude-code" && !out.worker_provider) out.worker_provider = wp;
   const n = attempt != null && /^\d+$/.test(String(attempt)) ? Number(attempt) : null;
   if (n != null && n > 0) out.attempt = n;
   const m = provLabel(model);
@@ -626,6 +654,18 @@ function cliMain(argv) {
     // keeps the conservative estimate (the spend caps never under-count) and is
     // labelled usage_limit so the ledger says why the call ended.
     record = withUsageLimit(estimatedRecord({ ticket, kind, reason, estimateUsd, basis }), json);
+    // A command worker that exits non-zero can still hand back an envelope with its cost
+    // (already floored by the parser adapter). Book whichever is MORE, so a failed call
+    // that reported real spend never reads as the cheaper kill estimate.
+    if (
+      json &&
+      typeof json === "object" &&
+      typeof json.gaffer_worker_provider === "string" &&
+      typeof json.total_cost_usd === "number" &&
+      Number.isFinite(json.total_cost_usd) &&
+      json.total_cost_usd > (estimateUsd || 0)
+    )
+      record = { ...buildUsageRecord({ json, ticket, kind }), exit_rc: rcNum, reason };
   } else if (json === null) {
     const reason = "no parseable --output-format json on stdout";
     const { estimateUsd, basis } = deriveKillEstimate({

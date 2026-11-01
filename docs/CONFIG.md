@@ -19,10 +19,10 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 145 |
+| Knobs with a runner default | 150 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 80 |
+| Env reads in code with no default and no UI entry | 79 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -45,6 +45,16 @@ computed from other knobs at runtime.
 | `SKILLS_DIR` | _derived_ (`$RUNNER_DIR/skills`) |  | crew, runner |  |
 | `CLAUDE_BIN` | `claude` |  | runner | headless `claude -p` |
 | `CLAUDE_FLAGS` | `--permission-mode acceptEdits` |  | runner | tune to your Claude Code version |
+
+### Worker provider
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_WORKER_PROVIDER` | `claude-code` |  | runner | which worker runs agent turns: claude-code (headless `claude -p`, guarded by the in-process safety hook) or command (your own program at GAFFER_WORKER_COMMAND, under the contract in docs/worker-providers.md; it has no in-process safety hook, so it requires the docker sandbox with the host-side MCP bridge, SANDBOX_PROVIDER=docker on a Linux host, unless you set GAFFER_STRICT_REQUIRE=0 in the environment to say the runner is contained out-of-band). Any other value refuses to run. Environment only: settings.json cannot set it. |
+| `GAFFER_WORKER_COMMAND` | _(empty)_ |  | runner | absolute path of the worker program GAFFER_WORKER_PROVIDER=command runs, with no arguments, in the call's working directory; it must live outside $GAFFER_DATA and every write root and not be writable by its group or others. It reads GAFFER_WORKER_PROMPT_FILE, GAFFER_WORKER_MCP_CONFIG, GAFFER_WORKER_MODEL, GAFFER_WORKER_MAX_TURNS and the other GAFFER_WORKER_* variables, prints one JSON object on stdout (result, stop_reason, cap_hit, num_turns, cost_usd, model, usage; all optional) and exits 0 when it finished (docs/worker-providers.md). Environment only. |
+| `GAFFER_WORKER_COMMAND_ENV` | _(empty)_ |  | runner | space-separated env var names the command worker also receives (its own model credential, for example); the scrub drops them otherwise. The runner-only secrets (DISPATCH_API_TOKEN, GAFFER_CLAIM_TOKEN, GITHUB_TOKEN, GH_TOKEN, notify and webhook settings) are never passed. Environment only. |
+| `GAFFER_WORKER_COMMAND_COST_USD` | _(empty)_ |  | runner | the least each command-worker call is booked at in the usage ledger, in USD, because the cost it reports is its own word: a cost it leaves out or reports lower is booked at this floor (cost_basis floor). Empty = this call's dollar cap (GAFFER_MAX_CALL_USD) when set, else GAFFER_KILL_ESTIMATE_USD; 0 = trust the worker's figure. Environment only. |
+| `GAFFER_SANDBOX_WORKER_COMMAND` | _(empty)_ |  | runner | where the command worker's program lives INSIDE the docker sandbox image; empty = the same path as GAFFER_WORKER_COMMAND (the runner dir is mounted read-only at its host path, so a program kept under it works as is). Environment only. |
 | `GAFFER_PLAN_MODEL` | `opus` |  | runner |  |
 | `GAFFER_IMPL_MODEL` | `sonnet` |  | runner |  |
 
@@ -467,7 +477,6 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/cleanup-ownership.sh`, `runner/lib/orphan-recovery.sh` |
-| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/claude-auth.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh`, `runner/tick.sh` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
 | `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
 | `MEMORY_NO_COLOR` |  | `packages/memory/src/cli/format.ts` |

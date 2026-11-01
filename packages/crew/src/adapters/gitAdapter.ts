@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { redactRemoteUrl } from "../safety/repoBoundary.js";
 import { CrewError } from "../util/errors.js";
 
 /**
@@ -42,9 +43,18 @@ function firstLine(out: string): string {
   return "";
 }
 
+/**
+ * Every adapter call runs on the host in a repository an agent may have edited, so it
+ * never runs the repository's hooks or fsmonitor program (external review #9, finding
+ * 2): `status` would run core.fsmonitor and `checkout -b` the post-checkout and
+ * reference-transaction hooks. Command-line `-c` beats every config file. The runner
+ * also exports these through GIT_CONFIG_COUNT; this holds when crew runs without it.
+ */
+const HOST_GIT_SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
+
 function run(repoDir: string, args: string[]): string {
   try {
-    return execFileSync("git", ["-C", repoDir, ...args], {
+    return execFileSync("git", [...HOST_GIT_SAFE, "-C", repoDir, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();
@@ -102,7 +112,9 @@ export const systemGitAdapter: GitAdapter = {
   remoteUrl(repoDir: string, remote = "origin"): string | null {
     if (!this.isRepo(repoDir)) return null;
     try {
-      const url = run(repoDir, ["remote", "get-url", remote]);
+      // External review #9: a remote's userinfo (an embedded password or token) is
+      // stripped here, at the source, so it can reach no prompt, digest, lore or log.
+      const url = redactRemoteUrl(run(repoDir, ["remote", "get-url", remote]));
       return url.length > 0 ? url : null;
     } catch {
       return null;

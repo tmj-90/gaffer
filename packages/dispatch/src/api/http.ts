@@ -152,12 +152,30 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     throw new DispatchError("VALIDATION_ERROR", "Request body is not valid UTF-8.");
   }
   if (raw === "") return {};
+  let parsed: unknown;
+  // JSON's \uD800-style escapes can spell half a surrogate pair in valid UTF-8 bytes;
+  // stored, it turns into U+FFFD just like an invalid byte, so it is refused the same way.
+  let unpaired = false;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(raw, (key: string, value: unknown) => {
+      if (LONE_SURROGATE.test(key) || (typeof value === "string" && LONE_SURROGATE.test(value)))
+        unpaired = true;
+      return value;
+    });
   } catch {
     throw new DispatchError("VALIDATION_ERROR", "Request body is not valid JSON.");
   }
+  if (unpaired) {
+    throw new DispatchError(
+      "VALIDATION_ERROR",
+      "Request body is not valid UTF-8 (a \\u escape names half a surrogate pair).",
+    );
+  }
+  return parsed;
 }
+
+/** A UTF-16 surrogate that is not half of a pair (the `u` flag reads a pair as one code point). */
+const LONE_SURROGATE = /\p{Cs}/u;
 
 /**
  * Read the body of a route that takes none (ready-approval, mono-fallback, POST

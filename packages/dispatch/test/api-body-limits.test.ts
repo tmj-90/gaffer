@@ -136,9 +136,26 @@ describe("bodies on the routes that take none, and invalid UTF-8", () => {
     expect(wg.listTickets({}).length).toBe(0);
     const sp = await rawPost("/specs", bad('{"title":"s","body":"text @ here"}'));
     expect(sp.status).toBe(422);
+    // Half a surrogate pair spelled as a JSON escape is the same lossy store (U+FFFD).
+    for (const json of [
+      '{"title":"a\\ud800b"}',
+      '{"title":"a\\udc00"}',
+      '{"title":"t","description":"x\\ud83d"}',
+      '{"title":"t","acceptance_criteria":["\\ud800"]}',
+      '{"\\ud800":"t","title":"t"}',
+    ]) {
+      const lone = await rawPost("/tickets", Buffer.from(json));
+      expect(lone.status, json).toBe(422);
+      expect((lone.json.error as { message: string }).message, json).toMatch(/UTF-8/);
+    }
+    expect(wg.listTickets({}).length).toBe(0);
+    // A whole pair, escaped or raw, is a character like any other.
+    const pair = await rawPost("/tickets", Buffer.from('{"title":"ok \\ud83d\\ude00"}'));
+    expect(pair.status).toBe(201);
+    expect(wg.listTickets({})[0]?.title).toBe("ok \u{1F600}");
     // Valid multi-byte text is untouched.
     const ok = await rawPost("/tickets", Buffer.from(JSON.stringify({ title: "café ✓ 日本" })));
     expect(ok.status).toBe(201);
-    expect(wg.listTickets({})[0]?.title).toBe("café ✓ 日本");
+    expect(wg.listTickets({}).map((t) => t.title)).toContain("café ✓ 日本");
   });
 });

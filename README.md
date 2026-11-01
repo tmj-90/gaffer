@@ -132,6 +132,8 @@ The runner decides "done" by running the repo's own tests, lint and typecheck, s
 
 The hook is a string analyser for bash, and a determined agent that builds paths at runtime can get further than I'd like. That's why anything that lets an agent ship work defaults `GAFFER_STRICT_REQUIRE=1`, which refuses to launch an agent without an OS sandbox. That covers the `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `MEMORY_AUTO_APPROVE` and `GAFFER_AUTO_PUSH` flags, the modes that set them, and a per-repo policy that lets a repo ship unattended. `SANDBOX_PROVIDER=docker` gives read and egress isolation on any host with Docker. macOS `sandbox-exec` only restricts writes.
 
+The worker doesn't have to be `claude -p`. `GAFFER_WORKER_PROVIDER=command` runs your own program (`GAFFER_WORKER_COMMAND`) for every agent turn, under a small contract: the prompt and the MCP config come in as environment variables, a JSON envelope with the result, turns and cost goes back on stdout, and the budget caps, the scrubbed environment and the gates apply as before. The safety hook only exists inside `claude -p`, so a command worker always runs inside an OS sandbox and refuses where there isn't one, unless you set `GAFFER_STRICT_REQUIRE=0` because you contain the whole runner yourself. [docs/worker-providers.md](docs/worker-providers.md) has the contract.
+
 Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`), and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. Every other paid launch follows the same rule: onboarding analysis, Plan a build, Suggest work, the spec author, the merge resolver and the tester refuse with the same message, and an onboard without a cap writes the mechanical digest and cards and says why. `GAFFER_ALLOW_UNCAPPED=1` opts out. `GAFFER_MAX_CALL_USD` caps a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
 
 ## What's rough
@@ -164,6 +166,7 @@ gaffer/
 - [docs/FEATURES.md](docs/FEATURES.md): each surface in more detail
 - [docs/CONFIG.md](docs/CONFIG.md): every setting, generated from the code
 - [SECURITY.md](SECURITY.md): threat model and residual limits
+- [docs/worker-providers.md](docs/worker-providers.md): running your own worker program instead of `claude -p`
 - [ARCHITECTURE.md](ARCHITECTURE.md): how the pieces fit together
 - [runner/README.md](runner/README.md) and [runner/RUNBOOK.md](runner/RUNBOOK.md): the runner in depth
 - [docs/openapi.json](docs/openapi.json): the REST contract, also served at `GET /api/openapi.json`

@@ -786,6 +786,22 @@ on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected
 (`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
 
+**A different worker behind the factory.** `GAFFER_WORKER_PROVIDER=command` with
+`GAFFER_WORKER_COMMAND=/path/to/program` runs your own worker program for every
+agent turn instead of `claude -p`: deliveries, reviews, clarify passes, planning,
+the tester and the merge resolver alike. The program gets the prompt, the MCP config
+path and the model and turn-cap hints as `GAFFER_WORKER_*` variables in the call's
+working directory, and prints a small JSON envelope (the result text, the stop
+reason, a cap-hit flag, turns, cost, model, token counts, all optional). Budget
+admission, the scrubbed environment, the timeout and every gate after the call work
+as they do for `claude-code`, and each usage-ledger row it writes names
+`worker_provider: "command"` with the cost it reported, or `"unknown"` when it
+reported none. It has no in-process safety hook, so it only launches inside an OS
+sandbox (`SANDBOX_PROVIDER=docker`, or `sandbox-exec` on macOS) and refuses where none
+is available, unless you set `GAFFER_STRICT_REQUIRE=0` to say the runner is contained
+out-of-band, which is logged as a warning at every spawn.
+[`worker-providers.md`](worker-providers.md) has the full contract.
+
 ![The Settings panel](img/settings.png)
 
 *The boot room (`#/settings`): the Team instructions dial on Supervised and the

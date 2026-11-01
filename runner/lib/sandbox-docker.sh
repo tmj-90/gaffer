@@ -658,6 +658,16 @@ docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' 
 # background so a TERM/INT/HUP sent to this wrapper (a tick timeout) is forwarded to it at
 # once instead of waiting for the container to finish.
 trap '_cleanup_private_git' EXIT
+# The forwarding traps are set BEFORE docker starts: a signal in the instant between the
+# launch and the trap would otherwise kill the wrapper (default action) and leave the
+# container running unsupervised. One that arrives before the pid is known is held and
+# sent as soon as it is.
+_DOCKER_PID=""; _PENDING_SIG=""
+_forward() {
+  if [ -n "$_DOCKER_PID" ]; then kill -"$1" "$_DOCKER_PID" 2>/dev/null || true
+  else _PENDING_SIG="$1"; fi
+}
+trap '_forward TERM' TERM; trap '_forward INT' INT; trap '_forward HUP' HUP
 docker run --rm --network "$_NET_INT" \
   --cap-drop=ALL \
   --cap-add=DAC_OVERRIDE \
@@ -671,11 +681,15 @@ docker run --rm --network "$_NET_INT" \
   "$_IMAGE" \
   "$@" &
 _DOCKER_PID=$!
-_forward() { kill -"$1" "$_DOCKER_PID" 2>/dev/null || true; }
-trap '_forward TERM' TERM; trap '_forward INT' INT; trap '_forward HUP' HUP
+[ -z "$_PENDING_SIG" ] || kill -"$_PENDING_SIG" "$_DOCKER_PID" 2>/dev/null || true
 while :; do
   _rc=0; wait "$_DOCKER_PID" || _rc=$?
-  kill -0 "$_DOCKER_PID" 2>/dev/null || break
+  kill -0 "$_DOCKER_PID" 2>/dev/null && continue
+  # docker is gone. A forwarded signal may have cut the wait above short (128+n): wait
+  # once more for its own exit status, which the shell keeps for a finished child.
+  _w=0; wait "$_DOCKER_PID" 2>/dev/null || _w=$?
+  [ "$_w" -eq 127 ] || _rc="$_w"
+  break
 done
 trap - TERM INT HUP
 # The validation profile (DoD gates, AC checks) never changes the branch it validates:

@@ -212,6 +212,32 @@ grep -q REDIR_DONE <<<"$OUT" && ok "the redirect payload ran" || fail "redirect 
 [ "$RC" != 0 ] && ok "wrapper reports the refused import (exit $RC)" || fail "an import through a rewritten .git file exited 0"
 printf 'gitdir: %s\n' "$GITDIR" > "$WT/.git"; rm -f "$WT/p.txt"; git -C "$WT" reset -q --hard "$TIP3" 2>/dev/null
 
+echo "== (2f) a TERM is forwarded to docker and the container's own exit status is kept =="
+# A tick timeout signals the wrapper; docker must get the signal, and the wrapper must exit
+# with what the container exited with, not with the 128+n of its own interrupted wait.
+SBIN="$WORK/sigbin"; mkdir -p "$SBIN"
+cat > "$SBIN/docker" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = "run" ] || exit 0
+for a in "$@"; do [ "$a" = "-d" ] && exit 0; done
+trap 'echo GOT_TERM >> "$SIG_LOG"; exit 5' TERM
+echo started >> "$SIG_LOG"
+sleep 30 & wait $!
+STUB
+chmod +x "$SBIN/docker"
+SIG_LOG="$WORK/sig.log"; : > "$SIG_LOG"; export SIG_LOG
+( cd "$WT" && PATH="$SBIN:$PATH" exec bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c true >/dev/null 2>&1 ) &
+WPID=$!
+for _i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  grep -qx started "$SIG_LOG" && break
+  perl -e 'select(undef,undef,undef,0.25)'
+done
+perl -e 'select(undef,undef,undef,0.5)'
+kill -TERM "$WPID" 2>/dev/null
+WRC=0; wait "$WPID" || WRC=$?
+grep -qx GOT_TERM "$SIG_LOG" && ok "the TERM reached docker" || fail "the TERM never reached docker: $(tr '\n' ' ' < "$SIG_LOG")"
+[ "$WRC" = 5 ] && ok "the wrapper exits with the container's status (5)" || fail "the wrapper exited $WRC, not the container's 5"
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0; fi
 echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"; exit 1

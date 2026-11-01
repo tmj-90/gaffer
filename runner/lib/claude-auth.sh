@@ -34,7 +34,7 @@ gaffer_claude_auth_probe() {
   done
   # No HOME (a bare service unit) and no CLAUDE_CONFIG_DIR: nowhere to look, so unknown.
   [ -z "${CLAUDE_CONFIG_DIR:-}" ] && [ -z "${HOME:-}" ] && return 2
-  local cdir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+  local cdir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
   local cred="$cdir/.credentials.json"
   if [ -s "$cred" ]; then GAFFER_CLAUDE_AUTH_SOURCE="$cred"; return 0; fi
   # The CLI's global config keeps a Console login's key as primaryApiKey.

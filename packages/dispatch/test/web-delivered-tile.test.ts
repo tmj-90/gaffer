@@ -39,7 +39,12 @@ function stubFetch(): void {
           counts: { total: 1 },
         });
       if (url.includes("/api/dashboard"))
-        return json({ summary: { ticketsByStatus: { done: 2 }, deliveredToday: 2 } });
+        return json({
+          summary: {
+            ticketsByStatus: { done: 2, ready: 3, blocked: 1, draft: 9 },
+            deliveredToday: 2,
+          },
+        });
       if (url.includes("/api/runs")) return json({ active: [], recent: [] });
       if (url.includes("/api/activity")) return json({ events: [], total: 0 });
       if (url.includes("/tickets")) return json({ tickets: [] });
@@ -81,5 +86,17 @@ describe("web: Delivered today", () => {
     expect(delivered.title).toBe("2 tickets landed (done) today: the Floor's lorry shows them");
     expect(delivered.querySelector(".kpi-val")?.textContent).toBe("2");
     expect(cell("Need you")!.querySelector(".kpi-val")?.textContent).toBe("1");
+  });
+
+  // ui-explore/F-15: "Work 4" had no visible explanation (only an aria-label).
+  it("the Work tab's count says what it counts, drafts not among them", async () => {
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
+    for (let i = 0; i < 12; i++) await tick();
+    const badge = document.querySelector<HTMLElement>('.nav-count[data-count="work"]')!;
+    expect(badge.textContent).toBe("4");
+    expect(badge.title).toBe(
+      "4 tickets in play: ready through to merge, plus blocked, paused or failed (drafts not counted)",
+    );
+    expect(badge.getAttribute("aria-label")).toBe(badge.title);
   });
 });

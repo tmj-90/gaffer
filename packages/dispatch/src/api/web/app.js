@@ -2792,7 +2792,15 @@ async function updateNavBadges() {
         n.textContent = String(v);
         n.hidden = false;
         n.classList.toggle("urgent", id === "review");
-        n.setAttribute("aria-label", id === "review" ? `${v} waiting for you` : `${v} in flight`);
+        // The Work count is unexplained on screen: its title and label say what it
+        // counts (live tickets, ready through to merge plus blocked/paused/failed;
+        // drafts are on the bench, not in it).
+        const what =
+          id === "review"
+            ? `${v} waiting for your sign-off`
+            : `${v} ${v === 1 ? "ticket" : "tickets"} in play: ready through to merge, plus blocked, paused or failed (drafts not counted)`;
+        n.setAttribute("aria-label", what);
+        n.title = what;
       } else {
         n.hidden = true;
       }
@@ -3171,6 +3179,19 @@ const PITCH_ZONES = [
 const ON_PITCH = new Set(PITCH_ZONES.map((z) => z.key));
 const OFF_PITCH = new Set(["blocked", "paused", "failed"]);
 const ON_BENCH = new Set(["draft", "refining"]);
+/**
+ * A campaign whose every unfinished ticket is still a draft (or refining) is not
+ * being played, it is waiting for someone to ready its tickets: "Nothing is holding
+ * it" said the opposite. Answers that sentence, or null when anything is in play.
+ */
+function benchedCampaignLine(members) {
+  const left = members.filter((t) => t.status !== "done" && t.status !== "cancelled");
+  if (!left.length || !left.every((t) => ON_BENCH.has(t.status))) return null;
+  const drafts = left.filter((t) => t.status === "draft").length;
+  return drafts === left.length
+    ? `Not kicked off: ${left.length === 1 ? "its ticket is a draft" : `all ${left.length} tickets left are drafts`} nobody has marked ready yet.`
+    : `Not kicked off: its ${plural(left.length, "ticket")} left ${left.length === 1 ? "is" : "are"} still drafts or refining, none ready yet.`;
+}
 const PITCH_MAX_CHANNELS = 6;
 const ARROW_WINDOW_MS = 3 * 3600e3;
 
@@ -5765,7 +5786,7 @@ function cupRuns(f) {
                     glyph("blocked", 16),
                     `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
                   ]
-                : `${done} of ${e.members.length} done. Nothing is holding it.`,
+                : `${done} of ${e.members.length} done. ${benchedCampaignLine(e.members) || "Nothing is holding it."}`,
             ),
           ]),
           el(
@@ -20866,7 +20887,14 @@ function renderEpicCard(s, ctx, specLink, focused) {
             ]
           : won
             ? "Won: every ticket is done, the Final included."
-            : `Round ${liveIdx + 1} of ${phases.length} is being played. Nothing is holding it.`,
+            : benchedCampaignLine(members)
+              ? [
+                  benchedCampaignLine(members),
+                  " ",
+                  el("a", { href: "#/work?status=draft" }, "Ready them on the Work board"),
+                  ` to start round ${liveIdx + 1}.`,
+                ]
+              : `Round ${liveIdx + 1} of ${phases.length} is being played. Nothing is holding it.`,
       );
   card.appendChild(lede);
   if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
@@ -26625,7 +26653,7 @@ function floorScene(m) {
       href: "#/overview",
       class: "fl-hit fl-station",
       "aria-label": m.decisions
-        ? `Your desk: ${plural(m.decisions, "decision")} ${m.decisions === 1 ? "waits" : "wait"} for you. Answer on the Team Sheet.`
+        ? `Your desk: ${plural(m.decisions, "decision")} ${m.decisions === 1 ? "waits" : "wait"} for you. Answer on the Team sheet.`
         : "Your desk: no decision waits for you. Open the Overview.",
       "data-station": "desk",
     });

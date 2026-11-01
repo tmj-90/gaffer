@@ -7,14 +7,28 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 
 pass=0; warn=0; fail=0
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
-wn()   { printf '  \033[33m!\033[0m %s\n' "$*"; warn=$((warn+1)); }
-no()   { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
+# No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
+ok()   { printf "  ${c_grn}✓${c_off} %s\n" "$*"; pass=$((pass+1)); }
+wn()   { printf "  ${c_yel}!${c_off} %s\n" "$*"; warn=$((warn+1)); }
+no()   { printf "  ${c_red}✗${c_off} %s\n" "$*"; fail=$((fail+1)); }
 
 echo "Gaffer factory preflight"
 
-# Toolchain
-command -v node >/dev/null && ok "node $(node -v)" || no "node missing"
+# Toolchain. Node is held to the SAME floor setup.sh enforces (engines.node in the root
+# package.json, via scripts/check-engines.mjs): preflight used to tick a Node that
+# setup then refused.
+if ! command -v node >/dev/null; then no "node missing"
+else
+  _floor="$(node -p 'require(process.argv[1]).engines.node' "$GAFFER_HOME/package.json" 2>/dev/null || echo '?')"
+  if node "$HERE/../scripts/check-engines.mjs" --runtime --root "$GAFFER_HOME" >/dev/null 2>&1; then
+    ok "node $(node -v) (Gaffer needs $_floor)"
+  else
+    no "node $(node -v) is below Gaffer's floor ($_floor, engines.node in $GAFFER_HOME/package.json) — setup refuses it; install a newer Node (nvm install 22, or Node 24)"
+  fi
+fi
 command -v pnpm >/dev/null && ok "pnpm $(pnpm -v)" || wn "pnpm missing (needed for setup/builds)"
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi
@@ -74,18 +88,9 @@ SK=$(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
 
 # Live MCP handshake (best-effort; only if servers are built)
 if [ -f "$MEMORY_MCP_BIN" ] && command -v node >/dev/null; then
-  PING="$MEMORY_DIR/.preflight-ping.mjs"
-  cat > "$PING" <<'EOF'
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-const [arg,k,v]=process.argv.slice(2);
-const c=new Client({name:"pf",version:"0"},{capabilities:{}});
-await c.connect(new StdioClientTransport({command:"node",args:[arg],env:{...process.env,[k]:v}}));
-console.log((await c.listTools()).tools.length); await c.close();
-EOF
-  WT=$(node "$PING" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" 2>/dev/null || echo 0)
-  LT=$(node "$PING" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" 2>/dev/null || echo 0)
-  rm -f "$PING"
+  # runner/lib/mcp-ping.mjs: a committed helper (nothing is written into packages/memory).
+  WT=$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" 2>/dev/null || echo 0)
+  LT=$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" 2>/dev/null || echo 0)
   [ "${WT:-0}" -ge 1 ] && ok "dispatch-mcp responds ($WT tools)" || no "dispatch-mcp did not respond"
   [ "${LT:-0}" -ge 1 ] && ok "memory-mcp responds ($LT tools)" || no "memory-mcp did not respond"
 fi

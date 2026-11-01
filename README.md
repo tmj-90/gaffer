@@ -75,9 +75,9 @@ runner/gaffer onboard ~/code/your-repo    # register it, scan it, write its dige
 runner/gaffer status                      # what's registered, and anything waiting on you
 ```
 
-`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. `--lan` is plain HTTP, so on a LAN the token travels unencrypted; [SECURITY.md](SECURITY.md) says what to do instead. To use another port, export `DISPATCH_API_PORT=9000` before `runner/gaffer dashboard --restart` (and in the shells you run `gaffer` from). Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
+`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. `--lan` is plain HTTP, so on a LAN the token travels unencrypted; [SECURITY.md](SECURITY.md) says what to do instead. To use another port, export `DISPATCH_API_PORT=9000` before `runner/gaffer dashboard --restart` (and in the shells you run `gaffer` from). `runner/gaffer dashboard --restart` starts it afresh with a new token, and `--stop` stops it. Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
 
-The CLI's own messages say `gaffer …`. To type it that way, add `alias gaffer="$PWD/runner/gaffer"` (run from the checkout) to your shell profile. A symlink to `runner/gaffer` doesn't work, because the script finds the factory relative to its own path.
+The CLI's own messages say `gaffer …`. To type it that way, add `alias gaffer="$PWD/runner/gaffer"` (run from the checkout) to your shell profile. A symlink to `runner/gaffer` on your PATH works too: the script follows it back to the checkout.
 
 Give it a first ticket. `runner/gaffer wg` is the control-plane CLI pointed at this factory's database:
 
@@ -94,7 +94,7 @@ If **ready** is refused, the refusal names what's missing, and `wg ticket edit 1
 Then watch it, and let it go when you're happy:
 
 ```bash
-runner/gaffer demo                         # the whole loop on a throwaway showcase repo, dry run
+runner/gaffer demo                         # one dry tick over a showcase repo, in a fresh temp dir
 runner/gaffer run --dry-run                # what a pass over your queue would do; nothing spent
 export GAFFER_DAILY_BUDGET_USD=5           # a live run refuses to start without a dollar cap
 runner/gaffer run                          # live: one pass, delivers ready tickets to review

@@ -59,6 +59,14 @@ chk 1 "GAFFER_ALLOW_UNCAPPED=0 does not" DRY_RUN=0 GAFFER_ALLOW_UNCAPPED=0
 hint="$(gaffer_spend_cap_hint)"
 case "$hint" in *GAFFER_DAILY_BUDGET_USD*GAFFER_ALLOW_UNCAPPED=1*) ok "the hint names the fix and the opt-out" ;; *) fail "hint: $hint" ;; esac
 [ "$(printf '%s' "$hint" | wc -l | tr -d ' ')" = 0 ] && ok "the hint is one line" || fail "hint spans lines"
+# A cap that IS set but admits nothing says why (it used to read "no dollar cap is set").
+hint0="$(GAFFER_DAILY_BUDGET_USD=0 gaffer_spend_cap_hint)"
+case "$hint0" in 'GAFFER_DAILY_BUDGET_USD=0 is $0 headroom: no paid work starts — set GAFFER_DAILY_BUDGET_USD (try 5)'*) ok "a cap of 0: '\$0 headroom: no paid work starts'" ;; *) fail "cap 0 hint: $hint0" ;; esac
+hintx="$(GAFFER_DAILY_BUDGET_USD=abc gaffer_spend_cap_hint)"
+case "$hintx" in "GAFFER_DAILY_BUDGET_USD='abc' is not a number — "*) ok "a non-number: 'is not a number'" ;; *) fail "non-number hint: $hintx" ;; esac
+hintb="$(GAFFER_DAILY_BUDGET_USD=abc GAFFER_BUDGET_USD=-3 gaffer_spend_cap_hint)"
+case "$hintb" in *"'abc' is not a number; GAFFER_BUDGET_USD=-3 is \$0 headroom"*) ok "both caps are named" ;; *) fail "both-caps hint: $hintb" ;; esac
+case "$hint0$hintx" in *"no dollar cap is set"*) fail "a set cap still reads 'no dollar cap is set'" ;; *) ok "a set cap never reads 'no dollar cap is set'" ;; esac
 
 # ── A FAKE runner dir: every real file symlinked in, tick.sh replaced by a stub.
 FAKE="$WORK/runner"; mkdir -p "$FAKE"
@@ -102,6 +110,15 @@ out="$(run_driver "$FAKE/loop.sh")"; rc=$?
 [ "$(calls)" = 0 ] && ok "no tick ran" || fail "$(calls) tick(s) ran uncapped"
 grep -q 'refusing a live run — no dollar cap is set' <<<"$out" && ok "it says why" || fail "no refusal line: $out"
 grep -q 'GAFFER_DAILY_BUDGET_USD (try 5)' <<<"$out" && ok "…and how to fix it" || fail "no fix hint: $out"
+
+echo "== 2b: gaffer run with a 0 cap refuses with the real reason =="
+reset
+out="$(gaffer_run GAFFER_DAILY_BUDGET_USD=0 bash "$RUNNER_DIR/gaffer" run)"; rc=$?
+[ "$rc" = 3 ] && [ "$(calls)" = 0 ] && ok "GAFFER_DAILY_BUDGET_USD=0: exit 3, nothing started" || fail "cap 0 gaffer run: rc=$rc calls=$(calls); out: $out"
+grep -q 'GAFFER_DAILY_BUDGET_USD=0 is \$0 headroom: no paid work starts' <<<"$out" && ok "…saying \$0 headroom" || fail "cap 0 message: $out"
+reset
+out="$(gaffer_run GAFFER_DAILY_BUDGET_USD=abc bash "$RUNNER_DIR/gaffer" run)"; rc=$?
+[ "$rc" = 3 ] && grep -q "GAFFER_DAILY_BUDGET_USD='abc' is not a number" <<<"$out" && ok "a non-number: exit 3, 'not a number'" || fail "abc gaffer run: rc=$rc; out: $out"
 
 echo "== 3: a cap lets the live run start =="
 reset

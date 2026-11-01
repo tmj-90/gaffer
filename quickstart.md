@@ -96,6 +96,8 @@ works.
 > (`ssh -L 8787:127.0.0.1:8787 <host>`) or a reverse proxy that terminates TLS, and give
 > viewers a read-only token, not the full one (the README says how to get one).
 
+`runner/gaffer dashboard --restart` stops the running server, rotates the login token and starts a fresh one; `--stop` stops it. Each reports "dashboard up" only once the server it started answers with the new token. When the port is already taken it says by which pid (`port 8787 is already in use by pid N`) and starts nothing; pick another port with `DISPATCH_API_PORT`.
+
 > **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
 > every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,
 > `DISPATCH_TICK_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_EPIC_FEATURE_CMD`) into the API's
@@ -162,7 +164,7 @@ The factory works tickets through **plan → implement → test → review**, ea
 git worktree, behind a deterministic safety hook.
 
 ```bash
-runner/gaffer demo                    # watch the whole loop, dry-run (never touches a repo or calls Claude)
+runner/gaffer demo                    # one dry tick over a showcase repo (a fresh temp dir; never touches your repos or calls Claude)
 DRY_RUN=1 bash runner/tick.sh         # preview a single tick
 ```
 
@@ -210,7 +212,11 @@ runner/gaffer merge 1                            # the same conflict-safe merge 
 and asks; the approval covers exactly those commits. If a branch moves before you
 confirm, the approval is refused and nothing is approved. Non-interactively, pass the
 commits you reviewed: `runner/gaffer approve 1 --commit <repo>=<sha>` (one per repo;
-`runner/gaffer wg ticket diff 1 --heads` prints them).
+`runner/gaffer wg ticket diff 1 --heads` prints them). A successful approve prints one line
+and the next command (`next: gaffer merge 1`); `runner/gaffer wg review approve` gives the raw
+JSON. `runner/gaffer status` lists every ticket waiting on you with the command for it.
+`merge` on a ticket that is not approved (or does not exist) refuses with exit 4, and on a
+done ticket says it is already merged.
 
 `merge` first builds the merge of the approved commit onto your current default branch in
 a scratch worktree and runs your repo's test/lint gates on **that** merge (the merge gate):

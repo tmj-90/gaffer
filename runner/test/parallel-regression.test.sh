@@ -51,7 +51,9 @@ grep -Eq 'if \[ "\$\{GAFFER_CONCURRENCY:-1\}" -gt 1 \]' "$RUNNER_DIR/loop.sh" \
 # path still drives ONE gaffer_timeout-wrapped tick.
 grep -q 'out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"' "$RUNNER_DIR/loop.sh" \
   && ok "serial path still runs the gaffer_timeout-wrapped single tick" || fail "serial tick invocation changed"
-grep -q 'echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"' "$RUNNER_DIR/loop.sh" \
+# The per-tick line prints the result code, or names a parked delivery in its place
+# (exploratory cli-runner F-20: a clean park read "tick → error").
+grep -q '_shown="${res:-unknown}"' "$RUNNER_DIR/loop.sh" && grep -q 'echo "tick $ticks/$MAX_TICKS → $_shown"' "$RUNNER_DIR/loop.sh" \
   && ok "serial path still prints the canonical per-tick line" || fail "serial per-tick output changed"
 
 # The canonical serial loop PREAMBLE must appear verbatim — the loop-control shape

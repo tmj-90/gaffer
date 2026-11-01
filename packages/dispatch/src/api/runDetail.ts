@@ -113,8 +113,11 @@ export function parseLastRouteInfo(logText: string): RouteInfo | null {
  *   "HYGIENE:"          → "FLAGGED"
  *   "delivery tick … finished (rc=0)" with no FAILED → "in_review" (submitted)
  *   "delivery FAILED … skipping" → "refining" (re-queued)
+ *   "delivery PARKED for #N" / "parked #N (→ blocked" / "released claim on #N → blocked"
+ *                       → "blocked" (an EMPTY delivery's park goes to refining)
  */
-export type RunOutcome = "in_review" | "refining" | "FLAGGED" | "FAILED" | "REFUSED" | null;
+export type RunOutcome =
+  "in_review" | "refining" | "blocked" | "FLAGGED" | "FAILED" | "REFUSED" | null;
 
 /**
  * The line runner/bin/poll-once.sh prints when it refuses a dashboard poll BEFORE any
@@ -144,6 +147,18 @@ export function detectOutcome(logText: string, runStatus: Run["status"]): RunOut
     // re-queued (→ refining). Without that marker it's a terminal FAILED.
     if (/skipping it for the rest of this run/.test(logText)) return "refining";
     return "FAILED";
+  }
+
+  // The tick parked the ticket (rework exhausted, not converging, a decision the agent
+  // opened, …). An attempt that "finished (rc=0)" before it is not a submission, so
+  // this wins over in_review. An EMPTY delivery is parked back to refining.
+  if (/delivery PARKED for #\d+ — empty\b/.test(logText)) return "refining";
+  if (
+    /delivery PARKED for #\d+|\bparked #\d+ \(→ blocked|released claim on #\d+ → blocked/.test(
+      logText,
+    )
+  ) {
+    return "blocked";
   }
 
   // Successful delivery: "delivery tick for #N finished (rc=0)".

@@ -13882,13 +13882,11 @@ async function renderSettings() {
     // A value the server would refuse is shown on its own row, and Save says which
     // field holds it back; nothing is posted until it is fixed (or put back).
     const bad = [];
-    for (const [key, ed] of editors) {
-      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
-      if (ed.input) ed.input.removeAttribute("aria-invalid");
-      const problem = key in payload && ed.check ? ed.check() : null;
-      if (!problem) continue;
-      const label = labelOf.get(key);
+    const markBad = (key, problem) => {
+      const ed = editors.get(key);
+      const label = labelOf.get(key) || key;
       bad.push(`${label} ${problem}`);
+      if (!ed) return;
       if (ed.input) ed.input.setAttribute("aria-invalid", "true");
       if (ed.row) {
         const ctl = ed.row.querySelector(".setting-control") || ed.row;
@@ -13898,19 +13896,40 @@ async function renderSettings() {
         const grp = ed.row.closest("details");
         if (grp) grp.open = true;
       }
-    }
-    if (bad.length) {
-      toast(`Not saved: ${bad.join("; ")}.`, {});
+    };
+    const focusFirstBad = () => {
       const first = [...editors.values()].find(
         (ed) => ed.input && ed.input.getAttribute("aria-invalid") === "true",
       );
       if (first) first.input.focus();
+    };
+    for (const [key, ed] of editors) {
+      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
+      if (ed.input) ed.input.removeAttribute("aria-invalid");
+      const problem = key in payload && ed.check ? ed.check() : null;
+      if (problem) markBad(key, problem);
+    }
+    if (bad.length) {
+      toast(`Not saved: ${bad.join("; ")}.`, {});
+      focusFirstBad();
       return;
     }
     // A submit is the intent (the primary only rests disabled while clean).
     saveBtn.disabled = false;
     runAsyncAction(saveBtn, "Saving…", async () => {
-      const res = await api("POST", "/api/settings", { settings: payload });
+      let res;
+      try {
+        res = await api("POST", "/api/settings", { settings: payload });
+      } catch (err) {
+        // A value only the server can judge (a webhook address, a choice it no longer
+        // lists): the 422 names each field, so mark them on their rows like the rest.
+        const invalid = err && err.details && err.details.invalid;
+        if (Array.isArray(invalid) && invalid.length) {
+          for (const p of invalid) if (p && p.key) markBad(p.key, p.problem || "is not valid");
+          focusFirstBad();
+        }
+        throw err;
+      }
       const written = (res.written || []).length;
       const rejected = (res.rejected || []).length;
       const invalid = (res.invalid || []).length;
@@ -15417,6 +15436,7 @@ function renderSecretSettingInput(s, editors) {
           ? input.value.trim()
           : SECRET_UNCHANGED,
     initial: SECRET_UNCHANGED,
+    input,
   });
   return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
 }

@@ -77,6 +77,8 @@ SELF="$HERE/run.sh"
 # two thirds of the short cap; run-harness.test.sh H10 fails when one is missing.
 # usage-limit-tick (119 s), tick-deadline (97 s) and resume-abort (89 s) were left on
 # the 120 s cap until CI run 41338925244 showed them that close to it.
+# direct-run-isolation is quick by default but stays here for its nightly
+# GAFFER_TEST_EXHAUSTIVE=1 form (~220 s).
 LONG_RE='^(gate-integrity-e2e(-retry)?|dashboard-lifecycle|eval-replay|auth-gate-delivery|merge-lane|land-tester-replay(-proof)?|parallel-stop(-live)?|waste-controls|security-review-lane|direct-run-isolation|review-wedge|afk-review-hold|branch-retention|branch-switch-fresh|branch-switch-recovery|rework-final-trail|memory-index-after-merge|rework-cost-live|landing-revocation|secondary-pr-landing|cleanup-ownership|usage-limit-tick|tick-deadline|resume-abort|e2e-.*)\.test\.(sh|mjs)$|^safety-hook\.test\.mjs$'
 CAP_SH="${GAFFER_RUN_CAP_SH:-120}" CAP_MJS="${GAFFER_RUN_CAP_MJS:-300}" CAP_LONG="${GAFFER_RUN_CAP_LONG:-600}"
 

@@ -15,12 +15,13 @@
 # ESTIMATES until the next refresh (the test changed after that run):
 #   delivery-lifecycle: 100 - 60, the two TICK_SLEEP=30 pauses it no longer sleeps (Linux alone: 95s -> 36s).
 #   e2e-release-gate-merge-typecheck: 136 x 65/141, scenarios 1-2 only (Linux alone: 141s -> 65s).
+#   direct-run-isolation: 224 x 16/213, the quick re-runs only (Linux alone: 213s -> 16s). It
+#   stays in LONG_RE: the nightly GAFFER_TEST_EXHAUSTIVE=1 run re-runs all 16 tests (~220s).
 334	land-tester-replay.test.sh
 297	merge-lane.test.sh
 252	land-tester-replay-proof.test.sh
 237	e2e-release-gate-tester-replay.test.sh
 237	waste-controls.test.sh
-224	direct-run-isolation.test.sh
 187	e2e-agent-skill-routing.test.sh
 176	gate-integrity-e2e-retry.test.sh
 154	e2e-multi-repo-delivery.test.sh
@@ -98,6 +99,7 @@
 18	onboard-analyze.test.mjs
 17	daemon-sigint.test.sh
 17	day-cap-no-work.test.sh
+17	direct-run-isolation.test.sh
 17	e2e-lifecycle.test.sh
 16	parallel-claim.test.sh
 16	registry-probe.test.sh

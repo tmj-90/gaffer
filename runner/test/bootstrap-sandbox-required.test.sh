@@ -19,6 +19,10 @@
 #      one-time image build
 #   3. the fix always offers the supervised alternative and the trusted-VM opt-out
 #   4. control: strict-require off → the bootstrap goes ahead (agent spawned)
+#   5. the same shape for the budget: a bootstrap whose paid launch the budget
+#      admission refuses is released to ready (budget_refused, uncounted) before it
+#      creates anything, where it used to git-init the repo and park "bootstrap failed
+#      (rc=77)"
 # Run: bash runner/test/bootstrap-sandbox-required.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -90,6 +94,7 @@ REL="$(release_line)"
 case "$REL" in *'"blocked"'*strict_require_unavailable*) ok "released to blocked with reason code strict_require_unavailable" ;;
   *) fail "release: '${REL:-<none>}' (log: $(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|STRICT|released' | tail -3 | tr '\n' ' ' | cut -c1-500))" ;; esac
 [ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created under GAFFER_BOOTSTRAP_ROOT" || fail "the new repo was git-init'd before the sandbox check"
+[ ! -e "$BOOT_ROOT" ] && ok "GAFFER_BOOTSTRAP_ROOT itself untouched" || fail "the bootstrap root was created: $(ls -la "$BOOT_ROOT" 2>&1 | head -3 | tr '\n' ' ')"
 [ ! -e "$MARKER" ] && ok "no agent spawned" || fail "the agent ran with no sandbox"
 case "$REL" in *SANDBOX_PROVIDER=docker*) ok "the reason names a provider to set (SANDBOX_PROVIDER=docker)" ;;
   *) fail "the reason names no fix: $REL" ;; esac
@@ -111,6 +116,19 @@ echo "== 4: control — strict-require off, the bootstrap goes ahead =="
 run_tick off GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none
 grep -q strict_require_unavailable "$WG_CALLS" && fail "parked strict_require_unavailable with strict-require off" || ok "no sandbox park with strict-require off"
 [ -e "$MARKER" ] && ok "the bootstrap agent was spawned" || fail "the agent never ran: $(printf '%s' "$OUT" | tail -4 | tr '\n' ' ' | cut -c1-400)"
+
+echo "== 5: budget refused → released to ready before anything is created =="
+# The tick's own day-cap check runs first, so a spent cap never gets this far. What
+# reaches the bootstrap is a refusal only the admission makes: a tick run by hand with
+# no dollar cap at all (a paid launch refuses to start uncapped, like a live run).
+run_tick budget GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_DAILY_BUDGET_USD= GAFFER_BUDGET_USD= GAFFER_ALLOW_UNCAPPED=
+REL="$(release_line)"
+case "$REL" in *'"ready"'*budget_refused*) ok "released to ready with reason code budget_refused" ;;
+  *) fail "budget release: '${REL:-<none>}' (log: $(printf '%s' "$OUT" | grep -E 'BUDGET|BOOTSTRAP|released' | tail -3 | tr '\n' ' ' | cut -c1-500))" ;; esac
+case "$REL" in *"rc=77"*) fail "still the 'bootstrap failed (rc=77)' park" ;; *) ok "not the 'bootstrap failed (rc=77)' park" ;; esac
+grep -q '"bootstrap_failed"' "$WG_CALLS" && fail "parked bootstrap_failed" || ok "never parked bootstrap_failed"
+[ ! -e "$BOOT_ROOT" ] && ok "nothing created under GAFFER_BOOTSTRAP_ROOT" || fail "the repo was created before the budget admission"
+[ ! -e "$MARKER" ] && ok "no agent spawned" || fail "the agent ran past a spent cap"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "bootstrap-sandbox-required: ALL $PASS checks passed"; exit 0; fi

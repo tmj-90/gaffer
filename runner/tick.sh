@@ -1284,6 +1284,20 @@ if [ "$READY_COUNT" -gt 0 ]; then
         fi ;;
     esac
 
+    # BUDGET ADMISSION, before anything is created. worker_deliver asks it again right
+    # before the launch (lib/worker.sh); asked only there, a refused bootstrap had
+    # already git-init'd the new repo and parked as "bootstrap failed (rc=77)". Asked
+    # here too, a cap that is already spent releases the ticket to ready, uncounted and
+    # with nothing made, the same way a refused delivery launch is released.
+    if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = "claude-code" ] \
+       && declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
+       && ! gaffer_paid_launch_admitted bootstrap; then
+      gaffer_release_delivery ready "the paid bootstrap launch was refused by the budget admission (no agent ran, nothing created); not counted as an attempt" budget_refused
+      gaffer_skip_ticket "$NUM"
+      log "BUDGET: bootstrap #$NUM — the paid launch was refused by the budget admission (see the line above); released to ready before creating $B_DIR, not counted as an attempt"
+      result no_work; exit 0
+    fi
+
     # Create + init the new repo dir WITH a baseline README commit on `main` (repo
     # display name + the ticket's intent). A failure here leaves no half-made repo.
     if ! gaffer_bootstrap_init "$B_DIR" "$B_NAME" "$TITLE"; then
@@ -1425,6 +1439,15 @@ if [ "$READY_COUNT" -gt 0 ]; then
       fi
       log "USAGE: bootstrap #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready, scaffold kept at $B_DIR; $_UL_LINE"
       result usage_paused; exit 0
+    fi
+    # BUDGET ADMISSION REFUSED at the launch itself (a cap reached since the check
+    # above): no agent ran, so it is not a failed scaffold. Release to ready uncounted;
+    # the dir stays a resumable bootstrap target for the retry.
+    if [ "${WORKER_LAST_BUDGET_REFUSED:-0}" = 1 ]; then
+      gaffer_release_delivery ready "the paid bootstrap launch was refused by the budget admission (no agent ran); not counted as an attempt (repo kept at $B_DIR)" budget_refused
+      gaffer_skip_ticket "$NUM"
+      log "BUDGET: bootstrap #$NUM — the paid launch was refused by the budget admission; released to ready without counting an attempt"
+      result no_work; exit 0
     fi
     if [ "$brc" -ne 0 ]; then
       # FINDING-12: park bootstrap failures to the VISIBLE `blocked` column (event +

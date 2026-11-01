@@ -242,6 +242,36 @@ describe("api/F8: a principal cannot take a registered agent's id; nobody approv
   });
 });
 
+describe("cli-wg/F-13: human-release hands back only your own by-hand ticket", () => {
+  function byHand(wg: Dispatch, owner: string) {
+    const t = wg.createTicket({ title: "By hand", description: "x" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
+    giveTicketRealDelivery(wg, t.id, human);
+    wg.markReady(t.id, human);
+    wg.humanClaimTicket(t.id, { type: "human", id: owner });
+    expect(wg.view(t.id).ticket.human_owner).toBe(owner);
+    return t.id;
+  }
+
+  it("another person is refused; the owner hands it back", () => {
+    const wg = freshWg();
+    const id = byHand(wg, "alice");
+    expect(codeOf(() => wg.humanReleaseTicket(id, { type: "human", id: "bob" }))).toBe(
+      "ACTOR_NOT_PERMITTED",
+    );
+    expect(wg.view(id).ticket.status).toBe("in_progress");
+    expect(wg.humanReleaseTicket(id, { type: "human", id: "alice" }).status).toBe("ready");
+    wg.db.close();
+  });
+
+  it("an admin (--admin) may hand back anyone's", () => {
+    const wg = freshWg();
+    const id = byHand(wg, "alice");
+    expect(wg.humanReleaseTicket(id, { type: "admin", id: "bob" }).status).toBe("ready");
+    wg.db.close();
+  });
+});
+
 describe("api/F1: two parallel Merge requests start one merge", () => {
   it("the second POST /tickets/:id/merge is 409 MERGE_IN_FLIGHT and starts nothing", async () => {
     const { createApiServer } = await import("../src/api/server.js");

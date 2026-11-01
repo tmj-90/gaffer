@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
+import type { Actor } from "../../domain/types.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -34,7 +35,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { apiActor, operatorActor } from "./context.js";
+import { API_ACTOR, apiActor, operatorActor } from "./context.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -280,7 +281,14 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.HUMAN_RELEASE && method === "POST") {
     humanClaimBody.parse(await readJsonBody(req));
     const ticket = wg.resolveTicket(id);
-    const result = wg.humanReleaseTicket(ticket.id, apiActor());
+    // OWNER ONLY (cli-wg/F-13): a named principal hands back only its own by-hand ticket;
+    // the dashboard's operator (the shared token) acts as admin and may hand back any.
+    const caller = apiActor();
+    const releaser: Actor =
+      caller.type === "human" && caller.id === API_ACTOR.id
+        ? { type: "admin", id: API_ACTOR.id ?? "dispatch-api" }
+        : caller;
+    const result = wg.humanReleaseTicket(ticket.id, releaser);
     sendJson(res, 200, {
       ticket_id: result.ticketId,
       status: result.status,

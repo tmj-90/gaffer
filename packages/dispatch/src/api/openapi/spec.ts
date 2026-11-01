@@ -669,6 +669,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/human-release",
     tag: T.tickets,
     summary: "Hand a by-hand ticket back to the queue",
+    description:
+      "A named principal hands back only a ticket it took by hand itself (403 `ACTOR_NOT_PERMITTED` for anyone else's); the shared operator token acts as admin and may hand back any.",
     capability: "full",
     body: "humanClaimBody",
     responses: [ok("`{ ticket_id, status, event_id }`."), notFound, conflict],

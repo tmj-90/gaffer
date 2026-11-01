@@ -132,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Only the owner hands back a by-hand ticket (exploratory finding cli-wg/F-13).** `USER=bob wg human-release 48` handed back alice's by-hand ticket without a word. `wg human-release` now refuses (`ACTOR_NOT_PERMITTED`) when `$USER` is not the ticket's human owner; `--admin` hands anyone's back. Over REST a named principal hands back only its own; the dashboard's operator token still acts as admin.
+
 - **A principal cannot speak as an agent (exploratory finding api/F8).** `POST /api/principals` accepted an `actor_id` equal to a registered agent's id; that principal's approval was recorded as `human/<agent id>`, and the dashboard showed the delivering agent approving its own work. Creating such a principal is now refused (409 `DUPLICATE`, `actor_id_is_agent`), and the review gate refuses any approval whose actor id is the delivering agent's, whatever the actor type.
 
 - **An approval names each repository once (exploratory finding api/F12).** With two commits given for one repository the first one decided: `[head, other]` approved and `[other, head]` was refused as a stale revision. Naming a repository twice (by name, by id, or both) is now a 422 `VALIDATION_ERROR` (`duplicate_repo`) in any order, and nothing is approved.

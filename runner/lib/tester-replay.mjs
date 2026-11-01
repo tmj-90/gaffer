@@ -41,11 +41,11 @@
 //   → one JSON line { ok, run, record, files, tests_ref, tests_head, tested, reason,
 //     invocation? } — exit 0 (decided; files applied and, with --test-cmd, the invocation
 //     and its proof directory prepared when run) · 4 could not decide / apply (hold).
-//   node lib/tester-replay.mjs proof --worktree <wt> --invocation <json> --files-json <json>
+//   node lib/tester-replay.mjs proof --worktree <wt> --invocation <json | - (stdin)> --files-json <json>
 //   → { ran, unproven, reason } (exit 0; 4 when there is no invocation to read).
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -283,14 +283,35 @@ export function applyTesterTests({ worktree, testsHead, files }) {
 // invocation is well defined, and in every case reads POSITIVE evidence per file from the
 // runner itself (a node:test reporter's events, a vitest/jest JSON report, pytest's
 // per-test node ids, `go list`'s test files, cargo's "Running tests/<name>.rs" line).
-// Where no file-scoped invocation is known the registered command runs as before, with a
-// node:test reporter added through NODE_OPTIONS and the same per-file output lines read.
+// Where no file-scoped invocation is known the registered command runs as before, with the
+// signed node:test reporter added through NODE_OPTIONS (its events are the only proof read).
 // A tester file with no proof is NOT a pass: the caller holds the landing
-// (tester_replay_unverified, naming the files) and records nothing. The evidence lives in
-// a fresh per-replay directory inside the scratch merge worktree (the sandbox's write
-// root), never in the landed commit. It is evidence about honest coverage — code under
-// test can always print what a runner prints — and it is strictly more than the exit code
-// the replay read before.
+// (tester_replay_unverified, naming the files) and records nothing.
+//
+// FORGERY (external review #7, the reviewer's follow-up). The code under test runs in the
+// same process tree as the runner, so anything it can print or write is no proof: a
+// delivery whose module exits before the tester's tests register, then prints "✔ …" lines
+// or appends reporter-shaped events to a proof file in the worktree, used to be counted as
+// "ran". So:
+//   • node:test events are SIGNED: the reporter (loaded by the runner's parent process
+//     before any test file starts) reads a per-replay key from GAFFER_REPLAY_PROOF_KEY and
+//     DELETES it from its environment, so the test files (child processes spawned after)
+//     never see it; each event line carries an HMAC of its JSON, a per-process sequence
+//     number and a closing count. A line with a bad MAC, a gap, a duplicate or a missing
+//     end makes the whole replay unverified. The key is never written to a file and is
+//     handed to the proof step on stdin, never on a command line.
+//   • the set of files the runner reports must match the files passed on the command line:
+//     a by-path run that reports any other file is unverified as a whole (vitest / jest
+//     JSON reports are shape-checked the same way: exactly the files requested, a
+//     consistent test count).
+//   • plain stdout text is never proof for the registered command: only the signed node:test
+//     events count there (a vitest / pytest suite behind an unrecognised command holds as
+//     unverified; register the runner's own command to replay it by path).
+// What this does NOT stop: code that reads another process's environment (/proc/<pid>/
+// environ, `ps -E`) as the same user, a node loader module the registered command imports
+// into the runner's parent process (--import / --require are kept so TypeScript suites
+// run), or code that rewrites a vitest / jest report or a pytest / cargo output line in
+// process. Those take a deliberate attack on the replay itself, not a mis-scoped command.
 
 /** The runners the replay knows a file-scoped invocation for. */
 export const REPLAY_RUNNERS = ["node-test", "vitest", "jest", "pytest", "go", "cargo"];
@@ -385,17 +406,36 @@ export function nodeLoaderFlags(effective) {
   return out;
 }
 
-/** The node:test reporter the replay adds: one JSON line per test that ran, with its file. */
+/** The prefix of a signed proof line, and the env var the reporter reads its key from. */
+export const PROOF_TAG = "gaffer-replay-proof";
+export const PROOF_KEY_ENV = "GAFFER_REPLAY_PROOF_KEY";
+
+/**
+ * The node:test reporter the replay adds: one SIGNED line per test that ran, with its file,
+ * then a closing count — `gaffer-replay-proof <hmac-sha256 hex> <json>`. The key comes from
+ * the environment and is deleted from it at load (before the runner spawns a test file),
+ * so no test process can sign a line. Without a key it signs nothing (no proof).
+ */
 const NODE_REPORTER = `// gaffer tester replay: which test files ran (written by lib/tester-replay.mjs)
+import { createHmac } from "node:crypto";
+const KEY = process.env.${PROOF_KEY_ENV} || "";
+delete process.env.${PROOF_KEY_ENV};
+const line = (o) => {
+  const j = JSON.stringify(o);
+  return "${PROOF_TAG} " + createHmac("sha256", KEY).update(j).digest("hex") + " " + j + "\\n";
+};
 export default async function* gafferReplayReporter(source) {
+  let seq = 0;
   for await (const ev of source) {
+    if (!KEY) continue;
     if ((ev.type === "test:pass" || ev.type === "test:fail") && ev.data && ev.data.file) {
       const d = ev.data;
-      yield JSON.stringify({ type: ev.type, file: String(d.file), name: String(d.name ?? ""),
-        skip: Boolean(d.skip), todo: Boolean(d.todo),
-        suite: Boolean(d.details && d.details.type === "suite") }) + "\\n";
+      yield line({ pid: process.pid, seq: ++seq, type: ev.type, file: String(d.file),
+        name: String(d.name ?? ""), skip: Boolean(d.skip), todo: Boolean(d.todo),
+        suite: Boolean(d.details && d.details.type === "suite") });
     }
   }
+  if (KEY) yield line({ pid: process.pid, type: "end", count: seq });
 }
 `;
 
@@ -405,26 +445,38 @@ export default async function* gafferReplayReporter(source) {
  * `command` runs through bin/dod-regate.sh (the gates' wrap and timeout); `env` is added
  * to its environment; `proof.dir` is a fresh directory inside the worktree.
  */
-export function replayInvocation({ worktree, base = "", testCommand, files, nonce = "" }) {
+export function replayInvocation({
+  worktree,
+  base = "",
+  testCommand,
+  files,
+  nonce = "",
+  key = "",
+}) {
   const n = nonce || randomBytes(6).toString("hex");
   const dir = join(worktree, `.gaffer-replay-${n}`);
+  // The node:test events are signed with this key (NODE_REPORTER); the caller passes it to
+  // the run in the environment only (inv.env) and to replayProof on stdin.
+  const proofKey = key || randomBytes(32).toString("hex");
   const proof = {
     dir,
     reporter: join(dir, "reporter.mjs"),
-    events: join(dir, "events.jsonl"),
     report: join(dir, "report.json"),
     golist: join(dir, "golist.txt"),
     output: join(dir, "output.txt"),
+    key: proofKey,
   };
   const effective = effectiveTestCommand({ worktree, base, testCommand });
   const runner = detectRunner(effective);
   const list = (files || []).map(shq).join(" ");
+  // Both reporters write to the run's stdout (the tests gate's output, kept through
+  // GAFFER_DOD_TESTS_OUTPUT): the signed lines need no file a test process could write.
   const reporters = (q) =>
     [
       "--test-reporter=spec",
       "--test-reporter-destination=stdout",
       `--test-reporter=${q(proof.reporter)}`,
-      `--test-reporter-destination=${q(proof.events)}`,
+      "--test-reporter-destination=stdout",
     ].join(" ");
   const registered = (why) => ({
     runner: "registered",
@@ -434,6 +486,7 @@ export function replayInvocation({ worktree, base = "", testCommand, files, nonc
       NODE_OPTIONS: [process.env.NODE_OPTIONS || "", reporters(nodeOptWord)]
         .filter(Boolean)
         .join(" "),
+      [PROOF_KEY_ENV]: proofKey,
     },
     proof,
     effective,
@@ -443,7 +496,7 @@ export function replayInvocation({ worktree, base = "", testCommand, files, nonc
     runner,
     mode: "files",
     command,
-    env: {},
+    env: runner === "node-test" ? { [PROOF_KEY_ENV]: proofKey } : {},
     proof,
     effective,
     reason: why,
@@ -550,68 +603,155 @@ function stripAnsi(line) {
   return String(line).replace(ANSI_RE, "");
 }
 
-const OUTPUT_FILE_LINE = [
-  // vitest / jest per-file lines: " ✓ test/a.test.ts (2 tests)", "PASS test/a.test.js"
-  /^\s*(?:✓|✔|√|×|✗|❯|PASS|FAIL)\s+(\S+)/,
-  // pytest node ids (-v): "test/test_a.py::test_x PASSED"
-  /^(\S+?)::\S.*?\s(?:PASSED|FAILED|ERROR|XFAIL|XPASS)\b/,
-];
+// pytest node ids (-vv): "test/test_a.py::test_x PASSED". (vitest / jest per-file text
+// lines are not read: anything the tests print can look like them.)
+const PYTEST_NODE_ID = /^(\S+?)::\S.*?\s(?:PASSED|FAILED|ERROR|XFAIL|XPASS)\b/;
+
+/** A signed node:test proof line's MAC check (constant time). */
+function macOk(key, json, mac) {
+  if (!key || !/^[0-9a-f]{64}$/.test(mac)) return false;
+  const want = createHmac("sha256", key).update(json).digest();
+  return timingSafeEqual(want, Buffer.from(mac, "hex"));
+}
+
+/**
+ * The node:test reporter's SIGNED events in a run's output → { events, bad } where `bad`
+ * names the first integrity failure (a line with a bad MAC or shape, a sequence gap or
+ * duplicate, a process with no closing count). Unsigned look-alikes are ignored.
+ */
+function signedNodeEvents(output, key) {
+  const events = [];
+  const byPid = new Map();
+  let bad = "";
+  const tag = `${PROOF_TAG} `;
+  for (const raw of output.split("\n")) {
+    const at = raw.indexOf(tag);
+    if (at < 0) continue;
+    const rest = raw.slice(at + tag.length).replace(/\r$/, "");
+    const sp = rest.indexOf(" ");
+    const mac = sp > 0 ? rest.slice(0, sp) : "";
+    const json = sp > 0 ? rest.slice(sp + 1) : "";
+    if (!macOk(key, json, mac)) {
+      bad ||= "a proof line is not signed by this replay's reporter";
+      continue;
+    }
+    let ev;
+    try {
+      ev = JSON.parse(json);
+    } catch {
+      bad ||= "a signed proof line is not JSON";
+      continue;
+    }
+    if (!ev || !Number.isInteger(ev.pid)) {
+      bad ||= "a signed proof line names no process";
+      continue;
+    }
+    const g = byPid.get(ev.pid) || { seq: 0, end: false };
+    byPid.set(ev.pid, g);
+    if (g.end) {
+      bad ||= "a proof line follows its process's closing count";
+      continue;
+    }
+    if (ev.type === "end") {
+      if (ev.count !== g.seq) bad ||= "a process's closing count does not match its events";
+      g.end = true;
+      continue;
+    }
+    if (ev.seq !== g.seq + 1 || typeof ev.file !== "string") {
+      bad ||= "the proof lines are out of sequence (a gap, a duplicate or a replayed line)";
+      continue;
+    }
+    g.seq = ev.seq;
+    events.push(ev);
+  }
+  for (const g of byPid.values())
+    if (!g.end) bad ||= "a runner process's proof has no closing count";
+  return { events, bad };
+}
+
+/** A vitest / jest JSON report's per-file results, or "" when its shape is not one. */
+function jsonReportResults(text) {
+  let rep;
+  try {
+    rep = JSON.parse(text || "null");
+  } catch {
+    return { results: [], bad: "the JSON report is unreadable" };
+  }
+  if (!rep || typeof rep !== "object" || !Array.isArray(rep.testResults))
+    return { results: [], bad: "the JSON report has no testResults" };
+  if (typeof rep.numTotalTests !== "number")
+    return { results: [], bad: "the JSON report has no test count" };
+  let total = 0;
+  for (const r of rep.testResults) {
+    if (!r || typeof r.name !== "string" || !Array.isArray(r.assertionResults))
+      return { results: [], bad: "a JSON report entry is not a test file result" };
+    total += r.assertionResults.length;
+  }
+  if (total !== rep.numTotalTests)
+    return { results: [], bad: "the JSON report's test count does not match its results" };
+  return { results: rep.testResults, bad: "" };
+}
 
 /**
  * Which tester files the replay PROVES ran: { ran, unproven, reason }. Reads only what
  * the runner wrote (see replayInvocation); a file without positive evidence is unproven.
+ * An integrity failure — a forged or out-of-sequence node:test line, a by-path run that
+ * reports a file it was not given, a malformed report — leaves EVERY file unproven.
  */
-export function replayProof({ inv, files, worktree }) {
+export function replayProof({ inv, files, worktree, key }) {
   const want = [...new Set((files || []).map(String))];
   const proven = new Set();
+  let bad = "";
+  const rels = (p) => [...relSpellings(worktree, p)];
+  const requested = (p) => rels(p).some((r) => want.includes(r));
   const mark = (p) => {
-    for (const r of relSpellings(worktree, p)) if (want.includes(r)) proven.add(r);
+    for (const r of rels(p)) if (want.includes(r)) proven.add(r);
   };
+  const byPath = inv.mode === "files";
   const runner = inv.runner;
   const output = readText(inv.proof.output);
+  const proofKey = key || (inv.proof && inv.proof.key) || "";
   // node:test events (files mode for node, and every registered run through NODE_OPTIONS).
   if (runner === "node-test" || runner === "registered") {
-    for (const line of readText(inv.proof.events).split("\n")) {
-      if (!line.trim()) continue;
-      let ev;
-      try {
-        ev = JSON.parse(line);
-      } catch {
+    const sig = signedNodeEvents(output, proofKey);
+    bad ||= sig.bad;
+    for (const ev of sig.events) {
+      // A by-path run is given exactly the tester's files: any other file is a mismatch.
+      if (byPath && !requested(ev.file)) {
+        bad ||= `the runner reported a file it was not given (${rels(ev.file)[0] || ev.file})`;
         continue;
       }
-      if (!ev || typeof ev.file !== "string" || ev.skip || ev.todo || ev.suite) continue;
+      if (ev.skip || ev.todo || ev.suite) continue;
       // node reports a file that defines no test as one synthetic test named after it:
       // nothing in it ran.
-      if ([...relSpellings(worktree, ev.file)].includes(String(ev.name))) continue;
+      if (rels(ev.file).includes(String(ev.name))) continue;
       if (ev.name === ev.file) continue;
       mark(ev.file);
     }
   }
   if (runner === "vitest" || runner === "jest") {
-    const rep = (() => {
-      try {
-        return JSON.parse(readText(inv.proof.report) || "null");
-      } catch {
-        return null;
+    const rep = jsonReportResults(readText(inv.proof.report));
+    bad ||= rep.bad;
+    for (const r of rep.results) {
+      if (!requested(r.name)) {
+        bad ||= `the JSON report names a file that was not requested (${rels(r.name)[0] || r.name})`;
+        continue;
       }
-    })();
-    for (const r of (rep && Array.isArray(rep.testResults) && rep.testResults) || []) {
-      const ran = (r.assertionResults || []).some(
+      const ran = r.assertionResults.some(
         (a) => a && (a.status === "passed" || a.status === "failed"),
       );
-      if (ran && typeof r.name === "string") mark(r.name);
+      if (ran) mark(r.name);
     }
   }
-  if (runner === "pytest" || runner === "registered") {
+  if (runner === "pytest") {
     for (const line of output.split("\n")) {
-      const m = OUTPUT_FILE_LINE[1].exec(stripAnsi(line));
-      if (m) mark(m[1]);
-    }
-  }
-  if (runner === "registered") {
-    for (const line of output.split("\n")) {
-      const m = OUTPUT_FILE_LINE[0].exec(stripAnsi(line));
-      if (m) mark(m[1]);
+      const m = PYTEST_NODE_ID.exec(stripAnsi(line));
+      if (!m) continue;
+      if (!requested(m[1])) {
+        bad ||= `pytest reported a file it was not given (${m[1]})`;
+        continue;
+      }
+      mark(m[1]);
     }
   }
   if (runner === "go") {
@@ -636,18 +776,38 @@ export function replayProof({ inv, files, worktree }) {
   if (runner === "cargo") {
     for (const line of output.split("\n")) {
       const m = /^\s*Running\s+(tests\/[^\s]+\.rs)\b/.exec(line);
-      if (m) mark(m[1]);
+      if (!m) continue;
+      if (!requested(m[1])) {
+        bad ||= `cargo ran a test target it was not given (${m[1]})`;
+        continue;
+      }
+      mark(m[1]);
     }
   }
+  const how = byPath ? `${runner}, by path` : "the registered test command";
+  if (bad)
+    return {
+      ran: [],
+      unproven: want,
+      reason: `the replay's proof of execution does not check out (${how}): ${bad} — none of the ${want.length} tester test file(s) counts as run: ${want.join(", ")}`,
+    };
   const ran = want.filter((f) => proven.has(f));
   const unproven = want.filter((f) => !proven.has(f));
   return {
     ran,
     unproven,
     reason: unproven.length
-      ? `${unproven.length} of ${want.length} tester test file(s) show no evidence they ran (${inv.mode === "files" ? `${runner}, by path` : "the registered test command"}): ${unproven.join(", ")}`
-      : `every tester test file ran (${inv.mode === "files" ? `${runner}, by path` : "the registered test command"})`,
+      ? `${unproven.length} of ${want.length} tester test file(s) show no evidence they ran (${how}): ${unproven.join(", ")}`
+      : `every tester test file ran (${how})`,
   };
+}
+
+function readStdinText() {
+  try {
+    return readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function main(argv) {
@@ -665,7 +825,9 @@ function main(argv) {
         return null;
       }
     };
-    const inv = parse(opt("invocation"));
+    // `--invocation -` reads it from stdin: it carries the proof key, which must never be
+    // on a command line (any process can read those).
+    const inv = parse(opt("invocation") === "-" ? readStdinText() : opt("invocation"));
     const files = parse(opt("files-json"));
     if (!inv || !inv.proof || !Array.isArray(files) || !opt("worktree")) {
       process.stdout.write(
@@ -682,7 +844,7 @@ function main(argv) {
   if (cmd !== "apply" && cmd !== "plan") {
     process.stderr.write(
       "usage: tester-replay.mjs apply --db <db> --ticket <n> --repo <path> --pin <sha> --worktree <wt> [--test-cmd <cmd> --base <sha>]\n" +
-        "       tester-replay.mjs proof --worktree <wt> --invocation <json> --files-json <json>\n",
+        "       tester-replay.mjs proof --worktree <wt> --invocation <json | -> --files-json <json>\n",
     );
     process.exit(2);
   }

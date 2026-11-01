@@ -42,6 +42,11 @@
 #      which runs one file): the tester's file shows no evidence it ran, so the merge lane
 #      and Merge now hold it (tester_replay_unverified, naming the file), nothing lands, no
 #      record, and `gaffer status` names the file that did not run.
+#   K  FORGED PROOF (the reviewer's follow-up): the delivery's module, imported by the
+#      tester's file, exits before the file's tests register and prints / writes "passed"
+#      evidence for it (runner lines, reporter-shaped events, appended to the replay's proof
+#      files). The by-path run exits 0, but no signed event proves the file: the merge lane
+#      holds it (tester_replay_unverified, naming the file), main is untouched, no record.
 # Run: bash runner/test/land-tester-replay.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -78,6 +83,7 @@ if [ -e .git ]; then
   case "$prompt" in
     *"[read-displayName]"*) sed -i.bak 's/profile().name;/profile().displayName;/' src/label.js ;;
     *"[note-"*) n="$(printf '%s' "$prompt" | sed -n 's/.*\[note-\([0-9a-z]*\)\].*/\1/p' | head -1)"; mkdir -p docs; printf 'note %s\n' "$n" > "docs/note-$n.md" ;;
+    *"[forge-proof]"*) cp "$(dirname "$0")/forger.js" src/label.js ;;
   esac
   rm -f src/*.bak
   git -c user.email=s@s -c user.name=s add -A >/dev/null; git -c user.email=s@s -c user.name=s commit -qm "feat: delivery" >/dev/null 2>&1 || true
@@ -404,6 +410,50 @@ merge_now "$T15"; rc=$?
 [ "$(git -C "$R3" rev-parse main)" = "$MAIN_J" ] && [ "$(st "$T15")" = blocked ] && [ -z "$(replay_rec "$T15")" ] && ok "J: …nothing landed, held, no record" || fail "J: #$T15 status=$(st "$T15") main=$(git -C "$R3" rev-parse main) rec=$(replay_rec "$T15")"
 STATUS_J="$(bash "$RUNNER_DIR/status.sh" 2>/dev/null)"
 case "$STATUS_J" in *"#$T14 tester replay UNVERIFIED (held)"*test/acceptance.test.mjs*) ok "J: gaffer status names the tester file that did not run" ;; *) fail "J: gaffer status: $(printf '%s' "$STATUS_J" | grep -i 'replay' | head -3)" ;; esac
+
+echo "== K: forged proof — the delivery stops the tester's file and prints 'passed' for it =="
+# The delivery's src/label.js: when the tester's file imports it, it writes "passed"
+# evidence for that file in every shape a runner uses (and appends a reporter-shaped event
+# to the replay's proof files once the runner has written there), then exits before the
+# file's tests register.
+cat > "$WORK/bin/forger.js" <<'FORGER'
+import { spawn } from "node:child_process";
+import { resolve } from "node:path";
+const me = resolve("test/acceptance.test.mjs");
+const ev = JSON.stringify({ pid: process.ppid, seq: 1, type: "test:pass", file: me, name: "the label is Ada", skip: false, todo: false, suite: false });
+const helper = `const fs = require("fs"); const t0 = Date.now();
+const tick = () => { for (const d of fs.readdirSync(".")) if (d.startsWith(".gaffer-replay-")) for (const f of ["events.jsonl", "output.txt"]) { try { if (fs.statSync(d + "/" + f).size > 0) { fs.appendFileSync(d + "/" + f, ${JSON.stringify(ev + "\n")}); return; } } catch {} } if (Date.now() - t0 < 4000) setImmediate(tick); };
+tick();`;
+spawn(process.execPath, ["-e", helper], { detached: true, stdio: "ignore" }).unref();
+console.log("\u2714 the label is Ada (0.1ms)");
+console.log("PASS test/acceptance.test.mjs");
+console.log(ev);
+console.log("gaffer-replay-proof " + "0".repeat(64) + " " + ev);
+await new Promise((r) => setTimeout(r, 300));
+process.exit(0);
+export function label() { return "Ada"; }
+FORGER
+R4="$WORK/repo4"; mkdir -p "$R4/src" "$R4/test"
+( cd "$R4" && git init -q -b main
+  printf '{ "name": "r4", "version": "0.1.0", "private": true, "type": "module" }\n' > package.json
+  printf 'export function profile() {\n  return { name: "Ada" };\n}\n' > src/profile.js
+  printf 'import { profile } from "./profile.js";\nexport function label() {\n  return profile().name;\n}\n' > src/label.js
+  printf 'import test from "node:test";\nimport assert from "node:assert/strict";\nimport { profile } from "../src/profile.js";\ntest("profile", () => { assert.equal(profile().name, "Ada"); });\n' > test/label.test.mjs
+  gitc add -A && gitc commit -qm init )
+wg repo add -n repo4 --path "$R4" --branch main --stack node --test "node --test test/label.test.mjs" >/dev/null 2>&1
+T16="$(new_ticket_in repo4 "Label tweak [forge-proof]" "label() reads the profile")"
+for _ in 1 2; do AUTO_MERGE=0 run_tick >/dev/null; done
+approve "$T16"
+[ "$(st "$T16")" = in_testing ] && ok "K: the forging delivery passed its own gates and went to the tester" || fail "K: #$T16 status=$(st "$T16")"
+tester_pass_in "$R4" "$T16" "$ACC_LABEL"
+MAIN_K="$(git -C "$R4" rev-parse main)"
+rm -f "$GAFFER_DATA/.merge-held-tickets"
+GAFFER_MODE=autonomous AUTO_MERGE=1 run_tick >/dev/null
+[ "$(git -C "$R4" rev-parse main)" = "$MAIN_K" ] && ok "K: main untouched — the forged proof did not land the delivery" || fail "K: repo4 main moved: $(git -C "$R4" log --oneline -2 main | tr '\n' '|')"
+H16="$(hold_of "$T16")"
+[ "$(st "$T16")" = blocked ] && case "$H16" in *tester_replay_unverified*) case "$H16" in *test/acceptance.test.mjs*) true ;; *) false ;; esac ;; *) false ;; esac \
+  && ok "K: #$T16 held (tester_replay_unverified) naming test/acceptance.test.mjs" || fail "K: #$T16 status=$(st "$T16") hold=${H16:0:400} $(grep "#$T16" "$LOGF" | tail -3 | tr '\n' '|' | cut -c1-400)"
+[ -z "$(replay_rec "$T16")" ] && ok "K: no replay record for the forged file" || fail "K: #$T16 recorded: $(replay_rec "$T16")"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "land-tester-replay: ALL $PASS checks passed"; exit 0; fi

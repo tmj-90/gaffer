@@ -499,7 +499,7 @@ _gaffer_merge_gate() {
 _gaffer_merge_gate_tester_replay() {
   local num="$1" repo="$2" pin="$3" wt="$4" label="$5" tcmd="$6" def="$7" who="$8" dodrc="${9:-0}"
   local helper="${RUNNER_DIR:-}/lib/tester-replay.mjs" out rc run record files reason rout rrc
-  local inv icmd irunner imode iout inodeopt proof unproven ran
+  local inv icmd irunner imode iout inodeopt ikey proof unproven ran
   if [ ! -f "$helper" ] || ! command -v node >/dev/null 2>&1; then
     _MG_REASON="the tester replay (lib/tester-replay.mjs) cannot run"; return 2
   fi
@@ -535,12 +535,16 @@ _gaffer_merge_gate_tester_replay() {
   imode="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.mode) || ""' 2>/dev/null || echo '')"
   iout="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.proof && d.invocation.proof.output) || ""' 2>/dev/null || echo '')"
   inodeopt="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.env && d.invocation.env.NODE_OPTIONS) || ""' 2>/dev/null || echo '')"
+  # The node:test reporter's signing key: in the run's environment only (the reporter
+  # deletes it before any test file starts) and handed to the proof step on stdin.
+  ikey="$(printf '%s' "$out" | jget '(d.invocation && d.invocation.env && d.invocation.env.GAFFER_REPLAY_PROOF_KEY) || ""' 2>/dev/null || echo '')"
   if [ -z "$icmd" ] || [ -z "$iout" ]; then
     _MG_REASON="the tester replay produced no invocation for the tester's tests ($files)"; return 2
   fi
   log "$who: #$num TESTER REPLAY — running the tester's $_MG_REPLAY_COUNT test file(s) ($files) on the merge candidate ${_MG_MERGE:0:12} ($irunner, $([ "$imode" = files ] && echo "by path" || echo "the registered command"))"
   local -a _renv=(GAFFER_DOD=1 GAFFER_DOD_TESTS=1 GAFFER_DOD_TYPECHECK=0 GAFFER_DOD_LINT=0 "GAFFER_DOD_TESTS_OUTPUT=$iout")
   [ -n "$inodeopt" ] && _renv+=("NODE_OPTIONS=$inodeopt")
+  [ -n "$ikey" ] && _renv+=("GAFFER_REPLAY_PROOF_KEY=$ikey")
   # The merge gate already installed this worktree's dependencies.
   [ "$dodrc" = "0" ] && _renv+=(GAFFER_DOD_INSTALL=0)
   rout="$(env "${_renv[@]}" bash "${RUNNER_DIR:-.}/bin/dod-regate.sh" "$wt" "$label:tester-replay" "$icmd" - "$_MG_TARGET" 2>/dev/null)"; rrc=$?
@@ -552,7 +556,7 @@ _gaffer_merge_gate_tester_replay() {
   fi
   # PROOF: every tester file must show the runner's own evidence that it ran. Unreadable
   # proof proves nothing (every file unproven).
-  proof="$(node "$helper" proof --worktree "$wt" --invocation "$inv" --files-json "$_MG_REPLAY_FILES" 2>/dev/null)" \
+  proof="$(printf '%s' "$inv" | node "$helper" proof --worktree "$wt" --invocation - --files-json "$_MG_REPLAY_FILES" 2>/dev/null)" \
     || proof=""
   unproven="$(printf '%s' "$proof" | jget '(d.unproven || []).join(", ")' 2>/dev/null || echo '')"
   ran="$(printf '%s' "$proof" | jget 'JSON.stringify(d.ran || [])' 2>/dev/null || echo '[]')"

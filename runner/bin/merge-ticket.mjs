@@ -2189,7 +2189,7 @@ export function preflightRefusal(ticketNumber, hold) {
   const next =
     hold.kind === "moved-since-review" || hold.kind === "unreviewed"
       ? ` — ${reReviewCommand(ticketNumber, hold.repo)}`
-      : hold.kind === "unavailable"
+      : hold.kind === "unavailable" || hold.kind === "no-head"
         ? ` — attach its checkout or restore the branch, then run gaffer merge ${ticketNumber} again`
         : "";
   return (

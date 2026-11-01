@@ -76,19 +76,33 @@ gaffer_dod_install_enabled() {
 # The STRIPPED environment the pre-gate install runs in (an allowlist, never the
 # runner's env): PATH, a throwaway HOME, TMPDIR, locale, CI=1 and the egress proxy /
 # CA settings a registry fetch needs. Nothing else crosses — no DISPATCH_API_TOKEN,
-# GITHUB_TOKEN, ANTHROPIC_API_KEY, NPM_TOKEN, cloud keys. Under the docker provider
-# the image's own HOME/PATH apply (the host's do not exist inside the container).
+# GITHUB_TOKEN, ANTHROPIC_API_KEY, NPM_TOKEN, cloud keys.
+# Under the docker provider the install runs `env -i <this list>` INSIDE the container,
+# so the wrapper's (lib/sandbox-docker.sh) own -e list never reaches it unless it is
+# named here too, and the host's values are wrong there: the image's HOME and PATH,
+# git's safe.directory (the mounts are owned by the host uid, the container runs as
+# root), the egress proxy (the container's only route out) and the container's /tmp.
+# The host's proxy, TMPDIR and CA bundle paths stay on the host. Same values as
+# lib/worker.sh gives the agent; keep the three in step.
 # Fills the named array ($1) and names the throwaway HOME in $2 (the caller removes it).
 #   gaffer_dod_install_env <array-name> <home-var-name>
 gaffer_dod_install_env() {
   local _arr="$1" _hv="$2" _h="" _v _name
   local -a _e=()
   if [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ] && [ -n "${GAFFER_DOD_WRAP:-}" ]; then
-    _e+=( "HOME=${GAFFER_SANDBOX_HOME:-/root}" "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
-  else
-    _h="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-dod-install-home.XXXXXX" 2>/dev/null)" || _h=""
-    _e+=( "HOME=${_h:-/nonexistent}" "PATH=${PATH:-/usr/bin:/bin}" )
+    _e+=( "HOME=${GAFFER_SANDBOX_HOME:-/root}" "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
+          "TMPDIR=/tmp" "CI=1" "LANG=${LANG:-C.UTF-8}"
+          "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=*"
+          "HTTP_PROXY=http://egress-proxy:8888" "HTTPS_PROXY=http://egress-proxy:8888"
+          "http_proxy=http://egress-proxy:8888" "https_proxy=http://egress-proxy:8888"
+          "NO_PROXY=localhost,127.0.0.1,egress-proxy" "no_proxy=localhost,127.0.0.1,egress-proxy" )
+    [ -n "${LC_ALL:-}" ] && _e+=( "LC_ALL=$LC_ALL" )
+    eval "$_arr=(\"\${_e[@]}\")"
+    eval "$_hv=\"\""
+    return 0
   fi
+  _h="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-dod-install-home.XXXXXX" 2>/dev/null)" || _h=""
+  _e+=( "HOME=${_h:-/nonexistent}" "PATH=${PATH:-/usr/bin:/bin}" )
   _e+=( "TMPDIR=${TMPDIR:-/tmp}" "CI=1" "LANG=${LANG:-C.UTF-8}" )
   for _name in LC_ALL HTTPS_PROXY HTTP_PROXY NO_PROXY https_proxy http_proxy no_proxy \
                NODE_EXTRA_CA_CERTS SSL_CERT_FILE SSL_CERT_DIR; do

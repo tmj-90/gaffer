@@ -168,6 +168,8 @@ while ! _should_stop && _reserve_run_tick; do
   fi
   case "${res:-unknown}" in
     worked)            worked=$((worked + 1)); empties=0 ;;
+    # DRY RUN: a preview of one delivery (nothing claimed or spent).
+    previewed)         worked=$((worked + 1)); empties=0 ;;
     reviewed)          reviewed=$((reviewed + 1)); empties=0 ;;
     # MERGE LANE: the tick found nothing else to do but landed approved work (tick.sh
     # reports `merged` instead of no_work) — productive: a landing frees dependents.

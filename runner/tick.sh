@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
-# Prints a final `TICK_RESULT=worked|reviewed|clarified|idle_drafted|maintenance_drafted|
-# maintenance_ran|merged|no_work|error|setup_error` line (merged: nothing else to do, but
+# Prints a final `TICK_RESULT=worked|previewed|reviewed|clarified|idle_drafted|maintenance_drafted|
+# maintenance_ran|merged|no_work|error|setup_error` line (previewed: a DRY_RUN tick
+# described one delivery and changed nothing) (merged: nothing else to do, but
 # the merge lane landed approved work; setup_error: a fail-closed setup check
 # refused before any agent launched). On an idle tick: maintenance_drafted / idle_drafted =
 # it FILED work (drafts, ingested issues, an epic, lore suggestions); maintenance_ran = it
@@ -389,6 +390,18 @@ result() {
     echo "TICK_RESULT=merged"; return 0
   fi
   echo "TICK_RESULT=$1"
+}
+
+# DRY RUN preview list (loop.sh exports GAFFER_DRY_PREVIEWED_FILE and empties it at the
+# start of a dry run): a ticket previewed once this run is not previewed again.
+# Unset (a hand-run dry tick, a dashboard Poll) → no list, every tick previews.
+gaffer_dry_previewed() {
+  [ "${DRY_RUN:-0}" = "1" ] && [ -n "${GAFFER_DRY_PREVIEWED_FILE:-}" ] && [ -f "$GAFFER_DRY_PREVIEWED_FILE" ] \
+    && grep -qxF -- "$1" "$GAFFER_DRY_PREVIEWED_FILE"
+}
+gaffer_dry_mark_previewed() {
+  [ -n "${GAFFER_DRY_PREVIEWED_FILE:-}" ] || return 0
+  printf '%s\n' "$1" >> "$GAFFER_DRY_PREVIEWED_FILE" 2>/dev/null || true
 }
 # SETUP ERROR: one exit for every fail-closed SETUP failure (no agent launched: the
 # dispatch CLI unbuilt, no timeout primitive, an unregistrable agent, the safety hook /
@@ -920,6 +933,8 @@ RESUME_NUM=""
 if [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ]; then
   SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
   RESUME_NUM="$(wg ticket resume-requested 2>/dev/null | gaffer_json resume-pick "$SKIP_FILE" 2>/dev/null || echo '')"
+  # A dry run previews a resume once per run, like a ready ticket.
+  [ -n "$RESUME_NUM" ] && gaffer_dry_previewed "$RESUME_NUM" && RESUME_NUM=""
 fi
 
 # How many tickets are claimable? DISTINGUISH a real dispatch failure from a genuinely
@@ -954,7 +969,8 @@ if [ -n "$RESUME_NUM" ]; then
   # resume request stays queued for the live tick. Checked BEFORE the lease is taken.
   if [ "${DRY_RUN:-0}" = "1" ]; then
     log "DRY_RUN: would resume paused #$NUM ('$TITLE') in its existing worktree — resume-begin NOT called: no lease taken, the ticket stays paused and its resume request stays queued for the live tick"
-    result worked; exit 0
+    gaffer_dry_mark_previewed "$NUM"
+    result previewed; exit 0
   fi
   # The resume is LEASED to this runner (--agent/--ttl): the pause released the old
   # lease, and resume-begin takes a fresh one and prints its token. From here a resumed
@@ -1019,6 +1035,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
     log "candidate scan: the claimable listing failed — walking the full ready list"
     CANDIDATES="$(echo "$READY_JSON" | gaffer_json pick-unskipped "$SKIP_FILE" --all)"
   fi
+  # DRY RUN: a ticket this run already previewed is not previewed again (loop.sh keeps
+  # the list), so a preview pass shows each ready ticket once and then ends.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ -n "${GAFFER_DRY_PREVIEWED_FILE:-}" ] && [ -s "$GAFFER_DRY_PREVIEWED_FILE" ]; then
+    CANDIDATES="$(printf '%s\n' "$CANDIDATES" | grep -vxF -f "$GAFFER_DRY_PREVIEWED_FILE" || true)"
+  fi
   # A-1: bound the candidate scan. Each candidate costs a `ticket show` + pressure
   # probe; with a per-repo cap (MAX_CONCURRENT_TICKETS_PER_REPO) in force, a tick
   # may legitimately skip several capped repos before finding a free one, so the
@@ -1078,6 +1099,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "all deliverable ready tickets are in repos under BACKPRESSURE — skipping new claims; prioritising review/merge/cleanup"
     elif [ -n "${_CLAIMABLE_JSON:-}" ] && [ "$(printf '%s' "$_CLAIMABLE_JSON" | jget 'Array.isArray(d) ? d.length : -1' 2>/dev/null)" = "0" ]; then
       log "every ready ticket waits on an unfinished dependency — nothing claimable this tick"
+    elif [ "${DRY_RUN:-0}" = "1" ] && [ -s "${GAFFER_DRY_PREVIEWED_FILE:-/nonexistent}" ]; then
+      log "DRY_RUN: every deliverable ready ticket has been previewed this run"
     else
       log "all ready tickets failed delivery this run — nothing deliverable"
     fi
@@ -1819,7 +1842,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # is exported ONLY for the delivery prime (not review/clarify) so memory logs
   # the read-event edge for the items that actually fed the delivered work.
   RECALL_REPO_NAME="$_CARD_REPO_NAME"
-  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$NUM" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
+  # A DRY_RUN prime is a preview: no recall ticket, so memory logs no read events and
+  # no memory_primed evidence lands on the ticket (exploratory finding cli-runner/F-06).
+  _RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"
+  FILE_CARDS_BLOCK="$(GAFFER_RECALL_TICKET="$_RECALL_FOR" gaffer_prime_context_block "$_CARD_REAL_REPO" "$_CARD_REPO_NAME" "$_CARD_QUERY" 2>/dev/null || true)"
   if [ -n "$FILE_CARDS_BLOCK" ]; then
     PRIME_CONTEXT_CALLED=true
     # Count card lines only: the recalled-lore section that may follow the cards
@@ -1836,7 +1862,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # tool-call layer ($GAFFER_DATA/tool-metrics.jsonl), keyed by GAFFER_TICKET. The
   # end-of-run summary (run-summary.sh → json-tool summary-retrieval) joins the two:
   # reads before the first write, and how many served cards the agent then Read.
-  if [ -n "${GAFFER_DATA:-}" ]; then
+  if [ -n "${GAFFER_DATA:-}" ] && [ "${DRY_RUN:-0}" != "1" ]; then
     {
       printf '%s\n' "$FILE_CARDS_BLOCK" \
         | node "$RUNNER_DIR/lib/json-tool.mjs" delivery-metric "$NUM" "$PRIME_CONTEXT_CALLED" "${CARDS_SERVED:-0}" \
@@ -1885,6 +1911,9 @@ $PRODUCT_CONTEXT_BLOCK}"
 
   if [ "$_RESUMING" = "1" ]; then
     log "resume=#$NUM → re-entering delivery for paused #$NUM ('$TITLE') in $PRIMARY_REPO [stack=$STACK]"
+  elif [ "${DRY_RUN:-0}" = "1" ]; then
+    # Not "delivering": `gaffer status` lists this line as a dry-run preview.
+    log "ready=$READY_COUNT → DRY_RUN: previewed #$NUM ('$TITLE') in $PRIMARY_REPO (nothing claimed, nothing spent) [stack=$STACK]"
   elif [ "$MULTI_REPO" = "1" ]; then
     log "ready=$READY_COUNT → delivering #$NUM ('$TITLE') across $WRITE_REPO_COUNT write repos (multi-repo) [stack=$STACK]"
   else
@@ -1949,7 +1978,8 @@ $PRODUCT_CONTEXT_BLOCK}"
     log "DRY_RUN: on failure, would remove the worktrees AND delete branch $WORK_BRANCH so the real repo stays 100% clean"
     log "DRY_RUN: recommended skills = $SKILLS"
     log "DRY_RUN: routed implement model = ${DELIVERY_MODEL:-<claude default>} (see the ROUTE #$NUM line above for the decision)"
-    result worked; exit 0
+    gaffer_dry_mark_previewed "$NUM"
+    result previewed; exit 0
   fi
 
   # ── Worktree delivery setup (replaces in-place branching) ───────────────────

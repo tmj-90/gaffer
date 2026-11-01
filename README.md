@@ -91,7 +91,7 @@ Then watch it, and let it go when you're happy:
 
 ```bash
 runner/gaffer demo                         # the whole loop on a throwaway showcase repo, dry run
-runner/gaffer run --dry-run                # what a pass over your queue would do; nothing spent
+runner/gaffer run --dry-run                # preview each ready ticket once; nothing claimed or spent
 export GAFFER_DAILY_BUDGET_USD=5           # a live run refuses to start without a dollar cap
 runner/gaffer run                          # live: one pass, delivers ready tickets to review
 runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review screen

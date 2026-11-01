@@ -229,7 +229,8 @@ if [ -n "$replay_lines" ]; then
 fi
 
 printf "\n  ${c_dim}recent ticks${c_off}\n"
-ticks="$(grep -hE 'delivering #|delivery tick for #' "$GAFFER_LOG" 2>/dev/null | tail -n "$STATUS_TICKS")"
+# A dry run logs "DRY_RUN: previewed #N" (never "delivering"), shown as what it was.
+ticks="$(grep -hE 'delivering #|delivery tick for #|DRY_RUN: previewed #' "$GAFFER_LOG" 2>/dev/null | tail -n "$STATUS_TICKS")"
 if [ -n "$ticks" ]; then printf '%s\n' "$ticks" | sed 's/^/    /'
 else printf "    ${c_dim}(none yet — %s)${c_off}\n" "$GAFFER_LOG"; fi
 

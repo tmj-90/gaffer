@@ -76,6 +76,11 @@ gaffer_loop_end_ping() {
   [ "$decisions" -eq "$decisions" ] 2>/dev/null || decisions=0
   [ "$merge" -eq "$merge" ] 2>/dev/null || merge=0
 
+  # A DRY RUN previews; it never wakes the operator (exploratory finding cli-runner/F-07).
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "gaffer factory: dry run — no closing ping."
+    return 0
+  fi
   if [ "$review" -eq 0 ] && [ "$blocked" -eq 0 ] && [ "$decisions" -eq 0 ] && [ "$merge" -eq 0 ] && [ "$unaccepted" -eq 0 ]; then
     echo "gaffer factory: all clear — nothing awaiting a human; no closing ping."
     return 0
@@ -121,6 +126,13 @@ rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_D
       "$GAFFER_DATA/.backpressure-repos" "$GAFFER_DATA/.ci-gate-needs-pr-warned" \
       "$GAFFER_DATA/.autonomy-policy-inert-warned" "$GAFFER_DATA/.merge-config-half-warned" "$GAFFER_DATA/.setup-error" \
   || echo "gaffer factory: WARNING — could not clear stale run markers in $GAFFER_DATA; this run may wrongly skip work." >&2
+# DRY RUN: the tickets this run has previewed (tick.sh skips them), so a preview pass
+# shows each ready ticket ONCE and then ends, instead of re-previewing the first ready
+# ticket MAX_TICKS times (exploratory findings cli-runner/F-07, fresh-user/F-15).
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  export GAFFER_DRY_PREVIEWED_FILE="$GAFFER_DATA/.previewed-tickets"
+  : > "$GAFFER_DRY_PREVIEWED_FILE" 2>/dev/null || true
+fi
 
 echo "gaffer factory: starting (DRY_RUN=$DRY_RUN, max_ticks=$MAX_TICKS, stop_after_empty=$EMPTY_POLL_LIMIT, max_ticks_per_day=$MAX_TICKS_PER_DAY)"
 # R-1 (expire-claims): reap stale claims from a prior interrupted run. Non-fatal
@@ -375,6 +387,12 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # An idle maintenance_ran (a paid planning step that filed nothing) counts against
   # the day cap above but is an EMPTY poll here, like no_work: a failing planner must
   # not keep the run alive and spending.
+  # A DRY RUN ends at its first empty poll: every ready ticket has been previewed and
+  # a preview of the idle lanes changes nothing on a second look.
+  if [ "${DRY_RUN:-0}" = "1" ] && [ "$res" = "no_work" ]; then
+    echo "gaffer factory: dry run — nothing left to preview; stopping."
+    break
+  fi
   if [ "$res" = "no_work" ] || [ "$res" = "maintenance_ran" ]; then
     empties=$((empties + 1))
     if [ "$empties" -ge "$EMPTY_POLL_LIMIT" ]; then
@@ -385,7 +403,8 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     empties=0
   fi
 
-  [ "$ticks" -lt "$MAX_TICKS" ] && { sleep "$TICK_SLEEP" & wait "$!" 2>/dev/null; }
+  # No pacing between previews: a dry tick spends nothing and waits on nothing.
+  [ "$ticks" -lt "$MAX_TICKS" ] && [ "${DRY_RUN:-0}" != "1" ] && { sleep "$TICK_SLEEP" & wait "$!" 2>/dev/null; }
   [ "$_loop_stop" = 1 ] && { echo "gaffer factory: stop signal — not starting another tick."; break; }
 done
 trap - INT TERM HUP

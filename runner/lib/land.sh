@@ -124,7 +124,7 @@ _gaffer_land_replay_record() {
   [ "${_MG_REPLAY_RECORD:-0}" = "1" ] && [ -n "$merge" ] && [ -n "$pin" ] || return 0
   local landed="$merge" _lt _mt
   case "$via" in
-    local) ;;
+    local|local-fallback) ;;
     pr)
       landed="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$def^{commit}" 2>/dev/null || true)"
       _lt="$(git -C "$repo" rev-parse --verify --quiet "$landed^{tree}" 2>/dev/null || true)"
@@ -286,8 +286,12 @@ _gaffer_land_one() {
   # fast-forward) — a local merge left the PR open and the branch unpushed. gh
   # failing/absent falls back to the local merge with the reason logged. The ticket's
   # pr_url belongs to its PRIMARY repo; a secondary repo lands locally.
-  _RPR=""
-  [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
+  # EVERY RECORDED PR LANDS UPSTREAM (external review #8): a repo whose delivery record
+  # carries a PR (`landing.repos[].prUrl`) lands through THAT PR, secondary repos too — a
+  # local merge into the checkout is not its landing (the ticket read done while that
+  # repo's upstream main still had the original code).
+  _RPR="$(echo "$RSHOW" | RID="$_RID" RP="$RREPO" jget '(((d.landing && d.landing.repos) || []).find(r => (process.env.RID && r.repoId === process.env.RID) || r.localPath === process.env.RP) || {}).prUrl || ""' 2>/dev/null || true)"
+  [ -n "$_RPR" ] || [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
   local _LREF="${_RID:-$(basename "$RREPO")}"
   _mrc=""
   # PROVENANCE TRAILERS on the merge commit (this repo's gated merge commit, or its PR's
@@ -373,6 +377,9 @@ _gaffer_land_one() {
       esac
     done
   fi
+  # A repo with a PR landed locally only by the operator's GAFFER_PR_LOCAL_FALLBACK=1 —
+  # recorded as such: the one local landing Dispatch counts for a repo with a PR.
+  [ "$_mrc" = "0" ] && [ "$_MERGED_VIA" = "local" ] && [ -n "$_RPR" ] && _MERGED_VIA="local-fallback"
   case "$_mrc" in
     0)
       log "$_WHO: #$RNUM merged $RBRANCH → $RDEFAULT in $RREPO (via $_MERGED_VIA)"
@@ -389,7 +396,7 @@ _gaffer_land_one() {
         "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
       # A PR merge already landed upstream: nothing to push (and never push a
       # stale local default over it).
-      if [ "$_MERGED_VIA" = "local" ] && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
+      if { [ "$_MERGED_VIA" = "local" ] || [ "$_MERGED_VIA" = "local-fallback" ]; } && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
         local _push_rc=0
         gaffer_auto_push "$RREPO" "$RDEFAULT" || _push_rc=$?
         case "$_push_rc" in

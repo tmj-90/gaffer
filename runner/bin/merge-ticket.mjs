@@ -342,19 +342,23 @@ export function resolveTicket(dbPath, number) {
     // The per-repo delivery row (ticket_repo_delivery) is where the factory records the
     // branch for a multi-repo ticket; fall back to it the same way the review diff does.
     let deliveryBranch = "";
+    let deliveryPrUrl = "";
     try {
       const d = db
         .prepare(
-          "SELECT branch_name AS b FROM ticket_repo_delivery WHERE ticket_id = ? AND repo_id = ?",
+          "SELECT branch_name AS b, pr_url AS pr FROM ticket_repo_delivery WHERE ticket_id = ? AND repo_id = ?",
         )
         .get(ticket.id, repoRow.id);
       deliveryBranch = String(d?.b || "");
+      deliveryPrUrl = String(d?.pr || "");
     } catch {
       deliveryBranch = ""; // pre-v4 schema / minimal fixture
     }
     const branch = String(repoRow.repoBranch || deliveryBranch || ticket.branchName || "").trim();
     if (!branch) return null;
-    const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
+    // The primary's PR: the repo link's, else the ticket's, else the one its delivery
+    // record carries (a PR recorded only there must land upstream too — review #8).
+    const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || deliveryPrUrl || "").trim();
 
     // Every WRITE repo's name + stack (the tester mounts the union of their stacks). An
     // older schema without repositories.stack / ticket_repos.relation resolves to [].
@@ -1290,7 +1294,8 @@ function replayOnMergeCandidate({
  *   → { ok: true, commit } | { ok: false, reason }
  */
 export function testerReplayLandedRevision(repo, landed, gatedMerge) {
-  if (landed.via === "local") return { ok: true, commit: gatedMerge };
+  if (landed.via === "local" || landed.via === "local-fallback")
+    return { ok: true, commit: gatedMerge };
   if (landed.via !== "pr" || !landed.fastForwarded)
     return {
       ok: false,
@@ -2081,6 +2086,111 @@ function notLanded(ticketNumber, reason, where = "") {
 }
 
 /**
+ * EVERY RECORDED PR LANDS UPSTREAM: land one secondary repo through its recorded PR — the
+ * merge gate on the remote target as just fetched (the same gate the primary's PR mode
+ * runs), the revocation re-check, then the provider's merge of that PR and a fast-forward
+ * of the local default. → { kind: "landed", via: "pr" | "pr-stale" } | { kind: "fallback" }
+ * (land locally: GAFFER_PR_LOCAL_FALLBACK=1 and the PR merge could not run) |
+ * { kind: "held", reason } (nothing merged in this repo; the ticket stays open).
+ */
+function landSecondaryPr({
+  ticketNumber,
+  r,
+  pin,
+  defaultBranch,
+  commands,
+  gateDir,
+  trailers,
+  approval,
+  ghBin,
+  prLocalFallback,
+}) {
+  if (!ghAvailable(ghBin)) {
+    if (prLocalFallback) {
+      log(
+        `#${ticketNumber} ${r.repo} has PR ${r.prUrl} but '${ghBin}' is not available — GAFFER_PR_LOCAL_FALLBACK=1: ` +
+          `landing it LOCALLY (the PR stays open — close it by hand)`,
+      );
+      return { kind: "fallback" };
+    }
+    return {
+      kind: "held",
+      reason:
+        `it has PR ${r.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — held: merge the PR by hand, ` +
+        `or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead`,
+    };
+  }
+  const remote = String(process.env.GAFFER_PR_REMOTE || "origin");
+  const fetched = git(r.localPath, "fetch", "--quiet", remote, defaultBranch);
+  const gate = gateProposedMerge({
+    repoPath: r.localPath,
+    branch: r.branch,
+    pin,
+    targetRef: fetched.status === 0 ? "FETCH_HEAD" : `refs/heads/${defaultBranch}`,
+    label: r.repo,
+    commands,
+    gateDir,
+    testerReplay: null,
+    trailers,
+  });
+  if (gate.kind === "conflict") return { kind: "held", reason: `${gate.reason} (merge conflict)` };
+  if (gate.kind === "error")
+    return {
+      kind: "held",
+      reason: `the merge gate could not run (${gate.reason}); nothing merged`,
+    };
+  if (gate.kind === "red") {
+    const h = holdMergeGateRed(ticketNumber, gate, {
+      branch: r.branch,
+      defaultBranch,
+      repoName: r.repo,
+    });
+    return {
+      kind: "held",
+      reason:
+        `MERGE GATE FAILED — ${gate.reason}; its PR was not merged; ` +
+        (h.held
+          ? `ticket held for a human (blocked, ${h.code})`
+          : "ticket left ready_for_merge (the hold could not be recorded)"),
+    };
+  }
+  const b = beginLandingCli(ticketNumber, r.repoId, pin, approval, "pr");
+  if (!b.ok) return { kind: "held", reason: notLanded(ticketNumber, b.reason, r.repo) };
+  const pr = mergeViaPr({
+    repoPath: r.localPath,
+    prUrl: r.prUrl,
+    defaultBranch,
+    ghBin,
+    method: process.env.GAFFER_PR_MERGE_METHOD,
+    remote: process.env.GAFFER_PR_REMOTE,
+    matchHeadCommit: pin,
+    body: trailers.join("\n"),
+  });
+  if (pr.ok) {
+    log(
+      `merged #${ticketNumber} in ${r.repo} through its PR ${r.prUrl} (${pr.argv.join(" ")})` +
+        (pr.fastForwarded
+          ? `; local ${defaultBranch} fast-forwarded from the remote`
+          : `; WARNING: the local ${defaultBranch} could not be fast-forwarded (${pr.ffReason}) — pull it by hand`),
+    );
+    return { kind: "landed", via: pr.fastForwarded ? "pr" : "pr-stale" };
+  }
+  if (prLocalFallback) {
+    log(
+      `PR merge for #${ticketNumber} in ${r.repo} failed — ${pr.reason}; GAFFER_PR_LOCAL_FALLBACK=1: landing it ` +
+        `LOCALLY (the PR ${r.prUrl} stays open — close it by hand)`,
+    );
+    return { kind: "fallback" };
+  }
+  return {
+    kind: "held",
+    reason:
+      `its PR ${r.prUrl} did not merge — ${pr.reason}; held for a human (merge the PR by hand, or set ` +
+      `GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
+  };
+}
+
+/**
  * Land every write repo OTHER than the primary: each lands only its pinned (approved)
  * commit, through the same landing check (`--secondary`: the tester verdict describes the
  * primary) and the same MERGE GATE + compare-and-land as the primary (landThroughMergeGate:
@@ -2092,6 +2202,8 @@ function notLanded(ticketNumber, reason, where = "") {
  */
 function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
   const plan = readLandingPlan(ticketNumber);
+  const ghBin = process.env.GAFFER_GH_BIN || "gh";
+  const prLocalFallback = /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
   const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
   if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
   // PROVENANCE TRAILERS — the same block the primary's merge commit carries.
@@ -2141,6 +2253,45 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
       continue;
     }
     const defaultBranch = r.defaultBranch || "main";
+    const commands = resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId);
+    const gateDir = resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`);
+    // EVERY RECORDED PR LANDS UPSTREAM (external review #8): a secondary repo whose
+    // delivery record carries a PR lands exactly like the primary's PR — the provider is
+    // asked to merge THAT PR (after its merge gate on the fetched remote target), and only
+    // that is its landing. A local merge into the checkout used to stand in for it: the
+    // ticket read done while that repo's upstream main had the original code.
+    // GAFFER_PR_LOCAL_FALLBACK=1 (the operator's explicit choice) still lands it locally.
+    if (r.prUrl) {
+      const pr = landSecondaryPr({
+        ticketNumber,
+        r,
+        pin: d.pin,
+        defaultBranch,
+        commands,
+        gateDir,
+        trailers,
+        approval,
+        ghBin,
+        prLocalFallback,
+      });
+      if (pr.kind === "landed") {
+        recordLandingCli(ticketNumber, r.repoId, d.pin, pr.via);
+        out.landed.push(r.repo);
+        if (pr.via === "pr")
+          out.merged.push({
+            repo: r.repo,
+            localPath: r.localPath,
+            branch: r.branch,
+            defaultBranch,
+            pin: d.pin,
+          });
+        continue;
+      }
+      if (pr.kind !== "fallback") {
+        why(pr.reason);
+        continue;
+      }
+    }
     const res = landThroughMergeGate({
       ticketNumber,
       repoPath: r.localPath,
@@ -2148,8 +2299,8 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
       branch: r.branch,
       defaultBranch,
       pin: d.pin,
-      commands: resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId),
-      gateDir: resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`),
+      commands,
+      gateDir,
       secondary: true,
       // Each repo's gated merge commit is the commit that lands there: it carries them too.
       trailers,
@@ -2190,7 +2341,7 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
     log(
       `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
     );
-    recordLandingCli(ticketNumber, r.repoId, d.pin, "local");
+    recordLandingCli(ticketNumber, r.repoId, d.pin, r.prUrl ? "local-fallback" : "local");
     out.landed.push(r.repo);
     out.merged.push({
       repo: r.repo,
@@ -2511,7 +2662,13 @@ function main() {
       return;
     }
     if (res.kind === "landed") {
-      landed = { via: "local", gatedMerge: res.gate.merge, gatedTarget: res.gate.target };
+      // A PR-mode ticket landed locally only by the operator's GAFFER_PR_LOCAL_FALLBACK=1:
+      // recorded as such, the one local landing that counts for a repo with a PR.
+      landed = {
+        via: resolved.prUrl ? "local-fallback" : "local",
+        gatedMerge: res.gate.merge,
+        gatedTarget: res.gate.target,
+      };
       replayed = res.gate.replay?.record
         ? { merge: res.gate.merge, files: res.gate.replay.files, note: res.gate.replay.note || "" }
         : null;

@@ -1680,7 +1680,9 @@ export class ReviewGateService {
     if (landing.pending > 0 && this.landedOnDefaultResolver) {
       // Git is the truth for a local landing: record what is verifiably on the default
       // branch already (as SYSTEM evidence, via "git-verified"), then re-read.
-      for (const r of landing.repos.filter((x) => !x.landed && x.pinned)) {
+      // (Not for a repo with a recorded PR: its checkout holding the commit is no evidence
+      // that the PR merged upstream — external review #8.)
+      for (const r of landing.repos.filter((x) => !x.landed && x.pinned && !x.prUrl)) {
         let onDefault: boolean;
         try {
           onDefault = this.landedOnDefaultResolver(r.repoId, r.sha);
@@ -1705,7 +1707,7 @@ export class ReviewGateService {
         `#${ticket.number} is not done: ${pending
           .map((r) =>
             r.pinned
-              ? `${r.repo} (${r.sha.slice(0, 12)})`
+              ? `${r.repo} (${r.sha.slice(0, 12)}${r.prUrl ? `, its PR ${r.prUrl} has not merged upstream` : ""})`
               : `${r.repo} (not covered by the approval)`,
           )
           .join(", ")} ` +

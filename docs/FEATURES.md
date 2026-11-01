@@ -364,6 +364,14 @@ structural barrier the whole design hangs on.
   failed check says so on the spot (`landed_already` in its output and a
   warning naming the repository and commit): it stops every landing that had not
   started and cannot undo one that had.
+- **Every recorded pull request lands upstream.** A repository whose delivery
+  record carries a PR lands only through that PR, secondary repositories
+  included: the merge gate runs on its freshly fetched remote default, then the
+  provider is asked to merge that PR. A merge into the local checkout is not a
+  landing for such a repository, so the ticket is done only when every recorded
+  PR has merged. If the provider refuses one, that repository does not land and
+  the ticket stays open (*partly landed*). `GAFFER_PR_LOCAL_FALLBACK=1` is still
+  the explicit way to land a PR repository locally instead, for each one.
 - **The independent tester's assertions run on what lands, not only on what it
   tested.** The tester's PASS is about the commit it tested, and its black-box
   tests live on their own branch (`gaffer-tests/ticket-<n>`), never on the

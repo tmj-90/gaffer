@@ -46,6 +46,7 @@ import {
 } from "../schemas.js";
 import { API_ACTOR, apiActor, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
+import { requestTicketFilter } from "../scopeGate.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -136,10 +137,27 @@ export async function routeTickets(
         offset: param("offset"),
         fields: param("fields"),
       });
-      const page = wg.listTicketPage(
-        { status: q.status, repo: q.repo, risk: q.risk },
-        { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
-      );
+      // PRINCIPAL SCOPES: a scoped principal lists only its tickets. The whole match
+      // is read and filtered, then windowed, so `total` counts what it may see.
+      const visible = requestTicketFilter(wg);
+      const page = visible
+        ? (() => {
+            const all = wg
+              .listTicketPage(
+                { status: q.status, repo: q.repo, risk: q.risk },
+                { summary: q.fields === "summary" },
+              )
+              .tickets.filter((t) => visible(t.id));
+            const from = q.offset ?? 0;
+            return {
+              tickets: q.limit !== undefined ? all.slice(from, from + q.limit) : all.slice(from),
+              total: all.length,
+            };
+          })()
+        : wg.listTicketPage(
+            { status: q.status, repo: q.repo, risk: q.risk },
+            { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
+          );
       sendJson(res, 200, {
         // Approved and held tickets carry `landing_state` (their truthful status label).
         tickets: page.tickets.map((t) =>

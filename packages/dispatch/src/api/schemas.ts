@@ -951,6 +951,16 @@ export const createPrincipalBody = z.object({
   actor_type: z.enum(["human", "admin"]).default("human"),
   /** Defaults to the name. */
   actor_id: z.string().trim().min(1).max(200).optional(),
+  /**
+   * PRINCIPAL SCOPES: repository names or ids. The principal then reaches only
+   * tickets whose write repos all sit inside these (403 `SCOPE_DENIED` otherwise).
+   */
+  repos: z.array(z.string().trim().min(1).max(200)).max(200).optional(),
+  /** PRINCIPAL SCOPES: ticket numbers or ids the principal may reach. */
+  tickets: z
+    .array(z.union([z.number().int().positive(), z.string().trim().min(1).max(200)]))
+    .max(500)
+    .optional(),
 });
 export type CreatePrincipalBody = z.infer<typeof createPrincipalBody>;
 

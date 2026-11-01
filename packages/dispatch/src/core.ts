@@ -208,8 +208,18 @@ import {
   hashPrincipalToken,
   mintPrincipalToken,
   PRINCIPAL_NAME_RE,
+  principalAccess,
   principalActor,
 } from "./services/principalService.js";
+import {
+  type Access,
+  type AccessAction,
+  type ScopeTicket,
+  authorizeAccess,
+  describeDenial,
+  isScoped,
+  evaluateTicketScope,
+} from "./services/accessScope.js";
 export { BOARD_COLUMNS } from "./services/boardService.js";
 export type { BoardColumn } from "./services/boardService.js";
 import { SuggestionService, type RepoSuggestion } from "./services/suggestionService.js";
@@ -1063,6 +1073,10 @@ export class Dispatch {
       capability?: PrincipalCapability | undefined;
       actorType?: PrincipalActorType | undefined;
       actorId?: string | undefined;
+      /** Repo names or ids: the principal may reach only tickets on these repos. */
+      repos?: readonly string[] | undefined;
+      /** Ticket numbers or ids: the principal may reach these tickets. */
+      tickets?: ReadonlyArray<string | number> | undefined;
     },
     actor: Actor,
   ): { principal: PrincipalView; token: string } {
@@ -1094,6 +1108,31 @@ export class Dispatch {
         { reason: "actor_id_is_agent", actor_id: actorId, actor_type: actorType },
       );
     }
+    // PRINCIPAL SCOPES: resolve every repo and ticket now (an unknown one is a 404
+    // and nothing is created); the row stores ids, so a rename keeps the grant.
+    const scopeRepos =
+      input.repos && input.repos.length > 0
+        ? [
+            ...new Map(
+              input.repos.map((ref) => {
+                const r = this.repos.findByName(ref) ?? this.repos.findById(ref);
+                if (!r) throw notFound("repository", ref);
+                return [r.id, r] as const;
+              }),
+            ).values(),
+          ]
+        : undefined;
+    const scopeTickets =
+      input.tickets && input.tickets.length > 0
+        ? [
+            ...new Map(
+              input.tickets.map((ref) => {
+                const t = this.resolveTicket(String(ref));
+                return [t.id, t] as const;
+              }),
+            ).values(),
+          ]
+        : undefined;
     const token = mintPrincipalToken();
     const now = this.clock.now();
     const principal = inTransaction(this.db, () => {
@@ -1106,13 +1145,22 @@ export class Dispatch {
         actorId,
         createdBy: actor.id ?? actor.type,
         now,
+        scopeRepos: scopeRepos?.map((r) => r.id),
+        scopeTickets: scopeTickets?.map((t) => t.id),
       });
       writeEvent(this.db, {
         entity_type: "principal",
         entity_id: row.id,
         actor,
         event_type: "principal.created",
-        payload: { name, capability, actor_type: actorType, actor_id: actorId },
+        payload: {
+          name,
+          capability,
+          actor_type: actorType,
+          actor_id: actorId,
+          ...(scopeRepos ? { scope_repos: scopeRepos.map((r) => r.name) } : {}),
+          ...(scopeTickets ? { scope_tickets: scopeTickets.map((t) => t.number) } : {}),
+        },
       });
       return row;
     });
@@ -1154,6 +1202,108 @@ export class Dispatch {
       if (!after) throw notFound("principal", ref);
       return after;
     });
+  }
+
+  /**
+   * PRINCIPAL SCOPES: a ticket as the scope evaluation sees it. Its repos are its
+   * confirmed WRITE repos (what a delivery changes); a ticket with none is judged on
+   * every repo linked to it (rejected suggestions aside), and one with no repo at all
+   * is reachable only through a ticket scope.
+   */
+  scopeTicket(ref: string): ScopeTicket {
+    const ticket = this.resolveTicket(ref);
+    return this.scopeTicketFor(ticket.id, ticket.number);
+  }
+
+  private scopeTicketFor(id: string, number: number | null): ScopeTicket {
+    const links = this.repos.listForTicket(id);
+    const writes = links.filter(
+      (l) =>
+        l.access === "write" &&
+        ["confirmed", "implicit_single_repo"].includes(String(l.relation ?? "")),
+    );
+    const linked = links.filter((l) => String(l.relation ?? "") !== "rejected");
+    return { id, number, repos: (writes.length > 0 ? writes : linked).map((l) => l.id) };
+  }
+
+  /**
+   * The ticket filter for a scoped principal: true for every ticket it may see (the
+   * read rule is the write rule). Null when the principal is unscoped, so a caller
+   * can skip filtering altogether.
+   */
+  ticketVisibility(principal: PrincipalView): ((ticketId: string) => boolean) | null {
+    const access = principalAccess(principal);
+    if (!isScoped(access.scope)) return null;
+    const memo = new Map<string, boolean>();
+    return (ticketId: string): boolean => {
+      const hit = memo.get(ticketId);
+      if (hit !== undefined) return hit;
+      const t = this.tickets.findById(ticketId);
+      const ok = t
+        ? evaluateTicketScope(access.scope, this.scopeTicketFor(t.id, t.number)).allowed
+        : false;
+      memo.set(ticketId, ok);
+      return ok;
+    };
+  }
+
+  /** The tickets a decision is linked to (blocks or informs), for the scope check. */
+  decisionTicketIds(decisionId: string): string[] {
+    this.getDecision(decisionId); // NOT_FOUND for an unknown decision
+    return (
+      this.db
+        .prepare("SELECT DISTINCT ticket_id FROM ticket_decisions WHERE decision_id = ?")
+        .all(decisionId) as Array<{ ticket_id: string }>
+    ).map((r) => r.ticket_id);
+  }
+
+  /**
+   * PRINCIPAL SCOPES: refuse an action outside what a principal may do — the one check
+   * REST and the CLI share (services/accessScope.ts decides; this names the scope).
+   * Throws READ_ONLY_TOKEN for a write by a read-only principal, else SCOPE_DENIED
+   * with `details.scope` (the repos and tickets it holds), `details.reason`, and the
+   * ticket / repos / requirement that put the action outside it.
+   */
+  assertPrincipalAccess(
+    principal: PrincipalView,
+    action: AccessAction,
+    access: Access = principalAccess(principal),
+  ): void {
+    const d = authorizeAccess(access, action);
+    if (d.allowed) return;
+    if (d.code === "READ_ONLY_TOKEN") {
+      throw new DispatchError("READ_ONLY_TOKEN", describeDenial("read_only", { scope: "" }));
+    }
+    const scope = principal.scope ?? { repos: null, tickets: null };
+    const label =
+      [
+        scope.repos ? `repos ${scope.repos.map((r) => r.name ?? r.id).join(", ")}` : "",
+        scope.tickets
+          ? `tickets ${scope.tickets.map((t) => `#${t.number ?? t.id}`).join(", ")}`
+          : "",
+      ]
+        .filter((x) => x !== "")
+        .join(" and ") || "no scope";
+    const ticket =
+      action.kind === "read_ticket" || action.kind === "write_ticket" ? action.ticket : undefined;
+    const repoName = (id: string): string => this.repos.findById(id)?.name ?? id;
+    const outside = d.outsideRepos.map(repoName);
+    throw new DispatchError(
+      "SCOPE_DENIED",
+      describeDenial(d.reason, {
+        scope: label,
+        ticket: ticket ? `ticket #${ticket.number ?? ticket.id}` : undefined,
+        outsideRepos: outside,
+      }),
+      {
+        principal: principal.name,
+        scope,
+        reason: d.reason,
+        ...(ticket ? { ticket: ticket.number ?? ticket.id } : {}),
+        ...(outside.length > 0 ? { outside_repos: outside } : {}),
+        ...(d.reason === "admin_required" ? { required: "admin" } : {}),
+      },
+    );
   }
 
   /**
@@ -3182,8 +3332,8 @@ export class Dispatch {
    * @param repo Optional repository name/id — when supplied, only tickets
    *   linked to that repo are included. Omit for the full board.
    */
-  board(repo?: string, window?: BoardWindow): BoardView {
-    const view = this.boardSvc.board(repo, window);
+  board(repo?: string, window?: BoardWindow, visible?: (ticketId: string) => boolean): BoardView {
+    const view = this.boardSvc.board(repo, window, visible);
     // Approved and held cards carry where their landing is (one read per such ticket).
     const states = new Map<string, LandingState>();
     const stamp = (c: BoardCard): BoardCard => {

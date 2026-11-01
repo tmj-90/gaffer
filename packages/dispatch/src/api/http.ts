@@ -59,6 +59,9 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   INCONSISTENT_BUNDLE: 409,
   MERGE_IN_FLIGHT: 409,
   ACTOR_NOT_PERMITTED: 403,
+  SCOPE_DENIED: 403,
+  READ_ONLY_TOKEN: 403,
+  UNAUTHORIZED: 401,
   NOT_CONFIGURED: 503,
   // Genuine server-side failures (UNSAFE_BIND is startup-only).
   IO_ERROR: 500,
@@ -130,7 +133,20 @@ const DRAIN_IDLE_MS = 5000;
  * is destroyed), BEFORE the 413 goes out with `connection: close`, so the close
  * never races the client's own writes and the socket is never reused mid-upload.
  */
-export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+export function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  // Read once per request: the authorisation layer (api/scopeGate.ts) may need the
+  // body of a scoped principal's write (the repos a new ticket names) before the
+  // route parses it, and a stream can only be consumed once.
+  let pending = BODIES.get(req);
+  if (!pending) {
+    pending = readJsonBodyOnce(req);
+    BODIES.set(req, pending);
+  }
+  return pending;
+}
+const BODIES = new WeakMap<IncomingMessage, Promise<unknown>>();
+
+async function readJsonBodyOnce(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   let overflow = false;

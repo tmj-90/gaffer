@@ -117,6 +117,8 @@ export async function routeApi(
       capability: requestCapability(req) ?? "full",
       actor: apiActor(),
       principal: p ? { id: p.principal.id, name: p.principal.name } : null,
+      // PRINCIPAL SCOPES: the repos and tickets this credential may reach (null: all).
+      scope: p ? p.principal.scope : null,
     });
     return;
   }
@@ -142,6 +144,8 @@ export async function routeApi(
           capability: body.capability,
           actorType: body.actor_type,
           actorId: body.actor_id,
+          repos: body.repos,
+          tickets: body.tickets,
         },
         apiActor(),
       );

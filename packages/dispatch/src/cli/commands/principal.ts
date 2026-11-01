@@ -9,6 +9,11 @@ import { cliActor, open, printJson } from "../shared.js";
  * once (only its hash is stored); `list` never shows token material; `revoke`
  * keeps the row for the audit trail.
  */
+/** Commander collector for a repeatable option. */
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
 export function registerPrincipal(program: Command): void {
   const principal = program
     .command("principal")
@@ -26,34 +31,70 @@ export function registerPrincipal(program: Command): void {
       "--actor-id <id>",
       "the actor id recorded on this principal's writes (default: the name)",
     )
-    .action((name: string, opts: { read: boolean; admin: boolean; actorId?: string }, cmd) => {
-      if (opts.read && opts.admin) {
-        // cli-wg/F-20: a read-scoped admin is a contradiction (it used to be minted).
-        throw new DispatchError(
-          "VALIDATION_ERROR",
-          "--read and --admin conflict: a read-only principal cannot act as an admin.",
-        );
-      }
-      const wg = open(cmd.optsWithGlobals());
-      try {
-        const { principal: p, token } = wg.createPrincipal(
-          {
-            name,
-            capability: opts.read ? "read" : "full",
-            actorType: opts.admin ? "admin" : "human",
-            actorId: opts.actorId,
-          },
-          cliActor(),
-        );
-        process.stderr.write(
-          `Principal '${p.name}' created (${p.capability}, acts as ${p.actor_type}:${p.actor_id}).\n` +
-            "The token below is shown ONCE — store it now; only its hash is kept.\n",
-        );
-        printJson({ ok: true, principal: p, token });
-      } finally {
-        wg.db.close();
-      }
-    });
+    .option(
+      "--repo <name>",
+      "scope it to a repository (repeatable): it reaches only tickets whose write repos all sit inside its repos",
+      collect,
+      [] as string[],
+    )
+    .option(
+      "--ticket <n>",
+      "scope it to a ticket (repeatable): it reaches these tickets whatever their repos",
+      collect,
+      [] as string[],
+    )
+    .action(
+      (
+        name: string,
+        opts: {
+          read: boolean;
+          admin: boolean;
+          actorId?: string;
+          repo: string[];
+          ticket: string[];
+        },
+        cmd,
+      ) => {
+        if (opts.read && opts.admin) {
+          // cli-wg/F-20: a read-scoped admin is a contradiction (it used to be minted).
+          throw new DispatchError(
+            "VALIDATION_ERROR",
+            "--read and --admin conflict: a read-only principal cannot act as an admin.",
+          );
+        }
+        const wg = open(cmd.optsWithGlobals());
+        try {
+          const { principal: p, token } = wg.createPrincipal(
+            {
+              name,
+              capability: opts.read ? "read" : "full",
+              actorType: opts.admin ? "admin" : "human",
+              actorId: opts.actorId,
+              repos: opts.repo.length > 0 ? opts.repo : undefined,
+              tickets: opts.ticket.length > 0 ? opts.ticket : undefined,
+            },
+            cliActor(),
+          );
+          const scope = p.scope
+            ? `, scoped to ${[
+                p.scope.repos ? `repos ${p.scope.repos.map((r) => r.name).join(", ")}` : "",
+                p.scope.tickets
+                  ? `tickets ${p.scope.tickets.map((t) => `#${t.number}`).join(", ")}`
+                  : "",
+              ]
+                .filter((x) => x !== "")
+                .join(" and ")}`
+            : "";
+          process.stderr.write(
+            `Principal '${p.name}' created (${p.capability}, acts as ${p.actor_type}:${p.actor_id}${scope}).\n` +
+              "The token below is shown ONCE — store it now; only its hash is kept.\n",
+          );
+          printJson({ ok: true, principal: p, token });
+        } finally {
+          wg.db.close();
+        }
+      },
+    );
 
   principal
     .command("list")

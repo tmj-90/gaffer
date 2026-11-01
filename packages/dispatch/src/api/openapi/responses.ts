@@ -128,6 +128,22 @@ export const PrincipalRowView = z
     created_at: str,
     last_used_at: nstr,
     revoked_at: nstr,
+    scope: z
+      .object({
+        repos: z
+          .array(z.object({ id: str, name: nstr }).strict())
+          .nullable()
+          .describe("The repositories it may reach (null: no repo scope)."),
+        tickets: z
+          .array(z.object({ id: str, number: int.nullable() }).strict())
+          .nullable()
+          .describe("The tickets it may reach (null: no ticket scope)."),
+      })
+      .strict()
+      .nullable()
+      .describe(
+        "PRINCIPAL SCOPES: null for an unscoped principal. Otherwise it reaches only tickets whose write repos all sit inside `repos`, or that are in `tickets`; everything else is 403 `SCOPE_DENIED`.",
+      ),
   } satisfies Record<keyof PrincipalView, ZodType>)
   .describe("An API principal (never carries token material).");
 
@@ -445,6 +461,7 @@ export const Whoami = z
     capability: z.enum(["full", "read"]),
     actor: z.object({ type: str, id: str.optional() }).strict(),
     principal: z.object({ id: str, name: str }).strict().nullable(),
+    scope: PrincipalRowView.shape.scope,
   })
   .strict();
 

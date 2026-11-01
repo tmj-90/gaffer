@@ -172,7 +172,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "The capability tier, the actor this credential's writes are attributed to, and the principal (`null` for the shared token).",
     capability: "read",
     responses: [
-      ok("`{ capability, actor: { type, id }, principal: { id, name } | null }`.", "Whoami"),
+      ok(
+        "`{ capability, actor: { type, id }, principal: { id, name } | null, scope: { repos, tickets } | null }`.",
+        "Whoami",
+      ),
     ],
   },
   {
@@ -191,7 +194,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Mint a named API credential",
     description:
-      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
+      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`), optionally scoped: `repos` (names or ids) limits it to tickets whose write repos all sit inside them, `tickets` (numbers or ids) to those tickets; an unknown repo or ticket is a 404 and nothing is created. The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
     capability: "full",
     body: "createPrincipalBody",
     responses: [
@@ -1822,10 +1825,14 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       // An operation's own 403 (e.g. PRINCIPAL_ADMIN_REQUIRED) is kept and the
       // auth-gate reasons appended, never overwritten.
       const own403 = (responses["403"] as { description?: string } | undefined)?.description;
+      // PRINCIPAL SCOPES: any data route may refuse a scoped (or non-admin) principal.
+      const scope403 =
+        " A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).";
       const gate403 =
-        e.capability === "full"
+        (e.capability === "full"
           ? "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`)."
-          : "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).";
+          : "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).") +
+        scope403;
       responses["403"] = {
         description: own403 ? `${own403} ${gate403}` : gate403,
         content: {
@@ -1870,7 +1877,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         "The control plane's REST surface: tickets and their gates, the Factory Map scope graph, plan sessions, epics and specs, repositories, runner actions, configuration, read models and the live event stream.\n\n" +
         "**Authentication.** Every data route requires `Authorization: Bearer <token>`. Two credentials exist: the **full** token (`DISPATCH_API_TOKEN`, or `$GAFFER_DATA/dashboard-token`) and a **read-scoped** token derived from it one-way (`dispatch-api print-read-token`) that may call GET routes only; a mutating call with the read token is refused with 403 `READ_ONLY_TOKEN`. Each operation's `x-capability` says which it needs (`public`, `read`, `full`). Token-less requests are also subject to a Host/Origin check (403 `FORBIDDEN_HOST`).\n\n" +
         "**Errors** are `{ error: { code, message, details? } }` with a stable `code`; 422 is validation, 409 a state-machine or claim conflict, 404 an unknown resource.\n\n" +
-        "**Actors.** A request acts as the principal its token names (`GET /api/whoami`), or as the single `dispatch-api` operator for the shared token; there is no per-repository RBAC. The main ticket, gate, decision and principal operations carry response schemas; the read models are described by the TypeScript view type they serialise (named in each description).",
+        "**Actors.** A request acts as the principal its token names (`GET /api/whoami`), or as the single `dispatch-api` operator for the shared token. A principal may be scoped to repositories and tickets (`repos`, `tickets` on POST /api/principals): it then sees only those tickets and every other read or write is refused with 403 `SCOPE_DENIED`; repository-level writes (repo settings, onboarding, a ticket's repo access, settings) need an `admin` principal. The main ticket, gate, decision and principal operations carry response schemas; the read models are described by the TypeScript view type they serialise (named in each description).",
     },
     servers: [{ url: "http://127.0.0.1:8787", description: "Default local dashboard bind." }],
     tags: [...tagSet].sort().map((name) => ({ name })),

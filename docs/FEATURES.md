@@ -255,7 +255,8 @@ structural barrier the whole design hangs on.
   between the diff loading and your click, the approval is **refused** (`409
   stale_revision`): nothing is approved, the Review view says the change moved and
   reloads the new diff. `wg review approve` takes `--commit <repo>=<sha>` (the values
-  `wg ticket diff <n> --heads` prints), and `gaffer approve` shows the commits and asks
+  `wg ticket diff <n> --heads` prints; one per repository, and naming a repository twice
+  is refused with 422 whatever the order), and `gaffer approve` shows the commits and asks
   before approving them; the factory's own agent review names the commit its reviewer
   judged and follows the same rule (a multi-repo ticket, whose other repositories the
   reviewer did not read, waits for you). The approval pins each repository's commit
@@ -266,10 +267,31 @@ structural barrier the whole design hangs on.
   reviewed holds the same way.
 - **A ticket that spans several repositories is done when every one landed.** Each
   repository's approved commit is merged and recorded separately; the ticket only
-  becomes *done* once all of them are on their default branches. If one lands and
-  another cannot (a conflict, a dirty checkout), the ticket stays in *Ready for merge*
-  and shows as **Partly merged** in what needs you, naming which repositories landed;
-  the next merge lands only the rest (`wg ticket landing <n>` shows the state). The
+  becomes *done* once all of them are on their default branches. Before the first merge
+  every landing path checks every repository still to land: one whose branch moved since
+  the review approved it, one with no approved commit, one whose checkout or delivery
+  branch is missing, or one whose required CI is red refuses the **whole** ticket. Nothing
+  is merged anywhere, the ticket stays in *Ready for merge*, and `gaffer merge` exits 4
+  naming the repository and the commands that fix it (for a moved branch:
+  `gaffer wg ticket reopen-for-review <n> --as admin --reason "..." --resolution "..."`,
+  then `gaffer approve <n>`). If one lands and another cannot for a reason only the
+  landing itself finds (a conflict or a dirty checkout), the ticket stays in *Ready for
+  merge* and shows as **Partly merged** in what needs you, naming which repositories
+  landed; a red merge gate holds it for you instead (blocked, the landed repositories
+  still recorded). The next merge lands only the rest. A partly landed ticket can only
+  be finished: `wg wont-do` and a cancelling send-back are refused with `PARTLY_LANDED`
+  (every landing on record counts, so a send-back or a reopen first changes nothing), and
+  a send-back to rework is held for you (blocked, parked as `partly_landed`) instead of
+  going back to the queue as if nothing had merged. A landing (`wg ticket record-landing`, which every
+  landing path calls per repository) is recorded only when it can be shown:
+  `--via local` needs the approved commit in the default branch's history; `--via pr`
+  needs a pull request on record for that repository and the change in the local default
+  branch (its history, or, after a squash or rebase merge, merging the commit into it
+  changes nothing); `--via pr-stale` needs the PR and checks the remote-tracking copy of
+  the default branch (or, without one, the local default branch). So *done* means landed
+  (`wg ticket landing <n>` shows the state; once the
+  approval is withdrawn by a send-back, a won't-do or a reopen it shows no approved
+  commit, the same as the ticket's status). The
   runner's merge lane (and so **Poll for work**) finishes it only under the same
   policy that lets it land any approval, decided again at that moment: a human
   approval with Auto-merge on, or an earned merge grant. Turn Auto-merge off, or
@@ -315,7 +337,9 @@ structural barrier the whole design hangs on.
   (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
   runner's merge lane lands it: Auto-merge on and a human approval, or an earned
   merge grant; *(paused: usage limit)* with the time while the usage window has
-  paused the runner), *Approved · landing* (a merge the dashboard started is running),
+  paused the runner), *Approved · landing* (a merge the dashboard started is running;
+  a second **Merge now** meanwhile is refused with `MERGE_IN_FLIGHT` and starts nothing,
+  and `gaffer merge` beside it exits 4),
   *Approved · partly landed* (a landing is recorded for some of its write repos'
   approved commits, not all: Merge now lands the rest and never re-merges a
   landed one), or the hold's own words — *Held · moved since review* (naming the
@@ -384,7 +408,9 @@ structural barrier the whole design hangs on.
   repaired, re-tested retry that lands counts it once. A ticket the tester never
   saw runs nothing extra.
 - **Required CI is required.** With *Require CI green before review* on, the
-  runner records the CI result for the exact commit under review; approval (and
+  runner records the CI result for the exact commit under review (a result is recorded
+  only for one of the ticket's own commits: a delivery head, a recorded delivery commit
+  or an approved revision; `wg ticket ci-result` refuses any other); approval (and
   a tester PASS) is refused until that commit's CI has passed, a red result for an
   approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
   CI again before landing. The CI gate asks `gh` only for the fields the real CLI
@@ -543,8 +569,9 @@ Memory is also usable standalone — see
 
 **Backing up the board.** `gaffer wg export --out board.json` writes the whole
 board (tickets, epics, scope graph, criteria, repos, decisions, reviews and
-evidence, the event log, claims) as one JSON bundle; `gaffer wg import` restores it
-into an empty database. What the export guarantees:
+evidence, the event log, claims, planner sessions, paused deliveries) as one JSON
+bundle; `gaffer wg import` restores it into an empty database, and `import --force`
+replaces every one of those tables. What the export guarantees:
 
 - **One consistent snapshot.** Every table is read inside a single SQLite read
   transaction, so an export taken while the runner, the API or another process is
@@ -556,7 +583,8 @@ into an empty database. What the export guarantees:
   writes the file or prints anything. If that fails it exits non-zero, writes
   nothing and says why, while you still have the source database to copy from.
 
-Run-activity rows and API credentials are machine-local and are not exported.
+Run-activity rows, API credentials and schema metadata are machine-local and are not
+exported; the export's summary names them (`not_exported`).
 
 ---
 

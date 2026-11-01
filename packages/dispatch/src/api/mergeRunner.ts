@@ -29,7 +29,11 @@ export interface MergeTriggerResult {
   triggered: boolean;
   /** OS process id of the spawned merge, or null (unconfigured / withheld). */
   pid: number | null;
-  /** Reason a merge was NOT triggered (e.g. "not_configured"), when applicable. */
+  /**
+   * Reason a merge was NOT triggered (e.g. "not_configured"). `in_flight`: this runner
+   * already started a merge for the ticket and that process is still alive, so a second
+   * one was not spawned (`pid` is the running one).
+   */
   skipped?: string;
   /** The tracked run id (when a registry is wired), so the UI can poll it. */
   runId?: string | null;
@@ -87,6 +91,17 @@ export function parseCommand(command: string): string[] {
   return trimmed.split(/\s+/).filter((token) => token.length > 0);
 }
 
+/** True while the process `pid` exists (signal 0 probes without signalling). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: it exists but belongs to someone else (a reused pid): treat as alive.
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** Strip Dispatch's bearer token from the child env (defence-in-depth). */
 function childEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const { DISPATCH_API_TOKEN: _omitToken, ...rest } = env;
@@ -105,6 +120,12 @@ export function createMergeRunner(
   log: MergeLogger = defaultLogger,
   tracker?: RunTracker,
 ): MergeRunner {
+  // IN-FLIGHT GUARD (exploratory finding api/F1): the merge this runner started per
+  // ticket. Two Merge clicks (or an Approve with Auto-merge and a Merge now) used to
+  // spawn two merge-ticket runs on one ticket: the second tore down the first's merge-gate
+  // scratch checkout, the first read that as a conflict and sent the approved ticket
+  // back to review. A second trigger while the first process is alive starts nothing.
+  const inFlight = new Map<number, number>();
   return {
     configured: () => parseCommand(env[MERGE_CMD_ENV] ?? "").length > 0,
     trigger({ ticketNumber }) {
@@ -112,6 +133,11 @@ export function createMergeRunner(
       if (tokens.length === 0) {
         // Unconfigured: skip silently — manual merge stays the default.
         return { triggered: false, pid: null, skipped: "not_configured" };
+      }
+      const running = inFlight.get(ticketNumber);
+      if (running !== undefined) {
+        if (pidAlive(running)) return { triggered: false, pid: running, skipped: "in_flight" };
+        inFlight.delete(ticketNumber);
       }
       const [bin, ...rest] = tokens;
       const args = [...rest, "--ticket", String(ticketNumber)];
@@ -126,6 +152,7 @@ export function createMergeRunner(
           tracker,
           env,
         );
+        if (result.pid !== null) inFlight.set(ticketNumber, result.pid);
         return { triggered: true, pid: result.pid, runId: result.runId };
       } catch (err) {
         // A synchronous spawn failure must not break the approve response — log

@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import type { Command } from "commander";
 
 import {
+  EXCLUDED_TABLES,
   exportState,
   importStateFromJson,
   serializeBundle,
@@ -18,7 +19,9 @@ export function registerPortability(program: Command): void {
     .command("export")
     .description(
       "Export the whole Dispatch board to a portable JSON bundle (tickets, epics, " +
-        "scope graph, ACs, repos, decisions, reviews/evidence, work_events, claims). " +
+        "scope graph, ACs, repos, decisions, reviews/evidence, work_events, claims, planner " +
+        "sessions, paused deliveries). Not carried: the run registry, API principals and " +
+        "schema metadata (machine-local). " +
         "Reads every table from one consistent snapshot, restores the bundle into a " +
         "scratch database with the importer's own checks, and only then writes it — to " +
         "stdout by default, or to a file with --out. Exits non-zero, writing nothing, if " +
@@ -44,6 +47,8 @@ export function registerPortability(program: Command): void {
             tables: Object.keys(bundle.tables).length,
             rows: verified.rowsRestored,
             verified: true,
+            // Not carried, by design (machine-local): named so "whole board" is honest.
+            not_exported: Object.keys(EXCLUDED_TABLES),
           });
         }
       } finally {

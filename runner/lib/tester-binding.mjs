@@ -266,6 +266,22 @@ export function readCiState(dbPath, ticketNumber, commit) {
   }
 }
 
+/**
+ * RE-REVIEW RECOVERY (exploratory finding cli-runner/F-11): the exact commands that take
+ * a ticket whose branch moved since the review approved it back through review. A
+ * ready_for_merge ticket cannot be dragged back to in_review (`ticket move` refuses it);
+ * `reopen-for-review` is the one path, and it needs a reason and a resolution. The
+ * landing refusals print this verbatim so the operator can copy it.
+ */
+export function reReviewCommand(ticketNumber, repo) {
+  const n = String(ticketNumber);
+  const r = String(repo || "the repository").replace(/["\\$`]/g, "");
+  return (
+    `gaffer wg ticket reopen-for-review ${n} --as admin --reason "${r} moved since review" ` +
+    `--resolution "re-review the new commits on ${r}"; then approve the new heads: gaffer approve ${n}`
+  );
+}
+
 export function landingDecision(args) {
   const d = testerLandingDecision(args);
   if (!d.ok) return d;

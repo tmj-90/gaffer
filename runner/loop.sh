@@ -386,19 +386,32 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
     gaffer_refund_day_tick "$_day_rsv_on" || true
   fi
-  # A delivery the gates PARKED (held for a human, worktree cleaned, branch kept) used to
-  # end its tick with TICK_RESULT=error, which printed "tick → error" for a clean,
-  # intended outcome. tick.sh now reports TICK_RESULT=parked for a release to blocked /
-  # refining (exploratory finding cli-runner/F-20); an older tick's error with a
-  # "delivery PARKED" line reads the same. The ticket is named from the tick's own
-  # factory.log lines; the day cap and the daemon treat a park like the error it was.
+  # A PARKED delivery used to end its tick with TICK_RESULT=error, which printed
+  # "tick → error" for a clean, intended outcome. tick.sh now reports TICK_RESULT=parked
+  # for a release to blocked / refining (exploratory finding cli-runner/F-20); an error
+  # with a "delivery PARKED" line reads the same. Name the ticket from the tick's own
+  # factory.log lines, and say which park it was: the gates park (rework used up →
+  # blocked, branch kept) is held for a human; an EMPTY delivery (no change produced)
+  # goes back to refining. The day cap and the daemon treat a park like an error.
   _shown="${res:-unknown}"
-  if [ "$res" = parked ]; then
-    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE '(delivery PARKED for|released claim on|transitioned) #[0-9]+ → (blocked|refining)|delivery PARKED for #[0-9]+' | grep -oE '#[0-9]+' | tail -1)"
-    _shown="parked${_parked:+ $_parked} — held for a human (see gaffer status)"
-  elif [ "$res" = error ]; then
-    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE 'delivery PARKED for #[0-9]+' | tail -1)"
-    [ -n "$_parked" ] && _shown="parked ${_parked##* } — held for a human (see gaffer status)"
+  if [ "$res" = parked ] || [ "$res" = error ]; then
+    _since_mark="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null)"
+    _parked="$(printf '%s\n' "$_since_mark" | grep -oE 'delivery PARKED for #[0-9]+( — empty)?' | tail -1)"
+    case "$_parked" in
+      *" — empty") _pn="${_parked% — empty}"; _shown="parked ${_pn##* } — empty delivery, back to refining (see gaffer status)" ;;
+      ?*) _shown="parked ${_parked##* } — held for a human (see gaffer status)" ;;
+      *)
+        if [ "$res" = parked ]; then
+          # A park without a "delivery PARKED" line (a refused bootstrap, a held gate):
+          # name it from the release line.
+          _rel="$(printf '%s\n' "$_since_mark" | grep -oE '(released claim on|transitioned) #[0-9]+ → (blocked|refining)' | tail -1)"
+          _rn="$(printf '%s' "$_rel" | grep -oE '#[0-9]+')"
+          case "$_rel" in
+            *refining) _shown="parked${_rn:+ $_rn} — back to refining (see gaffer status)" ;;
+            *) _shown="parked${_rn:+ $_rn} — held for a human (see gaffer status)" ;;
+          esac
+        fi ;;
+    esac
   fi
   echo "tick $ticks/$MAX_TICKS → $_shown"
 

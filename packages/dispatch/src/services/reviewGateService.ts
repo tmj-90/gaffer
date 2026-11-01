@@ -44,6 +44,7 @@ import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
 import {
   computeLandingStatus,
+  recordedLandingRepos,
   LANDING_PREFIX,
   type LandingStatus,
   REVIEW_PIN_PREFIX,
@@ -239,6 +240,18 @@ export interface ReviewGateServiceDeps {
    */
   readonly landedOnDefaultResolver?: (repoId: string, sha: string) => boolean;
   /**
+   * PR LANDINGS (exploratory finding cli-wg/F-01): does `ref` in the repo carry the change
+   * of `sha` (an ancestor, or, for a squash or rebase merge, merging `sha` into it changes
+   * nothing)? `refs` names what to look at: "default" (the local default branch) and/or
+   * "remote-default" (every remote-tracking ref of it). → true carried by one of them ·
+   * false none carries it · null none of the refs exists here.
+   */
+  readonly changeOnRefsResolver?: (
+    repoId: string,
+    sha: string,
+    refs: ReadonlyArray<"default" | "remote-default">,
+  ) => boolean | null;
+  /**
    * GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate that answers
    * "does an explicit mode='auto' approve policy cover this ticket (its risk × ALL
    * its write repos)?" NO env read here — the P0 check below ORs it with the env
@@ -336,8 +349,10 @@ function validatedBinding(
 
 /**
  * PER-REPOSITORY LANDING: the `via` values whose landing happened upstream (a merged PR,
- * possibly squashed), so the local default branch cannot confirm it. Every other landing
- * is checked against git before it is recorded.
+ * possibly squashed), so ancestry of the local default branch alone cannot confirm it:
+ * assertPrLanding checks them (a PR on record, the change carried by the default branch or
+ * its remote-tracking copy). Every other landing is checked by ancestry before it is
+ * recorded.
  */
 const UNVERIFIABLE_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale"]);
 
@@ -362,6 +377,7 @@ export class ReviewGateService {
   private readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];
   private readonly unavailableWriteReposResolver: ReviewGateServiceDeps["unavailableWriteReposResolver"];
   private readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
+  private readonly changeOnRefsResolver: ReviewGateServiceDeps["changeOnRefsResolver"];
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
 
@@ -383,6 +399,7 @@ export class ReviewGateService {
     this.reviewedHeadsResolver = deps.reviewedHeadsResolver;
     this.unavailableWriteReposResolver = deps.unavailableWriteReposResolver;
     this.landedOnDefaultResolver = deps.landedOnDefaultResolver;
+    this.changeOnRefsResolver = deps.changeOnRefsResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
     this.observedRiskResolver = deps.observedRiskResolver;
   }
@@ -471,14 +488,24 @@ export class ReviewGateService {
           { actor_type: actor.type, actor_id: actor.id ?? null },
         );
       }
-      const author = this.deliveringAgentId(ticket.id);
-      if (author !== null && actor.id !== undefined && actor.id === author) {
-        throw new DispatchError(
-          "ACTOR_NOT_PERMITTED",
-          "An agent may not approve its own delivery: the approving actor id matches the agent that claimed and delivered this ticket. Approve as a distinct reviewer principal (or a human).",
-          { actor_type: actor.type, actor_id: actor.id, delivering_agent_id: author },
-        );
-      }
+    }
+    // REVIEWER ≠ AUTHOR by id, whatever the actor type (exploratory finding api/F8): a
+    // human or admin principal whose actor_id is the delivering agent's id is that agent
+    // speaking under another type, and its approval would read as the agent approving
+    // its own work.
+    const author = this.deliveringAgentId(ticket.id);
+    if (
+      author !== null &&
+      actor.id !== undefined &&
+      actor.id.trim().toLowerCase() === author.toLowerCase()
+    ) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        actor.type === "agent"
+          ? "An agent may not approve its own delivery: the approving actor id matches the agent that claimed and delivered this ticket. Approve as a distinct reviewer principal (or a human)."
+          : `The approving ${actor.type} id '${actor.id}' is the id of the agent that claimed and delivered this ticket; nobody may approve a delivery under its author's id. Approve under your own identity.`,
+        { actor_type: actor.type, actor_id: actor.id, delivering_agent_id: author },
+      );
     }
     // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
     // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a
@@ -670,6 +697,25 @@ export class ReviewGateService {
     }
     const matches = (c: ShownCommit, h: ReviewedHead): boolean =>
       c.repo === null ? heads.length === 1 : c.repo === h.repoId || c.repo === h.repo;
+    // DUPLICATE PINS (exploratory finding api/F12): one commit per repository. With two
+    // entries for one repo the first decided the outcome, so [head, other] approved and
+    // [other, head] read as a stale revision: the order of the list chose the answer.
+    const named = (c: ShownCommit): string =>
+      c.repo === null
+        ? (heads[0]?.repoId ?? "(unnamed)")
+        : (heads.find((h) => matches(c, h))?.repoId ?? c.repo);
+    const seen = new Map<string, number>();
+    for (const c of commits) seen.set(named(c), (seen.get(named(c)) ?? 0) + 1);
+    const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+    if (dupes.length > 0) {
+      const label = (k: string): string => heads.find((h) => h.repoId === k)?.repo ?? k;
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `Each repository can be approved at one commit only; ${dupes.map(label).join(", ")} ` +
+          "was named more than once. Nothing was approved.",
+        { reason: "duplicate_repo", repos: dupes.map(label) },
+      );
+    }
     const moved: Array<{ repo: string; shown: string | null; current: string | null }> = [];
     for (const h of heads) {
       const shown = commits.find((c) => matches(c, h));
@@ -802,6 +848,8 @@ export class ReviewGateService {
           status: before,
         };
       }
+      if (UNVERIFIABLE_LANDING_VIAS.has(input.via ?? ""))
+        this.assertPrLanding(ticket, target, sha, input.via as "pr" | "pr-stale");
       // A LOCAL landing is checkable: the merge paths merge the pinned commit itself, so
       // it must be contained in the repo's default branch. Fail closed — a commit git
       // cannot show there (or a check that errors) is not recorded, so a forged or
@@ -1390,18 +1438,29 @@ export class ReviewGateService {
         created_at: now,
       });
 
-      const { nextAttempt, capReached } = capRetry(ticket.attempt_count, this.maxAttempts);
-      const target: TicketStatus = capReached ? "blocked" : failTo;
+      // PARTLY LANDED: a tester FAIL of a ticket whose change already reached a default
+      // branch holds it for a person instead of re-queueing it (as rejectReview does).
+      const landedRepos = recordedLandingRepos(this.db, ticket.id);
+      const holdLanded = landedRepos.length > 0;
+      const { nextAttempt, capReached } = holdLanded
+        ? { nextAttempt: ticket.attempt_count, capReached: false }
+        : capRetry(ticket.attempt_count, this.maxAttempts);
+      const target: TicketStatus = capReached || holdLanded ? "blocked" : failTo;
       const reason = `tester_failed:${summary}`;
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
-        reason: capReached ? `retry_cap_reached:${reason}` : reason,
+        reason: holdLanded
+          ? `partly_landed:${reason}`
+          : capReached
+            ? `retry_cap_reached:${reason}`
+            : reason,
         expectedFromStatus: "in_testing",
         patch: { attempt_count: nextAttempt },
-        ...(capReached ? { park: true } : { testerVerdict: true }),
+        ...(capReached || holdLanded ? { park: true } : { testerVerdict: true }),
       });
+      if (holdLanded) this.partlyLandedHold(ticket, landedRepos, failTo, reason, actor);
       if (capReached) {
         writeEvent(this.db, {
           entity_type: "ticket",
@@ -1676,6 +1735,22 @@ export class ReviewGateService {
     }
     const detail = (input.detail ?? "").trim().slice(0, 2_000);
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    // THE TICKET'S COMMITS ONLY (exploratory finding cli-wg/F-11): a result for a commit
+    // that is not one of the ticket's candidates was recorded anyway, and `ci-status` then
+    // reported that unrelated PASS while the real head was red.
+    const candidates = this.ciCandidateCommits(ticket);
+    const known = candidates.some((c) => c.startsWith(commit) || commit.startsWith(c));
+    if (!known) {
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `${commit.slice(0, 12)} is not a commit of #${ticket.number ?? "?"}: a CI result is recorded only for the ticket's candidate commit (a write repo's delivery head, a recorded delivery commit, or an approved revision).`,
+        {
+          reason: "not_ticket_commit",
+          commit,
+          candidates: candidates.map((c) => c.slice(0, 12)),
+        },
+      );
+    }
     const eventId = writeEvent(this.db, {
       entity_type: "ticket",
       entity_id: ticket.id,
@@ -1701,6 +1776,31 @@ export class ReviewGateService {
       status = r.ticket.status;
     }
     return { state: input.state, held, status, eventId };
+  }
+
+  /**
+   * REQUIRED CI: every commit a CI result may be recorded for: each write repo's current
+   * delivery head (git), each recorded per-repo delivery commit, and each review pin
+   * (an approved revision). Lower-case full or abbreviated ids, deduplicated.
+   */
+  private ciCandidateCommits(ticket: Ticket): string[] {
+    const out = new Set<string>();
+    for (const h of this.resolveReviewedHeads(ticket)) if (h.sha) out.add(h.sha.toLowerCase());
+    const rows = this.db
+      .prepare(
+        `SELECT commit_sha AS sha FROM ticket_repo_delivery
+          WHERE ticket_id = ? AND commit_sha IS NOT NULL AND commit_sha <> ''
+         UNION ALL
+         SELECT substr(uri, ${REVIEW_PIN_PREFIX.length + 1}) AS sha FROM evidence
+          WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system'
+            AND uri LIKE '${REVIEW_PIN_PREFIX}%'`,
+      )
+      .all(ticket.id, ticket.id) as Array<{ sha: string }>;
+    for (const r of rows) {
+      const sha = String(r.sha).trim().toLowerCase();
+      if (/^[0-9a-f]{7,64}$/.test(sha)) out.add(sha);
+    }
+    return [...out];
   }
 
   /**
@@ -1768,25 +1868,41 @@ export class ReviewGateService {
           { from: ticket.status, to },
         );
       }
+      if (to === "cancelled") this.refuseCancelOfLanded(ticket);
       const resolvedReason = reason && reason.trim().length > 0 ? reason : "review_rejected";
 
-      const isRequeue = to === "ready" || to === "refining";
+      // PARTLY LANDED (cli-runner/F-02): a send-back of a ticket whose change already
+      // reached a default branch is held for a person (blocked, reason code
+      // partly_landed) instead of re-queued: re-queued, it read as ordinary rework while
+      // half the change sat on main, and nothing then stopped it being cancelled.
+      const landedRepos =
+        to === "ready" || to === "refining" ? recordedLandingRepos(this.db, ticket.id) : [];
+      const holdLanded = landedRepos.length > 0;
+      const isRequeue = (to === "ready" || to === "refining") && !holdLanded;
       // Abandoning (cancelled) never increments the counter; re-queue does.
       const { nextAttempt, capReached } = isRequeue
         ? capRetry(ticket.attempt_count, this.maxAttempts)
         : { nextAttempt: ticket.attempt_count, capReached: false };
-      const target: TicketStatus = capReached ? "blocked" : to;
+      const target: TicketStatus = capReached || holdLanded ? "blocked" : to;
 
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
-        reason: capReached ? `retry_cap_reached:${resolvedReason}` : resolvedReason,
+        reason: holdLanded
+          ? `partly_landed:${resolvedReason}`
+          : capReached
+            ? `retry_cap_reached:${resolvedReason}`
+            : resolvedReason,
         expectedFromStatus: ticket.status,
         ...(isRequeue ? { patch: { attempt_count: nextAttempt }, reviewReject: true } : {}),
         ...(to === "cancelled" ? { wontDo: true } : {}),
-        ...(capReached ? { park: true } : {}),
+        ...(capReached || holdLanded ? { park: true } : {}),
       });
+      if (holdLanded) {
+        const why = this.partlyLandedHold(ticket, landedRepos, to, resolvedReason, actor);
+        parked = { attempt: ticket.attempt_count, requestedTarget: to, reason: why };
+      }
       if (capReached) {
         writeEvent(this.db, {
           entity_type: "ticket",
@@ -1817,7 +1933,9 @@ export class ReviewGateService {
       try {
         this.onTicketParked?.(
           result.ticket,
-          `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
+          p.reason.startsWith("partly landed")
+            ? p.reason
+            : `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
         );
       } catch {
         // Notifications are never allowed to break the caller.
@@ -1833,6 +1951,7 @@ export class ReviewGateService {
   wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ref);
+      this.refuseCancelOfLanded(ticket);
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -1863,6 +1982,132 @@ export class ReviewGateService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * PR LANDINGS (exploratory finding cli-wg/F-01): `record-landing --via pr|pr-stale` used
+   * to record any approved commit as landed with nothing checked, and mark-merged then
+   * closed the ticket while its branch sat unmerged. The rule now:
+   *   - a PR must be on record for that repository (its ticket_repos / delivery pr_url, or
+   *     the ticket's pr_url when it is the ticket's primary write repo): no PR, no PR
+   *     landing (`no_pr_recorded`);
+   *   - `pr` says the local default branch was fast-forwarded from the merged PR's base, so
+   *     the local default must carry the approved change (an ancestor, or for a squash or
+   *     rebase merge, merging the commit into it changes nothing): `not_on_default_branch`;
+   *   - `pr-stale` says the local default could NOT be updated, so it is checked the same way
+   *     against the remote-tracking refs of the default branch (or the local default) when
+   *     the checkout has any; with none here, the recorded PR is the only evidence there is.
+   */
+  private assertPrLanding(
+    ticket: Ticket,
+    target: { repoId: string; repo: string },
+    sha: string,
+    via: "pr" | "pr-stale",
+  ): void {
+    const repoPr = this.db
+      .prepare(
+        `SELECT COALESCE(NULLIF(tr.pr_url, ''), NULLIF(d.pr_url, '')) AS pr
+           FROM ticket_repos tr
+           LEFT JOIN ticket_repo_delivery d ON d.ticket_id = tr.ticket_id AND d.repo_id = tr.repo_id
+          WHERE tr.ticket_id = ? AND tr.repo_id = ?`,
+      )
+      .get(ticket.id, target.repoId) as { pr: string | null } | undefined;
+    const primary = this.db
+      .prepare(
+        `SELECT repo_id FROM ticket_repos WHERE ticket_id = ?
+          ORDER BY (access = 'write') DESC, (role = 'primary') DESC LIMIT 1`,
+      )
+      .get(ticket.id) as { repo_id: string } | undefined;
+    const ticketPr = String(ticket.pr_url ?? "").trim();
+    const pr =
+      String(repoPr?.pr ?? "").trim() || (primary?.repo_id === target.repoId ? ticketPr : "");
+    if (!pr) {
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `#${ticket.number ?? "?"} has no pull request on record for ${target.repo}; a landing --via ${via} is recorded only for a PR the delivery opened. A local merge records --via local (checked against git).`,
+        { reason: "no_pr_recorded", repo: target.repo, via },
+      );
+    }
+    if (!this.changeOnRefsResolver) return;
+    let carried: boolean | null;
+    try {
+      carried = this.changeOnRefsResolver(
+        target.repoId,
+        sha,
+        via === "pr" ? ["default"] : ["remote-default", "default"],
+      );
+    } catch {
+      carried = false;
+    }
+    // pr-stale with no remote-tracking ref here: the local default is known stale and
+    // nothing local can show the merge; the PR record above is the evidence.
+    if (carried === true) return;
+    if (via === "pr-stale" && carried === null) return;
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      via === "pr"
+        ? `${target.repo}'s default branch does not carry ${sha.slice(0, 12)}; a PR landing is recorded once the merged PR has been pulled into the local default branch (git shows the approved change there).`
+        : `Neither ${target.repo}'s default branch nor its remote-tracking copy carries ${sha.slice(0, 12)}; fetch or pull the default branch, then record the landing again (--via pr once it is pulled).`,
+      { reason: "not_on_default_branch", repo: target.repo, commit: sha, via, pr_url: pr },
+    );
+  }
+
+  /**
+   * PARTLY LANDED (exploratory finding cli-runner/F-02): a ticket whose change already
+   * reached a default branch in at least one repository cannot be cancelled. Cancelling
+   * read "won't do" while that repository's default branch carried the merge, and dropped
+   * the ticket out of the human queue's *Partly merged* item. Every landing on record
+   * counts (recordedLandingRepos), not only the current approval's: a send-back or a
+   * reopen withdraws the approval but not the merge, so neither opens a way to cancel. A
+   * reverted merge still has its landing on record; such a ticket ends as done.
+   */
+  private refuseCancelOfLanded(ticket: Ticket): void {
+    const landed = recordedLandingRepos(this.db, ticket.id);
+    if (landed.length === 0) return;
+    const current = computeLandingStatus(this.db, ticket.id);
+    const pending = current.repos.filter((r) => !r.landed).map((r) => r.repo);
+    const n = ticket.number ?? "<n>";
+    throw new DispatchError(
+      "PARTLY_LANDED",
+      `#${ticket.number ?? "?"} already landed in ${landed.join(", ")}; a ticket whose change is on a default branch cannot be cancelled, it can only be finished. ` +
+        (ticket.status === "ready_for_merge"
+          ? pending.length > 0
+            ? `Land the rest (gaffer merge ${n}: ${pending.join(", ")} still pending).`
+            : `Finish it (gaffer merge ${n}).`
+          : `Take it through review again and land the rest (gaffer merge ${n} once it is approved).`),
+      { ticket_number: ticket.number, landed, pending },
+    );
+  }
+
+  /**
+   * The hold a send-back (reject, tester FAIL) of a partly landed ticket becomes: a
+   * `ticket.blocked` park event with reason code `partly_landed` naming what landed, so
+   * the human queue lists it as parked with that reason. Returns the reason text.
+   */
+  private partlyLandedHold(
+    ticket: Ticket,
+    landed: string[],
+    requested: string,
+    reason: string,
+    actor: Actor,
+  ): string {
+    const why =
+      `partly landed: ${landed.join(", ")} already merged on the default branch, so this ` +
+      `send-back to ${requested} is held for a person instead of re-queued (${reason}). ` +
+      `Rework and re-approve it from here (unblock), then land the rest; it cannot be cancelled.`;
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.blocked",
+      payload: {
+        reason: why,
+        reason_code: "partly_landed",
+        landed,
+        requested_target: requested,
+      },
+    });
+    return why;
+  }
 
   /**
    * BBT-001 toggle accessor — overridable per-instance for tests. Defaults to the

@@ -5,8 +5,10 @@
 #   1  "landed:" counts only the tickets this run moved to done (updated_at at or
 #      after SUMMARY_SINCE, the run start); it used to count every done ticket ever.
 #      Without SUMMARY_SINCE it says "(all time)";
-#   2  a tick whose delivery the gates PARKED prints "tick 1/1 → parked #N …", not
-#      "tick → error" (TICK_RESULT is unchanged);
+#   2  a tick whose delivery the gates PARKED prints "tick 1/1 → parked #N — held for
+#      a human …", an EMPTY delivery parked to refining prints "tick 1/1 → parked #N —
+#      empty delivery, back to refining …", never "tick → error" (TICK_RESULT is
+#      unchanged);
 #   3  the daemon banner reads "gaffer daemon: …", not "gaffer gaffer daemon: …".
 # Hermetic: stubbed dispatch lists/shows, a fake runner dir whose tick.sh is a stub,
 # and a stub loop for the daemon.
@@ -57,6 +59,7 @@ cat > "$FAKE/tick.sh" <<'SH'
 #!/usr/bin/env bash
 case "${STUB_TICK:-park}" in
   park) printf '2026-01-01T10:00:00 delivery PARKED for #7 — tests not met (rework_exhausted, 3/3); worktree removed, branch gaffer/ticket-7 PRESERVED, VISIBLE in blocked\n' >> "$GAFFER_LOG" ;;
+  empty) printf '2026-01-01T10:00:00 delivery PARKED for #9 — empty; removed worktrees + branch gaffer/ticket-9\n' >> "$GAFFER_LOG" ;;
   error) printf '2026-01-01T10:00:00 delivery FAILED for #8 — a write repo could not be worktree'"'"'d\n' >> "$GAFFER_LOG" ;;
 esac
 echo "TICK_RESULT=error"
@@ -71,6 +74,9 @@ printf '2026-01-01T09:00:00 delivery PARKED for #2 — an EARLIER run\n' > "$WOR
 OUT="$(lp STUB_TICK=park)"
 has "$OUT" "tick 1/1 → parked #7 — held for a human" && ok "the park is named, with its ticket" || fail "tick line: $(printf '%s' "$OUT" | grep 'tick 1/')"
 has "$OUT" "tick 1/1 → error" && fail "still 'tick → error' for a park" || ok "no 'tick → error' for a clean park"
+OUT="$(lp STUB_TICK=empty)"
+has "$OUT" "tick 1/1 → parked #9 — empty delivery, back to refining (see gaffer status)" && ok "an empty delivery's park says what happened" || fail "empty tick line: $(printf '%s' "$OUT" | grep 'tick 1/')"
+has "$OUT" "held for a human" && fail "an empty delivery reads 'held for a human'" || ok "an empty delivery is not 'held for a human'"
 OUT="$(lp STUB_TICK=error)"
 has "$OUT" "tick 1/1 → error" && ok "a real error still reads error (an earlier run's PARKED line is not this tick's)" || fail "error tick: $(printf '%s' "$OUT" | grep 'tick 1/')"
 

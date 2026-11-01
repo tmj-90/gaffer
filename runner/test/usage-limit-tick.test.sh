@@ -199,7 +199,10 @@ has "$L3" "usage_paused" && fail "the tick reported usage_paused for an agent's 
 NC2="$(cat "$GAFFER_DATA/.nocommit-failures/$NUM2" 2>/dev/null)"
 ST2="$(sql 'select status from tickets where number=?' "$NUM2")"
 AT2="$(sql 'select attempt_count from tickets where number=?' "$NUM2")"
-has "$L3" "tick 1/1 → parked" && ok "loop reported tick → parked (the ordinary failure path; the ticket was parked for a human)" || fail "loop3: $(grep 'tick 1' "$WORK/loop3.log")"
+# The no-commit reply is an EMPTY delivery: parked to refining (TICK_RESULT=parked, the
+# ordinary failure path), and loop.sh names that park.
+has "$L3" "tick 1/1 → parked #$NUM2 — empty delivery, back to refining (see gaffer status)" \
+  && ok "loop reported the empty-delivery park (the ordinary failure path)" || fail "loop3: $(grep 'tick 1' "$WORK/loop3.log")"
 [ "$ST2" = "refining" ] && ok "#$NUM2 was parked to refining for a human (as for any no-commit reply)" \
   || fail "#$NUM2 is '$ST2' (want refining): attempt_count=${AT2:-0} nocommit=${NC2:-none}"
 

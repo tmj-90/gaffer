@@ -5,6 +5,7 @@ import { openDatabase } from "../src/db/connection.js";
 import { SCHEMA_VERSION } from "../src/db/schema.js";
 import type { Actor } from "../src/domain/types.js";
 import {
+  EXCLUDED_TABLES,
   EXPORT_TABLES,
   STATE_FORMAT_VERSION,
   exportState,
@@ -312,6 +313,62 @@ describe("dispatch state export", () => {
     );
   });
 
+  it("every exported table round-trips its rows; import --force replaces them all (api/F2)", () => {
+    const src = freshWg();
+    const seed = seedBoard(src);
+    src.db
+      .prepare(
+        "INSERT INTO plan_sessions (id, status, brief, messages_json) VALUES ('ps-1', 'active', 'plan a thing', '[]')",
+      )
+      .run();
+    src.db
+      .prepare(
+        "INSERT INTO paused_deliveries (ticket_id, reason, branch_name, worktree_path) VALUES (?, 'cap_hit', 'gaffer/t1', '/w/t1')",
+      )
+      .run(seed.reviewedTicketId);
+    const count = (db: Dispatch["db"], t: string): number =>
+      (db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n;
+    const bundle = exportState(src.db);
+    // A table with rows in the source but missing from the bundle is silently lost.
+    const live = (
+      src.db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .all() as Array<{ name: string }>
+    ).map((r) => r.name);
+    for (const t of live) {
+      if (t in EXCLUDED_TABLES) continue;
+      expect(bundle.tables[t]?.length ?? -1, `table ${t}`).toBe(count(src.db, t));
+    }
+    expect(bundle.tables.plan_sessions).toHaveLength(1);
+    expect(bundle.tables.paused_deliveries).toHaveLength(1);
+
+    const dst = new Dispatch(openDatabase(":memory:"), new TestClock(), nonEmptyDiffRunner);
+    importState(dst.db, bundle);
+    for (const t of EXPORT_TABLES) expect(count(dst.db, t), `table ${t}`).toBe(count(src.db, t));
+
+    // --force replaces: a board with its own planner session and paused delivery ends up
+    // with exactly the bundle's.
+    const other = freshWg();
+    const otherSeed = seedBoard(other);
+    other.db
+      .prepare(
+        "INSERT INTO plan_sessions (id, status, messages_json) VALUES ('ps-old', 'active', '[]')",
+      )
+      .run();
+    other.db
+      .prepare("INSERT INTO paused_deliveries (ticket_id, reason) VALUES (?, 'budget_cap')")
+      .run(otherSeed.reviewedTicketId);
+    importState(other.db, bundle, { force: true });
+    expect(
+      (other.db.prepare("SELECT id FROM plan_sessions").all() as Array<{ id: string }>).map(
+        (r) => r.id,
+      ),
+    ).toEqual(["ps-1"]);
+    expect(other.db.prepare("SELECT ticket_id, reason FROM paused_deliveries").all()).toEqual([
+      { ticket_id: seed.reviewedTicketId, reason: "cap_hit" },
+    ]);
+  });
+
   it("EXPORT_TABLES covers every durable table in a freshly-migrated DB (drift guard)", () => {
     // FIX-7: EXPORT_TABLES is hand-maintained. A future migration that adds a
     // durable table must consciously be included in the export (or excluded here).
@@ -326,33 +383,14 @@ describe("dispatch state export", () => {
         .all() as Array<{ name: string }>
     ).map((r) => r.name);
 
-    // Tables deliberately NOT round-tripped by the bundle, named explicitly so a
-    // reviewer must justify every exclusion:
-    //   - schema_meta: pure metadata, captured by the bundle's top-level
-    //     schema_version and re-stamped by migrate() on import.
-    //   - runs: machine-local control-plane data (the run-activity registry). Its
-    //     rows carry this machine's pids and GAFFER_DATA/runs/<id>.log paths and
-    //     have no FK to the board — they are meaningless (and a `running` row with
-    //     a foreign pid is actively misleading) on another machine. The bundle is
-    //     the portable BOARD; run history is intentionally not carried.
-    const INTENTIONALLY_EXCLUDED = [
-      "schema_meta",
-      "runs",
-      // plan_sessions: machine-local UI ephemera (in-flight plan-build conversations).
-      // Sessions are tied to a browser session on this machine; they contain no work-item
-      // data that needs to round-trip. An imported board should start a fresh conversation.
-      "plan_sessions",
-      // paused_deliveries: machine-local resume context (PAUSE-ON-CAP). Its rows
-      // carry THIS host's worktree paths + delivery branch for an in-flight paused
-      // delivery; they are meaningless on another machine (the worktree doesn't
-      // exist there), so they are not part of the portable board bundle — exactly
-      // like `runs`.
-      "paused_deliveries",
-      // api_principals: machine-local CREDENTIALS (sha256 token hashes bound to actor
-      // identities). Access material never travels with a board bundle; an importing
-      // factory mints its own principals.
-      "api_principals",
-    ];
+    // Tables deliberately NOT round-tripped by the bundle live in stateExport.ts
+    // (EXCLUDED_TABLES, each with its reason), next to EXPORT_TABLES. Only machine-local
+    // tables belong there: plan_sessions and paused_deliveries once sat in a list like
+    // this one while the export claimed "the whole board" (exploratory finding api/F2).
+    // Growing the exclusion list means changing this expectation, on purpose.
+    const INTENTIONALLY_EXCLUDED = Object.keys(EXCLUDED_TABLES);
+    expect(INTENTIONALLY_EXCLUDED.sort()).toEqual(["api_principals", "runs", "schema_meta"]);
+    for (const reason of Object.values(EXCLUDED_TABLES)) expect(reason.length).toBeGreaterThan(10);
 
     const covered = new Set<string>([...EXPORT_TABLES, ...INTENTIONALLY_EXCLUDED]);
 

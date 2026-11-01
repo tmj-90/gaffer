@@ -124,11 +124,15 @@ export function registerAgent(program: Command): void {
   program
     .command("human-release <ref>")
     .description(
-      "TRACK-2b: hand a by-hand ticket back to the queue (in_progress -> ready, clearing your ownership marker so agents can pick it up).",
+      "TRACK-2b: hand YOUR by-hand ticket back to the queue (in_progress -> ready, clearing your ownership marker so agents can pick it up). Refused when $USER is not the ticket's human owner; --admin hands anyone's back.",
     )
-    .action((ref, _opts, cmd) => {
+    .option("--admin", "act as an admin actor (hand back someone else's ticket)", false)
+    .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const res = wg.humanReleaseTicket(ref, cliActor());
+      const actor: Actor = opts.admin
+        ? { type: "admin", id: process.env.USER ?? "cli" }
+        : cliActor();
+      const res = wg.humanReleaseTicket(ref, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
     });

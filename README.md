@@ -136,7 +136,7 @@ Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`), and a live run won't sta
 
 - The docker sandbox is experimental. Its containment is red-team tested in CI, but a full live delivery inside the container hasn't been proven yet.
 - Only one worker is supported (`GAFFER_WORKER_PROVIDER=claude-code`). The seam for others exists, but any other value refuses to run.
-- REST credentials are per principal (`runner/gaffer wg principal create`) and can be read-only, but there's no per-repo or per-ticket permission. On the CLI the actor is whatever `$USER` says.
+- REST credentials are per principal (`runner/gaffer wg principal create`) and can be read-only, but there's no per-repo or per-ticket permission. A principal can't take a registered agent's id, and nobody approves a delivery under the id of the agent that delivered it. On the CLI the actor is whatever `$USER` says.
 - Planning a build needs the dashboard, and approving lore needs the memory CLI (`MEMORY_DB=.gaffer/memory.sqlite node packages/memory/dist/bin/memory.js review`).
 - Greenfield runs have a few first-run steps, covered in [quickstart.md](quickstart.md#greenfield-gotchas-things-you-currently-have-to-do). Read them before you start one.
 - The eval judge that scores each delivery is opt-in (`GAFFER_EVAL_JUDGE=1`) while I find out whether its scores are worth having. See [docs/eval-harness.md](docs/eval-harness.md).

@@ -1677,8 +1677,8 @@ gaffer_delivery_attempt_stamp() {
 #                                  its risk level and holds everything else for a human.
 #   autonomous  (walk-away / AFK) — agents approve; approved work auto-merges + pushes;
 #                                  the OS sandbox is required (containment block below)
-#   strict      (same flags as autonomous) — the only difference: STRICT_MODE stays on
-#                                  even with an explicit GAFFER_STRICT_REQUIRE=0
+#   strict      (same flags as autonomous; the one difference is that STRICT_MODE
+#                                  stays on even with an explicit GAFFER_STRICT_REQUIRE=0)
 #
 # PRECEDENCE (highest wins):
 #   real env var  >  explicit settings.json key  >  mode default  >  config default

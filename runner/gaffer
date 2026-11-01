@@ -142,8 +142,9 @@ onboard)
       *) [ -z "$path" ] || bad_arg onboard "one path only (got '$path' and '$a')"; path="$a" ;;
     esac
   done
-  if [ -z "$path" ]; then usage onboard; exit 1; fi
-  abs="$(cd "$path" 2>/dev/null && pwd -P)" || { echo "  no such directory: $path"; exit 1; }
+  # A missing or wrong path is a usage error: ✗ on stderr + the usage line, exit 2.
+  [ -n "$path" ] || bad_arg onboard "onboard needs the path of a repository"
+  abs="$(cd "$path" 2>/dev/null && pwd -P)" || bad_arg onboard "no such directory: $path"
   git -C "$abs" rev-parse --git-dir >/dev/null 2>&1 || warn "not a git repo (the factory branches per ticket — you'll want one)"
   # Route through onboard-run.mjs — the SAME path the dashboard's "Onboard a repo"
   # button uses: scan + register + the claude -p analysis (real digest + features +

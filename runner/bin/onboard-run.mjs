@@ -313,6 +313,17 @@ export function crewRefusal(...outputs) {
   return null;
 }
 
+/**
+ * Quote one word for a command line the operator copies (POSIX sh single quotes): a
+ * repo name with spaces printed bare (`repo-access set <n> repo with spaces`) became
+ * three arguments when pasted. A plain name stays as it is.
+ */
+export function shellArg(s) {
+  const v = String(s ?? "");
+  if (/^[A-Za-z0-9._\/@:+=-]+$/.test(v)) return v;
+  return `'${v.replace(/'/g, "'\\''")}'`;
+}
+
 export function buildOnboardSummary({ stdout, exit, analysis, logFile, refusal = null }) {
   const facts = extractScanFacts(stdout) ?? {};
   let clarifications = [];
@@ -366,7 +377,7 @@ export function buildOnboardSummary({ stdout, exit, analysis, logFile, refusal =
     );
   }
   lines.push(
-    `next: gaffer wg ticket create -t "…" -d "…", then ac add · repo-access set <n> ${name} · ready ` +
+    `next: gaffer wg ticket create -t "…" -d "…", then ac add · repo-access set <n> ${shellArg(name)} · ready ` +
       "(quickstart §4) — or map it in the Factory Map tab",
   );
   if (logFile) lines.push(`full log: ${logFile}`);

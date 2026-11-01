@@ -102,7 +102,7 @@ echo "== onboard / merge / approve / dashboard / skills reject bad arguments =="
 gx onboard --bogus "$WORK"
 [ "$RC" -eq 2 ] && [[ "$OUT" == *"unknown option '--bogus'"* ]] && ok "onboard --bogus: exit 2" || fail "onboard --bogus: rc=$RC out=$OUT"
 gx onboard "$WORK/absent" --standalone
-[ "$RC" -eq 1 ] && [[ "$OUT" == *"no such directory: $WORK/absent"* ]] \
+[ "$RC" -eq 2 ] && [[ "$OUT" == *"no such directory: $WORK/absent"* ]] \
   && ok "onboard <path> --standalone: --standalone accepted (reaches the path check)" || fail "onboard --standalone: rc=$RC out=$OUT"
 gx merge 3 4
 [ "$RC" -eq 2 ] && ok "merge 3 4: exit 2 (one ticket)" || fail "merge 3 4: rc=$RC"

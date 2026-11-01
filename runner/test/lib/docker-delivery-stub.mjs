@@ -26,10 +26,9 @@ import { spawn, execFileSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
-  mkdtempSync,
   readFileSync,
   readdirSync,
-  rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -125,7 +124,10 @@ function probes(mcpConfigPath) {
   );
   let tmpOk = false;
   try {
-    rmSync(mkdtempSync(path.join(tmpdir(), "gaffer-e2e-")), { recursive: true });
+    // A plain file, not a temp dir: this checks the directory exists and is writable.
+    const probe = path.join(tmpdir(), `gaffer-e2e-tmpdir-probe.${process.pid}`);
+    writeFileSync(probe, "ok\n");
+    unlinkSync(probe);
     tmpOk = true;
   } catch {
     /* no usable TMPDIR */

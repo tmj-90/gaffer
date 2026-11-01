@@ -201,8 +201,24 @@ export const recordAcCheckInput = z.object({
 });
 export type RecordAcCheckInput = z.infer<typeof recordAcCheckInput>;
 
+/**
+ * A repository name (exploratory finding cli-wg/F-06). The name rides into worktree
+ * paths, branch-pressure files and log lines, so it may not carry a path separator,
+ * be a dot segment, start with '-' (option injection downstream) or hold a control
+ * character (the onboard target's guard). Unicode letters and emoji are fine.
+ */
+export const repoNameText = z
+  .string()
+  .trim()
+  .min(1, "repo name is required")
+  .max(200)
+  .refine(noControlChars, noControlCharsMessage("repo name"))
+  .refine((v) => !/[/\\]/.test(v), "repo name must not contain a path separator (/ or \\)")
+  .refine((v) => v !== "." && v !== "..", "repo name must not be '.' or '..'")
+  .refine((v) => !v.startsWith("-"), "repo name must not start with '-'");
+
 export const registerRepoInput = z.object({
-  name: z.string().trim().min(1).max(200),
+  name: repoNameText,
   local_path: z.string().max(2_000).optional(),
   remote_url: z.string().max(2_000).optional(),
   default_branch: z.string().max(200).regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE).default("main"),

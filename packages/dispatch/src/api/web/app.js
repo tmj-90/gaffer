@@ -2527,8 +2527,11 @@ async function startLiveStream() {
         let isEvent = false;
         let data = "";
         for (const line of frame.split("\n")) {
-          if (line.startsWith("id: ")) liveStreamSeq = Number(line.slice(4)) || liveStreamSeq;
-          else if (line.startsWith("event: work_event")) isEvent = true;
+          // A seq of 0 counts: the server's `reset` frame moves a stale cursor back to it.
+          if (line.startsWith("id: ")) {
+            const seq = line.slice(4).trim();
+            if (/^\d+$/.test(seq)) liveStreamSeq = Number(seq);
+          } else if (line.startsWith("event: work_event")) isEvent = true;
           else if (line.startsWith("data: ")) data += line.slice(6);
         }
         if (isEvent) {

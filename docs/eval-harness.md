@@ -112,7 +112,7 @@ work that was submitted, never as evidence that memory improved it.
 | Env | Default | Meaning |
 |---|---|---|
 | `GAFFER_EVAL_JUDGE` | `0` | `1` enables post-submit judging (one extra paid model call per delivery) |
-| `GAFFER_JUDGE_MODEL_FLAG` | impl model flag | model for the judge turn |
+| `GAFFER_JUDGE_MODEL_FLAG` | plan model flag, else impl model flag | model for the judge turn |
 | `GAFFER_EVAL_LEDGER` | `$GAFFER_DATA/eval-ledger.jsonl` | ledger path |
 
 ## Honest limits of the current metrics (read before trusting a number)
@@ -129,12 +129,13 @@ of this harness and left visible rather than hidden:
   cost-per-good-delivery. `memoryLift` is likewise measured only within
   gate-passers, so if memory mostly helps work *clear the gates*, the effect is
   conditioned away. Widening judging to failed attempts is future work.
-- **Self-grading by default.** The judge turn uses
-  `GAFFER_JUDGE_MODEL_FLAG`, falling back to the implementation model flag — so
-  out of the box the judge shares the implementer's blind spots. Set
-  `GAFFER_JUDGE_MODEL_FLAG` to a *different* (ideally stronger) model for real
-  independence. Every record now carries `judgeModel` so a model swap is visible
-  and doesn't silently break longitudinal comparability.
+- **Self-grading when no plan model is set.** The judge turn uses
+  `GAFFER_JUDGE_MODEL_FLAG`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
+  and only when neither is set the implementation model flag, when it shares the
+  implementer's blind spots. Set `GAFFER_JUDGE_MODEL_FLAG` to a *different*
+  (ideally stronger) model for real independence. Every record carries
+  `judgeModel` so a model swap is visible and doesn't silently break longitudinal
+  comparability.
 - **Prefix grading on huge diffs.** Diffs over `GAFFER_JUDGE_DIFF_BYTES`
   (120 KB default) are truncated; the judge is told so and instructed to treat
   unseen changes as ungraded, not absent — but `minimalism`/`security` on a very

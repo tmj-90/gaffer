@@ -44,6 +44,7 @@ import { DispatchError, notFound } from "../util/errors.js";
 import { newId } from "../util/id.js";
 import {
   computeLandingStatus,
+  recordedLandingRepos,
   LANDING_PREFIX,
   type LandingStatus,
   REVIEW_PIN_PREFIX,
@@ -1433,18 +1434,29 @@ export class ReviewGateService {
         created_at: now,
       });
 
-      const { nextAttempt, capReached } = capRetry(ticket.attempt_count, this.maxAttempts);
-      const target: TicketStatus = capReached ? "blocked" : failTo;
+      // PARTLY LANDED: a tester FAIL of a ticket whose change already reached a default
+      // branch holds it for a person instead of re-queueing it (as rejectReview does).
+      const landedRepos = recordedLandingRepos(this.db, ticket.id);
+      const holdLanded = landedRepos.length > 0;
+      const { nextAttempt, capReached } = holdLanded
+        ? { nextAttempt: ticket.attempt_count, capReached: false }
+        : capRetry(ticket.attempt_count, this.maxAttempts);
+      const target: TicketStatus = capReached || holdLanded ? "blocked" : failTo;
       const reason = `tester_failed:${summary}`;
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
-        reason: capReached ? `retry_cap_reached:${reason}` : reason,
+        reason: holdLanded
+          ? `partly_landed:${reason}`
+          : capReached
+            ? `retry_cap_reached:${reason}`
+            : reason,
         expectedFromStatus: "in_testing",
         patch: { attempt_count: nextAttempt },
-        ...(capReached ? { park: true } : { testerVerdict: true }),
+        ...(capReached || holdLanded ? { park: true } : { testerVerdict: true }),
       });
+      if (holdLanded) this.partlyLandedHold(ticket, landedRepos, failTo, reason, actor);
       if (capReached) {
         writeEvent(this.db, {
           entity_type: "ticket",
@@ -1855,23 +1867,38 @@ export class ReviewGateService {
       if (to === "cancelled") this.refuseCancelOfLanded(ticket);
       const resolvedReason = reason && reason.trim().length > 0 ? reason : "review_rejected";
 
-      const isRequeue = to === "ready" || to === "refining";
+      // PARTLY LANDED (cli-runner/F-02): a send-back of a ticket whose change already
+      // reached a default branch is held for a person (blocked, reason code
+      // partly_landed) instead of re-queued: re-queued, it read as ordinary rework while
+      // half the change sat on main, and nothing then stopped it being cancelled.
+      const landedRepos =
+        to === "ready" || to === "refining" ? recordedLandingRepos(this.db, ticket.id) : [];
+      const holdLanded = landedRepos.length > 0;
+      const isRequeue = (to === "ready" || to === "refining") && !holdLanded;
       // Abandoning (cancelled) never increments the counter; re-queue does.
       const { nextAttempt, capReached } = isRequeue
         ? capRetry(ticket.attempt_count, this.maxAttempts)
         : { nextAttempt: ticket.attempt_count, capReached: false };
-      const target: TicketStatus = capReached ? "blocked" : to;
+      const target: TicketStatus = capReached || holdLanded ? "blocked" : to;
 
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
         toStatus: target,
-        reason: capReached ? `retry_cap_reached:${resolvedReason}` : resolvedReason,
+        reason: holdLanded
+          ? `partly_landed:${resolvedReason}`
+          : capReached
+            ? `retry_cap_reached:${resolvedReason}`
+            : resolvedReason,
         expectedFromStatus: ticket.status,
         ...(isRequeue ? { patch: { attempt_count: nextAttempt }, reviewReject: true } : {}),
         ...(to === "cancelled" ? { wontDo: true } : {}),
-        ...(capReached ? { park: true } : {}),
+        ...(capReached || holdLanded ? { park: true } : {}),
       });
+      if (holdLanded) {
+        const why = this.partlyLandedHold(ticket, landedRepos, to, resolvedReason, actor);
+        parked = { attempt: ticket.attempt_count, requestedTarget: to, reason: why };
+      }
       if (capReached) {
         writeEvent(this.db, {
           entity_type: "ticket",
@@ -1902,7 +1929,9 @@ export class ReviewGateService {
       try {
         this.onTicketParked?.(
           result.ticket,
-          `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
+          p.reason.startsWith("partly landed")
+            ? p.reason
+            : `retry cap reached (attempt ${p.attempt}/${this.maxAttempts}): ${p.reason}`,
         );
       } catch {
         // Notifications are never allowed to break the caller.
@@ -2019,25 +2048,61 @@ export class ReviewGateService {
   }
 
   /**
-   * PARTLY LANDED (exploratory finding cli-runner/F-02): a ticket whose approved change
-   * already reached a default branch in at least one repository cannot be cancelled.
-   * Cancelling read "won't do" while that repository's default branch carried the merge,
-   * and dropped the ticket out of the human queue's *Partly merged* item. Land the rest
-   * (`gaffer merge <n>`), or revert the landed merge first.
+   * PARTLY LANDED (exploratory finding cli-runner/F-02): a ticket whose change already
+   * reached a default branch in at least one repository cannot be cancelled. Cancelling
+   * read "won't do" while that repository's default branch carried the merge, and dropped
+   * the ticket out of the human queue's *Partly merged* item. Every landing on record
+   * counts (recordedLandingRepos), not only the current approval's: a send-back or a
+   * reopen withdraws the approval but not the merge, so neither opens a way to cancel. A
+   * reverted merge still has its landing on record; such a ticket ends as done.
    */
   private refuseCancelOfLanded(ticket: Ticket): void {
-    const landing = computeLandingStatus(this.db, ticket.id);
-    const landed = landing.repos.filter((r) => r.landed).map((r) => r.repo);
+    const landed = recordedLandingRepos(this.db, ticket.id);
     if (landed.length === 0) return;
-    const pending = landing.repos.filter((r) => !r.landed).map((r) => r.repo);
+    const current = computeLandingStatus(this.db, ticket.id);
+    const pending = current.repos.filter((r) => !r.landed).map((r) => r.repo);
+    const n = ticket.number ?? "<n>";
     throw new DispatchError(
       "PARTLY_LANDED",
-      `#${ticket.number ?? "?"} already landed in ${landed.join(", ")}; a ticket whose change is on a default branch cannot be cancelled. ` +
-        (pending.length > 0
-          ? `Land the rest (gaffer merge ${ticket.number ?? "<n>"}: ${pending.join(", ")} still pending), or revert the landed merge first.`
-          : `Finish it (gaffer merge ${ticket.number ?? "<n>"}), or revert the landed merge first.`),
+      `#${ticket.number ?? "?"} already landed in ${landed.join(", ")}; a ticket whose change is on a default branch cannot be cancelled, it can only be finished. ` +
+        (ticket.status === "ready_for_merge"
+          ? pending.length > 0
+            ? `Land the rest (gaffer merge ${n}: ${pending.join(", ")} still pending).`
+            : `Finish it (gaffer merge ${n}).`
+          : `Take it through review again and land the rest (gaffer merge ${n} once it is approved).`),
       { ticket_number: ticket.number, landed, pending },
     );
+  }
+
+  /**
+   * The hold a send-back (reject, tester FAIL) of a partly landed ticket becomes: a
+   * `ticket.blocked` park event with reason code `partly_landed` naming what landed, so
+   * the human queue lists it as parked with that reason. Returns the reason text.
+   */
+  private partlyLandedHold(
+    ticket: Ticket,
+    landed: string[],
+    requested: string,
+    reason: string,
+    actor: Actor,
+  ): string {
+    const why =
+      `partly landed: ${landed.join(", ")} already merged on the default branch, so this ` +
+      `send-back to ${requested} is held for a person instead of re-queued (${reason}). ` +
+      `Rework and re-approve it from here (unblock), then land the rest; it cannot be cancelled.`;
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: ticket.id,
+      actor,
+      event_type: "ticket.blocked",
+      payload: {
+        reason: why,
+        reason_code: "partly_landed",
+        landed,
+        requested_target: requested,
+      },
+    });
+    return why;
   }
 
   /**

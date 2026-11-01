@@ -275,11 +275,14 @@ structural barrier the whole design hangs on.
   naming the repository and the commands that fix it (for a moved branch:
   `gaffer wg ticket reopen-for-review <n> --as admin --reason "..." --resolution "..."`,
   then `gaffer approve <n>`). If one lands and another cannot for a reason only the
-  landing itself finds (a conflict, a dirty checkout, a red merge gate), the ticket stays
-  in *Ready for merge* and shows as **Partly merged** in what needs you, naming which
-  repositories landed (it cannot be cancelled then: `wg wont-do` and a cancelling send-back
-  are refused with `PARTLY_LANDED`, so land the rest or revert the landed merge first);
-  the next merge lands only the rest. A landing (`wg ticket record-landing`, which every
+  landing itself finds (a conflict or a dirty checkout), the ticket stays in *Ready for
+  merge* and shows as **Partly merged** in what needs you, naming which repositories
+  landed; a red merge gate holds it for you instead (blocked, the landed repositories
+  still recorded). The next merge lands only the rest. A partly landed ticket can only
+  be finished: `wg wont-do` and a cancelling send-back are refused with `PARTLY_LANDED`
+  (every landing on record counts, so a send-back or a reopen first changes nothing), and
+  a send-back to rework is held for you (blocked, parked as `partly_landed`) instead of
+  going back to the queue as if nothing had merged. A landing (`wg ticket record-landing`, which every
   landing path calls per repository) is recorded only when it can be shown:
   `--via local` needs the approved commit in the default branch's history; `--via pr`
   needs a pull request on record for that repository and the change in the local default

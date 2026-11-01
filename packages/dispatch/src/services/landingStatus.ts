@@ -67,6 +67,26 @@ function shaOf(uri: unknown, prefix: string): string | null {
   return SHA_RE.test(sha) ? sha : null;
 }
 
+/**
+ * PARTLY LANDED, whatever happened to the approval since (exploratory finding
+ * cli-runner/F-02): every repository with a landing of this ticket on record (a SYSTEM
+ * `gaffer-landed-commit:` row). A merge on a default branch stays there when the ticket is
+ * sent back for rework, reopened for review or parked, so unlike the review pins above a
+ * landing never goes stale: it is what keeps such a ticket from being cancelled or quietly
+ * re-queued. Sorted repo names. Pure read.
+ */
+export function recordedLandingRepos(db: Db, ticketId: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT r.name AS repo FROM evidence e JOIN repositories r ON r.id = e.repo_id
+       WHERE e.ticket_id = ? AND e.evidence_type = 'commit' AND e.recorded_by_actor_type = 'system'
+         AND e.repo_id IS NOT NULL AND e.uri LIKE '${LANDING_PREFIX}%'
+       ORDER BY r.name`,
+    )
+    .all(ticketId) as Array<{ repo: string }>;
+  return rows.map((r) => r.repo);
+}
+
 /** The current per-repo review pins and whether each has landed. Pure read. */
 export function computeLandingStatus(db: Db, ticketId: string): LandingStatus {
   // A pin describes the approved candidate only until the ticket leaves the approval's

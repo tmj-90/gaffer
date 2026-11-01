@@ -1,5 +1,6 @@
 // LANDING INTEGRITY (exploratory test pass, Package A). Each block pins one finding:
-//   cli-runner/F-02  a partly landed ticket cannot be cancelled (PARTLY_LANDED);
+//   cli-runner/F-02  a partly landed ticket cannot be cancelled (PARTLY_LANDED), and a
+//                    send-back of one is held for a person, not re-queued;
 //   cli-wg/F-10      `ticket landing` drops the approval's pins once it is withdrawn;
 //   ...and the further findings added below, one describe per finding.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,11 +45,11 @@ const movableHead: GitRunner = (cwd, args, opts) => {
   return nonEmptyDiffRunner(cwd, args, opts);
 };
 
-function freshWg(): Dispatch {
+function freshWg(opts: { maxAttempts?: number; testingEnabled?: boolean } = {}): Dispatch {
   head = "a".repeat(40);
   branchHead.clear();
   gitOverride = null;
-  return Dispatch.open(":memory:", systemClock, movableHead);
+  return Dispatch.open(":memory:", systemClock, movableHead, opts);
 }
 
 /** A delivered ticket in review, optionally with a second write repo. */
@@ -127,6 +128,69 @@ describe("cli-runner/F-02: a partly landed ticket cannot be cancelled", () => {
     wg.recordLanding(id, { repo: "billing-api", commit: head, via: "local" }, system);
     expect(codeOf(() => wg.rejectReview(id, "cancelled", human, "no"))).toBe("PARTLY_LANDED");
     expect(wg.view(id).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+
+  // Review of the package: the guard read only the CURRENT approval's pins, which a
+  // send-back or a reopen withdraws, so each of these ended cancelled with one repo's
+  // merge on main.
+  const partlyLanded = (wg: Dispatch) => {
+    const r = approved(wg, { extraWrite: "web-storefront" });
+    wg.recordLanding(r.id, { repo: "billing-api", commit: head, via: "local" }, system);
+    return r;
+  };
+
+  it("a send-back to rework parks it for a person (blocked, partly_landed); still no cancel", () => {
+    const wg = freshWg();
+    const { id } = partlyLanded(wg);
+    expect(wg.rejectReview(id, "refining", human, "rework the storefront").ticket.status).toBe(
+      "blocked",
+    );
+    // Still visibly partly landed, and listed for a person with the reason.
+    expect(wg.landingStatus(id)).toMatchObject({ landed: 1, partial: true });
+    const parked = wg.humanQueue().items.find((i) => i.ticket?.id === id);
+    expect(parked).toMatchObject({ kind: "parked", reasonCode: "partly_landed" });
+    expect(parked?.reason).toContain("billing-api");
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    // A person may still rework it from the hold (a red merge gate's recovery), and
+    // even then it cannot be cancelled.
+    wg.moveTicket(id, "ready", human);
+    expect(wg.view(id).ticket.status).toBe("ready");
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    wg.db.close();
+  });
+
+  it("after a reopen for review: a cancelling send-back is refused, a rework one parks it", () => {
+    const wg = freshWg();
+    const { id } = partlyLanded(wg);
+    wg.reopenForReview(id, { reason: "repo moved", resolution: "re-review" }, { type: "admin" });
+    expect(wg.view(id).ticket.status).toBe("in_review");
+    expect(codeOf(() => wg.rejectReview(id, "cancelled", human, "drop"))).toBe("PARTLY_LANDED");
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    expect(wg.rejectReview(id, "ready", human, "redo").ticket.status).toBe("blocked");
+    wg.db.close();
+  });
+
+  it("a retry-cap park, then a person's unblock: still cannot be cancelled", () => {
+    const wg = freshWg({ maxAttempts: 1 });
+    const { id } = partlyLanded(wg);
+    expect(wg.rejectReview(id, "refining", human, "again").ticket.status).toBe("blocked");
+    wg.moveTicket(id, "refining", human);
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    wg.db.close();
+  });
+
+  it("a tester FAIL of a partly landed ticket holds it for a person instead of re-queueing", () => {
+    const wg = freshWg({ testingEnabled: true });
+    const { id } = partlyLanded(wg);
+    wg.reopenForReview(id, { reason: "repo moved", resolution: "re-review" }, { type: "admin" });
+    wg.setTestable(id, true, human);
+    expect(wg.approveReview(id, human).ticket.status).toBe("in_testing");
+    const res = wg.testerFail(id, { summary: "checkout breaks", to: "ready" }, agentActor);
+    expect(res.ticket.status).toBe("blocked");
+    expect(wg.humanQueue().items.find((i) => i.ticket?.id === id)).toMatchObject({
+      reasonCode: "partly_landed",
+    });
     wg.db.close();
   });
 

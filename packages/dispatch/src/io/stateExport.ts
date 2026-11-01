@@ -57,9 +57,11 @@ export const STATE_FORMAT_VERSION = 1;
  *    identities). A board bundle must never carry access material; an importing
  *    factory mints its own principals.
  *
- * Every other table in SCHEMA_SQL carries durable board state and IS included.
- * The drift guard in state-export.test.ts enforces that any future durable table
- * is consciously added here or excluded with a reason.
+ * Those three are {@link EXCLUDED_TABLES}, with their reasons. Every other table in
+ * SCHEMA_SQL carries durable board state and IS included (`plan_sessions` and
+ * `paused_deliveries` were left out while this comment said otherwise: exploratory
+ * finding api/F2). The drift guard in state-export.test.ts reads both lists: a table in
+ * neither fails it, and every exported table must round-trip seeded rows.
  */
 export const EXPORT_TABLES = [
   // Roots (no FK dependencies).
@@ -72,6 +74,11 @@ export const EXPORT_TABLES = [
   // FK — target_repo/scope_node_id are soft references), and a durable, portable
   // asset the operator carries between machines, so it IS part of the bundle.
   "specs",
+  // PLANNER CONVERSATIONS (exploratory finding api/F2): the plan-build sessions (brief,
+  // messages, the proposed plan, target repo/scope). Standalone (no FK: a session
+  // outlives its epic) and the operator's own planning history, so it travels with the
+  // board; a restore that dropped them lost every planner session.
+  "plan_sessions",
   // First-level children.
   "acceptance_criteria",
   "ticket_required_capabilities",
@@ -93,6 +100,12 @@ export const EXPORT_TABLES = [
   // board diagnostics — the "why did #N fail" history is exactly the kind of asset
   // the README promises you carry between machines, so it IS part of the bundle.
   "rework_attempts",
+  // PAUSE-ON-CAP (exploratory finding api/F2): the resume context of a delivery paused in
+  // place (FK to tickets). A `paused` ticket without its row can neither resume nor be
+  // continued, so the row travels with its ticket. Its worktree path is this machine's;
+  // on another machine the resume finds no worktree and the delivery starts over, which
+  // is still better than a paused ticket nothing can move.
+  "paused_deliveries",
   // GRADUATED-AUTONOMY (Spec 2, Phase 3): the per-(repo × risk × gate) autonomy
   // enablement + its evidence snapshot (FK to repositories, so it sorts after that
   // root). A durable, security-relevant operator decision worth carrying between
@@ -106,6 +119,18 @@ export const EXPORT_TABLES = [
 export type ExportTable = (typeof EXPORT_TABLES)[number];
 
 /**
+ * The tables deliberately NOT carried, each with its reason (see the comment above
+ * {@link EXPORT_TABLES}). `dispatch export` names them, so "the whole board" is honest
+ * about what it leaves out, and the drift guard requires every live table to be in one
+ * of the two lists.
+ */
+export const EXCLUDED_TABLES: Readonly<Record<string, string>> = {
+  schema_meta: "metadata: the bundle's schema_version; migrate() re-stamps it on import",
+  runs: "machine-local run registry: this machine's pids and log paths",
+  api_principals: "machine-local credentials: an importing factory mints its own",
+};
+
+/**
  * The ORDER BY clause (primary-key columns) used to make each table's rows
  * deterministic. Composite-key tables order by every key column so the output is
  * stable regardless of SQLite's physical row order.
@@ -117,6 +142,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   agents: "id",
   scope_nodes: "id",
   specs: "id",
+  plan_sessions: "id",
   acceptance_criteria: "id",
   ticket_required_capabilities: "ticket_id, capability",
   agent_capabilities: "agent_id, capability",
@@ -135,6 +161,7 @@ const TABLE_ORDER_BY: Record<ExportTable, string> = {
   work_events: "rowid",
   ticket_dependencies: "ticket_id, depends_on_ticket_id",
   rework_attempts: "id",
+  paused_deliveries: "ticket_id",
   autonomy_policy: "id",
   club: "id",
 };

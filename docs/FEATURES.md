@@ -566,8 +566,9 @@ Memory is also usable standalone — see
 
 **Backing up the board.** `gaffer wg export --out board.json` writes the whole
 board (tickets, epics, scope graph, criteria, repos, decisions, reviews and
-evidence, the event log, claims) as one JSON bundle; `gaffer wg import` restores it
-into an empty database. What the export guarantees:
+evidence, the event log, claims, planner sessions, paused deliveries) as one JSON
+bundle; `gaffer wg import` restores it into an empty database, and `import --force`
+replaces every one of those tables. What the export guarantees:
 
 - **One consistent snapshot.** Every table is read inside a single SQLite read
   transaction, so an export taken while the runner, the API or another process is
@@ -579,7 +580,8 @@ into an empty database. What the export guarantees:
   writes the file or prints anything. If that fails it exits non-zero, writes
   nothing and says why, while you still have the source database to copy from.
 
-Run-activity rows and API credentials are machine-local and are not exported.
+Run-activity rows, API credentials and schema metadata are machine-local and are not
+exported; the export's summary names them (`not_exported`).
 
 ---
 

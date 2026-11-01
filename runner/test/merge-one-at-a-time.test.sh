@@ -11,7 +11,8 @@
 #   3. two runs started together: the ticket is done, main has ONE merge, and the ticket
 #      was never sent back to review;
 #   4. a merge that fails in the scratch checkout WITHOUT unmerged paths is an error, not a
-#      conflict (the resolver is never spawned for it).
+#      conflict (the resolver is never spawned for it);
+#   5. a stale lock another run took over first is left to it (never two holders).
 # Requires the dispatch CLI built + git. SKIPs (exit 0) otherwise. bash 3.2 compatible.
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -114,6 +115,22 @@ GATE="$(MT_JS="$RUNNER_DIR/bin/merge-ticket.mjs" GATE_REPO="$REPO" GATE_DIR="$WO
   process.stdout.write(r.kind + "|" + r.reason);
 ' 2>/dev/null)"
 case "$GATE" in error\|*"without a conflict"*) ok "kind=error: $GATE" ;; *) fail "gate result: $GATE" ;; esac
+
+echo "== 5. a stale lock another run takes over first is not taken from it =="
+# Two runs both read the dead pid; the first takes the lock over; the second must not then
+# remove the first's fresh lock and take it too (two holders = two merges of one ticket).
+# afterStaleRead runs the first run's takeover inside the second run's window.
+RACE="$(MT_JS="$RUNNER_DIR/bin/merge-ticket.mjs" RD="$WORK/race" LIVE="$$" node --input-type=module -e '
+  const { mkdirSync, writeFileSync, rmSync, readFileSync } = await import("node:fs");
+  const { acquireMergeLock } = await import(process.env.MT_JS);
+  const lock = process.env.RD + "/locks/merge-ticket-7.lock";
+  mkdirSync(lock, { recursive: true }); writeFileSync(lock + "/pid", "999999");
+  const r = acquireMergeLock(7, process.env.RD, { afterStaleRead: () => {
+    rmSync(lock, { recursive: true, force: true }); mkdirSync(lock); writeFileSync(lock + "/pid", process.env.LIVE);
+  } });
+  process.stdout.write(`${r.ok}|${readFileSync(lock + "/pid", "utf8")}`);
+' 2>&1)"
+[ "$RACE" = "false|$$" ] && ok "the second run backs off and the first keeps its lock" || fail "stale-takeover race: $RACE (want false|$$)"
 
 echo
 echo "merge-one-at-a-time: $PASS passed, ${#FAILURES[@]} failed"

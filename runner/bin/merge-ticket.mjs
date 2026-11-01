@@ -2378,11 +2378,16 @@ function landSecondaryPr({
  * beside the dashboard's) used to share the ticket's merge-gate scratch checkout: the
  * second removed the first's while it was merging, the first read the failure as a
  * conflict, and the resolver path sent an approved ticket back to review. The lock is a
- * directory (mkdir is atomic) holding the owner's pid; a lock whose pid is gone is stale
- * and taken over. Returns { ok: true, release } or { ok: false, pid }.
+ * directory (mkdir is atomic) holding the owner's pid. A lock whose pid is gone is stale
+ * and taken over, but only under a second, short-lived takeover lock and only after
+ * re-reading the pid inside it: without that, two runs that both saw the dead pid could
+ * each remove the lock the other had just taken and both hold it. Returns
+ * { ok: true, release, path } or { ok: false, pid, path }. `afterStaleRead` (tests only)
+ * runs between seeing a stale owner and taking the lock over: the window a racing run uses.
  */
-export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA) {
+export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA, { afterStaleRead } = {}) {
   const dir = resolve(dataDir, "locks", `merge-ticket-${ticketNumber}.lock`);
+  const takeover = `${dir}.takeover`;
   mkdirSync(dirname(dir), { recursive: true });
   const release = () => {
     try {
@@ -2392,36 +2397,65 @@ export function acquireMergeLock(ticketNumber, dataDir = GAFFER_DATA) {
       /* already gone */
     }
   };
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  const take = () => {
     try {
       mkdirSync(dir);
-      writeFileSync(resolve(dir, "pid"), String(process.pid));
-      process.on("exit", release);
-      return { ok: true, release };
     } catch {
-      let pid;
+      return false;
+    }
+    writeFileSync(resolve(dir, "pid"), String(process.pid));
+    process.on("exit", release);
+    return true;
+  };
+  // The owner recorded in the lock, and whether it still holds it.
+  const holder = () => {
+    let pid = 0;
+    try {
+      pid = parseInt(readFileSync(resolve(dir, "pid"), "utf8"), 10) || 0;
+    } catch {
+      if (!existsSync(dir)) return { pid: 0, held: false };
+    }
+    if (pid > 0) {
       try {
-        pid = parseInt(readFileSync(resolve(dir, "pid"), "utf8"), 10) || 0;
-      } catch {
-        pid = 0;
+        process.kill(pid, 0);
+        return { pid, held: true };
+      } catch (e) {
+        return { pid, held: e?.code === "EPERM" }; // EPERM: alive, someone else's
       }
-      let held;
-      if (pid > 0) {
-        try {
-          process.kill(pid, 0);
-          held = true;
-        } catch (e) {
-          held = e?.code === "EPERM"; // alive, someone else's
-        }
-      } else {
-        // No pid yet: a lock being created right now (mkdir, then the pid file).
-        held = Date.now() - statMtime(dir) < 10_000;
-      }
-      if (held) return { ok: false, pid };
-      rmSync(dir, { recursive: true, force: true }); // stale: its owner is gone
+    }
+    // No pid yet: a lock being created right now (mkdir, then the pid file).
+    return { pid: 0, held: Date.now() - statMtime(dir) < 10_000 };
+  };
+  if (take()) return { ok: true, release, path: dir };
+  const seen = holder();
+  if (seen.held) return { ok: false, pid: seen.pid, path: dir };
+  if (afterStaleRead) afterStaleRead();
+  // STALE: take it over under the takeover lock (a takeover left by a crash mid-takeover
+  // is itself stale after 10 s).
+  try {
+    mkdirSync(takeover);
+  } catch {
+    if (Date.now() - statMtime(takeover) < 10_000) return { ok: false, pid: seen.pid, path: dir };
+    rmSync(takeover, { recursive: true, force: true });
+    return { ok: false, pid: seen.pid, path: dir };
+  }
+  try {
+    const now = holder(); // re-read inside the takeover lock: another run may own it now
+    if (now.held) return { ok: false, pid: now.pid, path: dir };
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      return { ok: false, pid: now.pid, path: dir };
+    }
+    if (take()) return { ok: true, release, path: dir };
+    return { ok: false, pid: holder().pid, path: dir };
+  } finally {
+    try {
+      rmSync(takeover, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
     }
   }
-  return { ok: false, pid: 0 };
 }
 
 function statMtime(p) {
@@ -2495,7 +2529,7 @@ export function preflightRefusal(ticketNumber, hold) {
   const next =
     hold.kind === "moved-since-review" || hold.kind === "unreviewed"
       ? ` — ${reReviewCommand(ticketNumber, hold.repo)}`
-      : hold.kind === "unavailable"
+      : hold.kind === "unavailable" || hold.kind === "no-head"
         ? ` — attach its checkout or restore the branch, then run gaffer merge ${ticketNumber} again`
         : "";
   return (
@@ -2769,7 +2803,19 @@ function main() {
     fail(
       `refusing to merge #${resolved.number}: another merge of it is already running` +
         (lock.pid ? ` (pid ${lock.pid})` : "") +
-        `; nothing done — wait for it to finish`,
+        `; nothing done — wait for it to finish (if no merge of it is running, remove ${lock.path})`,
+      4,
+    );
+    return;
+  }
+  // The ticket as it is NOW, under the lock: a run that read ready_for_merge just before
+  // another run took the lock, landed the ticket (or sent it back to review) and let go
+  // would otherwise carry on from that stale read.
+  const current = resolveTicket(CONFIG.dispatchDb, opts.ticket);
+  if (!current || !canLand(current.status, { applyDigestOnly: opts.applyDigestOnly })) {
+    fail(
+      `refusing to merge #${resolved.number}: another merge finished first; the ticket is now ` +
+        `${current?.status || "unreadable"}; nothing merged`,
       4,
     );
     return;
@@ -3067,8 +3113,17 @@ function main() {
     // write repo's approved commit. A ticket is done only when all of them landed; one
     // that does not land leaves the ticket HELD (ready_for_merge, "Partly merged" in the
     // human queue) with what did land recorded, so a retry lands only the rest.
+    // A PR merged upstream whose local default could not be fast-forwarded is a
+    // `pr-stale` landing (checked against the remote-tracking default, which the fetch
+    // updated): recorded as `pr`, the local default could not show it, so the landing was
+    // refused and the ticket stayed ready_for_merge with its PR already merged.
     if (landed.via !== "earlier" && repo.id)
-      recordLandingCli(resolved.number, repo.id, pin, landed.via);
+      recordLandingCli(
+        resolved.number,
+        repo.id,
+        pin,
+        landed.via === "pr" && landed.fastForwarded === false ? "pr-stale" : landed.via,
+      );
     // REPLAY RECOVERY (external review #8): a retry of an already-landed repo regenerates
     // the tester replay record an interrupted landing never wrote — or holds, targeted.
     if (landed.via === "earlier") {

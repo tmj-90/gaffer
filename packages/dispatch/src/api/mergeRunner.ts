@@ -27,12 +27,13 @@ export const MERGE_CMD_ENV = "DISPATCH_MERGE_CMD";
 export interface MergeTriggerResult {
   /** True when a merge command was configured and spawned. */
   triggered: boolean;
-  /**
-   * Reason a merge was NOT triggered. `in_flight`: this runner already started a merge
-   * for the ticket and that process is still alive, so a second one was not spawned.
-   */
   /** OS process id of the spawned merge, or null (unconfigured / withheld). */
   pid: number | null;
+  /**
+   * Reason a merge was NOT triggered (e.g. "not_configured"). `in_flight`: this runner
+   * already started a merge for the ticket and that process is still alive, so a second
+   * one was not spawned (`pid` is the running one).
+   */
   skipped?: string;
   /** The tracked run id (when a registry is wired), so the UI can poll it. */
   runId?: string | null;

@@ -11,7 +11,8 @@
 #   1. bin/merge-ticket.mjs (the dashboard's Merge now, `gaffer merge`)
 #   2. lib/land.sh gaffer_land_delivery (the merge lane / AFK review pass)
 #   3. the named recovery (reopen-for-review, approve the new heads) lands both repos.
-# A secondary repo with NO approved commit is refused the same way (nothing lands).
+# A secondary repo with NO approved commit, or whose delivery branch was deleted, is
+# refused the same way (nothing lands).
 #
 # Requires the dispatch CLI built + git. SKIPs (exit 0) otherwise. bash 3.2 compatible.
 # =====================================================================
@@ -170,6 +171,20 @@ OUT4="$(MT "$N2")"; RC4=$?
 [ "$RC4" -eq 4 ] && ok "merge-ticket exits 4 for an unpinned secondary repo" || fail "unpinned rc=$RC4 out=$OUT4"
 [ "$(git -C "$REPO_A" rev-parse main)" = "$A2_MAIN" ] && ok "repoA did not land" || fail "repoA landed although repoB has no approved commit"
 case "$(printf '%s' "$OUT4" | jget 'd.error || ""')" in *repoB*) ok "the refusal names repoB" ;; *) fail "unpinned refusal: $OUT4" ;; esac
+
+echo "== 5. a secondary repo whose delivery branch was deleted → nothing lands, says to restore it =="
+N5="$(deliver_ticket "deleted branch ticket")"
+approve_heads "$N5"
+A5_MAIN="$(git -C "$REPO_A" rev-parse main)"; B5_MAIN="$(git -C "$REPO_B" rev-parse main)"
+git -C "$REPO_B" branch -q -D "gaffer/t$N5"
+OUT5="$(MT "$N5")"; RC5=$?
+[ "$RC5" -eq 4 ] && [ "$(git -C "$REPO_A" rev-parse main)" = "$A5_MAIN" ] && [ "$(git -C "$REPO_B" rev-parse main)" = "$B5_MAIN" ] \
+  && ok "merge-ticket exits 4, neither main moved" || fail "deleted branch rc=$RC5 out=$OUT5"
+case "$(printf '%s' "$OUT5" | jget 'd.error || ""')" in *repoB*"restore the branch"*"gaffer merge $N5"*) ok "the refusal names repoB and says to restore the branch" ;; *) fail "deleted-branch refusal: $OUT5" ;; esac
+: > "$WORK/lane5.log"
+LANE "$N5" "$WORK/lane5.log"; LRC5=$?
+[ "$LRC5" -eq 4 ] && [ "$(git -C "$REPO_A" rev-parse main)" = "$A5_MAIN" ] && ok "the lane holds it too, nothing merged" || fail "lane rc=$LRC5: $(tr '\n' '|' < "$WORK/lane5.log")"
+grep -q "repoB.*no-head.*restore the branch" "$WORK/lane5.log" && ok "the lane log says to restore the branch" || fail "lane log: $(tr '\n' '|' < "$WORK/lane5.log")"
 
 echo
 echo "multi-repo-landing-preflight: $PASS passed, ${#FAILURES[@]} failed"

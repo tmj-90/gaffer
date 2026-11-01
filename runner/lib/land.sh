@@ -183,6 +183,7 @@ _gaffer_land_preflight() {
     if ! _gaffer_land_tester_binding "$num" "$_rpath" "$_rbr" "$_rid" 1 </dev/null; then
       case "$_TB_KIND" in
         moved-since-review) log "$who: #$num HELD — ${_rname}: $_rbr moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}); nothing merged in any repository — $(_gaffer_rereview_cmd "$num" "$_rname")" ;;
+        no-head) log "$who: #$num HELD — ${_rname}: landing check: no-head: ${_TB_REASON:-the delivery branch is missing}; nothing merged in any repository — restore the branch, then land it again" ;;
         *) log "$who: #$num HELD — ${_rname}: landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged in any repository" ;;
       esac
       return 4

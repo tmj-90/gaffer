@@ -1076,7 +1076,11 @@ export class Dispatch {
     // IDENTITY COLLISION (exploratory finding api/F8): a principal (human or admin) may not
     // speak as a registered agent's id. One recorded "human/<agent id>" approval on that agent's
     // own delivery, and the dashboard showed the delivering agent as its own approver.
-    if (this.agents.findById(actorId)) {
+    // Case-insensitively: an agent id in capitals is the same id to a reader.
+    const agentWithId = this.db
+      .prepare("SELECT id FROM agents WHERE lower(id) = lower(?) LIMIT 1")
+      .get(actorId) as { id: string } | undefined;
+    if (agentWithId) {
       throw new DispatchError(
         "DUPLICATE",
         `actor_id '${actorId}' is a registered agent's id; a ${actorType} principal needs its own identity (pick another actor_id). Nothing was created.`,

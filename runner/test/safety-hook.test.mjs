@@ -1388,6 +1388,15 @@ for (const [label, cmd] of [
     "dispatch ticket record-tester-replay --files-json",
     "dispatch ticket record-tester-replay 5 --commit abc1234 --pin def5678 --files-json '[]'",
   ],
+  // The required-CI record is the runner's CI gate's: a forged PASS satisfies required CI.
+  [
+    "wg ticket ci-result --state pass --as system",
+    "wg ticket ci-result 5 --commit abc1234 --state pass --as system",
+  ],
+  [
+    "dispatch ticket ci-result --state pass",
+    "dispatch ticket ci-result 5 --commit abc1234 --state pass",
+  ],
   // attach-evidence writes a SYSTEM row with any uri: a forged review pin
   // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
   [

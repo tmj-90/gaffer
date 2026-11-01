@@ -1,5 +1,6 @@
 // LANDING INTEGRITY (exploratory test pass, Package A). Each block pins one finding:
-//   cli-runner/F-02  a partly landed ticket cannot be cancelled (PARTLY_LANDED);
+//   cli-runner/F-02  a partly landed ticket cannot be cancelled (PARTLY_LANDED), and a
+//                    send-back of one is held for a person, not re-queued;
 //   cli-wg/F-10      `ticket landing` drops the approval's pins once it is withdrawn;
 //   ...and the further findings added below, one describe per finding.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,11 +45,11 @@ const movableHead: GitRunner = (cwd, args, opts) => {
   return nonEmptyDiffRunner(cwd, args, opts);
 };
 
-function freshWg(): Dispatch {
+function freshWg(opts: { maxAttempts?: number; testingEnabled?: boolean } = {}): Dispatch {
   head = "a".repeat(40);
   branchHead.clear();
   gitOverride = null;
-  return Dispatch.open(":memory:", systemClock, movableHead);
+  return Dispatch.open(":memory:", systemClock, movableHead, opts);
 }
 
 /** A delivered ticket in review, optionally with a second write repo. */
@@ -127,6 +128,69 @@ describe("cli-runner/F-02: a partly landed ticket cannot be cancelled", () => {
     wg.recordLanding(id, { repo: "billing-api", commit: head, via: "local" }, system);
     expect(codeOf(() => wg.rejectReview(id, "cancelled", human, "no"))).toBe("PARTLY_LANDED");
     expect(wg.view(id).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+
+  // Review of the package: the guard read only the CURRENT approval's pins, which a
+  // send-back or a reopen withdraws, so each of these ended cancelled with one repo's
+  // merge on main.
+  const partlyLanded = (wg: Dispatch) => {
+    const r = approved(wg, { extraWrite: "web-storefront" });
+    wg.recordLanding(r.id, { repo: "billing-api", commit: head, via: "local" }, system);
+    return r;
+  };
+
+  it("a send-back to rework parks it for a person (blocked, partly_landed); still no cancel", () => {
+    const wg = freshWg();
+    const { id } = partlyLanded(wg);
+    expect(wg.rejectReview(id, "refining", human, "rework the storefront").ticket.status).toBe(
+      "blocked",
+    );
+    // Still visibly partly landed, and listed for a person with the reason.
+    expect(wg.landingStatus(id)).toMatchObject({ landed: 1, partial: true });
+    const parked = wg.humanQueue().items.find((i) => i.ticket?.id === id);
+    expect(parked).toMatchObject({ kind: "parked", reasonCode: "partly_landed" });
+    expect(parked?.reason).toContain("billing-api");
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    // A person may still rework it from the hold (a red merge gate's recovery), and
+    // even then it cannot be cancelled.
+    wg.moveTicket(id, "ready", human);
+    expect(wg.view(id).ticket.status).toBe("ready");
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    wg.db.close();
+  });
+
+  it("after a reopen for review: a cancelling send-back is refused, a rework one parks it", () => {
+    const wg = freshWg();
+    const { id } = partlyLanded(wg);
+    wg.reopenForReview(id, { reason: "repo moved", resolution: "re-review" }, { type: "admin" });
+    expect(wg.view(id).ticket.status).toBe("in_review");
+    expect(codeOf(() => wg.rejectReview(id, "cancelled", human, "drop"))).toBe("PARTLY_LANDED");
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    expect(wg.rejectReview(id, "ready", human, "redo").ticket.status).toBe("blocked");
+    wg.db.close();
+  });
+
+  it("a retry-cap park, then a person's unblock: still cannot be cancelled", () => {
+    const wg = freshWg({ maxAttempts: 1 });
+    const { id } = partlyLanded(wg);
+    expect(wg.rejectReview(id, "refining", human, "again").ticket.status).toBe("blocked");
+    wg.moveTicket(id, "refining", human);
+    expect(codeOf(() => wg.wontDo(id, human, "drop"))).toBe("PARTLY_LANDED");
+    wg.db.close();
+  });
+
+  it("a tester FAIL of a partly landed ticket holds it for a person instead of re-queueing", () => {
+    const wg = freshWg({ testingEnabled: true });
+    const { id } = partlyLanded(wg);
+    wg.reopenForReview(id, { reason: "repo moved", resolution: "re-review" }, { type: "admin" });
+    wg.setTestable(id, true, human);
+    expect(wg.approveReview(id, human).ticket.status).toBe("in_testing");
+    const res = wg.testerFail(id, { summary: "checkout breaks", to: "ready" }, agentActor);
+    expect(res.ticket.status).toBe("blocked");
+    expect(wg.humanQueue().items.find((i) => i.ticket?.id === id)).toMatchObject({
+      reasonCode: "partly_landed",
+    });
     wg.db.close();
   });
 
@@ -225,6 +289,15 @@ describe("api/F8: a principal cannot take a registered agent's id; nobody approv
     expect(err?.code).toBe("DUPLICATE");
     expect(err?.details).toMatchObject({ reason: "actor_id_is_agent" });
     expect(codeOf(() => wg.createPrincipal({ name: agent.id }, system))).toBe("DUPLICATE");
+    // ...in any case: the same id in capitals reads as that agent too.
+    expect(
+      codeOf(() =>
+        wg.createPrincipal(
+          { name: "loud", actorType: "admin", actorId: agent.id.toUpperCase() },
+          system,
+        ),
+      ),
+    ).toBe("DUPLICATE");
     // Any other id is fine.
     const ok = wg.createPrincipal({ name: "alice", actorType: "human" }, system);
     expect(ok.principal.actor_id).toBe("alice");
@@ -236,6 +309,9 @@ describe("api/F8: a principal cannot take a registered agent's id; nobody approv
     const { id, agentId } = inReview(wg);
     const disguised: Actor = { type: "human", id: agentId };
     expect(codeOf(() => wg.approveReview(id, disguised))).toBe("ACTOR_NOT_PERMITTED");
+    expect(codeOf(() => wg.approveReview(id, { type: "admin", id: agentId.toUpperCase() }))).toBe(
+      "ACTOR_NOT_PERMITTED",
+    );
     expect(wg.view(id).ticket.status).toBe("in_review");
     expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
     wg.db.close();
@@ -268,6 +344,71 @@ describe("cli-wg/F-13: human-release hands back only your own by-hand ticket", (
     const wg = freshWg();
     const id = byHand(wg, "alice");
     expect(wg.humanReleaseTicket(id, { type: "admin", id: "bob" }).status).toBe("ready");
+    wg.db.close();
+  });
+});
+
+describe("cli-wg/F-13 and cli-runner/F-02 over REST", () => {
+  const FULL = "shared-full-token-for-landing-integrity-0123456789";
+  let closeServer: (() => Promise<void>) | undefined;
+  afterEach(async () => {
+    await closeServer?.();
+    closeServer = undefined;
+    const { setPrincipalResolver } = await import("../src/api/auth.js");
+    setPrincipalResolver(null);
+    delete process.env.DISPATCH_API_TOKEN;
+  });
+  async function serve(wg: Dispatch) {
+    const { createApiServer } = await import("../src/api/server.js");
+    process.env.DISPATCH_AUDIT_OFF = "1";
+    process.env.DISPATCH_API_TOKEN = FULL;
+    const server = createApiServer(wg);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    closeServer = () => new Promise<void>((resolve) => server.close(() => resolve()));
+    const { port } = server.address() as { port: number };
+    return (path: string, token: string, body: unknown = {}) =>
+      fetch(`http://127.0.0.1:${port}${path}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+  }
+  function byHand(wg: Dispatch, owner: string, repoName: string): string {
+    const t = wg.createTicket({ title: "By hand", description: "x" }, human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "ok" }, human);
+    giveTicketRealDelivery(wg, t.id, human, { repoName });
+    wg.markReady(t.id, human);
+    wg.humanClaimTicket(t.id, { type: "human", id: owner });
+    return t.id;
+  }
+
+  it("human-release: a named principal only its own; the shared token any", async () => {
+    const wg = freshWg();
+    const post = await serve(wg);
+    const carol = wg.createPrincipal({ name: "carol" }, system).token;
+    // A principal that merely carries the shared operator's actor id is still a principal.
+    const lookalike = wg.createPrincipal({ name: "dispatch-api" }, system).token;
+    const alice = wg.createPrincipal({ name: "alice" }, system).token;
+    const a = byHand(wg, "alice", "repo-a");
+    expect((await post(`/tickets/${a}/human-release`, carol)).status).toBe(403);
+    expect((await post(`/tickets/${a}/human-release`, lookalike)).status).toBe(403);
+    expect((await post(`/tickets/${a}/human-release`, alice)).status).toBe(200);
+    const b = byHand(wg, "alice", "repo-b");
+    expect((await post(`/tickets/${b}/human-release`, FULL)).status).toBe(200);
+    wg.db.close();
+  });
+
+  it("a partly landed ticket: wont-do is 409 PARTLY_LANDED, a rework send-back parks it", async () => {
+    const wg = freshWg();
+    const post = await serve(wg);
+    const { id } = approved(wg, { extraWrite: "web-storefront" });
+    wg.recordLanding(id, { repo: "billing-api", commit: head, via: "local" }, system);
+    const w = await post(`/tickets/${id}/wont-do`, FULL, { reason: "drop" });
+    expect(w.status).toBe(409);
+    expect(((await w.json()) as { error: { code: string } }).error.code).toBe("PARTLY_LANDED");
+    const r = await post(`/tickets/${id}/review/reject`, FULL, { to: "refining", reason: "redo" });
+    expect(r.status).toBe(200);
+    expect(wg.view(id).ticket.status).toBe("blocked");
     wg.db.close();
   });
 });

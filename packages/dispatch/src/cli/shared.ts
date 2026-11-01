@@ -36,6 +36,19 @@ export function parseAs<T extends string>(value: unknown, allowed: readonly T[])
   );
 }
 
+/**
+ * `--as human|system` for a command a person and the runner both run (exploratory
+ * finding cli-wg/F-05). The default stays the person ($USER); the runner passes
+ * `--as system` so its bookkeeping (repo-delivery record, the tokenless-resume move,
+ * the bootstrap repo link, its own agent registration) is not recorded as a human's.
+ */
+export const AS_HUMAN_OR_SYSTEM_HELP =
+  "actor type: human (default, $USER) or system (the runner's own bookkeeping)";
+
+export function humanOrSystemActor(as: unknown): Actor {
+  return parseAs(as, ["human", "system"] as const) === "system" ? { type: "system" } : cliActor();
+}
+
 /** Resolve a `--as <type>` flag to an Actor (BBT-001 tester verdict commands). */
 export function testerActor(as: string): Actor {
   switch (parseAs(as, ["agent", "human", "admin", "system"] as const)) {

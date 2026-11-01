@@ -89,6 +89,8 @@ runner/gaffer wg ticket repo-access set 1 your-repo   # the name onboard registe
 runner/gaffer wg ticket ready 1
 ```
 
+If **ready** is refused, the refusal names what's missing, and `wg ticket edit 1` (title, description, policy) or `wg ac edit 1 <ac>` / `wg ac rm 1 <ac>` fixes it. A ticket's contract is editable until it is claimed; after that the review and the tester are held to it.
+
 Then watch it, and let it go when you're happy:
 
 ```bash

@@ -13,7 +13,7 @@
 // It is a PLANNER, not an actor: it reads the dispatch sqlite (read-only, zero
 // deps — node:sqlite ships with Node 22+) and emits a plan as a single JSON line.
 // The bash caller (lib/greenfield.sh → gaffer_inherit_repo) executes the plan via
-// `wg ticket repo-access set <sibling> <repo> --access write`, which is idempotent
+// `wg ticket repo-access inherit <sibling> <repo>` (write, recorded as system), which is idempotent
 // (the (ticket,repo) link is upserted), so re-running never double-links.
 //
 // =====================================================================

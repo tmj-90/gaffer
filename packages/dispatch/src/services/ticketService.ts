@@ -3,6 +3,9 @@ import {
   addAcInput,
   addDependencyInput,
   createTicketInput,
+  editAcInput,
+  editTicketInput,
+  toOneLine,
   recordDeliveryArtifactInput,
   recordRepoDeliveryInput,
   setRequiredCapabilitiesInput,
@@ -20,6 +23,7 @@ import {
   type TicketDependency,
   type TicketDependencyView,
   type TicketRepoDelivery,
+  type TicketStatus,
 } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { AcRepository } from "../repositories/acRepository.js";
@@ -85,6 +89,59 @@ export interface ClaimabilityResult {
   ready: boolean;
   blockers: { code: string; message: string }[];
   warnings: { code: string; message: string }[];
+}
+
+/**
+ * CONTRACT FREEZE (exploratory findings cli-wg/F-02, api-robustness/F3). A ticket's
+ * contract (title, description, policy pack, acceptance criteria and their check
+ * commands) may change only while no delivery is bound to it. From `claimed` on, the
+ * review, the tester's contract hash and the runner's check commands are bound to
+ * the contract as it stood; editing it then would let a criterion (or a check
+ * command) appear that the delivery never saw, so every contract write is refused
+ * with CONTRACT_FROZEN outside these statuses.
+ */
+export const CONTRACT_EDITABLE_STATUSES: readonly TicketStatus[] = [
+  "draft",
+  "refining",
+  "ready",
+  "blocked",
+];
+
+/**
+ * The test contract (the testing handover the independent tester reads) is part of the
+ * tester's contract hash (util/contractHash). It is written by whoever hands the
+ * ticket to the tester: the implementer while it delivers, or the reviewer while it
+ * reviews, so it stays editable through `claimed`, `in_progress` and `in_review`. From
+ * `in_testing` on the tester is bound to it (its verdict carries the hash, and a PASS
+ * reads stale once it changes), so a write there is refused with CONTRACT_FROZEN.
+ */
+export const TEST_CONTRACT_EDITABLE_STATUSES: readonly TicketStatus[] = [
+  ...CONTRACT_EDITABLE_STATUSES,
+  "claimed",
+  "in_progress",
+  "in_review",
+];
+
+/** A create-time warning: the ticket was created, but its pack will refuse it at ready. */
+export interface TicketWarning {
+  code: string;
+  message: string;
+}
+
+/** Result of a ticket edit (cli-wg/F-02). */
+export interface EditTicketResult {
+  ticket: Ticket;
+  eventId: string;
+  changed: string[];
+}
+
+function assertHumanOrAdmin(actor: Actor, what: string): void {
+  if (actor.type === "human" || actor.type === "admin") return;
+  throw new DispatchError(
+    "ACTOR_NOT_PERMITTED",
+    `Only a human or admin may ${what}; an agent blocks its own claim with its claim token.`,
+    { actor_type: actor.type },
+  );
 }
 
 export interface TicketServiceDeps {
@@ -189,6 +246,7 @@ export class TicketService {
     const now = this.clock.now();
     return inTransaction(this.db, () => {
       const ticket = this.tickets.resolveRef(input.ticket_id);
+      this.assertContractEditable(ticket, "add an acceptance criterion");
       const ac: AcceptanceCriterion = {
         id: newId(),
         ticket_id: ticket.id,
@@ -215,7 +273,352 @@ export class TicketService {
         event_type: "ac.added",
         payload: { ac_id: ac.id, text: ac.text },
       });
+      this.recheckReadyGate(ticket);
       return { ac, eventId };
+    });
+  }
+
+  // --- Contract edits (cli-wg/F-02, api-robustness/F3) ---------------------
+
+  /**
+   * Refuse a contract write outside {@link CONTRACT_EDITABLE_STATUSES} with
+   * CONTRACT_FROZEN (409 over REST).
+   */
+  assertContractEditable(ticket: Ticket, what: string): void {
+    if (CONTRACT_EDITABLE_STATUSES.includes(ticket.status)) return;
+    throw new DispatchError(
+      "CONTRACT_FROZEN",
+      `Cannot ${what}: ticket #${ticket.number ?? ticket.id} is '${ticket.status}', and its ` +
+        "contract (title, description, policy, criteria, check commands) is frozen once " +
+        "delivery starts, because the review and the tester are bound to it. Send it back for " +
+        `rework first, or change it while it is ${CONTRACT_EDITABLE_STATUSES.join(", ")}.`,
+      {
+        ticket_id: ticket.id,
+        status: ticket.status,
+        editable_statuses: CONTRACT_EDITABLE_STATUSES,
+      },
+    );
+  }
+
+  /**
+   * A READY ticket must keep passing its own ready gate: an edit that would fail it
+   * (a blanked description under team_light, the last criterion removed, a stricter
+   * pack) is refused with POLICY_DENIED, and the caller's transaction rolls back.
+   * Other statuses are checked when they next go ready.
+   */
+  private recheckReadyGate(before: Ticket): void {
+    if (before.status !== "ready") return;
+    const policy = this.transitions.preview(before.id, "ready");
+    if (policy && !policy.allowed) {
+      throw new DispatchError(
+        "POLICY_DENIED",
+        `This edit would make ready ticket #${before.number ?? before.id} fail its ` +
+          `'${policy.policy_pack}' ready gate; move it back to draft first, or fix what the ` +
+          "gate names in the same change.",
+        { policy },
+      );
+    }
+  }
+
+  /**
+   * Warnings for a just-created ticket (cli-wg/F-02): a team_light-or-stricter ticket
+   * with no description can never pass its ready gate until one is set.
+   */
+  createWarnings(ticket: Ticket): TicketWarning[] {
+    if (ticket.policy_pack === "solo_loose" || ticket.description.trim().length > 0) return [];
+    return [
+      {
+        code: "DESCRIPTION_REQUIRED",
+        message:
+          `The '${ticket.policy_pack}' pack needs a description before ticket ` +
+          `#${ticket.number} can be ready. Set one with: wg ticket edit ${ticket.number} -d "<what + why>"`,
+      },
+    ];
+  }
+
+  /**
+   * Edit a ticket's title, description, policy pack and/or priority. Writes one
+   * `ticket.edited` event naming what changed (old and new value; a description by
+   * its length). The contract fields are guarded by {@link assertContractEditable};
+   * a priority-only change is refused only on a done or cancelled ticket.
+   */
+  editTicket(ref: string, raw: unknown, actor: Actor): EditTicketResult {
+    const input = editTicketInput.parse(raw);
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ref);
+      const contract =
+        input.title !== undefined ||
+        input.description !== undefined ||
+        input.policy_pack !== undefined;
+      if (contract) this.assertContractEditable(ticket, "edit the ticket");
+      else if (ticket.status === "done" || ticket.status === "cancelled") {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Ticket #${ticket.number ?? ticket.id} is '${ticket.status}'; its priority is final.`,
+          { status: ticket.status },
+        );
+      }
+      const changes: Record<string, unknown> = {};
+      if (input.title !== undefined && input.title !== ticket.title) {
+        changes.title = { from: ticket.title, to: input.title };
+      }
+      if (input.description !== undefined && input.description !== ticket.description) {
+        changes.description = {
+          from_length: ticket.description.length,
+          to_length: input.description.length,
+        };
+      }
+      if (input.policy_pack !== undefined && input.policy_pack !== ticket.policy_pack) {
+        changes.policy_pack = { from: ticket.policy_pack, to: input.policy_pack };
+      }
+      if (input.priority !== undefined && input.priority !== ticket.priority) {
+        changes.priority = { from: ticket.priority, to: input.priority };
+      }
+      const changed = Object.keys(changes);
+      if (changed.length === 0) {
+        throw new DispatchError(
+          "NO_OP",
+          `Ticket #${ticket.number ?? ticket.id} already has those values.`,
+        );
+      }
+      const now = this.clock.now();
+      const ok = this.tickets.updateFields(
+        ticket.id,
+        ticket.row_version,
+        {
+          ...(input.title !== undefined ? { title: input.title } : {}),
+          ...(input.description !== undefined ? { description: input.description } : {}),
+          ...(input.policy_pack !== undefined ? { policy_pack: input.policy_pack } : {}),
+          ...(input.priority !== undefined ? { priority: input.priority } : {}),
+        },
+        now,
+      );
+      if (!ok) {
+        throw new DispatchError("CONCURRENCY_CONFLICT", "Ticket changed concurrently; retry.");
+      }
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.edited",
+        payload: { changed, changes },
+      });
+      this.recheckReadyGate(ticket);
+      const updated = this.tickets.findById(ticket.id);
+      if (!updated) throw notFound("ticket", ticket.id);
+      return { ticket: updated, eventId, changed };
+    });
+  }
+
+  /**
+   * One of a ticket's criteria by its id, a unique id prefix (4+ characters) or its
+   * 1-based position in the ticket's list (`1` = the first, as `ticket show` orders them).
+   */
+  resolveAcceptanceCriterion(ticket: Ticket, acRef: string): AcceptanceCriterion {
+    const ref = acRef.trim();
+    const acs = this.acs.listForTicket(ticket.id);
+    if (/^\d{1,3}$/.test(ref)) {
+      const ac = acs[Number(ref) - 1];
+      if (ac) return ac;
+      throw new DispatchError(
+        "NOT_FOUND",
+        `Ticket #${ticket.number ?? ticket.id} has ${acs.length} criteria; there is no criterion ${ref}.`,
+        { entity: "acceptance_criterion", id: ref, count: acs.length },
+      );
+    }
+    const exact = acs.find((a) => a.id === ref);
+    if (exact) return exact;
+    const hits = ref.length >= 4 ? acs.filter((a) => a.id.startsWith(ref)) : [];
+    if (hits.length === 1) return hits[0]!;
+    if (hits.length > 1) {
+      throw new DispatchError("AMBIGUOUS_REF", `Criterion ref "${ref}" matches ${hits.length}.`, {
+        ref,
+        matches: hits.map((a) => a.id),
+      });
+    }
+    throw notFound("acceptance_criterion", ref);
+  }
+
+  /**
+   * Edit one criterion's text, verification method and/or check command. The
+   * criterion goes back to `pending` (what verified the old wording does not verify
+   * the new). Writes `ac.edited` naming what changed.
+   */
+  editAcceptanceCriterion(
+    ticketRef: string,
+    acRef: string,
+    raw: unknown,
+    actor: Actor,
+  ): { ac: AcceptanceCriterion; eventId: string } {
+    const input = editAcInput.parse(raw);
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      this.assertContractEditable(ticket, "edit an acceptance criterion");
+      const ac = this.resolveAcceptanceCriterion(ticket, acRef);
+      const next = {
+        text: input.text ?? ac.text,
+        verification_method:
+          input.verification_method === undefined
+            ? ac.verification_method
+            : input.verification_method === null || input.verification_method.trim() === ""
+              ? null
+              : input.verification_method,
+        check_command: input.check_command === undefined ? ac.check_command : input.check_command,
+      };
+      const changes: Record<string, { from: unknown; to: unknown }> = {};
+      for (const k of ["text", "verification_method", "check_command"] as const) {
+        if (next[k] !== ac[k]) changes[k] = { from: ac[k], to: next[k] };
+      }
+      const changed = Object.keys(changes);
+      if (changed.length === 0) {
+        throw new DispatchError("NO_OP", "The criterion already has those values.");
+      }
+      const now = this.clock.now();
+      this.acs.update(ac.id, next, now);
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ac.edited",
+        payload: { ac_id: ac.id, changed, changes },
+      });
+      this.recheckReadyGate(ticket);
+      const updated = this.acs.findById(ac.id);
+      if (!updated) throw notFound("acceptance_criterion", ac.id);
+      return { ac: updated, eventId };
+    });
+  }
+
+  /** Remove one criterion (its evidence goes with it). Writes `ac.removed`. */
+  removeAcceptanceCriterion(
+    ticketRef: string,
+    acRef: string,
+    actor: Actor,
+  ): { acId: string; eventId: string } {
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ticketRef);
+      this.assertContractEditable(ticket, "remove an acceptance criterion");
+      const ac = this.resolveAcceptanceCriterion(ticket, acRef);
+      this.acs.delete(ac.id);
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ac.removed",
+        payload: { ac_id: ac.id, text: ac.text },
+      });
+      this.recheckReadyGate(ticket);
+      return { acId: ac.id, eventId };
+    });
+  }
+
+  // --- Human block / unblock (cli-wg/F-03) ---------------------------------
+
+  /**
+   * A person parks a ticket that is not in an agent's hands: draft, refining, ready,
+   * or in_progress when a human took it by hand. The state-machine edges this takes
+   * are legal only with the `humanBlock` flag, which transition() accepts from a
+   * human or admin alone. An agent-claimed ticket is refused here: the agent blocks
+   * its own claim with its token (Dispatch.markBlocked, unchanged). Writes
+   * `ticket.blocked` with the status it left, which {@link humanUnblockTicket} returns to.
+   */
+  humanBlockTicket(
+    ref: string,
+    reason: string,
+    actor: Actor,
+  ): { ticketId: string; from: TicketStatus; eventId: string } {
+    assertHumanOrAdmin(actor, "block a ticket without a claim token");
+    const why = reason.trim();
+    if (why.length === 0) throw new DispatchError("VALIDATION_ERROR", "A reason is required.");
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ref);
+      const from = ticket.status;
+      const humanOwned = from === "in_progress" && ticket.human_owner !== null;
+      if (from !== "draft" && from !== "refining" && from !== "ready" && !humanOwned) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          from === "claimed" || from === "in_progress"
+            ? `Ticket #${ticket.number ?? ticket.id} is '${from}' under an agent's claim: the agent ` +
+                "blocks it with its claim token (--token), or release the claim first."
+            : `Ticket #${ticket.number ?? ticket.id} is '${from}'; a person can block a draft, ` +
+                "refining, ready or by-hand ticket.",
+          { status: from, ticket_id: ticket.id },
+        );
+      }
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "blocked",
+        reason: why,
+        humanBlock: true,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.blocked",
+        payload: { reason: why, from },
+      });
+      return { ticketId: ticket.id, from, eventId };
+    });
+  }
+
+  /**
+   * Return a blocked ticket to the queue: to `to` when given, else to draft or
+   * refining when that is where a person blocked it from, else to ready (the ready
+   * gate applies, so a ticket that no longer passes it is refused with POLICY_DENIED;
+   * `to: "refining"` then parks it for triage). Writes `ticket.unblocked`.
+   */
+  humanUnblockTicket(
+    ref: string,
+    actor: Actor,
+    to?: "ready" | "refining" | "draft",
+  ): { ticketId: string; status: TicketStatus; eventId: string } {
+    assertHumanOrAdmin(actor, "unblock a ticket");
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ref);
+      if (ticket.status !== "blocked") {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Ticket #${ticket.number ?? ticket.id} is '${ticket.status}', not blocked.`,
+          { status: ticket.status, ticket_id: ticket.id },
+        );
+      }
+      // Where it was blocked from: the LAST transition into `blocked`, whichever path
+      // took it (a person, an agent's token, the runner's park, a board move). Only a
+      // human block writes `from` on ticket.blocked, so an older human block from draft
+      // must not decide where a later in-flight block goes back to.
+      const row = this.db
+        .prepare(
+          `SELECT payload_json FROM work_events
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+              AND json_extract(payload_json, '$.to') = 'blocked'
+            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        )
+        .get(ticket.id) as { payload_json: string | null } | undefined;
+      let blockedFrom: unknown;
+      try {
+        blockedFrom = (JSON.parse(row?.payload_json ?? "{}") as { from?: unknown }).from;
+      } catch {
+        blockedFrom = undefined;
+      }
+      const target: TicketStatus =
+        to ?? (blockedFrom === "draft" || blockedFrom === "refining" ? blockedFrom : "ready");
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: target,
+        reason: "unblock",
+        humanBlock: true,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.unblocked",
+        payload: { to: target },
+      });
+      return { ticketId: ticket.id, status: target, eventId };
     });
   }
 
@@ -320,7 +723,7 @@ export class TicketService {
     const ticket = this.resolveTicket(ticketRef);
 
     const unsatisfied = this.ticketDependencies.unsatisfiedDependencies(ticket.id);
-    const dependencyBlockers =
+    const dependencyBlockers: { code: string; message: string }[] =
       unsatisfied.length > 0
         ? [
             {
@@ -331,6 +734,18 @@ export class TicketService {
             },
           ]
         : [];
+
+    // cli-wg/F-12: an open blocking decision keeps a ticket out of every claim (the
+    // candidate scan skips it whatever its pack), so it is a blocker here too.
+    const decisions = this.decisions.blockingForTicket(ticket.id);
+    if (decisions.length > 0) {
+      dependencyBlockers.push({
+        code: "DECISION_BLOCKED",
+        message: `Waiting on ${decisions.length === 1 ? "a decision" : `${decisions.length} decisions`}: ${decisions
+          .map((d) => d.title)
+          .join("; ")} (answer it: gaffer wg decisions resolve <id>).`,
+      });
+    }
 
     const beforeReady = ticket.status === "draft" || ticket.status === "refining";
     if (!beforeReady) {
@@ -357,6 +772,16 @@ export class TicketService {
       blockers: [...policyBlockers, ...dependencyBlockers],
       warnings: policy.warnings.map((w) => ({ code: w.code, message: w.message })),
     };
+  }
+
+  /**
+   * cli-wg/F-12: could a claim take this ticket now? Ready, not taken by hand, and
+   * {@link claimability} reports no blocker (every dependency done, no open blocking
+   * decision). What `wg ticket list --claimable` lists.
+   */
+  isClaimableNow(ticket: Ticket): boolean {
+    if (ticket.status !== "ready" || ticket.human_owner !== null) return false;
+    return this.claimability(ticket.id).ready;
   }
 
   // --- AC management -------------------------------------------------------
@@ -460,6 +885,20 @@ export class TicketService {
     });
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(ticketRef);
+      if (!TEST_CONTRACT_EDITABLE_STATUSES.includes(ticket.status)) {
+        throw new DispatchError(
+          "CONTRACT_FROZEN",
+          `Cannot set the test contract: ticket #${ticket.number ?? ticket.id} is ` +
+            `'${ticket.status}', and the tester is bound to the contract from in_testing ` +
+            "on. Send it back for rework first, or set it while it is " +
+            `${TEST_CONTRACT_EDITABLE_STATUSES.join(", ")}.`,
+          {
+            ticket_id: ticket.id,
+            status: ticket.status,
+            editable_statuses: TEST_CONTRACT_EDITABLE_STATUSES,
+          },
+        );
+      }
       const now = this.clock.now();
       this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
       writeEvent(this.db, {
@@ -725,7 +1164,8 @@ export class TicketService {
     return inTransaction(this.db, () => {
       const ticket = this.createTicket(
         {
-          title: input.title,
+          // Machine-made (idle loops): collapse control characters rather than fail.
+          title: toOneLine(input.title),
           description: input.description ?? "",
           ...(input.policyPack ? { policy_pack: input.policyPack } : {}),
         },

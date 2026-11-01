@@ -23,6 +23,8 @@ import {
   assignReviewerBody,
   continuePausedBody,
   createTicketBody,
+  editAcBody,
+  editTicketBody,
   humanClaimBody,
   linkTicketScopeBody,
   moveTicketBody,
@@ -185,7 +187,12 @@ export async function routeTickets(
         { repo: body.repo, scopeNodeIds: body.scopeNodeIds, repoAccess: body.repoIds },
         apiActor(),
       );
-      sendCreated(res, `/tickets/${ticket.id}`, { ticket });
+      // cli-wg/F-02: a pack that will refuse this ticket at ready says so now.
+      const warnings = wg.ticketCreateWarnings(ticket);
+      sendCreated(res, `/tickets/${ticket.id}`, {
+        ticket,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      });
       return;
     }
     methodNotAllowed(res);
@@ -228,11 +235,40 @@ export async function routeTickets(
       });
       return;
     }
+    // cli-wg/F-02: edit title / description / policy / priority (contract frozen once claimed).
+    if (method === "PATCH") {
+      const body = editTicketBody.parse(await readJsonBody(req));
+      const result = wg.editTicket(id, body, apiActor());
+      sendJson(res, 200, {
+        ticket: result.ticket,
+        changed: result.changed,
+        event_id: result.eventId,
+      });
+      return;
+    }
     methodNotAllowed(res);
     return;
   }
 
   const sub = segments[2] as string;
+
+  // /tickets/:id/acceptance-criteria/:acId — edit or remove one criterion (cli-wg/F-02).
+  if (segments.length === 4 && sub === TICKET_SUB.ACCEPTANCE_CRITERIA) {
+    const acId = segments[3] as string;
+    if (method === "PATCH") {
+      const body = editAcBody.parse(await readJsonBody(req));
+      const { ac, eventId } = wg.editAcceptanceCriterion(id, acId, body, apiActor());
+      sendJson(res, 200, { acceptance_criterion: ac, event_id: eventId });
+      return;
+    }
+    if (method === "DELETE") {
+      const removed = wg.removeAcceptanceCriterion(id, acId, apiActor());
+      sendJson(res, 200, { ac_id: removed.acId, event_id: removed.eventId });
+      return;
+    }
+    methodNotAllowed(res);
+    return;
+  }
 
   // /tickets/:id/acceptance-criteria
   if (segments.length === 3 && sub === TICKET_SUB.ACCEPTANCE_CRITERIA && method === "POST") {

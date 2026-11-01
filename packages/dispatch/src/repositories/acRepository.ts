@@ -38,6 +38,32 @@ export class AcRepository {
       .all(ticketId) as AcceptanceCriterion[];
   }
 
+  /**
+   * Replace an AC's text / verification method / check command (cli-wg/F-02).
+   * The criterion changed, so whatever verified the old one no longer does: the
+   * row goes back to `pending` with its verifier stamp cleared.
+   */
+  update(
+    id: string,
+    fields: Pick<AcceptanceCriterion, "text" | "verification_method" | "check_command">,
+    nowIso: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE acceptance_criteria
+         SET text = @text, verification_method = @verification_method,
+             check_command = @check_command, status = 'pending',
+             verified_by = NULL, verified_at = NULL, updated_at = @now
+         WHERE id = @id`,
+      )
+      .run({ id, ...fields, now: nowIso });
+  }
+
+  /** Delete one AC (its evidence rows cascade). */
+  delete(id: string): void {
+    this.db.prepare(`DELETE FROM acceptance_criteria WHERE id = ?`).run(id);
+  }
+
   setStatus(id: string, status: AcStatus, verifiedBy: string | null, nowIso: string): void {
     this.db
       .prepare(

@@ -5,7 +5,16 @@ import type { Actor } from "../../domain/types.js";
 import { TICKET_STATUSES } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, parseAs, printJson, testerActor, validateTtl } from "../shared.js";
+import {
+  AS_HUMAN_OR_SYSTEM_HELP,
+  cliActor,
+  humanOrSystemActor,
+  open,
+  parseAs,
+  printJson,
+  testerActor,
+  validateTtl,
+} from "../shared.js";
 
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
@@ -38,6 +47,10 @@ export function registerTicket(program: Command): void {
         },
         cliActor(),
       );
+      // A pack that will refuse this ticket at ready says so now (cli-wg/F-02), on
+      // stderr for a person and in the JSON for a script.
+      const warnings = wg.ticketCreateWarnings(t);
+      for (const w of warnings) process.stderr.write(`warning: ${w.code}: ${w.message}\n`);
       printJson({
         ok: true,
         ticket: {
@@ -47,8 +60,57 @@ export function registerTicket(program: Command): void {
           bootstrap: t.bootstrap === 1,
           delivery_budget_usd: t.delivery_budget_usd,
         },
+        ...(warnings.length > 0 ? { warnings } : {}),
       });
       wg.db.close();
+    });
+
+  ticket
+    .command("edit <ref>")
+    .description(
+      "Edit a ticket's title, description, policy pack or priority. The contract (title, " +
+        "description, policy) is editable in draft, refining, ready and blocked; from claimed " +
+        "on it is frozen (CONTRACT_FROZEN). A ready ticket must still pass its ready gate.",
+    )
+    .option("-t, --title <title>", "new title (one line)")
+    .option("-d, --description <text>", 'new description ("" clears it)')
+    .option(
+      "-p, --policy <pack>",
+      "new policy pack (solo_loose|team_light|factory_strict|regulated)",
+    )
+    .option("--priority <n>", "new priority (0–1000)", (v) => Number(v))
+    .action((ref, opts, cmd) => {
+      const raw = {
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.description !== undefined ? { description: opts.description } : {}),
+        ...(opts.policy !== undefined ? { policy_pack: opts.policy } : {}),
+        ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+      };
+      if (Object.keys(raw).length === 0) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "Nothing to change: pass -t, -d, -p and/or --priority.",
+        );
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.editTicket(ref, raw, cliActor());
+        printJson({
+          ok: true,
+          ticket: {
+            number: res.ticket.number,
+            id: res.ticket.id,
+            status: res.ticket.status,
+            title: res.ticket.title,
+            policy_pack: res.ticket.policy_pack,
+            priority: res.ticket.priority,
+          },
+          changed: res.changed,
+          event: res.eventId,
+        });
+      } finally {
+        wg.db.close();
+      }
     });
 
   ticket
@@ -61,6 +123,13 @@ export function registerTicket(program: Command): void {
     )
     .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)
     .action((ref, opts, cmd) => {
+      if (opts.clear && opts.usd !== undefined) {
+        // cli-wg/F-20: one of them used to win silently.
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--usd and --clear conflict: give one of them.",
+        );
+      }
       const value = opts.clear ? null : opts.usd;
       if (value === undefined) {
         // A structured failure (stderr JSON, exit 1) like every other CLI error — it
@@ -91,11 +160,15 @@ export function registerTicket(program: Command): void {
     .command("move <ref> <to>")
     .description("Board move: send a ticket to another status (e.g. un-ready: ready -> draft)")
     .option("--admin", "act as an admin actor", false)
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP)
     .action((ref, to, opts, cmd) => {
-      const wg = open(cmd.optsWithGlobals());
+      if (opts.admin && opts.as !== undefined) {
+        throw new DispatchError("VALIDATION_ERROR", "--admin and --as conflict: give one of them.");
+      }
       const actor: Actor = opts.admin
         ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+        : humanOrSystemActor(opts.as ?? "human");
+      const wg = open(cmd.optsWithGlobals());
       const res = wg.moveTicket(ref, to, actor);
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });
       wg.db.close();
@@ -161,6 +234,8 @@ export function registerTicket(program: Command): void {
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
+      // cli-wg/F-16: an unknown --via is refused, not treated as local.
+      z.enum(["local", "git-verified", "pr", "pr-stale"]).optional().parse(opts.via);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
         as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
@@ -272,7 +347,7 @@ export function registerTicket(program: Command): void {
     .option("-s, --status <status>", "filter by status")
     .option(
       "--claimable",
-      "only tickets whose dependencies are all done (what a claim can take); the runner's candidate scan applies its limit to this list",
+      "only tickets a claim could take now: ready, not taken by hand, every dependency done and no open blocking decision; the runner's candidate scan applies its limit to this list",
       false,
     )
     .action((opts, cmd) => {
@@ -290,13 +365,11 @@ export function registerTicket(program: Command): void {
       // SCHEDULER: a dependant whose prerequisite is not done can never be claimed. The
       // runner's scan used to walk them first (priority order) and hit its limit before
       // reaching the low-priority prerequisite that would unblock them all — forever.
+      // cli-wg/F-12: --claimable is what a claim could take NOW (ready, not by hand,
+      // dependencies done, no open blocking decision), the claimability endpoint's answer.
       const rows = wg
         .list(opts.status)
-        .filter(
-          (t) =>
-            opts.claimable !== true ||
-            wg.ticketDependencies.unsatisfiedDependencies(t.id).length === 0,
-        );
+        .filter((t) => opts.claimable !== true || wg.isClaimableNow(t));
       printJson(
         // `acceptance` rides along so the runner's tester lane can pick an epic's
         // acceptance ticket out of in_testing even with GAFFER_TESTING off.
@@ -499,7 +572,8 @@ export function registerTicket(program: Command): void {
     .command("test-contract <ref>")
     .description(
       "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +
-        "independent tester reads to stand the system up (never the diff).",
+        "independent tester reads to stand the system up (never the diff). Refused once " +
+        "the ticket is in testing (CONTRACT_FROZEN).",
     )
     .option("--surface <surface...>", "changed boundary surface(s): API/endpoint/CLI/page", [])
     .option("--dep <dep...>", "runtime dependency to stand up (e.g. 'Postgres 16')", [])
@@ -750,6 +824,23 @@ export function registerTicket(program: Command): void {
     });
 
   ticketRepo
+    .command("inherit <ref> <repoRef>")
+    .description(
+      "Runner (greenfield): give a ticket write access to the repo a bootstrap ticket in " +
+        "its epic onboarded. Recorded as system; refused for any other repo (a person uses " +
+        "`repo-access set`).",
+    )
+    .action((ref, repoRef, _opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.inheritBootstrapRepoAccess(ref, repoRef, { type: "system" });
+        printJson({ ok: true, access: res.access, relation: res.relation });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  ticketRepo
     .command("packet <ref>")
     .description("Show the partitioned work-packet repo boundary (write/read/test/denied)")
     .action((ref, _opts, cmd) => {
@@ -795,7 +886,9 @@ export function registerTicket(program: Command): void {
     .option("--pr <url>", "pull-request url")
     .option("--status <status>", "delivery status")
     .option("--evidence <ref>", "evidence reference")
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((ref, repoRef, opts, cmd) => {
+      const actor = humanOrSystemActor(opts.as);
       const wg = open(cmd.optsWithGlobals());
       const res = wg.recordRepoDelivery(
         {
@@ -809,7 +902,7 @@ export function registerTicket(program: Command): void {
           status: opts.status,
           evidence_ref: opts.evidence,
         },
-        cliActor(),
+        actor,
       );
       printJson({ ok: true, delivery: res.delivery });
       wg.db.close();

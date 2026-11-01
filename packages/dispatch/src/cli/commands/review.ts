@@ -27,7 +27,7 @@ export function registerReview(program: Command): void {
   review
     .command("approve <ref>")
     .description("Approve a ticket in review (in_review -> ready_for_merge); evaluates policy")
-    .option("--reviewer <id>", "reviewer id")
+    .option("--reviewer <id>", "reviewer id (default: $USER for a human approval)")
     .option(
       "--as <type>",
       "actor type: human (default) or agent (requires DISPATCH_ALLOW_AGENT_APPROVE=1)",
@@ -43,10 +43,12 @@ export function registerReview(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["human", "agent"] as const);
       const wg = open(cmd.optsWithGlobals());
+      // cli-wg/F-04: a human approval is recorded as whoever runs the CLI ($USER),
+      // like every other wg write, unless --reviewer names someone else.
       const actor: Actor =
         as === "agent"
           ? { type: "agent", id: opts.reviewer ?? "agent" }
-          : { type: "human", id: opts.reviewer ?? "reviewer" };
+          : { type: "human", id: opts.reviewer ?? cliActor().id };
       const commits = ((opts.commit as string[] | undefined) ?? []).map(parseCommitFlag);
       const res = wg.approveReview(ref, actor, { commits, requireCommits: true });
       printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
@@ -61,7 +63,7 @@ export function registerReview(program: Command): void {
     )
     .requiredOption("--reason <text>", "rejection reason (recorded on the event)")
     .option("--to <status>", "return status: refining (default), ready, or cancelled", "refining")
-    .option("--reviewer <id>", "reviewer id")
+    .option("--reviewer <id>", "reviewer id (default: $USER for a human rejection)")
     .option(
       "--as <type>",
       "actor type: human (default), agent (the reviewer agent's verdict) or system (a runner " +
@@ -85,7 +87,7 @@ export function registerReview(program: Command): void {
           ? { type: "agent", id: opts.reviewer ?? "agent" }
           : as === "system"
             ? { type: "system", ...(opts.reviewer ? { id: opts.reviewer } : {}) }
-            : { type: "human", id: opts.reviewer ?? "reviewer" };
+            : { type: "human", id: opts.reviewer ?? cliActor().id };
       const res = wg.rejectReview(ref, to, actor, opts.reason);
       printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
       wg.db.close();

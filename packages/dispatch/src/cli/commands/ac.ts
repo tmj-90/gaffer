@@ -19,6 +19,15 @@ export function registerAc(program: Command): void {
     )
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
+      // cli-wg/F-16: the provenance must point at a real spec clause.
+      if (opts.clause !== undefined && !wg.specClauseExists(String(opts.clause).trim())) {
+        wg.db.close();
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `--clause ${String(opts.clause)}: no spec clause has that id (\`wg spec get <id>\` lists a spec's clause ids).`,
+          { clause: opts.clause },
+        );
+      }
       const t = wg.resolveTicket(ref);
       const { ac: created, eventId } = wg.addAcceptanceCriterion(
         {
@@ -33,6 +42,61 @@ export function registerAc(program: Command): void {
       );
       printJson({ ok: true, ac_id: created.id, event: eventId });
       wg.db.close();
+    });
+
+  // cli-wg/F-02: a criterion can be corrected (a missing --verify the strict packs
+  // need, a reworded check) or removed while the contract is editable (draft,
+  // refining, ready, blocked); from claimed on both are CONTRACT_FROZEN.
+  ac.command("edit <ref> <ac>")
+    .description(
+      "Edit an acceptance criterion (<ac> = its position, 1 = the first, or its id). " +
+        "It goes back to pending. Refused once the ticket is claimed (CONTRACT_FROZEN).",
+    )
+    .option("-t, --text <text>", "new AC text (one line)")
+    .option("--verify <method>", 'verification method ("" clears it)')
+    .option("--check <command>", "new machine check command (the runner executes it)")
+    .option("--clear-check", "remove the machine check command", false)
+    .action((ref, acRef, opts, cmd) => {
+      if (opts.check !== undefined && opts.clearCheck) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--check and --clear-check conflict: give one of them.",
+        );
+      }
+      const raw = {
+        ...(opts.text !== undefined ? { text: opts.text } : {}),
+        ...(opts.verify !== undefined ? { verification_method: opts.verify } : {}),
+        ...(opts.check !== undefined ? { check_command: opts.check } : {}),
+        ...(opts.clearCheck ? { check_command: null } : {}),
+      };
+      if (Object.keys(raw).length === 0) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "Nothing to change: pass -t, --verify, --check and/or --clear-check.",
+        );
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.editAcceptanceCriterion(ref, String(acRef), raw, cliActor());
+        printJson({ ok: true, ac: res.ac, event: res.eventId });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  ac.command("rm <ref> <ac>")
+    .description(
+      "Remove an acceptance criterion (<ac> = its position, 1 = the first, or its id). " +
+        "Refused once the ticket is claimed (CONTRACT_FROZEN).",
+    )
+    .action((ref, acRef, _opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.removeAcceptanceCriterion(ref, String(acRef), cliActor());
+        printJson({ ok: true, ac_id: res.acId, event: res.eventId });
+      } finally {
+        wg.db.close();
+      }
     });
 
   // MACHINE-CHECKABLE AC — the RUNNER reports the result of executing an AC's

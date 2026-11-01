@@ -423,7 +423,9 @@ _gaffer_inherit_planner() {
 # sqlite); THIS function executes the resulting plan via the `wg` CLI:
 #
 #   * deterministic links (single-bootstrap epic, or a sibling whose dependency
-#     graph names exactly one bootstrap) → `wg ticket repo-access set ... --access write`
+#     graph names exactly one bootstrap) → `wg ticket repo-access inherit <n> <repo>`
+#     (write + confirmed, recorded as system; dispatch refuses any repo that is not a
+#     bootstrap's in the ticket's epic, so this never sets a boundary a person did not)
 #   * ambiguous siblings (multi-app epic, 0/>1 bootstraps in the dep closure) →
 #     a headless `claude -p` decision (GAFFER_PLAN_MODEL) that MUST return one of the
 #     candidate repo names; an invalid/NONE answer leaves the ticket unlinked + logged.
@@ -453,7 +455,7 @@ gaffer_inherit_repo() {
   local applied=0
   while IFS=$'\t' read -r tnum repo reason; do
     [ -n "$tnum" ] && [ -n "$repo" ] || continue
-    if wg ticket repo-access set "$tnum" "$repo" --access write --relation confirmed >/dev/null 2>&1; then
+    if wg ticket repo-access inherit "$tnum" "$repo" >/dev/null 2>&1; then
       log "inherited repo $repo → #$tnum ($reason)"
       applied=$((applied+1))
     else
@@ -475,7 +477,7 @@ gaffer_inherit_repo() {
       ans="$(printf '%s' "$plan" | _gaffer_inherit_amb_spawn "$idx" "$tnum")"
       ans="$(printf '%s' "$ans" | tr -d '[:space:]')"
       if [ -n "$ans" ] && [ "$ans" != "NONE" ] && grep -qxF -- "$ans" <<<"$cands"; then
-        if wg ticket repo-access set "$tnum" "$ans" --access write --relation confirmed >/dev/null 2>&1; then
+        if wg ticket repo-access inherit "$tnum" "$ans" >/dev/null 2>&1; then
           log "inherited repo $ans → #$tnum (claude)"
           applied=$((applied+1))
         else

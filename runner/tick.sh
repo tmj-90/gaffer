@@ -489,7 +489,7 @@ fi
 # Ensure a stable factory agent (register once).
 if [ ! -s "$GAFFER_AGENT_ID_FILE" ]; then
   wg init >/dev/null 2>&1 || true
-  if ! wg agent register -n "$GAFFER_AGENT_NAME" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_AGENT_ID_FILE" 2>/dev/null; then
+  if ! wg agent register -n "$GAFFER_AGENT_NAME" --max-risk high --as system 2>/dev/null | jget 'd.agent.id' > "$GAFFER_AGENT_ID_FILE" 2>/dev/null; then
     gaffer_abort_setup SETUP "could not register factory agent"
   fi
 fi
@@ -497,7 +497,7 @@ AGENT="$(cat "$GAFFER_AGENT_ID_FILE")"
 # The REVIEWER principal (a distinct registered agent) — the review pass approves and
 # rejects as this id, never as the delivering agent and never as a bare string.
 if [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
-  if ! wg agent register -n "${GAFFER_AGENT_NAME}-reviewer" --max-risk high 2>/dev/null | jget 'd.agent.id' > "$GAFFER_REVIEWER_ID_FILE" 2>/dev/null \
+  if ! wg agent register -n "${GAFFER_AGENT_NAME}-reviewer" --max-risk high --as system 2>/dev/null | jget 'd.agent.id' > "$GAFFER_REVIEWER_ID_FILE" 2>/dev/null \
      || [ ! -s "$GAFFER_REVIEWER_ID_FILE" ]; then
     rm -f "$GAFFER_REVIEWER_ID_FILE"; gaffer_abort_setup SETUP "could not register the reviewer principal"
   fi
@@ -768,7 +768,7 @@ gaffer_submit_delivery() {
     _err="$(wg submit "$NUM" --token="$CLAIM_TOKEN" --reason "$reason" 2>&1 >/dev/null)"
     _rc=$?
   else
-    _err="$(wg ticket move "$NUM" in_review 2>&1 >/dev/null)"
+    _err="$(wg ticket move "$NUM" in_review --as system 2>&1 >/dev/null)"
     _rc=$?
   fi
   [ "$_rc" -ne 0 ] && [ -n "$_err" ] &&
@@ -1067,6 +1067,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
       fi
       CLAIM_TOKEN="$_CLAIM_TOK"
       log "claimed #$_cand for delivery (runner holds the claim; ttl=${GAFFER_CLAIM_TTL}s)"
+      # CONTRACT FREEZE: a ready ticket's contract is editable until this claim, so a
+      # person may have changed it since the scan read it. Re-read it now that it is
+      # frozen, so the prompt carries the contract the review and the tester hold it to.
+      _cshow_frozen="$(wg ticket show "$_cand" 2>/dev/null || true)"
+      [ -n "$_cshow_frozen" ] && _cshow="$_cshow_frozen"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
     STACK="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
@@ -1077,7 +1082,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     if [ -s "$BP_FILE" ]; then
       log "all deliverable ready tickets are in repos under BACKPRESSURE — skipping new claims; prioritising review/merge/cleanup"
     elif [ -n "${_CLAIMABLE_JSON:-}" ] && [ "$(printf '%s' "$_CLAIMABLE_JSON" | jget 'Array.isArray(d) ? d.length : -1' 2>/dev/null)" = "0" ]; then
-      log "every ready ticket waits on an unfinished dependency — nothing claimable this tick"
+      log "every ready ticket waits on an unfinished dependency or an open blocking decision — nothing claimable this tick"
     else
       log "all ready tickets failed delivery this run — nothing deliverable"
     fi
@@ -1152,7 +1157,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # RUNNER-OWNED-BOOKKEEPING: the runner holds the claim now, so release it first
       # (claimed → ready), THEN un-ready (ready -> draft) so the loop won't re-select it.
       gaffer_release_delivery ready "self-op: bootstrap target is a Gaffer component"
-      wg ticket move "$NUM" draft >/dev/null 2>&1 || true
+      wg ticket move "$NUM" draft --as system >/dev/null 2>&1 || true
       gaffer_skip_ticket "$NUM"
       log "SELF-OP: set aside bootstrap #$NUM for a human (released claim + un-readied ready→draft + skipped this run)"
       result no_work; exit 0
@@ -1462,7 +1467,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       GAFFER_KEEP_DELIVERY_BRANCH=1
       # Link the new repo to the bootstrap ticket + record the delivery so the
       # done-gate/reviewer can resolve it (best-effort, non-fatal).
-      wg repo link "$NUM" "$B_NAME" >/dev/null 2>&1 ||
+      wg repo link "$NUM" "$B_NAME" --as system >/dev/null 2>&1 ||
         log "BOOTSTRAP: repo link #$NUM ↔ $B_NAME did not record (non-fatal)"
       # Record the delivery on the NORMAL lane: the diff is the scaffold delta on TOP of
       # the README baseline (main..branch — exactly what the reviewer diffs), and the
@@ -1487,7 +1492,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # surface the real error, park → refining (blocks blind reclaim), skip, and fail the
       # tick for a human handoff — NEVER fall through to gaffer_submit_delivery.
       _B_RD_ERR="$GAFFER_DATA/.bootstrap-rd-err.$$"
-      if ! wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready 2>"$_B_RD_ERR"; then
+      if ! wg ticket repo-delivery record "$NUM" "$B_NAME" --branch "$B_WORK_BRANCH" $B_SHA_ARG --status review_ready --as system 2>"$_B_RD_ERR"; then
         log "BOOTSTRAP: per-repo delivery record for #$NUM ($B_NAME) FAILED — done-gate cannot resolve this delivery; parking → blocked (NOT submitting): $(head -c 400 "$_B_RD_ERR" 2>/dev/null | tr '\n' ' ')"
         rm -f "$_B_RD_ERR"
         # Park VISIBLY to `blocked` (pages a human via the attention count), never
@@ -1517,7 +1522,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # a retry resumes the scaffold and counts a now-registered repo as success.
       log "BOOTSTRAP: dispatch registration of '$B_NAME' FAILED (${GAFFER_ONBOARD_ERR:-unknown}) — parking #$NUM → blocked (NOT submitting)"
       GAFFER_KEEP_DELIVERY_BRANCH=1
-      gaffer_release_delivery blocked "bootstrap repo registration of '$B_NAME' failed: ${GAFFER_ONBOARD_ERR:-unknown} — register it with 'wg repo add' (scaffold kept at $B_DIR, branch $B_WORK_BRANCH), then unblock" bootstrap_failed
+      gaffer_release_delivery blocked "bootstrap repo registration of '$B_NAME' failed: ${GAFFER_ONBOARD_ERR:-unknown} — register it with 'wg repo add' (scaffold kept at $B_DIR, branch $B_WORK_BRANCH), then unblock it ('gaffer wg unblock $NUM')" bootstrap_failed
       gaffer_skip_ticket "$NUM"
       result error; exit 0
     fi
@@ -1607,7 +1612,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     _NWR_NOPATH="$(echo "$SHOW" | jget '(d.repositories || []).filter((r) => r && ["confirmed", "implicit_single_repo"].includes(r.relation) && r.access === "write" && !String(r.local_path || "").trim()).length' 2>/dev/null || echo 0)"
     if [ "${_NWR_NOPATH:-0}" -gt 0 ] 2>/dev/null; then
       log "ticket #$NUM has no local repo path ($_NWR_NOPATH write repo(s) linked with no local checkout); parking → blocked (no_local_repo_path) for a human"
-      gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock" no_local_repo_path
+      gaffer_release_delivery blocked "the write repo has no local checkout on this machine — clone it to its registered path, or register its path by onboarding a checkout ('gaffer onboard <dir>') and giving the ticket write access to that repo ('gaffer wg ticket repo-access set $NUM <repo>'), then unblock it ('gaffer wg unblock $NUM')" no_local_repo_path
       gaffer_skip_ticket "$NUM"
       result no_work; exit 0
     fi
@@ -1618,7 +1623,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       _NWR_WHY="no repo is linked to the ticket"
     fi
     log "WG-002: #$NUM has no WRITE repo ($_NWR_WHY) — refusing to deliver; parking → blocked (no_write_repo) for a human"
-    gaffer_release_delivery blocked "no write repo on the ticket ($_NWR_WHY) — link a repo and set its access to write (wg ticket repo-access set <n> <repo> --access write --relation confirmed), then unblock" no_write_repo
+    gaffer_release_delivery blocked "no write repo on the ticket ($_NWR_WHY) — link a repo and set its access to write (wg ticket repo-access set <n> <repo> --access write --relation confirmed), then unblock it ('gaffer wg unblock $NUM')" no_write_repo
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
@@ -1689,7 +1694,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Park VISIBLY as `blocked`, never back to `ready`: the skip file only lasts one
     # loop run, so a `ready` release was re-claimed and re-released on every run
     # forever. Skip it for the rest of this run too.
-    gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock" no_local_repo_path
+    gaffer_release_delivery blocked "the write repo has no local checkout on this machine — clone it to its registered path, or register its path by onboarding a checkout ('gaffer onboard <dir>') and giving the ticket write access to that repo ('gaffer wg ticket repo-access set $NUM <repo>'), then unblock it ('gaffer wg unblock $NUM')" no_local_repo_path
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi
@@ -1738,7 +1743,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # forever" mechanism the board already provides. SKIP_FILE is belt-and-braces
       # within the current run (loop.sh clears it per run).
       gaffer_release_delivery ready "self-op: target is a Gaffer component"
-      wg ticket move "$NUM" draft >/dev/null 2>&1 || true
+      wg ticket move "$NUM" draft --as system >/dev/null 2>&1 || true
       gaffer_skip_ticket "$NUM"
       log "SELF-OP: set aside #$NUM for a human (released claim + un-readied ready→draft + skipped this run; not delivered, not re-claimed)"
       result no_work; exit 0
@@ -2199,7 +2204,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       [ "$_sha" = "$_stored" ] && continue
       # Only a commit this tick cut the branch at may replace a stored base.
       _recut=""; [ -n "$_cut" ] && [ "$_sha" = "$_cut" ] && [ -n "$_stored" ] && _recut="--base-recut"
-      if wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha" $_recut >/dev/null 2>&1; then
+      if wg ticket repo-delivery record "$NUM" "${rid:-$rname}" --base-sha "$_sha" $_recut --as system >/dev/null 2>&1; then
         log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base recorded: $(printf '%s' "$_sha" | cut -c1-12) (off $rbase${_recut:+, branch re-cut})"
       else
         log "GATE INTEGRITY: #$NUM ${rname:-repo} delivery base $(printf '%s' "$_sha" | cut -c1-12) did not record (non-fatal; this tick's gates still use it)"
@@ -3601,7 +3606,7 @@ $_trail_q
     # repoRef accepts the repo id OR name; prefer the stable id, fall back to name.
     R_REF="${rid:-$rname}"
     if [ -n "$R_REF" ]; then
-      if wg ticket repo-delivery record "$NUM" "$R_REF" --branch "$R_CUR" $R_SHA_ARG --status review_ready >/dev/null 2>&1; then
+      if wg ticket repo-delivery record "$NUM" "$R_REF" --branch "$R_CUR" $R_SHA_ARG --status review_ready --as system >/dev/null 2>&1; then
         log "recorded per-repo delivery for #$NUM: ${rname:-repo} → $R_CUR (branch lives in $rpath)"
       else
         log "per-repo delivery for #$NUM (${rname:-repo}) did not record (non-fatal)"

@@ -1,5 +1,5 @@
 import { type Db, inTransaction } from "../db/connection.js";
-import { createEpicInput } from "../domain/schemas.js";
+import { createEpicInput, toOneLine } from "../domain/schemas.js";
 import { type Actor } from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { TicketScopeNodeRepository } from "../repositories/ticketScopeNodeRepository.js";
@@ -160,7 +160,9 @@ export class EpicsService {
         const sourceName = spec.source ?? (spec.repo && !repoKnown ? spec.repo : undefined);
         const ticket = this.tickets.createTicket(
           {
-            title: spec.title,
+            // One line (cli-wg F-08): a planner's title or criterion is machine-made, so a
+            // stray newline is collapsed rather than failing the whole build.
+            title: toOneLine(spec.title),
             description: spec.description,
             ...(spec.priority !== undefined ? { priority: spec.priority } : {}),
             // A BOOTSTRAP declares HIGH risk unless the plan says otherwise: a fresh
@@ -196,7 +198,7 @@ export class EpicsService {
           // Spec-Driven Development (Phase 2a): an AC is either a bare string
           // (unchanged) or `{ text, clauseRef? }`. When a clauseRef is present it
           // threads down as `spec_clause_id` provenance on the created AC.
-          const text = typeof ac === "string" ? ac : ac.text;
+          const text = toOneLine(typeof ac === "string" ? ac : ac.text);
           const clauseRef = typeof ac === "string" ? undefined : ac.clauseRef;
           this.tickets.addAcceptanceCriterion(
             {
@@ -258,7 +260,7 @@ export class EpicsService {
         const repoKnown = !repoSpec?.repo || this.repos.findRepository(repoSpec.repo) !== undefined;
         const acceptance = this.tickets.createTicket(
           {
-            title: acceptanceTicketTitle(input.epic.name),
+            title: toOneLine(acceptanceTicketTitle(input.epic.name)),
             description: acceptanceTicketDescription(
               input.epic.name,
               input.epic.brief ?? input.epic.description,
@@ -281,7 +283,7 @@ export class EpicsService {
         // receives it even when the proposed tickets dropped it.
         for (const r of agreed) {
           this.tickets.addAcceptanceCriterion(
-            { ticket_id: acceptance.id, text: agreedRequirementCriterion(r) },
+            { ticket_id: acceptance.id, text: toOneLine(agreedRequirementCriterion(r)) },
             actor,
           );
         }

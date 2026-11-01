@@ -281,11 +281,26 @@ flags under **Safety** below — off by default.
 >
 > Use the ticket number (`<n>`) or the full id; the 8-character short ref on cards won't
 > resolve. A ticket that is missing a reviewer shows on the Team sheet with an
-> **Assign…** row; assigning one is CLI-only for now. Give every criterion `--verify` when
-> you add it: if `runner/gaffer wg ac --help` lists `edit`, `runner/gaffer wg ac edit <n>
-> <ac-id> --verify "…"` adds one later; without it a criterion can't be changed, and the
-> ticket can't be readied under `factory_strict` or `regulated`. (The reviewer is *who owns
-> the gate*; the agent still cannot approve or merge its own work.)
+> **Assign…** row; assigning one is CLI-only for now. For a ticket you already made that
+> **Mark ready** refused, each code has a fix:
+>
+> ```bash
+> runner/gaffer wg ticket edit <n> -d "<what + why>"                # DESCRIPTION_REQUIRED
+> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>   # REVIEWER_REQUIRED
+> runner/gaffer wg ac edit <n> 1 --verify "unit test"               # AC_VERIFICATION_REQUIRED, once per criterion (1 = the first)
+> runner/gaffer wg ticket approve-ready <n>                         # HUMAN_APPROVAL_REQUIRED (regulated only)
+> runner/gaffer wg ticket ready <n>
+> ```
+>
+> Then **Mark ready** succeeds, and the ticket flows plan → implement → test → review as
+> normal. (The reviewer is *who owns the gate*; the agent still cannot approve or merge its
+> own work.)
+>
+> You can fix a ticket's title, description, policy and criteria (`wg ticket edit`,
+> `wg ac edit`, `wg ac rm`) while it is draft, refining, ready or blocked. Once it is
+> claimed the contract is frozen: the review and the tester are held to what the delivery
+> saw, so those edits (and `wg ac add`) are refused with `CONTRACT_FROZEN` until the
+> ticket comes back for rework.
 
 ---
 
@@ -362,10 +377,13 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
+  From the terminal, `runner/gaffer wg unblock <n>` does the same, and
+  `runner/gaffer wg block <n> --reason "…"` parks a draft, refining or ready ticket yourself.
 - **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
   that carry the testable flag, and the planner does not set it. Mark the ones you want
   black-box tested with `runner/gaffer wg ticket set-testable <n>` before readying them (and
-  optionally record a `test-contract`); unmarked tickets go straight from approval to merge.
+  optionally record a `test-contract`, any time before the ticket reaches testing); unmarked
+  tickets go straight from approval to merge.
   **The exception is the epic's Acceptance ticket:** it is always testable and always goes
   through the independent tester on approval, whatever `GAFFER_TESTING` says. Until the
   tester passes it, `gaffer status`, the loop's closing report and `wg stats` say the build

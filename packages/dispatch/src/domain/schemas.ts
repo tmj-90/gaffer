@@ -49,8 +49,44 @@ export const GIT_REF_SAFE_MESSAGE =
   "must be a git-ref-safe name: only letters, digits, '.', '_', '/', '-', " +
   "no leading '-', no '..', no whitespace or control characters";
 
+/**
+ * ONE-LINE TEXT guard (exploratory finding cli-wg/F-08). A ticket title or criterion
+ * text is printed on one line in `factory.log`, `gaffer status` and the dossier
+ * heading, so a newline, tab, NUL or other control byte there could forge or split a
+ * line. The same rule club set and agent rename use (squadService CONTROL_RE); emoji and
+ * other unicode are fine. Descriptions and check commands are multiline by design and
+ * do not use it.
+ */
+// eslint-disable-next-line no-control-regex -- explicit control-byte guard (NUL/newline/etc.).
+export const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+export const noControlChars = (v: string): boolean => !CONTROL_CHARS_RE.test(v);
+export const noControlCharsMessage = (field: string): string =>
+  `${field} must not contain control characters (NUL, newline, tab, etc.)`;
+
+/** Collapse control characters to single spaces (machine-made text: plans, chat answers). */
+export function toOneLine(v: string): string {
+  // eslint-disable-next-line no-control-regex -- explicit control-byte guard.
+  return v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+}
+
+/** A ticket title: trimmed, 1–300 chars, one line. */
+export const ticketTitleText = z
+  .string()
+  .trim()
+  .min(1, "title is required")
+  .max(300)
+  .refine(noControlChars, noControlCharsMessage("title"));
+
+/** Acceptance-criterion text: trimmed, 1–2000 chars, one line. */
+export const acText = z
+  .string()
+  .trim()
+  .min(1, "AC text is required")
+  .max(2_000)
+  .refine(noControlChars, noControlCharsMessage("AC text"));
+
 export const createTicketInput = z.object({
-  title: z.string().trim().min(1, "title is required").max(300),
+  title: ticketTitleText,
   description: z.string().max(20_000).default(""),
   priority: z.number().int().min(0).max(1_000).default(0),
   risk_level: z.enum(RISK_LEVELS).default("medium"),
@@ -90,7 +126,7 @@ export const checkCommandText = z
 
 export const addAcInput = z.object({
   ticket_id: z.string().min(1),
-  text: z.string().trim().min(1, "AC text is required").max(2_000),
+  text: acText,
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().default(false),
   /**
@@ -112,6 +148,43 @@ export const addAcInput = z.object({
 export type AddAcInput = z.infer<typeof addAcInput>;
 
 /**
+ * Edit a ticket after creation (exploratory finding cli-wg/F-02). Every field is
+ * optional; at least one must be given. Title, description and policy are the
+ * ticket's CONTRACT and are editable only before delivery starts (see
+ * TicketService.assertContractEditable); priority is not part of the contract.
+ */
+export const editTicketInput = z
+  .object({
+    title: ticketTitleText.optional(),
+    description: z.string().max(20_000).optional(),
+    policy_pack: z.enum(POLICY_PACKS).optional(),
+    priority: z.number().int().min(0).max(1_000).optional(),
+  })
+  .strict()
+  .refine(
+    (v) => Object.values(v).some((x) => x !== undefined),
+    "Nothing to change: give a title, description, policy or priority.",
+  );
+export type EditTicketInput = z.infer<typeof editTicketInput>;
+
+/**
+ * Edit one acceptance criterion (cli-wg/F-02). `check_command: null` clears the
+ * machine check; `verification_method: ""` or null clears the method.
+ */
+export const editAcInput = z
+  .object({
+    text: acText.optional(),
+    verification_method: z.string().max(500).nullable().optional(),
+    check_command: checkCommandText.nullable().optional(),
+  })
+  .strict()
+  .refine(
+    (v) => Object.values(v).some((x) => x !== undefined),
+    "Nothing to change: give a text, verification method or check command.",
+  );
+export type EditAcInput = z.infer<typeof editAcInput>;
+
+/**
  * MACHINE-CHECKABLE AC: the RUNNER's report of executing an AC's `check_command`.
  * Recorded by a trusted (system/human/admin) actor only — never the agent.
  */
@@ -128,8 +201,24 @@ export const recordAcCheckInput = z.object({
 });
 export type RecordAcCheckInput = z.infer<typeof recordAcCheckInput>;
 
+/**
+ * A repository name (exploratory finding cli-wg/F-06). The name rides into worktree
+ * paths, branch-pressure files and log lines, so it may not carry a path separator,
+ * be a dot segment, start with '-' (option injection downstream) or hold a control
+ * character (the onboard target's guard). Unicode letters and emoji are fine.
+ */
+export const repoNameText = z
+  .string()
+  .trim()
+  .min(1, "repo name is required")
+  .max(200)
+  .refine(noControlChars, noControlCharsMessage("repo name"))
+  .refine((v) => !/[/\\]/.test(v), "repo name must not contain a path separator (/ or \\)")
+  .refine((v) => v !== "." && v !== "..", "repo name must not be '.' or '..'")
+  .refine((v) => !v.startsWith("-"), "repo name must not start with '-'");
+
 export const registerRepoInput = z.object({
-  name: z.string().trim().min(1).max(200),
+  name: repoNameText,
   local_path: z.string().max(2_000).optional(),
   remote_url: z.string().max(2_000).optional(),
   default_branch: z.string().max(200).regex(GIT_REF_SAFE, GIT_REF_SAFE_MESSAGE).default("main"),
@@ -169,7 +258,13 @@ export const setRepoCommandsInput = z.object({
 export type SetRepoCommandsInput = z.infer<typeof setRepoCommandsInput>;
 
 export const registerAgentInput = z.object({
-  display_name: z.string().max(200).optional(),
+  /** Optional; when given it must say something (cli-wg/F-16) on one line. */
+  display_name: z
+    .string()
+    .max(200)
+    .refine((v) => v.trim().length > 0, "display name must not be empty (omit it for the default)")
+    .refine(noControlChars, noControlCharsMessage("display name"))
+    .optional(),
   agent_type: z.string().max(100).default("coding_agent"),
   model: z.string().max(200).optional(),
   runtime: z.string().max(200).optional(),

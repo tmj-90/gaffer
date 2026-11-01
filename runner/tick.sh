@@ -3550,6 +3550,11 @@ $_trail_q
   # keeping it is always correct, and the trap now preserves it from the visibility
   # point onward. (Redundantly re-raised on the record path + the submit-fail park.)
   GAFFER_KEEP_DELIVERY_BRANCH=1
+  # REQUIRED CI IS RECORDED BEFORE REVIEW (external review #9, finding 4): when CI gates
+  # this delivery (GAFFER_REQUIRE_CI with PR creation on), dispatch learns that before the
+  # ticket is exposed for review, so an approval in the window before the gate reports
+  # (or when it never can: no gh, no GitHub remote) is refused, not waved through.
+  declare -F gaffer_ci_require_mark >/dev/null 2>&1 && gaffer_ci_require_mark "$NUM"
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
     # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit

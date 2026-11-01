@@ -497,7 +497,11 @@ structural barrier the whole design hangs on.
   a tester PASS) is refused until that commit's CI has passed, a red result for an
   approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
   CI again before landing. The CI gate asks `gh` only for the fields the real CLI
-  exposes (`gh pr checks --json name,state,bucket,link`).
+  exposes (`gh pr checks --json name,state,bucket,link`). The requirement is recorded
+  on the ticket before it reaches review (`wg ticket ci-required`), so until CI
+  reports, the Review button reads *Approve held: CI required, not reported*; when
+  CI cannot be read at all (no `gh`, no GitHub remote) the strict policy sends the
+  delivery back instead of waving it through.
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates

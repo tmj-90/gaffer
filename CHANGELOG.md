@@ -132,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A dollar cap of 0, or one that is not a number, says so.** `GAFFER_DAILY_BUDGET_USD=0` or `=abc` was refused (exit 3) with "no dollar cap is set", although one was set. The refusal is unchanged; the reason now reads `GAFFER_DAILY_BUDGET_USD=0 is $0 headroom: no paid work starts` or `GAFFER_DAILY_BUDGET_USD='abc' is not a number`, followed by the same fix, in `gaffer run`, `loop.sh` and the dashboard's Poll. (`runner/test/spend-cap-required.test.sh`)
+
 - **An unknown `GAFFER_MODE` is said, and `gaffer status` shows the posture.** A typo such as `GAFFER_MODE=yolo` or `autonomus` fell back to supervised in silence. The config now warns once per run on stderr, naming the valid modes (supervised, graduated, lite, autonomous, strict) and the supervised fallback. `gaffer status` has a posture block: the effective mode, review mode, auto-merge, the dollar caps (or that a live run will refuse without one), the ticks-per-day cap and whether the OS sandbox is required. (`runner/test/status-posture.test.sh`)
 
 - **`gaffer status` where there is no factory.** On a `GAFFER_DATA` that was never set up it ran the doctors anyway, which created `dispatch.sqlite` and `memory.sqlite`, printed crew's raw `CONFIG_NOT_FOUND` JSON and a "MISMATCH" warning, and exited 0. It now says `no factory here (GAFFER_DATA=…): run runner/gaffer setup first`, creates nothing and exits 1. (`runner/test/status-posture.test.sh`)

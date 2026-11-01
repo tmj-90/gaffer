@@ -12,12 +12,16 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { listEvents } from "../src/events/eventWriter.js";
 import { nonEmptyDiffRunner } from "./helpers/realDiff.js";
+
+// Each case spawns the built CLI several times (about half a second a call, more on a
+// loaded machine), so the default 5 s is too tight.
+vi.setConfig({ testTimeout: 60_000 });
 
 const human: Actor = { type: "human", id: "tom" };
 const agentActor: Actor = { type: "agent", id: "agent-1" };

@@ -20,7 +20,16 @@
 # dashboard-lifecycle, gaffer-colour, demo-isolation: ESTIMATES (Linux, -j 2: 37s / 13s / 48s).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
+# landing-revocation, secondary-pr-landing, cleanup-ownership, replay-recovery: ESTIMATES
+# (external review #8; Linux alone: 77s / 81s / 169s / 34s, scaled like the others;
+# replay-recovery: 61s alone once it gained the merge-lane and red-replay cases).
+# landing-revocation-window: ESTIMATE (Linux alone: 40s, scaled like the others).
 171	merge-lane.test.sh
+110	landing-revocation.test.sh
+57	landing-revocation-window.test.sh
+110	secondary-pr-landing.test.sh
+200	cleanup-ownership.test.sh
+80	replay-recovery.test.mjs
 270	land-tester-replay.test.sh
 161	direct-run-isolation.test.sh
 150	gate-integrity-e2e.test.sh

@@ -585,6 +585,58 @@ switch (cmd) {
     println(at.replace(/[\t\n]/g, " "));
     break;
   }
+  // CLEANUP OWNERSHIP (external review #8). A stopped or expired tick's exit trap used to
+  // delete the branch its REPLACEMENT had already submitted: the worktree path and the
+  // branch name are per ticket, so both attempts share them.
+  // latest-claim-id: stdin = ticket show → the claim_id of the newest `claim.created`
+  // event ("" when there is none or the JSON is unreadable).
+  // cleanup-owner --claim <id> --what worktree|branch: stdin = ticket show → `owned`, or
+  // `foreign<TAB>why` (another attempt claimed the ticket after the run that holds <id>;
+  // for a branch, also a ticket that is already a submitted review candidate), or
+  // `unknown<TAB>why` (unreadable: the caller keeps the resources).
+  case "latest-claim-id":
+  case "cleanup-owner": {
+    const ours = flag("--claim") ?? "";
+    const what = flag("--what") ?? "branch";
+    const p = tryParse(readStdin());
+    const d = p.ok && isObj(p.value) ? p.value : null;
+    if (!d || !isObj(d.ticket)) {
+      println(cmd === "latest-claim-id" ? "" : "unknown\tthe ticket could not be read");
+      break;
+    }
+    let latest = "";
+    for (const e of Array.isArray(d.events) ? d.events : []) {
+      if (!e || e.event_type !== "claim.created") continue;
+      let pl;
+      try {
+        pl = JSON.parse(e.payload_json || "{}");
+      } catch {
+        pl = {};
+      }
+      if (isObj(pl) && typeof pl.claim_id === "string" && pl.claim_id) latest = pl.claim_id;
+    }
+    if (cmd === "latest-claim-id") {
+      println(latest);
+      break;
+    }
+    const num = d.ticket.number ?? "?";
+    const status = String(d.ticket.status ?? "");
+    if (ours && latest && latest !== ours) {
+      println(
+        `foreign\tanother attempt (claim ${latest}) took #${num} after this run's claim ${ours}`,
+      );
+      break;
+    }
+    if (
+      what === "branch" &&
+      ["in_review", "in_testing", "ready_for_merge", "done"].includes(status)
+    ) {
+      println(`foreign\t#${num} is ${status}: its branch is a submitted review candidate`);
+      break;
+    }
+    println("owned");
+    break;
+  }
   // review-feedback: stdin = ticket show → "  - <reason>" lines for the last five
   // distinct rework reasons (transitions to refining/ready/cancelled, boilerplate
   // reasons dropped). Unparseable → nothing.

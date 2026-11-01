@@ -476,6 +476,35 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     expect(text(".vd-cell.vd-judge")).toContain("judge-model-x");
   });
 
+  it("the judge's own words are text: HTML in its reasons, summary or model name never renders", async () => {
+    const attack = '<img src=x onerror="window.__judgeXss=1"><script>window.__judgeXss=2</script>';
+    packet = {
+      ...PACKET,
+      judge: {
+        overall: "fail",
+        score: 1.2,
+        blocking: true,
+        dims: { correctness: 1, security: 0 },
+        rationale: { correctness: attack, security: `</li><b class="forged">${attack}</b>` },
+        summary: attack,
+        judge_model: attack,
+        memory_present: null,
+        cost_usd: null,
+        attempt: 0,
+        at: "2026-10-30T09:58:40Z",
+        event_id: "e1",
+        recorded_by: "system",
+      },
+    };
+    await boot();
+    const cell = document.querySelector(".vd-cell.vd-judge")!;
+    expect(cell).not.toBeNull();
+    expect(cell.querySelector("img, script, .forged")).toBeNull();
+    expect(cell.textContent).toContain('<img src=x onerror="window.__judgeXss=1">');
+    expect((window as unknown as { __judgeXss?: number }).__judgeXss).toBeUndefined();
+    expect(document.querySelectorAll(".vd-judge-dim")).toHaveLength(2);
+  });
+
   it("draws no judge cell when the judge recorded nothing for this delivery", async () => {
     await boot();
     expect(document.querySelector(".rv-verdict")).not.toBeNull();

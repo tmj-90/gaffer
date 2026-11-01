@@ -43,9 +43,18 @@ function firstLine(out: string): string {
   return "";
 }
 
+/**
+ * Every adapter call runs on the host in a repository an agent may have edited, so it
+ * never runs the repository's hooks or fsmonitor program (external review #9, finding
+ * 2): `status` would run core.fsmonitor and `checkout -b` the post-checkout and
+ * reference-transaction hooks. Command-line `-c` beats every config file. The runner
+ * also exports these through GIT_CONFIG_COUNT; this holds when crew runs without it.
+ */
+const HOST_GIT_SAFE = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"] as const;
+
 function run(repoDir: string, args: string[]): string {
   try {
-    return execFileSync("git", ["-C", repoDir, ...args], {
+    return execFileSync("git", [...HOST_GIT_SAFE, "-C", repoDir, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     }).trim();

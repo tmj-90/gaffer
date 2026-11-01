@@ -51,7 +51,8 @@ gaffer_auto_merge() {
       return 3   # dirty live checkout on the target — never merge over active edits
     fi
     local _merr
-    if _merr="$(git -C "$repo" merge --no-edit -m "Merge branch '$branch'" "$src" 2>&1 >/dev/null)"; then return 0; fi
+    # --no-overwrite-ignore (external review #9): never replace a file the operator ignores.
+    if _merr="$(git -C "$repo" merge --no-edit --no-overwrite-ignore -m "Merge branch '$branch'" "$src" 2>&1 >/dev/null)"; then return 0; fi
     git -C "$repo" merge --abort 2>/dev/null || true
     # An untracked file in the way is a refusal, not a conflict: rc 1 would hand the
     # branch to the conflict resolver (and spend its one pass) on nothing to resolve.
@@ -122,7 +123,7 @@ gaffer_pr_merge() {
   if [ "$head_branch" = "$def" ]; then
     [ -z "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 3
     git -C "$repo" fetch "$remote" "$def" >/dev/null 2>&1 || return 4
-    git -C "$repo" merge --ff-only FETCH_HEAD >/dev/null 2>&1 || return 4
+    git -C "$repo" merge --ff-only --no-overwrite-ignore FETCH_HEAD >/dev/null 2>&1 || return 4
   else
     # Not checked out here: a non-forced refspec is fast-forward-only by construction.
     git -C "$repo" fetch "$remote" "$def:$def" >/dev/null 2>&1 || return 4

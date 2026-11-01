@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { systemGitAdapter, type GitAdapter } from "../adapters/gitAdapter.js";
 import { isExcludedDir, isSecretPath } from "../safety/secretPaths.js";
+import { readRepoText, redactRemoteUrl, statInRepo } from "../safety/repoBoundary.js";
 import { scanRepo, type RepoScanResult } from "../scan/repoScan.js";
 
 /**
@@ -81,7 +82,7 @@ function parseMakefileTargets(dir: string): Set<string> {
   if (!existsSync(makefile) || isSecretPath("Makefile")) return targets;
   let body: string;
   try {
-    body = readFileSync(makefile, "utf8");
+    body = readRepoText(dir, "Makefile");
   } catch {
     return targets;
   }
@@ -168,7 +169,9 @@ function fingerprintManifests(dir: string): string {
     const full = join(dir, file);
     if (!existsSync(full)) continue;
     try {
-      const size = statSync(full).size;
+      const st = statInRepo(dir, file);
+      if (!st) continue; // a manifest that resolves outside the repository is not fingerprinted
+      const size = st.size;
       hash.update(`${file}:${size}\n`);
     } catch {
       // Unreadable manifest contributes nothing — never throw mid-scan.
@@ -193,7 +196,8 @@ export function scanRepoForOnboarding(
   return {
     ...base,
     ...commands,
-    remoteUrl: base.isGitRepo ? git.remoteUrl(dir) : null,
+    // External review #9: userinfo (an embedded password or token) never leaves the scan.
+    remoteUrl: base.isGitRepo ? redactRemoteUrl(git.remoteUrl(dir)) : null,
     defaultBranch: base.isGitRepo ? git.defaultBranch(dir) : null,
     importantPaths: paths,
     fingerprint: fingerprintManifests(dir),

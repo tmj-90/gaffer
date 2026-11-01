@@ -71,6 +71,7 @@ import {
 } from "./usage-ledger.mjs";
 import { secretReadDenyRules, writeAgentSettings } from "./agent-home.mjs";
 import { Worker, roleTurnCap } from "./worker.mjs";
+import { outsideRepoReason, readRepoText, redactRemoteUrl, statRepo } from "./repo-boundary.mjs";
 import { loadRegistry, routeModel } from "../bin/route-model.mjs";
 import {
   extractLastJsonBlock as extractJson,
@@ -172,17 +173,18 @@ const README_CANDIDATES = [
   "README.txt",
 ];
 
-/** Read the repo README (truncated), or "" when none exists. */
-export function readReadme(repoPath, maxChars = README_MAX_CHARS) {
+/**
+ * Read the repo README (truncated), or "" when none exists. A README whose real path is
+ * outside the repository (a symlink to a file elsewhere) is never read; the reason is
+ * pushed onto `skipped` (external review #9).
+ */
+export function readReadme(repoPath, maxChars = README_MAX_CHARS, skipped = null) {
   for (const name of README_CANDIDATES) {
     const p = join(repoPath, name);
     if (existsSync(p)) {
-      try {
-        const text = readFileSync(p, "utf8");
-        return text.length > maxChars ? `${text.slice(0, maxChars)}\n…[truncated]` : text;
-      } catch {
-        /* unreadable — try the next candidate */
-      }
+      const text = readRepoText(repoPath, name, skipped);
+      if (text == null) continue; // unreadable or outside the repository: next candidate
+      return text.length > maxChars ? `${text.slice(0, maxChars)}\n…[truncated]` : text;
     }
   }
   return "";
@@ -253,15 +255,9 @@ export function parseMavenModules(pomXml) {
  * label ("maven-multimodule", "gradle-multiproject", "pnpm-workspace", …) or null
  * when the repo is a single-module build.
  */
-export function detectModules(repoPath) {
-  const read = (rel) => {
-    const p = join(repoPath, rel);
-    try {
-      return existsSync(p) ? readFileSync(p, "utf8") : null;
-    } catch {
-      return null;
-    }
-  };
+export function detectModules(repoPath, skipped = null) {
+  const read = (rel) =>
+    existsSync(join(repoPath, rel)) ? readRepoText(repoPath, rel, skipped) : null;
 
   // Maven
   const rootPom = read("pom.xml");
@@ -347,7 +343,12 @@ export function detectModules(repoPath) {
  * `<description>` + `<name>`-bearing head; otherwise we read whatever manifest the
  * module dir carries. Best-effort: unreadable modules are skipped.
  */
-export function sampleSubManifests(repoPath, modulesInfo, limit = SUBMODULE_POM_SAMPLE) {
+export function sampleSubManifests(
+  repoPath,
+  modulesInfo,
+  limit = SUBMODULE_POM_SAMPLE,
+  skipped = null,
+) {
   if (!modulesInfo || !Array.isArray(modulesInfo.modules)) return [];
   const out = [];
   for (const mod of modulesInfo.modules) {
@@ -366,8 +367,9 @@ export function sampleSubManifests(repoPath, modulesInfo, limit = SUBMODULE_POM_
     for (const name of candidates) {
       const p = join(dir, name);
       try {
-        if (existsSync(p) && statSync(p).isFile()) {
-          let text = readFileSync(p, "utf8");
+        if (existsSync(p) && statRepo(repoPath, p, skipped)?.isFile()) {
+          let text = readRepoText(repoPath, p, skipped);
+          if (text == null) continue;
           if (text.length > SUBMANIFEST_MAX_CHARS)
             text = `${text.slice(0, SUBMANIFEST_MAX_CHARS)}\n…[truncated]`;
           out.push({ module: mod, file: name, content: text });
@@ -421,7 +423,7 @@ export function readRecentCommits(repoPath, max = GIT_LOG_MAX) {
  * under the conventional decision dirs so the model knows which decisions exist and
  * can cite the doc path. Returns relative paths, or [] when none exist.
  */
-export function readAdrTitles(repoPath, max = ADR_MAX_TITLES) {
+export function readAdrTitles(repoPath, max = ADR_MAX_TITLES, skipped = null) {
   const dirs = [
     "docs/adrs",
     "docs/adr",
@@ -437,7 +439,7 @@ export function readAdrTitles(repoPath, max = ADR_MAX_TITLES) {
     const dir = join(repoPath, rel);
     let entries;
     try {
-      if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
+      if (!existsSync(dir) || !statRepo(repoPath, rel, skipped)?.isDirectory()) continue;
       entries = readdirSync(dir, { withFileTypes: true });
     } catch {
       continue;
@@ -459,18 +461,14 @@ const DEPRECATION_MARKERS =
  * (skill Step 2.2 + 2.7). Pure read-only, bounded — no external `grep` so it works
  * anywhere. Returns [{ file, line, text }] (text trimmed + truncated), capped.
  */
-export function findDeprecationMarkers(repoPath, max = DEPRECATION_GREP_MAX) {
+export function findDeprecationMarkers(repoPath, max = DEPRECATION_GREP_MAX, skipped = null) {
   const hits = [];
   const scanFile = (rel) => {
     if (hits.length >= max) return;
     const p = join(repoPath, rel);
-    let text;
-    try {
-      if (!existsSync(p) || !statSync(p).isFile()) return;
-      text = readFileSync(p, "utf8");
-    } catch {
-      return;
-    }
+    if (!existsSync(p) || !statRepo(repoPath, rel, skipped)?.isFile()) return;
+    const text = readRepoText(repoPath, rel, skipped);
+    if (text == null) return;
     const lines = text.split("\n");
     for (let i = 0; i < lines.length && hits.length < max; i += 1) {
       if (DEPRECATION_MARKERS.test(lines[i])) {
@@ -487,6 +485,7 @@ export function findDeprecationMarkers(repoPath, max = DEPRECATION_GREP_MAX) {
     const abs = join(repoPath, root);
     try {
       if (!existsSync(abs)) continue;
+      if (outsideRepoReason(repoPath, root)) continue;
       if (statSync(abs).isFile()) {
         scanFile(root);
         continue;
@@ -530,19 +529,30 @@ export function findDeprecationMarkers(repoPath, max = DEPRECATION_GREP_MAX) {
  * crew scan facts, passed straight through.
  */
 export function gatherMaterial(repoPath, scan) {
-  const modulesInfo = detectModules(repoPath);
+  // Files that were NOT read because their real path is outside the repository (a
+  // symlink to a file elsewhere): named in the prompt and in the digest, never read.
+  const skipped = [];
+  const modulesInfo = detectModules(repoPath, skipped);
+  const safeScan = scan ? { ...scan, remoteUrl: redactRemoteUrl(scan.remoteUrl ?? null) } : {};
   return {
     repoPath,
     name: scan?.name ?? "",
-    readme: readReadme(repoPath),
+    readme: readReadme(repoPath, README_MAX_CHARS, skipped),
     tree: buildTree(repoPath),
     modulesInfo,
-    subManifests: sampleSubManifests(repoPath, modulesInfo),
-    adrTitles: readAdrTitles(repoPath),
+    subManifests: sampleSubManifests(repoPath, modulesInfo, SUBMODULE_POM_SAMPLE, skipped),
+    adrTitles: readAdrTitles(repoPath, ADR_MAX_TITLES, skipped),
     recentCommits: readRecentCommits(repoPath),
-    deprecationMarkers: findDeprecationMarkers(repoPath),
-    scan: scan ?? {},
+    deprecationMarkers: findDeprecationMarkers(repoPath, DEPRECATION_GREP_MAX, skipped),
+    scan: safeScan,
+    skipped,
   };
+}
+
+/** The digest's note on files onboarding refused to read, or "" when none were. */
+export function boundaryNote(skipped) {
+  if (!Array.isArray(skipped) || skipped.length === 0) return "";
+  return ` Not read during onboarding: ${skipped.join("; ")}.`;
 }
 
 // ── Prompt assembly (P1 prompt-injection quarantine) ──────────────────────────
@@ -713,13 +723,20 @@ export function buildAnalysisPrompt(material) {
   if (stack) facts.push(`stack=${stack}`);
   if (scan?.packageManager) facts.push(`packageManager=${scan.packageManager}`);
   if (scan?.defaultBranch) facts.push(`branch=${scan.defaultBranch}`);
-  if (scan?.remoteUrl) facts.push(`remote=${scan.remoteUrl}`);
+  if (scan?.remoteUrl) facts.push(`remote=${redactRemoteUrl(scan.remoteUrl)}`);
   if (scan?.buildCommand) facts.push(`build=${scan.buildCommand}`);
   if (scan?.testCommand) facts.push(`test=${scan.testCommand}`);
   if (facts.length > 0) lines.push(`Scan facts: ${facts.join("  ")}`);
   lines.push("");
 
   if (readme) lines.push("README:", quarantine("readme", readme), "");
+  if (Array.isArray(material.skipped) && material.skipped.length > 0) {
+    lines.push(
+      "Files NOT read (their real path is outside the repository; do not guess their content):",
+      ...material.skipped.map((w) => `  - ${w}`),
+      "",
+    );
+  }
   if (tree) lines.push("Directory tree (top levels):", quarantine("tree", tree), "");
   for (const sm of subManifests) {
     lines.push(
@@ -1911,7 +1928,9 @@ export function repoCanonical(repoPath) {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    if (url) return url;
+    // External review #9: never hand a remote's userinfo (a password or token) on; the
+    // repo key normalises it away anyway (packages/memory repoIdentity.ts).
+    if (url) return redactRemoteUrl(url);
   } catch {
     /* not a git repo / no remote — fall through to the realpath */
   }
@@ -2946,6 +2965,11 @@ export function refreshFileCards(
       result.skipped += 1;
       continue;
     }
+    // A tracked symlink whose target is outside the repository is never read.
+    if (outsideRepoReason(repoPath, rel)) {
+      result.skipped += 1;
+      continue;
+    }
     let size;
     try {
       size = statSync(abs).size;
@@ -3163,6 +3187,18 @@ export function analyzeAndWrite(
   }
 
   if (!understanding) understanding = fallbackUnderstanding(material);
+  // The digest says which files were refused at the repository boundary, and why.
+  const note = boundaryNote(material.skipped);
+  if (note && understanding?.digest) {
+    understanding = {
+      ...understanding,
+      digest: {
+        ...understanding.digest,
+        overview: `${understanding.digest.overview ?? ""}${note}`,
+      },
+    };
+    log(`repository boundary: ${material.skipped.join("; ")}`);
+  }
 
   const stats = writeUnderstanding(cfg, repo, understanding, { log, env });
   log(
@@ -3211,7 +3247,7 @@ export function analyzeAndWrite(
           "set",
           repo,
           "--overview",
-          rollup.overview,
+          `${rollup.overview}${boundaryNote(material.skipped)}`,
           "--structure",
           rollup.structure,
           "--conventions",

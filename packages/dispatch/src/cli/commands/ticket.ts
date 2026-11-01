@@ -589,6 +589,30 @@ export function registerTicket(program: Command): void {
     });
 
   ticket
+    .command("ci-required <ref>")
+    .description(
+      "REQUIRED CI: record that this ticket needs a CI pass before it may be approved, " +
+        "before any result exists (the runner calls it when it submits a delivery that CI " +
+        "gates). Until a PASS is recorded for the candidate commit, approval and a tester " +
+        "PASS are refused. System/admin only; idempotent.",
+    )
+    .option("--detail <text>", "why CI is required (shown in the ticket timeline)")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.recordCiRequired(
+        ref,
+        opts.detail ? { detail: String(opts.detail) } : {},
+        actor,
+      );
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
     .command("ci-status <ref>")
     .description("The latest recorded CI state for a commit of the ticket")
     .option("--commit <sha>", "the candidate commit (default: the latest result)")

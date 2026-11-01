@@ -13,7 +13,9 @@
 #   8. gaffer_ci_gate with injectable gh returning green → rc=0.
 #   9. gaffer_ci_gate with injectable gh returning red → rc=2 + evidence attached.
 #  10. gaffer_ci_gate poll timeout → rc=2 (fail closed, strict default).
-#  11. No GitHub remote → gaffer_ci_gate returns 0 (no-op).
+#  11. No GitHub remote → the requirement is recorded; strict rc=2, proceed rc=0.
+#  17. gh missing → the requirement is recorded; strict rc=2 (external review #9).
+#  18. tick.sh records the requirement before the submit for review.
 #  12. gaffer_ci_gate poll timeout + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0 (proceed-with-note).
 #  13. gaffer_ci_gate no-PR/no-checks (all polls empty) → rc=2 under strict.
 #  14. gaffer_ci_gate no-PR/no-checks + GAFFER_CI_TIMEOUT_POLICY=proceed → rc=0.
@@ -135,12 +137,42 @@ gaffer_ci_gate "1" "$REPO_GH" "gaffer/ticket-1" ""
   && ok "T7 GAFFER_REQUIRE_CI=0 → no-op rc=0" \
   || fail "T7 expected rc=0 for disabled gate"
 
-# T11: no GitHub remote → rc=0 (no-op).
+# T11: no GitHub remote → CI cannot be read. External review #9: that is no longer a
+# silent success. The requirement is recorded (approval stays refused until a PASS) and
+# the strict policy fails the delivery back (rc=2); `proceed` lets it into review (rc=0).
 GAFFER_REQUIRE_CI=1
+: > "$WG_CALLS"
 gaffer_ci_gate "11" "$REPO_NORG" "gaffer/ticket-11" ""
-[ $? = 0 ] \
-  && ok "T11 no GitHub remote → no-op rc=0" \
-  || fail "T11 expected rc=0 for no GitHub remote"
+[ $? = 2 ] \
+  && ok "T11 no GitHub remote, strict → rc=2 (fail closed)" \
+  || fail "T11 expected rc=2 for no GitHub remote under the strict policy"
+grep -q "ticket ci-required 11" "$WG_CALLS" \
+  && ok "T11 the CI requirement is recorded on the ticket" || fail "T11 no ci-required record: $(cat "$WG_CALLS")"
+: > "$WG_CALLS"
+GAFFER_CI_TIMEOUT_POLICY=proceed gaffer_ci_gate "11" "$REPO_NORG" "gaffer/ticket-11" ""
+[ $? = 0 ] && grep -q "ticket ci-required 11" "$WG_CALLS" \
+  && ok "T11 no GitHub remote, proceed → rc=0 with the requirement still recorded" \
+  || fail "T11 proceed: expected rc=0 and a ci-required record"
+
+# T17: gh not installed (the reviewer's case) → never a success under the strict policy.
+: > "$WG_CALLS"
+GAFFER_GH_BIN="$WORK/no-such-gh" gaffer_ci_gate "17" "$REPO_GH" "gaffer/ticket-2" ""
+_RC17=$?
+[ "$_RC17" = 2 ] && ok "T17 gh missing, strict → rc=2 (was 0: CI skipped as a no-op)" || fail "T17 gh missing returned $_RC17"
+grep -q "ticket ci-required 17" "$WG_CALLS" && ok "T17 the CI requirement is recorded before anything else" || fail "T17 no ci-required record: $(cat "$WG_CALLS")"
+grep -q "CI BLOCKED (strict)" "$WG_CALLS" && ok "T17 the block is attached as evidence" || fail "T17 no evidence"
+
+# T18: tick.sh records the requirement BEFORE the submit that exposes the ticket.
+_mark_line="$(grep -n 'gaffer_ci_require_mark "$NUM"' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+_submit_line="$(grep -n 'if gaffer_submit_delivery "delivered on branch' "$RUNNER_DIR/tick.sh" | head -1 | cut -d: -f1)"
+[ -n "$_mark_line" ] && [ -n "$_submit_line" ] && [ "$_mark_line" -lt "$_submit_line" ] \
+  && ok "T18 tick.sh marks CI required before submitting for review" || fail "T18 mark ($_mark_line) not before submit ($_submit_line)"
+: > "$WG_CALLS"
+GAFFER_CREATE_PR=1 gaffer_ci_require_mark 18
+grep -q "ticket ci-required 18" "$WG_CALLS" && ok "T18 CI required + PR creation on → recorded" || fail "T18 not recorded"
+: > "$WG_CALLS"
+GAFFER_CREATE_PR=0 gaffer_ci_require_mark 18
+[ ! -s "$WG_CALLS" ] && ok "T18 PR creation off (the needs-PR skip) → nothing recorded" || fail "T18 recorded without PR creation"
 
 echo "== gaffer_ci_gate injectable gh =="
 

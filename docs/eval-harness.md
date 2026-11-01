@@ -72,8 +72,52 @@ falsifiable.
   `matched: null` with `matchedReason`. `null` until both arms have data (never a
   fake 0).
 - **cost.costPerPass** — total real spend over the costed records divided by the
-  number of judge-passing deliveries: what a *good* delivery costs, with spend
-  on failures amortised in. The FinOps headline.
+  number of judge-passing deliveries: what a *good judged* delivery costs, with
+  spend on judged failures amortised in. It leaves out every attempt the judge
+  never saw (see the limits below), so read the next metric for what a change
+  really costs.
+
+## Cost per accepted change (every attempt counted)
+
+The judge only sees submitted work, so `costPerPass` cannot say what a change a
+person accepted really cost. This metric is computed from the usage ledger, which
+records every model call the runner makes, against the ticket outcomes in dispatch
+(`packages/dispatch/src/health/acceptedChange.ts`):
+
+- **cost_per_accepted_change_usd**: the spend attributed to *any* ticket, every
+  attempt and every kind (delivery, review, tester, merge resolver, planning for the
+  ticket), whatever the ticket's outcome (done, parked, failed, abandoned or still in
+  flight), divided by the tickets that reached `done`.
+- **accepted_only_cost_per_change_usd**: what the done tickets alone cost each, the
+  figure you would get by leaving failures out. The gap between the two is the price
+  of the work that did not land.
+- **attempts_per_accepted_change**: delivery attempts on every ticket (one per
+  attempt id) divided by the tickets that reached done.
+- **by_outcome**: spend, tickets and attempts for accepted, parked or failed
+  (`blocked`, `refining`, `paused`, `failed`), abandoned (`cancelled`) and in-flight
+  tickets.
+- **reviewer_time**: for every human or admin decision that took a ticket out of
+  `in_review`, the time since it last entered `in_review`: the number of recorded
+  reviews, their mean, and the review time on done tickets per accepted change.
+
+`gaffer eval` prints the headline line, `gaffer wg stats` (and `--json`,
+`acceptedChange`) the detail, and the Health view's wage bill shows it as
+*Per accepted change*.
+
+Its limits, also listed in the report's `limits` field:
+
+- Spend with no ticket (onboarding, idle loops, planning before a ticket exists) is
+  reported as `unattributed_usd` and left out of the ratio.
+- A ticket still in flight adds its spend to the numerator but nothing to the
+  denominator until it lands, so the figure reads high in the middle of a run.
+- Reviewer time is wall-clock time in review that ended in a human decision. It is
+  not time spent reading (the transition log cannot show attention), and a review an
+  agent decided has none.
+- Spend is the API-equivalent cost the CLI reports; a killed call counts at its
+  labelled estimate.
+- There is no baseline. The comparison the external review asked for, the same
+  changes made with the coding agent directly, is not measured; until it is, this
+  number says what Gaffer cost per accepted change, not whether that is cheaper.
 
 ```sh
 node packages/crew/dist/eval/evalLedgerCli.js --mode summarize \
@@ -128,7 +172,8 @@ of this harness and left visible rather than hidden:
   **not** capture burn on parked/failed attempts, so it understates true
   cost-per-good-delivery. `memoryLift` is likewise measured only within
   gate-passers, so if memory mostly helps work *clear the gates*, the effect is
-  conditioned away. Widening judging to failed attempts is future work.
+  conditioned away. Widening judging to failed attempts is future work; the
+  spend on them is counted in *cost per accepted change* above.
 - **Self-grading when no plan model is set.** The judge turn uses
   `GAFFER_JUDGE_MODEL_FLAG`, else the plan model flag (`GAFFER_PLAN_MODEL_FLAG`),
   and only when neither is set the implementation model flag, when it shares the

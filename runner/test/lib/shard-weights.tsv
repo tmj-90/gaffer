@@ -265,6 +265,7 @@
 70	sandbox-docker-delivery-seam.test.sh
 1	sandbox-docker-delivery.test.sh
 9	sandbox-docker-mounts.test.sh
+3	sandbox-docker-git-isolation.test.sh
 1	security-md-planning-agents.test.mjs
 1	select-skills.test.mjs
 1	self-op-ban.test.sh
@@ -294,6 +295,9 @@
 1	worktree-key-golden.test.sh
 39	resume-dry-run.test.sh
 20	paid-launch-admission.test.sh
+45	git-hooks-host.test.sh
+20	onboard-boundary.test.sh
+100	land-ignored-file.test.sh
 7	ac-check-bytes.test.sh
 24	attempt-provenance.test.sh
 90	auth-gate-delivery.test.sh

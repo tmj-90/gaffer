@@ -304,6 +304,13 @@ usage ledger and the ticket transition log, and says only what those can show:
   Each ticket's row says how many send-backs came from review and how many from
   the runner, and whether its spend was placed by attempt or, for rows older than
   attempt ids, by the call's end time minus its duration.
+- **Per accepted change** is what a change that reached done really cost: the
+  spend of every attempt on every ticket (parked, failed and abandoned ones
+  included) divided by the tickets that reached done, with the attempts each took.
+  `gaffer wg stats` adds what the done tickets alone cost, the spend by outcome,
+  the spend with no ticket (left out) and human review time, and `gaffer eval`
+  prints it under the judge's cost per pass, which only sees submitted work
+  (docs/eval-harness.md has the definition and its limits).
 - **Flow efficiency** is the median share of a shipped ticket's lead time with
   an agent working on it (`claimed` or `in_progress`). Everything else is
   waiting, and the form guide lists it on its own: **waiting to merge** (approved,
@@ -604,7 +611,17 @@ structural barrier the whole design hangs on.
   a tester PASS) is refused until that commit's CI has passed, a red result for an
   approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
   CI again before landing. The CI gate asks `gh` only for the fields the real CLI
-  exposes (`gh pr checks --json name,state,bucket,link`).
+  exposes (`gh pr checks --json name,state,bucket,link`). The requirement is recorded
+  on the ticket before it reaches review (`wg ticket ci-required`), so until CI
+  reports, the Review button reads *Approve held: CI required, not reported*; when
+  CI cannot be read at all (no `gh`, no GitHub remote) the strict policy sends the
+  delivery back instead of waving it through.
+- **Landing never overwrites a file you ignore.** When an approved branch starts
+  tracking a file you keep ignored in your checkout (a `settings.local`), git would
+  replace your copy silently. Both landing paths (Merge now / `gaffer merge`, and the
+  merge lane) check for that first and merge with `--no-overwrite-ignore`; the ticket
+  is held for you (*blocked*, `ignored_file_in_the_way`) naming the file, and your
+  copy stays as it was.
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates
@@ -733,6 +750,10 @@ human-gated knowledge the factory works from:
   conventions / stack**, seeded at onboarding and refreshed deterministically as
   tickets merge. It carries a freshness stamp and an honest caveat: it's a map
   to *verify against the code* for high-stakes work, never a substitute for it.
+  Onboarding reads only files inside the repository: a README or manifest that is a
+  symlink to a file elsewhere is not read, and the digest says which one and why. A
+  password or token in an https remote URL is stripped before the URL reaches a
+  prompt, the digest, lore or a log.
 - **Feature ledger** — what's `backlog → building → shipped` per repo, so the
   factory knows what already exists before it proposes building it again.
 - **File cards** — one per source file (path, symbols, content hash, a short
@@ -891,7 +912,13 @@ tickets are parked for a person as before.
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected
-(`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
+(`sandbox-exec` on macOS, `docker` where a Docker CLI exists). Under `docker` the
+container works in its own git repository: it can commit, but only the ticket's own
+branch comes back to your repository when it exits, so nothing run inside can move
+`main` or tag a release. On the host, the runner's own git (the auto-commit, the
+landing) never runs your repository's hooks or any filter, driver or helper that
+points into the checkout, and the agent cannot edit hook scripts or repository git
+config at all.
 
 The `docker` provider is proven on a real ticket, not only on a shell payload. A CI
 job (`sandbox-delivery`, on a Linux runner) runs one ticket through the real tick with

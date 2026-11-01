@@ -307,19 +307,82 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   done < <(find "$_wr" -maxdepth 4 -name node_modules -type l -print0 2>/dev/null)
 done
 
-# --- the delivery worktree's git metadata (B25c) ---------------------------------------
-# A delivery worktree is a LINKED worktree: its `.git` is a FILE ("gitdir: …") pointing
-# into the real repo's `.git/worktrees/<name>`, and the objects/refs live in the repo's
-# `.git` (the common dir). Neither was mounted, so inside the container every git
-# command failed ("not a git repository") and the agent could not commit. Mount the
-# common dir READ-ONLY and only what a commit must write READ-WRITE: objects/ (new
-# blobs/trees/commits), refs/ + logs/ (the branch tip + its reflog) and the worktree's
-# own private dir (index, HEAD, COMMIT_EDITMSG). config, hooks, packed-refs, the main
-# checkout's HEAD and every OTHER worktree's private dir stay read-only. A write root
-# that is itself a full repo (`.git` is a directory) is already inside its rw mount.
+# --- the delivery worktree's git metadata: a PRIVATE repository (B25c; external review #9) --
+# A delivery worktree is a LINKED worktree: its `.git` is a FILE ("gitdir: …") naming the
+# repo's `.git/worktrees/<name>`, and the objects/refs live in the repo's `.git` (the
+# common dir). Git must work inside (status, commit), but NOTHING under the host's `.git`
+# may be writable from the container: with `.git/refs` mounted rw, any command inside (a
+# test, a build script, the agent) could `git update-ref refs/heads/main …` and move the
+# operator's branch before a reviewer saw anything (external review #9, finding 1).
+#
+# So the container gets its OWN repository. For each verified linked worktree the wrapper
+# builds a private git dir on the host (outside every write root) and mounts it AT the
+# path the worktree's `.git` file names:
+#   • HEAD       the worktree's own HEAD (its ticket branch, or a detached sha);
+#   • refs       a SNAPSHOT of the host's refs (packed-refs), so `git log main..` and
+#                `git diff main...` work, but every write lands in the private copy;
+#   • objects    empty and writable; the host's object store is reached READ-ONLY
+#                through objects/info/alternates (the host `$common/objects` mount is ro);
+#   • index      a copy of the worktree's index; config a minimal one the wrapper writes
+#                (identity + object format only: no hooks, no filters, no fsmonitor);
+#   • no `commondir` file, so git treats it as a standalone repository.
+# The host's `.git` config, hooks, HEAD, refs, logs, packed-refs and every other
+# worktree's private dir are not mounted at all. When the container exits (agent runs
+# only, never the validation profile, whose commits are discarded), the TRUSTED runner
+# imports exactly one ref: the worktree's own branch tip, fetched from the private repo
+# into the host repo (hooks off, the private config rewritten first) and moved with a
+# compare-and-swap `update-ref`. Every other ref the container wrote (main, tags, other
+# branches) is dropped with the private dir. The landing of that branch onto the
+# target stays where it was: on the host, after approval.
 # The `.git` FILE lives in the writable worktree, so it is honoured only when git's
 # registration confirms it (_verified_linked_worktree above); otherwise nothing is
 # mounted for it and git simply does not work inside (fail closed, WARNED).
+# A write root that is itself a full repo (`.git` is a directory) is a scratch checkout
+# the runner made for that call (clarify/review/eval cwd), not the operator's repo; it is
+# already inside its rw mount.
+_HOSTGIT=( git -c core.hooksPath=/dev/null -c core.fsmonitor=false )
+_SHADOWS=()        # "<write-root>\t<private-git-dir>\t<ref>\t<old-sha>\t<common>" per linked worktree
+_shadow_config() {  # <host-worktree> <private-git-dir>: the ONLY config the private repo has
+  local wt="$1" sd="$2" k v fmt
+  fmt="$("${_HOSTGIT[@]}" -C "$wt" rev-parse --show-object-format 2>/dev/null || echo sha1)"
+  {
+    if [ "$fmt" = "sha1" ]; then
+      printf '[core]\n\trepositoryformatversion = 0\n'
+    else
+      printf '[core]\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = %s\n[core]\n' "$fmt"
+    fi
+    printf '\tbare = false\n\tlogallrefupdates = true\n\thooksPath = /dev/null\n\tfsmonitor = false\n'
+    for k in user.name user.email core.autocrlf core.filemode core.ignorecase core.precomposeunicode; do
+      v="$("${_HOSTGIT[@]}" -C "$wt" config --get "$k" 2>/dev/null)" || continue
+      case "$v" in *$'\n'* | *'"'* | *'\'*) continue ;; esac
+      printf '[%s]\n\t%s = "%s"\n' "${k%%.*}" "${k#*.}" "$v"
+    done
+  } > "$sd/config.gaffer-new" || return 1
+  # Replace, never write through: unlinking first breaks a hard link the container may
+  # have left (a symlink or other special file is refused before this runs on import).
+  # Every step must succeed: a root container can leave a dir the host cannot write (a
+  # non-root Linux host), and an import must never read a config or alternates the
+  # container chose, so any failure here refuses it.
+  mv -f "$sd/config.gaffer-new" "$sd/config" || return 1
+  mkdir -p "$sd/objects/info" "$sd/refs/heads" "$sd/refs/tags" "$sd/info" || return 1
+  rm -rf "$sd/hooks" "$sd/commondir" "$sd/worktrees" "$sd/gitdir" || return 1
+  rm -f "$sd/objects/info/alternates" "$sd/objects/info/http-alternates" || return 1
+  printf '%s\n' "$_common/objects" > "$sd/objects/info/alternates" || return 1
+  [ "$(cat "$sd/objects/info/alternates" 2>/dev/null)" = "$_common/objects" ] || return 1
+  local f
+  for f in hooks commondir worktrees gitdir objects/info/http-alternates; do
+    { [ -e "$sd/$f" ] || [ -L "$sd/$f" ]; } && return 1
+  done
+  return 0
+}
+# All private dirs live in ONE parent, made before any mask is computed: in the legacy
+# layout $GAFFER_DATA is mounted rw with its top-level entries masked as they are at
+# start, so a sibling delivery's private dir made later directly in $GAFFER_DATA would be
+# visible and writable here (and that sibling's import fetches from it). Its parent is a
+# masked entry instead, so every private dir but this container's own stays hidden.
+_GIT_PRIV_BASE="${GAFFER_DATA:-${TMPDIR:-/tmp}}/sandbox-git"
+mkdir -p "$_GIT_PRIV_BASE" 2>/dev/null || true
+chmod 700 "$_GIT_PRIV_BASE" 2>/dev/null || true
 for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
   if ! _verified_linked_worktree "$_wr"; then
@@ -328,17 +391,114 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   fi
   _common="$_VW_COMMON"; _gitdir="$_VW_GITDIR"
   _under_write_root "$_common" && continue   # the repo itself is a write root: covered rw
-  _covered "$_common" || _add_mount "$_common" ro
-  # git creates logs/ lazily; make sure the reflog dir exists so its rw mount can land
-  # (an empty dir under .git is exactly what git itself would create on first commit).
-  mkdir -p "$_common/logs" 2>/dev/null || true
-  for _sub in objects refs logs; do
-    [ -d "$_common/$_sub" ] && _add_mount "$_common/$_sub" rw
-  done
-  if [ "$_gitdir" != "$_common" ]; then
-    _add_mount "$_gitdir" rw
+  case "$_gitdir" in *:* | *$'\n'*)
+    _warn "not mounting any git metadata for $_wr: its git dir path contains ':' or a newline"
+    continue ;;
+  esac
+  _sd="$(mktemp -d "$_GIT_PRIV_BASE/sandbox-git.$$.XXXXXX" 2>/dev/null)" \
+    || _die "could not create the private git directory for $_wr under $_GIT_PRIV_BASE"
+  _shadow_config "$_wr" "$_sd" || _die "could not write the private git directory for $_wr under $_GIT_PRIV_BASE"
+  # HEAD: the worktree's branch (symbolic) or its detached commit.
+  _ref="$("${_HOSTGIT[@]}" -C "$_wr" symbolic-ref -q HEAD 2>/dev/null || true)"
+  _old="$("${_HOSTGIT[@]}" -C "$_wr" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || true)"
+  if [ -n "$_ref" ]; then printf 'ref: %s\n' "$_ref" > "$_sd/HEAD"
+  elif [ -n "$_old" ]; then printf '%s\n' "$_old" > "$_sd/HEAD"; _ref=HEAD
+  else _die "could not read HEAD of $_wr"
   fi
+  # A snapshot of the host's shared refs (branches, tags, remotes): read-only context.
+  "${_HOSTGIT[@]}" -C "$_wr" for-each-ref --format='%(objectname) %(refname)' \
+      refs/heads refs/tags refs/remotes > "$_sd/packed-refs" 2>/dev/null || : > "$_sd/packed-refs"
+  [ -f "$_gitdir/index" ] && cp "$_gitdir/index" "$_sd/index" 2>/dev/null || true
+  # A shallow host repo (a CI clone) needs its shallow boundary, or history walks fail.
+  [ -f "$_common/shallow" ] && cp "$_common/shallow" "$_sd/shallow" 2>/dev/null || true
+  for _f in exclude attributes; do
+    [ -f "$_common/info/$_f" ] && cp "$_common/info/$_f" "$_sd/info/$_f" 2>/dev/null || true
+  done
+  [ -d "$_common/objects" ] && ! _covered "$_common/objects" && _add_mount "$_common/objects" ro
+  _add_mount_at "$_sd" "$_gitdir" rw
+  _SHADOWS+=( "$_wr"$'\t'"$_sd"$'\t'"$_ref"$'\t'"$_old"$'\t'"$_common"$'\t'"$_gitdir" )
 done
+
+# _import_private_git: after the container exits, bring each worktree's OWN ref back from
+# its private repository into the host repo (agent runs only). The private dir was
+# writable from the container, so its config/hooks/alternates are rewritten by the host
+# before any host git command reads it, the fetch runs with hooks off, the fetched tip
+# must be a commit, and the host ref moves only from the value it had when the container
+# started (compare-and-swap). Returns non-zero (and says why) when an import fails.
+_import_private_git() {
+  local row wr sd ref old gd tip tmpref rc=0
+  for row in ${_SHADOWS[@]+"${_SHADOWS[@]}"}; do
+    IFS=$'\t' read -r wr sd ref old _common gd <<<"$row"
+    # The worktree's `.git` FILE is in the writable worktree: the container could point it
+    # at another repository. Re-check the two-way registration, and run every host git
+    # command below against the git dir recorded at start, never the pointer.
+    if ! _verified_linked_worktree "$wr" || [ "$_VW_GITDIR" != "$gd" ] || [ "$_VW_COMMON" != "$_common" ]; then
+      printf 'sandbox-docker: import: the .git file of %s no longer names its registered git dir %s; nothing imported\n' "$wr" "$gd" >&2
+      rc=1; continue
+    fi
+    # The container could write anything here. A symlink (or a FIFO, socket, device) in
+    # the private dir would make the host's rewrite below, or the git commands reading
+    # it, follow a path the container chose to a host file; git never creates such
+    # entries in a git dir, so their presence refuses the import.
+    if [ -L "$sd" ] || [ ! -d "$sd" ] || [ -n "$(find "$sd" ! -type f ! -type d -print 2>/dev/null | head -n 1)" ]; then
+      printf 'sandbox-docker: import: the private repository for %s holds a symlink or special file (%s); nothing imported\n' \
+        "$wr" "$(find "$sd" ! -type f ! -type d -print 2>/dev/null | head -n 1)" >&2
+      rc=1; continue
+    fi
+    if ! _shadow_config "$wr" "$sd"; then
+      printf 'sandbox-docker: import: could not rewrite the config and alternates of the private repository for %s (a path the container left that the host cannot write); nothing imported\n' "$wr" >&2
+      rc=1; continue
+    fi
+    tip="$(GIT_DIR="$sd" "${_HOSTGIT[@]}" rev-parse -q --verify "$ref^{commit}" 2>/dev/null || true)"
+    [ -n "$tip" ] || { printf 'sandbox-docker: import: the private repository for %s has no commit at %s; nothing imported\n' "$wr" "$ref" >&2; continue; }
+    [ "$tip" = "$old" ] && continue
+    tmpref="refs/gaffer-sandbox/import-$$"
+    if ! "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" fetch -q --no-tags --no-write-fetch-head --no-recurse-submodules \
+         "$sd" "+$ref:$tmpref" >/dev/null 2>&1; then
+      printf 'sandbox-docker: import: could not fetch %s from the private repository of %s\n' "$ref" "$wr" >&2
+      rc=1; continue
+    fi
+    if [ "$("${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" rev-parse -q --verify "$tmpref^{commit}" 2>/dev/null)" != "$tip" ]; then
+      printf 'sandbox-docker: import: fetched tip for %s does not match the private repository (%s)\n' "$wr" "$tip" >&2
+      "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref -d "$tmpref" >/dev/null 2>&1 || true
+      rc=1; continue
+    fi
+    if [ "$ref" = "HEAD" ]; then
+      "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref --no-deref -m "gaffer: import sandbox commits" HEAD "$tip" "$old" >/dev/null 2>&1
+    else
+      "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref -m "gaffer: import sandbox commits" "$ref" "$tip" "$old" >/dev/null 2>&1
+    fi || { printf 'sandbox-docker: import: %s moved on the host while the container ran; not importing %s\n' "$ref" "$tip" >&2; rc=1; }
+    "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" update-ref -d "$tmpref" >/dev/null 2>&1 || true
+    # The host index still describes the old tip; reset it to the imported commit (the
+    # working tree is the shared mount and already matches).
+    "${_HOSTGIT[@]}" --git-dir="$gd" --work-tree="$wr" read-tree HEAD >/dev/null 2>&1 || true
+  done
+  return "$rc"
+}
+# On a non-root Linux host what the container (root) wrote inside a private dir is
+# root-owned, and the host's rm -rf leaves it behind (one leftover per agent and gate
+# run). Then a minimal container removes it: no network, no capability but
+# DAC_OVERRIDE, only the private dirs' parent mounted, and a fixed `rm -rf -- <dir>`.
+_cleanup_private_git() {
+  local row wr sd rest
+  for row in ${_SHADOWS[@]+"${_SHADOWS[@]}"}; do
+    IFS=$'\t' read -r wr sd rest <<<"$row"
+    case "$sd" in "$_GIT_PRIV_BASE"/sandbox-git.*) ;; *) continue ;; esac
+    case "$sd" in */../* | */./*) continue ;; esac
+    rm -rf "$sd" 2>/dev/null || true
+    { [ -e "$sd" ] || [ -L "$sd" ]; } || continue
+    case "$_GIT_PRIV_BASE" in *:* | *$'\n'*)
+      printf 'sandbox-docker: could not remove %s (root-owned files; its path holds a ":" so no cleanup container can mount it)\n' "$sd" >&2
+      continue ;;
+    esac
+    docker run --rm --network none --cap-drop=ALL --cap-add=DAC_OVERRIDE \
+      --security-opt=no-new-privileges -v "$_GIT_PRIV_BASE:$_GIT_PRIV_BASE" \
+      --entrypoint rm "$_IMAGE" -rf -- "$sd" >/dev/null 2>&1 || true
+    { [ -e "$sd" ] || [ -L "$sd" ]; } \
+      && printf 'sandbox-docker: could not remove the private git directory %s\n' "$sd" >&2
+  done
+  return 0
+}
 
 # --- $GAFFER_DATA: the MCP data plane's DB directory, everything else MASKED (B25c) ------
 # See the header. The directory must be mounted (SQLite siblings), so mount it rw and
@@ -560,7 +720,22 @@ docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' 
 # DAC_OVERRIDE-only + NoNewPrivs=1. (A non-root --user + --read-only root are the next
 # hardening step — they need a tmpfs-backed writable HOME for claude/npm state and are
 # validated with the live delivery workflow, sandbox-live.yml; see docs/docker-sandbox-provider.md.)
-exec docker run --rm --network "$_NET_INT" \
+# Not `exec`: the wrapper outlives the container to import the worktree's own branch from
+# its private repository (see the git-metadata section above). docker runs in the
+# background so a TERM/INT/HUP sent to this wrapper (a tick timeout) is forwarded to it at
+# once instead of waiting for the container to finish.
+trap '_cleanup_private_git' EXIT
+# The forwarding traps are set BEFORE docker starts: a signal in the instant between the
+# launch and the trap would otherwise kill the wrapper (default action) and leave the
+# container running unsupervised. One that arrives before the pid is known is held and
+# sent as soon as it is.
+_DOCKER_PID=""; _PENDING_SIG=""
+_forward() {
+  if [ -n "$_DOCKER_PID" ]; then kill -"$1" "$_DOCKER_PID" 2>/dev/null || true
+  else _PENDING_SIG="$1"; fi
+}
+trap '_forward TERM' TERM; trap '_forward INT' INT; trap '_forward HUP' HUP
+docker run --rm --network "$_NET_INT" \
   --cap-drop=ALL \
   --cap-add=DAC_OVERRIDE \
   --security-opt=no-new-privileges \
@@ -571,4 +746,23 @@ exec docker run --rm --network "$_NET_INT" \
   "${_mounts[@]}" \
   "${_envs[@]}" \
   "$_IMAGE" \
-  "$@"
+  "$@" &
+_DOCKER_PID=$!
+[ -z "$_PENDING_SIG" ] || kill -"$_PENDING_SIG" "$_DOCKER_PID" 2>/dev/null || true
+while :; do
+  _rc=0; wait "$_DOCKER_PID" || _rc=$?
+  kill -0 "$_DOCKER_PID" 2>/dev/null && continue
+  # docker is gone. A forwarded signal may have cut the wait above short (128+n): wait
+  # once more for its own exit status, which the shell keeps for a finished child.
+  _w=0; wait "$_DOCKER_PID" 2>/dev/null || _w=$?
+  [ "$_w" -eq 127 ] || _rc="$_w"
+  break
+done
+trap - TERM INT HUP
+# The validation profile (DoD gates, AC checks) never changes the branch it validates:
+# whatever a test committed inside is dropped with the private repository.
+if [ "$_MODE" != "validation" ] && ! _import_private_git; then
+  printf 'sandbox-docker: the commits made inside the container could not all be imported into the host repository (see above)\n' >&2
+  [ "$_rc" -ne 0 ] || _rc=1
+fi
+exit "$_rc"

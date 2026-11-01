@@ -1882,6 +1882,15 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # checkout). In single-repo / mono-fallback mode this is exactly one worktree.
   WRITE_ROOTS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{print $5}')"
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
+  # External review #9 (finding 2): beyond the static hooks/fsmonitor overrides
+  # factory.config.sh exported, neutralise every driver/helper/filter of THESE
+  # repositories that points into the checkout before any bookkeeping git runs in them.
+  if declare -F gaffer_git_harden >/dev/null 2>&1; then
+    _gh_repos=()
+    while IFS=$'\t' read -r _ _ _gh_p _ _; do [ -n "$_gh_p" ] && [ -d "$_gh_p" ] && _gh_repos+=( "$_gh_p" ); done <<< "$WT_ROWS"
+    gaffer_git_harden ${_gh_repos[@]+"${_gh_repos[@]}"}
+    unset _gh_repos _gh_p
+  fi
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$WORKTREES_BASE/primary"
 
   # Prior review feedback: if this ticket was sent back before, the reviewer's
@@ -3717,6 +3726,11 @@ $_trail_q
   # keeping it is always correct, and the trap now preserves it from the visibility
   # point onward. (Redundantly re-raised on the record path + the submit-fail park.)
   GAFFER_KEEP_DELIVERY_BRANCH=1
+  # REQUIRED CI IS RECORDED BEFORE REVIEW (external review #9, finding 4): when CI gates
+  # this delivery (GAFFER_REQUIRE_CI with PR creation on), dispatch learns that before the
+  # ticket is exposed for review, so an approval in the window before the gate reports
+  # (or when it never can: no gh, no GitHub remote) is refused, not waved through.
+  declare -F gaffer_ci_require_mark >/dev/null 2>&1 && gaffer_ci_require_mark "$NUM"
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
     # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit

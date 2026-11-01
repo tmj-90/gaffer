@@ -1,4 +1,4 @@
-import { Command, Help, type Option } from "commander";
+import { Command, Help, Option } from "commander";
 
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
@@ -81,6 +81,10 @@ export function allCommands(cmd: Command): Command[] {
 function rootHelpText(name: string): string {
   return [
     "",
+    "Output: every command prints JSON on stdout, except doctor, stats, human-queue and",
+    "the events commands, which print text unless given --json. Every command accepts",
+    "--json, so a script can pass it everywhere (a no-op where JSON is the default).",
+    "",
     'Errors: one JSON line on stderr, {"ok":false,"code","message","details"?}.',
     "Exit codes: 0 done; 1 refused or failed (the error line says why); 2 a usage error",
     "(unknown command or option, missing argument or required option, no database at",
@@ -152,6 +156,12 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
   registerClub(program);
 
   for (const cmd of allCommands(program)) {
+    // cli-wg/F-21: one rule for --json. A command that prints JSON anyway accepts it
+    // as a no-op (hidden from its help; the root help states the rule), so a script
+    // can pass --json to every command.
+    if (cmd.commands.length === 0 && !cmd.options.some((o) => o.long === "--json")) {
+      cmd.addOption(new Option("--json", "print JSON (already the default)").hideHelp());
+    }
     const internal = RUNNER_INTERNAL_COMMANDS[commandPath(cmd)];
     if (!internal) continue;
     for (const sub of cmd.commands) {

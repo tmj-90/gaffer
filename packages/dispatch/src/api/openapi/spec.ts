@@ -738,18 +738,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Merge an approved ticket that has not landed",
     description:
-      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge, and 409 `MERGE_IN_FLIGHT` while a merge this server started for the ticket is still running (nothing new is started).",
+      "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge.",
     capability: "full",
-    responses: [
-      ok("`{ ticket, merge }` — the merge run was started (202)."),
-      notFound,
-      {
-        status: 409,
-        description:
-          "Not in ready_for_merge (`ILLEGAL_TRANSITION`), or a merge of this ticket is already running (`MERGE_IN_FLIGHT`).",
-        content: "json",
-      },
-    ],
+    responses: [ok("`{ ticket, merge }` — the merge run was started (202)."), notFound, conflict],
   },
   {
     method: "POST",
@@ -884,20 +875,13 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [
       ok("`{ ticket, event_id }` (cancelled).", "TicketTransition"),
       notFound,
-      {
-        status: 409,
-        description:
-          "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
-        content: "json",
-      },
+      conflict,
       invalid,
     ],
   },
   {
     method: "POST",
     path: "/tickets/:id/reopen",
-    description:
-      "Cancels the ticket. Refused (409 `PARTLY_LANDED`) while any of its repositories has a recorded landing of its approved commit: land the rest, or revert the landed merge first.",
     tag: T.tickets,
     summary: "Reopen a won't-do ticket",
     capability: "full",

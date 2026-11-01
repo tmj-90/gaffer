@@ -2017,32 +2017,6 @@ export class Dispatch {
   pauseDelivery(ref: string, input: PauseInput, actor: Actor): TransitionResult {
     return this.pauseSvc.pauseDelivery(ref, input, actor);
   }
-  /**
-   * IN-FLIGHT GUARD (exploratory finding api/F1): true while a merge run the API started
-   * for this ticket (its latest `ticket.merge_started` event) is still `running` in the
-   * run registry. The merge route refuses a second merge then (409 MERGE_IN_FLIGHT).
-   */
-  mergeInFlight(ref: string): boolean {
-    const ticket = this.resolveTicket(ref);
-    const ev = this.db
-      .prepare(
-        `SELECT payload_json FROM work_events
-          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.merge_started'
-          ORDER BY rowid DESC LIMIT 1`,
-      )
-      .get(ticket.id) as { payload_json: string | null } | undefined;
-    if (!ev) return false;
-    try {
-      const runId = (JSON.parse(ev.payload_json || "{}") as { run_id?: string }).run_id;
-      if (!runId) return false;
-      const row = this.db.prepare("SELECT status FROM runs WHERE id = ?").get(runId) as
-        { status: string } | undefined;
-      return row?.status === "running";
-    } catch {
-      return false;
-    }
-  }
-
 
   /** The human pressed Continue — mark a paused ticket resume-requested. */
   continuePaused(ref: string, actor: Actor): { ticketId: string; eventId: string } {

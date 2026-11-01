@@ -10,8 +10,6 @@ export const DISPATCH_ERROR_CODES = [
   "VALIDATION_ERROR",
   "POLICY_DENIED",
   "STATE_CONFLICT",
-  // A cancel of a ticket whose change already landed in some repository.
-  "PARTLY_LANDED",
   "CONCURRENCY_CONFLICT",
   "ILLEGAL_TRANSITION",
   "NO_OP",
@@ -39,8 +37,6 @@ export const DISPATCH_ERROR_CODES = [
   "AMBIGUOUS_REF",
   "INCOMPATIBLE_BUNDLE",
   "INCONSISTENT_BUNDLE",
-  // A merge the API started for this ticket is still running (a second one would race it).
-  "MERGE_IN_FLIGHT",
   "FILE_NOT_FOUND",
   "IO_ERROR",
   "UNSAFE_BIND",

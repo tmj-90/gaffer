@@ -14,8 +14,7 @@ import { TICKET_REPO_ACTIVE_RELATIONS } from "../domain/types.js";
  *
  * Only SYSTEM rows count (agents record evidence as `agent` and cannot forge either kind),
  * and only pins recorded since the ticket last entered in_review (a rework or a conflict
- * resolution re-enters review, which makes older pins describe an older candidate) and
- * that no later move off the approval's path withdrew (a reject, a won't-do, a reopen). A
+ * resolution re-enters review, which makes older pins describe an older candidate). A
  * legacy pin with no repo (recorded before per-repo pins existed) imposes no per-repo
  * requirement here; the landing check still applies it.
  *
@@ -57,9 +56,6 @@ export interface LandingStatus {
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
-/** The statuses an approval moves through on its way to landing (and its holds). */
-const APPROVAL_PATH = ["in_testing", "ready_for_merge", "blocked", "done"] as const;
-
 function shaOf(uri: unknown, prefix: string): string | null {
   const s = String(uri ?? "");
   if (!s.startsWith(prefix)) return null;
@@ -69,26 +65,14 @@ function shaOf(uri: unknown, prefix: string): string | null {
 
 /** The current per-repo review pins and whether each has landed. Pure read. */
 export function computeLandingStatus(db: Db, ticketId: string): LandingStatus {
-  // A pin describes the approved candidate only until the ticket leaves the approval's
-  // path (in_testing → ready_for_merge → done, or a hold in blocked). Re-entering review
-  // makes it an older candidate (a pin is recorded AFTER that entry, so only earlier pins
-  // are stale); a reject, a won't-do, a reopen or any other move off the path withdraws
-  // the approval (exploratory finding cli-wg/F-10: `ticket landing` kept showing the
-  // withdrawn pin as pending), so every pin recorded up to that move is stale.
   const entered = db
     .prepare(
-      `SELECT created_at AS at, json_extract(payload_json, '$.to') AS to_status
-       FROM work_events
+      `SELECT created_at AS at FROM work_events
        WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
-         AND json_extract(payload_json, '$.to') NOT IN (${APPROVAL_PATH.map(() => "?").join(", ")})
+         AND json_extract(payload_json, '$.to') = 'in_review'
        ORDER BY rowid DESC LIMIT 1`,
     )
-    .get(ticketId, ...APPROVAL_PATH) as { at: string; to_status: string } | undefined;
-  const stale = (pinAt: string): boolean =>
-    entered !== undefined &&
-    (entered.to_status === "in_review"
-      ? String(entered.at) > String(pinAt)
-      : String(entered.at) >= String(pinAt));
+    .get(ticketId) as { at: string } | undefined;
   const pins = db
     .prepare(
       `SELECT e.repo_id AS repo_id, r.name AS repo, e.uri AS uri, e.created_at AS created_at,
@@ -133,7 +117,7 @@ export function computeLandingStatus(db: Db, ticketId: string): LandingStatus {
   for (const p of pins) {
     if (seen.has(p.repo_id)) continue; // the latest pin per repo is the approved revision
     seen.add(p.repo_id);
-    if (stale(String(p.created_at))) continue; // an older or withdrawn candidate
+    if (entered && String(entered.at) > String(p.created_at)) continue; // stale candidate
     const sha = shaOf(p.uri, REVIEW_PIN_PREFIX);
     if (!sha) continue;
     repos.push({

@@ -692,25 +692,6 @@ export class ReviewGateService {
       const what = moved
         .map((m) =>
           m.current === null
-    // DUPLICATE PINS (exploratory finding api/F12): one commit per repository. With two
-    // entries for one repo the first decided the outcome, so [head, other] approved and
-    // [other, head] read as a stale revision: the order of the list chose the answer.
-    const named = (c: ShownCommit): string =>
-      c.repo === null
-        ? (heads[0]?.repoId ?? "(unnamed)")
-        : (heads.find((h) => matches(c, h))?.repoId ?? c.repo);
-    const seen = new Map<string, number>();
-    for (const c of commits) seen.set(named(c), (seen.get(named(c)) ?? 0) + 1);
-    const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
-    if (dupes.length > 0) {
-      const label = (k: string): string => heads.find((h) => h.repoId === k)?.repo ?? k;
-      throw new DispatchError(
-        "VALIDATION_ERROR",
-        `Each repository can be approved at one commit only; ${dupes.map(label).join(", ")} ` +
-          "was named more than once. Nothing was approved.",
-        { reason: "duplicate_repo", repos: dupes.map(label) },
-      );
-    }
             ? `${m.repo} no longer has a delivery head to approve`
             : m.shown === null
               ? `${m.repo} (${m.current.slice(0, 12)}) was not in what you approved`
@@ -1787,7 +1768,6 @@ export class ReviewGateService {
           { from: ticket.status, to },
         );
       }
-      if (to === "cancelled") this.refuseCancelOfLanded(ticket);
       const resolvedReason = reason && reason.trim().length > 0 ? reason : "review_rejected";
 
       const isRequeue = to === "ready" || to === "refining";
@@ -1853,7 +1833,6 @@ export class ReviewGateService {
   wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ref);
-      this.refuseCancelOfLanded(ticket);
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -1884,28 +1863,6 @@ export class ReviewGateService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
-
-  /**
-   * PARTLY LANDED (exploratory finding cli-runner/F-02): a ticket whose approved change
-   * already reached a default branch in at least one repository cannot be cancelled.
-   * Cancelling read "won't do" while that repository's default branch carried the merge,
-   * and dropped the ticket out of the human queue's *Partly merged* item. Land the rest
-   * (`gaffer merge <n>`), or revert the landed merge first.
-   */
-  private refuseCancelOfLanded(ticket: Ticket): void {
-    const landing = computeLandingStatus(this.db, ticket.id);
-    const landed = landing.repos.filter((r) => r.landed).map((r) => r.repo);
-    if (landed.length === 0) return;
-    const pending = landing.repos.filter((r) => !r.landed).map((r) => r.repo);
-    throw new DispatchError(
-      "PARTLY_LANDED",
-      `#${ticket.number ?? "?"} already landed in ${landed.join(", ")}; a ticket whose change is on a default branch cannot be cancelled. ` +
-        (pending.length > 0
-          ? `Land the rest (gaffer merge ${ticket.number ?? "<n>"}: ${pending.join(", ")} still pending), or revert the landed merge first.`
-          : `Finish it (gaffer merge ${ticket.number ?? "<n>"}), or revert the landed merge first.`),
-      { ticket_number: ticket.number, landed, pending },
-    );
-  }
 
   /**
    * BBT-001 toggle accessor — overridable per-instance for tests. Defaults to the

@@ -3612,7 +3612,7 @@
           "Review & delivery"
         ],
         "summary": "Merge an approved ticket that has not landed",
-        "description": "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge, and 409 `MERGE_IN_FLIGHT` while a merge this server started for the ticket is still running (nothing new is started).",
+        "description": "Fires the merge runner for a ticket in `ready_for_merge` (the runner's approve-only path, lite mode, or a merge that hit a conflict left it there). 409 unless the ticket is in ready_for_merge.",
         "parameters": [
           {
             "name": "id",
@@ -3666,7 +3666,7 @@
             }
           },
           "409": {
-            "description": "Not in ready_for_merge (`ILLEGAL_TRANSITION`), or a merge of this ticket is already running (`MERGE_IN_FLIGHT`).",
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4402,7 +4402,6 @@
         ],
         "summary": "Mark won't-do",
         "parameters": [
-        "description": "Cancels the ticket. Refused (409 `PARTLY_LANDED`) while any of its repositories has a recorded landing of its approved commit: land the rest, or revert the landed merge first.",
           {
             "name": "id",
             "in": "path",
@@ -4465,7 +4464,7 @@
             }
           },
           "409": {
-            "description": "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
             "content": {
               "application/json": {
                 "schema": {

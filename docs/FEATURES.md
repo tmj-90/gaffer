@@ -255,8 +255,7 @@ structural barrier the whole design hangs on.
   between the diff loading and your click, the approval is **refused** (`409
   stale_revision`): nothing is approved, the Review view says the change moved and
   reloads the new diff. `wg review approve` takes `--commit <repo>=<sha>` (the values
-  `wg ticket diff <n> --heads` prints; one per repository, and naming a repository twice
-  is refused with 422 whatever the order), and `gaffer approve` shows the commits and asks
+  `wg ticket diff <n> --heads` prints), and `gaffer approve` shows the commits and asks
   before approving them; the factory's own agent review names the commit its reviewer
   judged and follows the same rule (a multi-repo ticket, whose other repositories the
   reviewer did not read, waits for you). The approval pins each repository's commit
@@ -277,11 +276,8 @@ structural barrier the whole design hangs on.
   then `gaffer approve <n>`). If one lands and another cannot for a reason only the
   landing itself finds (a conflict, a dirty checkout, a red merge gate), the ticket stays
   in *Ready for merge* and shows as **Partly merged** in what needs you, naming which
-  repositories landed (it cannot be cancelled then: `wg wont-do` and a cancelling send-back
-  are refused with `PARTLY_LANDED`, so land the rest or revert the landed merge first);
-  the next merge lands only the rest (`wg ticket landing <n>` shows the state; once the
-  approval is withdrawn by a send-back, a won't-do or a reopen it shows no approved
-  commit, the same as the ticket's status). The
+  repositories landed;
+  the next merge lands only the rest (`wg ticket landing <n>` shows the state). The
   runner's merge lane (and so **Poll for work**) finishes it only under the same
   policy that lets it land any approval, decided again at that moment: a human
   approval with Auto-merge on, or an earned merge grant. Turn Auto-merge off, or
@@ -327,9 +323,7 @@ structural barrier the whole design hangs on.
   (Auto-merge off, or nothing else lands it), *Approved · lands next tick* (the
   runner's merge lane lands it: Auto-merge on and a human approval, or an earned
   merge grant; *(paused: usage limit)* with the time while the usage window has
-  paused the runner), *Approved · landing* (a merge the dashboard started is running;
-  a second **Merge now** meanwhile is refused with `MERGE_IN_FLIGHT` and starts nothing,
-  and `gaffer merge` beside it exits 4),
+  paused the runner), *Approved · landing* (a merge the dashboard started is running),
   *Approved · partly landed* (a landing is recorded for some of its write repos'
   approved commits, not all: Merge now lands the rest and never re-merges a
   landed one), or the hold's own words — *Held · moved since review* (naming the

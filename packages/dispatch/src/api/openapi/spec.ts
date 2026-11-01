@@ -135,9 +135,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.meta,
     summary: "Liveness probe",
     description:
-      "Token-free and exempt from the Host/Origin check; carries no control-plane state.",
+      "Token-free and exempt from the Host/Origin check; carries no control-plane state. `auth` says whether the server wants a bearer token, so the dashboard's login gate draws itself without first sending a data call that can only answer 401.",
     capability: "public",
-    responses: [ok('`{ status: "ok" }`.')],
+    responses: [ok('`{ status: "ok", auth: boolean }`.')],
   },
   {
     method: "GET",
@@ -493,7 +493,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "What a human owns right now",
     description:
-      "Pending decisions, sign-offs, parked tickets and dependents of cancelled or failed tickets.",
+      "Pending decisions, sign-offs, parked tickets, deliveries paused at a cap (kind `paused`, until Continue is pressed), dependents of cancelled or failed tickets, and one `lore_drafts` row (with `loreDrafts`) while Memory holds lore drafts awaiting approval.",
     capability: "read",
     responses: [ok("`HumanQueueView`.")],
   },

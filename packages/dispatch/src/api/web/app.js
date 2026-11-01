@@ -71,6 +71,19 @@ function unreachable(cause, signal) {
   return e;
 }
 async function api(method, path, body, opts = {}) {
+  // A read token changes nothing: the server refuses every non-GET with 403
+  // READ_ONLY_TOKEN, so the page never sends one (a control that slipped through
+  // gets this refusal at once, and the console no 403). A write sent before the
+  // capability is known waits for whoami first.
+  if (method !== "GET" && method !== "HEAD") {
+    if (!squad.capability && squad.loaded) await squad.loaded.catch(() => null);
+    if (readOnly()) {
+      const e = new Error(READ_ONLY_TITLE);
+      e.code = "READ_ONLY_TOKEN";
+      e.status = 403;
+      throw e;
+    }
+  }
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
@@ -722,6 +735,7 @@ const squad = {
   byId: new Map(), // agent_id → AgentDisplay (+ registration facts once the squad loads)
   capability: null, // "full" | "read" from /api/whoami; null until known
   loaded: null, // the in-flight or settled first read
+  whoamiFailed: false, // the gate's whoami failed (not 401): the first squad read skips it
 };
 const ROLE_LABELS = {
   delivery: "Delivery",
@@ -759,21 +773,31 @@ function applySquad(res) {
 /** Read the squad and the token's capability, once per page load (best-effort). */
 function ensureSquad() {
   if (!squad.loaded) {
+    // The gate already waited once for a whoami that failed or timed out: the views do
+    // not wait (up to 15 s more) for a second one. It is asked in the background
+    // instead, and a read token's controls switch off when it answers.
+    const askLater = !squad.capability && squad.whoamiFailed;
+    squad.whoamiFailed = false;
+    if (askLater) api("GET", "/api/whoami").then(learnCapability, () => null);
     squad.loaded = Promise.all([
       api("GET", "/api/squad").catch(() => null),
-      squad.capability ? null : api("GET", "/api/whoami").catch(() => null),
+      squad.capability || askLater ? null : api("GET", "/api/whoami").catch(() => null),
     ]).then(([sq, who]) => {
-      const was = squad.capability;
-      if (who && typeof who === "object") squad.capability = who.capability || "full";
       if (sq) applySquad(sq);
       else squad.loaded = null; // try again on the next view
-      paintReadOnly();
-      // Learned only now that this token is read-only: redraw the view, so it shows
-      // its switched-off controls rather than the editors it painted first.
-      if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
+      learnCapability(who);
     });
   }
   return squad.loaded;
+}
+/** Take a whoami answer (null: still unknown) and paint what it means. */
+function learnCapability(who) {
+  const was = squad.capability;
+  if (who && typeof who === "object") squad.capability = who.capability || "full";
+  paintReadOnly();
+  // Learned only now that this token is read-only: redraw the view, so it shows
+  // its switched-off controls rather than the editors it painted first.
+  if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
 }
 /**
  * The live stream said the club or a name changed: read the squad again, repaint
@@ -1190,6 +1214,10 @@ async function runAsyncActionUntilDone(btn, running, fn) {
 function renderLogin(wasWrong) {
   const root = document.getElementById("app");
   if (!root) return;
+  // Reads already in flight when the token stopped working each answer 401 too: the
+  // gate is drawn once, so a token being typed into it is never wiped by a redraw.
+  if (authLost && root.querySelector("form.login-gate")) return;
+  goQuietForLogin();
   // A write 401 can fire from the Plan-a-build sheet (body-level overlay); dismiss it
   // so the token gate isn't stranded behind it — the CSS also covers it defensively.
   closeSheet();
@@ -1249,6 +1277,22 @@ function renderLogin(wasWrong) {
     location.reload();
   });
   root.appendChild(form);
+}
+
+/**
+ * The gate is up, so the page stops asking. A token revoked or rotated server-side
+ * used to leave the interval refresh, the live stream and its reconnects running
+ * behind the gate: about 80 refused reads a minute, each drawing the gate again.
+ * Entering a token reloads the page, which starts them afresh.
+ */
+let authLost = false;
+function goQuietForLogin() {
+  authLost = true;
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+  if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+  liveRefreshTimer = null;
+  if (liveStreamAbort) liveStreamAbort.abort();
 }
 
 /** Clear the token and return to the login gate. Wired to the header logout. */
@@ -2322,6 +2366,12 @@ function closeNavMenu() {
   if (btn) btn.setAttribute("aria-expanded", "false");
   document.removeEventListener("click", navMenuOutside, true);
   document.removeEventListener("keydown", navMenuKey);
+  document.removeEventListener("focusin", navMenuFocus);
+}
+/** Focus that moved outside the menu (Tab past its last item) closes it. */
+function navMenuFocus(e) {
+  if (navMenuEl && !navMenuEl.contains(e.target) && !e.target.closest?.(".nav-more"))
+    closeNavMenu();
 }
 function navMenuOutside(e) {
   if (navMenuEl && !navMenuEl.contains(e.target) && !e.target.closest?.(".nav-more"))
@@ -2380,6 +2430,22 @@ function toggleNavMenu(btn) {
   btn.setAttribute("aria-expanded", "true");
   navMenuEl.querySelector("a")?.focus();
   setTimeout(() => document.addEventListener("click", navMenuOutside, true), 0);
+  document.addEventListener("focusin", navMenuFocus);
+  // A press inside the menu is not focus leaving it: Safari (macOS and iOS) gives a
+  // clicked link or button no focus, so its mousedown blurs the item focused on open
+  // with no relatedTarget, and closing then would remove the menu before the click.
+  let pressing = false;
+  navMenuEl.addEventListener("pointerdown", () => {
+    pressing = true;
+    setTimeout(() => (pressing = false), 1000);
+  });
+  // Tab past the last item leaves the document (the menu is the body's last child):
+  // no focusin follows, so the menu's own focusout closes it.
+  navMenuEl.addEventListener("focusout", (e) => {
+    const to = e.relatedTarget;
+    if (pressing && !to) return;
+    if (!to || (!navMenuEl?.contains(to) && !to.closest?.(".nav-more"))) closeNavMenu();
+  });
   document.addEventListener("keydown", navMenuKey);
 }
 function navCountBadge(id) {
@@ -2493,7 +2559,12 @@ function scheduleLiveRefresh() {
 }
 
 async function startLiveStream() {
-  if (liveStreamAbort || typeof fetch !== "function" || typeof ReadableStream === "undefined")
+  if (
+    authLost ||
+    liveStreamAbort ||
+    typeof fetch !== "function" ||
+    typeof ReadableStream === "undefined"
+  )
     return;
   const controller = new AbortController();
   liveStreamAbort = controller;
@@ -2508,6 +2579,11 @@ async function startLiveStream() {
   };
   try {
     const res = await fetch(`/api/events/stream${since}`, { headers, signal: controller.signal });
+    if (res.status === 401) {
+      // The token stopped working: the gate, once, and no reconnect behind it.
+      freshness.fail("auth");
+      renderLogin(Boolean(tok));
+    }
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -2548,7 +2624,8 @@ async function startLiveStream() {
     clearTimeout(watchdog);
     liveStreamAbort = null;
     freshness.setStream("down");
-    if (document.visibilityState !== "hidden") setTimeout(startLiveStream, LIVE_RECONNECT_MS);
+    if (document.visibilityState !== "hidden" && !authLost)
+      setTimeout(startLiveStream, LIVE_RECONNECT_MS);
   }
 }
 // A phone tab coming back to the foreground re-checks at once instead of
@@ -2592,7 +2669,7 @@ function reviewSignature(tickets) {
 /** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
 let refreshing = false;
 function refreshCurrentView() {
-  if (document.visibilityState === "hidden") return;
+  if (authLost || document.visibilityState === "hidden") return;
   if (busyEditing()) return;
   // don't yank a card mid-drag or a menu/sheet out from under a click.
   if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
@@ -2769,7 +2846,15 @@ async function updateNavBadges() {
         n.textContent = String(v);
         n.hidden = false;
         n.classList.toggle("urgent", id === "review");
-        n.setAttribute("aria-label", id === "review" ? `${v} waiting for you` : `${v} in flight`);
+        // The Work count is unexplained on screen: its title and label say what it
+        // counts (live tickets, ready through to merge plus blocked/paused/failed;
+        // drafts are on the bench, not in it).
+        const what =
+          id === "review"
+            ? `${v} waiting for your sign-off`
+            : `${v} ${v === 1 ? "ticket" : "tickets"} in play: ready through to merge, plus blocked, paused or failed (drafts not counted)`;
+        n.setAttribute("aria-label", what);
+        n.title = what;
       } else {
         n.hidden = true;
       }
@@ -2927,7 +3012,8 @@ async function buildPaletteSources() {
     lookupOnly: i >= 60,
     run: () => navigate(`#/ticket/${t.id}`),
   }));
-  return [...base, ...ticketItems];
+  // A read token creates nothing: the palette offers it no Create actions.
+  return [...(readOnly() ? base.filter((x) => x.group !== "Create") : base), ...ticketItems];
 }
 
 function ensurePalette() {
@@ -2938,7 +3024,9 @@ function ensurePalette() {
     placeholder: "Jump to a view, ticket or action…",
     "aria-label": "Command palette",
   });
-  const list = el("ul", { class: "palette-list" });
+  // tabindex -1: a scrolling list is a Tab stop in Chromium, and from there Tab
+  // walked on to the page behind the scrim.
+  const list = el("ul", { class: "palette-list", tabindex: "-1" });
   const palette = el("div", { class: "palette", role: "dialog", "aria-modal": "true" }, [
     el("div", { class: "palette-input-wrap" }, [icon("search"), input]),
     list,
@@ -2953,14 +3041,29 @@ function ensurePalette() {
   palette.addEventListener("click", (e) => e.stopPropagation());
   input.addEventListener("input", () => renderPaletteList(input.value));
   input.addEventListener("keydown", paletteKeydown);
+  // A modal keeps focus: wherever focus is inside it (the list after a click, say),
+  // Esc closes it and Tab returns to the one field, never to the page behind.
+  palette.addEventListener("keydown", (e) => {
+    if (e.target === input) return; // the field's own handler has it
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closePalette();
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      input.focus();
+    } else paletteKeydown(e);
+  });
+
   document.body.appendChild(scrim);
   paletteEls = { scrim, palette, input, list };
   return paletteEls;
 }
 
 let paletteAllItems = [];
+let paletteReturnFocus = null;
 async function openPalette() {
   const { scrim, input } = ensurePalette();
+  if (!scrim.classList.contains("open")) paletteReturnFocus = document.activeElement;
   scrim.classList.add("open");
   input.value = "";
   input.focus();
@@ -2970,7 +3073,13 @@ async function openPalette() {
   renderPaletteList(input.value);
 }
 function closePalette() {
-  if (paletteEls) paletteEls.scrim.classList.remove("open");
+  if (!paletteEls || !paletteEls.scrim.classList.contains("open")) return;
+  paletteEls.scrim.classList.remove("open");
+  // Focus goes back where it was (the Search button, or the page) when it is still there.
+  const back = paletteReturnFocus;
+  paletteReturnFocus = null;
+  if (back && back.isConnected && back !== document.body && typeof back.focus === "function")
+    back.focus();
 }
 function fuzzyMatch(query, text) {
   const q = query.toLowerCase();
@@ -3078,6 +3187,8 @@ function paletteKeydown(e) {
   } else if (e.key === "Enter") {
     e.preventDefault();
     runPaletteItem(paletteActive);
+  } else if (e.key === "Tab") {
+    e.preventDefault(); // the field is the dialog's only Tab stop
   }
 }
 function scrollPaletteActive() {
@@ -3122,6 +3233,19 @@ const PITCH_ZONES = [
 const ON_PITCH = new Set(PITCH_ZONES.map((z) => z.key));
 const OFF_PITCH = new Set(["blocked", "paused", "failed"]);
 const ON_BENCH = new Set(["draft", "refining"]);
+/**
+ * A campaign whose every unfinished ticket is still a draft (or refining) is not
+ * being played, it is waiting for someone to ready its tickets: "Nothing is holding
+ * it" said the opposite. Answers that sentence, or null when anything is in play.
+ */
+function benchedCampaignLine(members) {
+  const left = members.filter((t) => t.status !== "done" && t.status !== "cancelled");
+  if (!left.length || !left.every((t) => ON_BENCH.has(t.status))) return null;
+  const drafts = left.filter((t) => t.status === "draft").length;
+  return drafts === left.length
+    ? `Not kicked off: ${left.length === 1 ? "its ticket is a draft" : `all ${left.length} tickets left are drafts`} nobody has marked ready yet.`
+    : `Not kicked off: its ${plural(left.length, "ticket")} left ${left.length === 1 ? "is" : "are"} still drafts or refining, none ready yet.`;
+}
 const PITCH_MAX_CHANNELS = 6;
 const ARROW_WINDOW_MS = 3 * 3600e3;
 
@@ -3679,7 +3803,9 @@ function overviewScoreboard(f) {
         el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
           statCell({
             label: "Need you",
-            value: String(total).padStart(2, "0"),
+            // Plain figures in every cell: "Need you 03" beside "On the pitch 4" read as
+            // two different kinds of number.
+            value: String(total),
             needs: total > 0,
             href: "#what-i-own",
             flip: "needs",
@@ -3697,9 +3823,12 @@ function overviewScoreboard(f) {
           }),
           statCell({
             label: "Delivered today",
-            value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
-            href: "#/work?status=done",
+            value: String(f.summary.deliveredToday ?? 0),
+            // The tickets that landed today are the Floor's lorry ("N despatched
+            // today"); the done list holds every landing ever, so it never matched.
+            href: "#/floor",
             flip: "delivered",
+            title: `${plural(f.summary.deliveredToday ?? 0, "ticket")} landed (done) today: the Floor's lorry shows them`,
           }),
           statCell({
             label: "Wage bill",
@@ -3750,6 +3879,8 @@ const OWN_VERB = {
   ready_approval: "Approve…",
   reviewer_assignment: "Assign…",
   dependency_cancelled: "Re-plan…",
+  paused: "Continue…",
+  lore_drafts: "Open Memory",
 };
 /** The word each kind of row leads with (the referee's call, not the queue's jargon). */
 const OWN_WORD = {
@@ -3757,6 +3888,8 @@ const OWN_WORD = {
   decision: "Decision",
   review: "Review sign-off",
   awaiting_merge: "Approved, not merged",
+  paused: "Paused",
+  lore_drafts: "Lore drafts",
 };
 const OWN_GLYPH = {
   review: "in_review",
@@ -3765,6 +3898,7 @@ const OWN_GLYPH = {
   awaiting_merge: "ready_for_merge",
   ready_approval: "ready",
   dependency_cancelled: "cancelled",
+  paused: "paused",
 };
 
 function whatIOwnPanel(queue, f) {
@@ -3867,6 +4001,25 @@ function ownActionControl(it, primary, f) {
       return t
         ? el("a", { class: cls, href: `#/review/${t.id}`, "aria-label": label }, verb)
         : null;
+    case "paused":
+      return t
+        ? el(
+            "button",
+            { class: cls, type: "button", "aria-label": label, onclick: () => pausedSheet(t, it) },
+            verb,
+          )
+        : null;
+    case "lore_drafts":
+      // Approving is Memory's: the drafts are listed there, each with Approve / Reject.
+      return el(
+        "a",
+        {
+          class: cls,
+          href: "#/memory",
+          "aria-label": `Open Memory: ${plural(it.loreDrafts || 0, "lore draft")} to approve`,
+        },
+        verb,
+      );
     default:
       return t
         ? el("a", { class: cls, href: `#/ticket/${t.id}`, "aria-label": label }, verb)
@@ -3979,11 +4132,14 @@ function renderOwnedItem(it, i = 0, f = null) {
       // lines with a More toggle, so the Tactics Board is not pushed down the page.
       ...ownReason(it, i, reason),
       el("p", { class: "own-meta" }, [
-        el(
-          "span",
-          { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
-          `Waited ${fmtWait(it.waitedMs)}`,
-        ),
+        // Memory records no time a draft started waiting, so its row says none.
+        it.kind === "lore_drafts"
+          ? null
+          : el(
+              "span",
+              { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
+              `Waited ${fmtWait(it.waitedMs)}`,
+            ),
         by
           ? el("span", { class: "own-by" }, [
               it.kind === "parked" ? "with " : "delivered by ",
@@ -4565,6 +4721,55 @@ function mergeSheet(t) {
             }),
         },
         "I merged it by hand",
+      ),
+      el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+    ],
+  });
+}
+
+/**
+ * A delivery paused at a cap: the human's move is Continue (resume it in its kept
+ * worktree) or Stop (abandon it), the same two the ticket page offers.
+ */
+function pausedSheet(t, it) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  actionSheet(`${ref} is paused`, {
+    intro: it.reason,
+    actions: [
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/continue`, {});
+              closeSheet();
+              toast(`Continue requested: the factory resumes ${ref} where it stopped.`, {
+                ok: true,
+              });
+              router();
+            }),
+        },
+        "Continue",
+      ),
+      el(
+        "button",
+        {
+          class: "btn danger",
+          type: "button",
+          title: "Stop: the ticket is cancelled and its worktree is removed on the next tick",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/stop`, {});
+              closeSheet();
+              toast(`Stopped ${ref}: it is cancelled; its worktree is removed on the next tick.`, {
+                ok: true,
+              });
+              router();
+            }),
+        },
+        "Stop",
       ),
       el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
     ],
@@ -5587,10 +5792,12 @@ function cupRuns(f) {
     return progPage("campaigns", "sky", "Cup runs", "epics, by phase", [
       el("p", { class: "quiet" }, [
         "No cup runs yet. ",
-        el(
-          "button",
-          { class: "btn-link", type: "button", onclick: () => openPlanBuild() },
-          "Plan a build",
+        roLock(
+          el(
+            "button",
+            { class: "btn-link", type: "button", onclick: () => openPlanBuild() },
+            "Plan a build",
+          ),
         ),
         " and the epic lands here as rounds.",
       ]),
@@ -5633,7 +5840,7 @@ function cupRuns(f) {
                     glyph("blocked", 16),
                     `Held at #${held[0].number}${waits.length ? `: ${waits.map((t) => "#" + t.number).join(", ")} wait on it.` : "."}`,
                   ]
-                : `${done} of ${e.members.length} done. Nothing is holding it.`,
+                : `${done} of ${e.members.length} done. ${benchedCampaignLine(e.members) || "Nothing is holding it."}`,
             ),
           ]),
           el(
@@ -6341,9 +6548,10 @@ function matchReport(f) {
         e.ticket_title ? el("span", { class: "mr-t" }, e.ticket_title) : null,
         el("span", { class: "mr-what" }, [" ", say]),
       ]),
-      el("span", { class: "mr-who", title: agent ? agentTitle(agent) : null }, [
+      el("span", { class: "mr-who", title: agent ? agentTitle(agent) : who }, [
         agent ? agentShirt(agent.name, 26, agent.no) : null,
-        who,
+        // A 40-character display name gives way (ellipsis) before the row does.
+        el("span", { class: "mr-who-name" }, who),
       ]),
     ]);
   });
@@ -7458,25 +7666,30 @@ function devFlowPanel(_tickets, byStatus, _now) {
         el("time", { datetime: new Date().toISOString() }, clockTime(Date.now())),
       ]),
     ]),
+    // A real list: each stage an <li> holding its link (role=listitem on the <a>
+    // took the link's own role away, and axe flagged aria-allowed-role).
     el(
-      "div",
-      { class: "pipeline", role: "list", "aria-label": "Development flow stages" },
+      "ol",
+      { class: "pipeline", "aria-label": "Development flow stages" },
       nodes.map((n) => {
         const active = n.count > 0;
         return el(
-          "a",
-          {
-            class: `pl-node ${active ? "active" : "dim"}`,
-            href: n.href,
-            role: "listitem",
-            "aria-label": `${n.label}: ${n.count}`,
-          },
-          [
-            el("span", { class: "pl-label" }, n.label),
-            el("span", { class: "pl-disc" }, glyph(n.glyph, 20)),
-            el("span", { class: "pl-count tabnum" }, String(n.count)),
-            el("span", { class: "pl-zone" }, n.zone),
-          ],
+          "li",
+          { class: "pl-stage" },
+          el(
+            "a",
+            {
+              class: `pl-node ${active ? "active" : "dim"}`,
+              href: n.href,
+              "aria-label": `${n.label}: ${n.count}`,
+            },
+            [
+              el("span", { class: "pl-label" }, n.label),
+              el("span", { class: "pl-disc" }, glyph(n.glyph, 20)),
+              el("span", { class: "pl-count tabnum" }, String(n.count)),
+              el("span", { class: "pl-zone" }, n.zone),
+            ],
+          ),
         );
       }),
     ),
@@ -9623,21 +9836,23 @@ function closedRow(t, action) {
 
 /** Won't do is reversible: Reopen sends the ticket back to refining. */
 function wontDoReopen(card) {
-  return el(
-    "button",
-    {
-      class: "btn small",
-      type: "button",
-      title: "Reopen this ticket into refining",
-      "aria-label": `Reopen ${card.number != null ? `#${card.number}` : "this ticket"} into refining`,
-      onclick: () =>
-        guard(async () => {
-          await api("POST", `/tickets/${card.id}/reopen`, { to: "refining" });
-          toast("Reopened to refining", { ok: true });
-          router();
-        }),
-    },
-    "Reopen",
+  return roLock(
+    el(
+      "button",
+      {
+        class: "btn small",
+        type: "button",
+        title: "Reopen this ticket into refining",
+        "aria-label": `Reopen ${card.number != null ? `#${card.number}` : "this ticket"} into refining`,
+        onclick: () =>
+          guard(async () => {
+            await api("POST", `/tickets/${card.id}/reopen`, { to: "refining" });
+            toast("Reopened to refining", { ok: true });
+            router();
+          }),
+      },
+      "Reopen",
+    ),
   );
 }
 
@@ -9929,6 +10144,8 @@ function renderBoardCard(card, laneKey, needs) {
             href,
             draggable: "false",
             "aria-label": `${numText} ${card.title}`,
+            // The card clamps a long title to three lines; hovering reads all of it.
+            title: card.title,
           },
           card.title,
         ),
@@ -10124,41 +10341,43 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
       el(
         "td",
         { class: "cl-act" },
-        el(
-          "button",
-          {
-            class: "btn danger small",
-            type: "button",
-            "aria-label": `Revoke ${agentLabel}'s claim on ${num}`,
-            // Revoking stops an agent's work, so it takes two presses: the first
-            // arms the button ("Stop the work?") for five seconds.
-            onclick: (e) => {
-              const btn = e.currentTarget;
-              if (btn.dataset.armed !== "1") {
-                btn.dataset.armed = "1";
-                btn.textContent = "Stop the work?";
-                btn.setAttribute(
-                  "aria-label",
-                  `Press again to stop ${agentLabel}'s work on ${num}`,
-                );
-                announce(`Press Revoke again to stop the work on ${num}`);
-                setTimeout(() => {
-                  if (!btn.isConnected || btn.dataset.armed !== "1") return;
-                  delete btn.dataset.armed;
-                  btn.textContent = "Revoke";
-                  btn.setAttribute("aria-label", `Revoke ${agentLabel}'s claim on ${num}`);
-                }, 5000);
-                return;
-              }
-              delete btn.dataset.armed;
-              guard(async () => {
-                await api("POST", `/claims/${c.claim_id}/revoke`);
-                toast("Claim revoked", { ok: true });
-                router();
-              });
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn danger small",
+              type: "button",
+              "aria-label": `Revoke ${agentLabel}'s claim on ${num}`,
+              // Revoking stops an agent's work, so it takes two presses: the first
+              // arms the button ("Stop the work?") for five seconds.
+              onclick: (e) => {
+                const btn = e.currentTarget;
+                if (btn.dataset.armed !== "1") {
+                  btn.dataset.armed = "1";
+                  btn.textContent = "Stop the work?";
+                  btn.setAttribute(
+                    "aria-label",
+                    `Press again to stop ${agentLabel}'s work on ${num}`,
+                  );
+                  announce(`Press Revoke again to stop the work on ${num}`);
+                  setTimeout(() => {
+                    if (!btn.isConnected || btn.dataset.armed !== "1") return;
+                    delete btn.dataset.armed;
+                    btn.textContent = "Revoke";
+                    btn.setAttribute("aria-label", `Revoke ${agentLabel}'s claim on ${num}`);
+                  }, 5000);
+                  return;
+                }
+                delete btn.dataset.armed;
+                guard(async () => {
+                  await api("POST", `/claims/${c.claim_id}/revoke`);
+                  toast("Claim revoked", { ok: true });
+                  router();
+                });
+              },
             },
-          },
-          "Revoke",
+            "Revoke",
+          ),
         ),
       ),
     ]);
@@ -10189,7 +10408,20 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
     ),
     el("tbody", {}, rows),
   ]);
-  page.appendChild(table);
+  // The table scrolls inside its own box: seven columns never fit a phone, and the
+  // page itself must never pan sideways (the Revoke column went off-screen).
+  page.appendChild(
+    el(
+      "div",
+      {
+        class: "claims-scroll",
+        role: "region",
+        "aria-label": "On the pitch: claims (scrolls sideways)",
+        tabindex: "0",
+      },
+      table,
+    ),
+  );
   return page;
 }
 
@@ -15283,7 +15515,9 @@ async function renderCreate(param) {
   if (param === "ticket") wrap._mounted = () => setTimeout(() => jumpTo("one-ticket"), 0);
   // Initial suggestion pass once the form is in the DOM (empty draft → likely
   // empty, but a pre-selected scope or single repo can still surface a candidate).
-  selector.refreshSuggestions();
+  // A read token files no ticket, so it asks for no suggestions (a POST it may not send).
+  roLockAll(form);
+  if (!readOnly()) selector.refreshSuggestions();
   return wrap;
 }
 
@@ -15443,6 +15677,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
 
   // --- suggestion population ------------------------------------------------
   async function refreshSuggestions() {
+    if (readOnly()) return; // POST /scope/repo-suggestions is a write route to the server
     const draft = getDraft ? getDraft() : {};
     const reqBody = {
       ...(draft.title ? { title: draft.title } : {}),
@@ -17086,7 +17321,7 @@ async function renderClearDesk(wrap) {
     others.length
       ? el("a", { href: "#/overview" }, `${others.join(" and ")} on your team sheet`)
       : null,
-    delivered != null ? `${plural(delivered, "delivery", "deliveries")} today` : null,
+    delivered != null ? `${plural(delivered, "ticket")} landed today` : null,
     medianReview && medianReview.samples
       ? `a change waits ${fmtDuration(medianReview.medianMs)} for you, on the median`
       : null,
@@ -17487,6 +17722,7 @@ async function renderReview(param) {
         [approveLabel],
       )
     : null;
+  roLock(approveBtn);
   const restLabel = () => (outcome ? outcome.label : "Approve");
   // One arm for both paths: the first `a` or click raises the yellow card on the
   // button (the outcome's confirm label: "Confirm: send to tester", "Confirm and land
@@ -17735,7 +17971,8 @@ async function renderReview(param) {
     diffRepos = repos;
     if (diffState.approvable) {
       diffBlockBanner.style.display = "none";
-      if (approveBtn && !isApproved()) approveBtn.removeAttribute("disabled");
+      // A read token never gets a live Approve (the server would refuse it).
+      if (approveBtn && !isApproved() && !readOnly()) approveBtn.removeAttribute("disabled");
     } else {
       diffBlockBanner.style.display = "";
       clear(diffBlockBanner);
@@ -17826,17 +18063,21 @@ async function renderReview(param) {
         [
           approveBtn,
           hasTicketAction(t.status, "rework")
-            ? el(
-                "button",
-                { class: "btn", type: "button", onclick: () => reject("refining") },
-                "Send back…",
+            ? roLock(
+                el(
+                  "button",
+                  { class: "btn", type: "button", onclick: () => reject("refining") },
+                  "Send back…",
+                ),
               )
             : null,
           hasTicketAction(t.status, "wont_do")
-            ? el(
-                "button",
-                { class: "btn danger", type: "button", onclick: () => reject("cancelled") },
-                "Won't do…",
+            ? roLock(
+                el(
+                  "button",
+                  { class: "btn danger", type: "button", onclick: () => reject("cancelled") },
+                  "Won't do…",
+                ),
               )
             : null,
         ].filter(Boolean),
@@ -17936,6 +18177,9 @@ async function renderReview(param) {
       disarm();
       const to = tickets[idx + (e.key === "j" ? 1 : -1)];
       if (to) navigate(`#/review/${to.id}`);
+    } else if ((e.key === "a" || e.key === "r") && readOnly()) {
+      // A read token signs nothing off: the keys do what the switched-off buttons do.
+      return;
     } else if (e.key === "a") {
       e.preventDefault();
       if (approveBtn && approveBtn.classList.contains("is-approved")) return;
@@ -18348,10 +18592,12 @@ async function renderFactory() {
         .filter(Boolean)
         .join(" · "),
       [
-        el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
-          icon("plus"),
-          "New ground",
-        ]),
+        roLock(
+          el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
+            icon("plus"),
+            "New ground",
+          ]),
+        ),
         onboardButton(repos, null, { primary: true }),
       ],
     ),
@@ -19137,20 +19383,22 @@ async function renderHidden() {
       el(
         "td",
         { class: "row-actions" },
-        el(
-          "button",
-          {
-            class: "btn small",
-            type: "button",
-            "aria-label": `Unhide ${r.name}`,
-            onclick: () =>
-              guard(async () => {
-                await api("POST", `/repos/${r.id}/hidden`, { hidden: false });
-                toast(`${r.name} un-hidden`, { ok: true });
-                router();
-              }),
-          },
-          "Unhide",
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              "aria-label": `Unhide ${r.name}`,
+              onclick: () =>
+                guard(async () => {
+                  await api("POST", `/repos/${r.id}/hidden`, { hidden: false });
+                  toast(`${r.name} un-hidden`, { ok: true });
+                  router();
+                }),
+            },
+            "Unhide",
+          ),
         ),
       ),
     ]),
@@ -19347,25 +19595,27 @@ async function renderNode(id) {
     el("summary", { class: "btn small" }, "Edit ground"),
     el("div", { class: "card gr-edit-body" }, renderNodeForm(node, allNodes)),
   ]);
-  const deleteBtn = el(
-    "button",
-    {
-      class: "btn danger small",
-      type: "button",
-      onclick: () =>
-        confirmSheet({
-          title: `Delete ${node.name}`,
-          intro: `The ground “${node.name}” is deleted from the Map. This cannot be undone.`,
-          confirm: "Delete ground",
-          tone: "danger",
-          onConfirm: async () => {
-            await api("DELETE", `/scope/nodes/${node.id}`);
-            toast("Ground deleted", { ok: true });
-            navigate("#/factory");
-          },
-        }),
-    },
-    "Delete ground",
+  const deleteBtn = roLock(
+    el(
+      "button",
+      {
+        class: "btn danger small",
+        type: "button",
+        onclick: () =>
+          confirmSheet({
+            title: `Delete ${node.name}`,
+            intro: `The ground “${node.name}” is deleted from the Map. This cannot be undone.`,
+            confirm: "Delete ground",
+            tone: "danger",
+            onConfirm: async () => {
+              await api("DELETE", `/scope/nodes/${node.id}`);
+              toast("Ground deleted", { ok: true });
+              navigate("#/factory");
+            },
+          }),
+      },
+      "Delete ground",
+    ),
   );
 
   wrap.appendChild(
@@ -19483,7 +19733,7 @@ async function renderNode(id) {
         )
       : el("p", { class: "quiet" }, "No repo plays here yet. Link one below."),
     el("h3", { class: "gr-sub" }, "Link a repo"),
-    renderLinkRepoForm(node.id),
+    roLockAll(renderLinkRepoForm(node.id)),
   ]);
 
   const connCard = renderConnectionsCard(node, allNodes, allEdges);
@@ -19633,7 +19883,7 @@ function renderNodeForm(node, allNodes = []) {
       ]),
     ],
   );
-  return form;
+  return roLockAll(form);
 }
 
 function renderConnectionsCard(node, allNodes, allEdges) {
@@ -19678,14 +19928,16 @@ function renderConnectionsCard(node, allNodes, allEdges) {
           ...incoming.map((e) => edgeRow(e, "in")),
         ])
       : el("p", { class: "quiet" }, "No connections yet: this ground stands alone on the map.");
-  return el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
-    panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
-      kit: "sky",
-    }),
-    list,
-    el("h3", { class: "gr-sub" }, "Add a connection"),
-    renderAddEdgeForm(node, allNodes),
-  ]);
+  return roLockAll(
+    el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
+      panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
+        kit: "sky",
+      }),
+      list,
+      el("h3", { class: "gr-sub" }, "Add a connection"),
+      renderAddEdgeForm(node, allNodes),
+    ]),
+  );
 }
 /** An edge read from this node's side: "Contains", "Depends on", "Part of", "Needed by". */
 function edgePhrase(relation, dir) {
@@ -19977,7 +20229,7 @@ async function renderRepo(id) {
 
   const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
     panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
-    renderRepoCommandsEditor(repo),
+    roLockAll(renderRepoCommandsEditor(repo)),
   ]);
 
   const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
@@ -20058,46 +20310,49 @@ function renderRepoScopeRow(repo, s) {
       router();
     }),
   );
-  return el(
-    "li",
-    {},
-    el("div", { class: "assoc-row assoc-row-edit" }, [
-      el("div", { class: "assoc-edit-main" }, [
-        el("a", { class: "assoc-name", href: `#/node/${s.id}` }, s.name),
-        badge(typeLabel(s.type), `type-${s.type}`),
-      ]),
-      el("div", { class: "assoc-edit-controls" }, [
-        el("label", { class: "assoc-edit-field" }, [
-          el("span", { class: "assoc-edit-label" }, "relation"),
-          relationSel,
+  // Relation, access and Unlink each change the mapping: a read token's are off.
+  return roLockAll(
+    el(
+      "li",
+      {},
+      el("div", { class: "assoc-row assoc-row-edit" }, [
+        el("div", { class: "assoc-edit-main" }, [
+          el("a", { class: "assoc-name", href: `#/node/${s.id}` }, s.name),
+          badge(typeLabel(s.type), `type-${s.type}`),
         ]),
-        el("label", { class: "assoc-edit-field" }, [
-          el("span", { class: "assoc-edit-label" }, "access"),
-          accessSel,
+        el("div", { class: "assoc-edit-controls" }, [
+          el("label", { class: "assoc-edit-field" }, [
+            el("span", { class: "assoc-edit-label" }, "relation"),
+            relationSel,
+          ]),
+          el("label", { class: "assoc-edit-field" }, [
+            el("span", { class: "assoc-edit-label" }, "access"),
+            accessSel,
+          ]),
+          el(
+            "button",
+            {
+              class: "btn danger small",
+              type: "button",
+              "aria-label": `Unlink from ${s.name}`,
+              onclick: () =>
+                confirmSheet({
+                  title: `Unlink ${repo.name}`,
+                  intro: `${repo.name} is no longer mapped into “${s.name}”. Existing tickets are unaffected.`,
+                  confirm: "Unlink",
+                  tone: "danger",
+                  onConfirm: async () => {
+                    await api("DELETE", `/scope/repos/${s.association_id}`);
+                    toast("Association removed", { ok: true });
+                    router();
+                  },
+                }),
+            },
+            "Unlink",
+          ),
         ]),
-        el(
-          "button",
-          {
-            class: "btn danger small",
-            type: "button",
-            "aria-label": `Unlink from ${s.name}`,
-            onclick: () =>
-              confirmSheet({
-                title: `Unlink ${repo.name}`,
-                intro: `${repo.name} is no longer mapped into “${s.name}”. Existing tickets are unaffected.`,
-                confirm: "Unlink",
-                tone: "danger",
-                onConfirm: async () => {
-                  await api("DELETE", `/scope/repos/${s.association_id}`);
-                  toast("Association removed", { ok: true });
-                  router();
-                },
-              }),
-          },
-          "Unlink",
-        ),
       ]),
-    ]),
+    ),
   );
 }
 
@@ -20138,23 +20393,25 @@ function renderMapRepoBox(repo, allNodes) {
     },
     "Map this repo",
   );
-  return el("div", { class: "map-repo-box" }, [
-    el("div", { class: "map-repo-lead" }, [
-      el("strong", {}, "This repo is unmapped. "),
-      "Map it into a scope node to coordinate it in factory mode. Existing tickets are not affected.",
-    ]),
-    el("div", { class: "map-repo-controls" }, [
-      el("label", { class: "assoc-edit-field" }, [
-        el("span", { class: "assoc-edit-label" }, "into node"),
-        nodeSel,
+  return roLockAll(
+    el("div", { class: "map-repo-box" }, [
+      el("div", { class: "map-repo-lead" }, [
+        el("strong", {}, "This repo is unmapped. "),
+        "Map it into a scope node to coordinate it in factory mode. Existing tickets are not affected.",
       ]),
-      el("label", { class: "assoc-edit-field" }, [
-        el("span", { class: "assoc-edit-label" }, "access"),
-        accessSel,
+      el("div", { class: "map-repo-controls" }, [
+        el("label", { class: "assoc-edit-field" }, [
+          el("span", { class: "assoc-edit-label" }, "into node"),
+          nodeSel,
+        ]),
+        el("label", { class: "assoc-edit-field" }, [
+          el("span", { class: "assoc-edit-label" }, "access"),
+          accessSel,
+        ]),
+        mapBtn,
       ]),
-      mapBtn,
     ]),
-  ]);
+  );
 }
 
 function renderRepoTickets(repo, tickets, err) {
@@ -20261,7 +20518,7 @@ function renderAddAssociationForm(repo, allNodes, existing) {
       el("button", { class: "btn", type: "submit" }, "Add association"),
     ],
   );
-  return form;
+  return roLockAll(form);
 }
 
 // ===========================================================================
@@ -20391,10 +20648,11 @@ async function renderEpics(param) {
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
-  const planBtn = el(
-    "button",
-    { class: "btn primary", type: "button", onclick: () => openPlanBuild() },
-    [icon("spark"), el("span", {}, "Plan a build")],
+  const planBtn = roLock(
+    el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
+      icon("spark"),
+      el("span", {}, "Plan a build"),
+    ]),
   );
   // Authoring a spec lives on Specs; the season links there.
   const specsLink = el("a", { class: "btn", href: "#/specs" }, "Specs");
@@ -20408,10 +20666,12 @@ async function renderEpics(param) {
         "No campaigns on the fixture list.",
         "Describe what to build in plain words: Plan a build proposes the draw (draft tickets, round by round), and the campaign lands here once you confirm it.",
         null,
-        el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
-          icon("spark"),
-          el("span", {}, "Plan a build"),
-        ]),
+        roLock(
+          el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
+            icon("spark"),
+            el("span", {}, "Plan a build"),
+          ]),
+        ),
       ),
     );
     return wrap;
@@ -20768,7 +21028,14 @@ function renderEpicCard(s, ctx, specLink, focused) {
             ]
           : won
             ? "Won: every ticket is done, the Final included."
-            : `Round ${liveIdx + 1} of ${phases.length} is being played. Nothing is holding it.`,
+            : benchedCampaignLine(members)
+              ? [
+                  benchedCampaignLine(members),
+                  " ",
+                  el("a", { href: "#/work?status=draft" }, "Ready them on the Work board"),
+                  ` to start round ${liveIdx + 1}.`,
+                ]
+              : `Round ${liveIdx + 1} of ${phases.length} is being played. Nothing is holding it.`,
       );
   card.appendChild(lede);
   if (epic.description) card.appendChild(el("p", { class: "epic-desc" }, epic.description));
@@ -21382,8 +21649,9 @@ function startPlanBuild(opts = {}) {
     } else if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
       // Restore server session (if one exists and the panel hasn't been interacted with).
       restorePlanBuildSession(sessionRes.session);
-    } else if (!sessionRes || !sessionRes.session) {
-      // No active session on the server — create one (best-effort).
+    } else if ((!sessionRes || !sessionRes.session) && !readOnly()) {
+      // No active session on the server — create one (best-effort). A read token
+      // cannot hold one (the server refuses the POST), so it reads without.
       await createPlanBuildSession();
     }
     planBuildState.nodes = nodesRes.nodes || [];
@@ -21576,13 +21844,26 @@ function updatePlanBuildActions() {
   const hasPlan = !!planBuildState.plan;
   // Hide the whole composer once a plan is proposed — the create path owns it now.
   form.hidden = hasPlan;
-  if (hasPlan) return;
-  planBuildEls.input.placeholder = turns
-    ? "Answer the planner, or add anything it should know…"
-    : "Describe what to build…";
-  // A bare first turn has no brief yet — force-plan with nothing to go on is a no-op.
-  forceBtn.disabled = planBuildState.busy || turns === 0;
-  forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
+  if (!hasPlan) {
+    planBuildEls.input.placeholder = turns
+      ? "Answer the planner, or add anything it should know…"
+      : "Describe what to build…";
+    // A bare first turn has no brief yet — force-plan with nothing to go on is a no-op.
+    forceBtn.disabled = planBuildState.busy || turns === 0;
+    forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
+  }
+  lockPlanBuildForReadOnly();
+}
+
+/**
+ * A read token may read a plan conversation but not hold one: the composer, its
+ * examples and mode toggle, New plan and the plan's create buttons are switched off
+ * (Close stays live). Runs after every repaint of the panel.
+ */
+function lockPlanBuildForReadOnly() {
+  if (!planBuildEls || !readOnly()) return;
+  planBuildEls.closeBtn.setAttribute("data-ro-ok", "");
+  roLockAll(planBuildEls.panel);
 }
 
 // ── Shared target selector ──────────────────────────────────────────────────
@@ -23259,7 +23540,7 @@ function onboardButton(repos, presetRepo, opts) {
     },
     [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
-  return btn;
+  return roLock(btn);
 }
 
 // --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------
@@ -23417,10 +23698,11 @@ async function renderSpecList() {
   const specs = res.specs || [];
 
   const wrap = el("div", { class: "view view-specs", dataset: { view: "specs" } });
-  const author = el(
-    "button",
-    { class: "btn primary", type: "button", onclick: () => openSpecBuild() },
-    [icon("spark"), el("span", {}, "Author a spec")],
+  const author = roLock(
+    el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+      icon("spark"),
+      el("span", {}, "Author a spec"),
+    ]),
   );
   const by = (st) => specs.filter((s) => s.status === st).length;
   wrap.appendChild(
@@ -23479,10 +23761,12 @@ async function renderSpecList() {
             : "Nothing is on the pitch yet: a spec is a good first play.",
         ),
         el("div", { class: "btn-row" }, [
-          el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
-            icon("spark"),
-            el("span", {}, "Write the first play"),
-          ]),
+          roLock(
+            el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+              icon("spark"),
+              el("span", {}, "Write the first play"),
+            ]),
+          ),
         ]),
       ]),
     );
@@ -23744,19 +24028,21 @@ async function renderSpecDetail(specId) {
   }
   if (status === "draft") {
     actions.unshift(
-      el(
-        "button",
-        {
-          class: "btn primary",
-          type: "button",
-          onclick: (e) =>
-            runAsyncAction(e.currentTarget, "Freezing…", async () => {
-              await api("POST", `/specs/${encodeURIComponent(specId)}/freeze`);
-              toast("Spec frozen: its clauses are locked and seeded as lore.", { ok: true });
-              router();
-            }),
-        },
-        [icon("lock", "", 18), el("span", {}, "Freeze spec")],
+      roLock(
+        el(
+          "button",
+          {
+            class: "btn primary",
+            type: "button",
+            onclick: (e) =>
+              runAsyncAction(e.currentTarget, "Freezing…", async () => {
+                await api("POST", `/specs/${encodeURIComponent(specId)}/freeze`);
+                toast("Spec frozen: its clauses are locked and seeded as lore.", { ok: true });
+                router();
+              }),
+          },
+          [icon("lock", "", 18), el("span", {}, "Freeze spec")],
+        ),
       ),
     );
   } else if (status === "frozen" && !cov.scope_node_id && clauses.length) {
@@ -23784,6 +24070,7 @@ async function renderSpecDetail(specId) {
         [icon("spark"), el("span", {}, "Plan a build from it")],
       ),
     );
+    roLock(actions[0]);
   }
 
   wrap.appendChild(
@@ -26105,8 +26392,10 @@ function floorTickStep(budget) {
  */
 function floorModel(f) {
   const now = f.now;
+  // "Today" is the server's day (UTC midnight), the same day the scoreboard's
+  // Delivered today counts, so the lorry and the tile never disagree.
   const dayStart = new Date(now);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const needs = new Set(f.items.map((i) => i.ticket && i.ticket.id).filter(Boolean));
   const parkedWhy = new Map();
   for (const i of f.items)
@@ -26505,7 +26794,7 @@ function floorScene(m) {
       href: "#/overview",
       class: "fl-hit fl-station",
       "aria-label": m.decisions
-        ? `Your desk: ${plural(m.decisions, "decision")} ${m.decisions === 1 ? "waits" : "wait"} for you. Answer on the Team Sheet.`
+        ? `Your desk: ${plural(m.decisions, "decision")} ${m.decisions === 1 ? "waits" : "wait"} for you. Answer on the Team sheet.`
         : "Your desk: no decision waits for you. Open the Overview.",
       "data-station": "desk",
     });
@@ -26748,7 +27037,7 @@ function floorScene(m) {
   }
   const world = svgEl("g", { class: "fl-world" }, [floor, ...C.items.map((i) => i.node)]);
   const signLayer = svgEl("g", { class: "fl-signs", "aria-hidden": "true" }, C.signs);
-  return svgEl(
+  const svg = svgEl(
     "svg",
     {
       viewBox: vb.join(" "),
@@ -26759,6 +27048,62 @@ function floorScene(m) {
     },
     [world, signLayer, tagLayer],
   );
+  // The drawing itself is no Tab stop (Chromium made it one); its links are.
+  svg.setAttribute("tabindex", "-1");
+  floorTabOrder(svg);
+  return svg;
+}
+
+/**
+ * The drawing is painted back to front (its DOM order is depth), so the browser's
+ * Tab order wandered: Drawing office, three of its parcels, Stores, then two more
+ * drawing-office parcels. Tab and Shift+Tab inside the floor follow the stations
+ * instead, in lifecycle order: each station, then its parcels and robots by ticket
+ * number, the desk last. Leaving the floor at either end is the browser's own Tab.
+ */
+function floorTabOrder(svg) {
+  const rank = (a) => {
+    const k = a.dataset.station || FLOOR_STATION_OF[a.dataset.status] || "desk";
+    const i = FLOOR_ORDER.indexOf(k);
+    return [i < 0 ? FLOOR_ORDER.length : i, a.dataset.station ? 0 : 1, Number(a.dataset.n) || 0];
+  };
+  const ordered = () =>
+    [...svg.querySelectorAll("a.fl-hit")]
+      .map((a, dom) => ({ a, dom, r: rank(a) }))
+      .sort((x, y) => x.r[0] - y.r[0] || x.r[1] - y.r[1] || x.r[2] - y.r[2] || x.dom - y.dom)
+      .map((x) => x.a);
+  svg.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
+    const list = ordered();
+    const i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    const next = list[i + (e.shiftKey ? -1 : 1)];
+    if (next) {
+      e.preventDefault();
+      next.focus();
+      return;
+    }
+    // Off the end: hand the browser the anchor at that end of the DOM, and its own
+    // Tab carries on out of the floor from there.
+    const all = [...svg.querySelectorAll("a.fl-hit")];
+    all[e.shiftKey ? 0 : all.length - 1]?.focus();
+  });
+  // Tabbing IN lands on the first station going forward, the last thing going back
+  // (a click focuses what was clicked: only keyboard entry is redirected).
+  let pointing = false;
+  svg.addEventListener("pointerdown", () => {
+    pointing = true;
+    setTimeout(() => (pointing = false), 0);
+  });
+  svg.addEventListener("focusin", (e) => {
+    const from = e.relatedTarget;
+    if (pointing || !from || (from !== svg && svg.contains(from))) return;
+    if (!e.target.closest?.("a.fl-hit")) return;
+    const list = ordered();
+    const forward = Boolean(from.compareDocumentPosition(svg) & from.DOCUMENT_POSITION_FOLLOWING);
+    const want = forward ? list[0] : list[list.length - 1];
+    if (want && want !== e.target) want.focus();
+  });
 }
 
 /**
@@ -27032,16 +27377,54 @@ document.addEventListener("click", (e) => {
   if (jumpTo(href.slice(1))) e.preventDefault();
 });
 
-adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
-buildChrome();
-window.addEventListener("hashchange", () => {
-  // A bare fragment that names a section on this page is a jump, not a route.
-  const h = location.hash || "";
-  if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
-  // A sheet belongs to the page that opened it: a reason being written for #15 must
-  // never stay over #20 (Back, a link, a typed address), where confirming it would
-  // act on a ticket the reader is no longer looking at.
-  if (sheetOpen()) closeSheet({ restore: false });
+/**
+ * The members' entrance asks for nothing it cannot have. With no token, the public
+ * /healthz says whether this server wants one, and if it does the gate is drawn
+ * straight away (no data call that can only answer 401). With a token, ONE whoami
+ * checks it first: a wrong token gets the gate from that one answer instead of a
+ * page of refused reads and a live stream, and a right one tells the views at once
+ * whether this token is read-only. Answers whether the dashboard may start.
+ */
+async function passGate() {
+  if (!authToken()) {
+    try {
+      const res = await fetch("/healthz");
+      const body = res.ok ? await res.json() : null;
+      if (body && body.auth === true) {
+        renderLogin(false);
+        return false;
+      }
+    } catch {
+      // An old server or a blip: start, and let the first read say if a token is needed.
+    }
+    return true;
+  }
+  try {
+    const who = await api("GET", "/api/whoami");
+    if (who && typeof who === "object" && who.capability) squad.capability = who.capability;
+  } catch (e) {
+    if (e && e.code === "UNAUTHORIZED") return false; // api() drew the gate already
+    // Slow, failing or unreachable: start anyway (unknown counts as full; the server
+    // still refuses a read token's writes), without a second wait for the same answer.
+    squad.whoamiFailed = true;
+  }
+  return true;
+}
+
+async function start() {
+  adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
+  if (!(await passGate())) return;
+  buildChrome();
+  window.addEventListener("hashchange", () => {
+    // A bare fragment that names a section on this page is a jump, not a route.
+    const h = location.hash || "";
+    if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
+    // A sheet belongs to the page that opened it: a reason being written for #15 must
+    // never stay over #20 (Back, a link, a typed address), where confirming it would
+    // act on a ticket the reader is no longer looking at.
+    if (sheetOpen()) closeSheet({ restore: false });
+    router();
+  });
   router();
-});
-router();
+}
+start();

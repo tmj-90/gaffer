@@ -52,6 +52,29 @@
     background: var(--red-wash);
   }
   .btn.ghost,
+  /* A button that reads as a link inside a sentence ("No cup runs yet. Plan a build
+     and …"). Without this it kept the browser's ButtonFace grey (#6b6b6b under the
+     floodlit kit: 2.4:1 for its text). It takes the sentence's colour, like an <a>. */
+  .btn-link {
+    display: inline;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    font-weight: 700;
+    text-decoration: underline;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .btn-link:hover {
+    text-decoration-color: currentColor;
+  }
+  .btn-link:disabled {
+    cursor: not-allowed;
+    text-decoration-style: dotted;
+  }
   .btn.quiet {
     background: none;
     border-color: transparent;

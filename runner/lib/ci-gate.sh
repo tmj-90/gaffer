@@ -300,10 +300,10 @@ gaffer_ci_gate_needs_pr() {
 }
 
 # The matching warning, logged ONCE per run — the marker lives beside the other per-run
-# bookkeeping files under $GAFFER_DATA and is cleared by loop.sh / poll-once.sh; without
-# GAFFER_DATA it warns each time. Always returns 0 (the caller proceeds to review).
+# bookkeeping files in the run's own state dir (lib/run-state.sh; $GAFFER_DATA for a
+# hand-run tick); without GAFFER_DATA it warns each time. Always returns 0 (the caller proceeds to review).
 gaffer_ci_gate_warn_needs_pr() {
-  local num="$1" marker="${GAFFER_DATA:+$GAFFER_DATA/.ci-gate-needs-pr-warned}"
+  local num="$1" marker="${GAFFER_DATA:+${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.ci-gate-needs-pr-warned}"
   if [ -n "$marker" ] && [ -f "$marker" ]; then
     return 0
   fi

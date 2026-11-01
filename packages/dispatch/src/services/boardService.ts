@@ -392,10 +392,13 @@ export class BoardService {
    * @param repo Optional repository name/id — when supplied, only tickets
    *   linked to that repo are included. Omit (or pass undefined) for the
    *   full board (back-compat).
+   * @param visible Optional ticket filter (a scoped principal's): tickets it rejects
+   *   are left out of every area and every count.
    */
-  board(repo?: string, window?: BoardWindow): BoardView {
+  board(repo?: string, window?: BoardWindow, visible?: (ticketId: string) => boolean): BoardView {
     const now = this.clock.now();
-    const tickets = this.tickets.listFiltered(repo ? { repo } : {});
+    const listed = this.tickets.listFiltered(repo ? { repo } : {});
+    const tickets = visible ? listed.filter((t) => visible(t.id)) : listed;
 
     // Place every ticket in its area first (cheap): the counts are always whole-board,
     // and only the tickets inside the window are enriched into cards below.
@@ -418,14 +421,14 @@ export class BoardService {
         b.updated_at < a.updated_at ? -1 : b.updated_at > a.updated_at ? 1 : 0;
       for (const area of ["done", "closed", "wontDo"] as const) byArea.get(area)!.sort(newestFirst);
     }
-    const visible = (area: BoardArea): Ticket[] => {
+    const inWindow = (area: BoardArea): Ticket[] => {
       const all = byArea.get(area)!;
       if (!window) return all;
       if (window.area !== undefined && window.area !== area) return [];
       return all.slice(window.offset, window.offset + window.limit);
     };
     const shown = new Map<BoardArea, Ticket[]>(
-      [...byArea.keys()].map((area) => [area, visible(area)]),
+      [...byArea.keys()].map((area) => [area, inWindow(area)]),
     );
 
     // Index active claims by ticket so each card resolves its holder in O(1).

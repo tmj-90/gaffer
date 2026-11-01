@@ -22,6 +22,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
+# CLI IDENTITY: the runner's own wg calls are the operator's and the system's; a
+# principal token inherited from the operator's shell must never make them a
+# principal's (whose scope would refuse --as system, repo registration, ...).
+unset GAFFER_PRINCIPAL_TOKEN
 # Extracted per-mode passes (B-H3: paying down the tick.sh monolith). Sourced
 # here so the functions are defined before their call sites below; behaviour is
 # identical to the previous inline blocks — the code was relocated verbatim.
@@ -917,7 +921,7 @@ gaffer_distill_ticket_intent() {
     if [ "$_promote" = "1" ]; then
       log "memory: distilled requirement from #$NUM → ACTIVE (auto-promoted: memory auto-approve is on; GAFFER_MEMORY_AUTO_PROMOTE=0 to gate)"
     else
-      log "memory: distilled requirement DRAFT from #$NUM (human-gated — \`memory review\` to ratify; GAFFER_MEMORY_AUTO_PROMOTE=1 to auto-promote)"
+      log "memory: distilled requirement DRAFT from #$NUM (human-gated — \`gaffer lore review\` to ratify; GAFFER_MEMORY_AUTO_PROMOTE=1 to auto-promote)"
     fi
   else
     log "memory: distill #$NUM skipped/failed — non-fatal, delivery unaffected"
@@ -943,7 +947,7 @@ declare -F _gaffer_merge_lane >/dev/null 2>&1 && _gaffer_merge_lane
 _RESUMING=0
 RESUME_NUM=""
 if [ "${GAFFER_PAUSE_ON_CAP:-1}" = "1" ]; then
-  SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
+  SKIP_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.failed-tickets"; touch "$SKIP_FILE"
   RESUME_NUM="$(wg ticket resume-requested 2>/dev/null | gaffer_json resume-pick "$SKIP_FILE" 2>/dev/null || echo '')"
   # A dry run previews a resume once per run, like a ready ticket.
   [ -n "$RESUME_NUM" ] && gaffer_dry_previewed "$RESUME_NUM" && RESUME_NUM=""
@@ -1014,8 +1018,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
   if [ "$_RESUMING" != "1" ]; then
   # Skip tickets that already failed delivery THIS run so one bad ticket can't
   # starve the queue (otherwise the loop re-claims the same first ready ticket
-  # forever). loop.sh clears the skip file at the start of a run.
-  SKIP_FILE="$GAFFER_DATA/.failed-tickets"; touch "$SKIP_FILE"
+  # forever). The skip file is the RUN's own (lib/run-state.sh: loop.sh and
+  # poll-once.sh give each run a fresh dir), never another run's.
+  SKIP_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.failed-tickets"; touch "$SKIP_FILE"
 
   # ── Stabilisation gate 0: per-repo BACKPRESSURE (skip new claims) ───────────
   # Walk ready candidates (least-recently-failed first) and pick the FIRST whose
@@ -1025,7 +1030,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # + in_review tickets + active claims) hits ANY per-repo cap; we then SKIP new
   # claims for it this tick so the loop never piles up more than the cap.
   # Backpressured repos are recorded in a
-  # per-run file (cleared by loop.sh) for the run-summary report. With every ready
+  # per-run file (the run's own state dir) for the run-summary report. With every ready
   # repo backpressured, the tick yields no_work and the loop prioritises
   # review/merge/cleanup elsewhere instead of claiming more.
   #
@@ -1034,7 +1039,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # below is taken under .bp.lock so a concurrent worker never tears a half-written
   # line; the per-tick truncate is a single atomic syscall. At concurrency 1 there
   # is one writer so this is byte-identical to before.
-  BP_FILE="$GAFFER_DATA/.backpressure-repos"; : > "$BP_FILE"
+  BP_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.backpressure-repos"; : > "$BP_FILE"
   NUM=""; SHOW=""; REPO_PATH=""; STACK=""; TITLE=""
   # SCHEDULER: walk CLAIMABLE work (every dependency done), so MAX_CANDIDATES bounds the
   # tickets a claim can take. Walking the raw ready list let 25 higher-priority dependants
@@ -1236,18 +1241,45 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Fail closed: never run a live agent without the deterministic safety hook.
     gaffer_assert_safety_hook || gaffer_abort_setup SAFETY "refusing live bootstrap (fail closed)"
 
+    # SANDBOX REQUIREMENT, before anything is created. Under GAFFER_STRICT_REQUIRE (every
+    # autonomy flag defaults it) the worker seam refuses to spawn without an OS sandbox.
+    # Asked only there, the bootstrap had already git-init'd the new repo and parked as a
+    # generic "bootstrap failed (rc=75)". Ask the provider now, and park the way a normal
+    # delivery does, with the fix on the card. The wrap files a docker/sandbox-exec probe
+    # writes carry this tick's PID, so the exit cleanup sweeps them.
+    if _sandbox_strict_required && ! sandbox_wrap_cmd "$B_DIR" "" >/dev/null 2>>"$GAFFER_LOG"; then
+      _B_SBX_WHY="$(gaffer_sandbox_unavailable_hint)"
+      log "STRICT_REQUIRE: bootstrap #$NUM parked before creating $B_DIR — $_B_SBX_WHY"
+      wg attach-evidence "$NUM" --type manual_note \
+        --summary "PARKED (strict_require_unavailable): $_B_SBX_WHY" >/dev/null 2>&1 || true
+      gaffer_release_delivery blocked "$_B_SBX_WHY" strict_require_unavailable
+      gaffer_skip_ticket "$NUM"; result error; exit 0
+    fi
+
     # EXECUTION PREFLIGHT (lib/registry-probe.sh): the bootstrap's one permitted
     # install needs the package registry from INSIDE the agent's allowlisted env.
     # Probe it there first — bounded, no model call. A dead registry used to surface
     # only as the agent's npm retrying TLS failures until the 30-min tick timeout,
     # parked as a generic "timeout" (seen live). Clearly non-node stacks skip it.
+    _B_OFFLINE_NOTE=""
     case "$(printf '%s' "${STACK:-}" | tr '[:upper:]' '[:lower:]')" in
       python*|go|golang|rust|java|kotlin|ruby|dotnet|csharp|php|elixir|swift|c|cpp|terraform|shell|bash) ;;
       *)
         if declare -F gaffer_registry_probe >/dev/null 2>&1; then
           _PROBE_RC=0; gaffer_registry_probe || _PROBE_RC=$?
+          if [ "$_PROBE_RC" -eq 3 ]; then
+            # Offline, but the agent's npm cache is warm: go ahead and install from it
+            # (the npm_config_ prefix carries this into the agent's env).
+            export npm_config_prefer_offline=true
+            log "BOOTSTRAP: #$NUM the npm registry is unreachable (${GAFFER_REGISTRY_PROBE_CODE:-offline}) but the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE:-?} is warm — going ahead offline (npm_config_prefer_offline=true)"
+            # Said on the card too, and on any park below: a package the cache does not
+            # hold fails the install with the same offline error, and that is the cause.
+            _B_OFFLINE_NOTE="the npm registry was unreachable (${GAFFER_REGISTRY_PROBE_CODE:-offline}), so this bootstrap installed offline from the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE:-?}; a package that cache does not hold cannot install: connect to the registry (or warm the cache) and move #$NUM back to ready"
+            wg attach-evidence "$NUM" --type manual_note \
+              --summary "OFFLINE INSTALL: $_B_OFFLINE_NOTE" >/dev/null 2>&1 || true
+          fi
           if [ "$_PROBE_RC" -eq 1 ]; then
-            _PROBE_WHY="environment: the npm registry is unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE:-unknown}) — $(gaffer_registry_probe_hint "${GAFFER_REGISTRY_PROBE_CODE:-}"). No model call was spent; fix the environment (runner/preflight.sh runs the same probe) and move #$NUM back to ready."
+            _PROBE_WHY="environment: the npm registry is unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE:-unknown}) — $(gaffer_registry_probe_hint "${GAFFER_REGISTRY_PROBE_CODE:-}")${GAFFER_REGISTRY_PROBE_NOTE:+; $GAFFER_REGISTRY_PROBE_NOTE}. No model call was spent; fix the environment (runner/preflight.sh runs the same probe) and move #$NUM back to ready."
             log "BOOTSTRAP: #$NUM parked before spawning — $_PROBE_WHY${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}"
             wg attach-evidence "$NUM" --type manual_note \
               --summary "ENVIRONMENT: $_PROBE_WHY" >/dev/null 2>&1 || true
@@ -1256,6 +1288,20 @@ if [ "$READY_COUNT" -gt 0 ]; then
           fi
         fi ;;
     esac
+
+    # BUDGET ADMISSION, before anything is created. worker_deliver asks it again right
+    # before the launch (lib/worker.sh); asked only there, a refused bootstrap had
+    # already git-init'd the new repo and parked as "bootstrap failed (rc=77)". Asked
+    # here too, a cap that is already spent releases the ticket to ready, uncounted and
+    # with nothing made, the same way a refused delivery launch is released.
+    if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = "claude-code" ] \
+       && declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
+       && ! gaffer_paid_launch_admitted bootstrap; then
+      gaffer_release_delivery ready "the paid bootstrap launch was refused by the budget admission (no agent ran, nothing created); not counted as an attempt" budget_refused
+      gaffer_skip_ticket "$NUM"
+      log "BUDGET: bootstrap #$NUM — the paid launch was refused by the budget admission (see the line above); released to ready before creating $B_DIR, not counted as an attempt"
+      result no_work; exit 0
+    fi
 
     # Create + init the new repo dir WITH a baseline README commit on `main` (repo
     # display name + the ticket's intent). A failure here leaves no half-made repo.
@@ -1399,11 +1445,20 @@ if [ "$READY_COUNT" -gt 0 ]; then
       log "USAGE: bootstrap #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready, scaffold kept at $B_DIR; $_UL_LINE"
       result usage_paused; exit 0
     fi
+    # BUDGET ADMISSION REFUSED at the launch itself (a cap reached since the check
+    # above): no agent ran, so it is not a failed scaffold. Release to ready uncounted;
+    # the dir stays a resumable bootstrap target for the retry.
+    if [ "${WORKER_LAST_BUDGET_REFUSED:-0}" = 1 ]; then
+      gaffer_release_delivery ready "the paid bootstrap launch was refused by the budget admission (no agent ran); not counted as an attempt (repo kept at $B_DIR)" budget_refused
+      gaffer_skip_ticket "$NUM"
+      log "BUDGET: bootstrap #$NUM — the paid launch was refused by the budget admission; released to ready without counting an attempt"
+      result no_work; exit 0
+    fi
     if [ "$brc" -ne 0 ]; then
       # FINDING-12: park bootstrap failures to the VISIBLE `blocked` column (event +
       # attention count in status.sh / the human queue) — `refining` hid them from
       # selection, clarify, status and the human queue.
-      gaffer_release_delivery blocked "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection" bootstrap_failed
+      gaffer_release_delivery blocked "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection${_B_OFFLINE_NOTE:+; $_B_OFFLINE_NOTE}" bootstrap_failed
       gaffer_skip_ticket "$NUM"
       log "BOOTSTRAP FAILED for #$NUM (rc=$brc) — leaving $B_DIR for inspection; not onboarding"
       result error; exit 0
@@ -1425,7 +1480,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: bootstrap produced no scaffold commit beyond the baseline — needs clarification" >/dev/null 2>&1 || true
       # FINDING-12: VISIBLE park (see the rc-failure park above).
-      gaffer_release_delivery blocked "bootstrap produced no initial commit" bootstrap_failed
+      gaffer_release_delivery blocked "bootstrap produced no initial commit${_B_OFFLINE_NOTE:+; $_B_OFFLINE_NOTE}" bootstrap_failed
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 
@@ -1552,6 +1607,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # escalates the genuinely-ambiguous multi-app case to a headless decision.
       # Best-effort/non-fatal + idempotent (re-running never double-links).
       gaffer_inherit_repo "$NUM" || true
+      # A new repo has no remote: with PR mode on, ask the person where it lives before
+      # the tickets it serves start (lib/greenfield.sh).
+      gaffer_bootstrap_remote_decision "$NUM" "$B_NAME" "$B_DIR" || true
     else
       # Registration failed, so there is no repo to link, no branch_name and no per-repo
       # delivery row: submitting would strand the ticket in in_review (the reviewer has
@@ -2434,7 +2492,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)" >/dev/null 2>&1 || true
-      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available — fail closed, agent not launched" strict_require_unavailable
+      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available, agent not launched: $(gaffer_sandbox_unavailable_hint)" strict_require_unavailable
       gaffer_skip_ticket "$NUM"
       result error; exit 0
     fi

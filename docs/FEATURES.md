@@ -57,6 +57,38 @@ Proposed tickets are numbered T1–T5 until you confirm, and T2 shows `after T1`
 Each carries its repo, priority and acceptance criteria. The guardrail banner is
 explicit: proposes only, confirmed tickets land as draft.*
 
+### From the terminal: `gaffer plan`
+
+`runner/gaffer plan "<goal>"` is the same conversation without the dashboard. It
+runs the same planner through dispatch's own plan-build runner (the
+`runner/bin/decompose.mjs` helper, the same prompt, the same budget admission and
+dollar cap), so a turn costs what a dashboard turn costs and is refused when a
+dashboard turn would be.
+
+- The planner's questions are printed. `gaffer plan --answer "…"` answers them and
+  `gaffer plan --now` is "Build the tickets". At a terminal it asks you in place.
+- The proposal is printed: the epic, each ticket with its repo, bootstrap flag,
+  `after T1` edges and criteria, the Final the factory adds, and every answer you
+  gave, flagged when no proposed criterion covers it.
+- Nothing is created until you type y or run `gaffer plan --yes`, which creates
+  the proposal you were shown (it never plans again). The create is the dashboard's
+  confirm: a repo that doesn't exist yet rides on `source` for the bootstrap, the
+  brief and the agreed answers ride on the epic, and the same `createEpic` makes
+  draft tickets plus the Final. Nothing is readied.
+- `--yes` runs on its own. With a goal, `--answer` or `--now` it is refused before
+  any model call, so a plan is never made and created in one step you didn't see.
+  A new answer drops the proposal it supersedes, so a failed turn after it leaves
+  nothing to create, and the draft names the factory it was planned in (its data
+  dir and dispatch database): a draft copied elsewhere, or `--yes` against another
+  `DISPATCH_DB`, is refused. While the factory is paused on the usage window a
+  turn isn't started (exit 75). It exits 0 when the epic is created and 4 while
+  nothing is created yet (questions asked, a proposal waiting for `--yes`, or a no
+  or Ctrl-D at the prompt).
+- `--repo <name>` extends a registered repo (brownfield), `--file <path>` reads
+  the brief from a file, `--show` prints the pending proposal, `--discard` drops
+  it, and `--list` lists the epics. The conversation between runs is kept in
+  `.gaffer/plan-draft.json`.
+
 ### Greenfield vs brownfield
 
 The decomposer takes one of two shapes depending on whether you point it at an
@@ -66,6 +98,20 @@ existing repo:
 |---|---|---|
 | **Greenfield** | "New app", no target repo | Exactly **one bootstrap ticket** (`git init` + scaffold, no dependencies); every other ticket transitively depends on it. A one-liner becomes a brand-new, structured repo. |
 | **Brownfield** | "Extend existing", a target repo/scope is chosen | **Zero bootstrap tickets** — there's nothing to scaffold. Every ticket is stamped with the target repo, so the plan *extends* what's already there. |
+
+On a greenfield run the factory sets the new repo up itself. The bootstrap ticket
+creates it under `GAFFER_BOOTSTRAP_ROOT` (`~/git` unless set), registers and onboards
+it with the stack, test and lint commands it detects from the scaffold, and links the
+epic's other tickets to it. Before the bootstrap agent starts it probes the package
+registry from the agent's environment (an offline machine with a warm npm cache
+installs from the cache) and, under `GAFFER_STRICT_REQUIRE`, the OS sandbox; a problem
+with either parks the ticket with the fix on the Team sheet before anything is
+created, and a dollar cap that would refuse the launch releases it back to ready. A CA bundle exported as `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+`REQUESTS_CA_BUNDLE` or `GIT_SSL_CAINFO` reaches the agent's npm as
+`NODE_EXTRA_CA_CERTS`. With the independent tester on (`GAFFER_TESTING`), the plan's
+tickets are created testable (all but the bootstrap; a plan ticket can say
+`testable` either way). In PR mode, a new repo with no remote gets one decision asking
+where it lives, which holds its tickets until you answer.
 
 The TaskFlow example above is brownfield: "add recurring tasks" to the existing
 `taskflow-mini` / `taskflow-web` repos — the data model first, then the API,
@@ -188,6 +234,36 @@ spec and Freeze, and the whole Plan a build composer. The page never sends such 
 token's write, so nothing comes back as a 403; the `s18-read-only` browser suite
 walks 23 views to keep it so. The login gate sends no data call until a token is
 there: `/healthz` says whether one is wanted, and a stored token is checked once.
+
+**Scoped access.** A principal can be scoped to repositories and tickets
+(Settings → Access's Repo scope and Ticket scope, or `wg principal create <name>
+--repo <name> --ticket <n>`, both repeatable). It then sees only tickets whose
+write repos are all in its repos, plus the tickets named, and the server refuses
+everything else with 403 `SCOPE_DENIED` naming its scope. On the dashboard such a
+token opens on the Work board instead of the Overview, sees one "Scoped access"
+strip naming what it holds, keeps the controls on its own tickets (Move, a
+ticket's actions, Review's Approve and Send back) and finds every factory-wide
+control (Poll for work, Suggest work, Create, Settings' Save, the Map and spec
+editors, Onboard) switched off with the title "Scoped access: this token can
+change only the tickets in its scope (…)". The live feed carries only its tickets'
+events, and the page never sends a call the server would refuse. A dependency on a
+ticket outside the scope shows as its number and "outside this token's scope",
+without the other ticket's title or a link to it. Repository-level
+changes need an admin principal (Acts as: admin): a human principal finds
+Settings' Save, Onboard and the repository editors switched off with the title
+"Admin access: …". The `s13-principals` browser suite mints a ticket-scoped
+token from Settings and walks it.
+
+**Who the CLI is.** `wg whoami` says who writes are recorded as. Without a token
+that is `$USER`, asserted and not checked, because the CLI opens the database
+directly. With `GAFFER_PRINCIPAL_TOKEN=<token>` (or `--as-principal <token>`),
+`wg`, `gaffer approve` and `gaffer merge` act as that principal: its identity on
+every write, its read-only flag and its scope enforced as on the API, and
+`whoami --can-write <n>` answers whether it may change a ticket. The runner's and
+agents' own commands (`attach-evidence`, `claim-ticket`, `submit`, `runner-release`
+and the like) write as the system or an agent, so a principal is refused them.
+`ticket create --repo <name>` gives a new ticket its write repo in the same step,
+which is how a repo-scoped principal creates one.
 
 **The Team sheet** lists everything waiting on you, one action a row: decisions,
 sign-offs, approved changes to merge, blocked tickets, a delivery paused at a cap
@@ -666,7 +742,13 @@ human-gated knowledge the factory works from:
   repo as indexed there.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
-  MCP review gate, and a human approves it via the memory CLI — it is never
+  MCP review gate, and a human approves it in the Memory view or from the
+  terminal (`gaffer lore review` lists the drafts the Memory view lists,
+  `gaffer lore show <id>` prints one, `gaffer lore approve <id>` and
+  `gaffer lore reject <id> --reason "…"` decide; `gaffer lore review --json`
+  prints the page the Memory view reads). An agent shell can't run these, or the
+  memory CLI's `approve` / `reject` / `review` / `add` and the verbs that change
+  ratified lore: the safety hook denies them. It is never
   silently rewritten. Every edit snapshots the previous version
   (`memory history <id>`), so a change is diffable and reversible.
 
@@ -729,6 +811,14 @@ refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment opts out (a value in
 answers `polled: false`, `reason: no_budget_cap` with the runner's fix and starts
 nothing; a poll the runner refuses once it has started (a cap already reached) is
 recorded as a `failed` run whose detail is the runner's reason, never `succeeded`.
+
+**One Poll at a time, each run with its own lists.** A live **Poll for work** pressed
+while the previous Poll is still running waits for it to finish (the run log says so),
+then polls; after `GAFFER_POLL_WAIT_TIMEOUT` seconds it gives up with a refusal instead.
+Every run (a Poll, a `gaffer run` pass) keeps the lists that only mean something for
+that run, such as the tickets that failed delivery this run, in its own directory under
+`$GAFFER_DATA/run-state/`, removed when the run ends, so a Poll beside a daemon pass
+never clears or reads the pass's lists.
 
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Secret-bearing settings —

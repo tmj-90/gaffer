@@ -237,7 +237,9 @@ CLI_JS="$RUNNER_DIR/../packages/dispatch/dist/cli/index.js"
 if [ -f "$CLI_JS" ] && node -e 'require("node:sqlite")' 2>/dev/null; then
   POL_DB="$WORK/policy.sqlite"
   node "$CLI_JS" --db "$POL_DB" init >/dev/null 2>&1
-  node "$CLI_JS" --db "$POL_DB" repo add -n demo --path "$WORK" --branch main >/dev/null 2>&1
+  # repo add --path needs a git repository (as onboard does).
+  git init -q "$WORK/demo-repo" >/dev/null 2>&1
+  node "$CLI_JS" --db "$POL_DB" repo add -n demo --path "$WORK/demo-repo" --branch main >/dev/null 2>&1
   set_policy_row() {  # $1 = mode (off|recommend|auto): upsert the single (demo, low, approve) row
     node -e '
       const { DatabaseSync } = require("node:sqlite");

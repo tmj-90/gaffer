@@ -3,11 +3,14 @@ import { z } from "zod";
 
 import type { Actor } from "../../domain/types.js";
 import {
+  POLICY_PACKS,
   REOPEN_FOR_REVIEW_CAUSES,
   type ReopenForReviewCause,
+  RISK_LEVELS,
   TICKET_STATUSES,
 } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
+import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
@@ -20,7 +23,10 @@ import {
   testerActor,
   validateTtl,
   warnLandedAlready,
+  cliTicketFilter,
+  cliUserId,
 } from "../shared.js";
+import { RULES } from "../limits.js";
 
 /** A --cause value, or a VALIDATION_ERROR naming the ones there are. */
 function parseCause(v: string): ReopenForReviewCause {
@@ -37,20 +43,27 @@ export function registerTicket(program: Command): void {
   ticket
     .command("create")
     .description("Create a draft ticket")
-    .requiredOption("-t, --title <title>", "ticket title")
-    .option("-d, --description <text>", "description", "")
-    .option("-p, --policy <pack>", "policy pack", "solo_loose")
-    .option("--risk <level>", "risk level", "medium")
-    .option("--priority <n>", "priority", (v) => Number(v), 0)
+    .requiredOption("-t, --title <title>", `ticket title: ${RULES.title}`)
+    .option("-d, --description <text>", `description: ${RULES.description}`, "")
+    .option("-p, --policy <pack>", `policy pack (${POLICY_PACKS.join("|")})`, "solo_loose")
+    .option("--risk <level>", `risk level (${RISK_LEVELS.join("|")})`, "medium")
+    .option("--priority <n>", `priority: ${RULES.priority}`, (v) => Number(v), 0)
     .option("--bootstrap", "mark as a greenfield (create-a-repo) bootstrap ticket", false)
     .option(
       "--budget <usd>",
-      "per-ticket cost ceiling in USD (all agent spend on the ticket)",
+      `per-ticket cost ceiling for all agent spend on the ticket: ${RULES.budget}`,
       (v) => Number(v),
+    )
+    .option(
+      "--repo <name>",
+      "a repository it delivers to (write access, confirmed); repeatable. Created with the ticket in one step, so an unknown repo leaves no ticket behind",
+      (v: string, acc: string[]) => [...acc, v],
+      [] as string[],
     )
     .action((opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const t = wg.createTicket(
+      const repos = opts.repo as string[];
+      const t = wg.createTicketWithLinks(
         {
           title: opts.title,
           description: opts.description,
@@ -60,6 +73,7 @@ export function registerTicket(program: Command): void {
           bootstrap: opts.bootstrap,
           ...(opts.budget !== undefined ? { delivery_budget_usd: opts.budget } : {}),
         },
+        { repoAccess: repos.map((r) => ({ repo_id: r, access: "write" })) },
         cliActor(),
       );
       // A pack that will refuse this ticket at ready says so now (cli-wg/F-02), on
@@ -87,13 +101,13 @@ export function registerTicket(program: Command): void {
         "description, policy) is editable in draft, refining, ready and blocked; from claimed " +
         "on it is frozen (CONTRACT_FROZEN). A ready ticket must still pass its ready gate.",
     )
-    .option("-t, --title <title>", "new title (one line)")
-    .option("-d, --description <text>", 'new description ("" clears it)')
+    .option("-t, --title <title>", `new title: ${RULES.title}`)
+    .option("-d, --description <text>", `new description: ${RULES.description} ("" clears it)`)
     .option(
       "-p, --policy <pack>",
       "new policy pack (solo_loose|team_light|factory_strict|regulated)",
     )
-    .option("--priority <n>", "new priority (0–1000)", (v) => Number(v))
+    .option("--priority <n>", `new priority: ${RULES.priority}`, (v) => Number(v))
     .action((ref, opts, cmd) => {
       const raw = {
         ...(opts.title !== undefined ? { title: opts.title } : {}),
@@ -133,7 +147,7 @@ export function registerTicket(program: Command): void {
     .description("Set (or clear) a ticket's per-ticket cost ceiling (USD)")
     .option(
       "--usd <amount>",
-      "USD ceiling for this ticket's cumulative agent spend (delivery, review, clarify, …)",
+      `ceiling for this ticket's cumulative agent spend (delivery, review, clarify, …): ${RULES.budget}`,
       (v) => Number(v),
     )
     .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)
@@ -181,7 +195,7 @@ export function registerTicket(program: Command): void {
         throw new DispatchError("VALIDATION_ERROR", "--admin and --as conflict: give one of them.");
       }
       const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
+        ? { type: "admin", id: cliUserId() }
         : humanOrSystemActor(opts.as ?? "human");
       const wg = open(cmd.optsWithGlobals());
       const res = wg.moveTicket(ref, to, actor);
@@ -194,7 +208,12 @@ export function registerTicket(program: Command): void {
     .description("Show a ticket with AC, repos and events")
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson(wg.view(ref));
+      // CLI IDENTITY: a scoped principal sees a dependency outside its scope by number only.
+      const view = wg.view(ref);
+      printJson({
+        ...view,
+        dependencies: hideOutOfScopeDependencies(view.dependencies, cliTicketFilter(wg)),
+      });
       wg.db.close();
     });
 
@@ -219,7 +238,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("landing <ref>")
     .description(
-      "PER-REPOSITORY LANDING: each write repo's approved commit and whether it has landed. " +
+      "Each write repo's approved commit and whether it has landed. " +
         "A ticket is done only when every approved revision has landed.",
     )
     .action((ref, _opts, cmd) => {
@@ -233,7 +252,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("landing-begin <ref>")
     .description(
-      "REVOCATION-SAFE LANDING: immediately before a default branch moves, re-check that the " +
+      "Immediately before a default branch moves, re-check that the " +
         "ticket is still ready_for_merge on the same approval with green required CI, and record " +
         "the landing as started. Refuses (STATE_CONFLICT) when it was revoked meanwhile: land " +
         "nothing. The merge paths call this per repo. System/admin only.",
@@ -246,8 +265,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.beginLanding(
         ref,
         {
@@ -265,7 +283,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("record-landing <ref>")
     .description(
-      "PER-REPOSITORY LANDING: record that one write repo's approved commit reached its " +
+      "Record that one write repo's approved commit reached its " +
         "default branch (the merge paths call this per repo). System/admin only; idempotent. " +
         "Recorded only when it can be shown, so done means landed: local / git-verified need " +
         "the commit in the local default branch's history; pr needs a PR on record for that " +
@@ -286,8 +304,7 @@ export function registerTicket(program: Command): void {
       // cli-wg/F-16: an unknown --via is refused, not treated as local.
       z.enum(["local", "git-verified", "pr", "pr-stale"]).optional().parse(opts.via);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.recordLanding(
         ref,
         { repo: String(opts.repo), commit: String(opts.commit), via: opts.via },
@@ -300,7 +317,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("record-tester-replay <ref>")
     .description(
-      "TESTER REPLAY: record that the independent tester's test files passed on the revision " +
+      "Record that the independent tester's test files passed on the revision " +
         "that landed (the runner's landing path calls this once the merge gate replayed them on " +
         "the merge candidate). System only; idempotent per landed revision.",
     )
@@ -342,7 +359,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("dossier <ref>")
     .description(
-      "DELIVERY-DOSSIER: assemble the tamper-evident evidence artifact for a " +
+      "Assemble the tamper-evident evidence artifact for a " +
         "delivered ticket from existing recorded state, and record its content hash " +
         "against the control plane (a `ticket.dossier_recorded` event). --markdown " +
         "renders the human-readable view; --no-record previews without writing the event.",
@@ -371,7 +388,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("auto-decision <ref>")
     .description(
-      "GRADUATED-AUTONOMY: read-only ship decision the AFK runner consults — is `auto` " +
+      "Read-only ship decision the AFK runner consults — is `auto` " +
         "permitted for THIS ticket at --gate (approve|merge)? Reuses isAutonomyAllowed " +
         "(env floor OR an earned per-repo/risk policy). Prints allow|deny. No mutation.",
     )
@@ -416,8 +433,11 @@ export function registerTicket(program: Command): void {
       // reaching the low-priority prerequisite that would unblock them all — forever.
       // cli-wg/F-12: --claimable is what a claim could take NOW (ready, not by hand,
       // dependencies done, no open blocking decision), the claimability endpoint's answer.
+      // CLI IDENTITY: a scoped principal lists only its tickets (the API's rule).
+      const visible = cliTicketFilter(wg);
       const rows = wg
         .list(opts.status)
+        .filter((t) => visible === null || visible(t.id))
         .filter((t) => opts.claimable !== true || wg.isClaimableNow(t));
       printJson(
         // `acceptance` rides along so the runner's tester lane can pick an epic's
@@ -439,9 +459,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.grantReadyApproval(ref, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -454,9 +472,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.assignReviewer(ref, opts.reviewer, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -487,8 +503,7 @@ export function registerTicket(program: Command): void {
       const cause =
         opts.cause === undefined ? undefined : parseCause(String(opts.cause).trim().toLowerCase());
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.reopenForReview(
         ref,
         { reason: opts.reason, resolution: opts.resolution, ...(cause ? { cause } : {}) },
@@ -510,8 +525,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.holdForHuman(
         ref,
         { reasonCode: String(opts.reasonCode), reason: String(opts.reason) },
@@ -524,7 +538,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("ci-result <ref>")
     .description(
-      "REQUIRED CI: record a CI result for the ticket's candidate commit (pending | pass | " +
+      "Record a CI result for the ticket's candidate commit (pending | pass | " +
         "fail). A fail on an approved ticket holds it for a human. System/admin only. The " +
         "commit must be one of the ticket's own: a write repo's delivery head, a recorded " +
         "delivery commit or an approved revision; any other commit is refused (not_ticket_commit).",
@@ -537,8 +551,7 @@ export function registerTicket(program: Command): void {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const state = z.enum(["pending", "pass", "fail"]).parse(String(opts.state));
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.recordCiResult(
         ref,
         {
@@ -556,7 +569,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("eval-score <ref>")
     .description(
-      "EVAL JUDGE: record the delivery-quality judge's verdict on the ticket (the runner " +
+      "Record the eval judge's verdict on the ticket (the runner " +
         "does this after a judged submit when the judge is on). Reads the judge record JSON " +
         "(the verdict with its rubric dimensions) from --file or stdin. Advisory: no gate " +
         "reads it; the Review view shows it and `judge-agreement` pairs it with the outcome. " +
@@ -577,7 +590,7 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("ci-status <ref>")
-    .description("REQUIRED CI: the latest recorded CI state for a commit of the ticket")
+    .description("The latest recorded CI state for a commit of the ticket")
     .option("--commit <sha>", "the candidate commit (default: the latest result)")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
@@ -596,8 +609,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.markMerged(ref, actor);
       printJson({ ok: true, ticket: res.ticket, eventId: res.eventId });
       wg.db.close();
@@ -606,16 +618,14 @@ export function registerTicket(program: Command): void {
   ticket
     .command("set-testable <ref>")
     .description(
-      "BBT-001: mark a ticket eligible for the independent black-box testing lane " +
+      "Mark a ticket eligible for the independent black-box testing lane " +
         "(--off to clear). Gates entry to in_testing on review approval when GAFFER_TESTING is on.",
     )
     .option("--off", "clear the flag (mark NOT testable)", false)
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.setTestable(ref, !opts.off, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -624,7 +634,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("allow-test-changes <ref>")
     .description(
-      "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
+      "Allow this ticket to change its tests (delete/rename a test, add a " +
         "skip marker, change a gate script) — the runner's integrity gate row then reads " +
         "PASS with a note instead of FLAG, and the test changes alone no longer hold an auto-approve " +
         "(they still count as medium risk, so a ticket declared low is still held). " +
@@ -638,9 +648,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.setAllowTestChanges(ref, !opts.off, actor, opts.reason);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -649,7 +657,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("test-contract <ref>")
     .description(
-      "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +
+      "Record (replace) a ticket's test_contract — the testing handover the " +
         "independent tester reads to stand the system up (never the diff). Refused once " +
         "the ticket is in testing (CONTRACT_FROZEN).",
     )
@@ -677,7 +685,7 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("tester-pass <ref>")
-    .description("BBT-001: record an independent tester PASS (in_testing -> ready_for_merge)")
+    .description("Record an independent tester PASS (in_testing -> ready_for_merge)")
     .requiredOption("--summary <text>", "passing test-result summary (recorded as evidence)")
     .option("--uri <uri>", "evidence uri")
     .option(
@@ -718,9 +726,7 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("tester-fail <ref>")
-    .description(
-      "BBT-001: record an independent tester FAIL (in_testing -> refining, with evidence)",
-    )
+    .description("Record an independent tester FAIL (in_testing -> refining, with evidence)")
     .requiredOption(
       "--summary <text>",
       "failing-test summary (recorded as evidence + reject reason)",
@@ -782,7 +788,7 @@ export function registerTicket(program: Command): void {
 
   // --- Ticket scope links + repo access boundaries (WG-001 + WG-002) ---------
 
-  const ticketScope = ticket.command("scope").description("Ticket↔scope-node links (WG-001)");
+  const ticketScope = ticket.command("scope").description("Ticket↔scope-node links");
   ticketScope
     .command("link <ref> <nodeId>")
     .description("Link a ticket to a scope node")
@@ -842,7 +848,7 @@ export function registerTicket(program: Command): void {
       wg.db.close();
     });
 
-  const ticketDep = ticket.command("dep").description("Ticket dependencies (EP-001)");
+  const ticketDep = ticket.command("dep").description("Ticket dependencies");
   ticketDep
     .command("add <ref> <dependsOnRef>")
     .description("Declare that <ref> must wait for <dependsOnRef> to be done")
@@ -858,7 +864,7 @@ export function registerTicket(program: Command): void {
     .description("List a ticket's dependencies (depended-on number/status + satisfied)")
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson(wg.listDependencies(ref));
+      printJson(hideOutOfScopeDependencies(wg.listDependencies(ref), cliTicketFilter(wg)));
       wg.db.close();
     });
 
@@ -872,9 +878,7 @@ export function registerTicket(program: Command): void {
       wg.db.close();
     });
 
-  const ticketRepo = ticket
-    .command("repo-access")
-    .description("Ticket↔repo access boundaries (WG-002)");
+  const ticketRepo = ticket.command("repo-access").description("Ticket↔repo access boundaries");
   ticketRepo
     .command("set <ref> <repoRef>")
     .description("Set a repo's access boundary on a ticket")
@@ -945,9 +949,7 @@ export function registerTicket(program: Command): void {
       wg.db.close();
     });
 
-  const ticketDelivery = ticket
-    .command("repo-delivery")
-    .description("Per-repo delivery artifacts (WG-005)");
+  const ticketDelivery = ticket.command("repo-delivery").description("Per-repo delivery artifacts");
   ticketDelivery
     .command("record <ref> <repoRef>")
     .description("Record (upsert) a repo's delivery artifact on a ticket")

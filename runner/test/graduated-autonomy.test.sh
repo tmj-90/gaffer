@@ -123,7 +123,8 @@ eq "MERGE_ON_AGENT_REVIEW=1 + AUTO_MERGE=1 → no warning (0)" "$(half MERGE_ON_
 eq "both off → no warning (0)"                               "$(half MERGE_ON_AGENT_REVIEW=0 AUTO_MERGE=0 2>/dev/null)" 0
 eq "GAFFER_MODE=autonomous (both on) → no warning (0)"       "$(half GAFFER_MODE=autonomous 2>/dev/null)" 0
 grep -q 'gaffer_half_merge_config_check >/dev/null' "$RUNNER_DIR/tick.sh" && ok "tick.sh runs the half-config check once per tick" || fail "tick.sh does not run gaffer_half_merge_config_check"
-grep -q '.merge-config-half-warned' "$RUNNER_DIR/loop.sh" && grep -q '.merge-config-half-warned' "$RUNNER_DIR/bin/poll-once.sh" && ok "loop.sh + poll-once.sh reset the once-per-run marker" || fail "the half-config marker is not reset per run"
+grep -qF '${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.merge-config-half-warned' "$RUNNER_DIR/factory.config.sh" && grep -q 'gaffer_run_state_begin loop' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_run_state_begin poll' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "the once-per-run marker lives in the run's own fresh state dir (loop.sh + poll-once.sh)" || fail "the half-config marker is not per run"
 
 echo "== 2: gaffer_auto_decision — parses the CLI + FAILS CLOSED on junk =="
 # A malformed / empty CLI response must never read as allow.

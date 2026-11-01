@@ -38,6 +38,7 @@ if (/black-box tests for #\d+/.test(prompt)) kind = "tester";
 else if (/machine-read verdict/.test(prompt) || /\{"verdict"/.test(prompt)) kind = "reviewer";
 else if (/You are an INTAKE agent/.test(prompt)) kind = "clarify";
 else if (/resolve a merge conflict on the delivery branch/.test(prompt)) kind = "resolver";
+else if (/Use the plan-build skill to decompose this app brief/.test(prompt)) kind = "plan";
 else if (isBootstrapDir) kind = "bootstrap";
 else if (isWorktree) kind = "delivery";
 
@@ -445,7 +446,74 @@ async function main() {
     );
   }
 
+  if (kind === "plan") return envelope(planAnswer());
+
   return envelope("ok");
+}
+
+// The planner (runner/bin/decompose.mjs, Plan a build and `gaffer plan`): a canned,
+// deterministic answer from the prompt alone. Two clarifying questions until the
+// conversation holds an answer to them (or the prompt forces a plan), then a plan of
+// three tickets (ticket 2 after ticket 1). A greenfield prompt (no target repo) gets a
+// bootstrap ticket first, naming the new repo "task-app"; a brownfield one names no
+// repo (decompose stamps the target on every ticket).
+function planAnswer() {
+  const fence = (o) => "```json\n" + JSON.stringify(o) + "\n```";
+  const hist = /<untrusted-conversation-history>([\s\S]*?)<\/untrusted-conversation-history>/.exec(
+    prompt,
+  );
+  let turns;
+  try {
+    turns = hist ? JSON.parse(hist[1]) : [];
+  } catch {
+    turns = [];
+  }
+  const asked = turns.findIndex((h) => h && h.role === "assistant" && Array.isArray(h.questions));
+  const answered = asked >= 0 && turns.slice(asked + 1).some((h) => h && h.role === "user");
+  const forced = /BUILD THE TICKETS NOW \(FORCE PLAN\)/.test(prompt);
+  if (!answered && !forced)
+    return `Two things first.\n${fence({ phase: "clarify", questions: ["Should completed tasks be archived or deleted?", "Does the list need sorting?"] })}`;
+  const brownfield = /EXISTING-REPO \(BROWNFIELD\) MODE/.test(prompt);
+  const brief = (/<untrusted-app-brief>([^<]*)<\/untrusted-app-brief>/.exec(prompt) || [])[1] || "";
+  const tickets = [
+    {
+      title: "Add an archive helper for completed tasks",
+      description: "archive(list) moves done tasks aside.",
+      acceptanceCriteria: ["archive(list) returns the open tasks and the archived ones"],
+      dependsOn: [],
+    },
+    {
+      title: "Show archived tasks count",
+      description: "countArchived(list) for the header.",
+      acceptanceCriteria: ["countArchived counts the archived tasks"],
+      dependsOn: [0],
+    },
+    {
+      title: "Document the archive helpers",
+      description: "README section.",
+      acceptanceCriteria: ["the README names archive and countArchived"],
+      dependsOn: [],
+    },
+  ];
+  if (!brownfield) {
+    for (const t of tickets) {
+      t.dependsOn = [0, ...t.dependsOn.map((d) => d + 1)];
+      t.repo = "task-app";
+    }
+    tickets.unshift({
+      repo: "task-app",
+      title: "Bootstrap the task app",
+      description: "a package.json and a passing test",
+      acceptanceCriteria: ["the repo has a package.json whose test script passes"],
+      bootstrap: true,
+      dependsOn: [],
+    });
+  }
+  const plan = {
+    epic: { name: "Archive completed tasks", description: `Planned from: ${brief.slice(0, 120)}` },
+    tickets,
+  };
+  return `Here is the plan.\n${fence({ phase: "plan", plan })}`;
 }
 
 main()

@@ -152,7 +152,9 @@ oversized_flagged
 printf "\n  ${c_dim}per-repo pressure (outstanding branches/in_review/claims vs cap)${c_off}\n"
 printf "    ${c_dim}caps: branches=%s in_review=%s claims=%s${c_off}\n" \
   "${MAX_OPEN_AGENT_BRANCHES_PER_REPO:-3}" "${MAX_OPEN_AGENT_PRS_PER_REPO:-3}" "${MAX_CONCURRENT_TICKETS_PER_REPO:-2}"
-BP_FILE="${GAFFER_BP_FILE:-$GAFFER_DATA/.backpressure-repos}"
+# The run's own state dir (lib/run-state.sh); $GAFFER_DATA for a hand-run tick.
+: "${GAFFER_RUN_STATE_DIR:=$GAFFER_DATA}"
+BP_FILE="${GAFFER_BP_FILE:-$GAFFER_RUN_STATE_DIR/.backpressure-repos}"
 if [ -s "$BP_FILE" ]; then
   while IFS=$'\t' read -r repo triple reason; do
     [ -n "$repo" ] || continue

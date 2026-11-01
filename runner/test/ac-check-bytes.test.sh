@@ -29,6 +29,8 @@ export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"
 export DISPATCH_DB="$WORK/dispatch.sqlite" GAFFER_DOD_TIMEOUT=30 GAFFER_DOD_OUTPUT_TAIL=40
 log(){ :; }
 wg(){ node "$CLI" --db "$DISPATCH_DB" "$@"; }
+# Only `init` creates a database (a missing --db is refused, exploratory finding cli-wg/F-09).
+wg init >/dev/null || { echo "FAIL: wg init"; exit 1; }
 jget(){ node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
 gaffer_timeout(){ shift; "$@"; }
 # shellcheck source=../lib/dod.sh

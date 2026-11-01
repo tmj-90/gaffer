@@ -1,13 +1,47 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 
 import { Dispatch } from "../core.js";
 import type { Actor } from "../domain/types.js";
+import type { PrincipalView } from "../repositories/principalRepository.js";
+import { principalActor } from "../services/principalService.js";
 import { DispatchError } from "../util/errors.js";
 import { assertCliDbExists, resolveDbPath } from "../util/paths.js";
 
-/** The human running the CLI is the actor for events. */
+/**
+ * CLI IDENTITY. The principal this invocation acts as (GAFFER_PRINCIPAL_TOKEN or
+ * `--as-principal`), resolved once before the command runs (cli/index.ts), or null:
+ * the operator, recorded as `$USER` (asserted, not authenticated).
+ */
+let actingPrincipal: PrincipalView | null = null;
+
+export function setCliPrincipal(p: PrincipalView | null): void {
+  actingPrincipal = p;
+}
+
+export function cliPrincipal(): PrincipalView | null {
+  return actingPrincipal;
+}
+
+/** The id a person running the CLI is recorded under: the principal's, else `$USER`. */
+export function cliUserId(): string {
+  return actingPrincipal ? actingPrincipal.actor_id : (process.env.USER ?? "cli");
+}
+
+/**
+ * The actor for events: the principal's identity (human or admin, as it was minted)
+ * when acting as one, else the human running the CLI (`$USER`).
+ */
 export function cliActor(): Actor {
+  if (actingPrincipal) return principalActor(actingPrincipal);
   return { type: "human", id: process.env.USER ?? "cli" };
+}
+
+/**
+ * A scoped principal's ticket filter for list output (null: no filtering), the same
+ * rule the API's list routes apply.
+ */
+export function cliTicketFilter(wg: Dispatch): ((ticketId: string) => boolean) | null {
+  return actingPrincipal ? wg.ticketVisibility(actingPrincipal) : null;
 }
 
 /** Validate that a claim TTL is a positive integer, throwing a structured error otherwise. */
@@ -26,13 +60,22 @@ export function validateTtl(ttl: number): void {
  * Call it before open() so a bad value never opens the DB or writes an event.
  */
 export function parseAs<T extends string>(value: unknown, allowed: readonly T[]): T {
+  return parseOneOf("--as", value, allowed);
+}
+
+/** Validate a flag against its closed list of values, naming them on a refusal. */
+export function parseOneOf<T extends string>(
+  flag: string,
+  value: unknown,
+  allowed: readonly T[],
+): T {
   if (typeof value === "string" && (allowed as readonly string[]).includes(value)) {
     return value as T;
   }
   throw new DispatchError(
     "VALIDATION_ERROR",
-    `--as must be one of: ${allowed.join(", ")} (got '${String(value)}').`,
-    { as: value, allowed },
+    `${flag} must be one of: ${allowed.join(", ")} (got '${String(value)}').`,
+    { [flag.replace(/^-+/, "")]: value, allowed },
   );
 }
 
@@ -53,9 +96,9 @@ export function humanOrSystemActor(as: unknown): Actor {
 export function testerActor(as: string): Actor {
   switch (parseAs(as, ["agent", "human", "admin", "system"] as const)) {
     case "human":
-      return { type: "human", id: process.env.USER ?? "cli" };
+      return cliActor();
     case "admin":
-      return { type: "admin", id: process.env.USER ?? "cli" };
+      return { type: "admin", id: cliUserId() };
     case "system":
       return { type: "system" };
     case "agent":
@@ -65,7 +108,8 @@ export function testerActor(as: string): Actor {
 
 /**
  * Open the CLI's database. Only `init` passes `create: true`; every other command
- * refuses to conjure an empty `./.dispatch/dispatch.sqlite` (see assertCliDbExists).
+ * refuses a database file that does not exist, wherever the path came from (--db,
+ * DISPATCH_DB or the cwd fallback; see assertCliDbExists).
  */
 export function open(
   opts: { db?: string },
@@ -81,6 +125,55 @@ export function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
+/**
+ * Read an input file the user named (`epic create`, `spec create`, `import`). A
+ * missing file is FILE_NOT_FOUND and any other read failure IO_ERROR, both naming
+ * the path, never a raw `ENOENT` stack (exploratory finding cli-wg/F-07).
+ */
+export function readInputFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      throw new DispatchError("FILE_NOT_FOUND", `File not found: ${path}`, { file: path });
+    }
+    throw new DispatchError(
+      "IO_ERROR",
+      `Could not read ${path}: ${code === "EISDIR" ? "it is a directory" : ((err as Error).message ?? String(err))}`,
+      { file: path, ...(code ? { errno: code } : {}) },
+    );
+  }
+}
+
+/**
+ * Write a file the user named (`export --out`). Any failure (a missing directory, no
+ * permission, a read-only disk) is WRITE_FAILED naming the path and the reason.
+ */
+export function writeOutputFile(path: string, data: string): void {
+  try {
+    writeFileSync(path, data, { encoding: "utf8" });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const reason =
+      code === "ENOENT"
+        ? "its directory does not exist"
+        : code === "EACCES" || code === "EPERM"
+          ? "permission denied"
+          : code === "EISDIR"
+            ? "it is a directory"
+            : code === "EROFS"
+              ? "the file system is read-only"
+              : code === "ENOSPC"
+                ? "no space left on the device"
+                : ((err as Error).message ?? String(err));
+    throw new DispatchError("WRITE_FAILED", `Could not write ${path}: ${reason}.`, {
+      file: path,
+      ...(code ? { errno: code } : {}),
+    });
+  }
+}
+
 /** Read the whole of stdin as a UTF-8 string (used when no file path is given). */
 export function readStdin(): string {
   // fd 0 is stdin; a synchronous full read keeps the command's control flow
@@ -94,7 +187,7 @@ export function readStdin(): string {
  * so it surfaces on the standard VALIDATION_ERROR path in main().
  */
 export function readJsonInput(path: string | undefined): unknown {
-  const raw = path === undefined || path === "-" ? readStdin() : readFileSync(path, "utf8");
+  const raw = path === undefined || path === "-" ? readStdin() : readInputFile(path);
   try {
     return JSON.parse(raw);
   } catch (err) {

@@ -23,20 +23,29 @@ export function isImplicitDbPath(explicit?: string): boolean {
 }
 
 /**
- * The CLI's guard against a stray database: with no `--db` and no `DISPATCH_DB`, a
- * command other than `init` refuses to CREATE `./.dispatch/dispatch.sqlite`. Copying a
- * docs snippet that lacked `--db` used to answer NOT_FOUND from a brand-new empty
- * database (left behind in whatever directory it ran in) instead of reaching the
- * factory's. An explicit path keeps the old open-or-create behaviour.
+ * The CLI's guard against a stray database: a command other than `init` (and `import`,
+ * which restores a bundle into the file it names) refuses to
+ * CREATE the database it was pointed at. Copying a docs snippet that lacked `--db`
+ * used to answer NOT_FOUND from a brand-new empty `./.dispatch/dispatch.sqlite` left
+ * in whatever directory it ran in; and because `runner/gaffer wg` always passes an
+ * explicit `--db`, a mistyped GAFFER_DATA silently created a new empty board that the
+ * next `ticket create` wrote into (exploratory finding cli-wg/F-09). Only `init` and
+ * `import` (and `:memory:`) open-or-create now.
  */
 export function assertCliDbExists(explicit?: string): void {
   const path = resolveDbPath(explicit);
-  if (!isImplicitDbPath(explicit) || existsSync(path)) return;
+  if (explicit === ":memory:" || existsSync(path)) return;
+  const implicit = isImplicitDbPath(explicit);
+  // The init command by the name that was typed (`gaffer wg` sets DISPATCH_CLI_NAME).
+  const cli = process.env["DISPATCH_CLI_NAME"]?.trim() || "dispatch";
   throw new DispatchError(
     "DB_NOT_FOUND",
-    `No Dispatch database at ${path} (no --db, no DISPATCH_DB). Pass --db <path>, set ` +
-      "DISPATCH_DB, or use `runner/gaffer wg …` (pinned to the factory's database); " +
-      "`dispatch init` creates one here.",
+    `no database at ${path}: run \`runner/gaffer setup\` (or \`${cli} init\`)` +
+      (implicit
+        ? ". No --db and no DISPATCH_DB were given, so this is the current directory's " +
+          "fallback: pass --db <path>, set DISPATCH_DB, or use `runner/gaffer wg …` " +
+          "(pinned to the factory's database)."
+        : `. Check the path (GAFFER_DATA for \`runner/gaffer wg\`); nothing was created.`),
     { path },
   );
 }

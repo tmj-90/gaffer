@@ -63,7 +63,8 @@ export class DatabaseOpenError extends Error {
   }
 }
 
-const BUSY_TIMEOUT_MS = 5000;
+/** How long a connection waits for another process's write lock before SQLITE_BUSY. */
+export const BUSY_TIMEOUT_MS = 5000;
 
 /**
  * Open (creating if needed) a Dispatch SQLite database and ensure the schema
@@ -114,13 +115,27 @@ export function openDatabase(path: string): Db {
     // better-sqlite3 opens lazily: a file that is not a database (or is corrupt)
     // fails on the first statement, not in the constructor. Give it the same
     // guidance as a path that cannot be opened at all, not a bare SqliteError.
-    if (!isUnreadableDbError(err)) throw err;
+    // A file this user cannot write (its permissions, a read-only mount) fails the
+    // same way when the open has to write (the WAL switch on a fresh file, a schema
+    // migration); an already-migrated database opens and reads fine, and the first
+    // write then fails with SQLITE_READONLY, which the CLI boundary reports the same
+    // way (isReadOnlyDbError below).
+    const readOnly = isReadOnlyDbError(err);
+    if (!isUnreadableDbError(err) && !readOnly) throw err;
     try {
       db.close();
     } catch {
       // Already unusable; nothing to release.
     }
-    throw new DatabaseOpenError(path, err);
+    throw new DatabaseOpenError(
+      path,
+      readOnly
+        ? new Error(
+            "the database is read-only for this user (SQLite needs to write the file and " +
+              "its directory, even to read): check their permissions",
+          )
+        : err,
+    );
   }
   return db;
 }
@@ -132,6 +147,14 @@ function isUnreadableDbError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code !== "string") return false;
   return UNREADABLE_DB_CODES.some((c) => code === c || code.startsWith(`${c}_`));
+}
+
+/** SQLITE_READONLY and its extended codes: the file (or its directory) cannot be written. */
+export function isReadOnlyDbError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return (
+    typeof code === "string" && (code === "SQLITE_READONLY" || code.startsWith("SQLITE_READONLY_"))
+  );
 }
 
 /**
@@ -327,6 +350,10 @@ function migrateLocked(db: Db): void {
   // ticket_repo_delivery table — a plain additive ALTER (nullable TEXT; NULL ⇒ a
   // delivery recorded before the column, scanned from the merge-base as before).
   alterRepoDeliveryAddBaseSha(db);
+  // PRINCIPAL SCOPES (v30→v31): add the nullable `scope_repos` / `scope_tickets` JSON
+  // columns to an EXISTING api_principals table — plain additive ALTERs (NULL ⇒
+  // unscoped, exactly what every existing principal was). No-op on a fresh DB.
+  alterPrincipalsAddScopes(db);
   // SQUAD (v26→v27): add the presentation-only `squad_name` + `shirt_number` columns
   // to an EXISTING agents table — plain additive ALTERs (NULL backfill ⇒ unnamed,
   // no number), so no rebuild. Must run BEFORE SCHEMA_SQL, whose partial unique
@@ -520,6 +547,17 @@ function alterRepoDeliveryAddBaseSha(db: Db): void {
   if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the column.
   if (!info.some((c) => c.name === "base_sha")) {
     db.exec("ALTER TABLE ticket_repo_delivery ADD COLUMN base_sha TEXT");
+  }
+}
+
+/** PRINCIPAL SCOPES additive migration (v30→v31): see the call site in migrate(). */
+function alterPrincipalsAddScopes(db: Db): void {
+  const info = db.prepare("PRAGMA table_info(api_principals)").all() as Array<{ name: string }>;
+  if (info.length === 0) return; // fresh DB — SCHEMA_SQL creates the columns.
+  const cols = new Set(info.map((c) => c.name));
+  if (!cols.has("scope_repos")) db.exec("ALTER TABLE api_principals ADD COLUMN scope_repos TEXT");
+  if (!cols.has("scope_tickets")) {
+    db.exec("ALTER TABLE api_principals ADD COLUMN scope_tickets TEXT");
   }
 }
 

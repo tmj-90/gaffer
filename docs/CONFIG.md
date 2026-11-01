@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 144 |
+| Knobs with a runner default | 145 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 80 |
@@ -291,6 +291,12 @@ computed from other knobs at runtime.
 | `GAFFER_REGISTRY_PROBE` | `1` |  | runner | REGISTRY PROBE: 1 = before a greenfield bootstrap spawns its agent (and in runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry… |
 | `GAFFER_REGISTRY_PROBE_TIMEOUT` | `45` |  | runner | Seconds the registry probe may take before it counts as unreachable ("timeout"). |
 
+### lib/run-state.sh
+
+| Variable | Default | UI | Read by | Notes |
+|---|---|---|---|---|
+| `GAFFER_POLL_WAIT_TIMEOUT` | _derived_ (`$(( ${GAFFER_TICK_OUTER_TIMEOUT:-5520} + 60 ))`) |  | runner | Seconds a live Poll waits for the Poll already running before it refuses. |
+
 ### lib/skills-mount.sh
 
 | Variable | Default | UI | Read by | Notes |
@@ -365,7 +371,7 @@ consuming component applies its own default when the variable is unset.
 
 | Variable | Type | Group | Read by | Help |
 |---|---|---|---|---|
-| `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). Only tickets carrying the testable flag are routed (`wg ticket set-testable <n>`; the planner does not set it) — the rest go straight from approval to merge, as does everything when this is off. |
+| `GAFFER_TESTING` | boolean | autonomy | dispatch, runner | When on, an approved testable ticket routes through the independent testing lane (in_review → in_testing) instead of straight to merge. The lane, the contract, and the runner seam are live; the seam hands an independent tester the contract + AC (never the diff). Only tickets carrying the testable flag are routed. While this is on, the tickets a planned build creates are testable (all but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one. The rest go straight from approval to merge, as does everything when this is off. |
 | `GAFFER_IDLE_FEATURE_BACKLOG` | boolean | idle-loops | crew, dispatch, runner | When idle, pull one `backlog` feature from the factory's memory ledger and plan it as an epic. Each idle tick (before the maintenance lane) claims one `backlog` feature, moves it to `building`, makes ONE paid plan call (the runner's own bin/decompose.mjs, run unattended with --force-plan so it plans without asking questions; counted against the day cap) and files the epic as drafts (or ready tickets if the idle-loop mode says so). A failed plan releases the feature back to `backlog`, and after `loops.idle_feature_backlog.max_plan_failures` (default 2) failed plans in a row idle ticks stop claiming it; plan it from the dashboard. Overrides the crew.yaml `loops.idle_feature_backlog.enabled` flag (the same toggle as the Feature backlog row in the Idle loops panel) for every crew run the runner spawns; empty = crew.yaml decides. |
 | `GAFFER_IDLE_MODE` | string: observe_only / create_draft_tickets / create_ready_tickets | idle-loops | crew, dispatch | How far EVERY idle loop goes with a finding: observe_only reports it and files nothing · create_draft_tickets files a draft for a human to ready (the default) · create_ready_tickets files it past the human gate. When set it overrides each loop's `mode` in crew.yaml for the crew runs the runner spawns; empty = crew.yaml decides per loop. |
 | `GAFFER_NOTIFY_WEBHOOK_URL` | string | notifications | dispatch, runner | POST each human-gate event as JSON to this URL (the generic integration). The URL is a credential: the dashboard shows only whether it is set and its host; replace it to change it. |
@@ -402,7 +408,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |
 | `GAFFER_BLOCK_LEDGER` | `$GAFFER_DATA/safety-blocks.jsonl` | `runner/bin/build-log.mjs`, `runner/run-summary.sh` |
-| `GAFFER_BP_FILE` | `$GAFFER_DATA/.backpressure-repos` | `runner/run-summary.sh` |
+| `GAFFER_BP_FILE` | `$GAFFER_RUN_STATE_DIR/.backpressure-repos` | `runner/run-summary.sh` |
 | `GAFFER_BUDGET_LOW_FRACTION` | `0.20` | `runner/factory.config.sh` |
 | `GAFFER_CARD_BATCH` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
 | `GAFFER_CARD_MODEL` | _(empty)_ | `runner/lib/onboard-analyze.mjs` |
@@ -461,7 +467,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/cleanup-ownership.sh`, `runner/lib/orphan-recovery.sh` |
-| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/claude-auth.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/claude-auth.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh`, `runner/tick.sh` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
 | `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
 | `MEMORY_NO_COLOR` |  | `packages/memory/src/cli/format.ts` |

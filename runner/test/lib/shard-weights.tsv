@@ -20,6 +20,9 @@
 #   land-tester-replay: 334 - 13, land-tester-replay-proof: 252 - 10, concurrency-bookkeeping: 67 - 12:
 #   ticket setup in one node process (lib/wg-batch.mjs; setup alone 13.6s -> 0.3s, 10.7s -> 0.8s,
 #   12.5s -> 0.3s on a loaded 4-CPU box). wg-batch-parity: new, 5s alone on Linux.
+#   gaffer-plan, gaffer-lore, poll-overlap-run-state: new after that run, the integration
+#   branch's estimates (poll-overlap-run-state: Linux alone under shared load, 90s, two real
+#   Polls and a loop pass).
 321	land-tester-replay.test.sh
 297	merge-lane.test.sh
 242	land-tester-replay-proof.test.sh
@@ -42,6 +45,7 @@
 97	secondary-pr-landing.test.sh
 97	tick-deadline.test.sh
 94	branch-switch-fresh.test.sh
+90	poll-overlap-run-state.test.sh
 89	resume-abort.test.sh
 84	e2e-memory-routing.test.sh
 65	rework-final-trail.test.sh
@@ -51,6 +55,7 @@
 63	e2e-release-gate-merge-typecheck.test.sh
 63	rework-cost-live.test.sh
 61	landing-revocation.test.sh
+60	gaffer-plan.test.sh
 60	parallel-stop-live.test.sh
 59	self-op-ban-integration.test.sh
 55	auth-gate-delivery.test.sh
@@ -97,6 +102,7 @@
 22	recall-feedback.test.sh
 21	gaffer-colour.test.sh
 21	memory-audit-path.test.sh
+20	gaffer-lore.test.sh
 19	budget-admission.test.sh
 19	merge-one-at-a-time.test.sh
 18	onboard-analyze.test.mjs

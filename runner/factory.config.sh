@@ -2443,6 +2443,12 @@ gaffer_review_reason() {
 # shellcheck source=lib/orphan-recovery.sh
 [ -f "$RUNNER_DIR/lib/orphan-recovery.sh" ] && source "$RUNNER_DIR/lib/orphan-recovery.sh"
 
+# Cleanup ownership (defines gaffer_note_own_claim / gaffer_cleanup_owned): a tick's
+# teardown removes a worktree or branch only while this run still owns it (external
+# review #8: a stopped or expired worker deleted its replacement's submitted branch).
+# shellcheck source=lib/cleanup-ownership.sh
+[ -f "$RUNNER_DIR/lib/cleanup-ownership.sh" ] && source "$RUNNER_DIR/lib/cleanup-ownership.sh"
+
 # Dashboard process tracking (defines gaffer_dashboard_pid / _pidfile / _write_pid):
 # precise running-detection via a recorded+validated PID instead of a broad pgrep.
 # shellcheck source=lib/dashboard.sh

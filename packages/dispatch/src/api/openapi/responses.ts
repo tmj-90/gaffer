@@ -223,6 +223,23 @@ export const TicketTransition = z
       })
       .optional()
       .describe("review/reject with captureLore only."),
+    landed_already: z
+      .array(
+        z
+          .object({
+            repo: str,
+            repoId: str,
+            commit: str,
+            landed: z.boolean().describe("false: the landing had started and may still be moving."),
+            via: nstr,
+            at: str,
+          })
+          .strict(),
+      )
+      .optional()
+      .describe(
+        "review/reject and wont-do: landings that had already started on the approval this revocation withdrew. It stops every landing not yet started and does not undo these.",
+      ),
   })
   .strict();
 

@@ -622,7 +622,9 @@ console.log(
   const SPY_WG = resolve(WORKDIR, "spy-wg.js");
   writeFileSync(
     SPY_WG,
-    `require("node:fs").writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\nprocess.stdout.write('{"ok":true}\\n');\n`,
+    // Only the re-approval signal (reopen-for-review) marks; the merge's own reads (the
+    // landing plan and the approval it acts on) are not a signal.
+    `if (process.argv.includes("reopen-for-review")) require("node:fs").writeFileSync(${JSON.stringify(SPY_MARK)}, "x");\nprocess.stdout.write('{"ok":true}\\n');\n`,
   );
   const gaveUp = runLive({
     GAFFER_STRICT_REQUIRE: "0",
@@ -1651,7 +1653,9 @@ console.log(
     ["--ticket", "7"],
   );
   assert("merged (exit 0)", code === 0 && out && out.phase === "merged");
-  assert("via:local", out && out.via === "local");
+  // Recorded as the operator's explicit fallback: the one local landing Dispatch counts
+  // for a repository with a PR (external review #8).
+  assert("via:local-fallback", out && out.via === "local-fallback");
   assert(
     "the fallback and its reason are logged",
     /falling back to a LOCAL merge/.test(err) && /not mergeable/.test(err),

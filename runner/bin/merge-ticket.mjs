@@ -2674,8 +2674,17 @@ function main() {
     // write repo's approved commit. A ticket is done only when all of them landed; one
     // that does not land leaves the ticket HELD (ready_for_merge, "Partly merged" in the
     // human queue) with what did land recorded, so a retry lands only the rest.
+    // A PR merged upstream whose local default could not be fast-forwarded is a
+    // `pr-stale` landing (checked against the remote-tracking default, which the fetch
+    // updated): recorded as `pr`, the local default could not show it, so the landing was
+    // refused and the ticket stayed ready_for_merge with its PR already merged.
     if (landed.via !== "earlier" && repo.id)
-      recordLandingCli(resolved.number, repo.id, pin, landed.via);
+      recordLandingCli(
+        resolved.number,
+        repo.id,
+        pin,
+        landed.via === "pr" && landed.fastForwarded === false ? "pr-stale" : landed.via,
+      );
     // TESTER REPLAY: which tester assertions passed on which landed revision. A local
     // landing lands exactly the gated merge. A PR landing lands what GitHub made of the PR
     // (merge, squash or rebase, on the remote default as it stood then): the record names

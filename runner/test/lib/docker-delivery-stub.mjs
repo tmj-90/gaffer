@@ -23,7 +23,16 @@
 //   4. Prints the `--output-format json` result envelope (with a smallest-change note).
 // A reviewer prompt gets an APPROVE envelope; anything else a bare "ok" envelope.
 import { spawn, execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +87,31 @@ function probes(mcpConfigPath) {
   const tokenSeen =
     "GAFFER_CLAIM_TOKEN" in process.env || /GAFFER_CLAIM_TOKEN|DISPATCH_DB|"env"/.test(cfgText);
   out.push(tokenSeen ? "TOKEN_LEAK" : "TOKEN_ABSENT");
+  // What the real CLI needs from its env inside the container (the runner starts it with
+  // `env -i <allowlist>`, so the wrapper's own -e values do not reach it on their own):
+  // git must trust the host-owned mounts (a host uid that is not the container's root
+  // is "dubious ownership" otherwise), the only route out is the egress proxy, and
+  // TMPDIR must exist in the container.
+  let safeDir = false;
+  for (let i = 0; i < Number(process.env.GIT_CONFIG_COUNT || 0); i++)
+    if (process.env[`GIT_CONFIG_KEY_${i}`] === "safe.directory") safeDir = true;
+  out.push(safeDir ? "GIT_SAFE_DIRECTORY" : "GIT_SAFE_DIRECTORY_MISSING");
+  const viaProxy = (v) => /^https?:\/\/egress-proxy:8888\/?$/.test(v || "");
+  out.push(
+    viaProxy(process.env.HTTPS_PROXY) &&
+      viaProxy(process.env.HTTP_PROXY) &&
+      /(^|,)egress-proxy(,|$)/.test(process.env.NO_PROXY || "")
+      ? "EGRESS_PROXY_SET"
+      : "EGRESS_PROXY_MISSING",
+  );
+  let tmpOk = false;
+  try {
+    rmSync(mkdtempSync(path.join(tmpdir(), "gaffer-e2e-")), { recursive: true });
+    tmpOk = true;
+  } catch {
+    /* no usable TMPDIR */
+  }
+  out.push(tmpOk ? "TMPDIR_USABLE" : "TMPDIR_UNUSABLE");
   if (!cfg) {
     out.push("NO_PROBE_FILE");
     return out;

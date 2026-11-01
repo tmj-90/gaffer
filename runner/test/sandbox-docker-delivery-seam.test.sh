@@ -109,6 +109,11 @@ echo "== the MCP round trip and the result envelope =="
 EV="$(ddw_evidence "$N")"
 case "$EV" in *"docker-delivery-stub:"*"MCP_BRIDGED"*) ok "the agent's record_ac_evidence reached the canonical DB through the host-side bridge" ;; *) fail "no agent evidence on #$N (evidence: $(printf '%s' "$EV" | head -c 400))" ;; esac
 case "$EV" in *"docker-delivery-stub:"*"TOKEN_ABSENT"*) ok "the claim token never reached the agent's env or its MCP config" ;; *) fail "the stub saw the claim token (or no probe ran)" ;; esac
+# The agent's own env is `env -i <allowlist>` INSIDE the container: what the real CLI
+# needs there must be on that list, not only on the wrapper's -e flags.
+for want in GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE; do
+  case "$EV" in *"docker-delivery-stub:"*" $want "*) ok "the agent's env inside the container: $want" ;; *) fail "the agent's env inside the container: expected $want" ;; esac
+done
 AC_OK="$(ddw_acs_satisfied "$N")"
 [ "$AC_OK" = yes ] && ok "the token-free evidence write satisfied the criterion (the host-side server held the claim token)" || fail "acceptance criterion not satisfied ($AC_OK)"
 grep -q 'Implemented helper' "$GAFFER_DATA/factory.log" 2>/dev/null && ok "the result envelope was parsed (the agent's result text is in the run log)" || fail "the agent's result text never reached factory.log"

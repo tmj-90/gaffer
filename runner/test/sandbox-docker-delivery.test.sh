@@ -160,10 +160,10 @@ else
   EV="$(ddw_evidence "$N" | grep 'docker-delivery-stub:' | head -1)"
   [ -n "$EV" ] && ok "the agent's record_ac_evidence reached the host DB through the bridge" || fail "no agent evidence on #$N"
   echo "    $EV" | cut -c1-400
-  for want in INSIDE_CONTAINER TOKEN_ABSENT PROBE_FILE DB_UNMOUNTED SETTINGS_ABSENT HOME_UNREADABLE CANARY_UNREADABLE HOST_WRITE_CONTAINED MCP_BRIDGED; do
+  for want in INSIDE_CONTAINER TOKEN_ABSENT GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE PROBE_FILE DB_UNMOUNTED SETTINGS_ABSENT HOME_UNREADABLE CANARY_UNREADABLE HOST_WRITE_CONTAINED MCP_BRIDGED; do
     case " $EV " in *" $want "*) ok "agent probe: $want" ;; *) fail "agent probe: expected $want" ;; esac
   done
-  for bad in NOT_IN_CONTAINER TOKEN_LEAK NO_PROBE_FILE DB_VISIBLE SETTINGS_VISIBLE HOME_READABLE CANARY_LEAK HOST_WRITE_POSSIBLE; do
+  for bad in NOT_IN_CONTAINER TOKEN_LEAK GIT_SAFE_DIRECTORY_MISSING EGRESS_PROXY_MISSING TMPDIR_UNUSABLE NO_PROBE_FILE DB_VISIBLE SETTINGS_VISIBLE HOME_READABLE CANARY_LEAK HOST_WRITE_POSSIBLE; do
     case " $EV " in *" $bad "*) fail "agent probe: saw $bad" ;; esac
   done
   [ "$(ddw_acs_satisfied "$N")" = yes ] \

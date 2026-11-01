@@ -233,6 +233,18 @@ worker_deliver() {
         WORKER_LAST_CLAUDE_VERSION="${GAFFER_CLAUDE_VERSION:-unknown (sandbox image)}"
         _sbx_env=( "HOME=${GAFFER_SANDBOX_HOME:-/root}"
                    "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+        # The agent runs under `env -i <allowlist>` INSIDE the container, so the env the
+        # wrapper (lib/sandbox-docker.sh) gives the container never reaches it unless it
+        # is listed here too. Same values as the wrapper's: git's safe.directory (the
+        # mounts are owned by the host uid, the container runs as root: without it every
+        # git command inside fails "dubious ownership" on a Linux host whose user is not
+        # root), the egress proxy (the container's only route out), and a TMPDIR that
+        # exists in the container (the host's may not).
+        _sbx_env+=( "GIT_CONFIG_COUNT=1" "GIT_CONFIG_KEY_0=safe.directory" "GIT_CONFIG_VALUE_0=*"
+                    "HTTP_PROXY=http://egress-proxy:8888" "HTTPS_PROXY=http://egress-proxy:8888"
+                    "http_proxy=http://egress-proxy:8888" "https_proxy=http://egress-proxy:8888"
+                    "NO_PROXY=localhost,127.0.0.1,egress-proxy" "no_proxy=localhost,127.0.0.1,egress-proxy"
+                    "TMPDIR=/tmp" )
         # ── MCP DATA PLANE ON THE HOST (external review, finding 2) ──────────────
         # The dispatch/memory MCP servers used to run INSIDE the container and write
         # the canonical SQLite files, which forced $GAFFER_DATA to be mounted rw.

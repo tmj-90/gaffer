@@ -11000,6 +11000,36 @@ async function ticketEpicCard(t, scopes) {
   ]);
 }
 
+/** Holds only a fresh review clears: the ticket page offers Back to review for them. */
+const REVIEW_HOLDS = new Set(["moved_since_review", "unpinned_repo"]);
+
+/**
+ * "Your move" on an approved ticket, in its landing state's own words: never "the merge
+ * runner has it" when nothing is landing it, and a hold's advice names an action the
+ * page offers (Back to review, Send back to rework, Merge now, Mark merged).
+ */
+function approvedMoveWords(t, ref) {
+  const ls = t.landing_state;
+  const byHand = " Mark merged only if you merged the branch by hand.";
+  if (!ls) return `Merge now lands it.${byHand}`;
+  if (ls.kind === "held") {
+    if (ls.hold === "moved_since_review")
+      return `Held: the branch moved since the review approved it, so nothing lands it. Back to review sends ${ref} to Review to sign off the new commits; Send back to rework returns it to Refining.${byHand}`;
+    if (ls.hold === "unpinned_repo")
+      return `Held: the approval does not cover every repository, so it can never land as approved. Back to review sends ${ref} to Review to approve every repository together.${byHand}`;
+    if (ls.hold === "merge_gate_red")
+      return `Held: the merge gate failed on the current default branch, so nothing lands it until you look. Merge now runs the merge gate again (after a fix on the default branch); Send back to rework returns it to Refining.${byHand}`;
+    if (ls.hold === "ci_red")
+      return `Held: required CI failed for the commit that would land. Merge now tries again once CI passes; Send back to rework returns it to Refining.${byHand}`;
+    return `${ls.label}. ${ls.detail}${byHand}`;
+  }
+  if (ls.kind === "partly_landed") return `Partly landed. ${ls.detail}`;
+  if (ls.kind === "landing")
+    return "The merge runner is landing it now; this page updates when it lands.";
+  if (ls.kind === "lands_next_tick") return `${ls.detail} Merge now lands it at once.${byHand}`;
+  return `Nothing lands it until you press Merge now.${byHand}`;
+}
+
 async function renderTicket(id) {
   if (!id) return renderWork();
   let view;
@@ -11107,6 +11137,37 @@ async function renderTicket(id) {
         },
         "Mark ready",
       ),
+    // A hold only a fresh review clears (the branch moved since the approval, or the
+    // approval missed a repository): back to Review, through the reopen-for-review route.
+    back_to_review: () =>
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          title: "Send this approved ticket back to Review to sign off its current commits",
+          onclick: () =>
+            reasonSheet({
+              title: `Back to review: ${ref}`,
+              ticket: t,
+              intro: `${ref} is held: ${(t.landing_state && t.landing_state.detail) || "its approval no longer covers what would land."} This moves it back to In review, the old approval stops counting, and you approve the current commits on the Review page.`,
+              label: "Why back to review?",
+              presets: ["The branch moved since review", "The approval missed a repository"],
+              hint: "Required. It is kept on the ticket.",
+              confirm: "Back to review",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/reopen-for-review`, {
+                  reason,
+                  resolution:
+                    "Sent back to review from the ticket page: review the current commits and approve again.",
+                });
+                toast(`${ref} is back in review.`, { ok: true });
+                router();
+              },
+            }),
+        },
+        "Back to review",
+      ),
     // Send an approved-and-merging ticket back for rework (-> refining); resets ACs.
     rework: () =>
       el(
@@ -11208,7 +11269,14 @@ async function renderTicket(id) {
           onclick: () =>
             guard(async () => {
               await api("POST", `/tickets/${t.id}/merge`);
-              toast("Merge started — the board updates when it lands", { ok: true });
+              // A held landing stays held: say so, not "Merge started".
+              const ls = t.landing_state;
+              if (ls && ls.kind === "held") {
+                const why = String(ls.label || "held").replace(/^Held · /, "");
+                toast(
+                  `${ref} is held (${why}): Merge now asked the merge runner to check again, and nothing lands while the hold stands.${REVIEW_HOLDS.has(ls.hold) ? " Back to review is the way on." : ""}`,
+                );
+              } else toast("Merge started — the board updates when it lands", { ok: true });
               router();
             }),
         },
@@ -11314,8 +11382,12 @@ async function renderTicket(id) {
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
   // runner may be held. The status (its landing_state) and the lede say where it is.
   let markReadyBtn = null;
+  const actionKeys = ticketActionKeys(t.status);
+  const reviewHold =
+    t.status === "ready_for_merge" && t.landing_state && REVIEW_HOLDS.has(t.landing_state.hold);
+  const keys = reviewHold ? ["back_to_review", ...actionKeys] : actionKeys;
   const headActions = [
-    ...ticketActionKeys(t.status).map((key) => {
+    ...keys.map((key) => {
       if (!actionButtons[key]) return null;
       const b = roLock(actionButtons[key]());
       if (key === "mark_ready") markReadyBtn = b;
@@ -11437,8 +11509,7 @@ async function renderTicket(id) {
     paused:
       "Continue resumes the delivery in its worktree; Stop cancels it, and its worktree is removed on the next tick.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
-    ready_for_merge:
-      "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",
+    ready_for_merge: approvedMoveWords(t, ref),
     in_testing: "The tester owns the verdict. Record it by hand only if you tested it yourself.",
     draft: "Mark it ready when its acceptance criteria say what done means.",
     refining: "Mark it ready when its acceptance criteria say what done means.",

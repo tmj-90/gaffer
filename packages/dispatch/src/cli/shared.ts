@@ -74,7 +74,8 @@ export function testerActor(as: string): Actor {
 
 /**
  * Open the CLI's database. Only `init` passes `create: true`; every other command
- * refuses to conjure an empty `./.dispatch/dispatch.sqlite` (see assertCliDbExists).
+ * refuses a database file that does not exist, wherever the path came from (--db,
+ * DISPATCH_DB or the cwd fallback; see assertCliDbExists).
  */
 export function open(
   opts: { db?: string },

@@ -48,7 +48,10 @@ export function describeCliFailure(err: unknown): CliFailure {
     return { exitCode: 1, body: body(err.code, err.message) };
   }
   if (err instanceof DispatchError) {
-    return { exitCode: 1, body: body(err.code, err.message, err.details) };
+    // No database where the command was pointed: nothing ran, the invocation is
+    // wrong (a mistyped --db / GAFFER_DATA), so it exits 2 like a usage error.
+    const exitCode = err.code === "DB_NOT_FOUND" ? 2 : 1;
+    return { exitCode, body: body(err.code, err.message, err.details) };
   }
   if (err instanceof ZodError) {
     const issues = toZod3Issues(err.issues).map((i) => ({ path: i.path, message: i.message }));

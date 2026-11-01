@@ -2602,6 +2602,7 @@ async function startLiveStream() {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         let isEvent = false;
+        let isReset = false;
         let data = "";
         for (const line of frame.split("\n")) {
           // A seq of 0 counts: the server's `reset` frame moves a stale cursor back to it.
@@ -2609,8 +2610,12 @@ async function startLiveStream() {
             const seq = line.slice(4).trim();
             if (/^\d+$/.test(seq)) liveStreamSeq = Number(seq);
           } else if (line.startsWith("event: work_event")) isEvent = true;
+          else if (line.startsWith("event: reset")) isReset = true;
           else if (line.startsWith("data: ")) data += line.slice(6);
         }
+        // A reset says the cursor came from another log (a restore, an import): what the
+        // page shows may be stale, and no event will say so. Re-read it.
+        if (isReset) scheduleLiveRefresh();
         if (isEvent) {
           // The stream carries no agent_display: a rename or a new agent re-reads the squad.
           const type = (parseJsonSafe(data) || {}).event_type;
@@ -2694,6 +2699,18 @@ function reviewSignature(tickets) {
   return tickets.map((t) => `${t.id}@${t.updated_at || ""}`).join("|");
 }
 
+/** A text field in this view holds something the person typed and has not sent. */
+function viewHasTypedText(root) {
+  if (!root || !root.querySelectorAll) return false;
+  for (const f of root.querySelectorAll("textarea, input")) {
+    const type = (f.getAttribute("type") || "text").toLowerCase();
+    if (!["text", "search", "url", "number", "email"].includes(type) && f.tagName !== "TEXTAREA")
+      continue;
+    if (f.value !== f.defaultValue) return true;
+  }
+  return false;
+}
+
 /** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
 let refreshing = false;
 function refreshCurrentView() {
@@ -2712,6 +2729,9 @@ function refreshCurrentView() {
   if (!render || refreshing) return;
   const gen = routeGen;
   const current = app.firstElementChild;
+  // The ticket page has inline forms (a criterion, a repo, a note): text typed there and
+  // left for a moment is not thrown away by a delivery that touched the ticket.
+  if (view === "ticket" && viewHasTypedText(current)) return;
   refreshing = true;
   (async () => {
     try {
@@ -3396,6 +3416,9 @@ async function allTickets(qs = "", opts = {}) {
   if (!opts.full) base.set("fields", "summary");
   base.set("limit", "1000");
   const out = [];
+  // A ticket created (or re-prioritised) between two pages shifts the rows after it, so
+  // the next page can repeat one: keep each ticket once.
+  const seen = new Set();
   let offset = 0;
   let total = 0;
   for (let guard = 0; guard < 1000; guard++) {
@@ -3407,7 +3430,11 @@ async function allTickets(qs = "", opts = {}) {
       opts.signal ? { signal: opts.signal } : {},
     );
     const rows = (res && res.tickets) || [];
-    out.push(...rows);
+    for (const r of rows) {
+      if (r && seen.has(r.id)) continue;
+      if (r) seen.add(r.id);
+      out.push(r);
+    }
     total = res && typeof res.total === "number" ? res.total : out.length;
     if (!res || res.next_offset == null || !rows.length) break;
     offset = res.next_offset;
@@ -3440,10 +3467,16 @@ async function boardAll(qs = "", opts = {}) {
   for (const area of areas) {
     const want =
       area === "closed" || area === "wontDo" ? board.counts[area] : board.counts.columns[area];
-    let have = areaCards(board, area);
+    const have = areaCards(board, area);
+    // Keep each card once: a ticket that moved between two reads shifts the window.
+    const seen = new Set(have.map((c) => c && c.id));
+    let pos = have.length;
     while (typeof want === "number" && have.length < want) {
-      const more = areaCards(await get({ area, offset: String(have.length) }), area);
-      if (!more.length) break;
+      const page = areaCards(await get({ area, offset: String(pos) }), area);
+      if (!page.length) break;
+      pos += page.length;
+      const more = page.filter((c) => c && !seen.has(c.id));
+      for (const c of more) seen.add(c.id);
       have.push(...more);
       if (area === "ready_for_merge" && Array.isArray(board.readyForMerge))
         board.readyForMerge.push(...more);
@@ -17790,7 +17823,9 @@ async function renderClearDesk(wrap) {
  * Keys: j / k next / previous change, a arm → a approve, r send back.
  */
 async function renderReview(param) {
-  const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+  // Every ticket in review (GET /tickets answers 500 rows a page), the same read the
+  // refresh signature makes, so a long queue neither loses its tail nor re-renders.
+  const tickets = (await allTickets("status=in_review", { full: true })).tickets;
   const wrap = el("div", { class: "view view-review" });
   // The refresh compares this before re-reading anything (see VIEW_SIGNATURES).
   wrap.dataset.sig = reviewSignature(tickets);

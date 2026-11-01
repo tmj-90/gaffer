@@ -93,9 +93,23 @@ export const maybe = (fn, label, ms, every) => waitFor(fn, label, ms, every).cat
 
 export const ticketView = async (id) => (await api("GET", `/tickets/${id}`)).json;
 export const ticketOf = async (id) => (await ticketView(id)).ticket;
+/** Every ticket: GET /tickets answers a page (500 rows unless `limit`), so follow next_offset. */
 export async function listTickets() {
-  const r = (await api("GET", "/tickets?limit=1000")).json;
-  return Array.isArray(r) ? r : r.tickets || [];
+  const out = [];
+  const seen = new Set();
+  let offset = 0;
+  for (let guard = 0; guard < 1000; guard++) {
+    const r = (await api("GET", `/tickets?limit=1000&offset=${offset}`)).json;
+    const rows = Array.isArray(r) ? r : (r && r.tickets) || [];
+    for (const t of rows) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(t);
+    }
+    if (Array.isArray(r) || !r || r.next_offset == null || !rows.length) break;
+    offset = r.next_offset;
+  }
+  return out;
 }
 export const acsOf = (view) => view.acceptanceCriteria || view.acceptance_criteria || [];
 /** Wait until the ticket's status is one of `statuses`; answers the ticket or null. */

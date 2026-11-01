@@ -396,9 +396,12 @@ structural barrier the whole design hangs on.
   The server stamps it as `landing_state` on the ticket, the board cards, the
   ticket list and the Team sheet. The ticket page's *Your move* says the same
   thing in its own words and offers the action that clears it (**Back to review**
-  for a branch that moved since review or an approval that missed a repository),
-  and the page follows the live stream: when a landing completes, every open tab
-  of that ticket turns to Done and drops its merge actions without a reload.
+  for a branch that moved since review or an approval that missed a repository;
+  the `ticket.reopened_for_review` event records that cause, and only the conflict
+  resolver's reopen says a merge conflict was resolved), and the page follows the
+  live stream: when a landing completes, every open tab of that ticket turns to
+  Done and drops its merge actions without a reload. Text typed in a field on the
+  page and not yet sent keeps the page as it is until it is sent or cleared.
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
   a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read

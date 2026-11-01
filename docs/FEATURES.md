@@ -255,7 +255,8 @@ structural barrier the whole design hangs on.
   between the diff loading and your click, the approval is **refused** (`409
   stale_revision`): nothing is approved, the Review view says the change moved and
   reloads the new diff. `wg review approve` takes `--commit <repo>=<sha>` (the values
-  `wg ticket diff <n> --heads` prints), and `gaffer approve` shows the commits and asks
+  `wg ticket diff <n> --heads` prints; one per repository, and naming a repository twice
+  is refused with 422 whatever the order), and `gaffer approve` shows the commits and asks
   before approving them; the factory's own agent review names the commit its reviewer
   judged and follows the same rule (a multi-repo ticket, whose other repositories the
   reviewer did not read, waits for you). The approval pins each repository's commit

@@ -177,6 +177,41 @@ describe("cli-wg/F-10: ticket landing shows no approved pin once the approval is
   });
 });
 
+describe("api/F12: duplicate repo entries in the approval's commits are refused, in any order", () => {
+  it("[head, other] and [other, head] are both 422 VALIDATION_ERROR and approve nothing", () => {
+    for (const order of [
+      [head, "0".repeat(40)],
+      ["0".repeat(40), head],
+    ]) {
+      const wg = freshWg();
+      const { id } = inReview(wg);
+      const commits = order.map((sha) => ({ repo: "billing-api", sha }));
+      expect(codeOf(() => wg.approveReview(id, human, { commits }))).toBe("VALIDATION_ERROR");
+      expect(wg.view(id).ticket.status).toBe("in_review");
+      wg.db.close();
+    }
+  });
+
+  it("the same repo named by name and by id is a duplicate too", () => {
+    const wg = freshWg();
+    const { id, repoId } = inReview(wg);
+    const commits = [
+      { repo: "billing-api", sha: head },
+      { repo: repoId, sha: head },
+    ];
+    expect(codeOf(() => wg.approveReview(id, human, { commits }))).toBe("VALIDATION_ERROR");
+    wg.db.close();
+  });
+
+  it("one entry per repo still approves", () => {
+    const wg = freshWg();
+    const { id } = inReview(wg);
+    const commits = [{ repo: "billing-api", sha: head }];
+    expect(wg.approveReview(id, human, { commits }).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+});
+
 describe("api/F1: two parallel Merge requests start one merge", () => {
   it("the second POST /tickets/:id/merge is 409 MERGE_IN_FLIGHT and starts nothing", async () => {
     const { createApiServer } = await import("../src/api/server.js");

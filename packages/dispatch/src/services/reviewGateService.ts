@@ -692,6 +692,25 @@ export class ReviewGateService {
       const what = moved
         .map((m) =>
           m.current === null
+    // DUPLICATE PINS (exploratory finding api/F12): one commit per repository. With two
+    // entries for one repo the first decided the outcome, so [head, other] approved and
+    // [other, head] read as a stale revision: the order of the list chose the answer.
+    const named = (c: ShownCommit): string =>
+      c.repo === null
+        ? (heads[0]?.repoId ?? "(unnamed)")
+        : (heads.find((h) => matches(c, h))?.repoId ?? c.repo);
+    const seen = new Map<string, number>();
+    for (const c of commits) seen.set(named(c), (seen.get(named(c)) ?? 0) + 1);
+    const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+    if (dupes.length > 0) {
+      const label = (k: string): string => heads.find((h) => h.repoId === k)?.repo ?? k;
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `Each repository can be approved at one commit only; ${dupes.map(label).join(", ")} ` +
+          "was named more than once. Nothing was approved.",
+        { reason: "duplicate_repo", repos: dupes.map(label) },
+      );
+    }
             ? `${m.repo} no longer has a delivery head to approve`
             : m.shown === null
               ? `${m.repo} (${m.current.slice(0, 12)}) was not in what you approved`

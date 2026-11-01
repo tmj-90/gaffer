@@ -502,6 +502,12 @@ structural barrier the whole design hangs on.
   reports, the Review button reads *Approve held: CI required, not reported*; when
   CI cannot be read at all (no `gh`, no GitHub remote) the strict policy sends the
   delivery back instead of waving it through.
+- **Landing never overwrites a file you ignore.** When an approved branch starts
+  tracking a file you keep ignored in your checkout (a `settings.local`), git would
+  replace your copy silently. Both landing paths (Merge now / `gaffer merge`, and the
+  merge lane) check for that first and merge with `--no-overwrite-ignore`; the ticket
+  is held for you (*blocked*, `ignored_file_in_the_way`) naming the file, and your
+  copy stays as it was.
 - **A merge conflict is never force-resolved.** The resolver agent merges the
   default branch into the delivery branch, and the runner **re-gates the
   resolution** — no conflict markers, and the repo's Definition-of-Done gates

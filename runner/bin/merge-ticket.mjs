@@ -129,6 +129,7 @@
 import { spawnSync, execFileSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -513,7 +514,9 @@ export function attemptMerge(repoPath, branch, defaultBranch, pin = null) {
       };
     }
   }
-  const co = git("checkout", defaultBranch);
+  // External review #9 (finding 5): a checkout or merge that updates the operator's
+  // working tree never overwrites a file the operator has ignored locally.
+  const co = git("checkout", "--no-overwrite-ignore", defaultBranch);
   if (co.status !== 0) {
     return {
       clean: false,
@@ -522,8 +525,8 @@ export function attemptMerge(repoPath, branch, defaultBranch, pin = null) {
     };
   }
   const merge = pin
-    ? git("merge", "--no-edit", "-m", `Merge branch '${branch}'`, pin)
-    : git("merge", "--no-edit", branch);
+    ? git("merge", "--no-edit", "--no-overwrite-ignore", "-m", `Merge branch '${branch}'`, pin)
+    : git("merge", "--no-edit", "--no-overwrite-ignore", branch);
   if (merge.status === 0) return { clean: true };
   // Conflict (or other merge failure): abort so the default branch is restored and the
   // delivery branch is left intact for the resolver.
@@ -645,7 +648,8 @@ export function mergeViaPr({
   let ff;
   if (head === defaultBranch) {
     const fetch = g("fetch", rem, defaultBranch);
-    ff = fetch.status === 0 ? g("merge", "--ff-only", "FETCH_HEAD") : fetch;
+    ff =
+      fetch.status === 0 ? g("merge", "--ff-only", "--no-overwrite-ignore", "FETCH_HEAD") : fetch;
   } else {
     // Not checked out here: a plain (non-forced) refspec is fast-forward-only by construction.
     ff = g("fetch", rem, `${defaultBranch}:${defaultBranch}`);
@@ -1580,6 +1584,90 @@ function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via,
  * tree only); a target checked out in another worktree is refused; otherwise the ref is
  * swapped atomically (`update-ref <ref> <merge> <target>`).
  */
+/**
+ * LANDING NEVER OVERWRITES AN IGNORED LOCAL FILE (external review #9, finding 5): the
+ * paths moving the live checkout from `from` to `to` would create where the operator has
+ * an untracked file that their ignore rules hide (a `settings.local` the approved branch
+ * started tracking). git's default for a merge or checkout is to overwrite such a file
+ * silently. Relative paths, sorted; [] when nothing is in the way.
+ */
+export function ignoredFilesInTheWay(repoPath, from, to) {
+  const added = git(
+    repoPath,
+    "diff",
+    "--name-only",
+    "--no-renames",
+    "--diff-filter=A",
+    "-z",
+    from,
+    to,
+  );
+  if (added.status !== 0) return [];
+  const out = [];
+  for (const rel of String(added.stdout || "")
+    .split("\0")
+    .filter(Boolean)) {
+    let exists = false;
+    try {
+      lstatSync(join(repoPath, rel));
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    if (!exists) continue;
+    if (git(repoPath, "check-ignore", "-q", "--no-index", "--", rel).status === 0) out.push(rel);
+  }
+  return out.sort();
+}
+
+/** The file names git listed in a "would be overwritten by merge/checkout" refusal. */
+export function overwrittenFiles(stderr) {
+  const text = String(stderr || "");
+  if (!/would be overwritten by (merge|checkout)/i.test(text)) return [];
+  const files = [];
+  let inList = false;
+  for (const line of text.split("\n")) {
+    if (/would be overwritten by (merge|checkout)/i.test(line)) {
+      inList = true;
+      continue;
+    }
+    if (!inList) continue;
+    if (/^\s+\S/.test(line)) files.push(line.trim());
+    else if (line.trim()) inList = false;
+  }
+  return files;
+}
+
+function ignoredFileRefusal(defaultBranch, files) {
+  const list =
+    files.slice(0, 10).join(", ") + (files.length > 10 ? ` (+${files.length - 10} more)` : "");
+  return {
+    ok: false,
+    code: "ignored-file",
+    files,
+    reason:
+      `landing would overwrite ${files.length === 1 ? "a file" : "files"} you ignore locally in the ` +
+      `${defaultBranch} checkout: ${list}. Your copy is kept; move it aside (or stop tracking it on ` +
+      `the branch) and land again`,
+  };
+}
+
+/** Hold the ticket for a human naming the ignored file(s) a landing refused to overwrite. */
+function holdIgnoredFile(ticketNumber, reason) {
+  const r = runDispatch([
+    "ticket",
+    "hold",
+    String(ticketNumber),
+    "--reason-code",
+    "ignored_file_in_the_way",
+    "--reason",
+    reason,
+    "--as",
+    "system",
+  ]);
+  return !r.error && r.status === 0;
+}
+
 export function landGatedMerge({ repoPath, defaultBranch, target, merge, branch, pin }) {
   const now = (ref) =>
     git(repoPath, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).stdout.trim();
@@ -1596,9 +1684,18 @@ export function landGatedMerge({ repoPath, defaultBranch, target, merge, branch,
       };
     if (now("HEAD") !== target)
       return { ok: false, code: "moved-target", reason: `${defaultBranch} moved` };
-    if (git(repoPath, "merge", "--quiet", "--ff-only", merge).status === 0) return { ok: true };
+    // Never overwrite a file the operator ignores locally (external review #9): checked
+    // first by name, and --no-overwrite-ignore makes git itself refuse if one appears.
+    const inTheWay = ignoredFilesInTheWay(repoPath, target, merge);
+    if (inTheWay.length > 0) return ignoredFileRefusal(defaultBranch, inTheWay);
+    const ff = git(repoPath, "merge", "--quiet", "--ff-only", "--no-overwrite-ignore", merge);
+    if (ff.status === 0) return { ok: true };
     if (now("HEAD") !== target)
       return { ok: false, code: "moved-target", reason: `${defaultBranch} moved` };
+    const named = overwrittenFiles(ff.stderr).filter(
+      (f) => git(repoPath, "check-ignore", "-q", "--no-index", "--", f).status === 0,
+    );
+    if (named.length > 0) return ignoredFileRefusal(defaultBranch, named);
     return {
       ok: false,
       code: "refused",
@@ -2143,6 +2240,16 @@ function landThroughMergeGate({
         ? `#${ticketNumber}: MERGE GATE OFF (GAFFER_DOD=0) — the combination was not gated`
         : `#${ticketNumber}: MERGE GATE PASS — the merge of ${pin.slice(0, 12)} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} passes the gates`,
     );
+    // An ignored local file the landing would overwrite is a refusal before anything is
+    // recorded as landing (external review #9): only the live checkout's working tree moves.
+    const liveHead = git(repoPath, "symbolic-ref", "--quiet", "--short", "HEAD").stdout.trim();
+    if (liveHead === defaultBranch) {
+      const inTheWay = ignoredFilesInTheWay(repoPath, gate.target, gate.merge);
+      if (inTheWay.length > 0) {
+        const r = ignoredFileRefusal(defaultBranch, inTheWay);
+        return { kind: "refused", code: r.code, reason: r.reason, files: r.files };
+      }
+    }
     // REVOCATION-SAFE LANDING: the last word before the default branch moves.
     if (beforeLand) {
       const b = beforeLand();
@@ -2163,7 +2270,7 @@ function landThroughMergeGate({
       );
       continue;
     }
-    return { kind: "refused", code: l.code, reason: l.reason };
+    return { kind: "refused", code: l.code, reason: l.reason, files: l.files };
   }
 }
 
@@ -2728,6 +2835,11 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
       continue;
     }
     if (res.kind !== "landed") {
+      if (res.code === "ignored-file") {
+        const held = holdIgnoredFile(ticketNumber, `${r.repo}: ${res.reason}`);
+        why(`${res.reason}${held ? " (held for a human: ignored_file_in_the_way)" : ""}`);
+        continue;
+      }
       why(`${res.reason}${res.code === "moved-target" ? " (kept moving while gated)" : ""}`);
       continue;
     }
@@ -3177,6 +3289,19 @@ function main() {
         `merged #${resolved.number} (${branch} → ${repo.defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
       );
     } else if (res.kind === "refused") {
+      // An ignored local file in the way: HOLD for a human naming it (the operator's copy
+      // is untouched), never a silent overwrite and never the resolver.
+      if (res.code === "ignored-file") {
+        const held = holdIgnoredFile(resolved.number, res.reason);
+        fail(
+          `refusing to merge #${resolved.number}: ${res.reason} — ` +
+            (held
+              ? "ticket held for a human (blocked, ignored_file_in_the_way)"
+              : "ticket stays ready_for_merge (the hold could not be recorded)"),
+          4,
+        );
+        return;
+      }
       // Not a conflict — nothing on the branch to resolve. Refuse, leave the ticket at
       // ready_for_merge and the live checkout as it was (never spawn the resolver).
       fail(

@@ -78,6 +78,11 @@ if [ -e .git ]; then
         commit retry
       fi
       done_json; exit 0 ;;
+    track-ignored)  # external review #9 (finding 5): the branch starts TRACKING a file the
+                    # operator ignores locally (settings.local), beside an ordinary change
+      printf 'BRANCH COPY\n' > settings.local
+      git add -f settings.local >/dev/null 2>&1
+      commit "$MODE"; done_json; exit 0 ;;
     hook-edit)  # external review #9: rewrite every tracked hook script (the repo's
                 # core.hooksPath dir) to drop a marker OUTSIDE the worktree, edit a source
                 # file, and stop WITHOUT committing, so the runner's auto-commit runs git

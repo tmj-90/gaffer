@@ -345,7 +345,7 @@ EOF
 _gaffer_land_one() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}" _RID="${7:-}" _RSEC="${8:-0}"
   local _CR_BASE _RPR _mrc _prc _mgrc
-  _MERGED_VIA="local"
+  _MERGED_VIA="local"; _LG_FILES=""
   # External review #9 (finding 2): every git below runs in the operator's checkout with
   # its hooks, fsmonitor and in-repo drivers/helpers neutralised (lib/git-safe.sh).
   declare -F gaffer_git_harden >/dev/null 2>&1 && gaffer_git_harden "$RREPO"
@@ -448,6 +448,16 @@ _gaffer_land_one() {
         4) _gaffer_merge_gate_hold "$RNUM" "$RBRANCH" "$RDEFAULT" "$_WHO"; return 4 ;;
         *) log "$_WHO: #$RNUM HELD — the merge gate could not run (${_MG_REASON:-unknown}); nothing merged"; return 2 ;;
       esac
+      # LANDING NEVER OVERWRITES AN IGNORED LOCAL FILE (external review #9): when the
+      # target is the live checkout, a file the operator ignores where the merge adds a
+      # tracked one is a HOLD naming it, before anything is recorded as landing.
+      if [ "$(git -C "$RREPO" symbolic-ref --quiet --short HEAD 2>/dev/null)" = "$RDEFAULT" ]; then
+        _LG_FILES="$(_gaffer_ignored_in_the_way "$RREPO" "$_MG_TARGET" "$_MG_MERGE")"
+        if [ -n "$_LG_FILES" ]; then
+          _gaffer_land_ignored_hold "$RNUM" "$RREPO" "$RDEFAULT" "$_WHO"
+          return 4
+        fi
+      fi
       # REVOCATION-SAFE LANDING: re-checked after the gate, right before the target moves.
       if ! _gaffer_land_begin "$RNUM" "$_LREF" "$_TB_PIN" local; then
         log "$_WHO: #$RNUM not landed: ${_LB_REASON}; nothing merged in $(basename "$RREPO") — left as Dispatch has it"
@@ -499,7 +509,12 @@ _gaffer_land_one() {
         esac
       fi
       ;;
-    3) log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes or untracked files the merge would overwrite; left in ready_for_merge for a human (never merge over live edits)" ;;
+    3)
+      if [ -n "${_LG_FILES:-}" ]; then
+        _gaffer_land_ignored_hold "$RNUM" "$RREPO" "$RDEFAULT" "$_WHO"; _mrc=4
+      else
+        log "$_WHO: #$RNUM approved but merge REFUSED — '$RDEFAULT' is checked out with uncommitted changes or untracked files the merge would overwrite; left in ready_for_merge for a human (never merge over live edits)"
+      fi ;;
     6) log "$_WHO: #$RNUM HELD — $RBRANCH moved between the landing check and the merge (approved ${_TB_PIN:0:12}); nothing merged"
        _mrc=4 ;;
     1)
@@ -732,6 +747,33 @@ _gaffer_merge_gate_hold() {
   fi
 }
 
+# LANDING NEVER OVERWRITES AN IGNORED LOCAL FILE (external review #9, finding 5).
+#   _gaffer_ignored_in_the_way <repo> <from> <to> → the paths (one per line) the move of the
+#   live checkout from <from> to <to> would create where the operator has an untracked file
+#   their ignore rules hide (git's merge/checkout default overwrites it silently).
+_gaffer_ignored_in_the_way() {
+  local repo="$1" from="$2" to="$3" rel
+  [ -n "$from" ] && [ -n "$to" ] || return 0
+  git -C "$repo" diff --name-only --no-renames --diff-filter=A "$from" "$to" 2>/dev/null | while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    { [ -e "$repo/$rel" ] || [ -L "$repo/$rel" ]; } || continue
+    git -C "$repo" check-ignore -q --no-index -- "$rel" 2>/dev/null && printf '%s\n' "$rel"
+  done
+  return 0
+}
+# _gaffer_land_ignored_hold <num> <repo> <default> <who>: hold the ticket for a human naming
+# the files in $_LG_FILES (the operator's copies are untouched).
+_gaffer_land_ignored_hold() {
+  local num="$1" repo="$2" def="$3" who="$4" list why
+  list="$(printf '%s\n' "$_LG_FILES" | grep . | head -10 | paste -sd ',' - | sed 's/,/, /g')"
+  why="landing would overwrite a file you ignore locally in the $def checkout of $(basename "$repo"): $list. Your copy is kept; move it aside (or stop tracking it on the branch) and land again"
+  if wg ticket hold "$num" --reason-code ignored_file_in_the_way --as system --reason "$why" >/dev/null 2>&1; then
+    log "$who: #$num HELD for a human — $why (blocked, ignored_file_in_the_way); nothing merged"
+  else
+    log "$who: #$num HELD — $why; nothing merged (could not move it to the human queue: left in ready_for_merge)"
+  fi
+}
+
 # COMPARE-AND-LAND: put exactly the gated merge commit on the target, and only while the
 # target still IS the commit that was gated.
 #   _gaffer_land_gated <repo> <default> <gated-target> <gated-merge> <branch> <pin>
@@ -747,9 +789,18 @@ _gaffer_land_gated() {
     # and a fast-forward to the gated merge only (refuses whatever is not its ancestor).
     [ -z "$(git -C "$repo" status --porcelain --untracked-files=no 2>/dev/null)" ] || return 3
     [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" = "$target" ] || return 7
-    git -C "$repo" merge --quiet --ff-only "$merge" >/dev/null 2>&1 && return 0
+    # --no-overwrite-ignore (external review #9): git's default silently replaces a file
+    # the operator ignores locally when the branch starts tracking it.
+    _LG_FILES="$(_gaffer_ignored_in_the_way "$repo" "$target" "$merge")"
+    [ -z "$_LG_FILES" ] || return 3
+    local _ffout
+    _ffout="$(git -C "$repo" merge --quiet --ff-only --no-overwrite-ignore "$merge" 2>&1 >/dev/null)" && return 0
     [ "$(git -C "$repo" rev-parse HEAD 2>/dev/null)" = "$target" ] || return 7
-    return 3   # an untracked file in the way: a refusal, not a conflict
+    # The files git named, kept only when the operator's ignore rules hide them (a plain
+    # untracked file in the way stays the ordinary refusal below).
+    _LG_FILES="$(printf '%s\n' "$_ffout" | awk '/would be overwritten by (merge|checkout)/{l=1;next} l&&/^[ \t]+[^ \t]/{sub(/^[ \t]+/,"");print;next} l&&NF{l=0}' \
+      | while IFS= read -r _f; do git -C "$repo" check-ignore -q --no-index -- "$_f" 2>/dev/null && printf '%s\n' "$_f"; done)"
+    return 3   # an untracked (or ignored) file in the way: a refusal, not a conflict
   fi
   # Checked out in ANOTHER worktree: moving the ref would desync that checkout — refuse.
   wtl="$(git -C "$repo" worktree list --porcelain 2>/dev/null)"

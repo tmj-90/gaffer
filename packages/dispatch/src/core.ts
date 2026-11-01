@@ -1382,6 +1382,18 @@ export class Dispatch {
     return this.repoSvc.setTicketRepoAccess(raw, actor);
   }
 
+  /**
+   * The runner's greenfield inherit (system only): give a sibling write access to the
+   * repo a bootstrap ticket in its epic onboarded. See RepoService.inheritBootstrapRepoAccess.
+   */
+  inheritBootstrapRepoAccess(
+    ticketRef: string,
+    repoRef: string,
+    actor: Actor,
+  ): TicketRepoAccessResult {
+    return this.repoSvc.inheritBootstrapRepoAccess(ticketRef, repoRef, actor);
+  }
+
   workPacketRepos(ticketRef: string): WorkPacketRepos {
     return this.repoSvc.workPacketRepos(ticketRef);
   }

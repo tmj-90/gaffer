@@ -384,6 +384,95 @@ describe("B1 review: one-line text on every surface, multi-line descriptions kep
   });
 });
 
+describe("B1 review: the greenfield inherit is recorded as system, and only for the epic's own repo", () => {
+  let dir: string;
+  let db: string;
+  let outside: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "wg-b1-inherit-"));
+    db = join(dir, "d.sqlite");
+    const wg = Dispatch.open(db);
+    // A greenfield epic: #1 bootstrap (onboarded "app"), #2 its sibling (a greenfield
+    // epic always gets its acceptance ticket too). "other" is an unrelated repo, and
+    // `outside` a ticket in no epic.
+    const epic = wg.createEpic(
+      {
+        epic: { name: "App", description: "brief" },
+        tickets: [
+          { title: "Bootstrap app", bootstrap: true, acceptanceCriteria: ["scaffolded"] },
+          { title: "Feature", acceptanceCriteria: ["works"], dependsOn: [0] },
+        ],
+      },
+      human,
+    );
+    expect(epic.ticketNumbers.slice(0, 2)).toEqual([1, 2]);
+    wg.registerRepository({ name: "app", default_branch: "main" }, human);
+    wg.registerRepository({ name: "other", default_branch: "main" }, human);
+    wg.linkRepository(wg.resolveTicket("1").id, "app", "primary", { type: "system" });
+    outside = String(wg.createTicket({ title: "unrelated" }, human).number);
+    wg.db.close();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("ticket repo-access inherit sets write+confirmed on the sibling as system", () => {
+    const r = runCli(db, ["ticket", "repo-access", "inherit", "2", "app"], { USER: "alice" });
+    expect(r.error).toBeUndefined();
+    const wg = Dispatch.open(db);
+    try {
+      const packet = wg.workPacketRepos("2");
+      expect(packet.writeRepos.map((l) => l.name)).toEqual(["app"]);
+      const ev = ticketEvents(wg, "2")
+        .filter((e) => e.event_type === "ticket.repo_access_set")
+        .pop()!;
+      expect(`${ev.actor_type}:${ev.actor_id ?? ""}`).toBe("system:");
+      expect(JSON.parse(ev.payload_json ?? "{}")).toMatchObject({
+        access: "write",
+        relation: "confirmed",
+      });
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("refuses any other repo, the bootstrap itself, a ticket outside the epic, and a non-system actor", () => {
+    for (const args of [
+      ["ticket", "repo-access", "inherit", "2", "other"],
+      ["ticket", "repo-access", "inherit", "1", "app"],
+      ["ticket", "repo-access", "inherit", outside, "app"],
+    ]) {
+      expect(errorCode(runCli(db, args).error), args.join(" ")).toBe("ACTOR_NOT_PERMITTED");
+    }
+    const wg = Dispatch.open(db);
+    try {
+      for (const actor of [human, agentActor, { type: "admin", id: "root" } as Actor]) {
+        let code: string | undefined;
+        try {
+          wg.inheritBootstrapRepoAccess("2", "app", actor);
+        } catch (e) {
+          code = errorCode(e);
+        }
+        expect(code, actor.type).toBe("ACTOR_NOT_PERMITTED");
+      }
+      expect(wg.workPacketRepos("2").writeRepos).toHaveLength(0);
+      // The person's boundary rule is unchanged: the system still cannot use `set`.
+      expect(() =>
+        wg.setTicketRepoAccess({ ticket_id: "2", repo_id: "app" }, { type: "system" }),
+      ).toThrow(/human or admin/);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("lib/greenfield.sh links through the system path, never `repo-access set`", () => {
+    const lib = readFileSync(join(__dirname, "../../../runner/lib/greenfield.sh"), "utf8");
+    const writes = lib
+      .split("\n")
+      .filter((l) => !/^\s*#/.test(l) && /\bwg ticket repo-access\b/.test(l));
+    expect(writes).toHaveLength(2);
+    for (const line of writes) expect(line, line.trim()).toMatch(/repo-access inherit\b/);
+  });
+});
+
 describe("B1 review: the runner's park messages name commands that exist", () => {
   it("the no-local-checkout park names onboard + repo-access set, never a `repo update`", () => {
     const tick = readFileSync(join(__dirname, "../../../runner/tick.sh"), "utf8");

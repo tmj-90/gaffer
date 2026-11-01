@@ -304,6 +304,62 @@ export class RepoService {
   }
 
   /**
+   * GREENFIELD INHERIT, the runner's system path (B1 review of cli-wg/F-05). After a
+   * bootstrap ticket onboards its new repo, the runner gives each sibling in the same
+   * epic write access to that repo (lib/greenfield.sh, planned by bin/inherit-repo.mjs,
+   * an ambiguous case chosen by a model call). That used to be recorded as the person
+   * running the CLI, which is false. It is now recorded as `system`, and the system may
+   * set exactly this boundary and no other: write + confirmed, on a non-bootstrap
+   * ticket, to a repo that a bootstrap ticket sharing one of its scope nodes (the epic)
+   * already holds write access to. Any other boundary stays a human's or admin's
+   * ({@link setTicketRepoAccess}).
+   */
+  inheritBootstrapRepoAccess(
+    ticketRef: string,
+    repoRef: string,
+    actor: Actor,
+  ): TicketRepoAccessResult {
+    if (actor.type !== "system") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only the runner (system) inherits a bootstrap repo; a person sets a boundary with `ticket repo-access set`.",
+        { actor_type: actor.type },
+      );
+    }
+    const ticket = this.resolveTicket(ticketRef);
+    const repo = this.repos.findById(repoRef) ?? this.repos.findByName(repoRef);
+    if (!repo) throw notFound("repository", repoRef);
+    const sharedBootstrap = this.db
+      .prepare(
+        `SELECT b.id FROM ticket_scope_nodes mine
+           JOIN ticket_scope_nodes theirs ON theirs.scope_node_id = mine.scope_node_id
+           JOIN tickets b ON b.id = theirs.ticket_id AND b.bootstrap = 1 AND b.id <> mine.ticket_id
+           JOIN ticket_repos tr ON tr.ticket_id = b.id AND tr.repo_id = ? AND tr.access = 'write'
+          WHERE mine.ticket_id = ? LIMIT 1`,
+      )
+      .get(repo.id, ticket.id) as { id: string } | undefined;
+    if (ticket.bootstrap === 1 || !sharedBootstrap) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        `The system may give ticket #${ticket.number ?? ticket.id} write access only to a repo ` +
+          `a bootstrap ticket in its epic onboarded, and '${repo.name}' is not one; a person ` +
+          "sets any other boundary with `ticket repo-access set`.",
+        { ticket_id: ticket.id, repo_id: repo.id },
+      );
+    }
+    return this.applyTicketRepoAccess(
+      {
+        ticket_id: ticket.id,
+        repo_id: repo.id,
+        access: "write",
+        relation: "confirmed",
+        source: "scope_inferred",
+      },
+      actor,
+    );
+  }
+
+  /**
    * Unguarded core of setTicketRepoAccess. Trusted internal callers (epic
    * creation) use this to seed a repo link.
    */

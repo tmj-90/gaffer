@@ -809,6 +809,23 @@ export function registerTicket(program: Command): void {
     });
 
   ticketRepo
+    .command("inherit <ref> <repoRef>")
+    .description(
+      "Runner (greenfield): give a ticket write access to the repo a bootstrap ticket in " +
+        "its epic onboarded. Recorded as system; refused for any other repo (a person uses " +
+        "`repo-access set`).",
+    )
+    .action((ref, repoRef, _opts, cmd) => {
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.inheritBootstrapRepoAccess(ref, repoRef, { type: "system" });
+        printJson({ ok: true, access: res.access, relation: res.relation });
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  ticketRepo
     .command("packet <ref>")
     .description("Show the partitioned work-packet repo boundary (write/read/test/denied)")
     .action((ref, _opts, cmd) => {

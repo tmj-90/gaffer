@@ -12,6 +12,7 @@ import {
   type DecisionSeverity,
   type Evidence,
   type PausedDelivery,
+  type ReopenForReviewCause,
   type ReworkAttempt,
   type Repository,
   type RiskLevel,
@@ -2319,12 +2320,28 @@ export class Dispatch {
     return this.reviewGateSvc.markMerged(ref, actor);
   }
 
+  /**
+   * Back to review (`done | ready_for_merge -> in_review`), system/admin only. `cause`
+   * says why; without one it is the ticket's hold when a fresh review is what clears it
+   * (`moved_since_review`, `unpinned_repo`), else `merge_conflict` (the resolver's
+   * reopen, the call this path was built for).
+   */
   reopenForReview(
     ref: string,
-    input: { reason: string; resolution: string },
+    input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    return this.reviewGateSvc.reopenForReview(ref, input, actor);
+    let cause = input.cause;
+    if (cause === undefined) {
+      const ls = this.landingState(ref);
+      cause =
+        ls &&
+        ls.kind === "held" &&
+        (ls.hold === "moved_since_review" || ls.hold === "unpinned_repo")
+          ? ls.hold
+          : "merge_conflict";
+    }
+    return this.reviewGateSvc.reopenForReview(ref, { ...input, cause }, actor);
   }
 
   rejectReview(

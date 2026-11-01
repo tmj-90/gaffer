@@ -682,7 +682,11 @@ export async function routeTickets(
     const body = reopenForReviewBody.parse(await readJsonBody(req));
     const result = wg.reopenForReview(
       id,
-      { reason: body.reason, resolution: body.resolution },
+      {
+        reason: body.reason,
+        resolution: body.resolution,
+        ...(body.cause ? { cause: body.cause } : {}),
+      },
       operatorActor(),
     );
     sendJson(res, 200, {

@@ -2047,8 +2047,10 @@ function removeWorktree(repoPath, worktree) {
  * This is the SINGLE, clearly-isolated Dispatch call: a human re-reviews the resolved
  * diff and re-approves, after which a later merge lands cleanly.
  *
- * The call is `wg ticket reopen-for-review <number> --reason … --resolution … --as
- * system` (ready_for_merge|done → in_review). Returns { ok, command, args, attempts }
+ * The call is `wg ticket reopen-for-review <number> --reason … --resolution … --cause
+ * merge_conflict --as system` (ready_for_merge|done → in_review). The cause is named:
+ * the resolution moved the branch, so the ticket's own hold would say
+ * moved_since_review, and the event must say a conflict was resolved. Returns { ok, command, args, attempts }
  * describing what was invoked; buildReapprovalCommand is exported
  * so tests can assert the argv shape without a real `wg`.
  */
@@ -2063,6 +2065,8 @@ export function buildReapprovalCommand({ ticketNumber, reason, resolution }) {
       reason,
       "--resolution",
       resolution,
+      "--cause",
+      "merge_conflict",
       "--as",
       "system",
     ],

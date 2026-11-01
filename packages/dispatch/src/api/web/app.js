@@ -11340,6 +11340,9 @@ async function renderTicket(id) {
               onConfirm: async (reason) => {
                 await api("POST", `/tickets/${t.id}/reopen-for-review`, {
                   reason,
+                  // The hold is the cause: the event says the branch moved (or the
+                  // approval missed a repository), not that a conflict was resolved.
+                  cause: (t.landing_state && t.landing_state.hold) || "other",
                   resolution:
                     "Sent back to review from the ticket page: review the current commits and approve again.",
                 });

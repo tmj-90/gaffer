@@ -4362,7 +4362,7 @@
           "Review & delivery"
         ],
         "summary": "Reopen a done ticket for re-review",
-        "description": "The auto-merge re-approval callback (done → in_review). Attributed like mark-merged: a human principal acts as admin under its own id.",
+        "description": "Back to review (done or ready_for_merge → in_review): the auto-merge resolver's re-approval callback, or a held ticket whose branch moved since review or whose approval missed a repository. `cause` says which, and the `ticket.reopened_for_review` event records it (`merge_conflict_resolved` is true only for `merge_conflict`). Attributed like mark-merged: a human principal acts as admin under its own id.",
         "parameters": [
           {
             "name": "id",
@@ -12536,6 +12536,16 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 20000
+          },
+          "cause": {
+            "type": "string",
+            "enum": [
+              "merge_conflict",
+              "moved_since_review",
+              "unpinned_repo",
+              "other"
+            ],
+            "description": "Why it goes back: merge_conflict (the resolver fixed a conflict), moved_since_review, unpinned_repo or other. Without it, the ticket's hold when it is one of those two, else merge_conflict."
           }
         },
         "required": [

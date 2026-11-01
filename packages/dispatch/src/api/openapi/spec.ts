@@ -852,8 +852,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Reopen a done ticket for re-review",
     description:
-      "The auto-merge re-approval callback (done → in_review). Attributed like " +
-      "mark-merged: a human principal acts as admin under its own id.",
+      "Back to review (done or ready_for_merge → in_review): the auto-merge resolver's " +
+      "re-approval callback, or a held ticket whose branch moved since review or whose " +
+      "approval missed a repository. `cause` says which, and the `ticket.reopened_for_review` " +
+      "event records it (`merge_conflict_resolved` is true only for `merge_conflict`). " +
+      "Attributed like mark-merged: a human principal acts as admin under its own id.",
     capability: "full",
     body: "reopenForReviewBody",
     responses: [

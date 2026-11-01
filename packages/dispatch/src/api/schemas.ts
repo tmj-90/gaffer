@@ -29,6 +29,7 @@ import {
   TICKET_REPO_SOURCES,
   TICKET_SCOPE_RELATIONS,
   TICKET_STATUSES,
+  REOPEN_FOR_REVIEW_CAUSES,
 } from "../domain/types.js";
 import { REPLAY_STATES } from "../util/contractHash.js";
 
@@ -339,6 +340,12 @@ export type RecordDeliveryArtifactBody = z.infer<typeof recordDeliveryArtifactBo
 export const reopenForReviewBody = z.object({
   reason: z.string().trim().min(1).max(2_000),
   resolution: z.string().trim().min(1).max(20_000),
+  cause: z
+    .enum(REOPEN_FOR_REVIEW_CAUSES)
+    .optional()
+    .describe(
+      "Why it goes back: merge_conflict (the resolver fixed a conflict), moved_since_review, unpinned_repo or other. Without it, the ticket's hold when it is one of those two, else merge_conflict.",
+    ),
 });
 export type ReopenForReviewBody = z.infer<typeof reopenForReviewBody>;
 

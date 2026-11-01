@@ -149,7 +149,10 @@ describe("web: a held or partly-landed ticket's Your move (exploratory finding u
     await ticks();
     const reopen = posts.find((p) => p.path === `/tickets/${t.id}/reopen-for-review`);
     expect(reopen).toBeTruthy();
-    expect(reopen!.body).toMatchObject({ reason: "taskflow-mini moved since review" });
+    expect(reopen!.body).toMatchObject({
+      reason: "taskflow-mini moved since review",
+      cause: "moved_since_review",
+    });
     expect(String((reopen!.body as { resolution?: string }).resolution)).not.toBe("");
   });
 

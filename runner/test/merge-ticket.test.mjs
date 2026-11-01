@@ -390,17 +390,23 @@ console.log("== AC7: buildReapprovalCommand is the single isolated re-approval c
     resolution: "summary",
   });
   eq("command is wg", command, "wg");
-  eq("argv shape: ticket reopen-for-review <n> --reason ... --resolution ... --as system", args, [
-    "ticket",
-    "reopen-for-review",
-    "7",
-    "--reason",
-    "why",
-    "--resolution",
-    "summary",
-    "--as",
-    "system",
-  ]);
+  eq(
+    "argv shape: ticket reopen-for-review <n> --reason ... --resolution ... --cause merge_conflict --as system",
+    args,
+    [
+      "ticket",
+      "reopen-for-review",
+      "7",
+      "--reason",
+      "why",
+      "--resolution",
+      "summary",
+      "--cause",
+      "merge_conflict",
+      "--as",
+      "system",
+    ],
+  );
 }
 
 console.log("== AC8: buildChildEnv strips DISPATCH_API_TOKEN, sets MCP + write-root ==");

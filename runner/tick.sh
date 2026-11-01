@@ -1256,6 +1256,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Probe it there first — bounded, no model call. A dead registry used to surface
     # only as the agent's npm retrying TLS failures until the 30-min tick timeout,
     # parked as a generic "timeout" (seen live). Clearly non-node stacks skip it.
+    _B_OFFLINE_NOTE=""
     case "$(printf '%s' "${STACK:-}" | tr '[:upper:]' '[:lower:]')" in
       python*|go|golang|rust|java|kotlin|ruby|dotnet|csharp|php|elixir|swift|c|cpp|terraform|shell|bash) ;;
       *)
@@ -1266,9 +1267,14 @@ if [ "$READY_COUNT" -gt 0 ]; then
             # (the npm_config_ prefix carries this into the agent's env).
             export npm_config_prefer_offline=true
             log "BOOTSTRAP: #$NUM the npm registry is unreachable (${GAFFER_REGISTRY_PROBE_CODE:-offline}) but the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE:-?} is warm — going ahead offline (npm_config_prefer_offline=true)"
+            # Said on the card too, and on any park below: a package the cache does not
+            # hold fails the install with the same offline error, and that is the cause.
+            _B_OFFLINE_NOTE="the npm registry was unreachable (${GAFFER_REGISTRY_PROBE_CODE:-offline}), so this bootstrap installed offline from the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE:-?}; a package that cache does not hold cannot install: connect to the registry (or warm the cache) and move #$NUM back to ready"
+            wg attach-evidence "$NUM" --type manual_note \
+              --summary "OFFLINE INSTALL: $_B_OFFLINE_NOTE" >/dev/null 2>&1 || true
           fi
           if [ "$_PROBE_RC" -eq 1 ]; then
-            _PROBE_WHY="environment: the npm registry is unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE:-unknown}) — $(gaffer_registry_probe_hint "${GAFFER_REGISTRY_PROBE_CODE:-}"). No model call was spent; fix the environment (runner/preflight.sh runs the same probe) and move #$NUM back to ready."
+            _PROBE_WHY="environment: the npm registry is unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE:-unknown}) — $(gaffer_registry_probe_hint "${GAFFER_REGISTRY_PROBE_CODE:-}")${GAFFER_REGISTRY_PROBE_NOTE:+; $GAFFER_REGISTRY_PROBE_NOTE}. No model call was spent; fix the environment (runner/preflight.sh runs the same probe) and move #$NUM back to ready."
             log "BOOTSTRAP: #$NUM parked before spawning — $_PROBE_WHY${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}"
             wg attach-evidence "$NUM" --type manual_note \
               --summary "ENVIRONMENT: $_PROBE_WHY" >/dev/null 2>&1 || true
@@ -1424,7 +1430,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # FINDING-12: park bootstrap failures to the VISIBLE `blocked` column (event +
       # attention count in status.sh / the human queue) — `refining` hid them from
       # selection, clarify, status and the human queue.
-      gaffer_release_delivery blocked "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection" bootstrap_failed
+      gaffer_release_delivery blocked "bootstrap failed (rc=$brc) — scaffold left at $B_DIR for inspection${_B_OFFLINE_NOTE:+; $_B_OFFLINE_NOTE}" bootstrap_failed
       gaffer_skip_ticket "$NUM"
       log "BOOTSTRAP FAILED for #$NUM (rc=$brc) — leaving $B_DIR for inspection; not onboarding"
       result error; exit 0
@@ -1446,7 +1452,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED: bootstrap produced no scaffold commit beyond the baseline — needs clarification" >/dev/null 2>&1 || true
       # FINDING-12: VISIBLE park (see the rc-failure park above).
-      gaffer_release_delivery blocked "bootstrap produced no initial commit" bootstrap_failed
+      gaffer_release_delivery blocked "bootstrap produced no initial commit${_B_OFFLINE_NOTE:+; $_B_OFFLINE_NOTE}" bootstrap_failed
       gaffer_skip_ticket "$NUM"; result error; exit 0
     fi
 

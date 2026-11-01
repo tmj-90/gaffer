@@ -40,7 +40,12 @@ cat > "$WORK/bin/npm" <<'STUB'
 #!/usr/bin/env bash
 env > "${STUB_ENV_DUMP_FILE:-/dev/null}" 2>/dev/null || true
 # `npm config get cache` answers from a file (check 10: the agent's npm cache dir).
-if [ "${1:-}" = "config" ]; then cat "__CACHE_FILE__" 2>/dev/null; exit 0; fi
+# Real npm refuses `config get cache` for a path it redacts as a secret (a UUID-shaped
+# segment): check 12 turns that on with the PROTECT file.
+if [ "${1:-}" = "config" ]; then
+  [ -e "__PROTECT_FILE__" ] && { echo "npm error The cache option is protected, and can not be retrieved in this way" >&2; exit 1; }
+  cat "__CACHE_FILE__" 2>/dev/null; exit 0
+fi
 mode="$(cat "$STUB_MODE_FILE" 2>/dev/null || echo ok)"
 case "$mode" in
   ok)   echo "npm notice PONG 12ms"; exit 0 ;;
@@ -52,11 +57,11 @@ case "$mode" in
 esac
 STUB
 chmod +x "$WORK/bin/npm"
-MODE="$WORK/mode"; DUMP="$WORK/env.dump"; CACHE_FILE="$WORK/npm-cache-path"
+MODE="$WORK/mode"; DUMP="$WORK/env.dump"; CACHE_FILE="$WORK/npm-cache-path"; PROTECT="$WORK/npm-config-protected"
 # STUB_* must reach the stub THROUGH the agent allowlist → ride the GAFFER_ prefix?
 # No: the allowlist is the thing under test, so the stub reads them from files
 # named by absolute paths baked in here instead.
-sed -i.bak "s|\${STUB_MODE_FILE}|$MODE|; s|\${STUB_ENV_DUMP_FILE:-/dev/null}|$DUMP|; s|\$STUB_MODE_FILE|$MODE|; s|__CACHE_FILE__|$CACHE_FILE|" "$WORK/bin/npm" && rm -f "$WORK/bin/npm.bak"
+sed -i.bak "s|\${STUB_MODE_FILE}|$MODE|; s|\${STUB_ENV_DUMP_FILE:-/dev/null}|$DUMP|; s|\$STUB_MODE_FILE|$MODE|; s|__CACHE_FILE__|$CACHE_FILE|; s|__PROTECT_FILE__|$PROTECT|" "$WORK/bin/npm" && rm -f "$WORK/bin/npm.bak"
 
 export PATH="$WORK/bin:$PATH"
 export HOME="$WORK/home"; mkdir -p "$HOME"
@@ -224,10 +229,53 @@ if [ -f "$ROOT_DIR/packages/crew/dist/runtime/context/renderPromptCli.js" ] && c
   grep -q '^npm_config_prefer_offline=true$' "$CLAUDE_ENV_DUMP" 2>/dev/null \
     && ok "the agent's npm is told prefer-offline (installs come from the warm cache)" \
     || fail "npm_config_prefer_offline=true missing from the agent env"
+  grep '"attach-evidence"' "$WG_CALLS" | grep -q 'OFFLINE INSTALL: the npm registry was unreachable (ENOTFOUND)' \
+    && ok "the card says the bootstrap installed offline from the cache" || fail "no OFFLINE INSTALL evidence"
+
+  echo "== 11b: offline, and the cache lacks a package: the park says why =="
+  : > "$WG_CALLS"; rm -rf "$BOOT_ROOT"; GDATA="$WORK/data-offline-miss"; mkdir -p "$GDATA"
+  STUB_CLAUDE3="$WORK/stub-claude-fail.sh"
+  printf '#!/usr/bin/env bash\necho "npm error code ENOTFOUND" >&2\nprintf "%%s\\n" "{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true,\"result\":\"install failed\"}"\nexit 1\n' > "$STUB_CLAUDE3"; chmod +x "$STUB_CLAUDE3"
+  OUT="$(env WG_CALLS="$WG_CALLS" RUNNER_DIR="$RUNNER_DIR" GAFFER_DATA="$GDATA" DISPATCH_DIR="$DISPATCH_DIR" \
+        GAFFER_BOOTSTRAP_ROOT="$BOOT_ROOT" CLAUDE_BIN="$STUB_CLAUDE3" CLAUDE_FLAGS="" GAFFER_DAILY_BUDGET_USD=5 \
+        DRY_RUN=0 REVIEW_MODE=human CLARIFY_DRAFTS_WHEN_IDLE=0 GAFFER_TESTING=0 GAFFER_MAINTENANCE=0 \
+        STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0 SANDBOX_PROVIDER=none GAFFER_TICK_TIMEOUT=120 GAFFER_REGISTRY_PROBE_TIMEOUT=5 \
+        ${BOUND[@]+"${BOUND[@]}"} bash "$RUNNER_DIR/tick.sh" 2>&1)"
+  REL="$(grep '"runner-release"' "$WG_CALLS" | tail -1)"
+  case "$REL" in *"installed offline from the npm cache"*"cannot install"*bootstrap_failed*) ok "the bootstrap park names the offline install from the cache as the likely cause" ;;
+    *) fail "park reason does not say it ran offline: ${REL:-<none>} ($(printf '%s' "$OUT" | grep -E 'BOOTSTRAP|TICK_RESULT' | tail -3 | tr '\n' ' ' | cut -c1-400))" ;; esac
   echo ok > "$MODE"
 else
   gaffer_skip_part "check 11 — crew not built or git missing"
 fi
+
+echo "== 12: npm will not print the cache dir (a UUID-shaped path): the warm cache is still found =="
+echo dns > "$MODE"; : > "$PROTECT"
+( export npm_config_cache="$CACHE"; gaffer_registry_probe 5; rc=$?
+  [ "$rc" -eq 3 ] && [ "${GAFFER_REGISTRY_PROBE_CACHE:-}" = "$CACHE" ] ) \
+  && ok "npm_config_cache in the agent env names the warm cache (rc 3)" || fail "npm_config_cache fallback: no warm cache found"
+H2="$WORK/home-npm"; mkdir -p "$H2/.npm/_cacache/index-v5/bb"; printf 'entry\n' > "$H2/.npm/_cacache/index-v5/bb/entry"
+( export HOME="$H2"; unset npm_config_cache; gaffer_registry_probe 5; rc=$?
+  [ "$rc" -eq 3 ] && [ "${GAFFER_REGISTRY_PROBE_CACHE:-}" = "$H2/.npm" ] ) \
+  && ok "else \$HOME/.npm (npm's default) is read" || fail "HOME/.npm fallback: no warm cache found"
+rm -f "$PROTECT"
+
+echo "== 13: the docker sandbox does not see the host's npm cache: offline still parks =="
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/docker"; chmod +x "$WORK/bin/docker"
+( export SANDBOX_PROVIDER=docker STRICT_MODE=1; gaffer_registry_probe 5; rc=$?
+  [ "$rc" -eq 1 ] && case "${GAFFER_REGISTRY_PROBE_NOTE:-}" in *"docker sandbox"*"cannot install offline"*) true ;; *) false ;; esac ) \
+  && ok "docker sandbox on + offline + warm host cache → rc 1, the note says the container's cache is empty" \
+  || fail "docker sandbox: the warm host cache still let the bootstrap go ahead"
+( export SANDBOX_PROVIDER=docker STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0; gaffer_registry_probe 5; [ "$?" -eq 3 ] ) \
+  && ok "control: docker selected but the sandbox off → the agent runs on the host, rc 3" || fail "docker provider with the sandbox off no longer goes ahead offline"
+OUT="$(SANDBOX_PROVIDER=docker STRICT_MODE=1 bash "$RUNNER_DIR/preflight.sh" 2>&1)"
+grep 'npm registry UNREACHABLE' <<<"$OUT" | grep -q 'docker sandbox' && ok "preflight says why the warm cache does not count" || fail "preflight: $(grep -i registry <<<"$OUT")"
+rm -f "$WORK/bin/docker"; echo ok > "$MODE"
+
+echo "== 14: preflight notes a CA bundle variable that names no readable file =="
+OUT="$(SSL_CERT_FILE="$WORK/no-such-ca.pem" bash "$RUNNER_DIR/preflight.sh" 2>&1)"
+grep -q "SSL_CERT_FILE=$WORK/no-such-ca.pem is not a readable file" <<<"$OUT" && ok "preflight warns about the unreadable bundle (fail soft, with a note)" || fail "no note for an unreadable SSL_CERT_FILE"
+grep -q 'npm registry reachable from the agent env' <<<"$OUT" && ok "and npm still works (Node keeps its own roots)" || fail "the probe failed with a bogus SSL_CERT_FILE"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "registry-probe: ALL $PASS checks passed"; exit 0; fi

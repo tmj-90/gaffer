@@ -76,6 +76,8 @@ grep -Eq 'failed-safe:.*1 blocked' <<<"$OUT" && ok "failed-safe = 1 blocked" || 
 grep -Eq 'parked:.*1 refining' <<<"$OUT" && ok "parked = 1 refining" || fail "parked wrong"
 grep -Eq 're-queued:.*1 ready' <<<"$OUT" && ok "re-queued = 1 ready" || fail "re-queued wrong"
 
+grep -Eq 'landed:.*2 done \(all time\)' <<<"$OUT" && ok "without SUMMARY_SINCE the count is labelled all-time" || fail "unlabelled all-time count"
+
 echo "== AC2: parked reasons =="
 grep -qi 'hygiene violation' <<<"$OUT" && ok "parked ticket surfaces its hygiene park reason" || fail "park reason missing"
 

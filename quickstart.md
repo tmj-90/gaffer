@@ -179,7 +179,9 @@ runner/gaffer run --daemon            # walk away: re-runs the loop every 30s (L
                                       #   honours MAX_TICKS_PER_DAY; SIGINT/SIGTERM stops cleanly
 ```
 
-A live run needs a dollar cap. With neither `GAFFER_DAILY_BUDGET_USD` (per UTC day) nor
+A live run needs a dollar cap, and so does every other paid call (onboarding analysis,
+Plan a build, Suggest work, the spec author, the merge resolver, the tester; an onboard
+without one writes the mechanical digest and says why). With neither `GAFFER_DAILY_BUDGET_USD` (per UTC day) nor
 `GAFFER_BUDGET_USD` (lifetime) set, `gaffer run`, `loop.sh` and the dashboard's **Poll for
 work** refuse to start and print the fix. In the dashboard, the first **Poll for work**
 asks for a daily budget (prefilled at $5) and saves it to Settings → Budget & caps before
@@ -187,8 +189,8 @@ it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` in your environm
 key you cap somewhere else). It is ignored in `settings.json`.
 
 If the model refuses a call because your usage window ran out (or a rate limit hit),
-the ticket goes back to Ready without counting an attempt and the run sleeps until the
-window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
+the ticket goes back to Ready without counting an attempt. A one-shot run stops there
+(exit 75, `paused until <time>`); `--daemon` sleeps until the window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
 on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
 
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a

@@ -64,7 +64,8 @@ echo "== 1: autonomy → STRICT_MODE defaults on (the requirement is actually ev
   && ok "supervised (default): STRICT_MODE=0, strict-require unset" \
   || fail "supervised should stay STRICT_MODE=0 / no strict-require (got: $(probe))"
 for entry in "GAFFER_MODE=autonomous" "GAFFER_MODE=strict" "GAFFER_MODE=lite" \
-             "DISPATCH_ALLOW_AGENT_APPROVE=1" "MERGE_ON_AGENT_REVIEW=1" "AUTO_MERGE=1" "MEMORY_AUTO_APPROVE=1"; do
+             "DISPATCH_ALLOW_AGENT_APPROVE=1" "MERGE_ON_AGENT_REVIEW=1" "AUTO_MERGE=1" "MEMORY_AUTO_APPROVE=1" \
+             "GAFFER_AUTO_PUSH=1"; do
   got="$(probe "$entry")"
   [ "$got" = "STRICT_MODE=1 STRICT_REQUIRE=1" ] \
     && ok "$entry → STRICT_MODE=1 + GAFFER_STRICT_REQUIRE=1" \

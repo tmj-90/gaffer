@@ -6,9 +6,11 @@
 # it and waits instead of spinning:
 #   tick.sh      pre-claim gate (no claim, no spawn while paused) + the delivery path
 #                that records the pause and releases the claim without an attempt
-#   loop.sh      sleeps until the pause ends before admitting the next tick
-#   worker.sh    a pool worker stops admitting (sleeps) until it ends
+#   loop.sh      ends the pass (exit 75, "paused until <time>") instead of admitting
+#                the next tick; a one-shot run never sleeps on a pause
+#   worker.sh    a pool worker stops admitting and exits (loop.sh then exits 75)
 #   daemon.sh    `gaffer run --daemon` sleeps instead of starting a pass
+#   poll-once.sh the dashboard's Poll refuses at once ("— not polling.")
 #   status.sh    prints "paused until <time>: usage limit"
 # The state, the timing rules and the floor live in usage-pause.mjs; these helpers
 # only call it. Fail-soft on a missing node: no pause can be read, so none applies

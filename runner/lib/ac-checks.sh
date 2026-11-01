@@ -39,7 +39,7 @@ _gaffer_ac_check_rows() {
 gaffer_ac_check_count() {
   local rows
   rows="$(_gaffer_ac_check_rows "$1")" || { echo 0; return 0; }
-  [ -n "$rows" ] && printf '%s\n' "$rows" | grep -c . || echo 0
+  if [ -n "$rows" ]; then printf '%s\n' "$rows" | grep -c . || true; else echo 0; fi
 }
 
 gaffer_run_ac_checks() {

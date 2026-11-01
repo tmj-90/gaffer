@@ -291,8 +291,9 @@ printf "\n  ${c_dim}recent ticks${c_off}\n"
 # A delivery's agent call ends with "delivery tick for #N finished (rc=0)", and its
 # outcome comes after the gates: PARKED / PAUSED / FAILED / FLAGGED, or "submitted #N
 # for review". Show the outcome in place of the bare "finished (rc=0)" — a parked
-# delivery used to read as finished, with the PARKED line never shown.
-ticks="$(grep -hE 'delivering #|delivery tick for #|delivery (PARKED|PAUSED|FAILED|FLAGGED)|submitted #[0-9]+ for review' "$GAFFER_LOG" 2>/dev/null \
+# delivery used to read as finished, with the PARKED line never shown. A dry run logs
+# "DRY_RUN: previewed #N" (never "delivering"), shown as what it was.
+ticks="$(grep -hE 'delivering #|delivery tick for #|delivery (PARKED|PAUSED|FAILED|FLAGGED)|submitted #[0-9]+ for review|DRY_RUN: previewed #' "$GAFFER_LOG" 2>/dev/null \
   | awk '
       function num(s,   m) { if (match(s, /#[0-9]+/)) return substr(s, RSTART + 1, RLENGTH - 1); return "" }
       { line[NR] = $0; n = num($0) }

@@ -134,6 +134,49 @@ describe("onboardClarifications — RE-ENABLED but BATCHED (Track 1c)", () => {
   });
 });
 
+describe("onboardClarifications — a re-onboard does not file a duplicate intake decision", () => {
+  // Exploratory findings cli-runner/F-14, fresh-user/F-05, ui-workflows/F3: every
+  // re-onboard filed another "Onboarding intake for '<repo>'" decision (three on the
+  // Team Sheet after three onboards) while quickstart calls onboarding idempotent.
+  it("reuses the repo's open intake decision instead of filing another (fake client)", () => {
+    const dispatch = new FakeDispatchClient();
+    const first = onboardClarifications(fakeScan(), { repoId: "api", name: "api" }, { dispatch });
+    const again = onboardClarifications(fakeScan(), { repoId: "api", name: "api" }, { dispatch });
+    expect(dispatch.decisions).toHaveLength(1);
+    expect(again[0]!.decisionId).toBe(first[0]!.decisionId);
+    expect(again).toHaveLength(first.length);
+  });
+
+  it("files a fresh one once the earlier intake was answered, and never reuses another repo's", () => {
+    const dispatch = new FakeDispatchClient();
+    const first = onboardClarifications(fakeScan(), { repoId: "api", name: "api" }, { dispatch });
+    dispatch.answerDecision(first[0]!.decisionId, "answered");
+    const second = onboardClarifications(fakeScan(), { repoId: "api", name: "api" }, { dispatch });
+    expect(second[0]!.decisionId).not.toBe(first[0]!.decisionId);
+    const other = onboardClarifications(
+      fakeScan({ name: "web" }),
+      { repoId: "web", name: "web" },
+      { dispatch },
+    );
+    expect(other[0]!.decisionId).not.toBe(second[0]!.decisionId);
+    expect(dispatch.decisions).toHaveLength(3);
+  });
+
+  it("reuses the open intake decision against the real Dispatch", () => {
+    const facade = Dispatch.open(":memory:");
+    const dispatch = RealDispatchClient.fromFacade(
+      facade as unknown as Parameters<typeof RealDispatchClient.fromFacade>[0],
+    );
+    const first = onboardClarifications(fakeScan(), { repoId: "api", name: "api" }, { dispatch });
+    const again = onboardClarifications(fakeScan(), { repoId: "api", name: "api" }, { dispatch });
+    expect(again[0]!.decisionId).toBe(first[0]!.decisionId);
+    const intake = facade
+      .listPendingDecisions()
+      .filter((d) => d.title.startsWith("Onboarding intake for 'api'"));
+    expect(intake).toHaveLength(1);
+  });
+});
+
 describe("buildClarificationSuggestions (AC2) — batched by kind, gated as drafts", () => {
   const answers: AnsweredClarification[] = [
     {

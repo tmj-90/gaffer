@@ -251,6 +251,12 @@ export interface DispatchClient {
     severity?: string;
     ticketId?: string;
   }): DecisionRequestResult;
+  /**
+   * The decisions still waiting on a human (Dispatch's `listPendingDecisions`), so a
+   * re-onboard can find the repo's open intake decision instead of filing another.
+   * Absent (or `[]`) on a facade without it: onboarding then files as before.
+   */
+  listOpenDecisions?(): DecisionRequestResult[];
   claimNextTicket(p: {
     agentId: string;
     ttlSeconds: number;

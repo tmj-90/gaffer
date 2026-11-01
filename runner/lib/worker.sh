@@ -140,6 +140,9 @@ gaffer_claude_version() {
 
 worker_deliver() {
   local cwd="$1" prompt="$2" model_flag="$3" mcp_config="$4" out_json="$5" wrap="${6:-}"
+  # 1 after a call the budget admission refused (rc 77, nothing spawned): tick.sh
+  # releases that delivery without counting an attempt.
+  WORKER_LAST_BUDGET_REFUSED=0
   # Per-call turn cap: a role passes its own (already clamped to GAFFER_MAX_TURNS by
   # gaffer_role_turns); delivery/bootstrap pass none and keep the global flag.
   local _turns_flag="${GAFFER_MAX_TURNS_FLAG:-}"
@@ -185,6 +188,7 @@ worker_deliver() {
          || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}"; then
         : > "$out_json"
         printf 'worker: budget admission refused the paid %s launch — no agent spawned\n' "${GAFFER_LAUNCH_KIND:-worker}" >&2
+        WORKER_LAST_BUDGET_REFUSED=1
         return 77
       fi
       # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──

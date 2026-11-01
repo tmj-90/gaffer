@@ -87,7 +87,7 @@ if grep -q 'SELF-OP: refusing to deliver' <<<"$OUT_REFUSE"; then
 else
   fail "expected a SELF-OP refusal log (got: $(printf '%s' "$OUT_REFUSE" | tail -4))"
 fi
-if grep -q "delivering #$SELF_NUM" <<<"$OUT_REFUSE"; then
+if grep -qE "(delivering|previewed) #$SELF_NUM" <<<"$OUT_REFUSE"; then
   fail "self-target ticket must NOT proceed to delivery"
 else
   ok "self-target ticket does NOT proceed to delivery"
@@ -109,7 +109,7 @@ SKIP_FILE="$WORK/.gaffer/.failed-tickets"
 echo "== PROOF A (no infinite re-claim): a second tick does not re-select it =="
 # It is no longer 'ready' (un-readied), so the next tick finds no deliverable work.
 OUT_AGAIN="$(run_tick)"
-if grep -q "delivering #$SELF_NUM" <<<"$OUT_AGAIN"; then
+if grep -qE "(delivering|previewed) #$SELF_NUM" <<<"$OUT_AGAIN"; then
   fail "set-aside self-target must not be re-claimed on a later tick"
 else
   ok "later tick does NOT re-claim the set-aside self-target"
@@ -128,7 +128,7 @@ if grep -q "SELF-OP: refusing to deliver #$ROOT_NUM" <<<"$OUT_ROOT"; then
 else
   fail "monorepo-root ticket should be refused (got: $(printf '%s' "$OUT_ROOT" | grep -E 'SELF-OP|delivering|worktree|TICK_RESULT' | tail -4))"
 fi
-if grep -qE "delivering #$ROOT_NUM|would add a throwaway worktree" <<<"$OUT_ROOT"; then
+if grep -qE "(delivering|previewed) #$ROOT_NUM|would add a throwaway worktree" <<<"$OUT_ROOT"; then
   fail "monorepo-root ticket must NOT reach the worktree/delivery plan"
 else
   ok "monorepo-root ticket does NOT reach the worktree/delivery plan"
@@ -160,7 +160,7 @@ if grep -q "SELF-OP: refusing to deliver #$MULTI_NUM" <<<"$OUT_MULTI"; then
 else
   fail "multi-repo ticket should be refused (got: $(printf '%s' "$OUT_MULTI" | grep -E 'SELF-OP|delivering|WRITE|worktree|TICK_RESULT' | tail -4))"
 fi
-if grep -qE "would add a throwaway worktree|delivering #$MULTI_NUM" <<<"$OUT_MULTI"; then
+if grep -qE "would add a throwaway worktree|(delivering|previewed) #$MULTI_NUM" <<<"$OUT_MULTI"; then
   fail "multi-repo self-target must NOT reach the worktree/delivery plan"
 else
   ok "multi-repo self-target does NOT reach the worktree/delivery plan"
@@ -181,7 +181,7 @@ WG repo link "$SELF2" dispatch >/dev/null 2>&1
 WG ac add "$SELF2" -t "Self-op override AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 WG ticket ready "$SELF2" >/dev/null 2>&1
 OUT_OVERRIDE="$(run_tick GAFFER_ALLOW_SELF_DELIVERY=1)"
-if grep -q "delivering #$SELF2" <<<"$OUT_OVERRIDE"; then
+if grep -qE "(delivering|previewed) #$SELF2" <<<"$OUT_OVERRIDE"; then
   ok "override → the self-target ticket proceeds to delivery (today's behaviour restored)"
 else
   fail "GAFFER_ALLOW_SELF_DELIVERY=1 should let the self-target through (got: $(printf '%s' "$OUT_OVERRIDE" | grep -E 'SELF-OP|delivering|TICK_RESULT'))"
@@ -199,7 +199,7 @@ WG ticket move "$SELF2" draft >/dev/null 2>&1 || true
 WG ac add "$NORM_NUM" -t "Normal control AC" >/dev/null 2>&1   # GUARD A: ≥1 AC to ready
 WG ticket ready "$NORM_NUM" >/dev/null 2>&1
 OUT_NORMAL="$(run_tick)"
-if grep -q "delivering #$NORM_NUM" <<<"$OUT_NORMAL"; then
+if grep -qE "(delivering|previewed) #$NORM_NUM" <<<"$OUT_NORMAL"; then
   ok "non-Gaffer target proceeds to delivery as before"
 else
   fail "non-Gaffer target should be unaffected (got: $(printf '%s' "$OUT_NORMAL" | grep -E 'SELF-OP|delivering|TICK_RESULT'))"

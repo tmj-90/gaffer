@@ -103,7 +103,7 @@ echo "== PROOF A (control): raising the cap lets the SAME ticket through =="
 # With the cap raised above the 3 outstanding branches, the repo is no longer
 # backpressured and the tick proceeds to plan delivery for the ticket.
 OUT_OK="$(run_tick MAX_OPEN_AGENT_BRANCHES_PER_REPO=99)"
-if grep -q "delivering #$TNUM" <<<"$OUT_OK"; then
+if grep -qE "(delivering|previewed) #$TNUM" <<<"$OUT_OK"; then
   ok "cap raised to 99 → tick proceeds to deliver #$TNUM (backpressure lifted)"
 else
   fail "raising the cap should let the ticket through (got: $(grep -E 'delivering|TICK_RESULT' <<<"$OUT_OK"))"
@@ -168,7 +168,7 @@ if grep -q 'BACKPRESSURE: skipping ready' <<<"$OUT_WD"; then
 else
   ok "no BACKPRESSURE skip from three won't-do branches"
 fi
-grep -q "delivering #$TNUM" <<<"$OUT_WD" \
+grep -qE "(delivering|previewed) #$TNUM" <<<"$OUT_WD" \
   && ok "the new ready ticket #$TNUM still delivers at the default cap of 3" \
   || fail "expected #$TNUM to deliver (got: $(grep -E 'delivering|BACKPRESSURE|TICK_RESULT' <<<"$OUT_WD" | tr '\n' '|'))"
 

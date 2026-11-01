@@ -112,6 +112,14 @@ export interface DispatchFacade {
     severity?: string;
     status?: string;
   };
+  /** Mirrors `Dispatch.listPendingDecisions()` → the open decision rows. */
+  listPendingDecisions?(): Array<{
+    id?: string;
+    title?: string;
+    question?: string;
+    severity?: string;
+    status?: string;
+  }>;
   heartbeat?(claimToken: string): void;
   recordEvidence?(input: unknown, actor?: unknown): { evidenceId?: string; eventId?: string };
   recordDeliveryArtifact?(
@@ -458,6 +466,20 @@ export class RealDispatchClient implements DispatchClient {
       severity: String(res.severity ?? severity),
       status: String(res.status ?? ""),
     };
+  }
+
+  listOpenDecisions(): DecisionRequestResult[] {
+    if (!this.facade.listPendingDecisions) return [];
+    const rows = this.facade.listPendingDecisions.call(this.facade) ?? [];
+    return rows
+      .filter((r) => r && r.id)
+      .map((r) => ({
+        decisionId: String(r.id),
+        title: String(r.title ?? ""),
+        question: String(r.question ?? ""),
+        severity: String(r.severity ?? ""),
+        status: String(r.status ?? ""),
+      }));
   }
 
   heartbeat(claimToken: string): void {

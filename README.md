@@ -64,7 +64,7 @@ You'll need:
 - Node 22.22.1 or newer. That's the floor in `package.json`, and `.npmrc` sets `engine-strict=true`, so pnpm refuses anything older. Node 22.22.0 is one patch short, and setup says so before it installs anything.
 - pnpm 10.33.0, pinned in `packageManager`
 - git
-- the Claude Code CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it, and onboarding falls back to a mechanical scan.
+- the Claude Code CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it, and onboarding falls back to a mechanical scan. A live run looks for a credential before it claims anything and refuses with `claude is not logged in: run \`claude /login\``; a call that still fails to authenticate puts the ticket back in Ready without counting an attempt and stops the run.
 
 Set up, start the dashboard and onboard a repo:
 
@@ -95,14 +95,14 @@ Then watch it, and let it go when you're happy:
 
 ```bash
 runner/gaffer demo                         # one dry tick over a showcase repo, in a fresh temp dir
-runner/gaffer run --dry-run                # what a pass over your queue would do; nothing spent
+runner/gaffer run --dry-run                # preview each ready ticket once; nothing claimed or spent
 export GAFFER_DAILY_BUDGET_USD=5           # a live run refuses to start without a dollar cap
 runner/gaffer run                          # live: one pass, delivers ready tickets to review
 runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review screen
 runner/gaffer merge 1
 ```
 
-`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
+`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). A one-shot `gaffer run` doesn't sleep: it prints `paused until <time>` and exits 75, and the dashboard's Poll for work refuses with the same line. Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
 
 To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), run `mkdir -p repos` and put the repos you want worked on under `./repos` (create it yourself: on Linux, Docker creates a missing one owned by root, and the container's user can't write to it), then run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` (`GAFFER_PORT` changes the host side, and it falls back to `DISPATCH_API_PORT`) and `docker compose logs dashboard` shows the login link.
 
@@ -130,9 +130,9 @@ Every agent tool call goes through a deterministic PreToolUse hook, [runner/safe
 
 The runner decides "done" by running the repo's own tests, lint and typecheck, so it also checks the agent hasn't weakened them. Gate commands that call a package.json script run the script from the commit the delivery branched from. A delivery that deletes or renames a test, adds a `.skip`/`.only`/`xfail`/`t.Skip`, or changes a gate script (an added `pretest` hook included) is flagged on the sign-off, and an agent can't approve it. The check compares against the commit the runner recorded when it cut the branch, not the base branch name, and a retry keeps that commit. Only you can allow test changes on a ticket (`gaffer wg ticket allow-test-changes <n>`); that clears the flag but the gate still runs the base commit's scripts. For now it flags and never fails a delivery.
 
-The hook is a string analyser for bash, and a determined agent that builds paths at runtime can get further than I'd like. That's why anything that lets an agent ship work defaults `GAFFER_STRICT_REQUIRE=1`, which refuses to launch an agent without an OS sandbox. That covers the `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE` and `MEMORY_AUTO_APPROVE` flags, the modes that set them, and a per-repo policy that lets a repo ship unattended. `SANDBOX_PROVIDER=docker` gives read and egress isolation on any host with Docker. macOS `sandbox-exec` only restricts writes.
+The hook is a string analyser for bash, and a determined agent that builds paths at runtime can get further than I'd like. That's why anything that lets an agent ship work defaults `GAFFER_STRICT_REQUIRE=1`, which refuses to launch an agent without an OS sandbox. That covers the `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `MEMORY_AUTO_APPROVE` and `GAFFER_AUTO_PUSH` flags, the modes that set them, and a per-repo policy that lets a repo ship unattended. `SANDBOX_PROVIDER=docker` gives read and egress isolation on any host with Docker. macOS `sandbox-exec` only restricts writes.
 
-Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`), and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. `GAFFER_ALLOW_UNCAPPED=1` opts out. `GAFFER_MAX_CALL_USD` caps a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
+Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`), and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. Every other paid launch follows the same rule: onboarding analysis, Plan a build, Suggest work, the spec author, the merge resolver and the tester refuse with the same message, and an onboard without a cap writes the mechanical digest and cards and says why. `GAFFER_ALLOW_UNCAPPED=1` opts out. `GAFFER_MAX_CALL_USD` caps a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
 
 ## What's rough
 

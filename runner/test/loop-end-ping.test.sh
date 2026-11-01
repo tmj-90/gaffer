@@ -53,9 +53,11 @@ chmod +x "$WORK/stats.sh" "$WORK/hq.sh" "$WORK/notify.sh"
 # (no tick.sh, no claude), so only the closing report + ping execute. DISPATCH_*
 # point at nonexistent paths so the config's best-effort `wg` calls fail fast and
 # harmlessly (all guarded `|| …` / `|| true`).
-run_loop() {  # run_loop <stats-json> <hq-json>
+# DRY_RUN=0: a dry run never pings (P4 of dry-run-preview.test.sh; AC0 below), so the
+# end path is driven live, with no tick to run and the dollar-cap opt-out set.
+run_loop() {  # run_loop <stats-json> <hq-json> [DRY_RUN]
   ( trap - EXIT
-    MAX_TICKS=0 DRY_RUN=1 \
+    MAX_TICKS=0 DRY_RUN="${3:-0}" GAFFER_ALLOW_UNCAPPED=1 \
     GAFFER_DATA="$WORK/data" \
     GAFFER_LOG="$WORK/factory.log" \
     DISPATCH_DIR="$WORK/nodist" DISPATCH_DB="$WORK/db.sqlite" \
@@ -65,6 +67,12 @@ run_loop() {  # run_loop <stats-json> <hq-json>
     LOOP_NOTIFY_EMIT_CMD="$WORK/notify.sh" \
     bash "$RUNNER_DIR/loop.sh" 2>&1 )
 }
+
+# --- AC0: a DRY RUN never pings, even with work waiting ----------------
+: > "$SINK"
+out="$(run_loop '{"ticketsByStatus":{"in_review":3,"blocked":1,"ready":4}}' '{"items":[]}' 1)"
+[ -s "$SINK" ] && fail "a dry run sent a closing ping" || ok "a dry run sends no closing ping"
+has "$out" "sending closing ping" && fail "a dry run says 'sending closing ping'" || ok "a dry run does not say 'sending closing ping'"
 
 # --- AC1: work waiting → one ping with correct N/B/M counts -----------
 : > "$SINK"

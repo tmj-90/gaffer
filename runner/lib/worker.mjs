@@ -958,6 +958,52 @@ export function detectUsageLimit(json, nowMs = Date.now()) {
   return null;
 }
 
+// =====================================================================
+// AUTH ERRORS — the CLI could not authenticate (logged out, a bad or expired key).
+// The agent never ran, so the runner releases the claim WITHOUT counting an attempt
+// and stops the run with a /login hint (exploratory finding fresh-user/F-06): read as
+// an ordinary failure it went through the no-commit counter and parked good tickets.
+// Gated on an ERROR envelope like the usage-limit rows (the agent controls a success
+// envelope's text), and anchored at the start of the text. Add a row (and a fixture
+// in test/auth-gate.test.sh) when the CLI changes a string; never loosen one.
+// =====================================================================
+export const AUTH_ERROR_PATTERNS = Object.freeze([
+  { id: "cc-invalid-api-key", re: /^Invalid API key(?=$|\s|\u00b7|\.)/ },
+  { id: "cc-not-logged-in", re: /^Not logged in(?=$|\s|\u00b7|\.)/ },
+  { id: "cc-oauth-expired", re: /^OAuth token has expired(?=$|\s|\.)/ },
+  { id: "cc-api-401", re: /^API Error: 401(?=$|\s)/ },
+  {
+    id: "cc-auth-failed",
+    re: /^(?:API Error: )?(?:Failed to authenticate|Authentication failed)(?=$|\s|\.|:)/,
+  },
+]);
+
+/**
+ * Classify a parsed envelope as an authentication failure, or null.
+ *   → { id, message }  (message ≤300 chars, quoted in the log and the release reason)
+ */
+export function detectAuthError(json) {
+  if (!json || typeof json !== "object" || !isErrorEnvelope(json)) return null;
+  // A turn-cap stop means the agent ran for its turns: whatever text the envelope
+  // carries is the agent's, never the CLI's login failure (it must not dodge the cap).
+  if (json.subtype === "error_max_turns") return null;
+  if (json.error && typeof json.error === "object" && json.error.type === "authentication_error") {
+    const m = typeof json.error.message === "string" ? json.error.message : "authentication_error";
+    return { id: "api-authentication-error", message: m.slice(0, 300) };
+  }
+  const texts = [];
+  if (typeof json.result === "string") texts.push(json.result.trim());
+  if (Array.isArray(json.errors)) {
+    for (const e of json.errors) if (typeof e === "string") texts.push(e.trim());
+  }
+  for (const text of texts) {
+    for (const p of AUTH_ERROR_PATTERNS) {
+      if (p.re.test(text)) return { id: p.id, message: text.slice(0, 300) };
+    }
+  }
+  return null;
+}
+
 /**
  * THE seam: parse a captured `--output-format json` envelope into the things every
  * caller needs — the agent text, the usage signals, the cap signals, the stop
@@ -1006,6 +1052,9 @@ export const Worker = {
 //   node lib/worker.mjs parse-result usage-limit          --json-file <f>
 //        → prints the detectUsageLimit JSON and exits 0 on a usage/rate-limit
 //          outcome; prints nothing and exits 1 otherwise
+//   node lib/worker.mjs parse-result auth-error           --json-file <f>
+//        → prints the detectAuthError message and exits 0 on an auth failure;
+//          prints nothing and exits 1 otherwise
 // =====================================================================
 function readFileSafe(f) {
   try {
@@ -1044,6 +1093,12 @@ function parseResultCli(argv) {
   if (field === "usage-limit") {
     if (!parsed.usageLimit) process.exit(1);
     process.stdout.write(JSON.stringify(parsed.usageLimit));
+    process.exit(0);
+  }
+  if (field === "auth-error") {
+    const a = detectAuthError(parseClaudeJson(jsonFile ? readFileSafe(jsonFile) : ""));
+    if (!a) process.exit(1);
+    process.stdout.write(a.message);
     process.exit(0);
   }
   if (field === "result-text") {

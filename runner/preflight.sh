@@ -7,9 +7,13 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/factory.config.sh"
 
 pass=0; warn=0; fail=0
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; pass=$((pass+1)); }
-wn()   { printf '  \033[33m!\033[0m %s\n' "$*"; warn=$((warn+1)); }
-no()   { printf '  \033[31m✗\033[0m %s\n' "$*"; fail=$((fail+1)); }
+# No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
+ok()   { printf "  ${c_grn}✓${c_off} %s\n" "$*"; pass=$((pass+1)); }
+wn()   { printf "  ${c_yel}!${c_off} %s\n" "$*"; warn=$((warn+1)); }
+no()   { printf "  ${c_red}✗${c_off} %s\n" "$*"; fail=$((fail+1)); }
 
 echo "Gaffer factory preflight"
 

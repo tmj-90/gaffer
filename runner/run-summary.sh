@@ -20,7 +20,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
-c_grn='\033[1;32m'; c_cya='\033[1;36m'; c_yel='\033[1;33m'; c_red='\033[1;31m'; c_dim='\033[2m'; c_off='\033[0m'
+# No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
 say()  { printf "${c_cya}gaffer${c_off} %s\n" "$*"; }
 line() { printf "  %-16s %s\n" "$1" "$2"; }
 

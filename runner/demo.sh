@@ -16,7 +16,11 @@ export GAFFER_DATA="$DEMO" DISPATCH_DB="$DEMO/dispatch.sqlite" MEMORY_DB="$DEMO/
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
-line() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+# No colour in a pipe / file, under NO_COLOR or TERM=dumb (lib/colour.sh).
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
+line() { printf "\n${c_bold}%s${c_off}\n" "$*"; }
 
 [ -f "$DISPATCH_DIR/dist/cli/index.js" ] || { echo "build first: pnpm -C $DISPATCH_DIR build"; exit 1; }
 [ -f "$MEMORY_CLI_BIN" ] || { echo "build first: pnpm -C $MEMORY_DIR build"; exit 1; }

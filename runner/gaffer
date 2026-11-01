@@ -39,12 +39,16 @@ _GAFFER_OP_DRY_RUN="${DRY_RUN-}"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
-c_grn='\033[1;32m'; c_cya='\033[1;36m'; c_yel='\033[1;33m'; c_dim='\033[2m'; c_off='\033[0m'
-c_red='\033[1;31m'
+# Colour only for a person at a terminal: not in a pipe / file, not under NO_COLOR or
+# TERM=dumb (lib/colour.sh). err() writes to stderr, so it asks about stderr.
+# shellcheck source=lib/colour.sh
+. "$HERE/lib/colour.sh"
+gaffer_colours 1
+_e_red=''; _e_off=''; gaffer_colour_on 2 && { _e_red='\033[1;31m'; _e_off='\033[0m'; }
 say() { printf "${c_cya}gaffer${c_off} %s\n" "$*"; }
 ok()  { printf "  ${c_grn}✓${c_off} %s\n" "$*"; }
 warn(){ printf "  ${c_yel}!${c_off} %s\n" "$*"; }
-err() { printf "  ${c_red}✗${c_off} %s\n" "$*" >&2; }
+err() { printf "  ${_e_red}✗${_e_off} %s\n" "$*" >&2; }
 
 # One usage line per command — what `gaffer <cmd> --help` prints, and what a bad
 # argument is pointed at. Kept next to the header block above, which is `gaffer help`.

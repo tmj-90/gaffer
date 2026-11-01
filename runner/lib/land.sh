@@ -281,7 +281,10 @@ EOF
   # Dispatch has it, not done.
   local _after_st
   _after_st="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status || ""' 2>/dev/null || true)"
-  if [ -n "$_after_st" ] && [ "$_after_st" != "ready_for_merge" ]; then
+  # (Only a status Dispatch actually answered: an unreadable one leaves it to mark-merged,
+  # which re-checks the ticket server-side.)
+  case "$_after_st" in ""|ready_for_merge|*[!a-z_]*) _after_st="" ;; esac
+  if [ -n "$_after_st" ]; then
     log "$_WHO: #$RNUM LANDED AFTER A REVOCATION — it became $_after_st while its landing was under way (recorded after the last pre-landing check passed); landed in ${_landed_names:-$(basename "$RREPO")}; nothing else landed and the ticket is left $_after_st, not done — revert by hand if it must not ship"
     return 4
   fi

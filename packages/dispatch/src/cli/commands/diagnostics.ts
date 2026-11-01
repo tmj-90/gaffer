@@ -156,7 +156,7 @@ export function registerDiagnostics(program: Command): void {
   program
     .command("judge-agreement")
     .description(
-      "EVAL JUDGE: is the judge's score worth having? Pairs every judged delivery with what " +
+      "Is the eval judge's score worth having? Pairs every judged delivery with what " +
         "happened next (accepted, sent back, cancelled, pending; by a person, the agent " +
         "review or the tester) and reports how well the score separated them, with a reading " +
         "against fixed thresholds. Read-only. See docs/eval-harness.md.",

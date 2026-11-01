@@ -617,6 +617,7 @@ export class Dispatch {
       scope: this.scope,
       tickets: this.ticketSvc,
       repos: this.repoSvc,
+      testingEnabled: () => this.testingEnabledOverride ?? isTestingEnabled(),
     });
     this.specsSvc = new SpecsService({
       db,
@@ -1707,14 +1708,25 @@ export class Dispatch {
   // --- Decisions -----------------------------------------------------------
 
   createDecision(
-    input: { title: string; question: string; severity?: DecisionSeverity; ticketId?: string },
+    input: {
+      title: string;
+      question: string;
+      severity?: DecisionSeverity;
+      ticketId?: string;
+      ticketIds?: readonly string[];
+    },
     actor: Actor,
   ): Decision {
     // Accept any ticket reference (id, 15, #15, T-15) like every other ticket tool; the
     // link table stores the id, so an unresolved number would fail its foreign key.
     const ticketId = input.ticketId ? this.resolveTicket(input.ticketId).id : undefined;
+    const ticketIds = input.ticketIds?.map((ref) => this.resolveTicket(ref).id);
     return this.decisionSvc.createDecision(
-      { ...input, ...(ticketId !== undefined ? { ticketId } : {}) },
+      {
+        ...input,
+        ...(ticketId !== undefined ? { ticketId } : {}),
+        ...(ticketIds !== undefined ? { ticketIds } : {}),
+      },
       actor,
     );
   }

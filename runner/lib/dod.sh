@@ -95,6 +95,12 @@ gaffer_dod_install_env() {
     eval "_v=\${$_name:-}"
     [ -n "$_v" ] && _e+=( "$_name=$_v" )
   done
+  # Node (and so npm) trusts the bundle the operator exported for other tools when
+  # NODE_EXTRA_CA_CERTS is unset: this throwaway HOME never reads a ~/.npmrc cafile.
+  if declare -F gaffer_node_ca_fallback >/dev/null 2>&1; then
+    _v="$(gaffer_node_ca_fallback)"
+    [ -n "$_v" ] && _e+=( "NODE_EXTRA_CA_CERTS=$_v" )
+  fi
   eval "$_arr=(\"\${_e[@]}\")"
   eval "$_hv=\"\$_h\""
 }

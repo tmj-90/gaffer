@@ -1,5 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs";
-
 import type { Command } from "commander";
 
 import {
@@ -9,14 +7,14 @@ import {
   serializeBundle,
   verifyBundleRestores,
 } from "../../io/stateExport.js";
-import { DispatchError } from "../../util/errors.js";
-import { open, printJson, readStdin } from "../shared.js";
+import { open, printJson, readInputFile, readStdin, writeOutputFile } from "../shared.js";
 
 export function registerPortability(program: Command): void {
   // --- Portability: export / import the whole board (H5) ----------------------
 
   program
     .command("export")
+    .summary("Export the whole board to a portable JSON bundle (stdout, or --out)")
     .description(
       "Export the whole Dispatch board to a portable JSON bundle (tickets, epics, " +
         "scope graph, ACs, repos, decisions, reviews/evidence, work_events, claims, planner " +
@@ -40,7 +38,7 @@ export function registerPortability(program: Command): void {
         if (out === undefined || out === "-") {
           process.stdout.write(json);
         } else {
-          writeFileSync(out, json, { encoding: "utf8" });
+          writeOutputFile(out, json);
           printJson({
             ok: true,
             out,
@@ -58,29 +56,19 @@ export function registerPortability(program: Command): void {
 
   program
     .command("import <file>")
+    .summary("Import a board bundle into this database (--force replaces a non-empty one)")
     .description(
-      "Import a board bundle (from 'dispatch export') into THIS database. Refuses a " +
-        "non-empty DB unless --force is given (which replaces its contents). Reads " +
+      "Import a board bundle (from `export`) into THIS database. Refuses a " +
+        "non-empty DB unless --force is given (which replaces its contents); creates the " +
+        "database when it does not exist yet. Reads " +
         "stdin when <file> is '-'.",
     )
     .option("--force", "replace the contents of a non-empty database", false)
     .action((file: string, opts, cmd) => {
-      let json: string;
-      if (file === "-") {
-        json = readStdin();
-      } else {
-        try {
-          json = readFileSync(file, "utf8");
-        } catch (err) {
-          const isEnoent = (err as NodeJS.ErrnoException).code === "ENOENT";
-          throw new DispatchError(
-            isEnoent ? "FILE_NOT_FOUND" : "IO_ERROR",
-            isEnoent ? `File not found: ${file}` : `Could not read file: ${file}`,
-            { file },
-          );
-        }
-      }
-      const wg = open(cmd.optsWithGlobals());
+      const json = file === "-" ? readStdin() : readInputFile(file);
+      // Restoring a bundle into a new database is deliberate, so import, like init,
+      // creates the file it is pointed at (the stray-board guard covers the rest).
+      const wg = open(cmd.optsWithGlobals(), { create: true });
       try {
         const res = importStateFromJson(wg.db, json, { force: opts.force });
         printJson({ ok: true, ...res });

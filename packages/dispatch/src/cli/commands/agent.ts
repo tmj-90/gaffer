@@ -140,7 +140,7 @@ export function registerAgent(program: Command): void {
   program
     .command("human-claim <ref>")
     .description(
-      'TRACK-2b: take a ready ticket "by hand" (I\'ll do this myself). Moves it ready -> in_progress owned by you; the factory selection loop then structurally skips it.',
+      'Take a ready ticket "by hand" (I\'ll do this myself). Moves it ready -> in_progress owned by you; the factory selection loop then structurally skips it.',
     )
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
@@ -152,7 +152,7 @@ export function registerAgent(program: Command): void {
   program
     .command("human-release <ref>")
     .description(
-      "TRACK-2b: hand YOUR by-hand ticket back to the queue (in_progress -> ready, clearing your ownership marker so agents can pick it up). Refused when $USER is not the ticket's human owner; --admin hands anyone's back.",
+      "Hand YOUR by-hand ticket back to the queue (in_progress -> ready, clearing your ownership marker so agents can pick it up). Refused when $USER is not the ticket's human owner; --admin hands anyone's back.",
     )
     .option("--admin", "act as an admin actor (hand back someone else's ticket)", false)
     .action((ref, opts, cmd) => {
@@ -219,7 +219,7 @@ export function registerAgent(program: Command): void {
   program
     .command("runner-release <ref>")
     .description(
-      "RUNNER-OWNED-BOOKKEEPING: release/park a runner-held delivery claim. --to ready (failure/retry), refining (legacy park), or blocked (rework loop exhausted — VISIBLE column). --token releases the matching claim; omit it for a tokenless resumed delivery.",
+      "Release or park a runner-held delivery claim (the runner's bookkeeping). --to ready (failure/retry), refining (legacy park), or blocked (rework loop exhausted — VISIBLE column). --token releases the matching claim; omit it for a tokenless resumed delivery.",
     )
     .requiredOption("--to <status>", "ready|refining|blocked")
     .option("--token <token>", "claim token to release (optional for a resumed delivery)")
@@ -257,7 +257,7 @@ export function registerAgent(program: Command): void {
   program
     .command("runner-rework <ref>")
     .description(
-      "RUNNER-OWNED-BOOKKEEPING: record a live rework attempt on an in-flight delivery (stays in_progress). Surfaces 'reworking · attempt N/M' + the latest failure on the board card between retries.",
+      "Record a live rework attempt on an in-flight delivery (stays in_progress). Surfaces 'reworking · attempt N/M' + the latest failure on the board card between retries.",
     )
     .requiredOption("--attempt <n>", "current rework attempt (1-based)")
     .requiredOption("--max <n>", "rework attempt ceiling")

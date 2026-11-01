@@ -5,4 +5,10 @@
 import { enableCompileCache } from "../util/compileCache.js";
 
 enableCompileCache();
-await import("./main.js");
+const { buildProgram, guardStdio, runProgram } = await import("./program.js");
+
+guardStdio();
+
+void runProgram(buildProgram(), process.argv).then((code) => {
+  process.exitCode = code;
+});

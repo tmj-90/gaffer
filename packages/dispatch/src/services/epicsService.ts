@@ -21,6 +21,8 @@ export interface CreateEpicResult {
   acceptanceTicketNumber: number | null;
   /** Requirements agreed during planning that became acceptance criteria. */
   agreedRequirements: number;
+  /** Implementation tickets created testable (the acceptance ticket not counted). */
+  testableTickets: number;
 }
 
 /**
@@ -92,6 +94,11 @@ export interface EpicsServiceDeps {
   readonly scope: ScopeService;
   readonly tickets: TicketService;
   readonly repos: RepoService;
+  /**
+   * Is the independent tester lane on (GAFFER_TESTING)? Decides whether a planned
+   * implementation ticket that does not say `testable` is created testable.
+   */
+  readonly testingEnabled?: () => boolean;
 }
 
 export class EpicsService {
@@ -101,6 +108,7 @@ export class EpicsService {
   private readonly scope: ScopeService;
   private readonly tickets: TicketService;
   private readonly repos: RepoService;
+  private readonly testingEnabled: () => boolean;
 
   constructor(deps: EpicsServiceDeps) {
     this.db = deps.db;
@@ -109,6 +117,7 @@ export class EpicsService {
     this.scope = deps.scope;
     this.tickets = deps.tickets;
     this.repos = deps.repos;
+    this.testingEnabled = deps.testingEnabled ?? (() => false);
   }
 
   createEpic(raw: unknown, actor: Actor): CreateEpicResult {
@@ -153,6 +162,8 @@ export class EpicsService {
       const createdIds: string[] = [];
       const createdNumbers: number[] = [];
       let deferredRepoLinks = 0;
+      let testableTickets = 0;
+      const testingOn = this.testingEnabled();
       for (const spec of input.tickets) {
         // Does the named repo exist yet? (Greenfield plans name the repo their bootstrap
         // ticket will create.) Matched by name or id, like every other repo reference.
@@ -193,6 +204,15 @@ export class EpicsService {
         );
         createdIds.push(ticket.id);
         createdNumbers.push(ticket.number ?? 0);
+
+        // TESTER LANE: decided here, when the plan becomes tickets, so a person who
+        // turned the tester on does not mark each planned ticket by hand. The plan's
+        // own answer wins; otherwise every implementation ticket is testable while the
+        // lane is on (the bootstrap only scaffolds), and none is while it is off.
+        if (spec.testable ?? (testingOn && spec.bootstrap !== true)) {
+          this.tickets.setTestable(ticket.id, true, actor);
+          testableTickets += 1;
+        }
 
         for (const ac of spec.acceptanceCriteria) {
           // Spec-Driven Development (Phase 2a): an AC is either a bare string
@@ -372,6 +392,7 @@ export class EpicsService {
         deferredRepoLinks,
         acceptanceTicketNumber,
         agreedRequirements: acceptanceTicketNumber === null ? 0 : agreed.length,
+        testableTickets,
       };
     });
   }

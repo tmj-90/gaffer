@@ -452,11 +452,15 @@ gaffer_inherit_repo() {
   fi
 
   # 1) Apply the deterministic links. json-tool emits "ticket\trepo\treason" lines.
+  # GAFFER_INHERIT_LINKED: the ticket numbers linked this pass (space-separated), read
+  # by gaffer_bootstrap_remote_decision to hold exactly the tickets the new repo serves.
+  GAFFER_INHERIT_LINKED=""
   local applied=0
   while IFS=$'\t' read -r tnum repo reason; do
     [ -n "$tnum" ] && [ -n "$repo" ] || continue
     if wg ticket repo-access inherit "$tnum" "$repo" >/dev/null 2>&1; then
       log "inherited repo $repo → #$tnum ($reason)"
+      GAFFER_INHERIT_LINKED="${GAFFER_INHERIT_LINKED:+$GAFFER_INHERIT_LINKED }$tnum"
       applied=$((applied+1))
     else
       log "inherit: failed to link $repo → #$tnum"
@@ -479,6 +483,7 @@ gaffer_inherit_repo() {
       if [ -n "$ans" ] && [ "$ans" != "NONE" ] && grep -qxF -- "$ans" <<<"$cands"; then
         if wg ticket repo-access inherit "$tnum" "$ans" >/dev/null 2>&1; then
           log "inherited repo $ans → #$tnum (claude)"
+          GAFFER_INHERIT_LINKED="${GAFFER_INHERIT_LINKED:+$GAFFER_INHERIT_LINKED }$tnum"
           applied=$((applied+1))
         else
           log "inherit: failed to link $ans → #$tnum (claude)"
@@ -491,6 +496,48 @@ gaffer_inherit_repo() {
   fi
 
   log "inherit: linked $applied sibling(s) for bootstrap #$boot_num"
+  return 0
+}
+
+# A brand-new repo has no remote. With PR mode on (GAFFER_CREATE_PR), every delivery
+# into it would skip its pull request, and with GAFFER_REQUIRE_CI the strict CI gate
+# would send each one back to rework, spending an attempt per ticket. Where the repo
+# lives is the person's call, so ask once, at the moment the repo exists: one
+# human_required decision that holds the tickets now delivering into it (the ones
+# gaffer_inherit_repo just linked, GAFFER_INHERIT_LINKED) until it is answered. Filed
+# only while PR mode is on and the repo has no GitHub remote, and never twice for the
+# same repo (an open decision with the same title is reused). Best-effort: a failed
+# filing is logged, never fatal.
+#   gaffer_bootstrap_remote_decision <bootstrap-num> <name> <dir>
+gaffer_bootstrap_remote_decision() {
+  local num="$1" name="$2" dir="$3"
+  [ -n "$name" ] && [ -n "$dir" ] || return 0
+  declare -F gaffer_pr_create_enabled >/dev/null 2>&1 && gaffer_pr_create_enabled || return 0
+  if declare -F gaffer_has_github_remote >/dev/null 2>&1; then
+    gaffer_has_github_remote "$dir" && return 0
+  else
+    git -C "$dir" remote get-url "${GAFFER_PR_REMOTE:-origin}" >/dev/null 2>&1 && return 0
+  fi
+  local title="Add a remote for the new repo $name (PR mode is on)"
+  # Reuse an open one: a resumed bootstrap must not file a second copy.
+  if grep -qF -- "$title" <<<"$(wg decisions list 2>/dev/null)"; then
+    type log >/dev/null 2>&1 && log "bootstrap #$num: the remote decision for $name is already open"
+    return 0
+  fi
+  local ci=""
+  case "${GAFFER_REQUIRE_CI:-0}" in
+    1|true|yes|on) ci=" With GAFFER_REQUIRE_CI on, the CI gate would also send each delivery back to rework." ;;
+  esac
+  local question="Bootstrap #$num created $name at $dir with no remote, and PR mode (GAFFER_CREATE_PR) is on, so a delivery into it cannot open a pull request.$ci Add one (git -C $dir remote add ${GAFFER_PR_REMOTE:-origin} <url> && git -C $dir push -u ${GAFFER_PR_REMOTE:-origin} main), then answer this to let its tickets start. Or answer to go ahead without one: they then merge locally (turn GAFFER_REQUIRE_CI off first if it is on)."
+  local -a refs=()
+  local t
+  for t in ${GAFFER_INHERIT_LINKED:-}; do refs+=(--ticket "$t"); done
+  if wg decision --title "$title" --question "$question" --severity human_required \
+       ${refs[@]+"${refs[@]}"} >/dev/null 2>&1; then
+    type log >/dev/null 2>&1 && log "bootstrap #$num: $name has no remote and PR mode is on — filed a decision holding ${GAFFER_INHERIT_LINKED:-no ticket} until you answer"
+  else
+    type log >/dev/null 2>&1 && log "bootstrap #$num: could not file the remote decision for $name (non-fatal)"
+  fi
   return 0
 }
 

@@ -5,12 +5,14 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 
 import { GIT_REF_SAFE } from "../../domain/schemas.js";
+import { TICKET_REPO_ROLES } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
   cliActor,
   humanOrSystemActor,
   open,
+  parseOneOf,
   printJson,
 } from "../shared.js";
 
@@ -42,16 +44,14 @@ export function detectDefaultBranch(path: string | undefined): string | undefine
 }
 
 /**
- * `repo add --path` the way `gaffer onboard` takes a path (exploratory finding
- * cli-wg/F-06): resolved against the cwd and canonicalised (`cd "$path" && pwd -P`),
- * so the stored path never depends on where the dashboard or runner was started; a
- * missing path or a file is refused; a directory that is not a git repo is kept, with
- * the onboard warning (the factory branches per ticket).
+ * `repo add --path` the way `gaffer onboard` and POST /repos/onboard take a path
+ * (exploratory finding cli-wg/F-06 and the B1 review): resolved against the cwd and
+ * canonicalised (`cd "$path" && pwd -P`), so the stored path never depends on where
+ * the dashboard or runner was started; a missing path or a file is refused, and so is
+ * a directory outside any git checkout (NOT_A_GIT_REPO: the factory branches per
+ * ticket, so such a repo could never be delivered to).
  */
-export function canonicalRepoPath(path: string): {
-  path: string;
-  warnings: { code: string; message: string }[];
-} {
+export function canonicalRepoPath(path: string): { path: string } {
   let abs: string;
   try {
     abs = realpathSync(resolve(path));
@@ -65,16 +65,15 @@ export function canonicalRepoPath(path: string): {
     encoding: "utf8",
     timeout: 5_000,
   });
-  const warnings =
-    git.status === 0
-      ? []
-      : [
-          {
-            code: "NOT_A_GIT_REPO",
-            message: `${abs} is not a git repo (the factory branches per ticket — you'll want one); the default branch falls back to main.`,
-          },
-        ];
-  return { path: abs, warnings };
+  if (git.status !== 0) {
+    throw new DispatchError(
+      "NOT_A_GIT_REPO",
+      `${abs} is not a git repository (no .git in it or above it). Run \`git init\` there ` +
+        "first, or pick the repository's own folder.",
+      { path: abs },
+    );
+  }
+  return { path: abs };
 }
 
 export function registerRepo(program: Command): void {
@@ -83,27 +82,27 @@ export function registerRepo(program: Command): void {
     .command("add")
     .description("Register a repository")
     .requiredOption("-n, --name <name>", "repo name")
-    .option("--path <path>", "local checkout (must exist; stored as its canonical absolute path)")
+    .option(
+      "--path <path>",
+      "local git checkout (must exist and be inside a git repository; stored as its canonical absolute path)",
+    )
     .option("--remote <url>", "remote url")
     .option("--branch <branch>", "default branch (auto-detected from --path when omitted)")
     .option("--stack <stack>", "stack")
     .option("--test <cmd>", "test command")
-    .option("--lint <cmd>", "lint command (the I3 lint DoD gate)")
+    .option("--lint <cmd>", "lint command (the Definition-of-Done lint gate)")
     .option("--coverage <cmd>", "coverage command")
     .action((opts, cmd) => {
-      const checked =
-        opts.path !== undefined
-          ? canonicalRepoPath(String(opts.path))
-          : { path: undefined, warnings: [] };
+      const checked = opts.path !== undefined ? canonicalRepoPath(String(opts.path)) : undefined;
       const wg = open(cmd.optsWithGlobals());
       // When --branch is omitted, detect the repo's ACTUAL default branch from
       // --path rather than assuming `main` — assuming `main` on a `master` repo
       // hard-fails every delivery at `git worktree add … off <default_branch>`.
-      const branch = opts.branch ?? detectDefaultBranch(checked.path) ?? "main";
+      const branch = opts.branch ?? detectDefaultBranch(checked?.path) ?? "main";
       const r = wg.registerRepository(
         {
           name: opts.name,
-          local_path: checked.path,
+          local_path: checked?.path,
           remote_url: opts.remote,
           default_branch: branch,
           stack: opts.stack,
@@ -113,7 +112,6 @@ export function registerRepo(program: Command): void {
         },
         cliActor(),
       );
-      for (const w of checked.warnings) process.stderr.write(`warning: ${w.code}: ${w.message}\n`);
       printJson({
         ok: true,
         repo: {
@@ -122,7 +120,6 @@ export function registerRepo(program: Command): void {
           default_branch: r.default_branch,
           local_path: r.local_path,
         },
-        ...(checked.warnings.length > 0 ? { warnings: checked.warnings } : {}),
       });
       wg.db.close();
     });
@@ -175,13 +172,19 @@ export function registerRepo(program: Command): void {
   repo
     .command("link <ref> <repoName>")
     .description("Link a repository to a ticket")
-    .option("--role <role>", "role", "primary")
+    .option(
+      "--role <role>",
+      `the repo's role on the ticket: ${TICKET_REPO_ROLES.join(" | ")}`,
+      "primary",
+    )
     .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((ref, repoName, opts, cmd) => {
       const actor = humanOrSystemActor(opts.as);
+      // cli-wg/F-07: refused here, naming the roles, not by the DB's CHECK constraint.
+      const role = parseOneOf("--role", opts.role, TICKET_REPO_ROLES);
       const wg = open(cmd.optsWithGlobals());
       const t = wg.resolveTicket(ref);
-      wg.linkRepository(t.id, repoName, opts.role, actor);
+      wg.linkRepository(t.id, repoName, role, actor);
       printJson({ ok: true });
       wg.db.close();
     });

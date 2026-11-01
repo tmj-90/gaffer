@@ -6,7 +6,12 @@ import {
   setTicketRepoAccessInput,
   suggestReposInput,
 } from "../domain/schemas.js";
-import { isActiveTicketRepoRelation, type Actor, type Repository } from "../domain/types.js";
+import {
+  isActiveTicketRepoRelation,
+  TICKET_REPO_ROLES,
+  type Actor,
+  type Repository,
+} from "../domain/types.js";
 import { writeEvent } from "../events/eventWriter.js";
 import { RepoRepository, type TicketRepoLink } from "../repositories/repoRepository.js";
 import { ScopeRepoRepository } from "../repositories/scopeRepoRepository.js";
@@ -224,6 +229,15 @@ export class RepoService {
   }
 
   linkRepository(ticketId: string, repoName: string, role: string, actor: Actor): void {
+    // Checked before the write so an unknown role is a VALIDATION_ERROR naming the
+    // roles, not the ticket_repos CHECK constraint's raw SqliteError.
+    if (!(TICKET_REPO_ROLES as readonly string[]).includes(role)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `A repo link role must be one of: ${TICKET_REPO_ROLES.join(", ")} (got '${role}').`,
+        { role, allowed: TICKET_REPO_ROLES },
+      );
+    }
     return inTransaction(this.db, () => {
       const ticket = this.tickets.findById(ticketId);
       if (!ticket) throw notFound("ticket", ticketId);

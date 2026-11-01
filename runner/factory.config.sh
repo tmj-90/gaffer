@@ -1287,6 +1287,22 @@ gaffer_provider_env_keep_despite_deny() {
   esac
 }
 
+# The CA bundle Node should trust, derived for a machine behind a TLS-intercepting
+# proxy whose operator exported the bundle for curl / git / python but not for Node.
+# npm, like every Node program, reads NODE_EXTRA_CA_CERTS (it EXTENDS Node's roots,
+# never replaces them), so an agent's `npm install` then trusts the proxy without a
+# separate `npm config set cafile`. Echoes nothing when NODE_EXTRA_CA_CERTS is already
+# set (the operator's value always wins) or no exported bundle is a readable file.
+#   gaffer_node_ca_fallback → a path, or nothing
+gaffer_node_ca_fallback() {
+  [ -n "${NODE_EXTRA_CA_CERTS:-}" ] && return 0
+  local _ca
+  for _ca in "${SSL_CERT_FILE:-}" "${CURL_CA_BUNDLE:-}" "${REQUESTS_CA_BUNDLE:-}" "${GIT_SSL_CAINFO:-}"; do
+    [ -n "$_ca" ] && [ -f "$_ca" ] && [ -r "$_ca" ] && { printf '%s\n' "$_ca"; return 0; }
+  done
+  return 0
+}
+
 GAFFER_AGENT_ENV=()
 gaffer_agent_env() {
   GAFFER_AGENT_ENV=()
@@ -1369,6 +1385,10 @@ gaffer_agent_env() {
   # installed bins (`npx vitest`, `npx tsc`) still run. An operator who exports
   # npm_config_yes themselves keeps their value (it rides the npm_config_ prefix).
   [ -n "${npm_config_yes+x}" ] || GAFFER_AGENT_ENV+=( "npm_config_yes=false" )
+  # Node trusts the proxy's CA the operator exported for other tools (see above).
+  local _node_ca; _node_ca="$(gaffer_node_ca_fallback)"
+  [ -n "$_node_ca" ] && GAFFER_AGENT_ENV+=( "NODE_EXTRA_CA_CERTS=$_node_ca" )
+  return 0
 }
 
 # NOTE on the DISPATCH_*_CMD defaults below: these are plain command STRINGS that

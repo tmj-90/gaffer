@@ -36,7 +36,7 @@ Models are tiered in [runner/model-registry.json](runner/model-registry.json), w
 
 ### Planning a build
 
-In the dashboard, "Plan a build" takes a one-line brief and has a short conversation about it. It usually asks a few clarifying questions first, then proposes an epic of tickets, each with its own criteria, target repo and `dependsOn` edges, so the API can wait for the data model and the docs can come last. Nothing is created until you confirm, and you can create the tickets as drafts to look them over first. If there's no repo yet, the plan starts with a bootstrap ticket that creates one.
+In the dashboard, "Plan a build" takes a one-line brief and has a short conversation about it. It usually asks a few clarifying questions first, then proposes an epic of tickets, each with its own criteria, target repo and `dependsOn` edges, so the API can wait for the data model and the docs can come last. Nothing is created until you confirm, and you can create the tickets as drafts to look them over first. If there's no repo yet, the plan starts with a bootstrap ticket that creates one under `GAFFER_BOOTSTRAP_ROOT` (`~/git` by default), registers and onboards it, and links the rest of the epic to it, so nothing needs setting up first. Before the bootstrap agent starts, Gaffer checks it can reach the package registry from the agent's environment (an offline machine with a warm npm cache goes ahead from the cache) and, on a hands-off run, that there's an OS sandbox; either problem parks the ticket with the fix on the Team sheet before anything is created. With the independent tester on, the planned tickets are created testable. In PR mode, a repo with no remote gets one decision asking where it lives, and its tickets wait for the answer.
 
 Every epic also gets an Acceptance ticket that depends on all the others. An independent tester checks the brief end to end against the merged build, working from the brief and the criteria without seeing the diff. Its pass is bound to the commit it tested, so a build where every ticket merged still isn't reported as accepted until that pass exists. Planning is dashboard-only for now.
 
@@ -106,7 +106,7 @@ runner/gaffer merge 1
 
 To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), run `mkdir -p repos` and put the repos you want worked on under `./repos` (create it yourself: on Linux, Docker creates a missing one owned by root, and the container's user can't write to it), then run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` (`GAFFER_PORT` changes the host side, and it falls back to `DISPATCH_API_PORT`) and `docker compose logs dashboard` shows the login link.
 
-[quickstart.md](quickstart.md) is the long version, with the greenfield path and the first-run gotchas.
+[quickstart.md](quickstart.md) is the long version, including the greenfield path and what Gaffer does on a greenfield run.
 
 ## The dashboard
 

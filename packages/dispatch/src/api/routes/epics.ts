@@ -58,6 +58,8 @@ export async function routeEpics(
     acceptance_ticket_number: result.acceptanceTicketNumber,
     // Requirements agreed during planning, now criteria of the acceptance ticket.
     agreed_requirements: result.agreedRequirements,
+    // Implementation tickets created testable (the tester lane on, or the plan said so).
+    testable_tickets: result.testableTickets,
   });
   return true;
 }

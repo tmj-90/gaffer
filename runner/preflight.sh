@@ -51,6 +51,16 @@ if command -v "$CLAUDE_BIN" >/dev/null && declare -F gaffer_claude_auth_probe >/
   fi
 fi
 
+# A CA bundle variable that names no readable file is passed through as it is, but it
+# trusts nothing, and gaffer_node_ca_fallback skips it when deriving NODE_EXTRA_CA_CERTS
+# (Node itself ignores an unloadable NODE_EXTRA_CA_CERTS and keeps its own roots).
+for _cav in NODE_EXTRA_CA_CERTS SSL_CERT_FILE CURL_CA_BUNDLE REQUESTS_CA_BUNDLE GIT_SSL_CAINFO; do
+  _cap="${!_cav:-}"
+  [ -n "$_cap" ] || continue
+  [ -f "$_cap" ] && [ -r "$_cap" ] && continue
+  wn "$_cav=$_cap is not a readable file: nothing trusts it (Node and npm keep their own roots), so behind a TLS-intercepting proxy the agent's npm fails the proxy's certificate; point it at the proxy's CA bundle"
+done
+
 # Execution environment: can the AGENT (env -i + the allowlist) reach the package
 # registry? Tool presence says nothing about this — a TLS-intercepting proxy whose
 # CA the agent env does not trust passes every check above and then burns the
@@ -59,7 +69,8 @@ if declare -F gaffer_registry_probe >/dev/null 2>&1; then
   _prc=0; gaffer_registry_probe || _prc=$?
   case "$_prc" in
     0) ok "npm registry reachable from the agent env (npm ping)" ;;
-    1) no "npm registry UNREACHABLE from the agent env (${GAFFER_REGISTRY_PROBE_CODE}) — $(gaffer_registry_probe_hint "$GAFFER_REGISTRY_PROBE_CODE")${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}" ;;
+    3) wn "npm registry unreachable from the agent env (${GAFFER_REGISTRY_PROBE_CODE}), but the npm cache at ${GAFFER_REGISTRY_PROBE_CACHE} is warm: a greenfield bootstrap installs from it offline" ;;
+    1) no "npm registry UNREACHABLE from the agent env (${GAFFER_REGISTRY_PROBE_CODE}) — $(gaffer_registry_probe_hint "$GAFFER_REGISTRY_PROBE_CODE")${GAFFER_REGISTRY_PROBE_NOTE:+; $GAFFER_REGISTRY_PROBE_NOTE}${GAFFER_REGISTRY_PROBE_DETAIL:+ [$GAFFER_REGISTRY_PROBE_DETAIL]}" ;;
     *) wn "npm registry probe skipped (${GAFFER_REGISTRY_PROBE_CODE}) — a greenfield bootstrap's install is unverified" ;;
   esac
 fi

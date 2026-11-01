@@ -224,7 +224,8 @@ console.log("== --summary: a short summary on stderr, the full log in $GAFFER_DA
   mkdirSync(data, { recursive: true });
   writeFileSync(resolve(data, "crew.yaml"), "dispatch:\n  local:\n    sqlite_path: x\n");
   const repoDir = resolve(work, "notes");
-  mkdirSync(repoDir, { recursive: true });
+  // A checkout (a .git dir): a folder outside any git checkout is refused before crew runs.
+  mkdirSync(resolve(repoDir, ".git"), { recursive: true });
   const run = (args, extraEnv = {}) =>
     spawnSync(process.execPath, [HELPER, "--repo", repoDir, ...args], {
       encoding: "utf8",

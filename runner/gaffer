@@ -146,7 +146,17 @@ onboard)
   # A missing or wrong path is a usage error: ✗ on stderr + the usage line, exit 2.
   [ -n "$path" ] || bad_arg onboard "onboard needs the path of a repository"
   abs="$(cd "$path" 2>/dev/null && pwd -P)" || bad_arg onboard "no such directory: $path"
-  git -C "$abs" rev-parse --git-dir >/dev/null 2>&1 || warn "not a git repo (the factory branches per ticket — you'll want one)"
+  # A filesystem root, the home directory or a folder outside any git checkout is not
+  # a repository: refused in one line, exit 2 — the same rule as the dashboard's
+  # onboard route (bin/onboard-run.mjs onboardPathProblem). `gaffer onboard /` used to
+  # end in a raw ZodError stack from crew; a non-git folder was only warned about.
+  if _onb_problem="$(OBR="$RUNNER_DIR/bin/onboard-run.mjs" node --input-type=module -e '
+      const { onboardPathProblem } = await import(process.env.OBR);
+      const p = onboardPathProblem(process.argv[1]);
+      if (p) { process.stdout.write(p); process.exit(2); }' "$abs" 2>/dev/null)"; then :
+  else
+    [ -n "$_onb_problem" ] && { err "$_onb_problem"; exit 2; }
+  fi
   # Route through onboard-run.mjs — the SAME path the dashboard's "Onboard a repo"
   # button uses: scan + register + the claude -p analysis (real digest + features +
   # cited lore drafts) into the memory store. Standalone single-repo scope by default;

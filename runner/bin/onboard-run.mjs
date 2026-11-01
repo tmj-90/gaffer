@@ -53,7 +53,15 @@
 // =====================================================================
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,6 +139,48 @@ function parseArgs(argv) {
     }
   }
   return opts;
+}
+
+/** The on-disk directory `target` names, resolved through symlinks, or null. */
+function existingRealDir(target) {
+  try {
+    const p = realpathSync(resolve(target));
+    return statSync(p).isDirectory() ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when `dir` or a folder above it holds `.git` (a checkout, a worktree, a submodule). */
+function insideGitCheckout(dir) {
+  for (let d = dir; ; d = dirname(d)) {
+    if (existsSync(join(d, ".git"))) return true;
+    if (dirname(d) === d) return false;
+  }
+}
+
+/**
+ * Why the directory `target` must not be onboarded, or null to go ahead — the SAME
+ * rule (and wording) as the dashboard's POST /repos/onboard check (dispatch
+ * api/onboard.ts onboardTargetProblem): a filesystem root or the home directory is
+ * never a repository, and a folder outside any git checkout is refused. `gaffer
+ * onboard /` used to reach crew, which registered an empty basename and died with a
+ * raw ZodError stack; /etc was registered as a repository. A target that is not an
+ * existing directory returns null (resolution reports it). Exported for tests.
+ */
+export function onboardPathProblem(target) {
+  const dir = existingRealDir(target);
+  if (dir === null) return null;
+  if (dirname(dir) === dir) {
+    return `Refusing to onboard ${dir}: a filesystem root is not a repository. Pick the repository's own folder.`;
+  }
+  if (dir === existingRealDir(homedir())) {
+    return `Refusing to onboard ${dir}: your home directory is not a repository. Pick the repository's own folder.`;
+  }
+  if (!insideGitCheckout(dir)) {
+    return `${dir} is not a git repository (no .git in it or above it). Run \`git init\` there first, or pick the repository's own folder.`;
+  }
+  return null;
 }
 
 /** True when `target` points at an existing directory on disk (a path target). */
@@ -455,6 +505,11 @@ function main() {
 
   if (!opts.dryRun && !existsSync(repoPath)) {
     fail(`onboard target "${opts.repo}" resolves to ${repoPath}, which is not on disk`);
+    return;
+  }
+  const pathProblem = onboardPathProblem(repoPath);
+  if (pathProblem !== null) {
+    fail(pathProblem, 2);
     return;
   }
 

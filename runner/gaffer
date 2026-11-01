@@ -423,6 +423,10 @@ run)
     err "gaffer run: refusing a live run — $(gaffer_spend_cap_hint) (or preview with --dry-run)"
     exit 3
   fi
+  if [ "$_live_dry" != 1 ] && declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! DRY_RUN=0 gaffer_claude_auth_gate; then
+    err "gaffer run: refusing a live run — $(gaffer_claude_auth_hint) (or preview with --dry-run)"
+    exit 3
+  fi
   # GAFFER_LOOP_SH: the supervisor pass to run (test seam; the real loop by default).
   _loop_sh="${GAFFER_LOOP_SH:-$HERE/loop.sh}"
   if [ "$_daemon" = 0 ]; then exec env DRY_RUN="$_live_dry" bash "$_loop_sh"; fi

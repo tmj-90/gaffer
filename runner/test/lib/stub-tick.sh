@@ -64,6 +64,9 @@ if [ -e .git ]; then
   done_json() { printf '{"type":"result","subtype":"success","is_error":false,"result":"done.\\n\\nSmallest-change note: helper.","total_cost_usd":0.02,"num_turns":1}\n'; }
   case "$MODE" in
     hang) touch "$D/hanging"; sleep 60; exit 0 ;;
+    # What a logged-out claude prints (auth-gate.test.sh): an error envelope, exit 1.
+    auth-error)
+      printf '{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key \xc2\xb7 Please run /login","total_cost_usd":0,"num_turns":1}\n'; exit 1 ;;
     edit-nocommit-cap)
       printf 'export function partial(){return 0;}\n' > "src/partial-$fn.js"
       printf '{"type":"result","subtype":"error_max_turns","is_error":false,"result":"ran out of turns","total_cost_usd":0.05,"num_turns":3}\n'; exit 0 ;;

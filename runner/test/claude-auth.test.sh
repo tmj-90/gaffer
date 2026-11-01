@@ -40,7 +40,7 @@ EOF
 mkclaude claude-401 "echo 'Invalid API key · Please run /login' >&2; exit 1"
 mkclaude claude-iserr "printf '%s\n' '{\"type\":\"result\",\"is_error\":true,\"result\":\"OAuth token has expired\"}'; exit 0"
 mkclaude claude-good "printf '%s\n' '{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\"}'; exit 0"
-NOCRED=(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CONFIG_DIR)
+NOCRED=(env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CONFIG_DIR -u ANTHROPIC_BASE_URL)
 probe() { "${NOCRED[@]}" "$@" bash -c 'source "$1"; gaffer_claude_auth_probe; rc=$?; echo "$rc|$GAFFER_CLAUDE_AUTH_SOURCE"' _ "$RUNNER_DIR/lib/claude-auth.sh"; }
 
 echo "== gaffer_claude_auth_probe: is a credential visible? =="
@@ -60,6 +60,13 @@ r="$(probe HOME="$HC")"
 [ "$r" = "0|$HC/.claude/.credentials.json" ] && ok "~/.claude/.credentials.json → visible" || fail "cred file: $r"
 r="$(probe HOME="$H" CLAUDE_CONFIG_DIR="$HC/.claude")"
 [ "${r%%|*}" = "0" ] && ok "CLAUDE_CONFIG_DIR is honoured" || fail "config dir: $r"
+HK="$WORK/home-helper"; mkdir -p "$HK/.claude"; echo '{"apiKeyHelper":"/usr/local/bin/key"}' > "$HK/.claude/settings.json"
+r="$(probe HOME="$HK")"
+[ "${r%%|*}" = "0" ] && ok "an apiKeyHelper in ~/.claude/settings.json → visible" || fail "apiKeyHelper: $r"
+if [ "$(uname -s)" != "Darwin" ]; then
+  r="$(probe HOME="$H" ANTHROPIC_BASE_URL=http://gateway.invalid)"
+  [ "${r%%|*}" = "2" ] && ok "ANTHROPIC_BASE_URL alone → unknown (a gateway may authenticate), not a refusal" || fail "base url: $r"
+fi
 
 echo "== gaffer_claude_live_probe (GAFFER_PREFLIGHT_LIVE=1) =="
 for b in claude-401 claude-iserr; do

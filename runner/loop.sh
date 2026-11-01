@@ -117,6 +117,14 @@ if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
   echo "gaffer factory: refusing a live run — $(gaffer_spend_cap_hint)." >&2
   exit 3
 fi
+# CLAUDE AUTH (lib/claude-auth.sh gaffer_claude_auth_gate): a live run with no visible
+# claude credential refuses before it claims anything, so no attempt is spent on a
+# logged-out CLI (exploratory findings fresh-user/F-04, F-06). One free check per run,
+# cached in the environment for the run's ticks and workers. Exit 3 like the cap.
+if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_gate; then
+  echo "gaffer factory: refusing a live run — $(gaffer_claude_auth_hint)." >&2
+  exit 3
+fi
 
 # R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. If
 # this rm fails, a prior run's markers could wrongly suppress work this run — so
@@ -253,6 +261,10 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
 
   _pool_setup_error=0
   [ -s "$GAFFER_DATA/.setup-error" ] && { _pool_setup_error=1; gaffer_setup_error_line; }
+  if [ -f "$WORKERS_DIR/auth-error" ]; then
+    _pool_setup_error=1
+    echo "gaffer factory: $(gaffer_claude_auth_hint) — the pool stopped (the ticket went back to ready; no attempt counted)."
+  fi
   # USAGE WINDOW: a worker that sees a pause stops admitting and exits (worker.sh), so
   # the pool ends like the serial pass: "paused until <time>", exit 75, no sleep.
   _pool_usage_paused=0
@@ -287,6 +299,7 @@ ticks=0
 empties=0
 _setup_error=0
 _usage_paused=0
+_auth_error=0
 # A stop signal ends the run after the current tick (the tick runs in the foreground,
 # so bash runs this trap once it returns; Ctrl-C also reaches the tick's own wrapper).
 # Without it bash carried on to the next tick whenever the reaped tick exited normally.
@@ -379,6 +392,13 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
     gaffer_setup_error_line
     break
   fi
+  # CLAUDE AUTH: the delivery call failed to authenticate; the ticket went back to
+  # ready without an attempt counted. Every next tick would fail the same way.
+  if [ "$res" = "auth_error" ]; then
+    _auth_error=1
+    echo "gaffer factory: $(gaffer_claude_auth_hint) — stopping this run (the ticket went back to ready; no attempt counted)."
+    break
+  fi
   if [ "$_loop_stop" = 1 ]; then
     echo "gaffer factory: stop signal — not starting another tick."
     break
@@ -419,5 +439,6 @@ if [ -f "$HERE/run-summary.sh" ]; then
 fi
 gaffer_loop_end_ping || true
 [ "$_setup_error" = 1 ] && exit 3
+[ "$_auth_error" = 1 ] && exit 3
 [ "$_usage_paused" = 1 ] && exit 75
 exit 0

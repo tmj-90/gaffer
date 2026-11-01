@@ -191,12 +191,22 @@ while ! _should_stop && _reserve_run_tick; do
     # error, and not an empty poll either (the queue is not drained): the next pass
     # of this loop waits out the pause.
     usage_paused)      nowork=$((nowork + 1)) ;;
+    # CLAUDE AUTH: refused before the agent worked; the pool stops below.
+    auth_error)        nowork=$((nowork + 1)) ;;
     no_work)           nowork=$((nowork + 1)); empties=$((empties + 1)) ;;
     *)                 errors=$((errors + 1)); empties=0 ;;
   esac
   echo "worker $WORKER_ID: tick $ticks → ${res:-unknown}" >&2
   # SETUP ERROR (tick.sh gaffer_abort_setup): systemic — every worker's next tick would
   # fail the same way. Stop the whole pool; loop.sh reports it and exits 3.
+  # CLAUDE AUTH: the delivery call could not authenticate — every worker's next tick
+  # would too. Stop the pool; loop.sh says how to log in and exits 3.
+  if [ "$res" = "auth_error" ]; then
+    echo "worker $WORKER_ID: claude could not authenticate — stopping the pool." >&2
+    : > "${GAFFER_DATA}/.workers/auth-error" 2>/dev/null || true
+    [ -n "${GAFFER_POOL_STOP_FILE:-}" ] && : > "$GAFFER_POOL_STOP_FILE"
+    break
+  fi
   if [ "$res" = "setup_error" ]; then
     echo "worker $WORKER_ID: setup error — stopping the pool." >&2
     [ -n "${GAFFER_POOL_STOP_FILE:-}" ] && : > "$GAFFER_POOL_STOP_FILE"

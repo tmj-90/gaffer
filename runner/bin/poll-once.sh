@@ -40,6 +40,11 @@ if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
   echo "gaffer poll: $(gaffer_spend_cap_hint) — not polling." >&2
   echo "TICK_RESULT=no_work"; exit 0
 fi
+# CLAUDE AUTH (lib/claude-auth.sh): no visible credential → refuse before any claim.
+if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_gate; then
+  echo "gaffer poll: $(gaffer_claude_auth_hint) — not polling." >&2
+  echo "TICK_RESULT=no_work"; exit 0
+fi
 if [ "$DRY_RUN" != "1" ]; then
   # USAGE WINDOW (lib/usage-pause.sh): refuse at once, like a one-shot `gaffer run`
   # (exploratory finding fresh-user/F-13). The tick's own gate would also refuse, but

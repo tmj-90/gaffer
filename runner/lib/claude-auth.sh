@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # =====================================================================
 # lib/claude-auth.sh — is `claude` able to AUTHENTICATE, not just installed?
-# Sourced by factory.config.sh; used by preflight.sh.
+# Sourced by factory.config.sh; used by preflight.sh and the live-run gate (loop.sh,
+# `gaffer run`, bin/poll-once.sh: gaffer_claude_auth_gate).
 #
 # Why it exists: preflight checked only `claude --version`, so an unauthenticated or
 # expired claude reported "→ ready"; the first onboard then logged a vague "no usable
@@ -30,8 +31,40 @@ gaffer_claude_auth_probe() {
   done
   local cred="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
   if [ -s "$cred" ]; then GAFFER_CLAUDE_AUTH_SOURCE="$cred"; return 0; fi
+  # An apiKeyHelper in the CLI's settings produces the key itself.
+  local cset="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
+  if [ -s "$cset" ] && grep -q '"apiKeyHelper"' "$cset" 2>/dev/null; then GAFFER_CLAUDE_AUTH_SOURCE="$cset (apiKeyHelper)"; return 0; fi
   [ "$(uname -s 2>/dev/null)" = "Darwin" ] && return 2
+  # A gateway (ANTHROPIC_BASE_URL) may authenticate on its own: not inspectable.
+  [ -n "${ANTHROPIC_BASE_URL:-}" ] && return 2
   return 1
+}
+
+# gaffer_claude_auth_gate — the LIVE-RUN gate (loop.sh, `gaffer run`, bin/poll-once.sh)
+# before any ticket is claimed (exploratory findings fresh-user/F-04, F-06): a logged-out
+# claude used to claim a good ticket, fail with "Invalid API key · Please run /login",
+# count a no-commit failure and, three runs later, park the ticket.
+#   → 0 go · 1 refuse (no credential visible; gaffer_claude_auth_hint says what to do).
+# FREE (gaffer_claude_auth_probe, no model call) and CACHED for the run: a pass exports
+# GAFFER_CLAUDE_AUTH_CHECKED=ok, so its workers and later checks do not probe again.
+# Never refuses on doubt: a dry run, another worker provider, a custom CLAUDE_BIN (a
+# wrapper may bring its own login), "unknown" (the macOS Keychain, an
+# ANTHROPIC_BASE_URL gateway) and GAFFER_CLAUDE_AUTH_PROBE=0 all go ahead. A credential
+# that is present but rejected is caught when the call fails (tick.sh auth_error).
+gaffer_claude_auth_gate() {
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  [ "${GAFFER_CLAUDE_AUTH_PROBE:-1}" = "0" ] && return 0
+  [ "${GAFFER_CLAUDE_AUTH_CHECKED:-}" = "ok" ] && return 0
+  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in claude-code|claude|"") ;; *) return 0 ;; esac
+  [ "${CLAUDE_BIN:-claude}" = "claude" ] || return 0
+  local _rc=0
+  gaffer_claude_auth_probe || _rc=$?
+  [ "$_rc" = 1 ] && return 1
+  export GAFFER_CLAUDE_AUTH_CHECKED=ok
+  return 0
+}
+gaffer_claude_auth_hint() {
+  printf '%s' 'claude is not logged in: run `claude /login` (or set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in your environment; GAFFER_CLAUDE_AUTH_PROBE=0 skips this check)'
 }
 
 # gaffer_claude_live_probe [timeout_secs]
@@ -69,6 +102,9 @@ gaffer_claude_live_probe() {
   return 1
 }
 
+# LIVE-RUN AUTH GATE: 0 = skip the free credential check before a live run
+# (gaffer_claude_auth_gate); 1 (default) = refuse a live run when no credential is visible.
+: "${GAFFER_CLAUDE_AUTH_PROBE:=1}"
 # LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call
 # to prove the login works (catches an expired token the free credential check cannot);
 # 0 = only the free check (is a credential visible at all).

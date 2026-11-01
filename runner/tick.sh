@@ -10,6 +10,8 @@
 # ran a model-backed step (feature-backlog planning) but filed nothing — counted against
 # the day cap but an empty poll for draining; no_work = nothing claimable and nothing new
 # (the deterministic scans cost nothing, so a scan that finds nothing new is no_work);
+# auth_error = the delivery call could not authenticate (logged out / a rejected key):
+# the claim went back to `ready` without counting an attempt and the run stops;
 # usage_paused = the delivery call was refused by the plan's usage window or a rate
 # limit: the claim went back to `ready` without counting an attempt and the factory is
 # paused until the window resets (lib/usage-pause.mjs).
@@ -2845,6 +2847,35 @@ $_trail_q
     fi
     log "USAGE: #$NUM refused by the model's usage window (${_UL_MSG:-usage limit}) — released to ready without counting an attempt ($_UL_BRANCH); $_UL_LINE"
     result usage_paused; exit 0
+  fi
+  # ── CLAUDE AUTH: a call that could not authenticate is NOT a failed delivery ──
+  # The CLI was logged out or its key rejected ("Invalid API key · Please run /login";
+  # lib/worker.mjs detectAuthError, error envelopes only), so the agent never worked.
+  # Read as a failure it counted toward the no-commit park and GAFFER_MAX_DELIVERY_
+  # ATTEMPTS, and three runs parked a good ticket (exploratory finding fresh-user/F-06).
+  # Release the claim to `ready` WITHOUT counting an attempt (the branch kept only when
+  # it already had commits), say how to log in, and report auth_error: loop.sh and
+  # worker.sh stop the run there. A resumed delivery goes back to `paused`.
+  _AUTH_MSG=""
+  if [ "${DRY_RUN:-0}" != "1" ] && [ -f "$USAGE_JSON" ] \
+     && _AUTH_MSG="$(node "$RUNNER_DIR/lib/worker.mjs" parse-result auth-error --json-file "$USAGE_JSON" 2>/dev/null)"; then
+    gaffer_usage_record delivery "$NUM" "$rc" "$USAGE_JSON" >>"$GAFFER_LOG" 2>/dev/null || true
+    rm -f "$USAGE_JSON"
+    _AUTH_HINT="$(gaffer_claude_auth_hint 2>/dev/null || echo 'claude is not logged in: run `claude /login`')"
+    if [ "$_RESUMING" = "1" ]; then
+      gaffer_resume_abort "claude_auth: ${_AUTH_MSG:-authentication failed}"
+      log "AUTH: resumed #$NUM could not authenticate (${_AUTH_MSG:-authentication failed}) — re-paused with its worktree; $_AUTH_HINT"
+      result auth_error; exit 0
+    fi
+    if gaffer_any_branch_has_commits "$WT_ROWS"; then
+      GAFFER_KEEP_DELIVERY_BRANCH=1
+      gaffer_cleanup_worktrees
+    else
+      gaffer_cleanup_worktrees drop-branch
+    fi
+    gaffer_release_delivery ready "claude could not authenticate: ${_AUTH_MSG:-authentication failed}; not counted as an attempt" claude_auth
+    log "AUTH: #$NUM — ${_AUTH_MSG:-authentication failed}: $_AUTH_HINT; released to ready without counting an attempt"
+    result auth_error; exit 0
   fi
   # ── GUARD C: PAUSE-ON-CAP detection (BEFORE the ledger removes the JSON) ─────
   # If the agent hit the TURN cap (num_turns at/over the cap, or a max-turns stop

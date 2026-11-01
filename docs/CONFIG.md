@@ -19,7 +19,7 @@ computed from other knobs at runtime.
 
 | Metric | Count |
 |---|---|
-| Knobs with a runner default | 143 |
+| Knobs with a runner default | 144 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
 | Env reads in code with no default and no UI entry | 78 |
@@ -259,6 +259,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
+| `GAFFER_CLAUDE_AUTH_PROBE` | `1` |  | runner | LIVE-RUN AUTH GATE: 0 = skip the free credential check before a live run (gaffer_claude_auth_gate); 1 (default) = refuse a live run when no credential is visible. |
 | `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible |
 | `GAFFER_PREFLIGHT_LIVE_TIMEOUT` | `60` |  | runner | Seconds the live probe may take before it counts as a failure. |
 
@@ -410,7 +411,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/orphan-recovery.sh` |
-| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/claude-auth.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
 | `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
 | `MEMORY_NO_COLOR` |  | `packages/memory/src/cli/format.ts` |

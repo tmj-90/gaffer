@@ -24,7 +24,7 @@ if command -v "$CLAUDE_BIN" >/dev/null && declare -F gaffer_claude_auth_probe >/
   _arc=0; gaffer_claude_auth_probe || _arc=$?
   case "$_arc" in
     0) ok "claude credential visible ($GAFFER_CLAUDE_AUTH_SOURCE)" ;;
-    2) ok "claude credential: macOS Keychain (not inspectable here — GAFFER_PREFLIGHT_LIVE=1 verifies it with one tiny call)" ;;
+    2) ok "claude credential: not inspectable here (the macOS Keychain or an ANTHROPIC_BASE_URL gateway — GAFFER_PREFLIGHT_LIVE=1 verifies it with one tiny call)" ;;
     *) wn "no claude credential visible (no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN, no ${CLAUDE_CONFIG_DIR:-~/.claude}/.credentials.json) — run \`claude\` and /login before a live run; GAFFER_PREFLIGHT_LIVE=1 verifies with one tiny call" ;;
   esac
   if [ "${GAFFER_PREFLIGHT_LIVE:-0}" = "1" ]; then

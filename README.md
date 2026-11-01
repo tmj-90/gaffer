@@ -64,7 +64,7 @@ You'll need:
 - Node 22.22.1 or newer. That's the floor in `package.json`, and `.npmrc` sets `engine-strict=true`, so pnpm refuses anything older. Node 22.22.0 is one patch short, and setup says so before it installs anything.
 - pnpm 10.33.0, pinned in `packageManager`
 - git
-- the Claude Code CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it, and onboarding falls back to a mechanical scan.
+- the Claude Code CLI (`claude`), installed and logged in, for any live run. Setup, the demo and dry runs work without it, and onboarding falls back to a mechanical scan. A live run looks for a credential before it claims anything and refuses with `claude is not logged in: run \`claude /login\``; a call that still fails to authenticate puts the ticket back in Ready without counting an attempt and stops the run.
 
 Set up, start the dashboard and onboard a repo:
 

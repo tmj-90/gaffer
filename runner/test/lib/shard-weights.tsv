@@ -67,7 +67,7 @@
 40	dashboard-lifecycle.test.sh
 49	eval-replay.test.sh
 40	resume-abort.test.sh
-60	parallel-stop.test.sh
+90	parallel-stop.test.sh
 56	self-op-ban-integration.test.sh
 31	setup-error-circuit.test.sh
 47	ci-gate-needs-pr.test.sh

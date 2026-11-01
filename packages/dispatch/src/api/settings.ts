@@ -132,12 +132,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "graduated ships what each repo has EARNED at its risk level and holds " +
       "everything else for you (the reviewer agent runs, but the per-repo/risk autonomy " +
       "policy is the sole allow-path — set grants in the per-repo policy editor); " +
-      "autonomous lets agents approve and auto-merges + pushes approved work; " +
-      "strict adds OS-level sandbox containment on top of autonomous, chosen by " +
-      "SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress " +
-      "isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on " +
-      "a non-macOS host strict has no OS containment beyond the deterministic hook — set " +
-      "GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. " +
+      "autonomous lets agents approve and auto-merges + pushes approved work, and " +
+      "because that removes the human gate it also requires the OS sandbox " +
+      "(GAFFER_STRICT_REQUIRE and STRICT_MODE default on: no sandbox, no agent). " +
+      "strict sets the same flags as autonomous; the one difference is that strict " +
+      "keeps STRICT_MODE on even when you set GAFFER_STRICT_REQUIRE=0 (the sandbox is " +
+      "still used where available, just not required). SANDBOX_PROVIDER picks the " +
+      "sandbox: docker (any host with Docker) gives real read + egress isolation; " +
+      "sandbox-exec (macOS) is a write-only sandbox. " +
       "Picking a mode prevents a " +
       "half-configured autonomy posture. The individual knobs below still " +
       "override the mode — an explicitly-set flag always wins.",
@@ -551,7 +553,14 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     type: "int",
     group: "budget",
     label: "Max delivery attempts",
-    help: "How many times a ticket may be re-worked after a rejected review before it parks to blocked.",
+    help:
+      "How many agent runs one delivery gets inside a tick: a failed gate (tests, " +
+      "typecheck, lint or a criterion's check) is fed back and the agent reworks the " +
+      "same branch, up to this many runs, then the ticket parks to blocked with its " +
+      "branch kept. A run that fails exactly as the one before (two identical " +
+      "failures) parks it early instead of spending the rest. It is also the default " +
+      "for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across " +
+      "runs) and DISPATCH_MAX_ATTEMPTS (review rejections).",
   },
   {
     key: "DISPATCH_MAX_ATTEMPTS",

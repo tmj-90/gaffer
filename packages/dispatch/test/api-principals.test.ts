@@ -154,6 +154,7 @@ describe("principals (REST)", () => {
       capability: "full",
       actor: { type: "human", id: "dispatch-api" },
       principal: null,
+      scope: null,
     });
 
     // Mint with the shared (full) token.
@@ -178,6 +179,7 @@ describe("principals (REST)", () => {
       capability: "full",
       actor: { type: "human", id: "alice@corp" },
       principal: { id: principal.id, name: "alice" },
+      scope: null,
     });
 
     // A write made with it is attributed to alice, not to the shared actor.

@@ -27,7 +27,7 @@ _gaffer_clarify_pass() {
 DRAFT_JSON="$(wg ticket list -s draft 2>/dev/null || echo '[]')"
 DRAFT_COUNT="$(echo "$DRAFT_JSON" | jget 'd.length' 2>/dev/null || echo 0)"
 if [ "${CLARIFY_DRAFTS_WHEN_IDLE:-0}" = "1" ] && [ "${DRAFT_COUNT:-0}" -gt 0 ]; then
-  CLARIFIED_FILE="$GAFFER_DATA/.clarified-tickets"; touch "$CLARIFIED_FILE"
+  CLARIFIED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.clarified-tickets"; touch "$CLARIFIED_FILE"
   # FINDING B-M2: pass the skip-file path via the environment, not interpolated into
   # the single-quoted Python literal — a path containing a `'` would break the string
   # (silent parse failure → the clarified-skip set is lost and the draft re-clarifies).

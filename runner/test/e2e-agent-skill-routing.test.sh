@@ -316,7 +316,8 @@ case "$H_BB" in [1-9]*/0/0) ok "3: Health read model: black-box-test opened, not
 wg wont-do "$A1DEP" --reason "fixture for the blocked-queue tester path" >/dev/null 2>&1 || true
 
 echo "== 3b. TESTER FAIL: autonomous → REWORK (ready, feedback carried); supervised → refining (human) =="
-grep -q '"\$GAFFER_DATA/.tested-tickets"' "$RUNNER_DIR/loop.sh" && ok "3b: loop.sh resets .tested-tickets each run (a held ticket is retried next run; it was never reset before)" || fail "3b: loop.sh does not reset .tested-tickets"
+grep -qF '${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.tested-tickets' "$RUNNER_DIR/lib/tester.sh" && grep -q 'gaffer_run_state_begin loop' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_run_state_begin poll' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "3b: .tested-tickets lives in the run's own fresh state dir (a held ticket is retried next run)" || fail "3b: .tested-tickets is not per run"
 echo FAIL > "$WORK/tester-verdict"
 tester_fail_case() { # $1 label, $2 autonomous(1|0) → prints the final status
   local n; n="$(new_ticket alpha "Add a CSV export endpoint ($1)" "GET /export returns CSV" medium)"

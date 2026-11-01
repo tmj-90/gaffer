@@ -59,9 +59,9 @@ echo "== 2: a second tick in the same run stays quiet (warned once) =="
 probe human "$AUTO" >/dev/null
 [ "$(grep -cF "$WARN" "$LOG")" = "1" ] && ok "exactly one warning across two ticks" || fail "warning repeated: $(grep -cF "$WARN" "$LOG")"
 
-echo "== 3: the run starters clear the marker (a new run warns again) =="
-grep -q 'autonomy-policy-inert-warned' "$RUNNER_DIR/loop.sh" && grep -q 'autonomy-policy-inert-warned' "$RUNNER_DIR/bin/poll-once.sh" \
-  && ok "loop.sh + poll-once.sh clear .autonomy-policy-inert-warned" || fail "marker not cleared by the run starters"
+echo "== 3: a new run starts without the marker (a new run warns again) =="
+grep -qF '${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.autonomy-policy-inert-warned' "$RUNNER_DIR/factory.config.sh" && grep -q 'gaffer_run_state_begin loop' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_run_state_begin poll' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "the marker lives in the run's own fresh state dir (loop.sh + poll-once.sh)" || fail "marker is not per run"
 rm -f "$WORK/data/.autonomy-policy-inert-warned"; probe human "$AUTO" >/dev/null
 [ "$(grep -cF "$WARN" "$LOG")" = "2" ] && ok "warns again after the marker is cleared" || fail "did not re-warn"
 

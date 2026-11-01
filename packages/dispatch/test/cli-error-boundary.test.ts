@@ -129,15 +129,20 @@ describe.skipIf(!CLI_BUILT)(
 
     // Root ignores file permissions, so this runs wherever the tests are not root (CI).
     it.skipIf(process.getuid?.() === 0)(
-      "a read-only database file is the open-failure guidance, not INTERNAL_ERROR",
+      "a read-only database file: reads work, a write is the read-only guidance, not INTERNAL_ERROR",
       () => {
         chmodSync(db, 0o444);
         try {
-          const r = runBin(db, ["ticket", "list"]);
+          // An already-migrated database opens and reads without writing anything.
+          const list = runBin(db, ["ticket", "list"]);
+          expectNoStack(list.stderr);
+          expect(list.status, list.stderr).toBe(0);
+          // The first write fails inside SQLite; the boundary names the cause.
+          const r = runBin(db, ["ticket", "create", "--title", "read-only probe"]);
           expectNoStack(r.stderr);
           expect(r.status).toBe(1);
           const e = oneLineError(r.stderr);
-          expect(e.code).toBe("DISPATCH_DB_OPEN_FAILED");
+          expect(e.code).toBe("DB_READ_ONLY");
           expect(e.message).toMatch(/read-only/);
         } finally {
           chmodSync(db, 0o644);

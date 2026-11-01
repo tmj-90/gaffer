@@ -12,6 +12,7 @@ import {
 } from "../domain/types.js";
 import type { Spec } from "../domain/types.js";
 import type { Actor } from "../domain/types.js";
+import { evaluateTicketScope } from "../services/accessScope.js";
 import { DispatchError } from "../util/errors.js";
 import { toZod3Issues } from "../util/zod3Compat.js";
 
@@ -422,8 +423,15 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     if (actor.type !== "agent" || !inFactoryContext()) return;
     const ticket = wg.resolveTicket(ref);
     const b = bindings();
-    if ([b.claimed, b.scope, b.review].includes(ticket.id)) return;
-    if (draftsCreatedHere.has(ticket.id) && ticket.status === "draft") return;
+    // The mount's scope is a ticket scope (the runner's bindings, plus a draft this
+    // server created while it is still a draft), decided by the same evaluation a
+    // scoped principal goes through (services/accessScope.ts): one truth.
+    const tickets = [b.claimed, b.scope, b.review].filter((x): x is string => Boolean(x));
+    if (draftsCreatedHere.has(ticket.id) && ticket.status === "draft") tickets.push(ticket.id);
+    if (
+      evaluateTicketScope({ tickets }, { id: ticket.id, number: ticket.number, repos: [] }).allowed
+    )
+      return;
     throw new DispatchError(
       "FACTORY_RUNNER_OWNED",
       `${tool}: in factory context an agent may only write the ticket this mount is bound ` +

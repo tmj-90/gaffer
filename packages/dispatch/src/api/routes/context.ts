@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import type { Dispatch } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
+import type { PrincipalView } from "../../repositories/principalRepository.js";
 import type { MemoryReader } from "../memoryReader.js";
 import type { MergeRunner } from "../mergeRunner.js";
 import type { OnboardRunner } from "../onboard.js";
@@ -23,14 +24,28 @@ export const API_ACTOR: Actor = { type: "human", id: "dispatch-api" };
  * the principal that acted. Outside a request (tests calling a route directly)
  * it falls back to {@link API_ACTOR}.
  */
-const requestActor = new AsyncLocalStorage<Actor>();
+interface RequestContext {
+  actor: Actor;
+  /** The principal the request authenticated as (null: the shared token). */
+  principal: PrincipalView | null;
+}
+const requestContext = new AsyncLocalStorage<RequestContext>();
 
-export function runWithActor<T>(actor: Actor, fn: () => Promise<T>): Promise<T> {
-  return requestActor.run(actor, fn);
+export function runWithActor<T>(
+  actor: Actor,
+  fn: () => Promise<T>,
+  principal: PrincipalView | null = null,
+): Promise<T> {
+  return requestContext.run({ actor, principal }, fn);
 }
 
 export function apiActor(): Actor {
-  return requestActor.getStore() ?? API_ACTOR;
+  return requestContext.getStore()?.actor ?? API_ACTOR;
+}
+
+/** The principal this request authenticated as, or null (the shared token, or no request). */
+export function apiPrincipal(): PrincipalView | null {
+  return requestContext.getStore()?.principal ?? null;
 }
 
 /**
@@ -39,7 +54,7 @@ export function apiActor(): Actor {
  * happens to be the operator's ("dispatch-api") is still that principal.
  */
 export function isSharedOperator(): boolean {
-  const a = requestActor.getStore();
+  const a = requestContext.getStore()?.actor;
   return a === undefined || a === API_ACTOR;
 }
 

@@ -1421,6 +1421,10 @@ for (const [label, cmd] of [
   ],
   ["wg agent rename --number", "wg agent rename gaffer-factory --number 9"],
   ["wg club set", "wg club set --name 'Robot Rovers'"],
+  // A principal is a credential: an agent never mints, revokes or acts as one.
+  ["wg principal create", "wg principal create bot --admin"],
+  ["dispatch principal revoke", "dispatch principal revoke alice"],
+  ["wg --as-principal", "wg --as-principal gfp_abc ticket show 3"],
   ["crew repo-access", "crew repo-access list"],
   // Gate inputs the MCP scope check guards must not be reachable through the CLI either.
   ["wg ticket set-testable --off", "wg ticket set-testable 5 --off"],

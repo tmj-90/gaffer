@@ -287,9 +287,9 @@ gaffer_ci_gate_warn_needs_pr 22; gaffer_ci_gate_warn_needs_pr 23
   && ok "T16 warned once for the run (later deliveries stay quiet)" \
   || fail "T16 expected exactly one warning, got $(grep -c 'GAFFER_REQUIRE_CI is on' "$LOG_FILE")"
 [ -f "$GAFFER_DATA/.ci-gate-needs-pr-warned" ] \
-  && ok "T16 per-run marker written (cleared by loop.sh / poll-once.sh)" || fail "T16 marker missing"
-grep -q 'ci-gate-needs-pr-warned' "$RUNNER_DIR/loop.sh" && grep -q 'ci-gate-needs-pr-warned' "$RUNNER_DIR/bin/poll-once.sh" \
-  && ok "T16 loop.sh + poll-once.sh clear the marker at run start" || fail "T16 marker not cleared by the run starters"
+  && ok "T16 per-run marker written (a hand-run tick's: \$GAFFER_DATA)" || fail "T16 marker missing"
+grep -qF '${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.ci-gate-needs-pr-warned' "$RUNNER_DIR/lib/ci-gate.sh" && grep -q 'gaffer_run_state_begin loop' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_run_state_begin poll' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "T16 the marker lives in the run's own fresh state dir (loop.sh + poll-once.sh)" || fail "T16 marker is not per run"
 log() { :; }; unset GAFFER_DATA
 
 echo ""

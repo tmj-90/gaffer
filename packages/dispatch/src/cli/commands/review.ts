@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, parseAs, printJson, warnLandedAlready } from "../helpers.js";
+import { cliActor, cliPrincipal, parseAs, printJson, warnLandedAlready } from "../helpers.js";
 import { open } from "../runtime.js";
 
 /** `--commit repo=sha` (or a bare sha) → a shown commit; malformed input is refused. */
@@ -49,7 +49,9 @@ export function registerReview(program: Command): void {
       const actor: Actor =
         as === "agent"
           ? { type: "agent", id: opts.reviewer ?? "agent" }
-          : { type: "human", id: opts.reviewer ?? cliActor().id };
+          : cliPrincipal()
+            ? cliActor() // CLI IDENTITY: the principal's own actor (human or admin)
+            : { type: "human", id: opts.reviewer ?? cliActor().id };
       const commits = ((opts.commit as string[] | undefined) ?? []).map(parseCommitFlag);
       const res = wg.approveReview(ref, actor, { commits, requireCommits: true });
       printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
@@ -88,7 +90,9 @@ export function registerReview(program: Command): void {
           ? { type: "agent", id: opts.reviewer ?? "agent" }
           : as === "system"
             ? { type: "system", ...(opts.reviewer ? { id: opts.reviewer } : {}) }
-            : { type: "human", id: opts.reviewer ?? cliActor().id };
+            : cliPrincipal()
+              ? cliActor()
+              : { type: "human", id: opts.reviewer ?? cliActor().id };
       const res = wg.rejectReview(ref, to, actor, opts.reason);
       warnLandedAlready(res.landedAlready, `rejection (--to ${to})`);
       printJson({

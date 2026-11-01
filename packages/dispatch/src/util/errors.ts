@@ -29,6 +29,13 @@ export const DISPATCH_ERROR_CODES = [
   "INVALID_DEPENDENCY",
   "ADVANCED_RELATION_REQUIRED",
   "ACTOR_NOT_PERMITTED",
+  // A scoped principal reached outside its repo/ticket scope (services/accessScope.ts).
+  "SCOPE_DENIED",
+  // A read-only credential attempted a write (REST answers it at the gate; the CLI
+  // acting as a read-only principal raises it from the same evaluation).
+  "READ_ONLY_TOKEN",
+  // A principal token that is unknown or revoked (the CLI's --as-principal).
+  "UNAUTHORIZED",
   "FACTORY_RUNNER_OWNED",
   "NOT_CONFIGURED",
   "TEST_CONTRACT_LEAK",

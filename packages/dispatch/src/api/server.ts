@@ -15,6 +15,7 @@ import { createMergeRunner, type MergeRunner } from "./mergeRunner.js";
 import { createOnboardRunner, type OnboardRunner } from "./onboard.js";
 import { createPlanBuildRunner, type PlanBuildRunner } from "./planBuild.js";
 import { createPollWorkRunner, type PollWorkRunner } from "./pollWork.js";
+import { authorizePrincipalRequest } from "./scopeGate.js";
 import { createProductOwnerRunner, type ProductOwnerRunner } from "./productOwner.js";
 import { routeApi } from "./routes/api.js";
 import { API_ACTOR, runWithActor } from "./routes/context.js";
@@ -49,9 +50,9 @@ import { serveStatic } from "./static.js";
  * included. Only the public bootstrap surface (the static SPA shell + `/healthz`,
  * served before the auth gate) is tokenless. This is what structurally stops the
  * delivery agent — whose child env the runner scrubs of the token — from reading
- * the backlog or self-approving its own work over REST. What is NOT here yet is
- * *role* enforcement: per-role RBAC is deferred, so an authenticated caller acts
- * as a single human actor with full rights.
+ * the backlog or self-approving its own work over REST. A named principal acts as
+ * its own actor, and its admin flag and optional repo/ticket scope are enforced by
+ * ./scopeGate before any route runs.
  */
 
 // Re-exported for the bin layer and the bind-guard tests, which import these
@@ -250,22 +251,32 @@ async function route(
     // PER-PRINCIPAL CREDENTIALS: attribute everything this request writes to the
     // principal it authenticated as (the shared token keeps the single API actor).
     const principal = requestPrincipal(req);
-    await runWithActor(principal ? principal.actor : API_ACTOR, () =>
-      dispatchResource(
-        wg,
-        runner,
-        planBuildRunner,
-        mergeRunner,
-        pollWorkRunner,
-        memoryReader,
-        onboardRunner,
-        specAuthorRunner,
-        method,
-        segments,
-        url,
-        req,
-        res,
-      ),
+    await runWithActor(
+      principal ? principal.actor : API_ACTOR,
+      async () => {
+        // PRINCIPAL SCOPES: a named principal's request is checked against its admin
+        // flag and repo/ticket scope before any route runs (api/scopeGate.ts); a
+        // refusal is 403 SCOPE_DENIED naming the scope. The shared token skips it.
+        if (principal) {
+          await authorizePrincipalRequest(wg, principal.principal, method, segments, req);
+        }
+        await dispatchResource(
+          wg,
+          runner,
+          planBuildRunner,
+          mergeRunner,
+          pollWorkRunner,
+          memoryReader,
+          onboardRunner,
+          specAuthorRunner,
+          method,
+          segments,
+          url,
+          req,
+          res,
+        );
+      },
+      principal ? principal.principal : null,
     );
   } catch (err) {
     handleError(res, err);

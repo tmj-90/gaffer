@@ -1,6 +1,7 @@
 import type { ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
+import { requestTicketFilter } from "../scopeGate.js";
 import { errorBody, sendJson } from "../http.js";
 import { apiActor } from "./context.js";
 
@@ -12,7 +13,10 @@ export async function routeClaims(
 ): Promise<void> {
   // /claims
   if (segments.length === 1 && method === "GET") {
-    sendJson(res, 200, { claims: wg.listActiveClaims() });
+    // PRINCIPAL SCOPES: a scoped principal sees the claims on its tickets only.
+    const visible = requestTicketFilter(wg);
+    const claims = wg.listActiveClaims();
+    sendJson(res, 200, { claims: visible ? claims.filter((c) => visible(c.ticket_id)) : claims });
     return;
   }
 

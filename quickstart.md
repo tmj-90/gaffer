@@ -64,11 +64,27 @@ asserts on its own.
 ## 3. Open the control room
 
 ```bash
-runner/gaffer dashboard --lan
+runner/gaffer dashboard
 ```
 
-Prints a URL (`http://<your-lan-ip>:8787`) and a bearer **token** — paste the token at the
-login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only; every data request still needs the auto-provisioned token, which the command prints as a `?token=` URL.)
+Prints a `http://127.0.0.1:8787/?token=…` link: open it on this machine (or paste the
+token at the login prompt). The dashboard binds loopback only, and every data request
+needs that token.
+
+To use another port, set `DISPATCH_API_PORT`, e.g. `DISPATCH_API_PORT=9000 runner/gaffer
+dashboard --restart`. `gaffer status` and the runner read the same variable, so export it
+in every shell you run them from. In the container, compose publishes the host side from
+`GAFFER_PORT` (a bind address, default `127.0.0.1:8787`) and falls back to
+`DISPATCH_API_PORT` for the port, so `DISPATCH_API_PORT=9000 docker compose up -d` also
+works.
+
+> **`--lan` is plain HTTP on your LAN.** `runner/gaffer dashboard --lan` binds every
+> interface so a phone or another machine can open `http://<your-lan-ip>:8787`. There is
+> no TLS, so the full token (approve, merge, run) crosses the network in the clear and
+> anyone who can see that traffic can use it. Use it only on a network you trust.
+> Otherwise keep the loopback default and reach it through an SSH tunnel
+> (`ssh -L 8787:127.0.0.1:8787 <host>`) or a reverse proxy that terminates TLS, and give
+> viewers a read-only token, not the full one (the README says how to get one).
 
 > **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
 > every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,

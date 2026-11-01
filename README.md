@@ -75,7 +75,9 @@ runner/gaffer onboard ~/code/your-repo    # register it, scan it, write its dige
 runner/gaffer status                      # what's registered, and anything waiting on you
 ```
 
-`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
+`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. `--lan` is plain HTTP, so on a LAN the token travels unencrypted; [SECURITY.md](SECURITY.md) says what to do instead. To use another port, export `DISPATCH_API_PORT=9000` before `runner/gaffer dashboard --restart` (and in the shells you run `gaffer` from). Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
+
+The CLI's own messages say `gaffer …`. To type it that way, add `alias gaffer="$PWD/runner/gaffer"` (run from the checkout) to your shell profile. A symlink to `runner/gaffer` doesn't work, because the script finds the factory relative to its own path.
 
 Give it a first ticket. `runner/gaffer wg` is the control-plane CLI pointed at this factory's database:
 
@@ -100,7 +102,7 @@ runner/gaffer merge 1
 
 `runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
 
-To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), put the repos you want worked on under `./repos`, and run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` and `docker compose logs dashboard` shows the login link.
+To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), run `mkdir -p repos` and put the repos you want worked on under `./repos` (create it yourself: on Linux, Docker creates a missing one owned by root, and the container's user can't write to it), then run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` (`GAFFER_PORT` changes the host side, and it falls back to `DISPATCH_API_PORT`) and `docker compose logs dashboard` shows the login link.
 
 [quickstart.md](quickstart.md) is the long version, with the greenfield path and the first-run gotchas.
 

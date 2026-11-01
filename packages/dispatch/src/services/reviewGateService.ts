@@ -157,6 +157,17 @@ export function unavailableRepoRemedy(
  * returned; the CLI takes `--commit <repo>=<sha>`). `repo` is the repo id or name; null
  * means "the ticket's only repo" and is refused for a multi-repo ticket.
  */
+/** REVOCATION-SAFE LANDING: one landing started or committed on the current approval. */
+export interface LandingStarted {
+  repo: string;
+  repoId: string;
+  commit: string;
+  /** On record, or git shows the commit on the repo's default branch. */
+  landed: boolean;
+  via: string | null;
+  at: string;
+}
+
 export interface ShownCommit {
   repo: string | null;
   sha: string;
@@ -856,6 +867,211 @@ export class ReviewGateService {
         status: computeLandingStatus(this.db, ticket.id),
       };
     });
+  }
+
+  /**
+   * REVOCATION-SAFE LANDING (external review #8): the approval a landing is acting on —
+   * the id of the ticket's latest transition into ready_for_merge (a human/agent approve,
+   * a tester PASS), or null when it never got there. The merge runner reads it before its
+   * gates run and hands it back to beginLanding, so a re-approval while the gates ran
+   * (even of the same commit) is a different approval and nothing lands on the old one.
+   */
+  approvalRef(ticketId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT id FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+            AND json_extract(payload_json, '$.to') = 'ready_for_merge'
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { id: string } | undefined;
+    return row?.id ?? null;
+  }
+
+  /**
+   * REVOCATION-SAFE LANDING (external review #8). A cancellation or a red required check
+   * recorded while the merge gate ran used to be acknowledged by Dispatch and then
+   * overridden by the landing that followed: both default branches advanced, the merge
+   * exited 0, and the ticket still read cancelled. The landing paths now call this
+   * IMMEDIATELY before they advance a default branch (or ask the provider to merge a PR),
+   * once per repository. In ONE immediate transaction it re-checks that the ticket is
+   * still ready_for_merge, on the same approval (`approval`, from approvalRef), that
+   * `commit` is still that repo's approved revision, and that required CI for the
+   * approved commits is still green — and records the landing as STARTED
+   * (`ticket.landing_started`). A refusal (STATE_CONFLICT, `details.reason` revoked |
+   * approval_changed | ci_not_green) means: land nothing. Because the check and the
+   * record are one transaction, a revocation is either committed first (this refuses) or
+   * sees the started landing (rejectReview / recordCiResult then report it). System/admin.
+   */
+  beginLanding(
+    ref: string,
+    input: {
+      repo: string;
+      commit: string;
+      approval?: string | undefined;
+      via?: string | undefined;
+    },
+    actor: Actor,
+  ): {
+    ticketId: string;
+    repo: string;
+    repoId: string;
+    commit: string;
+    approval: string | null;
+    eventId: string;
+  } {
+    if (actor.type !== "system" && actor.type !== "admin") {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        "Only a system or admin actor may start a landing.",
+        { actor_type: actor.type },
+      );
+    }
+    const sha = input.commit.trim().toLowerCase();
+    if (!/^[0-9a-f]{40}$|^[0-9a-f]{64}$/.test(sha)) {
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        "commit must be a full git commit id (40 or 64 hex characters).",
+      );
+    }
+    return inTransaction(this.db, () => {
+      const ticket = this.ticketSvc.resolveTicket(ref);
+      if (ticket.status !== "ready_for_merge") {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `#${ticket.number} is ${ticket.status}, no longer ready_for_merge: its approval was revoked while the landing was being prepared.`,
+          { reason: "revoked", status: ticket.status },
+        );
+      }
+      const approval = this.approvalRef(ticket.id);
+      if (input.approval && approval !== input.approval) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `#${ticket.number} was re-approved while the landing was being prepared; the approval it started on is no longer current.`,
+          { reason: "approval_changed", started_on: input.approval, current: approval },
+        );
+      }
+      const landing = computeLandingStatus(this.db, ticket.id);
+      const target = landing.repos.find((r) => r.repoId === input.repo || r.repo === input.repo);
+      // A legacy approval (no per-repo pins) has no plan: the status/approval/CI checks
+      // still apply; with a plan, the commit must be the repo's current approved revision.
+      if (landing.repos.length > 0 && (!target || target.sha !== sha)) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `${input.repo} has no approved revision ${sha.slice(0, 12)} on #${ticket.number} any more; the approval changed while the landing was being prepared.`,
+          {
+            reason: "approval_changed",
+            approved: landing.repos.map((r) => ({ repo: r.repo, sha: r.sha })),
+          },
+        );
+      }
+      // REQUIRED CI for the approved commits must still be green.
+      if (this.ciStatus(ticket.id, null).required) {
+        const pins = landing.repos.filter((r) => r.pinned).map((r) => r.sha);
+        const states = (pins.length > 0 ? pins : [sha]).map((c) => ({
+          state: this.ciStatus(ticket.id, c).state,
+          commit: c,
+        }));
+        const red = states.find((x) => x.state !== null && x.state !== "pass");
+        const anyPass = states.some((x) => x.state === "pass");
+        if (red || !anyPass) {
+          const at = red ? red.commit : (pins[0] ?? sha);
+          throw new DispatchError(
+            "STATE_CONFLICT",
+            `Required CI for ${String(at).slice(0, 12)} on #${ticket.number} is ${red?.state ?? "not passed"}; nothing may land on it.`,
+            { reason: "ci_not_green", commit: at, ci_state: red?.state ?? null },
+          );
+        }
+      }
+      const repoId = target?.repoId ?? input.repo;
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.landing_started",
+        payload: {
+          repo: target?.repo ?? input.repo,
+          repo_id: repoId,
+          commit: sha,
+          via: input.via ?? null,
+          approval,
+        },
+      });
+      return {
+        ticketId: ticket.id,
+        repo: target?.repo ?? input.repo,
+        repoId,
+        commit: sha,
+        approval,
+        eventId,
+      };
+    });
+  }
+
+  /**
+   * REVOCATION-SAFE LANDING: the landings already started or committed on the ticket's
+   * current approval (since it last entered in_review): every `ticket.landing_started`
+   * and every recorded landing, one row per repo and commit. `landed` is true when the
+   * landing is on record or git shows the approved commit on that repo's default branch;
+   * false means the landing had started (the default branch may be moving right now).
+   * A revocation (rejectReview, a failed CI result) reports these: it cannot undo them.
+   */
+  landingsStarted(ticketId: string): LandingStarted[] {
+    const entered = this.db
+      .prepare(
+        `SELECT created_at AS at FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+            AND json_extract(payload_json, '$.to') = 'in_review'
+          ORDER BY rowid DESC LIMIT 1`,
+      )
+      .get(ticketId) as { at: string } | undefined;
+    const since = entered?.at ?? "";
+    const started = this.db
+      .prepare(
+        `SELECT payload_json, created_at FROM work_events
+          WHERE entity_type = 'ticket' AND entity_id = ? AND created_at >= ?
+            AND event_type IN ('ticket.landing_started', 'ticket.repo_landed')
+          ORDER BY rowid ASC`,
+      )
+      .all(ticketId, since) as Array<{ payload_json: string | null; created_at: string }>;
+    const status = computeLandingStatus(this.db, ticketId);
+    const out = new Map<string, LandingStarted>();
+    for (const row of started) {
+      let p: Record<string, unknown> = {};
+      try {
+        p = JSON.parse(row.payload_json ?? "{}") as Record<string, unknown>;
+      } catch {
+        p = {};
+      }
+      const commit = String(p.commit ?? "").toLowerCase();
+      const repo = String(p.repo ?? "");
+      const st = status.repos.find((r) => r.repoId === String(p.repo_id ?? "") || r.repo === repo);
+      if (!commit) continue;
+      const key = `${st?.repoId ?? repo}\u0000${commit}`;
+      const prev = out.get(key);
+      out.set(key, {
+        repo: st?.repo ?? repo,
+        repoId: st?.repoId ?? String(p.repo_id ?? repo),
+        commit,
+        landed: prev?.landed ?? false,
+        via: (p.via as string | null | undefined) ?? prev?.via ?? null,
+        at: prev?.at ?? row.created_at,
+      });
+    }
+    for (const [key, v] of out) {
+      let landed = status.repos.some(
+        (r) => r.repoId === v.repoId && r.sha === v.commit && r.landed,
+      );
+      if (!landed && this.landedOnDefaultResolver && !UNVERIFIABLE_LANDING_VIAS.has(v.via ?? "")) {
+        try {
+          landed = this.landedOnDefaultResolver(v.repoId, v.commit);
+        } catch {
+          landed = false;
+        }
+      }
+      out.set(key, { ...v, landed });
+    }
+    return [...out.values()];
   }
 
   /**

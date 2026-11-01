@@ -84,6 +84,28 @@ _gaffer_land_record() {
   fi
 }
 
+# REVOCATION-SAFE LANDING (external review #8). A cancellation or a red required check
+# recorded while the merge gate ran used to be acknowledged by Dispatch and then overridden
+# by the landing that followed. Immediately before a default branch moves (or a PR merge is
+# requested) — per repo — Dispatch re-checks in one transaction that the ticket is still
+# ready_for_merge on the approval this landing started on (_LAND_APPROVAL, read before any
+# gate), that the pin is still the repo's approved revision and that required CI is still
+# green, and records the landing as started (a revocation after that reports it).
+#   _gaffer_land_begin <num> <repo_id|name> <pin> <via> → 0 land · 1 not landed (_LB_REASON)
+# Fail CLOSED: a check that cannot run is a refusal.
+_gaffer_land_begin() {
+  local num="$1" repo="$2" pin="$3" via="$4" out rc=0
+  _LB_REASON=""
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  local -a _ap=()
+  [ -n "${_LAND_APPROVAL:-}" ] && _ap=(--approval "$_LAND_APPROVAL")
+  out="$(wg ticket landing-begin "$num" --repo "$repo" --commit "$pin" --via "$via" ${_ap[@]+"${_ap[@]}"} --as system 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  _LB_REASON="$(printf '%s\n' "$out" | jget 'd.message || ""' 2>/dev/null | head -1)"
+  [ -n "$_LB_REASON" ] || _LB_REASON="the pre-landing check could not run (rc=$rc: $(printf '%s' "$out" | tail -n 1 | cut -c1-160))"
+  return 1
+}
+
 # TESTER REPLAY (external review #4): the merge gate replayed the independent tester's test
 # files on the exact merge candidate and that candidate landed — record WHICH assertions
 # passed on WHICH landed revision (system evidence, uri gaffer-tester-replayed:<sha>). The
@@ -133,6 +155,8 @@ gaffer_land_delivery() {
   # before the approve (the review pass) carries no pins and would land only one repo.
   _fresh="$(wg ticket show "$RNUM" 2>/dev/null || true)"
   [ -n "$_fresh" ] && RSHOW="$_fresh"
+  # REVOCATION-SAFE LANDING: the approval this landing acts on, read before any gate runs.
+  _LAND_APPROVAL="$(wg ticket landing "$RNUM" 2>/dev/null | jget 'd.approval || ""' 2>/dev/null || true)"
   _plan="$(_gaffer_land_plan "$RSHOW" "$RREPO" "$RBRANCH" "$RDEFAULT")"
   _n="$(printf '%s\n' "$_plan" | grep -c .)"
   [ "$_n" -gt 1 ] && log "$_WHO: #$RNUM lands in $_n repositories (one merge per approved revision)"
@@ -264,6 +288,7 @@ _gaffer_land_one() {
   # pr_url belongs to its PRIMARY repo; a secondary repo lands locally.
   _RPR=""
   [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
+  local _LREF="${_RID:-$(basename "$RREPO")}"
   _mrc=""
   # PROVENANCE TRAILERS on the merge commit (this repo's gated merge commit, or its PR's
   # merge): the ticket, the approving actor and the gate verdicts, read from the
@@ -288,6 +313,11 @@ _gaffer_land_one() {
     esac
   fi
   if [ -n "$_RPR" ] && [ -z "$_mrc" ]; then
+    # REVOCATION-SAFE LANDING: the last word before the provider is asked to merge.
+    if ! _gaffer_land_begin "$RNUM" "$_LREF" "$_TB_PIN" pr; then
+      log "$_WHO: #$RNUM not landed: ${_LB_REASON}; nothing merged in $(basename "$RREPO") — left as Dispatch has it"
+      return 4
+    fi
     gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN" "$_TRAILERS"; _prc=$?
     case "$_prc" in
       0) _mrc=0; _MERGED_VIA=pr
@@ -324,6 +354,11 @@ _gaffer_land_one() {
         4) _gaffer_merge_gate_hold "$RNUM" "$RBRANCH" "$RDEFAULT" "$_WHO"; return 4 ;;
         *) log "$_WHO: #$RNUM HELD — the merge gate could not run (${_MG_REASON:-unknown}); nothing merged"; return 2 ;;
       esac
+      # REVOCATION-SAFE LANDING: re-checked after the gate, right before the target moves.
+      if ! _gaffer_land_begin "$RNUM" "$_LREF" "$_TB_PIN" local; then
+        log "$_WHO: #$RNUM not landed: ${_LB_REASON}; nothing merged in $(basename "$RREPO") — left as Dispatch has it"
+        return 4
+      fi
       _gaffer_land_gated "$RREPO" "$RDEFAULT" "$_MG_TARGET" "$_MG_MERGE" "$RBRANCH" "$_TB_PIN"; _lrc=$?
       case "$_lrc" in
         7)

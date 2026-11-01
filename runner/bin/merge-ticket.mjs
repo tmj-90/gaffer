@@ -1888,6 +1888,7 @@ function landThroughMergeGate({
   secondary = false,
   testerReplay = null,
   trailers = [],
+  beforeLand = null,
 }) {
   const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
   const where = secondary && repoName ? ` in ${repoName}` : "";
@@ -1911,6 +1912,11 @@ function landThroughMergeGate({
         ? `#${ticketNumber}: MERGE GATE OFF (GAFFER_DOD=0) — the combination was not gated`
         : `#${ticketNumber}: MERGE GATE PASS — the merge of ${pin.slice(0, 12)} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} passes the gates`,
     );
+    // REVOCATION-SAFE LANDING: the last word before the default branch moves.
+    if (beforeLand) {
+      const b = beforeLand();
+      if (!b.ok) return { kind: "revoked", reason: b.reason };
+    }
     const l = landGatedMerge({
       repoPath,
       defaultBranch,
@@ -2013,6 +2019,68 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
 }
 
 /**
+ * REVOCATION-SAFE LANDING (external review #8): the approval this merge acts on, read
+ * BEFORE any gate runs (`wg ticket landing` .approval). beginLandingCli hands it back, so
+ * a re-approval while the gates ran is a different approval and nothing lands on the old.
+ */
+export function readLandingApproval(ticketNumber) {
+  const r = runDispatch(["ticket", "landing", String(ticketNumber)]);
+  if (r.error || r.status !== 0) return null;
+  try {
+    const j = JSON.parse(String(r.stdout || "").trim());
+    return typeof j.approval === "string" && j.approval ? j.approval : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * REVOCATION-SAFE LANDING: called after the gates passed and IMMEDIATELY before a default
+ * branch is advanced (or a PR merge requested), once per repo. Dispatch re-checks in one
+ * transaction that the ticket is still ready_for_merge on the same approval, that `pin`
+ * is still the repo's approved revision and that required CI is still green, and records
+ * the landing as started (a revocation after this reports it). → { ok, reason }: not ok
+ * means land NOTHING (fail closed: a check that cannot run is a refusal too).
+ */
+export function beginLandingCli(ticketNumber, repoRef, pin, approval, via) {
+  const args = [
+    "ticket",
+    "landing-begin",
+    String(ticketNumber),
+    "--repo",
+    String(repoRef),
+    "--commit",
+    String(pin),
+    "--via",
+    String(via || "local"),
+    "--as",
+    "system",
+  ];
+  if (approval) args.push("--approval", String(approval));
+  const r = runDispatch(args);
+  if (!r.error && r.status === 0) return { ok: true };
+  let reason = "";
+  for (const text of [r.stdout, r.stderr]) {
+    for (const line of String(text || "").split("\n")) {
+      try {
+        const j = JSON.parse(line);
+        if (j && typeof j.message === "string") reason = j.message;
+      } catch {
+        /* not JSON */
+      }
+    }
+  }
+  if (!reason)
+    reason = `the pre-landing check could not run (${(r.error?.message || r.stderr || `exit ${r.status}`).toString().trim().slice(0, 160)})`;
+  return { ok: false, reason };
+}
+
+/** The line a revoked landing reports (the ticket is left in the state Dispatch set). */
+function notLanded(ticketNumber, reason, where = "") {
+  return `not landed: ${String(reason).replace(/[.\s]+$/, "")}${where ? ` (${where})` : ""}; nothing merged${where ? " there" : ""}, #${ticketNumber} left as Dispatch has it`;
+}
+
+/**
  * Land every write repo OTHER than the primary: each lands only its pinned (approved)
  * commit, through the same landing check (`--secondary`: the tester verdict describes the
  * primary) and the same MERGE GATE + compare-and-land as the primary (landThroughMergeGate:
@@ -2022,7 +2090,7 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
  * repo); a RED merge gate also holds the ticket (blocked, merge_gate_red) with the gate
  * output as evidence. Returns { ok, merged, landed, pending, reason }.
  */
-function landSecondaryRepos(ticketNumber, primaryRepoId) {
+function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
   const plan = readLandingPlan(ticketNumber);
   const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
   if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
@@ -2085,7 +2153,13 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
       secondary: true,
       // Each repo's gated merge commit is the commit that lands there: it carries them too.
       trailers,
+      // REVOCATION-SAFE LANDING: re-checked before EACH repo's default branch moves.
+      beforeLand: () => beginLandingCli(ticketNumber, r.repoId, d.pin, approval, "local"),
     });
+    if (res.kind === "revoked") {
+      why(notLanded(ticketNumber, res.reason, r.repo));
+      continue;
+    }
     if (res.kind === "conflict") {
       why(`${res.gate.reason} (merge conflict)`);
       continue;
@@ -2273,6 +2347,11 @@ function main() {
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
   const pin = decision.pin;
+  // REVOCATION-SAFE LANDING (external review #8): the approval this merge acts on, read
+  // before any gate runs; every repo's landing re-checks it right before git moves.
+  const approval = readLandingApproval(resolved.number);
+  const primaryRef = repo.id || repo.name;
+  const revoked = (b) => fail(notLanded(resolved.number, b.reason), 4);
   // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
   const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
   // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
@@ -2348,6 +2427,9 @@ function main() {
   }
   if (!landed && resolved.prUrl && !conflict) {
     if (ghAvailable(ghBin)) {
+      // REVOCATION-SAFE LANDING: the last word before the provider is asked to merge.
+      const b = beginLandingCli(resolved.number, primaryRef, pin, approval, "pr");
+      if (!b.ok) return revoked(b);
       const pr = mergeViaPr({
         repoPath: repo.localPath,
         prUrl: resolved.prUrl,
@@ -2417,8 +2499,10 @@ function main() {
       testerReplay,
       // The gated merge commit is the commit that lands: it carries the trailers.
       trailers,
+      beforeLand: () => beginLandingCli(resolved.number, primaryRef, pin, approval, "local"),
     });
     // A conflict falls through to the resolver below (landed stays null).
+    if (res.kind === "revoked") return revoked(res);
     if (res.kind === "red") return holdRed(res.gate);
     if (res.kind === "error") {
       fail(
@@ -2475,7 +2559,7 @@ function main() {
           `#${resolved.number}: NO tester replay record — ${landedRev.reason}; the epic is not counted as accepted`,
         );
     }
-    const others = landSecondaryRepos(resolved.number, repo.id);
+    const others = landSecondaryRepos(resolved.number, repo.id, approval);
     if (!others.ok) {
       emit(
         {

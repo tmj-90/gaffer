@@ -89,3 +89,24 @@ export function readJsonInput(path: string | undefined): unknown {
     throw new DispatchError("VALIDATION_ERROR", `Invalid JSON input: ${reason}`);
   }
 }
+
+/**
+ * REVOCATION-SAFE LANDING (external review #8): a revocation acknowledged after a landing
+ * had started cannot undo it. Say so on stderr, naming each landing, so the operator who
+ * cancelled (or the CI hook that failed) knows a default branch already moved.
+ */
+export function warnLandedAlready(
+  landed: ReadonlyArray<{ repo: string; commit: string; landed: boolean }>,
+  what: string,
+): void {
+  if (landed.length === 0) return;
+  const list = landed
+    .map(
+      (l) => `${l.repo} ${l.commit.slice(0, 12)} (${l.landed ? "landed" : "landing in progress"})`,
+    )
+    .join(", ");
+  process.stderr.write(
+    `WARNING: a landing had already started before this ${what} was recorded: ${list}. ` +
+      `The ${what} stops every landing that had not started; it does not undo these — revert them by hand if needed.\n`,
+  );
+}

@@ -2,7 +2,7 @@ import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, parseAs, printJson } from "../shared.js";
+import { cliActor, open, parseAs, printJson, warnLandedAlready } from "../shared.js";
 
 /** `--commit repo=sha` (or a bare sha) → a shown commit; malformed input is refused. */
 export function parseCommitFlag(value: string): { repo: string | null; sha: string } {
@@ -87,7 +87,14 @@ export function registerReview(program: Command): void {
             ? { type: "system", ...(opts.reviewer ? { id: opts.reviewer } : {}) }
             : { type: "human", id: opts.reviewer ?? "reviewer" };
       const res = wg.rejectReview(ref, to, actor, opts.reason);
-      printJson({ ok: true, status: res.ticket.status, event: res.eventId, policy: res.policy });
+      warnLandedAlready(res.landedAlready, `rejection (--to ${to})`);
+      printJson({
+        ok: true,
+        status: res.ticket.status,
+        event: res.eventId,
+        policy: res.policy,
+        ...(res.landedAlready.length > 0 ? { landed_already: res.landedAlready } : {}),
+      });
       wg.db.close();
     });
 

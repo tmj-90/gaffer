@@ -411,6 +411,8 @@ export async function routeTickets(
         ticket: result.ticket,
         event_id: result.eventId,
         ...(loreCapture ? { lore_capture: loreCapture } : {}),
+        // REVOCATION-SAFE LANDING: landings that had started before the rejection.
+        ...(result.landedAlready.length > 0 ? { landed_already: result.landedAlready } : {}),
       });
       return;
     }

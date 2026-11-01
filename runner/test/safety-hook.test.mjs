@@ -1372,6 +1372,12 @@ for (const [label, cmd] of [
     "dispatch ticket record-landing --via local",
     "dispatch ticket record-landing 5 --repo repoB --commit abc1234 --via local",
   ],
+  // A started landing is the landing path's to record: a forged one makes a revocation
+  // report a landing that never happened (external review #8).
+  [
+    "wg ticket landing-begin --as system",
+    "wg ticket landing-begin 5 --repo repoA --commit abc1234 --as system",
+  ],
   // The tester-replay record is the landing path's to write: a forged row counts an epic
   // as accepted on assertions that never ran on what landed.
   [

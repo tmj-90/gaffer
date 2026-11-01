@@ -155,6 +155,7 @@ import { HumanQueueService, type HumanQueue } from "./services/humanQueueService
 import {
   type ApprovalShas,
   type ApproveReviewOptions,
+  type LandingStarted,
   type ReviewedHead,
   type UnavailableWriteRepo,
   ReviewGateService,
@@ -1582,6 +1583,57 @@ export class Dispatch {
     return this.reviewGateSvc.recordLanding(ref, input, actor);
   }
 
+  /**
+   * REVOCATION-SAFE LANDING (external review #8): re-check, immediately before a default
+   * branch moves, that the ticket is still landable on the same approval and green CI,
+   * and record the landing as started (see ReviewGateService.beginLanding).
+   */
+  beginLanding(
+    ref: string,
+    input: {
+      repo: string;
+      commit: string;
+      approval?: string | undefined;
+      via?: string | undefined;
+    },
+    actor: Actor,
+  ): ReturnType<ReviewGateService["beginLanding"]> {
+    return this.reviewGateSvc.beginLanding(ref, input, actor);
+  }
+
+  /** The approval a landing acts on (the latest transition into ready_for_merge). */
+  landingApproval(ref: string): string | null {
+    return this.reviewGateSvc.approvalRef(this.resolveTicket(ref).id);
+  }
+
+  /** The landings already started or committed on the ticket's current approval. */
+  landingsStarted(ref: string): LandingStarted[] {
+    return this.reviewGateSvc.landingsStarted(this.resolveTicket(ref).id);
+  }
+
+  /**
+   * A revocation (reject, a failed required check) acknowledged AFTER a landing started
+   * cannot undo it: say so on the ticket's trail and hand the landings back to the caller,
+   * which reports them ("a landing has already happened").
+   */
+  private revocationAfterLanding(
+    ticketId: string,
+    actor: Actor,
+    revocation: string,
+  ): LandingStarted[] {
+    const landed = this.reviewGateSvc.landingsStarted(ticketId);
+    if (landed.length > 0) {
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticketId,
+        actor,
+        event_type: "ticket.revoked_after_landing",
+        payload: { revocation, landings: landed },
+      });
+    }
+    return landed;
+  }
+
   /** TESTER REPLAY: record the tester's tests passed on the landed revision (system only). */
   recordTesterReplay(
     ref: string,
@@ -1688,16 +1740,27 @@ export class Dispatch {
     ref: string,
     input: { commit: string; state: "pending" | "pass" | "fail"; detail?: string },
     actor: Actor,
-  ): { state: string; held: boolean; status: string; eventId: string } {
+  ): {
+    state: string;
+    held: boolean;
+    status: string;
+    eventId: string;
+    landedAlready: LandingStarted[];
+  } {
     const res = this.reviewGateSvc.recordCiResult(ref, input, actor);
+    const ticket = this.tickets.resolveRef(ref);
     if (res.held) {
-      const ticket = this.tickets.resolveRef(ref);
       this.emitGate("ticket_parked", ticket, {
         status: "blocked",
         detail: `required CI failed for ${input.commit.slice(0, 12)}`,
       });
     }
-    return res;
+    // REVOCATION-SAFE LANDING: a red result after a landing started cannot stop it.
+    const landedAlready =
+      input.state === "fail" && ticket
+        ? this.revocationAfterLanding(ticket.id, actor, `ci_failed:${input.commit.slice(0, 12)}`)
+        : [];
+    return { ...res, landedAlready };
   }
 
   /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
@@ -2027,8 +2090,12 @@ export class Dispatch {
     to: "ready" | "refining" | "cancelled",
     actor: Actor,
     reason?: string,
-  ): TransitionResult {
-    return this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
+  ): TransitionResult & { landedAlready: LandingStarted[] } {
+    const res = this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
+    // REVOCATION-SAFE LANDING: a landing that started before this rejection committed is
+    // not undone by it; report it (the merge runner refuses every landing not yet started).
+    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, `rejected_to_${to}`);
+    return { ...res, landedAlready };
   }
 
   resetAcceptanceCriteria(

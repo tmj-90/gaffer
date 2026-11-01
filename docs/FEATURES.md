@@ -351,6 +351,19 @@ structural barrier the whole design hangs on.
   remote default branch before `gh pr merge` is asked; GitHub's branch
   protection ("require branches to be up to date" plus required checks) is the
   compare-and-land upstream.
+- **A cancellation or a red check during the merge gate stops the landing.** The
+  gates can take minutes, and you can cancel the ticket or a required check can
+  turn red while they run. After the gates pass and immediately before a default
+  branch moves (or the provider is asked to merge a PR), every landing path asks
+  Dispatch again, once per repository: is the ticket still *Ready for merge*, on
+  the same approval, with that repository's approved commit and green required
+  CI? That check and a record that the landing has started are one transaction.
+  If the answer is no, nothing lands, the merge says `not landed: <reason>` and
+  exits non-zero, and the ticket stays as you left it (*cancelled*, or *blocked*
+  for the red check). If a landing had already started, the cancellation or the
+  failed check says so on the spot (`landed_already` in its output and a
+  warning naming the repository and commit): it stops every landing that had not
+  started and cannot undo one that had.
 - **The independent tester's assertions run on what lands, not only on what it
   tested.** The tester's PASS is about the commit it tested, and its black-box
   tests live on their own branch (`gaffer-tests/ticket-<n>`), never on the

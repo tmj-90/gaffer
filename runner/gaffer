@@ -30,7 +30,19 @@
 #
 # Everything uses the factory's own config/state under $GAFFER_DATA — no flags to remember.
 set -uo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The real runner/ dir, even when this file is reached through a symlink on PATH
+# (`ln -s …/runner/gaffer ~/bin/gaffer`): follow each link (relative targets resolve
+# against the link's own dir), then take the physical dir. Portable to macOS bash 3.2,
+# which has no `readlink -f`. Without it, a symlinked gaffer looked for
+# factory.config.sh next to the link and died with "RUNNER_DIR: unbound variable".
+_gaffer_self="${BASH_SOURCE[0]}"
+while [ -L "$_gaffer_self" ]; do
+  _gaffer_link_dir="$(cd -P "$(dirname "$_gaffer_self")" && pwd)"
+  _gaffer_self="$(readlink "$_gaffer_self")"
+  case "$_gaffer_self" in /*) ;; *) _gaffer_self="$_gaffer_link_dir/$_gaffer_self" ;; esac
+done
+HERE="$(cd -P "$(dirname "$_gaffer_self")" && pwd)"
+unset _gaffer_self _gaffer_link_dir
 # The operator's OWN DRY_RUN, captured BEFORE factory.config.sh fills in its default
 # (DRY_RUN=1). `gaffer run` is the go-live command: it must default to a LIVE pass, and
 # only an explicit DRY_RUN=1 in the caller's environment keeps it dry. Reading DRY_RUN

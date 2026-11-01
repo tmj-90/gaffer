@@ -173,7 +173,7 @@ gaffer/
 
 ## Contributing
 
-Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules. The first one is that a change loosening the safety hook gets rejected. `pnpm check` runs the TypeScript side and `pnpm test:runner` runs the runner's tests, the same way CI does.
+Issues and pull requests are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules. The first one is that a change loosening the safety hook gets rejected. `pnpm check` runs the TypeScript side and `pnpm test:runner` runs the runner's tests, the same way CI does. [docs/testing.md](docs/testing.md) says what CI runs and when.
 
 ## Credits
 

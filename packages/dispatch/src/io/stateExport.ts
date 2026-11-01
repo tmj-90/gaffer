@@ -513,7 +513,7 @@ export function importState(
     throw new DispatchError(
       "DB_NOT_EMPTY",
       `Refusing to import into a non-empty Dispatch database (${existing} existing rows). ` +
-        "Pass force to replace its contents.",
+        "Pass --force to replace its contents.",
       { existingRows: existing },
     );
   }

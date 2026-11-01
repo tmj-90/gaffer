@@ -245,6 +245,51 @@ export class ClaimService {
   }
 
   /**
+   * Why `ticket` is not claimable by `agent` right now, in words (the candidate query's
+   * conditions, checked one by one). Empty when none of them explains it (a race).
+   */
+  private notClaimableReasons(
+    ticket: Ticket,
+    agent: Agent,
+    capabilities: readonly string[],
+    nowIso: string,
+  ): string[] {
+    const reasons: string[] = [];
+    if (ticket.status !== "ready") reasons.push(`it is ${ticket.status}, not ready`);
+    if (ticket.human_owner) reasons.push(`${ticket.human_owner} took it by hand`);
+    if (ticket.scheduled_after && ticket.scheduled_after > nowIso) {
+      reasons.push(`it is scheduled for after ${ticket.scheduled_after}`);
+    }
+    if (riskRank(ticket.risk_level) > riskRank(agent.max_risk)) {
+      reasons.push(
+        `its risk (${ticket.risk_level}) is above the agent's ceiling (${agent.max_risk})`,
+      );
+    }
+    const missing = (
+      this.db
+        .prepare("SELECT capability FROM ticket_required_capabilities WHERE ticket_id = ?")
+        .all(ticket.id) as Array<{ capability: string }>
+    )
+      .map((r) => r.capability)
+      .filter((c) => !capabilities.includes(c));
+    if (missing.length > 0) reasons.push(`the agent lacks ${missing.join(", ")}`);
+    for (const d of this.decisions.blockingForTicket(ticket.id)) {
+      const short = d.id.slice(0, 8);
+      reasons.push(
+        `blocked by open decision ${short} "${d.title}" (a person answers it: ` +
+          `\`gaffer wg decisions resolve ${short} --answer …\` or the dashboard)`,
+      );
+    }
+    const live = this.db
+      .prepare(
+        "SELECT 1 FROM ticket_claims WHERE ticket_id = ? AND status = 'active' AND expires_at > ? LIMIT 1",
+      )
+      .get(ticket.id, nowIso);
+    if (live) reasons.push("another claim on it is still live");
+    return reasons;
+  }
+
+  /**
    * Claim a SPECIFIC chosen ticket (by id) for an agent. Applies the same
    * eligibility rules as claimNextTicket (active agent, risk ceiling, required
    * capabilities, no blocking decision, ready-or-reclaimable-expired) plus the
@@ -281,10 +326,23 @@ export class ClaimService {
         if (unsatisfied.length > 0) {
           throw dependencyBlockedError(ticket.number ?? ticket.id, ticket.id, unsatisfied);
         }
+        // cli-wg/F-19: say WHY. An open blocking decision used to hide behind the
+        // generic "not claimable by this agent".
+        const reasons = this.notClaimableReasons(ticket, agent, capabilities, now);
+        const blocking = this.decisions.blockingForTicket(ticket.id);
         throw new DispatchError(
           "TICKET_NOT_CLAIMABLE",
-          `Ticket '${ticket.number ?? ticket.id}' is not claimable by this agent.`,
-          { ticket_id: ticket.id, status: ticket.status, agent_id: agent.id },
+          `Ticket '${ticket.number ?? ticket.id}' is not claimable by this agent` +
+            (reasons.length > 0 ? `: ${reasons.join("; ")}.` : "."),
+          {
+            ticket_id: ticket.id,
+            status: ticket.status,
+            agent_id: agent.id,
+            ...(reasons.length > 0 ? { reasons } : {}),
+            ...(blocking.length > 0
+              ? { blocking_decisions: blocking.map((d) => ({ id: d.id, title: d.title })) }
+              : {}),
+          },
         );
       }
 

@@ -118,18 +118,6 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       if [ -z "${RBRANCH:-}" ]; then
         _review_hold_ticket "no delivery branch recorded"; return 0
       fi
-      # SEVERAL WRITE REPOS (external review #7): an approval covers EVERY write repo, and
-      # this reviewer reads only the primary one, so dispatch refuses its approval (it names
-      # one commit). Running the reviewer anyway spent a model call on every run for a
-      # verdict that could never land, and the refusal was only in the log. Hold it for a
-      # human BEFORE any spend: a note on the ticket says why, it is skipped for the run and
-      # stays in_review (the human queue's review item) for a person to approve every repo.
-      _RWRITES="$(echo "$RSHOW" | jget '((d.repositories||[]).filter(r => r.access === "write" && (!r.relation || r.relation === "confirmed" || r.relation === "implicit_single_repo")).map(r => r.name)).join(", ")' 2>/dev/null || echo '')"
-      case "$_RWRITES" in
-        *", "*)
-          _review_hold_ticket "it writes to several repositories ($_RWRITES) and the agent reviewer reads only the primary one — an approval must cover every repository, so a person reviews and approves them together"
-          return 0 ;;
-      esac
       if ! mkdir "$_RCLAIM" 2>/dev/null; then
         _rowner="$(cat "$_RCLAIM/pid" 2>/dev/null || true)"
         if [ -n "$_rowner" ] && kill -0 "$_rowner" 2>/dev/null; then
@@ -148,6 +136,21 @@ if [ "$REVIEW_MODE" = "agent" ] || [ "$REVIEW_MODE" = "both" ]; then
       if [ -z "$RSHA" ]; then
         _review_hold_ticket "delivery branch '$RBRANCH' is missing or corrupt in $RREPO"; return 0
       fi
+      # SEVERAL WRITE REPOS (external review #7): an approval covers EVERY write repo and
+      # this reviewer reads only the primary one, so dispatch refuses its approval (it names
+      # one commit); its CHANGES verdict still reworks the ticket, so the reviewer runs. Once
+      # an approval of THIS head was refused (the note below), a later run does not spend a
+      # review call on the same head again: the ticket waits in_review for a person, and a
+      # new delivery head is reviewed afresh.
+      _RWRITES="$(echo "$RSHOW" | jget '((d.repositories||[]).filter(r => r.access === "write" && (!r.relation || r.relation === "confirmed" || r.relation === "implicit_single_repo")).map(r => r.name)).join(", ")' 2>/dev/null || echo '')"
+      case "$_RWRITES" in
+        *", "*)
+          if [ "$(echo "$RSHOW" | R="agent review approval refused for $RSHA" jget '(d.evidence||[]).some(e => (e.summary||"").startsWith(process.env.R)) ? "1" : ""' 2>/dev/null)" = "1" ]; then
+            log "REVIEW: #$RNUM writes to several repositories ($_RWRITES) and its agent approval of ${RSHA:0:12} was already refused — not reviewing the same head again; left in_review for a person to approve every repository"
+            _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+            _review_cleanup; _review_restore_traps; return 0
+          fi ;;
+      esac
       RDEF_SHA="$(git -C "$RREPO" rev-parse --verify --quiet "refs/heads/$RDEFAULT^{commit}" 2>/dev/null || true)"
       # A worktree left by a killed tick (registered or not) would make `worktree add` fail
       # forever; the claim above guarantees it is not another lane's live review.
@@ -607,6 +610,11 @@ EOF
             # an "approve rejected" with no reason was undiagnosable from the log.
             log "AFK: runner could not approve #$RNUM (approve rejected: $(printf '%s' "$_AP_ERR" | tr '\n' ' ' | cut -c1-300)) — left in_review"
             _gaffer_locked .skip.lock _gaffer_append_line "$REVIEWED_FILE" "$RNUM"
+            # VISIBLE (external review #7): the refusal is on the ticket, not only in the log
+            # (a ticket that writes to several repositories is refused here by design: a
+            # person approves every repository together). The same head is not re-reviewed.
+            wg attach-evidence "$RNUM" --type manual_note \
+              --summary "agent review approval refused for $RSHA: $(printf '%s' "$_AP_ERR" | tr '\n' ' ' | cut -c1-300) — needs a human" >/dev/null 2>&1 || true
           fi
           ;;
         rework)

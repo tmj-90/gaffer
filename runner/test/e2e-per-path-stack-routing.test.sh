@@ -196,6 +196,17 @@ else fail "D: no new reviewer spawn"; fi
 # approval of every repo (lib/review.sh, STALE REVISION). A human approves both heads.
 [ "$(st "$TD")" = "in_review" ] && ok "D: the agent approval of a two-repo ticket is held for a human" \
   || fail "D: #$TD is '$(st "$TD")' after the agent review (expected held in_review)"
+# External review #7: the refusal is on the ticket (a note), not only in the log, and a
+# later run does not spend another review call on the same head.
+grep -q "agent review approval refused for [0-9a-f]\{40\}: .*needs a human" <<<"$(wg ticket show "$TD" 2>/dev/null)" \
+  && ok "D: the refused agent approval is noted on the ticket (why, and that it needs a human)" || fail "D: no refusal note on #$TD"
+review_spawns() { grep -l "#$TD" "$CALLS"/*/prompt 2>/dev/null | xargs -n1 dirname 2>/dev/null | while read -r d; do [ "$(cat "$d/kind")" = review ] && echo "$d"; done | grep -c .; }
+NREV="$(review_spawns)"
+rm -f "$GAFFER_DATA/.reviewed-tickets"
+( cd "$RUNNER_DIR" && REVIEW_MODE=agent DISPATCH_ALLOW_AGENT_APPROVE=1 GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null
+[ "$(review_spawns)" = "$NREV" ] && [ "$NREV" -ge 1 ] && [ "$(st "$TD")" = "in_review" ] \
+  && ok "D: a later run does not review the same head again ($NREV review call(s) in all); still in_review" \
+  || fail "D: review calls for #$TD went $NREV → $(review_spawns) (status $(st "$TD"))"
 # shellcheck disable=SC2046
 GAFFER_TESTING=1 wg review approve "$TD" --reviewer human1 $(wg ticket diff "$TD" --heads 2>/dev/null | sed 's/^/--commit /') >/dev/null 2>&1
 [ "$(st "$TD")" = "in_testing" ] && ok "D: a human approval of both repos → in_testing" || fail "D: #$TD is '$(st "$TD")' after the human approval"

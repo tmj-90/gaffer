@@ -241,7 +241,7 @@ computed from other knobs at runtime.
 | `GAFFER_REQUIRE_CI` | `0` | yes (boolean) | dispatch, runner | Poll the delivery PR's CI checks and only let the ticket into review when they pass; red checks reject it back to rework. Required means required: approval (and a tester PASS) is refused until CI has passed for the exact commit being approved, a red result for an approved ticket holds it for a human (blocked, ci_red), and the merge lane re-reads CI before landing. REQUIRES 'Deliver as a pull request' — the checks live on the PR, so with PR delivery off this gate is skipped with a warning (it used to poll a PR that never existed and reject every delivery at the timeout). |
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
-| `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into… |
+| `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) with a reason… |
 
 ### lib/automerge.sh
 

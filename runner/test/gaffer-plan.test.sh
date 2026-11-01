@@ -80,7 +80,7 @@ ANSWER="archive them after 30 days"
 echo "== P1. no dollar cap: refused before the planner runs =="
 printf '{}' > "$A/settings.json"
 ga "$A" plan "$GOAL"
-[ "$RC" -eq 1 ] && has "$OUT" "dollar cap" && ok "P1: refused (exit 1) and says why" || fail "P1: rc=$RC out=$OUT"
+[ "$RC" -eq 3 ] && has "$OUT" "dollar cap" && ok "P1: refused (exit 3, gaffer run's code) and says why" || fail "P1: rc=$RC (want 3) out=$OUT"
 [ "$(calls "$A")" = 0 ] && ok "P1: no model call" || fail "P1: the stub was called $(calls "$A") time(s)"
 [ "$(tickets "$A")" = 0 ] && ok "P1: nothing created" || fail "P1: tickets exist"
 rm -f "$A/plan-draft.json"
@@ -113,8 +113,9 @@ has "$OUT" "gaffer plan --yes" && ok "P3: says how to create it" || fail "P3: no
 led() { [ -f "$1/usage-ledger.jsonl" ] && grep -c '"kind":"decompose"' "$1/usage-ledger.jsonl" | tr -d ' ' || echo 0; }
 [ "$(led "$A")" = 2 ] && ok "P9: the usage ledger booked both planner turns as decompose" || fail "P9: ledger decompose lines=$(led "$A")"
 GAFFER_DAILY_BUDGET_USD=0.0015 ga "$A" plan --now
-[ "$RC" -eq 1 ] && has "$OUT" "budget" && [ "$(calls "$A")" = 2 ] && [ "$(led "$A")" = 2 ] \
-  && ok "P9: today's spend at the daily cap: refused before the planner runs" || fail "P9: exhausted budget rc=$RC calls=$(calls "$A") out=$OUT"
+[ "$RC" -eq 3 ] && has "$OUT" "budget" && [ "$(calls "$A")" = 2 ] && [ "$(led "$A")" = 2 ] \
+  && ok "P9: today's spend at the daily cap: refused before the planner runs, exit 3 like gaffer run" || fail "P9: exhausted budget rc=$RC (want 3) calls=$(calls "$A") out=$OUT"
+has "$(bash "$G" plan --help 2>&1)" "3 refused by the budget" && ok "P9: the plan usage text names exit 3" || fail "P9: gaffer plan --help does not document exit 3: $(bash "$G" plan --help 2>&1)"
 ga "$A" plan --show
 has "$OUT" "Proposed epic: Archive completed tasks" && ok "P9: the refused turn kept the shown proposal" || fail "P9: proposal lost: $OUT"
 ga "$A" plan --show

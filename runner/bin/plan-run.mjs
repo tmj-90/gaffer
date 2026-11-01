@@ -32,8 +32,10 @@
 // EXIT: 0 the epic was created (or --show / --discard / --list) · 4 nothing created
 //   yet, waiting for you (the planner asked questions, the proposal is shown and needs
 //   --yes, or you said no) · 1 the planner or the create failed, or the draft belongs
-//   to another factory (the reason is printed) · 2 a usage error · 75 paused on the
-//   usage window (no planner turn was run; `gaffer run` uses the same code).
+//   to another factory (the reason is printed) · 2 a usage error · 3 refused by the
+//   budget admission (no dollar cap, or the daily or lifetime cap reached; no planner
+//   turn was run; `gaffer run`'s code for the same refusal) · 75 paused on the usage
+//   window (no planner turn was run; `gaffer run` uses the same code).
 import { chmodSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, join, resolve } from "node:path";
@@ -50,6 +52,8 @@ const USAGE =
 const HELD = 4;
 // The factory is paused on the usage window (lib/usage-pause.mjs); `gaffer run`'s code.
 const PAUSED = 75;
+// The budget admission refuses the turn (lib/budget-admission.mjs); `gaffer run`'s code.
+const BUDGET_REFUSED = 3;
 // A closed stdout (`gaffer plan --show | head`) ends the run quietly, not with a stack.
 process.stdout.on("error", (e) => {
   if (e && e.code === "EPIPE") process.exit(process.exitCode ?? 0);
@@ -401,8 +405,28 @@ async function refuseWhilePaused() {
   process.exit(PAUSED);
 }
 
+// BUDGET: the planner turn's own launch passes the budget admission (lib/worker.mjs
+// deliver), which refuses with an error the planner reports like any other. Asked here
+// first, so a refusal leaves the draft unchanged and exits with `gaffer run`'s code for
+// it (3), and asked again after a failed turn, so a cap reached between the two still
+// reads as the budget refusal it is.
+async function budgetRefusal() {
+  const { paidLaunchAdmission } = await import(join(HERE, "..", "lib", "budget-admission.mjs"));
+  const a = paidLaunchAdmission({ kind: "decompose", env: process.env });
+  return a.ok ? null : a.reason;
+}
+function refuseOnBudget(why, changed) {
+  process.stderr.write(
+    `  ✗ the budget refuses a planner turn: ${why}. No model call was made; ` +
+      `${changed ? "the refused turn is noted in the draft" : "the draft is unchanged"}.\n`,
+  );
+  process.exit(BUDGET_REFUSED);
+}
+
 async function round(draft, forcePlan) {
   await refuseWhilePaused();
+  const before = await budgetRefusal();
+  if (before) refuseOnBudget(before, false);
   out(forcePlan ? "Planning with what it has…" : "Asking the planner…");
   const res = await planTurn(draft, forcePlan);
   if (res.phase === "clarify") {
@@ -419,6 +443,10 @@ async function round(draft, forcePlan) {
   const why = res.error || "the planner returned no plan";
   draft.history.push({ role: "assistant", error: why });
   saveDraft(draft);
+  // Only the worker's own refusal (its message is the admission's reason) maps to 3: a
+  // turn that failed otherwise and happened to spend the last of a cap is a failure.
+  const after = await budgetRefusal();
+  if (after && why.includes(after)) refuseOnBudget(after, true);
   failWith(`the planner failed: ${why}`);
 }
 

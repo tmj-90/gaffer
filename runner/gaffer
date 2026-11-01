@@ -44,6 +44,7 @@
 #                                     (or a y typed at the prompt) creates them, as drafts. Also
 #                                     --file <path>, --show, --discard, --list. exit 0 created ·
 #                                     4 nothing created yet (questions, a proposal, or a no) ·
+#                                     3 refused by the budget (no dollar cap, or a cap reached) ·
 #                                     75 paused on the usage window
 #   gaffer lore [review [--json] | show <id> | approve <id> | reject <id> [--reason "…"]]
 #                                     the lore drafts waiting for you, as the Memory view lists
@@ -106,7 +107,7 @@ usage() {
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
-    plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer \"<text>\" | --now  ·  gaffer plan --yes | --show | --discard | --list   (each turn is a paid planner call; only --yes on its own, or a typed y, creates the proposal you were shown, as draft tickets; exit 4 nothing created yet)" ;;
+    plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer \"<text>\" | --now  ·  gaffer plan --yes | --show | --discard | --list   (each turn is a paid planner call; only --yes on its own, or a typed y, creates the proposal you were shown, as draft tickets; exit 0 created · 4 nothing created yet · 3 refused by the budget (no dollar cap, or a cap reached) · 75 paused on the usage window)" ;;
     lore)      echo "usage: gaffer lore [review [--repo <name>] [--offset <n>] [--json] | show <id> | approve <id> | reject <id> [--reason \"<why>\"]]" ;;
   esac
 }

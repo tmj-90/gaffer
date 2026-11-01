@@ -87,6 +87,25 @@ function probes(mcpConfigPath) {
   const tokenSeen =
     "GAFFER_CLAIM_TOKEN" in process.env || /GAFFER_CLAIM_TOKEN|DISPATCH_DB|"env"/.test(cfgText);
   out.push(tokenSeen ? "TOKEN_LEAK" : "TOKEN_ABSENT");
+  // The agent profile forwards the model credential (a decoy in the deterministic run):
+  // its presence here is what makes the gates' "no credential" check non-vacuous.
+  out.push(
+    process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN
+      ? "CREDENTIAL_FORWARDED"
+      : "CREDENTIAL_MISSING",
+  );
+  // The MCP config handed over must be the BRIDGED one: its dispatch server is
+  // `node mcp-bridge.mjs connect …` with no env of its own (the host-side server holds
+  // the claim token and the database path).
+  let bridged = false;
+  try {
+    const d = (JSON.parse(cfgText).mcpServers || {}).dispatch || {};
+    const a = (d.args || []).join(" ");
+    bridged = /mcp-bridge\.mjs/.test(a) && /\bconnect\b/.test(a) && !d.env;
+  } catch {
+    /* unreadable */
+  }
+  out.push(bridged ? "MCP_CONFIG_BRIDGED" : "MCP_CONFIG_NOT_BRIDGED");
   // What the real CLI needs from its env inside the container (the runner starts it with
   // `env -i <allowlist>`, so the wrapper's own -e values do not reach it on their own):
   // git must trust the host-owned mounts (a host uid that is not the container's root
@@ -233,7 +252,7 @@ async function deliver() {
       ticket_id: tk.id || ticket,
       ...(ac ? { ac_id: ac } : {}),
       evidence_type: "manual_note",
-      summary: `docker-delivery-stub: the helper is added and tested; in-container probes: ${tokens.join(" ")} MCP_BRIDGED status_seen=${tk.status || "?"}. Smallest-change note: one helper in src/a.js and one test in test/a.test.js, nothing else.`,
+      summary: `docker-delivery-stub: the helper is added and tested; in-container probes: ${tokens.join(" ")} MCP_ROUND_TRIP status_seen=${tk.status || "?"}. Smallest-change note: one helper in src/a.js and one test in test/a.test.js, nothing else.`,
     });
     mcp = "MCP_OK";
   } catch (e) {

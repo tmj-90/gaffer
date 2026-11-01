@@ -54,12 +54,29 @@ N="$(ddw_new_ready "Docker seam delivery")"
 [ -n "$N" ] && ok "setup: ready ticket #$N" || fail "setup: no ticket"
 
 echo "== one tick: SANDBOX_PROVIDER=docker, fake daemon =="
+REFS_BEFORE="$(ddw_host_refs)"
 OUT="$(ddw_run_tick)"
 echo "    $OUT"
 ddw_common_asserts "$N"
+ddw_refs_asserts "$N" "$REFS_BEFORE"
 
 echo "== the containers the runner asked for =="
 argv_of() { tr '\0' '\n' < "$FAKE_DOCKER_LOG/$1.argv"; }
+# The values of a recorded container's `-e` flags / the sources of its `-v` mounts.
+env_flags() { grep -A1 -x -- '-e' "$1" | grep -v -x -e '-e' -e '--'; }
+mount_sources() { grep -A1 -x -- '-v' "$1" | grep -v -x -e '-v' -e '--' | cut -d: -f1; }
+# mount_covering <argv-file> <path>…: the first mount source that IS one of the paths or
+# a directory above one (empty when none does).
+mount_covering() {
+  local f="$1" src p; shift
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    for p in "$@"; do
+      case "$p/" in "${src%/}/"*) printf '%s' "$src"; return 0 ;; esac
+    done
+  done <<<"$(mount_sources "$f")"
+  return 0
+}
 # Each recorded `run --rm` (the egress proxy's `run -d` is skipped), one arg per line.
 runs=()
 while read -r i sub; do
@@ -81,8 +98,13 @@ if [ -n "$AGENT" ]; then
   grep -qE '^/tmp/gaffer-mcp\.[^/]+/b\.sock:/tmp/gaffer-mcp\.[^/]+/b\.sock:rw$' "$A" && ok "agent container: the bridge socket is mounted rw" || fail "agent container: no bridge socket mount"
   grep -qx -- "$BRIDGED:$BRIDGED:ro" "$A" && ok "agent container: the bridged config is mounted ro" || fail "agent container: bridged config not mounted ro"
   grep -qE "^$GAFFER_DATA/worktrees/ticket-$N/[^:]+:$GAFFER_DATA/worktrees/ticket-$N/[^:]+:rw$" "$A" && ok "agent container: the delivery worktree is mounted rw" || fail "agent container: worktree not mounted rw"
-  grep -qE "^($GAFFER_DATA|$GAFFER_DATA/dispatch\.sqlite|$GAFFER_DATA/memory\.sqlite|$GAFFER_DATA/settings\.json):" "$A" && fail "agent container: \$GAFFER_DATA or a database/settings file is mounted" || ok "agent container: \$GAFFER_DATA, the databases and settings.json are not mounted"
-  grep -qE "^($HOST_HOME|$CANARY_DIR)(/|:)" "$A" && fail "agent container: the host HOME or the canary dir is mounted" || ok "agent container: the host HOME and the canary dir are not mounted"
+  # A mount whose SOURCE is one of these paths or any directory above one (a parent
+  # mount exposes everything below it) would hand the container what must stay out.
+  bad_src="$(mount_covering "$A" "$GAFFER_DATA" "$GAFFER_DATA/dispatch.sqlite" "$GAFFER_DATA/memory.sqlite" "$GAFFER_DATA/settings.json")"
+  [ -z "$bad_src" ] && ok "agent container: \$GAFFER_DATA, the databases and settings.json are not mounted (nor any directory above them)" || fail "agent container: '$bad_src' is mounted and covers \$GAFFER_DATA or a database/settings file"
+  bad_src="$(mount_covering "$A" "$HOST_HOME" "$CANARY_DIR")"
+  [ -z "$bad_src" ] && ok "agent container: the host HOME and the canary dir are not mounted (nor any directory above them)" || fail "agent container: '$bad_src' is mounted and covers the host HOME or the canary dir"
+  grep -qx 'ANTHROPIC_API_KEY' <<<"$(env_flags "$A")" && ok "agent container: the model credential is forwarded by name (the decoy: so the gates' 'no credential' check below is not vacuous)" || fail "agent container: the model credential was not forwarded"
   # Only the `-e` flags cross into a container (the agent's own `env -i` list inside it
   # names the DB paths, which do not exist there); the claim token appears nowhere.
   grep -qE '^(DISPATCH_DB|MEMORY_DB|DISPATCH_MCP_BIN|MEMORY_MCP_BIN)(=|$)' <<<"$(grep -A1 -x -- '-e' "$A")" && fail "agent container: a data-plane var is forwarded" || ok "agent container: no DISPATCH_DB / MEMORY_DB / server bin forwarded"
@@ -91,23 +113,37 @@ fi
 if [ "${#GATES[@]}" -ge 1 ]; then
   ok "the DoD gates ran as ${#GATES[@]} separate container(s)"
   gate_test=""; for i in "${GATES[@]}"; do grep -qx 'node gate-probe.mjs && node --test' <<<"$(argv_of "$i")" && gate_test="$i"; done
-  if [ -n "$gate_test" ]; then
-    G="$WORK/gate.argv"; argv_of "$gate_test" > "$G"
-    ok "gate container: the repo's test command ran inside (docker call #$gate_test)"
-    grep -q 'gaffer-mcp\.' "$G" && fail "gate container: the bridge socket reached the gate" || ok "gate container: no bridge socket (validation profile)"
-    grep -q -- '--mcp-config\|\.bridge\.json' "$G" && fail "gate container: an MCP config reached the gate" || ok "gate container: no MCP config"
-    grep -qE '^(GAFFER_DATA|ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN|DISPATCH_DB|MEMORY_DB)(=|$)' <<<"$(grep -A1 -x -- '-e' "$G")" && fail "gate container: data-plane env or a credential forwarded" || ok "gate container: no GAFFER_DATA, database path or credential forwarded"
-    grep -q 'safety-blocks.jsonl' "$G" && fail "gate container: the hook ledgers are mounted (not the validation profile)" || ok "gate container: nothing of \$GAFFER_DATA mounted"
-  else
-    fail "no gate container ran the repo's test command"
-  fi
+  [ -n "$gate_test" ] && ok "gate container: the repo's test command ran inside (docker call #$gate_test)" || fail "no gate container ran the repo's test command"
+  # EVERY gate container (tests, lint, …) runs under the validation profile.
+  for i in "${GATES[@]}"; do
+    G="$WORK/gate-$i.argv"; argv_of "$i" > "$G"
+    grep -q 'gaffer-mcp\.' "$G" && fail "gate container #$i: the bridge socket reached the gate" || ok "gate container #$i: no bridge socket (validation profile)"
+    grep -qE -- '--mcp-config|\.bridge\.json' "$G" && fail "gate container #$i: an MCP config reached the gate" || ok "gate container #$i: no MCP config"
+    grep -qE '^(GAFFER_DATA|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|DISPATCH_DB|MEMORY_DB|DISPATCH_MCP_BIN|MEMORY_MCP_BIN|GAFFER_CLAIM_TOKEN)(=|$)' <<<"$(env_flags "$G")" \
+      && fail "gate container #$i: data-plane env or a credential forwarded" || ok "gate container #$i: no GAFFER_DATA, database path or credential forwarded"
+    bad_src=""
+    while IFS= read -r spec; do
+      src="${spec%%:*}"; dst="${spec#*:}"; dst="${dst%%:*}"
+      case "$src" in
+        "$GAFFER_DATA/worktrees/ticket-$N/"*) ;;
+        # A wrapper that gives each container a PRIVATE git dir (built under
+        # $GAFFER_DATA/sandbox-git/, mounted at the worktree's own git dir) is fine.
+        "$GAFFER_DATA/sandbox-git/"*) case "$dst" in "$R/.git/worktrees/"*) ;; *) bad_src="$src" ;; esac ;;
+        "$GAFFER_DATA"/*) bad_src="$src" ;;
+      esac
+    done <<<"$(grep -A1 -x -- '-v' "$G" | grep -v -x -e '-v' -e '--')"
+    [ -n "$bad_src" ] || bad_src="$(mount_covering "$G" "$GAFFER_DATA" "$HOST_HOME" "$CANARY_DIR")"
+    [ -z "$bad_src" ] && ok "gate container #$i: nothing of \$GAFFER_DATA but the worktree mounted, no host HOME or canary dir" \
+      || fail "gate container #$i: '$bad_src' is mounted (from or above \$GAFFER_DATA, the host HOME or the canary dir: not the validation profile)"
+    grep -q 'GAFFER_CLAIM_TOKEN' "$G" && fail "gate container #$i: the claim token is in the argv"
+  done
 else
   fail "no DoD gate container recorded"
 fi
 
 echo "== the MCP round trip and the result envelope =="
 EV="$(ddw_evidence "$N")"
-case "$EV" in *"docker-delivery-stub:"*"MCP_BRIDGED"*) ok "the agent's record_ac_evidence reached the canonical DB through the host-side bridge" ;; *) fail "no agent evidence on #$N (evidence: $(printf '%s' "$EV" | head -c 400))" ;; esac
+case "$EV" in *"docker-delivery-stub:"*"MCP_CONFIG_BRIDGED"*"MCP_ROUND_TRIP"*) ok "the agent's record_ac_evidence reached the canonical DB through the host-side bridge (its config was the bridged one)" ;; *) fail "no agent evidence on #$N (evidence: $(printf '%s' "$EV" | head -c 400))" ;; esac
 case "$EV" in *"docker-delivery-stub:"*"TOKEN_ABSENT"*) ok "the claim token never reached the agent's env or its MCP config" ;; *) fail "the stub saw the claim token (or no probe ran)" ;; esac
 # The agent's own env is `env -i <allowlist>` INSIDE the container: what the real CLI
 # needs there must be on that list, not only on the wrapper's -e flags.
@@ -121,8 +157,59 @@ grep -q 'Implemented helper' "$GAFFER_DATA/factory.log" 2>/dev/null && ok "the r
 read -r LROWS LCOST <<<"$(ddw_ledger_cost "$N")"
 [ "${LROWS:-0}" -ge 1 ] && [ "${LCOST:-0}" = "0.0200" ] && ok "the usage ledger booked the envelope's cost (\$$LCOST)" || fail "usage ledger: rows=${LROWS:-?} cost=${LCOST:-?}"
 
+echo "== the real-daemon test's skip / require posture (no daemon needed) =="
+# sandbox-docker-delivery.test.sh, copied into a scratch tree and run against a scripted
+# `docker`: an infra outage (no daemon, an image that cannot be built) is an allowlisted
+# SKIP that GAFFER_SANDBOX_TEST_REQUIRE=1 turns red; anything else on a host WITH a daemon
+# (unbuilt packages, a live run without a credential or with an unreadable cap) is never
+# a docker-allowlisted skip.
+. "$HERE/lib/skip.sh"
+PT="$WORK/posture"; mkdir -p "$PT/bin" "$PT/bare/runner/test" "$PT/bare/runner/sandbox/egress-proxy" "$PT/built/runner/test" "$PT/built/runner/sandbox/egress-proxy"
+cp "$HERE/sandbox-docker-delivery.test.sh" "$PT/bare/runner/test/"
+cp "$HERE/sandbox-docker-delivery.test.sh" "$PT/built/runner/test/"
+ln -s "$ROOT/packages" "$PT/built/packages"
+cat > "$PT/bin/docker" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$POSTURE_LOG"
+case "$1" in info) exit "${POSTURE_INFO_RC:-0}" ;; build) exit "${POSTURE_BUILD_RC:-0}" ;; esac
+exit 0
+SH
+chmod +x "$PT/bin/docker"
+# posture <tree> <env assignment>… → "<rc>|<first SKIP/FAIL line>"
+posture() {
+  local tree="$1" out rc; shift
+  : > "$PT/calls.log"
+  out="$(env -u CI -u GITHUB_ACTIONS -u RUN_SANDBOX_DOCKER_TEST -u GAFFER_SANDBOX_TEST_REQUIRE \
+            -u GAFFER_LIVE_DOCKER_DELIVERY -u GAFFER_LIVE_MAX_CALL_USD -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
+            POSTURE_LOG="$PT/calls.log" PATH="$PT/bin:$PATH" "$@" bash "$PT/$tree/runner/test/sandbox-docker-delivery.test.sh" 2>&1 </dev/null)"
+  rc=$?
+  printf '%s|%s' "$rc" "$(grep -E '^(SKIP|FAIL)' <<<"$out" | head -1)"
+}
+why() { local r="${1#*|}"; r="${r#SKIP: }"; printf '%s' "$r"; }
+r="$(posture built POSTURE_INFO_RC=1)"
+case "$r" in "0|SKIP: docker daemon unavailable"*) gaffer_skip_allowed "$(why "$r")" && ok "posture: no daemon is an allowlisted SKIP" || fail "posture: the no-daemon skip is not allowlisted ($r)" ;; *) fail "posture: no daemon gave '$r'" ;; esac
+r="$(posture built POSTURE_INFO_RC=1 GAFFER_SANDBOX_TEST_REQUIRE=1)"
+case "$r" in "1|FAIL (required): docker daemon unavailable"*) ok "posture: no daemon under GAFFER_SANDBOX_TEST_REQUIRE=1 is a failure" ;; *) fail "posture: no daemon + REQUIRE gave '$r'" ;; esac
+r="$(posture built CI=true)"
+case "$r" in "0|SKIP: docker delivery e2e runs in its dedicated CI job"*) ok "posture: a CI runner shard defers to the dedicated job" ;; *) fail "posture: CI=true without RUN_SANDBOX_DOCKER_TEST gave '$r'" ;; esac
+r="$(posture bare)"
+case "$r" in "0|SKIP: "*"not built"*) gaffer_skip_allowed "$(why "$r")" && fail "posture: 'not built' on a host with a daemon is allowlisted under strict ($r)" || ok "posture: 'not built' with a daemon present is a skip the strict allowlist refuses" ;; *) fail "posture: unbuilt packages gave '$r'" ;; esac
+r="$(posture bare RUN_SANDBOX_DOCKER_TEST=1)"
+case "$r" in "1|FAIL: "*"not built"*) ok "posture: 'not built' in the dedicated job is a failure, on a pull request too" ;; *) fail "posture: unbuilt packages in the dedicated job gave '$r'" ;; esac
+r="$(posture built POSTURE_BUILD_RC=1)"
+case "$r" in "0|SKIP: could not build the delivery image"*) gaffer_skip_allowed "$(why "$r")" && ok "posture: an image that cannot be built is an allowlisted infra SKIP" || fail "posture: the image-build skip is not allowlisted ($r)" ;; *) fail "posture: a failed image build gave '$r'" ;; esac
+r="$(posture built POSTURE_BUILD_RC=1 GAFFER_SANDBOX_TEST_REQUIRE=1)"
+case "$r" in "1|FAIL (required): could not build the delivery image"*) ok "posture: a failed image build under REQUIRE is a failure" ;; *) fail "posture: failed build + REQUIRE gave '$r'" ;; esac
+r="$(posture built GAFFER_LIVE_DOCKER_DELIVERY=1 ANTHROPIC_API_KEY=)"
+case "$r" in "1|FAIL: GAFFER_LIVE_DOCKER_DELIVERY=1 needs"*) ok "posture: a live run without a credential fails at once" ;; *) fail "posture: live without a credential gave '$r'" ;; esac
+for cap in two '$2' 0 -1; do
+  r="$(posture built GAFFER_LIVE_DOCKER_DELIVERY=1 ANTHROPIC_API_KEY=decoy GAFFER_LIVE_MAX_CALL_USD="$cap")"
+  case "$r" in "1|FAIL: GAFFER_LIVE_MAX_CALL_USD="*) grep -q '^build' "$PT/calls.log" && fail "posture: live cap '$cap' refused only after an image build" || ok "posture: live cap '$cap' is refused before anything is built" ;; *) fail "posture: live cap '$cap' gave '$r'" ;; esac
+done
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "sandbox-docker-delivery-seam: ALL $PASS checks passed"; exit 0; fi
 echo "sandbox-docker-delivery-seam: ${#FAILURES[@]} FAILURE(S):"
 for f in "${FAILURES[@]}"; do echo "  - $f"; done
+ddw_save_evidence "$N"
 exit 1

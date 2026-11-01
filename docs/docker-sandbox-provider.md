@@ -177,17 +177,24 @@ checks:
 | step | how the test knows |
 |---|---|
 | the agent runs inside the container | the stub sees `/.dockerenv`, and records it |
+| the agent's env works inside | the stub checks git's `safe.directory` (the mounts are owned by the host user, the container runs as root), `HTTP(S)_PROXY` pointing at the egress proxy, a usable `TMPDIR`, and that the model credential reached it (a decoy in this run) |
 | the MCP round trip goes through the bridge | the stub's `get_ticket` + token-free `record_ac_evidence` land in the host's canonical DB and satisfy the criterion (only the host-side server holds the claim token) |
 | the worktree is written inside | the stub's commit, made through the mounted `.git`, is on the host branch with the stub's probes in its message |
-| the DoD gates run under the validation profile | the repo's test command is `node gate-probe.mjs --require && node --test`; the probe fails the gate unless it runs in a container with no database, no bridge socket, no host `HOME`, no canary and no model credential, and the DoD evidence records the gate as PASS with the delivered test in its tally |
+| the DoD gates run under the validation profile | the repo's test command is `node gate-probe.mjs --require && node --test`; the probe fails the gate unless it runs in a container with no database, no bridge socket, no host `HOME`, no canary and no model credential (the runner holds the decoy, so a profile that forwarded it would fail), and the DoD evidence records the gate as PASS with the delivered test in its tally |
 | the result envelope is parsed | the usage ledger books the envelope's cost |
 | the ticket is submitted | it is `in_review` |
-| the host outside the mounts is untouched | from inside, `dispatch.sqlite`, `memory.sqlite` and `settings.json` under `$GAFFER_DATA` are absent, the host `HOME` and a host canary file are unreadable, and a write beside the canary is refused; on the host the canary is unchanged and nothing appeared beside it |
+| the host outside the mounts is untouched | from inside, `dispatch.sqlite`, `memory.sqlite` and `settings.json` under `$GAFFER_DATA` are absent, the host `HOME` and a host canary file are unreadable, and a write beside the canary is refused; on the host the canary is unchanged, nothing appeared beside it, and no ref of the host repo but the ticket branch moved or appeared |
 
-It runs in the `sandbox-delivery` CI job with the containment gate's posture: no daemon
-means SKIP, on CI it runs only with `RUN_SANDBOX_DOCKER_TEST=1`, and on a push to main
+It runs in the `sandbox-delivery` CI job, on a GitHub Linux runner (the host user is
+not root, the container is), with the containment gate's posture: no daemon means SKIP,
+on CI it runs only with `RUN_SANDBOX_DOCKER_TEST=1`, and on a push to main
 `GAFFER_SANDBOX_TEST_REQUIRE=1` turns an infra skip (an image that cannot be built) into
-a failure. Its daemon-free twin, `runner/test/sandbox-docker-delivery-seam.test.sh`, runs
+a failure. A host that has a daemon but not the built packages, node, git or perl is not
+an infra outage: that is a plain SKIP the runner suite's strict mode refuses, and a
+failure in the CI job. A failed run uploads its logs, the ticket record and the git log
+as the `sandbox-delivery-evidence` artifact. This is the bridge layout of a Linux host;
+on macOS Docker Desktop the bridge is off and the masked fallback applies, which no CI
+job delivers through. Its daemon-free twin, `runner/test/sandbox-docker-delivery-seam.test.sh`, runs
 in the normal suite on every OS: the same world with a fake `docker`
 (`runner/test/lib/fake-docker.sh`) that records each container and runs it on the host,
 so it checks the wiring (what each container mounts and is given) but not the isolation.
@@ -204,7 +211,10 @@ spends real credits, so it never runs on a push or a pull request.
    `claude setup-token`).
 3. In the Actions tab, run **Docker sandbox live delivery**
    (`.github/workflows/sandbox-live.yml`). Its one input, `max_call_usd` (default 2), is
-   the dollar cap for the agent call; the run also has a $5 daily budget.
+   the dollar cap for the agent call (the runner passes it as `--max-budget-usd`; the
+   test refuses to start on anything but a positive dollar figure, and checks the runner
+   resolves it to the flag before any credit is spent); the run also has a $5 daily
+   budget.
 
 Locally, with a Docker daemon and a credential in the environment:
 

@@ -787,7 +787,7 @@ launch the agent rather than run it uncontained. The provider is auto-detected
 (`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
 
 The `docker` provider is proven on a real ticket, not only on a shell payload. A CI
-job (`sandbox-delivery`) runs one ticket through the real tick with
+job (`sandbox-delivery`, on a Linux runner) runs one ticket through the real tick with
 `SANDBOX_PROVIDER=docker` and a stub agent installed as the delivery image's own
 `claude`: the agent runs inside the container, claims nothing itself, records its
 evidence through the MCP bridge to the host's dispatch server (the claim token never

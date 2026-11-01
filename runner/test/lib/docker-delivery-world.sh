@@ -64,6 +64,9 @@ let cfg = null;
 try { cfg = JSON.parse(readFileSync("/etc/gaffer-e2e/probe.json", "utf8")); } catch { /* none */ }
 const seen = [];
 seen.push(existsSync("/.dockerenv") ? "GATE_IN_CONTAINER" : "GATE_ON_HOST");
+// The runner holds a credential (the real one live, a decoy otherwise): the validation
+// profile must not hand it to a gate.
+seen.push(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN ? "GATE_CREDENTIAL_PRESENT" : "GATE_CREDENTIAL_ABSENT");
 if (cfg) {
   const dbs = ["dispatch.sqlite", "memory.sqlite"].map((f) => path.join(cfg.gafferData, f));
   seen.push(dbs.some((p) => existsSync(p)) ? "GATE_DB_VISIBLE" : "GATE_DB_ABSENT");
@@ -73,7 +76,6 @@ if (cfg) {
   seen.push(existsSync(cfg.hostHome) ? "GATE_HOME_VISIBLE" : "GATE_HOME_ABSENT");
   let c = ""; try { c = readFileSync(cfg.canary, "utf8"); } catch { /* none */ }
   seen.push(c.includes(cfg.canaryToken) ? "GATE_CANARY_LEAK" : "GATE_CANARY_UNREADABLE");
-  seen.push(process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_CODE_OAUTH_TOKEN ? "GATE_CREDENTIAL_PRESENT" : "GATE_CREDENTIAL_ABSENT");
 } else seen.push("GATE_NO_PROBE_FILE");
 console.log("gate-probe: " + seen.join(" "));
 const bad = ["GATE_ON_HOST", "GATE_DB_VISIBLE", "GATE_BRIDGE_VISIBLE", "GATE_HOME_VISIBLE", "GATE_CANARY_LEAK", "GATE_CREDENTIAL_PRESENT", "GATE_NO_PROBE_FILE"];
@@ -93,8 +95,15 @@ export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$STUB" CLAUDE_FLAGS="" GAFFER_CLAUDE
        STRICT_MODE=1 SANDBOX_PROVIDER=docker GAFFER_STRICT_REQUIRE=1 GAFFER_MCP_BRIDGE=1 \
        GAFFER_DAILY_BUDGET_USD=5
 unset GAFFER_MODE GAFFER_SANDBOX_DRY_RUN GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE GAFFER_SANDBOX_PROFILE
-# The stub needs no credential: only the opt-in live variant (DDW_LIVE=1) keeps one.
-[ "${DDW_LIVE:-0}" = 1 ] || unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN GAFFER_SANDBOX_CLAUDE_CREDENTIALS
+# The stub needs no credential: only the opt-in live variant (DDW_LIVE=1) keeps the
+# real one. The deterministic run sets a DECOY instead (no service accepts it, and no
+# base URL is set), so "the agent container gets the credential, the gate containers do
+# not" is a real check: without one, a validation profile that forwarded the credential
+# would pass unseen.
+if [ "${DDW_LIVE:-0}" != 1 ]; then
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN GAFFER_SANDBOX_CLAUDE_CREDENTIALS
+  export ANTHROPIC_API_KEY="gaffer-e2e-decoy-not-a-key-$$"
+fi
 # shellcheck source=../../factory.config.sh
 source "$RUNNER_DIR/factory.config.sh" >/dev/null 2>&1
 wg init >/dev/null 2>&1; lg init >/dev/null 2>&1
@@ -175,4 +184,43 @@ ddw_ledger_cost() {
       for(const l of fs.readFileSync(p.join(dir,f),"utf8").split("\n")){ if(!l.trim()) continue;
         try{const r=JSON.parse(l); if(String(r.ticket)===t && r.kind==="delivery" && r.measured){rows++; total+=Number(r.total_cost_usd||0);} }catch{} } }
     process.stdout.write(rows+" "+total.toFixed(4));' "$GAFFER_DATA" "$1" 2>/dev/null
+}
+
+# ddw_host_refs: every ref of the host repo with its value, one "<ref> <sha>" per line.
+ddw_host_refs() { git -C "$R" for-each-ref --format='%(refname) %(objectname)' 2>/dev/null; }
+# ddw_refs_asserts <ticket> <refs before the tick>: the delivery moved or created no host
+# ref but the ticket's own branch (main, tags and every other branch as they were).
+ddw_refs_asserts() {
+  local n="$1" before="$2" after line moved="" extra=""
+  after="$(ddw_host_refs)"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    grep -Fqx -- "$line" <<<"$after" || moved="$moved ${line%% *}"
+  done <<<"$before"
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    case "${line%% *}" in refs/heads/gaffer/ticket-"$n"-*) continue ;; esac
+    grep -Fq -- "${line%% *} " <<<"$before" || extra="$extra ${line%% *}"
+  done <<<"$after"
+  [ -z "$moved$extra" ] \
+    && ok "no host ref but the ticket branch moved or appeared (main untouched: $(git -C "$R" rev-parse --short main 2>/dev/null))" \
+    || fail "host refs changed beyond the ticket branch: moved [${moved# }] new [${extra# }]"
+}
+# ddw_save_evidence <ticket>: on a failure with GAFFER_TEST_ARTIFACTS set (CI), keep the
+# logs and the ticket's record for the job's artifact upload. No database, settings
+# file or credential is copied.
+ddw_save_evidence() {
+  [ -n "${GAFFER_TEST_ARTIFACTS:-}" ] || return 0
+  local d="$GAFFER_TEST_ARTIFACTS/${DDW_NAME:-docker-delivery}"
+  mkdir -p "$d" 2>/dev/null || return 0
+  local f
+  for f in factory.log tick.stderr.log usage-ledger.jsonl events.jsonl safety-blocks.jsonl; do
+    [ -f "$GAFFER_DATA/$f" ] && cp "$GAFFER_DATA/$f" "$d/" 2>/dev/null
+  done
+  [ -f "$WORK/image-build.log" ] && cp "$WORK/image-build.log" "$d/" 2>/dev/null
+  [ -d "${FAKE_DOCKER_LOG:-/nonexistent}" ] && cp -R "$FAKE_DOCKER_LOG" "$d/docker-calls" 2>/dev/null
+  wg ticket show "$1" > "$d/ticket.json" 2>/dev/null
+  git -C "$R" log --all --format='%H %D%n%B' > "$d/git-log.txt" 2>/dev/null
+  echo "evidence saved to $d"
+  return 0
 }

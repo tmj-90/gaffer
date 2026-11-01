@@ -560,4 +560,15 @@ jobs:
         env:
           RUN_SANDBOX_DOCKER_TEST: "1"
           GAFFER_SANDBOX_TEST_REQUIRE: ${{ github.event_name == 'push' && '1' || '0' }}
+          # On a failure the test copies its logs, the ticket record and the git log here
+          # (never a database, settings file or credential).
+          GAFFER_TEST_ARTIFACTS: ${{ runner.temp }}/gaffer-test-artifacts
         run: bash runner/test/sandbox-docker-delivery.test.sh
+      - name: Upload delivery e2e evidence
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sandbox-delivery-evidence
+          path: ${{ runner.temp }}/gaffer-test-artifacts
+          if-no-files-found: ignore
+          retention-days: 14

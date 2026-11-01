@@ -57,11 +57,20 @@ if [ "${CI:-}" = "true" ] && [ "${RUN_SANDBOX_DOCKER_TEST:-0}" != "1" ]; then
   echo "SKIP: docker delivery e2e runs in its dedicated CI job (set RUN_SANDBOX_DOCKER_TEST=1)"
   exit 0
 fi
-command -v node >/dev/null 2>&1 || _skip "node required for the docker delivery e2e"
-command -v git >/dev/null 2>&1 || _skip "git required for the docker delivery e2e"
-command -v perl >/dev/null 2>&1 || _skip "perl required for the docker delivery e2e (timeout primitive)"
+# A host that HAS a daemon but lacks node/git/perl or the built packages is not an infra
+# outage: the reason never names docker, so the runner suite's strict allowlist
+# (lib/skip.sh) fails it, and in the dedicated CI job (which builds first) it is red.
+_prereq() {
+  if [ "${RUN_SANDBOX_DOCKER_TEST:-0}" = "1" ] || [ "${GAFFER_SANDBOX_TEST_REQUIRE:-0}" = "1" ]; then
+    echo "FAIL: $1 (the delivery e2e job must have it)"; exit 1
+  fi
+  echo "SKIP: $1"; exit 0
+}
+command -v node >/dev/null 2>&1 || _prereq "node required for the delivery e2e"
+command -v git >/dev/null 2>&1 || _prereq "git required for the delivery e2e"
+command -v perl >/dev/null 2>&1 || _prereq "perl required for the delivery e2e (timeout primitive)"
 for f in packages/dispatch/dist/cli/index.js packages/dispatch/dist/mcp/bin.js packages/memory/dist/bin/memory.js packages/crew/dist/cli/index.js; do
-  [ -f "$ROOT/$f" ] || _skip "$f not built (run pnpm -r build): docker delivery e2e not exercised"
+  [ -f "$ROOT/$f" ] || _prereq "$f not built (run pnpm -r build)"
 done
 if [ "$LIVE" = 1 ]; then
   # A workflow exports an unset secret as an empty string: drop the empty one.
@@ -70,6 +79,13 @@ if [ "$LIVE" = 1 ]; then
 fi
 if [ "$LIVE" = 1 ] && [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   echo "FAIL: GAFFER_LIVE_DOCKER_DELIVERY=1 needs ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN"; exit 1
+fi
+# The per-call cap is a hard requirement of the live run: the runner turns
+# GAFFER_MAX_CALL_USD into `claude --max-budget-usd`, but a value it cannot read (empty,
+# "$2", "two", 0) silently means NO flag, so refuse anything but a positive dollar figure.
+LIVE_CAP="${GAFFER_LIVE_MAX_CALL_USD:-2}"
+if [ "$LIVE" = 1 ] && ! awk -v c="$LIVE_CAP" 'BEGIN { exit !(c ~ /^[0-9]*\.?[0-9]+$/ && c + 0 > 0) }'; then
+  echo "FAIL: GAFFER_LIVE_MAX_CALL_USD='$LIVE_CAP' is not a positive dollar figure (e.g. 2 or 0.5): the live call would run without a per-call cap"; exit 1
 fi
 
 echo "== docker-provider delivery e2e ($([ "$LIVE" = 1 ] && echo "LIVE: the image's real claude" || echo "deterministic: stub agent")) =="
@@ -92,7 +108,14 @@ source "$HERE/lib/docker-delivery-world.sh"
 if [ "$LIVE" = 1 ]; then
   # The real CLI picks its own model and turns; a per-call dollar cap keeps it bounded.
   unset GAFFER_CARD_MODEL GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL GAFFER_CLAUDE_VERSION
-  export GAFFER_MAX_CALL_USD="${GAFFER_LIVE_MAX_CALL_USD:-2}"
+  export GAFFER_MAX_CALL_USD="$LIVE_CAP"
+  # ...and prove the runner resolves it to a flag (gaffer_call_budget_usd is what tick.sh
+  # and lib/worker.sh pass as --max-budget-usd) before any credit is spent.
+  _cb="$(gaffer_call_budget_usd 2>/dev/null)"
+  if [ -z "$_cb" ]; then
+    fail "the runner resolves GAFFER_MAX_CALL_USD=$LIVE_CAP to no --max-budget-usd: refusing to run uncapped"; exit 1
+  fi
+  ok "live per-call cap: the runner passes --max-budget-usd $_cb to the agent call (daily budget \$$GAFFER_DAILY_BUDGET_USD)"
 fi
 
 # The test image: the delivery image + the probe file (+ the stub as `claude`).
@@ -106,7 +129,9 @@ ddw_write_probe_json "$IMG_CTX/probe.json"
     printf '#!/bin/sh\nexec node /usr/local/lib/gaffer-e2e/stub.mjs "$@"\n' > "$IMG_CTX/claude"
     chmod 755 "$IMG_CTX/claude"
     # The image's own CLI entry is replaced (rm first: npm installs it as a symlink).
-    printf 'RUN rm -f /usr/local/bin/claude\n'
+    # ...but only after checking the shipped image really installed one, so the stub
+    # cannot mask an image whose CLI install went missing.
+    printf 'RUN test -e /usr/local/bin/claude && rm -f /usr/local/bin/claude\n'
     printf 'COPY stub.mjs /usr/local/lib/gaffer-e2e/stub.mjs\n'
     printf 'COPY claude /usr/local/bin/claude\n'
   fi
@@ -124,6 +149,10 @@ export GAFFER_SANDBOX_IMAGE="$_IMG"
 # delivery containers could not).
 # shellcheck disable=SC2317  # called from the world's EXIT trap
 ddw_pre_cleanup() {
+  # A delivery that failed midway (a tick timeout kills the docker CLI, not its
+  # container) can leave a container of this image running: stop it first.
+  local c
+  for c in $(docker ps -q --filter "ancestor=$_IMG" 2>/dev/null); do docker rm -f "$c" >/dev/null 2>&1 || true; done
   [ "$(id -u)" = 0 ] && return 0
   docker run --rm -v "$WORK:$WORK" "$_IMG" chown -R "$(id -u):$(id -g)" "$WORK" >/dev/null 2>&1 || true
 }
@@ -135,9 +164,11 @@ N="$(ddw_new_ready "Docker delivery e2e")"
 [ -n "$N" ] && ok "setup: ready ticket #$N" || fail "setup: no ticket"
 
 echo "== one tick: SANDBOX_PROVIDER=docker, real daemon =="
+REFS_BEFORE="$(ddw_host_refs)"
 OUT="$(ddw_run_tick)"
 echo "    $OUT"
 ddw_common_asserts "$N"
+ddw_refs_asserts "$N" "$REFS_BEFORE"
 
 [ "$(ddw_gate "$N" tests)" = "PASS node gate-probe.mjs --require && node --test" ] \
   && ok "the DoD tests gate PASSED with gate-probe --require: it ran in a container with no database, bridge socket, host HOME, canary or credential" \
@@ -160,10 +191,10 @@ else
   EV="$(ddw_evidence "$N" | grep 'docker-delivery-stub:' | head -1)"
   [ -n "$EV" ] && ok "the agent's record_ac_evidence reached the host DB through the bridge" || fail "no agent evidence on #$N"
   echo "    $EV" | cut -c1-400
-  for want in INSIDE_CONTAINER TOKEN_ABSENT GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE PROBE_FILE DB_UNMOUNTED SETTINGS_ABSENT HOME_UNREADABLE CANARY_UNREADABLE HOST_WRITE_CONTAINED MCP_BRIDGED; do
+  for want in INSIDE_CONTAINER TOKEN_ABSENT CREDENTIAL_FORWARDED MCP_CONFIG_BRIDGED GIT_SAFE_DIRECTORY EGRESS_PROXY_SET TMPDIR_USABLE PROBE_FILE DB_UNMOUNTED SETTINGS_ABSENT HOME_UNREADABLE CANARY_UNREADABLE HOST_WRITE_CONTAINED MCP_ROUND_TRIP; do
     case " $EV " in *" $want "*) ok "agent probe: $want" ;; *) fail "agent probe: expected $want" ;; esac
   done
-  for bad in NOT_IN_CONTAINER TOKEN_LEAK GIT_SAFE_DIRECTORY_MISSING EGRESS_PROXY_MISSING TMPDIR_UNUSABLE NO_PROBE_FILE DB_VISIBLE SETTINGS_VISIBLE HOME_READABLE CANARY_LEAK HOST_WRITE_POSSIBLE; do
+  for bad in NOT_IN_CONTAINER TOKEN_LEAK CREDENTIAL_MISSING MCP_CONFIG_NOT_BRIDGED GIT_SAFE_DIRECTORY_MISSING EGRESS_PROXY_MISSING TMPDIR_UNUSABLE NO_PROBE_FILE DB_VISIBLE SETTINGS_VISIBLE HOME_READABLE CANARY_LEAK HOST_WRITE_POSSIBLE; do
     case " $EV " in *" $bad "*) fail "agent probe: saw $bad" ;; esac
   done
   [ "$(ddw_acs_satisfied "$N")" = yes ] \
@@ -181,4 +212,5 @@ echo "sandbox-docker-delivery: ${#FAILURES[@]} FAILURE(S):"
 for f in "${FAILURES[@]}"; do echo "  - $f"; done
 echo "--- factory.log (tail) ---"; tail -40 "$GAFFER_DATA/factory.log" 2>/dev/null
 echo "--- tick.stderr.log (tail) ---"; tail -40 "$GAFFER_DATA/tick.stderr.log" 2>/dev/null
+ddw_save_evidence "$N"
 exit 1

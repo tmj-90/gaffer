@@ -375,7 +375,7 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   runs and every ticket waits in `in_review`, while the sandbox is still required. Any
   single flag you export overrides the mode (`AUTO_MERGE=0` keeps merges for you).
   The docker provider is experimental: its containment is red-team tested in CI and a CI
-  job delivers a ticket through it with a stub agent inside the container, but a live
+  job delivers a ticket through it on Linux with a stub agent inside the container, but a live
   delivery with the real `claude` inside it is a manual workflow you run yourself (see
   [`docs/docker-sandbox-provider.md`](docs/docker-sandbox-provider.md#prove-it-on-your-own-fork)
   and [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.

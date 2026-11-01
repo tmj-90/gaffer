@@ -12,6 +12,7 @@ import {
   type DecisionSeverity,
   type Evidence,
   type PausedDelivery,
+  type ReopenForReviewCause,
   type ReworkAttempt,
   type Repository,
   type RiskLevel,
@@ -88,6 +89,7 @@ import {
   type TicketScopeWithNode,
 } from "./repositories/ticketScopeNodeRepository.js";
 import {
+  TICKET_SUMMARY_COLUMNS,
   TicketRepository,
   type TicketListFilter,
   type TicketSummary,
@@ -255,6 +257,28 @@ import { isTestingEnabled } from "./util/testingLane.js";
  */
 export interface EvidenceView extends Evidence {
   recorded_by_agent: boolean;
+}
+
+/** The parts GET /tickets/details can return per ticket (the ticket row always comes). */
+export const TICKET_DETAIL_PARTS = [
+  "repositories",
+  "scopes",
+  "dependencies",
+  "rework_trail",
+  "events",
+  "evidence",
+] as const;
+export type TicketDetailPart = (typeof TICKET_DETAIL_PARTS)[number];
+
+/** One ticket of a {@link Dispatch.ticketDetailsBatch} read: the summary row + the asked parts. */
+export interface TicketDetailBatchItem {
+  ticket: TicketSummary;
+  repositories?: TicketRepoLink[];
+  scopes?: TicketScopeWithNode[];
+  dependencies?: TicketDependencyView[];
+  rework_trail?: ReturnType<ReworkAttemptRepository["listForTicket"]>;
+  events?: WorkEvent[];
+  evidence?: EvidenceView[];
 }
 
 export interface TicketView {
@@ -2296,12 +2320,28 @@ export class Dispatch {
     return this.reviewGateSvc.markMerged(ref, actor);
   }
 
+  /**
+   * Back to review (`done | ready_for_merge -> in_review`), system/admin only. `cause`
+   * says why; without one it is the ticket's hold when a fresh review is what clears it
+   * (`moved_since_review`, `unpinned_repo`), else `merge_conflict` (the resolver's
+   * reopen, the call this path was built for).
+   */
   reopenForReview(
     ref: string,
-    input: { reason: string; resolution: string },
+    input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
-    return this.reviewGateSvc.reopenForReview(ref, input, actor);
+    let cause = input.cause;
+    if (cause === undefined) {
+      const ls = this.landingState(ref);
+      cause =
+        ls &&
+        ls.kind === "held" &&
+        (ls.hold === "moved_since_review" || ls.hold === "unpinned_repo")
+          ? ls.hold
+          : "merge_conflict";
+    }
+    return this.reviewGateSvc.reopenForReview(ref, { ...input, cause }, actor);
   }
 
   rejectReview(
@@ -2902,6 +2942,57 @@ export class Dispatch {
       // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
       landing: computeLandingStatus(this.db, ticket.id),
     };
+  }
+
+  /**
+   * The parts of many tickets' detail in one read (GET /tickets/details): what the
+   * dashboard's Map, Overview and Epics need from each ticket, without one
+   * GET /tickets/:id per ticket. `ids` names the tickets (unknown ones are listed in
+   * `missing`); without it a page of every ticket is read (`limit`/`offset`). Each
+   * ticket row is the summary row (no description, test contract or review feedback).
+   */
+  ticketDetailsBatch(
+    select: { ids: readonly string[] } | { limit: number; offset: number },
+    include: ReadonlySet<TicketDetailPart>,
+  ): { details: TicketDetailBatchItem[]; missing: string[]; total: number } {
+    let rows: TicketSummary[];
+    let total: number;
+    const missing: string[] = [];
+    if ("ids" in select) {
+      const byId = new Map<string, TicketSummary>();
+      const unique = [...new Set(select.ids)];
+      const get = this.db.prepare(
+        `SELECT ${TICKET_SUMMARY_COLUMNS.join(", ")} FROM tickets WHERE id = ?`,
+      );
+      for (const id of unique) {
+        const row = get.get(id) as TicketSummary | undefined;
+        if (row) byId.set(id, row);
+        else missing.push(id);
+      }
+      rows = unique.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+      total = rows.length;
+    } else {
+      const page = this.tickets.listPage(
+        {},
+        { limit: select.limit, offset: select.offset, summary: true },
+      );
+      rows = page.tickets as TicketSummary[];
+      total = page.total;
+    }
+    const details = rows.map((ticket) => {
+      const item: TicketDetailBatchItem = { ticket };
+      if (include.has("repositories")) item.repositories = this.repos.listForTicket(ticket.id);
+      if (include.has("scopes")) item.scopes = this.ticketScopes.listForTicket(ticket.id);
+      if (include.has("dependencies"))
+        item.dependencies = this.ticketDependencies.listForTicket(ticket.id);
+      if (include.has("rework_trail"))
+        item.rework_trail = this.reworkAttempts.listForTicket(ticket.id);
+      if (include.has("events")) item.events = listEvents(this.db, "ticket", ticket.id);
+      if (include.has("evidence"))
+        item.evidence = this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id));
+      return item;
+    });
+    return { details, missing, total };
   }
 
   /**

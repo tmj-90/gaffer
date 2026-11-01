@@ -76,6 +76,20 @@ async function api(method, path, body) {
   };
   return { status: res.status, json: parse() };
 }
+
+/** Every ticket row: GET /tickets answers a page (500 rows unless `limit`); follow next_offset. */
+async function allTicketRows() {
+  const out = [];
+  let offset = 0;
+  for (let guard = 0; guard < 1000; guard++) {
+    const r = (await api("GET", `/tickets?limit=1000&offset=${offset}`)).json;
+    const rows = Array.isArray(r) ? r : (r && r.tickets) || [];
+    for (const t of rows) if (!out.some((x) => x.id === t.id)) out.push(t);
+    if (Array.isArray(r) || !r || r.next_offset == null || !rows.length) break;
+    offset = r.next_offset;
+  }
+  return out;
+}
 async function waitFor(fn, label, ms = 60000, every = 1000) {
   const t0 = Date.now();
   for (;;) {
@@ -378,9 +392,8 @@ try {
   await page.click(createSel);
   const ticket = await waitFor(
     async () => {
-      const r = await api("GET", "/tickets");
-      const list = r.json.tickets || r.json || [];
-      return (Array.isArray(list) ? list : []).find((t) => t.title.includes(RUN_TAG));
+      const list = await allTicketRows();
+      return list.find((t) => t.title.includes(RUN_TAG));
     },
     "ticket created",
     20000,
@@ -1044,8 +1057,7 @@ try {
     ok("Work view: 'Poll for work' clicked on an empty queue (maintenance lane tick)");
     const debt = await waitFor(
       async () => {
-        const rows = (await api("GET", "/tickets")).json;
-        const list = Array.isArray(rows) ? rows : rows.tickets || [];
+        const list = await allTicketRows();
         return (
           list.find((t) => /^Tech-debt hotspots/.test(t.title) && t.status === "ready") || null
         );
@@ -1145,7 +1157,7 @@ try {
   // ── 6e. the Floor: one parcel per open ticket, each a link read as a sentence,
   //        and focusing one shows its number and title in the floor's card.
   {
-    const all = (await api("GET", "/tickets")).json.tickets || [];
+    const all = await allTicketRows();
     const open = all.filter((t) => !["done", "cancelled"].includes(t.status)).length;
     await page.goto(`${BASE}/#/floor`, { waitUntil: "load" });
     await sleep(1200);
@@ -1633,7 +1645,7 @@ try {
     await page.click('button:has-text("Create as draft")');
     const acc = await waitFor(
       async () => {
-        const list = (await api("GET", "/tickets")).json.tickets || [];
+        const list = await allTicketRows();
         return list.find((t) => t.title === `Acceptance: Shortener ${RUN_TAG}`) || null;
       },
       "acceptance ticket created",

@@ -202,22 +202,31 @@ export default async function s14(t, L) {
   t.created.add(tk.id);
   await L.api("POST", `/tickets/${tk.id}/acceptance-criteria`, { text: "covered by a test" });
   await t.visit(`ticket/${tk.id}`);
-  await p.locator('button:has-text("Mark ready")').first().click();
-  const refusal = await L.maybe(
-    async () => {
-      const txt = (await p.textContent(".policy-result.fail").catch(() => "")) || "";
-      return txt ? txt : null;
-    },
-    "readiness refusal",
+  // The page reads the ready gate (claimability) and switches Mark ready off with the
+  // reason in its title (exploratory finding ui-workflows/F8); the server refuses too.
+  const markReady = p.locator('button:has-text("Mark ready")').first();
+  const offTitle = await L.maybe(
+    async () =>
+      (await markReady.isDisabled().catch(() => false))
+        ? (await markReady.getAttribute("title")) || ""
+        : null,
+    "Mark ready switched off by the ready gate",
     10000,
     300,
   );
   t.check(
-    refusal &&
-      /SCOPE_REPO_UNCONFIRMED|none of its repos is confirmed/.test(refusal) &&
+    offTitle != null && /none of its repos is confirmed/.test(offTitle),
+    "Mark ready on a ground-only ticket is off, its title naming the gate's reason (the ground's repos are only suggestions)",
+    `Mark ready on the scope-only ticket: disabled=${offTitle != null} title='${(offTitle || "").slice(0, 160)}'`,
+  );
+  const refused = await L.api("POST", `/tickets/${tk.id}/ready`);
+  const failures = refused.json?.error?.details?.policy?.failures || [];
+  t.check(
+    refused.status >= 400 &&
+      failures.some((f) => f.code === "SCOPE_REPO_UNCONFIRMED") &&
       (await L.ticketOf(tk.id)).status === "draft",
     "Mark ready on a ground-only ticket is refused: the ground's repos are only suggestions (SCOPE_REPO_UNCONFIRMED)",
-    `scope-only ready: '${(refusal || "").slice(0, 160)}' status=${(await L.ticketOf(tk.id)).status}`,
+    `scope-only ready: ${refused.status} ${JSON.stringify(failures).slice(0, 160)} status=${(await L.ticketOf(tk.id)).status}`,
   );
   const confirm = p.locator('.repo-group-suggested button:has-text("Confirm")').first();
   const hasSug = await confirm.waitFor({ timeout: 10000 }).then(

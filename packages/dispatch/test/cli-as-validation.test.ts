@@ -90,6 +90,27 @@ describe("CLI --as is validated", () => {
     });
   }
 
+  it("ticket reopen-for-review --cause takes only a known cause, and writes nothing", () => {
+    const before = eventCount(dbPath);
+    const err = thrown(() =>
+      run(
+        dbPath,
+        "ticket",
+        "reopen-for-review",
+        "1",
+        "--reason",
+        "r",
+        "--resolution",
+        "x",
+        "--cause",
+        "because",
+      ),
+    );
+    expect(err?.code).toBe("VALIDATION_ERROR");
+    expect(err?.message).toMatch(/--cause must be one of merge_conflict, moved_since_review/);
+    expect(eventCount(dbPath)).toBe(before);
+  });
+
   it("a valid --as still reaches the service (its own refusal, not a validation error)", () => {
     const err = thrown(() => run(dbPath, "ticket", "mark-merged", "1", "--as", "system"));
     expect(err).toBeDefined();

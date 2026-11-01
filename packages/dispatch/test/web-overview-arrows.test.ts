@@ -13,6 +13,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const ago = (min: number) => new Date(Date.now() - min * 60e3).toISOString();
@@ -50,44 +52,46 @@ function events(id: string) {
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const json = (obj: unknown) =>
-        new Response(JSON.stringify(obj), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
-      if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
-      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
-      if (url.includes("/api/activity")) {
-        const all = Object.keys(MOVES).flatMap(events);
-        return json({ events: all, total: all.length });
-      }
-      if (url.includes("/api/board")) return json(null);
-      const one = url.match(/\/tickets\/(tk-\d+)/);
-      const oneId = one?.[1];
-      const oneMoves = oneId ? MOVES[oneId] : undefined;
-      if (oneId && oneMoves)
-        return json({
-          ticket: { id: oneId, number: num(oneId), status: oneMoves.status },
-          events: events(oneId),
-          repositories: [{ name: "billing-api", access: "write" }],
-          scopes: [],
-        });
-      if (url.includes("/tickets"))
-        return json({
-          tickets: Object.entries(MOVES).map(([id, t]) => ({
-            id,
-            number: num(id),
-            title: `Ticket ${num(id)}`,
-            status: t.status,
-            updated_at: ago(5),
-          })),
-        });
-      if (url.includes("/decisions")) return json({ decisions: [] });
-      return json({});
-    }),
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (obj: unknown) =>
+          new Response(JSON.stringify(obj), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
+        if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
+        if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+        if (url.includes("/api/activity")) {
+          const all = Object.keys(MOVES).flatMap(events);
+          return json({ events: all, total: all.length });
+        }
+        if (url.includes("/api/board")) return json(null);
+        const one = url.match(/\/tickets\/(tk-\d+)/);
+        const oneId = one?.[1];
+        const oneMoves = oneId ? MOVES[oneId] : undefined;
+        if (oneId && oneMoves)
+          return json({
+            ticket: { id: oneId, number: num(oneId), status: oneMoves.status },
+            events: events(oneId),
+            repositories: [{ name: "billing-api", access: "write" }],
+            scopes: [],
+          });
+        if (url.includes("/tickets"))
+          return json({
+            tickets: Object.entries(MOVES).map(([id, t]) => ({
+              id,
+              number: num(id),
+              title: `Ticket ${num(id)}`,
+              status: t.status,
+              updated_at: ago(5),
+            })),
+          });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        return json({});
+      }),
+    ),
   );
 }
 

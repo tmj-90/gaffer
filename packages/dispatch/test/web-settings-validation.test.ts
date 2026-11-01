@@ -156,3 +156,76 @@ describe("web: Settings form validation", () => {
     expect(posts).toEqual([{ MAX_TICKS: "30", GAFFER_CONCURRENCY: "2" }]);
   });
 });
+
+describe("web: a value only the server can judge is still named on its row (exploratory finding ui-workflows/F11)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("a webhook URL the server refuses (422) is marked on its row, not only in the toast", async () => {
+    const WEBHOOK = {
+      key: "GAFFER_NOTIFY_WEBHOOK_URL",
+      value: "",
+      effective: "",
+      source: "default",
+      envLocked: false,
+      type: "string",
+      secret: true,
+      configured: false,
+      group: "notifications",
+      label: "Webhook URL",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.includes("/api/settings") && method === "POST")
+          return new Response(
+            JSON.stringify({
+              error: {
+                code: "VALIDATION_ERROR",
+                message: "Not saved: Webhook URL is not an allowed webhook address.",
+                details: {
+                  invalid: [
+                    {
+                      key: "GAFFER_NOTIFY_WEBHOOK_URL",
+                      label: "Webhook URL",
+                      problem: "is not an allowed webhook address",
+                    },
+                  ],
+                },
+              },
+            }),
+            { status: 422, headers: { "content-type": "application/json" } },
+          );
+        return new Response(JSON.stringify({ settings: [...SETTINGS, WEBHOOK] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    mountShell();
+    vi.resetModules();
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}`);
+    for (let i = 0; i < 4; i++) await tick();
+    const r = row("GAFFER_NOTIFY_WEBHOOK_URL");
+    const replace = [...r.querySelectorAll("button")].find((b) =>
+      /Set|Replace/.test(b.textContent ?? ""),
+    );
+    replace?.click();
+    const box = r.querySelector(
+      'input[type="text"], input[type="password"], input:not([type])',
+    ) as HTMLInputElement;
+    box.value = "http://127.0.0.1:9/hook";
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await save();
+    for (let i = 0; i < 6; i++) await tick();
+    expect(document.getElementById("toast")?.textContent).toMatch(/Webhook URL/);
+    expect(r.querySelector(".setting-error")?.textContent).toMatch(
+      /Webhook URL is not an allowed webhook address/,
+    );
+    expect(box.getAttribute("aria-invalid")).toBe("true");
+  });
+});

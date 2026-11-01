@@ -30,6 +30,12 @@ describe("redactRemoteUrl", () => {
     expect(redactRemoteUrl("https://github.com/acme/w")).toBe("https://github.com/acme/w");
     expect(redactRemoteUrl(null)).toBeNull();
   });
+
+  it("drops an ssh password and a password holding a raw @, keeping the ssh login", () => {
+    expect(redactRemoteUrl("ssh://git:s3cret@host/r.git")).toBe("ssh://git@host/r.git");
+    expect(redactRemoteUrl("git+ssh://git:s3cret@host/r")).toBe("git+ssh://git@host/r");
+    expect(redactRemoteUrl("https://u:p@ss@host/x")).toBe("https://host/x");
+  });
 });
 
 describe("repository boundary", () => {

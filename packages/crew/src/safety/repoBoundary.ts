@@ -75,9 +75,9 @@ export function statInRepo(root: string, rel: string): ReturnType<typeof statSyn
 
 /**
  * A remote URL with any userinfo removed: `https://user:token@host/x` becomes
- * `https://host/x`. scp-like and ssh forms (`git@host:owner/repo`, `ssh://git@host/…`)
- * name a login, not a secret, and are returned unchanged, as is anything that is not a
- * URL. Applied wherever a remote URL can reach a prompt, a digest, lore, an event or a
+ * `https://host/x`. An ssh login name (`ssh://git@host/…`) and scp-like forms
+ * (`git@host:owner/repo`) name a login, not a secret, and stay; an ssh password
+ * (`ssh://git:pw@host/…`) is dropped. Anything that is not a URL is returned unchanged. Applied wherever a remote URL can reach a prompt, a digest, lore, an event or a
  * log line.
  */
 export function redactRemoteUrl(url: string): string;
@@ -85,9 +85,16 @@ export function redactRemoteUrl(url: string | null): string | null;
 export function redactRemoteUrl(url: string | null | undefined): string | null | undefined;
 export function redactRemoteUrl(url: string | null | undefined): string | null | undefined {
   if (url == null) return url;
-  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*@)(.*)$/is.exec(url);
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)@(.*)$/is.exec(url);
   if (!m) return url;
-  const scheme = m[1]!.toLowerCase();
-  if (scheme === "ssh://" || scheme === "git+ssh://" || scheme === "ssh+git://") return url;
-  return `${m[1]}${m[3]}`;
+  return `${m[1]!}${keptUserinfo(m[1]!, m[2]!)}${m[3]!}`;
+}
+
+const SSH_SCHEMES = new Set(["ssh://", "git+ssh://", "ssh+git://"]);
+
+/** The userinfo to keep: an ssh login name (never a password), nothing for other schemes. */
+function keptUserinfo(scheme: string, userinfo: string): string {
+  if (!SSH_SCHEMES.has(scheme.toLowerCase())) return "";
+  const user = userinfo.split(":")[0] ?? "";
+  return user ? `${user}@` : "";
 }

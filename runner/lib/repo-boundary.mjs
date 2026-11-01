@@ -8,8 +8,8 @@
 // linked to a file outside the repository put that file into the prompt. Every read now
 // resolves the real path of the file and of the repository root and refuses a file that
 // lands outside, with a reason the digest can carry. The same module strips userinfo
-// from remote URLs (`https://user:pass@host/x` → `https://host/x`; ssh and scp-like forms
-// are a login, not a secret, and stay as they are). packages/crew mirrors both in
+// from remote URLs (`https://user:pass@host/x` → `https://host/x`; an ssh login name and
+// scp-like forms are a login, not a secret, and stay; an ssh password does not). packages/crew mirrors both in
 // src/safety/repoBoundary.ts.
 
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -80,21 +80,32 @@ export function statRepo(root, rel, skipped = null) {
   }
 }
 
-/** A remote URL without userinfo; ssh/scp forms and non-URLs are returned unchanged. */
+const SSH_SCHEMES = new Set(["ssh://", "git+ssh://", "ssh+git://"]);
+
+/** The userinfo to keep: an ssh login name (never a password), nothing for other schemes. */
+function keptUserinfo(scheme, userinfo) {
+  if (!SSH_SCHEMES.has(scheme.toLowerCase())) return "";
+  const user = userinfo.split(":")[0];
+  return user ? `${user}@` : "";
+}
+
+/**
+ * A remote URL without its secrets: userinfo is dropped, except an ssh login name
+ * (`ssh://git@host/x` stays; `ssh://git:pw@host/x` → `ssh://git@host/x`). scp-like
+ * forms and non-URLs are returned unchanged.
+ */
 export function redactRemoteUrl(url) {
   if (url == null) return url;
   const s = String(url);
-  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*@)(.*)$/is.exec(s);
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)@(.*)$/is.exec(s);
   if (!m) return s;
-  const scheme = m[1].toLowerCase();
-  if (scheme === "ssh://" || scheme === "git+ssh://" || scheme === "ssh+git://") return s;
-  return `${m[1]}${m[3]}`;
+  return `${m[1]}${keptUserinfo(m[1], m[2])}${m[3]}`;
 }
 
-/** Every https/http-style URL with userinfo inside `text`, redacted (for log lines). */
+/** Every URL with userinfo inside `text`, redacted the same way (for log lines). */
 export function redactUrlsIn(text) {
   return String(text ?? "").replace(
-    /\b((?!ssh:\/\/|git\+ssh:\/\/)[a-z][a-z0-9+.-]*:\/\/)[^/\s?#@]*@/gi,
-    "$1",
+    /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s?#"']*)@/gi,
+    (_all, scheme, userinfo) => `${scheme}${keptUserinfo(scheme, userinfo)}`,
   );
 }

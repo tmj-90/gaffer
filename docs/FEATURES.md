@@ -269,7 +269,12 @@ structural barrier the whole design hangs on.
   becomes *done* once all of them are on their default branches. If one lands and
   another cannot (a conflict, a dirty checkout), the ticket stays in *Ready for merge*
   and shows as **Partly merged** in what needs you, naming which repositories landed;
-  the next merge lands only the rest (`wg ticket landing <n>` shows the state).
+  the next merge lands only the rest (`wg ticket landing <n>` shows the state), and
+  **Poll for work** counts it as merge work even with Auto-merge off: the poll's tick
+  runs the merge lane, which lands the remaining repositories. An approval covers
+  **every** write repository: while one's delivery head cannot be read (no checkout
+  here, an unreadable path, its delivery branch missing) the approval is refused
+  (`repo_unavailable`) and the button reads *Approve held: <repo> unavailable*.
 - **Approve does not merge unless you ask it to.** With `AUTO_MERGE` off (the
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
@@ -281,16 +286,17 @@ structural barrier the whole design hangs on.
   now** (Auto-merge on with a merge command: the landing check and the merge gate
   run at once, through the PR in PR mode), **Approve, lands on next tick**
   (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
-  the landing), **Approve, waits for Merge now** (Auto-merge off), or **Approve
+  the landing), **Approve, waits for Merge now** (Auto-merge off), **Approve
   held: CI not passed** (required CI has no PASS for the commit, so the server
-  would refuse). When the delivery changed the tests that gate it, an agent's or
+  would refuse), or **Approve held: <repo> unavailable** (a write repository's
+  delivery head cannot be read, so the server refuses an approval that could not
+  cover it). When the delivery changed the tests that gate it, an agent's or
   auto approval is held (*Approve held: tests changed, a person must allow it*)
   but a human's is not: the line under the button says so and points at the
   test-changes banner. A line under the button says what follows; on a multi-repo
   ticket it says every write repo lands the same way, one merge each through the
   merge gate, and that a repo that fails is held while the landed ones stay
-  recorded (a repo with no checkout on this machine is named as one nothing can
-  merge); under Review mode *both* the line says this click is the human
+  recorded; under Review mode *both* the line says this click is the human
   confirmation. The armed button only says it lands
   when it does ("Confirm and land now"); after approval the button and the band
   under it say where the change went (`GET /tickets/:id/diff` carries
@@ -304,8 +310,9 @@ structural barrier the whole design hangs on.
   *Approved · partly landed* (a landing is recorded for some of its write repos'
   approved commits, not all: Merge now lands the rest and never re-merges a
   landed one), or the hold's own words — *Held · moved since review* (naming the
-  repo whose branch moved off its review pin), *Held · merge gate failed*, *Held ·
-  CI red*.
+  repo whose branch moved off its review pin), *Held · approval does not cover
+  every repository* (a write repo with no approved commit), *Held · merge gate
+  failed*, *Held · CI red*.
   The server stamps it as `landing_state` on the ticket, the board cards, the
   ticket list and the Team Sheet.
 - **A request for a human is never "Nothing flagged".** The runner's
@@ -343,7 +350,15 @@ structural barrier the whole design hangs on.
   passes, the same scratch merge also gets the tester's test files (only the ones
   it added or changed, never its agent wiring) and the repo's test command runs
   there too — on every landing path, PR mode's gate on the fetched remote
-  included. A failing assertion holds the landing exactly like a red gate
+  included. The tester's files run **by path** with the stack's runner
+  (`node --test <files>`, vitest/jest by path, pytest, `go test` on their
+  packages, `cargo test --test`) where that is well defined, else through the
+  registered command, and each file must show the runner's own evidence that it
+  ran: a repo whose registered command runs only some files can no longer report
+  a tester file as passed that never executed. A file with no such evidence
+  holds the landing (*blocked*, `tester_replay_unverified`, naming the files,
+  in `gaffer status` too) and nothing is recorded. A failing assertion holds
+  the landing exactly like a red gate
   (*blocked*, `tester_replay_red`, naming the files, the output as evidence,
   the default branch untouched); the tester's files run on the candidate but
   never land. When the candidate lands, the runner records **which tester

@@ -152,8 +152,23 @@ PASS is bound to (`--tests-commit`, which `bin/tester-run.mjs` records: its own 
 stands at landing time, so a rewritten or deleted tests branch changes nothing, and a bound
 commit git cannot find holds. (A PASS recorded before that binding falls back to the branch;
 one that does not descend from the tested commit is an earlier run's and is not replayed.) Those files are checked out into the scratch merge's
-working tree (the gated merge commit is unchanged: they run, they never land) and the repo's
-`test_command` runs there through `bin/dod-regate.sh` (tests only). A failure holds the
+working tree (the gated merge commit is unchanged: they run, they never land) and run there
+through `bin/dod-regate.sh` (tests only; the gates' sandbox wrap and timeout).
+**Proof of execution** (`replayInvocation` / `replayProof`): the files run by path with the
+stack's runner where a file-scoped invocation is well defined — `node --test <files…>` (the
+registered command's `--import`/`--require`/`--experimental-*` flags kept, test filters
+dropped), `vitest run <files>` / `jest --runTestsByPath <files>` with a JSON report,
+`pytest -vv <files>`, `go list` + `go test` on the files' packages, `cargo test --test <name>`
+for `tests/<name>.rs` — detected from the registered command, or the `test` script it names
+read from the gated target's package.json; otherwise the registered command runs with a
+node:test reporter in `NODE_OPTIONS`. Each file then needs the runner's own evidence that it
+ran (the reporter's per-file events, the JSON report, pytest node ids, `go list`'s test files,
+cargo's `Running tests/<name>.rs`, or a vitest/jest per-file line), kept in a fresh
+`.gaffer-replay-<nonce>/` directory of the scratch worktree (`GAFFER_DOD_TESTS_OUTPUT` keeps
+the tests gate's full output there). A file without it holds the landing
+(`--reason-code tester_replay_unverified`, the files named in the reason, the
+`TESTER REPLAY UNVERIFIED` evidence and `gaffer status`'s *landings held by the tester replay*);
+the record lists only the files proven to have run. A failure holds the
 ticket like a red gate (`wg ticket hold … --reason-code tester_replay_red`, the files named,
 the output attached); no tester PASS on record (not in the testing lane, or a human waiver)
 runs nothing extra; an unreadable DB or a git error holds (fail closed);
@@ -411,7 +426,15 @@ The factory keeps the memory product's **Repo Digest** current and drives the
   like `mark-merged`). `mark-merged` is refused until every approved
   revision has landed, so a partial landing is held in `ready_for_merge` ("Partly merged"
   in the human queue) with its branches kept, and a retry skips the repos that already
-  landed (`already-landed`) instead of merging them again. A secondary repo that conflicts
+  landed (`already-landed`) instead of merging them again. **Every write repo** (external
+  review #7): the approval is refused (`repo_unavailable`) while any write repo's head
+  cannot be resolved, the plan also lists a write repo an older approval left unpinned
+  (`pinned: false` — the landing holds on it, and `lib/tester-binding.mjs` never lands its
+  head), and a row whose checkout is missing holds rather than being dropped. A partly
+  landed ticket is merge work: the merge lane (`lib/merge-lane.sh`) lands its remaining
+  repos whatever the merge policy says (the landing started under the approval),
+  `bin/poll-once.sh` clears the lane's per-run held list, and a tick that only landed
+  reports `TICK_RESULT=merged` (not `no_work`; `loop.sh` counts it as a non-empty poll). A secondary repo that conflicts
   is held for a human; the resolver runs for the primary repo only.
 - **Conflicts (never a force-merge).** When the landing conflicts, `bin/merge-ticket.mjs`
   spawns the resolver agent once, in a throwaway worktree of the delivery branch, then

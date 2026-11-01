@@ -180,6 +180,22 @@ for (const l of labels) check(`quickstart lists **${l}**`, quick.includes(`**${l
 console.log("== F-25: the README's Docker paragraph creates ./repos ==");
 check("README has mkdir -p repos", /mkdir -p repos/.test(readme));
 
+console.log("== Team sheet: the README lists only rows the human queue builds ==");
+// The Team sheet is the human queue (humanQueueService.ts). Paused tickets and lore
+// drafts are not in it yet, so the README must not promise them until it builds them.
+const queueSrc = read("packages/dispatch/src/services/humanQueueService.ts");
+const sheetMatch = readme.match(/Beside it is the Team sheet[^\n]*?\.(?= The Tactics)/);
+const sheetSentence = sheetMatch ? sheetMatch[0] : "";
+check("README has the Team sheet sentence", sheetSentence.length > 0);
+check(
+  "README promises paused tickets only if the queue lists them",
+  !/paused/i.test(sheetSentence) || /"paused"/.test(queueSrc),
+);
+check(
+  "README promises lore drafts only if the queue lists them",
+  !/lore/i.test(sheetSentence) || /lore/i.test(queueSrc),
+);
+
 console.log("== UI F-15: how to get a read-only token ==");
 check("README names print-read-token", /print-read-token/.test(readme));
 check("README names `principal create … --read`", /principal create \S+ --read/.test(readme));

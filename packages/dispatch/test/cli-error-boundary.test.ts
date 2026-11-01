@@ -13,9 +13,11 @@ import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { CommanderError } from "commander";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { handleError } from "../src/api/http.js";
+import { describeCliFailure } from "../src/cli/errors.js";
 import { Dispatch } from "../src/core.js";
 
 import { CLI_BIN, CLI_BUILT, oneLineError, runBin } from "./helpers/cliBin.js";
@@ -200,5 +202,38 @@ describe("REST: a busy database is a 503 DB_BUSY, not a bare 500", () => {
     const parsed = JSON.parse(body) as { error: { code: string; message: string } };
     expect(parsed.error.code).toBe("DB_BUSY");
     expect(parsed.error.message).toContain("another process holds the database; retry");
+  });
+});
+
+describe("the boundary's fallback for an unexpected error", () => {
+  afterEach(() => {
+    delete process.env["DISPATCH_DEBUG"];
+  });
+
+  it("is INTERNAL_ERROR with its message and no stack", () => {
+    const f = describeCliFailure(new Error("boom"));
+    expect(f.exitCode).toBe(1);
+    expect(f.body).toEqual({
+      ok: false,
+      code: "INTERNAL_ERROR",
+      message: "Unexpected error: boom",
+    });
+  });
+
+  it("adds the stack under details only with DISPATCH_DEBUG=1", () => {
+    process.env["DISPATCH_DEBUG"] = "1";
+    const f = describeCliFailure(new Error("boom"));
+    expect(f.body?.code).toBe("INTERNAL_ERROR");
+    expect(String(f.body?.details?.["stack"])).toMatch(/Error: boom\n\s+at /);
+  });
+
+  it("a usage error exits 2, help and --version exit 0", () => {
+    expect(describeCliFailure(new CommanderError(1, "commander.unknownOption", "x")).exitCode).toBe(
+      2,
+    );
+    expect(describeCliFailure(new CommanderError(0, "commander.helpDisplayed", "x")).exitCode).toBe(
+      0,
+    );
+    expect(describeCliFailure(new CommanderError(0, "commander.version", "x")).exitCode).toBe(0);
   });
 });

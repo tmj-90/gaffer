@@ -1398,6 +1398,11 @@ export class Dispatch {
     return this.ticketSvc.claimability(ticketRef);
   }
 
+  /** cli-wg/F-12: ready, not by hand, deps done, no open blocking decision. */
+  isClaimableNow(ticket: Ticket): boolean {
+    return this.ticketSvc.isClaimableNow(ticket);
+  }
+
   // --- Factory Map: scope nodes (FG-001) -----------------------------------
 
   createScopeNode(raw: unknown, actor: Actor): ScopeNode {

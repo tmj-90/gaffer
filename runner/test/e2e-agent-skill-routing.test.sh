@@ -281,7 +281,7 @@ echo "== 3. TESTER: the test role with a CONTRACT-ONLY prompt =="
 A1DEP="$(new_ticket alpha "Follow-up on the endpoint" "depends on the endpoint ticket" low)"
 wg ticket dep add "$A1DEP" "$A1" >/dev/null 2>&1; wg ticket ready "$A1DEP" >/dev/null 2>&1
 ( cd "$RUNNER_DIR" && GAFFER_TESTING=1 bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) >/dev/null || true
-grep -qE "all ready tickets failed delivery this run — nothing deliverable|every ready ticket waits on an unfinished dependency — nothing claimable this tick" "$GAFFER_DATA/factory.log" && ok "3: the tick hit the nothing-deliverable path (dependent blocked behind in_testing #$A1)" || fail "3: fixture did not exercise the nothing-deliverable path"
+grep -qE "all ready tickets failed delivery this run — nothing deliverable|every ready ticket waits on an unfinished dependency( or an open blocking decision)? — nothing claimable this tick" "$GAFFER_DATA/factory.log" && ok "3: the tick hit the nothing-deliverable path (dependent blocked behind in_testing #$A1)" || fail "3: fixture did not exercise the nothing-deliverable path"
 [ "$(st "$A1DEP")" = "ready" ] && ok "3: the dependent stayed ready (blocked, not delivered)" || fail "3: dependent status=$(st "$A1DEP")"
 T1="$(last_call tester)"
 if [ -z "$T1" ]; then fail "3: the independent tester did not run"; else

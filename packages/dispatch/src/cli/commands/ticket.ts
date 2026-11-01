@@ -332,7 +332,7 @@ export function registerTicket(program: Command): void {
     .option("-s, --status <status>", "filter by status")
     .option(
       "--claimable",
-      "only tickets whose dependencies are all done (what a claim can take); the runner's candidate scan applies its limit to this list",
+      "only tickets a claim could take now: ready, not taken by hand, every dependency done and no open blocking decision; the runner's candidate scan applies its limit to this list",
       false,
     )
     .action((opts, cmd) => {
@@ -350,13 +350,11 @@ export function registerTicket(program: Command): void {
       // SCHEDULER: a dependant whose prerequisite is not done can never be claimed. The
       // runner's scan used to walk them first (priority order) and hit its limit before
       // reaching the low-priority prerequisite that would unblock them all — forever.
+      // cli-wg/F-12: --claimable is what a claim could take NOW (ready, not by hand,
+      // dependencies done, no open blocking decision), the claimability endpoint's answer.
       const rows = wg
         .list(opts.status)
-        .filter(
-          (t) =>
-            opts.claimable !== true ||
-            wg.ticketDependencies.unsatisfiedDependencies(t.id).length === 0,
-        );
+        .filter((t) => opts.claimable !== true || wg.isClaimableNow(t));
       printJson(
         // `acceptance` rides along so the runner's tester lane can pick an epic's
         // acceptance ticket out of in_testing even with GAFFER_TESTING off.

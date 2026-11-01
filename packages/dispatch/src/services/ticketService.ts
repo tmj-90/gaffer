@@ -703,7 +703,7 @@ export class TicketService {
     const ticket = this.resolveTicket(ticketRef);
 
     const unsatisfied = this.ticketDependencies.unsatisfiedDependencies(ticket.id);
-    const dependencyBlockers =
+    const dependencyBlockers: { code: string; message: string }[] =
       unsatisfied.length > 0
         ? [
             {
@@ -714,6 +714,18 @@ export class TicketService {
             },
           ]
         : [];
+
+    // cli-wg/F-12: an open blocking decision keeps a ticket out of every claim (the
+    // candidate scan skips it whatever its pack), so it is a blocker here too.
+    const decisions = this.decisions.blockingForTicket(ticket.id);
+    if (decisions.length > 0) {
+      dependencyBlockers.push({
+        code: "DECISION_BLOCKED",
+        message: `Waiting on ${decisions.length === 1 ? "a decision" : `${decisions.length} decisions`}: ${decisions
+          .map((d) => d.title)
+          .join("; ")} (answer it: gaffer wg decisions resolve <id>).`,
+      });
+    }
 
     const beforeReady = ticket.status === "draft" || ticket.status === "refining";
     if (!beforeReady) {
@@ -740,6 +752,16 @@ export class TicketService {
       blockers: [...policyBlockers, ...dependencyBlockers],
       warnings: policy.warnings.map((w) => ({ code: w.code, message: w.message })),
     };
+  }
+
+  /**
+   * cli-wg/F-12: could a claim take this ticket now? Ready, not taken by hand, and
+   * {@link claimability} reports no blocker (every dependency done, no open blocking
+   * decision). What `wg ticket list --claimable` lists.
+   */
+  isClaimableNow(ticket: Ticket): boolean {
+    if (ticket.status !== "ready" || ticket.human_owner !== null) return false;
+    return this.claimability(ticket.id).ready;
   }
 
   // --- AC management -------------------------------------------------------

@@ -1077,7 +1077,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     if [ -s "$BP_FILE" ]; then
       log "all deliverable ready tickets are in repos under BACKPRESSURE — skipping new claims; prioritising review/merge/cleanup"
     elif [ -n "${_CLAIMABLE_JSON:-}" ] && [ "$(printf '%s' "$_CLAIMABLE_JSON" | jget 'Array.isArray(d) ? d.length : -1' 2>/dev/null)" = "0" ]; then
-      log "every ready ticket waits on an unfinished dependency — nothing claimable this tick"
+      log "every ready ticket waits on an unfinished dependency or an open blocking decision — nothing claimable this tick"
     else
       log "all ready tickets failed delivery this run — nothing deliverable"
     fi

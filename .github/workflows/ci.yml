@@ -23,7 +23,7 @@ concurrency:
 #   runner    runner/test/run.sh — the CPU-bound bulk (~50 CPU-minutes on a 3-core
 #             macOS runner) — split into shards per os × node, so no one job carries
 #             the whole suite.
-#   ui-regression, sandbox-containment — their own jobs, as before.
+#   ui-regression, sandbox-containment, sandbox-delivery: their own jobs.
 #   ui-scenarios  the browser scenario suites (run-suites.sh), sharded by suite group.
 jobs:
   checks:
@@ -526,3 +526,38 @@ jobs:
           # keep the tolerant posture so a Docker Hub hiccup can't block review.
           GAFFER_SANDBOX_TEST_REQUIRE: ${{ github.event_name == 'push' && '1' || '0' }}
         run: bash runner/test/sandbox-docker-containment.test.sh
+
+  # The docker provider's END-TO-END delivery (runner/test/sandbox-docker-delivery.test.sh):
+  # one ticket through the real tick.sh with SANDBOX_PROVIDER=docker on a real daemon, the
+  # agent (the deterministic stub, installed as the image's own `claude`) INSIDE the
+  # shipped delivery image, its MCP calls through the host-side bridge, the DoD gates in
+  # their own container under the validation profile, the ticket in review. A sibling of
+  # sandbox-containment with the same posture (tolerant infra skip on pull requests,
+  # required on a push to main); it needs the built packages, so it installs + builds
+  # first. No model call and no secret: the live variant is the manual workflow
+  # sandbox-live.yml.
+  sandbox-delivery:
+    name: Docker sandbox delivery e2e (stub agent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Setup Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: Delivery through the docker provider (stub agent inside the container)
+        env:
+          RUN_SANDBOX_DOCKER_TEST: "1"
+          GAFFER_SANDBOX_TEST_REQUIRE: ${{ github.event_name == 'push' && '1' || '0' }}
+        run: bash runner/test/sandbox-docker-delivery.test.sh

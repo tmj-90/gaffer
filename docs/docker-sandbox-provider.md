@@ -5,8 +5,9 @@
 > it (the former `lima` provider stub was removed — an unknown provider fails closed
 > under `GAFFER_STRICT_REQUIRE=1` and otherwise warns and runs unwrapped).
 
-Status: **P0 built + validated (docker provider); live-delivery capstone (step 5)
-pending.** Fills the `docker` case in `runner/lib/sandbox.sh`'s `sandbox_wrap_cmd`
+Status: **P0 built + validated (docker provider), including a full delivery through it
+in CI with a stub agent; the same delivery with the real `claude` is an opt-in manual
+workflow (see "Prove it on your own fork").** Fills the `docker` case in `runner/lib/sandbox.sh`'s `sandbox_wrap_cmd`
 provider seam. Addresses the external security review's #1 ("no real exfiltration
 boundary — read + network") — the item no amount of regex/hook hardening can close.
 
@@ -16,9 +17,10 @@ scrub) + the `runner/sandbox/egress-proxy` allowlist proxy + a red-team acceptan
 (`runner/test/sandbox-docker-containment.test.sh`). **Verified on real Docker:** host
 secret unreadable (not mounted), egress to a non-allowlisted host blocked (DNS *and*
 raw-IP), allowlisted model + registry reachable, worktree writable and round-tripping.
-The delivery **image** now exists (`runner/sandbox/Dockerfile` — node + `claude`); still
-not done: a live `claude -p` delivery **end-to-end inside the container** (step 5, gated
-on a headless model credential), plus the per-ticket **microVM** upgrade — a design sketch, not code.
+The delivery **image** exists (`runner/sandbox/Dockerfile`: node + `claude`), and a whole
+delivery through it is tested in CI (`runner/test/sandbox-docker-delivery.test.sh`, the
+`sandbox-delivery` job; below). Not done: the per-ticket **microVM** upgrade, a design
+sketch, not code.
 
 ## Two modes (the framing)
 
@@ -161,11 +163,71 @@ The containment gate covers the legacy round (masking), the bridge round (databa
 absent, token absent, MCP round trip over the socket), the validation profile
 (databases and credential absent, worktree writable) and the refusal.
 
+## The delivery end to end (`runner/test/sandbox-docker-delivery.test.sh`)
+
+The containment gate above proves the boundary with a shell payload. This test proves
+a delivery works through it. One ticket goes through the real `tick.sh` with
+`SANDBOX_PROVIDER=docker`, `STRICT_MODE=1`, `GAFFER_STRICT_REQUIRE=1` and the bridge on,
+on a real daemon. The image is the shipped one (`runner/sandbox/Dockerfile`) with a
+probe file added and, by default, a deterministic stub agent
+(`runner/test/lib/docker-delivery-stub.mjs`) installed as its own `claude`, so the
+worker seam swaps in the image's binary exactly as it would for the real CLI. What it
+checks:
+
+| step | how the test knows |
+|---|---|
+| the agent runs inside the container | the stub sees `/.dockerenv`, and records it |
+| the MCP round trip goes through the bridge | the stub's `get_ticket` + token-free `record_ac_evidence` land in the host's canonical DB and satisfy the criterion (only the host-side server holds the claim token) |
+| the worktree is written inside | the stub's commit, made through the mounted `.git`, is on the host branch with the stub's probes in its message |
+| the DoD gates run under the validation profile | the repo's test command is `node gate-probe.mjs --require && node --test`; the probe fails the gate unless it runs in a container with no database, no bridge socket, no host `HOME`, no canary and no model credential, and the DoD evidence records the gate as PASS with the delivered test in its tally |
+| the result envelope is parsed | the usage ledger books the envelope's cost |
+| the ticket is submitted | it is `in_review` |
+| the host outside the mounts is untouched | from inside, `dispatch.sqlite`, `memory.sqlite` and `settings.json` under `$GAFFER_DATA` are absent, the host `HOME` and a host canary file are unreadable, and a write beside the canary is refused; on the host the canary is unchanged and nothing appeared beside it |
+
+It runs in the `sandbox-delivery` CI job with the containment gate's posture: no daemon
+means SKIP, on CI it runs only with `RUN_SANDBOX_DOCKER_TEST=1`, and on a push to main
+`GAFFER_SANDBOX_TEST_REQUIRE=1` turns an infra skip (an image that cannot be built) into
+a failure. Its daemon-free twin, `runner/test/sandbox-docker-delivery-seam.test.sh`, runs
+in the normal suite on every OS: the same world with a fake `docker`
+(`runner/test/lib/fake-docker.sh`) that records each container and runs it on the host,
+so it checks the wiring (what each container mounts and is given) but not the isolation.
+
+## Prove it on your own fork
+
+The stub proves the plumbing; it cannot prove that the real CLI behaves inside the
+container. The live variant runs the same delivery with the image's real `claude`. It
+spends real credits, so it never runs on a push or a pull request.
+
+1. Fork the repository and enable Actions on the fork.
+2. Add one repository secret under Settings > Secrets and variables > Actions:
+   `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN` (a subscription token from
+   `claude setup-token`).
+3. In the Actions tab, run **Docker sandbox live delivery**
+   (`.github/workflows/sandbox-live.yml`). Its one input, `max_call_usd` (default 2), is
+   the dollar cap for the agent call; the run also has a $5 daily budget.
+
+Locally, with a Docker daemon and a credential in the environment:
+
+```bash
+pnpm install && pnpm -r build
+GAFFER_LIVE_DOCKER_DELIVERY=1 bash runner/test/sandbox-docker-delivery.test.sh
+```
+
+The live run keeps every host-side check (the ticket in review, a commit on the branch,
+a measured cost in the usage ledger, the gates contained, the canary untouched). It
+reports, but does not require, the agent's own MCP evidence, because a real agent
+decides what it runs. Without a credential it fails at once and names the two secrets.
+
+The container runs as root with only `DAC_OVERRIDE`, so on a Linux host the files it
+creates in the worktree and the git objects it writes are owned by root; the test hands
+them back with one `chown` container before it removes its temp dir. A non-root
+`--user` with a tmpfs `HOME` is the next hardening step.
+
 ## Constraints / open questions
 
-- **Cannot be validated on the current dev machine** — Docker/VMs don't boot here
-  (Homebrew-Postgres fallback is in use for the same reason). P0 needs a
-  virtualization-capable host or CI runner.
+- **Validated in CI, not on every dev machine**: the containment gate and the delivery
+  e2e need a Docker daemon (a GitHub ubuntu runner has one); the daemon-free seam test
+  runs everywhere.
 - Boot latency: cold VM per ticket is likely 10–30s+; a warm pool is probably required
   before this is usable at throughput (P3, but design the pool seam in P0).
 - Registry allowlist breadth: monorepos pull from many registries; the default-deny

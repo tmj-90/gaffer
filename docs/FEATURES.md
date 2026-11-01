@@ -786,6 +786,21 @@ on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected
 (`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
 
+The `docker` provider is proven on a real ticket, not only on a shell payload. A CI
+job (`sandbox-delivery`) runs one ticket through the real tick with
+`SANDBOX_PROVIDER=docker` and a stub agent installed as the delivery image's own
+`claude`: the agent runs inside the container, claims nothing itself, records its
+evidence through the MCP bridge to the host's dispatch server (the claim token never
+enters the container), commits through the mounted `.git`, the DoD gates run in their
+own container under the validation profile, and the ticket reaches review. The agent
+checks from inside that the databases, `settings.json`, the host `HOME` and a host
+canary file are not there, and the tests gate refuses to pass unless it ran contained
+(`runner/test/sandbox-docker-delivery.test.sh`; its daemon-free twin
+`sandbox-docker-delivery-seam.test.sh` checks the same wiring with a fake `docker` in
+the normal suite). The same delivery with the real `claude` is the manual
+**Docker sandbox live delivery** workflow, which you run on your own fork with a
+repository secret ([docs/docker-sandbox-provider.md](docker-sandbox-provider.md)).
+
 ![The Settings panel](img/settings.png)
 
 *The boot room (`#/settings`): the Team instructions dial on Supervised and the

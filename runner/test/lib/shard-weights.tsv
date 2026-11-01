@@ -18,6 +18,7 @@
 # reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
 # rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
 # dashboard-lifecycle, gaffer-colour, demo-isolation: ESTIMATES (Linux, -j 2: 37s / 13s / 48s).
+# sandbox-docker-delivery-seam: ESTIMATE (Linux, alone: 35s; one real tick like branch-retention).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 # landing-revocation, secondary-pr-landing, cleanup-ownership, replay-recovery: ESTIMATES
@@ -256,6 +257,8 @@
 1	safety-hook-installs.test.mjs
 1	safety-hook-secret-precision.test.mjs
 1	sandbox-docker-containment.test.sh
+70	sandbox-docker-delivery-seam.test.sh
+1	sandbox-docker-delivery.test.sh
 9	sandbox-docker-mounts.test.sh
 1	security-md-planning-agents.test.mjs
 1	select-skills.test.mjs

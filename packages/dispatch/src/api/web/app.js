@@ -6218,6 +6218,8 @@ function fixtures(f) {
 const REPORT_QUIET = new Set([
   "evidence.recorded",
   "ac.added",
+  "ac.edited",
+  "ac.removed",
   "ticket.repo_linked",
   "ticket.repo_access_set",
   "ticket.testable_set",
@@ -7732,6 +7734,9 @@ const EVENT_LABELS = {
   "ticket.evidence_recorded": "Evidence recorded",
   "ticket.acceptance_criteria_reset": "Acceptance criteria reset",
   "ticket.reopened_for_review": "Reopened for review",
+  "ticket.edited": "Ticket edited",
+  "ac.edited": "Criterion edited",
+  "ac.removed": "Criterion removed",
 };
 function humanizeEvent(type) {
   if (!type) return "Event";
@@ -11652,6 +11657,14 @@ function eventSentence(ev, repos) {
       return { text: `Evidence: ${evidenceKind(p.evidence_type)}` };
     case "ac.added":
       return { text: "Criterion added", note: p.text || null };
+    case "ac.edited":
+      return { text: "Criterion edited", note: p.changes?.text?.to || null };
+    case "ac.removed":
+      return { text: "Criterion removed", note: p.text || null };
+    case "ticket.edited":
+      return {
+        text: `Edited: ${(Array.isArray(p.changed) ? p.changed : []).join(", ").replace(/_/g, " ") || "ticket"}`,
+      };
     case "ticket.dependency_added":
       return { text: `Now depends on #${p.depends_on_number ?? "?"}` };
     case "ticket.paused":

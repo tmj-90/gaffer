@@ -2623,11 +2623,11 @@
         },
         "responses": {
           "201": {
-            "description": "`{ ticket }` — the new ticket. The Location header names the created resource.",
+            "description": "`{ ticket, warnings? }` — the new ticket, and a warning when its pack will refuse it at ready as created. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TicketEnvelope"
+                  "$ref": "#/components/schemas/TicketCreated"
                 }
               }
             }
@@ -2748,6 +2748,103 @@
           }
         ],
         "x-capability": "read"
+      },
+      "patch": {
+        "operationId": "patchTicketsById",
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Edit a ticket",
+        "description": "Change any of `title`, `description`, `policy_pack`, `priority` (at least one). The contract (title, description, policy) is editable in draft, refining, ready and blocked; from claimed on it is frozen (409 `CONTRACT_FROZEN`), because the review and the tester are bound to it. A ready ticket must still pass its ready gate (409 `POLICY_DENIED` otherwise, nothing changed). Writes a `ticket.edited` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/editTicketBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket, changed, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketEdited"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The ticket's contract is frozen (`CONTRACT_FROZEN`: it is claimed or further on), or the edit would make a ready ticket fail its ready gate (`POLICY_DENIED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
       }
     },
     "/tickets/{id}/acceptance-criteria": {
@@ -2757,7 +2854,7 @@
           "Tickets"
         ],
         "summary": "Add an acceptance criterion",
-        "description": "An AC may carry a `check_command` the runner executes in the delivery worktree; the done gate refuses a checked AC the runner has not passed.",
+        "description": "An AC may carry a `check_command` the runner executes in the delivery worktree; the done gate refuses a checked AC the runner has not passed. Refused (409 `CONTRACT_FROZEN`) from claimed on, like every contract edit.",
         "parameters": [
           {
             "name": "id",
@@ -2820,8 +2917,212 @@
               }
             }
           },
+          "409": {
+            "description": "The ticket's contract is frozen (`CONTRACT_FROZEN`: it is claimed or further on), or the edit would make a ready ticket fail its ready gate (`POLICY_DENIED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/acceptance-criteria/{acId}": {
+      "patch": {
+        "operationId": "patchTicketsByIdAcceptanceCriteriaByAcId",
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Edit an acceptance criterion",
+        "description": "Change any of `text`, `verification_method`, `check_command` (`null` clears the check). The criterion goes back to pending. `:acId` is the criterion id (or its 1-based position). Same contract guard as PATCH /tickets/{id}. Writes `ac.edited`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "acId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "acId."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/editAcBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ acceptance_criterion, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcEdited"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The ticket's contract is frozen (`CONTRACT_FROZEN`: it is claimed or further on), or the edit would make a ready ticket fail its ready gate (`POLICY_DENIED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      },
+      "delete": {
+        "operationId": "deleteTicketsByIdAcceptanceCriteriaByAcId",
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Remove an acceptance criterion",
+        "description": "Removes the criterion and its evidence. Same contract guard as PATCH /tickets/{id}; a ready ticket keeps at least the criteria its gate needs. Writes `ac.removed`.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "acId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "acId."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ ac_id, event_id }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcRemoved"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The ticket's contract is frozen (`CONTRACT_FROZEN`: it is claimed or further on), or the edit would make a ready ticket fail its ready gate (`POLICY_DENIED`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9542,6 +9843,138 @@
         ],
         "additionalProperties": false
       },
+      "AcEdited": {
+        "type": "object",
+        "properties": {
+          "acceptance_criterion": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "ticket_id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "sort_order": {
+                "type": "integer"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pending",
+                  "satisfied",
+                  "failed",
+                  "waived"
+                ]
+              },
+              "verification_method": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "evidence_required": {
+                "type": "integer"
+              },
+              "verified_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "verified_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "check_command": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "spec_clause_id": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "ticket_id",
+              "text",
+              "sort_order",
+              "status",
+              "verification_method",
+              "evidence_required",
+              "verified_by",
+              "verified_at",
+              "check_command",
+              "spec_clause_id",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "An acceptance criterion."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "acceptance_criterion",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "AcRemoved": {
+        "type": "object",
+        "properties": {
+          "ac_id": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          }
+        },
+        "required": [
+          "ac_id",
+          "event_id"
+        ],
+        "additionalProperties": false
+      },
       "addAcBody": {
         "type": "object",
         "properties": {
@@ -10581,6 +11014,73 @@
           "decision"
         ],
         "additionalProperties": false
+      },
+      "editAcBody": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Additional validation rule applies (not expressible in JSON Schema)."
+          },
+          "verification_method": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "check_command": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "description": "Additional validation rule applies (not expressible in JSON Schema). Additional validation rule applies (not expressible in JSON Schema)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "description": "Additional validation rule applies (not expressible in JSON Schema)."
+      },
+      "editTicketBody": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "Additional validation rule applies (not expressible in JSON Schema)."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 20000
+          },
+          "policy_pack": {
+            "type": "string",
+            "enum": [
+              "solo_loose",
+              "team_light",
+              "factory_strict",
+              "regulated"
+            ]
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1000
+          }
+        },
+        "additionalProperties": false,
+        "description": "Additional validation rule applies (not expressible in JSON Schema)."
       },
       "ErrorBody": {
         "type": "object",
@@ -12267,6 +12767,276 @@
           "summary"
         ]
       },
+      "TicketCreated": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "refining",
+                  "ready",
+                  "claimed",
+                  "in_progress",
+                  "blocked",
+                  "in_review",
+                  "in_testing",
+                  "ready_for_merge",
+                  "done",
+                  "failed",
+                  "cancelled",
+                  "paused"
+                ]
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "policy_pack": {
+                "type": "string",
+                "enum": [
+                  "solo_loose",
+                  "team_light",
+                  "factory_strict",
+                  "regulated"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempt_count": {
+                "type": "integer"
+              },
+              "row_version": {
+                "type": "integer"
+              },
+              "scheduled_after": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "due_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bootstrap": {
+                "type": "integer"
+              },
+              "last_review_feedback": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded {reason, reviewer, at} or null."
+              },
+              "can_be_tested": {
+                "type": "integer"
+              },
+              "test_contract": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded test contract or null."
+              },
+              "acceptance": {
+                "type": "integer"
+              },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
+              "human_owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "human_delivered": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delivery_budget_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "risk_level",
+              "policy_pack",
+              "source",
+              "created_by",
+              "reviewer",
+              "branch_name",
+              "pr_url",
+              "attempt_count",
+              "row_version",
+              "scheduled_after",
+              "due_at",
+              "bootstrap",
+              "last_review_feedback",
+              "can_be_tested",
+              "test_contract",
+              "acceptance",
+              "allow_test_changes",
+              "human_owner",
+              "human_delivered",
+              "delivery_budget_usd",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A ticket row."
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "code",
+                "message"
+              ],
+              "additionalProperties": false
+            },
+            "description": "Present when the ticket's pack will refuse it at ready as created (DESCRIPTION_REQUIRED: a team_light-or-stricter ticket with no description)."
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "additionalProperties": false
+      },
       "TicketDetail": {
         "type": "object",
         "properties": {
@@ -12897,7 +13667,7 @@
         ],
         "additionalProperties": false
       },
-      "TicketEnvelope": {
+      "TicketEdited": {
         "type": "object",
         "properties": {
           "ticket": {
@@ -13140,10 +13910,23 @@
               "updated_at"
             ],
             "description": "A ticket row."
+          },
+          "changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The fields the edit changed."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
           }
         },
         "required": [
-          "ticket"
+          "ticket",
+          "changed",
+          "event_id"
         ],
         "additionalProperties": false
       },

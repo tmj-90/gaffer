@@ -93,6 +93,12 @@ const conflict: ResponseSpec = {
     "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
   content: "json",
 };
+const frozen: ResponseSpec = {
+  status: 409,
+  description:
+    "The ticket's contract is frozen (`CONTRACT_FROZEN`: it is claimed or further on), or the edit would make a ready ticket fail its ready gate (`POLICY_DENIED`).",
+  content: "json",
+};
 const invalid: ResponseSpec = {
   status: 422,
   description: "The body or query failed validation (`VALIDATION_ERROR`).",
@@ -606,7 +612,14 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
     capability: "full",
     body: "createTicketBody",
-    responses: [created("`{ ticket }` — the new ticket.", "TicketEnvelope"), notFound, invalid],
+    responses: [
+      created(
+        "`{ ticket, warnings? }` — the new ticket, and a warning when its pack will refuse it at ready as created.",
+        "TicketCreated",
+      ),
+      notFound,
+      invalid,
+    ],
   },
   {
     method: "GET",
@@ -625,15 +638,52 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     ],
   },
   {
+    method: "PATCH",
+    path: "/tickets/:id",
+    tag: T.tickets,
+    summary: "Edit a ticket",
+    description:
+      "Change any of `title`, `description`, `policy_pack`, `priority` (at least one). The contract (title, description, policy) is editable in draft, refining, ready and blocked; from claimed on it is frozen (409 `CONTRACT_FROZEN`), because the review and the tester are bound to it. A ready ticket must still pass its ready gate (409 `POLICY_DENIED` otherwise, nothing changed). Writes a `ticket.edited` event.",
+    capability: "full",
+    body: "editTicketBody",
+    responses: [ok("`{ ticket, changed, event_id }`.", "TicketEdited"), notFound, frozen, invalid],
+  },
+  {
     method: "POST",
     path: "/tickets/:id/acceptance-criteria",
     tag: T.tickets,
     summary: "Add an acceptance criterion",
     description:
-      "An AC may carry a `check_command` the runner executes in the delivery worktree; the done gate refuses a checked AC the runner has not passed.",
+      "An AC may carry a `check_command` the runner executes in the delivery worktree; the done gate refuses a checked AC the runner has not passed. Refused (409 `CONTRACT_FROZEN`) from claimed on, like every contract edit.",
     capability: "full",
     body: "addAcBody",
-    responses: [created("`{ acceptance_criterion, event_id }`.", "AcCreated"), notFound, invalid],
+    responses: [
+      created("`{ acceptance_criterion, event_id }`.", "AcCreated"),
+      notFound,
+      frozen,
+      invalid,
+    ],
+  },
+  {
+    method: "PATCH",
+    path: "/tickets/:id/acceptance-criteria/:acId",
+    tag: T.tickets,
+    summary: "Edit an acceptance criterion",
+    description:
+      "Change any of `text`, `verification_method`, `check_command` (`null` clears the check). The criterion goes back to pending. `:acId` is the criterion id (or its 1-based position). Same contract guard as PATCH /tickets/{id}. Writes `ac.edited`.",
+    capability: "full",
+    body: "editAcBody",
+    responses: [ok("`{ acceptance_criterion, event_id }`.", "AcEdited"), notFound, frozen, invalid],
+  },
+  {
+    method: "DELETE",
+    path: "/tickets/:id/acceptance-criteria/:acId",
+    tag: T.tickets,
+    summary: "Remove an acceptance criterion",
+    description:
+      "Removes the criterion and its evidence. Same contract guard as PATCH /tickets/{id}; a ready ticket keeps at least the criteria its gate needs. Writes `ac.removed`.",
+    capability: "full",
+    responses: [ok("`{ ac_id, event_id }`.", "AcRemoved"), notFound, frozen],
   },
   {
     method: "POST",

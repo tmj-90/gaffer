@@ -219,22 +219,34 @@ flags under **Safety** below — off by default.
 > (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`), or merge the script change
 > to the base branch first.
 
-> **Readying a ticket needs a reviewer under the strict policy packs.** The default
-> policy pack is `solo_loose`, which readies freely. But tickets under
-> **`factory_strict`** or **`regulated`** — which is what the **Product Owner**
-> ("Suggest work") drafts, and what you'll use for anything you actually gate —
-> **must have a reviewer assigned first**, or **Mark ready** fails with
-> `POLICY_DENIED … REVIEWER_REQUIRED`. Assign one from the CLI (the dashboard
-> button for this is planned):
+> **Readying a ticket under the stricter policy packs.** The default policy pack is
+> `solo_loose`, which readies freely. `team_light` and up need a description, and
+> **`factory_strict`** and **`regulated`** (what the **Product Owner** ("Suggest work")
+> drafts, and what you'll use for anything you actually gate) also need a reviewer and a
+> verification method on every criterion. `regulated` needs your approval on top.
+> **Mark ready** names what is missing (`POLICY_DENIED … DESCRIPTION_REQUIRED`,
+> `REVIEWER_REQUIRED`, `AC_VERIFICATION_REQUIRED`, `HUMAN_APPROVAL_REQUIRED`), and each
+> one has a command:
 >
 > ```bash
 > # use the ticket number (#n) or the full id; the 8-char short ref on cards won't resolve
-> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name> --admin
+> runner/gaffer wg ticket edit <n> -d "<what + why>"                # DESCRIPTION_REQUIRED
+> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>   # REVIEWER_REQUIRED
+> runner/gaffer wg ac edit <n> 1 --verify "unit test"               # AC_VERIFICATION_REQUIRED, once per criterion (1 = the first)
+> runner/gaffer wg ticket approve-ready <n>                         # HUMAN_APPROVAL_REQUIRED (regulated only)
+> runner/gaffer wg ticket ready <n>
 > ```
 >
-> Then **Mark ready** succeeds, and the ticket flows plan → implement → test →
-> review as normal. (The reviewer is *who owns the gate*; the agent still cannot
-> approve or merge its own work.)
+> (`wg ac add <n> -t "…" --verify "unit test"` sets the method as you add a criterion.)
+> Then **Mark ready** succeeds, and the ticket flows plan → implement → test → review as
+> normal. The reviewer is *who owns the gate*; the agent still cannot approve or merge its
+> own work.
+>
+> You can fix a ticket's title, description, policy and criteria (`wg ticket edit`,
+> `wg ac edit`, `wg ac rm`) while it is draft, refining, ready or blocked. Once it is
+> claimed the contract is frozen: the review and the tester are held to what the delivery
+> saw, so those edits (and `wg ac add`) are refused with `CONTRACT_FROZEN` until the
+> ticket comes back for rework.
 
 ---
 

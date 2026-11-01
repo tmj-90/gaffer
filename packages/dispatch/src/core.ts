@@ -123,7 +123,9 @@ import {
   type ClaimabilityResult,
   type DeliveryArtifactResult,
   type DeliveryEvidenceInput,
+  type EditTicketResult,
   type RepoDeliveryResult,
+  type TicketWarning,
 } from "./services/ticketService.js";
 import {
   RepoService,
@@ -307,7 +309,11 @@ export type { WorkPacketRepos } from "./services/repoService.js";
 /**
  * Whether a ticket currently passes its policy pack's readiness gate (WG-004).
  */
-export type { ClaimabilityResult } from "./services/ticketService.js";
+export type {
+  ClaimabilityResult,
+  EditTicketResult,
+  TicketWarning,
+} from "./services/ticketService.js";
 
 /** Result of setting a ticket↔repo access boundary. */
 export type { TicketRepoAccessResult } from "./services/repoService.js";
@@ -1155,6 +1161,35 @@ export class Dispatch {
 
   addAcceptanceCriterion(raw: unknown, actor: Actor): { ac: AcceptanceCriterion; eventId: string } {
     return this.ticketSvc.addAcceptanceCriterion(raw, actor);
+  }
+
+  /** Warnings for a just-created ticket (a pack that will refuse it at ready). */
+  ticketCreateWarnings(ticket: Ticket): TicketWarning[] {
+    return this.ticketSvc.createWarnings(ticket);
+  }
+
+  /** Edit a ticket's title / description / policy / priority (contract-frozen once claimed). */
+  editTicket(ref: string, raw: unknown, actor: Actor): EditTicketResult {
+    return this.ticketSvc.editTicket(ref, raw, actor);
+  }
+
+  /** Edit one acceptance criterion (id, id prefix or 1-based position). */
+  editAcceptanceCriterion(
+    ticketRef: string,
+    acRef: string,
+    raw: unknown,
+    actor: Actor,
+  ): { ac: AcceptanceCriterion; eventId: string } {
+    return this.ticketSvc.editAcceptanceCriterion(ticketRef, acRef, raw, actor);
+  }
+
+  /** Remove one acceptance criterion (id, id prefix or 1-based position). */
+  removeAcceptanceCriterion(
+    ticketRef: string,
+    acRef: string,
+    actor: Actor,
+  ): { acId: string; eventId: string } {
+    return this.ticketSvc.removeAcceptanceCriterion(ticketRef, acRef, actor);
   }
 
   // --- Ticket dependencies (EP-001) ----------------------------------------

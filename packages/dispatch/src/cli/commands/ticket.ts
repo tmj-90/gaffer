@@ -38,6 +38,10 @@ export function registerTicket(program: Command): void {
         },
         cliActor(),
       );
+      // A pack that will refuse this ticket at ready says so now (cli-wg/F-02), on
+      // stderr for a person and in the JSON for a script.
+      const warnings = wg.ticketCreateWarnings(t);
+      for (const w of warnings) process.stderr.write(`warning: ${w.code}: ${w.message}\n`);
       printJson({
         ok: true,
         ticket: {
@@ -47,8 +51,57 @@ export function registerTicket(program: Command): void {
           bootstrap: t.bootstrap === 1,
           delivery_budget_usd: t.delivery_budget_usd,
         },
+        ...(warnings.length > 0 ? { warnings } : {}),
       });
       wg.db.close();
+    });
+
+  ticket
+    .command("edit <ref>")
+    .description(
+      "Edit a ticket's title, description, policy pack or priority. The contract (title, " +
+        "description, policy) is editable in draft, refining, ready and blocked; from claimed " +
+        "on it is frozen (CONTRACT_FROZEN). A ready ticket must still pass its ready gate.",
+    )
+    .option("-t, --title <title>", "new title (one line)")
+    .option("-d, --description <text>", 'new description ("" clears it)')
+    .option(
+      "-p, --policy <pack>",
+      "new policy pack (solo_loose|team_light|factory_strict|regulated)",
+    )
+    .option("--priority <n>", "new priority (0–1000)", (v) => Number(v))
+    .action((ref, opts, cmd) => {
+      const raw = {
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.description !== undefined ? { description: opts.description } : {}),
+        ...(opts.policy !== undefined ? { policy_pack: opts.policy } : {}),
+        ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+      };
+      if (Object.keys(raw).length === 0) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "Nothing to change: pass -t, -d, -p and/or --priority.",
+        );
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.editTicket(ref, raw, cliActor());
+        printJson({
+          ok: true,
+          ticket: {
+            number: res.ticket.number,
+            id: res.ticket.id,
+            status: res.ticket.status,
+            title: res.ticket.title,
+            policy_pack: res.ticket.policy_pack,
+            priority: res.ticket.priority,
+          },
+          changed: res.changed,
+          event: res.eventId,
+        });
+      } finally {
+        wg.db.close();
+      }
     });
 
   ticket

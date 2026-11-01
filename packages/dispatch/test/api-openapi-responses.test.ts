@@ -134,6 +134,27 @@ describe("OpenAPI response schemas match the live routes", () => {
       { text: "works" },
       201,
     );
+    // cli-wg/F-02: the contract edits (and the create-time pack warning).
+    const strict = await expectContract(
+      "POST /tickets",
+      "/tickets",
+      { title: "Strict", policy_pack: "team_light" },
+      201,
+    );
+    expect((strict.body as { warnings?: unknown[] }).warnings).toHaveLength(1);
+    await expectContract("PATCH /tickets/:id", `/tickets/${id}`, { description: "why" });
+    const extra = await call("POST", `/tickets/${id}/acceptance-criteria`, { text: "extra" });
+    const extraId = (extra.body as { acceptance_criterion: { id: string } }).acceptance_criterion
+      .id;
+    await expectContract(
+      "PATCH /tickets/:id/acceptance-criteria/:acId",
+      `/tickets/${id}/acceptance-criteria/${extraId}`,
+      { verification_method: "unit test" },
+    );
+    await expectContract(
+      "DELETE /tickets/:id/acceptance-criteria/:acId",
+      `/tickets/${id}/acceptance-criteria/${extraId}`,
+    );
     await expectContract("POST /tickets/:id/testable", `/tickets/${id}/testable`, {
       can_be_tested: true,
     });

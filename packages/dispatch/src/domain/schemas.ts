@@ -148,6 +148,43 @@ export const addAcInput = z.object({
 export type AddAcInput = z.infer<typeof addAcInput>;
 
 /**
+ * Edit a ticket after creation (exploratory finding cli-wg/F-02). Every field is
+ * optional; at least one must be given. Title, description and policy are the
+ * ticket's CONTRACT and are editable only before delivery starts (see
+ * TicketService.assertContractEditable); priority is not part of the contract.
+ */
+export const editTicketInput = z
+  .object({
+    title: ticketTitleText.optional(),
+    description: z.string().max(20_000).optional(),
+    policy_pack: z.enum(POLICY_PACKS).optional(),
+    priority: z.number().int().min(0).max(1_000).optional(),
+  })
+  .strict()
+  .refine(
+    (v) => Object.values(v).some((x) => x !== undefined),
+    "Nothing to change: give a title, description, policy or priority.",
+  );
+export type EditTicketInput = z.infer<typeof editTicketInput>;
+
+/**
+ * Edit one acceptance criterion (cli-wg/F-02). `check_command: null` clears the
+ * machine check; `verification_method: ""` or null clears the method.
+ */
+export const editAcInput = z
+  .object({
+    text: acText.optional(),
+    verification_method: z.string().max(500).nullable().optional(),
+    check_command: checkCommandText.nullable().optional(),
+  })
+  .strict()
+  .refine(
+    (v) => Object.values(v).some((x) => x !== undefined),
+    "Nothing to change: give a text, verification method or check command.",
+  );
+export type EditAcInput = z.infer<typeof editAcInput>;
+
+/**
  * MACHINE-CHECKABLE AC: the RUNNER's report of executing an AC's `check_command`.
  * Recorded by a trusted (system/human/admin) actor only — never the agent.
  */

@@ -101,6 +101,40 @@ export class TicketRepository {
   }
 
   /**
+   * Edit a ticket's contract fields and priority (cli-wg/F-02) with the same
+   * optimistic-concurrency check as {@link updateStatus}. Undefined fields are left
+   * as they are. Returns true when the row was updated.
+   */
+  updateFields(
+    id: string,
+    expectedRowVersion: number,
+    fields: Partial<Pick<Ticket, "title" | "description" | "policy_pack" | "priority">>,
+    nowIso: string,
+  ): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE tickets SET
+            title = COALESCE(@title, title),
+            description = COALESCE(@description, description),
+            policy_pack = COALESCE(@policy_pack, policy_pack),
+            priority = COALESCE(@priority, priority),
+            row_version = row_version + 1,
+            updated_at = @updated_at
+         WHERE id = @id AND row_version = @expected_row_version`,
+      )
+      .run({
+        id,
+        expected_row_version: expectedRowVersion,
+        title: fields.title ?? null,
+        description: fields.description ?? null,
+        policy_pack: fields.policy_pack ?? null,
+        priority: fields.priority ?? null,
+        updated_at: nowIso,
+      });
+    return result.changes === 1;
+  }
+
+  /**
    * Set (or, with `null`, clear) the ticket's `last_review_feedback` (WG-049).
    * A plain write — no row_version bump — since callers run it inside the same
    * transaction as the guarded status change it accompanies (reject sets it;

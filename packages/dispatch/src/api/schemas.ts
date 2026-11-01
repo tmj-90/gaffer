@@ -7,6 +7,8 @@ import {
   acText,
   agreedRequirementInput,
   checkCommandText,
+  editAcInput,
+  editTicketInput,
   GIT_REF_SAFE,
   GIT_REF_SAFE_MESSAGE,
   PR_URL_SAFE,
@@ -139,6 +141,22 @@ export const addAcBody = z.object({
   check_command: checkCommandText.optional(),
 });
 export type AddAcBody = z.infer<typeof addAcBody>;
+
+/**
+ * Body for PATCH /tickets/:id (cli-wg/F-02): any of title, description, policy_pack,
+ * priority (at least one). The contract fields are refused (409 CONTRACT_FROZEN)
+ * from claimed on.
+ */
+export const editTicketBody = editTicketInput;
+export type EditTicketBody = z.infer<typeof editTicketBody>;
+
+/**
+ * Body for PATCH /tickets/:id/acceptance-criteria/:acId (cli-wg/F-02): any of text,
+ * verification_method, check_command (null clears the check). The criterion goes
+ * back to pending.
+ */
+export const editAcBody = editAcInput;
+export type EditAcBody = z.infer<typeof editAcBody>;
 
 /**
  * Body for POST /tickets/:id/review/reject. `to` is the rejection target:

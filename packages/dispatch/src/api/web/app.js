@@ -11093,6 +11093,14 @@ async function renderTicket(id) {
                   );
                 if (e.code) box.appendChild(el("div", { class: "toast-code" }, e.code));
                 policyBox.appendChild(box);
+                // The toast says why too: the reason, not only "Policy … denied ready".
+                const why = Array.isArray(failed)
+                  ? failed.map((f) => f && (f.message || f.code)).filter(Boolean)
+                  : [];
+                if (why.length) {
+                  toast(`Not marked ready: ${why.join(" ")}`, { code: e.code });
+                  return;
+                }
                 throw e;
               }
             }),
@@ -11305,10 +11313,14 @@ async function renderTicket(id) {
 
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
   // runner may be held. The status (its landing_state) and the lede say where it is.
+  let markReadyBtn = null;
   const headActions = [
-    ...ticketActionKeys(t.status).map((key) =>
-      actionButtons[key] ? roLock(actionButtons[key]()) : null,
-    ),
+    ...ticketActionKeys(t.status).map((key) => {
+      if (!actionButtons[key]) return null;
+      const b = roLock(actionButtons[key]());
+      if (key === "mark_ready") markReadyBtn = b;
+      return b;
+    }),
   ].filter(Boolean);
 
   // PAUSE-ON-CAP banner: when a delivery is paused on a turn/budget cap, surface WHY
@@ -11397,6 +11409,25 @@ async function renderTicket(id) {
   // blocked, done or in-flight ticket (the endpoint answers for the dependency gate).
   const claimable = ["ready", "draft", "refining"].includes(t.status);
   const claimBox = el("div", { class: "claim-box", dataset: claimable ? undefined : { off: "1" } });
+  // The claimability read runs the same ready gate Mark ready would: when it will
+  // refuse, Mark ready says so up front (disabled, the reasons in its title) instead
+  // of waiting for the click. A dependency or a decision holds the claim, not the ready.
+  claimBox._onClaim = (data) => {
+    const btn = markReadyBtn;
+    if (!btn || readOnly()) return;
+    const gate = ((data && data.blockers) || []).filter(
+      (b) => b && typeof b === "object" && !CLAIM_ONLY_BLOCKERS.has(b.code),
+    );
+    const refuses = data && data.ready === false && gate.length > 0;
+    btn.disabled = refuses;
+    if (refuses) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.title = `Mark ready would be refused: ${gate.map((b) => b.message || b.code).join(" ")}`;
+    } else {
+      btn.removeAttribute("aria-disabled");
+      btn.removeAttribute("title");
+    }
+  };
   if (claimable) loadClaimability(t.id, claimBox);
 
   // Your move: what the gaffer can do with this ticket now, in words, then the buttons.
@@ -12924,6 +12955,8 @@ function renderAddRepoForm(ticketId, reload, { linked = new Set(), hasWrite = fa
   return form;
 }
 
+/** Claimability blockers that hold a claim but not Mark ready (the ready gate passes them). */
+const CLAIM_ONLY_BLOCKERS = new Set(["DEPENDENCY_BLOCKED", "DECISION_BLOCKED"]);
 function loadClaimability(ticketId, box) {
   if (box.dataset.off) return; // only a ticket that can still be claimed asks
   clear(box);
@@ -12944,6 +12977,7 @@ function loadClaimability(ticketId, box) {
       return;
     }
     clear(box);
+    if (typeof box._onClaim === "function") box._onClaim(data);
     const ready = data.ready === true;
     const blockers = data.blockers || [];
     box.appendChild(

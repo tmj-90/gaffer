@@ -30,7 +30,14 @@ const BASE_TICKET = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
-function stubFetch(ticket: typeof BASE_TICKET, events: unknown[] = []): void {
+function stubFetch(
+  ticket: typeof BASE_TICKET,
+  events: unknown[] = [],
+  claimability: { ready: boolean; blockers: { code: string; message: string }[] } = {
+    ready: true,
+    blockers: [],
+  },
+): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -60,7 +67,7 @@ function stubFetch(ticket: typeof BASE_TICKET, events: unknown[] = []): void {
       }
       if (url.includes(`/tickets/${ticket.id}/diff`)) body = { ticketId: ticket.id, repos: [] };
       else if (url.includes(`/tickets/${ticket.id}/claimability`))
-        body = { ticketId: ticket.id, ready: true, blockers: [], warnings: [] };
+        body = { ticketId: ticket.id, ...claimability, warnings: [] };
       else if (url.includes(`/tickets/${ticket.id}/work-repos`))
         body = {
           writeRepos: [],
@@ -141,5 +148,51 @@ describe("web: a refused Mark ready names the failed policy check", () => {
     expect(box).toContain("Mark-ready failed");
     expect(box).toContain("none of its repos is confirmed yet");
     expect(box).toContain("SCOPE_REPO_UNCONFIRMED");
+  });
+
+  it("toasts the policy's reason, not only 'Policy denied ready' (exploratory finding ui-workflows/F8)", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET);
+    await bootDetail();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    );
+    btn!.click();
+    for (let i = 0; i < 6; i++) await tick();
+    const toast = document.getElementById("toast")?.textContent ?? "";
+    expect(toast).toContain("none of its repos is confirmed yet");
+    expect(toast).toContain("POLICY_DENIED");
+  });
+
+  it("disables Mark ready, with a title saying why, when the ready gate will refuse (exploratory finding ui-workflows/F8)", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [
+        { code: "AC_REQUIRED", message: "At least one acceptance criterion is required." },
+      ],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    ) as HTMLButtonElement | undefined;
+    expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(true);
+    expect(btn!.title).toContain("At least one acceptance criterion is required.");
+  });
+
+  it("a dependency or a decision does not disable Mark ready: they hold the claim, not the ready", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [{ code: "DEPENDENCY_BLOCKED", message: "Blocked by #3 (must be done first)." }],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    ) as HTMLButtonElement | undefined;
+    expect(btn!.disabled).toBe(false);
   });
 });

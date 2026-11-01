@@ -1,11 +1,10 @@
 import type { Command } from "commander";
-import { z } from "zod";
 
 import type { Dispatch } from "../../core.js";
 import { DECISION_SEVERITIES } from "../../domain/types.js";
-import { resolveDecisionBody } from "../../api/schemas.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, printJson } from "../shared.js";
+import { cliActor, printJson } from "../helpers.js";
+import { heavy, lazy, needs, open } from "../runtime.js";
 
 /** The shortest decision-id prefix `decisions resolve` takes (`gaffer status` shows 8). */
 export const MIN_DECISION_PREFIX = 4;
@@ -71,8 +70,9 @@ export function registerDecisions(program: Command): void {
     .option("--answer <text>", "the answer the agent will read")
     .option("--status <status>", "accepted | rejected", "accepted")
     .option("--rationale <text>", "why (recorded with the answer)")
+    .hook("preAction", needs("decisionSchemas"))
     .action((id: string, opts, cmd) => {
-      const body = resolveDecisionBody.parse({
+      const body = lazy("decisionSchemas").resolveDecisionBody.parse({
         status: opts.status,
         ...(opts.answer !== undefined ? { answer: opts.answer } : {}),
         ...(opts.rationale !== undefined ? { rationale: opts.rationale } : {}),
@@ -107,7 +107,7 @@ export function registerDecisions(program: Command): void {
       [] as string[],
     )
     .action((opts, cmd) => {
-      const severityResult = z.enum(DECISION_SEVERITIES).safeParse(opts.severity);
+      const severityResult = heavy().z.enum(DECISION_SEVERITIES).safeParse(opts.severity);
       if (!severityResult.success) {
         throw new DispatchError(
           "VALIDATION_ERROR",

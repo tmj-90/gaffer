@@ -1,9 +1,9 @@
 import type { Command } from "commander";
 
-import { buildNotifierFromEnv } from "../../notify/config.js";
 import { isNotifyKind } from "../../notify/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { printJson } from "../shared.js";
+import { printJson } from "../helpers.js";
+import { buildNotifierFromEnv } from "../runtime.js";
 
 export function registerNotify(program: Command): void {
   // --- H2 notifications: a setup-helper to test the configured sinks ----------

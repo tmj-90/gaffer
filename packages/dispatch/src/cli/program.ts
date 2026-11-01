@@ -1,4 +1,4 @@
-import { Command, Help, Option } from "commander";
+import { Command, CommanderError, Help, Option } from "commander";
 
 import { resolveDbPath } from "../util/paths.js";
 import { VERSION } from "../version.js";
@@ -17,8 +17,9 @@ import { registerReview } from "./commands/review.js";
 import { registerScope } from "./commands/scope.js";
 import { registerSpec } from "./commands/spec.js";
 import { registerTicket } from "./commands/ticket.js";
-import { describeCliFailure } from "./errors.js";
-import { open, printJson } from "./shared.js";
+import { describeCommanderFailure } from "./failure.js";
+import { printJson } from "./helpers.js";
+import { needs, open } from "./runtime.js";
 
 /**
  * The commands the runner (or an agent through it) calls as part of its own
@@ -124,7 +125,12 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
     // Commander's own exits become CommanderErrors the error boundary turns into
     // exit codes; set before any subcommand so every one inherits it.
     .exitOverride()
-    .addHelpText("after", rootHelpText(name));
+    .addHelpText("after", rootHelpText(name))
+    // Building this tree loads only commander and the light modules, so --version,
+    // --help and `help <command>` never open the database or load zod. What an
+    // action needs loads here, before any other preAction hook could use it (see
+    // runtime.ts).
+    .hook("preAction", needs("core"));
 
   program
     .command("init")
@@ -280,9 +286,13 @@ export async function runProgram(program: Command, argv: readonly string[]): Pro
     await program.parseAsync([...argv]);
     return typeof process.exitCode === "number" ? process.exitCode : 0;
   } catch (err) {
-    const failure = describeCliFailure(err, {
-      ...(action ? { command: action, commandPath: commandPath(action) } : {}),
-    });
+    // A usage error or --version needs only the light half of the boundary.
+    const failure =
+      err instanceof CommanderError
+        ? describeCommanderFailure(err)
+        : (await import("./errors.js")).describeCliFailure(err, {
+            ...(action ? { command: action, commandPath: commandPath(action) } : {}),
+          });
     if (failure.body) process.stderr.write(`${JSON.stringify(failure.body)}\n`);
     return failure.exitCode;
   }

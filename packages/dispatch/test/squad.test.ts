@@ -42,6 +42,11 @@ import { listEvents } from "../src/events/eventWriter.js";
 import { EXPORT_TABLES } from "../src/io/stateExport.js";
 import { makeHandlers, toolSchemas } from "../src/mcp/tools.js";
 import { TestClock } from "../src/util/clock.js";
+import { loadCliModules } from "../src/cli/runtime.js";
+
+// The command modules load what an action needs in a preAction hook of the real
+// program; this test drives them on its own Command, so it loads them up front.
+await loadCliModules();
 
 const operator: Actor = { type: "human", id: "tom" };
 

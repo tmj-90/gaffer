@@ -4,17 +4,16 @@ import { resolve } from "node:path";
 
 import type { Command } from "commander";
 
-import { GIT_REF_SAFE } from "../../domain/schemas.js";
 import { TICKET_REPO_ROLES } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
   cliActor,
   humanOrSystemActor,
-  open,
   parseOneOf,
   printJson,
-} from "../shared.js";
+} from "../helpers.js";
+import { heavy, open } from "../runtime.js";
 
 /**
  * Best-effort detection of a local repo's default branch, so `repo add` no longer
@@ -40,7 +39,7 @@ export function detectDefaultBranch(path: string | undefined): string | undefine
   const remoteHead = git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]);
   const remoteBranch = remoteHead?.replace(/^origin\//, "");
   const candidate = remoteBranch || git(["symbolic-ref", "--short", "HEAD"]);
-  return candidate && GIT_REF_SAFE.test(candidate) ? candidate : undefined;
+  return candidate && heavy().GIT_REF_SAFE.test(candidate) ? candidate : undefined;
 }
 
 /**

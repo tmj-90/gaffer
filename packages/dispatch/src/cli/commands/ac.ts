@@ -4,7 +4,8 @@ import { readFileSync } from "node:fs";
 
 import { DispatchError } from "../../util/errors.js";
 import { RULES } from "../limits.js";
-import { cliActor, open, printJson } from "../shared.js";
+import { cliActor, printJson } from "../helpers.js";
+import { open } from "../runtime.js";
 
 export function registerAc(program: Command): void {
   const ac = program.command("ac").description("Acceptance-criteria commands");

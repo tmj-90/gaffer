@@ -2,13 +2,21 @@ import { readFileSync } from "node:fs";
 
 import type { Command } from "commander";
 
-import { Dispatch } from "../../core.js";
-import { DatabaseOpenError, DatabaseTooNewError } from "../../db/connection.js";
-import { readJudgeAgreement, renderJudgeAgreement } from "../../health/judgeAgreement.js";
+import type { Dispatch } from "../../core.js";
 import { DispatchError } from "../../util/errors.js";
 import { assertCliDbExists, resolveDbPath } from "../../util/paths.js";
-import { computeStats, renderDoctor, renderHumanQueue, renderStats, runDoctor } from "../ops.js";
-import { cliActor, open, printJson } from "../shared.js";
+import { cliActor, printJson } from "../helpers.js";
+import {
+  computeStats,
+  heavy,
+  open,
+  readJudgeAgreement,
+  renderDoctor,
+  renderHumanQueue,
+  renderJudgeAgreement,
+  renderStats,
+  runDoctor,
+} from "../runtime.js";
 
 export function registerDiagnostics(program: Command): void {
   // --- Operational commands --------------------------------------------------
@@ -20,6 +28,7 @@ export function registerDiagnostics(program: Command): void {
     .action((opts, cmd) => {
       assertCliDbExists(cmd.optsWithGlobals().db);
       const dbPath = resolveDbPath(cmd.optsWithGlobals().db);
+      const { Dispatch, DatabaseOpenError, DatabaseTooNewError } = heavy();
       let wg: Dispatch;
       try {
         wg = Dispatch.open(dbPath);

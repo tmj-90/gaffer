@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 
-import { cliActor, open, printJson } from "../shared.js";
+import { cliActor, printJson } from "../helpers.js";
+import { open } from "../runtime.js";
 
 export function registerScope(program: Command): void {
   // --- Factory Map scope graph (FG-001 + FG-002) -----------------------------

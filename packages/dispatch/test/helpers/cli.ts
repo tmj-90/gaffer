@@ -8,6 +8,11 @@ import { registerPrincipal } from "../../src/cli/commands/principal.js";
 import { registerRepo } from "../../src/cli/commands/repo.js";
 import { registerReview } from "../../src/cli/commands/review.js";
 import { registerTicket } from "../../src/cli/commands/ticket.js";
+import { loadCliModules } from "../../src/cli/runtime.js";
+
+// The command modules load what an action needs in a preAction hook of the real
+// program; this test drives them on its own Command, so it loads them up front.
+await loadCliModules();
 
 /** What one CLI invocation printed, plus the error it threw (if any). */
 export interface CliResult {

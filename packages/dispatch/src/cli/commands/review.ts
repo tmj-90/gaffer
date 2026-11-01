@@ -2,7 +2,8 @@ import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, parseAs, printJson, warnLandedAlready } from "../shared.js";
+import { cliActor, parseAs, printJson, warnLandedAlready } from "../helpers.js";
+import { open } from "../runtime.js";
 
 /** `--commit repo=sha` (or a bare sha) → a shown commit; malformed input is refused. */
 export function parseCommitFlag(value: string): { repo: string | null; sha: string } {

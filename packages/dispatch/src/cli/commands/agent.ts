@@ -6,11 +6,11 @@ import {
   AS_HUMAN_OR_SYSTEM_HELP,
   cliActor,
   humanOrSystemActor,
-  open,
   parseAs,
   printJson,
   validateTtl,
-} from "../shared.js";
+} from "../helpers.js";
+import { open } from "../runtime.js";
 
 export function registerAgent(program: Command): void {
   // --- Agent / claim / evidence flow (mirrors the MCP tools) -----------------

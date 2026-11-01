@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 
-import { cliActor, open, printJson, readJsonInput } from "../shared.js";
+import { cliActor, printJson, readJsonInput } from "../helpers.js";
+import { open } from "../runtime.js";
 
 export function registerEpic(program: Command): void {
   // --- Epics (EP-001) --------------------------------------------------------

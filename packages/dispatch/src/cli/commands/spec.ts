@@ -1,9 +1,9 @@
 import type { Command } from "commander";
-import { z } from "zod";
 
 import { SPEC_STATUSES } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, printJson, readJsonInput } from "../shared.js";
+import { cliActor, printJson, readJsonInput } from "../helpers.js";
+import { heavy, open } from "../runtime.js";
 
 export function registerSpec(program: Command): void {
   // --- Specs (Spec-Driven Development, Phase 1a) -----------------------------
@@ -65,7 +65,7 @@ export function registerSpec(program: Command): void {
     .option("--status <status>", "filter by status (draft | frozen | superseded)")
     .action((opts, cmd) => {
       if (opts.status !== undefined) {
-        const statusResult = z.enum(SPEC_STATUSES).safeParse(opts.status);
+        const statusResult = heavy().z.enum(SPEC_STATUSES).safeParse(opts.status);
         if (!statusResult.success) {
           throw new DispatchError(
             "VALIDATION_ERROR",

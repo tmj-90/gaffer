@@ -925,7 +925,8 @@ job (`sandbox-delivery`, on a Linux runner) runs one ticket through the real tic
 `SANDBOX_PROVIDER=docker` and a stub agent installed as the delivery image's own
 `claude`: the agent runs inside the container, claims nothing itself, records its
 evidence through the MCP bridge to the host's dispatch server (the claim token never
-enters the container), commits through the mounted `.git`, the DoD gates run in their
+enters the container), commits into its private git dir (only the ticket branch is imported to the
+host; a `main` it moves inside stays inside), the DoD gates run in their
 own container under the validation profile, and the ticket reaches review. The agent
 checks from inside that the databases, `settings.json`, the host `HOME` and a host
 canary file are not there, and the tests gate refuses to pass unless it ran contained

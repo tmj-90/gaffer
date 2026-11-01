@@ -18,8 +18,9 @@
 //      socket): get_ticket, then record_ac_evidence on the ticket's first criterion with
 //      the probe tokens in the summary. No claim token is passed: the host-side server
 //      resolves it from its own env, so the write lands only if the bridge carried it.
-//   3. WORKTREE WRITE: appends one helper + one test, commits inside the container (the
-//      repo's .git is mounted ro with only the commit paths rw).
+//   3. WORKTREE WRITE: appends one helper + one test, commits inside the container (into
+//      the agent's private git dir; the host imports only the ticket branch) and moves
+//      main there, which must never reach the host.
 //   4. Prints the `--output-format json` result envelope (with a smallest-change note).
 // A reviewer prompt gets an APPROVE envelope; anything else a bare "ok" envelope.
 import { spawn, execFileSync } from "node:child_process";
@@ -272,6 +273,16 @@ async function deliver() {
     git("add", "-A");
     git("commit", "-qm", `feat: ${fn} (docker-delivery stub)\n\nprobes: ${tokens.join(" ")}`);
     committed = "COMMIT_OK";
+    // A ref written inside the container must stay inside it: the agent's git dir is a
+    // private copy (sandbox-git) and the host imports only the ticket branch afterwards.
+    // Moving main here lets the host-side refs check prove that; before the private git
+    // dir this moved the host's main.
+    try {
+      git("update-ref", "refs/heads/main", "HEAD");
+      tokens.push("MAIN_MOVED_INSIDE");
+    } catch (e) {
+      tokens.push(`MAIN_MOVE_FAIL(${String(e && e.message ? e.message : e).slice(0, 120)})`);
+    }
   } catch (e) {
     committed = `COMMIT_FAIL(${String(e && e.message ? e.message : e).slice(0, 200)})`;
   }

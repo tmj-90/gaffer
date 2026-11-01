@@ -229,7 +229,7 @@ checks:
 | the agent runs inside the container | the stub sees `/.dockerenv`, and records it |
 | the agent's env works inside | the stub checks git's `safe.directory` (the mounts are owned by the host user, the container runs as root), `HTTP(S)_PROXY` pointing at the egress proxy, a usable `TMPDIR`, and that the model credential reached it (a decoy in this run) |
 | the MCP round trip goes through the bridge | the stub's `get_ticket` + token-free `record_ac_evidence` land in the host's canonical DB and satisfy the criterion (only the host-side server holds the claim token) |
-| the worktree is written inside | the stub's commit, made through the mounted `.git`, is on the host branch with the stub's probes in its message |
+| the worktree is written inside | the stub's commit, made in the agent's private git dir, is imported to the host ticket branch with the stub's probes in its message; the `main` the stub moves inside the container does not reach the host (no host ref other than the ticket branch changes) |
 | the DoD gates run under the validation profile | the repo's test command is `node gate-probe.mjs --require && node --test`; the probe fails the gate unless it runs in a container with no database, no bridge socket, no host `HOME`, no canary and no model credential (the runner holds the decoy, so a profile that forwarded it would fail), and the DoD evidence records the gate as PASS with the delivered test in its tally |
 | the result envelope is parsed | the usage ledger books the envelope's cost |
 | the ticket is submitted | it is `in_review` |

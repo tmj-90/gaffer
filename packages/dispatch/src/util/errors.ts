@@ -49,6 +49,8 @@ export const DISPATCH_ERROR_CODES = [
   "WRITE_FAILED",
   // Another process held the SQLite write lock for longer than the busy timeout.
   "DB_BUSY",
+  // A --path that is a directory but not inside a git checkout (repo add).
+  "NOT_A_GIT_REPO",
   "UNSAFE_BIND",
   "INTERNAL_ERROR",
 ] as const;

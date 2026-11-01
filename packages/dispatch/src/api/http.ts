@@ -64,6 +64,7 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   // The database stayed write-locked by another process past the busy timeout: a
   // transient condition, so a client retries rather than reading a server crash.
   DB_BUSY: 503,
+  NOT_A_GIT_REPO: 422,
   // Genuine server-side failures (UNSAFE_BIND is startup-only).
   IO_ERROR: 500,
   WRITE_FAILED: 500,

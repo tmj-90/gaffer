@@ -66,14 +66,16 @@ describe("cli-wg F-06: repo add validates --path and the name", () => {
     expect(stored("ghost")).toBeNull();
   });
 
-  it("warns, and still registers, for a directory that is not a git repo", () => {
+  it("refuses a directory that is not a git repo, as onboard does (B1 review)", () => {
     const r = runCli(db, ["repo", "add", "-n", "notgit", "--path", join(dir, "notgit")]);
-    expect(r.error).toBeUndefined();
-    expect(r.stderr).toMatch(/not a git repo/);
-    expect((r.json as { warnings: Array<{ code: string }> }).warnings[0]!.code).toBe(
-      "NOT_A_GIT_REPO",
-    );
-    expect(stored("notgit")).toBe(join(dir, "notgit"));
+    expect(errorCode(r.error)).toBe("NOT_A_GIT_REPO");
+    expect(String((r.error as Error).message)).toMatch(/is not a git repository.*git init/);
+    expect(stored("notgit")).toBeNull();
+    // A folder inside a checkout is fine (a monorepo package), like onboard.
+    mkdirSync(join(gitRepo, "pkg"));
+    expect(
+      runCli(db, ["repo", "add", "-n", "pkg", "--path", join(gitRepo, "pkg")]).error,
+    ).toBeUndefined();
   });
 
   it("refuses names with a path separator, dot segments, a leading dash or a control character", () => {

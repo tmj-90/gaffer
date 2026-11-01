@@ -670,6 +670,25 @@ export class ReviewGateService {
     }
     const matches = (c: ShownCommit, h: ReviewedHead): boolean =>
       c.repo === null ? heads.length === 1 : c.repo === h.repoId || c.repo === h.repo;
+    // DUPLICATE PINS (exploratory finding api/F12): one commit per repository. With two
+    // entries for one repo the first decided the outcome, so [head, other] approved and
+    // [other, head] read as a stale revision: the order of the list chose the answer.
+    const named = (c: ShownCommit): string =>
+      c.repo === null
+        ? (heads[0]?.repoId ?? "(unnamed)")
+        : (heads.find((h) => matches(c, h))?.repoId ?? c.repo);
+    const seen = new Map<string, number>();
+    for (const c of commits) seen.set(named(c), (seen.get(named(c)) ?? 0) + 1);
+    const dupes = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
+    if (dupes.length > 0) {
+      const label = (k: string): string => heads.find((h) => h.repoId === k)?.repo ?? k;
+      throw new DispatchError(
+        "VALIDATION_ERROR",
+        `Each repository can be approved at one commit only; ${dupes.map(label).join(", ")} ` +
+          "was named more than once. Nothing was approved.",
+        { reason: "duplicate_repo", repos: dupes.map(label) },
+      );
+    }
     const moved: Array<{ repo: string; shown: string | null; current: string | null }> = [];
     for (const h of heads) {
       const shown = commits.find((c) => matches(c, h));

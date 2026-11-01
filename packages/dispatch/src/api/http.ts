@@ -20,6 +20,8 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   NOT_FOUND: 404,
   FILE_NOT_FOUND: 404,
   VALIDATION_ERROR: 422,
+  // A request body over the limit (readJsonBody).
+  PAYLOAD_TOO_LARGE: 413,
   INVALID_EDGE: 422,
   INVALID_DEPENDENCY: 422,
   ADVANCED_RELATION_REQUIRED: 422,
@@ -101,21 +103,40 @@ export function sendCreated(res: ServerResponse, location: string, payload: unkn
   sendJson(res, 201, payload);
 }
 
-/** Read and JSON-parse a request body. Empty bodies resolve to `{}`. */
+/** The largest request body the REST surface reads (bytes). */
+export const MAX_BODY_BYTES = 1_000_000;
+/**
+ * How much of an over-limit upload is read (and thrown away) after the 413, so the
+ * client is still reading when the answer arrives instead of getting a reset; past
+ * this the socket is destroyed.
+ */
+const OVERFLOW_DRAIN_BYTES = 16 * MAX_BODY_BYTES;
+
+/**
+ * Read and JSON-parse a request body. Empty bodies resolve to `{}`.
+ *
+ * A body over {@link MAX_BODY_BYTES} throws PAYLOAD_TOO_LARGE (a JSON 413). The
+ * stream used to be destroyed before the throw, so the answer was never sent and
+ * every client saw a reset connection. Now nothing more is kept: the rest of the
+ * upload is read and discarded up to {@link OVERFLOW_DRAIN_BYTES} (then the socket
+ * is destroyed), and the 413 goes out with `connection: close` so the socket is
+ * never reused mid-upload.
+ */
 export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
-  const MAX_BYTES = 1_000_000;
-  for await (const chunk of req) {
+  // destroyOnReturn: false — leaving the loop early must not destroy the request
+  // (that resets the socket before the 413 is written).
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     const buf = chunk as Buffer;
     size += buf.length;
-    if (size > MAX_BYTES) {
-      // Stop consuming an over-limit (possibly hostile/unbounded) upload before
-      // rejecting — draining it to the end would read attacker-controlled data, and
-      // leaving it undrained resets the keep-alive connection. Destroy the stream so
-      // the socket closes deterministically instead of dangling mid-read.
-      req.destroy();
-      throw new DispatchError("VALIDATION_ERROR", "Request body too large.");
+    if (size > MAX_BODY_BYTES) {
+      discardRest(req, size);
+      throw new DispatchError(
+        "PAYLOAD_TOO_LARGE",
+        `Request body too large (the limit is ${MAX_BODY_BYTES} bytes).`,
+        { limit_bytes: MAX_BODY_BYTES },
+      );
     }
     chunks.push(buf);
   }
@@ -127,6 +148,21 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   } catch {
     throw new DispatchError("VALIDATION_ERROR", "Request body is not valid JSON.");
   }
+}
+
+/** Keep reading an over-limit upload into nothing, up to a bound, then cut it off. */
+function discardRest(req: IncomingMessage, seen: number): void {
+  let read = seen;
+  const onData = (b: Buffer): void => {
+    read += b.length;
+    if (read > OVERFLOW_DRAIN_BYTES) {
+      req.off("data", onData);
+      req.destroy();
+    }
+  };
+  req.on("data", onData);
+  req.on("error", () => {});
+  req.resume();
 }
 
 /** Translate a thrown error into a structured JSON response. */
@@ -142,6 +178,8 @@ export function handleError(res: ServerResponse, err: unknown): void {
     return;
   }
   if (err instanceof DispatchError) {
+    // The rest of an over-limit upload is never read, so this socket is not reused.
+    if (err.code === "PAYLOAD_TOO_LARGE" && !res.headersSent) res.setHeader("connection", "close");
     sendJson(res, statusForCode(err.code), errorBody(err.code, err.message, err.details));
     return;
   }

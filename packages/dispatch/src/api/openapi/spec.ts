@@ -1700,6 +1700,14 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       }
       responses[key] = entry;
     }
+    if (e.body && !responses["413"]) {
+      responses["413"] = {
+        description: "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+        content: {
+          "application/json": { schema: { $ref: `#/components/schemas/${ERROR_SCHEMA_NAME}` } },
+        },
+      };
+    }
     if (e.capability !== "public") {
       responses["401"] = {
         description: "Missing or unknown bearer token (`UNAUTHORIZED`).",

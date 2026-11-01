@@ -105,11 +105,33 @@ export function openDatabase(path: string): Db {
     }
   }
 
-  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  migrate(db);
+  try {
+    db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+    db.pragma("journal_mode = WAL");
+    db.pragma("foreign_keys = ON");
+    migrate(db);
+  } catch (err) {
+    // better-sqlite3 opens lazily: a file that is not a database (or is corrupt)
+    // fails on the first statement, not in the constructor. Give it the same
+    // guidance as a path that cannot be opened at all, not a bare SqliteError.
+    if (!isUnreadableDbError(err)) throw err;
+    try {
+      db.close();
+    } catch {
+      // Already unusable; nothing to release.
+    }
+    throw new DatabaseOpenError(path, err);
+  }
   return db;
+}
+
+/** SQLite result codes (and their extended forms) meaning the file is not a readable database. */
+const UNREADABLE_DB_CODES = ["SQLITE_NOTADB", "SQLITE_CORRUPT", "SQLITE_CANTOPEN"];
+
+function isUnreadableDbError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") return false;
+  return UNREADABLE_DB_CODES.some((c) => code === c || code.startsWith(`${c}_`));
 }
 
 /**

@@ -2,6 +2,15 @@ import type { Db } from "../db/connection.js";
 import type { RiskLevel, Ticket, TicketStatus } from "../domain/types.js";
 import { notFound } from "../util/errors.js";
 
+/**
+ * The backlog order: priority, then age, then ticket number and id as tiebreakers.
+ * Tickets created in one burst (or imported) share a created_at to the millisecond,
+ * and without a tiebreaker they came back in storage order, so #12 and #13 swapped
+ * after an import.
+ */
+const TICKET_ORDER = "priority DESC, created_at ASC, number ASC, id ASC";
+const TICKET_ORDER_T = "t.priority DESC, t.created_at ASC, t.number ASC, t.id ASC";
+
 /** Optional filters for the human backlog list. */
 export interface TicketListFilter {
   status?: TicketStatus | undefined;
@@ -191,12 +200,10 @@ export class TicketRepository {
   list(status?: TicketStatus): Ticket[] {
     if (status) {
       return this.db
-        .prepare(`SELECT * FROM tickets WHERE status = ? ORDER BY priority DESC, created_at ASC`)
+        .prepare(`SELECT * FROM tickets WHERE status = ? ORDER BY ${TICKET_ORDER}`)
         .all(status) as Ticket[];
     }
-    return this.db
-      .prepare(`SELECT * FROM tickets ORDER BY priority DESC, created_at ASC`)
-      .all() as Ticket[];
+    return this.db.prepare(`SELECT * FROM tickets ORDER BY ${TICKET_ORDER}`).all() as Ticket[];
   }
 
   /**
@@ -208,7 +215,7 @@ export class TicketRepository {
   listFiltered(filter: TicketListFilter): Ticket[] {
     const { clause, params } = this.filterClause(filter);
     return this.db
-      .prepare(`SELECT t.* FROM tickets t ${clause} ORDER BY t.priority DESC, t.created_at ASC`)
+      .prepare(`SELECT t.* FROM tickets t ${clause} ORDER BY ${TICKET_ORDER_T}`)
       .all(params) as Ticket[];
   }
 
@@ -227,7 +234,7 @@ export class TicketRepository {
     const tickets = this.db
       .prepare(
         `SELECT ${cols} FROM tickets t ${clause}
-         ORDER BY t.priority DESC, t.created_at ASC LIMIT @limit OFFSET @offset`,
+         ORDER BY ${TICKET_ORDER_T} LIMIT @limit OFFSET @offset`,
       )
       .all({ ...params, ...bounds }) as Array<Ticket | TicketSummary>;
     const { n } = this.db.prepare(`SELECT COUNT(*) AS n FROM tickets t ${clause}`).get(params) as {

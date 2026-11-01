@@ -8,6 +8,7 @@
 export const DISPATCH_ERROR_CODES = [
   "NOT_FOUND",
   "VALIDATION_ERROR",
+  "PAYLOAD_TOO_LARGE",
   "POLICY_DENIED",
   "STATE_CONFLICT",
   // A cancel of a ticket whose change already landed in some repository.

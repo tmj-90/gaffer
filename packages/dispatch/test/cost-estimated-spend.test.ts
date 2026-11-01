@@ -185,11 +185,13 @@ describe("GET /api/cost — estimated spend is in the envelope", () => {
 });
 
 describe("Settings allow-list — the budget knobs the runner enforces are exposed", () => {
-  it("GAFFER_DAILY_BUDGET_USD is a budget setting (decimal string)", () => {
+  it("GAFFER_DAILY_BUDGET_USD is a budget setting (a decimal number of dollars)", () => {
     const def = SETTING_DEFS.find((d) => d.key === "GAFFER_DAILY_BUDGET_USD");
     expect(def).toBeDefined();
     expect(def!.group).toBe("budget");
-    expect(def!.type).toBe("string");
+    // Typed "number" (stored as its decimal string) so "abc" is refused on write
+    // (exploratory finding ui-workflows/F2).
+    expect(def!.type).toBe("number");
     expect(def!.help).toMatch(/UTC/);
   });
 

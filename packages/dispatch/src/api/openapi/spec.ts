@@ -99,6 +99,15 @@ const invalid: ResponseSpec = {
   content: "json",
 };
 
+const tooLarge: ResponseSpec = {
+  status: 413,
+  description: "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+  content: "json",
+};
+/** For a route that takes no body: empty or `{}`, anything else refused. */
+const noBodyNote =
+  " Takes no body: send none or `{}`; broken JSON or any field is a 422, and an over-limit body a 413.";
+
 const T = {
   tickets: "Tickets",
   review: "Review & delivery",
@@ -238,7 +247,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Write factory settings",
     description:
-      "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored; invalid values are reported.",
+      "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored. A value that does not fit its setting (a non-numeric dollar figure, an int below its minimum, an unlisted choice, a refused webhook URL) refuses the whole write with a 422 whose `details.invalid` names each field and why; nothing is written.",
     capability: "full",
     body: "settingsBody",
     responses: [ok("`{ settings, written, rejected, ignored, invalid }`."), invalid],
@@ -352,16 +361,18 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.events,
     summary: "Live event stream (Server-Sent Events)",
     description:
-      "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`.",
+      "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`. A `since` past the latest seq (a cursor kept from before a restore or an import) starts from the latest instead and says so first with `event: reset` (`id` = the latest seq, data `{ requested, latest }`). The server ends every open stream when it shuts down.",
     capability: "read",
     query: {
       since: {
-        description: "Replay events with seq greater than this before tailing.",
+        description:
+          "Replay events with seq greater than this before tailing. A whole number; anything else is a 422.",
         schema: { type: "integer", minimum: 0 },
       },
     },
     responses: [
       { status: 200, description: "`text/event-stream`.", content: "sse" },
+      invalid,
       { status: 503, description: "Too many stream clients (`STREAM_BUSY`).", content: "json" },
     ],
   },
@@ -680,8 +691,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/ready-approval",
     tag: T.tickets,
     summary: "Grant the regulated-pack ready approval",
+    description: noBodyNote.trim(),
     capability: "full",
-    responses: [ok("`{ ticket_id, event_id }`."), notFound, conflict],
+    responses: [ok("`{ ticket_id, event_id }`."), notFound, conflict, invalid, tooLarge],
   },
   {
     method: "GET",
@@ -1020,6 +1032,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/mono-fallback",
     tag: T.scopes,
     summary: "Promote a single unmapped repository to write access",
+    description: noBodyNote.trim(),
     capability: "full",
     responses: [
       ok(
@@ -1028,6 +1041,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       ),
       notFound,
       conflict,
+      invalid,
+      tooLarge,
     ],
   },
   {
@@ -1308,9 +1323,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/plan-sessions",
     tag: T.plan,
     summary: "Start a plan session",
-    description: "Archives the currently active session. No body.",
+    description: `Archives the currently active session.${noBodyNote}`,
     capability: "full",
-    responses: [created("The new `PlanSession`.")],
+    responses: [created("The new `PlanSession`."), invalid, tooLarge],
   },
   {
     method: "GET",
@@ -1453,7 +1468,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/repos/onboard",
     tag: T.repos,
     summary: "Onboard a repository",
-    description: "Spawns the configured onboarding command for the path.",
+    description:
+      "Spawns the configured onboarding command for the path or registered repo. A directory that is a filesystem root, the home directory, a bare repository, or outside any git checkout (a symlink is followed) is refused with a 422 that says why, and no run starts.",
     capability: "full",
     body: "onboardRepoBody",
     responses: [
@@ -1549,11 +1565,17 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/poll-work",
     tag: T.work,
     summary: "Fire one factory tick",
-    description: "Runs the configured tick command only when ready tickets exist.",
+    description:
+      "Runs the configured tick command only when a tick has work (`pending` counts it by lane) and the runner would not refuse it. A live poll with no dollar cap (neither `GAFFER_DAILY_BUDGET_USD` nor `GAFFER_BUDGET_USD` positive, no `GAFFER_ALLOW_UNCAPPED=1`) is refused before anything is spawned. A run the runner refuses after it started (a cap reached) ends `failed` with `detail` `refused: <reason>`.",
     capability: "full",
     responses: [
-      accepted("`{ polled: true, run }`."),
-      { status: 200, description: "`{ polled: false }` — nothing ready.", content: "json" },
+      accepted("`{ polled: true, readyCount, pending, run }`."),
+      {
+        status: 200,
+        description:
+          "`{ polled: false, reason, readyCount, pending }` — `reason` is `no_ready_work` (nothing for a tick to do) or `no_budget_cap` (with `message`, the runner's fix).",
+        content: "json",
+      },
       {
         status: 503,
         description: "No tick command configured (`NOT_CONFIGURED`).",
@@ -1718,6 +1740,14 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         continue;
       }
       responses[key] = entry;
+    }
+    if (e.body && !responses["413"]) {
+      responses["413"] = {
+        description: tooLarge.description,
+        content: {
+          "application/json": { schema: { $ref: `#/components/schemas/${ERROR_SCHEMA_NAME}` } },
+        },
+      };
     }
     if (e.capability !== "public") {
       responses["401"] = {

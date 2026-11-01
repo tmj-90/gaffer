@@ -284,6 +284,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -502,7 +512,7 @@
           "Configuration"
         ],
         "summary": "Write factory settings",
-        "description": "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored; invalid values are reported.",
+        "description": "Merges the given keys into settings.json atomically. Env-locked keys are rejected (the environment always wins); unknown keys are ignored. A value that does not fit its setting (a non-numeric dollar figure, an int below its minimum, an unlisted choice, a refused webhook URL) refuses the whole write with a 422 whose `details.invalid` names each field and why; nothing is written.",
         "requestBody": {
           "required": true,
           "content": {
@@ -536,6 +546,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -727,6 +747,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -874,6 +904,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -979,6 +1019,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1102,6 +1152,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -1175,7 +1235,7 @@
           "Events"
         ],
         "summary": "Live event stream (Server-Sent Events)",
-        "description": "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`.",
+        "description": "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`. A `since` past the latest seq (a cursor kept from before a restore or an import) starts from the latest instead and says so first with `event: reset` (`id` = the latest seq, data `{ requested, latest }`). The server ends every open stream when it shuts down.",
         "parameters": [
           {
             "name": "since",
@@ -1185,7 +1245,7 @@
               "type": "integer",
               "minimum": 0
             },
-            "description": "Replay events with seq greater than this before tailing."
+            "description": "Replay events with seq greater than this before tailing. A whole number; anything else is a 422."
           }
         ],
         "responses": {
@@ -1211,6 +1271,16 @@
           },
           "403": {
             "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1727,6 +1797,16 @@
           },
           "409": {
             "description": "Unknown id or not a draft (`CONFLICT`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2662,6 +2742,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -2812,6 +2902,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2997,6 +3097,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -3094,6 +3204,16 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3183,6 +3303,16 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3200,6 +3330,7 @@
           "Tickets"
         ],
         "summary": "Grant the regulated-pack ready approval",
+        "description": "Takes no body: send none or `{}`; broken JSON or any field is a 422, and an over-limit body a 413.",
         "parameters": [
           {
             "name": "id",
@@ -3254,6 +3385,26 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3488,6 +3639,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -3579,6 +3740,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3844,6 +4015,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -4100,6 +4281,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -4189,6 +4380,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -4269,6 +4470,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4376,6 +4587,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -4467,6 +4688,16 @@
           },
           "409": {
             "description": "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4573,6 +4804,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -4671,6 +4912,16 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4752,6 +5003,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4849,6 +5110,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -4929,6 +5200,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5091,6 +5372,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -5237,6 +5528,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5410,6 +5711,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -5491,6 +5802,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5594,6 +5915,7 @@
           "Ticket scopes & repos"
         ],
         "summary": "Promote a single unmapped repository to write access",
+        "description": "Takes no body: send none or `{}`; broken JSON or any field is a 422, and an over-limit body a 413.",
         "parameters": [
           {
             "name": "id",
@@ -5648,6 +5970,26 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -5946,6 +6288,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -6177,6 +6529,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -6281,6 +6643,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6448,6 +6820,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -6649,6 +7031,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -6808,6 +7200,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -6954,6 +7356,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -7153,6 +7565,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -7439,6 +7861,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -7594,6 +8026,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -7686,7 +8128,7 @@
           "Plan sessions"
         ],
         "summary": "Start a plan session",
-        "description": "Archives the currently active session. No body.",
+        "description": "Archives the currently active session. Takes no body: send none or `{}`; broken JSON or any field is a 422, and an over-limit body a 413.",
         "responses": {
           "201": {
             "description": "The new `PlanSession`. The Location header names the created resource.",
@@ -7710,6 +8152,26 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -7993,6 +8455,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -8081,6 +8553,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -8149,6 +8631,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -8208,6 +8700,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8442,6 +8944,16 @@
           },
           "409": {
             "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8733,7 +9245,7 @@
           "Repositories & agents"
         ],
         "summary": "Onboard a repository",
-        "description": "Spawns the configured onboarding command for the path.",
+        "description": "Spawns the configured onboarding command for the path or registered repo. A directory that is a filesystem root, the home directory, a bare repository, or outside any git checkout (a symlink is followed) is refused with a 422 that says why, and no run starts.",
         "requestBody": {
           "required": true,
           "content": {
@@ -8767,6 +9279,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8941,6 +9463,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -9021,6 +9553,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9118,6 +9660,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -9178,6 +9730,16 @@
           },
           "403": {
             "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9264,6 +9826,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -9332,6 +9904,16 @@
               }
             }
           },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
@@ -9358,10 +9940,10 @@
           "Runner actions"
         ],
         "summary": "Fire one factory tick",
-        "description": "Runs the configured tick command only when ready tickets exist.",
+        "description": "Runs the configured tick command only when a tick has work (`pending` counts it by lane) and the runner would not refuse it. A live poll with no dollar cap (neither `GAFFER_DAILY_BUDGET_USD` nor `GAFFER_BUDGET_USD` positive, no `GAFFER_ALLOW_UNCAPPED=1`) is refused before anything is spawned. A run the runner refuses after it started (a cap reached) ends `failed` with `detail` `refused: <reason>`.",
         "responses": {
           "200": {
-            "description": "`{ polled: false }` — nothing ready.",
+            "description": "`{ polled: false, reason, readyCount, pending }` — `reason` is `no_ready_work` (nothing for a tick to do) or `no_budget_cap` (with `message`, the runner's fix).",
             "content": {
               "application/json": {
                 "schema": {
@@ -9371,7 +9953,7 @@
             }
           },
           "202": {
-            "description": "`{ polled: true, run }`.",
+            "description": "`{ polled: true, readyCount, pending, run }`.",
             "content": {
               "application/json": {
                 "schema": {

@@ -19,6 +19,15 @@ export function registerAc(program: Command): void {
     )
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
+      // cli-wg/F-16: the provenance must point at a real spec clause.
+      if (opts.clause !== undefined && !wg.specClauseExists(String(opts.clause).trim())) {
+        wg.db.close();
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `--clause ${String(opts.clause)}: no spec clause has that id (\`wg spec get <id>\` lists a spec's clause ids).`,
+          { clause: opts.clause },
+        );
+      }
       const t = wg.resolveTicket(ref);
       const { ac: created, eventId } = wg.addAcceptanceCriterion(
         {

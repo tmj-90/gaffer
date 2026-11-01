@@ -258,7 +258,13 @@ export const setRepoCommandsInput = z.object({
 export type SetRepoCommandsInput = z.infer<typeof setRepoCommandsInput>;
 
 export const registerAgentInput = z.object({
-  display_name: z.string().max(200).optional(),
+  /** Optional; when given it must say something (cli-wg/F-16) on one line. */
+  display_name: z
+    .string()
+    .max(200)
+    .refine((v) => v.trim().length > 0, "display name must not be empty (omit it for the default)")
+    .refine(noControlChars, noControlCharsMessage("display name"))
+    .optional(),
   agent_type: z.string().max(100).default("coding_agent"),
   model: z.string().max(200).optional(),
   runtime: z.string().max(200).optional(),

@@ -221,6 +221,8 @@ export function registerTicket(program: Command): void {
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
+      // cli-wg/F-16: an unknown --via is refused, not treated as local.
+      z.enum(["local", "git-verified", "pr", "pr-stale"]).optional().parse(opts.via);
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
         as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };

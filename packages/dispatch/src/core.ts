@@ -1271,6 +1271,20 @@ export class Dispatch {
     return this.specsSvc.createSpec(raw, actor);
   }
 
+  /**
+   * cli-wg/F-16: does any spec carry a clause with this (namespaced) id? `ac add
+   * --clause` checks it so an AC's spec_clause_id provenance always points at a clause.
+   */
+  specClauseExists(clauseId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM specs s, json_each(s.clauses_json) c
+          WHERE json_extract(c.value, '$.clause_id') = ? LIMIT 1`,
+      )
+      .get(clauseId) as { hit: number } | undefined;
+    return row !== undefined;
+  }
+
   /** Fetch a spec by id (throws NOT_FOUND when absent). */
   getSpec(id: string): Spec {
     return this.specsSvc.getSpec(id);

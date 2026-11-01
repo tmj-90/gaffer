@@ -63,6 +63,16 @@ code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "Authorization: 
 alive() { kill -0 "$1" 2>/dev/null; }
 listener() { ( . "$RUNNER_DIR/lib/dashboard.sh"; gaffer_port_listener_pid "$PORT" ); }
 gone_within() { local i=0; while alive "$1" && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; ! alive "$1"; }
+port_free_within() { local i=0; while [ -n "$(listener)" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; [ -z "$(listener)" ]; }
+# stop_started <pid> — a section stops the server it started on EVERY path (a skip
+# too): `--stop` by the pid file, then a hard kill if it lingers, so the next section
+# never finds it on the port ("✓ dashboard already up").
+stop_started() {
+  case "$1" in ''|*[!0-9]*) return 0 ;; esac
+  alive "$1" || return 0
+  echo "$1" > "$DATA/dashboard.pid"; dash --stop
+  gone_within "$1" || kill -9 "$1" 2>/dev/null
+}
 
 echo "== A: a fresh start =="
 dash
@@ -178,10 +188,13 @@ if [ "$(uname -s)" != Darwin ] && [ -n "$PM" ]; then
   [ "$RC" -ne 0 ] && alive "$PM" && ok "--stop refuses it too (exit $RC)" || fail "--stop under a hidden env: rc=$RC: $OUT"
   hid
   [ "$RC" -ne 0 ] && alive "$PM" && has "$OUT" "kill $PM" && ok "a plain start names it and says how to stop it" || fail "plain start: rc=$RC: $OUT"
-  echo "$PM" > "$DATA/dashboard.pid"; dash --stop
+  stop_started "$PM"
 else
   echo "  note: skipped (real macOS, or no server)"
+  stop_started "$PM"
 fi
+# The timeout=abc start needs the port free: it must start a server, not find one.
+port_free_within && ok "the port is free before the timeout=abc start" || fail "port $PORT still held by pid $(listener) before the timeout=abc start"
 RC=0; OUT="$(env GAFFER_DASHBOARD_START_TIMEOUT=abc GAFFER_DATA="$DATA" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard 2>&1)" || RC=$?
 [ "$RC" -eq 0 ] && has "$OUT" "not a whole number" && has "$OUT" "dashboard up" && ok "a non-numeric start timeout falls back to 30 (said)" || fail "timeout=abc: rc=$RC: $OUT"
 has "$OUT" "unbound variable" && fail "raw bash error: $OUT"

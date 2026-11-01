@@ -170,7 +170,7 @@ JS
   grep -q 'NODE_EXTRA_CA_CERTS' "$WG_CALLS" && ok "the fix hint rides on the release reason" || fail "hint missing from the release"
   [ ! -e "$MARKER" ] && ok "the agent was NEVER spawned (zero model calls)" || fail "stub claude ran despite the failed probe"
   [ ! -e "$BOOT_ROOT/newapp" ] && ok "no repo dir created (gate runs before gaffer_bootstrap_init)" || fail "repo dir was created"
-  grep -q 'TICK_RESULT=error' <<<"$OUT" && ok "tick result is error (never a silent no_work)" || fail "unexpected tick result: $(printf '%s' "$OUT" | grep TICK_RESULT)"
+  grep -q 'TICK_RESULT=parked' <<<"$OUT" && ok "tick result is parked (the ticket was parked for a human; never a silent no_work)" || fail "unexpected tick result: $(printf '%s' "$OUT" | grep TICK_RESULT)"
   echo ok > "$MODE"
 else
   gaffer_skip_part "check 9 — crew not built or git missing"

@@ -99,7 +99,7 @@ if grep -q '"submit","7"' "$WG_CALLS" || grep -q '"ticket","move","7","in_review
 else
   ok "B2: no submit / in_review move was attempted"
 fi
-grep -q '^TICK_RESULT=error$' <<<"$OUT" && ok "B3: the tick reports error" || fail "B3: $(printf '%s\n' "$OUT" | grep TICK_RESULT=)"
+grep -q '^TICK_RESULT=parked$' <<<"$OUT" && ok "B3: the tick reports parked (released to blocked for a human)" || fail "B3: $(printf '%s\n' "$OUT" | grep TICK_RESULT=)"
 [ -d "$B_DIR/.git" ] && git -C "$B_DIR" rev-parse --verify --quiet "refs/heads/gaffer/ticket-7-bootstrap-newapp" >/dev/null \
   && ok "B3: the scaffold dir and its delivery branch are kept for the human" || fail "B3: scaffold or branch missing ($(git -C "$B_DIR" branch 2>&1 | tr '\n' ' '))"
 

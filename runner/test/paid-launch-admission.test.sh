@@ -41,12 +41,13 @@ YESTERDAY="2000-01-01T00:00:00Z"
 ledger() { : > "$DATA/usage-ledger.jsonl"; for row in "$@"; do printf '%s\n' "$row" >> "$DATA/usage-ledger.jsonl"; done; }
 calls() { [ -f "$INV" ] && wc -l < "$INV" | tr -d ' ' || echo 0; }
 export GAFFER_DATA="$DATA" CLAUDE_BIN="$WORK/claude" GAFFER_STRICT_REQUIRE=0 STRICT_MODE=0
-unset GAFFER_DAILY_BUDGET_USD GAFFER_BUDGET_USD GAFFER_USAGE_LEDGER
+unset GAFFER_DAILY_BUDGET_USD GAFFER_BUDGET_USD GAFFER_USAGE_LEDGER GAFFER_ALLOW_UNCAPPED
 
 echo "== the shared check (lib/budget-admission.mjs) =="
 adm() { node "$RUNNER_DIR/lib/budget-admission.mjs" check --kind test >/dev/null 2>&1; }
 printf '{}' > "$DATA/settings.json"; ledger "{\"ts\":\"$TODAY\",\"total_cost_usd\":5}"
-adm && ok "no cap configured ⇒ admitted" || fail "no cap should admit"
+adm && fail "no cap configured admitted (paid-launch-cap-required.test.sh)" || ok "no cap configured ⇒ refused, like a live run"
+GAFFER_ALLOW_UNCAPPED=1 adm && ok "no cap + GAFFER_ALLOW_UNCAPPED=1 ⇒ admitted" || fail "the opt-out refused"
 printf '{"GAFFER_DAILY_BUDGET_USD":"1"}' > "$DATA/settings.json"
 adm && fail "daily cap exhausted (settings.json) admitted" || ok "daily cap from settings.json exhausted ⇒ refused"
 ledger "{\"ts\":\"$YESTERDAY\",\"total_cost_usd\":5}"
@@ -82,7 +83,7 @@ done
 _nod_rc=0; (cd "$WORK/elsewhere" && env -u GAFFER_DATA -u GAFFER_USAGE_LEDGER HOME="$WORK/elsewhere" GAFFER_DAILY_BUDGET_USD=1 node "$RUNNER_DIR/lib/budget-admission.mjs" check --kind test >/dev/null 2>&1) || _nod_rc=$?
 [ "$_nod_rc" = 3 ] && ok "a cap with no ledger location (no GAFFER_DATA) ⇒ refused" || fail "a cap with no ledger location admitted (rc=$_nod_rc)"
 printf '{}' > "$DATA/settings.json"
-GAFFER_USAGE_LEDGER=0 adm && ok "no cap configured ⇒ a disabled ledger still admits" || fail "a disabled ledger with no cap refused"
+GAFFER_ALLOW_UNCAPPED=1 GAFFER_USAGE_LEDGER=0 adm && ok "uncapped by opt-out ⇒ a disabled ledger still admits" || fail "a disabled ledger with the opt-out refused"
 rm -f "$DATA/my-ledger.jsonl"
 
 # Exhausted from here on: settings.json caps (what the dashboard writes), ledger above both.

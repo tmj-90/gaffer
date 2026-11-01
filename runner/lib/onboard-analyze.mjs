@@ -3104,6 +3104,10 @@ export function analyzeAndWrite(
     runCardBatchTurn: runCardBatchTurnInjected = (prompt, count) =>
       runCardBatchTurn(prompt, count, env),
     runReviewTurn: runReviewTurnInjected = (prompt) => runCardReviewTurn(prompt, env),
+    // Why the model half must not run at all (the caller's budget admission refused:
+    // no dollar cap, or a cap exhausted). Set → no model call; the mechanical digest
+    // and mechanical-only cards are written and `modelSkipped` says why.
+    skipModel = null,
   } = {},
 ) {
   const cfg = memoryCliConfig(env);
@@ -3123,7 +3127,13 @@ export function analyzeAndWrite(
 
   let understanding = null;
   let usedModel = false;
+  if (skipModel) {
+    // Opened up front: the card and review passes below make no call either.
+    breaker.tripped = true;
+    log(`model analysis skipped: ${skipModel} — writing the mechanical digest and cards`);
+  }
   try {
+    if (skipModel) throw new SkipModel();
     const prompt = buildAnalysisPrompt(material);
     const turn = runTurn(prompt);
     if (turn.timedOut) {
@@ -3146,7 +3156,10 @@ export function analyzeAndWrite(
       }
     }
   } catch (err) {
-    log(`model analysis failed (${err?.message ?? err}) — falling back to a minimal honest digest`);
+    if (!(err instanceof SkipModel))
+      log(
+        `model analysis failed (${err?.message ?? err}) — falling back to a minimal honest digest`,
+      );
   }
 
   if (!understanding) understanding = fallbackUnderstanding(material);
@@ -3233,5 +3246,7 @@ export function analyzeAndWrite(
     // Why model analysis was unavailable (claude's own error line), for the onboard
     // summary + the dashboard run record. Absent when claude worked.
     ...(breaker.error ? { modelError: breaker.error } : {}),
+    ...(skipModel ? { modelSkipped: String(skipModel) } : {}),
   };
 }
+class SkipModel extends Error {}

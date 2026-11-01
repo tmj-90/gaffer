@@ -12,8 +12,13 @@
 // launchers; lib/worker.sh `worker_deliver` for the shell ones calls the CLI below via
 // lib/budget.sh `gaffer_paid_launch_admitted`), so one rule governs them all.
 //
-// Rule (same semantics as budget.sh's gaffer_day_usd_cap_ok / gaffer_budget_headroom_ok):
+// Rule (same semantics as budget.sh's gaffer_spend_cap_ok / gaffer_day_usd_cap_ok /
+// gaffer_budget_headroom_ok):
 //   • a cap that is unset, empty, <= 0 or not a number is OFF;
+//   • NO CAP AT ALL refuses, as a live run does (exploratory finding fresh-user/F-09:
+//     onboarding analysis, Plan a build, Suggest work, the spec author, the merge
+//     resolver and the tester used to launch paid calls with no dollar cap anywhere).
+//     GAFFER_ALLOW_UNCAPPED=1 in the ENVIRONMENT (never settings.json) opts out;
 //   • daily: today's (UTC) spend from the usage ledger must be BELOW the cap;
 //   • lifetime: the whole ledger's spend must be BELOW the budget;
 //   • spend = measured total_cost_usd, else the labelled estimated_cost_usd (killed
@@ -37,6 +42,10 @@ import { fileURLToPath } from "node:url";
 import { ledgerDisabled, resolveLedgerPath } from "./usage-ledger-path.mjs";
 
 export const BUDGET_REFUSED_STATUS = 77;
+
+/** The one-line fix, word for word lib/budget.sh gaffer_spend_cap_hint. */
+export const SPEND_CAP_HINT =
+  "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
 
 function capValue(raw) {
   const s = String(raw ?? "").trim();
@@ -141,8 +150,24 @@ export function paidLaunchAdmission({ kind = "worker", env = process.env, now = 
       kind,
       reason: `budget caps unknowable: ${caps.error} — refusing the paid ${kind} launch (fail closed)`,
     };
-  if (caps.daily === null && caps.lifetime === null)
-    return { ok: true, kind, reason: "no budget cap configured", daily: null, lifetime: null };
+  if (caps.daily === null && caps.lifetime === null) {
+    if (String(env.GAFFER_ALLOW_UNCAPPED ?? "").trim() === "1")
+      return {
+        ok: true,
+        kind,
+        reason: "no budget cap configured (GAFFER_ALLOW_UNCAPPED=1)",
+        daily: null,
+        lifetime: null,
+      };
+    return {
+      ok: false,
+      kind,
+      noCap: true,
+      reason: `a paid ${kind} launch refuses to start without a dollar cap, like a live run — ${SPEND_CAP_HINT}`,
+      daily: null,
+      lifetime: null,
+    };
+  }
   const spend = ledgerSpend(env, now);
   if (spend.unknown)
     return {

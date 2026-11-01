@@ -579,7 +579,13 @@ describe("the real runner planner (bin/decompose.mjs) files an epic on an idle t
     const dir = mkdtempSync(join(tmpdir(), "fb-real-planner-"));
     try {
       const stub = obeyingStub(dir);
-      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_BIN: stub.bin, GAFFER_DATA: dir };
+      // A paid launch needs a dollar cap (runner/lib/budget-admission.mjs); the stub costs nothing.
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        CLAUDE_BIN: stub.bin,
+        GAFFER_DATA: dir,
+        GAFFER_ALLOW_UNCAPPED: "1",
+      };
       for (const k of [
         "CLAUDE_FLAGS",
         "MCP_CONFIG",

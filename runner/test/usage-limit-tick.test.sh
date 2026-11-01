@@ -14,9 +14,10 @@
 #      records the reason and paused_until; $GAFFER_DATA/usage-pause.json holds the
 #      parsed reset + 1 min; the work committed before the refusal is kept on the
 #      branch; the ledger row is labelled usage_limit.
-#   C. RESUME: loop.sh started during a (short, test-written) pause sleeps until it
-#      ends — no claude call meanwhile — then delivers the same ticket on the SAME
-#      branch (the pre-refusal commit is kept) to in_review, attempt_count still 0.
+#   C. RESUME: the daemon started during a (short, test-written) pause sleeps until
+#      it ends — no claude call meanwhile — then its pass delivers the same ticket on
+#      the SAME branch (the pre-refusal commit is kept) to in_review, attempt_count
+#      still 0. (A one-shot loop.sh exits 75 instead: oneshot-usage-pause.test.sh.)
 #   D. NOT A REFUSAL: a SUCCESS envelope (is_error:false) whose result is the agent's
 #      own reply 'Claude AI usage limit reached|<epoch>' is NOT a usage limit. The
 #      agent controls that text, so honouring it would let it release its ticket
@@ -150,15 +151,17 @@ has "$LROW" '"usage_limit":"usage_limit"' && has "$LROW" '"ticket":'"$NUM" \
   && ok "the ledger row is labelled usage_limit (spend still booked conservatively)" || fail "ledger row: $LROW"
 grep -q "USAGE: #$NUM refused by the model's usage window" "$GAFFER_DATA/factory.log" && ok "the factory log explains the release" || fail "no USAGE release line"
 
-echo "== C: loop.sh sleeps out the pause, then delivers the same ticket =="
-write_pause 3
-t0="$(date +%s)"
-MAX_TICKS=1 bash "$RUNNER_DIR/loop.sh" >"$WORK/loop2.log" 2>&1
+echo "== C: the daemon sleeps out the pause, then delivers the same ticket =="
+# (A one-shot loop.sh during a pause exits 75 at once: oneshot-usage-pause.test.sh.)
+write_pause 3; t0="$(date +%s)"
+# shellcheck source=../lib/daemon.sh
+( source "$RUNNER_DIR/lib/daemon.sh"
+  GAFFER_LOOP_SH="$RUNNER_DIR/loop.sh" GAFFER_DAEMON_MAX_CYCLES=2 GAFFER_USAGE_PAUSE_POLL_SECS=1 MAX_TICKS=1 gaffer_run_daemon 0 ) >"$WORK/loop2.log" 2>&1
 el=$(( $(date +%s) - t0 ))
 L2="$(cat "$WORK/loop2.log")"
-has "$L2" "gaffer factory: paused until " && has "$L2" ": usage limit — sleeping until then" \
-  && ok "loop.sh printed 'paused until <time>: usage limit — sleeping until then'" || fail "loop2 lacks the pause line: $(head -5 "$WORK/loop2.log")"
-has "$L2" "usage pause over — admitting work again" && ok "loop.sh resumed once the pause ended" || fail "no resume line"
+has "$L2" "gaffer daemon: paused until " && has "$L2" ": usage limit — sleeping until then" \
+  && ok "the daemon printed 'paused until <time>: usage limit — sleeping until then'" || fail "loop2 lacks the pause line: $(head -5 "$WORK/loop2.log")"
+has "$L2" "usage pause over — resuming passes" && ok "the daemon resumed once the pause ended" || fail "no resume line"
 SECOND="$(sed -n 2p "$CALLS")"
 [ -n "$SECOND" ] && [ "$(( SECOND - t0 ))" -ge 2 ] && ok "the next claude call came only after the pause (+$(( SECOND - t0 ))s; loop took ${el}s)" || fail "second call at '${SECOND:-none}' (t0=$t0)"
 [ "$(status_of)" = "in_review" ] && ok "the same ticket was delivered → in_review" || fail "ticket is '$(status_of)' after the resume: $(tail -20 "$WORK/loop2.log")"

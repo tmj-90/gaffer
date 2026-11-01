@@ -98,7 +98,7 @@ runner/gaffer approve 1 --reviewer <you>   # the human gate, or use the Review s
 runner/gaffer merge 1
 ```
 
-`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
+`runner/gaffer run --daemon` repeats the pass every 30 seconds (`--interval` changes that) until you stop it. If the model's usage window runs out, the ticket goes back to Ready without counting an attempt and the daemon sleeps until the window resets (`gaffer status` says until when). A one-shot `gaffer run` doesn't sleep: it prints `paused until <time>` and exits 75, and the dashboard's Poll for work refuses with the same line. Read `runner/factory.config.sh` before the first live run. It's where the defaults live, and a live run spends real money.
 
 To run it in a container instead, export `ANTHROPIC_API_KEY` (or `CLAUDE_CODE_OAUTH_TOKEN`), put the repos you want worked on under `./repos`, and run `docker compose up -d`. The dashboard comes up on `127.0.0.1:8787` and `docker compose logs dashboard` shows the login link.
 

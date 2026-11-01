@@ -603,8 +603,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
     help:
       "When the model refuses a call on its usage window or a rate limit, the ticket goes " +
       "back to ready without counting an attempt and the factory pauses: no tick claims " +
-      "work, and gaffer run --daemon, the loop and a worker pool sleep until the pause " +
-      "ends. The pause lasts until the reset time the model reported, plus a minute; this " +
+      "work, and gaffer run --daemon sleeps until the pause ends (a one-shot gaffer run " +
+      "stops with exit 75 and the dashboard's Poll refuses). The pause lasts until the reset time the model reported, plus a minute; this " +
       "setting is the wait when no reset time was reported. Default 60. Never less than " +
       "10 minutes (a lower value is raised to 10; a reported reset is also held to at least " +
       "10 minutes and at most 8 days). gaffer status and the Health view show the pause; " +

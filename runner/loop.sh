@@ -241,6 +241,14 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
 
   _pool_setup_error=0
   [ -s "$GAFFER_DATA/.setup-error" ] && { _pool_setup_error=1; gaffer_setup_error_line; }
+  # USAGE WINDOW: a worker that sees a pause stops admitting and exits (worker.sh), so
+  # the pool ends like the serial pass: "paused until <time>", exit 75, no sleep.
+  _pool_usage_paused=0
+  if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
+     && _up_line="$(gaffer_usage_pause_active)"; then
+    _pool_usage_paused=1
+    echo "gaffer factory: $_up_line — the pool stopped admitting work (exit 75). \`gaffer run --daemon\` waits out a pause; lift it early: node $HERE/lib/usage-pause.mjs clear"
+  fi
   echo "gaffer factory: done after $ticks tick(s)."
   if [ -f "$HERE/run-summary.sh" ]; then
     echo
@@ -248,6 +256,7 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   fi
   gaffer_loop_end_ping || true
   [ "$_pool_setup_error" = 1 ] && exit 3
+  [ "$_pool_usage_paused" = 1 ] && exit 75
   exit 0
 fi
 
@@ -265,6 +274,7 @@ fi
 ticks=0
 empties=0
 _setup_error=0
+_usage_paused=0
 # A stop signal ends the run after the current tick (the tick runs in the foreground,
 # so bash runs this trap once it returns; Ctrl-C also reaches the tick's own wrapper).
 # Without it bash carried on to the next tick whenever the reaped tick exited normally.
@@ -273,20 +283,16 @@ trap '_loop_stop=1' INT TERM HUP
 _loop_stopping() { [ "$_loop_stop" = 1 ]; }
 while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # USAGE WINDOW (lib/usage-pause.sh): a model call was refused by the plan's usage
-  # window / a rate limit and $GAFFER_DATA/usage-pause.json says when it resets. Sleep
-  # until then instead of spinning ticks into the refusal; no tick is admitted, so the
-  # day cap, MAX_TICKS and the empty-poll count are untouched while it waits. A stop
-  # signal ends the wait at once; a human who clears the pause early is honoured
-  # within GAFFER_USAGE_PAUSE_POLL_SECS.
+  # window / a rate limit and $GAFFER_DATA/usage-pause.json says when it resets. No tick
+  # is admitted while it holds. This pass ENDS here with exit 75 (EX_TEMPFAIL: try again
+  # after <time>) instead of sleeping: a one-shot `gaffer run` (or a scheduled run)
+  # used to sit for hours (exploratory finding fresh-user/F-13). Waiting out the window
+  # is the daemon's job (lib/daemon.sh reads the same pause before its next pass).
   if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
      && _up_line="$(gaffer_usage_pause_active)"; then
-    echo "gaffer factory: $_up_line — sleeping until then, no new work admitted (lift it early: node $HERE/lib/usage-pause.mjs clear)"
-    if ! gaffer_usage_pause_wait _loop_stopping; then
-      echo "gaffer factory: stop signal — not starting another tick."
-      break
-    fi
-    echo "gaffer factory: usage pause over — admitting work again."
-    continue
+    echo "gaffer factory: $_up_line — stopping this pass, no new work admitted (exit 75). \`gaffer run --daemon\` waits out a pause; lift it early: node $HERE/lib/usage-pause.mjs clear"
+    _usage_paused=1
+    break
   fi
   # LIVE CAPS: the day caps are re-read from the CURRENT config before every
   # admission, so a dashboard edit (lower MAX_TICKS_PER_DAY / GAFFER_DAILY_BUDGET_USD)
@@ -394,4 +400,5 @@ if [ -f "$HERE/run-summary.sh" ]; then
 fi
 gaffer_loop_end_ping || true
 [ "$_setup_error" = 1 ] && exit 3
+[ "$_usage_paused" = 1 ] && exit 75
 exit 0

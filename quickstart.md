@@ -157,8 +157,8 @@ it polls. A dry run is never refused; `GAFFER_ALLOW_UNCAPPED=1` in your environm
 key you cap somewhere else). It is ignored in `settings.json`.
 
 If the model refuses a call because your usage window ran out (or a rate limit hit),
-the ticket goes back to Ready without counting an attempt and the run sleeps until the
-window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
+the ticket goes back to Ready without counting an attempt. A one-shot run stops there
+(exit 75, `paused until <time>`); `--daemon` sleeps until the window resets. `runner/gaffer status` shows `paused until <time>: usage limit`; it lifts
 on its own (`node runner/lib/usage-pause.mjs clear` lifts it early).
 
 A pass on the ticket from step 4 takes a minute or two: the agent claims it, works on a

@@ -31,7 +31,7 @@
 #   • the per-day tick cap (gaffer_day_cap_ok) or the per-day USD cap
 #     (gaffer_day_usd_cap_ok, GAFFER_DAILY_BUDGET_USD) is hit.
 # While a usage-window pause is in force (lib/usage-pause.sh) a worker admits nothing
-# and sleeps until it ends.
+# and stops (loop.sh ends the pass with exit 75; the daemon waits the pause out).
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
@@ -95,14 +95,14 @@ _refund_run_tick() { [ -n "${GAFFER_RUN_TICKS_FILE:-}" ] && gaffer_refund_run_ti
 while ! _should_stop && _reserve_run_tick; do
   # USAGE WINDOW (lib/usage-pause.sh): while the factory is paused on a usage-limit /
   # rate-limit refusal this worker admits nothing — it hands the reserved run tick
-  # back and sleeps until the pause ends (or the pool is told to stop). In-flight
-  # ticks on other workers finish on their own.
+  # back and stops (loop.sh then ends the pass with exit 75; the daemon is what waits
+  # out a pause, a one-shot run never sleeps on it: exploratory finding
+  # fresh-user/F-13). In-flight ticks on other workers finish on their own.
   if [ "${DRY_RUN:-0}" != "1" ] && declare -F gaffer_usage_pause_active >/dev/null 2>&1 \
      && _up_line="$(gaffer_usage_pause_active)"; then
     echo "worker $WORKER_ID: $_up_line — not admitting new work until then." >&2
     _refund_run_tick
-    gaffer_usage_pause_wait _should_stop || break
-    continue
+    break
   fi
   # Per-day cost cap is a SHARED guard — honour it inside every worker so the pool
   # can't collectively blow past MAX_TICKS_PER_DAY. ATOMIC ADMISSION: the slot is

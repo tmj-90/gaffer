@@ -41,6 +41,13 @@ if declare -F gaffer_spend_cap_ok >/dev/null 2>&1 && ! gaffer_spend_cap_ok; then
   echo "TICK_RESULT=no_work"; exit 0
 fi
 if [ "$DRY_RUN" != "1" ]; then
+  # USAGE WINDOW (lib/usage-pause.sh): refuse at once, like a one-shot `gaffer run`
+  # (exploratory finding fresh-user/F-13). The tick's own gate would also refuse, but
+  # only after a day-cap slot was reserved and with no line the dashboard toasts.
+  if declare -F gaffer_usage_pause_active >/dev/null 2>&1 && _up_line="$(gaffer_usage_pause_active)"; then
+    echo "gaffer poll: $_up_line — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
   if declare -F gaffer_day_usd_cap_ok >/dev/null 2>&1 && ! gaffer_day_usd_cap_ok; then
     echo "gaffer poll: per-day USD cap (GAFFER_DAILY_BUDGET_USD=${GAFFER_DAILY_BUDGET_USD:-}, spent \$$(gaffer_day_usd_spent)) reached — not polling." >&2
     echo "TICK_RESULT=no_work"; exit 0

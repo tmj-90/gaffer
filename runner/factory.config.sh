@@ -2530,12 +2530,26 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 # shellcheck source=lib/eval-judge.sh
 [ -f "$RUNNER_DIR/lib/eval-judge.sh" ] && source "$RUNNER_DIR/lib/eval-judge.sh"
 
+# HOST GIT NEVER RUNS REPOSITORY CODE (external review #9, finding 2). Every git the
+# runner runs for bookkeeping (auto-commit, worktrees, fetch/merge/push, status) gets
+# core.hooksPath=/dev/null and core.fsmonitor=false through GIT_CONFIG_COUNT, so an
+# agent's edit to a tracked hook script never executes on the host. tick.sh and land.sh
+# call it again with the ticket's repositories to neutralise drivers/helpers that point
+# into them (lib/git-safe.mjs). The agent's own env is allowlisted, so it never sees these.
+# shellcheck source=lib/git-safe.sh
+if [ -f "$RUNNER_DIR/lib/git-safe.sh" ]; then
+  source "$RUNNER_DIR/lib/git-safe.sh"
+  gaffer_git_harden
+fi
+
 # RE-SOURCE HYGIENE (see the top of this file): record every variable this source
 # newly exported, with its value, so a child's re-source can tell a stale derived
 # value (unchanged → derived afresh from settings.json / the mode / the defaults) from
 # one a parent changed on purpose (kept). Keep this block LAST.
 while IFS= read -r _dk; do
-  case "$_dk" in '' | _GAFFER_*) continue ;; esac
+  # GIT_CONFIG_* / GAFFER_GIT_SAFE_* (lib/git-safe.sh) are a numbered list: re-deriving
+  # some entries and not others would corrupt it, so they are never recorded.
+  case "$_dk" in '' | _GAFFER_* | GIT_CONFIG_* | GAFFER_GIT_SAFE_*) continue ;; esac
   case "$_GAFFER_EXPORTED_AT_START" in *" $_dk "*) continue ;; esac
   printf -v "_GAFFER_DV_$_dk" '%s' "${!_dk}"
   export "_GAFFER_DV_$_dk"

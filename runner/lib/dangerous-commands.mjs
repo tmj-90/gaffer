@@ -325,8 +325,11 @@ export const DANGEROUS_COMMANDS = [
     crewFlags: false,
   },
   {
-    re: /\bgit\b[^\n|;&]*\bconfig\b[^\n|;&]*\b(core\.hooksPath|core\.fsmonitor|core\.sshCommand|alias\.[\w-]+)\b/,
-    why: "git config of an execution-hijacking key (hooksPath/fsmonitor/sshCommand/alias)",
+    // External review #9: every key whose value git EXECUTES (hooks, fsmonitor, drivers,
+    // filters, helpers, includes that can pull any of them in). The runner's host git
+    // neutralises these too (lib/git-safe.mjs); this keeps an agent from planting one.
+    re: /\bgit\b[^\n|;&]*\bconfig\b[^\n|;&]*\b(core\.(?:hooksPath|fsmonitor|sshCommand|askPass|gitProxy|alternateRefsCommand)|alias\.[\w-]+|filter\.[^\s=]+\.(?:clean|smudge|process)|diff\.[^\s=]+\.(?:textconv|command)|diff\.external|merge\.[^\s=]+\.driver|include\.path|includeIf\.[^\s=]+\.path|credential\.(?:[^\s=]+\.)?helper|gpg\.(?:[^\s=]+\.)?program|trailer\.[^\s=]+\.(?:command|cmd)|remote\.[^\s=]+\.(?:uploadpack|receivepack)|lfs\.customtransfer\.[^\s=]+\.path)\b/i,
+    why: "git config of an execution-hijacking key (hooksPath/fsmonitor/sshCommand/alias/a filter, diff or merge driver/include/credential helper/gpg program)",
     example: "git config core.hooksPath /tmp/evil",
     crewFlags: false,
   },
@@ -334,8 +337,8 @@ export const DANGEROUS_COMMANDS = [
     // The `-c key=value` INLINE-config form hijacks execution for a single
     // command WITHOUT ever running `git config`, so the rule above misses it:
     // `git -c core.hooksPath=./h commit` runs an attacker-planted hook on commit.
-    re: /\bgit\b[^\n|;&]*\s-c\s+(?:core\.hooksPath|core\.fsmonitor|core\.sshCommand|alias\.[\w-]+)\s*=/i,
-    why: "git -c inline config of an execution-hijacking key (hooksPath/fsmonitor/sshCommand/alias)",
+    re: /\bgit\b[^\n|;&]*\s-c\s+(?:core\.(?:hooksPath|fsmonitor|sshCommand|askPass|gitProxy|alternateRefsCommand)|alias\.[\w-]+|filter\.[^\s=]+\.(?:clean|smudge|process)|diff\.[^\s=]+\.(?:textconv|command)|diff\.external|merge\.[^\s=]+\.driver|include\.path|includeIf\.[^\s=]+\.path|credential\.(?:[^\s=]+\.)?helper|gpg\.(?:[^\s=]+\.)?program|trailer\.[^\s=]+\.(?:command|cmd)|remote\.[^\s=]+\.(?:uploadpack|receivepack)|lfs\.customtransfer\.[^\s=]+\.path)\s*=/i,
+    why: "git -c inline config of an execution-hijacking key (hooksPath/fsmonitor/sshCommand/alias/a filter, diff or merge driver/include/credential helper/gpg program)",
     example: "git -c core.hooksPath=/tmp/evil commit -m x",
     crewFlags: false,
   },

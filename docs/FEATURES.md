@@ -770,7 +770,10 @@ launch the agent rather than run it uncontained. The provider is auto-detected
 (`sandbox-exec` on macOS, `docker` where a Docker CLI exists). Under `docker` the
 container works in its own git repository: it can commit, but only the ticket's own
 branch comes back to your repository when it exits, so nothing run inside can move
-`main` or tag a release.
+`main` or tag a release. On the host, the runner's own git (the auto-commit, the
+landing) never runs your repository's hooks or any filter, driver or helper that
+points into the checkout, and the agent cannot edit hook scripts or repository git
+config at all.
 
 ![The Settings panel](img/settings.png)
 

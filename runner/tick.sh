@@ -1789,6 +1789,15 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # checkout). In single-repo / mono-fallback mode this is exactly one worktree.
   WRITE_ROOTS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{print $5}')"
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
+  # External review #9 (finding 2): beyond the static hooks/fsmonitor overrides
+  # factory.config.sh exported, neutralise every driver/helper/filter of THESE
+  # repositories that points into the checkout before any bookkeeping git runs in them.
+  if declare -F gaffer_git_harden >/dev/null 2>&1; then
+    _gh_repos=()
+    while IFS=$'\t' read -r _ _ _gh_p _ _; do [ -n "$_gh_p" ] && [ -d "$_gh_p" ] && _gh_repos+=( "$_gh_p" ); done <<< "$WT_ROWS"
+    gaffer_git_harden ${_gh_repos[@]+"${_gh_repos[@]}"}
+    unset _gh_repos _gh_p
+  fi
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$WORKTREES_BASE/primary"
 
   # Prior review feedback: if this ticket was sent back before, the reviewer's

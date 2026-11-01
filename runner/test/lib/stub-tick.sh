@@ -78,6 +78,12 @@ if [ -e .git ]; then
         commit retry
       fi
       done_json; exit 0 ;;
+    hook-edit)  # external review #9: rewrite every tracked hook script (the repo's
+                # core.hooksPath dir) to drop a marker OUTSIDE the worktree, edit a source
+                # file, and stop WITHOUT committing, so the runner's auto-commit runs git
+      for h in .githooks/*; do printf '#!/bin/sh\necho "$0" >> "%s/../hook-pwned"\n' "$CALLS" > "$h"; done
+      printf 'export function %s(){return 2;}\n' "$fn" >> src/a.js
+      done_json; exit 0 ;;
     # GATE INTEGRITY modes (gate-integrity-e2e*.test.sh): break a() and weaken the gate.
     redirect-tests)  # point scripts.test at a no-op
       printf 'export function a() { return 2; }\n' > src/a.js

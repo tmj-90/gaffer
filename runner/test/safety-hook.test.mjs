@@ -2701,6 +2701,127 @@ else failures.push("ALLOW expected: whitespace-only stdin parses as {} and stays
   for (const d of [CT_ROOT, ledgerDir, lone]) rmSync(d, { recursive: true, force: true });
 }
 
+// --- GIT EXECUTION SURFACE (external review #9, finding 2) -------------------
+// With a tracked, relative core.hooksPath the hook allowed an edit to the pre-commit
+// script, and the runner's auto-commit then ran it on the host. Hook scripts, repo
+// git config files that git reads (include.path, .gitconfig, .lfsconfig) and a
+// .gitattributes driver assignment are now refused with a reason that says why.
+{
+  const G = realpathSync(gafferMkdtemp(resolve(tmpdir(), "gaffer-gitexec-")));
+  const repo = resolve(G, "repo");
+  const wt = resolve(G, "wt");
+  const sh = (args, cwd = repo) =>
+    spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  mkdirSync(resolve(repo, ".githooks"), { recursive: true });
+  mkdirSync(resolve(repo, "tools"), { recursive: true });
+  mkdirSync(resolve(repo, "src"), { recursive: true });
+  writeFileSync(resolve(repo, ".githooks/pre-commit"), "#!/bin/sh\nexit 0\n");
+  writeFileSync(resolve(repo, "tools/git.conf"), "[core]\n\tautocrlf = false\n");
+  writeFileSync(resolve(repo, "src/a.js"), "export const a = 1;\n");
+  writeFileSync(resolve(repo, ".gitattributes"), "*.png binary\n");
+  sh(["init", "-q", "-b", "main"]);
+  sh(["add", "-A"]);
+  sh(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed"]);
+  sh(["config", "core.hooksPath", ".githooks"]);
+  sh(["config", "include.path", "../tools/git.conf"]);
+  sh(["worktree", "add", "-q", "-b", "gaffer/ticket-1", wt, "main"]);
+  const env = { GAFFER_WRITE_ROOTS: wt, GAFFER_READ_ROOTS: "" };
+  const reasonOf = (payload) => decide(payload, { env: { ...process.env, ...env }, cwd: wt });
+  const expectDeny = (label, payload, re) => {
+    const r = reasonOf(payload);
+    if (r.exitCode === 2 && re.test(r.reason ?? "")) passed += 1;
+    else
+      failures.push(
+        `GIT-EXEC DENY expected (${re}) but got exit ${r.exitCode} "${r.reason ?? ""}": ${label}`,
+      );
+  };
+  const expectAllow = (label, payload) => {
+    const r = reasonOf(payload);
+    if (r.exitCode === 0) passed += 1;
+    else
+      failures.push(
+        `GIT-EXEC ALLOW expected but got exit ${r.exitCode} "${r.reason ?? ""}": ${label}`,
+      );
+  };
+  const W = (f, content = "x") => ({
+    tool_name: "Write",
+    tool_input: { file_path: resolve(wt, f), content },
+  });
+  const E = (f, n) => ({
+    tool_name: "Edit",
+    tool_input: { file_path: resolve(wt, f), old_string: "a", new_string: n },
+  });
+  expectDeny(
+    "Write the core.hooksPath pre-commit",
+    W(".githooks/pre-commit", "#!/bin/sh\ntouch /tmp/x\n"),
+    /git hook script/,
+  );
+  expectDeny(
+    "Edit the core.hooksPath pre-commit",
+    E(".githooks/pre-commit", "touch /tmp/x"),
+    /git hook script/,
+  );
+  expectDeny("Write a new hook in core.hooksPath", W(".githooks/post-checkout"), /git hook script/);
+  expectDeny(
+    "Write .husky/pre-commit (no config needed)",
+    W(".husky/pre-commit"),
+    /git hook script/,
+  );
+  expectDeny(
+    "Write the included git config",
+    W("tools/git.conf", "[core]\n\thooksPath = x\n"),
+    /git config file the repository includes/,
+  );
+  expectDeny(
+    "Write .gitconfig",
+    W(".gitconfig", '[filter "x"]\n\tclean = ./e.sh\n'),
+    /repository git config/,
+  );
+  expectDeny("Write .lfsconfig", W(".lfsconfig"), /repository git config/);
+  expectDeny("Write lefthook.yml", W("lefthook.yml"), /hook manager/);
+  expectDeny(
+    ".gitattributes assigns a filter",
+    E(".gitattributes", "*.js filter=evil"),
+    /filter, diff or merge driver/,
+  );
+  expectDeny(
+    ".gitattributes assigns a merge driver",
+    W(".gitattributes", "*.lock merge=evil\n"),
+    /driver/,
+  );
+  expectAllow(".gitattributes without a driver", E(".gitattributes", "*.png binary\n*.svg -diff"));
+  expectAllow("an ordinary source edit", W("src/a.js", "export const a = 2;\n"));
+  const B = (command) => ({ tool_name: "Bash", tool_input: { command } });
+  expectDeny(
+    "bash redirect into the hook",
+    B("echo 'touch /tmp/x' >> .githooks/pre-commit"),
+    /git hook script/,
+  );
+  expectDeny("bash cp over the hook", B("cp src/a.js .githooks/pre-commit"), /git hook script/);
+  expectDeny("bash .gitattributes driver", B("echo '* filter=evil' >> .gitattributes"), /driver/);
+  expectAllow("bash .gitattributes without a driver", B("echo '*.png binary' >> .gitattributes"));
+  expectDeny(
+    "git config of a filter",
+    B("git config filter.evil.clean ./e.sh"),
+    /execution-hijacking/,
+  );
+  expectDeny(
+    "git config include.path",
+    B("git config include.path ../x.conf"),
+    /execution-hijacking/,
+  );
+  expectDeny(
+    "git -c diff textconv",
+    B("git -c diff.x.textconv=./e.sh log -p"),
+    /execution-hijacking/,
+  );
+  expectAllow(
+    "git -c core.editor (agent-local, no host effect)",
+    B("git -c core.editor=true commit --amend --no-edit"),
+  );
+  rmSync(G, { recursive: true, force: true });
+}
+
 if (failures.length) {
   console.error(`FAIL — ${failures.length} failed, ${passed} passed`);
   for (const f of failures) console.error("  ✗ " + f);

@@ -168,6 +168,12 @@ import {
   replayProof,
 } from "../lib/tester-replay.mjs";
 import { mergeMessage, provenanceTrailers } from "../lib/provenance-trailers.mjs";
+import { hardenGitEnv } from "../lib/git-safe.mjs";
+
+// External review #9 (finding 2): every git this process runs (and every child it
+// spawns) carries core.hooksPath=/dev/null and core.fsmonitor=false; main() adds the
+// ticket's repositories once they are known (lib/git-safe.mjs).
+hardenGitEnv(process.env);
 
 // node:sqlite is only reachable via createRequire in an ESM module.
 const require = createRequire(import.meta.url);
@@ -2617,6 +2623,7 @@ function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
       why("its checkout or delivery branch is not available");
       continue;
     }
+    hardenGitEnv(process.env, [r.localPath]);
     const tree = inspectWorkingTree(r.localPath);
     if (tree.dirty) {
       why(`the live checkout has uncommitted changes (${tree.summary})`);
@@ -2818,6 +2825,9 @@ function main() {
     );
     return;
   }
+  // Neutralise the drivers/helpers/filters that point into the repositories this landing
+  // touches before the first git runs in them.
+  hardenGitEnv(process.env, [repo.localPath]);
 
   // The worktree the resolver WOULD use (deterministic so the dry-run argv matches the
   // live one).

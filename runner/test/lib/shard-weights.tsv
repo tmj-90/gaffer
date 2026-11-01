@@ -279,3 +279,4 @@
 1	worktree-key-golden.test.sh
 30	resume-dry-run.test.sh
 20	paid-launch-admission.test.sh
+30	git-hooks-host.test.sh

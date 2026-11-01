@@ -346,6 +346,9 @@ _gaffer_land_one() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}" _RID="${7:-}" _RSEC="${8:-0}"
   local _CR_BASE _RPR _mrc _prc _mgrc
   _MERGED_VIA="local"
+  # External review #9 (finding 2): every git below runs in the operator's checkout with
+  # its hooks, fsmonitor and in-repo drivers/helpers neutralised (lib/git-safe.sh).
+  declare -F gaffer_git_harden >/dev/null 2>&1 && gaffer_git_harden "$RREPO"
   # ACCEPTANCE GATE: never land code the tester did not run, and merge exactly the commit
   # the decision names (_TB_PIN) — see lib/tester-binding.mjs, shared with merge-ticket.mjs.
   if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH" "$_RID" "$_RSEC"; then

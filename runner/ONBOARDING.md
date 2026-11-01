@@ -76,7 +76,7 @@ runner/gaffer onboard /path/to/repo --standalone   # register as its own single-
 ```bash
 runner/gaffer status               # what's registered + running + what needs you
 runner/gaffer dashboard            # start the web UI (prints a login URL)
-runner/gaffer demo                 # the Factory Map showcase (DRY_RUN)
+runner/gaffer demo                 # one dry tick over a showcase repo (fresh temp dir; DRY_RUN)
 runner/gaffer wg decisions resolve <id> --answer "…"   # answer a decision from the terminal
 runner/gaffer help
 ```

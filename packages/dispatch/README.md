@@ -72,6 +72,20 @@ pnpm cli -- expire-claims            # system recovery: release stale claims
 (Use `-- --db <path>` or `DISPATCH_DB=<path>` to choose the database;
 default is `./.dispatch/dispatch.sqlite`.)
 
+### Startup
+
+The runner spawns `dispatch` dozens of times per tick, so its startup is kept small.
+`--version` and `-v` print before anything else loads. The command tree (every name,
+option and help line) is built from light modules only, so `--help` and
+`help <command>` never load the database layer or zod. An action loads those in a
+preAction hook just before it runs (`src/cli/runtime.ts`); a new command module
+imports only light modules and reaches the database through `runtime.ts`
+(`test/cli-lazy-load.test.ts` fails otherwise). The CLI, API and MCP entries turn on
+Node's compile cache first (`$NODE_COMPILE_CACHE`, else `<tmpdir>/node-compile-cache`;
+`NODE_DISABLE_COMPILE_CACHE=1` turns it off), and a database already at the current
+schema version opens without running any schema SQL unless a table or index is
+missing. `node scripts/bench-cli.mjs` prints the median startup of the common calls.
+
 ### Output, errors and exit codes
 
 Every command prints JSON on stdout, except `doctor`, `stats`, `human-queue` and the

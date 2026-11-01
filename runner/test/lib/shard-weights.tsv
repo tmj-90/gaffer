@@ -24,13 +24,18 @@
 # (external review #8; Linux alone: 77s / 81s / 169s / 34s, scaled like the others;
 # replay-recovery: 61s alone once it gained the merge-lane and red-replay cases).
 # landing-revocation-window: ESTIMATE (Linux alone: 40s, scaled like the others).
+# land-tester-replay-proof: split out of land-tester-replay (sections G-K) once the one
+# file passed run.sh's 600s long cap on ubuntu (CI run 41322221909). ESTIMATES: the old
+# 270 scaled by the ~25% the cleanup-ownership checks and the auth probe added, shared
+# by the split's measured ratio (Linux, both at once under shared load: 875s / 748s).
 171	merge-lane.test.sh
 110	landing-revocation.test.sh
 57	landing-revocation-window.test.sh
 110	secondary-pr-landing.test.sh
 200	cleanup-ownership.test.sh
 80	replay-recovery.test.mjs
-270	land-tester-replay.test.sh
+180	land-tester-replay.test.sh
+155	land-tester-replay-proof.test.sh
 161	direct-run-isolation.test.sh
 150	gate-integrity-e2e.test.sh
 150	gate-integrity-e2e-retry.test.sh

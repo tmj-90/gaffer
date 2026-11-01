@@ -8,7 +8,7 @@ import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { listEvents } from "../src/events/eventWriter.js";
 import { EVAL_JUDGED_EVENT } from "../src/services/evalJudgment.js";
-import { TestClock } from "../src/util/clock.js";
+import { systemClock, TestClock } from "../src/util/clock.js";
 import { errorCode, runCli } from "./helpers/cli.js";
 import { giveTicketRealDelivery, nonEmptyDiffRunner } from "./helpers/realDiff.js";
 
@@ -114,6 +114,23 @@ describe("eval judge verdict on the ticket", () => {
     expect(packet.judge).toMatchObject({ overall: "borderline", summary: RECORD.summary });
     // Telemetry: recording it moved nothing.
     expect(wg.view(id).ticket.status).toBe("in_review");
+  });
+
+  it("recording a grade moves the ticket's updated_at (the Review view re-reads on it), nothing else", () => {
+    const wg = Dispatch.open(":memory:", systemClock, nonEmptyDiffRunner, {
+      testingEnabled: false,
+    });
+    const agent = wg.registerAgent({ display_name: "a" }, human);
+    const id = readyTicket(wg);
+    toReview(wg, id, agent.id, true);
+    const before = wg.view(id).ticket;
+    step();
+    wg.recordEvalJudgment(id, RECORD, system);
+    const after = wg.view(id).ticket;
+    expect(after.updated_at > before.updated_at).toBe(true);
+    expect(after.status).toBe(before.status);
+    expect(after.row_version).toBe(before.row_version);
+    expect(after.attempt_count).toBe(before.attempt_count);
   });
 
   it("a judgment of an earlier attempt is not this delivery's", () => {

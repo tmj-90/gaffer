@@ -1986,12 +1986,19 @@ export class Dispatch {
     assertMayRecordJudgment(actor);
     const ticket = this.resolveTicket(ref);
     const judgment = normalizeJudgment(input, ticket.attempt_count);
-    const eventId = writeEvent(this.db, {
-      entity_type: "ticket",
-      entity_id: ticket.id,
-      actor,
-      event_type: EVAL_JUDGED_EVENT,
-      payload: judgment,
+    const eventId = inTransaction(this.db, () => {
+      const id = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: EVAL_JUDGED_EVENT,
+        payload: judgment,
+      });
+      // The Review view shows the grade, and it (and its packet cache) re-reads a ticket
+      // only when its updated_at moves: bump it so an open page shows the grade. Nothing
+      // else changes: no status, no row_version, no gate input.
+      this.tickets.touch(ticket.id, this.clock.now());
+      return id;
     });
     return { ticketId: ticket.id, eventId, judgment };
   }

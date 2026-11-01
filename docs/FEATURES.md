@@ -298,7 +298,12 @@ structural barrier the whole design hangs on.
   it is worth that on your factory is measured: after 20 or more reviewed deliveries,
   `gaffer eval agreement` pairs each score with what you did (accepted or sent back,
   and why) and says whether the score separated them, with the misses to read. See
-  [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having).
+  [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having). The grade is
+  recorded a moment after the delivery reaches review, and recording it marks the
+  ticket changed, so a Review page that is already open redraws with it. A CI result
+  does not do that yet: one recorded while the page is open shows after the ticket
+  next changes or you reload, and an approval made in the meantime is still checked
+  against CI on the server, which says so if it refuses.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.

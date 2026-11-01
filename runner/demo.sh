@@ -1,13 +1,34 @@
 #!/usr/bin/env bash
 # Gaffer factory — self-contained showcase. Seeds the two MCP servers (memory +
-# work), proves both are live, and runs ONE dry-run delivery tick end to end.
+# work) in a throwaway factory, proves both are live, and runs ONE dry-run tick over
+# a showcase repo (the tick previews the delivery; it is not the whole loop).
 # Safe: DRY_RUN stays on — no Claude is invoked and no repo is mutated.
+#
+# Where: DEMO_DIR, else a FRESH temp dir (mktemp, checked) each run, printed at the
+# end. It used to default to one fixed, shared /tmp path that it `rm -rf`d
+# first, and it wrote its MCP ping script into packages/memory inside the checkout.
+# Nothing is written inside the checkout now (the ping is runner/lib/mcp-ping.mjs). A
+# DEMO_DIR you name is only ever cleared when it is empty or a previous demo's (it
+# holds the .gaffer-demo marker); anything else is refused.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Isolated showcase state (set before sourcing config so these win).
-DEMO="${DEMO_DIR:-/tmp/gaffer-showcase}"
-rm -rf "$DEMO"; mkdir -p "$DEMO/repo"
+if [ -n "${DEMO_DIR:-}" ]; then
+  DEMO="$DEMO_DIR"
+  if [ -d "$DEMO" ] && [ -n "$(ls -A "$DEMO" 2>/dev/null)" ]; then
+    [ -f "$DEMO/.gaffer-demo" ] || { echo "DEMO_DIR=$DEMO is not empty and is not a previous demo (no .gaffer-demo marker) — refusing to clear it; name a new or empty directory" >&2; exit 2; }
+    _demo_real="$(cd "$DEMO" && pwd -P)"; _home_real="$(cd "$HOME" 2>/dev/null && pwd -P)"; _root_real="$(cd "$HERE/.." && pwd -P)"
+    case "$_demo_real" in
+      /|"$_home_real"|"$_root_real"|"$_root_real"/*) echo "DEMO_DIR=$DEMO is /, your home or inside the checkout — refusing" >&2; exit 2 ;;
+    esac
+    rm -rf "${_demo_real:?}"/* "${_demo_real:?}"/.[!.]* 2>/dev/null || true
+  fi
+else
+  DEMO="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-demo.XXXXXX")" || { echo "could not create a temp dir for the demo" >&2; exit 1; }
+  [ -n "$DEMO" ] && [ -d "$DEMO" ] || { echo "could not create a temp dir for the demo" >&2; exit 1; }
+fi
+mkdir -p "$DEMO/repo"; : > "$DEMO/.gaffer-demo"
 # Self-contained: set the identity on the commit itself (-c) so the demo works on a
 # fresh machine with no global git user.name/email configured.
 ( cd "$DEMO/repo" && git init -q \
@@ -41,20 +62,8 @@ node "$CREW_DIR/dist/cli/index.js" init -d "$GAFFER_DATA" -n showcase >/dev/null
 echo "  ticket #1 ready, linked to repo 'demo' (node)"
 
 line "3 ▸ The two MCP servers are real (live stdio handshake)"
-PING="$MEMORY_DIR/.demo-ping.mjs"
-cat > "$PING" <<'EOF'
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-const [label, arg, k, v] = process.argv.slice(2);
-const c = new Client({ name: "ping", version: "0" }, { capabilities: {} });
-await c.connect(new StdioClientTransport({ command: "node", args: [arg], env: { ...process.env, [k]: v } }));
-const tools = (await c.listTools()).tools.map((t) => t.name);
-console.log(`  ${label}: ${tools.length} tools — ${tools.join(", ")}`);
-await c.close();
-EOF
-node "$PING" "dispatch-mcp" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB"
-node "$PING" "memory-mcp" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB"
-rm -f "$PING"
+printf '  dispatch-mcp: %s\n' "$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" --names)"
+printf '  memory-mcp: %s\n' "$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" --names)"
 
 line "4 ▸ One factory tick (DRY-RUN — nothing is invoked or mutated)"
 bash "$HERE/tick.sh" 2>&1 | sed 's/^[0-9T:-]* //; s#'"$HERE"'#runner#g' | grep -vE '^TICK_RESULT'
@@ -63,3 +72,4 @@ line "▸ Live run: review $HERE/factory.config.sh, then  $HERE/gaffer run   (LI
 # This demo's ticket lives in the showcase db, not the factory's — name it, or
 # `gaffer wg ticket show 1` would show the operator's OWN ticket #1.
 echo "  Audit trail: DISPATCH_DB=$DISPATCH_DB $HERE/gaffer wg ticket show 1"
+echo "  Showcase factory: $DEMO   (yours to delete; DEMO_DIR=<dir> picks the place)"

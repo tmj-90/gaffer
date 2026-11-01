@@ -9,7 +9,7 @@
 #                                     token, start fresh; --stop = stop it; --lan = token-protected,
 #                                     on your LAN; --foreground = run in THIS process for supervisors)
 #   gaffer status                     what's registered + what's running
-#   gaffer demo                       run the Factory Map showcase (DRY_RUN)
+#   gaffer demo                       one dry tick over a showcase repo (a fresh temp dir; DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
 #   gaffer eval [--json]              delivery-quality metrics (pass rate · memory score gap · cost/pass)
 #   gaffer run [--dry-run] [--daemon] [--interval N]
@@ -74,7 +74,7 @@ usage() {
     dashboard) echo "usage: gaffer dashboard [--restart] [--stop] [--lan] [--foreground]   (--restart rotates the login token)" ;;
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
-    demo)      echo "usage: gaffer demo   (the Factory Map showcase; always DRY_RUN, nothing spent)" ;;
+    demo)      echo "usage: gaffer demo   (one dry tick over a showcase repo in a fresh temp dir, or DEMO_DIR; always DRY_RUN, nothing spent)" ;;
     eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>]" ;;
     approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)" ;;

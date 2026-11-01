@@ -136,7 +136,7 @@ The factory works tickets through **plan → implement → test → review**, ea
 git worktree, behind a deterministic safety hook.
 
 ```bash
-runner/gaffer demo                    # watch the whole loop, dry-run (never touches a repo or calls Claude)
+runner/gaffer demo                    # one dry tick over a showcase repo (a fresh temp dir; never touches your repos or calls Claude)
 DRY_RUN=1 bash runner/tick.sh         # preview a single tick
 ```
 

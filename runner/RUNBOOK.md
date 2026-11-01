@@ -178,8 +178,8 @@ request).
 ## 6. See the whole loop WITHOUT going live
 
 ```bash
-runner/gaffer demo          # seeds a throwaway showcase factory (/tmp/gaffer-showcase), proves both
-                            # MCP servers are live, runs ONE dry-run tick — always DRY_RUN, no agent
+runner/gaffer demo          # seeds a throwaway showcase factory (a fresh mktemp dir, or DEMO_DIR), proves
+                            # both MCP servers are live, runs ONE dry-run tick — always DRY_RUN, no agent
 runner/gaffer run --dry-run # one supervisor pass over YOUR ready queue, preview only
 ```
 

@@ -17,7 +17,7 @@
 # added two repos' worth of deliveries to each (Linux, -j 2: 391s / 172s) and the
 # reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
 # rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
-# dashboard-lifecycle, gaffer-colour: ESTIMATES (Linux, -j 2: 37s / 13s).
+# dashboard-lifecycle, gaffer-colour, demo-isolation: ESTIMATES (Linux, -j 2: 37s / 13s / 48s).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
@@ -45,6 +45,7 @@
 58	e2e-per-path-stack-routing.test.sh
 55	e2e-memory-routing.test.sh
 52	rework-final-trail.test.sh
+48	demo-isolation.test.sh
 45	rework-cost-live.test.sh
 40	dashboard-lifecycle.test.sh
 40	eval-replay.test.sh

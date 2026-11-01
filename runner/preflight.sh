@@ -88,18 +88,9 @@ SK=$(find "$SKILLS_DIR" -name SKILL.md 2>/dev/null | wc -l | tr -d ' ')
 
 # Live MCP handshake (best-effort; only if servers are built)
 if [ -f "$MEMORY_MCP_BIN" ] && command -v node >/dev/null; then
-  PING="$MEMORY_DIR/.preflight-ping.mjs"
-  cat > "$PING" <<'EOF'
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-const [arg,k,v]=process.argv.slice(2);
-const c=new Client({name:"pf",version:"0"},{capabilities:{}});
-await c.connect(new StdioClientTransport({command:"node",args:[arg],env:{...process.env,[k]:v}}));
-console.log((await c.listTools()).tools.length); await c.close();
-EOF
-  WT=$(node "$PING" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" 2>/dev/null || echo 0)
-  LT=$(node "$PING" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" 2>/dev/null || echo 0)
-  rm -f "$PING"
+  # runner/lib/mcp-ping.mjs: a committed helper (nothing is written into packages/memory).
+  WT=$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$DISPATCH_DIR/dist/mcp/bin.js" DISPATCH_DB "$DISPATCH_DB" 2>/dev/null || echo 0)
+  LT=$(MEMORY_DIR="$MEMORY_DIR" node "$HERE/lib/mcp-ping.mjs" "$MEMORY_MCP_BIN" MEMORY_DB "$MEMORY_DB" 2>/dev/null || echo 0)
   [ "${WT:-0}" -ge 1 ] && ok "dispatch-mcp responds ($WT tools)" || no "dispatch-mcp did not respond"
   [ "${LT:-0}" -ge 1 ] && ok "memory-mcp responds ($LT tools)" || no "memory-mcp did not respond"
 fi

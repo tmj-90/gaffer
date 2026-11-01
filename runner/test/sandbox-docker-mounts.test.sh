@@ -85,7 +85,7 @@ has_mount "$COMMON/objects:$COMMON/objects:ro" && ok ".git/objects mounted READ-
 has_mount "$COMMON/objects:$COMMON/objects:rw" && fail ".git/objects must not be rw" || ok ".git/objects not writable"
 has_mount "$COMMON/refs:$COMMON/refs:rw"    && fail ".git/refs must not be rw (external review #9)" || ok ".git/refs not writable"
 has_mount "$COMMON/logs:$COMMON/logs:rw"    && fail ".git/logs must not be rw" || ok ".git/logs not writable"
-grep -qE -- "^$GAFFER_DATA/sandbox-git\.[^:]+:$GITDIR:rw\$" <<<"$ARGV" && ok "a private git dir is mounted rw at the worktree's gitdir path" || fail "private git dir mount at $GITDIR missing"
+grep -qE -- "^$GAFFER_DATA/sandbox-git/sandbox-git\.[^:]+:$GITDIR:rw\$" <<<"$ARGV" && ok "a private git dir is mounted rw at the worktree's gitdir path" || fail "private git dir mount at $GITDIR missing"
 has_mount "$GITDIR:$GITDIR:rw"              && fail "the host's own worktree git dir must not be rw" || ok "host .git/worktrees/<this> not mounted"
 grep -qxF -- "$COMMON/config:$COMMON/config:rw" <<<"$ARGV" && fail ".git/config must not be rw" || ok ".git/config is not writable"
 has_arg "GIT_CONFIG_KEY_0=safe.directory" && ok "git safe.directory set for the uid-mismatched mounts" || fail "safe.directory env missing"
@@ -172,9 +172,9 @@ ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_SANDBOX_PROFILE=validation GAFFER_MCP_BR
   bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- bash -c 'pnpm test' 2>"$WORK/stderr.val")"
 # The worktree itself lives under $GAFFER_DATA/worktrees — that rw mount is the point;
 # NOTHING ELSE under $GAFFER_DATA may be referenced.
-# (The worktree's private git dir is built under $GAFFER_DATA/sandbox-git.* but mounted at
+# (The worktree's private git dir is built under $GAFFER_DATA/sandbox-git/ but mounted at
 # the gitdir path in the repo's .git: it is fresh, not any of $GAFFER_DATA's contents.)
-_beyond() { grep -F -- "$GAFFER_DATA" <<<"$ARGV" | grep -vF -- "$WT" | grep -vE -- "^$GAFFER_DATA/sandbox-git\.[^:]+:$GITDIR:rw\$"; }
+_beyond() { grep -F -- "$GAFFER_DATA" <<<"$ARGV" | grep -vF -- "$WT" | grep -vE -- "^$GAFFER_DATA/sandbox-git/sandbox-git\.[^:]+:$GITDIR:rw\$"; }
 [ -n "$(_beyond)" ] && fail "validation profile references GAFFER_DATA beyond the worktree: $(_beyond | head -3 | tr '\n' ' ')" || ok "validation: NOTHING under GAFFER_DATA but the worktree is mounted (no DBs, no ledgers, no socket)"
 has_mount "$WT:$WT:rw" && ok "validation: the worktree (the tests) is mounted rw" || fail "validation: worktree mount missing"
 has_arg ANTHROPIC_API_KEY && fail "validation profile forwards the model credential" || ok "validation: ANTHROPIC_API_KEY NOT forwarded (a test suite needs no model)"

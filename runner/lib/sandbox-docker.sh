@@ -366,8 +366,14 @@ _shadow_config() {  # <host-worktree> <private-git-dir>: the ONLY config the pri
   rm -f "$sd/objects/info/alternates" "$sd/objects/info/http-alternates" 2>/dev/null || true
   printf '%s\n' "$_common/objects" > "$sd/objects/info/alternates"
 }
-_GIT_PRIV_BASE="${GAFFER_DATA:-${TMPDIR:-/tmp}}"
+# All private dirs live in ONE parent, made before any mask is computed: in the legacy
+# layout $GAFFER_DATA is mounted rw with its top-level entries masked as they are at
+# start, so a sibling delivery's private dir made later directly in $GAFFER_DATA would be
+# visible and writable here (and that sibling's import fetches from it). Its parent is a
+# masked entry instead, so every private dir but this container's own stays hidden.
+_GIT_PRIV_BASE="${GAFFER_DATA:-${TMPDIR:-/tmp}}/sandbox-git"
 mkdir -p "$_GIT_PRIV_BASE" 2>/dev/null || true
+chmod 700 "$_GIT_PRIV_BASE" 2>/dev/null || true
 for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   [ -f "$_wr/.git" ] || continue          # only LINKED worktrees have a .git FILE
   if ! _verified_linked_worktree "$_wr"; then

@@ -97,6 +97,28 @@ for mode in none legacy validation; do
   fi
 done
 
+echo "== (1b) legacy layout: another delivery's private git dir is never reachable =="
+# Legacy mode mounts $GAFFER_DATA rw and masks the entries that exist when the container
+# starts. A sibling delivery's private git dir, made later, must not appear in that mount
+# (its import would fetch whatever this container wrote there): the private dirs live in
+# one parent dir that is masked as a whole.
+ARGV="$(GAFFER_SANDBOX_DRY_RUN=1 GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- claude -p hi --mcp-config "$GAFFER_DATA/x.json" 2>/dev/null)"
+PRIV="$(grep -E -- "^[^:]+:$GITDIR:rw\$" <<<"$ARGV" | head -1)"; PRIV="${PRIV%%:*}"
+PARENT="$(dirname "$PRIV")"
+if [ -z "$PRIV" ]; then
+  fail "legacy: no private git dir rendered"
+else
+  case "$PARENT" in
+    "$GAFFER_DATA")
+      fail "legacy: private git dirs sit directly in the rw \$GAFFER_DATA mount ($PRIV), where a later sibling's is unmasked" ;;
+    "$GAFFER_DATA"/*)
+      grep -qE -- "^$PARENT:rw,noexec" <<<"$ARGV" && ok "legacy: the private git dirs' parent is masked as a whole" \
+        || fail "legacy: the private git dirs' parent $PARENT is not masked" ;;
+    *) ok "legacy: private git dirs live outside \$GAFFER_DATA" ;;
+  esac
+  case "$PRIV" in "$COMMON"/*) ;; *) rm -rf "$PRIV" ;; esac
+fi
+
 echo "== (2) a stubbed container run: only the ticket branch comes back =="
 BIN="$WORK/bin"; mkdir -p "$BIN"
 cat > "$BIN/docker" <<'STUB'
@@ -145,7 +167,7 @@ grep -q PAYLOAD_DONE <<<"$OUT" && ok "the payload ran (commit, update-ref main, 
 git -C "$REPO" rev-parse -q --verify refs/tags/evil-tag >/dev/null && fail "a tag made inside reached the host" || ok "a tag made inside did not reach the host"
 [ -z "$(git -C "$REPO" for-each-ref refs/gaffer-sandbox)" ] && ok "no import scratch ref left behind" || fail "import ref left: $(git -C "$REPO" for-each-ref refs/gaffer-sandbox)"
 [ -z "$(git -C "$WT" status --porcelain)" ] && ok "host worktree index matches the imported commit" || fail "host worktree not clean after import: $(git -C "$WT" status --porcelain)"
-ls -d "$GAFFER_DATA"/sandbox-git.* >/dev/null 2>&1 && fail "private git dir not removed after the run" || ok "private git dir removed after the run"
+ls -d "$GAFFER_DATA"/sandbox-git/sandbox-git.* >/dev/null 2>&1 && fail "private git dir not removed after the run" || ok "private git dir removed after the run"
 
 echo "== (2b) the validation profile imports nothing =="
 TIP1="$(git -C "$REPO" rev-parse gaffer/ticket-1)"

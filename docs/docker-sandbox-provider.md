@@ -156,7 +156,7 @@ branch, which also let anything running inside (a test, a build script) run
 `git update-ref refs/heads/main …` and move the operator's main before review.
 
 Now the container gets its own repository. For each linked worktree the wrapper builds a
-private git dir on the host (`$GAFFER_DATA/sandbox-git.<pid>.*`, outside every write
+private git dir on the host (`$GAFFER_DATA/sandbox-git/sandbox-git.<pid>.*`, outside every write
 root) and mounts it at the path the worktree's `.git` file names:
 
 | part | in the container |
@@ -169,13 +169,19 @@ root) and mounts it at the path the worktree's `.git` file names:
 | everything else of the host's `.git` | not mounted: config, hooks, HEAD, refs, logs, packed-refs, other worktrees |
 
 When the container exits, the wrapper (on the host) imports exactly one ref: the
-worktree's own branch. It rewrites the private config first, fetches that ref with hooks
+worktree's own branch. It refuses a private dir that holds a symlink or any special file
+(git never makes one, and following one would let the container pick a host file),
+re-checks that the worktree's `.git` file still names its registered git dir (the file is
+in the writable worktree) and runs every host git command against that recorded dir. It
+then replaces the private config, fetches that ref with hooks
 off into a scratch ref, checks it is a commit, and moves the host branch with a
 compare-and-swap `update-ref` from the value it had when the container started (a branch
 that moved on the host meanwhile is kept and the wrapper exits non-zero, naming it).
 Tags, `main` and any other ref written inside are dropped with the private dir. The
 validation profile (DoD gates, AC checks) imports nothing, so a gate can never move the
-branch it validates. Landing the ticket branch onto the target is unchanged: the host
+branch it validates. Every private dir lives in one parent (`$GAFFER_DATA/sandbox-git/`)
+made before the masks are computed, so in the legacy layout, where `$GAFFER_DATA` is
+mounted with its entries masked, another delivery's private dir is never visible. Landing the ticket branch onto the target is unchanged: the host
 does it, after approval.
 
 `runner/test/sandbox-docker-git-isolation.test.sh` renders the mounts in every

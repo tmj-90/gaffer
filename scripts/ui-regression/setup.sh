@@ -40,15 +40,9 @@ mkdir -p "$OUT/data" "$OUT/shots" "$OUT/bin"
 # ── playwright-core (no browser download) + axe-core (a11y audit) into the out dir ──
 # UI_PW_CACHE (run-suites.sh sets it): install once into that dir, which the wipe above
 # never touches, so every world of a run (the shared one, each own-server one) reuses it.
-if ! node -e 'require.resolve("playwright-core"); require.resolve("axe-core")' >/dev/null 2>&1; then
-  _pw="${UI_PW_CACHE:-$OUT}"; mkdir -p "$_pw"
-  if [ ! -d "$_pw/node_modules/playwright-core" ] || [ ! -d "$_pw/node_modules/axe-core" ]; then
-    # Pinned: CI installs the matching Chromium with `npx playwright@<same version> install`.
-    ( cd "$_pw" && npm init -y >/dev/null 2>&1 && npm install --silent playwright-core@1.63.0 axe-core@4.13.0 >/dev/null 2>&1 ) \
-      || { echo "could not install playwright-core / axe-core (npm)"; exit 2; }
-  fi
-  export PW_CORE_ROOT="$_pw"   # regress.mjs resolves both from here (ESM ignores NODE_PATH)
-fi
+# shellcheck source=pw-install.sh
+. "$HERE/pw-install.sh"
+ui_pw_install "${UI_PW_CACHE:-$OUT}" || exit 2
 
 # ── sample target repo: a tiny node project with a real, passing test command ──
 R="$OUT/taskflow-mini"; mkdir -p "$R/src" "$R/test"

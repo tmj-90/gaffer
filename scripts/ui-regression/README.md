@@ -121,3 +121,26 @@ recorded (env, argv, prompt) in `$GAFFER_DATA/stub-calls.jsonl`.
 `run-suites.sh --serve` builds the world and leaves the dashboard up, printing the
 env to drive `node scripts/ui-regression/run-suites.mjs <suite>` against it while
 writing a suite.
+
+### Several worlds at once (`-j N`)
+
+```bash
+bash scripts/ui-regression/run-suites.sh -j 2 s2-wont-do s11-health
+```
+
+By default (`-j 1`, what CI runs) the suites run one world after another, as above.
+With `-j N` every named suite gets its own world, the shared kind too, and N of them
+run at once: out dir `$UI_REGRESS_OUT-<suite>`, port `$UI_REGRESS_PORT + i` (i is the
+suite's place in the run, from 1), its own `GAFFER_DATA`, sample repo, stub worker in
+`$UI_REGRESS_OUT-<suite>/bin` and dashboard. A suite never sees another suite's
+tickets or settings, which they already must not depend on (the driver resets both
+after each suite). Each world's output goes to `$UI_REGRESS_OUT-<suite>.log` and is
+printed whole when that world ends, then the combined `UI scenarios (every world):`
+line; the exit code is 1 if any world failed. playwright-core and axe-core are
+installed into `UI_PW_CACHE` once before the worlds start (`pw-install.sh`), so two
+setups never install into the same dir at the same time.
+
+A world per suite costs one more setup each (about 5 s on a 4-core Linux box) and N browsers and N
+dashboards at once, so `-j 2` is about right on a 4-core machine. Pick a
+`UI_REGRESS_PORT` with N free ports above it when other people's dashboards share
+the machine. `--serve` builds a single world and refuses `-j`.

@@ -325,7 +325,7 @@ jobs:
   # view rendered with zero console errors, zero failed requests and zero critical /
   # serious WCAG 2.1 A/AA violations (axe-core). Its own job so a browser download or
   # rendering hiccup never reds the unit matrix, and ubuntu-only (one browser is enough).
-  # playwright-core is pinned in scripts/ui-regression/run.sh; the Chromium installed
+  # playwright-core is pinned in scripts/ui-regression/pw-install.sh; the Chromium installed
   # here MUST be the same version or playwright-core refuses to launch it.
   ui-regression:
     name: Dashboard browser regression (Playwright + axe)

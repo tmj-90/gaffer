@@ -1531,11 +1531,17 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/poll-work",
     tag: T.work,
     summary: "Fire one factory tick",
-    description: "Runs the configured tick command only when ready tickets exist.",
+    description:
+      "Runs the configured tick command only when a tick has work (`pending` counts it by lane) and the runner would not refuse it. A live poll with no dollar cap (neither `GAFFER_DAILY_BUDGET_USD` nor `GAFFER_BUDGET_USD` positive, no `GAFFER_ALLOW_UNCAPPED=1`) is refused before anything is spawned. A run the runner refuses after it started (a cap reached) ends `failed` with `detail` `refused: <reason>`.",
     capability: "full",
     responses: [
-      accepted("`{ polled: true, run }`."),
-      { status: 200, description: "`{ polled: false }` — nothing ready.", content: "json" },
+      accepted("`{ polled: true, readyCount, pending, run }`."),
+      {
+        status: 200,
+        description:
+          "`{ polled: false, reason, readyCount, pending }` — `reason` is `no_ready_work` (nothing for a tick to do) or `no_budget_cap` (with `message`, the runner's fix).",
+        content: "json",
+      },
       {
         status: 503,
         description: "No tick command configured (`NOT_CONFIGURED`).",

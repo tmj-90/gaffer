@@ -149,7 +149,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `DRY_RUN` | `1` |  | runner | DRY_RUN=1 prints what it WOULD do and never invokes Claude or mutates a repo. |
+| `DRY_RUN` | `1` |  | dispatch, runner | DRY_RUN=1 prints what it WOULD do and never invokes Claude or mutates a repo. |
 | `MAX_TICKS` | `5` | yes (int) | dispatch, runner | Upper bound on factory ticks for a single run. A change applies from the next loop pass. |
 | `EMPTY_POLL_LIMIT` | `2` | yes (int) | dispatch, runner | Consecutive empty polls before the run (or a pool worker) stops: a no_work tick, or an idle maintenance tick whose scans filed nothing (they call no model, so they do not keep the run alive or consume the day cap). A change applies from the next loop pass. |
 | `TICK_SLEEP` | `30` | yes (int) | dispatch, runner | Seconds the loop waits between ticks. A change applies from the next loop pass. |

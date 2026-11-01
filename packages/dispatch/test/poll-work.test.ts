@@ -3,11 +3,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import { createApiServer } from "../src/api/server.js";
 import { createPollWorkRunner, TICK_CMD_ENV, type PollWorkRunner } from "../src/api/pollWork.js";
+
+// A live poll needs a dollar cap (runner/lib/budget.sh gaffer_spend_cap_ok), and the
+// route now checks for one before it spawns. These tests are about the work counts and
+// the spawn, so they run uncapped; the cap check has its own describe below.
+let prevUncapped: string | undefined;
+beforeAll(() => {
+  prevUncapped = process.env["GAFFER_ALLOW_UNCAPPED"];
+  process.env["GAFFER_ALLOW_UNCAPPED"] = "1";
+});
+afterAll(() => {
+  if (prevUncapped === undefined) delete process.env["GAFFER_ALLOW_UNCAPPED"];
+  else process.env["GAFFER_ALLOW_UNCAPPED"] = prevUncapped;
+});
 
 /**
  * The "Poll for work" button fires a single factory tick on demand. The runner
@@ -507,5 +520,112 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     res = await call(h.baseUrl, "POST", "/poll-work");
     expect(res.status).toBe(200);
     expect(res.body.polled).toBe(false);
+  });
+});
+
+// ===========================================================================
+//  A poll the runner would refuse is reported as refused (exploratory findings
+//  api-robustness/F11, fresh-user/F-16): with no dollar cap the answer was
+//  202 polled:true and the run "succeeded", the refusal only in the run log.
+// ===========================================================================
+
+describe("POST /poll-work — the runner's refusal is reported truthfully", () => {
+  let h: Harness | undefined;
+  let restore: (() => void) | undefined;
+  let dir: string | undefined;
+  afterEach(async () => {
+    if (h) await h.close();
+    h = undefined;
+    restore?.();
+    restore = undefined;
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  const noCap = (extra: Record<string, string | undefined> = {}) => {
+    dir = mkdtempSync(join(tmpdir(), "wg-poll-cap-"));
+    return withEnv({
+      GAFFER_DATA: dir,
+      GAFFER_ALLOW_UNCAPPED: undefined,
+      GAFFER_DAILY_BUDGET_USD: undefined,
+      GAFFER_BUDGET_USD: undefined,
+      DRY_RUN: undefined,
+      CREW_CONFIG: "/nonexistent/crew.yaml",
+      ...extra,
+    });
+  };
+
+  it("no dollar cap: polled:false reason no_budget_cap with the runner's fix, and no tick is spawned", async () => {
+    restore = noCap();
+    h = await startHarness({ run: () => ({ started: true, pid: 9 }) });
+    const res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.polled).toBe(false);
+    expect(res.body.reason).toBe("no_budget_cap");
+    expect(String(res.body.message)).toMatch(/no dollar cap is set: set GAFFER_DAILY_BUDGET_USD/);
+    expect(res.body.readyCount).toBe(1);
+    expect(h.runCount()).toBe(0);
+  });
+
+  it("a daily budget in settings.json, GAFFER_ALLOW_UNCAPPED=1 or a dry run lets the poll fire", async () => {
+    restore = noCap();
+    writeFileSync(join(dir!, "settings.json"), JSON.stringify({ GAFFER_DAILY_BUDGET_USD: "5" }));
+    h = await startHarness({ run: () => ({ started: true, pid: 9 }) });
+    expect((await call(h.baseUrl, "POST", "/poll-work")).status).toBe(202);
+    await h.close();
+    h = undefined;
+    restore();
+    for (const extra of [
+      { GAFFER_ALLOW_UNCAPPED: "1" },
+      { DRY_RUN: "1" },
+      { GAFFER_BUDGET_USD: "20" },
+    ]) {
+      restore = noCap(extra);
+      h = await startHarness({ run: () => ({ started: true, pid: 9 }) });
+      const res = await call(h.baseUrl, "POST", "/poll-work");
+      expect(res.status, JSON.stringify(extra)).toBe(202);
+      await h.close();
+      h = undefined;
+      restore();
+      restore = undefined;
+    }
+  });
+
+  it("a cap of 0 is no cap", async () => {
+    restore = noCap({ GAFFER_DAILY_BUDGET_USD: "0" });
+    h = await startHarness({ run: () => ({ started: true, pid: 9 }) });
+    const res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.body.reason).toBe("no_budget_cap");
+  });
+
+  it("a poll run the runner refused after it started ends 'failed' with the refusal as its detail, not 'succeeded'", async () => {
+    dir = mkdtempSync(join(tmpdir(), "wg-poll-refused-"));
+    const script = join(dir, "refusing-tick.cjs");
+    writeFileSync(
+      script,
+      "process.stderr.write('gaffer poll: per-day cap (MAX_TICKS_PER_DAY=1, used 1) reached — not polling.\\n');" +
+        "process.stdout.write('TICK_RESULT=no_work\\n');",
+    );
+    const wg = Dispatch.open(":memory:");
+    try {
+      const env: NodeJS.ProcessEnv = {
+        ...process.env,
+        GAFFER_DATA: dir,
+        [TICK_CMD_ENV]: `${process.execPath} ${script}`,
+      };
+      const res = createPollWorkRunner(env, wg).run();
+      expect(res.runId).toBeTruthy();
+      const deadline = Date.now() + 5000;
+      let run = wg.listRuns({}).find((r) => r.id === res.runId);
+      while (run?.status === "running" && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+        run = wg.listRuns({}).find((r) => r.id === res.runId);
+      }
+      expect(run?.exit_code).toBe(0);
+      expect(run?.status).toBe("failed");
+      expect(run?.detail).toMatch(/^refused: per-day cap \(MAX_TICKS_PER_DAY=1, used 1\) reached/);
+    } finally {
+      wg.db.close();
+    }
   });
 });

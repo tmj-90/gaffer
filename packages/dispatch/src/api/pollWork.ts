@@ -2,6 +2,7 @@ import { DispatchError } from "../util/errors.js";
 
 import { parseCommand } from "./mergeRunner.js";
 import { type RunTracker, spawnTrackedRun } from "./runTracking.js";
+import { listSettings } from "./settings.js";
 
 /**
  * Fires a single factory tick on demand — the Work/board view's "Poll for work"
@@ -78,4 +79,41 @@ export function createPollWorkRunner(
       return { started: result.started, pid: result.pid, runId: result.runId };
     },
   };
+}
+
+/** The two dollar caps a live run accepts (runner/lib/budget.sh gaffer_spend_cap_ok). */
+const SPEND_CAP_KEYS = ["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD"] as const;
+
+/**
+ * The fix runner/lib/budget.sh gaffer_spend_cap_hint prints when a live run has no
+ * dollar cap, word for word, so the dashboard says what the runner would.
+ */
+export const NO_SPEND_CAP_MESSAGE =
+  "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5) or GAFFER_BUDGET_USD in your " +
+  "environment or the dashboard's Settings → Budget & caps; GAFFER_ALLOW_UNCAPPED=1 runs without one";
+
+/**
+ * Would the runner refuse this poll for want of a dollar cap? Returns the refusal
+ * message, or null when the poll may start. Mirrors gaffer_spend_cap_ok exactly: a dry
+ * poll (DRY_RUN=1) and GAFFER_ALLOW_UNCAPPED=1 (environment only, never settings.json)
+ * always pass; otherwise one of the caps must hold a positive figure, read the way the
+ * runner reads it (awk `c+0 > 0`: a leading number, anything else is 0). The caps come
+ * from the same place the spawned tick takes them: the operator's env when set, else
+ * settings.json, read fresh. A settings.json that cannot be read is left to the runner,
+ * which refuses with its own reason.
+ */
+export function spendCapRefusal(env: NodeJS.ProcessEnv = process.env): string | null {
+  if ((env["DRY_RUN"] ?? "").trim() === "1") return null;
+  if ((env["GAFFER_ALLOW_UNCAPPED"] ?? "").trim() === "1") return null;
+  let views: ReturnType<typeof listSettings>;
+  try {
+    views = listSettings(env);
+  } catch {
+    return null;
+  }
+  const capped = SPEND_CAP_KEYS.some((key) => {
+    const v = views.find((s) => s.key === key)?.effective ?? "";
+    return Number.parseFloat(v) > 0;
+  });
+  return capped ? null : NO_SPEND_CAP_MESSAGE;
 }

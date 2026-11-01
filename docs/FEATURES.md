@@ -580,7 +580,10 @@ the Work view's **Poll for work**) refuses to start until `GAFFER_DAILY_BUDGET_U
 or `GAFFER_BUDGET_USD` is set, and says how to set one. In the dashboard the first
 Poll asks for a daily budget, prefilled at $5, saves it under **Budget & caps** and
 then polls. Dry runs are never refused; `GAFFER_ALLOW_UNCAPPED=1` in the environment
-opts out (a value in `settings.json` is ignored).
+opts out (a value in `settings.json` is ignored). With no cap, `POST /poll-work`
+answers `polled: false`, `reason: no_budget_cap` with the runner's fix and starts
+nothing; a poll the runner refuses once it has started (a cap already reached) is
+recorded as a `failed` run whose detail is the runner's reason, never `succeeded`.
 
 The same panel controls the **idle loops** (background work the factory mines
 between real tickets) and the **planning-debate** depth. Secret-bearing settings —

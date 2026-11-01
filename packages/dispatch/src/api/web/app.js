@@ -7910,6 +7910,11 @@ function pollWorkButton() {
 /** Fire one tick (POST /poll-work) and say what it is doing. */
 async function firePoll() {
   const res = await api("POST", "/poll-work");
+  // The server refused for the runner (no dollar cap): say why, in the runner's words.
+  if (res && res.polled === false && res.reason !== "no_ready_work" && res.message) {
+    toast(`Poll refused — ${res.message}`, {});
+    return;
+  }
   if (res && res.polled === false) {
     toast(
       "Nothing for a tick to do — ready a ticket, press Continue on a paused one, or turn on maintenance when idle in Settings → Idle loops.",

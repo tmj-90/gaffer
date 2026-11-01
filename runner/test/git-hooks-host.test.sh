@@ -54,7 +54,7 @@ run_tick >/dev/null
 B="$(branch_of "$T")"
 [ -n "$B" ] && [ "$(commits_on "$B")" != "BRANCH-GONE" ] && [ "$(commits_on "$B")" -ge 1 ] \
   && ok "H2: the runner auto-committed the agent's edits on $B" || fail "H2: no auto-commit (branch '$B', status $(st "$T"))"
-git -C "$R" log -1 --format=%s "$B" 2>/dev/null | grep -q "^deliver #$T" && ok "H2: the commit is the runner's auto-commit" || fail "H2: tip is '$(git -C "$R" log -1 --format=%s "$B" 2>/dev/null)'"
+grep -q "^deliver #$T" <<<"$(git -C "$R" log -1 --format=%s "$B" 2>/dev/null)" && ok "H2: the commit is the runner's auto-commit" || fail "H2: tip is '$(git -C "$R" log -1 --format=%s "$B" 2>/dev/null)'"
 [ ! -e "$WORK/hook-pwned" ] && ok "H2: the agent's edited hook never ran on the host" || fail "H2: the edited hook ran: $(tr '\n' ' ' < "$WORK/hook-pwned")"
 [ ! -e "$WORK/hook-ran" ] && ok "H2: no repository hook ran during the tick" || fail "H2: hooks ran during the tick: $(tr '\n' ' ' < "$WORK/hook-ran")"
 

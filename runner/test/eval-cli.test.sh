@@ -100,7 +100,7 @@ for (const [k, v] of Object.entries(want)) if (s[k] !== v) { console.error(k, s[
 if (s.by_outcome.parked_or_failed.spend_usd !== 3 || s.by_outcome.abandoned.spend_usd !== 0.5) process.exit(1);
 if (!Array.isArray(s.limits) || s.limits.length < 3) process.exit(1);' \
     && ok "wg stats --json: every attempt over accepted changes; parked/abandoned spend and the onboarding spend reported apart" || no "wg stats acceptedChange wrong: $(printf '%s' "$S" | head -c 600)"
-  node "$D" --db "$DB" stats 2>/dev/null | grep -q 'Cost per accepted change: \$6.00 (all attempts' \
+  grep -q 'Cost per accepted change: \$6.00 (all attempts' <<<"$(node "$D" --db "$DB" stats 2>/dev/null)" \
     && ok "wg stats prints the cost per accepted change" || no "wg stats text has no accepted-change line"
 else
   echo "  ok SKIP E: dispatch not built"

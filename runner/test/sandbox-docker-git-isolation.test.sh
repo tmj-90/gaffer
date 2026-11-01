@@ -90,7 +90,7 @@ for mode in none legacy validation; do
     grep -qxF "$COMMON/objects" "$PRIV/objects/info/alternates" && ok "$mode: history reached through a read-only alternate" || fail "$mode: alternates missing"
     grep -qF "$MAIN0 refs/heads/main" "$PRIV/packed-refs" && ok "$mode: refs are a snapshot (main visible for diffs)" || fail "$mode: no ref snapshot"
     [ ! -e "$PRIV/commondir" ] && ok "$mode: no commondir (a standalone repository)" || fail "$mode: commondir present"
-    git config -f "$PRIV/config" core.hooksPath | grep -qx /dev/null && ok "$mode: private config disables hooks" || fail "$mode: private config does not disable hooks"
+    [ "$(git config -f "$PRIV/config" core.hooksPath)" = /dev/null ] && ok "$mode: private config disables hooks" || fail "$mode: private config does not disable hooks"
     case "$PRIV" in "$COMMON"/*) ;; *) rm -rf "$PRIV" ;; esac   # never the host's own git dir
   else
     fail "$mode: no private git dir mounted at $GITDIR"
@@ -138,10 +138,10 @@ git branch -f main HEAD 2>/dev/null || true
 git tag evil-tag HEAD
 echo PAYLOAD_DONE'
 OUT="$(cd "$WT" && PATH="$BIN:$PATH" GAFFER_MCP_BRIDGE=0 bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$PAYLOAD" 2>&1)"; RC=$?
-printf '%s\n' "$OUT" | grep -q PAYLOAD_DONE && ok "the payload ran (commit, update-ref main, tag)" || fail "payload did not run: $OUT"
+grep -q PAYLOAD_DONE <<<"$OUT" && ok "the payload ran (commit, update-ref main, tag)" || fail "payload did not run: $OUT"
 [ "$RC" = 0 ] && ok "wrapper exit 0" || fail "wrapper exited $RC: $OUT"
 [ "$(git -C "$REPO" rev-parse main)" = "$MAIN0" ] && ok "host main did NOT move (update-ref / branch -f inside stayed private)" || fail "host main moved to $(git -C "$REPO" rev-parse main)"
-git -C "$REPO" log --format=%s -1 gaffer/ticket-1 | grep -qx sandbox-commit && ok "the in-container commit was imported onto the host ticket branch" || fail "ticket branch tip is '$(git -C "$REPO" log --format=%s -1 gaffer/ticket-1)'"
+[ "$(git -C "$REPO" log --format=%s -1 gaffer/ticket-1)" = sandbox-commit ] && ok "the in-container commit was imported onto the host ticket branch" || fail "ticket branch tip is '$(git -C "$REPO" log --format=%s -1 gaffer/ticket-1)'"
 git -C "$REPO" rev-parse -q --verify refs/tags/evil-tag >/dev/null && fail "a tag made inside reached the host" || ok "a tag made inside did not reach the host"
 [ -z "$(git -C "$REPO" for-each-ref refs/gaffer-sandbox)" ] && ok "no import scratch ref left behind" || fail "import ref left: $(git -C "$REPO" for-each-ref refs/gaffer-sandbox)"
 [ -z "$(git -C "$WT" status --porcelain)" ] && ok "host worktree index matches the imported commit" || fail "host worktree not clean after import: $(git -C "$WT" status --porcelain)"
@@ -150,7 +150,7 @@ ls -d "$GAFFER_DATA"/sandbox-git.* >/dev/null 2>&1 && fail "private git dir not 
 echo "== (2b) the validation profile imports nothing =="
 TIP1="$(git -C "$REPO" rev-parse gaffer/ticket-1)"
 OUT="$(cd "$WT" && PATH="$BIN:$PATH" GAFFER_SANDBOX_PROFILE=validation bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c 'echo v > v.txt && git add v.txt && git -c user.email=s@x -c user.name=s commit -qm from-a-test && echo VAL_DONE' 2>&1)"
-printf '%s\n' "$OUT" | grep -q VAL_DONE && ok "validation payload committed inside" || fail "validation payload failed: $OUT"
+grep -q VAL_DONE <<<"$OUT" && ok "validation payload committed inside" || fail "validation payload failed: $OUT"
 [ "$(git -C "$REPO" rev-parse gaffer/ticket-1)" = "$TIP1" ] && ok "a commit made by a gate is not imported (the validated branch never moves)" || fail "validation run moved the ticket branch"
 rm -f "$WT/v.txt"
 
@@ -158,7 +158,7 @@ echo "== (2c) a host ref that moved during the run is never overwritten =="
 OUT="$(cd "$WT" && PATH="$BIN:$PATH" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "echo r > r.txt && git add r.txt && git -c user.email=s@x -c user.name=s commit -qm racing && git -C '$REPO' --git-dir='$COMMON' update-ref refs/heads/gaffer/ticket-1 $MAIN0" 2>&1)"; RC=$?
 [ "$RC" != 0 ] && ok "wrapper reports the failed import (exit $RC)" || fail "a lost compare-and-swap still exited 0"
 [ "$(git -C "$REPO" rev-parse gaffer/ticket-1)" = "$MAIN0" ] && ok "the host's newer ref value was kept" || fail "the import overwrote a ref that moved on the host"
-printf '%s\n' "$OUT" | grep -q 'moved on the host' && ok "the refusal names the reason" || fail "no reason given: $OUT"
+grep -q 'moved on the host' <<<"$OUT" && ok "the refusal names the reason" || fail "no reason given: $OUT"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0; fi

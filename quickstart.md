@@ -297,9 +297,31 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   set `GAFFER_DOD_INSTALL=0` (or `GAFFER_GREENFIELD_INSTALL=0`) to manage deps yourself. The
   old workaround of setting `GAFFER_ALLOW_NO_DOD=1` for the first greenfield pass is no longer
   needed just to get past missing deps.
-- **Hands-off delivery is opt-in.** Without the autonomy flags, the loop stops at
-  `in_review` and waits for you. For an unattended greenfield run, set
-  `DISPATCH_ALLOW_AGENT_APPROVE=1` (and, if you want auto-merge, `AUTO_MERGE=1`).
+- **Hands-off delivery is opt-in, and it needs an OS sandbox.** Without it, the loop
+  stops at `in_review` and waits for you. For an unattended greenfield run, set the whole
+  autonomy group with one variable and give it a sandbox:
+
+  ```bash
+  export GAFFER_MODE=autonomous            # agents review, approve, merge and push
+  export SANDBOX_PROVIDER=docker           # Linux: the docker provider (macOS can keep sandbox-exec)
+  docker compose --profile sandbox build   # once: the delivery image and egress proxy it uses
+  export GAFFER_DAILY_BUDGET_USD=5
+  runner/gaffer run --daemon
+  ```
+
+  `GAFFER_MODE=autonomous` sets `REVIEW_MODE=agent` (a reviewer agent reviews each
+  delivery), `DISPATCH_ALLOW_AGENT_APPROVE=1` (the control plane accepts that reviewer's
+  approval, never the implementer's own), `MERGE_ON_AGENT_REVIEW=1` and `AUTO_MERGE=1`
+  (the merge lane lands agent-approved work through the merge gate), `GAFFER_AUTO_PUSH=1`
+  (pushes the landed default branch to `origin`) and `MEMORY_AUTO_APPROVE=1` (agent lore
+  goes live without review). With no human left in the loop it also defaults
+  `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`: when no OS sandbox is available the
+  runner fails closed, parking the ticket as `blocked` (`strict_require_unavailable`)
+  instead of launching an agent. Set `GAFFER_STRICT_REQUIRE=0` only when the whole runner
+  already runs inside a VM or container you trust. Setting `DISPATCH_ALLOW_AGENT_APPROVE=1`
+  on its own does not make a run hands-off: `REVIEW_MODE` stays `human`, so no reviewer
+  runs and every ticket waits in `in_review`, while the sandbox is still required. Any
+  single flag you export overrides the mode (`AUTO_MERGE=0` keeps merges for you).
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
 - **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
@@ -366,7 +388,7 @@ Gaffer runs shell-capable agents, so containment is first-class — but it is **
 - Every ticket runs in a **throwaway git worktree** — your real checkout is never touched.
 - The **review/merge gate is server-side** — by default a human approves every merge and an agent **structurally cannot** ship its own work.
 
-Full autonomy is **opt-in**, off by default. `GAFFER_MODE=autonomous` sets the whole cluster at once (agent approval, auto-merge, auto-push, memory auto-approve); `GAFFER_MODE=strict` adds the OS sandbox on top. The individual flags — `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `GAFFER_AUTO_PUSH`, `MEMORY_AUTO_APPROVE` — override the preset. For an unattended run also set `GAFFER_DAILY_BUDGET_USD` (the spend cap) and, if you want a scored quality trail, `GAFFER_EVAL_JUDGE=1` (see [`docs/eval-harness.md`](docs/eval-harness.md)). All knobs: [`docs/CONFIG.md`](docs/CONFIG.md). See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
+Full autonomy is **opt-in**, off by default. `GAFFER_MODE=autonomous` sets the whole cluster at once (agent review and approval, auto-merge, auto-push, memory auto-approve) and makes the OS sandbox mandatory (`GAFFER_STRICT_REQUIRE=1`: no sandbox, no agent). `GAFFER_MODE=strict` sets the same flags; it differs only if you set `GAFFER_STRICT_REQUIRE=0`, when strict still uses the sandbox where one exists and autonomous does not. The individual flags — `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `GAFFER_AUTO_PUSH`, `MEMORY_AUTO_APPROVE` — override the preset. For an unattended run also set `GAFFER_DAILY_BUDGET_USD` (the spend cap) and, if you want a scored quality trail, `GAFFER_EVAL_JUDGE=1` (see [`docs/eval-harness.md`](docs/eval-harness.md)). All knobs: [`docs/CONFIG.md`](docs/CONFIG.md). See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
 
 ---
 

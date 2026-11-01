@@ -15,6 +15,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const AT = "2026-10-29T18:56:04";
@@ -59,52 +61,54 @@ let dashboardFails = false;
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const json = (obj: unknown, status = 200) =>
-        new Response(JSON.stringify(obj), {
-          status,
-          headers: { "content-type": "application/json" },
-        });
-      if (url.includes("/api/dashboard")) {
-        if (dashboardFails)
-          return json({ error: { code: "INTERNAL", message: "database is locked" } }, 500);
-        return json({ summary: { ticketsByStatus: {} } });
-      }
-      if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
-      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
-      if (url.includes("/api/activity")) return json({ events: EVENTS, total: EVENTS.length });
-      if (url.includes("/api/board")) return json(null);
-      if (url.includes("/agents"))
-        return json({ agents: [{ id: "ag-2", display_name: "crew-delivery-02" }] });
-      if (url.includes("/tickets/tk-27"))
-        return json({
-          ticket: { id: "tk-27", number: 27, status: "claimed" },
-          events: [
-            {
-              id: "e-move",
-              event_type: "ticket.transitioned",
-              payload_json: JSON.stringify({ from: "ready", to: "claimed" }),
-            },
-          ],
-          repositories: [],
-          scopes: [],
-        });
-      if (url.includes("/tickets"))
-        return json({
-          tickets: [
-            {
-              id: "tk-27",
-              number: 27,
-              title: "Ban floats on money",
-              status: "claimed",
-              updated_at: `${AT}.644Z`,
-            },
-          ],
-        });
-      if (url.includes("/decisions")) return json({ decisions: [] });
-      return json({});
-    }),
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (obj: unknown, status = 200) =>
+          new Response(JSON.stringify(obj), {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/api/dashboard")) {
+          if (dashboardFails)
+            return json({ error: { code: "INTERNAL", message: "database is locked" } }, 500);
+          return json({ summary: { ticketsByStatus: {} } });
+        }
+        if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
+        if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+        if (url.includes("/api/activity")) return json({ events: EVENTS, total: EVENTS.length });
+        if (url.includes("/api/board")) return json(null);
+        if (url.includes("/agents"))
+          return json({ agents: [{ id: "ag-2", display_name: "crew-delivery-02" }] });
+        if (url.includes("/tickets/tk-27"))
+          return json({
+            ticket: { id: "tk-27", number: 27, status: "claimed" },
+            events: [
+              {
+                id: "e-move",
+                event_type: "ticket.transitioned",
+                payload_json: JSON.stringify({ from: "ready", to: "claimed" }),
+              },
+            ],
+            repositories: [],
+            scopes: [],
+          });
+        if (url.includes("/tickets"))
+          return json({
+            tickets: [
+              {
+                id: "tk-27",
+                number: 27,
+                title: "Ban floats on money",
+                status: "claimed",
+                updated_at: `${AT}.644Z`,
+              },
+            ],
+          });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        return json({});
+      }),
+    ),
   );
 }
 

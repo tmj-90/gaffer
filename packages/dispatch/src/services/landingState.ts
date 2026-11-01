@@ -87,12 +87,12 @@ const HOLD_WORDS: Record<LandingHold, { label: string; detail: string }> = {
   moved_since_review: {
     label: "Held · moved since review",
     detail:
-      "The branch moved since the review approved it; no landing path merges commits nobody reviewed. Move it back to review.",
+      "The branch moved since the review approved it; no landing path merges commits nobody reviewed. Send it back to review (Back to review on its ticket page, or `gaffer wg ticket reopen-for-review <n> --reason … --resolution … --as admin`) and approve the new commits.",
   },
   unpinned_repo: {
     label: "Held · approval does not cover every repository",
     detail:
-      "A write repository on this ticket has no approved commit (its delivery head could not be read when the ticket was approved), so no landing path can land it and the ticket can never be done as approved. Move it back to review and approve every repository together.",
+      "A write repository on this ticket has no approved commit (its delivery head could not be read when the ticket was approved), so no landing path can land it and the ticket can never be done as approved. Send it back to review (Back to review on its ticket page, or `gaffer wg ticket reopen-for-review <n> --reason … --resolution … --as admin`) and approve every repository together.",
   },
   merge_gate_red: {
     label: "Held · merge gate failed",

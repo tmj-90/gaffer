@@ -344,3 +344,5 @@ const SUMMARY_COLUMN_SET: Record<keyof TicketSummary, true> = {
   updated_at: true,
 };
 const SUMMARY_COLUMNS = Object.keys(SUMMARY_COLUMN_SET);
+/** The columns of a {@link TicketSummary} row, for a caller that selects them itself. */
+export const TICKET_SUMMARY_COLUMNS: readonly string[] = SUMMARY_COLUMNS;

@@ -1,6 +1,6 @@
 import type { AddressInfo } from "node:net";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
@@ -88,10 +88,52 @@ describe("reopenForReview (done -> in_review)", () => {
     const payload = JSON.parse(event!.payload_json ?? "{}") as {
       merge_conflict_resolved?: boolean;
       resolution?: string;
+      cause?: string;
     };
     expect(payload.merge_conflict_resolved).toBe(true);
+    expect(payload.cause).toBe("merge_conflict");
     expect(payload.resolution).toBe("kept both sides; tests green");
 
+    wg.db.close();
+  });
+
+  // Back to review on a held ticket used this path and the event said a merge conflict
+  // was resolved when the branch had only moved since review.
+  const reopenPayload = (wg: Dispatch, id: string) =>
+    JSON.parse(
+      wg.view(id).events.find((e) => e.event_type === "ticket.reopened_for_review")!.payload_json ??
+        "{}",
+    ) as { cause?: string; merge_conflict_resolved?: boolean };
+
+  it("records the cause it is given, and only a merge conflict says one was resolved", () => {
+    const wg = freshWg();
+    const { ticketId } = doneTicket(wg);
+    wg.reopenForReview(
+      ticketId,
+      { reason: "svc moved since review", resolution: "re-review", cause: "moved_since_review" },
+      admin,
+    );
+    expect(reopenPayload(wg, ticketId)).toMatchObject({
+      cause: "moved_since_review",
+      merge_conflict_resolved: false,
+    });
+    wg.db.close();
+  });
+
+  it("without a cause, a ticket held for a fresh review records its hold", () => {
+    const wg = freshWg();
+    const { ticketId } = doneTicket(wg);
+    vi.spyOn(wg, "landingState").mockReturnValue({
+      kind: "held",
+      label: "Held · approval does not cover every repository",
+      detail: "",
+      hold: "unpinned_repo",
+    });
+    wg.reopenForReview(ticketId, { reason: "missed a repo", resolution: "re-review" }, admin);
+    expect(reopenPayload(wg, ticketId)).toMatchObject({
+      cause: "unpinned_repo",
+      merge_conflict_resolved: false,
+    });
     wg.db.close();
   });
 
@@ -290,6 +332,36 @@ describe("REST: approve -> merge trigger + reopen-for-review + diff", () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe("in_review");
     expect(h.wg.view(ticketId).ticket.status).toBe("in_review");
+  });
+
+  it("POST /tickets/:id/reopen-for-review takes a cause and refuses an unknown one", async () => {
+    const { ticketId } = inReviewViaWg(h.wg);
+    await call(
+      h.baseUrl,
+      "POST",
+      `/tickets/${ticketId}/review/approve`,
+      shownCommits(h.wg, ticketId),
+    );
+    const bad = await call(h.baseUrl, "POST", `/tickets/${ticketId}/reopen-for-review`, {
+      reason: "r",
+      resolution: "x",
+      cause: "because",
+    });
+    expect(bad.status).toBe(422);
+    expect(h.wg.view(ticketId).ticket.status).toBe("ready_for_merge");
+    const res = await call(h.baseUrl, "POST", `/tickets/${ticketId}/reopen-for-review`, {
+      reason: "the branch moved since review",
+      resolution: "review the current commits",
+      cause: "moved_since_review",
+    });
+    expect(res.status).toBe(200);
+    const ev = h.wg
+      .view(ticketId)
+      .events.find((e) => e.event_type === "ticket.reopened_for_review");
+    expect(JSON.parse(ev!.payload_json ?? "{}")).toMatchObject({
+      cause: "moved_since_review",
+      merge_conflict_resolved: false,
+    });
   });
 
   it("POST /tickets/:id/mark-merged closes an approved ticket (ready_for_merge -> done)", async () => {

@@ -10,7 +10,8 @@ import { TestClock } from "../src/util/clock.js";
 /**
  * GET /tickets had no paging and silently ignored `limit`, so every view moved the
  * whole backlog (every row's description, test contract and review feedback).
- * Paging is opt-in (no `limit` ⇒ every row, as before) and `fields=summary` drops
+ * A bare GET /tickets answers the first 500 rows (api-robustness/F10, see
+ * api-ticket-details-batch.test.ts) and `fields=summary` drops
  * the large text columns.
  */
 

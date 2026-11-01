@@ -2,6 +2,21 @@
 
 import { DispatchError } from "../util/errors.js";
 
+/**
+ * Why a ticket went back to review through reopen-for-review: the auto-merge resolver
+ * fixed a conflict on its branch (`merge_conflict`), its branch moved since the review
+ * approved it (`moved_since_review`), the approval missed a write repository
+ * (`unpinned_repo`), or something else a human names (`other`). The
+ * `ticket.reopened_for_review` event records it.
+ */
+export const REOPEN_FOR_REVIEW_CAUSES = [
+  "merge_conflict",
+  "moved_since_review",
+  "unpinned_repo",
+  "other",
+] as const;
+export type ReopenForReviewCause = (typeof REOPEN_FOR_REVIEW_CAUSES)[number];
+
 export const TICKET_STATUSES = [
   "draft",
   "refining",

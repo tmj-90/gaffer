@@ -235,7 +235,7 @@
     gap: 2px;
     font-weight: 700;
   }
-  /* The button names the outcome ("Approve, waits for Merge now"): on a narrow
+  /* The button names the outcome ("Approve, merge is a separate click"): on a narrow
      phone it wraps onto two lines rather than push the page sideways. */
   .signoff-btn {
     white-space: normal;
@@ -934,6 +934,13 @@
     gap: 2px 8px;
     align-items: center;
     padding: 3px 0;
+  }
+  /* A multi-repo delivery: which repo the gate ran in. */
+  .vd-gate-repo {
+    min-width: 0;
+    font-size: var(--t12);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
   }
   .vd-word {
     font: 700 var(--t12) / 1 var(--f-cond);

@@ -16,6 +16,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const TICKET = {
@@ -84,81 +86,83 @@ const posts: Array<{ url: string; body: unknown }> = [];
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const json = (obj: unknown) =>
-        new Response(JSON.stringify(obj), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      if (init?.method === "POST") {
-        posts.push({ url, body: init.body ? JSON.parse(String(init.body)) : null });
-        return json({ ticket_id: TICKET.id, allow_test_changes: true, event_id: "ev-1" });
-      }
-      if (url.includes("/api/whoami"))
-        return json(capability ? { capability, actor: { type: "human", id: "viewer" } } : {});
-      if (url.includes(`/tickets/${TICKET.id}/diff`))
-        return json({
-          ticketId: TICKET.id,
-          repos: [
-            {
-              repo: "svc",
-              branch: TICKET.branch_name,
-              baseBranch: "main",
-              diff: "diff --git a/src/y.test.ts b/src/y.test.ts\n+it.skip('adds', () => {})\n",
-              files: 3,
-              additions: 2,
-              deletions: 12,
-              truncated: false,
-              riskAnnotations: annotations,
-            },
-          ],
-        });
-      if (url.includes(`/tickets/${TICKET.id}`))
-        return json({
-          ticket: TICKET,
-          acceptance_criteria: [],
-          repositories: [{ id: "r1", name: "svc", access: "write" }],
-          scopes: [],
-          blocking_decisions: [],
-          dependencies: [],
-          evidence: [DOD_FLAG],
-          events: [],
-        });
-      if (url.includes("/api/human-queue"))
-        return json({
-          items: [
-            {
-              kind: "review",
-              label: "Review sign-off",
-              reason: "please review",
-              ticket: {
-                id: TICKET.id,
-                number: TICKET.number,
-                title: TICKET.title,
-                status: "in_review",
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const json = (obj: unknown) =>
+          new Response(JSON.stringify(obj), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (init?.method === "POST") {
+          posts.push({ url, body: init.body ? JSON.parse(String(init.body)) : null });
+          return json({ ticket_id: TICKET.id, allow_test_changes: true, event_id: "ev-1" });
+        }
+        if (url.includes("/api/whoami"))
+          return json(capability ? { capability, actor: { type: "human", id: "viewer" } } : {});
+        if (url.includes(`/tickets/${TICKET.id}/diff`))
+          return json({
+            ticketId: TICKET.id,
+            repos: [
+              {
+                repo: "svc",
+                branch: TICKET.branch_name,
+                baseBranch: "main",
+                diff: "diff --git a/src/y.test.ts b/src/y.test.ts\n+it.skip('adds', () => {})\n",
+                files: 3,
+                additions: 2,
+                deletions: 12,
+                truncated: false,
+                riskAnnotations: annotations,
               },
-              decisionId: null,
-              severity: null,
-              since: new Date(Date.now() - 120_000).toISOString(),
-              waitedMs: 120_000,
-            },
-          ],
-          counts: { total: 1, reviews: 1 },
-        });
-      if (url.includes("/api/board"))
-        return json({
-          columns: [{ status: "in_review", cards: [TICKET] }],
-          closed: [],
-          wontDo: [],
-        });
-      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
-      if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
-      if (url.includes("/api/activity")) return json({ events: [], total: 0 });
-      if (url.includes("/tickets")) return json({ tickets: [TICKET] });
-      if (url.includes("/decisions")) return json({ decisions: [] });
-      return json({});
-    }),
+            ],
+          });
+        if (url.includes(`/tickets/${TICKET.id}`))
+          return json({
+            ticket: TICKET,
+            acceptance_criteria: [],
+            repositories: [{ id: "r1", name: "svc", access: "write" }],
+            scopes: [],
+            blocking_decisions: [],
+            dependencies: [],
+            evidence: [DOD_FLAG],
+            events: [],
+          });
+        if (url.includes("/api/human-queue"))
+          return json({
+            items: [
+              {
+                kind: "review",
+                label: "Review sign-off",
+                reason: "please review",
+                ticket: {
+                  id: TICKET.id,
+                  number: TICKET.number,
+                  title: TICKET.title,
+                  status: "in_review",
+                },
+                decisionId: null,
+                severity: null,
+                since: new Date(Date.now() - 120_000).toISOString(),
+                waitedMs: 120_000,
+              },
+            ],
+            counts: { total: 1, reviews: 1 },
+          });
+        if (url.includes("/api/board"))
+          return json({
+            columns: [{ status: "in_review", cards: [TICKET] }],
+            closed: [],
+            wontDo: [],
+          });
+        if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+        if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
+        if (url.includes("/api/activity")) return json({ events: [], total: 0 });
+        if (url.includes("/tickets")) return json({ tickets: [TICKET] });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        return json({});
+      }),
+    ),
   );
 }
 

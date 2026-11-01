@@ -457,7 +457,7 @@ jobs:
           # per suite. Measured locally (suite time, a loaded machine): ~3.7, ~1, ~1 and
           # ~2.8 min, ~10 min for the shard with four world setups.
           - name: own-server
-            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict
+            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict s20-ticket-landing
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

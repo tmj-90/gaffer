@@ -366,6 +366,64 @@ describe("web: the review packet on The Gaffer's Sign-off", () => {
     );
   });
 
+  it("names each gate's repo on a multi-repo ticket (exploratory finding ui-workflows/F10)", async () => {
+    // Two write repos: the same gates ran once per repo. The strip listed "tests PASSED"
+    // twice with nothing to say which repo each was.
+    packet = {
+      ...PACKET,
+      gates: {
+        ...PACKET.gates,
+        rows: [
+          {
+            gate: "tests",
+            repo: "notes-mini",
+            status: "PASS",
+            rc: "0",
+            command: "npm test",
+            note: null,
+          },
+          {
+            gate: "lint",
+            repo: "notes-mini",
+            status: "PASS",
+            rc: "0",
+            command: "npm run lint",
+            note: null,
+          },
+          {
+            gate: "tests",
+            repo: "taskflow-mini",
+            status: "PASS",
+            rc: "0",
+            command: "npm test",
+            note: null,
+          },
+          {
+            gate: "lint",
+            repo: "taskflow-mini",
+            status: "PASS",
+            rc: "0",
+            command: "npm run lint",
+            note: null,
+          },
+        ],
+      },
+    };
+    await boot();
+    const rows = [...document.querySelectorAll(".vd-gate-list .vd-gate")].map((r) =>
+      (r.textContent ?? "").replace(/\s+/g, " "),
+    );
+    expect(rows).toHaveLength(4);
+    expect(rows.filter((r) => r.includes("notes-mini"))).toHaveLength(2);
+    expect(rows.filter((r) => r.includes("taskflow-mini"))).toHaveLength(2);
+    expect(new Set(rows).size).toBe(4);
+  });
+
+  it("a one-repo ticket's gates carry no repo label", async () => {
+    await boot();
+    expect(document.querySelector(".vd-gate-list .vd-gate-repo")).toBeNull();
+  });
+
   it("shows when the tester comes, and leaves the pin out when none is recorded", async () => {
     packet = { ...PACKET, tester: null, pin: null };
     await boot();

@@ -5,7 +5,7 @@
 //    explicit runner request for human review. The flags, the summary and a warning band
 //    beside the button now all read the same rows the Evidence list renders.
 //  - The primary button names the server's outcome (GET /diff approve_outcome): "Approve
-//    and send to tester", "Approve, waits for Merge now", "Approve and land now". The
+//    and send to tester", "Approve, merge is a separate click", "Approve and land now". The
 //    armed button never says "Confirm merge" unless a landing is what the click starts,
 //    and a line under the button says what follows.
 //  - After approval the button and the done band say where the change actually went.
@@ -79,7 +79,7 @@ const OUTCOMES: Record<string, Outcome> = {
     kind: "waits_for_merge",
     approvable: true,
     to_status: "ready_for_merge",
-    label: "Approve, waits for Merge now",
+    label: "Approve, merge is a separate click",
     confirm_label: "Confirm approval",
     done_label: "Waits for Merge now",
     sentence:
@@ -343,7 +343,7 @@ describe("web review: the button names what Approve does", () => {
     expect(document.querySelector(".rv-done")?.textContent).not.toMatch(/merge runner/i);
   });
 
-  it("AUTO_MERGE off: 'Approve, waits for Merge now', and the done band says it waits", async () => {
+  it("AUTO_MERGE off: 'Approve, merge is a separate click', and the done band says it waits", async () => {
     stubFetch({
       outcome: OUTCOMES.waits_for_merge,
       approved: {
@@ -353,7 +353,7 @@ describe("web review: the button names what Approve does", () => {
       },
     });
     await boot();
-    expect(btn().textContent).toBe("Approve, waits for Merge now");
+    expect(btn().textContent).toBe("Approve, merge is a separate click");
     btn().click();
     expect(btn().textContent).toBe("Confirm approval");
     btn().click();
@@ -541,7 +541,7 @@ describe("web review: one source of evidence, one finding said once", () => {
     expect(document.querySelector(".signoff-asks")).toBeNull();
     // The human's button is not held; its line says so and points at the banner.
     expect(btn().disabled).toBe(false);
-    expect(btn().textContent).toBe("Approve, waits for Merge now");
+    expect(btn().textContent).toBe("Approve, merge is a separate click");
     const next = document.querySelector(".signoff-next")?.textContent || "";
     expect(next).toContain("your approval is not held by that");
     expect(next).toContain("the Flags below the button name what changed");

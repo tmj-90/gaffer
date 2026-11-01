@@ -13,6 +13,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const ago = (min: number) => new Date(Date.now() - min * 60e3).toISOString();
@@ -72,57 +74,59 @@ type Payload = {
 function stubFetch(p: Payload) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const json = (obj: unknown, status = 200) =>
-        new Response(JSON.stringify(obj), {
-          status,
-          headers: { "content-type": "application/json" },
-        });
-      const pathOnly = new URL(url, "http://x").pathname;
-      if (url.includes("/api/whoami")) return json({ capability: "full" });
-      if (url.includes("/api/squad")) return json({ club: CLUB, agents: AGENTS });
-      if (url.includes("/api/club")) return json({ club: CLUB });
-      if (url.includes("/api/board"))
-        return json({
-          columns: [{ key: "all", cards: p.tickets.map((t) => ({ ...t, repos: [] })) }],
-          closed: [],
-          wontDo: [],
-        });
-      const m = /^\/tickets\/(tk-\d+)$/.exec(pathOnly);
-      if (m) {
-        const t = p.tickets.find((x) => x.id === m[1]);
-        return json({
-          ticket: t,
-          events: (p.events && p.events[m[1]!]) || [],
-          repositories: [],
-          scopes: [],
-        });
-      }
-      if (url.includes("/claims")) return json({ claims: p.claims || [] });
-      if (url.includes("/agents"))
-        return json({
-          agents: AGENTS.map((a) => ({ id: a.agent_id, display_name: a.registered_name })),
-        });
-      if (url.includes("/api/dashboard"))
-        return json({ summary: { ticketsByStatus: {}, deliveredToday: 1 } });
-      if (url.includes("/api/human-queue"))
-        return json({ items: p.items || [], counts: { total: (p.items || []).length } });
-      if (url.includes("/api/cost")) return json({ today_usd: p.today ?? 4.1, total_usd: 9 });
-      if (url.includes("/api/settings"))
-        return json({
-          settings: [
-            { key: "GAFFER_DAILY_BUDGET_USD", value: "20", effective: "20" },
-            { key: "GAFFER_CONCURRENCY", value: "3", effective: "3" },
-          ],
-        });
-      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
-      if (url.includes("/api/activity")) return json({ events: [], total: 0 });
-      if (url.includes("/decisions")) return json({ decisions: [] });
-      if (url.includes("/scope/nodes")) return json({ nodes: [] });
-      if (url.includes("/tickets")) return json({ tickets: p.tickets });
-      return json({});
-    }),
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (obj: unknown, status = 200) =>
+          new Response(JSON.stringify(obj), {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+        const pathOnly = new URL(url, "http://x").pathname;
+        if (url.includes("/api/whoami")) return json({ capability: "full" });
+        if (url.includes("/api/squad")) return json({ club: CLUB, agents: AGENTS });
+        if (url.includes("/api/club")) return json({ club: CLUB });
+        if (url.includes("/api/board"))
+          return json({
+            columns: [{ key: "all", cards: p.tickets.map((t) => ({ ...t, repos: [] })) }],
+            closed: [],
+            wontDo: [],
+          });
+        const m = /^\/tickets\/(tk-\d+)$/.exec(pathOnly);
+        if (m) {
+          const t = p.tickets.find((x) => x.id === m[1]);
+          return json({
+            ticket: t,
+            events: (p.events && p.events[m[1]!]) || [],
+            repositories: [],
+            scopes: [],
+          });
+        }
+        if (url.includes("/claims")) return json({ claims: p.claims || [] });
+        if (url.includes("/agents"))
+          return json({
+            agents: AGENTS.map((a) => ({ id: a.agent_id, display_name: a.registered_name })),
+          });
+        if (url.includes("/api/dashboard"))
+          return json({ summary: { ticketsByStatus: {}, deliveredToday: 1 } });
+        if (url.includes("/api/human-queue"))
+          return json({ items: p.items || [], counts: { total: (p.items || []).length } });
+        if (url.includes("/api/cost")) return json({ today_usd: p.today ?? 4.1, total_usd: 9 });
+        if (url.includes("/api/settings"))
+          return json({
+            settings: [
+              { key: "GAFFER_DAILY_BUDGET_USD", value: "20", effective: "20" },
+              { key: "GAFFER_CONCURRENCY", value: "3", effective: "3" },
+            ],
+          });
+        if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+        if (url.includes("/api/activity")) return json({ events: [], total: 0 });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        if (url.includes("/scope/nodes")) return json({ nodes: [] });
+        if (url.includes("/tickets")) return json({ tickets: p.tickets });
+        return json({});
+      }),
+    ),
   );
 }
 

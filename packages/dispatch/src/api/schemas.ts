@@ -29,6 +29,7 @@ import {
   TICKET_REPO_SOURCES,
   TICKET_SCOPE_RELATIONS,
   TICKET_STATUSES,
+  REOPEN_FOR_REVIEW_CAUSES,
 } from "../domain/types.js";
 import { REPLAY_STATES } from "../util/contractHash.js";
 
@@ -339,6 +340,12 @@ export type RecordDeliveryArtifactBody = z.infer<typeof recordDeliveryArtifactBo
 export const reopenForReviewBody = z.object({
   reason: z.string().trim().min(1).max(2_000),
   resolution: z.string().trim().min(1).max(20_000),
+  cause: z
+    .enum(REOPEN_FOR_REVIEW_CAUSES)
+    .optional()
+    .describe(
+      "Why it goes back: merge_conflict (the resolver fixed a conflict), moved_since_review, unpinned_repo or other. Without it, the ticket's hold when it is one of those two, else merge_conflict.",
+    ),
 });
 export type ReopenForReviewBody = z.infer<typeof reopenForReviewBody>;
 
@@ -379,11 +386,18 @@ export type ResolveDecisionBody = z.infer<typeof resolveDecisionBody>;
 
 /** Largest page GET /tickets returns when the caller pages (`limit` is clamped to it). */
 export const TICKET_LIST_MAX_LIMIT = 1_000;
+/**
+ * The page GET /tickets (and GET /tickets/details without `ids`) returns when the caller
+ * names no `limit` (exploratory finding api-robustness/F10: a 20k-ticket board answered
+ * 54 MB to a bare GET /tickets). `next_offset` in the answer says where the next page
+ * starts, null on the last one.
+ */
+export const TICKET_LIST_DEFAULT_LIMIT = 500;
 
 /**
- * Query for GET /tickets. Paging is OPT-IN: with no `limit` every matching row is
- * returned, as before (callers that resolve tickets from the full list keep
- * working). `limit` is clamped to [1, TICKET_LIST_MAX_LIMIT]; `offset` skips rows;
+ * Query for GET /tickets. Paged: with no `limit` the first
+ * TICKET_LIST_DEFAULT_LIMIT rows come back, with `next_offset` naming the next page.
+ * `limit` is clamped to [1, TICKET_LIST_MAX_LIMIT]; `offset` skips rows;
  * `total` in the response counts the whole filtered set either way.
  * `fields=summary` drops the large free-text columns (description, test_contract,
  * last_review_feedback) a board card or picker never shows.
@@ -401,6 +415,69 @@ export const ticketListQuery = z.object({
   fields: z.enum(["full", "summary"]).optional(),
 });
 export type TicketListQuery = z.infer<typeof ticketListQuery>;
+
+/** Most tickets one GET /tickets/details?ids= names (the URL stays well under 16 KB). */
+export const TICKET_DETAILS_MAX_IDS = 200;
+
+/**
+ * Query for GET /tickets/details: the parts of many tickets' detail in one read.
+ * `ids` (comma-separated, at most TICKET_DETAILS_MAX_IDS) names the tickets; without
+ * it a page of every ticket comes back (`limit`, default TICKET_LIST_DEFAULT_LIMIT,
+ * clamped to TICKET_LIST_MAX_LIMIT; `offset`). `include` (comma-separated) picks the
+ * parts: repositories, scopes, dependencies (the default), rework_trail, events, evidence.
+ */
+const TICKET_DETAIL_PART_NAMES = [
+  "repositories",
+  "scopes",
+  "dependencies",
+  "rework_trail",
+  "events",
+  "evidence",
+] as const;
+const commaList = (v: string): string[] =>
+  v
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+export const ticketDetailsQuery = z.object({
+  ids: z
+    .string()
+    .max(TICKET_DETAILS_MAX_IDS * 65)
+    .transform(commaList)
+    .refine((a) => a.length >= 1 && a.length <= TICKET_DETAILS_MAX_IDS, {
+      message: `ids names 1 to ${TICKET_DETAILS_MAX_IDS} tickets`,
+    })
+    .optional()
+    .describe(
+      `Comma-separated ticket ids, at most ${TICKET_DETAILS_MAX_IDS}. Without it, a page of every ticket.`,
+    ),
+  include: z
+    .string()
+    .max(200)
+    .transform(commaList)
+    .refine(
+      (a) =>
+        a.length > 0 && a.every((x) => (TICKET_DETAIL_PART_NAMES as readonly string[]).includes(x)),
+      { message: `include lists parts from: ${TICKET_DETAIL_PART_NAMES.join(", ")}` },
+    )
+    .optional()
+    .describe(
+      `Comma-separated parts: ${TICKET_DETAIL_PART_NAMES.join(", ")}. Default: repositories, scopes, dependencies.`,
+    ),
+  limit: z.coerce
+    .number()
+    .int()
+    .transform((n) => Math.min(Math.max(n, 1), TICKET_LIST_MAX_LIMIT))
+    .optional()
+    .describe("Without `ids`: the page size (default 500, at most 1000)."),
+  offset: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe("Without `ids`: where the page starts."),
+});
+export type TicketDetailsQuery = z.infer<typeof ticketDetailsQuery>;
 
 /** Largest activity page a single request may return. */
 export const ACTIVITY_MAX_LIMIT = 200;

@@ -13,6 +13,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const ago = (min: number) => new Date(Date.now() - min * 60e3).toISOString();
@@ -72,36 +74,38 @@ function stubFetch(capability: "full" | "read", extra: (url: string) => unknown 
   calls = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init && init.method) || "GET";
-      const body = init && init.body ? JSON.parse(String(init.body)) : undefined;
-      calls.push({ method, url, body });
-      const json = (obj: unknown, status = 200) =>
-        new Response(JSON.stringify(obj), {
-          status,
-          headers: { "content-type": "application/json" },
-        });
-      if (method !== "GET") {
-        const path = new URL(url, "http://x").pathname;
-        const q = writes[`${method} ${path}`] || [];
-        const r = q.shift();
-        return r ? json(r.body, r.status ?? 200) : json({ error: { code: "NOPE" } }, 500);
-      }
-      if (url.includes("/api/whoami"))
-        return json({ capability, actor: { type: "human", id: "operator" } });
-      if (url.includes("/api/club")) return json({ club: CLUB });
-      if (url.includes("/api/squad")) return json({ club: CLUB, agents: AGENTS() });
-      if (url.includes("/api/board")) return json(null);
-      const hit = extra(url);
-      if (hit) return json(hit);
-      if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
-      if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
-      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
-      if (url.includes("/api/activity")) return json({ events: [], total: 0 });
-      if (url.includes("/decisions")) return json({ decisions: [] });
-      return json({});
-    }),
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init && init.method) || "GET";
+        const body = init && init.body ? JSON.parse(String(init.body)) : undefined;
+        calls.push({ method, url, body });
+        const json = (obj: unknown, status = 200) =>
+          new Response(JSON.stringify(obj), {
+            status,
+            headers: { "content-type": "application/json" },
+          });
+        if (method !== "GET") {
+          const path = new URL(url, "http://x").pathname;
+          const q = writes[`${method} ${path}`] || [];
+          const r = q.shift();
+          return r ? json(r.body, r.status ?? 200) : json({ error: { code: "NOPE" } }, 500);
+        }
+        if (url.includes("/api/whoami"))
+          return json({ capability, actor: { type: "human", id: "operator" } });
+        if (url.includes("/api/club")) return json({ club: CLUB });
+        if (url.includes("/api/squad")) return json({ club: CLUB, agents: AGENTS() });
+        if (url.includes("/api/board")) return json(null);
+        const hit = extra(url);
+        if (hit) return json(hit);
+        if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
+        if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
+        if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+        if (url.includes("/api/activity")) return json({ events: [], total: 0 });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        return json({});
+      }),
+    ),
   );
 }
 

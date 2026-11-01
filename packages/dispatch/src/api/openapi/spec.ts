@@ -476,7 +476,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       repo: { description: "Limit to one repository (name or id)." },
       limit: {
         description:
-          "A visible window: at most this many cards per area (1..1000). Without it every card is returned.",
+          "A visible window: at most this many cards per area (1..1000). Without it the window is the first 500 cards of each area; `counts` says how many each area holds, and `area` with `offset` pages one area.",
       },
       offset: { description: "With `limit`: skip this many cards in each area (default 0)." },
       area: {
@@ -561,7 +561,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Run detail",
     capability: "read",
-    responses: [ok("`RunDetail` (phase, model, turns, cost, log tail, outcome)."), notFound],
+    responses: [
+      ok(
+        "`RunDetail` (phase, model, the ticket's turns and cost, this run's own `run_num_turns` and `run_cost_usd`, log tail, outcome).",
+      ),
+      notFound,
+    ],
   },
   {
     method: "GET",
@@ -610,14 +615,22 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "List tickets",
     description:
-      "Paging is opt-in: with no `limit` every matching ticket is returned. `limit` (clamped to 1–1000) and `offset` page the list; `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
+      "Paged: with no `limit` the first 500 matching tickets come back. `limit` (clamped to 1–1000) and `offset` page the list; `next_offset` is the next page's offset (null on the last page) and `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
     capability: "read",
     query: "ticketListQuery",
+    responses: [ok("`{ tickets, total, limit, offset, next_offset }`.", "TicketList"), invalid],
+  },
+  {
+    method: "GET",
+    path: "/tickets/details",
+    tag: T.tickets,
+    summary: "Many tickets' detail in one read",
+    description:
+      "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`.",
+    capability: "read",
+    query: "ticketDetailsQuery",
     responses: [
-      ok(
-        "`{ tickets, total, limit?, offset? }` (`limit`/`offset` echoed when paging).",
-        "TicketList",
-      ),
+      ok("`{ details, missing, total, limit?, offset?, next_offset? }`.", "TicketDetailsBatch"),
       invalid,
     ],
   },
@@ -839,8 +852,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Reopen a done ticket for re-review",
     description:
-      "The auto-merge re-approval callback (done → in_review). Attributed like " +
-      "mark-merged: a human principal acts as admin under its own id.",
+      "Back to review (done or ready_for_merge → in_review): the auto-merge resolver's " +
+      "re-approval callback, or a held ticket whose branch moved since review or whose " +
+      "approval missed a repository. `cause` says which, and the `ticket.reopened_for_review` " +
+      "event records it (`merge_conflict_resolved` is true only for `merge_conflict`). " +
+      "Attributed like mark-merged: a human principal acts as admin under its own id.",
     capability: "full",
     body: "reopenForReviewBody",
     responses: [
@@ -1336,13 +1352,15 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/scope/repos",
     tag: T.scope,
     summary: "Repositories of a node, or scopes of a repository",
-    description: "Exactly one of `node` or `repo` is required.",
+    description:
+      "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read.",
     capability: "read",
     query: {
       node: { description: "Scope node id: list its repositories." },
       repo: { description: "Repository id: list its scope nodes." },
+      all: { description: "`1`: every repository's scope nodes, keyed by repository id." },
     },
-    responses: [ok("`ScopeRepo[]`."), invalid],
+    responses: [ok("`ScopeRepo[]`, or `{ by_repo }` with `all=1`."), invalid],
   },
   {
     method: "POST",

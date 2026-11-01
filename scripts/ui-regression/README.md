@@ -105,6 +105,7 @@ prints its own `UI scenarios:` line and a combined line closes the run.
 | `s12b-idle-lanes` | fake gh + github.com origin + ingest on | labelled issues → drafts (labels, Source), relabel, dedup, lane rotation |
 | `s7b-greenfield` | empty factory + GAFFER_BOOTSTRAP_ROOT | New app plan → bootstrap creates the repo → Map / Work / Floor → merge |
 | `s17-conflict` | its own sample repo | conflict → resolver → re-gate → back to Review; a markers resolution held |
+| `s20-ticket-landing` | its own sample repo | two tabs of a ticket page turn to Done when Merge now lands it; a held ticket (branch moved since review) says so, and Back to review re-opens it |
 
 `suites/bin/fake-gh.mjs` answers `pr create|view|checks|merge`, `run list`,
 `issue list|edit` with the real CLI's JSON field rules (an unknown `--json` field is

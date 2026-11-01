@@ -240,7 +240,7 @@ describe(
       const id = inReview(d);
       await serve(d, true);
       await openReview(id);
-      expect(btn().textContent).toBe("Approve, waits for Merge now");
+      expect(btn().textContent).toBe("Approve, merge is a separate click");
       btn().click();
       expect(btn().textContent).toBe("Confirm approval");
       btn().click();

@@ -140,7 +140,7 @@ describe("decideApproveOutcome: one outcome per approve path", () => {
     const o = decideApproveOutcome(facts());
     expect(o.kind).toBe("waits_for_merge");
     expect(o.to_status).toBe("ready_for_merge");
-    expect(o.label).toBe("Approve, waits for Merge now");
+    expect(o.label).toBe("Approve, merge is a separate click");
     expect(o.confirm_label).toBe("Confirm approval");
     expect(o.sentence).toContain("Auto-merge on approval is off");
     expect(o.via).toBeNull();

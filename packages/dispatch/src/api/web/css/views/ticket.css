@@ -591,6 +591,11 @@
     font-weight: 700;
     font-size: var(--t14);
   }
+  /* An attempt from a set an Unblock replaced: listed, but not counted in the header. */
+  .failure-round {
+    font: 600 var(--t12) / var(--lh-detail) var(--f-detail);
+    color: var(--ink-2);
+  }
   /* Which model and CLI ran the attempt (agent-run evidence). */
   .attempt-run {
     margin: 0;

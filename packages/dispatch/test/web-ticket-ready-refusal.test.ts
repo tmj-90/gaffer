@@ -30,7 +30,23 @@ const BASE_TICKET = {
   updated_at: "2026-01-01T00:00:00Z",
 };
 
-function stubFetch(ticket: typeof BASE_TICKET, events: unknown[] = []): void {
+// What another tab changed: the criteria the ticket read returns, the claimability
+// answer, the token's capability (null: use the stubFetch arguments).
+const live: {
+  acs: unknown[] | null;
+  repos: unknown[] | null;
+  claim: { ready: boolean; blockers: { code: string; message: string }[] } | null;
+  capability: string;
+} = { acs: null, repos: null, claim: null, capability: "full" };
+
+function stubFetch(
+  ticket: typeof BASE_TICKET,
+  events: unknown[] = [],
+  claimability: { ready: boolean; blockers: { code: string; message: string }[] } = {
+    ready: true,
+    blockers: [],
+  },
+): void {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL) => {
@@ -58,9 +74,12 @@ function stubFetch(ticket: typeof BASE_TICKET, events: unknown[] = []): void {
           { status: 400, headers: { "content-type": "application/json" } },
         );
       }
-      if (url.includes(`/tickets/${ticket.id}/diff`)) body = { ticketId: ticket.id, repos: [] };
+      if (url.includes("/api/whoami"))
+        body = { capability: live.capability, actor: { type: "human", id: "viewer" } };
+      else if (url.includes(`/tickets/${ticket.id}/diff`))
+        body = { ticketId: ticket.id, repos: [] };
       else if (url.includes(`/tickets/${ticket.id}/claimability`))
-        body = { ticketId: ticket.id, ready: true, blockers: [], warnings: [] };
+        body = { ticketId: ticket.id, ...(live.claim ?? claimability), warnings: [] };
       else if (url.includes(`/tickets/${ticket.id}/work-repos`))
         body = {
           writeRepos: [],
@@ -73,8 +92,8 @@ function stubFetch(ticket: typeof BASE_TICKET, events: unknown[] = []): void {
       else if (url.includes(`/tickets/${ticket.id}`))
         body = {
           ticket,
-          acceptance_criteria: [],
-          repositories: [],
+          acceptance_criteria: live.acs ?? [],
+          repositories: live.repos ?? [],
           scopes: [],
           blocking_decisions: [],
           dependencies: [],
@@ -114,6 +133,10 @@ async function bootDetail(): Promise<void> {
 describe("web: a refused Mark ready names the failed policy check", () => {
   beforeEach(() => {
     vi.resetModules();
+    live.acs = null;
+    live.repos = null;
+    live.claim = null;
+    live.capability = "full";
   });
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -141,5 +164,111 @@ describe("web: a refused Mark ready names the failed policy check", () => {
     expect(box).toContain("Mark-ready failed");
     expect(box).toContain("none of its repos is confirmed yet");
     expect(box).toContain("SCOPE_REPO_UNCONFIRMED");
+  });
+
+  it("toasts the policy's reason, not only 'Policy denied ready' (exploratory finding ui-workflows/F8)", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET);
+    await bootDetail();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    );
+    btn!.click();
+    for (let i = 0; i < 6; i++) await tick();
+    const toast = document.getElementById("toast")?.textContent ?? "";
+    expect(toast).toContain("none of its repos is confirmed yet");
+    expect(toast).toContain("POLICY_DENIED");
+  });
+
+  it("disables Mark ready, with a title saying why, when the ready gate will refuse (exploratory finding ui-workflows/F8)", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [
+        { code: "AC_REQUIRED", message: "At least one acceptance criterion is required." },
+      ],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    ) as HTMLButtonElement | undefined;
+    expect(btn).toBeTruthy();
+    expect(btn!.disabled).toBe(true);
+    expect(btn!.title).toContain("At least one acceptance criterion is required.");
+  });
+
+  it("a criterion added in another tab switches Mark ready back on, without a reload", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [
+        { code: "AC_REQUIRED", message: "At least one acceptance criterion is required." },
+      ],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const markReady = () =>
+      [...document.querySelectorAll("button")].find((b) => b.textContent === "Mark ready") as
+        HTMLButtonElement | undefined;
+    expect(markReady()!.disabled).toBe(true);
+    // Another tab adds a criterion: the ticket read and the claimability both change.
+    live.acs = [{ id: "ac-1", text: "Returns 200", status: "pending" }];
+    live.claim = { ready: true, blockers: [] };
+    document.dispatchEvent(new Event("visibilitychange")); // the stream or the 9 s tick
+    for (let i = 0; i < 20; i++) await tick();
+    expect(markReady()!.disabled).toBe(false);
+    expect(markReady()!.getAttribute("title")).toBeNull();
+  });
+
+  it("a repo linked in another tab (the ticket row unchanged) switches Mark ready back on", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [{ code: "REPO_REQUIRED", message: "A repository must be linked." }],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const markReady = () =>
+      [...document.querySelectorAll("button")].find((b) => b.textContent === "Mark ready") as
+        HTMLButtonElement | undefined;
+    expect(markReady()!.disabled).toBe(true);
+    live.repos = [{ id: "repo-1", name: "svc", access: "write", relation: "primary" }];
+    live.claim = { ready: true, blockers: [] };
+    document.dispatchEvent(new Event("visibilitychange"));
+    for (let i = 0; i < 20; i++) await tick();
+    expect(markReady()!.disabled).toBe(false);
+  });
+
+  it("a read-only token keeps the read-only title on Mark ready, whatever the gate says", async () => {
+    live.capability = "read";
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [
+        { code: "AC_REQUIRED", message: "At least one acceptance criterion is required." },
+      ],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    ) as HTMLButtonElement | undefined;
+    expect(btn!.disabled).toBe(true);
+    expect(btn!.title).toMatch(/^Read-only access/);
+  });
+
+  it("a dependency or a decision does not disable Mark ready: they hold the claim, not the ready", async () => {
+    mountShell(BASE_TICKET.id);
+    stubFetch(BASE_TICKET, [], {
+      ready: false,
+      blockers: [{ code: "DEPENDENCY_BLOCKED", message: "Blocked by #3 (must be done first)." }],
+    });
+    await bootDetail();
+    for (let i = 0; i < 6; i++) await tick();
+    const btn = [...document.querySelectorAll("button")].find(
+      (b) => b.textContent === "Mark ready",
+    ) as HTMLButtonElement | undefined;
+    expect(btn!.disabled).toBe(false);
   });
 });

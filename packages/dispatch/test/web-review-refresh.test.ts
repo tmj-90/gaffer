@@ -17,6 +17,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 let queue: Array<Record<string, unknown>> = [];
+let pageSize = 0;
+let insertAfterFirstPage: Record<string, unknown> | null = null;
 const calls: string[] = [];
 
 function json(obj: unknown): Response {
@@ -31,7 +33,19 @@ function stubFetch(): void {
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       calls.push(url);
-      if (url.includes("/tickets?status=in_review")) return json({ tickets: queue });
+      if (url.includes("/tickets?status=in_review")) {
+        // A server page is `pageSize` rows with next_offset (500 by default on the real one).
+        if (!pageSize) return json({ tickets: queue });
+        const off = Number(new URL(url, "http://x").searchParams.get("offset") ?? 0);
+        const rows = queue.slice(off, off + pageSize);
+        if (off === 0 && insertAfterFirstPage) {
+          // A higher-priority ticket arrives between two page reads: the rows shift.
+          queue.unshift(insertAfterFirstPage);
+          insertAfterFirstPage = null;
+        }
+        const next = off + rows.length < queue.length ? off + rows.length : null;
+        return json({ tickets: rows, total: queue.length, next_offset: next });
+      }
       if (/\/tickets\/[^/?]+\/dossier/.test(url)) return json({ review_packet: PACKET });
       const diff = url.match(/\/tickets\/([^/?]+)\/diff/);
       if (diff) return json({ repos: [] });
@@ -82,6 +96,7 @@ const DOSSIER = /\/tickets\/rv-\d+\/dossier\?include=packet$/;
 describe("web: Review refresh only re-reads a changed queue", () => {
   beforeEach(() => {
     calls.length = 0;
+    pageSize = 0;
     queue = [1, 2].map((n) => ({
       id: `rv-${n}`,
       number: n,
@@ -139,6 +154,38 @@ describe("web: Review refresh only re-reads a changed queue", () => {
     expect(count(DOSSIER)).toBe(dossierReads);
     // …and the view on screen is the same node (scroll, open details, cursor kept).
     expect(document.querySelector("#app > .view")).toBe(before);
+  });
+
+  it("a queue longer than one page is drawn whole, and an unchanged one keeps its DOM", async () => {
+    // GET /tickets answers a page (500 rows by default): the Review page drew the first
+    // page only, while the refresh's signature read every page, so a long queue lost its
+    // tail and re-rendered on every tick.
+    pageSize = 2;
+    queue.push({
+      id: "rv-3",
+      number: 3,
+      title: "Review 3",
+      status: "in_review",
+      risk_level: "low",
+      updated_at: "2026-10-30T10:00:00Z",
+    });
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
+    await settle(12);
+    expect(document.querySelector('a[href="#/review/rv-3"]')).not.toBeNull();
+    const before = document.querySelector("#app > .view");
+    vi.advanceTimersByTime(9000);
+    await settle(12);
+    expect(document.querySelector("#app > .view")).toBe(before);
+  });
+
+  it("a ticket that shifts the pages between two reads is listed once", async () => {
+    pageSize = 2;
+    queue.push({ ...queue[1], id: "rv-3", number: 3, title: "Review 3" });
+    insertAfterFirstPage = { ...queue[0], id: "rv-9", number: 9, title: "Review 9" };
+    await import(`${pathToFileURL(APP_JS).href}?t=${Date.now()}-${Math.random()}`);
+    await settle(12);
+    expect(document.querySelectorAll('a[href="#/review/rv-2"]').length).toBe(1);
+    expect(document.querySelector('a[href="#/review/rv-3"]')).not.toBeNull();
   });
 
   it("re-renders when a ticket in the queue changed", async () => {

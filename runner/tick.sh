@@ -1660,7 +1660,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     MULTI_REPO=0
   else
     # Count write repos to label the plan (mono-fallback = 1, mapped multi = >1).
-    WRITE_REPO_COUNT="$(printf '%s\n' "$WRITE_ROOTS" | grep -c . || echo 0)"
+    WRITE_REPO_COUNT="$(printf '%s\n' "$WRITE_ROOTS" | grep -c . || true)"
     [ "${WRITE_REPO_COUNT:-0}" -gt 1 ] && MULTI_REPO=1 || MULTI_REPO=0
   fi
 
@@ -1850,7 +1850,10 @@ if [ "$READY_COUNT" -gt 0 ]; then
     PRIME_CONTEXT_CALLED=true
     # Count card lines only: the recalled-lore section that may follow the cards
     # uses the same "  - [kind]" bullet, so it is cut off before counting.
-    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | sed '/Recalled lore for this scope (conventions \/ gotchas):$/,$d' | grep -c "^  - \[" 2>/dev/null || echo 0)"
+    CARDS_SERVED="$(printf '%s\n' "$FILE_CARDS_BLOCK" | sed '/Recalled lore for this scope (conventions \/ gotchas):$/,$d' | grep -c "^  - \[" 2>/dev/null || true)"
+    # `grep -c` exits 1 on a zero count, so `|| echo 0` captured "0⏎0" (exploratory
+    # finding fresh-user/F-18); `|| true` keeps grep's own "0".
+    CARDS_SERVED="${CARDS_SERVED:-0}"
     log "cards: primed delivery #$NUM with ${CARDS_SERVED} file card(s)"
   else
     log "cards: no file-card context for #$NUM (none served / memory unavailable) — proceeding without"

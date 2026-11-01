@@ -66,6 +66,8 @@ has "$LOUT" "tick 1/6 → previewed" && ok "P1: the loop reports 'previewed'" ||
 
 echo "== P2. no 'delivering' line; status shows the previews =="
 has "$LOG" "delivering #" && fail "P2: factory.log has a 'delivering #' line on a dry run" || ok "P2: no 'delivering #' line"
+# fresh-user/F-18: the card count is one number on the cards line, never "0⏎0".
+grep -qE '^0 file card' "$GAFFER_DATA/factory.log" && fail "P2: the cards line split as '0⏎0 file card(s)'" || ok "P2: the cards line carries one count"
 mk() { printf '#!/usr/bin/env bash\nprintf "%%s\\n" %q\n' "$2" > "$1"; chmod +x "$1"; }
 mk "$WORK/doc.sh" "Healthy."; mk "$WORK/sstats.sh" '{"ticketsByStatus":{"ready":2}}'; mk "$WORK/empty.sh" "[]"
 SOUT="$(WG_DOCTOR_CMD="$WORK/doc.sh" FG_DOCTOR_CMD="$WORK/doc.sh" LG_DOCTOR_CMD="$WORK/doc.sh" \

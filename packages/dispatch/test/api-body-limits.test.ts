@@ -91,6 +91,58 @@ describe("request body limits", () => {
     }
   });
 
+  it("a client still uploading when the limit is passed gets the 413, not a closed socket", async () => {
+    // The server used to write the 413 (connection: close) as soon as the limit was
+    // crossed, so a client with bytes still in flight saw EPIPE/ECONNRESET on macOS
+    // instead of the answer. Trickle 2.5 MB in 64 KB writes with a pause between them:
+    // the 413 must arrive after the upload has ended, and be readable.
+    const total = 2_500_000;
+    const chunk = Buffer.alloc(65_536, 0x79);
+    const res = await new Promise<{ status: number; code: string }>((resolve, reject) => {
+      const req = request(
+        {
+          host: "127.0.0.1",
+          port,
+          method: "POST",
+          path: "/specs",
+          headers: {
+            "content-type": "application/json",
+            "content-length": String(total),
+          },
+        },
+        (r) => {
+          let text = "";
+          r.setEncoding("utf8");
+          r.on("data", (d: string) => (text += d));
+          r.on("end", () => {
+            try {
+              resolve({
+                status: r.statusCode ?? 0,
+                code: (JSON.parse(text) as { error: { code: string } }).error.code,
+              });
+            } catch (e) {
+              reject(e);
+            }
+          });
+        },
+      );
+      req.on("error", reject);
+      let sent = 0;
+      const pump = (): void => {
+        if (sent >= total) {
+          req.end();
+          return;
+        }
+        const n = Math.min(chunk.length, total - sent);
+        sent += n;
+        req.write(chunk.subarray(0, n), () => setTimeout(pump, 5));
+      };
+      pump();
+    });
+    expect(res.status).toBe(413);
+    expect(res.code).toBe("PAYLOAD_TOO_LARGE");
+  });
+
   it("the server still answers the next request after a refused upload", async () => {
     await rawPost("/tickets", Buffer.alloc(1_100_000, 0x20));
     const res = await fetch(`http://127.0.0.1:${port}/healthz`);

@@ -76,7 +76,7 @@ runner/gaffer onboard /path/to/repo --standalone   # register as its own single-
 ```bash
 runner/gaffer status               # what's registered + running + what needs you
 runner/gaffer dashboard            # start the web UI (prints a login URL)
-runner/gaffer demo                 # the Factory Map showcase (DRY_RUN)
+runner/gaffer demo                 # one dry tick over a showcase repo (fresh temp dir; DRY_RUN)
 runner/gaffer wg decisions resolve <id> --answer "…"   # answer a decision from the terminal
 runner/gaffer help
 ```
@@ -87,7 +87,7 @@ runner/gaffer help
 |---|---|
 | `registered in Dispatch` shows **"NOT registered"** | `crew.yaml`'s `dispatch.local.sqlite_path` must point at `<repo-root>/.gaffer/dispatch.sqlite`. |
 | Repo doesn't appear in the dashboard | Check `runner/gaffer status` lists it under "repos (registered)"; if it does, reload the page (the dashboard reads the db on every request). |
-| `not a git repo` warning | The factory branches per ticket; `git init` the repo first. |
+| `… is not a git repository` (exit 2) | The factory branches per ticket, so onboarding refuses a folder outside any git checkout (and `/` or your home directory); `git init` the repo first, or pick the repository's own folder. |
 | `CONFIG_NOT_FOUND: safety_policy.yaml` | Run from a normal shell so the factory config under `<repo-root>/.gaffer/` resolves (or use `runner/gaffer`, which handles it). |
 
 See also: `RUNBOOK.md` (full build/run), `../README.md` (architecture).

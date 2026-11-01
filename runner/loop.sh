@@ -336,6 +336,7 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # and each inner claude -p already carries its own GAFFER_TICK_TIMEOUT, so the
   # inner per-call timeouts still fire first (and are logged with context) before
   # this outer backstop reaps the tick.
+  _log_mark="$(wc -l < "$GAFFER_LOG" 2>/dev/null | tr -d ' ')"
   out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
   res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   # R-1 (counting): a tick that may have spent (invoked claude -p) is persisted to the
@@ -354,7 +355,16 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
     gaffer_refund_day_tick "$_day_rsv_on" || true
   fi
-  echo "tick $ticks/$MAX_TICKS → ${res:-unknown}"
+  # A delivery the gates PARKED (held for a human, worktree cleaned, branch kept) ends
+  # its tick with TICK_RESULT=error, which printed "tick → error" for a clean, intended
+  # outcome. Name it from the tick's own factory.log lines; the result code (and what
+  # the day cap and the daemon make of it) is unchanged.
+  _shown="${res:-unknown}"
+  if [ "$res" = error ]; then
+    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE 'delivery PARKED for #[0-9]+' | tail -1)"
+    [ -n "$_parked" ] && _shown="parked ${_parked##* } — held for a human (see gaffer status)"
+  fi
+  echo "tick $ticks/$MAX_TICKS → $_shown"
 
   if [ "$res" = "setup_error" ]; then
     _setup_error=1

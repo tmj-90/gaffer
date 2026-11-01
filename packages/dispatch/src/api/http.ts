@@ -111,11 +111,13 @@ const UTF8 = new TextDecoder("utf-8", { fatal: true });
 /** The largest request body the REST surface reads (bytes). */
 export const MAX_BODY_BYTES = 1_000_000;
 /**
- * How much of an over-limit upload is read (and thrown away) after the 413, so the
- * client is still reading when the answer arrives instead of getting a reset; past
- * this the socket is destroyed.
+ * How much of an over-limit upload is read (and thrown away) before the 413 is
+ * written, so the client has finished sending when the answer arrives instead of
+ * getting a reset; past this the socket is destroyed.
  */
 const OVERFLOW_DRAIN_BYTES = 16 * MAX_BODY_BYTES;
+/** How long a refused upload may go quiet before the 413 is written anyway. */
+const DRAIN_IDLE_MS = 5000;
 
 /**
  * Read and JSON-parse a request body. Empty bodies resolve to `{}`.
@@ -123,27 +125,33 @@ const OVERFLOW_DRAIN_BYTES = 16 * MAX_BODY_BYTES;
  * A body over {@link MAX_BODY_BYTES} throws PAYLOAD_TOO_LARGE (a JSON 413). The
  * stream used to be destroyed before the throw, so the answer was never sent and
  * every client saw a reset connection. Now nothing more is kept: the rest of the
- * upload is read and discarded up to {@link OVERFLOW_DRAIN_BYTES} (then the socket
- * is destroyed), and the 413 goes out with `connection: close` so the socket is
- * never reused mid-upload.
+ * upload is read and discarded, up to {@link OVERFLOW_DRAIN_BYTES} (then the socket
+ * is destroyed), BEFORE the 413 goes out with `connection: close`, so the close
+ * never races the client's own writes and the socket is never reused mid-upload.
  */
 export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
+  let overflow = false;
   // destroyOnReturn: false — leaving the loop early must not destroy the request
-  // (that resets the socket before the 413 is written).
+  // (that resets the socket before the 413 is written). The loop is left first so
+  // the iterator releases the stream; only then can the drain below read from it.
   for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     const buf = chunk as Buffer;
     size += buf.length;
     if (size > MAX_BODY_BYTES) {
-      discardRest(req, size);
-      throw new DispatchError(
-        "PAYLOAD_TOO_LARGE",
-        `Request body too large (the limit is ${MAX_BODY_BYTES} bytes).`,
-        { limit_bytes: MAX_BODY_BYTES },
-      );
+      overflow = true;
+      break;
     }
     chunks.push(buf);
+  }
+  if (overflow) {
+    await discardRest(req, size);
+    throw new DispatchError(
+      "PAYLOAD_TOO_LARGE",
+      `Request body too large (the limit is ${MAX_BODY_BYTES} bytes).`,
+      { limit_bytes: MAX_BODY_BYTES },
+    );
   }
   if (chunks.length === 0) return {};
   // Fatal decoding: invalid UTF-8 is refused, never stored lossily as U+FFFD.
@@ -191,18 +199,43 @@ export async function readNoBody(req: IncomingMessage): Promise<void> {
 const NO_BODY = z.object({}).strict();
 
 /** Keep reading an over-limit upload into nothing, up to a bound, then cut it off. */
-function discardRest(req: IncomingMessage, seen: number): void {
-  let read = seen;
-  const onData = (b: Buffer): void => {
-    read += b.length;
-    if (read > OVERFLOW_DRAIN_BYTES) {
+function discardRest(req: IncomingMessage, seen: number): Promise<void> {
+  // Resolve only once the upload has ended (or the drain cap is hit, or the client
+  // has gone quiet for DRAIN_IDLE_MS). Writing the 413 before the client has finished
+  // sending makes the close race the client's writes: on macOS the client then sees
+  // EPIPE/ECONNRESET instead of the answer, where Linux buffers enough to hide it.
+  return new Promise<void>((resolve) => {
+    let read = seen;
+    let done = false;
+    let idle: NodeJS.Timeout | undefined;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      if (idle) clearTimeout(idle);
       req.off("data", onData);
-      req.destroy();
-    }
-  };
-  req.on("data", onData);
-  req.on("error", () => {});
-  req.resume();
+      resolve();
+    };
+    const armIdle = (): void => {
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(finish, DRAIN_IDLE_MS);
+      idle.unref();
+    };
+    const onData = (b: Buffer): void => {
+      read += b.length;
+      if (read > OVERFLOW_DRAIN_BYTES) {
+        req.destroy();
+        finish();
+        return;
+      }
+      armIdle();
+    };
+    req.on("data", onData);
+    req.once("end", finish);
+    req.once("close", finish);
+    req.on("error", finish);
+    armIdle();
+    req.resume();
+  });
 }
 
 /** Translate a thrown error into a structured JSON response. */

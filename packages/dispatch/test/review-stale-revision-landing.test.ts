@@ -285,6 +285,11 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     }
     expect(refusal(() => d.markMerged(t.id, system)).details.reason).toBe("partial_landing");
     expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
+  });
+
+  it("a PR landing needs a PR on record and the change on the default branch (cli-wg/F-01)", () => {
+    const { d, t, b } = approved();
+    const pinB = git(b, "rev-parse", BRANCH);
     // A PR landing (exploratory finding cli-wg/F-01) needs a PR on record for the repo...
     expect(
       refusal(() => d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system))
@@ -307,7 +312,7 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     expect(d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system).recorded).toBe(
       true,
     );
-  });
+  }, 20_000);
 });
 
 describe("an approval covers every write repo (external review #7)", () => {

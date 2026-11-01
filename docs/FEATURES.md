@@ -143,7 +143,7 @@ its name from `/api/club`; with the full token it opens *Name your club* (name,
 crest letters, the two kit colours, with a live preview), and the kit colours
 re-dress the header, crest and shirts with a contrast guard. Every agent is shown
 by its display name and shirt number (`/api/squad`, or the `agent_display` a
-payload carries) on the board cards, the Tactics Board, Review, ticket timelines,
+payload carries) on the board cards, the Tactics board, Review, ticket timelines,
 Squad & form and Health. The **Squad** page (`#/squad`) lists the squad and
 renames an agent in place; a taken shirt number is refused with the holder's
 name, and a read-only token sees no editors.
@@ -155,7 +155,7 @@ blocked, the first thing waiting leads ("Export tasks to CSV #12 awaits your
 sign-off."). The same goes for every scoreboard sentence that names a ticket (an
 approved change not yet merged, the tickets the squad is on, Health's recurring
 injuries, the Review page's "moved on" card). On a phone the count is said once,
-on the Team Sheet: the headline drops its "3 things need you." for the work, and
+on the Team sheet: the headline drops its "3 things need you." for the work, and
 the scoreboard keeps the three counters not already on screen.
 
 **The Floor.** `#/floor` draws the live factory as an isometric floor: stations
@@ -344,7 +344,7 @@ structural barrier the whole design hangs on.
   every repository* (a write repo with no approved commit), *Held · merge gate
   failed*, *Held · CI red*.
   The server stamps it as `landing_state` on the ticket, the board cards, the
-  ticket list and the Team Sheet.
+  ticket list and the Team sheet.
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
   a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read
@@ -469,10 +469,10 @@ structural barrier the whole design hangs on.
   never replaced by a later branch tip), so moving the base branch from the
   worktree, or a second attempt building on the first, cannot hide a change. The
   server recomputes the same check from the real diff (risk flag *Test
-  modified*), the Sign-off shows a banner naming each change, the Team Sheet
+  modified*), the sign-off shows a banner naming each change, the Team sheet
   row carries a *Tests changed* chip, and an agent approve is held for a person
   whatever the ticket's declared risk. When the ticket really should change its
-  tests, **Allow test changes…** on the Sign-off (or
+  tests, **Allow test changes…** on the sign-off (or
   `gaffer wg ticket allow-test-changes <n> --reason …`) records your allowance
   as an event: the row then reads PASS with a note. Only a person can set it.
   It does not change what the gate runs: a changed gate script still runs as
@@ -526,9 +526,9 @@ structural barrier the whole design hangs on.
   model. The attempt that used up the cap is on the history as a failure too
   ("Attempt 3/3 · definition-of-done failed"), recorded before the ticket parks.
 
-![The Gaffer's Sign-off](img/review.png)
+![The gaffer's sign-off](img/review.png)
 
-*An in-review ticket on The Gaffer's Sign-off: no flags, the Definition-of-Done
+*An in-review ticket on The gaffer's sign-off: no flags, the Definition-of-Done
 gates (tests and lint passed), 3 of 3 acceptance criteria satisfied by the
 runner's own checks, the evidence trail, and the server-computed diff for
 `taskflow-mini` — the new `toCsv` export and its tests. Approve / send-back are

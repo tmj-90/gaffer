@@ -138,6 +138,8 @@ People and bots get their own credentials. `runner/gaffer wg principal create <n
 
 On the command line, `wg` records writes as `$USER` and checks nothing, because anyone who can open the database file can change anything in it. That identity is asserted, not authenticated, and `runner/gaffer wg whoami` says so. Set `GAFFER_PRINCIPAL_TOKEN=<token>` (or pass `--as-principal <token>`) and `wg`, `gaffer approve` and `gaffer merge` act as that principal instead: writes are recorded as it, and its read-only flag and scopes apply exactly as they do on the API. A principal only ever writes as itself, so the runner's and agents' own commands (evidence, claims, releases) are refused to it. The safety hook stops an agent minting, revoking or acting as a principal.
 
+The worker doesn't have to be `claude -p`. `GAFFER_WORKER_PROVIDER=command` runs your own program (`GAFFER_WORKER_COMMAND`) for every agent turn, under a small contract: the prompt and the MCP config come in as environment variables, a JSON envelope with the result, turns and cost goes back on stdout, and the budget caps, the scrubbed environment and the gates apply as before. The safety hook only exists inside `claude -p`, so a command worker always runs inside the docker sandbox with the host-side MCP bridge (on a Linux host by default) and refuses anywhere else, `sandbox-exec` included, unless you set `GAFFER_STRICT_REQUIRE=0` in the environment because you contain the whole runner yourself. Its knobs are environment-only, its program must live where no agent can rewrite it, and each call is booked at no less than a per-call floor, because the cost it reports is its own word. [docs/worker-providers.md](docs/worker-providers.md) has the contract.
+
 Work is capped at 50 ticks a day (`MAX_TICKS_PER_DAY`), and a live run won't start without a dollar cap: set `GAFFER_DAILY_BUDGET_USD` for the day or `GAFFER_BUDGET_USD` for the factory's lifetime (no new paid work starts at $0 headroom). `gaffer run`, the loop and the dashboard's Poll for work all refuse until one is set, and the dashboard's first Poll asks for a daily budget, prefilled at $5. Every other paid launch follows the same rule: onboarding analysis, Plan a build, Suggest work, the spec author, the merge resolver and the tester refuse with the same message, and an onboard without a cap writes the mechanical digest and cards and says why. `GAFFER_ALLOW_UNCAPPED=1` opts out. `GAFFER_MAX_CALL_USD` caps a single agent call. [SECURITY.md](SECURITY.md) has the threat model and the limits in full.
 
 ## What's rough
@@ -170,6 +172,7 @@ gaffer/
 - [docs/FEATURES.md](docs/FEATURES.md): each surface in more detail
 - [docs/CONFIG.md](docs/CONFIG.md): every setting, generated from the code
 - [SECURITY.md](SECURITY.md): threat model and residual limits
+- [docs/worker-providers.md](docs/worker-providers.md): running your own worker program instead of `claude -p`
 - [ARCHITECTURE.md](ARCHITECTURE.md): how the pieces fit together
 - [runner/README.md](runner/README.md) and [runner/RUNBOOK.md](runner/RUNBOOK.md): the runner in depth
 - [docs/openapi.json](docs/openapi.json): the REST contract, also served at `GET /api/openapi.json`

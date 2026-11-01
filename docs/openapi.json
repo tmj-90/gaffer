@@ -1235,7 +1235,7 @@
           "Events"
         ],
         "summary": "Live event stream (Server-Sent Events)",
-        "description": "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`.",
+        "description": "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`. A `since` past the latest seq (a cursor kept from before a restore or an import) starts from the latest instead and says so first with `event: reset` (`id` = the latest seq, data `{ requested, latest }`). The server ends every open stream when it shuts down.",
         "parameters": [
           {
             "name": "since",
@@ -1245,7 +1245,7 @@
               "type": "integer",
               "minimum": 0
             },
-            "description": "Replay events with seq greater than this before tailing."
+            "description": "Replay events with seq greater than this before tailing. A whole number; anything else is a 422."
           }
         ],
         "responses": {
@@ -1271,6 +1271,16 @@
           },
           "403": {
             "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {

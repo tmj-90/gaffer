@@ -417,10 +417,26 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
     return;
   }
   const rawSince = url.searchParams.get("since");
-  const parsedSince = rawSince === null ? Number.NaN : Number.parseInt(rawSince, 10);
-  // Default: start from NOW (only new events); ?since=0 replays the whole log.
-  let cursor =
-    Number.isFinite(parsedSince) && parsedSince >= 0 ? parsedSince : wg.events.latestSeq();
+  // Default: start from NOW (only new events); ?since=0 replays the whole log. A since
+  // that is not a whole number is refused rather than silently read as "now".
+  if (rawSince !== null && !/^\d+$/.test(rawSince.trim())) {
+    sendJson(
+      res,
+      422,
+      errorBody("VALIDATION_ERROR", "since must be a whole-number event seq (0 replays the log).", {
+        since: rawSince,
+      }),
+    );
+    return;
+  }
+  const latest = wg.events.latestSeq();
+  const requested = rawSince === null ? latest : Number.parseInt(rawSince, 10);
+  // A cursor past the end of the log (one kept from before a restore or an import)
+  // would wait for seqs that already went by: every new event is below it, so the
+  // stream stayed open and silent forever. Start from the latest instead, and say so
+  // in a `reset` frame whose id moves the client's cursor back.
+  const beyond = requested > latest;
+  let cursor = beyond ? latest : requested;
 
   streamClients += 1;
   res.writeHead(200, {
@@ -430,6 +446,12 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
     "x-accel-buffering": "no",
   });
   res.write(`retry: 3000\n: connected seq=${cursor}\n\n`);
+  if (beyond) {
+    res.write(
+      `: since=${requested} is past the latest event seq ${latest}; resuming from ${latest}\n` +
+        `id: ${latest}\nevent: reset\ndata: ${JSON.stringify({ requested, latest })}\n\n`,
+    );
+  }
 
   let closed = false;
   const stop = (note?: string): void => {

@@ -351,16 +351,18 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.events,
     summary: "Live event stream (Server-Sent Events)",
     description:
-      "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`.",
+      "Tails the append-only `work_events` log as `event: work_event` messages (metadata only, the same safe shape as `/api/activity`), `id` = event seq, a `ping` every 15 s. Resume with `?since=<seq>`. At most 16 concurrent clients; a 17th gets 503 `STREAM_BUSY`. The credential is re-checked before every write: once it is revoked the stream sends `event: auth_revoked` and closes. A stream lives at most one hour; reconnect with `?since=<last id>`. A `since` past the latest seq (a cursor kept from before a restore or an import) starts from the latest instead and says so first with `event: reset` (`id` = the latest seq, data `{ requested, latest }`). The server ends every open stream when it shuts down.",
     capability: "read",
     query: {
       since: {
-        description: "Replay events with seq greater than this before tailing.",
+        description:
+          "Replay events with seq greater than this before tailing. A whole number; anything else is a 422.",
         schema: { type: "integer", minimum: 0 },
       },
     },
     responses: [
       { status: 200, description: "`text/event-stream`.", content: "sse" },
+      invalid,
       { status: 503, description: "Too many stream clients (`STREAM_BUSY`).", content: "json" },
     ],
   },

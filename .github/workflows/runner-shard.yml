@@ -20,10 +20,11 @@ on:
         type: number
         required: true
       # Weight-seconds shard 1 of this cell starts with in the split (shard.mjs
-      # GAFFER_RUN_SHARD1_HEAD_START). Must be the same for every shard of a cell.
+      # GAFFER_RUN_SHARD1_HEAD_START). Must be the same for every shard of a cell;
+      # 0 when shard 1 runs nothing extra (every caller passes it).
       head_start:
         type: number
-        default: 300
+        default: 0
       # This cell's package tests (`pnpm -r test`), folded into its shard 1: see the
       # `packages` job in ci.yml for why macOS has no package job of its own.
       packages:

@@ -5,12 +5,17 @@
 # (no YAML parser on a bare macOS bash, so each check reads the lines it names).
 #   C1  ci.yml (every push / PR): ubuntu node 22 and node 24 in 3 shards each, macOS
 #       node 22 in 3 shards, and NO macOS node 24 row: that cell queued 755 s behind
-#       GitHub's 5-concurrent-macOS limit on run 41338925244 (26.4 min wall)
+#       GitHub's 5-concurrent-macOS limit on run 41338925244 (26.4 min wall); in
+#       ci.yml and nightly.yml every cell's rows are shards 1..N once each (a doubled
+#       or missing K would run some files twice and others never), and macOS node 22
+#       shard 1 runs the package tests and the macOS e2e (packages: true, e2e: true)
 #   C2  nightly.yml runs the macOS node 24 cell (3 shards, the package tests on
 #       shard 1) on a schedule and on workflow_dispatch, with GAFFER_TEST_EXHAUSTIVE
 #   C3  both callers run their shards through runner-shard.yml, which runs run.sh
 #       with GAFFER_TEST_STRICT=1 and fixed caps, and a cell's shards share one head start (the
-#       shard split must be identical for every shard of a cell)
+#       shard split must be identical for every shard of a cell); the callers pass a
+#       row's packages / e2e through and runner-shard.yml runs `pnpm -r test` and the
+#       e2e steps on them
 #   C4  every `uses:` is a local workflow or an action pinned by a full commit sha
 #   C5  every scenario suite (scripts/ui-regression/suites/*.mjs) is in exactly one
 #       ui-scenarios group (s18-read-only and s19-layout were in none)
@@ -29,8 +34,8 @@ rows() {
   sed -n -E 's/^ *- \{ os: ([a-z-]+), node: "?([0-9]+)"?, shard: ([0-9]+), shards: ([0-9]+), head_start: ([0-9]+).*/\1 \2 \3 \4 \5/p' "$1"
 }
 count_cell() { # <rows> <os> <node> <shards> -> rows of that cell with that shard count
-  local n=0 os node k shards hs
-  while read -r os node k shards hs; do
+  local n=0 os node k shards _hs
+  while read -r os node k shards _hs; do
     [ "$os" = "$2" ] && [ "$node" = "$3" ] && [ "$shards" = "$4" ] && n=$((n + 1))
   done <<<"$1"
   echo "$n"
@@ -43,6 +48,27 @@ CI_ROWS="$(rows "$WF/ci.yml")"
 [ "$(count_cell "$CI_ROWS" macos-latest 22 3)" = 3 ] && ok "C1 macOS node 22: 3 shards" || fail "C1 macOS node 22 is not 3 shards of 3"
 if grep -qE 'os: macos-latest, node: "?24"?' "$WF/ci.yml"; then fail "C1 ci.yml still runs macOS node 24 on every push"
 else ok "C1 ci.yml runs no macOS node 24 shard on a push (3 macOS jobs, under the limit of 5)"; fi
+
+# Every cell of a caller: its rows are shards 1..N, each exactly once.
+shards_exact() { # <workflow file> -> the cells whose shard numbers are not 1..N once each
+  local r cell got want k
+  r="$(rows "$1")"
+  for cell in $(awk '{print $1 "/" $2 "/" $4}' <<<"$r" | sort -u); do
+    got="$(awk -v c="$cell" '$1 "/" $2 "/" $4 == c {print $3}' <<<"$r" | sort -n | tr '\n' ' ')"
+    want=""; k=1; while [ "$k" -le "${cell##*/}" ]; do want="$want$k "; k=$((k + 1)); done
+    [ "$got" = "$want" ] || printf ' %s(%s)' "$cell" "$got"
+  done
+  # Two shard counts for one os/node is two partitions of one cell.
+  [ "$(awk '{print $1 "/" $2}' <<<"$r" | sort -u | wc -l)" = "$(awk '{print $1 "/" $2 "/" $4}' <<<"$r" | sort -u | wc -l)" ] || printf ' (a cell with two shard counts)'
+}
+for caller in ci.yml nightly.yml; do
+  [ -f "$WF/$caller" ] || continue
+  bad="$(shards_exact "$WF/$caller")"
+  [ -z "$bad" ] && ok "C1 $caller: every cell's rows are shards 1..N, each once" || fail "C1 $caller: cells whose shards are not 1..N once each:$bad"
+done
+grep -qE '^ *- \{ os: macos-latest, node: "?22"?, shard: 1, shards: 3, head_start: [0-9]+, packages: true, e2e: true \}' "$WF/ci.yml" \
+  && ok "C1 macOS node 22 shard 1 runs the package tests and the macOS e2e (packages, e2e)" \
+  || fail "C1 ci.yml macOS node 22 shard 1 lost packages: true / e2e: true (no macOS vitest or e2e on a push)"
 
 echo "== C2: the nightly cell =="
 if [ -f "$WF/nightly.yml" ]; then
@@ -68,8 +94,20 @@ for caller in ci.yml nightly.yml; do
   done
   [ -z "$bad" ] && ok "C3 $caller: every cell's shards share one head_start" || fail "C3 $caller: cells with differing head_start:$bad"
 done
+for caller in ci.yml nightly.yml; do
+  [ -f "$WF/$caller" ] || continue
+  grep -qE '^      packages: \$\{\{ matrix\.packages == true \}\}$' "$WF/$caller" \
+    && ok "C3 $caller passes a row's packages flag to runner-shard.yml" || fail "C3 $caller does not pass packages: \${{ matrix.packages == true }}"
+done
+grep -qE '^      e2e: \$\{\{ matrix\.e2e == true \}\}$' "$WF/ci.yml" \
+  && ok "C3 ci.yml passes a row's e2e flag to runner-shard.yml" || fail "C3 ci.yml does not pass e2e: \${{ matrix.e2e == true }}"
 RS="$WF/runner-shard.yml"
 if [ -f "$RS" ]; then
+  # The step that runs the package tests: `if: inputs.packages` right before `run: pnpm -r test`.
+  awk '/^      - name: Test \(packages\)$/ { getline a; getline b; if (a ~ /^        if: inputs\.packages$/ && b ~ /^        run: pnpm -r test$/) f = 1 } END { exit !f }' "$RS" \
+    && ok "C3 runner-shard.yml runs pnpm -r test when packages is set" || fail "C3 runner-shard.yml has no 'Test (packages)' step on inputs.packages"
+  [ "$(grep -cE '^        if: inputs\.e2e$' "$RS")" = 2 ] && grep -q 'bash runner/test/maintenance-e2e.sh' "$RS" && grep -q 'bash runner/eval/replay.sh' "$RS" \
+    && ok "C3 runner-shard.yml runs the maintenance-lane e2e and the gate replay when e2e is set" || fail "C3 runner-shard.yml lost the e2e steps"
   grep -qE '^ *GAFFER_TEST_STRICT: "1"' "$RS" && grep -qE '^ *run: bash runner/test/run.sh$' "$RS" \
     && ok "C3 runner-shard.yml runs run.sh strict" || fail "C3 runner-shard.yml does not run run.sh with GAFFER_TEST_STRICT=1"
   grep -qE 'GAFFER_RUN_SHARD1_HEAD_START: \$\{\{ inputs\.head_start \}\}' "$RS" && ok "C3 the head start reaches shard.mjs" || fail "C3 head_start is not passed as GAFFER_RUN_SHARD1_HEAD_START"

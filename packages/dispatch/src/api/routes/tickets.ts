@@ -546,10 +546,11 @@ export async function routeTickets(
   // /tickets/:id/mark-merged — MERGE-COMPLETE callback (ready_for_merge -> done).
   // The merge runner calls this once the git merge of the delivery branch lands,
   // so `done` means actually merged. The service allows only system/admin (a board
-  // drag can never reach this); a full-capability REST caller acts as admin under its
-  // OWN principal id, so the event names who marked it merged.
+  // drag can never reach this). The shared token acts as admin (dispatch-api); a named
+  // principal needs actor type admin and acts under its OWN id, so the event names who
+  // marked it merged; a human principal is refused, as the CLI refuses it `--as admin`.
   if (segments.length === 3 && sub === TICKET_SUB.MARK_MERGED && method === "POST") {
-    const result = wg.markMerged(id, operatorActor());
+    const result = wg.markMerged(id, operatorActor("Marking a ticket merged"));
     sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
     return;
   }
@@ -705,7 +706,7 @@ export async function routeTickets(
 
   // /tickets/:id/reopen-for-review — auto-merge re-approval callback
   // (done -> in_review). System/admin only; records the resolver's resolution under
-  // the calling principal's id (see operatorActor).
+  // the calling principal's id; a human principal is refused (see operatorActor).
   if (segments.length === 3 && sub === TICKET_SUB.REOPEN_FOR_REVIEW && method === "POST") {
     const body = reopenForReviewBody.parse(await readJsonBody(req));
     const result = wg.reopenForReview(
@@ -715,7 +716,7 @@ export async function routeTickets(
         resolution: body.resolution,
         ...(body.cause ? { cause: body.cause } : {}),
       },
-      operatorActor(),
+      operatorActor("Reopening a ticket for review"),
     );
     sendJson(res, 200, {
       ticket_id: result.ticketId,

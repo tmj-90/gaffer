@@ -1397,6 +1397,9 @@ for (const [label, cmd] of [
     "dispatch ticket ci-result --state pass",
     "dispatch ticket ci-result 5 --commit abc1234 --state pass",
   ],
+  // The eval judge's verdict is the runner's to record: an agent never grades itself.
+  ["wg ticket eval-score --as system", "wg ticket eval-score 5 --as system --file /tmp/grade.json"],
+  ["dispatch ticket eval-score", "dispatch ticket eval-score 5 --file grade.json"],
   // attach-evidence writes a SYSTEM row with any uri: a forged review pin
   // (gaffer-reviewed-commit:) or a replay-record look-alike. The runner's, never an agent's.
   [

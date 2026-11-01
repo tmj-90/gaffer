@@ -17308,6 +17308,56 @@ function acEvidenceWords(a) {
   return "No machine evidence: nothing recorded";
 }
 
+const JUDGE_DIM_LABEL = {
+  ac_coverage: "Acceptance criteria",
+  correctness: "Correctness",
+  minimalism: "Smallest change",
+  test_adequacy: "Tests",
+  security: "Security",
+};
+const JUDGE_WORD = { pass: "Pass", borderline: "Borderline", fail: "Fail" };
+/**
+ * The judge's cell of the verdict strip: its verdict and score, then every dimension it
+ * scored 3 or lower with its reason (lowest first), its one-line summary and the model.
+ */
+function judgeCell(jd) {
+  const score = Number(jd.score);
+  const shown = Number.isFinite(score) ? score.toFixed(1) : "?";
+  const weak = Object.entries(jd.dims || {})
+    .filter(([, v]) => typeof v === "number" && v <= 3)
+    .sort((a, b) => a[1] - b[1]);
+  const why = jd.rationale || {};
+  return verdictCell(
+    "judge",
+    "Judge",
+    `${JUDGE_WORD[jd.overall] || jd.overall} ${shown}/5`,
+    `Quality judge, advisory: ${jd.overall}, ${shown} of 5${
+      weak.length ? `, ${plural(weak.length, "weak dimension")}` : ""
+    }`,
+    [
+      weak.length
+        ? el(
+            "ul",
+            { class: "clean vd-judge-dims" },
+            weak.map(([d, v]) =>
+              el("li", { class: "vd-judge-dim" }, [
+                el("b", {}, `${JUDGE_DIM_LABEL[d] || d} ${v}/5`),
+                why[d] ? [": ", el("span", { class: "vd-why" }, why[d])] : null,
+              ]),
+            ),
+          )
+        : el("p", { class: "vd-sub" }, "No dimension scored 3 or lower."),
+      jd.summary ? el("p", { class: "vd-say" }, jd.summary) : null,
+      el("p", { class: "vd-sub" }, [
+        "A model's grade of the diff, not a check: nothing gates on it",
+        jd.judge_model ? ` · ${jd.judge_model}` : "",
+        jd.at ? ` · ${fmtTime(jd.at)}` : "",
+      ]),
+    ],
+    jd.overall === "fail" ? "bad" : jd.overall === "borderline" ? "warn" : "",
+  );
+}
+
 /**
  * The verdict strip under the title: gates, the independent tester, cost and
  * turns, attempts and rework, risk and its reasons, the reviewed-commit pin.
@@ -17532,6 +17582,12 @@ function verdictStrip(p) {
         ]),
       ),
     );
+
+  // EVAL JUDGE (the runner's opt-in judge): the quality judge's grade, when one was recorded for
+  // this delivery. A model's opinion of the diff, not a runner fact: said as one, and no
+  // gate reads it. Its weak dimensions carry the judge's own reasons.
+  const jd = p.judge;
+  if (jd) cells.push(judgeCell(jd));
 
   const strip = el(
     "section",

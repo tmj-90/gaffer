@@ -20,5 +20,35 @@
     "outcome": "submit",
     "flags": [],
     "dod_failed": []
+  },
+  "judge": {
+    "quality": "good",
+    "review": { "outcome": "approve" },
+    "reply": {
+      "dimensions": [
+        {
+          "dimension": "ac_coverage",
+          "score": 5,
+          "rationale": "removeTask is exported and drops the matching task"
+        },
+        {
+          "dimension": "correctness",
+          "score": 5,
+          "rationale": "filter keeps every task whose title differs"
+        },
+        {
+          "dimension": "minimalism",
+          "score": 5,
+          "rationale": "one function and one test, nothing else touched"
+        },
+        {
+          "dimension": "test_adequacy",
+          "score": 4,
+          "rationale": "the test checks removal from a one-task list; a two-task case would show the others are kept"
+        },
+        { "dimension": "security", "score": 5, "rationale": "pure list code, nothing risky" }
+      ],
+      "summary": "A small, correct, tested change."
+    }
   }
 }

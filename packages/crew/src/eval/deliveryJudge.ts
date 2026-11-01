@@ -141,18 +141,37 @@ function clampScore(n: unknown): number {
   return Math.max(0, Math.min(5, Math.round(v)));
 }
 
-/** Extract the first JSON object from a model reply that may wrap it in prose/fences. */
-function extractJsonObject(raw: string): unknown {
-  const fence = /```(?:json)?\s*([\s\S]*?)```/i.exec(raw);
-  const candidate = fence?.[1] ?? raw;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
+/** The JSON object spanning the first `{` to the last `}` of `text`, or null. */
+function objectIn(text: string): unknown {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
   if (start === -1 || end === -1 || end < start) return null;
   try {
-    return JSON.parse(candidate.slice(start, end + 1));
+    return JSON.parse(text.slice(start, end + 1));
   } catch {
     return null;
   }
+}
+
+const isGrading = (v: unknown): boolean =>
+  v !== null && typeof v === "object" && Array.isArray((v as Record<string, unknown>).dimensions);
+
+/**
+ * Extract the grading from a model reply that may wrap it in prose/fences. The contract
+ * is ONE fenced object, so the fenced block that carries a `dimensions` array is the
+ * grading. A reply with two DIFFERENT gradings is ambiguous: one may be a rubric the
+ * delivery planted in its diff and the judge quoted, and which one is the judge's own
+ * cannot be told from the reply, so neither is taken (it reads as not judged, never as
+ * the planted score). With no fenced grading, the first fence or the bare reply is read.
+ */
+function extractJsonObject(raw: string): unknown {
+  const fenced = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((m) => m[1] ?? "");
+  const gradings = fenced.map(objectIn).filter(isGrading);
+  if (gradings.length > 0) {
+    const first = JSON.stringify(gradings[0]);
+    return gradings.every((g) => JSON.stringify(g) === first) ? gradings[0] : null;
+  }
+  return objectIn(fenced[0] ?? raw);
 }
 
 /**

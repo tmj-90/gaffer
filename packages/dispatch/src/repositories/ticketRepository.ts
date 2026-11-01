@@ -190,6 +190,16 @@ export class TicketRepository {
       .run({ id, value, now: nowIso });
   }
 
+  /**
+   * Mark the ticket changed (updated_at only, no row_version bump) when something it
+   * shows was recorded beside it rather than on its row: the dashboard's Review view and
+   * its packet cache key on id@updated_at, so without this a new fact stays unseen until
+   * the next change or a reload.
+   */
+  touch(id: string, nowIso: string): void {
+    this.db.prepare(`UPDATE tickets SET updated_at = @now WHERE id = @id`).run({ id, now: nowIso });
+  }
+
   /** True when the ticket currently has any active claim (TRACK-2b reuse guard). */
   hasActiveClaim(id: string): boolean {
     const row = this.db

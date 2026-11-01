@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { registerAc } from "../../src/cli/commands/ac.js";
 import { registerAgent, registerAgentSystem } from "../../src/cli/commands/agent.js";
 import { registerDecisions } from "../../src/cli/commands/decisions.js";
+import { registerDiagnostics } from "../../src/cli/commands/diagnostics.js";
 import { registerPrincipal } from "../../src/cli/commands/principal.js";
 import { registerRepo } from "../../src/cli/commands/repo.js";
 import { registerReview } from "../../src/cli/commands/review.js";
@@ -38,6 +39,7 @@ export function runCli(
   registerReview(program);
   registerAgentSystem(program);
   registerPrincipal(program);
+  registerDiagnostics(program);
   const out: string[] = [];
   const err: string[] = [];
   const realOut = process.stdout.write.bind(process.stdout);

@@ -54,6 +54,16 @@ exactly what the runner would have recorded.
 | `no-gates-waived` | same under `GAFFER_ALLOW_NO_DOD=1` | `submit` flagged `zero_gates_waived` |
 | `oversized-no-note` | the 450-line generated file, no note | `submit` flagged `missing_note` + `oversized_diff` |
 | `typecheck-detected` | failing package.json `typecheck` script, no typecheck command configured | `rework:definition-of-done`, `typecheck` fails |
+| `duplicated-helper` | `addTasks` that copies `addTask` as a private helper instead of reusing it | `submit` (only a reviewer or the judge sees it) |
+| `weakened-assertion` | `completeTask` stops setting `done`; the test's done assertion becomes `assert.ok(task)` | `submit` (gate integrity does not flag a weakened assertion) |
+| `trivial-replacement` | inverted `removeTask` filter; a real test deleted, an existence check added in another file | `submit` (test cases are netted per language across files) |
+
+The last three are the deliveries the eval judge exists for: every gate passes them and
+a careful reviewer rejects them. A fixture may carry a `judge` block (`quality`, the
+`review` decision with its reason, and the `reply` rubric a careful reviewer would
+score); the replay ignores it, and `packages/crew/test/eval-judge-fixtures.test.ts`
+runs the judged ones through the judge's plumbing with a deterministic stub judge
+(docs/eval-harness.md, "Is the judge worth having?").
 
 `runner/test/eval-replay.test.sh` proves the harness itself: it fails on an edited
 expectation **and** on a weakened gate (the hygiene rule list emptied flips the leak

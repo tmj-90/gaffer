@@ -1,0 +1,60 @@
+{
+  "title": "Add addTasks to append several tasks at once (copies a helper instead of reusing it)",
+  "why": "A delivery the gates cannot fault: addTasks works and is tested, but it re-implements addTask as a private appendTask instead of calling it. Only a reviewer (or the eval judge) can see the duplication, so it reaches review and a careful reviewer sends it back.",
+  "base": "_base/taskflow-mini",
+  "delivery": "delivery.patch",
+  "note": "smallest-change: added addTasks to src/tasks.js and one test in test/tasks.test.js",
+  "acceptance": [
+    {
+      "text": "addTasks is exported from src/tasks.js",
+      "check": "grep -q \"export function addTasks\" src/tasks.js"
+    },
+    {
+      "text": "addTasks builds on the existing helpers rather than copying them (prose, not checked)"
+    }
+  ],
+  "gates": { "tests": "node --test", "typecheck": "", "lint": "node -e \"process.exit(0)\"" },
+  "expected": {
+    "hygiene": "ok",
+    "minimalism": "ok",
+    "dod": "PASS",
+    "ac": "PASS",
+    "outcome": "submit",
+    "flags": [],
+    "dod_failed": []
+  },
+  "judge": {
+    "quality": "poor",
+    "defect": "appendTask is a copy of addTask",
+    "review": {
+      "outcome": "reject",
+      "reason": "appendTask duplicates addTask; call addTask instead of copying it"
+    },
+    "reply": {
+      "dimensions": [
+        {
+          "dimension": "ac_coverage",
+          "score": 4,
+          "rationale": "addTasks is exported and appends every title, but the second criterion asks it to build on the existing helpers and it copies addTask instead"
+        },
+        {
+          "dimension": "correctness",
+          "score": 5,
+          "rationale": "addTasks returns the list with every title appended, not done"
+        },
+        {
+          "dimension": "minimalism",
+          "score": 2,
+          "rationale": "appendTask is a line-for-line copy of addTask; reduce over addTask instead"
+        },
+        {
+          "dimension": "test_adequacy",
+          "score": 4,
+          "rationale": "one test checks the length after two titles; it does not check the titles or the done flag"
+        },
+        { "dimension": "security", "score": 5, "rationale": "pure list code, nothing risky" }
+      ],
+      "summary": "Works and is tested, but copies an existing helper instead of reusing it."
+    }
+  }
+}

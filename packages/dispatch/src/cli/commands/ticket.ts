@@ -16,6 +16,7 @@ import {
   open,
   parseAs,
   printJson,
+  readJsonInput,
   testerActor,
   validateTtl,
   warnLandedAlready,
@@ -548,6 +549,28 @@ export function registerTicket(program: Command): void {
         actor,
       );
       warnLandedAlready(res.landedAlready, `CI failure for ${String(opts.commit).slice(0, 12)}`);
+      printJson({ ok: true, ...res });
+      wg.db.close();
+    });
+
+  ticket
+    .command("eval-score <ref>")
+    .description(
+      "EVAL JUDGE: record the delivery-quality judge's verdict on the ticket (the runner " +
+        "does this after a judged submit when the judge is on). Reads the judge record JSON " +
+        "(the verdict with its rubric dimensions) from --file or stdin. Advisory: no gate " +
+        "reads it; the Review view shows it and `judge-agreement` pairs it with the outcome. " +
+        "System/admin only.",
+    )
+    .option("--file <path>", "the judge record JSON (default: stdin)")
+    .option("--as <actor>", "actor type: system|admin", "system")
+    .action((ref, opts, cmd) => {
+      const as = parseAs(opts.as, ["system", "admin"] as const);
+      const input = readJsonInput(opts.file ? String(opts.file) : undefined);
+      const wg = open(cmd.optsWithGlobals());
+      const actor: Actor =
+        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const res = wg.recordEvalJudgment(ref, input, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
     });

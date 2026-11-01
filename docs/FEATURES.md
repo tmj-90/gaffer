@@ -294,6 +294,23 @@ structural barrier the whole design hangs on.
   tabs turned into spaces and drops any that start with `GATE`, `---` or
   `gotest-tally:`, and it reads gate rows only outside the framed output blocks,
   so a test that prints a gate-shaped line cannot add a gate to the strip.
+- **The eval judge's grade, when you turn it on.** With `GAFFER_EVAL_JUDGE=1` an
+  independent judge grades every submitted delivery against its acceptance criteria
+  on five dimensions (criteria, correctness, smallest change, tests, security), and
+  the verdict strip shows its verdict and score with the judge's reason for each
+  dimension it scored 3 or lower ("Smallest change 2/5: re-implements addTask as
+  appendTask"). It is labelled as what it is, a model's grade of the diff: nothing
+  gates on it, and only the runner can record one (an agent cannot grade itself).
+  It is off by default because it is one more paid model call per delivery. Whether
+  it is worth that on your factory is measured: after 20 or more reviewed deliveries,
+  `gaffer eval agreement` pairs each score with what you did (accepted or sent back,
+  and why) and says whether the score separated them, with the misses to read. See
+  [docs/eval-harness.md](eval-harness.md#is-the-judge-worth-having). The grade is
+  recorded a moment after the delivery reaches review, and recording it marks the
+  ticket changed, so a Review page that is already open redraws with it. A CI result
+  does not do that yet: one recorded while the page is open shows after the ticket
+  next changes or you reload, and an approval made in the meantime is still checked
+  against CI on the server, which says so if it refuses.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.

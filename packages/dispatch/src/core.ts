@@ -138,6 +138,15 @@ import { EpicsService, type CreateEpicResult } from "./services/epicsService.js"
 import { EPIC_MEMBER_RELATIONS, ownAcceptanceTicketId } from "./services/epicAcceptance.js";
 import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
 import {
+  assertMayRecordJudgment,
+  currentJudgment,
+  EVAL_JUDGED_EVENT,
+  normalizeJudgment,
+  type EvalJudgment,
+  type RecordedEvalJudgment,
+} from "./services/evalJudgment.js";
+import {
+  enteredReviewAt,
   ReviewPacketService,
   type CostReader,
   type ReviewPacket,
@@ -320,6 +329,13 @@ export interface TicketView {
    * done only when every one has; `partial` marks a held, partly merged ticket.
    */
   landing: LandingStatus;
+  /**
+   * EVAL JUDGE: the delivery-quality judge's verdict on the current delivery (the latest
+   * `ticket.eval_judged` event since the ticket last entered review), or null when the
+   * judge is off (the runner default), failed, or graded only an earlier attempt.
+   * Advisory: no gate reads it.
+   */
+  evalJudgment: RecordedEvalJudgment | null;
 }
 
 /**
@@ -1980,6 +1996,37 @@ export class Dispatch {
     return { ...res, landedAlready };
   }
 
+  /**
+   * EVAL JUDGE: record the delivery-quality judge's verdict on a ticket (runner/lib/
+   * eval-judge.sh after a submit). System/admin only. Telemetry: nothing reads it to
+   * gate, approve or land; it is shown to the reviewer and paired with the review outcome
+   * by `wg judge-agreement`.
+   */
+  recordEvalJudgment(
+    ref: string,
+    input: unknown,
+    actor: Actor,
+  ): { ticketId: string; eventId: string; judgment: EvalJudgment } {
+    assertMayRecordJudgment(actor);
+    const ticket = this.resolveTicket(ref);
+    const judgment = normalizeJudgment(input, ticket.attempt_count);
+    const eventId = inTransaction(this.db, () => {
+      const id = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: EVAL_JUDGED_EVENT,
+        payload: judgment,
+      });
+      // The Review view shows the grade, and it (and its packet cache) re-reads a ticket
+      // only when its updated_at moves: bump it so an open page shows the grade. Nothing
+      // else changes: no status, no row_version, no gate input.
+      this.tickets.touch(ticket.id, this.clock.now());
+      return id;
+    });
+    return { ticketId: ticket.id, eventId, judgment };
+  }
+
   /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
   ciStatus(
     ref: string,
@@ -2920,6 +2967,7 @@ export class Dispatch {
 
   view(ref: string): TicketView {
     const ticket = this.resolveTicket(ref);
+    const events = listEvents(this.db, "ticket", ticket.id);
     return {
       ticket,
       acceptanceCriteria: this.acs.listForTicket(ticket.id),
@@ -2933,7 +2981,7 @@ export class Dispatch {
       resolvedDecisions: this.decisions.resolvedForTicket(ticket.id),
       dependencies: this.ticketDependencies.listForTicket(ticket.id),
       evidence: this.enrichEvidenceProvenance(this.evidence.listForTicket(ticket.id)),
-      events: listEvents(this.db, "ticket", ticket.id),
+      events,
       // BBT-001: parse the JSON-encoded test_contract to a structured object so
       // consumers (CLI, API) never receive a JSON-in-JSON string.
       testContract: parseTestContract(ticket.test_contract),
@@ -2941,6 +2989,7 @@ export class Dispatch {
       reworkTrail: this.reworkAttempts.listForTicket(ticket.id),
       // PER-REPOSITORY LANDING: each write repo's approved commit and whether it landed.
       landing: computeLandingStatus(this.db, ticket.id),
+      evalJudgment: currentJudgment(events, enteredReviewAt(ticket.id, events)),
     };
   }
 

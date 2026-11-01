@@ -13,5 +13,10 @@
     "outcome": "rework:definition-of-done",
     "flags": [],
     "dod_failed": ["tests"]
+  },
+  "judge": {
+    "quality": "poor",
+    "defect": "completeTask no longer sets done",
+    "judged": false
   }
 }

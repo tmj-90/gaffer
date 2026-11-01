@@ -29,6 +29,8 @@
 #                                     unknown, partly merged, a conflict resolved and sent back for
 #                                     re-approval) · 1 a hard failure
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
+#   gaffer eval agreement [--json]    is the eval judge worth having? each judged delivery paired with
+#                                     its review outcome, and a reading (docs/eval-harness.md)
 #   gaffer help | --version
 #
 #   Every command takes -h/--help; an unknown command or option exits 2 and does nothing.
@@ -79,7 +81,7 @@ usage() {
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
     demo)      echo "usage: gaffer demo   (one dry tick over a showcase repo in a fresh temp dir, or DEMO_DIR; always DRY_RUN, nothing spent)" ;;
-    eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>]" ;;
+    eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>] | gaffer eval agreement [--json]" ;;
     approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
@@ -469,6 +471,15 @@ eval)
   # `gaffer eval replay` — the offline half of the harness: recorded deliveries
   # through the real gates, verdicts checked against each fixture (runner/eval/).
   if [ "${1:-}" = "replay" ]; then shift; exec bash "$HERE/eval/replay.sh" "$@"; fi
+  # `gaffer eval agreement` — is the judge worth having? Every judged delivery (on the
+  # ticket, plus older ledger-only records) paired with what the review then did, and a
+  # reading against fixed thresholds (dispatch: `judge-agreement`).
+  if [ "${1:-}" = "agreement" ]; then
+    shift
+    case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval agreement argument '$1'" ;; esac
+    exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" judge-agreement \
+      --ledger "${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}" "$@"
+  fi
   case "$#:${1:-}" in 0:|1:--json) ;; *) bad_arg eval "unknown eval argument '$1'" ;; esac
   # Delivery-quality metrics from the eval ledger (docs/eval-harness.md):
   # pass rate, per-dimension means, the memory score gap (judge score on

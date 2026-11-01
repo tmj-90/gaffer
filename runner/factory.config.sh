@@ -2522,10 +2522,15 @@ export GAFFER_REQUIRE_CI GAFFER_CI_POLL_ATTEMPTS GAFFER_CI_POLL_INTERVAL_SECS
 
 # EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge
 # scores the diff against the ticket on the crew rubric (AC coverage, correctness,
-# minimalism, test adequacy, security) into $GAFFER_DATA/eval-ledger.jsonl with a
-# per-dimension rationale; the EVAL log line names the weak dimensions. Advisory only:
-# it never blocks, parks or reworks a ticket. One extra model call per delivery
-# (ledgered as kind eval-judge). 0 = off. See docs/eval-harness.md.
+# minimalism, test adequacy, security) with a reason per dimension, into
+# $GAFFER_DATA/eval-ledger.jsonl and onto the ticket: the Review view's verdict strip and
+# `wg ticket show` carry the score and the weak dimensions' reasons. Advisory only: it
+# never blocks, parks or reworks a ticket. Off by default because it is one extra paid
+# model call per delivery (booked as kind eval-judge). Whether it earns that on your
+# factory is measured, not assumed: after 20 or more reviewed deliveries,
+# `gaffer eval agreement` pairs each score with the review outcome and says whether it
+# separates the work you accepted from the work you sent back. 0 = off.
+# See docs/eval-harness.md.
 : "${GAFFER_EVAL_JUDGE:=0}"
 # Post-delivery quality judging (gaffer_eval_judge_delivery): scores a submitted
 # delivery on the crew rubric into the eval ledger (pass rate / cost-per-pass /

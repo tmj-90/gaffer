@@ -7,7 +7,7 @@ below is the real, verified path — run them in order.
 
 ## Prerequisites
 
-- **Node 22.22.1+ or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`)
+- **Node 22.22.1+ or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`). The Node floor is a hard prerequisite; see the note under step 1.
 - **Git** (the factory branches per ticket, so your target repos should be git repos)
 - The **`claude` CLI**, authenticated with Anthropic — the factory spawns `claude -p` agents for planning, delivery, and repo analysis; required for live runs
 - `sqlite3` is handy for poking the stores, but not required
@@ -31,7 +31,17 @@ This one command:
 
 > State lives in `.gaffer/` next to the repo by default (override with `GAFFER_DATA`). Delete that directory to start completely fresh.
 
-(If you only want to build, `pnpm install && pnpm -r build` does that part on its own.)
+(If you only want to build, `pnpm install && pnpm -r build` builds the packages without creating `.gaffer/`. It needs the same Node: on an older one pnpm stops with `ERR_PNPM_UNSUPPORTED_ENGINE`.)
+
+> **An older Node stops setup before it installs anything.** On Node 22.22.0, for example:
+>
+> ```
+> Node v22.22.0 is below Gaffer's floor (engines.node ">=22.22.1" in …/package.json) — install a newer Node first, e.g. `nvm install 22 && nvm use 22` (or Node 24), then re-run.
+> ```
+>
+> Exporting `npm_config_engine_strict=false` does not get past it: pnpm then only warns,
+> but setup runs its own check and still refuses. There is no supported way to run below
+> the floor. Install Node 22.22.1 or newer (or 24) and run setup again.
 
 ---
 
@@ -64,11 +74,27 @@ asserts on its own.
 ## 3. Open the control room
 
 ```bash
-runner/gaffer dashboard --lan
+runner/gaffer dashboard
 ```
 
-Prints a URL (`http://<your-lan-ip>:8787`) and a bearer **token** — paste the token at the
-login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only; every data request still needs the auto-provisioned token, which the command prints as a `?token=` URL.)
+Prints a `http://127.0.0.1:8787/?token=…` link: open it on this machine (or paste the
+token at the login prompt). The dashboard binds loopback only, and every data request
+needs that token.
+
+To use another port, set `DISPATCH_API_PORT`, e.g. `DISPATCH_API_PORT=9000 runner/gaffer
+dashboard --restart`. `gaffer status` and the runner read the same variable, so export it
+in every shell you run them from. In the container, compose publishes the host side from
+`GAFFER_PORT` (a bind address, default `127.0.0.1:8787`) and falls back to
+`DISPATCH_API_PORT` for the port, so `DISPATCH_API_PORT=9000 docker compose up -d` also
+works.
+
+> **`--lan` is plain HTTP on your LAN.** `runner/gaffer dashboard --lan` binds every
+> interface so a phone or another machine can open `http://<your-lan-ip>:8787`. There is
+> no TLS, so the full token (approve, merge, run) crosses the network in the clear and
+> anyone who can see that traffic can use it. Use it only on a network you trust.
+> Otherwise keep the loopback default and reach it through an SSH tunnel
+> (`ssh -L 8787:127.0.0.1:8787 <host>`) or a reverse proxy that terminates TLS, and give
+> viewers a read-only token, not the full one (the README says how to get one).
 
 `runner/gaffer dashboard --restart` stops the running server, rotates the login token and starts a fresh one; `--stop` stops it. Each reports "dashboard up" only once the server it started answers with the new token. When the port is already taken it says by which pid (`port 8787 is already in use by pid N`) and starts nothing; pick another port with `DISPATCH_API_PORT`.
 
@@ -90,6 +116,8 @@ In the dashboard:
 - **Health** — ROI and factory honesty: what the factory cost, what it delivered, where it failed.
 - **Specs** — the spec library: frozen statements of product intent, each clause traced to acceptance criteria, with the coverage gaps.
 - **Memory** — pick your repo to read its digest, feature ledger, and lore. The **Onboard a repo** button does step 2 from the UI.
+- **Squad**: every agent with its shirt number, name, role and when it was last seen; **Rename** gives one a display name and number.
+- **Floor**: the factory drawn as a live isometric floor: every open ticket a parcel at its station, every live claim a robot in its agent's shirt.
 - **Settings** — every operator knob, grouped: **autonomy**, the **delivery** cycle (auto-merge · push · PR · require-CI), **execution** & concurrency, **idle loops**, **budget & caps**, the **planning debate**, **quality gates**, the strict **sandbox**, and **notifications** — all editable, persisted to `settings.json` (a real env var always wins, and shows read-only when set).
 
 ```bash
@@ -225,22 +253,39 @@ flags under **Safety** below — off by default.
 > (`runner/gaffer wg repo set-commands <repo> --test "<cmd>"`), or merge the script change
 > to the base branch first.
 
-> **Readying a ticket needs a reviewer under the strict policy packs.** The default
-> policy pack is `solo_loose`, which readies freely. But tickets under
-> **`factory_strict`** or **`regulated`** — which is what the **Product Owner**
-> ("Suggest work") drafts, and what you'll use for anything you actually gate —
-> **must have a reviewer assigned first**, or **Mark ready** fails with
-> `POLICY_DENIED … REVIEWER_REQUIRED`. Assign one from the CLI (the dashboard
-> button for this is planned):
+> **Readying a ticket under the stricter policy packs.** The default policy pack is
+> `solo_loose`, which readies freely. The stricter packs each add gates to **Mark ready**,
+> and the **Product Owner** ("Suggest work") drafts its tickets under `factory_strict`.
+> A ticket that misses one fails with `POLICY_DENIED` and the code below:
+>
+> - **`team_light`** and up: a description (`DESCRIPTION_REQUIRED`) and a repo with
+>   write access (`REPO_REQUIRED`, `WRITE_REPO_REQUIRED`).
+> - **`factory_strict`** adds: every acceptance criterion has a verification method
+>   (`AC_VERIFICATION_REQUIRED`; `--check` alone does not count, so pass `--verify`
+>   too), a reviewer (`REVIEWER_REQUIRED`), no open blocking decision, and a primary
+>   scope if the repo is mapped into the Factory Map (a single unmapped repo is fine).
+> - **`regulated`** adds a human ready-approval (`HUMAN_APPROVAL_REQUIRED`).
+>
+> All of them, from the start:
 >
 > ```bash
-> # use the ticket number (#n) or the full id; the 8-char short ref on cards won't resolve
-> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name> --admin
+> runner/gaffer wg ticket create -p factory_strict -t "Add listNotes" \
+>   -d "Export listNotes(notes) from src/notes.js, newest first, input untouched."
+> runner/gaffer wg ac add <n> -t "listNotes returns a new array sorted newest-first" --verify "unit test"
+> runner/gaffer wg ac add <n> -t "the test suite passes" --verify "npm test" --check "npm test"
+> runner/gaffer wg ticket repo-access set <n> <repo-name>
+> runner/gaffer wg ticket set-reviewer <n> --reviewer <your-name>
+> runner/gaffer wg ticket approve-ready <n>      # regulated only (or Approve… on the Team sheet)
+> runner/gaffer wg ticket ready <n>
 > ```
 >
-> Then **Mark ready** succeeds, and the ticket flows plan → implement → test →
-> review as normal. (The reviewer is *who owns the gate*; the agent still cannot
-> approve or merge its own work.)
+> Use the ticket number (`<n>`) or the full id; the 8-character short ref on cards won't
+> resolve. A ticket that is missing a reviewer shows on the Team sheet with an
+> **Assign…** row; assigning one is CLI-only for now. Give every criterion `--verify` when
+> you add it: if `runner/gaffer wg ac --help` lists `edit`, `runner/gaffer wg ac edit <n>
+> <ac-id> --verify "…"` adds one later; without it a criterion can't be changed, and the
+> ticket can't be readied under `factory_strict` or `regulated`. (The reviewer is *who owns
+> the gate*; the agent still cannot approve or merge its own work.)
 
 ---
 
@@ -287,9 +332,34 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   set `GAFFER_DOD_INSTALL=0` (or `GAFFER_GREENFIELD_INSTALL=0`) to manage deps yourself. The
   old workaround of setting `GAFFER_ALLOW_NO_DOD=1` for the first greenfield pass is no longer
   needed just to get past missing deps.
-- **Hands-off delivery is opt-in.** Without the autonomy flags, the loop stops at
-  `in_review` and waits for you. For an unattended greenfield run, set
-  `DISPATCH_ALLOW_AGENT_APPROVE=1` (and, if you want auto-merge, `AUTO_MERGE=1`).
+- **Hands-off delivery is opt-in, and it needs an OS sandbox.** Without it, the loop
+  stops at `in_review` and waits for you. For an unattended greenfield run, set the whole
+  autonomy group with one variable and give it a sandbox:
+
+  ```bash
+  export GAFFER_MODE=autonomous            # agents review, approve, merge and push
+  export SANDBOX_PROVIDER=docker           # Linux: the docker provider (macOS can keep sandbox-exec)
+  docker compose --profile sandbox build sandbox-image egress-proxy   # once: the images it runs
+  export GAFFER_DAILY_BUDGET_USD=5
+  runner/gaffer run --daemon
+  ```
+
+  `GAFFER_MODE=autonomous` sets `REVIEW_MODE=agent` (a reviewer agent reviews each
+  delivery), `DISPATCH_ALLOW_AGENT_APPROVE=1` (the control plane accepts that reviewer's
+  approval, never the implementer's own), `MERGE_ON_AGENT_REVIEW=1` and `AUTO_MERGE=1`
+  (the merge lane lands agent-approved work through the merge gate), `GAFFER_AUTO_PUSH=1`
+  (pushes the landed default branch to `origin`) and `MEMORY_AUTO_APPROVE=1` (agent lore
+  goes live without review). With no human left in the loop it also defaults
+  `GAFFER_STRICT_REQUIRE=1` and `STRICT_MODE=1`: when no OS sandbox is available the
+  runner fails closed, parking the ticket as `blocked` (`strict_require_unavailable`)
+  instead of launching an agent. Set `GAFFER_STRICT_REQUIRE=0` only when the whole runner
+  already runs inside a VM or container you trust. Setting `DISPATCH_ALLOW_AGENT_APPROVE=1`
+  on its own does not make a run hands-off: `REVIEW_MODE` stays `human`, so no reviewer
+  runs and every ticket waits in `in_review`, while the sandbox is still required. Any
+  single flag you export overrides the mode (`AUTO_MERGE=0` keeps merges for you).
+  The docker provider is experimental: its containment is red-team tested in CI, but a
+  full live delivery inside its container hasn't been proven yet (see
+  [`SECURITY.md`](SECURITY.md)), so watch the first few tickets before you walk away.
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
 - **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
@@ -356,7 +426,7 @@ Gaffer runs shell-capable agents, so containment is first-class — but it is **
 - Every ticket runs in a **throwaway git worktree** — your real checkout is never touched.
 - The **review/merge gate is server-side** — by default a human approves every merge and an agent **structurally cannot** ship its own work.
 
-Full autonomy is **opt-in**, off by default. `GAFFER_MODE=autonomous` sets the whole cluster at once (agent approval, auto-merge, auto-push, memory auto-approve); `GAFFER_MODE=strict` adds the OS sandbox on top. The individual flags — `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `GAFFER_AUTO_PUSH`, `MEMORY_AUTO_APPROVE` — override the preset. For an unattended run also set `GAFFER_DAILY_BUDGET_USD` (the spend cap) and, if you want a scored quality trail, `GAFFER_EVAL_JUDGE=1` (see [`docs/eval-harness.md`](docs/eval-harness.md)). All knobs: [`docs/CONFIG.md`](docs/CONFIG.md). See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
+Full autonomy is **opt-in**, off by default. `GAFFER_MODE=autonomous` sets the whole cluster at once (agent review and approval, auto-merge, auto-push, memory auto-approve) and makes the OS sandbox mandatory (`GAFFER_STRICT_REQUIRE=1`: no sandbox, no agent). `GAFFER_MODE=strict` sets the same flags; it differs only if you set `GAFFER_STRICT_REQUIRE=0`, when strict still uses the sandbox where one exists and autonomous does not. The individual flags — `DISPATCH_ALLOW_AGENT_APPROVE`, `MERGE_ON_AGENT_REVIEW`, `AUTO_MERGE`, `GAFFER_AUTO_PUSH`, `MEMORY_AUTO_APPROVE` — override the preset. For an unattended run also set `GAFFER_DAILY_BUDGET_USD` (the spend cap) and, if you want a scored quality trail, `GAFFER_EVAL_JUDGE=1` (see [`docs/eval-harness.md`](docs/eval-harness.md)). All knobs: [`docs/CONFIG.md`](docs/CONFIG.md). See [`SECURITY.md`](SECURITY.md) for the threat model and honest residual limits.
 
 ---
 

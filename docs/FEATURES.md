@@ -357,7 +357,7 @@ structural barrier the whole design hangs on.
   now** (Auto-merge on with a merge command: the landing check and the merge gate
   run at once, through the PR in PR mode), **Approve, lands on next tick**
   (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
-  the landing), **Approve, waits for Merge now** (Auto-merge off), **Approve
+  the landing), **Approve, merge is a separate click** (Auto-merge off: it waits in Ready for merge for Merge now), **Approve
   held: CI not passed** (required CI has no PASS for the commit, so the server
   would refuse), or **Approve held: <repo> unavailable** (a write repository's
   delivery head cannot be read, so the server refuses an approval that could not

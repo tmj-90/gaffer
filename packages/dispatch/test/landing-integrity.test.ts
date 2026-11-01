@@ -212,6 +212,36 @@ describe("api/F12: duplicate repo entries in the approval's commits are refused,
   });
 });
 
+describe("api/F8: a principal cannot take a registered agent's id; nobody approves under the author's id", () => {
+  it("a human principal with a registered agent's actor_id is refused (DUPLICATE → 409)", () => {
+    const wg = freshWg();
+    const agent = wg.registerAgent({ display_name: "builder" }, human);
+    let err: DispatchError | null = null;
+    try {
+      wg.createPrincipal({ name: "sneaky", actorType: "human", actorId: agent.id }, system);
+    } catch (e) {
+      err = e as DispatchError;
+    }
+    expect(err?.code).toBe("DUPLICATE");
+    expect(err?.details).toMatchObject({ reason: "actor_id_is_agent" });
+    expect(codeOf(() => wg.createPrincipal({ name: agent.id }, system))).toBe("DUPLICATE");
+    // Any other id is fine.
+    const ok = wg.createPrincipal({ name: "alice", actorType: "human" }, system);
+    expect(ok.principal.actor_id).toBe("alice");
+    wg.db.close();
+  });
+
+  it("a human actor whose id is the delivering agent's id cannot approve its delivery", () => {
+    const wg = freshWg();
+    const { id, agentId } = inReview(wg);
+    const disguised: Actor = { type: "human", id: agentId };
+    expect(codeOf(() => wg.approveReview(id, disguised))).toBe("ACTOR_NOT_PERMITTED");
+    expect(wg.view(id).ticket.status).toBe("in_review");
+    expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+});
+
 describe("api/F1: two parallel Merge requests start one merge", () => {
   it("the second POST /tickets/:id/merge is 409 MERGE_IN_FLIGHT and starts nothing", async () => {
     const { createApiServer } = await import("../src/api/server.js");

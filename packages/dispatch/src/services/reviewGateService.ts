@@ -471,14 +471,20 @@ export class ReviewGateService {
           { actor_type: actor.type, actor_id: actor.id ?? null },
         );
       }
-      const author = this.deliveringAgentId(ticket.id);
-      if (author !== null && actor.id !== undefined && actor.id === author) {
-        throw new DispatchError(
-          "ACTOR_NOT_PERMITTED",
-          "An agent may not approve its own delivery: the approving actor id matches the agent that claimed and delivered this ticket. Approve as a distinct reviewer principal (or a human).",
-          { actor_type: actor.type, actor_id: actor.id, delivering_agent_id: author },
-        );
-      }
+    }
+    // REVIEWER ≠ AUTHOR by id, whatever the actor type (exploratory finding api/F8): a
+    // human or admin principal whose actor_id is the delivering agent's id is that agent
+    // speaking under another type, and its approval would read as the agent approving
+    // its own work.
+    const author = this.deliveringAgentId(ticket.id);
+    if (author !== null && actor.id !== undefined && actor.id === author) {
+      throw new DispatchError(
+        "ACTOR_NOT_PERMITTED",
+        actor.type === "agent"
+          ? "An agent may not approve its own delivery: the approving actor id matches the agent that claimed and delivered this ticket. Approve as a distinct reviewer principal (or a human)."
+          : `The approving ${actor.type} id '${actor.id}' is the id of the agent that claimed and delivered this ticket; nobody may approve a delivery under its author's id. Approve under your own identity.`,
+        { actor_type: actor.type, actor_id: actor.id, delivering_agent_id: author },
+      );
     }
     // GRADUATED-AUTONOMY (Spec 2, Phase 1): capture whether this delivery is being
     // approved UNCHANGED vs edited, emitted on the transition below. Best-effort — a

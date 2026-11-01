@@ -132,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A principal cannot speak as an agent (exploratory finding api/F8).** `POST /api/principals` accepted an `actor_id` equal to a registered agent's id; that principal's approval was recorded as `human/<agent id>`, and the dashboard showed the delivering agent approving its own work. Creating such a principal is now refused (409 `DUPLICATE`, `actor_id_is_agent`), and the review gate refuses any approval whose actor id is the delivering agent's, whatever the actor type.
+
 - **An approval names each repository once (exploratory finding api/F12).** With two commits given for one repository the first one decided: `[head, other]` approved and `[other, head]` was refused as a stale revision. Naming a repository twice (by name, by id, or both) is now a 422 `VALIDATION_ERROR` (`duplicate_repo`) in any order, and nothing is approved.
 
 - **Two Merge clicks start one merge (exploratory finding api/F1).** Two parallel `POST /tickets/:id/merge` both started `merge-ticket`; the second removed the first's merge-gate scratch checkout while it was merging, the first read that as a conflict, and the resolver path sent the approved ticket back to review with main unchanged. The route now answers 409 `MERGE_IN_FLIGHT` while a merge it started for the ticket is still running, the merge runner never spawns a second one for a ticket whose first is alive, `merge-ticket` holds a per-ticket lock under `GAFFER_DATA` (a second run exits 4 and touches nothing; a lock whose owner died is taken over), and a merge that fails in the scratch checkout without any unmerged path is reported as an error, never as a conflict.

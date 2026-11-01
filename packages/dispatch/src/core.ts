@@ -1021,6 +1021,16 @@ export class Dispatch {
     const capability = input.capability ?? "full";
     const actorType = input.actorType ?? "human";
     const actorId = String(input.actorId ?? name).trim() || name;
+    // IDENTITY COLLISION (exploratory finding api/F8): a principal (human or admin) may not
+    // speak as a registered agent's id. One recorded "human/<agent id>" approval on that agent's
+    // own delivery, and the dashboard showed the delivering agent as its own approver.
+    if (this.agents.findById(actorId)) {
+      throw new DispatchError(
+        "DUPLICATE",
+        `actor_id '${actorId}' is a registered agent's id; a ${actorType} principal needs its own identity (pick another actor_id). Nothing was created.`,
+        { reason: "actor_id_is_agent", actor_id: actorId, actor_type: actorType },
+      );
+    }
     const token = mintPrincipalToken();
     const now = this.clock.now();
     const principal = inTransaction(this.db, () => {

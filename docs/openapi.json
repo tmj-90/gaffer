@@ -275,7 +275,7 @@
             }
           },
           "409": {
-            "description": "A principal with that name exists (`DUPLICATE`).",
+            "description": "A principal with that name exists, or its `actor_id` is a registered agent's id (`DUPLICATE`, `details.reason: actor_id_is_agent`).",
             "content": {
               "application/json": {
                 "schema": {

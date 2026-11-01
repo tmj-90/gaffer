@@ -1181,10 +1181,14 @@ gaffer_with_lock() {
 # (the live-holder check is authoritative; mtime is the last resort for an
 # abandoned lock left by a killed holder that never wrote — or had its pid file
 # lost).
+# GNU first: GNU `stat -f` is FILESYSTEM status, so `stat -f %m <path>` there prints a
+# filesystem report for <path> (and fails on the "%m" operand), which the old BSD-first
+# form fed to the arithmetic below. Each answer must be a plain number to count.
 _gaffer_lock_age() {
   local d="$1" mtime now
-  mtime="$(stat -f %m "$d" 2>/dev/null || stat -c %Y "$d" 2>/dev/null || echo "")"
-  [ -n "$mtime" ] || { echo 0; return 0; }
+  mtime="$(stat -c %Y "$d" 2>/dev/null)" || mtime=""
+  case "$mtime" in ''|*[!0-9]*) mtime="$(stat -f %m "$d" 2>/dev/null)" || mtime="" ;; esac
+  case "$mtime" in ''|*[!0-9]*) echo 0; return 0 ;; esac
   now="$(date +%s)"
   echo $((now - mtime))
 }

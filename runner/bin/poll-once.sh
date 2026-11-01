@@ -135,6 +135,8 @@ fi
 # to burn wall-clock forever. Output streams through (the dashboard's run tracker
 # captures it live) and is tee'd so the result line can be read back afterwards.
 _POLL_OUT="$(mktemp "${TMPDIR:-/tmp}/gaffer-poll.XXXXXX")" || _POLL_OUT=""
+# The poll lock's age bound counts from here (lib/run-state.sh PID REUSE).
+declare -F gaffer_poll_lock_refresh >/dev/null 2>&1 && gaffer_poll_lock_refresh
 gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$GAFFER_POLL_TICK_SH" | tee "${_POLL_OUT:-/dev/null}"
 rc="${PIPESTATUS[0]}"
 res="$(sed -n 's/^TICK_RESULT=//p' "${_POLL_OUT:-/dev/null}" 2>/dev/null | tail -1)"

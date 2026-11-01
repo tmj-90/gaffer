@@ -27,6 +27,16 @@
 # run. A Poll that finds it held WAITS for the other Poll to finish, up to
 # GAFFER_POLL_WAIT_TIMEOUT seconds, then refuses. A lock whose holder is gone is
 # taken over at once.
+#
+# PID REUSE: "gone" is `kill -0 <pid>` failing, and a pid can be reused: after a
+# container restart (pids are handed out in the same order again) or a long uptime,
+# a Poll killed with SIGKILL can leave a lock whose pid now names an unrelated live
+# process. A Poll cannot run longer than its outer tick bound plus the reap grace
+# (GAFFER_TICK_OUTER_TIMEOUT + GAFFER_REAP_GRACE, the TERM-to-KILL wait), and the holder
+# rewrites its pid file just before its tick starts (gaffer_poll_lock_refresh), so a
+# lock whose pid file is older than that bound plus a minute is abandoned whatever its
+# pid says, and is taken over. Without that bound such a lock made every later Poll
+# wait GAFFER_POLL_WAIT_TIMEOUT and refuse, for as long as the unrelated process lived.
 
 # How long a Poll waits for the Poll already running (seconds). The default is the
 # longest a Poll can run (its outer tick bound) plus a minute, so a Poll pressed during
@@ -36,16 +46,23 @@
 # The per-run state root.
 _gaffer_run_state_root() { printf '%s/run-state' "${GAFFER_DATA:?}"; }
 
-# Remove the run-state dirs whose run is gone. A dir is named <kind>-<pid>-<epoch>, and
-# only a dir whose pid is provably dead is removed: a live run's lists are never touched.
+# Remove the run-state dirs whose run is gone. A dir is named <kind>-<pid>-<epoch>
+# (kind lower-case letters, pid and epoch digits), and only a real directory of exactly
+# that shape whose pid is provably dead is removed: a live run's lists are never
+# touched, and nothing else under the root (a symlink, a file, a name of another shape)
+# is ever deleted.
 gaffer_run_state_sweep() {
-  local _root _d _name _pid
+  local _root _d _name _kind _rest _pid _epoch
   _root="$(_gaffer_run_state_root)"
   [ -d "$_root" ] || return 0
   for _d in "$_root"/*; do
-    [ -d "$_d" ] || continue
-    _name="${_d##*/}"; _pid="${_name#*-}"; _pid="${_pid%%-*}"
+    [ -d "$_d" ] && [ ! -L "$_d" ] || continue
+    _name="${_d##*/}"
+    case "$_name" in *-*-*) ;; *) continue ;; esac
+    _kind="${_name%%-*}"; _rest="${_name#*-}"; _pid="${_rest%%-*}"; _epoch="${_rest#*-}"
+    case "$_kind" in ''|*[!a-z]*) continue ;; esac
     case "$_pid" in ''|*[!0-9]*) continue ;; esac
+    case "$_epoch" in ''|*[!0-9]*) continue ;; esac
     [ "$_pid" = "$$" ] && continue
     kill -0 "$_pid" 2>/dev/null && continue
     rm -rf "$_d" 2>/dev/null || true
@@ -59,6 +76,7 @@ gaffer_run_state_sweep() {
 # rather than fall back to a shared path another run may be using.
 gaffer_run_state_begin() {
   local _kind="${1:-run}" _root _dir
+  case "$_kind" in ''|*[!a-z]*) return 1 ;; esac   # the sweep's name shape
   _root="$(_gaffer_run_state_root)"
   unset GAFFER_RUN_STATE_DIR
   gaffer_run_state_sweep
@@ -84,15 +102,36 @@ gaffer_run_state_end() {
 # pid is then in _GAFFER_POLL_LOCK_HOLDER.
 _GAFFER_POLL_LOCK_HELD=0
 _GAFFER_POLL_LOCK_HOLDER=""
+# The age (seconds) past which a held lock's pid file cannot belong to a running Poll:
+# the outer tick bound + the reap grace (gaffer_timeout's TERM-to-KILL wait, 30 s unless
+# GAFFER_REAP_GRACE says otherwise) + a minute for the Poll's own steps around its tick.
+_gaffer_poll_lock_stale_after() {
+  local _o="${GAFFER_TICK_OUTER_TIMEOUT:-5520}" _g="${GAFFER_REAP_GRACE:-30}"
+  case "$_o" in ''|*[!0-9]*) _o=5520 ;; esac
+  case "$_g" in ''|*[!0-9]*|0) _g=30 ;; esac
+  printf '%s' "$(( _o + _g + 60 ))"
+}
 gaffer_poll_lock_acquire() {
-  local _lock="${GAFFER_DATA:?}/.poll.lock.d" _pid _said=0 _waited=0 _nopid=0
+  local _lock="${GAFFER_DATA:?}/.poll.lock.d" _pid _said=0 _waited=0 _nopid=0 _age _stale
   local _limit="${GAFFER_POLL_WAIT_TIMEOUT:-0}"
   case "$_limit" in ''|*[!0-9]*) _limit=0 ;; esac
+  _stale="$(_gaffer_poll_lock_stale_after)"
   while ! mkdir "$_lock" 2>/dev/null; do
     _pid="$(cat "$_lock/pid" 2>/dev/null)"
     if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then
       rm -rf "$_lock" 2>/dev/null || true   # the holder is gone: an abandoned lock
       continue
+    fi
+    # PID REUSE (header): a live pid on a pid file older than any Poll can run is not
+    # the Poll that wrote it.
+    if [ -n "$_pid" ] && declare -F _gaffer_lock_age >/dev/null 2>&1; then
+      _age="$(_gaffer_lock_age "$_lock/pid")"
+      case "$_age" in ''|*[!0-9]*) _age=0 ;; esac
+      if [ "$_age" -ge "$_stale" ]; then
+        echo "gaffer poll: the poll lock (pid $_pid) is ${_age}s old, older than any Poll runs (${_stale}s): that Poll is gone and the pid is another process now; taking the lock over"
+        rm -rf "$_lock" 2>/dev/null || true
+        continue
+      fi
     fi
     # No pid: the holder is between its mkdir and its pid write, or died there. Give it
     # a few seconds, then treat the lock as abandoned.
@@ -115,6 +154,15 @@ gaffer_poll_lock_acquire() {
   done
   printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null || true
   _GAFFER_POLL_LOCK_HELD=1
+  return 0
+}
+
+# Rewrite the holder's pid file just before the tick starts, so the stale bound above
+# counts from the tick's start (the tick is what the outer bound limits).
+gaffer_poll_lock_refresh() {
+  [ "${_GAFFER_POLL_LOCK_HELD:-0}" = 1 ] || return 0
+  local _lock="${GAFFER_DATA:?}/.poll.lock.d"
+  [ "$(cat "$_lock/pid" 2>/dev/null)" = "$$" ] && printf '%s\n' "$$" > "$_lock/pid" 2>/dev/null
   return 0
 }
 

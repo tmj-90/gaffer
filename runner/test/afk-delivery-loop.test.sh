@@ -96,7 +96,7 @@ run_tick() {
   DISPATCH_DIR="$DISPATCH_DIR" CREW_DIR="$WORK/crew-absent" \
   DRY_RUN=1 REVIEW_MODE="$review_mode" GAFFER_PAUSE_ON_CAP=1 \
   CLARIFY_DRAFTS_WHEN_IDLE=0 \
-  bash "$TICK" 2>&1
+  env -u GAFFER_DRY_PREVIEWED_FILE bash "$TICK" 2>&1
 }
 
 echo "== BUG 1: reviewer pass IS reached at the no_work juncture (REVIEW_MODE=agent) =="
@@ -113,6 +113,15 @@ grep -q "TICK_RESULT=reviewed" <<<"$OUT_AGENT" \
 grep -q "TICK_RESULT=no_work" <<<"$OUT_AGENT" \
   && fail "tick STILL exited no_work — reviewer was skipped (deadlock)" \
   || ok "tick did NOT fall through to no_work (reviewer short-circuited it)"
+
+# The "every ready ticket previewed" branch must key on the preview list loop.sh
+# exports, never on a stand-in path: `[ -s "${F:-/nonexistent}" ]` is TRUE when the
+# host has a non-empty /nonexistent directory (a root box where a gate's
+# HOME=/nonexistent npm cache got created), which sent this tick down the wrong log
+# line and failed the juncture check above on such a box only.
+grep -qE -- '-s "\$\{GAFFER_DRY_PREVIEWED_FILE:-/' "$TICK" \
+  && fail "tick.sh tests the DRY_RUN preview list through a stand-in path (true on a host with a non-empty /nonexistent dir)" \
+  || ok "tick.sh tests the DRY_RUN preview list only when loop.sh exported one"
 
 echo "== BUG 1: supervised (REVIEW_MODE=human) is byte-identical — no reviewer, no_work =="
 OUT_HUMAN="$(run_tick human || true)"

@@ -17,6 +17,7 @@
 // (exploratory finding ui-explore/F-05).
 // Exploratory findings ui-explore/F-01 and ui-workflows/F7.
 import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export const TITLE = "Read-only access: this token can look, not change anything.";
@@ -251,6 +252,53 @@ export default async function s18(t, L) {
     `seeded: #${w.review.number} in review, #${w.paused.number} paused, #${w.held.number} claimed by '${w.agent.display_name}', #${w.closed.number} won't do, an epic, a spec and a ground`,
     `seed: review=${w.review.status} paused=${w.paused.status} claim=${JSON.stringify(w.claim).slice(0, 120)}`,
   );
+  // The repo mapped into the ground (the repo page's relation, access and Unlink) and a
+  // hidden repo (#/hidden's Unhide): a run that did not follow s14-map had neither, so
+  // those controls went unwalked and stayed live for a read token (review follow-up).
+  const assoc = (
+    await L.api("POST", "/scope/repos", {
+      scope_node_id: w.node.id,
+      repo_id: t.repo.id,
+      relation: "uses",
+      default_access: "read",
+    })
+  ).json;
+  const side = path.join(path.dirname(L.REPO_PATH), `ro-side-${w.tag}`);
+  mkdirSync(side, { recursive: true });
+  writeFileSync(path.join(side, "README.md"), "# side repo\n");
+  for (const a of [
+    ["init", "-q", "-b", "main"],
+    ["add", "-A"],
+    ["commit", "-qm", "init"],
+  ])
+    L.git(side, ...a);
+  execFileSync(
+    "node",
+    [
+      path.join(L.ROOT, "packages/dispatch/dist/cli/index.js"),
+      "--db",
+      path.join(L.GAFFER_DATA, "dispatch.sqlite"),
+      "repo",
+      "add",
+      "--name",
+      path.basename(side),
+      "--path",
+      side,
+    ],
+    { timeout: 60000 },
+  );
+  const sideRepo = ((await L.api("GET", "/repositories")).json.repositories || []).find(
+    (r) => r.local_path === side || r.name === path.basename(side),
+  );
+  const hid = sideRepo
+    ? await L.api("POST", `/repos/${sideRepo.id}/hidden`, { hidden: true })
+    : { status: 0 };
+  t.check(
+    (assoc.association || assoc.scope_repo || assoc.id) && hid.status < 300,
+    `seeded: ${t.repo.name} mapped into the ground, ${path.basename(side)} hidden`,
+    `seed: association=${JSON.stringify(assoc).slice(0, 160)} hide=${hid.status}`,
+  );
+
   const rtok = readToken(L);
   const who = await L.api("GET", "/api/whoami", undefined, rtok);
   t.check(
@@ -287,6 +335,7 @@ export default async function s18(t, L) {
     ["health", "health"],
     ["settings", "settings"],
     [`repo/${encodeURIComponent(t.repo.id)}`, "repo/:id"],
+    ["hidden", "hidden"],
   ].filter(Boolean);
   const live = [];
   const noTitle = [];
@@ -363,6 +412,8 @@ export default async function s18(t, L) {
     await ctx.close();
   }
 
-  // leave nothing live: the claim and the agent's ticket
+  // leave nothing live: the claim and the agent's ticket, and the sample repo unmapped
   await revokeHeld(L, w);
+  const aid = assoc.association?.id || assoc.scope_repo?.id || assoc.id;
+  if (aid) await L.api("DELETE", `/scope/repos/${aid}`);
 }

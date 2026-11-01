@@ -155,7 +155,7 @@ change something switched off with a title saying why, on every view: Review's
 sign-off, Revoke and Reopen, the Map, ground and repo editors, Onboard, Author a
 spec and Freeze, and the whole Plan a build composer. The page never sends such a
 token's write, so nothing comes back as a 403; the `s18-read-only` browser suite
-walks 22 views to keep it so. The login gate sends no data call until a token is
+walks 23 views to keep it so. The login gate sends no data call until a token is
 there: `/healthz` says whether one is wanted, and a stored token is checked once.
 
 **The Team sheet** lists everything waiting on you, one action a row: decisions,

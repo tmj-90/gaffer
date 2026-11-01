@@ -19289,20 +19289,22 @@ async function renderHidden() {
       el(
         "td",
         { class: "row-actions" },
-        el(
-          "button",
-          {
-            class: "btn small",
-            type: "button",
-            "aria-label": `Unhide ${r.name}`,
-            onclick: () =>
-              guard(async () => {
-                await api("POST", `/repos/${r.id}/hidden`, { hidden: false });
-                toast(`${r.name} un-hidden`, { ok: true });
-                router();
-              }),
-          },
-          "Unhide",
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn small",
+              type: "button",
+              "aria-label": `Unhide ${r.name}`,
+              onclick: () =>
+                guard(async () => {
+                  await api("POST", `/repos/${r.id}/hidden`, { hidden: false });
+                  toast(`${r.name} un-hidden`, { ok: true });
+                  router();
+                }),
+            },
+            "Unhide",
+          ),
         ),
       ),
     ]),
@@ -20214,46 +20216,49 @@ function renderRepoScopeRow(repo, s) {
       router();
     }),
   );
-  return el(
-    "li",
-    {},
-    el("div", { class: "assoc-row assoc-row-edit" }, [
-      el("div", { class: "assoc-edit-main" }, [
-        el("a", { class: "assoc-name", href: `#/node/${s.id}` }, s.name),
-        badge(typeLabel(s.type), `type-${s.type}`),
-      ]),
-      el("div", { class: "assoc-edit-controls" }, [
-        el("label", { class: "assoc-edit-field" }, [
-          el("span", { class: "assoc-edit-label" }, "relation"),
-          relationSel,
+  // Relation, access and Unlink each change the mapping: a read token's are off.
+  return roLockAll(
+    el(
+      "li",
+      {},
+      el("div", { class: "assoc-row assoc-row-edit" }, [
+        el("div", { class: "assoc-edit-main" }, [
+          el("a", { class: "assoc-name", href: `#/node/${s.id}` }, s.name),
+          badge(typeLabel(s.type), `type-${s.type}`),
         ]),
-        el("label", { class: "assoc-edit-field" }, [
-          el("span", { class: "assoc-edit-label" }, "access"),
-          accessSel,
+        el("div", { class: "assoc-edit-controls" }, [
+          el("label", { class: "assoc-edit-field" }, [
+            el("span", { class: "assoc-edit-label" }, "relation"),
+            relationSel,
+          ]),
+          el("label", { class: "assoc-edit-field" }, [
+            el("span", { class: "assoc-edit-label" }, "access"),
+            accessSel,
+          ]),
+          el(
+            "button",
+            {
+              class: "btn danger small",
+              type: "button",
+              "aria-label": `Unlink from ${s.name}`,
+              onclick: () =>
+                confirmSheet({
+                  title: `Unlink ${repo.name}`,
+                  intro: `${repo.name} is no longer mapped into “${s.name}”. Existing tickets are unaffected.`,
+                  confirm: "Unlink",
+                  tone: "danger",
+                  onConfirm: async () => {
+                    await api("DELETE", `/scope/repos/${s.association_id}`);
+                    toast("Association removed", { ok: true });
+                    router();
+                  },
+                }),
+            },
+            "Unlink",
+          ),
         ]),
-        el(
-          "button",
-          {
-            class: "btn danger small",
-            type: "button",
-            "aria-label": `Unlink from ${s.name}`,
-            onclick: () =>
-              confirmSheet({
-                title: `Unlink ${repo.name}`,
-                intro: `${repo.name} is no longer mapped into “${s.name}”. Existing tickets are unaffected.`,
-                confirm: "Unlink",
-                tone: "danger",
-                onConfirm: async () => {
-                  await api("DELETE", `/scope/repos/${s.association_id}`);
-                  toast("Association removed", { ok: true });
-                  router();
-                },
-              }),
-          },
-          "Unlink",
-        ),
       ]),
-    ]),
+    ),
   );
 }
 

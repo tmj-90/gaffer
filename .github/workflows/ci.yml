@@ -280,10 +280,12 @@ jobs:
   # GitHub's free/pro limit of 5 concurrent macOS jobs before it could start. One run
   # is 25,234 test-seconds across the four cells (macOS n22 6124, macOS n24 6417,
   # ubuntu n22 6427, ubuntu n24 6266). With three macOS jobs per push nothing queues.
-  # Expected from that run's per-test times and the shard split below: each macOS
-  # node 22 job about 13.5-14 min (shard 1: 238 s of package tests, 46 s of e2e and
-  # ~510 s of runner tests), each ubuntu job about 9.5 min, so about 14 min of wall
-  # clock per push instead of 26.4. The node 24 x macOS cell still runs every night
+  # Expected from that run's per-test times, the cheaper tests since (delivery-
+  # lifecycle, merge-typecheck, direct-run-isolation, the batched ticket setups) and
+  # the shard split below: each macOS node 22 job about 13 min (shard 1: 238 s of
+  # package tests, 46 s of e2e and ~465 s of runner tests; shards 2 and 3 ~740-755 s
+  # of runner tests), each ubuntu job about 9 min, so about 13 min of wall clock per
+  # push instead of 26.4. The node 24 x macOS cell still runs every night
   # with the same strictness and the same evidence upload, so a regression only it
   # catches is at most a day old.
   #
@@ -291,8 +293,11 @@ jobs:
   # (`packages: true`) rather than being `packages` jobs of their own. That shard
   # starts with a head start in the split (`head_start`, weight-seconds, passed to
   # shard.mjs as GAFFER_RUN_SHARD1_HEAD_START and identical for every shard of a
-  # cell, so the partition stays exact): about the package tests' wall time × the
-  # runner's -j. A cell without the package tests gets 0. macOS node 22 shard 1 also
+  # cell, so the partition stays exact): about the package tests' and e2e's wall
+  # time × the runner's -j, then tuned on the run's per-test times (macOS node 22:
+  # 800 left shard 1 ~60 s longer than the others, 1100 evens them to within ~15 s;
+  # shard.mjs caps it at half a shard's mean load). A cell without the package
+  # tests gets 0. macOS node 22 shard 1 also
   # runs the OS-sensitive maintenance-lane e2e and gate replay (`e2e: true`) so they
   # keep macOS coverage; on ubuntu they run in `checks`.
   runner:
@@ -307,9 +312,9 @@ jobs:
           - { os: ubuntu-latest, node: "24", shard: 1, shards: 3, head_start: 0 }
           - { os: ubuntu-latest, node: "24", shard: 2, shards: 3, head_start: 0 }
           - { os: ubuntu-latest, node: "24", shard: 3, shards: 3, head_start: 0 }
-          - { os: macos-latest, node: "22", shard: 1, shards: 3, head_start: 800, packages: true, e2e: true }
-          - { os: macos-latest, node: "22", shard: 2, shards: 3, head_start: 800 }
-          - { os: macos-latest, node: "22", shard: 3, shards: 3, head_start: 800 }
+          - { os: macos-latest, node: "22", shard: 1, shards: 3, head_start: 1100, packages: true, e2e: true }
+          - { os: macos-latest, node: "22", shard: 2, shards: 3, head_start: 1100 }
+          - { os: macos-latest, node: "22", shard: 3, shards: 3, head_start: 1100 }
     uses: ./.github/workflows/runner-shard.yml
     with:
       os: ${{ matrix.os }}

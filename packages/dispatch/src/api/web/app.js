@@ -2335,6 +2335,12 @@ function closeNavMenu() {
   if (btn) btn.setAttribute("aria-expanded", "false");
   document.removeEventListener("click", navMenuOutside, true);
   document.removeEventListener("keydown", navMenuKey);
+  document.removeEventListener("focusin", navMenuFocus);
+}
+/** Focus that moved outside the menu (Tab past its last item) closes it. */
+function navMenuFocus(e) {
+  if (navMenuEl && !navMenuEl.contains(e.target) && !e.target.closest?.(".nav-more"))
+    closeNavMenu();
 }
 function navMenuOutside(e) {
   if (navMenuEl && !navMenuEl.contains(e.target) && !e.target.closest?.(".nav-more"))
@@ -2393,6 +2399,13 @@ function toggleNavMenu(btn) {
   btn.setAttribute("aria-expanded", "true");
   navMenuEl.querySelector("a")?.focus();
   setTimeout(() => document.addEventListener("click", navMenuOutside, true), 0);
+  document.addEventListener("focusin", navMenuFocus);
+  // Tab past the last item leaves the document (the menu is the body's last child):
+  // no focusin follows, so the menu's own focusout closes it.
+  navMenuEl.addEventListener("focusout", (e) => {
+    const to = e.relatedTarget;
+    if (!to || (!navMenuEl?.contains(to) && !to.closest?.(".nav-more"))) closeNavMenu();
+  });
   document.addEventListener("keydown", navMenuKey);
 }
 function navCountBadge(id) {
@@ -2949,7 +2962,9 @@ function ensurePalette() {
     placeholder: "Jump to a view, ticket or action…",
     "aria-label": "Command palette",
   });
-  const list = el("ul", { class: "palette-list" });
+  // tabindex -1: a scrolling list is a Tab stop in Chromium, and from there Tab
+  // walked on to the page behind the scrim.
+  const list = el("ul", { class: "palette-list", tabindex: "-1" });
   const palette = el("div", { class: "palette", role: "dialog", "aria-modal": "true" }, [
     el("div", { class: "palette-input-wrap" }, [icon("search"), input]),
     list,
@@ -2964,14 +2979,29 @@ function ensurePalette() {
   palette.addEventListener("click", (e) => e.stopPropagation());
   input.addEventListener("input", () => renderPaletteList(input.value));
   input.addEventListener("keydown", paletteKeydown);
+  // A modal keeps focus: wherever focus is inside it (the list after a click, say),
+  // Esc closes it and Tab returns to the one field, never to the page behind.
+  palette.addEventListener("keydown", (e) => {
+    if (e.target === input) return; // the field's own handler has it
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closePalette();
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      input.focus();
+    } else paletteKeydown(e);
+  });
+
   document.body.appendChild(scrim);
   paletteEls = { scrim, palette, input, list };
   return paletteEls;
 }
 
 let paletteAllItems = [];
+let paletteReturnFocus = null;
 async function openPalette() {
   const { scrim, input } = ensurePalette();
+  if (!scrim.classList.contains("open")) paletteReturnFocus = document.activeElement;
   scrim.classList.add("open");
   input.value = "";
   input.focus();
@@ -2981,7 +3011,13 @@ async function openPalette() {
   renderPaletteList(input.value);
 }
 function closePalette() {
-  if (paletteEls) paletteEls.scrim.classList.remove("open");
+  if (!paletteEls || !paletteEls.scrim.classList.contains("open")) return;
+  paletteEls.scrim.classList.remove("open");
+  // Focus goes back where it was (the Search button, or the page) when it is still there.
+  const back = paletteReturnFocus;
+  paletteReturnFocus = null;
+  if (back && back.isConnected && back !== document.body && typeof back.focus === "function")
+    back.focus();
 }
 function fuzzyMatch(query, text) {
   const q = query.toLowerCase();
@@ -3089,6 +3125,8 @@ function paletteKeydown(e) {
   } else if (e.key === "Enter") {
     e.preventDefault();
     runPaletteItem(paletteActive);
+  } else if (e.key === "Tab") {
+    e.preventDefault(); // the field is the dialog's only Tab stop
   }
 }
 function scrollPaletteActive() {
@@ -26825,7 +26863,7 @@ function floorScene(m) {
   }
   const world = svgEl("g", { class: "fl-world" }, [floor, ...C.items.map((i) => i.node)]);
   const signLayer = svgEl("g", { class: "fl-signs", "aria-hidden": "true" }, C.signs);
-  return svgEl(
+  const svg = svgEl(
     "svg",
     {
       viewBox: vb.join(" "),
@@ -26836,6 +26874,62 @@ function floorScene(m) {
     },
     [world, signLayer, tagLayer],
   );
+  // The drawing itself is no Tab stop (Chromium made it one); its links are.
+  svg.setAttribute("tabindex", "-1");
+  floorTabOrder(svg);
+  return svg;
+}
+
+/**
+ * The drawing is painted back to front (its DOM order is depth), so the browser's
+ * Tab order wandered: Drawing office, three of its parcels, Stores, then two more
+ * drawing-office parcels. Tab and Shift+Tab inside the floor follow the stations
+ * instead, in lifecycle order: each station, then its parcels and robots by ticket
+ * number, the desk last. Leaving the floor at either end is the browser's own Tab.
+ */
+function floorTabOrder(svg) {
+  const rank = (a) => {
+    const k = a.dataset.station || FLOOR_STATION_OF[a.dataset.status] || "desk";
+    const i = FLOOR_ORDER.indexOf(k);
+    return [i < 0 ? FLOOR_ORDER.length : i, a.dataset.station ? 0 : 1, Number(a.dataset.n) || 0];
+  };
+  const ordered = () =>
+    [...svg.querySelectorAll("a.fl-hit")]
+      .map((a, dom) => ({ a, dom, r: rank(a) }))
+      .sort((x, y) => x.r[0] - y.r[0] || x.r[1] - y.r[1] || x.r[2] - y.r[2] || x.dom - y.dom)
+      .map((x) => x.a);
+  svg.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
+    const list = ordered();
+    const i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    const next = list[i + (e.shiftKey ? -1 : 1)];
+    if (next) {
+      e.preventDefault();
+      next.focus();
+      return;
+    }
+    // Off the end: hand the browser the anchor at that end of the DOM, and its own
+    // Tab carries on out of the floor from there.
+    const all = [...svg.querySelectorAll("a.fl-hit")];
+    all[e.shiftKey ? 0 : all.length - 1]?.focus();
+  });
+  // Tabbing IN lands on the first station going forward, the last thing going back
+  // (a click focuses what was clicked: only keyboard entry is redirected).
+  let pointing = false;
+  svg.addEventListener("pointerdown", () => {
+    pointing = true;
+    setTimeout(() => (pointing = false), 0);
+  });
+  svg.addEventListener("focusin", (e) => {
+    const from = e.relatedTarget;
+    if (pointing || !from || (from !== svg && svg.contains(from))) return;
+    if (!e.target.closest?.("a.fl-hit")) return;
+    const list = ordered();
+    const forward = Boolean(from.compareDocumentPosition(svg) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const want = forward ? list[0] : list[list.length - 1];
+    if (want && want !== e.target) want.focus();
+  });
 }
 
 /**

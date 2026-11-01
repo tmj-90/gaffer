@@ -116,7 +116,10 @@ export function openDatabase(path: string): Db {
     // fails on the first statement, not in the constructor. Give it the same
     // guidance as a path that cannot be opened at all, not a bare SqliteError.
     // A file this user cannot write (its permissions, a read-only mount) fails the
-    // same way, on the first statement that writes (the WAL switch, the schema).
+    // same way when the open has to write (the WAL switch on a fresh file, a schema
+    // migration); an already-migrated database opens and reads fine, and the first
+    // write then fails with SQLITE_READONLY, which the CLI boundary reports the same
+    // way (isReadOnlyDbError below).
     const readOnly = isReadOnlyDbError(err);
     if (!isUnreadableDbError(err) && !readOnly) throw err;
     try {
@@ -147,7 +150,7 @@ function isUnreadableDbError(err: unknown): boolean {
 }
 
 /** SQLITE_READONLY and its extended codes: the file (or its directory) cannot be written. */
-function isReadOnlyDbError(err: unknown): boolean {
+export function isReadOnlyDbError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   return (
     typeof code === "string" && (code === "SQLITE_READONLY" || code.startsWith("SQLITE_READONLY_"))

@@ -1,7 +1,7 @@
 import { type Command, CommanderError } from "commander";
 import { ZodError } from "zod";
 
-import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
+import { DatabaseOpenError, DatabaseTooNewError, isReadOnlyDbError } from "../db/connection.js";
 import { dbBusyError, isDbBusyError } from "../util/dbBusy.js";
 import { DispatchError } from "../util/errors.js";
 import { toZod3Issues, type Zod3Issue } from "../util/zod3Compat.js";
@@ -77,6 +77,19 @@ export function describeCliFailure(
   if (isDbBusyError(err)) {
     const busy = dbBusyError();
     return { exitCode: 1, body: body(busy.code, busy.message, busy.details) };
+  }
+  // An already-migrated database opens and reads for a user who cannot write it; the
+  // first write then fails with SQLITE_READONLY. Say what is wrong and what to check,
+  // not "attempt to write a readonly database" with a stack.
+  if (isReadOnlyDbError(err)) {
+    return {
+      exitCode: 1,
+      body: body(
+        "DB_READ_ONLY",
+        "The database is read-only for this user, so this command's write was refused (reads still work): " +
+          "check the permissions of the database file and its directory (SQLite writes the directory too).",
+      ),
+    };
   }
   const message = err instanceof Error ? err.message : String(err);
   const debug = process.env["DISPATCH_DEBUG"] === "1" && err instanceof Error && err.stack;

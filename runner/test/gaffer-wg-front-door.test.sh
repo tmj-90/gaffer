@@ -22,7 +22,10 @@ G="$RUNNER_DIR/gaffer"
 PASS=0; FAILURES=()
 ok()   { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAILURES+=("$1"); printf '  FAIL %s\n' "$1"; }
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-wg-front-door.XXXXXX")"
+# macOS TMPDIR ends in "/": strip it, or $GAFFER_DATA carries a double slash the CLI
+# prints normalised, and the path comparison below misses.
+_T="${TMPDIR:-/tmp}"; _T="${_T%/}"
+WORK="$(mktemp -d "$_T/gaffer-wg-front-door.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
 trap 'gaffer_test_rm_work "$WORK"' EXIT
 export GAFFER_DATA="$WORK/data"; mkdir -p "$GAFFER_DATA"

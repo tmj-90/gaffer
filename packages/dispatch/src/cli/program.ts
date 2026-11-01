@@ -235,11 +235,18 @@ function handleHelpRequest(program: Command, args: readonly string[]): number | 
 export async function runProgram(program: Command, argv: readonly string[]): Promise<number> {
   const help = handleHelpRequest(program, argv.slice(2));
   if (help !== null) return help;
+  // The command whose action is running, so a validation failure can name its flags.
+  let action: Command | undefined;
+  program.hook("preAction", (_root, actionCommand) => {
+    action = actionCommand;
+  });
   try {
     await program.parseAsync([...argv]);
     return typeof process.exitCode === "number" ? process.exitCode : 0;
   } catch (err) {
-    const failure = describeCliFailure(err);
+    const failure = describeCliFailure(err, {
+      ...(action ? { command: action, commandPath: commandPath(action) } : {}),
+    });
     if (failure.body) process.stderr.write(`${JSON.stringify(failure.body)}\n`);
     return failure.exitCode;
   }

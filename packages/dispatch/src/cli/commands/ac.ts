@@ -3,13 +3,14 @@ import type { Command } from "commander";
 import { readFileSync } from "node:fs";
 
 import { DispatchError } from "../../util/errors.js";
+import { RULES } from "../limits.js";
 import { cliActor, open, printJson } from "../shared.js";
 
 export function registerAc(program: Command): void {
   const ac = program.command("ac").description("Acceptance-criteria commands");
   ac.command("add <ref>")
     .description("Add an acceptance criterion to a ticket")
-    .requiredOption("-t, --text <text>", "AC text")
+    .requiredOption("-t, --text <text>", `the criterion: ${RULES.criterion}`)
     .option("--verify <method>", "verification method")
     .option("--evidence", "evidence required", false)
     .option("--clause <id>", "frozen-spec clause id this AC satisfies (spec_clause_id provenance)")
@@ -52,7 +53,7 @@ export function registerAc(program: Command): void {
       "Edit an acceptance criterion (<ac> = its position, 1 = the first, or its id). " +
         "It goes back to pending. Refused once the ticket is claimed (CONTRACT_FROZEN).",
     )
-    .option("-t, --text <text>", "new AC text (one line)")
+    .option("-t, --text <text>", `new criterion text: ${RULES.criterion}`)
     .option("--verify <method>", 'verification method ("" clears it)')
     .option("--check <command>", "new machine check command (the runner executes it)")
     .option("--clear-check", "remove the machine check command", false)

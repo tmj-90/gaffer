@@ -1,10 +1,11 @@
-import { CommanderError } from "commander";
+import { type Command, CommanderError } from "commander";
 import { ZodError } from "zod";
 
 import { DatabaseOpenError, DatabaseTooNewError } from "../db/connection.js";
 import { dbBusyError, isDbBusyError } from "../util/dbBusy.js";
 import { DispatchError } from "../util/errors.js";
-import { toZod3Issues } from "../util/zod3Compat.js";
+import { toZod3Issues, type Zod3Issue } from "../util/zod3Compat.js";
+import { flagForField, ruleForField } from "./limits.js";
 
 /** The CLI's one error shape, written as one JSON line on stderr. */
 export interface CliErrorBody {
@@ -39,7 +40,10 @@ function body(
  * (with internal file paths) is never printed; DISPATCH_DEBUG=1 adds it under
  * `details.stack` for a bug report.
  */
-export function describeCliFailure(err: unknown): CliFailure {
+export function describeCliFailure(
+  err: unknown,
+  ctx: { command?: Command; commandPath?: string } = {},
+): CliFailure {
   if (err instanceof CommanderError) {
     // Commander has already printed its message (and the help) to stderr. A usage
     // mistake (unknown command or option, a missing argument or required option, a
@@ -63,10 +67,11 @@ export function describeCliFailure(err: unknown): CliFailure {
     return { exitCode, body: body(err.code, err.message, err.details) };
   }
   if (err instanceof ZodError) {
-    const issues = toZod3Issues(err.issues).map((i) => ({ path: i.path, message: i.message }));
+    const zod3 = toZod3Issues(err.issues);
+    const issues = zod3.map((i) => ({ path: i.path, message: i.message }));
     return {
       exitCode: 1,
-      body: body("VALIDATION_ERROR", issues.map((i) => i.message).join("; "), { issues }),
+      body: body("VALIDATION_ERROR", validationMessage(zod3, ctx), { issues }),
     };
   }
   if (isDbBusyError(err)) {
@@ -83,4 +88,29 @@ export function describeCliFailure(err: unknown): CliFailure {
       debug ? { stack: err.stack } : undefined,
     ),
   };
+}
+
+/**
+ * A validation failure in words a person can act on (exploratory finding cli-wg/F-15):
+ * the flag they typed and the rule it breaks ("--priority must be a whole number
+ * between 0 and 1000"), else the flag (or field) and the issue's own message. One
+ * sentence per field; the raw issues stay under `details.issues` for a script.
+ */
+export function validationMessage(
+  issues: readonly Zod3Issue[],
+  ctx: { command?: Command; commandPath?: string } = {},
+): string {
+  const parts: string[] = [];
+  const seen = new Set<string>();
+  for (const issue of issues) {
+    const field = issue.path.length === 1 ? String(issue.path[0]) : undefined;
+    const key = field ?? issue.path.join(".");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const flag = field ? flagForField(ctx.command, field) : undefined;
+    const rule = field && ctx.commandPath ? ruleForField(ctx.commandPath, field) : undefined;
+    const subject = flag ?? (key || "input");
+    parts.push(rule ? `${subject} must be ${rule}` : `${subject}: ${issue.message}`);
+  }
+  return parts.join("; ") || "Invalid input.";
 }

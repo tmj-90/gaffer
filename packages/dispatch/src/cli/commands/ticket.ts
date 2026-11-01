@@ -2,7 +2,7 @@ import type { Command } from "commander";
 import { z } from "zod";
 
 import type { Actor } from "../../domain/types.js";
-import { TICKET_STATUSES } from "../../domain/types.js";
+import { POLICY_PACKS, RISK_LEVELS, TICKET_STATUSES } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
 import {
@@ -15,6 +15,7 @@ import {
   testerActor,
   validateTtl,
 } from "../shared.js";
+import { RULES } from "../limits.js";
 
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
@@ -22,15 +23,15 @@ export function registerTicket(program: Command): void {
   ticket
     .command("create")
     .description("Create a draft ticket")
-    .requiredOption("-t, --title <title>", "ticket title")
-    .option("-d, --description <text>", "description", "")
-    .option("-p, --policy <pack>", "policy pack", "solo_loose")
-    .option("--risk <level>", "risk level", "medium")
-    .option("--priority <n>", "priority", (v) => Number(v), 0)
+    .requiredOption("-t, --title <title>", `ticket title: ${RULES.title}`)
+    .option("-d, --description <text>", `description: ${RULES.description}`, "")
+    .option("-p, --policy <pack>", `policy pack (${POLICY_PACKS.join("|")})`, "solo_loose")
+    .option("--risk <level>", `risk level (${RISK_LEVELS.join("|")})`, "medium")
+    .option("--priority <n>", `priority: ${RULES.priority}`, (v) => Number(v), 0)
     .option("--bootstrap", "mark as a greenfield (create-a-repo) bootstrap ticket", false)
     .option(
       "--budget <usd>",
-      "per-ticket cost ceiling in USD (all agent spend on the ticket)",
+      `per-ticket cost ceiling for all agent spend on the ticket: ${RULES.budget}`,
       (v) => Number(v),
     )
     .action((opts, cmd) => {
@@ -72,13 +73,13 @@ export function registerTicket(program: Command): void {
         "description, policy) is editable in draft, refining, ready and blocked; from claimed " +
         "on it is frozen (CONTRACT_FROZEN). A ready ticket must still pass its ready gate.",
     )
-    .option("-t, --title <title>", "new title (one line)")
-    .option("-d, --description <text>", 'new description ("" clears it)')
+    .option("-t, --title <title>", `new title: ${RULES.title}`)
+    .option("-d, --description <text>", `new description: ${RULES.description} ("" clears it)`)
     .option(
       "-p, --policy <pack>",
       "new policy pack (solo_loose|team_light|factory_strict|regulated)",
     )
-    .option("--priority <n>", "new priority (0–1000)", (v) => Number(v))
+    .option("--priority <n>", `new priority: ${RULES.priority}`, (v) => Number(v))
     .action((ref, opts, cmd) => {
       const raw = {
         ...(opts.title !== undefined ? { title: opts.title } : {}),
@@ -118,7 +119,7 @@ export function registerTicket(program: Command): void {
     .description("Set (or clear) a ticket's per-ticket cost ceiling (USD)")
     .option(
       "--usd <amount>",
-      "USD ceiling for this ticket's cumulative agent spend (delivery, review, clarify, …)",
+      `ceiling for this ticket's cumulative agent spend (delivery, review, clarify, …): ${RULES.budget}`,
       (v) => Number(v),
     )
     .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)

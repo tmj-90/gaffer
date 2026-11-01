@@ -495,6 +495,8 @@ fi
 # ownership") unless it is marked safe. Mark the mounted paths safe through git's
 # env-config channel (no file is written): `*` is scoped to the container, whose only
 # repos are the ones this wrapper mounted.
+# (lib/worker.sh repeats this and the proxy settings below in the agent's own `env -i`
+# list, which would otherwise drop them; keep the two in step.)
 _envs+=( -e "GIT_CONFIG_COUNT=1" -e "GIT_CONFIG_KEY_0=safe.directory" -e "GIT_CONFIG_VALUE_0=*" )
 # Route all egress through the allowlist proxy.
 _envs+=( -e "HTTP_PROXY=http://egress-proxy:8888" -e "HTTPS_PROXY=http://egress-proxy:8888" )
@@ -521,7 +523,7 @@ docker image inspect "$_IMAGE" >/dev/null 2>&1 || _die "sandbox image '$_IMAGE' 
 # no-new-privileges + pid/mem/cpu caps. The containment test asserts CapEff is
 # DAC_OVERRIDE-only + NoNewPrivs=1. (A non-root --user + --read-only root are the next
 # hardening step — they need a tmpfs-backed writable HOME for claude/npm state and are
-# validated with the live-delivery capstone; see docs/docker-sandbox-provider.md.)
+# validated with the live delivery workflow, sandbox-live.yml; see docs/docker-sandbox-provider.md.)
 exec docker run --rm --network "$_NET_INT" \
   --cap-drop=ALL \
   --cap-add=DAC_OVERRIDE \

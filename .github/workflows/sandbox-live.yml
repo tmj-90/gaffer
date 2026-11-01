@@ -1,0 +1,56 @@
+# The LIVE docker-provider delivery: the same end-to-end delivery as the CI job
+# sandbox-delivery (runner/test/sandbox-docker-delivery.test.sh), but the agent inside
+# the container is the delivery image's real `claude`, authenticated by a repository
+# secret. It spends real credits, so it never runs on a push or a pull request: only
+# when someone starts it from the Actions tab (workflow_dispatch). Without a secret it
+# fails at once and names the missing secret. How to run it on your own fork:
+# docs/docker-sandbox-provider.md ("Prove it on your own fork").
+name: Docker sandbox live delivery
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_call_usd:
+        description: "Dollar cap for the one agent call (passed as --max-budget-usd)"
+        required: false
+        default: "2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sandbox-live-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-delivery:
+    name: Docker sandbox delivery e2e (live agent)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - name: Setup Node 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm -r build
+      - name: Live delivery through the docker provider
+        env:
+          RUN_SANDBOX_DOCKER_TEST: "1"
+          GAFFER_SANDBOX_TEST_REQUIRE: "1"
+          GAFFER_LIVE_DOCKER_DELIVERY: "1"
+          GAFFER_LIVE_MAX_CALL_USD: ${{ inputs.max_call_usd }}
+          # One of the two is enough: an API key, or a subscription token from
+          # `claude setup-token`. Set them under Settings > Secrets and variables > Actions.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: bash runner/test/sandbox-docker-delivery.test.sh

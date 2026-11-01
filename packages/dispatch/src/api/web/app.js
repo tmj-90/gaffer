@@ -10764,6 +10764,22 @@ function runForAttempt(runs, a) {
   );
   return before.length ? before[before.length - 1] : null;
 }
+/**
+ * When the current set of attempts began: the first run of the latest set, where a run
+ * whose attempt number is not above the run before it starts a new set (an Unblock
+ * resets the count and the runner numbers the next run 1). Null with one set only.
+ */
+function currentRoundStart(runs) {
+  let start = null;
+  let prev = null;
+  for (const r of runs || []) {
+    const n = Number(r.attempt);
+    if (!Number.isInteger(n)) continue;
+    if (prev !== null && n <= prev && r.created_at) start = String(r.created_at);
+    prev = n;
+  }
+  return start;
+}
 /** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */
 function runLine(r) {
   const served = Array.isArray(r.models_served) && r.models_served.length ? r.models_served : null;
@@ -10792,7 +10808,13 @@ function renderFailureHistory(trail, runs = []) {
   }
   // Oldest first (runs is sorted): the runs no failure accounts for.
   const unpaired = runs.filter((r) => !paired.has(r));
-  const used = trail.length + unpaired.length;
+  // An Unblock gives a fresh set of attempts, and the runner numbers the next run 1
+  // again: the header and the kicks count the CURRENT set, from the same agent-run rows
+  // the run list labels its attempts by, and the earlier sets stay listed, marked.
+  const since = currentRoundStart(runs);
+  const current = (x) => !since || String(x.created_at || "") >= since;
+  const used = trail.filter(current).length + unpaired.filter(current).length;
+  const earlier = trail.length + unpaired.length - used;
   const goal = (i, taken = true) =>
     svgEl(
       "svg",
@@ -10832,11 +10854,11 @@ function renderFailureHistory(trail, runs = []) {
         el(
           "span",
           { class: "panel-aux" },
-          max
+          (max
             ? `${Math.min(used, Number(max) || used)} of ${max} used`
             : used === 1
               ? "1 attempt"
-              : `${used} attempts`,
+              : `${used} attempts`) + (earlier ? `, ${earlier} before an Unblock` : ""),
         ),
       ]),
     ]),
@@ -10857,11 +10879,12 @@ function renderFailureHistory(trail, runs = []) {
           // Labelled with the attempt that FAILED (the trail files it one higher), so the
           // number matches its run's and the rows below it.
           const n = failedAttempt(a) ?? a.attempt;
-          return el("li", { class: "failure-attempt" }, [
+          return el("li", { class: `failure-attempt${current(a) ? "" : " is-earlier"}` }, [
             goal(i),
             el("div", { class: "failure-attempt-head" }, [
               el("span", { class: "failure-attempt-num" }, `Attempt ${n}${mx}`),
               a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
+              current(a) ? null : el("span", { class: "failure-round" }, "before the Unblock"),
               el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
             ]),
             (() => {
@@ -10886,7 +10909,7 @@ function renderFailureHistory(trail, runs = []) {
         }),
         // The runs no failure was recorded for, each with its model and CLI.
         ...unpaired.map((r) =>
-          el("li", { class: "failure-run" }, [
+          el("li", { class: `failure-run${current(r) ? "" : " is-earlier"}` }, [
             el("div", { class: "failure-attempt-head" }, [
               el(
                 "span",
@@ -10896,6 +10919,7 @@ function renderFailureHistory(trail, runs = []) {
                   : "Run",
               ),
               r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+              current(r) ? null : el("span", { class: "failure-round" }, "before the Unblock"),
               el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
             ]),
             el("p", { class: "attempt-run mono" }, runLine(r)),
@@ -12134,6 +12158,9 @@ function ticketMatchReport(events, repos) {
  * and a finished one keeps its record. A ticket marked delivering with no live
  * run says so plainly (the #88 hung-claim case).
  */
+/** A run's own turns / spend (an older server sends only the ticket's totals). */
+const runTurns = (d) => (typeof d.run_num_turns === "number" ? d.run_num_turns : d.num_turns);
+const runCost = (d) => (typeof d.run_cost_usd === "number" ? d.run_cost_usd : d.cost_usd);
 function ticketRunsPanel(t, events) {
   // In testing is not delivering: the tester lane runs outside the delivery runs read here,
   // so "no live run" would wrongly say a ticket under test may be stuck.
@@ -12209,11 +12236,13 @@ function ticketRunsPanel(t, events) {
           const on = run.status === "running";
           const chips = [
             d.phase ? el("span", { class: "run-detail-chip" }, d.phase) : null,
-            d.num_turns > 0
-              ? el("span", { class: "run-detail-chip" }, plural(d.num_turns, "turn"))
+            // This run's own turns and spend (run_*), not the ticket's totals: two
+            // runs of one ticket read the same cumulative figure.
+            runTurns(d) > 0
+              ? el("span", { class: "run-detail-chip" }, plural(runTurns(d), "turn"))
               : null,
-            d.cost_usd > 0
-              ? el("span", { class: "run-detail-chip tabnum" }, money(d.cost_usd))
+            runCost(d) > 0
+              ? el("span", { class: "run-detail-chip tabnum" }, money(runCost(d)))
               : null,
             d.outcome
               ? el(

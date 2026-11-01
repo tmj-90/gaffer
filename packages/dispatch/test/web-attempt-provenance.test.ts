@@ -322,6 +322,34 @@ describe("web: the attempt history names the model and the CLI", () => {
     expect(card.querySelector(".failure-run")?.textContent).toContain("exit 1");
   });
 
+  it("after an Unblock the header counts the fresh set of attempts, as the run list does (exploratory finding ui-workflows/F9)", async () => {
+    // Attempts 1 and 2 failed identically and the ticket parked; Unblock gave it a fresh
+    // set, and the new attempt 1 passed. The header read "3 of 3 used" beside the new
+    // run's "Attempt 1/3".
+    stubFetch(
+      [
+        run(1, "2026-01-02T00:00:00Z"),
+        run(2, "2026-01-02T00:10:00Z"),
+        run(1, "2026-01-02T01:00:00Z"),
+      ],
+      [failure(2, "2026-01-02T00:05:00Z"), failure(3, "2026-01-02T00:15:00Z")],
+    );
+    await boot();
+    const card = document.querySelector(".failure-history")!;
+    const aux = card.querySelector(".panel-aux")?.textContent ?? "";
+    expect(aux).toContain("1 of 3 used");
+    const latest = [...card.querySelectorAll(".failure-run .failure-attempt-num")].map(
+      (n) => n.textContent,
+    );
+    expect(latest).toEqual(["Attempt 1/3"]);
+    const kicks = [...card.querySelectorAll(".failure-kick-none .failure-attempt-num")].map(
+      (n) => n.textContent,
+    );
+    expect(kicks).toEqual(["Attempt 2/3", "Attempt 3/3"]);
+    // The earlier set is still on the page, marked as before the Unblock.
+    expect(card.querySelectorAll(".failure-attempt.is-earlier")).toHaveLength(2);
+  });
+
   it("names no model for a failure with no run recorded before it", async () => {
     stubFetch([run(1, "2026-01-02T01:00:00Z")], [failure(2, "2026-01-02T00:05:00Z")]);
     await boot();
@@ -387,5 +415,108 @@ describe("web: the attempt history names the model and the CLI", () => {
     stubFetch([plain], []);
     await boot();
     expect(document.querySelector(".failure-history")).toBeNull();
+  });
+});
+
+describe("web: Match footage shows each run's own turns and cost (exploratory finding ui-workflows/F9)", () => {
+  beforeEach(() => {
+    mountShell();
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    document.body.innerHTML = "";
+  });
+
+  it("two runs of one ticket read their own figures, not the ticket's total twice", async () => {
+    const claimEvents = [
+      {
+        id: "c1",
+        event_type: "claim.created",
+        payload_json: "{}",
+        created_at: "2026-01-02T00:00:00Z",
+      },
+      {
+        id: "c2",
+        event_type: "claim.created",
+        payload_json: "{}",
+        created_at: "2026-01-02T01:00:00Z",
+      },
+    ];
+    const runRow = (id: string, at: string) => ({
+      id,
+      kind: "poll_work",
+      repo: null,
+      pid: 1,
+      status: "succeeded",
+      started_at: at,
+      ended_at: at,
+      exit_code: 0,
+      log_path: null,
+      detail: null,
+    });
+    const details: Record<string, unknown> = {
+      r1: {
+        ticket_number: 9,
+        phase: "implement",
+        num_turns: 18,
+        cost_usd: 0.06,
+        run_num_turns: 12,
+        run_cost_usd: 0.04,
+        outcome: "in_review",
+      },
+      r2: {
+        ticket_number: 9,
+        phase: "implement",
+        num_turns: 18,
+        cost_usd: 0.06,
+        run_num_turns: 6,
+        run_cost_usd: 0.02,
+        outcome: "in_review",
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input).replace(/^https?:\/\/[^/]+/, "");
+        let body: unknown = {};
+        const m = /^\/api\/runs\/(r\d)$/.exec(url);
+        if (m)
+          body = {
+            detail: { run: runRow(m[1]!, "2026-01-02T00:00:00Z"), ...(details[m[1]!] as object) },
+          };
+        else if (url.startsWith("/api/runs"))
+          body = {
+            active: [],
+            recent: [runRow("r1", "2026-01-02T00:00:30Z"), runRow("r2", "2026-01-02T01:00:30Z")],
+          };
+        else if (url.includes(`/tickets/${TICKET.id}/diff`))
+          body = { ticketId: TICKET.id, repos: [] };
+        else if (url === `/tickets/${TICKET.id}`)
+          body = {
+            ticket: TICKET,
+            acceptance_criteria: [],
+            repositories: [],
+            scopes: [],
+            blocking_decisions: [],
+            dependencies: [],
+            evidence: [],
+            events: claimEvents,
+            rework_trail: [],
+          };
+        else body = { tickets: [TICKET] };
+        return new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }),
+    );
+    await boot();
+    for (let i = 0; i < 8; i++) await tick();
+    const rows = [...document.querySelectorAll(".tk-run-list .tk-run")].map((r) => r.textContent);
+    expect(rows).toHaveLength(2);
+    expect(rows.join(" | ")).toContain("12 turns");
+    expect(rows.join(" | ")).toContain("6 turns");
+    expect(rows.join(" | ")).not.toContain("18 turns");
   });
 });

@@ -2325,7 +2325,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`RunDetail` (phase, model, turns, cost, log tail, outcome).",
+            "description": "`RunDetail` (phase, model, the ticket's turns and cost, this run's own `run_num_turns` and `run_cost_usd`, log tail, outcome).",
             "content": {
               "application/json": {
                 "schema": {

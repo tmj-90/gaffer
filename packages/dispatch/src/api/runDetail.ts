@@ -213,11 +213,13 @@ const ZERO_COST: TicketCostInfo = {
 export function ticketCostInfo(
   ticketNumber: number,
   env: NodeJS.ProcessEnv = process.env,
+  window?: { from: string; to: string | null },
 ): TicketCostInfo {
   try {
     const ledgerPath = resolveLedgerPath(env);
     if (!ledgerPath) return { ...ZERO_COST };
-    const { rows, status } = readLedger(ledgerPath);
+    const { rows: all, status } = readLedger(ledgerPath);
+    const rows = window ? all.filter((row) => inWindow(row.ts, window)) : all;
     let measured = 0;
     let estimated = 0;
     let turns = 0;
@@ -244,6 +246,22 @@ export function ticketCostInfo(
   } catch {
     return { ...ZERO_COST, ledger_status: "unreadable" };
   }
+}
+
+/**
+ * A ledger row's timestamp (when its call finished) inside a run's window: at or after
+ * the run started and, for a run that ended, no later than a few seconds after it ended
+ * (the row is appended as the call returns, the run's end is stamped after its child
+ * exits). A running run's window is open-ended.
+ */
+const RUN_WINDOW_SLACK_MS = 5_000;
+function inWindow(ts: string, w: { from: string; to: string | null }): boolean {
+  const at = Date.parse(ts);
+  const from = Date.parse(w.from);
+  if (!Number.isFinite(at) || !Number.isFinite(from) || at < from) return false;
+  if (w.to === null) return true;
+  const to = Date.parse(w.to);
+  return !Number.isFinite(to) || at <= to + RUN_WINDOW_SLACK_MS;
 }
 
 // ── Log tail (line-capped) ────────────────────────────────────────────────────
@@ -274,6 +292,13 @@ export interface RunDetail {
   model: string | null;
   /** Turns consumed (from ledger) for this ticket. 0 when none recorded. */
   num_turns: number;
+  /**
+   * This run's own share: turns and accounted spend of the ticket's ledger rows written
+   * while this run was going (started_at .. ended_at). `num_turns`/`cost_usd` are the
+   * ticket's totals across every run, so two runs of one ticket showed the same figure.
+   */
+  run_num_turns: number;
+  run_cost_usd: number;
   /**
    * Accounted spend for this ticket: measured PLUS the labelled killed/timeout
    * estimates — the same figure the Cost view and the runner's caps use.
@@ -316,6 +341,10 @@ export function buildRunDetail(
 
   const costInfo: TicketCostInfo | null =
     ticketNumber !== null ? ticketCostInfo(ticketNumber, env) : null;
+  const runInfo: TicketCostInfo | null =
+    ticketNumber !== null
+      ? ticketCostInfo(ticketNumber, env, { from: run.started_at, to: run.ended_at })
+      : null;
 
   return {
     run,
@@ -324,6 +353,8 @@ export function buildRunDetail(
     model,
     num_turns: costInfo?.num_turns ?? 0,
     cost_usd: costInfo?.cost_usd ?? 0,
+    run_num_turns: runInfo?.num_turns ?? 0,
+    run_cost_usd: runInfo?.cost_usd ?? 0,
     estimated_usd: costInfo?.estimated_usd ?? 0,
     unknown_calls: costInfo?.unknown_calls ?? 0,
     cost_status: costInfo ? costInfo.ledger_status : "no_ticket",

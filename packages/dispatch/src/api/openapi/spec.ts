@@ -561,7 +561,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.read,
     summary: "Run detail",
     capability: "read",
-    responses: [ok("`RunDetail` (phase, model, turns, cost, log tail, outcome)."), notFound],
+    responses: [
+      ok(
+        "`RunDetail` (phase, model, the ticket's turns and cost, this run's own `run_num_turns` and `run_cost_usd`, log tail, outcome).",
+      ),
+      notFound,
+    ],
   },
   {
     method: "GET",

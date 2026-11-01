@@ -194,6 +194,22 @@ EOF
   return 0
 }
 
+# REPLAY RECOVERY (external review #8): an interrupted landing may have left no tester
+# replay record (the epic would read unreplayed for good). On a retry of an already-landed
+# PRIMARY repo, regenerate it on the landed revision (bin/merge-ticket.mjs
+# --recover-replay, under the per-ticket merge lock), or hold, targeted.
+#   _gaffer_land_recover_replay <num> <who> → 0 nothing missing · 1 held (logged)
+_gaffer_land_recover_replay() {
+  local num="$1" who="$2" _rr_out _rr_rc=0 _rr_line
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  _rr_out="$(node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$num" --recover-replay 2>&1 </dev/null)" || _rr_rc=$?
+  [ "$_rr_rc" -eq 0 ] && return 0
+  _rr_line="$(printf '%s\n' "$_rr_out" | grep -o 'replay missing:.*' | tail -n 1 | sed 's/"}$//' | cut -c1-600)"
+  [ -n "$_rr_line" ] || _rr_line="replay missing: the replay recovery could not run (rc=$_rr_rc); run \`gaffer merge $num\` to regenerate it"
+  log "$who: #$num HELD — $_rr_line"
+  return 1
+}
+
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
@@ -227,6 +243,12 @@ gaffer_land_delivery() {
     fi
     if [ "$_rlanded" = "1" ]; then
       log "$_WHO: #$RNUM ${_rname}: its approved commit already landed — not merged again"
+      # (A landing on record is exactly what an interrupted merge leaves: the replay
+      # record may be the part that is missing.)
+      if [ "$_rsec" != "1" ] && ! _gaffer_land_recover_replay "$RNUM" "$_WHO"; then
+        _rc=4; _pending="${_pending:+$_pending, }$_rname (replay missing)"
+        break
+      fi
       _done=$((_done + 1)); _landed_names="${_landed_names:+$_landed_names, }$_rname"
       _LANDED_REPOS+=("$_rpath"); _LANDED_BRANCHES+=("$_rbr"); _LANDED_DEFAULTS+=("$_rdef"); _LANDED_VIA+=("earlier")
       continue
@@ -334,19 +356,7 @@ _gaffer_land_one() {
   case "$_TB_KIND" in
     already-landed)
       log "$_WHO: #$RNUM $(basename "$RREPO"): approved commit ${_TB_PIN:0:12} already landed — not merged again"; _MERGED_VIA="earlier"
-      # REPLAY RECOVERY (external review #8): an interrupted landing may have left no
-      # tester replay record (the epic would read unreplayed for good). Regenerate it on
-      # the landed revision (bin/merge-ticket.mjs --recover-replay), or hold, targeted.
-      if [ "$_RSEC" != "1" ] && [ "${DRY_RUN:-0}" != "1" ]; then
-        local _rr_out _rr_rc=0 _rr_line
-        _rr_out="$(node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$RNUM" --recover-replay 2>&1)" || _rr_rc=$?
-        if [ "$_rr_rc" -ne 0 ]; then
-          _rr_line="$(printf '%s\n' "$_rr_out" | grep -o 'replay missing:.*' | tail -n 1 | sed 's/"}$//' | cut -c1-600)"
-          [ -n "$_rr_line" ] || _rr_line="replay missing: the replay recovery could not run (rc=$_rr_rc); run \`gaffer merge $RNUM\` to regenerate it"
-          log "$_WHO: #$RNUM HELD — $_rr_line"
-          return 4
-        fi
-      fi
+      if [ "$_RSEC" != "1" ]; then _gaffer_land_recover_replay "$RNUM" "$_WHO" || return 4; fi
       return 0 ;;
     waived) log "$_WHO: #$RNUM landing on a HUMAN tester waiver (pinned ${_TB_PIN:0:12})" ;;
     legacy-unbound) log "$_WHO: #$RNUM tester PASS predates commit binding — landing the current head ${_TB_PIN:0:12}" ;;

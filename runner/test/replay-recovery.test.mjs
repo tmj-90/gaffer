@@ -13,12 +13,15 @@
 //      and the epic reads accepted
 //   R3 when the replay cannot be regenerated (the tester's tests are gone), the retry
 //      holds: "replay missing: … run `gaffer merge <n>`", exit 4, the ticket not done
+//   R4 the merge lane's retry (lib/land.sh, through merge-ticket.mjs --recover-replay)
+//      regenerates it the same way, and the ticket is done
+//   R5 a tester file that FAILS on the landed revision: the retry holds, not done
 // A real repo, the Dispatch core and CLI, the merge runner and the tester runner with a
 // local stub model that writes and runs a real node:test file. No network, no model.
 // Run: node runner/test/replay-recovery.test.mjs
 // =====================================================================
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -71,7 +74,11 @@ cat >test/acceptance.test.mjs <<'TEST'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { label } from '../label.mjs';
-test('renders the public label', () => assert.equal(label(), 'Ada'));
+import { existsSync } from 'node:fs';
+test('renders the public label', () => {
+  assert.equal(existsSync(${JSON.stringify(join(ws, "break-replay"))}), false);
+  assert.equal(label(), 'Ada');
+});
 TEST
 node --test >/dev/null
 printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"Fixture tests passed\\n{\\"verdict\\":\\"PASS\\"}","total_cost_usd":0,"num_turns":1}'
@@ -219,6 +226,28 @@ process.exit(r.status ?? 1);
   );
   return p;
 }
+// The merge lane's landing (lib/land.sh gaffer_land_delivery), as the Poll / AFK path runs it.
+function laneRetry(w, n) {
+  const log = join(w.ws, `lane-${n}.log`);
+  const script = `
+log() { printf '%s\\n' "$*" >> "$LANE_LOG"; }
+wg() { node "$DISPATCH_JS" --db "$DISPATCH_DB" "$@"; }
+jget() { node "$RUNNER_DIR/lib/json-tool.mjs" expr "$1"; }
+gaffer_refresh_cards() { :; }
+_gaffer_flag_on() { case "\${1:-}" in 1|true|yes|on) return 0 ;; *) return 1 ;; esac; }
+export RUNNER_DIR
+source "$RUNNER_DIR/lib/automerge.sh"; source "$RUNNER_DIR/lib/land.sh"
+cd "$REPO" || exit 2
+gaffer_land_delivery "$N" "$REPO" "$(wg ticket show "$N" | jget 'd.ticket.branch_name')" main "$(wg ticket show "$N")" MERGE </dev/null`;
+  const r = w.exec("bash", ["-c", script], {
+    LANE_LOG: log,
+    DISPATCH_JS: cli,
+    RUNNER_DIR: join(ROOT, "runner"),
+    REPO: w.repo,
+    N: n,
+  });
+  return { status: r.status, log: existsSync(log) ? readFileSync(log, "utf8") : r.stderr };
+}
 const status = (w, n) => w.wg("ticket", "show", n).ticket.status;
 const acceptance = (w) => w.wg("stats", "--json").acceptance;
 const replayRows = (w, n) =>
@@ -300,6 +329,62 @@ async function main() {
     ok(false, "R3 fixture completed", e.message);
   } finally {
     rmSync(w3.ws, { recursive: true, force: true });
+  }
+
+  console.log("== R4: the merge lane's retry regenerates the replay ==");
+  const w4 = world("lane");
+  try {
+    const { final } = await setup(w4);
+    w4.exec("bash", [runner, "merge", final], { DISPATCH_CLI: interruptingCli(w4) });
+    ok(replayRows(w4, final).length === 0, "R4: interrupted, no replay record");
+    const lane = laneRetry(w4, final);
+    ok(
+      lane.status === 0,
+      `R4: the lane's landing succeeds (rc ${lane.status})`,
+      lane.log.slice(-600),
+    );
+    const rows = replayRows(w4, final);
+    ok(
+      rows.length === 1 && rows[0].uri === `gaffer-tester-replayed:${w4.git("rev-parse", "main")}`,
+      `R4: one replay record, on the landed revision (${rows.length})`,
+    );
+    ok(status(w4, final) === "done", `R4: the final is done (${status(w4, final)})`);
+  } catch (e) {
+    ok(false, "R4 fixture completed", e.message);
+  } finally {
+    rmSync(w4.ws, { recursive: true, force: true });
+  }
+
+  console.log("== R5: a tester file that fails on the landed revision holds ==");
+  const w5 = world("red");
+  try {
+    const { final } = await setup(w5);
+    w5.exec("bash", [runner, "merge", final], { DISPATCH_CLI: interruptingCli(w5) });
+    writeFileSync(join(w5.ws, "break-replay"), "1\n");
+    const retry = w5.exec("bash", [runner, "merge", final]);
+    ok(
+      retry.status === 4,
+      `R5: gaffer merge holds (exit ${retry.status})`,
+      retry.stderr.slice(-600),
+    );
+    ok(
+      /replay missing: .*did not pass/.test(retry.stderr + retry.stdout),
+      "R5: it says the replay on the landed revision did not pass",
+      retry.stderr.slice(-400),
+    );
+    const lane = laneRetry(w5, final);
+    ok(
+      lane.status === 4 && /HELD — replay missing/.test(lane.log),
+      `R5: the lane holds too (rc ${lane.status})`,
+      lane.log.slice(-400),
+    );
+    ok(replayRows(w5, final).length === 0, "R5: no replay record was written");
+    ok(status(w5, final) === "ready_for_merge", `R5: the final is not done (${status(w5, final)})`);
+    ok(acceptance(w5).accepted === 0, "R5: the epic is not counted as accepted");
+  } catch (e) {
+    ok(false, "R5 fixture completed", e.message);
+  } finally {
+    rmSync(w5.ws, { recursive: true, force: true });
   }
 
   console.log();

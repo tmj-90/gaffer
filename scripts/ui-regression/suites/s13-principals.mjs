@@ -241,6 +241,19 @@ async function scopedWalk(t, L, mint) {
     `scoped refusals: read=${denied.status} ${JSON.stringify(denied.json).slice(0, 160)} write=${wdenied.status} poll=${poll.status}`,
   );
 
+  // The operator makes its ticket wait on the other one: the ticket page must name the
+  // dependency by number only (the server leaves the other ticket's title out).
+  const dep = await L.api("POST", `/tickets/${mine.id}/dependencies`, { depends_on: other.id });
+  const seen = await L.api("GET", `/tickets/${mine.id}/dependencies`, undefined, tok);
+  t.check(
+    dep.status === 201 &&
+      seen.status === 200 &&
+      seen.json.dependencies?.[0]?.outside_scope === true &&
+      seen.json.dependencies?.[0]?.title === null,
+    `scoped token: a dependency on #${other.number} (outside its scope) comes by number, without its title`,
+    `scoped dependency: add=${dep.status} read=${seen.status} ${JSON.stringify(seen.json).slice(0, 200)}`,
+  );
+
   const sp = await L.openPage(t.browser, { token: tok, route: "work" });
   const writes = [];
   sp.on("request", (req) => {
@@ -251,8 +264,18 @@ async function scopedWalk(t, L, mint) {
     ["work", "work"],
     ["work?view=list", "work list"],
     [`ticket/${mine.id}`, "ticket (in scope)"],
-    ["settings", "settings"],
+    ["review", "review"],
+    ["epics", "epics"],
     ["create", "create"],
+    ["factory", "map"],
+    ["specs", "specs"],
+    ["memory", "memory"],
+    ["squad", "squad"],
+    ["floor", "floor"],
+    ["health", "health"],
+    ["settings", "settings"],
+    [`repo/${encodeURIComponent(t.repo.id)}`, "repo/:id"],
+    ["hidden", "hidden"],
   ];
   const leaks = [];
   const live = [];
@@ -279,14 +302,16 @@ async function scopedWalk(t, L, mint) {
       if (x.scopeLocked && !SCOPE_TITLE.test(x.title))
         badTitle.push(`${label}: ${x.label} '${x.title}'`);
     }
-    if (route.startsWith("ticket/"))
+    if (route.startsWith("ticket/")) {
       ticketControls = c.filter((x) => !x.off && /^BUTTON:/.test(x.label)).length;
+      if (!/outside this token's scope/.test(text)) leaks.push(`${label} (dependency not marked)`);
+    }
   }
   await L.shot(sp, "s13-scoped-token");
   const strip = (await sp.textContent("#scope-strip").catch(() => "")) || "";
   t.check(
     leaks.length === 0,
-    `scoped token: the front page, the board, the list and the ticket page show #${mine.number} and never #${other.number}`,
+    `scoped token: no view shows #${other.number}'s title, the board and list show #${mine.number}, and its dependency on #${other.number} reads "outside this token's scope"`,
     `scoped token showed out-of-scope work or lost its own: ${leaks.join(", ")}`,
   );
   t.check(
@@ -307,7 +332,7 @@ async function scopedWalk(t, L, mint) {
   const f403 = sp.failedRequests.filter((x) => /→ 403/.test(x));
   t.check(
     f403.length === 0 && sp.consoleErrors.length === 0 && writes.length === 0,
-    "scoped token: no request refused (403), no console error and no write sent over the walk",
+    `scoped token: no request refused (403), no console error and no write sent over all ${routes.length} views`,
     `scoped token: 403s=${f403.join(", ").slice(0, 300)} console=${sp.consoleErrors.join(" | ").slice(0, 300)} writes=${writes.join(", ").slice(0, 200)}`,
   );
   await sp.context().close();

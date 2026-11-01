@@ -7735,6 +7735,7 @@ const EVENT_LABELS = {
   "ticket.acceptance_criteria_reset": "Acceptance criteria reset",
   "ticket.reopened_for_review": "Reopened for review",
   "ticket.edited": "Ticket edited",
+  "ticket.unblocked": "Unblocked",
   "ac.edited": "Criterion edited",
   "ac.removed": "Criterion removed",
 };

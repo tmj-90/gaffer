@@ -298,6 +298,8 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
   `DISPATCH_ALLOW_AGENT_APPROVE=1` (and, if you want auto-merge, `AUTO_MERGE=1`).
 - **A stuck ticket is safe to drag back.** Moving a `blocked` card to `ready` on the board
   re-queues it cleanly (its delivery claim is released), so a parked ticket never strands.
+  From the terminal, `runner/gaffer wg unblock <n>` does the same, and
+  `runner/gaffer wg block <n> --reason "…"` parks a draft, refining or ready ticket yourself.
 - **The tester lane needs the ticket marked testable.** `GAFFER_TESTING=1` only routes tickets
   that carry the testable flag, and the planner does not set it. Mark the ones you want
   black-box tested with `runner/gaffer wg ticket set-testable <n>` before readying them (and

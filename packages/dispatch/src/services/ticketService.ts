@@ -120,6 +120,15 @@ export interface EditTicketResult {
   changed: string[];
 }
 
+function assertHumanOrAdmin(actor: Actor, what: string): void {
+  if (actor.type === "human" || actor.type === "admin") return;
+  throw new DispatchError(
+    "ACTOR_NOT_PERMITTED",
+    `Only a human or admin may ${what}; an agent blocks its own claim with its claim token.`,
+    { actor_type: actor.type },
+  );
+}
+
 export interface TicketServiceDeps {
   readonly db: Db;
   readonly clock: Clock;
@@ -485,6 +494,111 @@ export class TicketService {
       });
       this.recheckReadyGate(ticket);
       return { acId: ac.id, eventId };
+    });
+  }
+
+  // --- Human block / unblock (cli-wg/F-03) ---------------------------------
+
+  /**
+   * A person parks a ticket that is not in an agent's hands: draft, refining, ready,
+   * or in_progress when a human took it by hand. The state-machine edges this takes
+   * are legal only with the `humanBlock` flag, which transition() accepts from a
+   * human or admin alone. An agent-claimed ticket is refused here: the agent blocks
+   * its own claim with its token (Dispatch.markBlocked, unchanged). Writes
+   * `ticket.blocked` with the status it left, which {@link humanUnblockTicket} returns to.
+   */
+  humanBlockTicket(
+    ref: string,
+    reason: string,
+    actor: Actor,
+  ): { ticketId: string; from: TicketStatus; eventId: string } {
+    assertHumanOrAdmin(actor, "block a ticket without a claim token");
+    const why = reason.trim();
+    if (why.length === 0) throw new DispatchError("VALIDATION_ERROR", "A reason is required.");
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ref);
+      const from = ticket.status;
+      const humanOwned = from === "in_progress" && ticket.human_owner !== null;
+      if (from !== "draft" && from !== "refining" && from !== "ready" && !humanOwned) {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          from === "claimed" || from === "in_progress"
+            ? `Ticket #${ticket.number ?? ticket.id} is '${from}' under an agent's claim: the agent ` +
+                "blocks it with its claim token (--token), or release the claim first."
+            : `Ticket #${ticket.number ?? ticket.id} is '${from}'; a person can block a draft, ` +
+                "refining, ready or by-hand ticket.",
+          { status: from, ticket_id: ticket.id },
+        );
+      }
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: "blocked",
+        reason: why,
+        humanBlock: true,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.blocked",
+        payload: { reason: why, from },
+      });
+      return { ticketId: ticket.id, from, eventId };
+    });
+  }
+
+  /**
+   * Return a blocked ticket to the queue: to `to` when given, else to draft or
+   * refining when that is where a person blocked it from, else to ready (the ready
+   * gate applies, so a ticket that no longer passes it is refused with POLICY_DENIED;
+   * `to: "refining"` then parks it for triage). Writes `ticket.unblocked`.
+   */
+  humanUnblockTicket(
+    ref: string,
+    actor: Actor,
+    to?: "ready" | "refining" | "draft",
+  ): { ticketId: string; status: TicketStatus; eventId: string } {
+    assertHumanOrAdmin(actor, "unblock a ticket");
+    return inTransaction(this.db, () => {
+      const ticket = this.resolveTicket(ref);
+      if (ticket.status !== "blocked") {
+        throw new DispatchError(
+          "STATE_CONFLICT",
+          `Ticket #${ticket.number ?? ticket.id} is '${ticket.status}', not blocked.`,
+          { status: ticket.status, ticket_id: ticket.id },
+        );
+      }
+      const row = this.db
+        .prepare(
+          `SELECT payload_json FROM work_events
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.blocked'
+            ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        )
+        .get(ticket.id) as { payload_json: string | null } | undefined;
+      let blockedFrom: unknown;
+      try {
+        blockedFrom = (JSON.parse(row?.payload_json ?? "{}") as { from?: unknown }).from;
+      } catch {
+        blockedFrom = undefined;
+      }
+      const target: TicketStatus =
+        to ?? (blockedFrom === "draft" || blockedFrom === "refining" ? blockedFrom : "ready");
+      this.transitions.transition({
+        ticketId: ticket.id,
+        actor,
+        toStatus: target,
+        reason: "unblock",
+        humanBlock: true,
+      });
+      const eventId = writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
+        actor,
+        event_type: "ticket.unblocked",
+        payload: { to: target },
+      });
+      return { ticketId: ticket.id, status: target, eventId };
     });
   }
 

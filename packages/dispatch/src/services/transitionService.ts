@@ -65,6 +65,15 @@ export const ALLOWED: ReadonlySet<string> = new Set([
   "in_progress->refining",
   "blocked->ready",
   "blocked->refining",
+  // HUMAN BLOCK (exploratory finding cli-wg/F-03): a person parks a ticket that is
+  // not in an agent's hands (draft, refining, ready) and later returns it to where
+  // it was. Guarded by the `humanBlock` flag, which only Dispatch.humanBlockTicket /
+  // humanUnblockTicket set and which transition() accepts from a human or admin
+  // only, so neither a board drag nor an agent can take these edges.
+  "draft->blocked",
+  "refining->blocked",
+  "ready->blocked",
+  "blocked->draft",
   // Approve takes a delivery to `ready_for_merge` (NOT `done`): the human has
   // approved the diff and the merge runner now does the git merge. `done` is
   // reached only once the merge actually lands (ready_for_merge->done below), so
@@ -304,6 +313,14 @@ export interface TransitionInput {
    */
   humanClaim?: boolean;
   /**
+   * HUMAN BLOCK opt-in flag (cli-wg/F-03) the human block/unblock paths
+   * (`draft|refining|ready -> blocked`, `blocked -> draft`) MUST set. Set only by
+   * {@link Dispatch.humanBlockTicket} / {@link Dispatch.humanUnblockTicket}; a
+   * transition carrying it from any actor but a human or admin is refused, so the
+   * agent block rule (a claim token) is unchanged.
+   */
+  humanBlock?: boolean;
+  /**
    * TRACK-2b opt-in flag the human hand-back path (`in_progress -> ready`) MUST set
    * when the release is a HUMAN handing their by-hand ticket back (as opposed to the
    * runner releasing a delivery claim, which sets {@link runnerRelease}). Either flag
@@ -448,6 +465,12 @@ export const GUARDED_EDGES: readonly GuardedEdge[] = [
     anyOf: ["humanClaim"],
     message: "A ready ticket can only be taken by hand via the human-claim path.",
     why: "TRACK-2b: Dispatch.humanClaimTicket records who took it; a drag would push ready work straight into in-flight human-owned state.",
+  },
+  {
+    edges: ["draft->blocked", "refining->blocked", "ready->blocked", "blocked->draft"],
+    anyOf: ["humanBlock"],
+    message: "Only a person can block a ticket that is not in delivery (gaffer wg block <n>).",
+    why: "cli-wg F-03: a human parks pre-delivery work and returns it; a board drag or an agent must not (an agent blocks only its own claim, with its token).",
   },
   {
     edges: ["claimed->refining", "in_progress->refining"],
@@ -623,6 +646,13 @@ export class TransitionService {
       // GUARDED EDGES: an edge in ALLOWED that is legal only through the facade path
       // that sets its flag. One declarative table + one check replaces the former
       // eleven near-identical if-blocks (see GUARDED_EDGES for each edge's rationale).
+      if (input.humanBlock && input.actor.type !== "human" && input.actor.type !== "admin") {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          "Only a human or admin may block or unblock a ticket this way; an agent blocks its own claim with its claim token.",
+          { actor_type: input.actor.type },
+        );
+      }
       const guard = violatedGuard(key, input);
       if (guard) {
         throw new DispatchError("ILLEGAL_TRANSITION", guard.message, {

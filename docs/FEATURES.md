@@ -102,7 +102,12 @@ Day-to-day, work lives on the board. Tickets flow through
   parked as blocked (`no_write_repo`) rather than delivered or retried; one
   whose write repo has no local checkout is parked as `no_local_repo_path`.
 - **In progress** — claimed by an agent (the card shows which one).
-- **Blocked** — surfaced for a human, not silently retried forever.
+- **Blocked** — surfaced for a human, not silently retried forever. You can park
+  a draft, refining, ready or by-hand ticket yourself with `gaffer wg block <n>
+  --reason "…"` (recorded as you, `$USER`) and send any blocked ticket back with
+  `gaffer wg unblock <n>`: to draft or refining when you blocked it from there,
+  otherwise to ready (`--to` picks). An agent still blocks only its own claim,
+  with its claim token. The runner's park reasons name the command.
 - **In review** — delivered, awaiting your sign-off.
 
 Every card carries a **risk badge**, a **priority**, and live

@@ -2286,6 +2286,31 @@ export class Dispatch {
     return result;
   }
 
+  /**
+   * cli-wg/F-03: a person blocks a ticket that is not in an agent's hands (draft,
+   * refining, ready, or their own by-hand in_progress). See
+   * {@link TicketService.humanBlockTicket}; fires the ticket_blocked gate like markBlocked.
+   */
+  humanBlockTicket(
+    ref: string,
+    reason: string,
+    actor: Actor,
+  ): { ticketId: string; from: TicketStatus; eventId: string } {
+    const result = this.ticketSvc.humanBlockTicket(ref, reason, actor);
+    const ticket = this.tickets.findById(result.ticketId);
+    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: reason });
+    return result;
+  }
+
+  /** cli-wg/F-03: return a blocked ticket to the queue (see {@link TicketService.humanUnblockTicket}). */
+  humanUnblockTicket(
+    ref: string,
+    actor: Actor,
+    to?: "ready" | "refining" | "draft",
+  ): { ticketId: string; status: TicketStatus; eventId: string } {
+    return this.ticketSvc.humanUnblockTicket(ref, actor, to);
+  }
+
   markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {
     const result = this.claims.markBlocked(input, actor);
     // H2: the ticket is now `blocked` and needs a human to unblock it. Emit after

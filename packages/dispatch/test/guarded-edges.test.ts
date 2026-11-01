@@ -80,7 +80,7 @@ describe("guarded transition edges (capability table)", () => {
       expect(rule.message.length).toBeGreaterThan(10);
       expect(rule.why.length).toBeGreaterThan(10);
     }
-    expect(GUARDED_EDGES.length).toBe(15);
+    expect(GUARDED_EDGES.length).toBe(16);
   });
 
   it("live: a raw board move onto a guarded edge throws the table's message; the facade path passes", () => {

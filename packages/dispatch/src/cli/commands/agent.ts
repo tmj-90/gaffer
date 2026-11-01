@@ -299,18 +299,58 @@ export function registerAgent(program: Command): void {
 
   program
     .command("block <ref>")
-    .description("Mark a ticket blocked")
+    .description(
+      "Mark a ticket blocked. Without --token you act as yourself ($USER) and may block a " +
+        "draft, refining, ready or by-hand ticket; with --token an agent blocks its own claim.",
+    )
     .requiredOption("--reason <text>", "reason")
-    .option("--token <token>", "claim token")
+    .option("--token <token>", "claim token (the agent path)")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const t = wg.resolveTicket(ref);
-      const res = wg.markBlocked(
-        { claimToken: opts.token, ticket_id: t.id, reason: opts.reason },
-        { type: "agent" },
-      );
-      printJson({ ok: true, ...res });
-      wg.db.close();
+      try {
+        const t = wg.resolveTicket(ref);
+        if (opts.token) {
+          // The agent path, unchanged: a claim token naming this ticket's live claim.
+          const res = wg.markBlocked(
+            { claimToken: opts.token, ticket_id: t.id, reason: opts.reason },
+            { type: "agent" },
+          );
+          printJson({ ok: true, ...res });
+        } else {
+          // cli-wg/F-03: a person blocking, recorded as $USER.
+          const res = wg.humanBlockTicket(t.id, String(opts.reason), cliActor());
+          printJson({ ok: true, status: "blocked", ...res });
+        }
+      } finally {
+        wg.db.close();
+      }
+    });
+
+  program
+    .command("unblock <ref>")
+    .description(
+      "Return a blocked ticket to the queue: to draft or refining when you blocked it from " +
+        "there, else to ready (its ready gate applies). --to picks the status.",
+    )
+    .option("--to <status>", "ready | refining | draft")
+    .action((ref, opts, cmd) => {
+      const to = opts.to as string | undefined;
+      if (to !== undefined && to !== "ready" && to !== "refining" && to !== "draft") {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--to must be 'ready', 'refining' or 'draft'.",
+          {
+            to,
+          },
+        );
+      }
+      const wg = open(cmd.optsWithGlobals());
+      try {
+        const res = wg.humanUnblockTicket(ref, cliActor(), to as "ready" | "refining" | "draft");
+        printJson({ ok: true, ...res });
+      } finally {
+        wg.db.close();
+      }
     });
 }
 

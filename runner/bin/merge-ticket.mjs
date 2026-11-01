@@ -1607,14 +1607,11 @@ export function ignoredFilesInTheWay(repoPath, from, to) {
   for (const rel of String(added.stdout || "")
     .split("\0")
     .filter(Boolean)) {
-    let exists = false;
     try {
       lstatSync(join(repoPath, rel));
-      exists = true;
     } catch {
-      exists = false;
+      continue; // nothing at that path in the checkout: nothing to overwrite
     }
-    if (!exists) continue;
     if (git(repoPath, "check-ignore", "-q", "--no-index", "--", rel).status === 0) out.push(rel);
   }
   return out.sort();

@@ -24,7 +24,7 @@ import {
   updateClubBody,
   updateSquadAgentBody,
 } from "../schemas.js";
-import { listSettings, readSecretSetting, writeSettings } from "../settings.js";
+import { listSettings, readSecretSetting, settingProblems, writeSettings } from "../settings.js";
 import { apiActor } from "./context.js";
 import { routeReadModels } from "./readModels.js";
 
@@ -56,6 +56,16 @@ export async function routeApi(
     }
     if (method === "POST") {
       const body = settingsBody.parse(await readJsonBody(req));
+      // One invalid value refuses the whole write (422 naming each field and why), so
+      // a bad field is never half-saved beside good ones and never silently dropped.
+      const problems = settingProblems(body.settings);
+      if (problems.length > 0) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `Not saved: ${problems.map((p) => `${p.label} ${p.problem}`).join("; ")}.`,
+          { invalid: problems },
+        );
+      }
       const result = writeSettings(body.settings);
       sendJson(res, 200, {
         settings: listSettings(),

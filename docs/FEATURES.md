@@ -591,7 +591,10 @@ API. The **budget caps** (daily and lifetime, in dollars) are checked immediatel
 before every paid agent launch — a delivery, a review, Plan a build, Suggest work,
 the tester, onboarding analysis, the merge resolver, the repo classifier that
 links a new app to its sibling tickets — so an exhausted budget starts
-nothing, wherever the work was asked for. Every knob the factory
+nothing, wherever the work was asked for. A value that does not fit its setting
+(a dollar cap that is not a number of 0 or more, Concurrent ticks below 1) is not
+saved: the panel marks the field and says which one holds Save back, and the API
+refuses the whole write with a 422 that names it. Every knob the factory
 reads — its default, whether the panel can edit it, which component consumes it
 — is listed in the generated [`CONFIG.md`](CONFIG.md).
 

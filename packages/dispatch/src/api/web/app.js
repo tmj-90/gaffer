@@ -735,6 +735,7 @@ const squad = {
   byId: new Map(), // agent_id → AgentDisplay (+ registration facts once the squad loads)
   capability: null, // "full" | "read" from /api/whoami; null until known
   loaded: null, // the in-flight or settled first read
+  whoamiFailed: false, // the gate's whoami failed (not 401): the first squad read skips it
 };
 const ROLE_LABELS = {
   delivery: "Delivery",
@@ -772,21 +773,31 @@ function applySquad(res) {
 /** Read the squad and the token's capability, once per page load (best-effort). */
 function ensureSquad() {
   if (!squad.loaded) {
+    // The gate already waited once for a whoami that failed or timed out: the views do
+    // not wait (up to 15 s more) for a second one. It is asked in the background
+    // instead, and a read token's controls switch off when it answers.
+    const askLater = !squad.capability && squad.whoamiFailed;
+    squad.whoamiFailed = false;
+    if (askLater) api("GET", "/api/whoami").then(learnCapability, () => null);
     squad.loaded = Promise.all([
       api("GET", "/api/squad").catch(() => null),
-      squad.capability ? null : api("GET", "/api/whoami").catch(() => null),
+      squad.capability || askLater ? null : api("GET", "/api/whoami").catch(() => null),
     ]).then(([sq, who]) => {
-      const was = squad.capability;
-      if (who && typeof who === "object") squad.capability = who.capability || "full";
       if (sq) applySquad(sq);
       else squad.loaded = null; // try again on the next view
-      paintReadOnly();
-      // Learned only now that this token is read-only: redraw the view, so it shows
-      // its switched-off controls rather than the editors it painted first.
-      if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
+      learnCapability(who);
     });
   }
   return squad.loaded;
+}
+/** Take a whoami answer (null: still unknown) and paint what it means. */
+function learnCapability(who) {
+  const was = squad.capability;
+  if (who && typeof who === "object") squad.capability = who.capability || "full";
+  paintReadOnly();
+  // Learned only now that this token is read-only: redraw the view, so it shows
+  // its switched-off controls rather than the editors it painted first.
+  if (was !== "read" && squad.capability === "read" && app.firstElementChild) router();
 }
 /**
  * The live stream said the club or a name changed: read the squad again, repaint
@@ -1203,6 +1214,10 @@ async function runAsyncActionUntilDone(btn, running, fn) {
 function renderLogin(wasWrong) {
   const root = document.getElementById("app");
   if (!root) return;
+  // Reads already in flight when the token stopped working each answer 401 too: the
+  // gate is drawn once, so a token being typed into it is never wiped by a redraw.
+  if (authLost && root.querySelector("form.login-gate")) return;
+  goQuietForLogin();
   // A write 401 can fire from the Plan-a-build sheet (body-level overlay); dismiss it
   // so the token gate isn't stranded behind it — the CSS also covers it defensively.
   closeSheet();
@@ -1262,6 +1277,22 @@ function renderLogin(wasWrong) {
     location.reload();
   });
   root.appendChild(form);
+}
+
+/**
+ * The gate is up, so the page stops asking. A token revoked or rotated server-side
+ * used to leave the interval refresh, the live stream and its reconnects running
+ * behind the gate: about 80 refused reads a minute, each drawing the gate again.
+ * Entering a token reloads the page, which starts them afresh.
+ */
+let authLost = false;
+function goQuietForLogin() {
+  authLost = true;
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+  if (liveRefreshTimer) clearTimeout(liveRefreshTimer);
+  liveRefreshTimer = null;
+  if (liveStreamAbort) liveStreamAbort.abort();
 }
 
 /** Clear the token and return to the login gate. Wired to the header logout. */
@@ -2519,7 +2550,12 @@ function scheduleLiveRefresh() {
 }
 
 async function startLiveStream() {
-  if (liveStreamAbort || typeof fetch !== "function" || typeof ReadableStream === "undefined")
+  if (
+    authLost ||
+    liveStreamAbort ||
+    typeof fetch !== "function" ||
+    typeof ReadableStream === "undefined"
+  )
     return;
   const controller = new AbortController();
   liveStreamAbort = controller;
@@ -2534,6 +2570,11 @@ async function startLiveStream() {
   };
   try {
     const res = await fetch(`/api/events/stream${since}`, { headers, signal: controller.signal });
+    if (res.status === 401) {
+      // The token stopped working: the gate, once, and no reconnect behind it.
+      freshness.fail("auth");
+      renderLogin(Boolean(tok));
+    }
     if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -2571,7 +2612,8 @@ async function startLiveStream() {
     clearTimeout(watchdog);
     liveStreamAbort = null;
     freshness.setStream("down");
-    if (document.visibilityState !== "hidden") setTimeout(startLiveStream, LIVE_RECONNECT_MS);
+    if (document.visibilityState !== "hidden" && !authLost)
+      setTimeout(startLiveStream, LIVE_RECONNECT_MS);
   }
 }
 // A phone tab coming back to the foreground re-checks at once instead of
@@ -2615,7 +2657,7 @@ function reviewSignature(tickets) {
 /** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
 let refreshing = false;
 function refreshCurrentView() {
-  if (document.visibilityState === "hidden") return;
+  if (authLost || document.visibilityState === "hidden") return;
   if (busyEditing()) return;
   // don't yank a card mid-drag or a menu/sheet out from under a click.
   if (document.querySelector(".dragging, .is-dragging, .sheet.open, .menu-open")) return;
@@ -27263,6 +27305,9 @@ async function passGate() {
     if (who && typeof who === "object" && who.capability) squad.capability = who.capability;
   } catch (e) {
     if (e && e.code === "UNAUTHORIZED") return false; // api() drew the gate already
+    // Slow, failing or unreachable: start anyway (unknown counts as full; the server
+    // still refuses a read token's writes), without a second wait for the same answer.
+    squad.whoamiFailed = true;
   }
   return true;
 }

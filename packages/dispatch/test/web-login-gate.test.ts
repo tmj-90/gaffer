@@ -5,7 +5,9 @@
 // it: GET /api/squad, /api/whoami, /api/events/stream and every view read answered
 // 401, each a "Failed to load resource" console error. Now the public /healthz says
 // whether a token is wanted and the gate is drawn at once; a stored token is checked
-// with ONE whoami before anything else is sent.
+// with ONE whoami before anything else is sent. Review follow-ups: a token revoked
+// while the page is open leaves the page quiet behind the gate, and a failed gate
+// whoami is not waited for again by the first view.
 
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,7 +18,8 @@ const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 let sent: string[] = [];
 let authOn = true;
-const validToken = "right";
+let validToken = "right";
+let whoamiStatus = 200;
 
 function json(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {
@@ -38,13 +41,42 @@ function stubFetch(): void {
           401,
         );
       if (url.includes("/api/whoami"))
-        return json({ capability: "full", actor: { type: "human", id: "api" } });
+        return whoamiStatus === 200
+          ? json({ capability: "read", actor: { type: "human", id: "api" } })
+          : json({ error: { code: "INTERNAL", message: "boom" } }, whoamiStatus);
       if (url.includes("/api/events/stream")) return new Response(null, { status: 204 });
       return json({});
     }),
   );
 }
-const tick = () => new Promise((r) => setTimeout(r, 0));
+/** The first whoami answers 500, every later one 200 (read). */
+function stubFetchOnce500ThenRead(): void {
+  const inner = globalThis.fetch;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const r = await inner(input, init);
+      if (String(input).includes("/api/whoami")) whoamiStatus = 200;
+      return r;
+    }),
+  );
+}
+/** The first whoami answers as stubbed (500); every later one never answers. */
+function stubFetchWhoamiHangsAfterFirst(): void {
+  const inner = globalThis.fetch;
+  let n = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/api/whoami") && ++n > 1) {
+        sent.push(String(input));
+        return new Promise<Response>(() => {});
+      }
+      return inner(input, init);
+    }),
+  );
+}
+let tick = () => new Promise((r) => setTimeout(r, 0));
 async function boot(): Promise<void> {
   document.body.innerHTML = `
     <div id="toast" class="toast" role="alert" hidden></div>
@@ -63,13 +95,18 @@ describe("web: the login gate sends no data call it cannot have", () => {
     vi.resetModules();
     sent = [];
     authOn = true;
+    validToken = "right";
+    whoamiStatus = 200;
     localStorage.clear();
     stubFetch();
   });
   afterEach(() => {
+    vi.useRealTimers();
+    tick = () => new Promise((r) => setTimeout(r, 0));
     vi.unstubAllGlobals();
     localStorage.clear();
     document.body.innerHTML = "";
+    document.body.className = "";
   });
 
   it("no token: only the public /healthz is asked, and the gate is drawn", async () => {
@@ -103,5 +140,48 @@ describe("web: the login gate sends no data call it cannot have", () => {
     expect(document.querySelector("form.login-gate")).toBeNull();
     expect(sent[0]).toBe("/healthz");
     expect(sent.length).toBeGreaterThan(1);
+  });
+  it("a token revoked while the page is open: the gate once, then the page goes quiet", async () => {
+    // Review finding: the interval refresh and the live stream's reconnects kept asking
+    // behind the gate (about 80 refused reads a minute), each drawing the gate again.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    tick = () => vi.advanceTimersByTimeAsync(0);
+    localStorage.setItem("wg_api_token", "right");
+    await boot();
+    expect(document.querySelector("form.login-gate")).toBeNull();
+    validToken = "rotated"; // revoked server-side
+    await vi.advanceTimersByTimeAsync(10_000); // one interval refresh, one stream reconnect
+    expect(document.querySelector("form.login-gate")).not.toBeNull();
+    expect(document.querySelector(".login-error")?.textContent).toContain("rejected");
+    const typed = document.querySelector<HTMLInputElement>("#login-token")!;
+    typed.value = "half-typed";
+    const asked = sent.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sent.slice(asked)).toEqual([]);
+    expect(document.querySelector<HTMLInputElement>("#login-token")!.value).toBe("half-typed");
+  });
+
+  it("a gate whoami that fails: the views do not wait for a second one, asked in the background", async () => {
+    // Review finding: the views waited for a second whoami after the gate's had failed,
+    // so a slow one held "Loading…" for 30 s (two 15 s read timeouts) instead of 15.
+    localStorage.setItem("wg_api_token", "right");
+    whoamiStatus = 500;
+    stubFetchWhoamiHangsAfterFirst();
+    await boot();
+    expect(document.querySelector("form.login-gate")).toBeNull();
+    expect(sent.filter((u) => u === "/api/whoami")).toHaveLength(2);
+    // The Overview drew (not its loading skeleton) while the second whoami still hangs.
+    expect(document.querySelector("#app > .view-overview")).not.toBeNull();
+    expect(document.querySelector("#app > .skeleton-view")).toBeNull();
+    expect(document.body.classList.contains("is-read-only")).toBe(false);
+  });
+
+  it("a gate whoami that fails once: the background one switches a read token's controls off", async () => {
+    localStorage.setItem("wg_api_token", "right");
+    whoamiStatus = 500;
+    stubFetchOnce500ThenRead();
+    await boot();
+    expect(document.body.classList.contains("is-read-only")).toBe(true);
+    expect(document.getElementById("ro-strip")?.hidden).toBe(false);
   });
 });

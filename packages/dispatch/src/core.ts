@@ -131,6 +131,7 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
+import { EPIC_MEMBER_RELATIONS, ownAcceptanceTicketId } from "./services/epicAcceptance.js";
 import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
 import {
   ReviewPacketService,
@@ -1129,7 +1130,7 @@ export class Dispatch {
       const ticket = this.ticketSvc.createTicket(raw, actor);
       if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
       (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
-        this.scope.linkTicketScope(
+        this.linkTicketScope(
           {
             ticket_id: ticket.id,
             scope_node_id: scopeNodeId,
@@ -1300,11 +1301,48 @@ export class Dispatch {
   // --- Ticket scope links (WG-001) -----------------------------------------
 
   linkTicketScope(raw: unknown, actor: Actor): TicketScopeNode {
-    return this.scope.linkTicketScope(raw, actor);
+    return inTransaction(this.db, () => {
+      const link = this.scope.linkTicketScope(raw, actor);
+      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
+      return link;
+    });
   }
 
   setPrimaryScope(ticketRef: string, scopeNodeId: string, actor: Actor): TicketScopeNode {
-    return this.scope.setPrimaryScope(ticketRef, scopeNodeId, actor);
+    return inTransaction(this.db, () => {
+      const link = this.scope.setPrimaryScope(ticketRef, scopeNodeId, actor);
+      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
+      return link;
+    });
+  }
+
+  /**
+   * EPIC MEMBERSHIP (external review #8): a ticket confirmed into an epic after it was
+   * planned (a `primary` / `secondary` link) is part of the build the epic's acceptance
+   * ticket must test, so that acceptance ticket now DEPENDS on it, exactly like the
+   * members createEpic wired: the final cannot be claimed until the new member is done.
+   * Before this the final ran (and the epic read accepted) with the new member still
+   * ready. Nothing is wired for a suggested / rejected link, an acceptance ticket, a
+   * cancelled member, or a final already done or cancelled (`wg stats` then reads the
+   * epic pending / stale instead of accepted). Inside the caller's transaction.
+   */
+  private wireEpicAcceptance(
+    ticketId: string,
+    scopeNodeId: string,
+    relation: string,
+    actor: Actor,
+  ): void {
+    if (!(EPIC_MEMBER_RELATIONS as readonly string[]).includes(relation)) return;
+    const node = this.scopeNodes.findById(scopeNodeId);
+    if (!node || node.type !== "epic") return;
+    const ticket = this.tickets.findById(ticketId);
+    if (!ticket || ticket.acceptance === 1 || ticket.status === "cancelled") return;
+    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
+    if (finalId === null || finalId === ticket.id) return;
+    const final = this.tickets.findById(finalId);
+    if (!final || final.status === "done" || final.status === "cancelled") return;
+    if (this.ticketDependencies.exists(final.id, ticket.id)) return;
+    this.ticketSvc.addDependency({ ticket: final.id, depends_on: ticket.id }, actor);
   }
 
   listTicketScopes(ticketRef: string): TicketScopeWithNode[] {

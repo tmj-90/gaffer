@@ -269,12 +269,21 @@ structural barrier the whole design hangs on.
   becomes *done* once all of them are on their default branches. If one lands and
   another cannot (a conflict, a dirty checkout), the ticket stays in *Ready for merge*
   and shows as **Partly merged** in what needs you, naming which repositories landed;
-  the next merge lands only the rest (`wg ticket landing <n>` shows the state), and
-  **Poll for work** counts it as merge work even with Auto-merge off: the poll's tick
-  runs the merge lane, which lands the remaining repositories. An approval covers
+  the next merge lands only the rest (`wg ticket landing <n>` shows the state). The
+  runner's merge lane (and so **Poll for work**) finishes it only under the same
+  policy that lets it land any approval, decided again at that moment: a human
+  approval with Auto-merge on, or an earned merge grant. Turn Auto-merge off, or
+  withdraw an agent approval's `MERGE_ON_AGENT_REVIEW`, and the ticket stays
+  *Approved · partly landed* (its status says nothing lands the rest on its own)
+  until someone presses **Merge now**. An approval covers
   **every** write repository: while one's delivery head cannot be read (no checkout
   here, an unreadable path, its delivery branch missing) the approval is refused
-  (`repo_unavailable`) and the button reads *Approve held: <repo> unavailable*.
+  (`repo_unavailable`) and the button reads *Approve held: <repo> unavailable*,
+  with what to do: attach the checkout or restore the branch, or make the
+  repository read-only on the ticket (a read-only repository never blocks). The
+  runner's agent reviewer reads only the primary repository, so its approval of a
+  multi-repo ticket is refused: a note on the ticket says so, the ticket waits for
+  a person, and the same delivery head is not reviewed again.
 - **Approve does not merge unless you ask it to.** With `AUTO_MERGE` off (the
   default) an approved ticket waits in *Ready for merge* for **Merge now**; with
   it on, a human approval lands on its own (an agent's approval also needs
@@ -355,7 +364,12 @@ structural barrier the whole design hangs on.
   packages, `cargo test --test`) where that is well defined, else through the
   registered command, and each file must show the runner's own evidence that it
   ran: a repo whose registered command runs only some files can no longer report
-  a tester file as passed that never executed. A file with no such evidence
+  a tester file as passed that never executed. For node:test that evidence is a
+  line the runner's reporter signs with a per-replay key the test processes never
+  see, so a delivery that stops the tester's file and prints "passed" for it
+  proves nothing; a run that reports a file it was not given, or a vitest/jest
+  report that names other files or miscounts, proves nothing either, and plain
+  output text never counts. A file with no such evidence
   holds the landing (*blocked*, `tester_replay_unverified`, naming the files,
   in `gaffer status` too) and nothing is recorded. A failing assertion holds
   the landing exactly like a red gate

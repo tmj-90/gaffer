@@ -88,10 +88,21 @@ attempts_of() { sql 'select attempt_count from tickets where number=?' "$NUM"; }
 # --- the fake claude: call 1 commits WIP then is REFUSED; call 2 delivers ------
 CALLS="$WORK/claude-calls"; : > "$CALLS"
 FAKE="$WORK/bin"; mkdir -p "$FAKE"
+# The run's skip list lives in the loop's own run-state dir, removed when the loop ends
+# (lib/run-state.sh). A stub keeps it visible by hard-linking it while the run is still
+# going (the tick creates it before the claim, and only ever appends to it), so the
+# "not skip-listed" checks below read the RUN's list, not a shared path no run writes.
+cat >"$FAKE/keep-run-list" <<SH
+#!/bin/sh
+for f in "$GAFFER_DATA"/run-state/loop-*/.failed-tickets; do [ -f "\$f" ] && ln -f "\$f" "\$1"; done
+exit 0
+SH
+chmod +x "$FAKE/keep-run-list"
 cat >"$FAKE/claude" <<SH
 #!/bin/sh
 date +%s >> "$CALLS"
 n=\$(wc -l < "$CALLS" | tr -d ' ')
+"$FAKE/keep-run-list" "$WORK/run-failed.\$n"
 gc() { git -c user.email=fake@agent -c user.name="fake agent" -c commit.gpgsign=false "\$@" >/dev/null 2>&1; }
 if [ "\$n" = 1 ]; then
   printf 'half-way\n' > WIP.txt; gc add -A; gc commit -qm "wip: started before the refusal"
@@ -127,7 +138,8 @@ has "$(cat "$WORK/loop1.log")" "tick 1/1 → usage_paused" && ok "loop reported 
 [ "$(sql 'select count(*) from ticket_claims where ticket_id=? and status=?' "$TID" active)" = "0" ] && ok "no active claim left" || fail "an active claim remains"
 [ ! -e "$GAFFER_DATA/.nocommit-failures/$NUM" ] && ok "the cross-run no-commit counter was not touched" || fail "nocommit counter = $(cat "$GAFFER_DATA/.nocommit-failures/$NUM")"
 [ "$(sql 'select count(*) from rework_attempts where ticket_id=?' "$TID")" = "0" ] && ok "no rework attempt was recorded" || fail "rework_attempts rows exist"
-grep -qx "$NUM" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && fail "the ticket was skip-listed for the run" || ok "not skip-listed (it is retried once the window resets)"
+[ -f "$WORK/run-failed.1" ] && ok "the run's own skip list was seen" || fail "the run's skip list was not found under $GAFFER_DATA/run-state"
+grep -qx "$NUM" "$WORK/run-failed.1" 2>/dev/null && fail "the ticket was skip-listed for the run" || ok "not skip-listed (it is retried once the window resets)"
 EV_UNTIL="$(sql "select json_extract(payload_json,'\$.paused_until') from work_events where entity_id=? and event_type='ticket.usage_limited'" "$TID")"
 EV_REASON="$(sql "select json_extract(payload_json,'\$.reason') from work_events where entity_id=? and event_type='ticket.usage_limited'" "$TID")"
 [ -n "$EV_UNTIL" ] && ok "a ticket.usage_limited event records paused_until ($EV_UNTIL)" || fail "no ticket.usage_limited event (or no paused_until)"
@@ -226,6 +238,7 @@ CALLS3="$WORK/claude-calls-3"; : > "$CALLS3"
 cat >"$FAKE/claude-ok" <<SH
 #!/bin/sh
 date +%s >> "$CALLS3"
+"$FAKE/keep-run-list" "$WORK/run-failed.ok"
 printf 'out\n' > OUT.txt
 git -c user.email=fake@agent -c user.name="fake agent" -c commit.gpgsign=false add -A >/dev/null 2>&1
 git -c user.email=fake@agent -c user.name="fake agent" -c commit.gpgsign=false commit -qm "deliver: add OUT.txt" >/dev/null 2>&1
@@ -253,7 +266,8 @@ ST3="$(sql 'select status from tickets where number=?' "$NUM3")"
 [ "$ST3" = "in_review" ] && ok "#$NUM3 reached in_review" || fail "#$NUM3 is '$ST3' (want in_review): $(grep 'tick 1' "$WORK/loop4.log")"
 [ "$(sql "select count(*) from work_events where entity_id=? and event_type='ticket.usage_limited'" "$TID3")" = "0" ] \
   && ok "no ticket.usage_limited event" || fail "a ticket.usage_limited event was recorded for #$NUM3"
-grep -qx "$NUM3" "$GAFFER_DATA/.failed-tickets" 2>/dev/null && fail "#$NUM3 was skip-listed" || ok "#$NUM3 was not skip-listed"
+[ -f "$WORK/run-failed.ok" ] && ok "the run's own skip list was seen" || fail "the run's skip list was not found under $GAFFER_DATA/run-state"
+grep -qx "$NUM3" "$WORK/run-failed.ok" 2>/dev/null && fail "#$NUM3 was skip-listed" || ok "#$NUM3 was not skip-listed"
 [ ! -e "$GAFFER_DATA/usage-pause.json" ] && ok "no usage-pause.json was written" || fail "a pause was recorded: $(cat "$GAFFER_DATA/usage-pause.json")"
 
 echo "== F: Claude Code 2.1.316 wording (5-hour limit + ' · progress saved') pauses with its real reset =="

@@ -144,13 +144,18 @@ export function registerTicket(program: Command): void {
     .command("record-landing <ref>")
     .description(
       "PER-REPOSITORY LANDING: record that one write repo's approved commit reached its " +
-        "default branch (the merge paths call this per repo). System/admin only; idempotent.",
+        "default branch (the merge paths call this per repo). System/admin only; idempotent. " +
+        "Recorded only when it can be shown, so done means landed: local / git-verified need " +
+        "the commit in the local default branch's history; pr needs a PR on record for that " +
+        "repo and the change in the local default branch (its history, or after a squash or " +
+        "rebase merge, merging the commit changes nothing); pr-stale needs the PR and is " +
+        "checked against the default branch's remote-tracking copy when the checkout has one.",
     )
     .requiredOption("--repo <repo>", "repo name or id")
     .requiredOption("--commit <sha>", "the approved commit that landed")
     .option(
       "--via <how>",
-      "local | git-verified (checked against the default branch) | pr | pr-stale (upstream)",
+      "local | git-verified (checked against the default branch) | pr (a recorded PR, merged and pulled) | pr-stale (a recorded PR, merged; local default not updated)",
     )
     .option("--as <actor>", "actor type: system|admin", "system")
     .action((ref, opts, cmd) => {

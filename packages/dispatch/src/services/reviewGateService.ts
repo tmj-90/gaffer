@@ -239,6 +239,18 @@ export interface ReviewGateServiceDeps {
    */
   readonly landedOnDefaultResolver?: (repoId: string, sha: string) => boolean;
   /**
+   * PR LANDINGS (exploratory finding cli-wg/F-01): does `ref` in the repo carry the change
+   * of `sha` (an ancestor, or, for a squash or rebase merge, merging `sha` into it changes
+   * nothing)? `refs` names what to look at: "default" (the local default branch) and/or
+   * "remote-default" (every remote-tracking ref of it). → true carried by one of them ·
+   * false none carries it · null none of the refs exists here.
+   */
+  readonly changeOnRefsResolver?: (
+    repoId: string,
+    sha: string,
+    refs: ReadonlyArray<"default" | "remote-default">,
+  ) => boolean | null;
+  /**
    * GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate that answers
    * "does an explicit mode='auto' approve policy cover this ticket (its risk × ALL
    * its write repos)?" NO env read here — the P0 check below ORs it with the env
@@ -336,8 +348,10 @@ function validatedBinding(
 
 /**
  * PER-REPOSITORY LANDING: the `via` values whose landing happened upstream (a merged PR,
- * possibly squashed), so the local default branch cannot confirm it. Every other landing
- * is checked against git before it is recorded.
+ * possibly squashed), so ancestry of the local default branch alone cannot confirm it:
+ * assertPrLanding checks them (a PR on record, the change carried by the default branch or
+ * its remote-tracking copy). Every other landing is checked by ancestry before it is
+ * recorded.
  */
 const UNVERIFIABLE_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale"]);
 
@@ -362,6 +376,7 @@ export class ReviewGateService {
   private readonly reviewedHeadsResolver: ReviewGateServiceDeps["reviewedHeadsResolver"];
   private readonly unavailableWriteReposResolver: ReviewGateServiceDeps["unavailableWriteReposResolver"];
   private readonly landedOnDefaultResolver: ReviewGateServiceDeps["landedOnDefaultResolver"];
+  private readonly changeOnRefsResolver: ReviewGateServiceDeps["changeOnRefsResolver"];
   private readonly policyAllowsAgentApprove: ((ticket: Ticket) => boolean) | undefined;
   private readonly observedRiskResolver: ((ticket: Ticket) => ObservedRisk | null) | undefined;
 
@@ -383,6 +398,7 @@ export class ReviewGateService {
     this.reviewedHeadsResolver = deps.reviewedHeadsResolver;
     this.unavailableWriteReposResolver = deps.unavailableWriteReposResolver;
     this.landedOnDefaultResolver = deps.landedOnDefaultResolver;
+    this.changeOnRefsResolver = deps.changeOnRefsResolver;
     this.policyAllowsAgentApprove = deps.policyAllowsAgentApprove;
     this.observedRiskResolver = deps.observedRiskResolver;
   }
@@ -827,6 +843,8 @@ export class ReviewGateService {
           status: before,
         };
       }
+      if (UNVERIFIABLE_LANDING_VIAS.has(input.via ?? ""))
+        this.assertPrLanding(ticket, target, sha, input.via as "pr" | "pr-stale");
       // A LOCAL landing is checkable: the merge paths merge the pinned commit itself, so
       // it must be contained in the repo's default branch. Fail closed — a commit git
       // cannot show there (or a check that errors) is not recorded, so a forged or
@@ -1931,6 +1949,74 @@ export class ReviewGateService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * PR LANDINGS (exploratory finding cli-wg/F-01): `record-landing --via pr|pr-stale` used
+   * to record any approved commit as landed with nothing checked, and mark-merged then
+   * closed the ticket while its branch sat unmerged. The rule now:
+   *   - a PR must be on record for that repository (its ticket_repos / delivery pr_url, or
+   *     the ticket's pr_url when it is the ticket's primary write repo): no PR, no PR
+   *     landing (`no_pr_recorded`);
+   *   - `pr` says the local default branch was fast-forwarded from the merged PR's base, so
+   *     the local default must carry the approved change (an ancestor, or for a squash or
+   *     rebase merge, merging the commit into it changes nothing): `not_on_default_branch`;
+   *   - `pr-stale` says the local default could NOT be updated, so it is checked the same way
+   *     against the remote-tracking refs of the default branch (or the local default) when
+   *     the checkout has any; with none here, the recorded PR is the only evidence there is.
+   */
+  private assertPrLanding(
+    ticket: Ticket,
+    target: { repoId: string; repo: string },
+    sha: string,
+    via: "pr" | "pr-stale",
+  ): void {
+    const repoPr = this.db
+      .prepare(
+        `SELECT COALESCE(NULLIF(tr.pr_url, ''), NULLIF(d.pr_url, '')) AS pr
+           FROM ticket_repos tr
+           LEFT JOIN ticket_repo_delivery d ON d.ticket_id = tr.ticket_id AND d.repo_id = tr.repo_id
+          WHERE tr.ticket_id = ? AND tr.repo_id = ?`,
+      )
+      .get(ticket.id, target.repoId) as { pr: string | null } | undefined;
+    const primary = this.db
+      .prepare(
+        `SELECT repo_id FROM ticket_repos WHERE ticket_id = ?
+          ORDER BY (access = 'write') DESC, (role = 'primary') DESC LIMIT 1`,
+      )
+      .get(ticket.id) as { repo_id: string } | undefined;
+    const ticketPr = String(ticket.pr_url ?? "").trim();
+    const pr =
+      String(repoPr?.pr ?? "").trim() || (primary?.repo_id === target.repoId ? ticketPr : "");
+    if (!pr) {
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `#${ticket.number ?? "?"} has no pull request on record for ${target.repo}; a landing --via ${via} is recorded only for a PR the delivery opened. A local merge records --via local (checked against git).`,
+        { reason: "no_pr_recorded", repo: target.repo, via },
+      );
+    }
+    if (!this.changeOnRefsResolver) return;
+    let carried: boolean | null;
+    try {
+      carried = this.changeOnRefsResolver(
+        target.repoId,
+        sha,
+        via === "pr" ? ["default"] : ["remote-default", "default"],
+      );
+    } catch {
+      carried = false;
+    }
+    // pr-stale with no remote-tracking ref here: the local default is known stale and
+    // nothing local can show the merge; the PR record above is the evidence.
+    if (carried === true) return;
+    if (via === "pr-stale" && carried === null) return;
+    throw new DispatchError(
+      "STATE_CONFLICT",
+      via === "pr"
+        ? `${target.repo}'s default branch does not carry ${sha.slice(0, 12)}; a PR landing is recorded once the merged PR has been pulled into the local default branch (git shows the approved change there).`
+        : `Neither ${target.repo}'s default branch nor its remote-tracking copy carries ${sha.slice(0, 12)}; fetch or pull the default branch, then record the landing again (--via pr once it is pulled).`,
+      { reason: "not_on_default_branch", repo: target.repo, commit: sha, via, pr_url: pr },
+    );
+  }
 
   /**
    * PARTLY LANDED (exploratory finding cli-runner/F-02): a ticket whose approved change

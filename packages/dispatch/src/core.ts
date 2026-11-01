@@ -644,6 +644,8 @@ export class Dispatch {
       unavailableWriteReposResolver: (ticket) => this.writeRepoHeads(ticket).unavailable,
       // PER-REPOSITORY LANDING: git ancestry as positive evidence of a landing.
       landedOnDefaultResolver: (repoId, sha) => this.commitOnDefaultBranch(repoId, sha),
+      // PR LANDINGS: the approved change carried by the default branch (or its remote copy).
+      changeOnRefsResolver: (repoId, sha, refs) => this.changeOnRefs(repoId, sha, refs),
       // GRADUATED-AUTONOMY (Spec 2, Phase 3): the pure-policy predicate the P0 gate
       // ORs with the env flag — true iff a mode='auto' approve policy covers every
       // write repo at this ticket's risk. NO env read here (that stays in the gate).
@@ -874,6 +876,54 @@ export class Dispatch {
       `refs/heads/${repo.default_branch || "main"}`,
     ]);
     return res.status === 0;
+  }
+
+  /**
+   * PR LANDINGS (exploratory finding cli-wg/F-01): does any of `refs` carry the change of
+   * `sha`? "default" is the local default branch, "remote-default" every remote-tracking
+   * ref of it. A ref carries it when `sha` is its ancestor (a merge commit) or when merging
+   * `sha` into it changes nothing (`git merge-tree --write-tree` gives the ref's own tree:
+   * a squash or rebase merge of that change already applied). → null when none of the
+   * refs exists here (or the checkout is missing), else true/false.
+   */
+  private changeOnRefs(
+    repoId: string,
+    sha: string,
+    refs: ReadonlyArray<"default" | "remote-default">,
+  ): boolean | null {
+    const repo = this.repos.findById(repoId);
+    if (!repo || !repo.local_path || !existsSync(repo.local_path)) return null;
+    const cwd = repo.local_path;
+    const runGit = this.gitRunner ?? defaultGitRunner;
+    const def = repo.default_branch || "main";
+    const names: string[] = [];
+    for (const r of refs) {
+      if (r === "default") names.push(`refs/heads/${def}`);
+      else {
+        const listed = runGit(cwd, ["for-each-ref", "--format=%(refname)", "refs/remotes/"]);
+        if (listed.status === 0)
+          for (const line of listed.stdout.split("\n")) {
+            const name = line.trim();
+            if (name.endsWith(`/${def}`) && name.split("/").length === 4) names.push(name);
+          }
+      }
+    }
+    let anyRef = false;
+    for (const ref of names) {
+      const tip = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+      if (tip.status !== 0 || tip.stdout.trim() === "") continue;
+      anyRef = true;
+      if (runGit(cwd, ["merge-base", "--is-ancestor", sha, ref]).status === 0) return true;
+      const tree = runGit(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{tree}`]);
+      const merged = runGit(cwd, ["merge-tree", "--write-tree", ref, sha]);
+      if (
+        tree.status === 0 &&
+        merged.status === 0 &&
+        merged.stdout.split("\n")[0]?.trim() === tree.stdout.trim()
+      )
+        return true;
+    }
+    return anyRef ? false : null;
   }
 
   // --- Graduated Autonomy policy (Spec 2, Phase 3) -------------------------

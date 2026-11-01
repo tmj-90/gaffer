@@ -303,6 +303,107 @@ describe("cli-wg/F-11: ci-result accepts only a commit of the ticket", () => {
   });
 });
 
+describe("cli-wg/F-01: record-landing --via pr|pr-stale must be justified", () => {
+  const setPr = (wg: Dispatch, id: string, url: string | null) =>
+    wg.db.prepare("UPDATE tickets SET pr_url = ? WHERE id = ?").run(url, id);
+
+  it("no PR on record: --via pr and --via pr-stale are refused (no_pr_recorded); mark-merged stays refused", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    for (const via of ["pr", "pr-stale"]) {
+      let err: DispatchError | null = null;
+      try {
+        wg.recordLanding(id, { repo: "billing-api", commit: head, via }, system);
+      } catch (e) {
+        err = e as DispatchError;
+      }
+      expect(err?.code).toBe("STATE_CONFLICT");
+      expect(err?.details).toMatchObject({ reason: "no_pr_recorded" });
+    }
+    expect(wg.landingStatus(id).landed).toBe(0);
+    // ...and with the commit not on the default branch, mark-merged stays refused.
+    gitOverride = (_cwd, args) =>
+      args[0] === "merge-base" && args[1] === "--is-ancestor"
+        ? { status: 1, stdout: "", stderr: "" }
+        : (null as never);
+    expect(codeOf(() => wg.markMerged(id, system))).toBe("STATE_CONFLICT");
+    expect(wg.view(id).ticket.status).toBe("ready_for_merge");
+    wg.db.close();
+  });
+
+  it("--via pr with a PR: the local default branch must carry the change", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    setPr(wg, id, "https://github.com/o/r/pull/7");
+    // The local default does not have it: not an ancestor, and merging it changes the tree.
+    gitOverride = (_cwd, args) => {
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor")
+        return { status: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && String(args[3]).endsWith("^{tree}"))
+        return { status: 0, stdout: "t1\n", stderr: "" };
+      if (args[0] === "merge-tree") return { status: 0, stdout: "t2\n", stderr: "" };
+      return null as never;
+    };
+    expect(
+      codeOf(() => wg.recordLanding(id, { repo: "billing-api", commit: head, via: "pr" }, system)),
+    ).toBe("STATE_CONFLICT");
+    // A squash merge of the change is on main: merging the commit into main is a no-op.
+    gitOverride = (_cwd, args) => {
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor")
+        return { status: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && String(args[3]).endsWith("^{tree}"))
+        return { status: 0, stdout: "t1\n", stderr: "" };
+      if (args[0] === "merge-tree") return { status: 0, stdout: "t1\n", stderr: "" };
+      return null as never;
+    };
+    expect(
+      wg.recordLanding(id, { repo: "billing-api", commit: head, via: "pr" }, system).recorded,
+    ).toBe(true);
+    wg.db.close();
+  });
+
+  it("--via pr-stale: checked against a remote-tracking ref when one exists, else the PR record", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    setPr(wg, id, "https://github.com/o/r/pull/8");
+    let remotes = "refs/remotes/origin/main\n";
+    gitOverride = (_cwd, args) => {
+      if (args[0] === "for-each-ref") return { status: 0, stdout: remotes, stderr: "" };
+      if (args[0] === "merge-base" && args[1] === "--is-ancestor")
+        return { status: 1, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && String(args[3]).endsWith("^{tree}"))
+        return { status: 0, stdout: "t1\n", stderr: "" };
+      if (args[0] === "merge-tree") return { status: 0, stdout: "t2\n", stderr: "" };
+      return null as never;
+    };
+    expect(
+      codeOf(() =>
+        wg.recordLanding(id, { repo: "billing-api", commit: head, via: "pr-stale" }, system),
+      ),
+    ).toBe("STATE_CONFLICT");
+    // No remote-tracking ref and the local default known stale: the PR record is the evidence.
+    remotes = "";
+    gitOverride = ((prev) => (cwd: string, args: readonly string[], opts?: unknown) => {
+      if (args[0] === "rev-parse" && String(args[3]) === "refs/heads/main^{commit}")
+        return { status: 1, stdout: "", stderr: "" };
+      return prev!(cwd, args as string[], opts as never);
+    })(gitOverride) as GitRunner;
+    expect(
+      wg.recordLanding(id, { repo: "billing-api", commit: head, via: "pr-stale" }, system).recorded,
+    ).toBe(true);
+    wg.db.close();
+  });
+
+  it("--via local is unchanged (ancestry)", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    expect(
+      wg.recordLanding(id, { repo: "billing-api", commit: head, via: "local" }, system).recorded,
+    ).toBe(true);
+    wg.db.close();
+  });
+});
+
 describe("api/F1: two parallel Merge requests start one merge", () => {
   it("the second POST /tickets/:id/merge is 409 MERGE_IN_FLIGHT and starts nothing", async () => {
     const { createApiServer } = await import("../src/api/server.js");

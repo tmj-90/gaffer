@@ -285,7 +285,25 @@ describe("a two-repo ticket is done only when both repos landed", () => {
     }
     expect(refusal(() => d.markMerged(t.id, system)).details.reason).toBe("partial_landing");
     expect(d.view(t.id).ticket.status).toBe("ready_for_merge");
-    // A PR landing happens upstream (possibly squashed), so git here cannot confirm it.
+    // A PR landing (exploratory finding cli-wg/F-01) needs a PR on record for the repo...
+    expect(
+      refusal(() => d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system))
+        .details.reason,
+    ).toBe("no_pr_recorded");
+    // ...and the change in the local default branch (the merged PR pulled).
+    d.db
+      .prepare(
+        "UPDATE ticket_repos SET pr_url = 'https://github.com/o/b/pull/1' WHERE ticket_id = ? AND repo_id = (SELECT id FROM repositories WHERE name = 'repoB')",
+      )
+      .run(t.id);
+    expect(
+      refusal(() => d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system))
+        .details.reason,
+    ).toBe("not_on_default_branch");
+    // GitHub squash-merged it and the local main was fast-forwarded: not an ancestor, but
+    // merging the approved commit into main changes nothing, so the landing is shown.
+    git(b, "merge", "-q", "--squash", BRANCH);
+    git(b, "commit", "-q", "-m", "squash of the PR");
     expect(d.recordLanding(t.id, { repo: "repoB", commit: pinB, via: "pr" }, system).recorded).toBe(
       true,
     );

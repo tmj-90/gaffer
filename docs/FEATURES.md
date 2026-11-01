@@ -279,7 +279,13 @@ structural barrier the whole design hangs on.
   in *Ready for merge* and shows as **Partly merged** in what needs you, naming which
   repositories landed (it cannot be cancelled then: `wg wont-do` and a cancelling send-back
   are refused with `PARTLY_LANDED`, so land the rest or revert the landed merge first);
-  the next merge lands only the rest (`wg ticket landing <n>` shows the state; once the
+  the next merge lands only the rest. A landing is recorded only when it can be shown:
+  `--via local` needs the approved commit in the default branch's history; `--via pr`
+  needs a pull request on record for that repository and the change in the local default
+  branch (its history, or, after a squash or rebase merge, merging the commit into it
+  changes nothing); `--via pr-stale` needs the PR and checks the remote-tracking copy of
+  the default branch when the checkout has one. So *done* means landed
+  (`wg ticket landing <n>` shows the state; once the
   approval is withdrawn by a send-back, a won't-do or a reopen it shows no approved
   commit, the same as the ticket's status). The
   runner's merge lane (and so **Poll for work**) finishes it only under the same

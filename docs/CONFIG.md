@@ -83,7 +83,7 @@ computed from other knobs at runtime.
 | `GAFFER_TEST_PATH_RE` | _(empty)_ |  | crew, dispatch | extra test-path regex for the gate-integrity check (additive) |
 | `GAFFER_DOD_SANDBOX` | `1` |  | runner | Run the DoD gates + AC check commands under the SAME OS sandbox wrap as the agent (they execute agent-modified code). |
 | `GAFFER_PR_LOCAL_FALLBACK` | `0` |  | runner | PR mode: when `gh pr merge` fails or gh is absent, 1 lands the branch LOCALLY (the PR stays open — the previous behaviour). |
-| `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the wor |
+| `GAFFER_MCP_BRIDGE` | `auto` |  | runner | docker provider: run the MCP data plane (dispatch + memory servers) on the HOST and bridge the container to it over one unix socket (lib/mcp-bridge.mjs), so no database, ledger, claim token or settings file is in the… |
 | `GAFFER_DOD_OUTPUT_TAIL` | `40` |  | crew, runner | lines of gate output kept as evidence / rework feedback |
 | `GAFFER_REWORK_HISTORY_BYTES` | `8000` |  | runner | prior-attempt feedback carried into a rework prompt |
 | `GAFFER_JUDGE_DIFF_BYTES` | `120000` |  | runner | diff bytes handed to the eval judge |
@@ -94,7 +94,7 @@ computed from other knobs at runtime.
 | `GAFFER_DAEMON_MAX_CYCLES` | `0` |  | runner | 0 = unbounded |
 | `GAFFER_DAEMON_SETUP_BACKOFF_MAX` | `1800` |  | runner | ceiling (s) of the daemon's doubling wait after a setup-error pass (loop.sh exit 3) |
 | `GAFFER_RESOLVER_MAX_TURNS` | _(empty)_ |  | runner | alias of GAFFER_MERGE_MAX_TURNS (empty → that knob) |
-| `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many times a ticket may be re-worked after a rejected review before it parks to blocked. |
+| `GAFFER_MAX_DELIVERY_ATTEMPTS` | `3` | yes (int) | dispatch, runner | How many agent runs one delivery gets inside a tick: a failed gate (tests, typecheck, lint or a criterion's check) is fed back and the agent reworks the same branch, up to this many runs, then the ticket parks to blocked with its branch kept. A run that fails exactly as the one before (two identical failures) parks it early instead of spending the rest. It is also the default for GAFFER_MAX_NOCOMMIT_FAILURES (runs that end with no commit, counted across runs) and DISPATCH_MAX_ATTEMPTS (review rejections). |
 | `GAFFER_RETRY_FRESH_BRANCH` | `0` |  | runner | WASTE CONTROL: a ticket re-entered by a LATER tick (review CHANGES rework, a resumed pause, a re-queued retry) keeps its branch's commits; 1 = reset it to base for that tick (in-tick rework is never reset). |
 | `GAFFER_CLAIM_TTL` | _derived_ (`$(( ${GAFFER_MAX_DELIVERY_ATTEMPTS:-3} * ${GAFFER_TICK_TIMEOUT:-1800} + 300 ))`) |  | runner |  |
 | `DISPATCH_MAX_ATTEMPTS` | _derived_ (`$GAFFER_MAX_DELIVERY_ATTEMPTS`) | yes (int) | dispatch, runner | Dispatch's own cap on how many times a delivery may be rejected back into the queue before the ticket is parked (blocked) for a human — the server-side wallet guard against an unbounded reject loop, enforced on every reject transition regardless of which runner drove it. Defaults to Max delivery attempts so the two caps agree; set it only to make the server stricter or looser than the runner's rework ladder. |
@@ -169,14 +169,14 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_USAGE_LEDGER` | _derived_ (`$GAFFER_DATA/usage-ledger.jsonl`) |  | dispatch, runner | Every headless `claude -p` call is switched to `--output-format json` and its real usage (tokens verbatim, dollars RELAYED from Claude Code's own total_cost_usd / modelUsage[*].costUSD — never computed from a price table |
+| `GAFFER_USAGE_LEDGER` | _derived_ (`$GAFFER_DATA/usage-ledger.jsonl`) |  | dispatch, runner | Every headless `claude -p` call is switched to `--output-format json` and its real usage (tokens verbatim, dollars RELAYED from Claude Code's own total_cost_usd / modelUsage[*].costUSD — never computed from a price… |
 | `GAFFER_KILL_ESTIMATE_USD` | `0.05` |  | runner | GAFFER_KILL_ESTIMATE_USD — budget honesty for a KILLED / TIMED-OUT `claude -p` call (Part A). |
 
 ### Autonomy MODE
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_MODE` | `supervised` | yes (string: supervised / lite / graduated / autonomous / strict) | dispatch, runner | Preset that sets the whole autonomy cluster at once (review mode, agent approval, auto-merge, auto-push, memory auto-approve): supervised · lite · graduated · autonomous · strict. supervised (default) keeps a human on every merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, no sensitive path) that passed every gate + earned an APPROVE from the reviewer agent — and still leaves a human to MERGE (never auto-merges); non-trivial tickets hold for you. (Because auto-approve drops the human quality gate, lite requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) graduated ships what each repo has EARNED at its risk level and holds everything else for you (the reviewer agent runs, but the per-repo/risk autonomy policy is the sole allow-path — set grants in the per-repo policy editor); autonomous lets agents approve and auto-merges + pushes approved work; strict adds OS-level sandbox containment on top of autonomous, chosen by SANDBOX_PROVIDER: docker (any host with Docker) gives real read + egress isolation; sandbox-exec (macOS) is a write-only sandbox, so with sandbox-exec on a non-macOS host strict has no OS containment beyond the deterministic hook — set GAFFER_STRICT_REQUIRE=1 to fail closed rather than degrade. Picking a mode prevents a half-configured autonomy posture. The individual knobs below still override the mode — an explicitly-set flag always wins. |
+| `GAFFER_MODE` | `supervised` | yes (string: supervised / lite / graduated / autonomous / strict) | dispatch, runner | Preset that sets the whole autonomy cluster at once (review mode, agent approval, auto-merge, auto-push, memory auto-approve): supervised · lite · graduated · autonomous · strict. supervised (default) keeps a human on every merge; lite auto-approves only GENUINELY TRIVIAL tickets (low risk, tiny diff, no sensitive path) that passed every gate + earned an APPROVE from the reviewer agent — and still leaves a human to MERGE (never auto-merges); non-trivial tickets hold for you. (Because auto-approve drops the human quality gate, lite requires the OS sandbox — GAFFER_STRICT_REQUIRE defaults on.) graduated ships what each repo has EARNED at its risk level and holds everything else for you (the reviewer agent runs, but the per-repo/risk autonomy policy is the sole allow-path — set grants in the per-repo policy editor); autonomous lets agents approve and auto-merges + pushes approved work, and because that removes the human gate it also requires the OS sandbox (GAFFER_STRICT_REQUIRE and STRICT_MODE default on: no sandbox, no agent). strict sets the same flags as autonomous; the one difference is that strict keeps STRICT_MODE on even when you set GAFFER_STRICT_REQUIRE=0 (the sandbox is still used where available, just not required). SANDBOX_PROVIDER picks the sandbox: docker (any host with Docker) gives real read + egress isolation; sandbox-exec (macOS) is a write-only sandbox. Picking a mode prevents a half-configured autonomy posture. The individual knobs below still override the mode — an explicitly-set flag always wins. |
 | `DISPATCH_ALLOW_AGENT_APPROVE` | `0` _(the default; other modes/branches can set it)_ | yes (boolean) | dispatch, runner | Let an agent actor approve a ticket's review (otherwise human-only). Off by default; the autonomous, strict and lite modes turn it on. An agent approve is still held for a person whenever the real diff's observed risk exceeds the declared risk, and ALWAYS when the delivery changed the tests that gate it (deleted or renamed a test file, added a skip/only marker, changed a gate script, one of its pre/post hooks or a script it runs, touched test config, or added or changed a package-manager rc file such as .npmrc) — unless a person allowed test changes on that ticket (`wg ticket allow-test-changes <n>`, or Allow test changes on the Review page). The allowance clears the hold only; the gate still runs the base commit's scripts. |
 | `MEMORY_AUTO_APPROVE` | `0` _(the default; other modes/branches can set it)_ | yes (boolean) | crew, dispatch, memory, runner | Let the memory the runner itself files go live without a human review step: the requirement distilled from each delivered ticket, onboarding's induction lore and `memory suggest` from the CLI. Lore a delivery agent suggests over MCP always stays a draft for you to approve, whatever this says. Off by default; the autonomous and strict modes turn it on. |
 
@@ -219,9 +219,9 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_SECURITY_REVIEW` | `1` |  | runner | SECURITY SECOND OPINION — decides whether a ticket gets a SECOND, security-focused reviewer pass after the primary reviewer APPROVEs (lib/review.sh). |
-| `GAFFER_MERGE_LANE` | `1` |  | dispatch, runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the |
-| `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default bran |
-| `GAFFER_MERGE_GATE_RETRIES` | `2` |  | runner | MERGE GATE (lib/land.sh, bin/merge-ticket.mjs): every landing first builds the merge of the approved commit onto the CURRENT target in a scratch worktree and runs the repo's DoD gates on that merge (bin/dod-regate.sh: te |
+| `GAFFER_MERGE_LANE` | `1` |  | dispatch, runner | MERGE LANE (lib/merge-lane.sh): at the start of every tick, land every ready_for_merge ticket the merge policy permits (a human's approve, the tester's PASS, a merge gate held at review time and since earned) through the… |
+| `GAFFER_CONFLICT_RESOLVER` | `1` |  | runner | CONFLICT RESOLVER (lib/land.sh): when a landing hits a merge CONFLICT (the branch forked before a sibling landed on the same files), spawn bin/merge-ticket.mjs's resolver agent ONCE per ticket: it merges the default… |
+| `GAFFER_MERGE_GATE_RETRIES` | `2` |  | runner | MERGE GATE (lib/land.sh, bin/merge-ticket.mjs): every landing first builds the merge of the approved commit onto the CURRENT target in a scratch worktree and runs the repo's DoD gates on that merge (bin/dod-regate.sh… |
 | `CLARIFY_DRAFTS_WHEN_IDLE` | `0` | yes (boolean) | dispatch, runner | When idle, run the clarify pass over vague draft tickets to sharpen their acceptance criteria and raise blocking decisions (one paid agent call per draft, once per run). A draft with no linked repo on disk (a greenfield epic's tickets before the bootstrap links one) is skipped and logged, and the pass moves on to the next draft. |
 | `IDLE_DRAFT_WHEN_IDLE` | `0` | yes (boolean) | crew, dispatch, runner | When idle AND the maintenance lane is off (or failed), run ALL enabled crew idle loops in one pass plus GitHub/Jira ingest and the lore-gap / feature-backlog loops. Superseded by the maintenance lane in the Idle loops panel, which runs one prioritised lane per idle tick (rotating), does the same ingest + async loops, and can promote its own drafts. A tick that files nothing is an empty poll. |
 | `GAFFER_MAINTENANCE` | _(empty)_ | yes (string: 0 / 1) | crew, dispatch, runner | Overrides the Idle loops panel's master switch (crew.yaml `loops.maintenance.enabled`): 0 = kill switch, an idle tick never runs maintenance · 1 = run the lane even while the switch is off · empty = the panel decides. It only turns the LANE on: it rotates through the lanes you enabled, so with none enabled an idle tick still does nothing (and reports no_work). |
@@ -241,7 +241,7 @@ computed from other knobs at runtime.
 | `GAFFER_REQUIRE_CI` | `0` | yes (boolean) | dispatch, runner | Poll the delivery PR's CI checks and only let the ticket into review when they pass; red checks reject it back to rework. Required means required: approval (and a tester PASS) is refused until CI has passed for the exact commit being approved, a red result for an approved ticket holds it for a human (blocked, ci_red), and the merge lane re-reads CI before landing. REQUIRES 'Deliver as a pull request' — the checks live on the PR, so with PR delivery off this gate is skipped with a warning (it used to poll a PR that never existed and reject every delivery at the timeout). |
 | `GAFFER_CI_POLL_ATTEMPTS` | `20` | yes (int) | dispatch, runner | How many times to poll CI checks (when Require-CI is on) before giving up. |
 | `GAFFER_CI_POLL_INTERVAL_SECS` | `30` | yes (int) | dispatch, runner | Seconds between CI check polls. |
-| `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into $GAFFER_D |
+| `GAFFER_EVAL_JUDGE` | `0` |  | runner | EVAL JUDGE (lib/eval-judge.sh): 1 = after every submitted delivery an independent judge scores the diff against the ticket on the crew rubric (AC coverage, correctness, minimalism, test adequacy, security) into… |
 
 ### lib/automerge.sh
 
@@ -259,7 +259,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible |
+| `GAFFER_PREFLIGHT_LIVE` | `0` |  | runner | LIVE CLAUDE PROBE: 1 = runner/preflight.sh also makes ONE tiny paid `claude -p` call to prove the login works (catches an expired token the free credential check cannot); 0 = only the free check (is a credential visible… |
 | `GAFFER_PREFLIGHT_LIVE_TIMEOUT` | `60` |  | runner | Seconds the live probe may take before it counts as a failure. |
 
 ### lib/delivery-recovery.sh
@@ -273,7 +273,7 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_DOD_INSTALL_TIMEOUT` | _derived_ (`${GAFFER_DOD_TIMEOUT:-900}`) |  | runner | Max wall-clock seconds for the PRE-GATE dependency install (see gaffer_dod_install_deps). |
-| `GAFFER_DOD_FLAKY_RERUN` | `1` |  | dispatch, runner | ── FLAKY-TEST RERUN (a red TEST gate under a parallel pool) ────────────────── With GAFFER_CONCURRENCY>1 several deliveries' suites share the machine, and a test that races for a port, a temp dir or CPU can go red on cod |
+| `GAFFER_DOD_FLAKY_RERUN` | `1` |  | dispatch, runner | ── FLAKY-TEST RERUN (a red TEST gate under a parallel pool) ────────────────── With GAFFER_CONCURRENCY>1 several deliveries' suites share the machine, and a test that races for a port, a temp dir or CPU can go red on… |
 | `GAFFER_DOD_RERUN_WAIT` | `120` |  | runner | max seconds the rerun waits for the other workers' in-flight gate runs to finish |
 | `GAFFER_DOD_FEEDBACK_LINES` | _derived_ (`${GAFFER_DOD_OUTPUT_TAIL:-40}`) |  | crew, runner | How many lines of distilled failure to keep per gate. |
 
@@ -287,7 +287,7 @@ computed from other knobs at runtime.
 
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
-| `GAFFER_REGISTRY_PROBE` | `1` |  | runner | REGISTRY PROBE: 1 = before a greenfield bootstrap spawns its agent (and in runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry |
+| `GAFFER_REGISTRY_PROBE` | `1` |  | runner | REGISTRY PROBE: 1 = before a greenfield bootstrap spawns its agent (and in runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry… |
 | `GAFFER_REGISTRY_PROBE_TIMEOUT` | `45` |  | runner | Seconds the registry probe may take before it counts as unreachable ("timeout"). |
 
 ### lib/skills-mount.sh
@@ -308,6 +308,54 @@ computed from other knobs at runtime.
 | Variable | Default | UI | Read by | Notes |
 |---|---|---|---|---|
 | `GAFFER_CLAUDE_VERSION` | _(empty)_ |  | runner | pin the Claude Code CLI version recorded per call (e.g. a docker image's CLI); empty = read it from the binary |
+
+## Read where they are used
+
+These have no `factory.config.sh` default line: the code that uses each one
+applies the default below at its read site (the file named under **Read in**).
+Some are seams the runner also sets for itself; the notes say which.
+
+### Safety and containment
+
+| Variable | Default | Read in | Notes |
+|---|---|---|---|
+| `GAFFER_STRICT_REQUIRE` | `0` | `runner/lib/sandbox.sh` | 1 = refuse to launch an agent without an OS sandbox (fail closed). Unset, factory.config.sh turns it on whenever an autonomy flag, an autonomous/strict/lite mode or an `auto` policy row is on; set 0 explicitly only if you contain the whole runner yourself (a VM or container). |
+| `GAFFER_SANDBOX_IMAGE` | `gaffer-sandbox:latest` | `runner/lib/sandbox-docker.sh` | The image the docker sandbox provider runs each delivery in (`docker compose --profile sandbox build` builds it). |
+| `GAFFER_SANDBOX_PROFILE` | _(empty)_ | `runner/lib/sandbox-docker.sh` | Set by the runner, not by you: `validation` runs the DoD gates and criterion checks in the docker sandbox with no data plane. Empty is the agent profile. |
+
+### Definition of Done
+
+| Variable | Default | Read in | Notes |
+|---|---|---|---|
+| `GAFFER_DOD` | `1` | `runner/lib/dod.sh` | 0 turns every Definition-of-Done gate off, the only way to land a delivery ungated (the merge gate is off too). |
+| `GAFFER_DOD_INSTALL` | `1` | `runner/lib/dod.sh` | 1 = install the delivery worktree's dependencies (from its lockfile) before the test gate; a no-op when node_modules exists. 0 to manage dependencies yourself. |
+| `GAFFER_GREENFIELD_INSTALL` | `1` | `runner/lib/greenfield.sh` | 0 = skip the dependency install in a new greenfield repo; also turns GAFFER_DOD_INSTALL off. |
+| `GAFFER_ALLOW_NO_DOD` | `0` | `runner/tick.sh` | 1 = let a delivery pass when no gate ran at all (a repo with no test or lint command). Otherwise that is a failure and the ticket parks. |
+| `GAFFER_CI_TIMEOUT_POLICY` | `block` | `runner/lib/ci-gate.sh` | With GAFFER_REQUIRE_CI=1: what happens when the checks time out, there is no PR or no checks exist. block rejects the delivery; proceed lets it through with a note. |
+
+### Delivery and landing
+
+| Variable | Default | Read in | Notes |
+|---|---|---|---|
+| `GAFFER_KEEP_DELIVERY_BRANCH` | `0` | `runner/tick.sh` | Raised by the tick once a delivery's branch is review-visible, so cleanup removes the worktree but never the branch. Exporting 1 keeps every delivery branch (debugging only). |
+| `GAFFER_PAUSE_KEEP_WORKTREE` | `0` | `runner/tick.sh` | Raised by the tick when a delivery pauses on a cap, so its worktree and branch survive for Continue. Exporting 1 keeps every worktree (debugging only). |
+| `GAFFER_DIGEST_DISABLE` | `0` | `runner/lib/land.sh` | 1 = skip the repo digest and feature-ledger refresh after a merge lands. |
+| `GAFFER_MEMORY_AUTO_PROMOTE` | _follows_ `MEMORY_AUTO_APPROVE` | `runner/tick.sh` | 1 = a requirement distilled from a delivered ticket goes live at once; 0 = it lands as a draft for `memory review`. Unset, it follows MEMORY_AUTO_APPROVE. |
+
+### Onboarding and demo
+
+| Variable | Default | Read in | Notes |
+|---|---|---|---|
+| `GAFFER_VERBOSE` | _(empty)_ | `runner/bin/onboard-run.mjs` | 1 = `gaffer onboard` prints its full log instead of the summary (the log is always in $GAFFER_DATA/onboard.log). |
+| `DEMO_DIR` | `/tmp/gaffer-showcase` | `runner/demo.sh` | Where `gaffer demo` builds its throwaway showcase repo (it deletes that directory first). |
+
+### Credentials
+
+| Variable | Default | Read in | Notes |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | _(empty)_ | `runner/preflight.sh` | An API key for the worker CLI (`claude`). One of this, CLAUDE_CODE_OAUTH_TOKEN or a logged-in CLAUDE_CONFIG_DIR is needed for a live run; the container reads only these two variables. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | _(empty)_ | `runner/preflight.sh` | The subscription token `claude setup-token` prints, used instead of an API key. |
+| `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | `runner/lib/claude-auth.sh` | Where the worker CLI keeps its login (`.credentials.json`); preflight looks there for a credential. |
 
 ## Dashboard-only settings
 

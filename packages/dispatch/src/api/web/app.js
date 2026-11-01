@@ -27010,16 +27010,51 @@ document.addEventListener("click", (e) => {
   if (jumpTo(href.slice(1))) e.preventDefault();
 });
 
-adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
-buildChrome();
-window.addEventListener("hashchange", () => {
-  // A bare fragment that names a section on this page is a jump, not a route.
-  const h = location.hash || "";
-  if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
-  // A sheet belongs to the page that opened it: a reason being written for #15 must
-  // never stay over #20 (Back, a link, a typed address), where confirming it would
-  // act on a ticket the reader is no longer looking at.
-  if (sheetOpen()) closeSheet({ restore: false });
+/**
+ * The members' entrance asks for nothing it cannot have. With no token, the public
+ * /healthz says whether this server wants one, and if it does the gate is drawn
+ * straight away (no data call that can only answer 401). With a token, ONE whoami
+ * checks it first: a wrong token gets the gate from that one answer instead of a
+ * page of refused reads and a live stream, and a right one tells the views at once
+ * whether this token is read-only. Answers whether the dashboard may start.
+ */
+async function passGate() {
+  if (!authToken()) {
+    try {
+      const res = await fetch("/healthz");
+      const body = res.ok ? await res.json() : null;
+      if (body && body.auth === true) {
+        renderLogin(false);
+        return false;
+      }
+    } catch {
+      // An old server or a blip: start, and let the first read say if a token is needed.
+    }
+    return true;
+  }
+  try {
+    const who = await api("GET", "/api/whoami");
+    if (who && typeof who === "object" && who.capability) squad.capability = who.capability;
+  } catch (e) {
+    if (e && e.code === "UNAUTHORIZED") return false; // api() drew the gate already
+  }
+  return true;
+}
+
+async function start() {
+  adoptTokenFromUrl(); // one-scan token pickup (QR) before the first authed call
+  if (!(await passGate())) return;
+  buildChrome();
+  window.addEventListener("hashchange", () => {
+    // A bare fragment that names a section on this page is a jump, not a route.
+    const h = location.hash || "";
+    if (h.length > 1 && !h.startsWith("#/") && jumpTo(h.slice(1))) return;
+    // A sheet belongs to the page that opened it: a reason being written for #15 must
+    // never stay over #20 (Back, a link, a typed address), where confirming it would
+    // act on a ticket the reader is no longer looking at.
+    if (sheetOpen()) closeSheet({ restore: false });
+    router();
+  });
   router();
-});
-router();
+}
+start();

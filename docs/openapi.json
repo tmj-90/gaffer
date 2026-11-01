@@ -66,10 +66,10 @@
           "Meta"
         ],
         "summary": "Liveness probe",
-        "description": "Token-free and exempt from the Host/Origin check; carries no control-plane state.",
+        "description": "Token-free and exempt from the Host/Origin check; carries no control-plane state. `auth` says whether the server wants a bearer token, so the dashboard's login gate draws itself without first sending a data call that can only answer 401.",
         "responses": {
           "200": {
-            "description": "`{ status: \"ok\" }`.",
+            "description": "`{ status: \"ok\", auth: boolean }`.",
             "content": {
               "application/json": {
                 "schema": {

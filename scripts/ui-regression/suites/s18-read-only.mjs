@@ -12,6 +12,9 @@
 //   - every control switched off for the token carries that title;
 //   - the page sends no non-GET request at all, so nothing is refused with a 403
 //     (the Create view used to POST /scope/repo-suggestions on open).
+// Then the gate itself: with no token the members' entrance sends no API call that
+// answers 401, and with a wrong token only the one whoami that says so
+// (exploratory finding ui-explore/F-05).
 // Exploratory findings ui-explore/F-01 and ui-workflows/F7.
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -316,6 +319,36 @@ export default async function s18(t, L) {
     `read token: 403s=${f403.join(", ").slice(0, 300)} console=${rp.consoleErrors.join(" | ").slice(0, 300)}`,
   );
   await rp.context().close();
+
+  // ── the members' entrance asks for nothing it cannot have (F-05) ──────────
+  for (const [label, q] of [
+    ["no token", ""],
+    ["a wrong token", "?token=not-the-token"],
+  ]) {
+    const ctx = await t.browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const gp = await ctx.newPage();
+    const unauth = [];
+    const errs = [];
+    gp.on("response", (r) => {
+      if (r.status() === 401) unauth.push(`${r.request().method()} ${new URL(r.url()).pathname}`);
+    });
+    gp.on("console", (m) => {
+      if (m.type() === "error") errs.push(m.text());
+    });
+    await gp.goto(`${L.BASE}/${q}#/overview`, { waitUntil: "load" });
+    await L.sleep(2500);
+    const gate = await gp.evaluate(() => Boolean(document.querySelector("form.login-gate")));
+    // A wrong token is checked once (one 401 says it was rejected); nothing else may ask.
+    const allowed = q ? 1 : 0;
+    t.check(
+      gate &&
+        unauth.length <= allowed &&
+        errs.filter((e) => !/401/.test(e) || unauth.length > allowed).length === 0,
+      `the login gate with ${label} shows the entrance and makes ${unauth.length ? "only the one token check" : "no API call"} (no 401 console noise)`,
+      `login gate with ${label}: gate=${gate} 401s=${unauth.join(", ")} console=${errs.join(" | ").slice(0, 200)}`,
+    );
+    await ctx.close();
+  }
 
   // leave nothing live: the claim and the agent's ticket
   await revokeHeld(L, w);

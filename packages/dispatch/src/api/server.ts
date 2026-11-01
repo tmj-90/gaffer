@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 
 import type { Dispatch } from "../core.js";
 import {
+  authConfigured,
   hasValidBearer,
   isMutationAuthorized,
   isRequestAuthorized,
@@ -177,7 +178,9 @@ async function route(
     // balancers, k8s, uptime monitors) legitimately arrive with arbitrary Host
     // headers, and the response carries no control-plane state to protect.
     if (segments.length === 1 && segments[0] === "healthz" && method === "GET") {
-      sendJson(res, 200, { status: "ok" });
+      // `auth` says whether a bearer token is wanted, so the dashboard's login gate
+      // can draw itself without first sending a data call that can only answer 401.
+      sendJson(res, 200, { status: "ok", auth: authConfigured() });
       return;
     }
 

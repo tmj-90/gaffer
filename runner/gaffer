@@ -515,7 +515,15 @@ eval)
   _ledger="${GAFFER_EVAL_LEDGER:-$GAFFER_DATA/eval-ledger.jsonl}"
   _cli="$CREW_DIR/dist/eval/evalLedgerCli.js"
   if [ ! -f "$_cli" ]; then echo "eval: crew not built — run: pnpm -C packages/crew build"; exit 1; fi
+  # COST PER ACCEPTED CHANGE (external review #9): the judge only sees submitted work, so
+  # its cost-per-pass leaves parked and failed attempts out. This line reads the usage
+  # ledger (every attempt) and the tickets that reached done; `wg stats` has the detail.
+  _accepted_line() {
+    node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" stats --json 2>/dev/null \
+      | node "$HERE/lib/json-tool.mjs" accepted-change 2>/dev/null || true
+  }
   if [ ! -s "$_ledger" ]; then
+    if [ "${1:-}" != "--json" ]; then _accepted_line; fi
     echo "eval: no judged deliveries yet ($_ledger is empty)."
     echo "Enable post-submit judging with GAFFER_EVAL_JUDGE=1 — see docs/eval-harness.md."
     exit 0
@@ -524,6 +532,7 @@ eval)
     node "$_cli" --mode summarize --file "$_ledger"
   else
     node "$_cli" --mode summarize --file "$_ledger" | node "$HERE/lib/json-tool.mjs" eval-summary
+    _accepted_line
   fi
   ;;
 

@@ -6,7 +6,8 @@
  * module turns the facts the approve path itself acts on into the FIRST step that will
  * certainly happen, so the button, the line under it and the done band say exactly that:
  *
- *   held_ci          GAFFER_REQUIRE_CI has recorded CI for this ticket and the candidate
+ *   held_ci          GAFFER_REQUIRE_CI has recorded CI (a result, or the requirement
+ *                    itself, recorded before review) for this ticket and the candidate
  *                    commit has no PASS: approveReview refuses (POLICY_DENIED).
  *   held_repo_unavailable
  *                    a write repo's delivery head cannot be read now (no checkout here, an
@@ -232,16 +233,22 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
   };
   if (f.ciHold) {
     const at = f.ciHold.commit ? ` for ${f.ciHold.commit.slice(0, 12)}` : "";
-    const state = f.ciHold.state ?? "no result for this commit";
+    // No result at all for the commit under review: CI is required but has not reported.
+    const notReported = f.ciHold.state === null;
+    const label = notReported
+      ? "Approve held: CI required, not reported"
+      : "Approve held: CI not passed";
     return {
       ...base,
       kind: "held_ci",
       approvable: false,
       to_status: null,
-      label: "Approve held: CI not passed",
-      confirm_label: "Approve held: CI not passed",
+      label,
+      confirm_label: label,
       done_label: "Approve held",
-      sentence: `Required CI has not passed${at} (${state}). The server refuses approval until a passing result is recorded for this commit.`,
+      sentence: notReported
+        ? `CI required: not reported${at}. The server refuses approval until a passing result is recorded for this commit.`
+        : `Required CI has not passed${at} (${f.ciHold.state}). The server refuses approval until a passing result is recorded for this commit.`,
       via: null,
       lands_repo: null,
       also_lands_repos: [],

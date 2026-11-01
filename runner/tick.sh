@@ -181,7 +181,7 @@ gaffer_crash_cleanup() {
   [ -n "${MCP_RUNTIME:-}" ] && rm -f "$MCP_RUNTIME" 2>/dev/null || true
   # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
   # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
-  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* 2>/dev/null || true
+  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* "$GAFFER_DATA"/worker-prompt.$$.* 2>/dev/null || true
   # RESUME ABORT: a resumed delivery (paused → Continue → in_progress) that ends here
   # without completing — a signal, the outer timeout, a fail-closed setup exit, a
   # worktree that could not be reused — used to stay in_progress with nothing left to
@@ -1882,6 +1882,15 @@ if [ "$READY_COUNT" -gt 0 ]; then
   # checkout). In single-repo / mono-fallback mode this is exactly one worktree.
   WRITE_ROOTS="$(printf '%s\n' "$WT_ROWS" | grep . | awk -F'\t' '{print $5}')"
   PRIMARY_REPO="$(printf '%s\n' "$WRITE_ROOTS" | grep . | head -1)"
+  # External review #9 (finding 2): beyond the static hooks/fsmonitor overrides
+  # factory.config.sh exported, neutralise every driver/helper/filter of THESE
+  # repositories that points into the checkout before any bookkeeping git runs in them.
+  if declare -F gaffer_git_harden >/dev/null 2>&1; then
+    _gh_repos=()
+    while IFS=$'\t' read -r _ _ _gh_p _ _; do [ -n "$_gh_p" ] && [ -d "$_gh_p" ] && _gh_repos+=( "$_gh_p" ); done <<< "$WT_ROWS"
+    gaffer_git_harden ${_gh_repos[@]+"${_gh_repos[@]}"}
+    unset _gh_repos _gh_p
+  fi
   [ -n "$PRIMARY_REPO" ] || PRIMARY_REPO="$WORKTREES_BASE/primary"
 
   # Prior review feedback: if this ticket was sent back before, the reviewer's
@@ -2473,6 +2482,20 @@ $PRODUCT_CONTEXT_BLOCK}"
   # (GAFFER_STRICT_REQUIRE — auto-set by every autonomy flag). Gating this on
   # STRICT_MODE alone let `GAFFER_MODE=autonomous` announce "fails closed without an
   # OS sandbox" and then launch uncontained, because nothing here ever asked.
+  # THE COMMAND WORKER'S CONTAINMENT RULE, checked before any wrap is composed: its only
+  # accepted boundary is the docker sandbox with the host-side MCP bridge (lib/worker.mjs
+  # commandContainmentProblem). The seam refuses anything else at the spawn (rc 75);
+  # parking HERE keeps that refusal from being counted as a failed delivery attempt.
+  if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ] && ! _gaffer_strict_require_opted_out \
+     && ! _CMD_WHY="$(SANDBOX_PROVIDER="${SANDBOX_PROVIDER:-sandbox-exec}" node "$RUNNER_DIR/lib/worker.mjs" command-containment 2>/dev/null)"; then
+    [ -n "$_CMD_WHY" ] || _CMD_WHY="$(_gaffer_worker_command_refusal_msg none)"
+    log "STRICT_REQUIRE: refusing to launch the agent (fail closed, strict_require_unavailable): $_CMD_WHY"
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "PARKED (strict_require_unavailable): $_CMD_WHY" >/dev/null 2>&1 || true
+    gaffer_release_delivery blocked "GAFFER_WORKER_PROVIDER=command needs the docker sandbox with the MCP bridge — fail closed, agent not launched" strict_require_unavailable
+    gaffer_skip_ticket "$NUM"
+    result error; exit 0
+  fi
   if [ "${STRICT_MODE:-0}" = "1" ] || _sandbox_strict_required; then
     # C4: sandbox_wrap_cmd returns NON-ZERO only when GAFFER_STRICT_REQUIRE=1 and no OS
     # sandbox provider is available — a hard fail-closed: the operator demanded OS
@@ -2489,10 +2512,15 @@ $PRODUCT_CONTEXT_BLOCK}"
         log "STRICT_MODE active but provider '${SANDBOX_PROVIDER:-sandbox-exec}' added no OS sandbox — worktree isolation + safety hook still apply"
       fi
     else
-      log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)"
+      # The command worker has no in-process safety hook, which is WHY the sandbox is
+      # required (factory.config.sh defaults GAFFER_STRICT_REQUIRE=1 for it): say so.
+      _SR_WHY=""
+      [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ] \
+        && _SR_WHY=" (GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs one: set SANDBOX_PROVIDER=docker with a running daemon, or GAFFER_STRICT_REQUIRE=0 in the environment if the runner is contained out-of-band)"
+      log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)$_SR_WHY"
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)" >/dev/null 2>&1 || true
-      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available, agent not launched: $(gaffer_sandbox_unavailable_hint)" strict_require_unavailable
+        --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)$_SR_WHY" >/dev/null 2>&1 || true
+      gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available, agent not launched: $(gaffer_sandbox_unavailable_hint)$_SR_WHY" strict_require_unavailable
       gaffer_skip_ticket "$NUM"
       result error; exit 0
     fi
@@ -3698,6 +3726,11 @@ $_trail_q
   # keeping it is always correct, and the trap now preserves it from the visibility
   # point onward. (Redundantly re-raised on the record path + the submit-fail park.)
   GAFFER_KEEP_DELIVERY_BRANCH=1
+  # REQUIRED CI IS RECORDED BEFORE REVIEW (external review #9, finding 4): when CI gates
+  # this delivery (GAFFER_REQUIRE_CI with PR creation on), dispatch learns that before the
+  # ticket is exposed for review, so an approval in the window before the gate reports
+  # (or when it never can: no gh, no GitHub remote) is refused, not waved through.
+  declare -F gaffer_ci_require_mark >/dev/null 2>&1 && gaffer_ci_require_mark "$NUM"
   if gaffer_submit_delivery "delivered on branch $WORK_BRANCH; gates passed"; then
     log "submitted #$NUM for review (→ in_review) — runner-owned submit"
     # FINDING-3: this delivery attempt SUCCEEDED — reset the cross-run no-commit

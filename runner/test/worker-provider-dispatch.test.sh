@@ -8,6 +8,9 @@
 #
 #   • provider=claude-code (default): BYTE-IDENTICAL to today — it actually spawns
 #     the worker binary (positive control: a marker file appears).
+#   • provider=command: the second real provider — it runs GAFFER_WORKER_COMMAND (not
+#     claude) with the GAFFER_WORKER_* contract, and the parser adapter writes the
+#     canonical envelope the bash guards read through parse-result.
 #   • provider=codex / local / unknown: FAIL CLOSED — non-zero exit, the exact
 #     message on stderr, NO spawn (negative control: the marker NEVER appears),
 #     and NO envelope written to the capture file.
@@ -103,6 +106,42 @@ for prov in codex local made-up-provider; do
     || fail "provider=$prov wrote a capture — a stub must not fabricate an envelope"
 done
 
+echo "== provider=command is the second real provider — it runs GAFFER_WORKER_COMMAND, not claude =="
+CMD_ENV_DUMP="$WORK/command-env"
+FAKE_CMD="$WORK/fake-command-worker"
+cat > "$FAKE_CMD" <<EOF
+#!/usr/bin/env bash
+env > "$CMD_ENV_DUMP"
+pwd >> "$CMD_ENV_DUMP"
+printf 'noise first\n'
+printf '%s\n' '{"result":"cmd ok","cost_usd":0.25,"num_turns":3,"model":"m-cmd","cap_hit":true}'
+EOF
+chmod +x "$FAKE_CMD"
+rm -f "$MARKER" "$CMD_ENV_DUMP"
+# This suite has no OS sandbox, so it takes the explicit out-of-band opt-out (the
+# containment rule itself is pinned by worker-command.test.sh).
+GAFFER_WORKER_PROVIDER=command GAFFER_WORKER_COMMAND="$FAKE_CMD" GAFFER_STRICT_REQUIRE=0 \
+  worker_deliver "$CWD" "the command prompt" "--model stub-m" "$MCP" "$WORK/out.command.json" "" 9 2>"$WORK/err.command"
+crc=$?
+[ "$crc" = "0" ] && ok "provider=command exits 0 (the worker program ran)" || fail "provider=command should exit 0 (got $crc: $(cat "$WORK/err.command"))"
+[ ! -f "$MARKER" ] && ok "provider=command did NOT run the claude binary" || fail "provider=command ran CLAUDE_BIN"
+[ -f "$CMD_ENV_DUMP" ] && ok "provider=command ran GAFFER_WORKER_COMMAND" || fail "the command worker never ran"
+grep -qx "GAFFER_WORKER_PROMPT=the command prompt" "$CMD_ENV_DUMP" && grep -qx "GAFFER_WORKER_MODEL=stub-m" "$CMD_ENV_DUMP" \
+  && grep -qx "GAFFER_WORKER_MAX_TURNS=9" "$CMD_ENV_DUMP" && grep -qx "GAFFER_WORKER_MCP_CONFIG=$MCP" "$CMD_ENV_DUMP" \
+  && grep -qx "GAFFER_WORKER_CONTRACT=1" "$CMD_ENV_DUMP" && grep -qx "$CWD" "$CMD_ENV_DUMP" \
+  && ok "the contract reached the worker (prompt, model, turn cap, MCP config) in the call's cwd" \
+  || fail "contract env missing: $(grep '^GAFFER_WORKER_' "$CMD_ENV_DUMP" | cut -c1-80 | tr '\n' ' ')"
+grep -q '"gaffer_worker_provider":"command"' "$WORK/out.command.json" \
+  && ok "the parser adapter wrote the canonical envelope (stamped with the provider)" || fail "no canonical envelope: $(cat "$WORK/out.command.json")"
+[ "$(node "$RUNNER_DIR/lib/worker.mjs" parse-result spend --json-file "$WORK/out.command.json")" = '$0.2500' ] \
+  && [ "$(node "$RUNNER_DIR/lib/worker.mjs" parse-result num-turns --json-file "$WORK/out.command.json")" = 3 ] \
+  && [ "$(node "$RUNNER_DIR/lib/worker.mjs" parse-result result-text --json-file "$WORK/out.command.json")" = "cmd ok" ] \
+  && node "$RUNNER_DIR/lib/worker.mjs" parse-result stopreason-maxturns --json-file "$WORK/out.command.json" \
+  && ok "the bash cap/spend guards read it through the same parse-result CLI (spend, turns, text, cap hit)" \
+  || fail "parse-result could not read the command envelope"
+grep -q "WARNING: GAFFER_WORKER_PROVIDER=command with GAFFER_STRICT_REQUIRE=0" "$WORK/err.command" \
+  && ok "the out-of-band opt-out is logged loudly at the spawn" || fail "no opt-out warning at the spawn"
+
 echo "== model-flag emission is provider-indirected but claude-code is byte-identical =="
 GAFFER_WORKER_PROVIDER=claude-code
 [ "$(gaffer_model_flag opus)" = "--model opus" ] && ok "gaffer_model_flag opus → '--model opus' (claude-code)" \
@@ -129,6 +168,22 @@ env_has CLAUDE_CODE_SOMETHING && ok "claude-code keeps CLAUDE_* namespace (provi
 GAFFER_WORKER_PROVIDER=codex gaffer_agent_env
 env_has ANTHROPIC_API_KEY && fail "codex must NOT inherit ANTHROPIC_API_KEY (cross-provider leak)" \
   || ok "negative control: codex drops ANTHROPIC_API_KEY (provider-scoped auth surface)"
+# command: the claude-code surface is dropped; the names GAFFER_WORKER_COMMAND_ENV lists survive
+# the credential deny (the worker's own auth) except the runner-only secrets.
+export OTHER_MODEL_API_KEY="other-test-key" GITHUB_TOKEN="ghp-test" DISPATCH_API_TOKEN="dsp-test"
+GAFFER_WORKER_PROVIDER=command GAFFER_WORKER_COMMAND_ENV="OTHER_MODEL_API_KEY GITHUB_TOKEN DISPATCH_API_TOKEN" gaffer_agent_env
+env_has ANTHROPIC_API_KEY && fail "command must NOT inherit ANTHROPIC_API_KEY" || ok "command drops ANTHROPIC_API_KEY"
+env_has CLAUDE_CODE_SOMETHING && fail "command must NOT inherit CLAUDE_* vars" || ok "command drops the CLAUDE_* namespace"
+env_has OTHER_MODEL_API_KEY && ok "command keeps a name GAFFER_WORKER_COMMAND_ENV lists (survives the *_KEY deny)" \
+  || fail "command should pass OTHER_MODEL_API_KEY named in GAFFER_WORKER_COMMAND_ENV"
+{ env_has GITHUB_TOKEN || env_has DISPATCH_API_TOKEN; } && fail "command must never receive GITHUB_TOKEN / DISPATCH_API_TOKEN" \
+  || ok "command never receives the runner-only secrets, even when named"
+GAFFER_WORKER_PROVIDER=command GAFFER_WORKER_COMMAND_ENV="" gaffer_agent_env
+env_has OTHER_MODEL_API_KEY && fail "without GAFFER_WORKER_COMMAND_ENV the key must be scrubbed" || ok "unnamed credentials stay scrubbed for command"
+unset OTHER_MODEL_API_KEY GITHUB_TOKEN DISPATCH_API_TOKEN
+[ "$(GAFFER_WORKER_PROVIDER=command gaffer_model_flag opus)" = "--model opus" ] \
+  && ok "command: the model flag string is the seam's currency (read back as GAFFER_WORKER_MODEL)" \
+  || fail "command model flag changed (got '$(GAFFER_WORKER_PROVIDER=command gaffer_model_flag opus)')"
 
 echo "== PARITY: the safety-hook precondition still HARD-GATES the Claude path =="
 # The invariant this seam must never weaken: tick.sh refuses to run a live agent when the
@@ -156,6 +211,13 @@ grep -qE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WSH" \
 grep -qE 'gaffer_timeout "\$GAFFER_TICK_TIMEOUT"' "$WSH" \
   && ok "claude-code branch still runs under gaffer_timeout" \
   || fail "the gaffer_timeout wrapper vanished from the claude-code branch"
+# The command branch spawns under the SAME wrap + timeout + env -i scrub.
+N_TO="$(grep -cE 'gaffer_timeout "\$GAFFER_TICK_TIMEOUT" \$wrap' "$WSH" || true)"
+[ "$N_TO" = "2" ] && ok "both providers' spawns run under gaffer_timeout + the same \$wrap" \
+  || fail "expected 2 gaffer_timeout \$wrap spawns in lib/worker.sh (got $N_TO)"
+N_ENV="$(grep -cE 'env -i "\$\{GAFFER_AGENT_ENV\[@\]\}"' "$WSH" || true)"
+[ "$N_ENV" = "2" ] && ok "both providers' spawns run under the env -i allowlist scrub" \
+  || fail "expected 2 env -i allowlist spawns in lib/worker.sh (got $N_ENV)"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

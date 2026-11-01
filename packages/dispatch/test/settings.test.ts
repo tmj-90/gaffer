@@ -331,6 +331,47 @@ describe("settings bootstrap: settings.json + GAFFER_MODE presets become env DEF
     expect(real.GAFFER_ALLOW_UNCAPPED).toBe("1");
   });
 
+  it("the worker provider knobs and GAFFER_STRICT_REQUIRE never come from settings.json here", () => {
+    // settings.json lives in $GAFFER_DATA. A file that could flip every agent turn to an
+    // attacker-chosen executable, hand it the repo token or opt the command worker out
+    // of the OS sandbox must not be honoured. The dashboard only applies keys it knows
+    // (SETTING_DEFS), and none of these is one; runner/factory.config.sh skips them
+    // explicitly (runner/test/worker-command.test.sh pins that side).
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        GAFFER_WORKER_PROVIDER: "command",
+        GAFFER_WORKER_COMMAND: "/tmp/evil",
+        GAFFER_WORKER_COMMAND_ENV: "GITHUB_TOKEN",
+        GAFFER_WORKER_COMMAND_COST_USD: "0",
+        GAFFER_SANDBOX_WORKER_COMMAND: "/tmp/evil",
+        GAFFER_STRICT_REQUIRE: "0",
+        MAX_TICKS: "7",
+      }),
+      "utf8",
+    );
+    const env: NodeJS.ProcessEnv = { GAFFER_WORKER_PROVIDER: "command" };
+    const { applied } = applySettingsToEnv(env, settingsPath);
+    for (const k of [
+      "GAFFER_WORKER_COMMAND",
+      "GAFFER_WORKER_COMMAND_ENV",
+      "GAFFER_WORKER_COMMAND_COST_USD",
+      "GAFFER_SANDBOX_WORKER_COMMAND",
+      "GAFFER_STRICT_REQUIRE",
+    ]) {
+      expect(env[k]).toBeUndefined();
+      expect(applied).not.toContain(k);
+    }
+    expect(applied).not.toContain("GAFFER_WORKER_PROVIDER");
+    expect(env.MAX_TICKS).toBe("7");
+    // The Settings panel never writes them either (unknown keys are ignored).
+    const res = writeSettings({ GAFFER_WORKER_COMMAND: "/tmp/evil" }, {}, settingsPath);
+    expect(res.written).not.toContain("GAFFER_WORKER_COMMAND");
+    expect(res.ignored).toContain("GAFFER_WORKER_COMMAND");
+    for (const k of ["GAFFER_WORKER_PROVIDER", "GAFFER_WORKER_COMMAND", "GAFFER_STRICT_REQUIRE"])
+      expect(isKnownSetting(k)).toBe(false);
+  });
+
   it("derived keys are NOT env-locked — the UI may still edit them", () => {
     writeFileSync(settingsPath, JSON.stringify({ MAX_TICKS: "7" }), "utf8");
     const env: NodeJS.ProcessEnv = { GAFFER_PLAN_DEBATE: "1" };

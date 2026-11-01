@@ -93,7 +93,7 @@ if [ "$(uname -s)" != "Darwin" ]; then
 fi
 [ "$(gate GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0)" = 1 ] && ok "gate: nothing visible, Keychain declared empty → refuse (every OS)" \
   || fail "gate keychain seam: $(gate GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0)"
-for c in "DRY_RUN=1" "GAFFER_CLAUDE_AUTH_PROBE=0" "CLAUDE_BIN=/opt/wrapper/claude" "GAFFER_WORKER_PROVIDER=other" \
+for c in "DRY_RUN=1" "GAFFER_CLAUDE_AUTH_PROBE=0" "CLAUDE_BIN=/opt/wrapper/claude" "GAFFER_WORKER_PROVIDER=other" "GAFFER_WORKER_PROVIDER=command" \
          "ANTHROPIC_BASE_URL=http://gateway.invalid" "SANDBOX_PROVIDER=docker STRICT_MODE=1" "SANDBOX_PROVIDER=docker GAFFER_STRICT_REQUIRE=1"; do
   # shellcheck disable=SC2086
   [ "$(gate $c)" = 0 ] && ok "gate: $c → go ahead" || fail "gate $c: $(gate $c)"

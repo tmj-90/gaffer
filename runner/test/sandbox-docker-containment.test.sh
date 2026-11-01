@@ -13,8 +13,10 @@
 #                   token) / a sibling delivery worktree under $GAFFER_DATA are NOT readable,
 #                   while this call's own mcp-runtime file and the SQLite DB stay usable
 #   GIT_COMMIT_OK   the LINKED delivery worktree can `git status` + `git commit` inside
-#                   (its repo's .git is mounted ro with only the commit path rw; the
-#                   commit round-trips to the host), and .git/config stays read-only
+#                   (a private repository is mounted at its gitdir path; the host's
+#                   objects are read-only and its refs/config are not mounted; the
+#                   wrapper imports only the ticket branch afterwards, so the commit
+#                   round-trips while an `update-ref main` inside does not)
 #
 # CI-safe: with no docker daemon the whole gate SKIPS (exit 0) rather than failing, so the
 # bash suite stays green on machines/CI without docker. Where docker IS present it is a
@@ -75,6 +77,7 @@ echo "repo" > "$REPO/README"; git -C "$REPO" add -A; git -C "$REPO" commit -qm s
 WT="$GAFFER_DATA/worktrees/ticket-1"
 git -C "$REPO" worktree add -q -b gaffer/ticket-1 "$WT" main
 GIT_COMMON="$(cd "$REPO/.git" && pwd -P)"
+MAIN_BEFORE="$(git -C "$REPO" rev-parse main)"
 # What must NOT be visible inside: the dashboard's secrets, another worker's claim
 # token and a sibling delivery's worktree — all of them live in $GAFFER_DATA.
 printf '{"GAFFER_MODE":"autonomous","note":"TOPSECRET_SETTINGS"}\n' > "$GAFFER_DATA/settings.json"
@@ -116,7 +119,12 @@ PAYLOAD="
   # B25(c): the linked worktree's git metadata is mounted — status + commit work inside.
   if git -C '$WT' status >/dev/null 2>&1; then echo GIT_STATUS_OK; else echo GIT_STATUS_FAIL; fi
   if git -C '$WT' add canary >/dev/null 2>&1 && git -C '$WT' -c user.email=s@x -c user.name=s commit -qm sandbox-commit >/dev/null 2>&1; then echo GIT_COMMIT_OK; else echo GIT_COMMIT_FAIL; fi
-  if echo x >> '$GIT_COMMON/config' 2>/dev/null; then echo GITCONFIG_WRITABLE; else echo GITCONFIG_RO; fi
+  # External review #9: the host's .git is not mounted (only its objects, read-only), so
+  # its config and refs are unreachable; a ref written inside lands in the private repo.
+  if [ -f '$GIT_COMMON/config' ] && echo x >> '$GIT_COMMON/config' 2>/dev/null; then echo GITCONFIG_WRITABLE; else echo GITCONFIG_RO; fi
+  if [ -d '$GIT_COMMON/refs/heads' ] && touch '$GIT_COMMON/refs/heads/probe' 2>/dev/null; then echo HOSTREFS_WRITABLE; else echo HOSTREFS_UNREACHABLE; fi
+  if touch '$GIT_COMMON/objects/probe' 2>/dev/null; then echo HOSTOBJ_WRITABLE; else echo HOSTOBJ_RO; fi
+  git -C '$WT' update-ref refs/heads/main HEAD >/dev/null 2>&1 && echo MAIN_MOVED_INSIDE
   if cat '$WT/packages/evil/node_modules/.aws-credentials' 2>/dev/null | grep -q TOPSECRET; then echo DEPLINK_LEAK; else echo DEPLINK_ISOLATED; fi
   if grep -q LEGIT_DEP_CONTENT '$WT/node_modules/legit-dep/index.js' 2>/dev/null; then echo DEPLINK_OK; else echo DEPLINK_MISSING; fi
 "
@@ -129,23 +137,30 @@ echo "$OUT" | sed 's/^/    /'
 fail=0
 for want in READ_ISOLATED EGRESS_BLOCKED RAWIP_BLOCKED WRITE_OK NNP_SET CAPS_DROPPED \
             DATA_MASKED OWN_MCP_OK DB_RW_OK GIT_STATUS_OK GIT_COMMIT_OK GITCONFIG_RO \
-            DEPLINK_ISOLATED DEPLINK_OK; do
+            HOSTREFS_UNREACHABLE HOSTOBJ_RO DEPLINK_ISOLATED DEPLINK_OK; do
   if echo "$OUT" | grep -q "$want"; then echo "  ok   $want"; else echo "  FAIL expected $want"; fail=1; fi
 done
 for bad in READ_LEAK EGRESS_LEAK RAWIP_LEAK WRITE_FAIL NNP_UNSET CAPS_KEPT \
            DATA_LEAK OWN_MCP_MISSING DB_RW_FAIL GIT_STATUS_FAIL GIT_COMMIT_FAIL GITCONFIG_WRITABLE \
-           DEPLINK_LEAK DEPLINK_MISSING; do
+           HOSTREFS_WRITABLE HOSTOBJ_WRITABLE DEPLINK_LEAK DEPLINK_MISSING; do
   if echo "$OUT" | grep -q "$bad"; then echo "  FAIL saw $bad"; fail=1; fi
 done
 # The refused link is named in a WARNING (never mounted silently, never fails open).
 if echo "$OUT" | grep -qF "symlink $WT/packages/evil/node_modules"; then echo "  ok   the repository's external node_modules link was refused with a WARNING"; else echo "  FAIL no warning for the external node_modules link"; fail=1; fi
 # The write must have actually landed on the host worktree (proves the rw mount round-trips).
 if [ -f "$WT/canary" ]; then echo "  ok   worktree write round-tripped to host"; else echo "  FAIL canary not on host"; fail=1; fi
-# The commit made INSIDE must be on the host repo's branch (the .git mounts round-trip).
+# The commit made INSIDE must be on the host repo's branch: the wrapper imports the
+# worktree's own branch from the private repository when the container exits.
 if git -C "$REPO" log --oneline gaffer/ticket-1 2>/dev/null | grep -q sandbox-commit; then
   echo "  ok   in-container commit round-tripped to the host repo branch"
 else
   echo "  FAIL in-container commit not on the host branch"; fail=1
+fi
+# ...and NOTHING else: the `update-ref main` the payload ran inside stayed private.
+if [ "$(git -C "$REPO" rev-parse main)" = "$MAIN_BEFORE" ]; then
+  echo "  ok   host main did not move (a ref written inside stays in the private repo)"
+else
+  echo "  FAIL host main moved from inside the container"; fail=1
 fi
 # And the host's canonical settings.json was not touched by the mask.
 grep -q TOPSECRET_SETTINGS "$GAFFER_DATA/settings.json" && echo "  ok   host settings.json intact after masking" || { echo "  FAIL host settings.json damaged"; fail=1; }

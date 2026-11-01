@@ -1,4 +1,5 @@
-# Gaffer worker seam — the ONE headless `claude -p` invocation for the bash runner.
+# Gaffer worker seam — the ONE headless worker invocation (`claude -p`, or the
+# command provider's program) for the bash runner.
 # shellcheck shell=bash
 _GAFFER_WORKER_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
@@ -29,24 +30,31 @@ _GAFFER_WORKER_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # invocation seam still only produces $out_json + $?; the parsing of that capture
 # now flows through the ONE worker-owned parser instead of open-coded node scripts.
 #
-# Phase 3 (this file) — PROVIDER DISPATCH (SEAM ONLY, honest fail-closed stubs).
+# Phase 3 — PROVIDER DISPATCH. Two real providers, everything else fails closed.
 # ------------------------------------------------------------------------------
-# worker_deliver now dispatches on $GAFFER_WORKER_PROVIDER exactly the way
-# lib/sandbox.sh dispatches on $SANDBOX_PROVIDER: a `case` with one real branch
-# and honest stubs for the rest. The default provider is `claude-code`, whose
-# branch is BYTE-IDENTICAL to the pre-Phase-3 invocation (the correctness
-# invariant the delivery/e2e/decompose suites pin). Any OTHER provider
-# (`codex`, `local`, …) is a stub that FAILS CLOSED: it refuses to run, returns
-# non-zero, and writes NO envelope — it never spawns an agent.
+# worker_deliver dispatches on $GAFFER_WORKER_PROVIDER the way lib/sandbox.sh
+# dispatches on $SANDBOX_PROVIDER:
+#   • claude-code (default): BYTE-IDENTICAL to the pre-Phase-3 invocation (the
+#     correctness invariant the delivery/e2e/decompose suites pin).
+#   • command: an operator-supplied program ($GAFFER_WORKER_COMMAND) under the
+#     contract in docs/worker-providers.md. Same budget admission, same agent-env
+#     scrub, same $wrap derivation, same timeout, same MCP bridge; the program gets
+#     the call's inputs as GAFFER_WORKER_* variables and prints a small JSON envelope,
+#     which lib/worker.mjs normalizeCommandEnvelope turns into the canonical shape
+#     every downstream reader (parseResult, the ledger, the cap/spend guards) consumes.
+#   • anything else (`codex`, `local`, …) refuses: rc 70, NO envelope, no spawn.
 #
-# WHY FAIL CLOSED rather than degrade (the load-bearing safety reason): the
-# PreToolUse containment hook is Claude-Code-native (safety-hook.mjs runs
-# in-process inside `claude -p`). A non-Claude worker has NO equivalent
-# in-process boundary, so running one would put an agent with a shell on the host
-# with no containment. Until a real OS-sandbox provider exists we refuse rather
-# than run blind. sandbox.sh can degrade to "no extra OS wrapping" because the
-# safety hook still applies there; the WORKER seam cannot, because the missing
-# piece IS the safety hook. See SECURITY.md ("worker provider containment").
+# CONTAINMENT (the load-bearing safety reason): the PreToolUse safety hook is
+# native to claude-code (safety-hook.mjs runs in-process inside `claude -p`). A command
+# worker has NO equivalent in-process boundary, so its containment has to come from
+# the OS: launching one REQUIRES an active sandbox wrap (docker, or sandbox-exec on
+# macOS) and refuses with rc 75 when none is available, whatever GAFFER_STRICT_REQUIRE
+# says. The one exception is an explicit GAFFER_STRICT_REQUIRE=0, the operator's
+# assertion that the whole runner is contained out-of-band (a VM or container): the
+# worker then runs, with a loud WARNING at every spawn. sandbox.sh can degrade to "no
+# extra OS wrapping" for claude-code because the safety hook still applies there; the
+# command provider cannot, because the missing piece IS the safety hook. See
+# SECURITY.md ("worker provider containment").
 #
 # INTERFACE  {prompt, model, env, mcpConfig, cwd, timeout, maxTurns}
 #   $1 cwd        interface: cwd       — run the agent in this directory
@@ -78,11 +86,51 @@ _GAFFER_WORKER_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #     (resultText / usage / capHit / stopReason are DERIVED from $out_json by
 #      lib/worker.mjs's parseResult — the ONE Phase-2 parser seam; the bash guards
 #      call its `parse-result` CLI rather than re-parsing the envelope themselves).
-# The honest fail-closed message a non-Claude provider stub emits. Shared word-for-word
+# The honest fail-closed message an unknown provider emits. Shared word-for-word
 # with the mjs seam (lib/worker.mjs unsupportedProviderMessage) so both runtimes speak
 # with one voice; the provider-stub tests pin this string.
 _gaffer_worker_unsupported_msg() {
   printf 'worker provider %s not yet supported; safety-hook containment unavailable\n' "$1"
+}
+
+# ── The command provider (GAFFER_WORKER_PROVIDER=command) ─────────────────────
+# The runner runs an operator-supplied program instead of `claude -p`, under the
+# contract in docs/worker-providers.md (shared word for word with lib/worker.mjs).
+# These messages are the mjs seam's too (commandSandboxRefusalMessage /
+# commandOptOutWarning / commandWorkerConfig), so both runtimes speak with one voice.
+_gaffer_worker_command_refusal_msg() {
+  printf '%s\n' "worker: GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs an OS sandbox and none is available on this host — refusing to spawn the worker (fail closed). Fix: set SANDBOX_PROVIDER=docker with a running docker daemon (or SANDBOX_PROVIDER=sandbox-exec on macOS), or set GAFFER_STRICT_REQUIRE=0 if you contain the whole runner out-of-band (a VM or container)"
+}
+_gaffer_worker_command_optout_msg() {
+  printf '%s\n' "WARNING: GAFFER_WORKER_PROVIDER=command with GAFFER_STRICT_REQUIRE=0 — the command worker runs with no OS sandbox requirement and no in-process safety hook. Only safe if you contain the runner out-of-band (a VM or container)."
+}
+# _gaffer_worker_command_bin → prints $GAFFER_WORKER_COMMAND when it is an absolute
+# path to an executable file; else prints the refusal to stderr and returns 1.
+_gaffer_worker_command_bin() {
+  local cmd="${GAFFER_WORKER_COMMAND:-}" why=""
+  local fix="set GAFFER_WORKER_COMMAND to the absolute path of an executable worker program (docs/worker-providers.md)"
+  if [ -z "$cmd" ]; then why="GAFFER_WORKER_COMMAND is not set"
+  else
+    case "$cmd" in
+      /*) { [ -f "$cmd" ] && [ -x "$cmd" ]; } || why="GAFFER_WORKER_COMMAND=$cmd is not an executable file" ;;
+      *) why="GAFFER_WORKER_COMMAND=$cmd is not an absolute path" ;;
+    esac
+  fi
+  if [ -n "$why" ]; then
+    printf 'worker provider command: %s; %s — no agent spawned\n' "$why" "$fix" >&2
+    return 1
+  fi
+  printf '%s' "$cmd"
+}
+# True only for an EXPLICIT GAFFER_STRICT_REQUIRE=0|false|no|off — the operator's
+# assertion that the runner is contained out-of-band. Unset, empty or anything else
+# keeps the command provider's sandbox requirement.
+_gaffer_strict_require_opted_out() {
+  [ -n "${GAFFER_STRICT_REQUIRE+x}" ] || return 1
+  case "$(printf '%s' "$GAFFER_STRICT_REQUIRE" | tr '[:upper:]' '[:lower:]')" in
+    0 | false | no | off) return 0 ;;
+  esac
+  return 1
 }
 
 # True when the OS sandbox is ON (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE).
@@ -168,159 +216,244 @@ worker_deliver() {
   WORKER_LAST_MODEL="$(gaffer_model_from_flag "$model_flag")"
   [ -n "$WORKER_LAST_MODEL" ] || WORKER_LAST_MODEL="default"
   WORKER_LAST_CLAUDE_VERSION=""
+  WORKER_LAST_PROVIDER="${GAFFER_WORKER_PROVIDER:-claude-code}"
   # The MCP config the AGENT is handed. Under the docker provider with the bridge on,
   # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
   # real servers — and their env, including the claim token — run host-side in `serve`.
   local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _bridge_dir="" _rc=0
-  case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
-    claude-code)
-      # ── BUDGET ADMISSION (external review #6): the ONE check before EVERY paid launch
-      # (lib/budget.sh → lib/budget-admission.mjs, shared with the Node seam). Daily or
-      # lifetime budget exhausted, or the spend unknowable with a cap set ⇒ NO spawn:
-      # rc 77, empty envelope, nothing booked. GAFFER_LAUNCH_KIND names the launcher.
-      # If budget.sh was not sourced, load the sibling copy; if the check still cannot
-      # be asked, the launch is refused (fail closed), never waved through.
-      if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 && [ -f "$_GAFFER_WORKER_LIB/budget.sh" ]; then
-        # shellcheck source=budget.sh
-        . "$_GAFFER_WORKER_LIB/budget.sh"
-      fi
-      if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
-         || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}"; then
+  # ── PROVIDER DISPATCH: claude-code and command are real; anything else refuses. ──
+  local _provider="$WORKER_LAST_PROVIDER" _cmd_bin=""
+  case "$_provider" in
+    claude-code) ;;
+    command)
+      # The operator's worker program. A missing / relative / non-executable path is a
+      # configuration error: refuse (rc 70, no envelope), never guess.
+      if ! _cmd_bin="$(_gaffer_worker_command_bin)"; then
         : > "$out_json"
-        printf 'worker: budget admission refused the paid %s launch — no agent spawned\n' "${GAFFER_LAUNCH_KIND:-worker}" >&2
-        WORKER_LAST_BUDGET_REFUSED=1
-        return 77
+        return 70
       fi
-      # ── The real provider — BYTE-IDENTICAL to the pre-Phase-3 invocation. ──
-      # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).
-      # Populated here so the scrub is byte-identical for every site (each site called
-      # gaffer_agent_env immediately before its invocation previously).
-      gaffer_agent_env
-      # ── OS-sandbox containment AT THE SEAM (every spawn site, not just delivery) ──
-      # Before this, only tick.sh's delivery spawn passed a $wrap; the bootstrap,
-      # reviewer, clarify and eval-judge spawns ran bare even under STRICT_MODE=1 —
-      # and the reviewer reads an UNTRUSTED diff with a shell. When the sandbox is ON
-      # (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE, auto-set by every autonomy
-      # flag) and the caller passed no wrap, derive it here from the per-call boundary
-      # vars (GAFFER_WRITE_ROOTS / GAFFER_READ_ROOTS in WORKER_CALL_ENV; the cwd is the
-      # write root when none is named). FAIL CLOSED: a required sandbox that the host
-      # cannot supply means NO spawn — rc 75, empty envelope — never a silent bare run.
-      # With the sandbox off this block is inert and the invocation is byte-identical.
-      if [ -z "$wrap" ] && _worker_sandbox_wanted; then
-        local _wr="" _rr="" _kv
-        for _kv in ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"}; do
-          case "$_kv" in
-            GAFFER_WRITE_ROOTS=*) _wr="${_kv#GAFFER_WRITE_ROOTS=}" ;;
-            GAFFER_READ_ROOTS=*)  _rr="${_kv#GAFFER_READ_ROOTS=}" ;;
-          esac
-        done
-        [ -n "$_wr" ] || _wr="$cwd"
-        if ! wrap="$(sandbox_wrap_cmd "$_wr" "$_rr" 2>>"$GAFFER_LOG")"; then
-          : > "$out_json"
-          printf 'worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)\n' >&2
-          return 75
-        fi
-      fi
-      # Inside the `docker` provider the HOST's claude binary path / HOME / PATH do not
-      # exist — the image ships `claude` on its own PATH and root's HOME is /root (where
-      # the credentials file is mounted). Substitute ONLY when a docker wrap is active;
-      # the per-call env layers on top of the allowlist, so these win over host values.
-      local _sbx_claude_bin="$CLAUDE_BIN" _sbx_env=()
-      WORKER_LAST_CLAUDE_VERSION="$(gaffer_claude_version "$CLAUDE_BIN")"
-      if [ -n "$wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
-        _sbx_claude_bin="${GAFFER_SANDBOX_CLAUDE_BIN:-claude}"
-        # The image's CLI, not the host's: unknown unless the operator pinned it.
-        WORKER_LAST_CLAUDE_VERSION="${GAFFER_CLAUDE_VERSION:-unknown (sandbox image)}"
-        _sbx_env=( "HOME=${GAFFER_SANDBOX_HOME:-/root}"
-                   "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
-        # ── MCP DATA PLANE ON THE HOST (external review, finding 2) ──────────────
-        # The dispatch/memory MCP servers used to run INSIDE the container and write
-        # the canonical SQLite files, which forced $GAFFER_DATA to be mounted rw.
-        # Now `mcp-bridge.mjs serve` runs them here, on the host, from the rendered
-        # runtime config (with its env + claim token), listening on a per-spawn unix
-        # socket; the container gets a bridged config whose servers are
-        # `mcp-bridge.mjs connect` over that socket. sandbox-docker.sh (reading
-        # GAFFER_MCP_BRIDGE_SOCKET) then mounts the socket instead of $GAFFER_DATA.
-        # FAIL CLOSED: if the bridge cannot be rendered or does not come up, no spawn.
-        if _worker_mcp_bridge_on && [ -n "$mcp_config" ] && [ -f "$mcp_config" ]; then
-          # The socket lives in a SHORT private dir, not under $GAFFER_DATA: a unix socket
-          # path is capped at 104 bytes on macOS (108 on Linux) and a data dir under a
-          # deep path (macOS TMPDIR, a nested checkout) pushed it over — `serve` could
-          # not listen and every spawn was refused. /tmp/gaffer-mcp.XXXXXX is mode 700.
-          _bridge_dir="$(mktemp -d /tmp/gaffer-mcp.XXXXXX 2>/dev/null)" || {
-            : > "$out_json"
-            printf 'worker: mcp bridge: could not create a private socket dir under /tmp — refusing to spawn the agent (fail closed)\n' >&2
-            return 76
-          }
-          _bridge_sock="$_bridge_dir/b.sock"
-          _mcp_for_agent="${mcp_config%.json}.bridge.json"
-          if ! node "$RUNNER_DIR/lib/mcp-bridge.mjs" render --config "$mcp_config" --out "$_mcp_for_agent" \
-                 --socket "$_bridge_sock" --bridge "$RUNNER_DIR/lib/mcp-bridge.mjs" 2>>"$GAFFER_LOG"; then
-            rm -rf "$_bridge_dir"
-            : > "$out_json"
-            printf 'worker: mcp bridge: could not render the bridged MCP config from %s — refusing to spawn the agent (fail closed)\n' "$mcp_config" >&2
-            return 76
-          fi
-          # An EMPTY data plane (a config with no servers, e.g. `{}`) needs no bridge:
-          # hand the original config through and tell the wrapper there is no data
-          # plane to mount (GAFFER_SANDBOX_DATA_PLANE=none ⇒ $GAFFER_DATA stays out).
-          local _nsrv
-          _nsrv="$(node -e 'const c=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Object.keys(c.mcpServers||{}).length))' "$_mcp_for_agent" 2>/dev/null || echo 0)"
-          if [ "${_nsrv:-0}" -eq 0 ] 2>/dev/null; then
-            rm -f "$_mcp_for_agent"; _mcp_for_agent="$mcp_config"; _bridge_sock=""
-            rmdir "$_bridge_dir" 2>/dev/null || true; _bridge_dir=""
-            unset GAFFER_MCP_BRIDGE_SOCKET
-            export GAFFER_SANDBOX_DATA_PLANE=none
-          else
-            node "$RUNNER_DIR/lib/mcp-bridge.mjs" serve --socket "$_bridge_sock" --config "$mcp_config" >>"$GAFFER_LOG" 2>&1 &
-            _bridge_pid=$!
-            local _bw=0
-            while [ ! -S "$_bridge_sock" ] && [ "$_bw" -lt 100 ]; do sleep 0.05; _bw=$((_bw + 1)); done
-            if [ ! -S "$_bridge_sock" ]; then
-              kill "$_bridge_pid" 2>/dev/null || true
-              rm -f "$_mcp_for_agent"; rm -rf "$_bridge_dir"
-              : > "$out_json"
-              printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
-              return 76
-            fi
-            unset GAFFER_SANDBOX_DATA_PLANE
-            export GAFFER_MCP_BRIDGE_SOCKET="$_bridge_sock"
-          fi
-        else
-          unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
-        fi
-      fi
-      # CLAUDE_BIN is rebound INSIDE the invocation subshell only (the docker case above
-      # swaps in the image's binary; otherwise it is unchanged), so the single pinned
-      # invocation site below stays exactly where the seam tests look for it.
-      local _t0=$SECONDS
-      ( cd "$cwd" && CLAUDE_BIN="$_sbx_claude_bin" \
-        && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
-           env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" ${_sbx_env[@]+"${_sbx_env[@]}"} \
-             "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$_mcp_for_agent" $CLAUDE_FLAGS $model_flag $_turns_flag ${_extra[@]+"${_extra[@]}"} \
-      ) >"$out_json" 2>>"$GAFFER_LOG"
-      _rc=$?
-      WORKER_LAST_ELAPSED_MS=$(( (SECONDS - _t0) * 1000 ))
-      # Tear the bridge down with the agent: the host-side servers exit with their
-      # connections; the socket + the bridged config (token-free, but per-spawn) go too.
-      if [ -n "$_bridge_pid" ]; then
-        kill "$_bridge_pid" 2>/dev/null || true
-        wait "$_bridge_pid" 2>/dev/null || true
-        rm -f "$_bridge_sock" "$_mcp_for_agent" 2>/dev/null || true
-      fi
-      [ -n "$_bridge_dir" ] && rm -rf "$_bridge_dir" 2>/dev/null || true
-      unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
-      return "$_rc"
       ;;
     *)
-      # ── codex / local / any non-Claude provider — honest stub, FAIL CLOSED. ──
-      # No execution: a non-Claude worker has no in-process safety hook, so we
-      # refuse rather than run an agent with a shell and no containment. Write NO
-      # envelope (empty capture → parseResult reads "unknown", never a fake 0) and
-      # return non-zero so the caller's existing error path treats it as a failure.
+      # ── codex / local / any other value — honest stub, FAIL CLOSED. ──
+      # No execution: a worker the runner has no contract for has no containment it
+      # can rely on. Write NO envelope (empty capture → parseResult reads "unknown",
+      # never a fake 0) and return non-zero so the caller's error path fires.
       : > "$out_json"
       _gaffer_worker_unsupported_msg "${GAFFER_WORKER_PROVIDER:-}" >&2
       return 70
       ;;
   esac
+  # ── BUDGET ADMISSION (external review #6): the ONE check before EVERY paid launch
+  # (lib/budget.sh → lib/budget-admission.mjs, shared with the Node seam), for every
+  # provider. Daily or lifetime budget exhausted, or the spend unknowable with a cap
+  # set ⇒ NO spawn: rc 77, empty envelope, nothing booked. GAFFER_LAUNCH_KIND names
+  # the launcher. If budget.sh was not sourced, load the sibling copy; if the check
+  # still cannot be asked, the launch is refused (fail closed), never waved through.
+  if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 && [ -f "$_GAFFER_WORKER_LIB/budget.sh" ]; then
+    # shellcheck source=budget.sh
+    . "$_GAFFER_WORKER_LIB/budget.sh"
+  fi
+  if ! declare -F gaffer_paid_launch_admitted >/dev/null 2>&1 \
+     || ! gaffer_paid_launch_admitted "${GAFFER_LAUNCH_KIND:-worker}"; then
+    : > "$out_json"
+    printf 'worker: budget admission refused the paid %s launch — no agent spawned\n' "${GAFFER_LAUNCH_KIND:-worker}" >&2
+    WORKER_LAST_BUDGET_REFUSED=1
+    return 77
+  fi
+  # C1/M2: strip ambient credentials from the live agent's env (allowlist via env -i).
+  # Populated here so the scrub is byte-identical for every site (each site called
+  # gaffer_agent_env immediately before its invocation previously). The allowlist is
+  # provider-indirected (factory.config.sh): the command worker gets the agnostic base
+  # plus the names GAFFER_WORKER_COMMAND_ENV lists, never the claude-code auth surface.
+  gaffer_agent_env
+  # ── OS-sandbox containment AT THE SEAM (every spawn site, not just delivery) ──
+  # Before this, only tick.sh's delivery spawn passed a $wrap; the bootstrap,
+  # reviewer, clarify and eval-judge spawns ran bare even under STRICT_MODE=1 —
+  # and the reviewer reads an UNTRUSTED diff with a shell. When the sandbox is ON
+  # (STRICT_MODE=1) or REQUIRED (GAFFER_STRICT_REQUIRE, auto-set by every autonomy
+  # flag) and the caller passed no wrap, derive it here from the per-call boundary
+  # vars (GAFFER_WRITE_ROOTS / GAFFER_READ_ROOTS in WORKER_CALL_ENV; the cwd is the
+  # write root when none is named). FAIL CLOSED: a required sandbox that the host
+  # cannot supply means NO spawn — rc 75, empty envelope — never a silent bare run.
+  # With the sandbox off this block is inert and the invocation is byte-identical.
+  #
+  # THE COMMAND PROVIDER has no in-process safety hook (that lives inside `claude -p`),
+  # so for it the sandbox is ALWAYS required, whatever GAFFER_STRICT_REQUIRE says —
+  # unless the operator set GAFFER_STRICT_REQUIRE=0 explicitly to assert out-of-band
+  # containment: then it runs, logged loudly here at every spawn, and is wrapped only
+  # when STRICT_MODE=1 asks for it (degrading like claude-code does).
+  local _cmd_needs_wrap=0
+  if [ "$_provider" = command ]; then
+    if _gaffer_strict_require_opted_out; then
+      _gaffer_worker_command_optout_msg >&2
+    else
+      _cmd_needs_wrap=1
+    fi
+  fi
+  if [ -z "$wrap" ] && { [ "$_cmd_needs_wrap" = 1 ] || _worker_sandbox_wanted; }; then
+    local _wr="" _rr="" _kv _wrap_ok=1
+    for _kv in ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"}; do
+      case "$_kv" in
+        GAFFER_WRITE_ROOTS=*) _wr="${_kv#GAFFER_WRITE_ROOTS=}" ;;
+        GAFFER_READ_ROOTS=*)  _rr="${_kv#GAFFER_READ_ROOTS=}" ;;
+      esac
+    done
+    [ -n "$_wr" ] || _wr="$cwd"
+    if [ "$_cmd_needs_wrap" = 1 ]; then
+      wrap="$(GAFFER_STRICT_REQUIRE=1 sandbox_wrap_cmd "$_wr" "$_rr" 2>>"$GAFFER_LOG")" || _wrap_ok=0
+    else
+      wrap="$(sandbox_wrap_cmd "$_wr" "$_rr" 2>>"$GAFFER_LOG")" || _wrap_ok=0
+    fi
+    if [ "$_wrap_ok" = 0 ] && [ "$_cmd_needs_wrap" = 0 ]; then
+      : > "$out_json"
+      printf 'worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)\n' >&2
+      return 75
+    fi
+    [ "$_wrap_ok" = 1 ] || wrap=""
+  fi
+  if [ "$_cmd_needs_wrap" = 1 ] && [ -z "$wrap" ]; then
+    : > "$out_json"
+    _gaffer_worker_command_refusal_msg >&2
+    return 75
+  fi
+  # Inside the `docker` provider the HOST's claude binary path / HOME / PATH do not
+  # exist — the image ships `claude` on its own PATH and root's HOME is /root (where
+  # the credentials file is mounted). Substitute ONLY when a docker wrap is active;
+  # the per-call env layers on top of the allowlist, so these win over host values.
+  # A command worker's program is the same path inside the container (the runner dir
+  # and the write roots are mounted there) unless GAFFER_SANDBOX_WORKER_COMMAND names
+  # where the image keeps it.
+  local _sbx_claude_bin="$CLAUDE_BIN" _sbx_env=() _cmd_run="$_cmd_bin"
+  [ "$_provider" = claude-code ] && WORKER_LAST_CLAUDE_VERSION="$(gaffer_claude_version "$CLAUDE_BIN")"
+  if [ -n "$wrap" ] && [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ]; then
+    if [ "$_provider" = claude-code ]; then
+      _sbx_claude_bin="${GAFFER_SANDBOX_CLAUDE_BIN:-claude}"
+      # The image's CLI, not the host's: unknown unless the operator pinned it.
+      WORKER_LAST_CLAUDE_VERSION="${GAFFER_CLAUDE_VERSION:-unknown (sandbox image)}"
+    else
+      _cmd_run="${GAFFER_SANDBOX_WORKER_COMMAND:-$_cmd_bin}"
+    fi
+    _sbx_env=( "HOME=${GAFFER_SANDBOX_HOME:-/root}"
+               "PATH=${GAFFER_SANDBOX_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}" )
+    # ── MCP DATA PLANE ON THE HOST (external review, finding 2) ──────────────
+    # The dispatch/memory MCP servers used to run INSIDE the container and write
+    # the canonical SQLite files, which forced $GAFFER_DATA to be mounted rw.
+    # Now `mcp-bridge.mjs serve` runs them here, on the host, from the rendered
+    # runtime config (with its env + claim token), listening on a per-spawn unix
+    # socket; the container gets a bridged config whose servers are
+    # `mcp-bridge.mjs connect` over that socket. sandbox-docker.sh (reading
+    # GAFFER_MCP_BRIDGE_SOCKET) then mounts the socket instead of $GAFFER_DATA.
+    # FAIL CLOSED: if the bridge cannot be rendered or does not come up, no spawn.
+    if _worker_mcp_bridge_on && [ -n "$mcp_config" ] && [ -f "$mcp_config" ]; then
+      # The socket lives in a SHORT private dir, not under $GAFFER_DATA: a unix socket
+      # path is capped at 104 bytes on macOS (108 on Linux) and a data dir under a
+      # deep path (macOS TMPDIR, a nested checkout) pushed it over — `serve` could
+      # not listen and every spawn was refused. /tmp/gaffer-mcp.XXXXXX is mode 700.
+      _bridge_dir="$(mktemp -d /tmp/gaffer-mcp.XXXXXX 2>/dev/null)" || {
+        : > "$out_json"
+        printf 'worker: mcp bridge: could not create a private socket dir under /tmp — refusing to spawn the agent (fail closed)\n' >&2
+        return 76
+      }
+      _bridge_sock="$_bridge_dir/b.sock"
+      _mcp_for_agent="${mcp_config%.json}.bridge.json"
+      if ! node "$RUNNER_DIR/lib/mcp-bridge.mjs" render --config "$mcp_config" --out "$_mcp_for_agent" \
+             --socket "$_bridge_sock" --bridge "$RUNNER_DIR/lib/mcp-bridge.mjs" 2>>"$GAFFER_LOG"; then
+        rm -rf "$_bridge_dir"
+        : > "$out_json"
+        printf 'worker: mcp bridge: could not render the bridged MCP config from %s — refusing to spawn the agent (fail closed)\n' "$mcp_config" >&2
+        return 76
+      fi
+      # An EMPTY data plane (a config with no servers, e.g. `{}`) needs no bridge:
+      # hand the original config through and tell the wrapper there is no data
+      # plane to mount (GAFFER_SANDBOX_DATA_PLANE=none ⇒ $GAFFER_DATA stays out).
+      local _nsrv
+      _nsrv="$(node -e 'const c=JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Object.keys(c.mcpServers||{}).length))' "$_mcp_for_agent" 2>/dev/null || echo 0)"
+      if [ "${_nsrv:-0}" -eq 0 ] 2>/dev/null; then
+        rm -f "$_mcp_for_agent"; _mcp_for_agent="$mcp_config"; _bridge_sock=""
+        rmdir "$_bridge_dir" 2>/dev/null || true; _bridge_dir=""
+        unset GAFFER_MCP_BRIDGE_SOCKET
+        export GAFFER_SANDBOX_DATA_PLANE=none
+      else
+        node "$RUNNER_DIR/lib/mcp-bridge.mjs" serve --socket "$_bridge_sock" --config "$mcp_config" >>"$GAFFER_LOG" 2>&1 &
+        _bridge_pid=$!
+        local _bw=0
+        while [ ! -S "$_bridge_sock" ] && [ "$_bw" -lt 100 ]; do sleep 0.05; _bw=$((_bw + 1)); done
+        if [ ! -S "$_bridge_sock" ]; then
+          kill "$_bridge_pid" 2>/dev/null || true
+          rm -f "$_mcp_for_agent"; rm -rf "$_bridge_dir"
+          : > "$out_json"
+          printf 'worker: mcp bridge did not start on %s — refusing to spawn the agent (fail closed)\n' "$_bridge_sock" >&2
+          return 76
+        fi
+        unset GAFFER_SANDBOX_DATA_PLANE
+        export GAFFER_MCP_BRIDGE_SOCKET="$_bridge_sock"
+      fi
+    else
+      unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
+    fi
+  fi
+  local _t0=$SECONDS
+  if [ "$_provider" = claude-code ]; then
+    # CLAUDE_BIN is rebound INSIDE the invocation subshell only (the docker case above
+    # swaps in the image's binary; otherwise it is unchanged), so the single pinned
+    # invocation site below stays exactly where the seam tests look for it.
+    ( cd "$cwd" && CLAUDE_BIN="$_sbx_claude_bin" \
+      && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
+         env -i "${GAFFER_AGENT_ENV[@]}" "${WORKER_CALL_ENV[@]}" ${_sbx_env[@]+"${_sbx_env[@]}"} \
+           "$CLAUDE_BIN" -p "$prompt" --output-format json --mcp-config "$_mcp_for_agent" $CLAUDE_FLAGS $model_flag $_turns_flag ${_extra[@]+"${_extra[@]}"} \
+    ) >"$out_json" 2>>"$GAFFER_LOG"
+    _rc=$?
+  else
+    # ── THE COMMAND WORKER: the same wrap, timeout and scrubbed env as claude-code; the
+    # program gets no arguments, the call's inputs ride the GAFFER_WORKER_* contract
+    # (docs/worker-providers.md). CLAUDE_FLAGS belong to the claude CLI and are not passed.
+    local _c_model="$WORKER_LAST_MODEL" _c_turns="" _c_budget="" _c_tools="all" _i
+    [ "$_c_model" = default ] && _c_model=""
+    case "$_turns_flag" in "--max-turns "*) _c_turns="${_turns_flag#--max-turns }" ;; esac
+    case "$_c_turns" in '' | *[!0-9]*) _c_turns="" ;; esac
+    _i=0
+    while [ "$_i" -lt "${#_extra[@]}" ]; do
+      case "${_extra[$_i]}" in
+        --max-budget-usd) _c_budget="${_extra[$((_i + 1))]:-}"; _i=$((_i + 1)) ;;
+        --tools) [ -z "${_extra[$((_i + 1))]:-}" ] && _c_tools="none"; _i=$((_i + 1)) ;;
+      esac
+      _i=$((_i + 1))
+    done
+    local _cmd_env=(
+      "GAFFER_WORKER_CONTRACT=1" "GAFFER_WORKER_PROMPT=$prompt" "GAFFER_WORKER_MCP_CONFIG=$_mcp_for_agent"
+      "GAFFER_WORKER_MODEL=$_c_model" "GAFFER_WORKER_MAX_TURNS=$_c_turns" "GAFFER_WORKER_MAX_BUDGET_USD=$_c_budget"
+      "GAFFER_WORKER_TOOLS=$_c_tools" "GAFFER_WORKER_ALLOWED_TOOLS=" "GAFFER_WORKER_DISALLOWED_TOOLS="
+      "GAFFER_WORKER_KIND=${GAFFER_LAUNCH_KIND:-worker}" "GAFFER_WORKER_TIMEOUT_SECS=${GAFFER_TICK_TIMEOUT:-}"
+    )
+    ( cd "$cwd" \
+      && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
+         env -i "${GAFFER_AGENT_ENV[@]}" ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"} ${_sbx_env[@]+"${_sbx_env[@]}"} "${_cmd_env[@]}" \
+           "$_cmd_run" </dev/null \
+    ) >"$out_json.raw" 2>>"$GAFFER_LOG"
+    _rc=$?
+    # The parser adapter (lib/worker.mjs normalizeCommandEnvelope): $out_json gets the
+    # canonical envelope every downstream reader already consumes, or stays empty when
+    # the worker printed no JSON object (the ledger then books a conservative estimate).
+    node "$_GAFFER_WORKER_LIB/worker.mjs" normalize-command-envelope --in "$out_json.raw" --out "$out_json" 2>>"$GAFFER_LOG" \
+      || : > "$out_json"
+    rm -f "$out_json.raw"
+    # The runner's own refusal codes cannot come from the worker: a worker that exits
+    # with one is a failed call, never "the budget refused" or "no sandbox".
+    case "$_rc" in
+      70 | 75 | 76 | 77)
+        printf 'worker: the command worker exited %s, a code the runner reserves for its own refusals; recording it as a failed call (exit 1)\n' "$_rc" >>"$GAFFER_LOG"
+        _rc=1 ;;
+    esac
+  fi
+  WORKER_LAST_ELAPSED_MS=$(( (SECONDS - _t0) * 1000 ))
+  # Tear the bridge down with the agent: the host-side servers exit with their
+  # connections; the socket + the bridged config (token-free, but per-spawn) go too.
+  if [ -n "$_bridge_pid" ]; then
+    kill "$_bridge_pid" 2>/dev/null || true
+    wait "$_bridge_pid" 2>/dev/null || true
+    rm -f "$_bridge_sock" "$_mcp_for_agent" 2>/dev/null || true
+  fi
+  [ -n "$_bridge_dir" ] && rm -rf "$_bridge_dir" 2>/dev/null || true
+  unset GAFFER_MCP_BRIDGE_SOCKET GAFFER_SANDBOX_DATA_PLANE
+  return "$_rc"
 }

@@ -4,7 +4,8 @@
 # ---------------------------------------------------------------------
 # Proves that EVERY headless claude invocation now flows through the ONE worker
 # seam, and that no open-coded invocation remains outside it:
-#   • bash: the only `"$CLAUDE_BIN" -p` lives in lib/worker.sh (worker_deliver);
+#   • bash: the only `"$CLAUDE_BIN" -p` lives in lib/worker.sh (worker_deliver), and so
+#           does the only command-worker spawn (GAFFER_WORKER_PROVIDER=command);
 #           tick.sh routes all four agent turns through worker_deliver and has
 #           zero open-coded launches. factory.config.sh sources the seam.
 #   • mjs:  decompose.mjs + product-owner-run.mjs no longer open-code spawnSync;
@@ -41,6 +42,16 @@ grep -qE '^worker_deliver\(\)' "$WORKER_SH" \
 WORKER_INVOKES="$(grep -cE '"\$CLAUDE_BIN" -p' "$WORKER_SH" || true)"
 [ "$WORKER_INVOKES" = "1" ] && ok "exactly 1 claude -p invocation in lib/worker.sh" \
   || fail "expected exactly 1 claude -p in lib/worker.sh (got $WORKER_INVOKES)"
+
+# The command provider's spawn is the seam's second (and only other) invocation.
+CMD_INVOKES="$(grep -cE '"\$_cmd_run" </dev/null' "$WORKER_SH" || true)"
+[ "$CMD_INVOKES" = "1" ] && ok "exactly 1 command-worker invocation in lib/worker.sh" \
+  || fail "expected exactly 1 command-worker invocation in lib/worker.sh (got $CMD_INVOKES)"
+for _f in "$TICK" "$RUNNER_DIR/lib/review.sh" "$RUNNER_DIR/lib/clarify.sh" "$RUNNER_DIR/lib/eval-judge.sh"; do
+  grep -qE 'GAFFER_WORKER_COMMAND"? ' "$_f" \
+    && fail "$(basename "$_f") open-codes a command-worker spawn outside the seam" \
+    || ok "$(basename "$_f") never spawns GAFFER_WORKER_COMMAND itself"
+done
 
 TICK_INLINE="$(grep -cE '"\$CLAUDE_BIN" -p' "$TICK" || true)"
 [ "$TICK_INLINE" = "0" ] && ok "tick.sh open-codes NO claude -p invocation" \
@@ -89,6 +100,16 @@ for f in "$RUNNER_DIR/bin/merge-ticket.mjs" "$RUNNER_DIR/bin/tester-run.mjs" "$R
   grep -qE 'Worker\.deliver\(' "$f" \
     && ok "$name calls Worker.deliver()" || fail "$name does not call Worker.deliver()"
 done
+# spec-author.mjs keeps its direct claude-code spawn, but every OTHER provider goes
+# through Worker.deliver (command → the contract + containment rule; unknown → refused),
+# so GAFFER_WORKER_PROVIDER means the same thing at every launcher.
+SA="$RUNNER_DIR/bin/spec-author.mjs"
+grep -qE 'workerProvider\(\) === DEFAULT_WORKER_PROVIDER' "$SA" && grep -qE 'Worker\.deliver\(' "$SA" \
+  && ok "spec-author.mjs routes a non-default provider through Worker.deliver" \
+  || fail "spec-author.mjs does not route GAFFER_WORKER_PROVIDER through the seam"
+grep -qE 'provider === COMMAND_WORKER_PROVIDER' "$WORKER_MJS" \
+  && ok "lib/worker.mjs deliver() dispatches the command provider" || fail "lib/worker.mjs has no command provider dispatch"
+
 grep -qE 'agentChildEnv\(baseEnv\)' "$RUNNER_DIR/bin/merge-ticket.mjs" \
   && ok "merge-ticket.mjs builds the resolver env from the shared agentChildEnv scrub" \
   || fail "merge-ticket.mjs does not start the resolver env from agentChildEnv"

@@ -49,7 +49,18 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import {
+  accessSync,
+  constants as fsConstants,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,14 +69,15 @@ const RUNNER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const UNKNOWN = "unknown";
 
-// ── PROVIDER DISPATCH (Spec 3 / Phase 3 — SEAM ONLY, honest fail-closed stubs) ──
-// The mjs runners (decompose, product-owner) pick their worker backend the same
-// way the bash seam (worker.sh) and the sandbox seam (sandbox.sh) do: on an env
-// var, defaulting to the one real provider. `claude-code` is BYTE-IDENTICAL to the
-// historical spawn; any other provider FAILS CLOSED (no spawn) because the
-// PreToolUse containment hook is Claude-Code-native — a non-Claude worker has no
-// in-process boundary. See worker.sh's header and SECURITY.md for the full reason.
+// ── PROVIDER DISPATCH ──────────────────────────────────────────────────────────
+// The mjs runners (decompose, product-owner, tester, resolver, onboarding) pick
+// their worker backend the same way the bash seam (worker.sh) and the sandbox seam
+// (sandbox.sh) do: on an env var, defaulting to `claude-code`. Two providers are
+// real: `claude-code` (BYTE-IDENTICAL to the historical spawn) and `command` (an
+// operator-supplied program under the contract in docs/worker-providers.md). Any
+// other value FAILS CLOSED (no spawn). See worker.sh's header and SECURITY.md.
 export const DEFAULT_WORKER_PROVIDER = "claude-code";
+export const COMMAND_WORKER_PROVIDER = "command";
 
 /** The selected worker provider (trimmed), defaulting to claude-code. */
 export function workerProvider(env = process.env) {
@@ -92,6 +104,254 @@ function failClosedResult(message) {
     output: [null, "", message],
     error: new Error(message),
   };
+}
+
+// ── THE COMMAND PROVIDER (GAFFER_WORKER_PROVIDER=command) ─────────────────────
+// The runner runs an operator-supplied program (GAFFER_WORKER_COMMAND) instead of
+// `claude -p`. The contract (docs/worker-providers.md, word for word what the bash
+// seam does): no arguments, cwd = the call's directory, stdin empty, the scrubbed
+// agent env plus the GAFFER_WORKER_* contract variables below, a JSON envelope on
+// stdout, exit 0 when it finished. The helpers here are shared by both runtimes (the
+// bash seam calls the `normalize-command-envelope` CLI below).
+//
+// CONTAINMENT: the PreToolUse safety hook runs INSIDE `claude -p`; a command worker
+// has no such hook. So launching one REQUIRES an OS sandbox wrap (GAFFER_STRICT_REQUIRE
+// semantics, whatever GAFFER_STRICT_REQUIRE says) unless the operator sets
+// GAFFER_STRICT_REQUIRE=0 explicitly to assert containment out-of-band, which is
+// logged loudly at every spawn.
+
+/** Exit codes the runner itself returns for refusals; a worker returning one is remapped to 1. */
+export const RESERVED_WORKER_EXIT_CODES = Object.freeze([70, 75, 76, 77]);
+
+/**
+ * The command provider's program: `{ ok: true, command }` for an absolute path to an
+ * executable file, else `{ ok: false, message }` (the launch is refused, status 70).
+ */
+export function commandWorkerConfig(env = process.env) {
+  const cmd = String(env.GAFFER_WORKER_COMMAND ?? "").trim();
+  const fix =
+    "set GAFFER_WORKER_COMMAND to the absolute path of an executable worker program (docs/worker-providers.md)";
+  if (!cmd)
+    return {
+      ok: false,
+      message: `worker provider command: GAFFER_WORKER_COMMAND is not set; ${fix} — no agent spawned`,
+    };
+  if (!cmd.startsWith("/"))
+    return {
+      ok: false,
+      message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} is not an absolute path; ${fix} — no agent spawned`,
+    };
+  try {
+    accessSync(cmd, fsConstants.X_OK);
+    if (!statSync(cmd).isFile()) throw new Error("not a file");
+  } catch {
+    return {
+      ok: false,
+      message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} is not an executable file; ${fix} — no agent spawned`,
+    };
+  }
+  return { ok: true, command: cmd };
+}
+
+/** True only for an EXPLICIT GAFFER_STRICT_REQUIRE=0|false|no|off: the operator's out-of-band assertion. */
+export function strictRequireOptedOut(env = process.env) {
+  if (env.GAFFER_STRICT_REQUIRE === undefined) return false;
+  const v = String(env.GAFFER_STRICT_REQUIRE).trim().toLowerCase();
+  return v === "0" || v === "false" || v === "no" || v === "off";
+}
+
+/** The refusal when the command provider needs an OS sandbox the host cannot supply. Same words as worker.sh. */
+export function commandSandboxRefusalMessage() {
+  return (
+    "worker: GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs an OS sandbox and none is available on this host — refusing to spawn the worker (fail closed). " +
+    "Fix: set SANDBOX_PROVIDER=docker with a running docker daemon (or SANDBOX_PROVIDER=sandbox-exec on macOS), " +
+    "or set GAFFER_STRICT_REQUIRE=0 if you contain the whole runner out-of-band (a VM or container)"
+  );
+}
+
+/** The loud line logged at every command-worker spawn under the opt-out. Same words as worker.sh. */
+export function commandOptOutWarning() {
+  return "WARNING: GAFFER_WORKER_PROVIDER=command with GAFFER_STRICT_REQUIRE=0 — the command worker runs with no OS sandbox requirement and no in-process safety hook. Only safe if you contain the runner out-of-band (a VM or container).";
+}
+
+// Names the runner keeps to itself: never passed to a command worker, even when
+// GAFFER_WORKER_COMMAND_ENV names them (the dispatch API token, the claim token, the
+// repo host tokens, the notify channels).
+const COMMAND_ENV_NEVER =
+  /^(DISPATCH_API_TOKEN|GAFFER_CLAIM_TOKEN|GITHUB_TOKEN|GH_TOKEN)$|^GAFFER_NOTIFY_|_WEBHOOK|_SLACK/;
+
+/** The env names GAFFER_WORKER_COMMAND_ENV lets through to the command worker (validated). */
+export function commandEnvPassNames(env = process.env) {
+  return String(env.GAFFER_WORKER_COMMAND_ENV ?? "")
+    .split(/[\s,]+/)
+    .filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n) && !COMMAND_ENV_NEVER.test(n));
+}
+
+/**
+ * The command worker's env, from the caller's already-scrubbed env: the claude-code auth
+ * and config surface (ANTHROPIC_*, CLAUDE_*) is removed (it is not this worker's), the
+ * names GAFFER_WORKER_COMMAND_ENV lists are added from the runner's env, and the
+ * contract variables go on top.
+ */
+export function commandWorkerEnv(callerEnv, contract, env = process.env) {
+  const out = {};
+  for (const [k, v] of Object.entries(callerEnv || {})) {
+    if (/^(ANTHROPIC_|CLAUDE_)/.test(k)) continue;
+    out[k] = v;
+  }
+  for (const n of commandEnvPassNames(env)) if (env[n] !== undefined) out[n] = env[n];
+  return { ...out, ...contract };
+}
+
+/**
+ * Read the contract hints out of the claude-shaped argv the mjs launchers build, so
+ * every launcher routes through the command provider unchanged:
+ *   -p → prompt · --mcp-config → mcpConfig · --model → model · --max-turns → maxTurns
+ *   · --max-budget-usd → maxBudgetUsd · `--tools ""` → tools "none"
+ *   · --allowedTools / --disallowedTools → their tool names (hints, space-separated).
+ */
+export function commandArgvHints(argv) {
+  const a = Array.isArray(argv) ? argv : [];
+  const after = (flag) => {
+    const i = a.indexOf(flag);
+    return i >= 0 && i + 1 < a.length ? String(a[i + 1]) : "";
+  };
+  const list = (flag) => {
+    const i = a.indexOf(flag);
+    if (i < 0) return "";
+    const names = [];
+    for (let k = i + 1; k < a.length && !String(a[k]).startsWith("-"); k++) names.push(a[k]);
+    return names.join(" ");
+  };
+  const i = a.indexOf("--tools");
+  return {
+    prompt: after("-p"),
+    mcpConfig: after("--mcp-config"),
+    model: after("--model"),
+    maxTurns: /^[0-9]+$/.test(after("--max-turns")) ? after("--max-turns") : "",
+    maxBudgetUsd: after("--max-budget-usd"),
+    tools: i >= 0 && a[i + 1] === "" ? "none" : "all",
+    allowedTools: list("--allowedTools"),
+    disallowedTools: list("--disallowedTools"),
+  };
+}
+
+/** The GAFFER_WORKER_* contract variables (all strings; "" = not set for this call). */
+export function commandContractEnv({
+  prompt = "",
+  mcpConfig = "",
+  model = "",
+  maxTurns = "",
+  maxBudgetUsd = "",
+  tools = "all",
+  allowedTools = "",
+  disallowedTools = "",
+  kind = "worker",
+  timeoutSecs = "",
+} = {}) {
+  return {
+    GAFFER_WORKER_CONTRACT: "1",
+    GAFFER_WORKER_PROMPT: String(prompt),
+    GAFFER_WORKER_MCP_CONFIG: String(mcpConfig),
+    GAFFER_WORKER_MODEL: String(model),
+    GAFFER_WORKER_MAX_TURNS: String(maxTurns),
+    GAFFER_WORKER_MAX_BUDGET_USD: String(maxBudgetUsd),
+    GAFFER_WORKER_TOOLS: tools === "none" ? "none" : "all",
+    GAFFER_WORKER_ALLOWED_TOOLS: String(allowedTools),
+    GAFFER_WORKER_DISALLOWED_TOOLS: String(disallowedTools),
+    GAFFER_WORKER_KIND: String(kind),
+    GAFFER_WORKER_TIMEOUT_SECS: String(timeoutSecs),
+  };
+}
+
+const finiteNonNeg = (v) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined);
+
+/**
+ * THE PARSER ADAPTER for the command provider: turn the worker's envelope (stdout;
+ * log noise tolerated, the last top-level JSON object wins) into the canonical
+ * envelope every downstream reader already consumes — parseResult, the usage ledger,
+ * the bash cap/spend guards — so `{resultText, usage, capHit, stopReason}` mean the
+ * same thing for both providers. Only the documented fields are read; everything is
+ * optional:
+ *   result (string) · stop_reason (string) · cap_hit (boolean) · num_turns ·
+ *   duration_ms · cost_usd (numbers) · model (string) · usage { input_tokens,
+ *   output_tokens, cache_read_input_tokens, cache_creation_input_tokens }
+ * Returns the canonical envelope as a JSON string, or "" when stdout held no JSON
+ * object (the ledger then books the call as a killed one: a conservative estimate).
+ *
+ * Honesty: a cost the worker did not report stays "unknown" (gaffer_cost_basis
+ * "unreported"), never an invented figure. The envelope is stamped
+ * gaffer_worker_provider:"command", and such an envelope can NEVER read as a
+ * usage-limit or auth-error outcome (detectUsageLimit / detectAuthError): those
+ * release a ticket without counting an attempt, and the program writing this
+ * envelope must not be able to buy that.
+ */
+export function normalizeCommandEnvelope(text) {
+  const raw = parseClaudeJson(text);
+  if (!raw) return "";
+  const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
+  const stop = str(raw.stop_reason, 200);
+  const capHit = raw.cap_hit === true || MAX_TURNS_RE.test(stop);
+  const budgetStop = !capHit && MAX_BUDGET_RE.test(stop);
+  const cost = finiteNonNeg(raw.cost_usd);
+  const out = {
+    type: "result",
+    subtype: capHit ? "error_max_turns" : budgetStop ? "error_max_budget_usd" : "success",
+    is_error: capHit || budgetStop,
+    result: typeof raw.result === "string" ? raw.result : "",
+    gaffer_worker_provider: COMMAND_WORKER_PROVIDER,
+    gaffer_cost_basis: cost === undefined ? "unreported" : "reported",
+  };
+  if (stop) out.stop_reason = stop;
+  if (finiteNonNeg(raw.num_turns) !== undefined) out.num_turns = raw.num_turns;
+  if (finiteNonNeg(raw.duration_ms) !== undefined) out.duration_ms = raw.duration_ms;
+  if (cost !== undefined) out.total_cost_usd = cost;
+  const u =
+    raw.usage && typeof raw.usage === "object" && !Array.isArray(raw.usage) ? raw.usage : null;
+  const tokens = {};
+  if (u) {
+    for (const k of [
+      "input_tokens",
+      "output_tokens",
+      "cache_read_input_tokens",
+      "cache_creation_input_tokens",
+    ]) {
+      if (finiteNonNeg(u[k]) !== undefined) tokens[k] = u[k];
+    }
+  }
+  const model = str(raw.model, 80)
+    .replace(/[^A-Za-z0-9 ._()+:/@[\]-]/g, "")
+    .trim();
+  if (model) {
+    const m = {};
+    if (tokens.input_tokens !== undefined) m.inputTokens = tokens.input_tokens;
+    if (tokens.output_tokens !== undefined) m.outputTokens = tokens.output_tokens;
+    if (tokens.cache_read_input_tokens !== undefined)
+      m.cacheReadInputTokens = tokens.cache_read_input_tokens;
+    if (tokens.cache_creation_input_tokens !== undefined)
+      m.cacheCreationInputTokens = tokens.cache_creation_input_tokens;
+    if (cost !== undefined) m.costUSD = cost;
+    out.modelUsage = { [model]: m };
+  } else if (Object.keys(tokens).length) {
+    out.usage = tokens;
+  }
+  return JSON.stringify(out);
+}
+
+/** The adapter's parse: the command envelope → the same {resultText, usage, capHit, stopReason} parseResult returns. */
+export function parseCommandEnvelope(text, opts) {
+  const { json, resultText, usage, capHit, stopReason } = parseResult(
+    normalizeCommandEnvelope(text),
+    opts,
+  );
+  return { json, resultText, usage, capHit, stopReason, usageLimit: null };
+}
+
+/** True when a parsed envelope came from the command provider's adapter. */
+function isCommandEnvelope(json) {
+  return (
+    !!json && typeof json === "object" && json.gaffer_worker_provider === COMMAND_WORKER_PROVIDER
+  );
 }
 
 // ── OS-SANDBOX CONTAINMENT AT THE SEAM (parity with worker.sh's worker_deliver) ──
@@ -150,6 +410,7 @@ export function sandboxWrapArgv({ writeRoots, readRoots, env = process.env }) {
   if (res.error || res.status !== 0) {
     return {
       ok: false,
+      diag,
       message:
         "worker: GAFFER_STRICT_REQUIRE demands an OS sandbox and none is available on this host — refusing to spawn the agent (fail closed)" +
         (diag ? `: ${diag}` : ""),
@@ -304,14 +565,23 @@ export function startMcpBridge({ mcpConfig, gafferData, env = process.env }) {
 
 export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "worker" }) {
   const provider = workerProvider(process.env);
-  if (provider !== DEFAULT_WORKER_PROVIDER) {
-    // codex / local / any non-Claude provider — honest stub, FAIL CLOSED. No spawn.
+  const isCommand = provider === COMMAND_WORKER_PROVIDER;
+  if (provider !== DEFAULT_WORKER_PROVIDER && !isCommand) {
+    // codex / local / any other value — FAIL CLOSED. No spawn.
     return failClosedResult(unsupportedProviderMessage(provider));
+  }
+  let command = null;
+  if (isCommand) {
+    command = commandWorkerConfig(process.env);
+    if (!command.ok) {
+      process.stderr.write(`${command.message}\n`);
+      return failClosedResult(command.message);
+    }
   }
   // BUDGET ADMISSION (external review #6): the ONE check every paid launch passes
   // immediately before it spawns (lib/budget-admission.mjs; the bash seam asks the same
   // module). Daily or lifetime budget exhausted, or the spend unknowable with a cap set
-  // ⇒ NO spawn: status 77, empty stdout, nothing booked to the ledger.
+  // ⇒ NO spawn: status 77, empty stdout, nothing booked to the ledger. Both providers.
   const admission = paidLaunchAdmission({ kind, env: process.env });
   if (!admission.ok) {
     const r = failClosedResult(admission.reason);
@@ -328,17 +598,43 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   let spawnArgv = argv;
   let spawnEnv = env;
   let bridgeStop = () => {};
-  if (sandboxWanted(process.env)) {
+  // The command provider: the same launch, a different program. The claude-shaped argv
+  // the launcher built becomes the GAFFER_WORKER_* contract; the program gets no args.
+  let contract = null;
+  if (isCommand) {
+    const hints = commandArgvHints(argv);
+    contract = commandContractEnv({
+      ...hints,
+      kind,
+      timeoutSecs: timeoutMs > 0 ? String(Math.ceil(timeoutMs / 1000)) : "",
+    });
+    spawnBin = command.command;
+    spawnArgv = [];
+    spawnEnv = commandWorkerEnv(env, contract, process.env);
+  }
+  // THE CONTAINMENT DECISION. claude-code: wrap when the sandbox is ON or REQUIRED.
+  // command: ALWAYS required (no in-process safety hook), unless the operator opted out
+  // with an explicit GAFFER_STRICT_REQUIRE=0 — then logged loudly, and wrapped only when
+  // STRICT_MODE=1 asks for it (degrading like claude-code does).
+  const optedOut = isCommand && strictRequireOptedOut(process.env);
+  const commandNeedsWrap = isCommand && !optedOut;
+  if (optedOut) process.stderr.write(`${commandOptOutWarning()}\n`);
+  if (commandNeedsWrap || sandboxWanted(process.env)) {
     // Derive the wrap from the per-call boundary vars (the cwd is the write root
     // when none is named), exactly like worker_deliver's WORKER_CALL_ENV scan.
     const writeRoots = (env && env.GAFFER_WRITE_ROOTS) || cwd;
     const readRoots = (env && env.GAFFER_READ_ROOTS) || "";
-    const wrapped = sandboxWrapArgv({ writeRoots, readRoots, env: process.env });
-    if (!wrapped.ok) {
+    const wrapEnv = commandNeedsWrap ? { ...process.env, GAFFER_STRICT_REQUIRE: "1" } : process.env;
+    const wrapped = sandboxWrapArgv({ writeRoots, readRoots, env: wrapEnv });
+    if (!wrapped.ok || (commandNeedsWrap && wrapped.wrap.length === 0)) {
       // FAIL CLOSED: a required sandbox the host cannot supply means NO spawn —
       // status 75, empty stdout (no fabricated envelope), error set so callers'
       // existing error paths fire. Never a silent bare run.
-      const r = failClosedResult(wrapped.message);
+      const message = commandNeedsWrap
+        ? commandSandboxRefusalMessage() + (wrapped.diag ? ` (${wrapped.diag})` : "")
+        : wrapped.message;
+      if (commandNeedsWrap) process.stderr.write(`${message}\n`);
+      const r = failClosedResult(message);
       r.status = SANDBOX_REFUSED_STATUS;
       return r;
     }
@@ -351,7 +647,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
         RUNNER_DIR,
         GAFFER_HOME: process.env.GAFFER_HOME || resolve(RUNNER_DIR, ".."),
         GAFFER_DATA: process.env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"),
-        ...env,
+        ...spawnEnv,
       };
       // Inside the `docker` provider the HOST's claude path / HOME / PATH do not
       // exist — the image ships `claude` on its own PATH and root's HOME is /root.
@@ -359,7 +655,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
       // INSIDE the container (an `env HOME=… PATH=… claude` prefix, the shape the
       // bash seam's `env -i … HOME= PATH= claude` takes) — the wrapper script itself
       // still runs with the host PATH so it can find `docker`.
-      let inner = [spawnBin, ...argv];
+      let inner = [spawnBin, ...spawnArgv];
       if ((process.env.SANDBOX_PROVIDER || "sandbox-exec") === "docker") {
         // ── MCP DATA PLANE ON THE HOST (same lifecycle as lib/worker.sh) ──────────
         // The wrapper never infers a layout from an absent socket: with the bridge on
@@ -383,33 +679,71 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
           if (b.dataPlane === "bridge") {
             spawnEnv = { ...spawnEnv, GAFFER_MCP_BRIDGE_SOCKET: b.socket };
             agentArgv = argv.map((a, k) => (k === i + 1 ? b.bridgedConfig : a));
+            if (contract) contract = { ...contract, GAFFER_WORKER_MCP_CONFIG: b.bridgedConfig };
           } else {
             spawnEnv = { ...spawnEnv, GAFFER_SANDBOX_DATA_PLANE: "none" };
           }
         }
-        inner = [
+        const containerBase = [
           "env",
           `HOME=${process.env.GAFFER_SANDBOX_HOME || "/root"}`,
           `PATH=${process.env.GAFFER_SANDBOX_PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
-          process.env.GAFFER_SANDBOX_CLAUDE_BIN || "claude",
-          ...agentArgv,
         ];
+        if (isCommand) {
+          // The wrapper forwards only its own allowlist into the container, so the
+          // contract (and the names GAFFER_WORKER_COMMAND_ENV passes) ride the inner
+          // `env` argv, as they do in the bash seam's `env -i …`.
+          const pass = {};
+          for (const n of [
+            "GAFFER_WRITE_ROOTS",
+            "GAFFER_READ_ROOTS",
+            "GAFFER_DATA",
+            "GAFFER_TICKET",
+          ])
+            if (env && env[n] !== undefined) pass[n] = env[n];
+          for (const n of commandEnvPassNames(process.env))
+            if (process.env[n] !== undefined) pass[n] = process.env[n];
+          inner = [
+            ...containerBase,
+            ...Object.entries({ ...pass, ...contract }).map(([k, v]) => `${k}=${v}`),
+            process.env.GAFFER_SANDBOX_WORKER_COMMAND || command.command,
+          ];
+        } else {
+          inner = [
+            ...containerBase,
+            process.env.GAFFER_SANDBOX_CLAUDE_BIN || "claude",
+            ...agentArgv,
+          ];
+        }
       }
       spawnArgv = [...wrapped.wrap.slice(1), ...inner];
       spawnBin = wrapped.wrap[0];
     }
   }
+  let res;
   try {
-    return spawnSync(spawnBin, spawnArgv, {
+    res = spawnSync(spawnBin, spawnArgv, {
       cwd,
       encoding: "utf8",
       timeout: timeoutMs,
       maxBuffer,
       env: spawnEnv,
+      ...(isCommand ? { stdio: ["ignore", "pipe", "pipe"] } : {}),
     });
   } finally {
     bridgeStop(); // the host-side servers, the socket and the bridged config go with the agent
   }
+  if (isCommand && res) {
+    // The parser adapter: callers read the canonical envelope, never the raw stdout.
+    res.stdout = normalizeCommandEnvelope(res.stdout || "");
+    if (RESERVED_WORKER_EXIT_CODES.includes(res.status)) {
+      process.stderr.write(
+        `worker: the command worker exited ${res.status}, a code the runner reserves for its own refusals; recording it as a failed call (exit 1)\n`,
+      );
+      res.status = 1;
+    }
+  }
+  return res;
 }
 
 // =====================================================================
@@ -910,6 +1244,9 @@ export function parseRetryAfter(text, nowMs = Date.now()) {
  */
 export function detectUsageLimit(json, nowMs = Date.now()) {
   if (!json || typeof json !== "object") return null;
+  // A command worker's envelope is written by the worker program, not a CLI the runner
+  // knows: it never releases a ticket attempt-free (normalizeCommandEnvelope).
+  if (isCommandEnvelope(json)) return null;
   const isErr = isErrorEnvelope(json);
   // Structural shapes are typed fields the SDK / API set, not prose, so they need no
   // error-envelope gate of their own beyond what each row checks.
@@ -984,6 +1321,7 @@ export const AUTH_ERROR_PATTERNS = Object.freeze([
  */
 export function detectAuthError(json) {
   if (!json || typeof json !== "object" || !isErrorEnvelope(json)) return null;
+  if (isCommandEnvelope(json)) return null; // see detectUsageLimit
   // A turn-cap stop means the agent ran for its turns: whatever text the envelope
   // carries is the agent's, never the CLI's login failure (it must not dodge the cap).
   if (json.subtype === "error_max_turns") return null;
@@ -1026,8 +1364,11 @@ export function parseResult(text, { nowMs = Date.now() } = {}) {
 export const Worker = {
   deliver,
   parseResult,
+  parseCommandEnvelope,
+  normalizeCommandEnvelope,
   workerProvider,
   unsupportedProviderMessage,
+  commandWorkerConfig,
   sandboxWanted,
   sandboxRequired,
   sandboxWrapArgv,
@@ -1123,8 +1464,25 @@ function invokedDirectly() {
     return false;
   }
 }
+// `node lib/worker.mjs normalize-command-envelope --in <raw stdout> --out <envelope>`:
+// the bash seam's call into the command provider's parser adapter. Writes the
+// canonical envelope (or an empty file when the raw stdout held no JSON object).
+function normalizeCli(argv) {
+  let inFile = null;
+  let outFile = null;
+  for (let i = 1; i < argv.length; i++) {
+    if (argv[i] === "--in") inFile = argv[++i];
+    else if (argv[i] === "--out") outFile = argv[++i];
+  }
+  if (!inFile || !outFile) process.exit(2);
+  const norm = normalizeCommandEnvelope(readFileSafe(inFile));
+  writeFileSync(outFile, norm ? norm + "\n" : "");
+  process.exit(0);
+}
+
 if (invokedDirectly()) {
   const argv = process.argv.slice(2);
   if (argv[0] === "parse-result") parseResultCli(argv);
+  else if (argv[0] === "normalize-command-envelope") normalizeCli(argv);
   else process.exit(2);
 }

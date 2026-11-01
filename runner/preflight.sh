@@ -30,6 +30,19 @@ else
   fi
 fi
 command -v pnpm >/dev/null && ok "pnpm $(pnpm -v)" || wn "pnpm missing (needed for setup/builds)"
+# The worker provider (docs/worker-providers.md). The command provider runs your own
+# program, which has no in-process safety hook, so it needs an OS sandbox.
+case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
+  claude-code) ;;
+  command)
+    if _wcmd="$(_gaffer_worker_command_bin 2>&1)"; then ok "worker provider: command ($_wcmd)"; else no "$_wcmd"; fi
+    if _gaffer_strict_require_opted_out; then
+      wn "worker provider command with GAFFER_STRICT_REQUIRE=0: no OS sandbox requirement and no in-process safety hook — only safe if the runner is contained out-of-band (a VM or container)"
+    else
+      ok "worker provider command: an OS sandbox is required at every spawn (SANDBOX_PROVIDER=${SANDBOX_PROVIDER:-sandbox-exec}; docker needs a running daemon)"
+    fi ;;
+  *) no "GAFFER_WORKER_PROVIDER=${GAFFER_WORKER_PROVIDER} is not a known worker provider (claude-code or command) — every agent launch refuses" ;;
+esac
 if command -v "$CLAUDE_BIN" >/dev/null; then ok "claude CLI: $($CLAUDE_BIN --version 2>/dev/null | head -1)"
 else wn "claude CLI not on PATH — required for LIVE runs (dry-run works without it)"; fi
 # `--version` works logged out, so it says nothing about auth: an unauthenticated claude

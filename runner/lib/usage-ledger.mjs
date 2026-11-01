@@ -252,13 +252,16 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     numTurns !== UNKNOWN ||
     durationMs !== UNKNOWN;
   if (!hasAnySignal) {
-    return withUsageLimit(
-      unknownRecord({
-        ts,
-        ticket,
-        kind,
-        reason: reason || "result JSON carried no usage block",
-      }),
+    return withWorkerProvider(
+      withUsageLimit(
+        unknownRecord({
+          ts,
+          ticket,
+          kind,
+          reason: reason || "result JSON carried no usage block",
+        }),
+        json,
+      ),
       json,
     );
   }
@@ -291,7 +294,21 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
     num_turns: numTurns,
     duration_ms: durationMs,
   };
-  return withUsageLimit(rec, json);
+  return withWorkerProvider(withUsageLimit(rec, json), json);
+}
+
+// A call served by a non-default worker provider names it on its row, with how its
+// cost is known: `reported` (the worker said, relayed verbatim) or `unreported` (the
+// worker said nothing: total_cost_usd stays "unknown" and counts $0 against the caps,
+// never an invented figure). The envelope stamp comes from the command provider's
+// parser adapter (lib/worker.mjs normalizeCommandEnvelope). claude-code rows are unchanged.
+function withWorkerProvider(rec, json) {
+  const p = json && typeof json === "object" ? json.gaffer_worker_provider : null;
+  if (typeof p !== "string" || !p) return rec;
+  const out = { ...rec, worker_provider: provLabel(p) };
+  if (json.gaffer_cost_basis === "reported" || json.gaffer_cost_basis === "unreported")
+    out.cost_basis = json.gaffer_cost_basis;
+  return out;
 }
 
 // A call the usage window / rate limit refused is labelled on its row (the SAME
@@ -375,6 +392,7 @@ function parseCliArgs(argv) {
     else if (a === "--attempt") out.attempt = argv[++i];
     else if (a === "--model") out.model = argv[++i];
     else if (a === "--claude-version") out.claudeVersion = argv[++i];
+    else if (a === "--worker-provider") out.workerProvider = argv[++i];
     // The delivery attempt this call belongs to, and when it was spawned: lets the
     // Health report charge a correction's spend to the send-back that caused it.
     else if (a === "--attempt-id") out.attemptId = argv[++i];
@@ -417,8 +435,12 @@ function provLabel(v) {
  * later quality metric (per model, per CLI release) keys on these. Absent inputs add
  * nothing, so older call sites write exactly the record they always did.
  */
-export function withProvenance(record, { attempt, model, claudeVersion } = {}) {
+export function withProvenance(record, { attempt, model, claudeVersion, workerProvider } = {}) {
   const out = { ...record };
+  // The worker provider that ran the call, when it is not the default claude-code (the
+  // rows of a claude-code factory stay exactly as they were).
+  const wp = provLabel(workerProvider);
+  if (wp && wp !== "claude-code" && !out.worker_provider) out.worker_provider = wp;
   const n = attempt != null && /^\d+$/.test(String(attempt)) ? Number(attempt) : null;
   if (n != null && n > 0) out.attempt = n;
   const m = provLabel(model);

@@ -2431,9 +2431,14 @@ $PRODUCT_CONTEXT_BLOCK}"
         log "STRICT_MODE active but provider '${SANDBOX_PROVIDER:-sandbox-exec}' added no OS sandbox — worktree isolation + safety hook still apply"
       fi
     else
-      log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)"
+      # The command worker has no in-process safety hook, which is WHY the sandbox is
+      # required (factory.config.sh defaults GAFFER_STRICT_REQUIRE=1 for it): say so.
+      _SR_WHY=""
+      [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ] \
+        && _SR_WHY=" (GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs one: set SANDBOX_PROVIDER=docker, or GAFFER_STRICT_REQUIRE=0 if the runner is contained out-of-band)"
+      log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)$_SR_WHY"
       wg attach-evidence "$NUM" --type manual_note \
-        --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)" >/dev/null 2>&1 || true
+        --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)$_SR_WHY" >/dev/null 2>&1 || true
       gaffer_release_delivery blocked "GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider available — fail closed, agent not launched" strict_require_unavailable
       gaffer_skip_ticket "$NUM"
       result error; exit 0

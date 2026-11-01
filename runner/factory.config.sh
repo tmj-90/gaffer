@@ -160,6 +160,14 @@ export SKILLS_DIR
 : "${CLAUDE_BIN:=claude}"                                   # headless `claude -p`
 : "${CLAUDE_FLAGS:=--permission-mode acceptEdits}"          # tune to your Claude Code version
 
+# --- Worker provider ---
+# Which worker program the runner launches for every agent turn (lib/worker.sh and
+# lib/worker.mjs dispatch on it; docs/worker-providers.md is the contract).
+: "${GAFFER_WORKER_PROVIDER:=claude-code}"   # which worker runs agent turns: claude-code (headless `claude -p`, guarded by the in-process safety hook) or command (your own program at GAFFER_WORKER_COMMAND, under the contract in docs/worker-providers.md; it has no in-process safety hook, so it requires an OS sandbox: SANDBOX_PROVIDER=docker, or sandbox-exec on macOS, unless you set GAFFER_STRICT_REQUIRE=0 to say the runner is contained out-of-band). Any other value refuses to run.
+: "${GAFFER_WORKER_COMMAND:=}"   # absolute path of the worker program GAFFER_WORKER_PROVIDER=command runs, with no arguments, in the call's working directory. It reads GAFFER_WORKER_PROMPT, GAFFER_WORKER_MCP_CONFIG, GAFFER_WORKER_MODEL, GAFFER_WORKER_MAX_TURNS and the other GAFFER_WORKER_* variables, prints one JSON object on stdout (result, stop_reason, cap_hit, num_turns, cost_usd, model, usage; all optional) and exits 0 when it finished (docs/worker-providers.md).
+: "${GAFFER_WORKER_COMMAND_ENV:=}"   # space-separated env var names the command worker also receives (its own model credential, for example); the scrub drops them otherwise. The runner-only secrets (DISPATCH_API_TOKEN, GAFFER_CLAIM_TOKEN, GITHUB_TOKEN, GH_TOKEN, notify and webhook settings) are never passed.
+: "${GAFFER_SANDBOX_WORKER_COMMAND:=}"   # where the command worker's program lives INSIDE the docker sandbox image; empty = the same path as GAFFER_WORKER_COMMAND (the runner dir and the write roots are mounted at their host paths).
+
 # SINGLE RUNTIME. The runner's text processing — prompt / MCP / context-primer
 # renders, the DoD distill helpers, the worktree key, the hygiene forbidden-path
 # scan, minimalism and the CI-check parse — runs through packages/crew's typed CLIs
@@ -206,16 +214,18 @@ export GAFFER_PLAN_MODEL GAFFER_IMPL_MODEL
 # gaffer_route_model, below); this helper is the ONE place that turns a chosen name
 # into the worker CLI's model-selection FLAG SYNTAX. Splitting name-choice
 # (registry-indirected) from flag-emission (provider-indirected) is the seam: a
-# future non-Claude provider changes ONLY this `case`. `claude-code` emits
+# provider with its own flag syntax changes ONLY this `case`. `claude-code` emits
 # `--model <name>` — BYTE-IDENTICAL to the historical inline emission; an empty
 # name emits nothing (falls back to the worker's own default model).
 gaffer_model_flag() {
   local model="${1:-}"
   [ -n "$model" ] || return 0
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
-    # claude-code (and the default until a provider proves otherwise): the Claude
-    # Code CLI selects a model with `--model <name>`.
-    claude-code|*) printf -- '--model %s' "$model" ;;
+    # claude-code: the claude CLI selects a model with `--model <name>`.
+    # command: the same string is the seam's internal currency; worker_deliver reads
+    # the name back out (gaffer_model_from_flag) and hands it to the worker program as
+    # GAFFER_WORKER_MODEL. An unknown provider never spawns, so its flag is moot.
+    claude-code|command|*) printf -- '--model %s' "$model" ;;
   esac
 }
 GAFFER_PLAN_MODEL_FLAG="$(gaffer_model_flag "${GAFFER_PLAN_MODEL:-}")"
@@ -1249,11 +1259,24 @@ _gaffer_lock_age() {
 # (which model-provider secrets + config the worker CLI reads). These three
 # functions ARE the seam: claude-code's contribution is BYTE-IDENTICAL to the set
 # this allowlist always carried (its union with the agnostic base == the historical
-# list), so the scrub is unchanged today; a future provider (codex/local) adds one
-# `case` branch naming ITS auth surface and nothing else moves. Each echoes
-# whitespace-separated tokens (empty for unknown providers — harmless, since a
-# non-Claude worker fails closed in worker_deliver before the scrub is even built).
+# list), so the scrub is unchanged. The `command` provider's auth surface is whatever
+# the operator names in GAFFER_WORKER_COMMAND_ENV (never claude-code's, never the
+# runner-only secrets). Each echoes whitespace-separated tokens (empty for unknown
+# providers — harmless, since an unknown provider fails closed in worker_deliver
+# before the scrub is even built).
 #
+# The names GAFFER_WORKER_COMMAND_ENV lets through to a command worker: valid env
+# names, minus the runner-only secrets (lib/worker.mjs commandEnvPassNames).
+gaffer_command_env_pass_names() {
+  local n
+  for n in $(printf '%s' "${GAFFER_WORKER_COMMAND_ENV:-}" | tr ',' ' '); do
+    case "$n" in
+      *[!A-Za-z0-9_]* | [0-9]*) continue ;;
+      DISPATCH_API_TOKEN | GAFFER_CLAIM_TOKEN | GITHUB_TOKEN | GH_TOKEN | GAFFER_NOTIFY_* | *_WEBHOOK* | *_SLACK*) continue ;;
+    esac
+    printf '%s\n' "$n"
+  done
+}
 # keep-exact: exact env-var names the provider's worker needs.
 gaffer_provider_env_keep_exact() {
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
@@ -1262,6 +1285,7 @@ gaffer_provider_env_keep_exact() {
         ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_MODEL \
         AWS_REGION AWS_DEFAULT_REGION
       ;;
+    command) gaffer_command_env_pass_names ;;
   esac
 }
 # keep-prefix: env-var prefixes whose whole namespace the provider's worker reads.
@@ -1284,6 +1308,9 @@ gaffer_provider_env_keep_prefix() {
 gaffer_provider_env_keep_despite_deny() {
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     claude-code) printf '%s\n' ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL CLAUDE_CODE_OAUTH_TOKEN ;;
+    # command: the operator NAMED these for the worker's own auth, so they survive
+    # the credential-shaped deny like the ANTHROPIC auth trio does for claude-code.
+    command) gaffer_command_env_pass_names ;;
   esac
 }
 
@@ -1602,11 +1629,15 @@ gaffer_usage_record() {
   # call asked for and the CLI version that ran it come from the last worker_deliver
   # (lib/worker.sh) and are consumed here like the elapsed time.
   local attempt_n="${6:-}" model="${WORKER_LAST_MODEL:-}" cliver="${WORKER_LAST_CLAUDE_VERSION:-}"
-  WORKER_LAST_MODEL=""; WORKER_LAST_CLAUDE_VERSION=""
+  local wprov="${WORKER_LAST_PROVIDER:-}"
+  WORKER_LAST_MODEL=""; WORKER_LAST_CLAUDE_VERSION=""; WORKER_LAST_PROVIDER=""
   local -a prov=()
   [ -n "$attempt_n" ] && prov+=(--attempt "$attempt_n")
   [ -n "$model" ] && prov+=(--model "$model")
   [ -n "$cliver" ] && prov+=(--claude-version "$cliver")
+  # The worker provider that ran the call; the ledger names it only when it is not
+  # claude-code, so a claude-code factory's rows are unchanged.
+  [ -n "$wprov" ] && [ "$wprov" != claude-code ] && prov+=(--worker-provider "$wprov")
   local mod="$RUNNER_DIR/lib/usage-ledger.mjs"
   [ -f "$mod" ] || return 0
   # R-4: an append failure used to be doubly hidden — node stderr went to /dev/null
@@ -1817,6 +1848,29 @@ _gaffer_autonomy_on() {
   _gaffer_autonomy_policy_active && return 0
   return 1
 }
+# THE COMMAND WORKER REQUIRES CONTAINMENT (enforced in code, like autonomy below).
+# GAFFER_WORKER_PROVIDER=command runs an operator-supplied program instead of
+# `claude -p`, so the in-process PreToolUse safety hook is not there: the OS sandbox
+# is its only containment boundary. Default GAFFER_STRICT_REQUIRE=1 (and STRICT_MODE=1,
+# so tick.sh actually asks the provider): the runner then refuses to launch it where
+# no OS sandbox is available. The worker seam enforces the same rule on its own (it
+# also covers the Node launchers the dashboard starts). An explicit
+# GAFFER_STRICT_REQUIRE=0 is the operator asserting out-of-band containment: honoured,
+# logged loudly here and again at every spawn.
+if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ]; then
+  case "$(printf '%s' "${GAFFER_STRICT_REQUIRE-}" | tr '[:upper:]' '[:lower:]')" in
+    0 | false | no | off)
+      if [ -n "${GAFFER_STRICT_REQUIRE+x}" ]; then
+        printf 'WARNING: GAFFER_WORKER_PROVIDER=command with GAFFER_STRICT_REQUIRE=%s — the command worker has no in-process safety hook and the OS sandbox is NOT required, so nothing contains it but what you provide out-of-band (a VM or container). Only safe if you do.\n' "${GAFFER_STRICT_REQUIRE}" >&2
+      fi ;;
+    1 | true | yes | on) : "${STRICT_MODE:=1}" ;;
+    *)
+      export GAFFER_STRICT_REQUIRE=1
+      : "${STRICT_MODE:=1}"
+      printf 'worker: GAFFER_WORKER_PROVIDER=command has no in-process safety hook → defaulting GAFFER_STRICT_REQUIRE=1 (OS sandbox mandatory; the runner refuses to launch the worker without one). Set GAFFER_STRICT_REQUIRE=0 if you contain the runner out-of-band.\n' >&2
+      ;;
+  esac
+fi
 if _gaffer_autonomy_on; then
   if [ -z "${GAFFER_STRICT_REQUIRE+x}" ]; then
     export GAFFER_STRICT_REQUIRE=1

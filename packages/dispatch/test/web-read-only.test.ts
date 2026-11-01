@@ -16,6 +16,38 @@ const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 const TITLE = "Read-only access: this token can look, not change anything.";
 
 let capability = "read";
+/** Every request the page sent, "METHOD path". */
+let sent: string[] = [];
+const CLAIM = {
+  claim_id: "c-1",
+  ticket_id: "t-3",
+  ticket_number: 3,
+  ticket_title: "Held one",
+  ticket_status: "claimed",
+  branch_name: null,
+  agent_id: "a-1",
+  agent_display_name: "Delivery 1",
+  status: "active",
+  expires_at: new Date(Date.now() + 3600_000).toISOString(),
+  heartbeat_at: new Date().toISOString(),
+};
+const WONT = { ...READY_BASE(), id: "t-4", number: 4, title: "Closed one", status: "cancelled" };
+function READY_BASE() {
+  return {
+    priority: 1,
+    risk_level: "low",
+    updated_at: "2026-10-01T00:00:00Z",
+    acTotal: 0,
+    acSatisfied: 0,
+    acEvidenced: 0,
+    acEvidenceRequired: 0,
+    repos: [],
+    claim: null,
+    humanOwner: null,
+    lastReviewFeedback: null,
+    blockingCount: 0,
+  };
+}
 const READY = {
   id: "t-1",
   number: 1,
@@ -44,8 +76,9 @@ function json(obj: unknown): Response {
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
+    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      sent.push(`${(init?.method ?? "GET").toUpperCase()} ${url}`);
       if (url.includes("/api/whoami"))
         return json({ capability, actor: { type: "human", id: "viewer" } });
       if (url.includes("/api/settings"))
@@ -68,7 +101,7 @@ function stubFetch(): void {
             cards: column === "ready" ? [READY] : [],
           })),
           closed: [],
-          wontDo: [],
+          wontDo: [WONT],
         });
       if (url.includes("/api/human-queue"))
         return json({
@@ -109,7 +142,7 @@ function stubFetch(): void {
       if (url.includes("/tickets")) return json({ tickets: [] });
       if (url.includes("/repositories")) return json({ repositories: [] });
       if (url.includes("/scope/nodes")) return json({ nodes: [] });
-      if (url.includes("/claims")) return json({ claims: [] });
+      if (url.includes("/claims")) return json({ claims: [CLAIM] });
       if (url.includes("/decisions")) return json({ decisions: [] });
       if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
       return json({});
@@ -140,6 +173,7 @@ describe("web: a read token sees read-only controls", () => {
   beforeEach(() => {
     vi.resetModules();
     capability = "read";
+    sent = [];
     stubFetch();
   });
   afterEach(() => {
@@ -187,6 +221,50 @@ describe("web: a read token sees read-only controls", () => {
     expect(isOff(document.querySelector<HTMLButtonElement>("#what-i-own button.own-act"))).toBe(
       true,
     );
+  });
+
+  // Exploratory findings ui-explore/F-01 + ui-workflows/F7: these stayed live.
+  it("Work: On the pitch's Revoke and Won't do's Reopen are off", async () => {
+    await boot("#/work");
+    const revoke = document.querySelector<HTMLButtonElement>(".claims-table .cl-act button");
+    expect(revoke?.textContent).toBe("Revoke");
+    expect(isOff(revoke)).toBe(true);
+    revoke?.click();
+    expect(revoke?.textContent).toBe("Revoke"); // never arms "Stop the work?"
+    const reopen = byText("Reopen");
+    expect(isOff(reopen)).toBe(true);
+  });
+
+  it("Plan a build: the composer, its examples, New plan and the one-ticket form are off, and nothing is POSTed", async () => {
+    await boot("#/create");
+    for (let i = 0; i < 12; i++) await tick();
+    const panel = document.querySelector(".pb-panel")!;
+    for (const sel of [
+      "textarea.pb-input",
+      "button.pb-send",
+      "button.pb-force",
+      "button.pb-new-plan",
+    ])
+      expect(isOff(panel.querySelector<HTMLButtonElement>(sel)), sel).toBe(true);
+    for (const b of panel.querySelectorAll<HTMLButtonElement>("button.pb-example"))
+      expect(isOff(b)).toBe(true);
+    const form = document.querySelector("#one-ticket form")!;
+    const live = [
+      ...form.querySelectorAll<HTMLButtonElement>("button, input, select, textarea"),
+    ].filter((n) => !n.disabled);
+    expect(live.map((n) => n.outerHTML.slice(0, 60))).toEqual([]);
+    expect(sent.filter((r) => !r.startsWith("GET "))).toEqual([]);
+  });
+
+  it("a write a control still sends is refused in the page, never sent to the server", async () => {
+    await boot("#/work");
+    const wontDo = document.querySelector<HTMLButtonElement>(".closed-row button");
+    expect(wontDo).not.toBeNull();
+    // Force the click past the disabled attribute: the request must still not leave.
+    wontDo!.disabled = false;
+    wontDo!.click();
+    for (let i = 0; i < 6; i++) await tick();
+    expect(sent.filter((r) => !r.startsWith("GET "))).toEqual([]);
   });
 
   it("a full token sees no strip and live controls", async () => {

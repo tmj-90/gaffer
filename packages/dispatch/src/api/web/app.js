@@ -71,6 +71,19 @@ function unreachable(cause, signal) {
   return e;
 }
 async function api(method, path, body, opts = {}) {
+  // A read token changes nothing: the server refuses every non-GET with 403
+  // READ_ONLY_TOKEN, so the page never sends one (a control that slipped through
+  // gets this refusal at once, and the console no 403). A write sent before the
+  // capability is known waits for whoami first.
+  if (method !== "GET" && method !== "HEAD") {
+    if (!squad.capability && squad.loaded) await squad.loaded.catch(() => null);
+    if (readOnly()) {
+      const e = new Error(READ_ONLY_TITLE);
+      e.code = "READ_ONLY_TOKEN";
+      e.status = 403;
+      throw e;
+    }
+  }
   const headers = body !== undefined ? { "content-type": "application/json" } : {};
   const tok = authToken();
   if (tok) headers["authorization"] = "Bearer " + tok;
@@ -2924,7 +2937,8 @@ async function buildPaletteSources() {
     lookupOnly: i >= 60,
     run: () => navigate(`#/ticket/${t.id}`),
   }));
-  return [...base, ...ticketItems];
+  // A read token creates nothing: the palette offers it no Create actions.
+  return [...(readOnly() ? base.filter((x) => x.group !== "Create") : base), ...ticketItems];
 }
 
 function ensurePalette() {
@@ -5584,10 +5598,12 @@ function cupRuns(f) {
     return progPage("campaigns", "sky", "Cup runs", "epics, by phase", [
       el("p", { class: "quiet" }, [
         "No cup runs yet. ",
-        el(
-          "button",
-          { class: "btn-link", type: "button", onclick: () => openPlanBuild() },
-          "Plan a build",
+        roLock(
+          el(
+            "button",
+            { class: "btn-link", type: "button", onclick: () => openPlanBuild() },
+            "Plan a build",
+          ),
         ),
         " and the epic lands here as rounds.",
       ]),
@@ -9615,21 +9631,23 @@ function closedRow(t, action) {
 
 /** Won't do is reversible: Reopen sends the ticket back to refining. */
 function wontDoReopen(card) {
-  return el(
-    "button",
-    {
-      class: "btn small",
-      type: "button",
-      title: "Reopen this ticket into refining",
-      "aria-label": `Reopen ${card.number != null ? `#${card.number}` : "this ticket"} into refining`,
-      onclick: () =>
-        guard(async () => {
-          await api("POST", `/tickets/${card.id}/reopen`, { to: "refining" });
-          toast("Reopened to refining", { ok: true });
-          router();
-        }),
-    },
-    "Reopen",
+  return roLock(
+    el(
+      "button",
+      {
+        class: "btn small",
+        type: "button",
+        title: "Reopen this ticket into refining",
+        "aria-label": `Reopen ${card.number != null ? `#${card.number}` : "this ticket"} into refining`,
+        onclick: () =>
+          guard(async () => {
+            await api("POST", `/tickets/${card.id}/reopen`, { to: "refining" });
+            toast("Reopened to refining", { ok: true });
+            router();
+          }),
+      },
+      "Reopen",
+    ),
   );
 }
 
@@ -10116,41 +10134,43 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
       el(
         "td",
         { class: "cl-act" },
-        el(
-          "button",
-          {
-            class: "btn danger small",
-            type: "button",
-            "aria-label": `Revoke ${agentLabel}'s claim on ${num}`,
-            // Revoking stops an agent's work, so it takes two presses: the first
-            // arms the button ("Stop the work?") for five seconds.
-            onclick: (e) => {
-              const btn = e.currentTarget;
-              if (btn.dataset.armed !== "1") {
-                btn.dataset.armed = "1";
-                btn.textContent = "Stop the work?";
-                btn.setAttribute(
-                  "aria-label",
-                  `Press again to stop ${agentLabel}'s work on ${num}`,
-                );
-                announce(`Press Revoke again to stop the work on ${num}`);
-                setTimeout(() => {
-                  if (!btn.isConnected || btn.dataset.armed !== "1") return;
-                  delete btn.dataset.armed;
-                  btn.textContent = "Revoke";
-                  btn.setAttribute("aria-label", `Revoke ${agentLabel}'s claim on ${num}`);
-                }, 5000);
-                return;
-              }
-              delete btn.dataset.armed;
-              guard(async () => {
-                await api("POST", `/claims/${c.claim_id}/revoke`);
-                toast("Claim revoked", { ok: true });
-                router();
-              });
+        roLock(
+          el(
+            "button",
+            {
+              class: "btn danger small",
+              type: "button",
+              "aria-label": `Revoke ${agentLabel}'s claim on ${num}`,
+              // Revoking stops an agent's work, so it takes two presses: the first
+              // arms the button ("Stop the work?") for five seconds.
+              onclick: (e) => {
+                const btn = e.currentTarget;
+                if (btn.dataset.armed !== "1") {
+                  btn.dataset.armed = "1";
+                  btn.textContent = "Stop the work?";
+                  btn.setAttribute(
+                    "aria-label",
+                    `Press again to stop ${agentLabel}'s work on ${num}`,
+                  );
+                  announce(`Press Revoke again to stop the work on ${num}`);
+                  setTimeout(() => {
+                    if (!btn.isConnected || btn.dataset.armed !== "1") return;
+                    delete btn.dataset.armed;
+                    btn.textContent = "Revoke";
+                    btn.setAttribute("aria-label", `Revoke ${agentLabel}'s claim on ${num}`);
+                  }, 5000);
+                  return;
+                }
+                delete btn.dataset.armed;
+                guard(async () => {
+                  await api("POST", `/claims/${c.claim_id}/revoke`);
+                  toast("Claim revoked", { ok: true });
+                  router();
+                });
+              },
             },
-          },
-          "Revoke",
+            "Revoke",
+          ),
         ),
       ),
     ]);
@@ -15198,7 +15218,9 @@ async function renderCreate(param) {
   if (param === "ticket") wrap._mounted = () => setTimeout(() => jumpTo("one-ticket"), 0);
   // Initial suggestion pass once the form is in the DOM (empty draft → likely
   // empty, but a pre-selected scope or single repo can still surface a candidate).
-  selector.refreshSuggestions();
+  // A read token files no ticket, so it asks for no suggestions (a POST it may not send).
+  roLockAll(form);
+  if (!readOnly()) selector.refreshSuggestions();
   return wrap;
 }
 
@@ -15358,6 +15380,7 @@ function renderRepoScopeSelector({ nodes, allRepos, getDraft, onChange }) {
 
   // --- suggestion population ------------------------------------------------
   async function refreshSuggestions() {
+    if (readOnly()) return; // POST /scope/repo-suggestions is a write route to the server
     const draft = getDraft ? getDraft() : {};
     const reqBody = {
       ...(draft.title ? { title: draft.title } : {}),
@@ -17402,6 +17425,7 @@ async function renderReview(param) {
         [approveLabel],
       )
     : null;
+  roLock(approveBtn);
   const restLabel = () => (outcome ? outcome.label : "Approve");
   // One arm for both paths: the first `a` or click raises the yellow card on the
   // button (the outcome's confirm label: "Confirm: send to tester", "Confirm and land
@@ -17650,7 +17674,8 @@ async function renderReview(param) {
     diffRepos = repos;
     if (diffState.approvable) {
       diffBlockBanner.style.display = "none";
-      if (approveBtn && !isApproved()) approveBtn.removeAttribute("disabled");
+      // A read token never gets a live Approve (the server would refuse it).
+      if (approveBtn && !isApproved() && !readOnly()) approveBtn.removeAttribute("disabled");
     } else {
       diffBlockBanner.style.display = "";
       clear(diffBlockBanner);
@@ -17741,17 +17766,21 @@ async function renderReview(param) {
         [
           approveBtn,
           hasTicketAction(t.status, "rework")
-            ? el(
-                "button",
-                { class: "btn", type: "button", onclick: () => reject("refining") },
-                "Send back…",
+            ? roLock(
+                el(
+                  "button",
+                  { class: "btn", type: "button", onclick: () => reject("refining") },
+                  "Send back…",
+                ),
               )
             : null,
           hasTicketAction(t.status, "wont_do")
-            ? el(
-                "button",
-                { class: "btn danger", type: "button", onclick: () => reject("cancelled") },
-                "Won't do…",
+            ? roLock(
+                el(
+                  "button",
+                  { class: "btn danger", type: "button", onclick: () => reject("cancelled") },
+                  "Won't do…",
+                ),
               )
             : null,
         ].filter(Boolean),
@@ -17851,6 +17880,9 @@ async function renderReview(param) {
       disarm();
       const to = tickets[idx + (e.key === "j" ? 1 : -1)];
       if (to) navigate(`#/review/${to.id}`);
+    } else if ((e.key === "a" || e.key === "r") && readOnly()) {
+      // A read token signs nothing off: the keys do what the switched-off buttons do.
+      return;
     } else if (e.key === "a") {
       e.preventDefault();
       if (approveBtn && approveBtn.classList.contains("is-approved")) return;
@@ -18263,10 +18295,12 @@ async function renderFactory() {
         .filter(Boolean)
         .join(" · "),
       [
-        el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
-          icon("plus"),
-          "New ground",
-        ]),
+        roLock(
+          el("button", { class: "btn", type: "button", onclick: () => navigate("#/node") }, [
+            icon("plus"),
+            "New ground",
+          ]),
+        ),
         onboardButton(repos, null, { primary: true }),
       ],
     ),
@@ -19262,25 +19296,27 @@ async function renderNode(id) {
     el("summary", { class: "btn small" }, "Edit ground"),
     el("div", { class: "card gr-edit-body" }, renderNodeForm(node, allNodes)),
   ]);
-  const deleteBtn = el(
-    "button",
-    {
-      class: "btn danger small",
-      type: "button",
-      onclick: () =>
-        confirmSheet({
-          title: `Delete ${node.name}`,
-          intro: `The ground “${node.name}” is deleted from the Map. This cannot be undone.`,
-          confirm: "Delete ground",
-          tone: "danger",
-          onConfirm: async () => {
-            await api("DELETE", `/scope/nodes/${node.id}`);
-            toast("Ground deleted", { ok: true });
-            navigate("#/factory");
-          },
-        }),
-    },
-    "Delete ground",
+  const deleteBtn = roLock(
+    el(
+      "button",
+      {
+        class: "btn danger small",
+        type: "button",
+        onclick: () =>
+          confirmSheet({
+            title: `Delete ${node.name}`,
+            intro: `The ground “${node.name}” is deleted from the Map. This cannot be undone.`,
+            confirm: "Delete ground",
+            tone: "danger",
+            onConfirm: async () => {
+              await api("DELETE", `/scope/nodes/${node.id}`);
+              toast("Ground deleted", { ok: true });
+              navigate("#/factory");
+            },
+          }),
+      },
+      "Delete ground",
+    ),
   );
 
   wrap.appendChild(
@@ -19398,7 +19434,7 @@ async function renderNode(id) {
         )
       : el("p", { class: "quiet" }, "No repo plays here yet. Link one below."),
     el("h3", { class: "gr-sub" }, "Link a repo"),
-    renderLinkRepoForm(node.id),
+    roLockAll(renderLinkRepoForm(node.id)),
   ]);
 
   const connCard = renderConnectionsCard(node, allNodes, allEdges);
@@ -19548,7 +19584,7 @@ function renderNodeForm(node, allNodes = []) {
       ]),
     ],
   );
-  return form;
+  return roLockAll(form);
 }
 
 function renderConnectionsCard(node, allNodes, allEdges) {
@@ -19593,14 +19629,16 @@ function renderConnectionsCard(node, allNodes, allEdges) {
           ...incoming.map((e) => edgeRow(e, "in")),
         ])
       : el("p", { class: "quiet" }, "No connections yet: this ground stands alone on the map.");
-  return el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
-    panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
-      kit: "sky",
-    }),
-    list,
-    el("h3", { class: "gr-sub" }, "Add a connection"),
-    renderAddEdgeForm(node, allNodes),
-  ]);
+  return roLockAll(
+    el("section", { class: "card gr-card", "aria-label": "Neighbours" }, [
+      panelHead("Neighbours", `${outgoing.length + incoming.length} on the map`, null, {
+        kit: "sky",
+      }),
+      list,
+      el("h3", { class: "gr-sub" }, "Add a connection"),
+      renderAddEdgeForm(node, allNodes),
+    ]),
+  );
 }
 /** An edge read from this node's side: "Contains", "Depends on", "Part of", "Needed by". */
 function edgePhrase(relation, dir) {
@@ -19892,7 +19930,7 @@ async function renderRepo(id) {
 
   const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
     panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
-    renderRepoCommandsEditor(repo),
+    roLockAll(renderRepoCommandsEditor(repo)),
   ]);
 
   const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
@@ -20053,23 +20091,25 @@ function renderMapRepoBox(repo, allNodes) {
     },
     "Map this repo",
   );
-  return el("div", { class: "map-repo-box" }, [
-    el("div", { class: "map-repo-lead" }, [
-      el("strong", {}, "This repo is unmapped. "),
-      "Map it into a scope node to coordinate it in factory mode. Existing tickets are not affected.",
-    ]),
-    el("div", { class: "map-repo-controls" }, [
-      el("label", { class: "assoc-edit-field" }, [
-        el("span", { class: "assoc-edit-label" }, "into node"),
-        nodeSel,
+  return roLockAll(
+    el("div", { class: "map-repo-box" }, [
+      el("div", { class: "map-repo-lead" }, [
+        el("strong", {}, "This repo is unmapped. "),
+        "Map it into a scope node to coordinate it in factory mode. Existing tickets are not affected.",
       ]),
-      el("label", { class: "assoc-edit-field" }, [
-        el("span", { class: "assoc-edit-label" }, "access"),
-        accessSel,
+      el("div", { class: "map-repo-controls" }, [
+        el("label", { class: "assoc-edit-field" }, [
+          el("span", { class: "assoc-edit-label" }, "into node"),
+          nodeSel,
+        ]),
+        el("label", { class: "assoc-edit-field" }, [
+          el("span", { class: "assoc-edit-label" }, "access"),
+          accessSel,
+        ]),
+        mapBtn,
       ]),
-      mapBtn,
     ]),
-  ]);
+  );
 }
 
 function renderRepoTickets(repo, tickets, err) {
@@ -20176,7 +20216,7 @@ function renderAddAssociationForm(repo, allNodes, existing) {
       el("button", { class: "btn", type: "submit" }, "Add association"),
     ],
   );
-  return form;
+  return roLockAll(form);
 }
 
 // ===========================================================================
@@ -20306,10 +20346,11 @@ async function renderEpics(param) {
   ]);
   const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
   const tickets = ticketsRes.tickets || [];
-  const planBtn = el(
-    "button",
-    { class: "btn primary", type: "button", onclick: () => openPlanBuild() },
-    [icon("spark"), el("span", {}, "Plan a build")],
+  const planBtn = roLock(
+    el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
+      icon("spark"),
+      el("span", {}, "Plan a build"),
+    ]),
   );
   // Authoring a spec lives on Specs; the season links there.
   const specsLink = el("a", { class: "btn", href: "#/specs" }, "Specs");
@@ -20323,10 +20364,12 @@ async function renderEpics(param) {
         "No campaigns on the fixture list.",
         "Describe what to build in plain words: Plan a build proposes the draw (draft tickets, round by round), and the campaign lands here once you confirm it.",
         null,
-        el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
-          icon("spark"),
-          el("span", {}, "Plan a build"),
-        ]),
+        roLock(
+          el("button", { class: "btn primary", type: "button", onclick: () => openPlanBuild() }, [
+            icon("spark"),
+            el("span", {}, "Plan a build"),
+          ]),
+        ),
       ),
     );
     return wrap;
@@ -21297,8 +21340,9 @@ function startPlanBuild(opts = {}) {
     } else if (sessionRes && sessionRes.session && planBuildState.history.length === 0) {
       // Restore server session (if one exists and the panel hasn't been interacted with).
       restorePlanBuildSession(sessionRes.session);
-    } else if (!sessionRes || !sessionRes.session) {
-      // No active session on the server — create one (best-effort).
+    } else if ((!sessionRes || !sessionRes.session) && !readOnly()) {
+      // No active session on the server — create one (best-effort). A read token
+      // cannot hold one (the server refuses the POST), so it reads without.
       await createPlanBuildSession();
     }
     planBuildState.nodes = nodesRes.nodes || [];
@@ -21491,13 +21535,26 @@ function updatePlanBuildActions() {
   const hasPlan = !!planBuildState.plan;
   // Hide the whole composer once a plan is proposed — the create path owns it now.
   form.hidden = hasPlan;
-  if (hasPlan) return;
-  planBuildEls.input.placeholder = turns
-    ? "Answer the planner, or add anything it should know…"
-    : "Describe what to build…";
-  // A bare first turn has no brief yet — force-plan with nothing to go on is a no-op.
-  forceBtn.disabled = planBuildState.busy || turns === 0;
-  forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
+  if (!hasPlan) {
+    planBuildEls.input.placeholder = turns
+      ? "Answer the planner, or add anything it should know…"
+      : "Describe what to build…";
+    // A bare first turn has no brief yet — force-plan with nothing to go on is a no-op.
+    forceBtn.disabled = planBuildState.busy || turns === 0;
+    forceBtn.classList.toggle("pb-force-strong", turns >= PLAN_BUILD_FORCE_EMPHASIS_TURNS);
+  }
+  lockPlanBuildForReadOnly();
+}
+
+/**
+ * A read token may read a plan conversation but not hold one: the composer, its
+ * examples and mode toggle, New plan and the plan's create buttons are switched off
+ * (Close stays live). Runs after every repaint of the panel.
+ */
+function lockPlanBuildForReadOnly() {
+  if (!planBuildEls || !readOnly()) return;
+  planBuildEls.closeBtn.setAttribute("data-ro-ok", "");
+  roLockAll(planBuildEls.panel);
 }
 
 // ── Shared target selector ──────────────────────────────────────────────────
@@ -23174,7 +23231,7 @@ function onboardButton(repos, presetRepo, opts) {
     },
     [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
-  return btn;
+  return roLock(btn);
 }
 
 // --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------
@@ -23332,10 +23389,11 @@ async function renderSpecList() {
   const specs = res.specs || [];
 
   const wrap = el("div", { class: "view view-specs", dataset: { view: "specs" } });
-  const author = el(
-    "button",
-    { class: "btn primary", type: "button", onclick: () => openSpecBuild() },
-    [icon("spark"), el("span", {}, "Author a spec")],
+  const author = roLock(
+    el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+      icon("spark"),
+      el("span", {}, "Author a spec"),
+    ]),
   );
   const by = (st) => specs.filter((s) => s.status === st).length;
   wrap.appendChild(
@@ -23394,10 +23452,12 @@ async function renderSpecList() {
             : "Nothing is on the pitch yet: a spec is a good first play.",
         ),
         el("div", { class: "btn-row" }, [
-          el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
-            icon("spark"),
-            el("span", {}, "Write the first play"),
-          ]),
+          roLock(
+            el("button", { class: "btn primary", type: "button", onclick: () => openSpecBuild() }, [
+              icon("spark"),
+              el("span", {}, "Write the first play"),
+            ]),
+          ),
         ]),
       ]),
     );
@@ -23659,19 +23719,21 @@ async function renderSpecDetail(specId) {
   }
   if (status === "draft") {
     actions.unshift(
-      el(
-        "button",
-        {
-          class: "btn primary",
-          type: "button",
-          onclick: (e) =>
-            runAsyncAction(e.currentTarget, "Freezing…", async () => {
-              await api("POST", `/specs/${encodeURIComponent(specId)}/freeze`);
-              toast("Spec frozen: its clauses are locked and seeded as lore.", { ok: true });
-              router();
-            }),
-        },
-        [icon("lock", "", 18), el("span", {}, "Freeze spec")],
+      roLock(
+        el(
+          "button",
+          {
+            class: "btn primary",
+            type: "button",
+            onclick: (e) =>
+              runAsyncAction(e.currentTarget, "Freezing…", async () => {
+                await api("POST", `/specs/${encodeURIComponent(specId)}/freeze`);
+                toast("Spec frozen: its clauses are locked and seeded as lore.", { ok: true });
+                router();
+              }),
+          },
+          [icon("lock", "", 18), el("span", {}, "Freeze spec")],
+        ),
       ),
     );
   } else if (status === "frozen" && !cov.scope_node_id && clauses.length) {
@@ -23699,6 +23761,7 @@ async function renderSpecDetail(specId) {
         [icon("spark"), el("span", {}, "Plan a build from it")],
       ),
     );
+    roLock(actions[0]);
   }
 
   wrap.appendChild(

@@ -44,6 +44,7 @@ export const ORDER = [
   "s11-health",
   "s4-autonomy",
   "s16-review-hold",
+  "s18-read-only",
   "sweep",
   "s4b-pr-mode",
   "s12b-idle-lanes",

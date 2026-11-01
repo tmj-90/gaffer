@@ -357,14 +357,23 @@ _shadow_config() {  # <host-worktree> <private-git-dir>: the ONLY config the pri
       case "$v" in *$'\n'* | *'"'* | *'\'*) continue ;; esac
       printf '[%s]\n\t%s = "%s"\n' "${k%%.*}" "${k#*.}" "$v"
     done
-  } > "$sd/config.gaffer-new"
+  } > "$sd/config.gaffer-new" || return 1
   # Replace, never write through: unlinking first breaks a hard link the container may
   # have left (a symlink or other special file is refused before this runs on import).
-  mv -f "$sd/config.gaffer-new" "$sd/config"
-  mkdir -p "$sd/objects/info" "$sd/refs/heads" "$sd/refs/tags" "$sd/info"
-  rm -rf "$sd/hooks" "$sd/commondir" "$sd/worktrees" "$sd/gitdir" 2>/dev/null || true
-  rm -f "$sd/objects/info/alternates" "$sd/objects/info/http-alternates" 2>/dev/null || true
-  printf '%s\n' "$_common/objects" > "$sd/objects/info/alternates"
+  # Every step must succeed: a root container can leave a dir the host cannot write (a
+  # non-root Linux host), and an import must never read a config or alternates the
+  # container chose, so any failure here refuses it.
+  mv -f "$sd/config.gaffer-new" "$sd/config" || return 1
+  mkdir -p "$sd/objects/info" "$sd/refs/heads" "$sd/refs/tags" "$sd/info" || return 1
+  rm -rf "$sd/hooks" "$sd/commondir" "$sd/worktrees" "$sd/gitdir" || return 1
+  rm -f "$sd/objects/info/alternates" "$sd/objects/info/http-alternates" || return 1
+  printf '%s\n' "$_common/objects" > "$sd/objects/info/alternates" || return 1
+  [ "$(cat "$sd/objects/info/alternates" 2>/dev/null)" = "$_common/objects" ] || return 1
+  local f
+  for f in hooks commondir worktrees gitdir objects/info/http-alternates; do
+    { [ -e "$sd/$f" ] || [ -L "$sd/$f" ]; } && return 1
+  done
+  return 0
 }
 # All private dirs live in ONE parent, made before any mask is computed: in the legacy
 # layout $GAFFER_DATA is mounted rw with its top-level entries masked as they are at
@@ -388,7 +397,7 @@ for _wr in ${_WRITE_ROOTS[@]+"${_WRITE_ROOTS[@]}"}; do
   esac
   _sd="$(mktemp -d "$_GIT_PRIV_BASE/sandbox-git.$$.XXXXXX" 2>/dev/null)" \
     || _die "could not create the private git directory for $_wr under $_GIT_PRIV_BASE"
-  _shadow_config "$_wr" "$_sd"
+  _shadow_config "$_wr" "$_sd" || _die "could not write the private git directory for $_wr under $_GIT_PRIV_BASE"
   # HEAD: the worktree's branch (symbolic) or its detached commit.
   _ref="$("${_HOSTGIT[@]}" -C "$_wr" symbolic-ref -q HEAD 2>/dev/null || true)"
   _old="$("${_HOSTGIT[@]}" -C "$_wr" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || true)"
@@ -436,7 +445,10 @@ _import_private_git() {
         "$wr" "$(find "$sd" ! -type f ! -type d -print 2>/dev/null | head -n 1)" >&2
       rc=1; continue
     fi
-    _shadow_config "$wr" "$sd"
+    if ! _shadow_config "$wr" "$sd"; then
+      printf 'sandbox-docker: import: could not rewrite the config and alternates of the private repository for %s (a path the container left that the host cannot write); nothing imported\n' "$wr" >&2
+      rc=1; continue
+    fi
     tip="$(GIT_DIR="$sd" "${_HOSTGIT[@]}" rev-parse -q --verify "$ref^{commit}" 2>/dev/null || true)"
     [ -n "$tip" ] || { printf 'sandbox-docker: import: the private repository for %s has no commit at %s; nothing imported\n' "$wr" "$ref" >&2; continue; }
     [ "$tip" = "$old" ] && continue
@@ -463,12 +475,29 @@ _import_private_git() {
   done
   return "$rc"
 }
+# On a non-root Linux host what the container (root) wrote inside a private dir is
+# root-owned, and the host's rm -rf leaves it behind (one leftover per agent and gate
+# run). Then a minimal container removes it: no network, no capability but
+# DAC_OVERRIDE, only the private dirs' parent mounted, and a fixed `rm -rf -- <dir>`.
 _cleanup_private_git() {
   local row wr sd rest
   for row in ${_SHADOWS[@]+"${_SHADOWS[@]}"}; do
     IFS=$'\t' read -r wr sd rest <<<"$row"
-    case "$sd" in "$_GIT_PRIV_BASE"/sandbox-git.*) rm -rf "$sd" 2>/dev/null || true ;; esac
+    case "$sd" in "$_GIT_PRIV_BASE"/sandbox-git.*) ;; *) continue ;; esac
+    case "$sd" in */../* | */./*) continue ;; esac
+    rm -rf "$sd" 2>/dev/null || true
+    { [ -e "$sd" ] || [ -L "$sd" ]; } || continue
+    case "$_GIT_PRIV_BASE" in *:* | *$'\n'*)
+      printf 'sandbox-docker: could not remove %s (root-owned files; its path holds a ":" so no cleanup container can mount it)\n' "$sd" >&2
+      continue ;;
+    esac
+    docker run --rm --network none --cap-drop=ALL --cap-add=DAC_OVERRIDE \
+      --security-opt=no-new-privileges -v "$_GIT_PRIV_BASE:$_GIT_PRIV_BASE" \
+      --entrypoint rm "$_IMAGE" -rf -- "$sd" >/dev/null 2>&1 || true
+    { [ -e "$sd" ] || [ -L "$sd" ]; } \
+      && printf 'sandbox-docker: could not remove the private git directory %s\n' "$sd" >&2
   done
+  return 0
 }
 
 # --- $GAFFER_DATA: the MCP data plane's DB directory, everything else MASKED (B25c) ------

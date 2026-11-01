@@ -181,7 +181,12 @@ Tags, `main` and any other ref written inside are dropped with the private dir. 
 validation profile (DoD gates, AC checks) imports nothing, so a gate can never move the
 branch it validates. Every private dir lives in one parent (`$GAFFER_DATA/sandbox-git/`)
 made before the masks are computed, so in the legacy layout, where `$GAFFER_DATA` is
-mounted with its entries masked, another delivery's private dir is never visible. Landing the ticket branch onto the target is unchanged: the host
+mounted with its entries masked, another delivery's private dir is never visible. On a
+non-root Linux host what the container (root) wrote in its private dir is root-owned and
+the host cannot remove it, so the wrapper then removes it with a minimal container (no
+network, only `DAC_OVERRIDE`, only `$GAFFER_DATA/sandbox-git/` mounted, a fixed
+`rm -rf -- <dir>`). For the same reason the import refuses when the host cannot rewrite
+the private config or alternates. Landing the ticket branch onto the target is unchanged: the host
 does it, after approval.
 
 `runner/test/sandbox-docker-git-isolation.test.sh` renders the mounts in every

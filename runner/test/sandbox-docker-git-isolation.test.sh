@@ -238,6 +238,63 @@ WRC=0; wait "$WPID" || WRC=$?
 grep -qx GOT_TERM "$SIG_LOG" && ok "the TERM reached docker" || fail "the TERM never reached docker: $(tr '\n' ' ' < "$SIG_LOG")"
 [ "$WRC" = 5 ] && ok "the wrapper exits with the container's status (5)" || fail "the wrapper exited $WRC, not the container's 5"
 
+echo "== (2g) a private dir the host cannot remove is removed through a container =="
+# On a non-root Linux host, what the container (root) wrote inside the private repo is
+# root-owned and the host's rm -rf leaves it behind: one leftover per agent and gate run
+# under $GAFFER_DATA/sandbox-git/. Root cannot be faked here, so a PATH `rm` refuses the
+# private dir the way a non-root host would, and the fake docker records (and performs)
+# the cleanup run the wrapper must then make.
+CBIN="$WORK/cleanbin"; mkdir -p "$CBIN"
+REAL_RM="$(command -v rm)"
+cat > "$CBIN/rm" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in */sandbox-git/sandbox-git.*/*) ;; */sandbox-git/sandbox-git.*) echo "rm: cannot remove '\$a': Permission denied" >&2; exit 1 ;; esac
+done
+exec "$REAL_RM" "\$@"
+STUB
+cat > "$CBIN/docker" <<STUB
+#!/usr/bin/env bash
+[ "\${1:-}" = "run" ] || exit 0
+for a in "\$@"; do [ "\$a" = "-d" ] && exit 0; done
+case " \$* " in
+  *" --entrypoint rm "*) printf '%s\\n' "\$*" >> "$WORK/cleanup-runs.log"; eval "last=\\\${\$#}"; "$REAL_RM" -rf -- "\$last"; exit 0 ;;
+esac
+exit 0
+STUB
+chmod +x "$CBIN/rm" "$CBIN/docker"; : > "$WORK/cleanup-runs.log"
+for prof in agent validation; do
+  if [ "$prof" = validation ]; then PENV=validation; else PENV=""; fi
+  ( cd "$WT" && PATH="$CBIN:$PATH" GAFFER_SANDBOX_PROFILE="$PENV" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c true >/dev/null 2>&1 )
+  ls -d "$GAFFER_DATA"/sandbox-git/sandbox-git.* >/dev/null 2>&1 \
+    && fail "$prof: the private dir the host could not remove was left behind" \
+    || ok "$prof: the private dir the host could not remove is gone"
+  rm -rf "$GAFFER_DATA"/sandbox-git/sandbox-git.* 2>/dev/null
+done
+CL="$(cat "$WORK/cleanup-runs.log")"
+[ "$(grep -c . <<<"$CL")" = 2 ] && ok "one cleanup container per leftover (agent and gate)" || fail "cleanup runs: $(printf '%s' "$CL" | tr '\n' '|')"
+grep -q -- "--network none" <<<"$CL" && grep -q -- "-v $GAFFER_DATA/sandbox-git:$GAFFER_DATA/sandbox-git" <<<"$CL" \
+  && ok "the cleanup container has no network and mounts only the private dirs' parent" \
+  || fail "cleanup container shape: $CL"
+
+echo "== (2h) the import refuses when the host cannot rewrite the private config =="
+# A root container can replace objects/info with a dir the host cannot write; the import
+# must not then fetch through the alternates the container chose.
+LOCKPAY="echo k > k.txt && git add k.txt && git -c user.email=s@x -c user.name=s commit -qm locked && : > '$WORK/lock-on' && echo LOCK_DONE"
+TIP4="$(git -C "$REPO" rev-parse gaffer/ticket-1)"
+LBIN="$WORK/lockbin"; mkdir -p "$LBIN"
+cat > "$LBIN/rm" <<STUB
+#!/usr/bin/env bash
+[ -f "$WORK/lock-on" ] && for a in "\$@"; do case "\$a" in */objects/info/alternates) echo "rm: cannot remove '\$a': Permission denied" >&2; exit 1 ;; esac; done
+exec "$REAL_RM" "\$@"
+STUB
+chmod +x "$LBIN/rm"
+OUT="$(cd "$WT" && PATH="$LBIN:$BIN:$PATH" bash "$RUNNER_DIR/lib/sandbox-docker.sh" "$WRF" "$RRF" -- sh -c "$LOCKPAY" 2>&1)"; RC=$?
+grep -q LOCK_DONE <<<"$OUT" && ok "the lock payload committed inside" || fail "lock payload did not run: $OUT"
+[ "$RC" != 0 ] && ok "wrapper reports the refused import (exit $RC)" || fail "an import over an unrewritable private config exited 0"
+[ "$(git -C "$REPO" rev-parse gaffer/ticket-1)" = "$TIP4" ] && ok "nothing imported when the host cannot rewrite the private config" || fail "imported over an unrewritable private config"
+rm -f "$WORK/lock-on"; git -C "$WT" reset -q --hard "$TIP4" 2>/dev/null; rm -f "$WT/k.txt"; rm -rf "$GAFFER_DATA"/sandbox-git/sandbox-git.* 2>/dev/null
+
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS: $PASS checks"; exit 0; fi
 echo "FAILED: ${#FAILURES[@]} of $((PASS + ${#FAILURES[@]}))"; exit 1

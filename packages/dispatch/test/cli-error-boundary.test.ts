@@ -6,8 +6,8 @@
  * `{"ok":false,"code",…}` on stderr. One error boundary now turns each of them into
  * that line; the REST side of the lock case is a 503 DB_BUSY, not a bare 500.
  */
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import type { ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { handleError } from "../src/api/http.js";
 import { Dispatch } from "../src/core.js";
 
-import { CLI_BUILT, oneLineError, runBin } from "./helpers/cliBin.js";
+import { CLI_BIN, CLI_BUILT, oneLineError, runBin } from "./helpers/cliBin.js";
 
 const require = createRequire(import.meta.url);
 
@@ -94,6 +94,54 @@ describe.skipIf(!CLI_BUILT)(
       expect(e.code).toBe("DISPATCH_DB_OPEN_FAILED");
       expect(e.message).toMatch(/If the file is corrupt, restore a backup/);
     });
+
+    it("a reader that closes the pipe early (`| head`) gets no EPIPE stack", () => {
+      // Enough output to outlast the pipe buffer, so the CLI is still writing when the
+      // reader has gone.
+      const wg = Dispatch.open(db);
+      for (let i = 0; i < 200; i++) {
+        wg.createTicket(
+          { title: `t${i}`, description: "x".repeat(2000) },
+          { type: "human", id: "test" },
+        );
+      }
+      wg.db.close();
+      for (const args of ["export", "ticket list"]) {
+        const r = spawnSync(
+          "bash",
+          [
+            "-c",
+            'set -o pipefail; "$0" "$1" --db "$2" $3 | head -c 1 >/dev/null',
+            process.execPath,
+            CLI_BIN,
+            db,
+            args,
+          ],
+          { encoding: "utf8", timeout: 60_000 },
+        );
+        expectNoStack(r.stderr);
+        expect(r.stderr, args).not.toMatch(/EPIPE/);
+        expect(r.status, `${args}: ${r.stderr}`).toBe(0);
+      }
+    });
+
+    // Root ignores file permissions, so this runs wherever the tests are not root (CI).
+    it.skipIf(process.getuid?.() === 0)(
+      "a read-only database file is the open-failure guidance, not INTERNAL_ERROR",
+      () => {
+        chmodSync(db, 0o444);
+        try {
+          const r = runBin(db, ["ticket", "list"]);
+          expectNoStack(r.stderr);
+          expect(r.status).toBe(1);
+          const e = oneLineError(r.stderr);
+          expect(e.code).toBe("DISPATCH_DB_OPEN_FAILED");
+          expect(e.message).toMatch(/read-only/);
+        } finally {
+          chmodSync(db, 0o644);
+        }
+      },
+    );
 
     describe("a database write-locked by another process", () => {
       let holder: ChildProcess | undefined;

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { buildProgram, runProgram } from "./program.js";
+import { buildProgram, guardStdio, runProgram } from "./program.js";
+
+guardStdio();
 
 void runProgram(buildProgram(), process.argv).then((code) => {
   process.exitCode = code;

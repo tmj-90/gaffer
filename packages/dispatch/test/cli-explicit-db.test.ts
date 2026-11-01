@@ -41,7 +41,8 @@ describe.skipIf(!CLI_BUILT)(
         expect(e.code).toBe("DB_NOT_FOUND");
         expect(e.message).toContain(`no database at ${db}`);
         expect(e.message).toContain("runner/gaffer setup");
-        expect(e.message).toContain("wg init");
+        // The init command by the name that was typed: `dispatch` here.
+        expect(e.message).toContain("`dispatch init`");
         expect(r.stdout).toBe("");
         expect(existsSync(db), args.join(" ")).toBe(false);
       }
@@ -86,6 +87,7 @@ describe.skipIf(!CLI_BUILT)(
       });
       expect(r.status).toBe(2);
       expect(r.stderr).toContain("runner/gaffer setup");
+      expect(r.stderr).toContain("`gaffer wg init`");
       expect(readdirSync(data)).toEqual([]);
     });
   },

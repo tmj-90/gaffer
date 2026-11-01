@@ -36,9 +36,11 @@ export function assertCliDbExists(explicit?: string): void {
   const path = resolveDbPath(explicit);
   if (explicit === ":memory:" || existsSync(path)) return;
   const implicit = isImplicitDbPath(explicit);
+  // The init command by the name that was typed (`gaffer wg` sets DISPATCH_CLI_NAME).
+  const cli = process.env["DISPATCH_CLI_NAME"]?.trim() || "dispatch";
   throw new DispatchError(
     "DB_NOT_FOUND",
-    `no database at ${path}: run \`runner/gaffer setup\` (or \`wg init\`)` +
+    `no database at ${path}: run \`runner/gaffer setup\` (or \`${cli} init\`)` +
       (implicit
         ? ". No --db and no DISPATCH_DB were given, so this is the current directory's " +
           "fallback: pass --db <path>, set DISPATCH_DB, or use `runner/gaffer wg …` " +

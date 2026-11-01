@@ -21,6 +21,8 @@
 #   * claude TRIPWIRE: a `claude` stub is first on PATH and in CLAUDE_BIN. It answers
 #     `--version`; any other call is logged and exits 97, and a logged call fails the
 #     run. No test may make a real, billed model call on a contributor's machine.
+#   * NODE_COMPILE_CACHE points at a per-run dir, so the many short node processes a
+#     test starts (each `wg` call is one) reuse each other's compiled modules.
 #   * dollar-cap opt-out: GAFFER_ALLOW_UNCAPPED=1 is exported, because a live run with
 #     no GAFFER_DAILY_BUDGET_USD / GAFFER_BUDGET_USD refuses to start and every agent
 #     here is a stub (spend-cap-required.test.sh unsets it to prove the refusal).
@@ -191,6 +193,12 @@ RES="$(mktemp -d "${TMPDIR:-/tmp}/gaffer-run.XXXXXX")"
 gaffer_test_check_tmp "$RES" || exit 70
 trap 'gaffer_test_rm_work "$RES"' EXIT
 export GAFFER_RUN_RES="$RES"
+# Node's on-disk compile cache (Node 22.1+): every dispatch CLI call, json-tool and
+# helper a test starts is a fresh node process that would otherwise compile the same
+# few hundred ES modules from scratch; with the cache each reuses the code a previous
+# process compiled. Per run, under $RES (removed with it), so no test sees an older
+# run's cache or the operator's.
+export NODE_COMPILE_CACHE="$RES/node-compile-cache"
 mkdir -p "$RES/tripwire"
 export GAFFER_CLAUDE_TRIPWIRE_LOG="$RES/tripwire.log"
 : >"$GAFFER_CLAUDE_TRIPWIRE_LOG"

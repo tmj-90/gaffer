@@ -14,6 +14,7 @@
 # "::group::<file> — PASS (<n>s)" line per test.
 # ESTIMATES until the next refresh (the test changed after that run):
 #   delivery-lifecycle: 100 - 60, the two TICK_SLEEP=30 pauses it no longer sleeps (Linux alone: 95s -> 36s).
+#   e2e-release-gate-merge-typecheck: 136 x 65/141, scenarios 1-2 only (Linux alone: 141s -> 65s).
 334	land-tester-replay.test.sh
 297	merge-lane.test.sh
 252	land-tester-replay-proof.test.sh
@@ -26,7 +27,6 @@
 151	gate-integrity-e2e.test.sh
 148	e2e-per-path-stack-routing.test.sh
 141	review-wedge.test.sh
-136	e2e-release-gate-merge-typecheck.test.sh
 133	afk-review-hold.test.sh
 131	e2e-release-gate-merge-combination.test.sh
 130	branch-retention.test.sh
@@ -45,6 +45,7 @@
 64	e2e-release-gate-ci-required.test.sh
 64	setup-error-circuit.test.sh
 63	e2e-release-gate-epic-verdict.test.sh
+63	e2e-release-gate-merge-typecheck.test.sh
 63	rework-cost-live.test.sh
 61	landing-revocation.test.sh
 60	parallel-stop-live.test.sh

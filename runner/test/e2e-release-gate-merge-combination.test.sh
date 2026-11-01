@@ -21,12 +21,16 @@
 #   4  compare-and-land: a target that moves after the gate is re-gated, never landed
 #      on the stale verdict (lib/land.sh _gaffer_land_gated → 7).
 #
-# RG2_GATE=typecheck runs the same scenarios with the failing check moved to the repo's
+# RG2_GATE=typecheck runs 1 and 2 with the failing check moved to the repo's
 # package.json `typecheck` script (test is `node -e 0`): the merge gate must run the
 # SAME auto-detected typecheck the delivery gate runs (gaffer_dod_typecheck_cmd), not
 # only an explicit GAFFER_DOD_TYPECHECK_CMD — the regression from external review 2's
 # round-1 finding (the merge gate SKIPPED typecheck, B landed, main was red).
-# e2e-release-gate-merge-typecheck.test.sh is that variant.
+# e2e-release-gate-merge-typecheck.test.sh is that variant. It stops after 2: scenario 4
+# never runs a gate, and 3's Merge now path is this file's default run, with the
+# typecheck wiring of its gate (gateProposedMerge passing the target, a failing
+# auto-detected typecheck failing that merge gate) pinned by dod-regate-typecheck.test.sh
+# T6. Re-running both with the other gate only repeated two deliveries and two merges.
 # Run: bash runner/test/e2e-release-gate-merge-combination.test.sh
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -139,6 +143,14 @@ HQ="$(node -e '
   process.stdout.write(i ? `${i.kind}|${i.reasonCode}|${i.reason}` : "none");' --input-type=module "$ROOT/packages/dispatch/dist/core.js" "$DISPATCH_DB" "$B" 2>/dev/null || echo none)"
 case "$HQ" in "parked|merge_gate_red|"*"fails its gates"*) ok "B is in the human queue: parked, merge_gate_red, with the reason" ;; *) fail "human queue item: $HQ" ;; esac
 
+finish() {
+  echo
+  if [ "${#FAILURES[@]}" -eq 0 ]; then echo "$NAME: ALL $PASS checks passed"; exit 0; fi
+  echo "$NAME: ${#FAILURES[@]} FAILURE(S):"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1
+}
+# The typecheck variant's own part ends here (see the header).
+[ "$RG2_GATE" = typecheck ] && finish
+
 echo "== 3: the dashboard's Merge now (bin/merge-ticket.mjs) applies the same gate =="
 C="$(new_ticket "Tag by handle [read-handle]" "tag() reads user().handle")"
 D="$(new_ticket "Drop the unused handle [drop-handle]" "remove handle from user(); nothing reads it")"
@@ -169,6 +181,4 @@ _gaffer_land_gated "$R" cl-target "$T0" "$(git -C "$R" rev-parse cl-branch)" cl-
 [ "$rc" -eq 7 ] && [ "$(git -C "$R" rev-parse cl-target)" = "$MOVED" ] && ok "target moved since the gate → rc 7 (re-gate), target untouched" || fail "compare-and-land rc=$rc"
 grep -q "re-gating on the new target" "$RUNNER_DIR/lib/land.sh" && grep -q "landGatedMerge" "$RUNNER_DIR/bin/merge-ticket.mjs" && ok "both landing paths re-gate a moved target" || fail "re-gate wiring missing"
 
-echo
-if [ "${#FAILURES[@]}" -eq 0 ]; then echo "$NAME: ALL $PASS checks passed"; exit 0; fi
-echo "$NAME: ${#FAILURES[@]} FAILURE(S):"; for f in "${FAILURES[@]}"; do echo "  - $f"; done; exit 1
+finish

@@ -11837,7 +11837,9 @@ function ticketRunsPanel(t, events) {
               ? el(
                   "span",
                   { class: "run-detail-chip" },
-                  `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
+                  d.outcome === "blocked"
+                    ? "parked as blocked"
+                    : `ended ${statusLabel(d.outcome).replace(/_/g, " ").toLowerCase()}`,
                 )
               : null,
           ];

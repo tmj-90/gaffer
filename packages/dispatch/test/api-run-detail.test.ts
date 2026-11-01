@@ -182,6 +182,40 @@ describe("detectOutcome", () => {
     expect(detectOutcome(log, "succeeded")).toBe("FLAGGED");
   });
 
+  it("detects blocked when the delivery parked the ticket, though an attempt finished rc=0 (exploratory finding ui-workflows/F5)", () => {
+    // The real shape: two attempts finish rc=0, the acceptance check fails both, and the
+    // tick parks the ticket as blocked. Match footage read "ended in review".
+    const log = [
+      "2026-11-01T08:19:49 delivery tick for #2 finished (rc=0)",
+      "2026-11-01T08:19:52 AC-check: #2 FAILED — 1 gate(s): 0 pass, 0 skip, 1 fail (failed: ac-check@AC1: archive flag exists); auto-rejecting back to rework (not submitting for review)",
+      "2026-11-01T08:19:56 delivery tick for #2 finished (rc=0)",
+      "2026-11-01T08:20:00 released claim on #2 → blocked (acceptance-check failed after an identical failure on attempts 1 and 2)",
+      "2026-11-01T08:20:00 RECOVER: parked #2 (→ blocked, rework_exhausted) after an identical failure on attempts 1 and 2 — branch gaffer/ticket-2 PRESERVED for rework, VISIBLE on the board",
+      "2026-11-01T08:20:00 delivery PARKED for #2 — acceptance-check not met (rework_exhausted, an identical failure); worktree removed, branch gaffer/ticket-2 PRESERVED, VISIBLE in blocked",
+      "TICK_RESULT=error",
+    ].join("\n");
+    expect(detectOutcome(log, "succeeded")).toBe("blocked");
+    // Each blocked marker on its own.
+    for (const line of [
+      "delivery PARKED for #9 — tests not met (rework_exhausted, attempts used); worktree removed",
+      "RECOVER: parked #9 (→ blocked, rework_exhausted) after 3 attempts",
+      "NOCOMMIT: parked #9 (→ blocked, rework_exhausted) after 3 no-commit failures",
+      "released claim on #9 → blocked (decision opened)",
+    ]) {
+      expect(
+        detectOutcome(`delivery tick for #9 finished (rc=0)\n${line}`, "succeeded"),
+        line,
+      ).toBe("blocked");
+    }
+    // An EMPTY delivery is parked to refining (needs clarification), not blocked.
+    expect(
+      detectOutcome(
+        "delivery tick for #4 finished (rc=0)\nEMPTY delivery for #4 — 0 commits / no diff across all write repos; parking (no blind retry)\ndelivery PARKED for #4 — empty; removed worktrees + branch gaffer/ticket-4",
+        "succeeded",
+      ),
+    ).toBe("refining");
+  });
+
   it("returns null when log text has no conclusive markers", () => {
     const log = "ready=2 → delivering #3 ('Add feature') in myrepo [stack=node]";
     expect(detectOutcome(log, "failed")).toBeNull();

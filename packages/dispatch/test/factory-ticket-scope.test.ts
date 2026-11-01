@@ -132,7 +132,13 @@ describe("factory ticket scope (MCP agent writes)", () => {
       );
 
       const mine = call(h, `#${own.number}`, spare.id, own.number);
-      expect(mine.isError).toBeUndefined();
+      if (tool === "add_acceptance_criterion") {
+        // In scope, but a claimed ticket's contract is frozen (api-robustness F3): the
+        // refusal is the contract guard's, not the scope guard's.
+        expect(code(mine)).toBe("CONTRACT_FROZEN");
+      } else {
+        expect(mine.isError).toBeUndefined();
+      }
     });
 
     it(`${tool}: a ticket bound by GAFFER_SCOPE_TICKET / GAFFER_REVIEW_TICKET (by number) passes`, () => {

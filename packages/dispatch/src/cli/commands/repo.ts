@@ -1,9 +1,18 @@
 import { spawnSync } from "node:child_process";
+import { realpathSync, statSync } from "node:fs";
+import { resolve } from "node:path";
 
 import type { Command } from "commander";
 
 import { GIT_REF_SAFE } from "../../domain/schemas.js";
-import { cliActor, open, printJson } from "../shared.js";
+import { DispatchError } from "../../util/errors.js";
+import {
+  AS_HUMAN_OR_SYSTEM_HELP,
+  cliActor,
+  humanOrSystemActor,
+  open,
+  printJson,
+} from "../shared.js";
 
 /**
  * Best-effort detection of a local repo's default branch, so `repo add` no longer
@@ -32,13 +41,49 @@ export function detectDefaultBranch(path: string | undefined): string | undefine
   return candidate && GIT_REF_SAFE.test(candidate) ? candidate : undefined;
 }
 
+/**
+ * `repo add --path` the way `gaffer onboard` takes a path (exploratory finding
+ * cli-wg/F-06): resolved against the cwd and canonicalised (`cd "$path" && pwd -P`),
+ * so the stored path never depends on where the dashboard or runner was started; a
+ * missing path or a file is refused; a directory that is not a git repo is kept, with
+ * the onboard warning (the factory branches per ticket).
+ */
+export function canonicalRepoPath(path: string): {
+  path: string;
+  warnings: { code: string; message: string }[];
+} {
+  let abs: string;
+  try {
+    abs = realpathSync(resolve(path));
+  } catch {
+    throw new DispatchError("VALIDATION_ERROR", `--path: no such directory: ${path}`, { path });
+  }
+  if (!statSync(abs).isDirectory()) {
+    throw new DispatchError("VALIDATION_ERROR", `--path is not a directory: ${path}`, { path });
+  }
+  const git = spawnSync("git", ["-C", abs, "rev-parse", "--git-dir"], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  const warnings =
+    git.status === 0
+      ? []
+      : [
+          {
+            code: "NOT_A_GIT_REPO",
+            message: `${abs} is not a git repo (the factory branches per ticket — you'll want one); the default branch falls back to main.`,
+          },
+        ];
+  return { path: abs, warnings };
+}
+
 export function registerRepo(program: Command): void {
   const repo = program.command("repo").description("Repository commands");
   repo
     .command("add")
     .description("Register a repository")
     .requiredOption("-n, --name <name>", "repo name")
-    .option("--path <path>", "local path")
+    .option("--path <path>", "local checkout (must exist; stored as its canonical absolute path)")
     .option("--remote <url>", "remote url")
     .option("--branch <branch>", "default branch (auto-detected from --path when omitted)")
     .option("--stack <stack>", "stack")
@@ -46,15 +91,19 @@ export function registerRepo(program: Command): void {
     .option("--lint <cmd>", "lint command (the I3 lint DoD gate)")
     .option("--coverage <cmd>", "coverage command")
     .action((opts, cmd) => {
+      const checked =
+        opts.path !== undefined
+          ? canonicalRepoPath(String(opts.path))
+          : { path: undefined, warnings: [] };
       const wg = open(cmd.optsWithGlobals());
       // When --branch is omitted, detect the repo's ACTUAL default branch from
       // --path rather than assuming `main` — assuming `main` on a `master` repo
       // hard-fails every delivery at `git worktree add … off <default_branch>`.
-      const branch = opts.branch ?? detectDefaultBranch(opts.path) ?? "main";
+      const branch = opts.branch ?? detectDefaultBranch(checked.path) ?? "main";
       const r = wg.registerRepository(
         {
           name: opts.name,
-          local_path: opts.path,
+          local_path: checked.path,
           remote_url: opts.remote,
           default_branch: branch,
           stack: opts.stack,
@@ -64,7 +113,17 @@ export function registerRepo(program: Command): void {
         },
         cliActor(),
       );
-      printJson({ ok: true, repo: { id: r.id, name: r.name, default_branch: r.default_branch } });
+      for (const w of checked.warnings) process.stderr.write(`warning: ${w.code}: ${w.message}\n`);
+      printJson({
+        ok: true,
+        repo: {
+          id: r.id,
+          name: r.name,
+          default_branch: r.default_branch,
+          local_path: r.local_path,
+        },
+        ...(checked.warnings.length > 0 ? { warnings: checked.warnings } : {}),
+      });
       wg.db.close();
     });
 
@@ -117,10 +176,12 @@ export function registerRepo(program: Command): void {
     .command("link <ref> <repoName>")
     .description("Link a repository to a ticket")
     .option("--role <role>", "role", "primary")
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((ref, repoName, opts, cmd) => {
+      const actor = humanOrSystemActor(opts.as);
       const wg = open(cmd.optsWithGlobals());
       const t = wg.resolveTicket(ref);
-      wg.linkRepository(t.id, repoName, opts.role, cliActor());
+      wg.linkRepository(t.id, repoName, opts.role, actor);
       printJson({ ok: true });
       wg.db.close();
     });

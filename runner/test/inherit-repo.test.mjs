@@ -451,8 +451,8 @@ console.log("== AC6: buildClaudeArgv shape + tick.sh wiring ==");
   else fail("tick.sh does not wire gaffer_inherit_repo");
 
   const lib = readFileSync(resolve(RUNNER_DIR, "lib", "greenfield.sh"), "utf8");
-  if (lib.includes("gaffer_inherit_repo") && lib.includes("wg ticket repo-access set"))
-    ok("greenfield.sh defines gaffer_inherit_repo and links via wg repo-access set");
+  if (lib.includes("gaffer_inherit_repo") && lib.includes("wg ticket repo-access inherit"))
+    ok("greenfield.sh defines gaffer_inherit_repo and links via wg repo-access inherit (system)");
   else fail("greenfield.sh missing gaffer_inherit_repo / wg link verb");
 }
 

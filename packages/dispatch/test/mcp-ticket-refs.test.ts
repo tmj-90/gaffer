@@ -105,6 +105,12 @@ describe("MCP ticket references are accepted uniformly", () => {
       it(`${tool} accepts ${ref === "uuid" ? "the id" : `'${ref}'`}`, () => {
         const s = seed();
         const r = call(s, ref === "uuid" ? s.id : ref);
+        if (tool === "add_acceptance_criterion") {
+          // The ref resolved to the claimed ticket, whose contract is frozen
+          // (api-robustness F3): CONTRACT_FROZEN, never NOT_FOUND.
+          expect((r.structuredContent.error as { code: string }).code).toBe("CONTRACT_FROZEN");
+          return;
+        }
         expect(r.structuredContent.error).toBeUndefined();
         if (returnsId) expect(r.structuredContent.ticket_id).toBe(s.id);
       });

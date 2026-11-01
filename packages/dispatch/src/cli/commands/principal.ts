@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 
+import { DispatchError } from "../../util/errors.js";
 import { cliActor, open, printJson } from "../shared.js";
 
 /**
@@ -26,6 +27,13 @@ export function registerPrincipal(program: Command): void {
       "the actor id recorded on this principal's writes (default: the name)",
     )
     .action((name: string, opts: { read: boolean; admin: boolean; actorId?: string }, cmd) => {
+      if (opts.read && opts.admin) {
+        // cli-wg/F-20: a read-scoped admin is a contradiction (it used to be minted).
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--read and --admin conflict: a read-only principal cannot act as an admin.",
+        );
+      }
       const wg = open(cmd.optsWithGlobals());
       try {
         const { principal: p, token } = wg.createPrincipal(

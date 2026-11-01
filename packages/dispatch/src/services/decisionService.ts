@@ -43,6 +43,16 @@ export class DecisionService {
     input: { title: string; question: string; severity?: DecisionSeverity; ticketId?: string },
     actor: Actor,
   ): Decision {
+    // cli-wg/F-16: an empty decision showed as a blank "[Decision] — why:" in the
+    // human queue, a question nobody could answer.
+    for (const [field, value] of [
+      ["title", input.title],
+      ["question", input.question],
+    ] as const) {
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw new DispatchError("VALIDATION_ERROR", `A decision needs a ${field}.`, { field });
+      }
+    }
     const now = this.clock.now();
     const decision = inTransaction(this.db, () => {
       const created: Decision = {

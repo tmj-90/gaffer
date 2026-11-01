@@ -216,7 +216,8 @@ export const toolSchemas = {
     ticket_id: z.string().min(1),
     can_be_tested: z.boolean(),
   },
-  // BBT-001: record the testing handover artifact (the implementer/reviewer fills it).
+  // BBT-001: record the testing handover artifact (the implementer/reviewer fills it;
+  // from in_testing on it is part of the frozen contract).
   set_test_contract: {
     ticket_id: z.string().min(1),
     changed_surfaces: z.array(z.string()).optional(),
@@ -445,7 +446,7 @@ export function makeHandlers(wg: Dispatch, actor: Actor) {
     throw new DispatchError(
       "FACTORY_RUNNER_OWNED",
       "add_acceptance_criterion: a reviewer/tester mount may not add a check_command (the " +
-        "runner executes it). Add the criterion as prose, or raise it in your verdict.",
+        "runner executes it), and the contract is frozen under review. Raise it in your verdict.",
     );
   };
   const raw = {

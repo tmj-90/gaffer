@@ -326,12 +326,12 @@ chmod +x "$BIN/claude"
   # Live mode: deterministic link + the ambiguous claude decision both apply.
   gaffer_inherit_repo 61 >/dev/null 2>&1
 )
-if grep -q "ticket repo-access set 62 auto-trader --access write" "$WG_LOG"; then
-  ok "deterministic link applied via 'wg ticket repo-access set 62 auto-trader --access write'"
+if grep -q "ticket repo-access inherit 62 auto-trader" "$WG_LOG"; then
+  ok "deterministic link applied via 'wg ticket repo-access inherit 62 auto-trader'"
 else
   fail "deterministic link not applied (wg.log: $(cat "$WG_LOG" 2>/dev/null))"
 fi
-if grep -q "ticket repo-access set 30 auto-trader --access write" "$WG_LOG"; then
+if grep -q "ticket repo-access inherit 30 auto-trader" "$WG_LOG"; then
   ok "ambiguous sibling linked after a valid claude answer (#30→auto-trader)"
 else
   fail "ambiguous claude-decided link not applied"
@@ -346,7 +346,7 @@ fi
   export GAFFER_INHERIT_DRY_RUN=1
   gaffer_inherit_repo 61 >/dev/null 2>&1
 )
-if grep -q "ticket repo-access set 62 auto-trader" "$WG_LOG" && [ ! -s "$CLAUDE_LOG" ]; then
+if grep -q "ticket repo-access inherit 62 auto-trader" "$WG_LOG" && [ ! -s "$CLAUDE_LOG" ]; then
   ok "GAFFER_INHERIT_DRY_RUN=1 applies deterministic links but never spawns claude"
 else
   fail "dry-run mishandled (wg=$(cat "$WG_LOG" 2>/dev/null); claude=$(cat "$CLAUDE_LOG" 2>/dev/null))"
@@ -372,7 +372,7 @@ INH_LEDGER="$INH_WORK/usage-ledger.jsonl"
   gaffer_usage_record() { "$REAL_NODE" "$RUNNER_DIR/lib/usage-ledger.mjs" --kind "$1" --ticket "$2" --rc "$3" --json-file "$4"; }
   cd "$INH_WORK" && gaffer_inherit_repo 61 >/dev/null 2>&1
 )
-grep -q "ticket repo-access set 30 auto-trader --access write" "$WG_LOG" \
+grep -q "ticket repo-access inherit 30 auto-trader" "$WG_LOG" \
   && ok "an envelope reply is unwrapped (.result) and the ambiguous link applies" \
   || fail "envelope reply not unwrapped (wg.log: $(cat "$WG_LOG" 2>/dev/null))"
 grep -q '"kind":"inherit"' "$INH_LEDGER" 2>/dev/null && grep -q '"ticket":30' "$INH_LEDGER" \

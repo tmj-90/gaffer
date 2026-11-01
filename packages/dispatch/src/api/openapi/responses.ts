@@ -158,6 +158,28 @@ const eventId = str.describe("The id of the work event the change wrote.");
 
 export const TicketEnvelope = z.object({ ticket: TicketRow }).strict();
 
+const TicketWarningRow = z.object({ code: str, message: str }).strict();
+
+export const TicketCreated = z
+  .object({
+    ticket: TicketRow,
+    warnings: z
+      .array(TicketWarningRow)
+      .optional()
+      .describe(
+        "Present when the ticket's pack will refuse it at ready as created (DESCRIPTION_REQUIRED: a team_light-or-stricter ticket with no description).",
+      ),
+  })
+  .strict();
+
+export const TicketEdited = z
+  .object({
+    ticket: TicketRow,
+    changed: z.array(str).describe("The fields the edit changed."),
+    event_id: eventId,
+  })
+  .strict();
+
 export const TicketList = z
   .object({
     tickets: z.array(
@@ -269,6 +291,12 @@ export const ReviewApproved = z
 export const AcCreated = z
   .object({ acceptance_criterion: AcceptanceCriterionRow, event_id: eventId })
   .strict();
+
+export const AcEdited = z
+  .object({ acceptance_criterion: AcceptanceCriterionRow, event_id: eventId })
+  .strict();
+
+export const AcRemoved = z.object({ ac_id: str, event_id: eventId }).strict();
 
 export const ReopenedForReview = z
   .object({ ticket_id: str, status: z.enum(TICKET_STATUSES), event_id: eventId })

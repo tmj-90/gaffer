@@ -48,6 +48,7 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   // observed risk outgrew the auto-ship ceiling, a role owns this move, a bundle or
   // target DB does not fit.
   CONTRACT_MISMATCH: 409,
+  CONTRACT_FROZEN: 409,
   OBSERVED_RISK_ESCALATED: 409,
   FACTORY_RUNNER_OWNED: 409,
   DB_NOT_EMPTY: 409,

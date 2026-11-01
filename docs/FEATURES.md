@@ -102,11 +102,35 @@ Day-to-day, work lives on the board. Tickets flow through
   parked as blocked (`no_write_repo`) rather than delivered or retried; one
   whose write repo has no local checkout is parked as `no_local_repo_path`.
 - **In progress** — claimed by an agent (the card shows which one).
-- **Blocked** — surfaced for a human, not silently retried forever.
+- **Blocked** — surfaced for a human, not silently retried forever. You can park
+  a draft, refining, ready or by-hand ticket yourself with `gaffer wg block <n>
+  --reason "…"` (recorded as you, `$USER`) and send any blocked ticket back with
+  `gaffer wg unblock <n>`: to draft or refining when you blocked it from there,
+  otherwise to ready (`--to` picks). An agent still blocks only its own claim,
+  with its claim token. The runner's park reasons name the command.
 - **In review** — delivered, awaiting your sign-off.
 
 Every card carries a **risk badge**, a **priority**, and live
 **acceptance-criteria progress** (`2/3 satisfied`).
+
+**A ticket's contract can be fixed until it is claimed.** `gaffer wg ticket edit <n>`
+changes the title, description, policy pack or priority, and `gaffer wg ac edit <n>
+<ac>` / `gaffer wg ac rm <n> <ac>` correct or remove a criterion (`<ac>` is its
+position, 1 for the first, or its id); REST has `PATCH /tickets/{id}` and `PATCH` /
+`DELETE /tickets/{id}/acceptance-criteria/{acId}`. So every ready-gate refusal names
+something you can fix: `DESCRIPTION_REQUIRED` with `ticket edit -d`,
+`AC_VERIFICATION_REQUIRED` with `ac edit --verify`, `REVIEWER_REQUIRED` with
+`ticket set-reviewer`, `HUMAN_APPROVAL_REQUIRED` with `ticket approve-ready`, and
+`ticket create` warns when the pack will need a description it wasn't given. The
+contract (title, description, policy, criteria, check commands) is editable in
+draft, refining, ready and blocked. From claimed on it is frozen, because the
+review and the tester are held to the contract the delivery saw: every contract
+edit, `ac add` included and over MCP too, is refused with `CONTRACT_FROZEN` (409)
+until the ticket comes back for rework. The test contract the independent tester
+reads is held the same way once the tester has it: editable up to `in_review`,
+`CONTRACT_FROZEN` from `in_testing` on. An edit to a ready ticket must keep it
+passing its ready gate. Each edit is an event on the ticket (`ticket.edited`,
+`ac.edited`, `ac.removed`), and an edited criterion goes back to pending.
 
 The board stays usable on a factory with years of history. The Work view loads
 a visible window of each lane (`GET /api/board?limit=200`; Done, failed and won't-do

@@ -123,7 +123,9 @@ import {
   type ClaimabilityResult,
   type DeliveryArtifactResult,
   type DeliveryEvidenceInput,
+  type EditTicketResult,
   type RepoDeliveryResult,
+  type TicketWarning,
 } from "./services/ticketService.js";
 import {
   RepoService,
@@ -307,7 +309,11 @@ export type { WorkPacketRepos } from "./services/repoService.js";
 /**
  * Whether a ticket currently passes its policy pack's readiness gate (WG-004).
  */
-export type { ClaimabilityResult } from "./services/ticketService.js";
+export type {
+  ClaimabilityResult,
+  EditTicketResult,
+  TicketWarning,
+} from "./services/ticketService.js";
 
 /** Result of setting a ticket↔repo access boundary. */
 export type { TicketRepoAccessResult } from "./services/repoService.js";
@@ -1222,6 +1228,35 @@ export class Dispatch {
     return this.ticketSvc.addAcceptanceCriterion(raw, actor);
   }
 
+  /** Warnings for a just-created ticket (a pack that will refuse it at ready). */
+  ticketCreateWarnings(ticket: Ticket): TicketWarning[] {
+    return this.ticketSvc.createWarnings(ticket);
+  }
+
+  /** Edit a ticket's title / description / policy / priority (contract-frozen once claimed). */
+  editTicket(ref: string, raw: unknown, actor: Actor): EditTicketResult {
+    return this.ticketSvc.editTicket(ref, raw, actor);
+  }
+
+  /** Edit one acceptance criterion (id, id prefix or 1-based position). */
+  editAcceptanceCriterion(
+    ticketRef: string,
+    acRef: string,
+    raw: unknown,
+    actor: Actor,
+  ): { ac: AcceptanceCriterion; eventId: string } {
+    return this.ticketSvc.editAcceptanceCriterion(ticketRef, acRef, raw, actor);
+  }
+
+  /** Remove one acceptance criterion (id, id prefix or 1-based position). */
+  removeAcceptanceCriterion(
+    ticketRef: string,
+    acRef: string,
+    actor: Actor,
+  ): { acId: string; eventId: string } {
+    return this.ticketSvc.removeAcceptanceCriterion(ticketRef, acRef, actor);
+  }
+
   // --- Ticket dependencies (EP-001) ----------------------------------------
 
   addDependency(raw: unknown, actor: Actor): AddDependencyResult {
@@ -1299,6 +1334,20 @@ export class Dispatch {
    */
   createSpec(raw: unknown, actor: Actor): Spec {
     return this.specsSvc.createSpec(raw, actor);
+  }
+
+  /**
+   * cli-wg/F-16: does any spec carry a clause with this (namespaced) id? `ac add
+   * --clause` checks it so an AC's spec_clause_id provenance always points at a clause.
+   */
+  specClauseExists(clauseId: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM specs s, json_each(s.clauses_json) c
+          WHERE json_extract(c.value, '$.clause_id') = ? LIMIT 1`,
+      )
+      .get(clauseId) as { hit: number } | undefined;
+    return row !== undefined;
   }
 
   /** Fetch a spec by id (throws NOT_FOUND when absent). */
@@ -1398,6 +1447,18 @@ export class Dispatch {
     return this.repoSvc.setTicketRepoAccess(raw, actor);
   }
 
+  /**
+   * The runner's greenfield inherit (system only): give a sibling write access to the
+   * repo a bootstrap ticket in its epic onboarded. See RepoService.inheritBootstrapRepoAccess.
+   */
+  inheritBootstrapRepoAccess(
+    ticketRef: string,
+    repoRef: string,
+    actor: Actor,
+  ): TicketRepoAccessResult {
+    return this.repoSvc.inheritBootstrapRepoAccess(ticketRef, repoRef, actor);
+  }
+
   workPacketRepos(ticketRef: string): WorkPacketRepos {
     return this.repoSvc.workPacketRepos(ticketRef);
   }
@@ -1426,6 +1487,11 @@ export class Dispatch {
    */
   claimability(ticketRef: string): ClaimabilityResult {
     return this.ticketSvc.claimability(ticketRef);
+  }
+
+  /** cli-wg/F-12: ready, not by hand, deps done, no open blocking decision. */
+  isClaimableNow(ticket: Ticket): boolean {
+    return this.ticketSvc.isClaimableNow(ticket);
   }
 
   // --- Factory Map: scope nodes (FG-001) -----------------------------------
@@ -2340,6 +2406,31 @@ export class Dispatch {
       this.emitGate("review_needed", ticket, { detail: input.reason });
     }
     return result;
+  }
+
+  /**
+   * cli-wg/F-03: a person blocks a ticket that is not in an agent's hands (draft,
+   * refining, ready, or their own by-hand in_progress). See
+   * {@link TicketService.humanBlockTicket}; fires the ticket_blocked gate like markBlocked.
+   */
+  humanBlockTicket(
+    ref: string,
+    reason: string,
+    actor: Actor,
+  ): { ticketId: string; from: TicketStatus; eventId: string } {
+    const result = this.ticketSvc.humanBlockTicket(ref, reason, actor);
+    const ticket = this.tickets.findById(result.ticketId);
+    if (ticket) this.emitGate("ticket_blocked", ticket, { detail: reason });
+    return result;
+  }
+
+  /** cli-wg/F-03: return a blocked ticket to the queue (see {@link TicketService.humanUnblockTicket}). */
+  humanUnblockTicket(
+    ref: string,
+    actor: Actor,
+    to?: "ready" | "refining" | "draft",
+  ): { ticketId: string; status: TicketStatus; eventId: string } {
+    return this.ticketSvc.humanUnblockTicket(ref, actor, to);
   }
 
   markBlocked(input: MarkBlockedInput, actor: Actor): { ticketId: string; eventId: string } {

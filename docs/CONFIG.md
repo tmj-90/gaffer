@@ -461,7 +461,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `GAFFER_WG_DELIVERIES_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_LIST_CMD` | _(empty)_ | `runner/lib/backpressure.sh` |
 | `GAFFER_WG_SHOW_CMD` | _(empty)_ | `runner/lib/backpressure.sh`, `runner/lib/cleanup-ownership.sh`, `runner/lib/orphan-recovery.sh` |
-| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/claude-auth.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh` |
+| `GAFFER_WORKER_PROVIDER` | _(empty)_ / `claude-code` | `runner/factory.config.sh`, `runner/lib/claude-auth.sh`, `runner/lib/worker.mjs`, `runner/lib/worker.sh`, `runner/tick.sh` |
 | `MEMORY_AUDIT_OFF` |  | `packages/memory/src/cli/doctor.ts`, `packages/memory/src/core/audit.ts`, `packages/memory/src/core/lore.ts` |
 | `MEMORY_CLI` |  | `runner/bin/epic-feature.mjs`, `runner/bin/merge-ticket.mjs` |
 | `MEMORY_NO_COLOR` |  | `packages/memory/src/cli/format.ts` |

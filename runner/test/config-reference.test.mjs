@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
-const { parseConfigDefaults, generate, readSiteDefault } = await import(
+const { parseConfigDefaults, generate, readSiteDefault, firstSentence } = await import(
   path.join(ROOT, "scripts", "config-reference.mjs")
 );
 
@@ -165,5 +165,77 @@ ok(
   !/\| `GAFFER_STRICT_REQUIRE` \| `runner/.test(text),
   "a variable the config assigns itself is not reported as undocumented",
 );
+
+// Exploratory finding fresh-user/CONFIG drift: knobs read only where they are used
+// (no default line) were missing, a description was cut mid-word at 220 characters,
+// and two rows described the wrong behaviour.
+console.log("== descriptions end on a word, not mid-word ==");
+ok(typeof firstSentence === "function", "firstSentence is exported for the test");
+const long = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ") + ".";
+const cut = firstSentence([long]);
+ok(cut.length <= 222 && cut.endsWith("…"), "a sentence over the limit is cut and marked with …");
+ok(
+  /word\d+…$/.test(cut) && long.includes(cut.slice(0, -1) + " "),
+  "the cut falls on a word boundary",
+);
+ok(
+  firstSentence(["Short one (see a.b: c). Second."]) === "Short one (see a.b: c).",
+  "a short first sentence is kept whole",
+);
+const rows = text.split("\n").filter((l) => l.startsWith("| `"));
+const cutMid = rows.filter((l) => {
+  const notes = l.split(" | ").at(-1).replace(/ \|$/, "").trim();
+  return notes.length >= 200 && !/[.!?)`"':…]$/.test(notes);
+});
+ok(
+  cutMid.length === 0,
+  `no long description stops mid-word (${cutMid.map((l) => l.split(" | ")[0]).join(", ")})`,
+);
+
+console.log("== knobs read where they are used are documented ==");
+for (const name of [
+  "GAFFER_STRICT_REQUIRE",
+  "GAFFER_DOD",
+  "GAFFER_DOD_INSTALL",
+  "GAFFER_GREENFIELD_INSTALL",
+  "GAFFER_ALLOW_NO_DOD",
+  "GAFFER_KEEP_DELIVERY_BRANCH",
+  "GAFFER_CI_TIMEOUT_POLICY",
+  "GAFFER_MEMORY_AUTO_PROMOTE",
+  "GAFFER_SANDBOX_IMAGE",
+  "GAFFER_SANDBOX_PROFILE",
+  "GAFFER_DIGEST_DISABLE",
+  "GAFFER_PAUSE_KEEP_WORKTREE",
+  "GAFFER_VERBOSE",
+  "DEMO_DIR",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_CONFIG_DIR",
+]) {
+  ok(new RegExp(`^\\| \`${name}\` \\|`, "m").test(text), `${name} has a row`);
+}
+ok(/\| `GAFFER_DOD_INSTALL` \| `1` \|/.test(text), "GAFFER_DOD_INSTALL shows its real default (1)");
+ok(
+  /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` \|/.test(text),
+  "GAFFER_CI_TIMEOUT_POLICY defaults to block",
+);
+ok(/\| `DEMO_DIR` \| `\/tmp\/gaffer-showcase` \|/.test(text), "DEMO_DIR shows the demo's path");
+
+console.log("== rows describe the behaviour ==");
+const row = (k) => rows.find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";
+ok(
+  !/on top of autonomous/i.test(row("GAFFER_MODE")),
+  "GAFFER_MODE does not say strict adds a sandbox on top",
+);
+ok(
+  /same flags/i.test(row("GAFFER_MODE")),
+  "GAFFER_MODE says strict and autonomous set the same flags",
+);
+const attempts = row("GAFFER_MAX_DELIVERY_ATTEMPTS");
+ok(
+  /gate/i.test(attempts) && /GAFFER_MAX_NOCOMMIT_FAILURES/.test(attempts),
+  "MAX_DELIVERY_ATTEMPTS: gate rework + the no-commit cap",
+);
+ok(/identical/i.test(attempts), "MAX_DELIVERY_ATTEMPTS: the two-identical-failures early stop");
 
 console.log(`\nconfig-reference: ALL ${passed} checks passed`);

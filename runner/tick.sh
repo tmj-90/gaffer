@@ -964,6 +964,7 @@ if [ -n "$RESUME_NUM" ]; then
   if _RESUME_JSON="$(wg ticket resume-begin "$NUM" --agent "$AGENT" --ttl "$GAFFER_CLAIM_TTL" 2>/dev/null)"; then
     CLAIM_TOKEN="$(printf '%s' "$_RESUME_JSON" | jget 'd.claim_token ?? ""' 2>/dev/null || echo '')"
     [ -n "$CLAIM_TOKEN" ] || log "RESUME: WARNING — resume-begin returned no lease token for #$NUM; continuing tokenless"
+    declare -F gaffer_note_own_claim >/dev/null 2>&1 && gaffer_note_own_claim "$NUM"
     _RESUMING=1
     # Keep the (existing) worktree alive even if THIS resumed tick crashes mid-way —
     # the partial work must never be torn down by the trap. A clean success still tears
@@ -1072,6 +1073,8 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # frozen, so the prompt carries the contract the review and the tester hold it to.
       _cshow_frozen="$(wg ticket show "$_cand" 2>/dev/null || true)"
       [ -n "$_cshow_frozen" ] && _cshow="$_cshow_frozen"
+      # CLEANUP OWNERSHIP: remember WHICH claim is this run's (lib/cleanup-ownership.sh).
+      declare -F gaffer_note_own_claim >/dev/null 2>&1 && gaffer_note_own_claim "$_cand"
     fi
     NUM="$_cand"; SHOW="$_cshow"; REPO_PATH="$_crepo"
     STACK="$(echo "$_cshow" | jget '(((d.repositories||[]).find(r => r.access === "write" && r.local_path) || (d.repositories||[]).find(r => r.local_path) || (d.repositories||[])[0] || {}).stack) || ""' 2>/dev/null)"
@@ -2006,11 +2009,22 @@ $PRODUCT_CONTEXT_BLOCK}"
     # $1 = "drop-branch" to also delete $WORK_BRANCH from each real repo where this
     # tick created it (see BRANCH RETENTION above).
     local drop_branch="${1:-}"
-    local _rid _rname _rpath _rbase _rwt _kept
+    local _rid _rname _rpath _rbase _rwt _kept _tip
+    # CLEANUP OWNERSHIP (external review #8): every destructive step below first checks
+    # that this run still owns the ticket's resources (lib/cleanup-ownership.sh) — a
+    # stopped or expired attempt must never remove its replacement's worktree or branch.
+    _gco_owned() {
+      declare -F gaffer_cleanup_owned >/dev/null 2>&1 || return 0
+      gaffer_cleanup_owned "${NUM:-}" "$1" && return 0
+      log "CLEANUP: #${NUM:-?} $1 ${2:-} KEPT — the resources belong to another attempt or ownership is unknown (${_GCO_WHY:-no reason}); this run removes only its own"
+      return 1
+    }
     while IFS=$'\t' read -r _rid _rname _rpath _rbase _rwt; do
       [ -n "$_rpath" ] || continue
-      git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && rm -rf "$_rwt"; continue; }
-      if [ -n "$_rwt" ] && [ -e "$_rwt" ]; then
+      git -C "$_rpath" rev-parse --git-dir >/dev/null 2>&1 || { [ -e "$_rwt" ] && _gco_owned worktree "$_rwt" && rm -rf "$_rwt"; continue; }
+      if [ -n "$_rwt" ] && [ -e "$_rwt" ] && ! _gco_owned worktree "$_rwt"; then
+        :
+      elif [ -n "$_rwt" ] && [ -e "$_rwt" ]; then
         # `git worktree remove --force` deregisters the worktree but REFUSES to
         # delete untracked residue — notably the `.claude/` the skill-mount installs.
         # Once gaffer_skills_mount_cleanup drops the mount target, that worktree's
@@ -2019,12 +2033,20 @@ $PRODUCT_CONTEXT_BLOCK}"
         # (broken symlink: .claude/skills). Always `rm -rf` the worktree path after
         # the git remove so teardown leaves NOTHING behind, dangling links included.
         git -C "$_rpath" worktree remove --force "$_rwt" >/dev/null 2>&1 || true
-        rm -rf "$_rwt" 2>/dev/null || true
+        # (Re-checked: the git call can be slow, and a replacement may have re-created
+        # the worktree at this path meanwhile.)
+        if [ -e "$_rwt" ] && _gco_owned worktree "$_rwt"; then rm -rf "$_rwt" 2>/dev/null || true; fi
       fi
       git -C "$_rpath" worktree prune >/dev/null 2>&1 || true
       if [ "$drop_branch" = "drop-branch" ]; then
         if _gaffer_branch_created_here "$_rpath"; then
-          git -C "$_rpath" branch -D "$WORK_BRANCH" >/dev/null 2>&1 || true
+          # Compare-and-delete: only the tip read right after the ownership check.
+          _tip="$(git -C "$_rpath" rev-parse --verify --quiet "refs/heads/$WORK_BRANCH^{commit}" 2>/dev/null || true)"
+          # (`branch -D` refused a branch checked out in a worktree; so does this.)
+          if [ -n "$_tip" ] && _gco_owned branch "$WORK_BRANCH in ${_rname:-repo}" \
+             && ! grep -qxF "branch refs/heads/$WORK_BRANCH" <<<"$(git -C "$_rpath" worktree list --porcelain 2>/dev/null)"; then
+            git -C "$_rpath" update-ref -d "refs/heads/$WORK_BRANCH" "$_tip" >/dev/null 2>&1 || true
+          fi
         else
           _kept="$(git -C "$_rpath" rev-list --count "${_rbase:-main}..$WORK_BRANCH" 2>/dev/null || echo 0)"
           [ "${_kept:-0}" -gt 0 ] 2>/dev/null \

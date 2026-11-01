@@ -133,6 +133,7 @@ import {
   type WorkPacketRepos,
 } from "./services/repoService.js";
 import { EpicsService, type CreateEpicResult } from "./services/epicsService.js";
+import { EPIC_MEMBER_RELATIONS, ownAcceptanceTicketId } from "./services/epicAcceptance.js";
 import { DossierService, DOSSIER_EVENT_TYPE, type Dossier } from "./services/dossierService.js";
 import {
   ReviewPacketService,
@@ -156,6 +157,7 @@ import { HumanQueueService, type HumanQueue } from "./services/humanQueueService
 import {
   type ApprovalShas,
   type ApproveReviewOptions,
+  type LandingStarted,
   type ReviewedHead,
   type UnavailableWriteRepo,
   ReviewGateService,
@@ -1200,7 +1202,7 @@ export class Dispatch {
       const ticket = this.ticketSvc.createTicket(raw, actor);
       if (links.repo) this.repoSvc.linkRepository(ticket.id, links.repo, "primary", actor);
       (links.scopeNodeIds ?? []).forEach((scopeNodeId, i) => {
-        this.scope.linkTicketScope(
+        this.linkTicketScope(
           {
             ticket_id: ticket.id,
             scope_node_id: scopeNodeId,
@@ -1414,11 +1416,105 @@ export class Dispatch {
   // --- Ticket scope links (WG-001) -----------------------------------------
 
   linkTicketScope(raw: unknown, actor: Actor): TicketScopeNode {
-    return this.scope.linkTicketScope(raw, actor);
+    return inTransaction(this.db, () => {
+      const link = this.scope.linkTicketScope(raw, actor);
+      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
+      this.unwireEpicAcceptance(link.ticket_id, link.scope_node_id, actor);
+      return link;
+    });
   }
 
   setPrimaryScope(ticketRef: string, scopeNodeId: string, actor: Actor): TicketScopeNode {
-    return this.scope.setPrimaryScope(ticketRef, scopeNodeId, actor);
+    return inTransaction(this.db, () => {
+      const link = this.scope.setPrimaryScope(ticketRef, scopeNodeId, actor);
+      this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
+      return link;
+    });
+  }
+
+  /**
+   * EPIC MEMBERSHIP (external review #8): a ticket confirmed into an epic after it was
+   * planned (a `primary` / `secondary` link) is part of the build the epic's acceptance
+   * ticket must test, so that acceptance ticket now DEPENDS on it, exactly like the
+   * members createEpic wired: the final cannot be claimed until the new member is done.
+   * Before this the final ran (and the epic read accepted) with the new member still
+   * ready. Nothing is wired for a suggested / rejected link, an acceptance ticket, a
+   * cancelled member, or a final already done or cancelled (`wg stats` then reads the
+   * epic pending / stale instead of accepted). Inside the caller's transaction.
+   */
+  private wireEpicAcceptance(
+    ticketId: string,
+    scopeNodeId: string,
+    relation: string,
+    actor: Actor,
+  ): void {
+    if (!(EPIC_MEMBER_RELATIONS as readonly string[]).includes(relation)) return;
+    const node = this.scopeNodes.findById(scopeNodeId);
+    if (!node || node.type !== "epic") return;
+    const ticket = this.tickets.findById(ticketId);
+    if (!ticket || ticket.acceptance === 1 || ticket.status === "cancelled") return;
+    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
+    if (finalId === null || finalId === ticket.id) return;
+    const final = this.tickets.findById(finalId);
+    if (!final || final.status === "done" || final.status === "cancelled") return;
+    if (this.ticketDependencies.exists(final.id, ticket.id)) return;
+    try {
+      this.ticketSvc.addDependency({ ticket: final.id, depends_on: ticket.id }, actor);
+    } catch (err) {
+      // A member that itself waits on the final (a follow-up that depends on it) cannot
+      // also be a dependency of it. The link stands; `wg stats` reads the epic pending,
+      // then stale, until its acceptance ticket is re-run on the finished scope.
+      if (err instanceof DispatchError && err.code === "INVALID_DEPENDENCY") return;
+      throw err;
+    }
+    // Marks this edge as the membership's, so withdrawing the membership withdraws it.
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: final.id,
+      actor,
+      event_type: "epic.member_dependency_wired",
+      payload: { epic_node_id: scopeNodeId, member_ticket_id: ticket.id },
+    });
+  }
+
+  /**
+   * EPIC MEMBERSHIP: the reverse of wireEpicAcceptance. When a ticket stops being a
+   * confirmed member of an epic (its link removed, or changed to suggested / rejected),
+   * the dependency of the epic's acceptance ticket on it goes too, but only an edge the
+   * membership wired (an explicit dependency someone added stays), and never on a final
+   * already done or cancelled. Before this, a ticket taken out of the epic kept its
+   * acceptance ticket blocked (DEPENDENCY_BLOCKED) on work that was no longer in scope.
+   */
+  private unwireEpicAcceptance(ticketId: string, scopeNodeId: string, actor: Actor): void {
+    const node = this.scopeNodes.findById(scopeNodeId);
+    if (!node || node.type !== "epic") return;
+    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
+    if (finalId === null || finalId === ticketId) return;
+    const final = this.tickets.findById(finalId);
+    if (!final || final.status === "done" || final.status === "cancelled") return;
+    const stillMember = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM ticket_scope_nodes WHERE ticket_id = ? AND scope_node_id = ?
+           AND relation IN (${EPIC_MEMBER_RELATIONS.map((r) => `'${r}'`).join(", ")})`,
+      )
+      .get(ticketId, scopeNodeId);
+    if (stillMember) return;
+    if (!this.ticketDependencies.exists(final.id, ticketId)) return;
+    const last = (eventType: string, field: string, value: string): number => {
+      const row = this.db
+        .prepare(
+          `SELECT MAX(rowid) AS r FROM work_events
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
+              AND json_extract(payload_json, '$.' || ?) = ?`,
+        )
+        .get(final.id, eventType, field, value) as { r: number | null } | undefined;
+      return Number(row?.r ?? 0);
+    };
+    const wired = last("epic.member_dependency_wired", "member_ticket_id", ticketId);
+    // The current edge is the membership's only if nobody removed and re-added it since.
+    if (wired === 0 || last("ticket.dependency_removed", "depends_on_ticket_id", ticketId) > wired)
+      return;
+    this.ticketSvc.removeDependency(final.id, ticketId, actor);
   }
 
   listTicketScopes(ticketRef: string): TicketScopeWithNode[] {
@@ -1430,7 +1526,11 @@ export class Dispatch {
     scopeNodeId: string,
     actor: Actor,
   ): { ticketId: string; scopeNodeId: string; eventId: string } {
-    return this.scope.removeTicketScope(ticketRef, scopeNodeId, actor);
+    return inTransaction(this.db, () => {
+      const res = this.scope.removeTicketScope(ticketRef, scopeNodeId, actor);
+      this.unwireEpicAcceptance(res.ticketId, res.scopeNodeId, actor);
+      return res;
+    });
   }
 
   ticketScopeSummary(ticketRef: string): {
@@ -1630,7 +1730,8 @@ export class Dispatch {
       (ticket.status === "in_review" || ticket.status === "ready_for_merge") &&
       (toStatus === "ready" || toStatus === "refining")
     ) {
-      return this.reviewGateSvc.rejectReview(ticket.id, toStatus, actor, "board_move");
+      // (Through this.rejectReview: a landing already started is reported on the trail.)
+      return this.rejectReview(ticket.id, toStatus, actor, "board_move");
     }
     return inTransaction(this.db, () => {
       // Handing in unleased in-progress work (a by-hand delivery, a tokenless resume)
@@ -1673,6 +1774,57 @@ export class Dispatch {
     actor: Actor,
   ): ReturnType<ReviewGateService["recordLanding"]> {
     return this.reviewGateSvc.recordLanding(ref, input, actor);
+  }
+
+  /**
+   * REVOCATION-SAFE LANDING (external review #8): re-check, immediately before a default
+   * branch moves, that the ticket is still landable on the same approval and green CI,
+   * and record the landing as started (see ReviewGateService.beginLanding).
+   */
+  beginLanding(
+    ref: string,
+    input: {
+      repo: string;
+      commit: string;
+      approval?: string | undefined;
+      via?: string | undefined;
+    },
+    actor: Actor,
+  ): ReturnType<ReviewGateService["beginLanding"]> {
+    return this.reviewGateSvc.beginLanding(ref, input, actor);
+  }
+
+  /** The approval a landing acts on (the latest transition into ready_for_merge). */
+  landingApproval(ref: string): string | null {
+    return this.reviewGateSvc.approvalRef(this.resolveTicket(ref).id);
+  }
+
+  /** The landings already started or committed on the ticket's current approval. */
+  landingsStarted(ref: string): LandingStarted[] {
+    return this.reviewGateSvc.landingsStarted(this.resolveTicket(ref).id);
+  }
+
+  /**
+   * A revocation (reject, a failed required check) acknowledged AFTER a landing started
+   * cannot undo it: say so on the ticket's trail and hand the landings back to the caller,
+   * which reports them ("a landing has already happened").
+   */
+  private revocationAfterLanding(
+    ticketId: string,
+    actor: Actor,
+    revocation: string,
+  ): LandingStarted[] {
+    const landed = this.reviewGateSvc.landingsStarted(ticketId);
+    if (landed.length > 0) {
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticketId,
+        actor,
+        event_type: "ticket.revoked_after_landing",
+        payload: { revocation, landings: landed },
+      });
+    }
+    return landed;
   }
 
   /** TESTER REPLAY: record the tester's tests passed on the landed revision (system only). */
@@ -1781,16 +1933,27 @@ export class Dispatch {
     ref: string,
     input: { commit: string; state: "pending" | "pass" | "fail"; detail?: string },
     actor: Actor,
-  ): { state: string; held: boolean; status: string; eventId: string } {
+  ): {
+    state: string;
+    held: boolean;
+    status: string;
+    eventId: string;
+    landedAlready: LandingStarted[];
+  } {
     const res = this.reviewGateSvc.recordCiResult(ref, input, actor);
+    const ticket = this.tickets.resolveRef(ref);
     if (res.held) {
-      const ticket = this.tickets.resolveRef(ref);
       this.emitGate("ticket_parked", ticket, {
         status: "blocked",
         detail: `required CI failed for ${input.commit.slice(0, 12)}`,
       });
     }
-    return res;
+    // REVOCATION-SAFE LANDING: a red result after a landing started cannot stop it.
+    const landedAlready =
+      input.state === "fail" && ticket
+        ? this.revocationAfterLanding(ticket.id, actor, `ci_failed:${input.commit.slice(0, 12)}`)
+        : [];
+    return { ...res, landedAlready };
   }
 
   /** REQUIRED CI: the latest CI state for a ticket's commit (null commit = latest overall). */
@@ -2146,8 +2309,12 @@ export class Dispatch {
     to: "ready" | "refining" | "cancelled",
     actor: Actor,
     reason?: string,
-  ): TransitionResult {
-    return this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
+  ): TransitionResult & { landedAlready: LandingStarted[] } {
+    const res = this.reviewGateSvc.rejectReview(ticketRef, to, actor, reason);
+    // REVOCATION-SAFE LANDING: a landing that started before this rejection committed is
+    // not undone by it; report it (the merge runner refuses every landing not yet started).
+    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, `rejected_to_${to}`);
+    return { ...res, landedAlready };
   }
 
   resetAcceptanceCriteria(
@@ -2157,8 +2324,16 @@ export class Dispatch {
     return this.ticketSvc.resetAcceptanceCriteria(ref, actor);
   }
 
-  wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
-    return this.reviewGateSvc.wontDo(ref, actor, reason);
+  wontDo(
+    ref: string,
+    actor: Actor,
+    reason?: string,
+  ): TransitionResult & { landedAlready: LandingStarted[] } {
+    const res = this.reviewGateSvc.wontDo(ref, actor, reason);
+    // REVOCATION-SAFE LANDING: the dashboard's Won't do is a cancellation too; a landing
+    // that had already started is reported exactly as a rejection reports it.
+    const landedAlready = this.revocationAfterLanding(res.ticket.id, actor, "wont_do");
+    return { ...res, landedAlready };
   }
 
   reopenFromWontDo(ref: string, to: "refining" | "draft", actor: Actor): TransitionResult {

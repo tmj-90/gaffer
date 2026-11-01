@@ -419,6 +419,33 @@ structural barrier the whole design hangs on.
   remote default branch before `gh pr merge` is asked; GitHub's branch
   protection ("require branches to be up to date" plus required checks) is the
   compare-and-land upstream.
+- **A cancellation or a red check during the merge gate stops the landing.** The
+  gates can take minutes, and you can cancel the ticket or a required check can
+  turn red while they run. After the gates pass and immediately before a default
+  branch moves (or the provider is asked to merge a PR), every landing path asks
+  Dispatch again, once per repository: is the ticket still *Ready for merge*, on
+  the same approval, with that repository's approved commit and green required
+  CI? That check and a record that the landing has started are one transaction.
+  If the answer is no, nothing lands, the merge says `not landed: <reason>` and
+  exits non-zero, and the ticket stays as you left it (*cancelled*, or *blocked*
+  for the red check). If a landing had already started, the cancellation or the
+  failed check says so on the spot (`landed_already` in its output and a
+  warning naming the repository and commit): it stops every landing that had not
+  started and cannot undo one that had. The won't-do button and a board move
+  back to rework report it the same way. That landing still goes on record, and
+  the merge then says `LANDED AFTER A REVOCATION` and exits 4 instead of
+  reporting a clean merge; the ticket stays cancelled or blocked, not done. Once
+  a repository's landing is on record, or git already shows a started landing
+  on its default branch, a cancellation is refused outright and names it; land
+  the rest or revert it first.
+- **Every recorded pull request lands upstream.** A repository whose delivery
+  record carries a PR lands only through that PR, secondary repositories
+  included: the merge gate runs on its freshly fetched remote default, then the
+  provider is asked to merge that PR. A merge into the local checkout is not a
+  landing for such a repository, so the ticket is done only when every recorded
+  PR has merged. If the provider refuses one, that repository does not land and
+  the ticket stays open (*partly landed*). `GAFFER_PR_LOCAL_FALLBACK=1` is still
+  the explicit way to land a PR repository locally instead, for each one.
 - **The independent tester's assertions run on what lands, not only on what it
   tested.** The tester's PASS is about the commit it tested, and its black-box
   tests live on their own branch (`gaffer-tests/ticket-<n>`), never on the
@@ -450,7 +477,23 @@ structural barrier the whole design hangs on.
   and `wg stats`, which counts an epic as **accepted** only when its acceptance
   ticket has it (*unreplayed* otherwise). A held replay keeps the epic out; a
   repaired, re-tested retry that lands counts it once. A ticket the tester never
-  saw runs nothing extra.
+  saw runs nothing extra. If a merge is interrupted after it landed but before it
+  wrote that record, the next `gaffer merge` (or the merge lane) replays the
+  tester's files on the revision that landed and writes it; when that cannot run,
+  the ticket stays *Ready for merge* with `replay missing: … run gaffer merge <n>`.
+- **An epic is accepted on its current scope, once.** A ticket you add to an epic
+  after planning (a primary or secondary scope link) makes the epic's acceptance
+  ticket wait for it, like the planned ones. If the acceptance ticket finishes
+  while a member is still open, the epic reads *pending*, and *stale* when a
+  member lands after it (`wg stats --json` marks these `scope_incomplete` and
+  `scope_changed`). Taking a ticket out of the epic (removing the link, or
+  marking it rejected) takes that wait away again; a dependency you added by
+  hand stays. A follow-up that itself waits on the acceptance ticket can still
+  be linked: it cannot also be waited on, so the epic reads *pending* until it
+  is done. A suggested or rejected scope link counts for nothing:
+  each epic is counted against its own acceptance ticket only, so linking one
+  epic's finished acceptance ticket to another epic never makes that epic
+  accepted.
 - **Required CI is required.** With *Require CI green before review* on, the
   runner records the CI result for the exact commit under review (a result is recorded
   only for one of the ticket's own commits: a delivery head, a recorded delivery commit

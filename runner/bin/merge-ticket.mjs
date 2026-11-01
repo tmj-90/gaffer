@@ -151,7 +151,7 @@ import {
   recordKilledCall,
 } from "../lib/usage-ledger.mjs";
 import { agentChildEnv, renderPoMcpRuntime } from "./product-owner-run.mjs";
-import { branchHead, landingDecision } from "../lib/tester-binding.mjs";
+import { branchHead, landingDecision, reReviewCommand } from "../lib/tester-binding.mjs";
 import {
   applyTesterTests,
   prepareReplayProof,
@@ -2013,6 +2013,78 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
 }
 
 /**
+ * LANDING PREFLIGHT (exploratory finding cli-runner/F-01): before the FIRST merge of a
+ * multi-repo ticket, every write repo still to land must pass what can be known without
+ * landing anything: it has an approved commit, its checkout and delivery branch are here,
+ * and its landing check holds nothing (its branch is still the commit the review pinned,
+ * required CI is not red for it). One that fails refuses the WHOLE ticket, so nothing is
+ * merged and the ticket is never left partly landed for a fault that was visible up
+ * front. Partly merged stays for what only landing can find (a conflict, a dirty
+ * checkout, a red merge gate). Returns null (all clear) or { repo, kind, reason, reviewed,
+ * head }. The primary repo's own landing check runs in main() before this.
+ */
+export function preflightSecondaryRepos(
+  ticketNumber,
+  primaryRepoId,
+  plan = readLandingPlan(ticketNumber),
+) {
+  if (!plan) return null; // legacy approval (no per-repo pins): the primary was the change
+  for (const r of plan) {
+    if (r.repoId === primaryRepoId || r.landed) continue;
+    if (r.pinned === false)
+      return {
+        repo: r.repo,
+        kind: "unreviewed",
+        reason: `${r.repo} is a write repository with no approved commit (the approval did not cover it)`,
+      };
+    if (!r.localPath || !existsSync(r.localPath) || !r.branch)
+      return {
+        repo: r.repo,
+        kind: "unavailable",
+        reason: `${r.repo}'s checkout or delivery branch is not available here`,
+      };
+    const d = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber,
+      repoPath: r.localPath,
+      branch: r.branch,
+      repoId: r.repoId,
+      secondary: true,
+    });
+    if (!d.ok)
+      return {
+        repo: r.repo,
+        kind: d.kind,
+        reason:
+          d.kind === "moved-since-review"
+            ? `${r.repo}: ${r.branch} moved since the review approved it`
+            : `${r.repo}: landing check ${d.kind}: ${d.reason}`,
+        reviewed: d.reviewed || "",
+        head: d.head || "",
+      };
+  }
+  return null;
+}
+
+/** The refusal line for a preflight hold: what, which repo, and what to run next. */
+export function preflightRefusal(ticketNumber, hold) {
+  const commits =
+    hold.reviewed && hold.head
+      ? ` (reviewed ${String(hold.reviewed).slice(0, 12)}, head is now ${String(hold.head).slice(0, 12)})`
+      : "";
+  const next =
+    hold.kind === "moved-since-review" || hold.kind === "unreviewed"
+      ? ` — ${reReviewCommand(ticketNumber, hold.repo)}`
+      : hold.kind === "unavailable"
+        ? ` — attach its checkout or restore the branch, then run gaffer merge ${ticketNumber} again`
+        : "";
+  return (
+    `refusing to merge #${ticketNumber}: ${hold.reason}${commits}; nothing merged in any repository, ` +
+    `ticket left ready_for_merge${next}`
+  );
+}
+
+/**
  * Land every write repo OTHER than the primary: each lands only its pinned (approved)
  * commit, through the same landing check (`--secondary`: the tester verdict describes the
  * primary) and the same MERGE GATE + compare-and-land as the primary (landThroughMergeGate:
@@ -2264,11 +2336,25 @@ function main() {
         (decision.kind === "moved"
           ? ` (tested ${String(decision.tested).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — re-test the branch or record a human verdict`
           : decision.kind === "moved-since-review"
-            ? ` (reviewed ${String(decision.reviewed).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)}) — move it back to in_review for a re-review`
+            ? ` (reviewed ${String(decision.reviewed).slice(0, 12)}, head is now ${String(decision.head).slice(0, 12)})`
             : "") +
-        `; ticket left ready_for_merge, nothing merged`,
+        `; ticket left ready_for_merge, nothing merged` +
+        (decision.kind === "moved-since-review"
+          ? ` — ${reReviewCommand(resolved.number, repo.name)}`
+          : ""),
       4,
     );
+    return;
+  }
+  // LANDING PREFLIGHT: every OTHER write repo must be landable as approved before the
+  // first merge (a moved branch, a missing approval or checkout refuses the whole ticket).
+  // (A single-write-repo ticket has no other repo: nothing to read.)
+  const preHold =
+    (resolved.writeRepos || []).length > 1
+      ? preflightSecondaryRepos(resolved.number, repo.id || null)
+      : null;
+  if (preHold) {
+    fail(preflightRefusal(resolved.number, preHold), 4);
     return;
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);

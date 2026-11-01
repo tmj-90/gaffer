@@ -125,6 +125,52 @@ _gaffer_land_replay_record() {
   fi
 }
 
+# RE-REVIEW RECOVERY (cli-runner/F-11): the exact commands that take a ticket whose branch
+# moved since the review approved it back through review — the same text as
+# lib/tester-binding.mjs reReviewCommand (merge-ticket.mjs prints that one).
+#   _gaffer_rereview_cmd <num> <repo-name>
+_gaffer_rereview_cmd() {
+  local n="$1" r="${2:-the repository}"
+  r="${r//\"/}"; r="${r//\\/}"; r="${r//\$/}"; r="${r//\`/}"
+  printf 'gaffer wg ticket reopen-for-review %s --as admin --reason "%s moved since review" --resolution "re-review the new commits on %s"; then approve the new heads: gaffer approve %s' "$n" "$r" "$r" "$n"
+}
+
+# LANDING PREFLIGHT (exploratory finding cli-runner/F-01): before the FIRST merge, every
+# SECONDARY write repo still to land must be landable as approved — it has an approved
+# commit, its checkout is here, and its landing check (lib/tester-binding.mjs --secondary:
+# the branch is still its review pin, required CI is not red for it) holds nothing. One
+# that fails holds the WHOLE ticket with nothing merged, instead of landing the primary and
+# leaving it partly merged for a fault that was visible up front. Partly merged stays for
+# what only landing finds (a conflict, a dirty checkout, a red merge gate). The primary's
+# own landing check runs first in the loop, before anything lands, as before.
+#   _gaffer_land_preflight <num> <plan-rows> <who>  → 0 clear · 4 held (logged)
+_gaffer_land_preflight() {
+  local num="$1" plan="$2" who="$3" _rid _rname _rpath _rbr _rdef _rlanded _rsec _rpinned
+  while IFS=$'\t' read -r _rid _rname _rpath _rbr _rdef _rlanded _rsec _rpinned; do
+    [ -n "$_rpath" ] || continue
+    [ "$_rsec" = "1" ] && [ "$_rlanded" != "1" ] || continue
+    [ "$_rid" = "-" ] && _rid=""
+    if [ "${_rpinned:-1}" = "0" ]; then
+      log "$who: #$num HELD — ${_rname} is a write repository with NO approved commit (the approval did not cover it); nothing merged in any repository — $(_gaffer_rereview_cmd "$num" "$_rname")"
+      return 4
+    fi
+    if [ "$_rpath" = "-" ] || [ ! -d "$_rpath" ] || [ -z "$_rbr" ] || [ "$_rbr" = "-" ]; then
+      log "$who: #$num HELD — ${_rname}'s checkout or delivery branch is not available (${_rpath}); nothing merged in any repository — attach the checkout or restore the branch, then land it again"
+      return 4
+    fi
+    if ! _gaffer_land_tester_binding "$num" "$_rpath" "$_rbr" "$_rid" 1 </dev/null; then
+      case "$_TB_KIND" in
+        moved-since-review) log "$who: #$num HELD — ${_rname}: $_rbr moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}); nothing merged in any repository — $(_gaffer_rereview_cmd "$num" "$_rname")" ;;
+        *) log "$who: #$num HELD — ${_rname}: landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged in any repository" ;;
+      esac
+      return 4
+    fi
+  done <<EOF
+$plan
+EOF
+  return 0
+}
+
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
@@ -136,6 +182,9 @@ gaffer_land_delivery() {
   _plan="$(_gaffer_land_plan "$RSHOW" "$RREPO" "$RBRANCH" "$RDEFAULT")"
   _n="$(printf '%s\n' "$_plan" | grep -c .)"
   [ "$_n" -gt 1 ] && log "$_WHO: #$RNUM lands in $_n repositories (one merge per approved revision)"
+  if [ "$_n" -gt 1 ]; then
+    _gaffer_land_preflight "$RNUM" "$_plan" "$_WHO" || return 4
+  fi
   local -a _LANDED_REPOS=() _LANDED_BRANCHES=() _LANDED_DEFAULTS=() _LANDED_VIA=()
   while IFS=$'\t' read -r _rid _rname _rpath _rbr _rdef _rlanded _rsec _rpinned; do
     [ -n "$_rpath" ] || continue
@@ -243,7 +292,7 @@ _gaffer_land_one() {
   if ! _gaffer_land_tester_binding "$RNUM" "$RREPO" "$RBRANCH" "$_RID" "$_RSEC"; then
     case "$_TB_KIND" in
       moved) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the tester's PASS (tested ${_TB_TESTED:0:12}, head is now ${_TB_HEAD:0:12}); re-test the branch (move it back to in_review) or record a human verdict" ;;
-      moved-since-review) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}${_TB_TESTED:+, tested ${_TB_TESTED:0:12}}); nobody reviewed the new commits — move it back to in_review for a re-review" ;;
+      moved-since-review) log "$_WHO: #$RNUM HELD — $RBRANCH moved since the review approved it (reviewed ${_TB_REVIEWED:0:12}, head is now ${_TB_HEAD:0:12}${_TB_TESTED:+, tested ${_TB_TESTED:0:12}}); nobody reviewed the new commits — $(_gaffer_rereview_cmd "$RNUM" "$(basename "$RREPO")")" ;;
       *)     log "$_WHO: #$RNUM HELD — landing check: ${_TB_KIND:-?}: ${_TB_REASON:-no decision}; nothing merged" ;;
     esac
     return 4

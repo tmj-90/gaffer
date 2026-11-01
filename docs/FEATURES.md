@@ -266,9 +266,17 @@ structural barrier the whole design hangs on.
   reviewed holds the same way.
 - **A ticket that spans several repositories is done when every one landed.** Each
   repository's approved commit is merged and recorded separately; the ticket only
-  becomes *done* once all of them are on their default branches. If one lands and
-  another cannot (a conflict, a dirty checkout), the ticket stays in *Ready for merge*
-  and shows as **Partly merged** in what needs you, naming which repositories landed;
+  becomes *done* once all of them are on their default branches. Before the first merge
+  every landing path checks every repository still to land: one whose branch moved since
+  the review approved it, one with no approved commit, one whose checkout or delivery
+  branch is missing, or one whose required CI is red refuses the **whole** ticket. Nothing
+  is merged anywhere, the ticket stays in *Ready for merge*, and `gaffer merge` exits 4
+  naming the repository and the commands that fix it (for a moved branch:
+  `gaffer wg ticket reopen-for-review <n> --as admin --reason "..." --resolution "..."`,
+  then `gaffer approve <n>`). If one lands and another cannot for a reason only the
+  landing itself finds (a conflict, a dirty checkout, a red merge gate), the ticket stays
+  in *Ready for merge* and shows as **Partly merged** in what needs you, naming which
+  repositories landed;
   the next merge lands only the rest (`wg ticket landing <n>` shows the state). The
   runner's merge lane (and so **Poll for work**) finishes it only under the same
   policy that lets it land any approval, decided again at that moment: a human

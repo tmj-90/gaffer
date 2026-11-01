@@ -337,12 +337,19 @@ export function registerTicket(program: Command): void {
   ticket
     .command("reopen-for-review <ref>")
     .description(
-      "Re-open a done ticket for review (done -> in_review) after the auto-merge " +
-        "resolver fixed a conflict on the branch — records the resolution for re-review",
+      "Send an approved (ready_for_merge) or done ticket back to review (-> in_review). Two " +
+        "cases: a write repo's branch moved since the review approved it, so every landing " +
+        "path refuses it (`gaffer merge` prints this command with the values filled in; " +
+        "`ticket move <n> in_review` cannot do this); or the auto-merge resolver fixed a " +
+        "conflict on the branch. The approval's review pins stop counting; review the new " +
+        "heads and approve again (`gaffer approve <n>`). As yourself: --as admin.",
     )
-    .requiredOption("--reason <reason>", "short why the ticket is being reopened")
-    .requiredOption("--resolution <summary>", "resolver's summary of what was reconciled")
-    .option("--as <actor>", "actor type: system|admin", "system")
+    .requiredOption("--reason <reason>", 'short why, e.g. "repoB moved since review"')
+    .requiredOption(
+      "--resolution <summary>",
+      'what the re-review is about, e.g. "re-review the new commits on repoB" (the resolver writes its summary here)',
+    )
+    .option("--as <actor>", "actor type: system|admin (admin records you, $USER)", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());

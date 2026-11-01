@@ -3,7 +3,10 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
-import type { RunKind } from "../domain/types.js";
+import type { RunKind, RunStatus } from "../domain/types.js";
+
+import { POLL_REFUSAL_RE } from "./runDetail.js";
+import { readLogTail, RUN_LOG_TAIL_BYTES } from "./static.js";
 
 /**
  * Shared spawn tracking for the API's detached background runs (the "Suggest
@@ -39,7 +42,10 @@ export interface RunTracker {
     pid?: number | null;
     log_path?: string | null;
   }): { id: string };
-  markRunEnd(id: string, input: { exit_code: number | null; detail?: string | null }): void;
+  markRunEnd(
+    id: string,
+    input: { exit_code: number | null; detail?: string | null; status?: RunStatus },
+  ): void;
   /** Mint a fresh run id (so the caller can name the log file up front). */
   newRunId(): string;
 }
@@ -211,9 +217,17 @@ export function spawnTrackedRun(
     // The child can outlive the API's database (tests close it; a shutdown races
     // the exit event). A run row that cannot be closed is not worth crashing
     // the process over: it is swallowed here, and the stale-run sweep ends it.
+    // A poll the runner REFUSED before any tick ran (a cap reached, no dollar cap,
+    // a setup check failing closed) exits 0 by design; recording that as "succeeded"
+    // said the poll worked. It ends "failed" with the runner's own reason instead.
+    const refusal =
+      code === 0 && input.kind === "poll_work" && logPath !== null
+        ? pollRefusalLine(logPath)
+        : null;
     try {
       tracker.markRunEnd(runId, {
         exit_code: code,
+        ...(refusal !== null ? { status: "failed" as const, detail: `refused: ${refusal}` } : {}),
         ...(errDetail !== undefined ? { detail: errDetail } : {}),
       });
     } catch {
@@ -229,6 +243,12 @@ export function spawnTrackedRun(
   child.unref();
 
   return { started: true, pid: child.pid ?? null, runId };
+}
+
+/** The runner's poll refusal in a run log, without its `gaffer poll: ` prefix, or null. */
+function pollRefusalLine(logPath: string): string | null {
+  const m = POLL_REFUSAL_RE.exec(readLogTail(logPath, RUN_LOG_TAIL_BYTES) ?? "");
+  return m ? m[0].replace(/^gaffer poll: /, "") : null;
 }
 
 /** Close a fd, swallowing an already-closed/invalid-fd error. */

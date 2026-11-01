@@ -21,6 +21,7 @@ interface Call {
 let calls: Call[] = [];
 let settings: Record<string, string> = {};
 let envLocked: Set<string> = new Set();
+let pollAnswer: Record<string, unknown> | null = null;
 
 function settingRows() {
   return ["GAFFER_DAILY_BUDGET_USD", "GAFFER_BUDGET_USD", "MAX_TICKS_PER_DAY"].map((key) => ({
@@ -63,7 +64,7 @@ function stubFetch(): void {
         return json({ settings: settingRows() });
       }
       if (url.includes("/poll-work"))
-        return json({ polled: true, readyCount: 1, run: { runId: null } });
+        return json(pollAnswer ?? { polled: true, readyCount: 1, run: { runId: null } });
       if (url.includes("/api/runs")) return json({ active: [], recent: [] });
       if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
       if (url.includes("/tickets")) return json({ tickets: [] });
@@ -110,6 +111,7 @@ describe("web: the first live poll sets a dollar cap", () => {
     calls = [];
     settings = {};
     envLocked = new Set();
+    pollAnswer = null;
     stubFetch();
     mountShell();
     vi.resetModules();
@@ -182,5 +184,24 @@ describe("web: the first live poll sets a dollar cap", () => {
     await settle();
     expect(sheet()).toBeNull();
     expect(polls()).toHaveLength(1);
+  });
+
+  it("says why when the server refuses the poll for the runner (exploratory finding api-robustness/F11)", async () => {
+    // An environment-set cap the runner reads as none: the server answers polled:false
+    // with the runner's fix, which used to read as "Nothing for a tick to do".
+    envLocked = new Set(["GAFFER_DAILY_BUDGET_USD"]);
+    pollAnswer = {
+      polled: false,
+      reason: "no_budget_cap",
+      message: "no dollar cap is set: set GAFFER_DAILY_BUDGET_USD (try 5)",
+      readyCount: 1,
+    };
+    await loadApp();
+    pollButton().click();
+    await settle();
+    expect(polls()).toHaveLength(1);
+    const text = document.getElementById("toast")?.textContent ?? "";
+    expect(text).toMatch(/Poll refused — no dollar cap is set/);
+    expect(text).not.toMatch(/Nothing for a tick to do/);
   });
 });

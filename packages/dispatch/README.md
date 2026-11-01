@@ -171,6 +171,13 @@ reverse proxy or DNS name, allowlist those hostnames via
 node dist/api/bin.js --port 8787          # or DISPATCH_API_PORT / --host
 ```
 
+SIGTERM or SIGINT stops the server within about 2 seconds: it ends any open event
+stream (the dashboard reconnects and loses nothing), gives in-flight requests a
+short grace, then closes the database. On the way out it removes the pid file the
+launcher wrote (`DISPATCH_PID_FILE`, default `$GAFFER_DATA/dashboard.pid`, which
+`runner/gaffer dashboard` records), but only when the file names this process, so
+a newer server's record survives an old one's exit.
+
 The dashboard's nav is seven surfaces:
 
 - **Overview** — the stat band (tickets by status, active/stale claims, decisions),

@@ -149,6 +149,37 @@ describe("GET /api/events/stream (SSE)", () => {
     ctrl2.abort();
   });
 
+  it("?since beyond the latest seq resets to the latest, says so in a reset frame, and then streams (exploratory finding api-robustness/F13)", async () => {
+    // A cursor from before a restore/import (or a typo) used to open ": connected
+    // seq=<since>" and then stay silent forever: every new seq was below the cursor.
+    h.wg.createTicket({ title: "A" }, human);
+    const latest = h.wg.events.latestSeq();
+    const ctrl = new AbortController();
+    const res = await fetch(`${h.baseUrl}/api/events/stream?since=${latest + 500}`, {
+      signal: ctrl.signal,
+    });
+    expect(res.status).toBe(200);
+    setTimeout(() => h.wg.createTicket({ title: "B" }, human), 50);
+    const frames = await readFrames(res, 2);
+    const reset = frames.find((f) => f.event === "reset");
+    expect(reset).toBeDefined();
+    expect(reset!.id).toBe(latest);
+    expect(reset!.data).toMatchObject({ requested: latest + 500, latest });
+    const ev = frames.find((f) => f.event === "work_event");
+    expect(ev, "a new event still arrives after the reset").toBeDefined();
+    expect(ev!.id!).toBeGreaterThan(latest);
+    ctrl.abort();
+  });
+
+  it("a malformed ?since is a 422, not a silent default", async () => {
+    for (const bad of ["abc", "-1", "1.5"]) {
+      const res = await fetch(`${h.baseUrl}/api/events/stream?since=${bad}`);
+      expect(res.status, bad).toBe(422);
+      const json = (await res.json()) as { error: { code: string } };
+      expect(json.error.code).toBe("VALIDATION_ERROR");
+    }
+  });
+
   it("is behind the bearer gate: 401 without the token when auth is configured", async () => {
     const prev = process.env.DISPATCH_API_TOKEN;
     process.env.DISPATCH_API_TOKEN = "secret-token-for-stream-test";

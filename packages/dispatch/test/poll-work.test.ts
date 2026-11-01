@@ -333,6 +333,38 @@ describe("POST /poll-work — work beyond the ready queue", () => {
     expect(res.body.pending).toMatchObject({ testing: 1 });
   });
 
+  it("fires for an epic's ACCEPTANCE ticket in testing even with the tester lane off (exploratory finding ui-workflows/F1)", async () => {
+    // quickstart: the Acceptance ticket "always goes through the independent tester on
+    // approval, whatever GAFFER_TESTING says", and runner/lib/tester.sh picks acceptance
+    // tickets with the lane off. Counting in_testing only with the lane on stranded the
+    // build: Poll for work answered no_ready_work forever.
+    const acceptanceInTesting = (wg: Dispatch) => {
+      const t = wg.createTicket({ title: "Acceptance" }, human);
+      wg.db
+        .prepare("UPDATE tickets SET status = 'in_testing', acceptance = 1 WHERE id = ?")
+        .run(t.id);
+    };
+    restore = withEnv({ GAFFER_TESTING: undefined, CREW_CONFIG: "/nonexistent/crew.yaml" });
+    h = await startHarness({ run: () => ({ started: true, pid: 5 }) }, false, acceptanceInTesting);
+    let res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(202);
+    expect(res.body.polled).toBe(true);
+    expect(res.body.pending).toMatchObject({ ready: 0, testing: 1 });
+    expect(h.runCount()).toBe(1);
+    // A plain (non-acceptance) ticket in testing is the lane's: with the lane off the
+    // runner leaves it alone, so nothing would run.
+    await h.close();
+    h = await startHarness(
+      { run: () => ({ started: true, pid: 5 }) },
+      false,
+      seedInStatus("in_testing"),
+    );
+    res = await call(h.baseUrl, "POST", "/poll-work");
+    expect(res.status).toBe(200);
+    expect(res.body.reason).toBe("no_ready_work");
+    expect(h.runCount()).toBe(0);
+  });
+
   it("fires for an approved ticket the merge lane would land (AUTO_MERGE on), not otherwise", async () => {
     restore = withEnv({
       AUTO_MERGE: "1",

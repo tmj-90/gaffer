@@ -154,6 +154,9 @@ Rules the `ready` gate enforces, so you don't discover them by failing:
 - the default policy pack is `solo_loose`; the strict packs also need a reviewer (see the
   note in the next section).
 
+`ticket create --repo <repo-name>` does the `repo-access set` step in the same command,
+if you'd rather.
+
 The ticket number (`1`) is what every later command takes.
 
 ---

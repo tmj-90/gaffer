@@ -251,10 +251,12 @@ export function assertPrincipalCommand(
       if (t) return check({ kind: "write_ticket", ticket: wg.scopeTicket(t) });
       return check({ kind: "write_factory" });
     }
-    case "create_ticket":
-      // `ticket create` names no repository: a repo-scoped principal links one through
-      // the API's create (`repoIds`), which checks it; here it is refused unless unscoped.
-      return check({ kind: "create_ticket", repos: [] });
+    case "create_ticket": {
+      // `ticket create --repo <name>…`: the repos it would deliver to (none: refused for
+      // a scoped principal, which reaches no repo-less ticket).
+      const named = Array.isArray(opts.repo) ? (opts.repo as unknown[]).map(String) : [];
+      return check({ kind: "create_ticket", repos: named.map(repoId) });
+    }
     case "scope_link":
       check({ kind: "write_ticket", ticket: wg.scopeTicket(arg(0)) });
       return check({ kind: "write_factory" });

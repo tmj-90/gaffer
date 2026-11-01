@@ -374,3 +374,41 @@ describe("wg acting as a principal: the runner's and agents' commands", () => {
     expect(JSON.stringify(list.out)).not.toContain("on svc");
   });
 });
+
+describe("wg ticket create --repo", () => {
+  it("creates a ticket delivering to the named repos, and a scoped principal only on its own", () => {
+    const w = seed();
+    const op = cli(w.db, ["ticket", "create", "-t", "op on svc", "--repo", "svc"]);
+    expect(op.status, op.stderr).toBe(0);
+    const env = { GAFFER_PRINCIPAL_TOKEN: w.scoped.token };
+    const mine = cli(w.db, ["ticket", "create", "-t", "mine", "--repo", "app"], env);
+    expect(mine.status, mine.stderr).toBe(0);
+    const out = cli(
+      w.db,
+      ["ticket", "create", "-t", "theirs", "--repo", "app", "--repo", "svc"],
+      env,
+    );
+    expect(out.err).toMatchObject({
+      code: "SCOPE_DENIED",
+      details: { reason: "outside_repo_scope", outside_repos: ["svc"] },
+    });
+    const none = cli(w.db, ["ticket", "create", "-t", "nowhere"], env);
+    expect(none.err).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "no_repos" } });
+    const bad = cli(w.db, ["ticket", "create", "-t", "x", "--repo", "nope"]);
+    expect(bad.err).toMatchObject({ code: "NOT_FOUND" });
+    const wg = Dispatch.open(w.db);
+    const titles = wg.list().map((t) => t.title);
+    expect(titles).toContain("op on svc");
+    expect(titles).toContain("mine");
+    expect(titles).not.toContain("theirs");
+    expect(titles).not.toContain("x");
+    const t = wg.list().find((x) => x.title === "mine");
+    const links = wg.repos.listForTicket(t?.id ?? "");
+    expect(links.map((l) => [l.name, l.access, l.relation])).toEqual([
+      ["app", "write", "confirmed"],
+    ]);
+    // The new ticket is in the principal's scope: it can show it.
+    expect(cli(w.db, ["ticket", "show", String(t?.number)], env).status).toBe(0);
+    wg.db.close();
+  });
+});

@@ -37,9 +37,16 @@ export function registerTicket(program: Command): void {
       "per-ticket cost ceiling in USD (all agent spend on the ticket)",
       (v) => Number(v),
     )
+    .option(
+      "--repo <name>",
+      "a repository it delivers to (write access, confirmed); repeatable. Created with the ticket in one step, so an unknown repo leaves no ticket behind",
+      (v: string, acc: string[]) => [...acc, v],
+      [] as string[],
+    )
     .action((opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const t = wg.createTicket(
+      const repos = opts.repo as string[];
+      const t = wg.createTicketWithLinks(
         {
           title: opts.title,
           description: opts.description,
@@ -49,6 +56,7 @@ export function registerTicket(program: Command): void {
           bootstrap: opts.bootstrap,
           ...(opts.budget !== undefined ? { delivery_budget_usd: opts.budget } : {}),
         },
+        { repoAccess: repos.map((r) => ({ repo_id: r, access: "write" })) },
         cliActor(),
       );
       // A pack that will refuse this ticket at ready says so now (cli-wg/F-02), on

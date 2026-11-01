@@ -39,6 +39,7 @@ pnpm --filter dispatch test     # M1 core, M2 claims/evidence, M3 MCP, audit, op
 pnpm cli -- --version               # print the Dispatch version (also -v)
 pnpm cli -- --db ./.dispatch/dispatch.sqlite init
 pnpm cli -- ticket create -t "Add /health endpoint" -d "Expose health" -p team_light
+pnpm cli -- ticket create -t "Fix login" --repo api   # with its write repo in one step (repeatable)
 pnpm cli -- repo add -n api --test "pnpm test"
 pnpm cli -- repo link 1 api
 pnpm cli -- ac add 1 -t "GET /health returns 200"

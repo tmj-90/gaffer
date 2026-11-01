@@ -17130,6 +17130,12 @@ function verdictStrip(p) {
   // Gates: the runner's DoD rows, each with its command; the test count it saw.
   const g = p.gates;
   const gateBody = [];
+  // A multi-repo delivery ran each gate once per repo: name the repo on every row, or
+  // "tests passed" twice says nothing about which repo is which.
+  const gateRepos = g
+    ? new Set(g.rows.map((r) => r.repo).filter((x) => x && x !== "-"))
+    : new Set();
+  const multiRepo = gateRepos.size > 1;
   if (g) {
     gateBody.push(
       el(
@@ -17152,6 +17158,9 @@ function verdictStrip(p) {
               { pass: "✓", fail: "✗", flag: "!", skip: "–" }[st],
             ),
             el("b", {}, r.gate),
+            multiRepo && r.repo && r.repo !== "-"
+              ? el("span", { class: "vd-gate-repo" }, r.repo)
+              : null,
             el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
             r.command
               ? el("code", { class: "vd-cmd mono" }, r.command)

@@ -935,6 +935,13 @@
     align-items: center;
     padding: 3px 0;
   }
+  /* A multi-repo delivery: which repo the gate ran in. */
+  .vd-gate-repo {
+    min-width: 0;
+    font-size: var(--t12);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
   .vd-word {
     font: 700 var(--t12) / 1 var(--f-cond);
     text-transform: uppercase;

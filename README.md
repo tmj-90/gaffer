@@ -10,6 +10,7 @@
 # Gaffer
 
 [![CI](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/ci.yml)
+[![Nightly](https://github.com/tmj-90/gaffer/actions/workflows/nightly.yml/badge.svg)](https://github.com/tmj-90/gaffer/actions/workflows/nightly.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 ![The Match Day overview: the scoreboard, the Team sheet of things that need you, and the Tactics board](docs/img/match-day-overview.png)
@@ -60,7 +61,7 @@ Every flag that hands one of these to an agent is off by default. `GAFFER_MODE` 
 
 You'll need:
 
-- macOS or Linux. CI runs both; I don't test Windows.
+- macOS or Linux. CI runs both; I don't test Windows. Every push runs the runner tests on Linux with Node 22 and 24 and on macOS with Node 22; macOS with Node 24 runs every night (the Nightly badge above).
 - Node 22.22.1 or newer. That's the floor in `package.json`, and `.npmrc` sets `engine-strict=true`, so pnpm refuses anything older. Node 22.22.0 is one patch short, and setup says so before it installs anything.
 - pnpm 10.33.0, pinned in `packageManager`
 - git

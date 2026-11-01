@@ -69,7 +69,13 @@ else
 fi
 
 echo "== F4: CI keeps the evidence =="
-CI="$ROOT/.github/workflows/ci.yml"
+# The runner-test steps live in runner-shard.yml; ci.yml (every push) and nightly.yml
+# (the macOS node 24 cell) both call it, so both keep the same evidence.
+CI="$ROOT/.github/workflows/runner-shard.yml"
+for caller in ci.yml nightly.yml; do
+  grep -q 'uses: ./.github/workflows/runner-shard.yml' "$ROOT/.github/workflows/$caller" \
+    && ok "F4 $caller runs its runner shards through runner-shard.yml" || fail "F4 $caller does not call runner-shard.yml"
+done
 grep -qE 'GAFFER_TEST_ARTIFACTS: \$\{\{ runner\.temp \}\}/gaffer-test-artifacts' "$CI" && ok "F4 the runner-test step exports GAFFER_TEST_ARTIFACTS" || fail "F4 GAFFER_TEST_ARTIFACTS not set for the runner tests"
 UP="$(grep -A6 'name: Upload runner-test evidence' "$CI")"
 grep -q 'if: failure()' <<<"$UP" && ok "F4 an upload step runs on failure" || fail "F4 no on-failure upload step"

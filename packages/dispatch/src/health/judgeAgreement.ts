@@ -238,7 +238,9 @@ export function aucOf(accepted: readonly number[], rejected: readonly number[]):
 /**
  * One judgment per delivery: a ledger record is the same judgment as an event on the
  * same ticket number with the same verdict and score recorded within ten minutes of it
- * (eval-judge.sh appends the ledger line, then records the event).
+ * (eval-judge.sh records the event, then appends the ledger line). Each event absorbs at
+ * most one ledger record, so when recording one of two close judgments on the ticket
+ * failed, the ledger's second copy is still counted.
  */
 export function mergeJudgments(
   events: readonly JudgmentPoint[],
@@ -246,16 +248,22 @@ export function mergeJudgments(
 ): JudgmentPoint[] {
   const WINDOW = 10 * 60 * 1000;
   const out = [...events];
+  const used = new Set<number>();
   for (const l of ledger) {
-    const dup = events.some(
-      (e) =>
-        e.ticketNumber !== null &&
-        e.ticketNumber === l.ticketNumber &&
-        e.overall === l.overall &&
-        Math.abs(e.score - l.score) < 0.01 &&
-        Math.abs(Date.parse(e.at) - Date.parse(l.at)) <= WINDOW,
-    );
-    if (!dup) out.push(l);
+    let best = -1;
+    let bestGap = Infinity;
+    events.forEach((e, i) => {
+      if (used.has(i)) return;
+      if (e.ticketNumber === null || e.ticketNumber !== l.ticketNumber) return;
+      if (e.overall !== l.overall || Math.abs(e.score - l.score) >= 0.01) return;
+      const gap = Math.abs(Date.parse(e.at) - Date.parse(l.at));
+      if (gap <= WINDOW && gap < bestGap) {
+        best = i;
+        bestGap = gap;
+      }
+    });
+    if (best === -1) out.push(l);
+    else used.add(best);
   }
   return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 }

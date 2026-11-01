@@ -365,6 +365,23 @@ describe("judgeAgreement: the figures and the reading", () => {
     ]);
     expect(merged[0]!.dims).toEqual({ security: 1 });
   });
+
+  it("each ticket event absorbs one ledger copy: a second close judgment the ticket missed counts", () => {
+    // Two gradings of #7 a few minutes apart, same verdict and score; recording the
+    // second on the ticket failed (fail-soft), so only the ledger has it.
+    const ev = [jp("t7", 10, "fail", 1.4)];
+    const led = parseLedgerJudgments(
+      [T(11), T(14)]
+        .map((ts) => JSON.stringify({ ts, ticketId: "7", overall: "fail", score: 1.4, dims: {} }))
+        .join("\n"),
+      new Map([[7, "t7"]]),
+    );
+    const merged = mergeJudgments(ev, led);
+    expect(merged.map((m) => [m.source, m.at])).toEqual([
+      ["event", T(10)],
+      ["ledger", T(14)],
+    ]);
+  });
 });
 
 describe("readJudgeAgreement over a real factory database", () => {

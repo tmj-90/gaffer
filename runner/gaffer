@@ -185,6 +185,13 @@ dashboard)
   mkdir -p "$GAFFER_DATA" && chmod 700 "$GAFFER_DATA" 2>/dev/null || true
   DASH_LOG="$GAFFER_DATA/dashboard.log"
   TOKFILE="$GAFFER_DATA/dashboard-token"
+  # How long a new server gets to come up (its own "listening" line, /healthz and an
+  # authenticated GET). Whole seconds; anything else falls back to 30, said once.
+  DASH_START_TIMEOUT="${GAFFER_DASHBOARD_START_TIMEOUT:-30}"
+  case "$DASH_START_TIMEOUT" in
+    ''|*[!0-9]*) warn "GAFFER_DASHBOARD_START_TIMEOUT='$DASH_START_TIMEOUT' is not a whole number of seconds — using 30"; DASH_START_TIMEOUT=30 ;;
+    *) DASH_START_TIMEOUT=$((10#$DASH_START_TIMEOUT)) ;;   # "08" is not octal here
+  esac
   # A server from before the fix echoed a freshly generated token into dashboard.log,
   # created 0644 (a `>` redirect keeps an existing file's mode). True when that log
   # still holds one — a credential any local user could read.
@@ -208,9 +215,13 @@ dashboard)
     local found _p _how
     if found="$(gaffer_dashboard_find "$DASH_PORT")"; then
       _p="${found%% *}"; _how="${found#* }"
-      case "$_how" in other\ *)
-        err "port $DASH_PORT is held by pid $_p, the dashboard of another factory (GAFFER_DATA=${_how#other }) — not stopping it from here; stop it there, or set DISPATCH_API_PORT"
-        return 1 ;;
+      case "$_how" in
+        other\ *)
+          err "port $DASH_PORT is held by pid $_p, the dashboard of another factory (GAFFER_DATA=${_how#other }) — not stopping it from here; stop it there, or set DISPATCH_API_PORT"
+          return 1 ;;
+        unknown)
+          err "port $DASH_PORT is held by pid $_p, a dispatch dashboard with no valid pid file whose GAFFER_DATA this system does not show — it may be another factory's, so it is not stopped from here; if it is this factory's, stop it yourself (kill $_p), or set DISPATCH_API_PORT"
+          return 1 ;;
       esac
       if gaffer_dashboard_stop_pid "$_p"; then
         rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true
@@ -232,6 +243,8 @@ dashboard)
     case "$_f" in
       *" other "*)
         printf 'port %s is already in use by pid %s, the dashboard of another factory (GAFFER_DATA=%s); stop it there or set DISPATCH_API_PORT' "$DASH_PORT" "${_f%% *}" "${_f#* other }" ;;
+      *" unknown")
+        printf 'port %s is already in use by pid %s, a dispatch dashboard with no valid pid file whose GAFFER_DATA this system does not show (another factory'"'"'s, or this one'"'"'s with its pid file lost); stop it yourself (kill %s) or set DISPATCH_API_PORT' "$DASH_PORT" "${_f%% *}" "${_f%% *}" ;;
       *" port")
         printf 'port %s is already in use by pid %s, a dispatch dashboard with no valid pid file (this factory'"'"'s, its pid file lost?); `gaffer dashboard --restart` replaces it, `gaffer dashboard --stop` stops it, or set DISPATCH_API_PORT' "$DASH_PORT" "${_f%% *}" ;;
       *)
@@ -247,7 +260,7 @@ dashboard)
   # the token it uses succeeds. An old server still answering on the port satisfies
   # none of the first two. 0 = ready; 1 = it died; 2 = it never answered in time.
   dash_wait_ready() {
-    local _np="$1" _nl="$2" _t _deadline=$((SECONDS + ${GAFFER_DASHBOARD_START_TIMEOUT:-30}))
+    local _np="$1" _nl="$2" _t _deadline=$((SECONDS + DASH_START_TIMEOUT))
     while :; do
       kill -0 "$_np" 2>/dev/null || return 1
       if grep -q 'dispatch-api listening on' "$_nl" 2>/dev/null; then
@@ -284,7 +297,7 @@ dashboard)
     if grep -q 'EADDRINUSE' "$_fl" 2>/dev/null; then
       _why="$(dash_port_busy_msg)"
     elif [ "$_rc" -eq 2 ]; then
-      _why="the server did not answer within ${GAFFER_DASHBOARD_START_TIMEOUT:-30}s (stopped it)"
+      _why="the server did not answer within ${DASH_START_TIMEOUT}s (stopped it; GAFFER_DASHBOARD_START_TIMEOUT gives a slow machine longer)"
     else
       _last="$(grep -v '^[[:space:]]*$' "$_fl" 2>/dev/null | grep -v '^[[:space:]]*at ' | tail -1 | cut -c1-240)"
       _why="the server exited${_last:+: $_last}"

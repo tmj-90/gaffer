@@ -44,12 +44,18 @@ _gaffer_dashboard_pid_is_ours() {
 # Echo the validated, live dashboard PID (from the PID file) or nothing. A missing,
 # unreadable, non-numeric, dead, or mismatched PID yields empty output + rc 1, so a
 # stale file is treated as "not running". Keep output to the single PID on success.
+# Mismatched = its command line is not the dispatch api bin, OR the OS shows its
+# environment and that names another factory's GAFFER_DATA or none at all (a recycled
+# PID that happens to carry the marker on its argv is not trusted on argv alone). Where
+# the environment cannot be seen (macOS without `ps -E` output) the PID file, which
+# only ever records a server this factory confirmed, plus the argv marker decide.
 gaffer_dashboard_pid() {
-  local f pid
+  local f pid own
   f="$(gaffer_dashboard_pidfile)"
   [ -s "$f" ] || return 1
   pid="$(tr -d ' \t\r\n' < "$f" 2>/dev/null)"
-  if _gaffer_dashboard_pid_is_ours "$pid"; then printf '%s\n' "$pid"; return 0; fi
+  own="$(_gaffer_dashboard_owner "$pid")" || return 1
+  case "$own" in mine|unknown) printf '%s\n' "$pid"; return 0 ;; esac
   return 1
 }
 
@@ -89,33 +95,63 @@ gaffer_port_bind_check() {
   ' "$1" "$2" 2>/dev/null
 }
 
-# _gaffer_pid_data_dir <pid> — the GAFFER_DATA in <pid>'s environment, when the OS
-# shows it (Linux /proc, macOS `ps -E` for our own processes); nothing otherwise.
+# _gaffer_pid_data_dir <pid> — the GAFFER_DATA in <pid>'s environment. rc 0 = printed;
+# rc 1 = the environment IS visible and holds no GAFFER_DATA (Linux /proc only: every
+# gaffer-launched dashboard has one); rc 2 = this OS / user cannot see it (no readable
+# /proc/<pid>/environ, and on macOS `ps -E` showed no GAFFER_DATA). Callers treat rc 2
+# as "cannot tell", never as "mine". _GAFFER_PROC_ROOT is a test seam (default /proc).
 _gaffer_pid_data_dir() {
-  local pid="$1" v=""
-  if [ -r "/proc/$pid/environ" ]; then
-    v="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^GAFFER_DATA=//p' | head -1)"
-  elif [ "$(uname -s 2>/dev/null)" = Darwin ]; then
-    v="$(ps -E -ww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^GAFFER_DATA=//p' | head -1)"
+  local pid="$1" v="" proc="${_GAFFER_PROC_ROOT:-/proc}"
+  case "$pid" in ''|*[!0-9]*) return 2 ;; esac
+  if [ -r "$proc/$pid/environ" ]; then
+    v="$(tr '\0' '\n' < "$proc/$pid/environ" 2>/dev/null | sed -n 's/^GAFFER_DATA=//p' | head -1)"
+    [ -n "$v" ] || return 1
+    printf '%s' "$v"; return 0
   fi
-  printf '%s' "$v"
+  if [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    # `ps -E` appends the environment AFTER the arguments, so the LAST GAFFER_DATA=
+    # word is the environment's (an argv word cannot pose as it). A value with a
+    # space is cut at it and then fails the directory comparison: refused, not killed.
+    v="$(ps -E -ww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^GAFFER_DATA=//p' | tail -1)"
+    [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  fi
+  return 2
+}
+
+# _gaffer_dashboard_owner <pid> — whose dashboard is <pid>? rc 1 (nothing printed) when
+# it is not a live dispatch api server (argv marker) or its visible environment has no
+# GAFFER_DATA. Else prints "mine" (its GAFFER_DATA is this factory's), "other <dir>",
+# or "unknown" (the OS does not show its environment).
+_gaffer_dashboard_owner() {
+  local pid="$1" dd rc mine theirs
+  _gaffer_dashboard_pid_is_ours "$pid" || return 1
+  dd="$(_gaffer_pid_data_dir "$pid")"; rc=$?
+  case "$rc" in
+    0)
+      mine="$(cd "$GAFFER_DATA" 2>/dev/null && pwd -P)"
+      theirs="$(cd "$dd" 2>/dev/null && pwd -P)"
+      if [ -n "$theirs" ] && [ "$theirs" = "$mine" ]; then echo mine; else echo "other $dd"; fi ;;
+    1) return 1 ;;
+    *) echo unknown ;;
+  esac
+  return 0
 }
 
 # gaffer_dashboard_find <port> — "<pid> pidfile" for the recorded dashboard, else
-# "<pid> port" for a dispatch api server listening on <port> with no (valid) PID file,
-# else "<pid> other <its GAFFER_DATA>" when that server visibly belongs to ANOTHER
-# factory (a different GAFFER_DATA — never stopped from here). Nothing + rc 1 when the
-# port is free or held by something that is not a dispatch api server.
+# "<pid> port" for this factory's dispatch api server listening on <port> with no
+# (valid) PID file, "<pid> other <its GAFFER_DATA>" when that server belongs to ANOTHER
+# factory, or "<pid> unknown" when the OS does not show whose it is. Only "pidfile" and
+# "port" are ever stopped from here. Nothing + rc 1 when the port is free or held by
+# something that is not a dispatch api server.
 gaffer_dashboard_find() {
-  local pid dd mine
+  local pid own
   if pid="$(gaffer_dashboard_pid 2>/dev/null)"; then printf '%s pidfile\n' "$pid"; return 0; fi
-  if pid="$(gaffer_port_listener_pid "$1")" && _gaffer_dashboard_pid_is_ours "$pid"; then
-    dd="$(_gaffer_pid_data_dir "$pid")"
-    if [ -n "$dd" ]; then
-      mine="$(cd "$GAFFER_DATA" 2>/dev/null && pwd -P)"
-      [ "$(cd "$dd" 2>/dev/null && pwd -P)" = "$mine" ] || { printf '%s other %s\n' "$pid" "$dd"; return 0; }
-    fi
-    printf '%s port\n' "$pid"; return 0
+  if pid="$(gaffer_port_listener_pid "$1")" && own="$(_gaffer_dashboard_owner "$pid")"; then
+    case "$own" in
+      mine) printf '%s port\n' "$pid" ;;
+      *) printf '%s %s\n' "$pid" "$own" ;;
+    esac
+    return 0
   fi
   return 1
 }

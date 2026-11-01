@@ -17,7 +17,12 @@
 #   H  a server that exits on startup: exit 1, the reason, no dead pid, old log kept;
 #   I  the token file deleted while it runs: a clear message + --restart, exit 1;
 #   J  --stop stops it and removes the pid file; again → "not running", exit 0;
-#   K  `gaffer status` reports the pid-file state truthfully.
+#   K  `gaffer status` reports the pid-file state truthfully;
+#   L  a pid file naming a live process that only CARRIES the marker on its argv (a
+#      recycled pid) is not trusted on Linux: not "already up", never stopped;
+#   M  where the OS hides a process's environment (macOS-like, via _GAFFER_PROC_ROOT)
+#      a server found only by its port is refused, not killed; one the pid file names
+#      is still stopped; a non-numeric GAFFER_DASHBOARD_START_TIMEOUT falls back to 30.
 # Ports: GAFFER_TEST_PORT_BASE (+0, +1), else random in 20000-39999.
 # Run: bash runner/test/dashboard-lifecycle.test.sh   (bash 3.2 safe)
 # =====================================================================
@@ -40,7 +45,7 @@ WORK="$(cd "$WORK" && pwd -P)"
 DATA="$WORK/data"; OTHER="$WORK/other"
 BASE="${GAFFER_TEST_PORT_BASE:-$(( 20000 + RANDOM % 20000 ))}"
 PORT="$BASE"
-unset DISPATCH_API_TOKEN NO_COLOR
+unset DISPATCH_API_TOKEN NO_COLOR GAFFER_DATA _GAFFER_PROC_ROOT GAFFER_DASHBOARD_START_TIMEOUT
 SPAWNED=()
 cleanup() {
   local p
@@ -137,6 +142,50 @@ else
 fi
 env GAFFER_DATA="$OTHER" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard --stop >/dev/null 2>&1
 gone_within "$PO" || kill -9 "$PO" 2>/dev/null
+
+echo "== L: a pid file naming a process that only carries the marker on its argv =="
+rm -f "$DATA/dashboard.pid"
+( exec -a "node /elsewhere/dist/api/bin.js --port $PORT" sleep 300 ) & FAKE=$!; SPAWNED+=("$FAKE")
+if [ -r "/proc/$FAKE/environ" ]; then
+  echo "$FAKE" > "$DATA/dashboard.pid"
+  dash
+  PL="$(cat "$DATA/dashboard.pid" 2>/dev/null)"
+  [ "$RC" -eq 0 ] && ! has "$OUT" "already up" && [ "$PL" != "$FAKE" ] && alive "$PL" && ok "not 'already up': a real server started ($PL)" || fail "fake pid trusted: rc=$RC: $OUT"
+  echo "$FAKE" > "$DATA/dashboard.pid"
+  dash --stop
+  alive "$FAKE" && ok "--stop never signals the marker-carrying stranger" || fail "--stop killed pid $FAKE: $OUT"
+  gone_within "$PL" && ok "--stop stopped the real server, found by its port" || fail "real server $PL still runs: $OUT"
+  echo "$FAKE" > "$DATA/dashboard.pid"
+  dash --restart
+  alive "$FAKE" && [ "$RC" -eq 0 ] && ok "--restart leaves it alone too" || fail "--restart rc=$RC fake alive? $(alive "$FAKE" && echo y || echo n): $OUT"
+  dash --stop
+else
+  echo "  note: no /proc/<pid>/environ here; section M covers the hidden-environment rule"
+fi
+kill "$FAKE" 2>/dev/null
+
+echo "== M: an OS that does not show a process's environment =="
+rm -f "$DATA/dashboard.pid"
+dash; PM="$(cat "$DATA/dashboard.pid" 2>/dev/null)"
+hid() { RC=0; OUT="$(env _GAFFER_PROC_ROOT="$WORK/no-proc" GAFFER_DATA="$DATA" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard "$@" 2>&1)" || RC=$?; }
+if [ "$(uname -s)" != Darwin ] && [ -n "$PM" ]; then
+  hid --stop
+  [ "$RC" -eq 0 ] && gone_within "$PM" && ok "the server its pid file names is still stopped" || fail "pid-file stop under a hidden env: rc=$RC: $OUT"
+  dash; PM="$(cat "$DATA/dashboard.pid" 2>/dev/null)"; rm -f "$DATA/dashboard.pid"
+  hid --restart
+  [ "$RC" -ne 0 ] && alive "$PM" && has "$OUT" "does not show" && ok "--restart refuses a port-only match it cannot attribute" || fail "--restart killed or misreported: rc=$RC alive? $(alive "$PM" && echo y || echo n): $OUT"
+  hid --stop
+  [ "$RC" -ne 0 ] && alive "$PM" && ok "--stop refuses it too (exit $RC)" || fail "--stop under a hidden env: rc=$RC: $OUT"
+  hid
+  [ "$RC" -ne 0 ] && alive "$PM" && has "$OUT" "kill $PM" && ok "a plain start names it and says how to stop it" || fail "plain start: rc=$RC: $OUT"
+  echo "$PM" > "$DATA/dashboard.pid"; dash --stop
+else
+  echo "  note: skipped (real macOS, or no server)"
+fi
+RC=0; OUT="$(env GAFFER_DASHBOARD_START_TIMEOUT=abc GAFFER_DATA="$DATA" DISPATCH_API_PORT="$PORT" bash "$RUNNER_DIR/gaffer" dashboard 2>&1)" || RC=$?
+[ "$RC" -eq 0 ] && has "$OUT" "not a whole number" && has "$OUT" "dashboard up" && ok "a non-numeric start timeout falls back to 30 (said)" || fail "timeout=abc: rc=$RC: $OUT"
+has "$OUT" "unbound variable" && fail "raw bash error: $OUT"
+dash --stop
 
 echo "== H: a server that exits on startup =="
 dash

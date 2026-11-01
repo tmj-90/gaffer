@@ -5,6 +5,7 @@ import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
 import { contractHash } from "../util/contractHash.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
+import { epicImplementationMembers, epicsWithOwnAcceptance } from "../services/epicAcceptance.js";
 import { readTesterReplay } from "../services/testerReplay.js";
 import { VERSION } from "../version.js";
 
@@ -241,6 +242,14 @@ export interface EpicAcceptance {
   readonly implementation_done: number;
   readonly implementation_total: number;
   /**
+   * CURRENT SCOPE (external review #8): a confirmed implementation member is not done, so
+   * a finished acceptance ticket does not count (result `pending`) — it tested a build
+   * without that member.
+   */
+  readonly scope_incomplete: boolean;
+  /** A confirmed member reached done after the acceptance ticket did (result `stale`). */
+  readonly scope_changed: boolean;
+  /**
    * accepted   — VERIFIED: done, and the latest PASS is an agent/system verdict bound to a
    *              tested commit, the contract on record (hash matches) and a clean replay,
    *              AND the runner's landing path recorded that the tester's assertions passed
@@ -253,12 +262,14 @@ export interface EpicAcceptance {
    *              with the replay switched off (GAFFER_TESTER_REPLAY off records nothing);
    * waived     — done on a HUMAN tester-pass (an explicit decision, shown as such — never
    *              the same evidence as a revision-bound test);
-   * stale      — done, but the contract changed after the bound PASS;
+   * stale      — done, but the contract changed after the bound PASS, or a confirmed
+   *              implementation member landed after the acceptance ticket was done;
    * unverified — done without a bound PASS (no PASS evidence, a legacy PASS with no commit /
    *              hash, or no clean replay): nothing certifies what was accepted;
    * testing    — in the tester's hands (in_testing);
    * failed     — the tester failed it or it was parked (refining / blocked / failed);
-   * pending    — not yet reached (draft / ready / claimed / in_progress / in_review / paused).
+   * pending    — not yet reached (draft / ready / claimed / in_progress / in_review / paused),
+   *              or done while a confirmed implementation member is still unfinished.
    */
   readonly result:
     | "accepted"
@@ -346,28 +357,59 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     epic_name: string;
     impl_total: number;
     impl_done: number;
+    /** A confirmed member reached done AFTER the acceptance ticket did (scope changed). */
+    impl_done_after: number;
     repo_path: string | null;
     default_branch: string | null;
   }>;
   try {
-    rows = db
-      .prepare(
-        `SELECT t.id AS id, t.number AS number, t.status AS status, sn.id AS epic_id, sn.name AS epic_name,
-                (SELECT r.local_path FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
-                  WHERE tr.ticket_id = t.id ORDER BY tr.role = 'primary' DESC LIMIT 1) AS repo_path,
-                (SELECT r.default_branch FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
-                  WHERE tr.ticket_id = t.id ORDER BY tr.role = 'primary' DESC LIMIT 1) AS default_branch,
-                (SELECT COUNT(*) FROM ticket_scope_nodes s2 JOIN tickets t2 ON t2.id = s2.ticket_id
-                  WHERE s2.scope_node_id = sn.id AND t2.acceptance = 0 AND t2.status <> 'cancelled') AS impl_total,
-                (SELECT COUNT(*) FROM ticket_scope_nodes s2 JOIN tickets t2 ON t2.id = s2.ticket_id
-                  WHERE s2.scope_node_id = sn.id AND t2.acceptance = 0 AND t2.status = 'done') AS impl_done
-           FROM tickets t
-           JOIN ticket_scope_nodes tsn ON tsn.ticket_id = t.id
-           JOIN scope_nodes sn ON sn.id = tsn.scope_node_id AND sn.type = 'epic'
-          WHERE t.acceptance = 1
-          ORDER BY t.number ASC`,
-      )
-      .all() as typeof rows;
+    // EPIC MEMBERSHIP (external review #8): each epic once, against its OWN acceptance
+    // ticket; only confirmed (primary / secondary) links count as members, so a
+    // suggested or rejected link neither credits another epic nor adds scope.
+    const ticketRow = db.prepare(
+      `SELECT t.id AS id, t.number AS number, t.status AS status,
+              (SELECT r.local_path FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+                WHERE tr.ticket_id = t.id ORDER BY tr.role = 'primary' DESC LIMIT 1) AS repo_path,
+              (SELECT r.default_branch FROM ticket_repos tr JOIN repositories r ON r.id = tr.repo_id
+                WHERE tr.ticket_id = t.id ORDER BY tr.role = 'primary' DESC LIMIT 1) AS default_branch,
+              (SELECT MAX(w.created_at) FROM work_events w
+                WHERE w.entity_type = 'ticket' AND w.entity_id = t.id
+                  AND w.event_type = 'ticket.transitioned'
+                  AND json_extract(w.payload_json, '$.to') = 'done') AS done_at
+         FROM tickets t WHERE t.id = ?`,
+    );
+    rows = [];
+    for (const e of epicsWithOwnAcceptance(db)) {
+      const t = ticketRow.get(e.acceptanceTicketId) as
+        | {
+            id: string;
+            number: number | null;
+            status: string;
+            repo_path: string | null;
+            default_branch: string | null;
+            done_at: string | null;
+          }
+        | undefined;
+      if (!t) continue;
+      const members = epicImplementationMembers(db, e.epicNodeId);
+      const done = members.filter((m) => m.status === "done");
+      rows.push({
+        id: t.id,
+        number: t.number,
+        status: t.status,
+        epic_id: e.epicNodeId,
+        epic_name: e.epicName,
+        impl_total: members.length,
+        impl_done: done.length,
+        impl_done_after:
+          t.status === "done" && t.done_at
+            ? done.filter((m) => m.doneAt !== null && m.doneAt > String(t.done_at)).length
+            : 0,
+        repo_path: t.repo_path,
+        default_branch: t.default_branch,
+      });
+    }
+    rows.sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
   } catch {
     return empty;
   }
@@ -406,9 +448,15 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
     // TESTER REPLAY: the record that the tester's assertions passed on the landed revision.
     const replayed = readTesterReplay(db, r.id, acceptedCommit);
     let result: EpicAcceptance["result"];
-    if (r.status === "done") {
+    // CURRENT SCOPE: an acceptance that ran while a confirmed member was still unfinished
+    // tested a build without it — the epic is pending until the revised scope is done
+    // (and its acceptance re-run); one whose member landed after it is stale.
+    const scopeIncomplete = r.impl_done < r.impl_total;
+    const scopeChanged = !scopeIncomplete && r.impl_done_after > 0;
+    if (r.status === "done" && scopeIncomplete) result = "pending";
+    else if (r.status === "done") {
       if (provenance === "human") result = "waived";
-      else if (contractChanged) result = "stale";
+      else if (contractChanged || scopeChanged) result = "stale";
       else if (acceptedCommit !== null && acceptedHash !== null && replay === "passed")
         // Zero tester files replayed is zero independent assertions on what landed.
         result = replayed && replayed.files.length > 0 ? "accepted" : "unreplayed";
@@ -429,6 +477,8 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
       acceptance_status: r.status,
       implementation_done: r.impl_done,
       implementation_total: r.impl_total,
+      scope_incomplete: scopeIncomplete,
+      scope_changed: scopeChanged,
       result,
       unaccepted,
       pass_provenance: provenance,

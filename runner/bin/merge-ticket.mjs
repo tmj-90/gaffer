@@ -232,6 +232,13 @@ function parseArgs(argv) {
       case "--dry-run":
         opts.dryRun = true;
         break;
+      case "--recover-replay":
+        // REPLAY RECOVERY (external review #8): the approved commit already landed but the
+        // tester replay record was never written (the merger was interrupted between the
+        // landing record and the replay record). Regenerate it on the landed revision, or
+        // exit 4 with a targeted "replay missing" hold. lib/land.sh calls this on a retry.
+        opts.recoverReplay = true;
+        break;
       case "--apply-digest-only":
         // The merge ALREADY landed elsewhere (the runner's unattended AFK merge in
         // review.sh): skip git + claude and run only the post-merge memory work —
@@ -390,19 +397,23 @@ export function resolveTicket(dbPath, number) {
     // The per-repo delivery row (ticket_repo_delivery) is where the factory records the
     // branch for a multi-repo ticket; fall back to it the same way the review diff does.
     let deliveryBranch = "";
+    let deliveryPrUrl = "";
     try {
       const d = db
         .prepare(
-          "SELECT branch_name AS b FROM ticket_repo_delivery WHERE ticket_id = ? AND repo_id = ?",
+          "SELECT branch_name AS b, pr_url AS pr FROM ticket_repo_delivery WHERE ticket_id = ? AND repo_id = ?",
         )
         .get(ticket.id, repoRow.id);
       deliveryBranch = String(d?.b || "");
+      deliveryPrUrl = String(d?.pr || "");
     } catch {
       deliveryBranch = ""; // pre-v4 schema / minimal fixture
     }
     const branch = String(repoRow.repoBranch || deliveryBranch || ticket.branchName || "").trim();
     if (!branch) return null;
-    const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || "").trim();
+    // The primary's PR: the repo link's, else the ticket's, else the one its delivery
+    // record carries (a PR recorded only there must land upstream too — review #8).
+    const prUrl = String(repoRow.repoPrUrl || ticket.prUrl || deliveryPrUrl || "").trim();
 
     // Every WRITE repo's name + stack (the tester mounts the union of their stacks). An
     // older schema without repositories.stack / ticket_repos.relation resolves to [].
@@ -1343,6 +1354,159 @@ function replayOnMergeCandidate({
   return { kind: "pass", replay: { record: true, files: proof.ran, note: plan.reason } };
 }
 
+/** TESTER REPLAY: is a replay record on file for `pin` (a system row, any landed revision)? */
+export function replayRecordOnFile(dbPath, ticketNumber, pin) {
+  let DatabaseSync;
+  try {
+    ({ DatabaseSync } = require("node:sqlite"));
+  } catch {
+    return null;
+  }
+  let db;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const t = db.prepare("SELECT id FROM tickets WHERE number = ?").get(Number(ticketNumber));
+    if (!t) return null;
+    const row = db
+      .prepare(
+        "SELECT 1 AS hit FROM evidence WHERE ticket_id = ? AND recorded_by_actor_type = 'system' " +
+          "AND uri LIKE 'gaffer-tester-replayed:%' AND lower(json_extract(payload_json, '$.tested')) = ? LIMIT 1",
+      )
+      .get(t.id, String(pin).toLowerCase());
+    return Boolean(row);
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* closed */
+    }
+  }
+}
+
+/**
+ * The revision on `defaultBranch` that landed `pin`: the oldest first-parent commit of the
+ * default branch that contains it (the gated merge commit; `pin` itself after a
+ * fast-forward). "" when `pin` is not on the default branch.
+ */
+export function landedRevisionOf(repoPath, defaultBranch, pin) {
+  const ref = `refs/heads/${defaultBranch}`;
+  if (git(repoPath, "merge-base", "--is-ancestor", pin, ref).status !== 0) return "";
+  const fp = git(repoPath, "rev-list", "--first-parent", ref).stdout.trim().split("\n");
+  if (fp.includes(pin)) return pin;
+  const desc = git(repoPath, "rev-list", "--first-parent", "--ancestry-path", `${pin}..${ref}`)
+    .stdout.trim()
+    .split("\n")
+    .filter(Boolean);
+  return desc.length > 0 ? desc[desc.length - 1] : "";
+}
+
+/**
+ * REPLAY RECOVERY (external review #8). Interrupting the merger after git and the landing
+ * record succeeded but before the tester replay record was written left the acceptance
+ * ticket landed (a retry skips the landed repo) and its epic never replayed: it read
+ * "unreplayed" for good. On a retry of an already-landed repo this regenerates the missing
+ * evidence: the tester's test files are replayed on the revision that LANDED (a scratch
+ * checkout of it, the same replay and proof of execution as the merge gate's) and the
+ * record names that revision. → { ok: true, recorded, reason } when nothing is missing
+ * any more (or nothing needed recording); { ok: false, reason } is a targeted hold — the
+ * caller leaves the ticket at ready_for_merge and says "replay missing: run …".
+ */
+export function recoverMissingReplay({ ticketNumber, repo, pin, commands }) {
+  const plan = replayPlan({
+    dbPath: CONFIG.dispatchDb,
+    ticketNumber,
+    repoPath: repo.localPath,
+    pin,
+  });
+  if (!plan.ok) return { ok: false, reason: `the replay could not be planned (${plan.reason})` };
+  if (!plan.record) return { ok: true, recorded: false, reason: plan.reason };
+  const onFile = replayRecordOnFile(CONFIG.dispatchDb, ticketNumber, pin);
+  if (onFile === null) return { ok: false, reason: "the replay record could not be read" };
+  if (onFile) return { ok: true, recorded: false, reason: "the replay record is on file" };
+  const landedRev = landedRevisionOf(repo.localPath, repo.defaultBranch, pin);
+  if (!landedRev)
+    return {
+      ok: false,
+      reason: `the landed revision of ${String(pin).slice(0, 12)} is not on the local ${repo.defaultBranch} (a PR landing not pulled yet?)`,
+    };
+  log(
+    `#${ticketNumber}: REPLAY RECOVERY — ${repo.name} landed ${String(pin).slice(0, 12)} as ${landedRev.slice(0, 12)} but no tester replay was recorded; replaying the tester's tests on it`,
+  );
+  const wt = resolve(GAFFER_DATA, "worktrees", `replay-recovery-${ticketNumber}`);
+  mkdirSync(dirname(wt), { recursive: true });
+  const cleanup = () => {
+    git(repo.localPath, "worktree", "remove", "--force", wt);
+    rmSync(wt, { recursive: true, force: true });
+    git(repo.localPath, "worktree", "prune");
+  };
+  cleanup();
+  const add = git(
+    repo.localPath,
+    "worktree",
+    "add",
+    "--quiet",
+    "--detach",
+    "--force",
+    wt,
+    landedRev,
+  );
+  if (add.status !== 0) {
+    cleanup();
+    return { ok: false, reason: "a scratch checkout of the landed revision could not be created" };
+  }
+  try {
+    const parent = git(
+      repo.localPath,
+      "rev-parse",
+      "--verify",
+      "--quiet",
+      `${landedRev}^1`,
+    ).stdout.trim();
+    const rp = replayOnMergeCandidate({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber,
+      repoPath: repo.localPath,
+      wt,
+      pin,
+      target: parent || landedRev,
+      merge: landedRev,
+      label: repo.name,
+      testCommand: commands?.test || "",
+      installed: false,
+      env: process.env,
+    });
+    if (rp.kind !== "pass")
+      return {
+        ok: false,
+        reason: `the replay on the landed revision ${landedRev.slice(0, 12)} did not pass (${rp.reason})`,
+      };
+    const recorded = recordTesterReplayCli(
+      ticketNumber,
+      repo.id || null,
+      landedRev,
+      pin,
+      rp.replay.files,
+      "local",
+      `regenerated on a merge retry: the earlier landing was interrupted before its replay record${rp.replay.note ? `; ${rp.replay.note}` : ""}`,
+    );
+    if (recorded === false)
+      return { ok: false, reason: "the regenerated replay could not be recorded" };
+    return { ok: true, recorded: true, reason: `replayed on ${landedRev.slice(0, 12)}` };
+  } finally {
+    cleanup();
+  }
+}
+
+/** The targeted hold line when the replay evidence is missing and could not be regenerated. */
+function replayMissing(ticketNumber, reason) {
+  return (
+    `replay missing: #${ticketNumber} landed but its tester replay record is missing and could not be regenerated (${reason}); ` +
+    `the ticket stays ready_for_merge (not done) — fix the cause, then run \`gaffer merge ${ticketNumber}\` to regenerate it`
+  );
+}
+
 /**
  * TESTER REPLAY: the revision that landed, for the replay record — `gatedMerge` itself for
  * a local landing (compare-and-land landed exactly it); for a PR landing, the local default
@@ -1350,7 +1514,8 @@ function replayOnMergeCandidate({
  *   → { ok: true, commit } | { ok: false, reason }
  */
 export function testerReplayLandedRevision(repo, landed, gatedMerge) {
-  if (landed.via === "local") return { ok: true, commit: gatedMerge };
+  if (landed.via === "local" || landed.via === "local-fallback")
+    return { ok: true, commit: gatedMerge };
   if (landed.via !== "pr" || !landed.fastForwarded)
     return {
       ok: false,
@@ -1390,15 +1555,17 @@ function recordTesterReplayCli(ticketNumber, repoId, landedSha, pin, files, via,
     "--as",
     "system",
   ]);
-  if (r.error || r.status !== 0)
+  if (r.error || r.status !== 0) {
     log(
       `WARNING: #${ticketNumber} could not record the tester replay on ${String(landedSha).slice(0, 12)} ` +
         `(${(r.stderr || "").trim().slice(0, 160)}) — the epic is not counted as accepted until it is`,
     );
-  else
-    log(
-      `#${ticketNumber}: recorded the tester replay — ${(files || []).length} tester test file(s) passed on the landed revision ${String(landedSha).slice(0, 12)}`,
-    );
+    return false;
+  }
+  log(
+    `#${ticketNumber}: recorded the tester replay — ${(files || []).length} tester test file(s) passed on the landed revision ${String(landedSha).slice(0, 12)}`,
+  );
+  return true;
 }
 
 /**
@@ -1948,6 +2115,7 @@ function landThroughMergeGate({
   secondary = false,
   testerReplay = null,
   trailers = [],
+  beforeLand = null,
 }) {
   const maxTries = Math.max(0, parseInt(process.env.GAFFER_MERGE_GATE_RETRIES ?? "", 10) || 2);
   const where = secondary && repoName ? ` in ${repoName}` : "";
@@ -1971,6 +2139,11 @@ function landThroughMergeGate({
         ? `#${ticketNumber}: MERGE GATE OFF (GAFFER_DOD=0) — the combination was not gated`
         : `#${ticketNumber}: MERGE GATE PASS — the merge of ${pin.slice(0, 12)} onto ${defaultBranch}@${gate.target.slice(0, 12)}${where} passes the gates`,
     );
+    // REVOCATION-SAFE LANDING: the last word before the default branch moves.
+    if (beforeLand) {
+      const b = beforeLand();
+      if (!b.ok) return { kind: "revoked", reason: b.reason };
+    }
     const l = landGatedMerge({
       repoPath,
       defaultBranch,
@@ -2070,6 +2243,173 @@ function recordLandingCli(ticketNumber, repoId, sha, via) {
       `WARNING: #${ticketNumber} could not record the landing of ${String(sha).slice(0, 12)} ` +
         `(${(r.stderr || "").trim().slice(0, 160)}) — the done gate re-checks git`,
     );
+}
+
+/**
+ * REVOCATION-SAFE LANDING (external review #8): the approval this merge acts on, read
+ * BEFORE any gate runs (`wg ticket landing` .approval). beginLandingCli hands it back, so
+ * a re-approval while the gates ran is a different approval and nothing lands on the old.
+ */
+export function readLandingApproval(ticketNumber) {
+  const r = runDispatch(["ticket", "landing", String(ticketNumber)]);
+  if (r.error || r.status !== 0) return null;
+  try {
+    const j = JSON.parse(String(r.stdout || "").trim());
+    return typeof j.approval === "string" && j.approval ? j.approval : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * REVOCATION-SAFE LANDING: called after the gates passed and IMMEDIATELY before a default
+ * branch is advanced (or a PR merge requested), once per repo. Dispatch re-checks in one
+ * transaction that the ticket is still ready_for_merge on the same approval, that `pin`
+ * is still the repo's approved revision and that required CI is still green, and records
+ * the landing as started (a revocation after this reports it). → { ok, reason }: not ok
+ * means land NOTHING (fail closed: a check that cannot run is a refusal too).
+ */
+export function beginLandingCli(ticketNumber, repoRef, pin, approval, via) {
+  const args = [
+    "ticket",
+    "landing-begin",
+    String(ticketNumber),
+    "--repo",
+    String(repoRef),
+    "--commit",
+    String(pin),
+    "--via",
+    String(via || "local"),
+    "--as",
+    "system",
+  ];
+  if (approval) args.push("--approval", String(approval));
+  const r = runDispatch(args);
+  if (!r.error && r.status === 0) return { ok: true };
+  let reason = "";
+  for (const text of [r.stdout, r.stderr]) {
+    for (const line of String(text || "").split("\n")) {
+      try {
+        const j = JSON.parse(line);
+        if (j && typeof j.message === "string") reason = j.message;
+      } catch {
+        /* not JSON */
+      }
+    }
+  }
+  if (!reason)
+    reason = `the pre-landing check could not run (${(r.error?.message || r.stderr || `exit ${r.status}`).toString().trim().slice(0, 160)})`;
+  return { ok: false, reason };
+}
+
+/** The line a revoked landing reports (the ticket is left in the state Dispatch set). */
+function notLanded(ticketNumber, reason, where = "") {
+  return `not landed: ${String(reason).replace(/[.\s]+$/, "")}${where ? ` (${where})` : ""}; nothing merged${where ? " there" : ""}, #${ticketNumber} left as Dispatch has it`;
+}
+
+/**
+ * EVERY RECORDED PR LANDS UPSTREAM: land one secondary repo through its recorded PR — the
+ * merge gate on the remote target as just fetched (the same gate the primary's PR mode
+ * runs), the revocation re-check, then the provider's merge of that PR and a fast-forward
+ * of the local default. → { kind: "landed", via: "pr" | "pr-stale" } | { kind: "fallback" }
+ * (land locally: GAFFER_PR_LOCAL_FALLBACK=1 and the PR merge could not run) |
+ * { kind: "held", reason } (nothing merged in this repo; the ticket stays open).
+ */
+function landSecondaryPr({
+  ticketNumber,
+  r,
+  pin,
+  defaultBranch,
+  commands,
+  gateDir,
+  trailers,
+  approval,
+  ghBin,
+  prLocalFallback,
+}) {
+  if (!ghAvailable(ghBin)) {
+    if (prLocalFallback) {
+      log(
+        `#${ticketNumber} ${r.repo} has PR ${r.prUrl} but '${ghBin}' is not available — GAFFER_PR_LOCAL_FALLBACK=1: ` +
+          `landing it LOCALLY (the PR stays open — close it by hand)`,
+      );
+      return { kind: "fallback" };
+    }
+    return {
+      kind: "held",
+      reason:
+        `it has PR ${r.prUrl} but '${ghBin}' is not available (GAFFER_GH_BIN) — held: merge the PR by hand, ` +
+        `or set GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead`,
+    };
+  }
+  const remote = String(process.env.GAFFER_PR_REMOTE || "origin");
+  const fetched = git(r.localPath, "fetch", "--quiet", remote, defaultBranch);
+  const gate = gateProposedMerge({
+    repoPath: r.localPath,
+    branch: r.branch,
+    pin,
+    targetRef: fetched.status === 0 ? "FETCH_HEAD" : `refs/heads/${defaultBranch}`,
+    label: r.repo,
+    commands,
+    gateDir,
+    testerReplay: null,
+    trailers,
+  });
+  if (gate.kind === "conflict") return { kind: "held", reason: `${gate.reason} (merge conflict)` };
+  if (gate.kind === "error")
+    return {
+      kind: "held",
+      reason: `the merge gate could not run (${gate.reason}); nothing merged`,
+    };
+  if (gate.kind === "red") {
+    const h = holdMergeGateRed(ticketNumber, gate, {
+      branch: r.branch,
+      defaultBranch,
+      repoName: r.repo,
+    });
+    return {
+      kind: "held",
+      reason:
+        `MERGE GATE FAILED — ${gate.reason}; its PR was not merged; ` +
+        (h.held
+          ? `ticket held for a human (blocked, ${h.code})`
+          : "ticket left ready_for_merge (the hold could not be recorded)"),
+    };
+  }
+  const b = beginLandingCli(ticketNumber, r.repoId, pin, approval, "pr");
+  if (!b.ok) return { kind: "held", reason: notLanded(ticketNumber, b.reason, r.repo) };
+  const pr = mergeViaPr({
+    repoPath: r.localPath,
+    prUrl: r.prUrl,
+    defaultBranch,
+    ghBin,
+    method: process.env.GAFFER_PR_MERGE_METHOD,
+    remote: process.env.GAFFER_PR_REMOTE,
+    matchHeadCommit: pin,
+    body: trailers.join("\n"),
+  });
+  if (pr.ok) {
+    log(
+      `merged #${ticketNumber} in ${r.repo} through its PR ${r.prUrl} (${pr.argv.join(" ")})` +
+        (pr.fastForwarded
+          ? `; local ${defaultBranch} fast-forwarded from the remote`
+          : `; WARNING: the local ${defaultBranch} could not be fast-forwarded (${pr.ffReason}) — pull it by hand`),
+    );
+    return { kind: "landed", via: pr.fastForwarded ? "pr" : "pr-stale" };
+  }
+  if (prLocalFallback) {
+    log(
+      `PR merge for #${ticketNumber} in ${r.repo} failed — ${pr.reason}; GAFFER_PR_LOCAL_FALLBACK=1: landing it ` +
+        `LOCALLY (the PR ${r.prUrl} stays open — close it by hand)`,
+    );
+    return { kind: "fallback" };
+  }
+  return {
+    kind: "held",
+    reason:
+      `its PR ${r.prUrl} did not merge — ${pr.reason}; held for a human (merge the PR by hand, or set ` +
+      `GAFFER_PR_LOCAL_FALLBACK=1 to land locally instead)`,
+  };
 }
 
 /**
@@ -2248,8 +2588,10 @@ export function preflightRefusal(ticketNumber, hold) {
  * repo); a RED merge gate also holds the ticket (blocked, merge_gate_red) with the gate
  * output as evidence. Returns { ok, merged, landed, pending, reason }.
  */
-function landSecondaryRepos(ticketNumber, primaryRepoId) {
+function landSecondaryRepos(ticketNumber, primaryRepoId, approval = null) {
   const plan = readLandingPlan(ticketNumber);
+  const ghBin = process.env.GAFFER_GH_BIN || "gh";
+  const prLocalFallback = /^(1|true|yes|on)$/i.test(process.env.GAFFER_PR_LOCAL_FALLBACK || "");
   const out = { ok: true, merged: [], landed: [], pending: [], reason: "" };
   if (!plan) return out; // legacy approval (no per-repo pins): the primary was the change
   // PROVENANCE TRAILERS — the same block the primary's merge commit carries.
@@ -2299,6 +2641,45 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
       continue;
     }
     const defaultBranch = r.defaultBranch || "main";
+    const commands = resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId);
+    const gateDir = resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`);
+    // EVERY RECORDED PR LANDS UPSTREAM (external review #8): a secondary repo whose
+    // delivery record carries a PR lands exactly like the primary's PR — the provider is
+    // asked to merge THAT PR (after its merge gate on the fetched remote target), and only
+    // that is its landing. A local merge into the checkout used to stand in for it: the
+    // ticket read done while that repo's upstream main had the original code.
+    // GAFFER_PR_LOCAL_FALLBACK=1 (the operator's explicit choice) still lands it locally.
+    if (r.prUrl) {
+      const pr = landSecondaryPr({
+        ticketNumber,
+        r,
+        pin: d.pin,
+        defaultBranch,
+        commands,
+        gateDir,
+        trailers,
+        approval,
+        ghBin,
+        prLocalFallback,
+      });
+      if (pr.kind === "landed") {
+        recordLandingCli(ticketNumber, r.repoId, d.pin, pr.via);
+        out.landed.push(r.repo);
+        if (pr.via === "pr")
+          out.merged.push({
+            repo: r.repo,
+            localPath: r.localPath,
+            branch: r.branch,
+            defaultBranch,
+            pin: d.pin,
+          });
+        continue;
+      }
+      if (pr.kind !== "fallback") {
+        why(pr.reason);
+        continue;
+      }
+    }
     const res = landThroughMergeGate({
       ticketNumber,
       repoPath: r.localPath,
@@ -2306,12 +2687,18 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
       branch: r.branch,
       defaultBranch,
       pin: d.pin,
-      commands: resolveGateCommands(CONFIG.dispatchDb, ticketNumber, r.repoId),
-      gateDir: resolve(GAFFER_DATA, "worktrees", `merge-gate-${ticketNumber}-${r.repoId}`),
+      commands,
+      gateDir,
       secondary: true,
       // Each repo's gated merge commit is the commit that lands there: it carries them too.
       trailers,
+      // REVOCATION-SAFE LANDING: re-checked before EACH repo's default branch moves.
+      beforeLand: () => beginLandingCli(ticketNumber, r.repoId, d.pin, approval, "local"),
     });
+    if (res.kind === "revoked") {
+      why(notLanded(ticketNumber, res.reason, r.repo));
+      continue;
+    }
     if (res.kind === "conflict") {
       why(`${res.gate.reason} (merge conflict)`);
       continue;
@@ -2342,7 +2729,7 @@ function landSecondaryRepos(ticketNumber, primaryRepoId) {
     log(
       `merged #${ticketNumber} in ${r.repo} (${r.branch} → ${defaultBranch}) — landed the gated merge ${res.gate.merge.slice(0, 12)}`,
     );
-    recordLandingCli(ticketNumber, r.repoId, d.pin, "local");
+    recordLandingCli(ticketNumber, r.repoId, d.pin, r.prUrl ? "local-fallback" : "local");
     out.landed.push(r.repo);
     out.merged.push({
       repo: r.repo,
@@ -2505,6 +2892,42 @@ function main() {
     return;
   }
 
+  if (opts.recoverReplay) {
+    // REPLAY RECOVERY only (lib/land.sh, on a retry of an already-landed primary repo),
+    // under the same per-ticket merge lock as a landing.
+    const d0 = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber: resolved.number,
+      repoPath: repo.localPath,
+      branch,
+      repoId: repo.id || null,
+    });
+    if (!d0.ok || d0.kind !== "already-landed") {
+      emit({ phase: "replay-recovery", ticket: resolved.number, skipped: "not landed yet" }, 0);
+      return;
+    }
+    const rec = recoverMissingReplay({
+      ticketNumber: resolved.number,
+      repo,
+      pin: d0.pin,
+      commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number, repo.id || null),
+    });
+    if (!rec.ok) {
+      fail(replayMissing(resolved.number, rec.reason), 4);
+      return;
+    }
+    emit(
+      {
+        phase: "replay-recovery",
+        ticket: resolved.number,
+        recorded: rec.recorded,
+        reason: rec.reason,
+      },
+      0,
+    );
+    return;
+  }
+
   // Fail CLOSED: never run a live agent without the deterministic safety hook.
   if (!existsSync(resolve(RUNNER_DIR, "safety-hook.mjs"))) {
     fail(
@@ -2568,6 +2991,11 @@ function main() {
   }
   if (decision.kind === "waived") log(`#${resolved.number}: landing on a HUMAN tester waiver`);
   const pin = decision.pin;
+  // REVOCATION-SAFE LANDING (external review #8): the approval this merge acts on, read
+  // before any gate runs; every repo's landing re-checks it right before git moves.
+  const approval = readLandingApproval(resolved.number);
+  const primaryRef = repo.id || repo.name;
+  const revoked = (b) => fail(notLanded(resolved.number, b.reason), 4);
   // PROVENANCE TRAILERS for the merge commit — the same block lib/land.sh writes.
   const trailers = provenanceTrailers({ dbPath: CONFIG.dispatchDb, ticketNumber: resolved.number });
   // PER-REPOSITORY LANDING: the primary repo's approved commit already landed (a retry
@@ -2643,6 +3071,9 @@ function main() {
   }
   if (!landed && resolved.prUrl && !conflict) {
     if (ghAvailable(ghBin)) {
+      // REVOCATION-SAFE LANDING: the last word before the provider is asked to merge.
+      const b = beginLandingCli(resolved.number, primaryRef, pin, approval, "pr");
+      if (!b.ok) return revoked(b);
       const pr = mergeViaPr({
         repoPath: repo.localPath,
         prUrl: resolved.prUrl,
@@ -2712,8 +3143,10 @@ function main() {
       testerReplay,
       // The gated merge commit is the commit that lands: it carries the trailers.
       trailers,
+      beforeLand: () => beginLandingCli(resolved.number, primaryRef, pin, approval, "local"),
     });
     // A conflict falls through to the resolver below (landed stays null).
+    if (res.kind === "revoked") return revoked(res);
     if (res.kind === "red") return holdRed(res.gate);
     if (res.kind === "error") {
       fail(
@@ -2722,7 +3155,13 @@ function main() {
       return;
     }
     if (res.kind === "landed") {
-      landed = { via: "local", gatedMerge: res.gate.merge, gatedTarget: res.gate.target };
+      // A PR-mode ticket landed locally only by the operator's GAFFER_PR_LOCAL_FALLBACK=1:
+      // recorded as such, the one local landing that counts for a repo with a PR.
+      landed = {
+        via: resolved.prUrl ? "local-fallback" : "local",
+        gatedMerge: res.gate.merge,
+        gatedTarget: res.gate.target,
+      };
       replayed = res.gate.replay?.record
         ? { merge: res.gate.merge, files: res.gate.replay.files, note: res.gate.replay.note || "" }
         : null;
@@ -2756,6 +3195,20 @@ function main() {
         pin,
         landed.via === "pr" && landed.fastForwarded === false ? "pr-stale" : landed.via,
       );
+    // REPLAY RECOVERY (external review #8): a retry of an already-landed repo regenerates
+    // the tester replay record an interrupted landing never wrote — or holds, targeted.
+    if (landed.via === "earlier") {
+      const rec = recoverMissingReplay({
+        ticketNumber: resolved.number,
+        repo,
+        pin,
+        commands: gateCommands,
+      });
+      if (!rec.ok) {
+        fail(replayMissing(resolved.number, rec.reason), 4);
+        return;
+      }
+    }
     // TESTER REPLAY: which tester assertions passed on which landed revision. A local
     // landing lands exactly the gated merge. A PR landing lands what GitHub made of the PR
     // (merge, squash or rebase, on the remote default as it stood then): the record names
@@ -2779,7 +3232,7 @@ function main() {
           `#${resolved.number}: NO tester replay record — ${landedRev.reason}; the epic is not counted as accepted`,
         );
     }
-    const others = landSecondaryRepos(resolved.number, repo.id);
+    const others = landSecondaryRepos(resolved.number, repo.id, approval);
     if (!others.ok) {
       emit(
         {
@@ -2789,6 +3242,20 @@ function main() {
           pending: others.pending,
           error: others.reason,
         },
+        4,
+      );
+      return;
+    }
+    // REVOCATION-SAFE LANDING: a revocation acknowledged after a landing started (its
+    // last check passed) cannot stop it, and the revocation said so. Say it here too:
+    // this is not a clean merge, and the ticket stays as Dispatch has it (not done).
+    const after = ticketStatusOf(CONFIG.dispatchDb, resolved.number);
+    if (after.exists && after.status !== "ready_for_merge") {
+      fail(
+        `LANDED AFTER A REVOCATION: #${resolved.number} became ${after.status} while its landing was under way ` +
+          `(the revocation was recorded after the last pre-landing check passed); ${repo.name}'s ` +
+          `${repo.defaultBranch} carries the merge, nothing else was landed and the ` +
+          `ticket is left ${after.status}, not done — revert it by hand if it must not ship`,
         4,
       );
       return;

@@ -793,11 +793,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.review,
     summary: "Reject the review",
     description:
-      "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store. A ticket whose change already landed in some repository is not re-queued: it is held for a person (`blocked`, park reason code `partly_landed`), and `to: cancelled` is refused (409 `PARTLY_LANDED`).",
+      "Sends the ticket back to rework with the reason as feedback; `captureLore` files a lore draft in the memory store. A ticket whose change already landed in some repository is not re-queued: it is held for a person (`blocked`, park reason code `partly_landed`), and `to: cancelled` is refused (409 `PARTLY_LANDED`). A rejection recorded after a landing started (the merge runner's last check passed) cannot stop that landing: the response lists it in `landed_already`.",
     capability: "full",
     body: "rejectReviewBody",
     responses: [
-      ok("`{ ticket, event_id, lore_capture? }`.", "TicketTransition"),
+      ok("`{ ticket, event_id, lore_capture?, landed_already? }`.", "TicketTransition"),
       notFound,
       conflict,
       invalid,
@@ -958,11 +958,11 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Mark won't-do",
     description:
-      "Cancels the ticket. Refused (409 `PARTLY_LANDED`) once any of its repositories has a landing on record, whatever happened to the approval since (a send-back or a reopen withdraws the approval, not the merge): such a ticket can only be finished, so land the rest.",
+      "Cancels the ticket. Refused (409 `PARTLY_LANDED`) once any of its repositories has a landing on record, whatever happened to the approval since (a send-back or a reopen withdraws the approval, not the merge): such a ticket can only be finished, so land the rest. A landing that started before the won't-do is listed in `landed_already`.",
     capability: "full",
     body: "wontDoBody",
     responses: [
-      ok("`{ ticket, event_id }` (cancelled).", "TicketTransition"),
+      ok("`{ ticket, event_id, landed_already? }` (cancelled).", "TicketTransition"),
       notFound,
       {
         status: 409,

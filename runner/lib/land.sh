@@ -84,6 +84,28 @@ _gaffer_land_record() {
   fi
 }
 
+# REVOCATION-SAFE LANDING (external review #8). A cancellation or a red required check
+# recorded while the merge gate ran used to be acknowledged by Dispatch and then overridden
+# by the landing that followed. Immediately before a default branch moves (or a PR merge is
+# requested) — per repo — Dispatch re-checks in one transaction that the ticket is still
+# ready_for_merge on the approval this landing started on (_LAND_APPROVAL, read before any
+# gate), that the pin is still the repo's approved revision and that required CI is still
+# green, and records the landing as started (a revocation after that reports it).
+#   _gaffer_land_begin <num> <repo_id|name> <pin> <via> → 0 land · 1 not landed (_LB_REASON)
+# Fail CLOSED: a check that cannot run is a refusal.
+_gaffer_land_begin() {
+  local num="$1" repo="$2" pin="$3" via="$4" out rc=0
+  _LB_REASON=""
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  local -a _ap=()
+  [ -n "${_LAND_APPROVAL:-}" ] && _ap=(--approval "$_LAND_APPROVAL")
+  out="$(wg ticket landing-begin "$num" --repo "$repo" --commit "$pin" --via "$via" ${_ap[@]+"${_ap[@]}"} --as system 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  _LB_REASON="$(printf '%s\n' "$out" | jget 'd.message || ""' 2>/dev/null | head -1)"
+  [ -n "$_LB_REASON" ] || _LB_REASON="the pre-landing check could not run (rc=$rc: $(printf '%s' "$out" | tail -n 1 | cut -c1-160))"
+  return 1
+}
+
 # TESTER REPLAY (external review #4): the merge gate replayed the independent tester's test
 # files on the exact merge candidate and that candidate landed — record WHICH assertions
 # passed on WHICH landed revision (system evidence, uri gaffer-tester-replayed:<sha>). The
@@ -102,7 +124,7 @@ _gaffer_land_replay_record() {
   [ "${_MG_REPLAY_RECORD:-0}" = "1" ] && [ -n "$merge" ] && [ -n "$pin" ] || return 0
   local landed="$merge" _lt _mt
   case "$via" in
-    local) ;;
+    local|local-fallback) ;;
     pr)
       landed="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$def^{commit}" 2>/dev/null || true)"
       _lt="$(git -C "$repo" rev-parse --verify --quiet "$landed^{tree}" 2>/dev/null || true)"
@@ -172,6 +194,22 @@ EOF
   return 0
 }
 
+# REPLAY RECOVERY (external review #8): an interrupted landing may have left no tester
+# replay record (the epic would read unreplayed for good). On a retry of an already-landed
+# PRIMARY repo, regenerate it on the landed revision (bin/merge-ticket.mjs
+# --recover-replay, under the per-ticket merge lock), or hold, targeted.
+#   _gaffer_land_recover_replay <num> <who> → 0 nothing missing · 1 held (logged)
+_gaffer_land_recover_replay() {
+  local num="$1" who="$2" _rr_out _rr_rc=0 _rr_line
+  [ "${DRY_RUN:-0}" = "1" ] && return 0
+  _rr_out="$(node "$RUNNER_DIR/bin/merge-ticket.mjs" --ticket "$num" --recover-replay 2>&1 </dev/null)" || _rr_rc=$?
+  [ "$_rr_rc" -eq 0 ] && return 0
+  _rr_line="$(printf '%s\n' "$_rr_out" | grep -o 'replay missing:.*' | tail -n 1 | sed 's/"}$//' | cut -c1-600)"
+  [ -n "$_rr_line" ] || _rr_line="replay missing: the replay recovery could not run (rc=$_rr_rc); run \`gaffer merge $num\` to regenerate it"
+  log "$who: #$num HELD — $_rr_line"
+  return 1
+}
+
 gaffer_land_delivery() {
   local RNUM="$1" RREPO="$2" RBRANCH="$3" RDEFAULT="$4" RSHOW="${5:-}" _WHO="${6:-AFK}"
   [ -n "$RNUM" ] && [ -n "$RREPO" ] && [ -n "$RBRANCH" ] && [ -n "$RDEFAULT" ] || { log "$_WHO: land: missing ticket/repo/branch/default — refusing"; return 2; }
@@ -180,6 +218,8 @@ gaffer_land_delivery() {
   # before the approve (the review pass) carries no pins and would land only one repo.
   _fresh="$(wg ticket show "$RNUM" 2>/dev/null || true)"
   [ -n "$_fresh" ] && RSHOW="$_fresh"
+  # REVOCATION-SAFE LANDING: the approval this landing acts on, read before any gate runs.
+  _LAND_APPROVAL="$(wg ticket landing "$RNUM" 2>/dev/null | jget 'd.approval || ""' 2>/dev/null || true)"
   _plan="$(_gaffer_land_plan "$RSHOW" "$RREPO" "$RBRANCH" "$RDEFAULT")"
   _n="$(printf '%s\n' "$_plan" | grep -c .)"
   [ "$_n" -gt 1 ] && log "$_WHO: #$RNUM lands in $_n repositories (one merge per approved revision)"
@@ -203,6 +243,12 @@ gaffer_land_delivery() {
     fi
     if [ "$_rlanded" = "1" ]; then
       log "$_WHO: #$RNUM ${_rname}: its approved commit already landed — not merged again"
+      # (A landing on record is exactly what an interrupted merge leaves: the replay
+      # record may be the part that is missing.)
+      if [ "$_rsec" != "1" ] && ! _gaffer_land_recover_replay "$RNUM" "$_WHO"; then
+        _rc=4; _pending="${_pending:+$_pending, }$_rname (replay missing)"
+        break
+      fi
       _done=$((_done + 1)); _landed_names="${_landed_names:+$_landed_names, }$_rname"
       _LANDED_REPOS+=("$_rpath"); _LANDED_BRANCHES+=("$_rbr"); _LANDED_DEFAULTS+=("$_rdef"); _LANDED_VIA+=("earlier")
       continue
@@ -229,6 +275,18 @@ EOF
     # the rest without re-merging what already landed.
     [ "$_done" -gt 0 ] && log "$_WHO: #$RNUM PARTLY MERGED — landed in ${_landed_names}; ${_pending} did not land (rc=$_rc) — held (ready_for_merge, or the human queue when the merge gate held it); the landed repos are recorded and a retry lands the rest"
     return "$_rc"
+  fi
+  # REVOCATION-SAFE LANDING: a revocation acknowledged after a landing started cannot
+  # stop it (the revocation said so); this is not a clean merge, and the ticket stays as
+  # Dispatch has it, not done.
+  local _after_st
+  _after_st="$(wg ticket show "$RNUM" 2>/dev/null | jget 'd.ticket.status || ""' 2>/dev/null || true)"
+  # (Only a status Dispatch actually answered: an unreadable one leaves it to mark-merged,
+  # which re-checks the ticket server-side.)
+  case "$_after_st" in ""|ready_for_merge|*[!a-z_]*) _after_st="" ;; esac
+  if [ -n "$_after_st" ]; then
+    log "$_WHO: #$RNUM LANDED AFTER A REVOCATION — it became $_after_st while its landing was under way (recorded after the last pre-landing check passed); landed in ${_landed_names:-$(basename "$RREPO")}; nothing else landed and the ticket is left $_after_st, not done — revert by hand if it must not ship"
+    return 4
   fi
   # Every approved revision landed → done (the server re-checks every repo).
   if wg ticket mark-merged "$RNUM" --as system >/dev/null 2>&1; then
@@ -299,7 +357,10 @@ _gaffer_land_one() {
     return 4
   fi
   case "$_TB_KIND" in
-    already-landed) log "$_WHO: #$RNUM $(basename "$RREPO"): approved commit ${_TB_PIN:0:12} already landed — not merged again"; _MERGED_VIA="earlier"; return 0 ;;
+    already-landed)
+      log "$_WHO: #$RNUM $(basename "$RREPO"): approved commit ${_TB_PIN:0:12} already landed — not merged again"; _MERGED_VIA="earlier"
+      if [ "$_RSEC" != "1" ]; then _gaffer_land_recover_replay "$RNUM" "$_WHO" || return 4; fi
+      return 0 ;;
     waived) log "$_WHO: #$RNUM landing on a HUMAN tester waiver (pinned ${_TB_PIN:0:12})" ;;
     legacy-unbound) log "$_WHO: #$RNUM tester PASS predates commit binding — landing the current head ${_TB_PIN:0:12}" ;;
   esac
@@ -312,8 +373,13 @@ _gaffer_land_one() {
   # fast-forward) — a local merge left the PR open and the branch unpushed. gh
   # failing/absent falls back to the local merge with the reason logged. The ticket's
   # pr_url belongs to its PRIMARY repo; a secondary repo lands locally.
-  _RPR=""
-  [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
+  # EVERY RECORDED PR LANDS UPSTREAM (external review #8): a repo whose delivery record
+  # carries a PR (`landing.repos[].prUrl`) lands through THAT PR, secondary repos too — a
+  # local merge into the checkout is not its landing (the ticket read done while that
+  # repo's upstream main still had the original code).
+  _RPR="$(echo "$RSHOW" | RID="$_RID" RP="$RREPO" jget '(((d.landing && d.landing.repos) || []).find(r => (process.env.RID && r.repoId === process.env.RID) || r.localPath === process.env.RP) || {}).prUrl || ""' 2>/dev/null || true)"
+  [ -n "$_RPR" ] || [ "$_RSEC" = "1" ] || _RPR="$(echo "$RSHOW" | jget 'd.ticket.pr_url || ""' 2>/dev/null)"
+  local _LREF="${_RID:-$(basename "$RREPO")}"
   _mrc=""
   # PROVENANCE TRAILERS on the merge commit (this repo's gated merge commit, or its PR's
   # merge): the ticket, the approving actor and the gate verdicts, read from the
@@ -338,6 +404,11 @@ _gaffer_land_one() {
     esac
   fi
   if [ -n "$_RPR" ] && [ -z "$_mrc" ]; then
+    # REVOCATION-SAFE LANDING: the last word before the provider is asked to merge.
+    if ! _gaffer_land_begin "$RNUM" "$_LREF" "$_TB_PIN" pr; then
+      log "$_WHO: #$RNUM not landed: ${_LB_REASON}; nothing merged in $(basename "$RREPO") — left as Dispatch has it"
+      return 4
+    fi
     gaffer_pr_merge "$RREPO" "$_RPR" "$RDEFAULT" "$_TB_PIN" "$_TRAILERS"; _prc=$?
     case "$_prc" in
       0) _mrc=0; _MERGED_VIA=pr
@@ -374,6 +445,11 @@ _gaffer_land_one() {
         4) _gaffer_merge_gate_hold "$RNUM" "$RBRANCH" "$RDEFAULT" "$_WHO"; return 4 ;;
         *) log "$_WHO: #$RNUM HELD — the merge gate could not run (${_MG_REASON:-unknown}); nothing merged"; return 2 ;;
       esac
+      # REVOCATION-SAFE LANDING: re-checked after the gate, right before the target moves.
+      if ! _gaffer_land_begin "$RNUM" "$_LREF" "$_TB_PIN" local; then
+        log "$_WHO: #$RNUM not landed: ${_LB_REASON}; nothing merged in $(basename "$RREPO") — left as Dispatch has it"
+        return 4
+      fi
       _gaffer_land_gated "$RREPO" "$RDEFAULT" "$_MG_TARGET" "$_MG_MERGE" "$RBRANCH" "$_TB_PIN"; _lrc=$?
       case "$_lrc" in
         7)
@@ -388,6 +464,9 @@ _gaffer_land_one() {
       esac
     done
   fi
+  # A repo with a PR landed locally only by the operator's GAFFER_PR_LOCAL_FALLBACK=1 —
+  # recorded as such: the one local landing Dispatch counts for a repo with a PR.
+  [ "$_mrc" = "0" ] && [ "$_MERGED_VIA" = "local" ] && [ -n "$_RPR" ] && _MERGED_VIA="local-fallback"
   case "$_mrc" in
     0)
       log "$_WHO: #$RNUM merged $RBRANCH → $RDEFAULT in $RREPO (via $_MERGED_VIA)"
@@ -404,7 +483,7 @@ _gaffer_land_one() {
         "$(git -C "$RREPO" rev-parse "$RDEFAULT" 2>/dev/null || true)" || true
       # A PR merge already landed upstream: nothing to push (and never push a
       # stale local default over it).
-      if [ "$_MERGED_VIA" = "local" ] && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
+      if { [ "$_MERGED_VIA" = "local" ] || [ "$_MERGED_VIA" = "local-fallback" ]; } && _gaffer_flag_on "${GAFFER_AUTO_PUSH:-0}"; then
         local _push_rc=0
         gaffer_auto_push "$RREPO" "$RDEFAULT" || _push_rc=$?
         case "$_push_rc" in

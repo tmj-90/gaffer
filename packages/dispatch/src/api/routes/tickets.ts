@@ -462,6 +462,8 @@ export async function routeTickets(
         ticket: result.ticket,
         event_id: result.eventId,
         ...(loreCapture ? { lore_capture: loreCapture } : {}),
+        // REVOCATION-SAFE LANDING: landings that had started before the rejection.
+        ...(result.landedAlready.length > 0 ? { landed_already: result.landedAlready } : {}),
       });
       return;
     }
@@ -650,7 +652,12 @@ export async function routeTickets(
   if (segments.length === 3 && sub === TICKET_SUB.WONT_DO && method === "POST") {
     const body = wontDoBody.parse(await readJsonBody(req));
     const result = wg.wontDo(id, apiActor(), body.reason);
-    sendJson(res, 200, { ticket: result.ticket, event_id: result.eventId });
+    sendJson(res, 200, {
+      ticket: result.ticket,
+      event_id: result.eventId,
+      // REVOCATION-SAFE LANDING: landings that had started before the won't-do.
+      ...(result.landedAlready.length > 0 ? { landed_already: result.landedAlready } : {}),
+    });
     return;
   }
 

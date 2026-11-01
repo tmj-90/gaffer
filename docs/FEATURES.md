@@ -276,8 +276,11 @@ structural barrier the whole design hangs on.
   then `gaffer approve <n>`). If one lands and another cannot for a reason only the
   landing itself finds (a conflict, a dirty checkout, a red merge gate), the ticket stays
   in *Ready for merge* and shows as **Partly merged** in what needs you, naming which
-  repositories landed;
-  the next merge lands only the rest (`wg ticket landing <n>` shows the state). The
+  repositories landed (it cannot be cancelled then: `wg wont-do` and a cancelling send-back
+  are refused with `PARTLY_LANDED`, so land the rest or revert the landed merge first);
+  the next merge lands only the rest (`wg ticket landing <n>` shows the state; once the
+  approval is withdrawn by a send-back, a won't-do or a reopen it shows no approved
+  commit, the same as the ticket's status). The
   runner's merge lane (and so **Poll for work**) finishes it only under the same
   policy that lets it land any approval, decided again at that moment: a human
   approval with Auto-merge on, or an earned merge grant. Turn Auto-merge off, or

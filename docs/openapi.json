@@ -4401,6 +4401,7 @@
           "Tickets"
         ],
         "summary": "Mark won't-do",
+        "description": "Cancels the ticket. Refused (409 `PARTLY_LANDED`) while any of its repositories has a recorded landing of its approved commit: land the rest, or revert the landed merge first.",
         "parameters": [
           {
             "name": "id",
@@ -4464,7 +4465,7 @@
             }
           },
           "409": {
-            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "description": "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
             "content": {
               "application/json": {
                 "schema": {

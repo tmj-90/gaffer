@@ -870,12 +870,19 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/wont-do",
     tag: T.tickets,
     summary: "Mark won't-do",
+    description:
+      "Cancels the ticket. Refused (409 `PARTLY_LANDED`) while any of its repositories has a recorded landing of its approved commit: land the rest, or revert the landed merge first.",
     capability: "full",
     body: "wontDoBody",
     responses: [
       ok("`{ ticket, event_id }` (cancelled).", "TicketTransition"),
       notFound,
-      conflict,
+      {
+        status: 409,
+        description:
+          "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
+        content: "json",
+      },
       invalid,
     ],
   },

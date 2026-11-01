@@ -1768,6 +1768,7 @@ export class ReviewGateService {
           { from: ticket.status, to },
         );
       }
+      if (to === "cancelled") this.refuseCancelOfLanded(ticket);
       const resolvedReason = reason && reason.trim().length > 0 ? reason : "review_rejected";
 
       const isRequeue = to === "ready" || to === "refining";
@@ -1833,6 +1834,7 @@ export class ReviewGateService {
   wontDo(ref: string, actor: Actor, reason?: string): TransitionResult {
     return inTransaction(this.db, () => {
       const ticket = this.ticketSvc.resolveTicket(ref);
+      this.refuseCancelOfLanded(ticket);
       const result = this.transitions.transition({
         ticketId: ticket.id,
         actor,
@@ -1863,6 +1865,28 @@ export class ReviewGateService {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * PARTLY LANDED (exploratory finding cli-runner/F-02): a ticket whose approved change
+   * already reached a default branch in at least one repository cannot be cancelled.
+   * Cancelling read "won't do" while that repository's default branch carried the merge,
+   * and dropped the ticket out of the human queue's *Partly merged* item. Land the rest
+   * (`gaffer merge <n>`), or revert the landed merge first.
+   */
+  private refuseCancelOfLanded(ticket: Ticket): void {
+    const landing = computeLandingStatus(this.db, ticket.id);
+    const landed = landing.repos.filter((r) => r.landed).map((r) => r.repo);
+    if (landed.length === 0) return;
+    const pending = landing.repos.filter((r) => !r.landed).map((r) => r.repo);
+    throw new DispatchError(
+      "PARTLY_LANDED",
+      `#${ticket.number ?? "?"} already landed in ${landed.join(", ")}; a ticket whose change is on a default branch cannot be cancelled. ` +
+        (pending.length > 0
+          ? `Land the rest (gaffer merge ${ticket.number ?? "<n>"}: ${pending.join(", ")} still pending), or revert the landed merge first.`
+          : `Finish it (gaffer merge ${ticket.number ?? "<n>"}), or revert the landed merge first.`),
+      { ticket_number: ticket.number, landed, pending },
+    );
+  }
 
   /**
    * BBT-001 toggle accessor — overridable per-instance for tests. Defaults to the

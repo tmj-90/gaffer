@@ -7,7 +7,7 @@ below is the real, verified path — run them in order.
 
 ## Prerequisites
 
-- **Node 22.22.1+ or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`)
+- **Node 22.22.1+ or 24** and **[pnpm](https://pnpm.io)** (`pnpm@10.33.0`, pinned via `packageManager`). The Node floor is a hard prerequisite; see the note under step 1.
 - **Git** (the factory branches per ticket, so your target repos should be git repos)
 - The **`claude` CLI**, authenticated with Anthropic — the factory spawns `claude -p` agents for planning, delivery, and repo analysis; required for live runs
 - `sqlite3` is handy for poking the stores, but not required
@@ -31,7 +31,17 @@ This one command:
 
 > State lives in `.gaffer/` next to the repo by default (override with `GAFFER_DATA`). Delete that directory to start completely fresh.
 
-(If you only want to build, `pnpm install && pnpm -r build` does that part on its own.)
+(If you only want to build, `pnpm install && pnpm -r build` builds the packages without creating `.gaffer/`. It needs the same Node: on an older one pnpm stops with `ERR_PNPM_UNSUPPORTED_ENGINE`.)
+
+> **An older Node stops setup before it installs anything.** On Node 22.22.0, for example:
+>
+> ```
+> Node v22.22.0 is below Gaffer's floor (engines.node ">=22.22.1" in …/package.json) — install a newer Node first, e.g. `nvm install 22 && nvm use 22` (or Node 24), then re-run.
+> ```
+>
+> Exporting `npm_config_engine_strict=false` does not get past it: pnpm then only warns,
+> but setup runs its own check and still refuses. There is no supported way to run below
+> the floor. Install Node 22.22.1 or newer (or 24) and run setup again.
 
 ---
 

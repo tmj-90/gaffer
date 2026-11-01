@@ -15,7 +15,7 @@ export function registerAc(program: Command): void {
     .option("--clause <id>", "frozen-spec clause id this AC satisfies (spec_clause_id provenance)")
     .option(
       "--check <command>",
-      "MACHINE-CHECKABLE: shell command the runner executes in the delivery worktree to verify this AC (exit 0 ⇒ satisfied)",
+      "a machine check: a shell command the runner executes in the delivery worktree to verify this AC (exit 0 ⇒ satisfied)",
     )
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
@@ -104,7 +104,7 @@ export function registerAc(program: Command): void {
   // agent: this is the runner-owned verification the done gate trusts.
   ac.command("check-result <ac-id>")
     .description(
-      "RUNNER-OWNED: record the result of executing an AC's check_command (exit 0 ⇒ satisfied, else failed + test_output evidence)",
+      "Record the result of executing an AC's check command (the runner calls this; exit 0 ⇒ satisfied, else failed + test_output evidence)",
     )
     .requiredOption("--ticket <ref>", "the ticket the AC belongs to")
     .requiredOption("--exit <code>", "the check command's exit code")

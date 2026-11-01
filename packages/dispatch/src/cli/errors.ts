@@ -41,8 +41,17 @@ function body(
  */
 export function describeCliFailure(err: unknown): CliFailure {
   if (err instanceof CommanderError) {
-    // Commander has already printed its message (and the help) to stderr.
-    return { exitCode: err.exitCode, body: null };
+    // Commander has already printed its message (and the help) to stderr. A usage
+    // mistake (unknown command or option, a missing argument or required option, a
+    // command group given no command) exits 2 and did nothing, as the `gaffer` front
+    // door promises (cli-wg/F-14); help and --version exit 0.
+    if (err.code === "commander.helpDisplayed" || err.code === "commander.version") {
+      return { exitCode: 0, body: null };
+    }
+    if (err.code === "commander.help") {
+      process.stderr.write("error: a command is missing: pick one of those listed above\n");
+    }
+    return { exitCode: 2, body: null };
   }
   if (err instanceof DatabaseTooNewError || err instanceof DatabaseOpenError) {
     return { exitCode: 1, body: body(err.code, err.message) };

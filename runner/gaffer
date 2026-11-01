@@ -10,7 +10,12 @@
 #                                     on your LAN; --foreground = run in THIS process for supervisors)
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       one dry tick over a showcase repo (a fresh temp dir; DRY_RUN)
-#   gaffer skills [install]           list the skill library / install it into your Claude Code
+#   gaffer skills [list]              list the skill library
+#   gaffer skills install [--user|--project] [--force]
+#                                     link it into your own skills folder: --project (default)
+#                                     = ./.claude/skills, --user = ~/.claude/skills
+#   gaffer skills add <path|git-url> [--force]
+#                                     add an external skill to the factory's own library
 #   gaffer eval [--json]              delivery-quality metrics (pass rate · memory score gap · cost/pass)
 #   gaffer run [--dry-run] [--daemon] [--interval N]
 #                                     go live: one supervisor pass (drains the ready queue), or
@@ -489,7 +494,8 @@ wg)
   # The dispatch CLI, pinned to THIS factory's database — the "your first ticket" path
   # without a dashboard: create → ac add → repo-access set → ready → (after delivery)
   # review approve. Same binary the runner uses; nothing hidden.
-  exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
+  # DISPATCH_CLI_NAME: its help and usage errors say `gaffer wg`, the name you typed.
+  exec env DISPATCH_CLI_NAME="gaffer wg" node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" "$@"
   ;;
 
 approve)

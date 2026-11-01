@@ -204,7 +204,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("landing <ref>")
     .description(
-      "PER-REPOSITORY LANDING: each write repo's approved commit and whether it has landed. " +
+      "Each write repo's approved commit and whether it has landed. " +
         "A ticket is done only when every approved revision has landed.",
     )
     .action((ref, _opts, cmd) => {
@@ -216,7 +216,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("record-landing <ref>")
     .description(
-      "PER-REPOSITORY LANDING: record that one write repo's approved commit reached its " +
+      "Record that one write repo's approved commit reached its " +
         "default branch (the merge paths call this per repo). System/admin only; idempotent. " +
         "Recorded only when it can be shown, so done means landed: local / git-verified need " +
         "the commit in the local default branch's history; pr needs a PR on record for that " +
@@ -251,7 +251,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("record-tester-replay <ref>")
     .description(
-      "TESTER REPLAY: record that the independent tester's test files passed on the revision " +
+      "Record that the independent tester's test files passed on the revision " +
         "that landed (the runner's landing path calls this once the merge gate replayed them on " +
         "the merge candidate). System only; idempotent per landed revision.",
     )
@@ -293,7 +293,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("dossier <ref>")
     .description(
-      "DELIVERY-DOSSIER: assemble the tamper-evident evidence artifact for a " +
+      "Assemble the tamper-evident evidence artifact for a " +
         "delivered ticket from existing recorded state, and record its content hash " +
         "against the control plane (a `ticket.dossier_recorded` event). --markdown " +
         "renders the human-readable view; --no-record previews without writing the event.",
@@ -322,7 +322,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("auto-decision <ref>")
     .description(
-      "GRADUATED-AUTONOMY: read-only ship decision the AFK runner consults — is `auto` " +
+      "Read-only ship decision the AFK runner consults — is `auto` " +
         "permitted for THIS ticket at --gate (approve|merge)? Reuses isAutonomyAllowed " +
         "(env floor OR an earned per-repo/risk policy). Prints allow|deny. No mutation.",
     )
@@ -469,7 +469,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("ci-result <ref>")
     .description(
-      "REQUIRED CI: record a CI result for the ticket's candidate commit (pending | pass | " +
+      "Record a CI result for the ticket's candidate commit (pending | pass | " +
         "fail). A fail on an approved ticket holds it for a human. System/admin only. The " +
         "commit must be one of the ticket's own: a write repo's delivery head, a recorded " +
         "delivery commit or an approved revision; any other commit is refused (not_ticket_commit).",
@@ -499,7 +499,7 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("ci-status <ref>")
-    .description("REQUIRED CI: the latest recorded CI state for a commit of the ticket")
+    .description("The latest recorded CI state for a commit of the ticket")
     .option("--commit <sha>", "the candidate commit (default: the latest result)")
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
@@ -528,7 +528,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("set-testable <ref>")
     .description(
-      "BBT-001: mark a ticket eligible for the independent black-box testing lane " +
+      "Mark a ticket eligible for the independent black-box testing lane " +
         "(--off to clear). Gates entry to in_testing on review approval when GAFFER_TESTING is on.",
     )
     .option("--off", "clear the flag (mark NOT testable)", false)
@@ -546,7 +546,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("allow-test-changes <ref>")
     .description(
-      "GATE INTEGRITY: allow this ticket to change its tests (delete/rename a test, add a " +
+      "Allow this ticket to change its tests (delete/rename a test, add a " +
         "skip marker, change a gate script) — the runner's integrity gate row then reads " +
         "PASS with a note instead of FLAG, and the test changes alone no longer hold an auto-approve " +
         "(they still count as medium risk, so a ticket declared low is still held). " +
@@ -571,7 +571,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("test-contract <ref>")
     .description(
-      "BBT-001: record (replace) a ticket's test_contract — the testing handover the " +
+      "Record (replace) a ticket's test_contract — the testing handover the " +
         "independent tester reads to stand the system up (never the diff). Refused once " +
         "the ticket is in testing (CONTRACT_FROZEN).",
     )
@@ -599,7 +599,7 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("tester-pass <ref>")
-    .description("BBT-001: record an independent tester PASS (in_testing -> ready_for_merge)")
+    .description("Record an independent tester PASS (in_testing -> ready_for_merge)")
     .requiredOption("--summary <text>", "passing test-result summary (recorded as evidence)")
     .option("--uri <uri>", "evidence uri")
     .option(
@@ -640,9 +640,7 @@ export function registerTicket(program: Command): void {
 
   ticket
     .command("tester-fail <ref>")
-    .description(
-      "BBT-001: record an independent tester FAIL (in_testing -> refining, with evidence)",
-    )
+    .description("Record an independent tester FAIL (in_testing -> refining, with evidence)")
     .requiredOption(
       "--summary <text>",
       "failing-test summary (recorded as evidence + reject reason)",
@@ -704,7 +702,7 @@ export function registerTicket(program: Command): void {
 
   // --- Ticket scope links + repo access boundaries (WG-001 + WG-002) ---------
 
-  const ticketScope = ticket.command("scope").description("Ticket↔scope-node links (WG-001)");
+  const ticketScope = ticket.command("scope").description("Ticket↔scope-node links");
   ticketScope
     .command("link <ref> <nodeId>")
     .description("Link a ticket to a scope node")
@@ -764,7 +762,7 @@ export function registerTicket(program: Command): void {
       wg.db.close();
     });
 
-  const ticketDep = ticket.command("dep").description("Ticket dependencies (EP-001)");
+  const ticketDep = ticket.command("dep").description("Ticket dependencies");
   ticketDep
     .command("add <ref> <dependsOnRef>")
     .description("Declare that <ref> must wait for <dependsOnRef> to be done")
@@ -794,9 +792,7 @@ export function registerTicket(program: Command): void {
       wg.db.close();
     });
 
-  const ticketRepo = ticket
-    .command("repo-access")
-    .description("Ticket↔repo access boundaries (WG-002)");
+  const ticketRepo = ticket.command("repo-access").description("Ticket↔repo access boundaries");
   ticketRepo
     .command("set <ref> <repoRef>")
     .description("Set a repo's access boundary on a ticket")
@@ -867,9 +863,7 @@ export function registerTicket(program: Command): void {
       wg.db.close();
     });
 
-  const ticketDelivery = ticket
-    .command("repo-delivery")
-    .description("Per-repo delivery artifacts (WG-005)");
+  const ticketDelivery = ticket.command("repo-delivery").description("Per-repo delivery artifacts");
   ticketDelivery
     .command("record <ref> <repoRef>")
     .description("Record (upsert) a repo's delivery artifact on a ticket")

@@ -14,6 +14,7 @@ export function registerPortability(program: Command): void {
 
   program
     .command("export")
+    .summary("Export the whole board to a portable JSON bundle (stdout, or --out)")
     .description(
       "Export the whole Dispatch board to a portable JSON bundle (tickets, epics, " +
         "scope graph, ACs, repos, decisions, reviews/evidence, work_events, claims, planner " +
@@ -55,8 +56,9 @@ export function registerPortability(program: Command): void {
 
   program
     .command("import <file>")
+    .summary("Import a board bundle into this database (--force replaces a non-empty one)")
     .description(
-      "Import a board bundle (from 'dispatch export') into THIS database. Refuses a " +
+      "Import a board bundle (from `export`) into THIS database. Refuses a " +
         "non-empty DB unless --force is given (which replaces its contents). Reads " +
         "stdin when <file> is '-'.",
     )

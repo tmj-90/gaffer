@@ -90,7 +90,7 @@ export function registerRepo(program: Command): void {
     .option("--branch <branch>", "default branch (auto-detected from --path when omitted)")
     .option("--stack <stack>", "stack")
     .option("--test <cmd>", "test command")
-    .option("--lint <cmd>", "lint command (the I3 lint DoD gate)")
+    .option("--lint <cmd>", "lint command (the Definition-of-Done lint gate)")
     .option("--coverage <cmd>", "coverage command")
     .action((opts, cmd) => {
       const checked =

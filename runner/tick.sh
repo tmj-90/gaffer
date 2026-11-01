@@ -1573,6 +1573,9 @@ if [ "$READY_COUNT" -gt 0 ]; then
       # escalates the genuinely-ambiguous multi-app case to a headless decision.
       # Best-effort/non-fatal + idempotent (re-running never double-links).
       gaffer_inherit_repo "$NUM" || true
+      # A new repo has no remote: with PR mode on, ask the person where it lives before
+      # the tickets it serves start (lib/greenfield.sh).
+      gaffer_bootstrap_remote_decision "$NUM" "$B_NAME" "$B_DIR" || true
     else
       # Registration failed, so there is no repo to link, no branch_name and no per-repo
       # delivery row: submitting would strand the ticket in in_review (the reviewer has

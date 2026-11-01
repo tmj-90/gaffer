@@ -40,7 +40,14 @@ export class DecisionService {
   }
 
   createDecision(
-    input: { title: string; question: string; severity?: DecisionSeverity; ticketId?: string },
+    input: {
+      title: string;
+      question: string;
+      severity?: DecisionSeverity;
+      ticketId?: string;
+      /** More tickets the same decision informs or blocks (one question, several holds). */
+      ticketIds?: readonly string[];
+    },
     actor: Actor,
   ): Decision {
     // cli-wg/F-16: an empty decision showed as a blank "[Decision] — why:" in the
@@ -74,13 +81,16 @@ export class DecisionService {
         updated_at: now,
       };
       this.decisions.insert(created);
-      if (input.ticketId) {
-        // An informational (log_only) or agent-decidable (agent_can_choose) decision
-        // informs the ticket; only a decision that needs a human answer blocks it
-        // (readiness / claim policy counts `blocks` links).
-        const informational =
-          created.severity === "log_only" || created.severity === "agent_can_choose";
-        this.decisions.link(input.ticketId, created.id, informational ? "informs" : "blocks", now);
+      const linked = [...new Set([input.ticketId, ...(input.ticketIds ?? [])])].filter(
+        (id): id is string => typeof id === "string" && id.length > 0,
+      );
+      // An informational (log_only) or agent-decidable (agent_can_choose) decision
+      // informs the ticket; only a decision that needs a human answer blocks it
+      // (readiness / claim policy counts `blocks` links).
+      const informational =
+        created.severity === "log_only" || created.severity === "agent_can_choose";
+      for (const ticketId of linked) {
+        this.decisions.link(ticketId, created.id, informational ? "informs" : "blocks", now);
       }
       writeEvent(this.db, {
         entity_type: "decision",

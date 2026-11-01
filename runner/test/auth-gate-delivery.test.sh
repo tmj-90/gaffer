@@ -60,7 +60,7 @@ has "$out" 'claude /login' && ok "G5: the run says to log in" || fail "G5: $out"
 echo "== G6. the dashboard's Poll says the call could not authenticate =="
 out="$( ( cd "$RUNNER_DIR" && GAFFER_ALLOW_UNCAPPED=1 bash ./bin/poll-once.sh 2>&1 ) )"
 has "$out" "TICK_RESULT=auth_error" && ok "G6: the poll's tick reports auth_error" || fail "G6: $(printf '%s' "$out" | grep TICK_RESULT)"
-printf '%s\n' "$out" | grep -qE '^gaffer poll: aborting\b.*claude could not authenticate' \
+grep -qE '^gaffer poll: aborting\b.*claude could not authenticate' <<<"$out" \
   && ok "G6: the refusal line the dashboard toasts names the cause" || fail "G6: no 'gaffer poll: aborting' line: $(printf '%s' "$out" | grep 'gaffer poll' | tr '\n' ' ')"
 [ "$(st "$T")" = ready ] && [ "$(sqlv 'select attempt_count from tickets where number=?' "$T")" = 0 ] \
   && ok "G6: #$T is still ready with no attempt counted" || fail "G6: #$T is $(st "$T")"

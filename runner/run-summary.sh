@@ -108,8 +108,23 @@ oversized_flagged() {
 
 say "run summary"
 
+# LANDED THIS RUN (exploratory finding cli-runner/F-20): "landed: N done" counted every
+# done ticket the factory ever had. loop.sh hands over the done tickets it saw at the
+# start of the run (SUMMARY_DONE_BEFORE, space-separated numbers; set even when empty),
+# so the line counts only this run's landings; without it (a standalone summary) the
+# all-time count is shown and labelled so.
+landed_line() {
+  local all; all="$(count_status 'done')"
+  if [ -z "${SUMMARY_DONE_BEFORE+x}" ]; then printf '%s done (all time)' "$all"; return 0; fi
+  local n now=0
+  for n in $(status_numbers 'done'); do
+    case " ${SUMMARY_DONE_BEFORE} " in *" $n "*) ;; *) now=$((now + 1)) ;; esac
+  done
+  printf '%s this run (%s done in all)' "$now" "$all"
+}
+
 printf "\n  ${c_dim}outcomes${c_off}\n"
-line "landed:"      "$(count_status 'done') done"
+line "landed:"      "$(landed_line)"
 line "failed-safe:" "$(count_status blocked) blocked"
 line "parked:"      "$(count_status refining) refining"
 line "re-queued:"   "$(count_status ready) ready"

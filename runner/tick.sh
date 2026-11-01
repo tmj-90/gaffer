@@ -2,7 +2,8 @@
 # One factory tick: deliver the next ready ticket via Claude Code + the two MCP
 # servers, or (when nothing is ready) run an idle scan that drafts new work.
 # Prints a final `TICK_RESULT=worked|previewed|reviewed|clarified|idle_drafted|maintenance_drafted|
-# maintenance_ran|merged|no_work|error|setup_error` line (previewed: a DRY_RUN tick
+# maintenance_ran|merged|parked|no_work|error|setup_error` line (parked: the delivery
+# ended with its ticket parked for a human — blocked / refining — on purpose) (previewed: a DRY_RUN tick
 # described one delivery and changed nothing) (merged: nothing else to do, but
 # the merge lane landed approved work; setup_error: a fail-closed setup check
 # refused before any agent launched). On an idle tick: maintenance_drafted / idle_drafted =
@@ -387,9 +388,17 @@ _gaffer_bp_record() { printf '%s\t%s\t%s\n' "$2" "$3" "$4" >> "$1"; }
 # dashboard's Poll for work must not call it empty (external review #7). loop.sh counts it
 # as a non-empty poll; worker.sh as reviewed.
 _GAFFER_MERGE_LANE_LANDED=0
+# PARKED (exploratory finding cli-runner/F-20): a tick that ended by parking its ticket
+# for a human (released to blocked / refining: attempts spent, an empty delivery, a gate
+# that holds) reports `parked`, not `error` — the park is the designed outcome, and
+# "tick → error" sent operators hunting a crash. gaffer_release_delivery sets the flag.
+_GAFFER_TICK_PARKED=0
 result() {
   if [ "$1" = "no_work" ] && [ "${_GAFFER_MERGE_LANE_LANDED:-0}" -gt 0 ]; then
     echo "TICK_RESULT=merged"; return 0
+  fi
+  if [ "$1" = "error" ] && [ "${_GAFFER_TICK_PARKED:-0}" = 1 ]; then
+    echo "TICK_RESULT=parked"; return 0
   fi
   echo "TICK_RESULT=$1"
 }
@@ -567,6 +576,7 @@ gaffer_release_delivery() {
       local _suffix=""; [ "$_try" -gt 1 ] && _suffix=" after $_try attempts"
       log "$_verb #$NUM → $to ($reason)$_suffix"
       GAFFER_CLAIM_RESOLVED=1
+      case "$to" in blocked|refining) _GAFFER_TICK_PARKED=1 ;; esac
       return 0
     fi
     [ "$_try" -lt 3 ] && sleep "$_try"

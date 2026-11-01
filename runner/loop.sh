@@ -166,6 +166,13 @@ if declare -F gaffer_cleanup_orphaned_worktrees >/dev/null 2>&1; then
 fi
 
 RUN_STARTED="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"   # run start, for the trust report's run-scoping
+# The done tickets at the start of the run, so the closing summary's "landed" counts
+# only THIS run's landings (run-summary.sh SUMMARY_DONE_BEFORE). A listing that fails
+# leaves it unset, and the summary falls back to the labelled all-time count.
+if _done_json="$(wg ticket list -s done 2>/dev/null)"; then
+  export SUMMARY_DONE_BEFORE
+  SUMMARY_DONE_BEFORE="$(printf '%s' "$_done_json" | grep -o '"number"[[:space:]]*:[[:space:]]*[0-9][0-9]*' | sed 's/.*:[[:space:]]*//' | tr '\n' ' ')"
+fi
 
 # SETUP ERROR (tick.sh gaffer_abort_setup): a fail-closed setup check refused before any
 # agent launched — a systemic fault (an unbuilt CLI, a broken template, a missing hook)

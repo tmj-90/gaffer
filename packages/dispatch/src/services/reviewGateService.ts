@@ -1701,6 +1701,22 @@ export class ReviewGateService {
     }
     const detail = (input.detail ?? "").trim().slice(0, 2_000);
     const ticket = this.ticketSvc.resolveTicket(ticketRef);
+    // THE TICKET'S COMMITS ONLY (exploratory finding cli-wg/F-11): a result for a commit
+    // that is not one of the ticket's candidates was recorded anyway, and `ci-status` then
+    // reported that unrelated PASS while the real head was red.
+    const candidates = this.ciCandidateCommits(ticket);
+    const known = candidates.some((c) => c.startsWith(commit) || commit.startsWith(c));
+    if (!known) {
+      throw new DispatchError(
+        "STATE_CONFLICT",
+        `${commit.slice(0, 12)} is not a commit of #${ticket.number ?? "?"}: a CI result is recorded only for the ticket's candidate commit (a write repo's delivery head, a recorded delivery commit, or an approved revision).`,
+        {
+          reason: "not_ticket_commit",
+          commit,
+          candidates: candidates.map((c) => c.slice(0, 12)),
+        },
+      );
+    }
     const eventId = writeEvent(this.db, {
       entity_type: "ticket",
       entity_id: ticket.id,
@@ -1726,6 +1742,31 @@ export class ReviewGateService {
       status = r.ticket.status;
     }
     return { state: input.state, held, status, eventId };
+  }
+
+  /**
+   * REQUIRED CI: every commit a CI result may be recorded for: each write repo's current
+   * delivery head (git), each recorded per-repo delivery commit, and each review pin
+   * (an approved revision). Lower-case full or abbreviated ids, deduplicated.
+   */
+  private ciCandidateCommits(ticket: Ticket): string[] {
+    const out = new Set<string>();
+    for (const h of this.resolveReviewedHeads(ticket)) if (h.sha) out.add(h.sha.toLowerCase());
+    const rows = this.db
+      .prepare(
+        `SELECT commit_sha AS sha FROM ticket_repo_delivery
+          WHERE ticket_id = ? AND commit_sha IS NOT NULL AND commit_sha <> ''
+         UNION ALL
+         SELECT substr(uri, ${REVIEW_PIN_PREFIX.length + 1}) AS sha FROM evidence
+          WHERE ticket_id = ? AND evidence_type = 'commit' AND recorded_by_actor_type = 'system'
+            AND uri LIKE '${REVIEW_PIN_PREFIX}%'`,
+      )
+      .all(ticket.id, ticket.id) as Array<{ sha: string }>;
+    for (const r of rows) {
+      const sha = String(r.sha).trim().toLowerCase();
+      if (/^[0-9a-f]{7,64}$/.test(sha)) out.add(sha);
+    }
+    return [...out];
   }
 
   /**

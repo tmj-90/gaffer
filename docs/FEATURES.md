@@ -398,7 +398,9 @@ structural barrier the whole design hangs on.
   repaired, re-tested retry that lands counts it once. A ticket the tester never
   saw runs nothing extra.
 - **Required CI is required.** With *Require CI green before review* on, the
-  runner records the CI result for the exact commit under review; approval (and
+  runner records the CI result for the exact commit under review (a result is recorded
+  only for one of the ticket's own commits: a delivery head, a recorded delivery commit
+  or an approved revision; `wg ticket ci-result` refuses any other); approval (and
   a tester PASS) is refused until that commit's CI has passed, a red result for an
   approved ticket holds it for you (*blocked*, `ci_red`), and the merge lane reads
   CI again before landing. The CI gate asks `gh` only for the fields the real CLI

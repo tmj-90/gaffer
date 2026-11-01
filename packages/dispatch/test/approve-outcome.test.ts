@@ -426,7 +426,8 @@ describe("Dispatch.approveOutcome: read from the approve path's own predicates",
   it("required CI recorded without a PASS: held_ci, and approveReview refuses", () => {
     const wg = freshWg();
     const { id } = inReview(wg);
-    wg.recordCiResult(id, { commit: "abc1234", state: "pending" }, { type: "system" });
+    // (An abbreviated id of the ticket's head: a CI result must name one of its commits.)
+    wg.recordCiResult(id, { commit: FAKE_HEAD.slice(0, 7), state: "pending" }, { type: "system" });
     const o = wg.approveOutcome(id, { mergeCommand: true });
     expect(o.kind).toBe("held_ci");
     expect(o.approvable).toBe(false);

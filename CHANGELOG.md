@@ -132,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A CI result belongs to one of the ticket's commits (exploratory finding cli-wg/F-11).** `wg ticket ci-result` accepted any sha, so a PASS recorded for an unrelated commit made `wg ticket ci-status` read green while the real head was red. It now accepts only a write repo's current delivery head, a recorded delivery commit or an approved revision of the ticket (full or abbreviated), and refuses anything else with `not_ticket_commit`.
+
 - **Only the owner hands back a by-hand ticket (exploratory finding cli-wg/F-13).** `USER=bob wg human-release 48` handed back alice's by-hand ticket without a word. `wg human-release` now refuses (`ACTOR_NOT_PERMITTED`) when `$USER` is not the ticket's human owner; `--admin` hands anyone's back. Over REST a named principal hands back only its own; the dashboard's operator token still acts as admin.
 
 - **A principal cannot speak as an agent (exploratory finding api/F8).** `POST /api/principals` accepted an `actor_id` equal to a registered agent's id; that principal's approval was recorded as `human/<agent id>`, and the dashboard showed the delivering agent approving its own work. Creating such a principal is now refused (409 `DUPLICATE`, `actor_id_is_agent`), and the review gate refuses any approval whose actor id is the delivering agent's, whatever the actor type.

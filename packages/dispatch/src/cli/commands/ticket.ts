@@ -391,9 +391,11 @@ export function registerTicket(program: Command): void {
     .command("ci-result <ref>")
     .description(
       "REQUIRED CI: record a CI result for the ticket's candidate commit (pending | pass | " +
-        "fail). A fail on an approved ticket holds it for a human. System/admin only.",
+        "fail). A fail on an approved ticket holds it for a human. System/admin only. The " +
+        "commit must be one of the ticket's own: a write repo's delivery head, a recorded " +
+        "delivery commit or an approved revision; any other commit is refused (not_ticket_commit).",
     )
-    .requiredOption("--commit <sha>", "the commit the checks ran on")
+    .requiredOption("--commit <sha>", "the ticket's commit the checks ran on")
     .requiredOption("--state <state>", "pending | pass | fail")
     .option("--detail <text>", "the failing check (name + url) or a note")
     .option("--as <actor>", "actor type: system|admin", "system")

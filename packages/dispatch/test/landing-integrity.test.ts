@@ -272,6 +272,37 @@ describe("cli-wg/F-13: human-release hands back only your own by-hand ticket", (
   });
 });
 
+describe("cli-wg/F-11: ci-result accepts only a commit of the ticket", () => {
+  it("a foreign sha is refused (not_ticket_commit); ci-status reports the ticket's own result", () => {
+    const wg = freshWg();
+    const { id } = inReview(wg);
+    wg.recordCiResult(id, { commit: head, state: "fail" }, system);
+    let err: DispatchError | null = null;
+    try {
+      wg.recordCiResult(id, { commit: "2".repeat(40), state: "pass" }, system);
+    } catch (e) {
+      err = e as DispatchError;
+    }
+    expect(err?.code).toBe("STATE_CONFLICT");
+    expect(err?.details).toMatchObject({ reason: "not_ticket_commit" });
+    expect(wg.ciStatus(id, null)).toMatchObject({ state: "fail", commit: head });
+    wg.db.close();
+  });
+
+  it("the head (full or abbreviated) and an approved revision are accepted", () => {
+    const wg = freshWg();
+    const { id } = approved(wg);
+    const pinned = head;
+    expect(wg.recordCiResult(id, { commit: head.slice(0, 12), state: "pass" }, system).state).toBe(
+      "pass",
+    );
+    // The branch moves on; the approved revision is still the ticket's own commit.
+    head = "b".repeat(40);
+    expect(wg.recordCiResult(id, { commit: pinned, state: "pass" }, system).state).toBe("pass");
+    wg.db.close();
+  });
+});
+
 describe("api/F1: two parallel Merge requests start one merge", () => {
   it("the second POST /tickets/:id/merge is 409 MERGE_IN_FLIGHT and starts nothing", async () => {
     const { createApiServer } = await import("../src/api/server.js");

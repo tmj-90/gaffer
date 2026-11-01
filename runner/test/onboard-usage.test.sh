@@ -68,7 +68,12 @@ for target in / "$WORK/home" "$WORK/plain" "$WORK/plain-link" "$WORK/plain/sub";
 done
 case "$(HOME="$WORK/home" bash "$RUNNER_DIR/gaffer" onboard / 2>&1)" in *"a filesystem root is not a repository"*) ok "/ : 'a filesystem root is not a repository'" ;; *) fail "/ message" ;; esac
 case "$(HOME="$WORK/home" bash "$RUNNER_DIR/gaffer" onboard "$WORK/home" 2>&1)" in *"your home directory is not a repository"*) ok "home: 'your home directory is not a repository'" ;; *) fail "home message" ;; esac
-case "$(HOME="$WORK/home" bash "$RUNNER_DIR/gaffer" onboard "$WORK/plain-link" 2>&1)" in *"$WORK/plain is not a git repository"*"git init"*) ok "a symlink is followed: the real folder is named, with git init" ;; *) fail "symlink message" ;; esac
+# The refusal names the REAL folder (gaffer resolves with `pwd -P`). Compare against the
+# target's own realpath: on macOS a mktemp dir under /var resolves to /private/var.
+REAL_PLAIN="$(cd "$WORK/plain" && pwd -P)"
+SYM_OUT="$(HOME="$WORK/home" bash "$RUNNER_DIR/gaffer" onboard "$WORK/plain-link" 2>&1)"
+case "$SYM_OUT" in *"$REAL_PLAIN is not a git repository"*"git init"*) ok "a symlink is followed: the real folder is named, with git init" ;; *) fail "symlink message (want '$REAL_PLAIN is not a git repository … git init'): $SYM_OUT" ;; esac
+has "$SYM_OUT" "plain-link" && fail "the symlink refusal names the link, not the real folder: $SYM_OUT" || ok "the symlink refusal does not name the link"
 [ ! -e "$WORK/claude-calls" ] && ok "nothing was spawned (no model call)" || fail "claude was called"
 [ ! -e "$GAFFER_DATA/onboard.log" ] && ok "no onboard run started (no onboard.log)" || fail "an onboard run started"
 RC=0; ERR="$(HOME="$WORK/home" DISPATCH_ONBOARD_REPO=/ node "$RUNNER_DIR/bin/onboard-run.mjs" 2>&1 >/dev/null)" || RC=$?

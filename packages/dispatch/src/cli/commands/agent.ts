@@ -50,8 +50,17 @@ export function registerAgent(program: Command): void {
       }
     });
 
-  agent
-    .command("rename <id>")
+  // cli-wg/F-20: --number and --no-number set the same commander key, so the last
+  // one silently won. Note each as it is parsed and refuse the pair.
+  const shirtFlags = { set: false, clear: false };
+  const rename = agent.command("rename <id>");
+  rename.on("option:number", () => {
+    shirtFlags.set = true;
+  });
+  rename.on("option:no-number", () => {
+    shirtFlags.clear = true;
+  });
+  rename
     .description(
       'Give an agent a display name (≤ 40 chars; "" clears) and/or a shirt number (1–99, unique). Presentation only — the id never changes.',
     )
@@ -59,6 +68,15 @@ export function registerAgent(program: Command): void {
     .option("--number <n>", "shirt number 1–99")
     .option("--no-number", "clear the shirt number")
     .action((ref: string, opts: { name?: string; number?: string | boolean }, cmd) => {
+      const both = shirtFlags.set && shirtFlags.clear;
+      shirtFlags.set = false;
+      shirtFlags.clear = false;
+      if (both) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--number and --no-number conflict: give one of them.",
+        );
+      }
       let shirt: number | null | undefined;
       if (opts.number === false) shirt = null;
       else if (typeof opts.number === "string") {

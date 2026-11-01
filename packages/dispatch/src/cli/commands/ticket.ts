@@ -123,6 +123,13 @@ export function registerTicket(program: Command): void {
     )
     .option("--clear", "clear the per-ticket budget (fall back to the factory-wide budget)", false)
     .action((ref, opts, cmd) => {
+      if (opts.clear && opts.usd !== undefined) {
+        // cli-wg/F-20: one of them used to win silently.
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          "--usd and --clear conflict: give one of them.",
+        );
+      }
       const value = opts.clear ? null : opts.usd;
       if (value === undefined) {
         // A structured failure (stderr JSON, exit 1) like every other CLI error — it

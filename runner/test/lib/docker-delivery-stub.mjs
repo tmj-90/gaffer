@@ -276,12 +276,17 @@ async function deliver() {
     // A ref written inside the container must stay inside it: the agent's git dir is a
     // private copy (sandbox-git) and the host imports only the ticket branch afterwards.
     // Moving main here lets the host-side refs check prove that; before the private git
-    // dir this moved the host's main.
-    try {
-      git("update-ref", "refs/heads/main", "HEAD");
-      tokens.push("MAIN_MOVED_INSIDE");
-    } catch (e) {
-      tokens.push(`MAIN_MOVE_FAIL(${String(e && e.message ? e.message : e).slice(0, 120)})`);
+    // dir this moved the host's main. Only in a real container: the seam test's fake
+    // docker runs this on the host without the mounts, where the move would be real.
+    if (existsSync("/.dockerenv")) {
+      try {
+        git("update-ref", "refs/heads/main", "HEAD");
+        tokens.push("MAIN_MOVED_INSIDE");
+      } catch (e) {
+        tokens.push(`MAIN_MOVE_FAIL(${String(e && e.message ? e.message : e).slice(0, 120)})`);
+      }
+    } else {
+      tokens.push("MAIN_MOVE_SKIPPED_NO_CONTAINER");
     }
   } catch (e) {
     committed = `COMMIT_FAIL(${String(e && e.message ? e.message : e).slice(0, 200)})`;

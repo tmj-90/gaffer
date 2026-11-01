@@ -626,6 +626,10 @@ human-gated knowledge the factory works from:
   conventions / stack**, seeded at onboarding and refreshed deterministically as
   tickets merge. It carries a freshness stamp and an honest caveat: it's a map
   to *verify against the code* for high-stakes work, never a substitute for it.
+  Onboarding reads only files inside the repository: a README or manifest that is a
+  symlink to a file elsewhere is not read, and the digest says which one and why. A
+  password or token in an https remote URL is stripped before the URL reaches a
+  prompt, the digest, lore or a log.
 - **Feature ledger** — what's `backlog → building → shipped` per repo, so the
   factory knows what already exists before it proposes building it again.
 - **File cards** — one per source file (path, symbols, content hash, a short

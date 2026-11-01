@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
+import { redactRemoteUrl } from "../safety/repoBoundary.js";
 import { CrewError } from "../util/errors.js";
 
 /**
@@ -102,7 +103,9 @@ export const systemGitAdapter: GitAdapter = {
   remoteUrl(repoDir: string, remote = "origin"): string | null {
     if (!this.isRepo(repoDir)) return null;
     try {
-      const url = run(repoDir, ["remote", "get-url", remote]);
+      // External review #9: a remote's userinfo (an embedded password or token) is
+      // stripped here, at the source, so it can reach no prompt, digest, lore or log.
+      const url = redactRemoteUrl(run(repoDir, ["remote", "get-url", remote]));
       return url.length > 0 ? url : null;
     } catch {
       return null;

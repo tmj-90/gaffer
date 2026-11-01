@@ -2,15 +2,21 @@
 // scripts/config-reference.mjs — the generated docs/CONFIG.md must be derived
 // from the code, not hand-maintained. Pin the parser rules that make the
 // reference honest, then prove the committed file is current.
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..", "..");
-const { parseConfigDefaults, generate, readSiteDefault, firstSentence } = await import(
-  path.join(ROOT, "scripts", "config-reference.mjs")
-);
+const {
+  parseConfigDefaults,
+  generate,
+  readSiteDefault,
+  firstSentence,
+  verifyExtraKnobs,
+  EXTRA_KNOBS,
+} = await import(path.join(ROOT, "scripts", "config-reference.mjs"));
 
 let passed = 0;
 function ok(cond, msg) {
@@ -220,6 +226,58 @@ ok(
   "GAFFER_CI_TIMEOUT_POLICY defaults to block",
 );
 ok(/\| `DEMO_DIR` \| `\/tmp\/gaffer-showcase` \|/.test(text), "DEMO_DIR shows the demo's path");
+
+console.log("== the read-site table fails when it drifts from the code ==");
+ok(verifyExtraKnobs(ROOT) === undefined, "every EXTRA_KNOBS entry matches its read site today");
+const drift = mkdtempSync(path.join(os.tmpdir(), "config-ref-drift-"));
+try {
+  mkdirSync(path.join(drift, "lib"), { recursive: true });
+  writeFileSync(path.join(drift, "lib", "a.sh"), 'x="${KNOB_A:-block}"\n');
+  writeFileSync(path.join(drift, "lib", "b.mjs"), 'const v = process.env.KNOB_B ?? "1";\n');
+  const extras = [
+    { name: "KNOB_A", default: "block", file: "lib/a.sh" },
+    { name: "KNOB_B", default: "1", file: "lib/b.mjs" },
+  ];
+  const throws = (list) => {
+    try {
+      verifyExtraKnobs(drift, list);
+      return "";
+    } catch (err) {
+      return err.message;
+    }
+  };
+  ok(throws(extras) === "", "a table that matches its fixture passes");
+  ok(
+    /KNOB_A: documented default "proceed" but lib\/a\.sh falls back to "block"/.test(
+      throws([{ ...extras[0], default: "proceed" }]),
+    ),
+    "a shell default that changed is reported",
+  );
+  ok(
+    /KNOB_B: documented default "0" but lib\/b\.mjs falls back to "1"/.test(
+      throws([{ ...extras[1], default: "0" }]),
+    ),
+    "a JS default that changed is reported",
+  );
+  ok(
+    /KNOB_C: no longer read in lib\/a\.sh/.test(
+      throws([{ name: "KNOB_C", default: "", file: "lib/a.sh" }]),
+    ),
+    "a knob its file no longer reads is reported",
+  );
+  ok(
+    /lib\/gone\.sh does not exist/.test(
+      throws([{ name: "KNOB_A", default: "block", file: "lib/gone.sh" }]),
+    ),
+    "a read site that moved is reported",
+  );
+} finally {
+  rmSync(drift, { recursive: true, force: true });
+}
+ok(
+  EXTRA_KNOBS.every((k) => new RegExp(`^\\| \`${k.name}\` \\|`, "m").test(text)),
+  "every EXTRA_KNOBS entry has a row in docs/CONFIG.md",
+);
 
 console.log("== rows describe the behaviour ==");
 const row = (k) => rows.find((l) => l.startsWith(`| \`${k}\` |`)) ?? "";

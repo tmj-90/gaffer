@@ -47,7 +47,7 @@ import {
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
-import { API_ACTOR, apiActor, isSharedOperator, operatorActor } from "./context.js";
+import { API_ACTOR, apiActor, apiPrincipal, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
 import { requestTicketFilter } from "../scopeGate.js";
 
@@ -804,8 +804,36 @@ export async function routeTickets(
   }
 
   // /tickets/:id/reviewer — assign the reviewer the strict packs gate on.
+  // A named principal names a REAL reviewer: a registered agent's id or a live
+  // principal's actor id (a made-up id would satisfy the strict packs' "has a reviewer"
+  // gate with nobody). A scoped principal names only itself or the reviewer already on
+  // the ticket, so it cannot pick who reviews its own work. The shared operator token
+  // is operator trust, like the tokenless CLI's `--reviewer <your-name>`: unchanged.
   if (segments.length === 3 && sub === TICKET_SUB.REVIEWER && method === "PUT") {
     const body = assignReviewerBody.parse(await readJsonBody(req));
+    const principal = isSharedOperator() ? null : apiPrincipal();
+    if (principal) {
+      const reviewer = body.reviewer.trim();
+      const current = wg.resolveTicket(id).reviewer;
+      if (principal.scope && reviewer !== principal.actor_id && reviewer !== current) {
+        throw new DispatchError(
+          "ACTOR_NOT_PERMITTED",
+          `A scoped principal assigns only itself ('${principal.actor_id}') or the reviewer already on the ticket${current ? ` ('${current}')` : ""}; '${reviewer}' is someone else.`,
+          { principal: principal.name, reviewer, current_reviewer: current },
+        );
+      }
+      const known =
+        reviewer === current ||
+        wg.db.prepare("SELECT 1 FROM agents WHERE id = ? LIMIT 1").get(reviewer) !== undefined ||
+        wg.listPrincipals().some((p) => p.revoked_at === null && p.actor_id === reviewer);
+      if (!known) {
+        throw new DispatchError(
+          "VALIDATION_ERROR",
+          `Reviewer '${reviewer}' is not a registered agent or principal; name one (wg agent list, principal list).`,
+          { reason: "unknown_reviewer", reviewer },
+        );
+      }
+    }
     const result = wg.assignReviewer(id, body.reviewer, apiActor());
     sendJson(res, 200, {
       ticket_id: result.ticketId,

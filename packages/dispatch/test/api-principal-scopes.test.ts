@@ -252,6 +252,49 @@ describe("principal scopes (REST)", () => {
     expect((await call(base, "GET", "/repositories", tok)).status).toBe(200);
   });
 
+  it("PUT /tickets/:id/reviewer: a principal names a real reviewer; a scoped one only itself or the one on the ticket", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    const agent = wg.registerAgent({ display_name: "rev-agent" }, human);
+    const scoped = await mint(base, { name: "app-bot", repos: ["app"] });
+    const full = await mint(base, { name: "lead" });
+    await mint(base, { name: "carol" });
+    const put = (tok: string, ticket: string, reviewer: string) =>
+      call(base, "PUT", `/tickets/${ticket}/reviewer`, tok, { reviewer });
+    const reviewerOf = (id: string) => wg.resolveTicket(id).reviewer;
+
+    // An unscoped principal: any registered agent or principal, never a made-up id.
+    const made = await put(full, w.onSvc.id, "nobody-at-all");
+    expect(made.status).toBe(422);
+    expect(made.body.error?.code).toBe("VALIDATION_ERROR");
+    expect(made.body.error?.details).toMatchObject({ reason: "unknown_reviewer" });
+    expect(reviewerOf(w.onSvc.id)).toBeNull();
+    expect((await put(full, w.onSvc.id, agent.id)).status).toBe(200);
+    expect((await put(full, w.onSvc.id, "carol")).status).toBe(200);
+    expect(reviewerOf(w.onSvc.id)).toBe("carol");
+
+    // A scoped principal, on a ticket in its scope: itself...
+    expect((await put(scoped, w.onApp.id, "app-bot")).status).toBe(200);
+    expect(reviewerOf(w.onApp.id)).toBe("app-bot");
+    // ...or the reviewer already on the ticket; anyone else is refused, nothing written.
+    expect((await put(full, w.onApp.id, "carol")).status).toBe(200);
+    expect((await put(scoped, w.onApp.id, "carol")).status).toBe(200);
+    for (const other of ["lead", agent.id, "nobody-at-all"]) {
+      const r = await put(scoped, w.onApp.id, other);
+      expect(r.status, other).toBe(403);
+      expect(r.body.error?.code, other).toBe("ACTOR_NOT_PERMITTED");
+    }
+    expect(reviewerOf(w.onApp.id)).toBe("carol");
+    // Out of scope stays 403 SCOPE_DENIED.
+    const out = await put(scoped, w.onSvc.id, "app-bot");
+    expect(out.status).toBe(403);
+    expect(out.body.error?.code).toBe("SCOPE_DENIED");
+
+    // The shared operator token is operator trust (the tokenless CLI's free-form
+    // `--reviewer <your-name>`): unchanged.
+    expect((await put(FULL, w.onBoth.id, "a-person")).status).toBe(200);
+  });
+
   it("a ticket-scoped principal reaches exactly its tickets", async () => {
     const { base, wg } = await start();
     const w = world(wg);

@@ -1044,9 +1044,15 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/reviewer",
     tag: T.review,
     summary: "Assign the reviewer",
+    description:
+      "The reviewer the strict policy packs gate on. A named principal names a registered " +
+      "agent's id or a live principal's actor id (anything else is 422 `VALIDATION_ERROR`, " +
+      "`details.reason` `unknown_reviewer`); a scoped principal names only itself or the " +
+      "reviewer already on the ticket (403 `ACTOR_NOT_PERMITTED`). The shared operator token " +
+      "may name anyone, like the tokenless CLI.",
     capability: "full",
     body: "assignReviewerBody",
-    responses: [ok("`{ ticket_id, reviewer, event_id }`."), notFound, invalid],
+    responses: [ok("`{ ticket_id, reviewer, event_id }`."), notFound, forbidden, invalid],
   },
   {
     method: "GET",

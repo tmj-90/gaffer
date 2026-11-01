@@ -35,6 +35,7 @@ import {
   wontDoBody,
 } from "../schemas.js";
 import { apiActor, operatorActor } from "./context.js";
+import { forgetLoreDrafts } from "./readModels.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -402,6 +403,7 @@ export async function routeTickets(
           ...(repo ? { repo } : {}),
           tags: ["review-rejection", `ticket-${t.number}`],
         });
+        if (draft.available) forgetLoreDrafts(memoryReader); // a new draft for the queue
         // `repo` says where the draft waits, so the dashboard can name it and link there.
         loreCapture = draft.available
           ? { captured: true, id: draft.id, repo: repo ?? null }

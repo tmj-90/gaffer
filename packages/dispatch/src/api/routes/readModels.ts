@@ -27,6 +27,34 @@ import { buildRunDetail } from "../runDetail.js";
 import { RUN_LOG_TAIL_BYTES, readLogTail } from "../static.js";
 import { activityQuery, runsQuery } from "../schemas.js";
 
+/**
+ * Lore drafts awaiting approval, for the human queue's one Memory row. Memory is a
+ * separate store read through its CLI (a child process), and the Overview reads the
+ * queue on every refresh, so the count is memoised per reader for 15 s and forgotten
+ * when this server approves, rejects or files a draft ({@link forgetLoreDrafts}).
+ * Unavailable Memory is no row, never an error.
+ */
+const LORE_DRAFTS_MEMO_MS = 15_000;
+const loreDraftMemo = new WeakMap<MemoryReader, { at: number; total: number; titles: string[] }>();
+export function forgetLoreDrafts(reader: MemoryReader): void {
+  loreDraftMemo.delete(reader);
+}
+function pendingLoreDrafts(reader: MemoryReader): { total: number; titles: string[] } {
+  const now = Date.now();
+  const hit = loreDraftMemo.get(reader);
+  if (hit && now - hit.at < LORE_DRAFTS_MEMO_MS) return hit;
+  let value = { total: 0, titles: [] as string[] };
+  try {
+    const page = reader.listLore({ status: ["draft"], limit: 3 });
+    if (page.available)
+      value = { total: page.total, titles: page.lore.map((l) => l.title).filter(Boolean) };
+  } catch {
+    /* Memory is best-effort: no row */
+  }
+  loreDraftMemo.set(reader, { at: now, ...value });
+  return value;
+}
+
 /** Default number of audit lines surfaced by GET /api/audit. */
 const AUDIT_TAIL_DEFAULT = 50;
 
@@ -158,9 +186,32 @@ export function routeReadModels(
   // assignments, and runner/human PARKED tickets), each with what/which-ticket/
   // why/how-long. Read-only; the parked item's free-text reason is serialized as a
   // JSON string (encoder-escaped), never server-rendered HTML.
+  // Lore drafts awaiting approval join it as ONE row (README "What still needs you":
+  // approving or rejecting lore drafts), after everything that holds a ticket.
   if (segments.length === 2 && segments[1] === "human-queue") {
     if (method !== "GET") return methodNotAllowed(res);
-    sendJson(res, 200, wg.humanQueue());
+    const q = wg.humanQueue();
+    const lore = pendingLoreDrafts(memoryReader);
+    if (lore.total > 0) {
+      const named = lore.titles.map((t) => `“${t}”`).join(", ");
+      q.items.push({
+        kind: "lore_drafts",
+        label: "Lore drafts",
+        reason:
+          `${lore.total === 1 ? "1 lore draft awaits" : `${lore.total} lore drafts await`} your ` +
+          `approval in Memory${named ? `: ${named}${lore.total > lore.titles.length ? " and more" : ""}` : ""}. ` +
+          "Agents read lore only once a person approves it.",
+        ticket: null,
+        decisionId: null,
+        severity: null,
+        loreDrafts: lore.total,
+        since: q.generatedAt,
+        waitedMs: 0,
+      });
+      q.counts.total += 1;
+      q.counts.loreDrafts = lore.total;
+    }
+    sendJson(res, 200, q);
     return;
   }
 

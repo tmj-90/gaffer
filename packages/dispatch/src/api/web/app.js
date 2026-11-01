@@ -3766,6 +3766,8 @@ const OWN_VERB = {
   ready_approval: "Approve…",
   reviewer_assignment: "Assign…",
   dependency_cancelled: "Re-plan…",
+  paused: "Continue…",
+  lore_drafts: "Open Memory",
 };
 /** The word each kind of row leads with (the referee's call, not the queue's jargon). */
 const OWN_WORD = {
@@ -3773,6 +3775,8 @@ const OWN_WORD = {
   decision: "Decision",
   review: "Review sign-off",
   awaiting_merge: "Approved, not merged",
+  paused: "Paused",
+  lore_drafts: "Lore drafts",
 };
 const OWN_GLYPH = {
   review: "in_review",
@@ -3781,6 +3785,7 @@ const OWN_GLYPH = {
   awaiting_merge: "ready_for_merge",
   ready_approval: "ready",
   dependency_cancelled: "cancelled",
+  paused: "paused",
 };
 
 function whatIOwnPanel(queue, f) {
@@ -3883,6 +3888,25 @@ function ownActionControl(it, primary, f) {
       return t
         ? el("a", { class: cls, href: `#/review/${t.id}`, "aria-label": label }, verb)
         : null;
+    case "paused":
+      return t
+        ? el(
+            "button",
+            { class: cls, type: "button", "aria-label": label, onclick: () => pausedSheet(t, it) },
+            verb,
+          )
+        : null;
+    case "lore_drafts":
+      // Approving is Memory's: the drafts are listed there, each with Approve / Reject.
+      return el(
+        "a",
+        {
+          class: cls,
+          href: "#/memory",
+          "aria-label": `Open Memory: ${plural(it.loreDrafts || 0, "lore draft")} to approve`,
+        },
+        verb,
+      );
     default:
       return t
         ? el("a", { class: cls, href: `#/ticket/${t.id}`, "aria-label": label }, verb)
@@ -3995,11 +4019,14 @@ function renderOwnedItem(it, i = 0, f = null) {
       // lines with a More toggle, so the Tactics Board is not pushed down the page.
       ...ownReason(it, i, reason),
       el("p", { class: "own-meta" }, [
-        el(
-          "span",
-          { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
-          `Waited ${fmtWait(it.waitedMs)}`,
-        ),
+        // Memory records no time a draft started waiting, so its row says none.
+        it.kind === "lore_drafts"
+          ? null
+          : el(
+              "span",
+              { class: "own-age tabnum", title: `Waiting since ${fmtTime(it.since)}` },
+              `Waited ${fmtWait(it.waitedMs)}`,
+            ),
         by
           ? el("span", { class: "own-by" }, [
               it.kind === "parked" ? "with " : "delivered by ",
@@ -4581,6 +4608,55 @@ function mergeSheet(t) {
             }),
         },
         "I merged it by hand",
+      ),
+      el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
+    ],
+  });
+}
+
+/**
+ * A delivery paused at a cap: the human's move is Continue (resume it in its kept
+ * worktree) or Stop (abandon it), the same two the ticket page offers.
+ */
+function pausedSheet(t, it) {
+  const ref = t.number != null ? `#${t.number}` : "this ticket";
+  actionSheet(`${ref} is paused`, {
+    intro: it.reason,
+    actions: [
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/continue`, {});
+              closeSheet();
+              toast(`Continue requested: the factory resumes ${ref} where it stopped.`, {
+                ok: true,
+              });
+              router();
+            }),
+        },
+        "Continue",
+      ),
+      el(
+        "button",
+        {
+          class: "btn danger",
+          type: "button",
+          title: "Stop: the ticket is cancelled and its worktree is removed on the next tick",
+          onclick: () =>
+            guard(async () => {
+              await api("POST", `/tickets/${t.id}/stop`, {});
+              closeSheet();
+              toast(`Stopped ${ref}: it is cancelled; its worktree is removed on the next tick.`, {
+                ok: true,
+              });
+              router();
+            }),
+        },
+        "Stop",
       ),
       el("button", { class: "btn", type: "button", onclick: closeSheet }, "Cancel"),
     ],

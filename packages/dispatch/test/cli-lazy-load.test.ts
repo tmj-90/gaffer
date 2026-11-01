@@ -16,7 +16,9 @@ import { pathToFileURL } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { isVersionRequest } from "../src/cli/stdio.js";
 import { Dispatch } from "../src/core.js";
+import { VERSION } from "../src/version.js";
 
 import { CLI_BIN, CLI_BUILT } from "./helpers/cliBin.js";
 
@@ -61,9 +63,25 @@ const heavyIn = (modules: string[]): string[] =>
 describe.skipIf(!CLI_BUILT)(
   "testspeed/TS-2: the CLI loads what an action needs only for an action",
   () => {
+    it.each([["--version"], ["-v"], ["--db", "other.sqlite", "--version"], ["--db=x", "-v"]])(
+      "%s prints the version without loading commander (TS-4)",
+      (...args) => {
+        const r = spawnSync(process.execPath, [CLI_BIN, ...args], { encoding: "utf8" });
+        expect(r.status).toBe(0);
+        expect(r.stdout).toBe(`${VERSION}\n`);
+        expect(r.stderr).toBe("");
+        expect(modulesFor(args).modules.filter((m) => !m.startsWith("node:"))).toEqual([
+          expect.stringMatching(/\/dist\/cli\/index\.js$/),
+          expect.stringMatching(/\/dist\/util\/compileCache\.js$/),
+          expect.stringMatching(/\/dist\/cli\/stdio\.js$/),
+          expect.stringMatching(/\/dist\/version\.js$/),
+        ]);
+      },
+    );
+
     it.each([
-      [["--version"], 0],
-      [["-v"], 0],
+      [["-v", "ticket", "list"], 0],
+      [["--db", "--version"], 2],
       [["--help"], 0],
       [["help", "ticket", "create"], 0],
       [["ticket", "list", "--help"], 0],
@@ -93,3 +111,25 @@ describe.skipIf(!CLI_BUILT)(
     });
   },
 );
+
+describe("testspeed/TS-4: isVersionRequest", () => {
+  it("is the version option alone, after any root --db", () => {
+    for (const args of [["--version"], ["-v"], ["--db", "x", "-v"], ["--db=x", "--version"]]) {
+      expect(isVersionRequest(args)).toBe(true);
+    }
+  });
+  it("leaves everything else to commander", () => {
+    for (const args of [
+      [],
+      ["-V"],
+      ["--db", "--version"],
+      ["-v", "ticket"],
+      ["--version", "bogus"],
+      ["ticket", "-v"],
+      ["--json", "-v"],
+      ["-hv"],
+    ]) {
+      expect(isVersionRequest(args)).toBe(false);
+    }
+  });
+});

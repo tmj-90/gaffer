@@ -4,11 +4,19 @@
 // next call. The runner spawns this file dozens of times per tick.
 import { enableCompileCache } from "../util/compileCache.js";
 
-enableCompileCache();
-const { buildProgram, guardStdio, runProgram } = await import("./program.js");
+import { guardStdio, isVersionRequest } from "./stdio.js";
 
+enableCompileCache();
 guardStdio();
 
-void runProgram(buildProgram(), process.argv).then((code) => {
-  process.exitCode = code;
-});
+if (isVersionRequest(process.argv.slice(2))) {
+  // What commander's version option prints, and its exit code, without loading it.
+  const { VERSION } = await import("../version.js");
+  process.stdout.write(`${VERSION}\n`);
+  process.exitCode = 0;
+} else {
+  const { buildProgram, runProgram } = await import("./program.js");
+  void runProgram(buildProgram(), process.argv).then((code) => {
+    process.exitCode = code;
+  });
+}

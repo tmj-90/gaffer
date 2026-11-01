@@ -21,6 +21,8 @@ import { describeCommanderFailure } from "./failure.js";
 import { printJson } from "./helpers.js";
 import { needs, open } from "./runtime.js";
 
+export { guardStdio } from "./stdio.js";
+
 /**
  * The commands the runner (or an agent through it) calls as part of its own
  * bookkeeping. They stay callable, for a person recovering by hand, but sit under
@@ -242,31 +244,6 @@ function handleHelpRequest(program: Command, args: readonly string[]): number | 
   }
   cur.outputHelp();
   return 0;
-}
-
-/**
- * A reader that stops early (`gaffer wg ticket list | head -1`) closes the pipe, and
- * the CLI's next write fails with EPIPE. Node raises that as an unhandled 'error'
- * event: a raw stack trace and exit 1, after the command had already done its work and
- * the reader had what it wanted. So EPIPE is ignored and the command keeps its own
- * exit code. Any other failure to write stdout is the one JSON error line and exit 1.
- */
-export function guardStdio(): void {
-  const closed = (err: NodeJS.ErrnoException): boolean =>
-    err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED";
-  process.stdout.on("error", (err: NodeJS.ErrnoException) => {
-    if (closed(err)) return;
-    const body = {
-      ok: false,
-      code: "IO_ERROR",
-      message: `Could not write the output: ${err.message}`,
-      ...(err.code ? { details: { errno: err.code } } : {}),
-    };
-    process.stderr.write(`${JSON.stringify(body)}\n`);
-    process.exitCode = 1;
-  });
-  // Nowhere left to report a failure to write stderr itself.
-  process.stderr.on("error", () => undefined);
 }
 
 /**

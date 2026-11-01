@@ -591,7 +591,7 @@ export function registerTicket(program: Command): void {
   ticket
     .command("ci-required <ref>")
     .description(
-      "REQUIRED CI: record that this ticket needs a CI pass before it may be approved, " +
+      "Record that this ticket needs a CI pass before it may be approved, " +
         "before any result exists (the runner calls it when it submits a delivery that CI " +
         "gates). Until a PASS is recorded for the candidate commit, approval and a tester " +
         "PASS are refused. System/admin only; idempotent.",

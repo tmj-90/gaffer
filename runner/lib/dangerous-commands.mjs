@@ -420,9 +420,10 @@ export const DANGEROUS_COMMANDS = [
     // GATE INTEGRITY allowance (`ticket allow-test-changes`): only a human may excuse a
     // delivery's test edits (dispatch also refuses an agent actor server-side), and the
     // repo's registered DoD commands (`repo set-commands`): they ARE the gate.
+    // And `wont-do`: closing a ticket as not worth doing is a person's call, like approve.
     // And the credentials (`principal create|revoke`, `--as-principal`): a principal is
     // a person's or a bot's delegated access, never an agent's to mint or act as.
-    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|principal[ \t]+(?:create|revoke)|as-principal)\b/,
+    re: /\b(wg|dispatch|fg|crew)\b[^\n|;&]*\b(review|approve|approve-ready|mark-merged|record-landing|landing-begin|record-tester-replay|ci-result|eval-score|attach-evidence|reject|repo-access|set-testable|allow-test-changes|set-commands|test-contract|tester-pass|tester-fail|repo-delivery|require-cap|set-reviewer|decisions[ \t]+resolve|agent[ \t]+rename|club[ \t]+set|wont-do|principal[ \t]+(?:create|revoke)|as-principal)\b/,
     why: "control-plane CLI write (use the scoped MCP, not the privileged wg/dispatch/fg/crew CLI)",
     example: "wg ticket approve T-1",
     crewFlags: false,
@@ -627,6 +628,15 @@ export const DANGEROUS_COMMANDS = [
     re: /(^|[\s;&|(])env\s*($|[|;&>#])/,
     why: "bare `env` environment dump (leaks the forwarded model credential into context); `env VAR=x cmd` to RUN a command is unaffected",
     example: "env | grep -i token",
+    crewFlags: false,
+  },
+  {
+    // A payload decoded at run time and piped straight into a shell: the hook cannot
+    // read what runs, and there is no honest reason for an agent to spell a command
+    // that way. Decoding into a file or a variable is unaffected.
+    re: /\b(?:base64|base32|xxd|openssl[ \t]+(?:enc|base64)|uudecode|gunzip|zcat|xz|bzcat)\b[^\n;&]*\|[ \t]*(?:sudo[ \t]+)?(?:[^\s;&|()<>`"'\\]*\/)?(?:(?:ba|da|k|z)?sh|eval)\b/,
+    why: "a decoded or decompressed payload piped into a shell (the command that runs is not visible to the hook)",
+    example: "echo d2cgcHJpbmNpcGFsIGNyZWF0ZSB4 | base64 -d | sh",
     crewFlags: false,
   },
 ];

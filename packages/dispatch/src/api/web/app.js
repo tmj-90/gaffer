@@ -2650,10 +2650,10 @@ const VIEW_SIGNATURES = {
     return ticketSignature(await api("GET", `/tickets/${param}`));
   },
   review: async () => {
-    const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+    const tickets = (await allTickets("status=in_review", { full: true })).tickets;
     if (tickets.length) return reviewSignature(tickets);
     // The clear desk shows what moved on and who is still playing: watch those.
-    const all = (await api("GET", "/tickets")).tickets || [];
+    const all = (await allTickets()).tickets;
     return clearDeskSignature(all);
   },
 };
@@ -3026,7 +3026,7 @@ async function buildPaletteSources() {
   ];
   let tickets = [];
   try {
-    tickets = (await api("GET", "/tickets")).tickets || [];
+    tickets = (await allTickets()).tickets;
   } catch {
     // Palette still works for navigation if the list call fails.
   }
@@ -3385,28 +3385,148 @@ function shirtGroup(no, x = 0, y = 0, scale = 1, numPx) {
   );
 }
 
-/** Ticket details (scopes, deps, events, evidence) cached by updated_at. */
+/**
+ * Every ticket, page by page: GET /tickets answers a bounded page (500 by default) with
+ * `next_offset`, so a view that needs the whole list follows it. Summary rows (no
+ * description, test contract or review feedback: no list view shows them) unless
+ * `full`. `qs` is the filter (`status=in_review`, `repo=…`), without paging.
+ */
+async function allTickets(qs = "", opts = {}) {
+  const base = new URLSearchParams(qs);
+  if (!opts.full) base.set("fields", "summary");
+  base.set("limit", "1000");
+  const out = [];
+  let offset = 0;
+  let total = 0;
+  for (let guard = 0; guard < 1000; guard++) {
+    base.set("offset", String(offset));
+    const res = await api(
+      "GET",
+      `/tickets?${base}`,
+      undefined,
+      opts.signal ? { signal: opts.signal } : {},
+    );
+    const rows = (res && res.tickets) || [];
+    out.push(...rows);
+    total = res && typeof res.total === "number" ? res.total : out.length;
+    if (!res || res.next_offset == null || !rows.length) break;
+    offset = res.next_offset;
+  }
+  return { tickets: out, total };
+}
+
+/**
+ * The whole board: GET /api/board answers a window of each area (500 cards by default),
+ * so ask for the widest window and page any area whose `counts` says there is more.
+ */
+async function boardAll(qs = "", opts = {}) {
+  const LIMIT = 1000;
+  const q = new URLSearchParams(qs);
+  q.set("limit", String(LIMIT));
+  const get = (extra) => {
+    const u = new URLSearchParams(q);
+    for (const [k, v] of Object.entries(extra || {})) u.set(k, v);
+    return api("GET", `/api/board?${u}`, undefined, opts.signal ? { signal: opts.signal } : {});
+  };
+  const board = await get();
+  if (!board || !board.counts) return board;
+  const areaCards = (b, area) =>
+    area === "closed"
+      ? b.closed || []
+      : area === "wontDo"
+        ? b.wontDo || []
+        : ((b.columns || []).find((c) => c.column === area) || {}).cards || [];
+  const areas = [...Object.keys(board.counts.columns || {}), "closed", "wontDo"];
+  for (const area of areas) {
+    const want =
+      area === "closed" || area === "wontDo" ? board.counts[area] : board.counts.columns[area];
+    let have = areaCards(board, area);
+    while (typeof want === "number" && have.length < want) {
+      const more = areaCards(await get({ area, offset: String(have.length) }), area);
+      if (!more.length) break;
+      have.push(...more);
+      if (area === "ready_for_merge" && Array.isArray(board.readyForMerge))
+        board.readyForMerge.push(...more);
+    }
+  }
+  board.window = null;
+  return board;
+}
+
+/**
+ * Ticket details cached by updated_at. Read in batches through GET /tickets/details
+ * (exploratory finding api-robustness/F9: one GET /tickets/:id per ticket made the Map
+ * at 2000 tickets ~1000 requests), with only the parts the caller needs: the links
+ * (repositories, scopes, dependencies) by default, `DETAIL_FULL` for the views that
+ * also read a ticket's events, evidence and rework trail.
+ */
+const DETAIL_LINKS = ["repositories", "scopes", "dependencies"];
+const DETAIL_FULL = [...DETAIL_LINKS, "rework_trail", "events", "evidence"];
+const DETAIL_IDS_PER_READ = 150;
+const DETAIL_PAGE = 1000;
 const ticketDetailCache = new Map();
 const TICKET_DETAIL_TTL_MS = 120000;
-async function ticketDetails(tickets, signal) {
+async function ticketDetails(tickets, signal, include = DETAIL_LINKS) {
   const now = Date.now();
+  const fresh = (c) =>
+    c && now - c.at <= TICKET_DETAIL_TTL_MS && include.every((k) => c.parts.has(k));
   const need = tickets.filter((t) => {
     const c = ticketDetailCache.get(t.id);
-    return !c || c.stamp !== t.updated_at || now - c.at > TICKET_DETAIL_TTL_MS;
+    return !fresh(c) || c.stamp !== t.updated_at;
   });
-  for (let i = 0; i < need.length; i += EPIC_DETAIL_CONCURRENCY) {
-    const batch = need.slice(i, i + EPIC_DETAIL_CONCURRENCY);
-    const got = await Promise.all(
-      batch.map((t) =>
-        api("GET", `/tickets/${t.id}`, undefined, { signal }).catch((e) => {
-          if (e && e.code === "ABORTED") throw e;
-          return null;
-        }),
-      ),
-    );
-    batch.forEach((t, j) => {
-      if (got[j]) ticketDetailCache.set(t.id, { stamp: t.updated_at, at: now, data: got[j] });
-    });
+  const keep = (rows) => {
+    for (const d of rows || []) {
+      if (!d || !d.ticket) continue;
+      const old = ticketDetailCache.get(d.ticket.id);
+      // A fuller entry for the same revision keeps the parts this read did not ask for.
+      const base = old && old.stamp === d.ticket.updated_at ? old.data : {};
+      ticketDetailCache.set(d.ticket.id, {
+        stamp: d.ticket.updated_at,
+        at: now,
+        parts: new Set([
+          ...(old && old.stamp === d.ticket.updated_at ? old.parts : []),
+          ...include,
+        ]),
+        data: { ...base, ...d },
+      });
+    }
+  };
+  const opts = { signal };
+  const inc = include.join(",");
+  try {
+    if (need.length > DETAIL_PAGE / 2) {
+      // Most of the club: page through every ticket instead of naming each one.
+      let offset = 0;
+      for (let guard = 0; guard < 1000; guard++) {
+        const res = await api(
+          "GET",
+          `/tickets/details?include=${inc}&limit=${DETAIL_PAGE}&offset=${offset}`,
+          undefined,
+          opts,
+        );
+        keep(res && res.details);
+        if (!res || res.next_offset == null) break;
+        offset = res.next_offset;
+      }
+    } else {
+      const chunks = [];
+      for (let i = 0; i < need.length; i += DETAIL_IDS_PER_READ)
+        chunks.push(need.slice(i, i + DETAIL_IDS_PER_READ));
+      const got = await Promise.all(
+        chunks.map((c) =>
+          api(
+            "GET",
+            `/tickets/details?include=${inc}&ids=${c.map((t) => encodeURIComponent(t.id)).join(",")}`,
+            undefined,
+            opts,
+          ),
+        ),
+      );
+      for (const res of got) keep(res && res.details);
+    }
+  } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
+    // A failed batch leaves those tickets without details (as a failed read did before).
   }
   const out = new Map();
   for (const t of tickets) {
@@ -3465,7 +3585,10 @@ async function loadMatchDay() {
   ] = await Promise.all([
     api("GET", "/api/dashboard", undefined, { signal }),
     opt("/api/human-queue", { items: [], counts: { total: 0 } }),
-    opt("/api/board", null),
+    boardAll("", { signal }).catch((e) => {
+      if (e && (e.code === "ABORTED" || e.code === "UNAUTHORIZED")) throw e;
+      return null;
+    }),
     opt("/api/cost", null),
     opt("/api/health", null),
     opt("/api/settings", null),
@@ -3490,7 +3613,14 @@ async function loadMatchDay() {
     for (const c of board.columns || []) tickets.push(...(c.cards || []));
     tickets.push(...(board.closed || []), ...(board.wontDo || []));
   } else {
-    tickets = ((await opt("/tickets", { tickets: [] })).tickets || []).map((t) => ({
+    tickets = (
+      (
+        await allTickets("", { signal }).catch((e) => {
+          if (e && e.code === "ABORTED") throw e;
+          return { tickets: [] };
+        })
+      ).tickets || []
+    ).map((t) => ({
       ...t,
       repos: [],
     }));
@@ -3508,7 +3638,7 @@ async function loadMatchDay() {
         String(b.updated_at).localeCompare(String(a.updated_at)),
     );
   const detailCapped = ranked.length > OVERVIEW_DETAIL_CAP;
-  const details = await ticketDetails(ranked.slice(0, OVERVIEW_DETAIL_CAP), signal);
+  const details = await ticketDetails(ranked.slice(0, OVERVIEW_DETAIL_CAP), signal, DETAIL_FULL);
   const runByTicket = await activeRunDetails((runsRes && runsRes.active) || [], signal);
 
   const repoOf = new Map();
@@ -6835,7 +6965,7 @@ async function fitnessRoomPanels(healthRes) {
   const [{ summary }, ticketsRes, decisionsRes, costRes, bouncingRes, claimsRes, settingsRes] =
     await Promise.all([
       api("GET", "/api/dashboard"),
-      api("GET", "/tickets").catch(() => ({ tickets: [] })),
+      allTickets().catch(() => ({ tickets: [] })),
       api("GET", "/decisions").catch(() => ({ decisions: [] })),
       api("GET", "/api/cost").catch(() => null),
       api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
@@ -8978,7 +9108,7 @@ async function renderWork() {
   const list = workState.mode === "list";
   const [board, listRes, ref, claimsRes, queue] = await Promise.all([
     list ? null : get(`/api/board${boardQs}`),
-    list ? get("/tickets" + (listQs.toString() ? `?${listQs}` : "")) : null,
+    list ? allTickets(listQs.toString(), { signal }) : null,
     workReference(),
     get("/claims"),
     get("/api/human-queue").catch((e) => {
@@ -10980,7 +11110,7 @@ async function ticketEpicCard(t, scopes) {
   if (!epic) return null;
   const all =
     (
-      await api("GET", "/tickets", undefined, { signal: routeSignal() }).catch(() => ({
+      await allTickets("", { signal: routeSignal() }).catch(() => ({
         tickets: [],
       }))
     ).tickets || [];
@@ -17487,7 +17617,7 @@ function isStaleRevision(e) {
 async function renderClearDesk(wrap) {
   const signal = routeSignal();
   const [all, claims, dash] = await Promise.all([
-    api("GET", "/tickets", undefined, { signal }).then((r) => r.tickets || []),
+    allTickets("", { signal }).then((r) => r.tickets || []),
     api("GET", "/claims", undefined, { signal })
       .then((r) => r.claims || [])
       .catch(() => []),
@@ -18529,10 +18659,17 @@ async function mapOverlay(nodes, repos, signal, { all = false } = {}) {
       if (e && e.code === "ABORTED") throw e;
       return fb;
     });
-  const [board, ...links] = await Promise.all([
-    opt("/api/board", null),
-    ...repos.map((r) => opt(`/scope/repos?repo=${encodeURIComponent(r.id)}`, { scopes: [] })),
+  // The whole board, and every repo's grounds in ONE read (it was one per repo).
+  const [board, scopeLinks] = await Promise.all([
+    boardAll("", { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return null;
+    }),
+    opt("/scope/repos?all=1", { by_repo: {} }),
   ]);
+  const links = repos.map((r) => ({
+    scopes: (scopeLinks && scopeLinks.by_repo && scopeLinks.by_repo[r.id]) || [],
+  }));
   const every = boardCards(board);
   const cards = every.filter((c) => mapTone(c.status));
   const book = all ? every.filter((c) => c.status !== "cancelled") : cards;
@@ -20289,7 +20426,7 @@ async function renderRepo(id) {
   let tickets = null;
   let ticketErr = null;
   try {
-    const board = await api("GET", "/api/board");
+    const board = await boardAll();
     tickets = boardCards(board).filter(
       (c) =>
         c.status !== "cancelled" &&
@@ -20736,12 +20873,9 @@ function renderAddAssociationForm(repo, allNodes, existing) {
 // An epic is a scope node of type "epic" that `contains` its tickets. There is
 // no "tickets-for-epic" endpoint, so the view stitches the tree from the
 // existing surfaces: GET /scope/nodes (the epics), GET /tickets (the universe),
-// and GET /tickets/:id (each ticket's `scopes` → epic membership, plus its
+// and GET /tickets/details (each ticket's `scopes` → epic membership, plus its
 // `dependencies` → the "blocked by #N" edges). Tickets are grouped into phases
 // by their dependency depth so the build order reads top-to-bottom.
-
-/** Cap concurrent ticket-detail fetches so a big backlog doesn't flood the API. */
-const EPIC_DETAIL_CONCURRENCY = 6;
 
 /**
  * Assign each ticket a phase = longest dependency chain to a root, computed over
@@ -20849,7 +20983,7 @@ async function renderEpics(param) {
     });
   const [nodesRes, ticketsRes, claimsRes, specsRes] = await Promise.all([
     api("GET", "/scope/nodes", undefined, { signal }),
-    api("GET", "/tickets", undefined, { signal }),
+    allTickets("", { signal }),
     extra("/claims", { claims: [] }),
     extra("/specs", { specs: [] }),
     ensureSquad(),
@@ -20890,6 +21024,13 @@ async function renderEpics(param) {
     tickets.filter((t) => t.status !== "cancelled"),
     signal,
   );
+  // A held member's line says why (its rework trail and events): read those in full.
+  const heldFull = await ticketDetails(
+    tickets.filter((t) => OFF_PITCH.has(t.status)),
+    signal,
+    DETAIL_FULL,
+  );
+  for (const [k, v] of heldFull) detailById.set(k, v);
   const membersByEpic = new Map(epics.map((e) => [e.id, []]));
   const depsById = new Map();
   const depViewById = new Map();
@@ -22868,7 +23009,7 @@ async function confirmPlanBuild(plan, opts = {}) {
       // gate decide per ticket. A refusal (missing AC, unmet precondition) is
       // expected for some tickets — they stay draft, counted, never surfaced as an
       // error. Bootstrap-gated tickets are readied too; the loop honours deps.
-      const all = (await api("GET", "/tickets")).tickets || [];
+      const all = (await allTickets()).tickets;
       const mine = all.filter((t) => numbers.includes(t.number));
       for (const t of mine) {
         try {
@@ -23992,7 +24133,7 @@ async function renderSpecList() {
     // so the empty page still says something true about this club.
     const [nodesRes, ticketsRes] = await Promise.all([
       api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
-      api("GET", "/tickets", undefined, { signal }).catch(() => ({ tickets: [] })),
+      allTickets("", { signal }).catch(() => ({ tickets: [] })),
     ]);
     const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
     const live = (ticketsRes.tickets || []).filter((t) => !TERMINAL.has(t.status));

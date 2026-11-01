@@ -1868,7 +1868,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "A visible window: at most this many cards per area (1..1000). Without it every card is returned."
+            "description": "A visible window: at most this many cards per area (1..1000). Without it the window is the first 500 cards of each area; `counts` says how many each area holds, and `area` with `offset` pages one area."
           },
           {
             "name": "offset",
@@ -2555,7 +2555,7 @@
           "Tickets"
         ],
         "summary": "List tickets",
-        "description": "Paging is opt-in: with no `limit` every matching ticket is returned. `limit` (clamped to 1–1000) and `offset` page the list; `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
+        "description": "Paged: with no `limit` the first 500 matching tickets come back. `limit` (clamped to 1–1000) and `offset` page the list; `next_offset` is the next page's offset (null on the last page) and `total` always counts the whole filtered set. `fields=summary` leaves out `description`, `test_contract` and `last_review_feedback`. Unknown query parameters are ignored.",
         "parameters": [
           {
             "name": "status",
@@ -2637,7 +2637,7 @@
         ],
         "responses": {
           "200": {
-            "description": "`{ tickets, total, limit?, offset? }` (`limit`/`offset` echoed when paging).",
+            "description": "`{ tickets, total, limit, offset, next_offset }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2769,6 +2769,105 @@
           }
         ],
         "x-capability": "full"
+      }
+    },
+    "/tickets/details": {
+      "get": {
+        "operationId": "getTicketsDetails",
+        "tags": [
+          "Tickets"
+        ],
+        "summary": "Many tickets' detail in one read",
+        "description": "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`.",
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 13000
+            },
+            "description": "Additional validation rule applies (not expressible in JSON Schema)."
+          },
+          {
+            "name": "include",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "description": "Additional validation rule applies (not expressible in JSON Schema)."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Coerced from a string."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Coerced from a string."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ details, missing, total, limit?, offset?, next_offset? }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketDetailsBatch"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
       }
     },
     "/tickets/{id}": {
@@ -8076,7 +8175,7 @@
           "Factory Map (scope graph)"
         ],
         "summary": "Repositories of a node, or scopes of a repository",
-        "description": "Exactly one of `node` or `repo` is required.",
+        "description": "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read.",
         "parameters": [
           {
             "name": "node",
@@ -8095,11 +8194,20 @@
               "type": "string"
             },
             "description": "Repository id: list its scope nodes."
+          },
+          {
+            "name": "all",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "`1`: every repository's scope nodes, keyed by repository id."
           }
         ],
         "responses": {
           "200": {
-            "description": "`ScopeRepo[]`.",
+            "description": "`ScopeRepo[]`, or `{ by_repo }` with `all=1`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -14259,6 +14367,340 @@
         ],
         "additionalProperties": false
       },
+      "TicketDetailsBatch": {
+        "type": "object",
+        "properties": {
+          "details": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ticket": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "number": {
+                      "anyOf": [
+                        {
+                          "type": "integer"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "description": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "draft",
+                        "refining",
+                        "ready",
+                        "claimed",
+                        "in_progress",
+                        "blocked",
+                        "in_review",
+                        "in_testing",
+                        "ready_for_merge",
+                        "done",
+                        "failed",
+                        "cancelled",
+                        "paused"
+                      ]
+                    },
+                    "priority": {
+                      "type": "integer"
+                    },
+                    "risk_level": {
+                      "type": "string",
+                      "enum": [
+                        "low",
+                        "medium",
+                        "high",
+                        "critical"
+                      ]
+                    },
+                    "policy_pack": {
+                      "type": "string",
+                      "enum": [
+                        "solo_loose",
+                        "team_light",
+                        "factory_strict",
+                        "regulated"
+                      ]
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_by": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reviewer": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "branch_name": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "pr_url": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "attempt_count": {
+                      "type": "integer"
+                    },
+                    "row_version": {
+                      "type": "integer"
+                    },
+                    "scheduled_after": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "due_at": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "bootstrap": {
+                      "type": "integer"
+                    },
+                    "last_review_feedback": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "JSON-encoded {reason, reviewer, at} or null."
+                    },
+                    "can_be_tested": {
+                      "type": "integer"
+                    },
+                    "test_contract": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "description": "JSON-encoded test contract or null."
+                    },
+                    "acceptance": {
+                      "type": "integer"
+                    },
+                    "allow_test_changes": {
+                      "type": "integer",
+                      "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+                    },
+                    "human_owner": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "human_delivered": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "delivery_budget_usd": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "number",
+                    "title",
+                    "status",
+                    "priority",
+                    "risk_level",
+                    "policy_pack",
+                    "source",
+                    "created_by",
+                    "reviewer",
+                    "branch_name",
+                    "pr_url",
+                    "attempt_count",
+                    "row_version",
+                    "scheduled_after",
+                    "due_at",
+                    "bootstrap",
+                    "can_be_tested",
+                    "acceptance",
+                    "allow_test_changes",
+                    "human_owner",
+                    "human_delivered",
+                    "delivery_budget_usd",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "description": "The ticket's summary row (plus `landing_state`)."
+                },
+                "repositories": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "dependencies": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "rework_trail": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "events": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                },
+                "evidence": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": {}
+                  }
+                }
+              },
+              "required": [
+                "ticket"
+              ],
+              "additionalProperties": false
+            },
+            "description": "One entry per ticket, each carrying the parts `include` asked for."
+          },
+          "missing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Requested ids no ticket has."
+          },
+          "total": {
+            "type": "integer",
+            "description": "With `ids`: the tickets found. Without: every ticket."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Without `ids`: the page size applied."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Without `ids`: where this page starts."
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Without `ids`: the next page's `offset`, or null on the last page."
+          }
+        },
+        "required": [
+          "details",
+          "missing",
+          "total"
+        ],
+        "additionalProperties": false
+      },
       "TicketDiff": {
         "type": "object",
         "properties": {
@@ -14795,16 +15237,30 @@
           },
           "limit": {
             "type": "integer",
-            "description": "Echoed when paging."
+            "description": "The page size applied (500 when the request names none)."
           },
           "offset": {
             "type": "integer",
-            "description": "Echoed when paging."
+            "description": "Where this page starts."
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `offset` of the next page, or null when this page is the last."
           }
         },
         "required": [
           "tickets",
-          "total"
+          "total",
+          "limit",
+          "offset",
+          "next_offset"
         ],
         "additionalProperties": false
       },

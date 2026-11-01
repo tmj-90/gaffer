@@ -128,6 +128,11 @@ describe("OpenAPI response schemas match the live routes", () => {
     await expectContract("GET /tickets", "/tickets");
     await expectContract("GET /tickets", "/tickets?fields=summary&limit=1");
     await expectContract("GET /tickets/:id", `/tickets/${id}`);
+    await expectContract("GET /tickets/details", `/tickets/details?ids=${id},missing-id`);
+    await expectContract(
+      "GET /tickets/details",
+      "/tickets/details?include=repositories,scopes,dependencies,rework_trail,events,evidence&limit=2",
+    );
     await expectContract(
       "POST /tickets/:id/acceptance-criteria",
       `/tickets/${id}/acceptance-criteria`,

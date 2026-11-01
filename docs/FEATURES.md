@@ -137,8 +137,15 @@ a visible window of each lane (`GET /api/board?limit=200`; Done, failed and won'
 newest first) and the lane heads show each lane's true size from the server's
 `counts`; the rest of a lane is one link away in the List view, which filters on
 the server. A filter typed on a windowed board applies to the loaded cards and says
-so. Without `limit` the endpoint still returns every card, and it no longer has a
-size ceiling (it used to fail at 32,767 tickets on SQLite's variable limit).
+so. Without `limit` the board answers the first 500 cards of each area (its `counts`
+say how many there are, and `area` with `offset` pages one), and `GET /tickets`
+answers 500 rows with a `next_offset`, so a bare read of a big board stays small (a
+20k-ticket board used to answer 54 MB). The views that need every ticket's links (the
+Map, the Overview, Epics, a ticket's campaign card) read them in batches through
+`GET /tickets/details` (by `ids`, or a page of every ticket, with only the parts they
+use) and every repo's grounds through `GET /scope/repos?all=1`, instead of one
+`GET /tickets/:id` per ticket: the Map at 2,000 tickets settles in about 0.6 s with
+14 requests (it took 2–4 s and over 600).
 
 An acceptance criterion can be **machine-checkable**: give it a check command
 (`npm test`, a script, an HTTP probe) and the runner executes it in the delivery

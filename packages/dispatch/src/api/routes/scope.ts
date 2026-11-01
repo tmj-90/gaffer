@@ -127,10 +127,21 @@ export async function routeScope(
           sendJson(res, 200, { scopes: wg.scopesForRepo(repo) });
           return;
         }
+        // ?all=1: every repository's scopes in one read, keyed by repository id (the
+        // Map read them one request per repo: exploratory finding api-robustness/F9).
+        if (params.get("all") === "1") {
+          const byRepo: Record<string, ReturnType<Dispatch["scopesForRepo"]>> = {};
+          for (const r of wg.listRepositories(true)) byRepo[r.id] = wg.scopesForRepo(r.id);
+          sendJson(res, 200, { by_repo: byRepo });
+          return;
+        }
         sendJson(
           res,
           422,
-          errorBody("VALIDATION_ERROR", "GET /scope/repos requires a ?node= or ?repo= filter."),
+          errorBody(
+            "VALIDATION_ERROR",
+            "GET /scope/repos requires a ?node= or ?repo= filter (or ?all=1).",
+          ),
         );
         return;
       }

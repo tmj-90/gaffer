@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import type { Dispatch } from "../../core.js";
+import type { Dispatch, TicketDetailPart } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
@@ -41,6 +41,8 @@ import {
   setTicketRepoAccessBody,
   stopPausedBody,
   testerVerdictBody,
+  TICKET_LIST_DEFAULT_LIMIT,
+  ticketDetailsQuery,
   ticketListQuery,
   wontDoBody,
 } from "../schemas.js";
@@ -136,9 +138,13 @@ export async function routeTickets(
         offset: param("offset"),
         fields: param("fields"),
       });
+      // Paged by default (exploratory finding api-robustness/F10): a bare GET /tickets
+      // answers the first TICKET_LIST_DEFAULT_LIMIT rows and `next_offset`.
+      const limit = q.limit ?? TICKET_LIST_DEFAULT_LIMIT;
+      const offset = q.offset ?? 0;
       const page = wg.listTicketPage(
         { status: q.status, repo: q.repo, risk: q.risk },
-        { limit: q.limit, offset: q.offset, summary: q.fields === "summary" },
+        { limit, offset, summary: q.fields === "summary" },
       );
       sendJson(res, 200, {
         // Approved and held tickets carry `landing_state` (their truthful status label).
@@ -148,7 +154,10 @@ export async function routeTickets(
             : t,
         ),
         total: page.total,
-        ...(q.limit !== undefined ? { limit: q.limit, offset: q.offset ?? 0 } : {}),
+        limit,
+        offset,
+        next_offset:
+          offset + page.tickets.length < page.total ? offset + page.tickets.length : null,
       });
       return;
     }
@@ -196,6 +205,43 @@ export async function routeTickets(
       return;
     }
     methodNotAllowed(res);
+    return;
+  }
+
+  // /tickets/details — the parts of many tickets' detail in one read (exploratory
+  // finding api-robustness/F9: the dashboard read GET /tickets/:id once per ticket, ~1000
+  // requests for the Map at 2000 tickets). `?ids=a,b,c` or a page of every ticket.
+  if (segments.length === 2 && segments[1] === "details" && method === "GET") {
+    const param = (k: string) => url.searchParams.get(k) ?? undefined;
+    const q = ticketDetailsQuery.parse({
+      ids: param("ids"),
+      include: param("include"),
+      limit: param("limit"),
+      offset: param("offset"),
+    });
+    const include = new Set<TicketDetailPart>(
+      (q.include as TicketDetailPart[] | undefined) ?? ["repositories", "scopes", "dependencies"],
+    );
+    const limit = q.limit ?? TICKET_LIST_DEFAULT_LIMIT;
+    const offset = q.offset ?? 0;
+    const read = wg.ticketDetailsBatch(q.ids ? { ids: q.ids } : { limit, offset }, include);
+    sendJson(res, 200, {
+      details: read.details.map((d) =>
+        d.ticket.status === "ready_for_merge" || d.ticket.status === "blocked"
+          ? { ...d, ticket: { ...d.ticket, ...withLanding(wg, d.ticket.id) } }
+          : d,
+      ),
+      missing: read.missing,
+      total: read.total,
+      ...(q.ids
+        ? {}
+        : {
+            limit,
+            offset,
+            next_offset:
+              offset + read.details.length < read.total ? offset + read.details.length : null,
+          }),
+    });
     return;
   }
 

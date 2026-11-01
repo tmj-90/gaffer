@@ -94,7 +94,7 @@ export const maybe = (fn, label, ms, every) => waitFor(fn, label, ms, every).cat
 export const ticketView = async (id) => (await api("GET", `/tickets/${id}`)).json;
 export const ticketOf = async (id) => (await ticketView(id)).ticket;
 export async function listTickets() {
-  const r = (await api("GET", "/tickets")).json;
+  const r = (await api("GET", "/tickets?limit=1000")).json;
   return Array.isArray(r) ? r : r.tickets || [];
 }
 export const acsOf = (view) => view.acceptanceCriteria || view.acceptance_criteria || [];

@@ -320,7 +320,7 @@ export function crewRefusal(...outputs) {
  */
 export function shellArg(s) {
   const v = String(s ?? "");
-  if (/^[A-Za-z0-9._\/@:+=-]+$/.test(v)) return v;
+  if (/^[A-Za-z0-9._/@:+=-]+$/.test(v)) return v;
   return `'${v.replace(/'/g, "'\\''")}'`;
 }
 

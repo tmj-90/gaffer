@@ -132,6 +132,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`gaffer onboard` usage errors and a hint that pastes.** A missing path printed the usage on stdout and exited 1, and a wrong path printed "no such directory" on stdout with no mark; both are now usage errors (✗ on stderr, exit 2). The next-step hint after an onboard quotes a repo name with spaces (`repo-access set <n> 'repo with spaces'`), so it pastes as one argument. (`runner/test/onboard-usage.test.sh`)
+
 - **Setup and preflight agree with each other and with the facts.** A `gaffer setup` that stopped before the data dir existed (Node below the floor, pnpm missing) pointed at `.gaffer/setup.log`, which had not been written; it now says "see the reason above", and `setup.sh` names the log itself when an install or build fails. The setup footer printed `http://127.0.0.1:8787` while the dashboard ran on `DISPATCH_API_PORT`; it now prints the real port. `preflight.sh` ticked "✓ node v22.22.0", the version setup refuses: it now applies the same `engines.node` floor and says so either way. (`runner/test/setup.test.sh`)
 
 - **A dollar cap of 0, or one that is not a number, says so.** `GAFFER_DAILY_BUDGET_USD=0` or `=abc` was refused (exit 3) with "no dollar cap is set", although one was set. The refusal is unchanged; the reason now reads `GAFFER_DAILY_BUDGET_USD=0 is $0 headroom: no paid work starts` or `GAFFER_DAILY_BUDGET_USD='abc' is not a number`, followed by the same fix, in `gaffer run`, `loop.sh` and the dashboard's Poll. (`runner/test/spend-cap-required.test.sh`)

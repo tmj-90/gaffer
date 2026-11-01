@@ -724,7 +724,10 @@ tickets are parked for a person as before.
 Enabling autonomy **requires containment**: any agent ship or mutate flag turns
 on the OS sandbox requirement, and a required-but-unavailable sandbox refuses to
 launch the agent rather than run it uncontained. The provider is auto-detected
-(`sandbox-exec` on macOS, `docker` where a Docker CLI exists).
+(`sandbox-exec` on macOS, `docker` where a Docker CLI exists). Under `docker` the
+container works in its own git repository: it can commit, but only the ticket's own
+branch comes back to your repository when it exits, so nothing run inside can move
+`main` or tag a release.
 
 ![The Settings panel](img/settings.png)
 

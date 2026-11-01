@@ -147,6 +147,45 @@ resolver, tester and onboarding analysis) runs the identical lifecycle. `GAFFER_
 socket into its VM; there the wrapper falls back to the legacy layout (DB directory
 mounted rw, masked) and logs a WARNING naming the gap. Force with `1`/`0`.
 
+### The container's git view (external review #9)
+
+The delivery worktree is a linked worktree of the operator's repository, so its branch
+refs live in the repository's shared `.git`. The wrapper used to mount `.git/refs`,
+`.git/logs` and `.git/objects` read-write so a commit inside would land on the ticket
+branch, which also let anything running inside (a test, a build script) run
+`git update-ref refs/heads/main …` and move the operator's main before review.
+
+Now the container gets its own repository. For each linked worktree the wrapper builds a
+private git dir on the host (`$GAFFER_DATA/sandbox-git.<pid>.*`, outside every write
+root) and mounts it at the path the worktree's `.git` file names:
+
+| part | in the container |
+|---|---|
+| `HEAD` | the worktree's own branch (or its detached commit) |
+| refs | a snapshot of the host's branches, tags and remotes (`packed-refs`), so `git diff main...` works; every write stays private |
+| objects | empty and writable; the host's `.git/objects` is mounted **read-only** and reached through `objects/info/alternates` |
+| `index` | a copy of the worktree's index |
+| `config` | written by the wrapper: identity and object format only, `core.hooksPath=/dev/null`, `core.fsmonitor=false` |
+| everything else of the host's `.git` | not mounted: config, hooks, HEAD, refs, logs, packed-refs, other worktrees |
+
+When the container exits, the wrapper (on the host) imports exactly one ref: the
+worktree's own branch. It rewrites the private config first, fetches that ref with hooks
+off into a scratch ref, checks it is a commit, and moves the host branch with a
+compare-and-swap `update-ref` from the value it had when the container started (a branch
+that moved on the host meanwhile is kept and the wrapper exits non-zero, naming it).
+Tags, `main` and any other ref written inside are dropped with the private dir. The
+validation profile (DoD gates, AC checks) imports nothing, so a gate can never move the
+branch it validates. Landing the ticket branch onto the target is unchanged: the host
+does it, after approval.
+
+`runner/test/sandbox-docker-git-isolation.test.sh` renders the mounts in every
+data-plane mode and asserts that no `-v` mount is writable at, or sourced from, a host
+path under `.git`, then drives the wrapper with a stub `docker` to show a commit made
+inside comes back while `update-ref main`, `branch -f main` and a new tag do not. The
+containment gate (`sandbox-docker-containment.test.sh`) checks the same in a real
+container: the host's refs and config are unreachable, its objects read-only, the
+in-container commit is on the host branch and main has not moved.
+
 ### Data-plane modes (decided by the wrapper, never inferred from an absent socket)
 
 | mode | when | what of `$GAFFER_DATA` is in the container |
@@ -170,8 +209,7 @@ absent, token absent, MCP round trip over the socket), the validation profile
   before this is usable at throughput (P3, but design the pool seam in P0).
 - Registry allowlist breadth: monorepos pull from many registries; the default-deny
   list needs a sane, documented, per-repo-overridable default.
-- Worktree/object-DB sharing: today the worktree shares the host repo object DB; in the
-  guest it must be a self-contained clone or a mounted repo — decide in P0 (mount the
-  repo RW is simplest; clone-in is cleaner isolation).
+- Worktree/object-DB sharing: decided (external review #9). See "The container's git
+  view" above.
 - macOS vs Linux provider parity: one `vm` case or two (`lima` / `qemu`)? Prefer one
   `vm` case that auto-selects the backend, mirroring how `sandbox-exec` hides SBPL.

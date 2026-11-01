@@ -240,6 +240,7 @@
 1	safety-hook-secret-precision.test.mjs
 1	sandbox-docker-containment.test.sh
 1	sandbox-docker-mounts.test.sh
+1	sandbox-docker-git-isolation.test.sh
 1	security-md-planning-agents.test.mjs
 1	select-skills.test.mjs
 1	self-op-ban.test.sh

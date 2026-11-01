@@ -47,12 +47,18 @@
 //     env       interface: env — the credential-stripped child env
 //   Returns the Node `SpawnSyncReturns` verbatim ({ status, stdout, stderr, error, … }).
 
-import { spawn, spawnSync } from "node:child_process";
 import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { platform } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// node:child_process costs about 10 ms to load, and `parse-result` (spawned several
+// times per tick) never starts a process, so it is loaded on first use
+// (exploratory finding testspeed/TS-5).
+const childProcess = () => process.getBuiltinModule("node:child_process");
+const spawn = (...args) => childProcess().spawn(...args);
+const spawnSync = (...args) => childProcess().spawnSync(...args);
 
 const RUNNER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

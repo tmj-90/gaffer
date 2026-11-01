@@ -56,6 +56,15 @@ wg repo add -n repo --path "$R" --branch main --stack node --test "npm test" --l
 run_tick() { ( cd "$RUNNER_DIR" && bash ./tick.sh 2>>"$GAFFER_DATA/tick.stderr.log" ) | grep '^TICK_RESULT=' ; }
 st() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.status'; }
 approve_heads() { wg ticket diff "$1" --heads 2>/dev/null | sed 's/^/--commit /' | tr '\n' ' '; }
+# new_tickets [-r REPO] "title<TAB>description[<TAB>plain]"...: what new_ticket does, for
+# several tickets in ONE node process (lib/wg-batch.mjs makes the five wg commands'
+# service calls; wg-batch-parity.test.sh holds it to the same database). One number
+# per line, in order. A setup of nine tickets was ~55 node starts, ~13 s of CI time.
+new_tickets() {
+  local rp=repo; [ "${1:-}" = -r ] && { rp="$2"; shift 2; }
+  node "$HERE/lib/wg-batch.mjs" "$DISPATCH_DB" --risk low --ac "tests pass" --repo "$rp" --testable --ready "$@"
+}
+TAB="$(printf '\t')"
 new_ticket() { local n; n="$(wg ticket create -t "$1" -d "$2" --risk low 2>/dev/null | jget 'd.ticket.number')"; wg ac add "$n" -t "tests pass" >/dev/null 2>&1; wg ticket repo-access set "$n" repo --access write --relation confirmed >/dev/null 2>&1; [ "${3:-testable}" = testable ] && wg ticket set-testable "$n" >/dev/null 2>&1; wg ticket ready "$n" >/dev/null 2>&1; printf '%s' "$n"; }
 branch_of() { wg ticket show "$1" 2>/dev/null | jget 'd.ticket.branch_name || ""'; }
 LABEL_TEST='import test from "node:test";

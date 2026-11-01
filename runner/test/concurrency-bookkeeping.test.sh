@@ -124,11 +124,10 @@ runner_claim() {  # $1 ticket number, $2 agent id → echoes the captured token 
 echo "== PART A: N workers race across M ready tickets → no double-claim, none lost =="
 TICKETS=12          # ready tickets on the board
 WORKERS=6           # concurrent workers hammering the SAME board (>1: the point)
-for n in $(seq 1 "$TICKETS"); do
-  wg ticket create -t "T$n" --risk low >/dev/null 2>&1
-  wg ac add "$n" -t "AC$n" >/dev/null 2>&1
-  wg ticket ready "$n" >/dev/null 2>&1
-done
+# One node process for the whole board (lib/wg-batch.mjs: per ticket the service calls
+# of `ticket create -t "T$n" --risk low`, `ac add $n -t "AC$n"`, `ticket ready $n`;
+# wg-batch-parity.test.sh B4 holds it to the same database). Was 36 wg starts.
+node "$HERE/lib/wg-batch.mjs" "$DB" --risk low --ac 'AC{n}' --ready $(for n in $(seq 1 "$TICKETS"); do printf 'T%s ' "$n"; done) >/dev/null
 # Each worker sweeps EVERY ticket number trying to claim it (exactly the candidate
 # scan two worker.sh ticks do against the shared board). Real workers tick REPEATEDLY,
 # so a ticket a worker couldn't take this pass (lost the race, or a transient claim

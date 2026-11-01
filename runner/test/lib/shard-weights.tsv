@@ -17,9 +17,12 @@
 #   e2e-release-gate-merge-typecheck: 136 x 65/141, scenarios 1-2 only (Linux alone: 141s -> 65s).
 #   direct-run-isolation: 224 x 16/213, the quick re-runs only (Linux alone: 213s -> 16s). It
 #   stays in LONG_RE: the nightly GAFFER_TEST_EXHAUSTIVE=1 run re-runs all 16 tests (~220s).
-334	land-tester-replay.test.sh
+#   land-tester-replay: 334 - 13, land-tester-replay-proof: 252 - 10, concurrency-bookkeeping: 67 - 12:
+#   ticket setup in one node process (lib/wg-batch.mjs; setup alone 13.6s -> 0.3s, 10.7s -> 0.8s,
+#   12.5s -> 0.3s on a loaded 4-CPU box). wg-batch-parity: new, 5s alone on Linux.
+321	land-tester-replay.test.sh
 297	merge-lane.test.sh
-252	land-tester-replay-proof.test.sh
+242	land-tester-replay-proof.test.sh
 237	e2e-release-gate-tester-replay.test.sh
 237	waste-controls.test.sh
 187	e2e-agent-skill-routing.test.sh
@@ -41,7 +44,6 @@
 94	branch-switch-fresh.test.sh
 89	resume-abort.test.sh
 84	e2e-memory-routing.test.sh
-67	concurrency-bookkeeping.test.sh
 65	rework-final-trail.test.sh
 64	e2e-release-gate-ci-required.test.sh
 64	setup-error-circuit.test.sh
@@ -52,6 +54,7 @@
 60	parallel-stop-live.test.sh
 59	self-op-ban-integration.test.sh
 55	auth-gate-delivery.test.sh
+55	concurrency-bookkeeping.test.sh
 49	cli-contract-regression.test.sh
 48	merge-ticket.test.mjs
 47	replay-recovery.test.mjs
@@ -159,6 +162,7 @@
 6	setup.test.sh
 6	tester-held.test.sh
 6	tester-replay-proof.test.mjs
+6	wg-batch-parity.test.sh
 5	afk-delivery-loop.test.sh
 5	autonomy-flag-parsing.test.sh
 5	budget-remaining.test.sh

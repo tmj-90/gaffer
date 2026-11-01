@@ -65,12 +65,26 @@ start_pool() {  # <case> → sets LP (the loop pid == its own process group id),
         exec @ARGV' "$D/loop.pid" bash ./loop.sh > "$D/loop.out" 2>&1 ) &
   LP=""
   local _
-  # Bounded waits sized for a loaded CI runner (macOS shards start a pool slowly): the
-  # stop assertions below are what the test is about, not how fast the pool comes up.
-  for _ in $(seq 1 300); do [ -s "$D/loop.pid" ] && { LP="$(cat "$D/loop.pid")"; break; }; sleep 0.1; done
+  # Bounded waits sized for a loaded CI runner: the stop assertions below are what the
+  # test is about, not how fast the pool comes up. A macOS shard running three long
+  # tests beside this one took over 60s to bring two workers to their second tick
+  # (CI run 41338925244), so the budget is 60s for the pid file and 180s for the
+  # workers' ticks; a pool that is up returns as soon as it is, whatever the budget.
+  START_SECS=$SECONDS
+  for _ in $(seq 1 600); do [ -s "$D/loop.pid" ] && { LP="$(cat "$D/loop.pid")"; break; }; sleep 0.1; done
   [ -n "$LP" ] || return 1
-  for _ in $(seq 1 300); do [ "$(workers | wc -l | tr -d ' ')" -ge 2 ] && [ "$(ticks_in "$D/data")" -ge 2 ] && return 0; sleep 0.2; done
+  for _ in $(seq 1 900); do [ "$(workers | wc -l | tr -d ' ')" -ge 2 ] && [ "$(ticks_in "$D/data")" -ge 2 ] && return 0; sleep 0.2; done
   return 1
+}
+# A pool that never came up is one failure with its evidence, not a stop assertion:
+# say how far the start got, show the loop's and workers' logs, and clear the group so
+# the next case starts clean. The dependent checks of that case are not run (they
+# would fail for the same reason and hide the cause).
+start_failed() {  # <case-label>
+  fail "$1: the pool never started after $(( SECONDS - START_SECS ))s (loop pid=${LP:-none}, alive=$([ -n "$LP" ] && kill -0 "$LP" 2>/dev/null && echo yes || echo no), workers=$(workers | wc -l | tr -d ' '), log lines=$(ticks_in "$D/data"))"
+  dump_survivors "$1"
+  if [ -n "$LP" ]; then kill -KILL -- "-$LP" 2>/dev/null; kill -KILL "$LP" 2>/dev/null; fi
+  LP=""
 }
 gone_within() {  # <secs> → 0 once the loop and every worker have exited
   local _
@@ -101,20 +115,26 @@ assert_stopped() {  # <case-label> <secs>
 }
 
 echo "== P1. Ctrl-C (INT to the process group) stops the pool =="
-start_pool int && ok "P1: pool running (2 workers ticking)" || fail "P1: the pool never started"
-kill -INT -- "-$LP" 2>/dev/null
-assert_stopped P1 15
+if start_pool int; then
+  ok "P1: pool running (2 workers ticking, $(( SECONDS - START_SECS ))s)"
+  kill -INT -- "-$LP" 2>/dev/null
+  assert_stopped P1 15
+else start_failed P1; fi
 
 echo "== P2. TERM to the loop pid stops the pool =="
-start_pool term && ok "P2: pool running" || fail "P2: the pool never started"
-kill -TERM "$LP" 2>/dev/null
-assert_stopped P2 15
-grep -q "stop signal — stopping the worker pool" "$WORK/term/loop.out" && ok "P2: loop.sh logged the pool stop" || fail "P2: no pool-stop line in loop.out"
+if start_pool term; then
+  ok "P2: pool running ($(( SECONDS - START_SECS ))s)"
+  kill -TERM "$LP" 2>/dev/null
+  assert_stopped P2 15
+  grep -q "stop signal — stopping the worker pool" "$WORK/term/loop.out" && ok "P2: loop.sh logged the pool stop" || fail "P2: no pool-stop line in loop.out"
+else start_failed P2; fi
 
 echo "== P3. SIGKILL to the loop pid: the workers notice it is gone =="
-start_pool kill && ok "P3: pool running" || fail "P3: the pool never started"
-{ kill -KILL "$LP"; wait "$LP"; } 2>/dev/null
-assert_stopped P3 20
+if start_pool kill; then
+  ok "P3: pool running ($(( SECONDS - START_SECS ))s)"
+  { kill -KILL "$LP"; wait "$LP"; } 2>/dev/null
+  assert_stopped P3 20
+else start_failed P3; fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

@@ -88,7 +88,7 @@ A failure is one JSON line on stderr, the same shape for every command:
 `details` (when present) carries the machine-readable rest, such as the raw validation
 `issues`. Exit codes: `0` done, `1` refused or failed (the error line says why), `2` a
 usage error: an unknown command or option, a missing argument or required option, or no
-database at `--db` (only `init` creates one). A database another process holds locked for
+database at `--db` (only `init`, and `import` restoring into a new file, create one). A database another process holds locked for
 more than 5 s is `DB_BUSY`: retry.
 
 #### CLI and REST key names

@@ -23,13 +23,14 @@ export function isImplicitDbPath(explicit?: string): boolean {
 }
 
 /**
- * The CLI's guard against a stray database: a command other than `init` refuses to
+ * The CLI's guard against a stray database: a command other than `init` (and `import`,
+ * which restores a bundle into the file it names) refuses to
  * CREATE the database it was pointed at. Copying a docs snippet that lacked `--db`
  * used to answer NOT_FOUND from a brand-new empty `./.dispatch/dispatch.sqlite` left
  * in whatever directory it ran in; and because `runner/gaffer wg` always passes an
  * explicit `--db`, a mistyped GAFFER_DATA silently created a new empty board that the
- * next `ticket create` wrote into (exploratory finding cli-wg/F-09). Only `init`
- * (and `:memory:`) open-or-create now.
+ * next `ticket create` wrote into (exploratory finding cli-wg/F-09). Only `init` and
+ * `import` (and `:memory:`) open-or-create now.
  */
 export function assertCliDbExists(explicit?: string): void {
   const path = resolveDbPath(explicit);

@@ -59,13 +59,16 @@ export function registerPortability(program: Command): void {
     .summary("Import a board bundle into this database (--force replaces a non-empty one)")
     .description(
       "Import a board bundle (from `export`) into THIS database. Refuses a " +
-        "non-empty DB unless --force is given (which replaces its contents). Reads " +
+        "non-empty DB unless --force is given (which replaces its contents); creates the " +
+        "database when it does not exist yet. Reads " +
         "stdin when <file> is '-'.",
     )
     .option("--force", "replace the contents of a non-empty database", false)
     .action((file: string, opts, cmd) => {
       const json = file === "-" ? readStdin() : readInputFile(file);
-      const wg = open(cmd.optsWithGlobals());
+      // Restoring a bundle into a new database is deliberate, so import, like init,
+      // creates the file it is pointed at (the stray-board guard covers the rest).
+      const wg = open(cmd.optsWithGlobals(), { create: true });
       try {
         const res = importStateFromJson(wg.db, json, { force: opts.force });
         printJson({ ok: true, ...res });

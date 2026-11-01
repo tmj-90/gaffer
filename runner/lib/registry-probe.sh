@@ -67,7 +67,7 @@ gaffer_registry_probe() {
 gaffer_registry_probe_hint() {
   case "${1:-}" in
     SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_*)
-      printf '%s' "the agent env does not trust the proxy's CA: export NODE_EXTRA_CA_CERTS=<bundle> (passed through to agents) and run \`npm config set cafile <bundle>\`; never disable TLS verification" ;;
+      printf '%s' "the agent env does not trust the proxy's CA: export NODE_EXTRA_CA_CERTS=<bundle> or SSL_CERT_FILE=<bundle> for the runner (either reaches the agent's npm); never disable TLS verification" ;;
     ENOTFOUND|EAI_AGAIN)
       printf '%s' "the registry host does not resolve from the agent env: offline, or the proxy route is missing (export HTTPS_PROXY / NO_PROXY)" ;;
     ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|timeout)

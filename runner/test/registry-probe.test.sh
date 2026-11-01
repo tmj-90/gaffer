@@ -75,7 +75,7 @@ gaffer_registry_probe 5; rc=$?
 [ "$GAFFER_REGISTRY_PROBE_CODE" = "SELF_SIGNED_CERT_IN_CHAIN" ] && ok "code parsed from 'npm error code …'" || fail "code='$GAFFER_REGISTRY_PROBE_CODE'"
 case "$GAFFER_REGISTRY_PROBE_DETAIL" in *"SELF_SIGNED_CERT_IN_CHAIN"*) ok "detail carries the first npm error line" ;; *) fail "detail='$GAFFER_REGISTRY_PROBE_DETAIL'" ;; esac
 case "$(gaffer_registry_probe_hint "$GAFFER_REGISTRY_PROBE_CODE")" in
-  *NODE_EXTRA_CA_CERTS*cafile*) ok "hint: CA bundle via NODE_EXTRA_CA_CERTS + npm cafile" ;;
+  *NODE_EXTRA_CA_CERTS*SSL_CERT_FILE*) ok "hint: CA bundle via NODE_EXTRA_CA_CERTS or SSL_CERT_FILE (no npm config step)" ;;
   *) fail "TLS hint wrong: $(gaffer_registry_probe_hint "$GAFFER_REGISTRY_PROBE_CODE")" ;;
 esac
 case "$(gaffer_registry_probe_hint SELF_SIGNED_CERT_IN_CHAIN)" in *"never disable TLS"*) ok "hint never suggests disabling TLS verification" ;; *) fail "hint lacks the never-disable-TLS line" ;; esac
@@ -105,7 +105,7 @@ grep -q '^RUNNER_SECRET_TOKEN=' "$DUMP" && fail "a runner-only *_TOKEN reached t
 grep -q '^NODE_EXTRA_CA_CERTS=/etc/corp/ca.pem$' "$DUMP" && ok "trust store present (as the agent gets it)" || fail "NODE_EXTRA_CA_CERTS missing from the probe env"
 grep -q '^HTTPS_PROXY=' "$DUMP" && ok "proxy route present" || fail "HTTPS_PROXY missing"
 grep -q '^npm_config_fetch_retries=0$' "$DUMP" && ok "retries off (one attempt answers)" || fail "fetch_retries not 0"
-grep -q "^HOME=$HOME\$" "$DUMP" && ok "HOME passed (so ~/.npmrc cafile applies)" || fail "HOME wrong"
+grep -q "^HOME=$HOME\$" "$DUMP" && ok "HOME passed (so ~/.npmrc applies)" || fail "HOME wrong"
 
 echo "== 7: preflight.sh reports the probe =="
 echo ok > "$MODE"

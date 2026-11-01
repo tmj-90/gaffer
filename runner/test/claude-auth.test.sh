@@ -51,6 +51,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
 else
   [ "${r%%|*}" = "1" ] && ok "no env var, no credentials file → rc 1" || fail "empty home: $r"
 fi
+# The test seam (GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0) declares the Keychain empty, so
+# "nothing visible" reads as none on every OS, macOS included.
+r="$(probe HOME="$H" GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0)"
+[ "${r%%|*}" = "1" ] && ok "Keychain declared empty (test seam), nothing visible → rc 1 on this OS too" || fail "keychain seam: $r"
 r="$(probe HOME="$H" ANTHROPIC_API_KEY=sk-test-secret)"
 [ "$r" = "0|\$ANTHROPIC_API_KEY" ] && ok "ANTHROPIC_API_KEY → visible, named (value never printed)" || fail "api key: $r"
 r="$(probe HOME="$H" CLAUDE_CODE_OAUTH_TOKEN=tok)"
@@ -87,6 +91,8 @@ gate() { "${NOCRED[@]}" HOME="$H" CLAUDE_BIN=claude "$@" bash -c 'source "$1"; s
 if [ "$(uname -s)" != "Darwin" ]; then
   [ "$(gate)" = 1 ] && ok "gate: nothing visible → refuse" || fail "gate none: $(gate)"
 fi
+[ "$(gate GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0)" = 1 ] && ok "gate: nothing visible, Keychain declared empty → refuse (every OS)" \
+  || fail "gate keychain seam: $(gate GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0)"
 for c in "DRY_RUN=1" "GAFFER_CLAUDE_AUTH_PROBE=0" "CLAUDE_BIN=/opt/wrapper/claude" "GAFFER_WORKER_PROVIDER=other" \
          "ANTHROPIC_BASE_URL=http://gateway.invalid" "SANDBOX_PROVIDER=docker STRICT_MODE=1" "SANDBOX_PROVIDER=docker GAFFER_STRICT_REQUIRE=1"; do
   # shellcheck disable=SC2086

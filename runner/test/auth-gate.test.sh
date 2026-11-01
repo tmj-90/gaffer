@@ -33,11 +33,17 @@ source "$HERE/lib/stub-tick.sh"
 has() { case "$1" in *"$2"*) return 0 ;; *) return 1 ;; esac; }
 sqlv() { node -e 'const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(process.argv[1], { readOnly: true }); const r = db.prepare(process.argv[2]).get(Number(process.argv[3])); process.stdout.write(String(r ? Object.values(r)[0] : ""));' "$DISPATCH_DB" "$1" "$2" 2>/dev/null; }
 # A credential-free HOME (no ~/.claude/.credentials.json) and a `claude` on PATH.
+# GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0 (lib/claude-auth.sh test seam) declares the macOS
+# Keychain empty: on a macOS runner the probe otherwise reports "unknown" (a shell
+# cannot read the Keychain) and the gate rightly goes ahead, so G1/G3 never refused.
 mkdir -p "$WORK/home" "$WORK/pathbin"; cp "$WORK/bin/claude" "$WORK/pathbin/claude"
-NOCRED=(env -u ANTHROPIC_API_KEY HOME="$WORK/home" CLAUDE_CONFIG_DIR="$WORK/home/.claude" PATH="$WORK/pathbin:$PATH" CLAUDE_BIN=claude)
+NOCRED=(env -u ANTHROPIC_API_KEY HOME="$WORK/home" CLAUDE_CONFIG_DIR="$WORK/home/.claude" PATH="$WORK/pathbin:$PATH" CLAUDE_BIN=claude GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0)
 
 # A FAKE runner dir with a stub tick.sh for the admission cases.
 FAKE="$WORK/runner"; mkdir -p "$FAKE"
+# The fake runner's GAFFER_HOME is $WORK: give it the built packages, so its wg (loop.sh's
+# expire-claims and orphan sweep) works and a started run's output is clean.
+ln -s "$ROOT/packages" "$WORK/packages"
 for f in "$RUNNER_DIR"/*; do
   case "$(basename "$f")" in tick.sh|run-summary.sh|test) ;; *) ln -s "$f" "$FAKE/$(basename "$f")" ;; esac
 done
@@ -60,6 +66,10 @@ has "$out" 'claude is not logged in: run `claude /login`' && ok "G1: it says 'cl
 echo "== G2. what lets a run start =="
 out="$(stub_loop ANTHROPIC_API_KEY=sk-test)"; rc=$?
 [ "$rc" = 0 ] && [ "$(ticks)" = 1 ] && ok "G2: a visible credential (ANTHROPIC_API_KEY) → the run starts" || fail "G2 key: rc=$rc ticks=$(ticks): $out"
+# A first live run on a fresh data dir (no factory.log yet) starts cleanly: loop.sh's
+# log mark once printed "factory.log: No such file or directory".
+! has "$out" "No such file or directory" && ! has "$out" "WARNING" \
+  && ok "G2: a first run on a fresh data dir prints no missing-file error or warning" || fail "G2 clean start: $out"
 out="$(stub_loop CLAUDE_BIN="$WORK/bin/claude")"; rc=$?
 [ "$rc" = 0 ] && [ "$(ticks)" = 1 ] && ok "G2: a custom CLAUDE_BIN is not probed (it may bring its own login)" || fail "G2 custom: rc=$rc ticks=$(ticks): $out"
 out="$(stub_loop DRY_RUN=1)"; rc=$?

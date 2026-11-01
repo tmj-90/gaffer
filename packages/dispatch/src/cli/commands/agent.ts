@@ -2,7 +2,15 @@ import type { Command } from "commander";
 
 import type { Actor } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, parseAs, printJson, validateTtl } from "../shared.js";
+import {
+  AS_HUMAN_OR_SYSTEM_HELP,
+  cliActor,
+  humanOrSystemActor,
+  open,
+  parseAs,
+  printJson,
+  validateTtl,
+} from "../shared.js";
 
 export function registerAgent(program: Command): void {
   // --- Agent / claim / evidence flow (mirrors the MCP tools) -----------------
@@ -14,11 +22,13 @@ export function registerAgent(program: Command): void {
     .option("-n, --name <name>", "display name")
     .option("--max-risk <level>", "max risk", "medium")
     .option("--cap <capability...>", "capabilities", [])
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((opts, cmd) => {
+      const actor = humanOrSystemActor(opts.as);
       const wg = open(cmd.optsWithGlobals());
       const a = wg.registerAgent(
         { display_name: opts.name, max_risk: opts.maxRisk, capabilities: opts.cap },
-        cliActor(),
+        actor,
       );
       printJson({ ok: true, agent: { id: a.id, display_name: a.display_name } });
       wg.db.close();

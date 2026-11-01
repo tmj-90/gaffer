@@ -3,7 +3,13 @@ import { spawnSync } from "node:child_process";
 import type { Command } from "commander";
 
 import { GIT_REF_SAFE } from "../../domain/schemas.js";
-import { cliActor, open, printJson } from "../shared.js";
+import {
+  AS_HUMAN_OR_SYSTEM_HELP,
+  cliActor,
+  humanOrSystemActor,
+  open,
+  printJson,
+} from "../shared.js";
 
 /**
  * Best-effort detection of a local repo's default branch, so `repo add` no longer
@@ -117,10 +123,12 @@ export function registerRepo(program: Command): void {
     .command("link <ref> <repoName>")
     .description("Link a repository to a ticket")
     .option("--role <role>", "role", "primary")
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((ref, repoName, opts, cmd) => {
+      const actor = humanOrSystemActor(opts.as);
       const wg = open(cmd.optsWithGlobals());
       const t = wg.resolveTicket(ref);
-      wg.linkRepository(t.id, repoName, opts.role, cliActor());
+      wg.linkRepository(t.id, repoName, opts.role, actor);
       printJson({ ok: true });
       wg.db.close();
     });

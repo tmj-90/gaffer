@@ -5,7 +5,16 @@ import type { Actor } from "../../domain/types.js";
 import { TICKET_STATUSES } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
-import { cliActor, open, parseAs, printJson, testerActor, validateTtl } from "../shared.js";
+import {
+  AS_HUMAN_OR_SYSTEM_HELP,
+  cliActor,
+  humanOrSystemActor,
+  open,
+  parseAs,
+  printJson,
+  testerActor,
+  validateTtl,
+} from "../shared.js";
 
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
@@ -144,11 +153,15 @@ export function registerTicket(program: Command): void {
     .command("move <ref> <to>")
     .description("Board move: send a ticket to another status (e.g. un-ready: ready -> draft)")
     .option("--admin", "act as an admin actor", false)
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP)
     .action((ref, to, opts, cmd) => {
-      const wg = open(cmd.optsWithGlobals());
+      if (opts.admin && opts.as !== undefined) {
+        throw new DispatchError("VALIDATION_ERROR", "--admin and --as conflict: give one of them.");
+      }
       const actor: Actor = opts.admin
         ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+        : humanOrSystemActor(opts.as ?? "human");
+      const wg = open(cmd.optsWithGlobals());
       const res = wg.moveTicket(ref, to, actor);
       printJson({ ok: true, status: res.ticket.status, event: res.eventId });
       wg.db.close();
@@ -833,7 +846,9 @@ export function registerTicket(program: Command): void {
     .option("--pr <url>", "pull-request url")
     .option("--status <status>", "delivery status")
     .option("--evidence <ref>", "evidence reference")
+    .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((ref, repoRef, opts, cmd) => {
+      const actor = humanOrSystemActor(opts.as);
       const wg = open(cmd.optsWithGlobals());
       const res = wg.recordRepoDelivery(
         {
@@ -847,7 +862,7 @@ export function registerTicket(program: Command): void {
           status: opts.status,
           evidence_ref: opts.evidence,
         },
-        cliActor(),
+        actor,
       );
       printJson({ ok: true, delivery: res.delivery });
       wg.db.close();

@@ -87,9 +87,10 @@ async function api(method, path, body, opts = {}) {
   // A scoped token (a principal with a repo or ticket scope) sees only its tickets:
   // the server refuses a factory-wide read or write with 403 SCOPE_DENIED, so the page
   // never sends one (the view shows what it has; a control that slipped through gets
-  // this refusal at once, and the console no 403).
+  // this refusal at once, and the console no 403). Likewise a repository-level write
+  // by a principal that is not an admin.
   if (scopeRefuses(method, path)) {
-    const e = new Error(scopeTitle());
+    const e = new Error(scoped() ? scopeTitle() : ADMIN_TITLE);
     e.code = "SCOPE_DENIED";
     e.status = 403;
     throw e;
@@ -746,6 +747,7 @@ const squad = {
   capability: null, // "full" | "read" from /api/whoami; null until known
   scope: null, // { repos, tickets } from /api/whoami for a scoped principal; null: unscoped
   admin: false, // the whoami actor is an admin (repo-level writes inside its scope)
+  principal: false, // the token is a named principal (not the shared operator token)
   loaded: null, // the in-flight or settled first read
   whoamiFailed: false, // the gate's whoami failed (not 401): the first squad read skips it
 };
@@ -856,7 +858,14 @@ function learnWhoami(who) {
   else if (!squad.capability) squad.capability = "full";
   squad.scope = who.scope && (who.scope.repos || who.scope.tickets) ? who.scope : null;
   squad.admin = Boolean(who.actor && who.actor.type === "admin");
+  squad.principal = Boolean(who.principal);
 }
+/** A named principal that is not an admin: repository-level writes are refused. */
+function needsAdmin() {
+  return squad.principal && !squad.admin;
+}
+const ADMIN_TITLE =
+  "Admin access: repository and settings changes need an admin credential (Settings → Access, Acts as admin).";
 
 // --- Scoped access --------------------------------------------------------------
 // A principal minted with a repo or ticket scope sees only its tickets, and the server
@@ -886,9 +895,10 @@ function scopeTitle() {
 }
 /** Would the server refuse this call for the scoped token? Mirrors api/scopeGate.ts. */
 function scopeRefuses(method, path) {
-  if (!scoped()) return false;
   const seg = String(path).split("?")[0].split("/").filter(Boolean);
   const [head, second, third] = seg;
+  if (!scoped()) return needsAdmin() && method !== "GET" && method !== "HEAD" && repoLevel(seg);
+  if (needsAdmin() && method !== "GET" && method !== "HEAD" && repoLevel(seg)) return true;
   if (method === "GET" || method === "HEAD") {
     if (head === "tickets" || head === "claims" || head === "decisions") return false;
     if ((head === "repositories" || head === "agents") && seg.length === 1) return false;
@@ -911,10 +921,19 @@ function scopeRefuses(method, path) {
   }
   return true;
 }
+/** A repository-level write (api/scopeGate.ts `write_repo`): an admin's to make. */
+function repoLevel(seg) {
+  const [head, second, third] = seg;
+  if (head === "repos") return true;
+  if (head === "tickets" && ["repo-access", "work-repos", "mono-fallback"].includes(third))
+    return true;
+  return head === "api" && ["settings", "idle-loops", "autonomy"].includes(second);
+}
 /** Why a control is switched off for this token (null: it is not). */
 function lockReason(kind) {
   if (readOnly()) return READ_ONLY_TITLE;
   if (scoped() && kind !== "ticket") return scopeTitle();
+  if (kind === "repo" && needsAdmin()) return ADMIN_TITLE;
   return null;
 }
 /**
@@ -13953,7 +13972,7 @@ async function renderSettings() {
   instructions.sync();
   // A read token sees the room, not its switches: every editor and button in it is
   // off (the index's search still works). The strip under the header says why.
-  roLockAll(main);
+  roLockAll(main, "repo");
   return wrap;
 }
 
@@ -19505,7 +19524,7 @@ function renderRepoCommandsEditor(repo) {
 // click, asks in the shared sheet, then hides the repo and refreshes — it drops off the list and
 // reappears on the "Hidden repos" page.
 function hideRepoBtn(repo) {
-  return roLock(hideRepoBtnControl(repo));
+  return roLock(hideRepoBtnControl(repo), "repo");
 }
 function hideRepoBtnControl(repo) {
   return el(
@@ -20327,7 +20346,7 @@ async function renderRepo(id) {
         },
         "Hide repo",
       );
-  roLock(hideBtn);
+  roLock(hideBtn, "repo");
 
   const lede = t ? groundCountLine(t, { where: "in this repo" }) : null;
 
@@ -20383,7 +20402,7 @@ async function renderRepo(id) {
     },
     "Edit",
   );
-  roLock(branchBtn);
+  roLock(branchBtn, "repo");
   const kvRow = (k, v) => [el("dt", {}, k), el("dd", {}, v)];
   const groundCard = el("section", { class: "card gr-card", "aria-label": "The ground" }, [
     panelHead("The ground", "where the work is done", null, { kit: "claret" }),
@@ -20424,7 +20443,7 @@ async function renderRepo(id) {
 
   const checksCard = el("section", { class: "card gr-card", "aria-label": "Referee's checks" }, [
     panelHead("Referee's checks", "the Definition of Done", null, { kit: "sky" }),
-    roLockAll(renderRepoCommandsEditor(repo)),
+    roLockAll(renderRepoCommandsEditor(repo), "repo"),
   ]);
 
   const scopeCard = el("section", { class: "card gr-card", "aria-label": "On the map" }, [
@@ -23735,7 +23754,7 @@ function onboardButton(repos, presetRepo, opts) {
     },
     [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
-  return roLock(btn);
+  return roLock(btn, "repo");
 }
 
 // --- Specs (Spec-Driven Development, Phase 3: coverage & traceability) -------

@@ -194,8 +194,10 @@ control (Poll for work, Suggest work, Create, Settings' Save, the Map and spec
 editors, Onboard) switched off with the title "Scoped access: this token can
 change only the tickets in its scope (…)". The live feed carries only its tickets'
 events, and the page never sends a call the server would refuse. Repository-level
-changes need an admin principal (Acts as: admin). The `s13-principals` browser
-suite mints a ticket-scoped token from Settings and walks it.
+changes need an admin principal (Acts as: admin): a human principal finds
+Settings' Save, Onboard and the repository editors switched off with the title
+"Admin access: …". The `s13-principals` browser suite mints a ticket-scoped
+token from Settings and walks it.
 
 **Who the CLI is.** `wg whoami` says who writes are recorded as. Without a token
 that is `$USER`, asserted and not checked, because the CLI opens the database

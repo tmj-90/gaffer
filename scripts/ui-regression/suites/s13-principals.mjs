@@ -49,6 +49,21 @@ export default async function s13(t, L) {
       `signed in with the full credential, Access names the principal ("${who.slice(0, 80)}")`,
       `Access whoami with the writer token: '${who.slice(0, 120)}'`,
     );
+    // A human principal changes tickets, not repositories or settings: Settings' Save is
+    // switched off with a title saying an admin credential is needed (the server answers
+    // 403 SCOPE_DENIED admin_required anyway).
+    const save = wp.locator('button:has-text("Save changes")').first();
+    await save.waitFor({ timeout: 10000 }).catch(() => {});
+    const saveTitle = (await save.getAttribute("title").catch(() => "")) || "";
+    const refusedSettings = await L.api("POST", "/api/settings", { settings: {} }, wtok);
+    t.check(
+      (await save.isDisabled().catch(() => false)) &&
+        /^Admin access:/.test(saveTitle) &&
+        refusedSettings.status === 403 &&
+        refusedSettings.json.error?.details?.reason === "admin_required",
+      "Settings with a human principal: Save changes is switched off ('Admin access: …') and the server refuses the write (admin_required)",
+      `human principal on Settings: Save disabled=${await save.isDisabled().catch(() => "?")} title='${saveTitle}' POST /api/settings=${refusedSettings.status} ${JSON.stringify(refusedSettings.json).slice(0, 160)}`,
+    );
     const title = `Filed by a principal (${L.tag("s13")})`;
     await wp.goto(`${L.BASE}/#/create`, { waitUntil: "load" });
     await wp.waitForSelector('input[placeholder="Short, action-oriented title"]', {

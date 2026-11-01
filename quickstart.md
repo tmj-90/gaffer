@@ -350,13 +350,26 @@ moments it stops to ask you.
   no-op for a repo that is not a node project or already has its modules, and a failed
   install never passes the gate (the gate still runs and fails loudly).
   `GAFFER_DOD_INSTALL=0` turns it off if you manage dependencies yourself.
+- **A scaffold the gates cannot run.** The bootstrap registers the new repo with the
+  test and lint commands it detects from the scaffold's manifest. When the scaffold
+  has neither, the repo has no gates and the first dependent ticket parks with
+  "Definition of Done: zero gates executed". Without a lockfile the gate's install is
+  skipped (it only installs deterministically), so the tests run with no modules and
+  fail. Either way the fix is in the new repo: commit a test script (and a lockfile),
+  run `runner/gaffer wg repo set-commands <name> --test "<cmd>"` (and `--lint`), then
+  move the parked ticket back to ready.
 - **The package registry.** Before the bootstrap spawns its agent, the factory runs
   `npm ping` from inside the agent's environment. A proxy whose CA the agent does not
   trust, or a registry that does not answer, parks the ticket as `blocked`
   (`env_registry_unreachable`) with the npm error code and the fix, before any model
   call. A machine that is simply offline but has packages in its npm cache goes ahead
-  and installs from the cache (`npm_config_prefer_offline=true`). `runner/preflight.sh`
-  runs the same probe.
+  and installs from the cache (`npm_config_prefer_offline=true`), and the card says so;
+  if the cache is missing a package the scaffold needs, the install fails and the park
+  says it ran offline from the cache. Under the docker sandbox the agent's container
+  has its own empty cache, so an offline machine parks there instead. A bootstrap your
+  dollar cap would refuse is released back to ready (`budget_refused`, not counted as
+  an attempt) before anything is created. `runner/preflight.sh` runs the same probe,
+  and warns about a CA bundle variable that names no readable file.
 - **Behind a corporate / TLS-intercepting proxy.** The proxy route and trust store
   (`HTTPS_PROXY`, `NO_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
   `GIT_SSL_CAINFO`, …) are passed through to the agent; credentials are not. Exporting

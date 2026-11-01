@@ -74,7 +74,7 @@ epic's other tickets to it. Before the bootstrap agent starts it probes the pack
 registry from the agent's environment (an offline machine with a warm npm cache
 installs from the cache) and, under `GAFFER_STRICT_REQUIRE`, the OS sandbox; a problem
 with either parks the ticket with the fix on the Team sheet before anything is
-created. A CA bundle exported as `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
+created, and a dollar cap that would refuse the launch releases it back to ready. A CA bundle exported as `SSL_CERT_FILE`, `CURL_CA_BUNDLE`,
 `REQUESTS_CA_BUNDLE` or `GIT_SSL_CAINFO` reaches the agent's npm as
 `NODE_EXTRA_CA_CERTS`. With the independent tester on (`GAFFER_TESTING`), the plan's
 tickets are created testable (all but the bootstrap; a plan ticket can say

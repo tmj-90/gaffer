@@ -241,14 +241,29 @@ echo
 # foreground server (`gaffer dashboard --foreground`: compose, systemd, any
 # supervisor) writes no PID file — the supervisor owns it — so fall back to probing
 # the port's /healthz. That proves something answers there, not that it is THIS
-# factory's server, and the line says so.
+# factory's server; the line names the pid holding the port when the OS says, and
+# what the PID file really holds (missing, or a stale value) instead of guessing.
 _dash_url="http://127.0.0.1:${DISPATCH_API_PORT:-8787}"
+_pf_state="$(gaffer_dashboard_pidfile_state 2>/dev/null || echo missing)"
+case "$_pf_state" in
+  "running "*) _pf_note="" ;;
+  missing) _pf_note="no pid file" ;;
+  "stale "*) _pf_note="the pid file is stale: it names '${_pf_state#stale }', not a running dashboard" ;;
+esac
 if _dash_pid="$(gaffer_dashboard_pid 2>/dev/null)"; then
   ok "dashboard running → $_dash_url (pid $_dash_pid)"
 elif command -v curl >/dev/null 2>&1 && curl -fsS --max-time 2 "${DASHBOARD_PROBE_URL:-$_dash_url/healthz}" >/dev/null 2>&1; then
-  ok "dashboard answering → $_dash_url (no pid file: a foreground/supervised server)"
+  _port_pid="$(gaffer_port_listener_pid "${DISPATCH_API_PORT:-8787}" 2>/dev/null || true)"
+  if [ "$_pf_state" = missing ]; then
+    ok "dashboard answering → $_dash_url (${_port_pid:+pid $_port_pid, }no pid file: a foreground/supervised server, or one whose pid file was lost)"
+  else
+    warn "dashboard answering → $_dash_url${_port_pid:+ (pid $_port_pid)}, but $_pf_note — \`gaffer dashboard --restart\` replaces it with one this factory tracks"
+  fi
 else
-  warn "dashboard not running (\`gaffer dashboard\`)"
+  case "$_pf_state" in
+    "stale "*) warn "dashboard not running (\`gaffer dashboard\`) — $_pf_note" ;;
+    *) warn "dashboard not running (\`gaffer dashboard\`)" ;;
+  esac
 fi
 
 # Pending decisions, from the human-queue already fetched. A human_required one blocks

@@ -70,6 +70,8 @@ runner/gaffer dashboard --lan
 Prints a URL (`http://<your-lan-ip>:8787`) and a bearer **token** — paste the token at the
 login prompt. (`runner/gaffer dashboard` without `--lan` binds loopback-only; every data request still needs the auto-provisioned token, which the command prints as a `?token=` URL.)
 
+`runner/gaffer dashboard --restart` stops the running server, rotates the login token and starts a fresh one; `--stop` stops it. Each reports "dashboard up" only once the server it started answers with the new token. When the port is already taken it says by which pid (`port 8787 is already in use by pid N`) and starts nothing; pick another port with `DISPATCH_API_PORT`.
+
 > **Wiring reference — always launch the dashboard via `gaffer dashboard`.** It wires
 > every action command (`DISPATCH_PRODUCT_OWNER_CMD`, `DISPATCH_MERGE_CMD`,
 > `DISPATCH_TICK_CMD`, `DISPATCH_ONBOARD_CMD`, `DISPATCH_EPIC_FEATURE_CMD`) into the API's

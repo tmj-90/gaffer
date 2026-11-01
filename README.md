@@ -75,7 +75,7 @@ runner/gaffer onboard ~/code/your-repo    # register it, scan it, write its dige
 runner/gaffer status                      # what's registered, and anything waiting on you
 ```
 
-`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
+`setup` prints a `http://127.0.0.1:8787/?token=…` link. The dashboard listens on loopback unless you start it with `runner/gaffer dashboard --lan`, and every data request needs that token either way. `runner/gaffer dashboard --restart` starts it afresh with a new token, and `--stop` stops it. Factory state, including the databases and that token, lives in `.gaffer/` inside the checkout. Delete it to start again.
 
 Give it a first ticket. `runner/gaffer wg` is the control-plane CLI pointed at this factory's database:
 

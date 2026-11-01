@@ -4,9 +4,10 @@
 #   gaffer setup                      nothing → running: build + init + open the UI
 #   gaffer onboard <path> [--standalone] [--name <alias>]   scan + register a repo (standalone scope — the default; map to a
 #                                     wider scope in the Factory Map UI)
-#   gaffer dashboard [--restart|--lan|--foreground]
-#                                     start the web dashboard (--lan = token-protected, on your LAN;
-#                                     --foreground = run in THIS process for containers/supervisors)
+#   gaffer dashboard [--restart|--stop|--lan|--foreground]
+#                                     start the web dashboard (--restart = stop it, rotate the login
+#                                     token, start fresh; --stop = stop it; --lan = token-protected,
+#                                     on your LAN; --foreground = run in THIS process for supervisors)
 #   gaffer status                     what's registered + what's running
 #   gaffer demo                       run the Factory Map showcase (DRY_RUN)
 #   gaffer skills [install]           list the skill library / install it into your Claude Code
@@ -36,6 +37,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # after the source made every `gaffer run` a dry run while help, README and quickstart
 # all called it "go live".
 _GAFFER_OP_DRY_RUN="${DRY_RUN-}"
+# An operator-set dashboard token (the server then uses it instead of the token file).
+_GAFFER_OP_API_TOKEN="${DISPATCH_API_TOKEN:-}"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
 
@@ -55,7 +58,7 @@ err() { printf "  ${_e_red}✗${_e_off} %s\n" "$*" >&2; }
 usage() {
   case "$1" in
     onboard)   echo "usage: gaffer onboard <path> [--standalone] [--name <alias>]   (standalone scope is the default; map it to a wider scope in the Factory Map UI; --name registers it under an alias when another repository already has its directory name)" ;;
-    dashboard) echo "usage: gaffer dashboard [--restart] [--lan] [--foreground]" ;;
+    dashboard) echo "usage: gaffer dashboard [--restart] [--stop] [--lan] [--foreground]   (--restart rotates the login token)" ;;
     status)    echo "usage: gaffer status   (doctors + work counts + what needs a human)" ;;
     setup)     echo "usage: gaffer setup   (install + build + init state + open the dashboard)" ;;
     demo)      echo "usage: gaffer demo   (the Factory Map showcase; always DRY_RUN, nothing spent)" ;;
@@ -150,34 +153,141 @@ onboard)
   ;;
 
 dashboard)
-  want_lan=0; want_restart=0; want_fg=0
-  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; --foreground) want_fg=1;; *) bad_arg dashboard "unknown option '$a'";; esac; done
+  want_lan=0; want_restart=0; want_fg=0; want_stop=0
+  for a in "$@"; do case "$a" in --lan) want_lan=1;; --restart) want_restart=1;; --foreground) want_fg=1;; --stop) want_stop=1;; *) bad_arg dashboard "unknown option '$a'";; esac; done
+  [ "$want_stop" = 1 ] && [ "$#" -gt 1 ] && bad_arg dashboard "--stop takes no other option"
   # Owner-only state dir (it holds the token file): installs from before setup.sh made
   # it 0700 are tightened here too.
   mkdir -p "$GAFFER_DATA" && chmod 700 "$GAFFER_DATA" 2>/dev/null || true
   DASH_LOG="$GAFFER_DATA/dashboard.log"
+  TOKFILE="$GAFFER_DATA/dashboard-token"
   # A server from before the fix echoed a freshly generated token into dashboard.log,
   # created 0644 (a `>` redirect keeps an existing file's mode). True when that log
   # still holds one — a credential any local user could read.
   dash_log_leaked() { grep -Eq 'Authorization: Bearer [A-Za-z0-9_-]{20,}' "$DASH_LOG" 2>/dev/null; }
   # dash_log_reset — called only when no server of ours is running: a leaked log is
   # deleted AND the token rotated (the next start generates a new one; `gaffer dashboard`
-  # prints its login URL), then the log is recreated empty and 0600.
+  # prints its login URL). A clean log is KEPT until the new server is confirmed up
+  # (the new server writes to dashboard.log.new, renamed over it on success), so a
+  # start that fails never wipes the log of the server that was working.
   dash_log_reset() {
     if dash_log_leaked; then
-      rm -f "$GAFFER_DATA/dashboard-token"
+      rm -f "$TOKFILE" "$DASH_LOG"
       warn "an old dashboard.log held the dashboard token — rotated it (open the new login URL below)"
     fi
-    rm -f "$DASH_LOG"; ( umask 077; : > "$DASH_LOG" )
   }
+  # dash_stop_running <verb> — stop this factory's server: the one the PID file names,
+  # else a dispatch api server holding the port (a lost PID file, a --foreground run).
+  # Never a process whose command line is not the dispatch api bin. Prints what it did;
+  # 0 when nothing of ours is running any more, 1 when it could not stop it.
+  dash_stop_running() {
+    local found _p _how
+    if found="$(gaffer_dashboard_find "$DASH_PORT")"; then
+      _p="${found%% *}"; _how="${found#* }"
+      case "$_how" in other\ *)
+        err "port $DASH_PORT is held by pid $_p, the dashboard of another factory (GAFFER_DATA=${_how#other }) — not stopping it from here; stop it there, or set DISPATCH_API_PORT"
+        return 1 ;;
+      esac
+      if gaffer_dashboard_stop_pid "$_p"; then
+        rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true
+        if [ "$_how" = port ]; then ok "$1 the dashboard on port $DASH_PORT (pid $_p, found by its port: it had no valid pid file)"
+        else ok "$1 the dashboard (pid $_p)"; fi
+        return 0
+      fi
+      err "could not stop the dashboard (pid $_p) — stop it yourself: kill $_p"
+      return 1
+    fi
+    rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true
+    return 0
+  }
+  # dash_port_busy_msg — the EADDRINUSE explanation, naming the holder when it can.
+  dash_port_busy_msg() {
+    local _h _f
+    _h="$(gaffer_port_listener_pid "$DASH_PORT" 2>/dev/null || true)"
+    _f="$(gaffer_dashboard_find "$DASH_PORT" 2>/dev/null || true)"
+    case "$_f" in
+      *" other "*)
+        printf 'port %s is already in use by pid %s, the dashboard of another factory (GAFFER_DATA=%s); stop it there or set DISPATCH_API_PORT' "$DASH_PORT" "${_f%% *}" "${_f#* other }" ;;
+      *" port")
+        printf 'port %s is already in use by pid %s, a dispatch dashboard with no valid pid file (this factory'"'"'s, its pid file lost?); `gaffer dashboard --restart` replaces it, `gaffer dashboard --stop` stops it, or set DISPATCH_API_PORT' "$DASH_PORT" "${_f%% *}" ;;
+      *)
+        printf 'port %s is already in use%s (another dashboard?); stop it or set DISPATCH_API_PORT' "$DASH_PORT" "${_h:+ by pid $_h}" ;;
+    esac
+  }
+  # The token the server will use: an operator-set DISPATCH_API_TOKEN wins (the server
+  # reads it from the env), else the saved token file.
+  dash_token() { if [ -n "$_GAFFER_OP_API_TOKEN" ]; then printf '%s' "$_GAFFER_OP_API_TOKEN"; else tr -d ' \n' < "$TOKFILE" 2>/dev/null; fi; }
+  # dash_wait_ready <pid> <startup-log> — the server THIS call started is up: the process
+  # is alive, it logged its OWN "listening" line (so it bound the port — a server that
+  # died on EADDRINUSE never does), /healthz answers, and an authenticated request with
+  # the token it uses succeeds. An old server still answering on the port satisfies
+  # none of the first two. 0 = ready; 1 = it died; 2 = it never answered in time.
+  dash_wait_ready() {
+    local _np="$1" _nl="$2" _t _deadline=$((SECONDS + ${GAFFER_DASHBOARD_START_TIMEOUT:-30}))
+    while :; do
+      kill -0 "$_np" 2>/dev/null || return 1
+      if grep -q 'dispatch-api listening on' "$_nl" 2>/dev/null; then
+        _t="$(dash_token)"
+        if [ -n "$_t" ] \
+          && curl -fsS --max-time 5 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1 \
+          && curl -fsS --max-time 10 -H "Authorization: Bearer $_t" "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then
+          kill -0 "$_np" 2>/dev/null && return 0
+          return 1
+        fi
+      fi
+      [ "$SECONDS" -ge "$_deadline" ] && return 2
+      sleep 0.2
+    done
+  }
+  # dash_launch <host> [VAR=value…] — start the detached server, confirm it, adopt it.
+  # Output goes to dashboard.log.new until the server is confirmed; only then is it
+  # renamed over dashboard.log and its PID recorded. On failure the new process is
+  # stopped, its output is kept as dashboard-failed.log, the reason is said, exit 1.
+  dash_launch() {
+    local _host="$1" _np _rc _why _last; shift
+    local _nl="$DASH_LOG.new" _fl="$GAFFER_DATA/dashboard-failed.log"
+    rm -f "$_nl"; ( umask 077; : > "$_nl" )
+    nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" "$@" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host "$_host" >>"$_nl" 2>&1 </dev/null &
+    _np=$!
+    _rc=0; dash_wait_ready "$_np" "$_nl" || _rc=$?
+    if [ "$_rc" -eq 0 ]; then
+      mv -f "$_nl" "$DASH_LOG"; chmod 600 "$DASH_LOG" 2>/dev/null || true
+      gaffer_dashboard_write_pid "$_np"   # OUR server, confirmed: precise restart/status
+      return 0
+    fi
+    gaffer_dashboard_stop_pid "$_np" >/dev/null 2>&1 || true
+    mv -f "$_nl" "$_fl" 2>/dev/null || true
+    if grep -q 'EADDRINUSE' "$_fl" 2>/dev/null; then
+      _why="$(dash_port_busy_msg)"
+    elif [ "$_rc" -eq 2 ]; then
+      _why="the server did not answer within ${GAFFER_DASHBOARD_START_TIMEOUT:-30}s (stopped it)"
+    else
+      _last="$(grep -v '^[[:space:]]*$' "$_fl" 2>/dev/null | grep -v '^[[:space:]]*at ' | tail -1 | cut -c1-240)"
+      _why="the server exited${_last:+: $_last}"
+    fi
+    err "dashboard failed to start — $_why"
+    printf '    server output: %s\n' "$_fl" >&2
+    exit 1
+  }
+
+  if [ "$want_stop" = 1 ]; then
+    # Stop this factory's server and drop its PID file. Idempotent; a port held by
+    # something that is not a dispatch dashboard is left alone (and said so).
+    if gaffer_dashboard_find "$DASH_PORT" >/dev/null; then dash_stop_running "stopped" || exit 1; exit 0; fi
+    rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true
+    ok "dashboard not running (nothing to stop)"
+    _h="$(gaffer_port_listener_pid "$DASH_PORT" 2>/dev/null || true)"
+    [ -n "$_h" ] && warn "port $DASH_PORT is held by pid $_h, which is not a gaffer dashboard — left alone"
+    exit 0
+  fi
+
   if [ "$want_fg" = 1 ]; then
     # FOREGROUND (compose / systemd / any supervisor): the SAME env wiring as the
     # detached paths below, exec'd in this process so the supervisor owns the lifetime
     # and the logs. Always token-protected (a container binds every interface; the
     # compose file maps the port to loopback on the host). Bind 0.0.0.0 with --lan,
     # loopback otherwise. Prints the login URL first so `docker compose logs` shows it.
-    dash_log_leaked && { rm -f "$GAFFER_DATA/dashboard-token" "$DASH_LOG"; warn "an old dashboard.log held the dashboard token — rotated it"; }
-    TOKFILE="$GAFFER_DATA/dashboard-token"
+    dash_log_leaked && { rm -f "$TOKFILE" "$DASH_LOG"; warn "an old dashboard.log held the dashboard token — rotated it"; }
     [ -s "$TOKFILE" ] || { umask 077; (openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n') > "$TOKFILE"; }
     TOK="$(tr -d ' \n' < "$TOKFILE")"
     fg_host="127.0.0.1"; [ "$want_lan" = 1 ] && fg_host="0.0.0.0"
@@ -188,29 +298,53 @@ dashboard)
   # Precise running-detection: a recorded+validated PID (alive AND its command is
   # the dispatch api bin), not a broad `pgrep -f` that can match another checkout.
   pid="$(gaffer_dashboard_pid 2>/dev/null || true)"
-  # --restart or --lan both need a fresh bind (lan changes host + auth).
-  if [ -n "$pid" ] && { [ "$want_restart" = 1 ] || [ "$want_lan" = 1 ]; }; then
-    kill "$pid" 2>/dev/null && say "restarting dashboard"
-    rm -f "$(gaffer_dashboard_pidfile)" 2>/dev/null || true; pid=""
-  fi
-  if [ -n "$pid" ]; then
+  if [ -n "$pid" ] && [ "$want_restart" = 0 ] && [ "$want_lan" = 0 ]; then
     ok "dashboard already up → http://127.0.0.1:$DASH_PORT (pid $pid)"
     # Re-running is how an operator gets back in, so hand over the login URL again (a
     # --lan server persisted its reachable base in dashboard-url). It used to print
     # the bare URL, whose login gate pointed at "the terminal that started" the
     # detached server — which had printed nothing.
-    _tok="$(tr -d ' \n' < "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
     _base="$(cat "$GAFFER_DATA/dashboard-url" 2>/dev/null)"; _base="${_base:-http://127.0.0.1:$DASH_PORT}"
-    [ -n "$_tok" ] && printf "    open with your token:\n    ${c_cya}%s/?token=%s${c_off}\n" "$_base" "$_tok"
     chmod 600 "$DASH_LOG" 2>/dev/null || true
+    if [ -n "$_GAFFER_OP_API_TOKEN" ]; then
+      printf "    open %s and log in with the DISPATCH_API_TOKEN you set\n" "$_base"
+    elif [ ! -s "$TOKFILE" ]; then
+      # The server holds its token in memory; the file that held it is gone, so no
+      # login URL can be printed. Only a restart (which writes a new one) gets back in.
+      err "the dashboard is running but its token file ($TOKFILE) is gone — no login URL to print; \`gaffer dashboard --restart\` rotates the token and prints a new one"
+      exit 1
+    else
+      printf "    open with your token:\n    ${c_cya}%s/?token=%s${c_off}\n" "$_base" "$(dash_token)"
+    fi
     dash_log_leaked && warn "dashboard.log holds the running server's token — \`gaffer dashboard --restart\` rotates it"
     exit 0
+  fi
+  # --restart or --lan both need a fresh bind (lan changes host + auth). Stop the old
+  # server for real — found by its PID file or, failing that, by the port — so the new
+  # one can bind and the token can rotate.
+  if [ "$want_restart" = 1 ] || [ "$want_lan" = 1 ]; then
+    dash_stop_running "stopped" || exit 1
+  fi
+  # --restart rotates the login token: the new server generates a fresh one (an
+  # operator-set DISPATCH_API_TOKEN is the operator's to change).
+  if [ "$want_restart" = 1 ]; then
+    if [ -n "$_GAFFER_OP_API_TOKEN" ]; then warn "the token comes from DISPATCH_API_TOKEN in your environment — not rotated"
+    elif [ -e "$TOKFILE" ]; then rm -f "$TOKFILE"; say "rotating the dashboard login token"; fi
+  fi
+  # The port must be free before a new server is started: a held port used to start a
+  # server that died on EADDRINUSE while the old one answered the readiness probe.
+  _bind_host=127.0.0.1; [ "$want_lan" = 1 ] && _bind_host=0.0.0.0
+  if _bind_err="$(gaffer_port_bind_check "$_bind_host" "$DASH_PORT")"; then :; else
+    case "$_bind_err" in
+      EADDRINUSE) err "dashboard not started — $(dash_port_busy_msg)" ;;
+      *) err "dashboard not started — cannot bind $_bind_host:$DASH_PORT (${_bind_err:-unknown error}); set DISPATCH_API_PORT to another port" ;;
+    esac
+    exit 1
   fi
   dash_log_reset
 
   if [ "$want_lan" = 1 ]; then
     # LAN bind, made safe by a bearer token (generated once, stored 0600).
-    TOKFILE="$GAFFER_DATA/dashboard-token"
     [ -s "$TOKFILE" ] || { umask 077; (openssl rand -hex 16 2>/dev/null || head -c16 /dev/urandom | od -An -tx1 | tr -d ' \n') > "$TOKFILE"; }
     TOK="$(tr -d ' \n' < "$TOKFILE")"
     # LAN IP for the "open this URL" hint. macOS: ipconfig getifaddr; Linux: hostname -I
@@ -230,21 +364,18 @@ dashboard)
     # loop (and status.sh) read it back, so every notify deep-links to the SAME URL
     # the dashboard serves under --lan. (factory.config.sh reads this file.)
     ( umask 077; printf '%s\n' "$GAFFER_DASHBOARD_URL" > "$GAFFER_DATA/dashboard-url" ) 2>/dev/null || true
-    nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" DISPATCH_API_TOKEN="$TOK" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" --host 0.0.0.0 >>"$DASH_LOG" 2>&1 &
-    gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
-    if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/healthz" >/dev/null 2>&1; then
-      ok "dashboard up on your LAN (token-protected)"
-      printf "    open:   ${c_cya}http://%s:%s${c_off}\n    token:  ${c_cya}%s${c_off}  (paste at the login prompt)\n" "$LAN" "$DASH_PORT" "$TOK"
-      # AFK-LOOP P3: one-scan phone access. The QR encodes the URL WITH the token
-      # (the dashboard adopts ?token=… and scrubs it from history), so scanning
-      # logs you straight in — no copy-paste of the token. Optional dependency:
-      # if qrencode is absent we degrade to the plain URL+token printed above.
-      if command -v qrencode >/dev/null 2>&1; then
-        printf "    scan to open on your phone (token embedded):\n"
-        qrencode -t ANSIUTF8 "http://$LAN:$DASH_PORT/?token=$TOK" 2>/dev/null \
-          || printf "    (qr render failed — use the URL + token above)\n"
-      fi
-    else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
+    _GAFFER_OP_API_TOKEN="$TOK" dash_launch 0.0.0.0 DISPATCH_API_TOKEN="$TOK"
+    ok "dashboard up on your LAN (token-protected)"
+    printf "    open:   ${c_cya}http://%s:%s${c_off}\n    token:  ${c_cya}%s${c_off}  (paste at the login prompt)\n" "$LAN" "$DASH_PORT" "$TOK"
+    # AFK-LOOP P3: one-scan phone access. The QR encodes the URL WITH the token
+    # (the dashboard adopts ?token=… and scrubs it from history), so scanning
+    # logs you straight in — no copy-paste of the token. Optional dependency:
+    # if qrencode is absent we degrade to the plain URL+token printed above.
+    if command -v qrencode >/dev/null 2>&1; then
+      printf "    scan to open on your phone (token embedded):\n"
+      qrencode -t ANSIUTF8 "http://$LAN:$DASH_PORT/?token=$TOK" 2>/dev/null \
+        || printf "    (qr render failed — use the URL + token above)\n"
+    fi
     exit 0
   fi
 
@@ -255,28 +386,20 @@ dashboard)
   # stale persisted LAN url — the loop then falls back to the loopback default rather
   # than deep-linking to a LAN address that is no longer being served.
   rm -f "$GAFFER_DATA/dashboard-url" 2>/dev/null || true
-  nohup env $(gaffer_dashboard_env_unset_flags) GAFFER_DATA="$GAFFER_DATA" CREW_DIR="$CREW_DIR" CREW_CONFIG="$CREW_CONFIG" MEMORY_CLI_BIN="$MEMORY_CLI_BIN" MEMORY_DB="$MEMORY_DB" DISPATCH_DB="$DISPATCH_DB" DISPATCH_PRODUCT_OWNER_CMD="$PRODUCT_OWNER_CMD" DISPATCH_PRODUCT_OWNER_REPO="${DISPATCH_PRODUCT_OWNER_REPO:-}" DISPATCH_MERGE_CMD="$MERGE_CMD" DISPATCH_TICK_CMD="$TICK_CMD" DISPATCH_ONBOARD_CMD="$ONBOARD_CMD" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" GAFFER_DASHBOARD_URL="$GAFFER_DASHBOARD_URL" node "$DISPATCH_DIR/dist/api/bin.js" --port "$DASH_PORT" >>"$DASH_LOG" 2>&1 &
-  gaffer_dashboard_write_pid "$!"   # record OUR server's PID for precise restart/status
-  if curl -s --retry 25 --retry-connrefused --retry-delay 1 "http://127.0.0.1:$DASH_PORT/api/dashboard" >/dev/null 2>&1; then
-    ok "dashboard up → http://127.0.0.1:$DASH_PORT"
-    # EVERY data request (reads included — only the SPA shell + /healthz are tokenless) needs
-    # the auto-provisioned token — otherwise the first request 401s with no obvious cause.
-    # Hand it to the operator as a ?token= URL the SPA adopts (and scrubs from history).
-    # The delivery agent never gets it: the runner scrubs DISPATCH_API_TOKEN from its env,
-    # so an agent still cannot self-approve its own work over the REST API.
-    # The server auto-provisions + writes the token a beat AFTER /api/dashboard first answers,
-    # so poll briefly (bash-3.2-safe) for the file — otherwise on a fast machine the very first
-    # `gaffer dashboard` can print the URL WITHOUT ?token=, and the first write 401s.
-    _tok=""; _i=0
-    while [ -z "$_tok" ] && [ "$_i" -lt 50 ]; do
-      _tok="$(cat "$GAFFER_DATA/dashboard-token" 2>/dev/null)"
-      [ -n "$_tok" ] && break
-      sleep 0.1; _i=$((_i + 1))
-    done
-    if [ -n "$_tok" ]; then
-      printf "    to make changes (onboard · plan · approve), open with your token:\n    ${c_cya}http://127.0.0.1:%s/?token=%s${c_off}\n" "$DASH_PORT" "$_tok"
-    fi
-  else warn "dashboard failed to start — see $GAFFER_DATA/dashboard.log"; fi
+  # The server writes its token file (ensureApiToken) BEFORE it listens, so once
+  # dash_launch has confirmed it the file holds the token the server accepts.
+  dash_launch 127.0.0.1
+  ok "dashboard up → http://127.0.0.1:$DASH_PORT (pid $(gaffer_dashboard_pid 2>/dev/null))"
+  # EVERY data request (reads included — only the SPA shell + /healthz are tokenless) needs
+  # the auto-provisioned token — otherwise the first request 401s with no obvious cause.
+  # Hand it to the operator as a ?token= URL the SPA adopts (and scrubs from history).
+  # The delivery agent never gets it: the runner scrubs DISPATCH_API_TOKEN from its env,
+  # so an agent still cannot self-approve its own work over the REST API.
+  if [ -n "$_GAFFER_OP_API_TOKEN" ]; then
+    printf "    log in with the DISPATCH_API_TOKEN you set\n"
+  else
+    printf "    to make changes (onboard · plan · approve), open with your token:\n    ${c_cya}http://127.0.0.1:%s/?token=%s${c_off}\n" "$DASH_PORT" "$(dash_token)"
+  fi
   ;;
 
 status)

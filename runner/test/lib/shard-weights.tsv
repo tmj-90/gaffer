@@ -17,6 +17,7 @@
 # added two repos' worth of deliveries to each (Linux, -j 2: 391s / 172s) and the
 # reviewer's two-repo sequence plus two real poll ticks to e2e-multi-repo-delivery (76s).
 # rework-final-trail: ESTIMATE too (Linux, alone: 33s, scaled like memory-index-after-merge).
+# dashboard-lifecycle, gaffer-colour: ESTIMATES (Linux, -j 2: 37s / 13s).
 # e2e-release-gate-merge-typecheck: ESTIMATE too. Linux, one at a time under shared
 # load: 131s where e2e-release-gate-merge-combination took 103s against its 100 here.
 171	merge-lane.test.sh
@@ -45,6 +46,7 @@
 55	e2e-memory-routing.test.sh
 52	rework-final-trail.test.sh
 45	rework-cost-live.test.sh
+40	dashboard-lifecycle.test.sh
 40	eval-replay.test.sh
 40	resume-abort.test.sh
 60	parallel-stop.test.sh
@@ -70,6 +72,7 @@
 15	merge-ticket.test.mjs
 15	settings-resource.test.sh
 14	day-cap-no-work.test.sh
+13	gaffer-colour.test.sh
 12	mktemp-failure-safe.test.sh
 12	model-routing.test.sh
 12	nocommit-crash-bound.test.sh

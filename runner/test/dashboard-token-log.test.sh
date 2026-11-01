@@ -31,7 +31,7 @@ mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/dashboard-token-log.XXXXXX")"
 gaffer_test_check_tmp "$WORK" || exit 70
 DATA="$WORK/data"
-PORT=$(( 20000 + RANDOM % 20000 ))
+PORT="${GAFFER_TEST_PORT_BASE:-$(( 20000 + RANDOM % 20000 ))}"
 stop_server() {
   local p; p="$(cat "$DATA/dashboard.pid" 2>/dev/null || true)"
   [ -n "$p" ] && kill "$p" 2>/dev/null; sleep 0.3; rm -f "$DATA/dashboard.pid"

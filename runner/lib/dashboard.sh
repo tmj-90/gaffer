@@ -8,8 +8,9 @@
 #
 # Instead we record OUR server's PID in a file under $GAFFER_DATA and validate it
 # before trusting it: the PID must be alive AND its command must actually be the
-# dispatch api bin. A missing or stale PID file degrades gracefully to "not running"
-# (the caller then starts a fresh server), so a crashed/old PID never wedges things.
+# dispatch api bin. A missing or stale PID file degrades gracefully to "not running";
+# the port's listener (gaffer_dashboard_find below) covers a server whose PID file is
+# gone, so a crashed/old PID never wedges things and never hides a running server.
 
 # Path to the dashboard PID file under the factory's data dir.
 gaffer_dashboard_pidfile() {
@@ -50,6 +51,98 @@ gaffer_dashboard_pid() {
   pid="$(tr -d ' \t\r\n' < "$f" 2>/dev/null)"
   if _gaffer_dashboard_pid_is_ours "$pid"; then printf '%s\n' "$pid"; return 0; fi
   return 1
+}
+
+# ── Who holds the port, and stopping a server ───────────────────────────────
+# `gaffer dashboard --restart` / `--stop` must find the server even when the PID file
+# is missing, stale or garbage (a crash, a deleted file, a --foreground server): the
+# port's listener is the next place to look, and it is only ever stopped when its
+# command line IS the dispatch api bin (the same marker check as the PID file).
+
+# gaffer_port_listener_pid <port> — the PID listening on TCP <port> (lsof, then ss, then
+# fuser), or nothing + rc 1 when none is found or no tool can tell.
+gaffer_port_listener_pid() {
+  local port="$1" p=""
+  case "$port" in ''|*[!0-9]*) return 1 ;; esac
+  if command -v lsof >/dev/null 2>&1; then
+    p="$(lsof -nP -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -1)"
+  fi
+  if [ -z "$p" ] && command -v ss >/dev/null 2>&1; then
+    p="$(ss -ltnpH "sport = :$port" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)"
+  fi
+  if [ -z "$p" ] && command -v fuser >/dev/null 2>&1; then
+    p="$(fuser -n tcp "$port" 2>/dev/null | tr -s ' \t' '\n' | sed -n 's/^\([0-9][0-9]*\).*/\1/p' | head -1)"
+  fi
+  case "$p" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$p"
+}
+
+# gaffer_port_bind_check <host> <port> — try the bind the server is about to make.
+# 0 = free; 1 = taken (prints the error code, e.g. EADDRINUSE); 0 as well when node
+# cannot run the probe (the server then reports for itself).
+gaffer_port_bind_check() {
+  command -v node >/dev/null 2>&1 || return 0
+  node -e '
+    const s = require("net").createServer();
+    s.once("error", (e) => { process.stdout.write(String(e.code || e.message)); process.exit(1); });
+    s.listen(Number(process.argv[2]), process.argv[1], () => s.close(() => process.exit(0)));
+  ' "$1" "$2" 2>/dev/null
+}
+
+# _gaffer_pid_data_dir <pid> — the GAFFER_DATA in <pid>'s environment, when the OS
+# shows it (Linux /proc, macOS `ps -E` for our own processes); nothing otherwise.
+_gaffer_pid_data_dir() {
+  local pid="$1" v=""
+  if [ -r "/proc/$pid/environ" ]; then
+    v="$(tr '\0' '\n' < "/proc/$pid/environ" 2>/dev/null | sed -n 's/^GAFFER_DATA=//p' | head -1)"
+  elif [ "$(uname -s 2>/dev/null)" = Darwin ]; then
+    v="$(ps -E -ww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n' | sed -n 's/^GAFFER_DATA=//p' | head -1)"
+  fi
+  printf '%s' "$v"
+}
+
+# gaffer_dashboard_find <port> — "<pid> pidfile" for the recorded dashboard, else
+# "<pid> port" for a dispatch api server listening on <port> with no (valid) PID file,
+# else "<pid> other <its GAFFER_DATA>" when that server visibly belongs to ANOTHER
+# factory (a different GAFFER_DATA — never stopped from here). Nothing + rc 1 when the
+# port is free or held by something that is not a dispatch api server.
+gaffer_dashboard_find() {
+  local pid dd mine
+  if pid="$(gaffer_dashboard_pid 2>/dev/null)"; then printf '%s pidfile\n' "$pid"; return 0; fi
+  if pid="$(gaffer_port_listener_pid "$1")" && _gaffer_dashboard_pid_is_ours "$pid"; then
+    dd="$(_gaffer_pid_data_dir "$pid")"
+    if [ -n "$dd" ]; then
+      mine="$(cd "$GAFFER_DATA" 2>/dev/null && pwd -P)"
+      [ "$(cd "$dd" 2>/dev/null && pwd -P)" = "$mine" ] || { printf '%s other %s\n' "$pid" "$dd"; return 0; }
+    fi
+    printf '%s port\n' "$pid"; return 0
+  fi
+  return 1
+}
+
+# gaffer_dashboard_stop_pid <pid> — SIGTERM, up to 5 s for a clean exit (an open
+# browser stream can hold server.close() open), then SIGKILL. 0 once it is gone.
+gaffer_dashboard_stop_pid() {
+  local pid="$1" i=0
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill "$pid" 2>/dev/null || true
+  while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+    i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 20 ]; do sleep 0.1; i=$((i + 1)); done
+  fi
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+# gaffer_dashboard_pidfile_state — what the PID file says, for `gaffer status`:
+# "missing", "running <pid>", or "stale <first 20 chars of its content>".
+gaffer_dashboard_pidfile_state() {
+  local f pid
+  f="$(gaffer_dashboard_pidfile)"
+  [ -s "$f" ] || { echo "missing"; return 0; }
+  if pid="$(gaffer_dashboard_pid 2>/dev/null)"; then echo "running $pid"; return 0; fi
+  pid="$(head -c 20 "$f" 2>/dev/null | tr -d ' \t\r\n')"
+  echo "stale ${pid:-?}"
 }
 
 # Env flags (`-u KEY …`) that strip CONFIG-DERIVED setting values from the dashboard

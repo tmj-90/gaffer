@@ -577,6 +577,7 @@ export class Dispatch {
       scope: this.scope,
       tickets: this.ticketSvc,
       repos: this.repoSvc,
+      testingEnabled: () => this.testingEnabledOverride ?? isTestingEnabled(),
     });
     this.specsSvc = new SpecsService({
       db,

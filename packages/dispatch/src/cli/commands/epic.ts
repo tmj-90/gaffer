@@ -13,7 +13,7 @@ export function registerEpic(program: Command): void {
     .description(
       "Create an epic from a JSON plan (a file path, or stdin when omitted or '-'). " +
         "The plan is { epic:{name,description}, tickets:[{title,description,acceptanceCriteria[]," +
-        "priority?,risk_level?,policy_pack?,repo?,access?,bootstrap?,dependsOn:[<indexes>]}] }. " +
+        "priority?,risk_level?,policy_pack?,repo?,access?,bootstrap?,testable?,dependsOn:[<indexes>]}] }. " +
         "Tickets are created as draft.",
     )
     .action((file: string | undefined, _opts, cmd) => {
@@ -27,6 +27,7 @@ export function registerEpic(program: Command): void {
         deferred_repo_links: res.deferredRepoLinks,
         acceptance_ticket_number: res.acceptanceTicketNumber,
         agreed_requirements: res.agreedRequirements,
+        testable_tickets: res.testableTickets,
       });
       wg.db.close();
     });

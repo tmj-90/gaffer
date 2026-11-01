@@ -11089,6 +11089,9 @@
                     }
                   ]
                 },
+                "testable": {
+                  "type": "boolean"
+                },
                 "dependsOn": {
                   "type": "array",
                   "items": {

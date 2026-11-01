@@ -203,7 +203,8 @@ export const SETTING_DEFS: readonly SettingDef[] = [
       "lane (in_review → in_testing) instead of straight to merge. The lane, the " +
       "contract, and the runner seam are live; the seam hands an independent tester " +
       "the contract + AC (never the diff). Only tickets carrying the testable flag are " +
-      "routed (`wg ticket set-testable <n>`; the planner does not set it) — the rest go " +
+      "routed. While this is on, the tickets a planned build creates are testable (all " +
+      "but the bootstrap); `wg ticket set-testable <n>` marks or unmarks one. The rest go " +
       "straight from approval to merge, as does everything when this is off.",
   },
 

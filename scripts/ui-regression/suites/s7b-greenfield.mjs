@@ -10,10 +10,12 @@
 //      Floor draws the bootstrap's parcel.
 //   4. Approve + Merge now: the scaffold lands on task-app's main, the bootstrap is
 //      done and its dependents are now claimable against the new repo.
+// The tester lane is on (GAFFER_TESTING=1): the plan's tickets are created testable
+// with nobody running `wg ticket set-testable`, the bootstrap is not.
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-export const server = { env: {}, fixtures: ["bootstrap-root"] };
+export const server = { env: { GAFFER_TESTING: "1" }, fixtures: ["bootstrap-root"] };
 export const onboard = false;
 export const needsRepo = false;
 
@@ -100,6 +102,20 @@ export default async function s7b(t, L) {
   const planned = (await L.listTickets()).filter((x) => x.status !== "cancelled");
   planned.forEach((x) => t.created.add(x.id));
   if (!bt) return t.bad("the bootstrap ticket is not ready after Create & ready");
+  // The tester lane is on: every planned implementation ticket is testable, the
+  // bootstrap is not, and nobody marked one by hand.
+  const flags = await Promise.all(
+    planned.map(async (x) => [x, (await L.ticketOf(x.id)).can_be_tested]),
+  );
+  const impl = flags.filter(([x]) => x.id !== bt.id && !/^Acceptance:/.test(x.title));
+  t.check(
+    impl.length > 0 &&
+      impl.every(([, f]) => f === 1) &&
+      flags.find(([x]) => x.id === bt.id)?.[1] === 0 &&
+      (body.tickets || []).every((x) => x.testable === undefined),
+    "with the tester lane on, the plan's tickets were created testable (the bootstrap not) without set-testable",
+    `testable flags: ${JSON.stringify(flags.map(([x, f]) => [x.title, f]))}`,
+  );
 
   // ── 2. Poll: the bootstrap creates the repo ───────────────────────────────
   await t.visit("work");

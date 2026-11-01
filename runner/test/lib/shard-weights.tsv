@@ -97,6 +97,7 @@
 8	safety-hook.test.mjs
 8	skills-install.test.sh
 8	tick-unrecoverable-claim-release.test.sh
+7	status-posture.test.sh
 7	ac-checks.test.sh
 7	bootstrap-hook-fail-closed.test.sh
 7	claude-auth.test.sh

@@ -108,12 +108,45 @@ notify() {
 
 say "factory status"
 
+# NO FACTORY HERE: a GAFFER_DATA that was never set up (no dispatch db, no crew.yaml).
+# The doctors used to run anyway — creating dispatch.sqlite + memory.sqlite as a side
+# effect, printing crew's raw CONFIG_NOT_FOUND JSON and a "MISMATCH" warning — and
+# the pane exited 0. Say what is wrong, create nothing, exit 1. Only on a real run
+# (a test that stubs the doctors has no factory either).
+if [ "$_REAL_DOCTORS" = 1 ] && [ ! -f "$DISPATCH_DB" ] && [ ! -f "$CREW_CONFIG" ]; then
+  bad "no factory here (GAFFER_DATA=$GAFFER_DATA): run \`runner/gaffer setup\` first, or point GAFFER_DATA at an existing factory" >&2
+  exit 1
+fi
+
 # DB-path footgun: onboards land in the wrong place if these disagree.
 fg_sqlite="$(grep -E '^[[:space:]]*sqlite_path:' "$CREW_CONFIG" 2>/dev/null | head -1 | sed 's/.*sqlite_path:[[:space:]]*//')"
 printf "  %-20s %s\n" "Factory DB:" "$DISPATCH_DB"
 printf "  %-20s %s\n" "Crew config:" "$CREW_CONFIG"
 if [ "$fg_sqlite" = "$DISPATCH_DB" ]; then printf "  %-20s ${c_grn}same db ✓${c_off}\n" "  → reads:"
 else printf "  %-20s ${c_yel}%s  (MISMATCH — onboards land elsewhere!)${c_off}\n" "  → reads:" "${fg_sqlite:-?}"; fi
+
+# POSTURE: what this factory will do on its own — the effective GAFFER_MODE (a typo
+# falls back to supervised: say so), who reviews, whether approved work lands by
+# itself, the dollar caps a live run needs, and whether the OS sandbox is mandatory.
+# All from the config this script sourced, so it is what a run here would use.
+_on_off() { if _gaffer_flag_on "${1:-0}"; then echo on; else echo off; fi; }
+case "${GAFFER_MODE:-supervised}" in
+  supervised|graduated|lite|autonomous|strict) _mode="${GAFFER_MODE:-supervised}" ;;
+  *) _mode="supervised  (GAFFER_MODE='$GAFFER_MODE' is not a mode — supervised, graduated, lite, autonomous, strict)" ;;
+esac
+if [ -n "${GAFFER_DAILY_BUDGET_USD:-}" ]; then _cap="\$${GAFFER_DAILY_BUDGET_USD} a day (GAFFER_DAILY_BUDGET_USD)"
+else _cap="none"; fi
+[ -n "${GAFFER_BUDGET_USD:-}" ] && _cap="$_cap · lifetime \$${GAFFER_BUDGET_USD} (GAFFER_BUDGET_USD)"
+if [ -z "${GAFFER_DAILY_BUDGET_USD:-}${GAFFER_BUDGET_USD:-}" ]; then
+  if [ "${GAFFER_ALLOW_UNCAPPED:-}" = 1 ]; then _cap="none (GAFFER_ALLOW_UNCAPPED=1: live runs start uncapped)"
+  else _cap="none — a live run refuses to start until GAFFER_DAILY_BUDGET_USD or GAFFER_BUDGET_USD is set"; fi
+fi
+if _gaffer_flag_on "${GAFFER_STRICT_REQUIRE:-0}"; then _sbx="required (GAFFER_STRICT_REQUIRE=1: no OS sandbox, no agent run)"
+elif _gaffer_flag_on "${STRICT_MODE:-0}"; then _sbx="used when available (STRICT_MODE=1), not required"
+else _sbx="not required"; fi
+printf "\n  ${c_dim}posture${c_off}\n"
+printf "    %-12s %s\n" "mode:" "$_mode" "review:" "${REVIEW_MODE:-human}" "auto-merge:" "$(_on_off "${AUTO_MERGE:-0}")" \
+  "day cap:" "$_cap" "ticks/day:" "${MAX_TICKS_PER_DAY:-0}" "sandbox:" "$_sbx"
 
 # Pre-build short-circuit: if the products were never built, the bundled doctor
 # CLIs (dist/cli/index.js, MEMORY_CLI_BIN) don't exist and each roll_doctor would

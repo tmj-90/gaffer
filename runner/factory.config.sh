@@ -1744,6 +1744,16 @@ case "$GAFFER_MODE" in
     : "${MEMORY_AUTO_APPROVE:=0}"
     ;;
   *)   # supervised (default) — and any unrecognised value → safe posture
+    # A typo (`yolo`, `autonomus`) used to fall back to supervised in silence: say so,
+    # once per process tree (the config is re-sourced by every child script).
+    case "$GAFFER_MODE" in
+      supervised) ;;
+      *)
+        if [ "${_GAFFER_MODE_WARNED:-}" != "$GAFFER_MODE" ]; then
+          printf "gaffer: GAFFER_MODE='%s' is not a mode (supervised, graduated, lite, autonomous, strict) — using supervised: a human approves every merge\n" "$GAFFER_MODE" >&2
+          export _GAFFER_MODE_WARNED="$GAFFER_MODE"
+        fi ;;
+    esac
     : "${REVIEW_MODE:=human}"
     : "${DISPATCH_ALLOW_AGENT_APPROVE:=0}"
     : "${MERGE_ON_AGENT_REVIEW:=0}"

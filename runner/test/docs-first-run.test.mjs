@@ -54,8 +54,8 @@ const config = read("docs/CONFIG.md");
 const app = read("packages/dispatch/src/api/web/app.js");
 
 console.log("== F-01: the unattended greenfield recipe ==");
-const gotchas = section(quick, "### Greenfield gotchas");
-check("quickstart has the greenfield gotchas section", gotchas.length > 0);
+const gotchas = section(quick, "### What Gaffer does on a greenfield run");
+check("quickstart has the greenfield run section", gotchas.length > 0);
 check("the hands-off recipe sets GAFFER_MODE=autonomous", /GAFFER_MODE=autonomous/.test(gotchas));
 check(
   "the hands-off recipe names the sandbox requirement it brings",

@@ -26,10 +26,20 @@
 #   → 0 reachable · 1 unreachable (GAFFER_REGISTRY_PROBE_CODE = npm error code, e.g.
 #     SELF_SIGNED_CERT_IN_CHAIN / ENOTFOUND / ECONNREFUSED / E407 / timeout / rc=N;
 #     GAFFER_REGISTRY_PROBE_DETAIL = the first `npm error` line) · 2 skipped
-#     (GAFFER_REGISTRY_PROBE=0, npm not installed, or gaffer_agent_env unavailable).
+#     (GAFFER_REGISTRY_PROBE=0, npm not installed, or gaffer_agent_env unavailable)
+#   · 3 OFFLINE WITH A WARM CACHE: the failure is offline-shaped (no DNS, no route,
+#     refused) and the agent's npm cache already holds packages
+#     (GAFFER_REGISTRY_PROBE_CACHE = that cache dir). The caller goes ahead with
+#     npm_config_prefer_offline=true instead of parking, so an offline machine needs
+#     no GAFFER_REGISTRY_PROBE=0. A TLS / auth failure or a timeout is never offline:
+#     those still return 1, because a warm cache would only hide a misconfiguration
+#     and a hung registry is the 30-minute stall this probe exists to prevent. Nor is
+#     a warm HOST cache when the agent runs in the docker sandbox (its container has
+#     its own empty cache): that returns 1 with GAFFER_REGISTRY_PROBE_NOTE saying so.
 gaffer_registry_probe() {
   local secs="${1:-${GAFFER_REGISTRY_PROBE_TIMEOUT:-45}}"
-  GAFFER_REGISTRY_PROBE_CODE=""; GAFFER_REGISTRY_PROBE_DETAIL=""
+  GAFFER_REGISTRY_PROBE_CODE=""; GAFFER_REGISTRY_PROBE_DETAIL=""; GAFFER_REGISTRY_PROBE_CACHE=""
+  GAFFER_REGISTRY_PROBE_NOTE=""
   [ "${GAFFER_REGISTRY_PROBE:-1}" = "1" ] || { GAFFER_REGISTRY_PROBE_CODE="skipped"; return 2; }
   command -v npm >/dev/null 2>&1 || { GAFFER_REGISTRY_PROBE_CODE="no-npm"; return 2; }
   declare -F gaffer_agent_env >/dev/null 2>&1 || { GAFFER_REGISTRY_PROBE_CODE="no-agent-env"; return 2; }
@@ -60,14 +70,70 @@ gaffer_registry_probe() {
     [ -n "$GAFFER_REGISTRY_PROBE_CODE" ] || GAFFER_REGISTRY_PROBE_CODE="$(printf '%s\n' "$out" | grep -o -m1 -E 'SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_[A-Z_]+|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|E40[0-9]|E5[0-9][0-9]' || true)"
     [ -n "$GAFFER_REGISTRY_PROBE_CODE" ] || GAFFER_REGISTRY_PROBE_CODE="rc=$rc"
   fi
+  case "$GAFFER_REGISTRY_PROBE_CODE" in
+    ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED)
+      local _cache
+      _cache="$(gaffer_registry_probe_warm_cache)"
+      if [ -n "$_cache" ]; then
+        # The docker sandbox runs the agent in a container with its own (empty) npm
+        # cache and HOME, so the host's warm cache never reaches its install: going
+        # ahead would spend the bootstrap's model call on an install that cannot work.
+        if gaffer_registry_probe_agent_in_docker; then
+          # shellcheck disable=SC2034  # read by tick.sh / preflight.sh after the call
+          GAFFER_REGISTRY_PROBE_NOTE="the npm cache at $_cache is warm, but the agent runs in the docker sandbox, whose own npm cache is empty, so it cannot install offline"
+          return 1
+        fi
+        # shellcheck disable=SC2034  # read by tick.sh / preflight.sh after the call
+        GAFFER_REGISTRY_PROBE_CACHE="$_cache"
+        return 3
+      fi ;;
+  esac
   return 1
+}
+
+# The agent env's npm cache dir when it already holds packages (a content index
+# entry under _cacache/index-v5), else nothing. Asked of npm itself in the agent's
+# exact env, so a ~/.npmrc or npm_config_cache override is honoured; no network.
+# npm refuses `config get cache` for a path it redacts as a secret (one with a
+# UUID-shaped segment: "The cache option is protected"), so when it answers nothing the
+# dir is read the way npm resolves it: npm_config_cache in the agent env, else
+# $HOME/.npm with the agent env's HOME.
+gaffer_registry_probe_warm_cache() {
+  local _dir _entry="" _kv _cfg="" _home=""
+  _dir="$(env -i ${GAFFER_AGENT_ENV[@]+"${GAFFER_AGENT_ENV[@]}"} npm_config_update_notifier=false \
+    npm config get cache 2>/dev/null </dev/null | tail -1)"
+  case "$_dir" in /*) ;; *) _dir="" ;; esac
+  if [ -z "$_dir" ]; then
+    for _kv in ${GAFFER_AGENT_ENV[@]+"${GAFFER_AGENT_ENV[@]}"}; do
+      case "$_kv" in
+        npm_config_cache=*) _cfg="${_kv#npm_config_cache=}" ;;
+        HOME=*) _home="${_kv#HOME=}" ;;
+      esac
+    done
+    if [ -n "$_cfg" ]; then _dir="$_cfg"; elif [ -n "$_home" ]; then _dir="$_home/.npm"; fi
+  fi
+  [ -n "$_dir" ] && [ -d "$_dir/_cacache/index-v5" ] || return 0
+  _entry="$(find "$_dir/_cacache/index-v5" -type f 2>/dev/null | head -1)"
+  [ -n "$_entry" ] && printf '%s\n' "$_dir"
+  return 0
+}
+
+# True when the agent will run inside the docker sandbox: SANDBOX_PROVIDER=docker, the
+# sandbox on or required (lib/worker.sh _worker_sandbox_wanted), and a daemon that
+# answers (without one, a sandbox that is only on falls back to the host).
+gaffer_registry_probe_agent_in_docker() {
+  [ "${SANDBOX_PROVIDER:-sandbox-exec}" = "docker" ] || return 1
+  if [ "${STRICT_MODE:-0}" != "1" ]; then
+    case "${GAFFER_STRICT_REQUIRE:-0}" in 1 | true | yes | on) ;; *) return 1 ;; esac
+  fi
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
 }
 
 # gaffer_registry_probe_hint <code> → one line an operator can act on.
 gaffer_registry_probe_hint() {
   case "${1:-}" in
     SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_GET_ISSUER_CERT_LOCALLY|UNABLE_TO_VERIFY_LEAF_SIGNATURE|DEPTH_ZERO_SELF_SIGNED_CERT|CERT_*)
-      printf '%s' "the agent env does not trust the proxy's CA: export NODE_EXTRA_CA_CERTS=<bundle> (passed through to agents) and run \`npm config set cafile <bundle>\`; never disable TLS verification" ;;
+      printf '%s' "the agent env does not trust the proxy's CA: export NODE_EXTRA_CA_CERTS=<bundle> or SSL_CERT_FILE=<bundle> for the runner (either reaches the agent's npm); never disable TLS verification" ;;
     ENOTFOUND|EAI_AGAIN)
       printf '%s' "the registry host does not resolve from the agent env: offline, or the proxy route is missing (export HTTPS_PROXY / NO_PROXY)" ;;
     ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|timeout)
@@ -77,7 +143,7 @@ gaffer_registry_probe_hint() {
     E401|E403)
       printf '%s' "the registry refused the request (auth / allowlist): check npm_config_registry and its token" ;;
     *)
-      printf '%s' "run \`npm ping\` from a shell with the agent's env (runner/preflight.sh prints this probe); GAFFER_REGISTRY_PROBE=0 skips it for an offline machine with a warm cache" ;;
+      printf '%s' "run \`npm ping\` from a shell with the agent's env (runner/preflight.sh prints this probe); GAFFER_REGISTRY_PROBE=0 skips it for a registry that rejects ping" ;;
   esac
 }
 
@@ -85,7 +151,9 @@ gaffer_registry_probe_hint() {
 # runner/preflight.sh) run `npm ping` inside the agent's allowlisted env, bounded by
 # GAFFER_REGISTRY_PROBE_TIMEOUT seconds; an unreachable registry parks the bootstrap
 # to blocked at once with the npm error code and a fix hint, spending no model call.
-# 0 = skip (offline with a warm npm cache, or a registry that rejects ping).
+# An offline machine whose npm cache is warm needs nothing: an offline-shaped failure
+# with a warm cache goes ahead with npm_config_prefer_offline=true.
+# 0 = skip (a registry that rejects ping).
 : "${GAFFER_REGISTRY_PROBE:=1}"
 # Seconds the registry probe may take before it counts as unreachable ("timeout").
 : "${GAFFER_REGISTRY_PROBE_TIMEOUT:=45}"

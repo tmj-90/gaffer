@@ -664,6 +664,9 @@ const epicTicketBody = z.object({
   source: z.string().max(200).optional(),
   // TRACK-3a: per-ticket delivery-budget ceiling (also dropped without this).
   delivery_budget_usd: z.number().positive().nullable().optional(),
+  // Tester lane: route this ticket through the independent tester (see epicTicketInput;
+  // omitted, the lane's own on/off decides).
+  testable: z.boolean().optional(),
   dependsOn: z.array(z.number().int().nonnegative()).max(100).optional(),
 });
 

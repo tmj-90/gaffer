@@ -9042,7 +9042,7 @@
         },
         "responses": {
           "201": {
-            "description": "`{ node, tickets }`; Location is the scope node. The Location header names the created resource.",
+            "description": "`{ epic_node_id, ticket_numbers, deferred_repo_links, acceptance_ticket_number, agreed_requirements, testable_tickets }` (`testable_tickets`: implementation tickets created testable, because the tester lane is on or the plan said so); Location is the scope node. The Location header names the created resource.",
             "content": {
               "application/json": {
                 "schema": {
@@ -11196,6 +11196,9 @@
                       "type": "null"
                     }
                   ]
+                },
+                "testable": {
+                  "type": "boolean"
                 },
                 "dependsOn": {
                   "type": "array",

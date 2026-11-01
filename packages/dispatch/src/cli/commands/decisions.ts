@@ -100,7 +100,12 @@ export function registerDecisions(program: Command): void {
     .requiredOption("--title <title>", "title")
     .requiredOption("--question <q>", "question")
     .option("--severity <sev>", "severity", "human_preferred")
-    .option("--ticket <ref>", "block this ticket")
+    .option(
+      "--ticket <ref>",
+      "block this ticket (repeat to hold several on one decision)",
+      (ref: string, prev: string[]) => [...prev, ref],
+      [] as string[],
+    )
     .action((opts, cmd) => {
       const severityResult = z.enum(DECISION_SEVERITIES).safeParse(opts.severity);
       if (!severityResult.success) {
@@ -111,13 +116,13 @@ export function registerDecisions(program: Command): void {
         );
       }
       const wg = open(cmd.optsWithGlobals());
-      const ticketId = opts.ticket ? wg.resolveTicket(opts.ticket).id : undefined;
+      const refs = (opts.ticket as string[]).map((ref) => wg.resolveTicket(ref).id);
       const d = wg.createDecision(
         {
           title: opts.title,
           question: opts.question,
           severity: severityResult.data,
-          ...(ticketId ? { ticketId } : {}),
+          ...(refs.length ? { ticketIds: refs } : {}),
         },
         cliActor(),
       );

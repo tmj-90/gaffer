@@ -1462,7 +1462,12 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description: "Atomically creates the epic scope node and its dependency-ordered draft tickets.",
     capability: "full",
     body: "createEpicBody",
-    responses: [created("`{ node, tickets }`; Location is the scope node."), invalid],
+    responses: [
+      created(
+        "`{ epic_node_id, ticket_numbers, deferred_repo_links, acceptance_ticket_number, agreed_requirements, testable_tickets }` (`testable_tickets`: implementation tickets created testable, because the tester lane is on or the plan said so); Location is the scope node.",
+      ),
+      invalid,
+    ],
   },
   {
     method: "POST",

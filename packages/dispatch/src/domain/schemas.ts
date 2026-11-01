@@ -584,6 +584,13 @@ export const epicTicketInput = z.object({
   source: z.string().max(200).optional(),
   /** TRACK-3a: per-ticket delivery budget; overrides the epic-level default below. */
   delivery_budget_usd: z.number().positive().nullable().optional(),
+  /**
+   * Route this ticket through the independent tester on approval (the testable flag
+   * `wg ticket set-testable` sets). Omitted: testable when the tester lane
+   * (GAFFER_TESTING) is on and the ticket is not the bootstrap, so a planned build is
+   * tested without marking each ticket by hand; not testable when the lane is off.
+   */
+  testable: z.boolean().optional(),
   dependsOn: z.array(z.number().int().nonnegative()).max(MAX_EPIC_TICKETS).default([]),
 });
 export type EpicTicketInput = z.infer<typeof epicTicketInput>;

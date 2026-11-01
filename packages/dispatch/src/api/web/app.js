@@ -23096,9 +23096,14 @@ async function confirmPlanBuild(plan, opts = {}) {
     await archivePlanBuildSession("confirmed");
     const numbers = res.ticket_numbers || [];
     const count = numbers.length;
-    const note = deferred
-      ? ` (${deferred} repo link${deferred === 1 ? "" : "s"} deferred to bootstrap)`
-      : "";
+    const tested = Number(res.testable_tickets) || 0;
+    const note =
+      (deferred
+        ? ` (${deferred} repo link${deferred === 1 ? "" : "s"} deferred to bootstrap)`
+        : "") +
+      (tested
+        ? `; ${tested} marked for the independent tester (set-testable --off unmarks one)`
+        : "");
 
     let readied = 0;
     let heldDraft = 0;

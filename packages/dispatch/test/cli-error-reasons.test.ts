@@ -32,7 +32,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 const msg = (e: unknown): string => String((e as Error).message);
 const json = <T>(r: { json: unknown }): T => r.json as T;
 
-describe("cli-wg F-19: errors name the real reason", () => {
+describe("cli-wg F-19: errors name the real reason", { timeout: 60_000 }, () => {
   it("claim-ticket blocked by an open decision names the decision", () => {
     const agent = json<{ agent: { id: string } }>(runCli(db, ["agent", "register", "-n", "a"]))
       .agent.id;

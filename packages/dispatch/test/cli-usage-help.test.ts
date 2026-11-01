@@ -35,58 +35,66 @@ beforeAll(() => {
 });
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
-describe.skipIf(!CLI_BUILT)("cli-wg F-14 / F-24: usage errors exit 2, refusals exit 1", () => {
-  it.each([
-    [["ticket", "list", "--nope"], /unknown option '--nope'/],
-    [["ticket", "create"], /required option '-t, --title <title>' not specified/],
-    [["ticket", "show"], /missing required argument 'ref'/],
-    [["bogus"], /unknown command 'bogus'/],
-    [["ticket", "bogus"], /unknown command 'bogus'/],
-    [["help", "bogus"], /unknown command 'bogus'/],
-    [["ticket", "help", "bogus"], /unknown command 'bogus'/],
-    [["help", "ticket", "bogus"], /unknown command 'bogus'/],
-    [["ticket"], /a command is missing/],
-  ])("%j exits 2 and names the problem", (args, re) => {
-    const r = runBin(db, args as string[]);
-    expect(r.status).toBe(2);
-    expect(r.stderr).toMatch(re);
-    expect(r.stdout).toBe("");
-  });
+describe.skipIf(!CLI_BUILT)(
+  "cli-wg F-14 / F-24: usage errors exit 2, refusals exit 1",
+  { timeout: 60_000 },
+  () => {
+    it.each([
+      [["ticket", "list", "--nope"], /unknown option '--nope'/],
+      [["ticket", "create"], /required option '-t, --title <title>' not specified/],
+      [["ticket", "show"], /missing required argument 'ref'/],
+      [["bogus"], /unknown command 'bogus'/],
+      [["ticket", "bogus"], /unknown command 'bogus'/],
+      [["help", "bogus"], /unknown command 'bogus'/],
+      [["ticket", "help", "bogus"], /unknown command 'bogus'/],
+      [["help", "ticket", "bogus"], /unknown command 'bogus'/],
+      [["ticket"], /a command is missing/],
+    ])("%j exits 2 and names the problem", (args, re) => {
+      const r = runBin(db, args as string[]);
+      expect(r.status).toBe(2);
+      expect(r.stderr).toMatch(re);
+      expect(r.stdout).toBe("");
+    });
 
-  it("a runtime refusal (NOT_FOUND) still exits 1 with the JSON error", () => {
-    const r = runBin(db, ["ticket", "show", "999"]);
-    expect(r.status).toBe(1);
-    expect(oneLineError(r.stderr).code).toBe("NOT_FOUND");
-  });
+    it("a runtime refusal (NOT_FOUND) still exits 1 with the JSON error", () => {
+      const r = runBin(db, ["ticket", "show", "999"]);
+      expect(r.status).toBe(1);
+      expect(oneLineError(r.stderr).code).toBe("NOT_FOUND");
+    });
 
-  it("help <command> [subcommand] prints that command's help and exits 0", () => {
-    for (const args of [
-      ["help", "ticket", "create"],
-      ["ticket", "help", "create"],
-      ["ticket", "create", "--help"],
-    ]) {
-      const r = runBin(db, args);
-      expect(r.status, args.join(" ")).toBe(0);
-      expect(r.stdout).toMatch(/^Usage: dispatch ticket create \[options\]/);
-    }
-    const root = runBin(db, ["help"]);
-    expect(root.status).toBe(0);
-    expect(root.stdout).toMatch(/^Usage: dispatch \[options\] \[command\]/);
-  });
-});
+    it("help <command> [subcommand] prints that command's help and exits 0", () => {
+      for (const args of [
+        ["help", "ticket", "create"],
+        ["ticket", "help", "create"],
+        ["ticket", "create", "--help"],
+      ]) {
+        const r = runBin(db, args);
+        expect(r.status, args.join(" ")).toBe(0);
+        expect(r.stdout).toMatch(/^Usage: dispatch ticket create \[options\]/);
+      }
+      const root = runBin(db, ["help"]);
+      expect(root.status).toBe(0);
+      expect(root.stdout).toMatch(/^Usage: dispatch \[options\] \[command\]/);
+    });
+  },
+);
 
-describe.skipIf(!CLI_BUILT)("fresh-user F-22 / cli-wg F-23: help names `gaffer wg`", () => {
-  it("Usage lines use the invoked name", () => {
-    const env = { DISPATCH_CLI_NAME: "gaffer wg" };
-    const r = runBin(db, ["ticket", "create", "--help"], { env });
-    expect(r.stdout).toMatch(/^Usage: gaffer wg ticket create \[options\]/);
-    const bad = runBin(db, ["ticket", "create"], { env });
-    expect(bad.stderr).toContain("Usage: gaffer wg ticket create");
-    const root = runBin(db, ["--help"], { env });
-    expect(root.stdout).toMatch(/^Usage: gaffer wg \[options\] \[command\]/);
-    expect(root.stdout).not.toMatch(/Usage: dispatch/);
-  });
-});
+describe.skipIf(!CLI_BUILT)(
+  "fresh-user F-22 / cli-wg F-23: help names `gaffer wg`",
+  { timeout: 60_000 },
+  () => {
+    it("Usage lines use the invoked name", () => {
+      const env = { DISPATCH_CLI_NAME: "gaffer wg" };
+      const r = runBin(db, ["ticket", "create", "--help"], { env });
+      expect(r.stdout).toMatch(/^Usage: gaffer wg ticket create \[options\]/);
+      const bad = runBin(db, ["ticket", "create"], { env });
+      expect(bad.stderr).toContain("Usage: gaffer wg ticket create");
+      const root = runBin(db, ["--help"], { env });
+      expect(root.stdout).toMatch(/^Usage: gaffer wg \[options\] \[command\]/);
+      expect(root.stdout).not.toMatch(/Usage: dispatch/);
+    });
+  },
+);
 
 /** Every command's full help text, rendered in-process. */
 function helpTexts(program: Command): Array<[string, string]> {

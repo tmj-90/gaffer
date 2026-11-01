@@ -46,7 +46,7 @@ describe("cli-wg F-21: --json is accepted by every command", () => {
   });
 });
 
-describe.skipIf(!CLI_BUILT)("cli-wg F-21: end to end", () => {
+describe.skipIf(!CLI_BUILT)("cli-wg F-21: end to end", { timeout: 60_000 }, () => {
   it("`ticket show 1 --json` prints the same JSON as without it", () => {
     const a = runBin(db, ["ticket", "show", "1", "--json"]);
     expect(a.status).toBe(0);

@@ -99,8 +99,12 @@ export function createOnboardRunner(
   };
 }
 
-/** The on-disk directory `target` names, resolved through symlinks, or null. */
-function existingDir(target: string): string | null {
+/**
+ * The on-disk directory `target` names, resolved through symlinks, or null. A blank
+ * target is null, never the server's working directory (`resolve("")`).
+ */
+function existingDir(target: string | null): string | null {
+  if (target === null || target.trim() === "") return null;
   try {
     const p = realpathSync(resolve(target));
     return statSync(p).isDirectory() ? p : null;
@@ -115,6 +119,16 @@ function insideGitCheckout(dir: string): boolean {
     if (existsSync(join(d, ".git"))) return true;
     if (dirname(d) === d) return false;
   }
+}
+
+/** True when `dir` itself is a bare repository (HEAD, objects/ and refs/, no .git). */
+function isBareRepository(dir: string): boolean {
+  return (
+    !existsSync(join(dir, ".git")) &&
+    existsSync(join(dir, "HEAD")) &&
+    existsSync(join(dir, "objects")) &&
+    existsSync(join(dir, "refs"))
+  );
 }
 
 /**
@@ -132,13 +146,16 @@ export function onboardTargetProblem(
   target: string,
   registeredPath: (nameOrId: string) => string | null = () => null,
 ): string | null {
-  const dir = existingDir(target) ?? existingDir(registeredPath(target) ?? "");
+  const dir = existingDir(target) ?? existingDir(registeredPath(target));
   if (dir === null) return null;
   if (dirname(dir) === dir) {
     return `Refusing to onboard ${dir}: a filesystem root is not a repository. Pick the repository's own folder.`;
   }
   if (dir === existingDir(homedir())) {
     return `Refusing to onboard ${dir}: your home directory is not a repository. Pick the repository's own folder.`;
+  }
+  if (isBareRepository(dir)) {
+    return `${dir} is a bare git repository (no working tree to scan). Onboard a checkout of it instead.`;
   }
   if (!insideGitCheckout(dir)) {
     return `${dir} is not a git repository (no .git in it or above it). Run \`git init\` there first, or pick the repository's own folder.`;

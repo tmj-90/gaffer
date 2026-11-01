@@ -56,9 +56,19 @@ function modulesFor(args: string[]): { status: number | null; modules: string[] 
   return { status: r.status, modules: readFileSync(out, "utf8").split("\n").filter(Boolean) };
 }
 
-const HEAVY = [/\/zod\//, /better-sqlite3/, /\/dist\/core\.js$/, /\/dist\/db\//, /\/services\//];
+// The two services the light helpers use (principalService's principalActor,
+// accessScope's dependency filter) import nothing but types and node:crypto.
+const LIGHT_SERVICES = /\/services\/(principalService|accessScope)\.js$/;
+const HEAVY = [
+  /\/zod\//,
+  /better-sqlite3/,
+  /\/dist\/core\.js$/,
+  /\/dist\/db\//,
+  /\/dist\/api\//,
+  /\/services\//,
+];
 const heavyIn = (modules: string[]): string[] =>
-  modules.filter((m) => HEAVY.some((re) => re.test(m)));
+  modules.filter((m) => !LIGHT_SERVICES.test(m) && HEAVY.some((re) => re.test(m)));
 
 describe.skipIf(!CLI_BUILT)(
   "testspeed/TS-2: the CLI loads what an action needs only for an action",

@@ -2699,41 +2699,6 @@ function main() {
     return;
   }
 
-  if (opts.recoverReplay) {
-    // REPLAY RECOVERY only (lib/land.sh, on a retry of an already-landed primary repo).
-    const d0 = landingDecision({
-      dbPath: CONFIG.dispatchDb,
-      ticketNumber: resolved.number,
-      repoPath: repo.localPath,
-      branch,
-      repoId: repo.id || null,
-    });
-    if (!d0.ok || d0.kind !== "already-landed") {
-      emit({ phase: "replay-recovery", ticket: resolved.number, skipped: "not landed yet" }, 0);
-      return;
-    }
-    const rec = recoverMissingReplay({
-      ticketNumber: resolved.number,
-      repo,
-      pin: d0.pin,
-      commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number, repo.id || null),
-    });
-    if (!rec.ok) {
-      fail(replayMissing(resolved.number, rec.reason), 4);
-      return;
-    }
-    emit(
-      {
-        phase: "replay-recovery",
-        ticket: resolved.number,
-        recorded: rec.recorded,
-        reason: rec.reason,
-      },
-      0,
-    );
-    return;
-  }
-
   if (opts.applyDigestOnly) {
     // review.sh's AFK path merged + mark-merged already; this is the SAME post-merge
     // memory step the dashboard merge runs below (digest delta / stamp + feature →
@@ -2806,6 +2771,42 @@ function main() {
         (lock.pid ? ` (pid ${lock.pid})` : "") +
         `; nothing done — wait for it to finish`,
       4,
+    );
+    return;
+  }
+
+  if (opts.recoverReplay) {
+    // REPLAY RECOVERY only (lib/land.sh, on a retry of an already-landed primary repo),
+    // under the same per-ticket merge lock as a landing.
+    const d0 = landingDecision({
+      dbPath: CONFIG.dispatchDb,
+      ticketNumber: resolved.number,
+      repoPath: repo.localPath,
+      branch,
+      repoId: repo.id || null,
+    });
+    if (!d0.ok || d0.kind !== "already-landed") {
+      emit({ phase: "replay-recovery", ticket: resolved.number, skipped: "not landed yet" }, 0);
+      return;
+    }
+    const rec = recoverMissingReplay({
+      ticketNumber: resolved.number,
+      repo,
+      pin: d0.pin,
+      commands: resolveGateCommands(CONFIG.dispatchDb, resolved.number, repo.id || null),
+    });
+    if (!rec.ok) {
+      fail(replayMissing(resolved.number, rec.reason), 4);
+      return;
+    }
+    emit(
+      {
+        phase: "replay-recovery",
+        ticket: resolved.number,
+        recorded: rec.recorded,
+        reason: rec.reason,
+      },
+      0,
     );
     return;
   }

@@ -1369,6 +1369,7 @@ export class Dispatch {
     return inTransaction(this.db, () => {
       const link = this.scope.linkTicketScope(raw, actor);
       this.wireEpicAcceptance(link.ticket_id, link.scope_node_id, link.relation, actor);
+      this.unwireEpicAcceptance(link.ticket_id, link.scope_node_id, actor);
       return link;
     });
   }
@@ -1407,7 +1408,63 @@ export class Dispatch {
     const final = this.tickets.findById(finalId);
     if (!final || final.status === "done" || final.status === "cancelled") return;
     if (this.ticketDependencies.exists(final.id, ticket.id)) return;
-    this.ticketSvc.addDependency({ ticket: final.id, depends_on: ticket.id }, actor);
+    try {
+      this.ticketSvc.addDependency({ ticket: final.id, depends_on: ticket.id }, actor);
+    } catch (err) {
+      // A member that itself waits on the final (a follow-up that depends on it) cannot
+      // also be a dependency of it. The link stands; `wg stats` reads the epic pending,
+      // then stale, until its acceptance ticket is re-run on the finished scope.
+      if (err instanceof DispatchError && err.code === "INVALID_DEPENDENCY") return;
+      throw err;
+    }
+    // Marks this edge as the membership's, so withdrawing the membership withdraws it.
+    writeEvent(this.db, {
+      entity_type: "ticket",
+      entity_id: final.id,
+      actor,
+      event_type: "epic.member_dependency_wired",
+      payload: { epic_node_id: scopeNodeId, member_ticket_id: ticket.id },
+    });
+  }
+
+  /**
+   * EPIC MEMBERSHIP: the reverse of wireEpicAcceptance. When a ticket stops being a
+   * confirmed member of an epic (its link removed, or changed to suggested / rejected),
+   * the dependency of the epic's acceptance ticket on it goes too, but only an edge the
+   * membership wired (an explicit dependency someone added stays), and never on a final
+   * already done or cancelled. Before this, a ticket taken out of the epic kept its
+   * acceptance ticket blocked (DEPENDENCY_BLOCKED) on work that was no longer in scope.
+   */
+  private unwireEpicAcceptance(ticketId: string, scopeNodeId: string, actor: Actor): void {
+    const node = this.scopeNodes.findById(scopeNodeId);
+    if (!node || node.type !== "epic") return;
+    const finalId = ownAcceptanceTicketId(this.db, scopeNodeId);
+    if (finalId === null || finalId === ticketId) return;
+    const final = this.tickets.findById(finalId);
+    if (!final || final.status === "done" || final.status === "cancelled") return;
+    const stillMember = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM ticket_scope_nodes WHERE ticket_id = ? AND scope_node_id = ?
+           AND relation IN (${EPIC_MEMBER_RELATIONS.map((r) => `'${r}'`).join(", ")})`,
+      )
+      .get(ticketId, scopeNodeId);
+    if (stillMember) return;
+    if (!this.ticketDependencies.exists(final.id, ticketId)) return;
+    const last = (eventType: string, field: string, value: string): number => {
+      const row = this.db
+        .prepare(
+          `SELECT MAX(rowid) AS r FROM work_events
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = ?
+              AND json_extract(payload_json, '$.' || ?) = ?`,
+        )
+        .get(final.id, eventType, field, value) as { r: number | null } | undefined;
+      return Number(row?.r ?? 0);
+    };
+    const wired = last("epic.member_dependency_wired", "member_ticket_id", ticketId);
+    // The current edge is the membership's only if nobody removed and re-added it since.
+    if (wired === 0 || last("ticket.dependency_removed", "depends_on_ticket_id", ticketId) > wired)
+      return;
+    this.ticketSvc.removeDependency(final.id, ticketId, actor);
   }
 
   listTicketScopes(ticketRef: string): TicketScopeWithNode[] {
@@ -1419,7 +1476,11 @@ export class Dispatch {
     scopeNodeId: string,
     actor: Actor,
   ): { ticketId: string; scopeNodeId: string; eventId: string } {
-    return this.scope.removeTicketScope(ticketRef, scopeNodeId, actor);
+    return inTransaction(this.db, () => {
+      const res = this.scope.removeTicketScope(ticketRef, scopeNodeId, actor);
+      this.unwireEpicAcceptance(res.ticketId, res.scopeNodeId, actor);
+      return res;
+    });
   }
 
   ticketScopeSummary(ticketRef: string): {

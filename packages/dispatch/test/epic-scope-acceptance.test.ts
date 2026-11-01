@@ -216,3 +216,61 @@ describe("epic scope: each epic counts once, against its own acceptance ticket",
     expect(computeStats(wg.db).acceptance.epics[0]!.implementation_total).toBe(1);
   });
 });
+
+// Adversarial review of #8: the edge a membership wired goes when the membership does.
+describe("epic scope: withdrawing a membership withdraws the dependency it wired", () => {
+  it("a removed or rejected member no longer blocks the final; an explicit dependency stays", () => {
+    const wg = freshWg();
+    wg.registerRepository({ name: "app", default_branch: "main" }, human);
+    const { plan, implId, finalId } = oneTicketEpic(wg, "Profiles");
+    const agent = wg.registerAgent({ display_name: "a", max_risk: "high" }, human);
+    shipImplementation(wg, implId, agent.id);
+    const planned = dependsOn(wg, finalId);
+    const x = wg.createTicket({ title: "x", description: "x" }, human);
+    const y = wg.createTicket({ title: "y", description: "y" }, human);
+    for (const t of [x, y])
+      wg.linkTicketScope(
+        { ticket_id: t.id, scope_node_id: plan.epicNodeId, relation: "secondary" },
+        human,
+      );
+    expect(dependsOn(wg, finalId).sort()).toEqual(
+      [...planned, String(x.number), String(y.number)].sort(),
+    );
+    wg.linkTicketScope(
+      { ticket_id: x.id, scope_node_id: plan.epicNodeId, relation: "rejected" },
+      human,
+    );
+    wg.removeTicketScope(y.id, plan.epicNodeId, human);
+    expect(dependsOn(wg, finalId)).toEqual(planned);
+    wg.markReady(finalId, human);
+    expect(
+      wg.claimTicket({ ticket_id: finalId, agent_id: agent.id, ttl_seconds: 60 }, agentActor)
+        .claimToken,
+    ).toBeTruthy();
+
+    // A dependency a person added by hand is theirs: unlinking the ticket leaves it.
+    const second = oneTicketEpic(wg, "Retention");
+    const z = wg.createTicket({ title: "z", description: "z" }, human);
+    wg.addDependency({ ticket: second.finalId, depends_on: z.id }, human);
+    wg.linkTicketScope(
+      { ticket_id: z.id, scope_node_id: second.plan.epicNodeId, relation: "secondary" },
+      human,
+    );
+    wg.removeTicketScope(z.id, second.plan.epicNodeId, human);
+    expect(dependsOn(wg, second.finalId)).toContain(String(z.number));
+  });
+
+  it("a follow-up that depends on the final can still be linked into the epic", () => {
+    const wg = freshWg();
+    wg.registerRepository({ name: "app", default_branch: "main" }, human);
+    const { plan, finalId } = oneTicketEpic(wg, "Profiles");
+    const follow = wg.createTicket({ title: "after", description: "after" }, human);
+    wg.addDependency({ ticket: follow.id, depends_on: finalId }, human);
+    const link = wg.linkTicketScope(
+      { ticket_id: follow.id, scope_node_id: plan.epicNodeId, relation: "secondary" },
+      human,
+    );
+    expect(link.relation).toBe("secondary");
+    expect(dependsOn(wg, finalId)).not.toContain(String(follow.number));
+  });
+});

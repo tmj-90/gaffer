@@ -441,7 +441,12 @@ structural barrier the whole design hangs on.
   after planning (a primary or secondary scope link) makes the epic's acceptance
   ticket wait for it, like the planned ones. If the acceptance ticket finishes
   while a member is still open, the epic reads *pending*, and *stale* when a
-  member lands after it. A suggested or rejected scope link counts for nothing:
+  member lands after it (`wg stats --json` marks these `scope_incomplete` and
+  `scope_changed`). Taking a ticket out of the epic (removing the link, or
+  marking it rejected) takes that wait away again; a dependency you added by
+  hand stays. A follow-up that itself waits on the acceptance ticket can still
+  be linked: it cannot also be waited on, so the epic reads *pending* until it
+  is done. A suggested or rejected scope link counts for nothing:
   each epic is counted against its own acceptance ticket only, so linking one
   epic's finished acceptance ticket to another epic never makes that epic
   accepted.

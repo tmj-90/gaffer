@@ -1292,7 +1292,11 @@ export class Dispatch {
       "SCOPE_DENIED",
       describeDenial(d.reason, {
         scope: label,
-        ticket: ticket ? `ticket #${ticket.number ?? ticket.id}` : undefined,
+        ticket: ticket
+          ? `ticket #${ticket.number ?? ticket.id}`
+          : action.kind === "create_ticket"
+            ? "the new ticket"
+            : undefined,
         outsideRepos: outside,
       }),
       {

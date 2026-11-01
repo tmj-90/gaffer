@@ -186,7 +186,7 @@ export function describeDenial(
   reason: ScopeDenialReason | "read_only",
   labels: { scope: string; ticket?: string | undefined; outsideRepos?: readonly string[] },
 ): string {
-  const t = labels.ticket ?? "this";
+  const t = labels.ticket ?? "this request";
   switch (reason) {
     case "read_only":
       return "This token is read-scoped; mutating routes are not permitted.";

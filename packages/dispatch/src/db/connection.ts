@@ -63,7 +63,8 @@ export class DatabaseOpenError extends Error {
   }
 }
 
-const BUSY_TIMEOUT_MS = 5000;
+/** How long a connection waits for another process's write lock before SQLITE_BUSY. */
+export const BUSY_TIMEOUT_MS = 5000;
 
 /**
  * Open (creating if needed) a Dispatch SQLite database and ensure the schema
@@ -114,13 +115,24 @@ export function openDatabase(path: string): Db {
     // better-sqlite3 opens lazily: a file that is not a database (or is corrupt)
     // fails on the first statement, not in the constructor. Give it the same
     // guidance as a path that cannot be opened at all, not a bare SqliteError.
-    if (!isUnreadableDbError(err)) throw err;
+    // A file this user cannot write (its permissions, a read-only mount) fails the
+    // same way, on the first statement that writes (the WAL switch, the schema).
+    const readOnly = isReadOnlyDbError(err);
+    if (!isUnreadableDbError(err) && !readOnly) throw err;
     try {
       db.close();
     } catch {
       // Already unusable; nothing to release.
     }
-    throw new DatabaseOpenError(path, err);
+    throw new DatabaseOpenError(
+      path,
+      readOnly
+        ? new Error(
+            "the database is read-only for this user (SQLite needs to write the file and " +
+              "its directory, even to read): check their permissions",
+          )
+        : err,
+    );
   }
   return db;
 }
@@ -132,6 +144,14 @@ function isUnreadableDbError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null)?.code;
   if (typeof code !== "string") return false;
   return UNREADABLE_DB_CODES.some((c) => code === c || code.startsWith(`${c}_`));
+}
+
+/** SQLITE_READONLY and its extended codes: the file (or its directory) cannot be written. */
+function isReadOnlyDbError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return (
+    typeof code === "string" && (code === "SQLITE_READONLY" || code.startsWith("SQLITE_READONLY_"))
+  );
 }
 
 /**

@@ -50,6 +50,8 @@ export DISPATCH_DB="$WORK/dispatch.sqlite" MEMORY_DB="$WORK/memory.sqlite"
 export MEMORY_CLI_BIN="$MEM_JS"
 REPO="$WORK/taskapi"; mkdir -p "$REPO"
 ( cd "$REPO" && git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m init )
+# Only `init` creates a database (exploratory finding cli-wg/F-09).
+node "$CLI_JS" --db "$DISPATCH_DB" init >/dev/null 2>&1 || { echo "FAIL: dispatch init"; exit 1; }
 node "$CLI_JS" --db "$DISPATCH_DB" repo add --name taskapi --path "$REPO" >/dev/null 2>&1 \
   || { echo "FAIL: could not register the repo"; exit 1; }
 

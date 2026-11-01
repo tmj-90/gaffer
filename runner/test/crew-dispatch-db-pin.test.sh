@@ -70,6 +70,8 @@ FAC2="$WORK/fac2"; mkdir -p "$FAC2" "$WORK/repo1"
 chmod 700 "$FAC2"   # as $GAFFER_DATA is (factory.config.sh), so the audit-log check is clean
 node "$DISPATCH_CLI" --db "$FAC2/dispatch.sqlite" init >/dev/null 2>&1
 node "$CREW_CLI" init -d "$FAC2" >/dev/null 2>&1
+# repo add --path needs a git repository (as onboard does).
+git init -q "$WORK/repo1" >/dev/null 2>&1
 node "$DISPATCH_CLI" --db "$FAC2/dispatch.sqlite" repo add -n repo1 --path "$WORK/repo1" >/dev/null 2>&1
 DOC="$(node "$CREW_CLI" -c "$FAC2/crew.yaml" doctor 2>&1)"
 if grep -qE '^!|with warnings' <<<"$DOC"; then

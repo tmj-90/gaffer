@@ -52,15 +52,19 @@ describe("implicit database path", () => {
     open({}).db.close();
   });
 
-  it("an explicit --db or DISPATCH_DB keeps open-or-create", () => {
+  it("an explicit --db or DISPATCH_DB is refused too when the file is missing (cli-wg/F-09)", () => {
     const explicit = join(dir, "explicit.sqlite");
     expect(isImplicitDbPath(explicit)).toBe(false);
-    open({ db: explicit }).db.close();
-    expect(existsSync(explicit)).toBe(true);
+    expect(() => open({ db: explicit })).toThrow(/no database at .*explicit\.sqlite/);
+    expect(existsSync(explicit)).toBe(false);
     process.env.DISPATCH_DB = join(dir, "env.sqlite");
     expect(isImplicitDbPath(undefined)).toBe(false);
-    open({}).db.close();
-    expect(existsSync(join(dir, "env.sqlite"))).toBe(true);
+    expect(() => open({})).toThrow(DispatchError);
+    expect(existsSync(join(dir, "env.sqlite"))).toBe(false);
+    // init (create: true) still creates either.
+    open({ db: explicit }, { create: true }).db.close();
+    expect(existsSync(explicit)).toBe(true);
+    open({ db: explicit }).db.close();
   });
 });
 

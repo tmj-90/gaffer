@@ -71,6 +71,45 @@ pnpm cli -- expire-claims            # system recovery: release stale claims
 (Use `-- --db <path>` or `DISPATCH_DB=<path>` to choose the database;
 default is `./.dispatch/dispatch.sqlite`.)
 
+### Output, errors and exit codes
+
+Every command prints JSON on stdout, except `doctor`, `stats`, `human-queue` and the
+`events` commands, which print text unless given `--json`. Every command accepts
+`--json`, so a script can pass it everywhere; where JSON is already the default it
+changes nothing.
+
+A failure is one JSON line on stderr, the same shape for every command:
+
+```json
+{"ok":false,"code":"VALIDATION_ERROR","message":"--priority must be a whole number between 0 and 1000","details":{"issues":[{"path":["priority"],"message":"Expected number, received nan"}]}}
+```
+
+`code` is stable (the same codes the REST API uses), `message` is for a person and
+`details` (when present) carries the machine-readable rest, such as the raw validation
+`issues`. Exit codes: `0` done, `1` refused or failed (the error line says why), `2` a
+usage error: an unknown command or option, a missing argument or required option, or no
+database at `--db` (only `init`, and `import` restoring into a new file, create one). A database another process holds locked for
+more than 5 s is `DB_BUSY`: retry. A reader that stops early (`| head -1`) is not an error: the command
+keeps its own exit code and prints no `EPIPE` trace.
+
+#### CLI and REST key names
+
+`ticket show` and `GET /tickets/:id` return the same data under different key names:
+the CLI prints Dispatch's own view object (camelCase), the REST API snake_case. I have
+kept both as they are, since scripts already read each; map them when you switch:
+
+| `ticket show` (CLI)  | `GET /tickets/:id` (REST)                                   |
+| -------------------- | ----------------------------------------------------------- |
+| `acceptanceCriteria` | `acceptance_criteria`                                       |
+| `blockingDecisions`  | `blocking_decisions`                                        |
+| `reworkTrail`        | `rework_trail`                                              |
+| `landing`            | `ticket.landing_state` (approved and held tickets only)     |
+| (not printed)        | `agent_display` (display names of the agents it names)      |
+| `resolvedDecisions`, `testContract` | not in this response                         |
+
+`ticket`, `repositories`, `scopes`, `dependencies`, `evidence` and `events` have the
+same name in both.
+
 ### Operational commands
 
 ```bash

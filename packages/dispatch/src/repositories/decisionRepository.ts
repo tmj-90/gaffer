@@ -81,6 +81,15 @@ export class DecisionRepository {
       .run(ticketId, decisionId, relation, nowIso);
   }
 
+  /** Ids of every decision (any status) starting with `prefix`; at most 2 (enough to tell unique). */
+  idsWithPrefix(prefix: string): string[] {
+    return (
+      this.db
+        .prepare("SELECT id FROM decisions WHERE substr(id, 1, ?) = ? ORDER BY id LIMIT 2")
+        .all(prefix.length, prefix) as Array<{ id: string }>
+    ).map((r) => r.id);
+  }
+
   listPending(): Decision[] {
     return this.db
       .prepare(

@@ -700,7 +700,14 @@ export class TicketService {
       const dependsOn = this.resolveTicket(dependsOnRef);
       const removed = this.ticketDependencies.delete(ticket.id, dependsOn.id);
       if (!removed) {
-        throw notFound("ticket_dependency", `${ticket.id}->${dependsOn.id}`);
+        // cli-wg/F-19: by number, not the internal `<uuid>-><uuid>` key.
+        const n = (t: { number: number | null; id: string }): string =>
+          t.number != null ? `#${t.number}` : t.id;
+        throw new DispatchError(
+          "NOT_FOUND",
+          `Ticket ${n(ticket)} does not depend on ${n(dependsOn)} (\`ticket dep list ${ticket.number ?? ticket.id}\` shows what it does depend on).`,
+          { entity: "ticket_dependency", ticket_id: ticket.id, depends_on_ticket_id: dependsOn.id },
+        );
       }
       const eventId = writeEvent(this.db, {
         entity_type: "ticket",

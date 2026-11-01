@@ -15,7 +15,8 @@ import { DISPATCH_ERROR_CODES } from "../src/util/errors.js";
  */
 
 const SRC = fileURLToPath(new URL("../src", import.meta.url));
-const SERVER_SIDE = new Set(["INTERNAL_ERROR", "UNSAFE_BIND", "IO_ERROR"]);
+// WRITE_FAILED is CLI-only today (export --out); DB_BUSY is a retryable 503.
+const SERVER_SIDE = new Set(["INTERNAL_ERROR", "UNSAFE_BIND", "IO_ERROR", "WRITE_FAILED"]);
 
 function tsFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -54,10 +55,12 @@ describe("DispatchError codes → HTTP status", () => {
 
   it("no domain refusal maps to 500", () => {
     const fiveHundreds = DISPATCH_ERROR_CODES.filter(
-      (c) => !SERVER_SIDE.has(c) && statusForCode(c) >= 500 && c !== "NOT_CONFIGURED",
+      (c) =>
+        !SERVER_SIDE.has(c) && statusForCode(c) >= 500 && c !== "NOT_CONFIGURED" && c !== "DB_BUSY",
     );
     expect(fiveHundreds).toEqual([]);
     expect(statusForCode("NOT_CONFIGURED")).toBe(503);
+    expect(statusForCode("DB_BUSY")).toBe(503);
     expect(statusForCode("TEST_CONTRACT_LEAK")).toBe(422);
     expect(statusForCode("BINDING_REQUIRED")).toBe(422);
     expect(statusForCode("CONTRACT_MISMATCH")).toBe(409);

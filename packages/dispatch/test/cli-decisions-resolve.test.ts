@@ -90,7 +90,7 @@ describe("dispatch decisions resolve", () => {
 
   it("refuses an unknown ref, a too-short prefix, and a second resolve", () => {
     expect(() => runCli(dbPath, "zzzzzzzz")).toThrow(/not found/i);
-    expect(() => runCli(dbPath, id.slice(0, 3))).toThrow(/not found/i);
+    expect(() => runCli(dbPath, id.slice(0, 3))).toThrow(/too short.*at least 4/);
     runCli(dbPath, id, "--answer", "x");
     expect(() => runCli(dbPath, id, "--answer", "y")).toThrow(/already/);
   });

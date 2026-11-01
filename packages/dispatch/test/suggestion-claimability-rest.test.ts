@@ -136,4 +136,30 @@ describe("FG-005 / WG-004 REST surface", () => {
     expect((after.body.blockers as unknown[]).length).toBe(0);
     expect(repo.id).toBeTruthy();
   });
+
+  // cli-wg/F-12, F-19: the readiness preview agrees with `claim-ticket` and
+  // `ticket list --claimable`: an open blocking decision keeps a ticket out of every
+  // claim, so the route says ready:false with DECISION_BLOCKED until it is answered.
+  it("GET /tickets/:id/claimability reports an open blocking decision", async () => {
+    h.wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    const t = h.wg.createTicket({ title: "Held" }, human);
+    h.wg.linkRepository(t.id, "svc", "primary", human);
+    h.wg.addAcceptanceCriterion({ ticket_id: t.id, text: "done" }, human);
+    h.wg.markReady(t.id, human);
+    const d = h.wg.createDecision(
+      { title: "which db?", question: "pg or sqlite?", severity: "human_required", ticketId: t.id },
+      human,
+    );
+
+    const held = await call(h.baseUrl, "GET", `/tickets/${t.id}/claimability`);
+    expect(held.status).toBe(200);
+    expect(held.body.ready).toBe(false);
+    const blockers = held.body.blockers as { code: string; message: string }[];
+    expect(blockers.map((b) => b.code)).toContain("DECISION_BLOCKED");
+    expect(blockers.find((b) => b.code === "DECISION_BLOCKED")!.message).toContain("which db?");
+
+    h.wg.resolveDecision({ decisionId: d.id, status: "accepted", answer: "sqlite" }, human);
+    const answered = await call(h.baseUrl, "GET", `/tickets/${t.id}/claimability`);
+    expect(answered.body.ready).toBe(true);
+  });
 });

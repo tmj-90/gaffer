@@ -67,8 +67,15 @@ else
 fi
 
 echo "== C. tick.sh sets the recall ticket on delivery + calls feedback at both outcomes =="
-if grep -q 'GAFFER_RECALL_TICKET="\$NUM" gaffer_prime_context_block' "$TICK"; then
-  ok "delivery prime exports GAFFER_RECALL_TICKET=\$NUM"
+# The delivery prime passes the recall ticket through _RECALL_FOR, which is $NUM on a
+# live tick and empty on a DRY_RUN preview (exploratory finding cli-runner/F-06: a
+# preview logs no read events). Both halves must hold: the prime is fed _RECALL_FOR,
+# and _RECALL_FOR is $NUM unless DRY_RUN=1. Behaviourally, e2e-memory-routing.test.sh
+# check 6 (memory_primed evidence after a real live tick) proves the live value and
+# dry-run-preview.test.sh P3 the empty one.
+if grep -q 'GAFFER_RECALL_TICKET="\$_RECALL_FOR" gaffer_prime_context_block' "$TICK" \
+   && grep -Fq '_RECALL_FOR=""; [ "${DRY_RUN:-0}" = "1" ] || _RECALL_FOR="$NUM"' "$TICK"; then
+  ok "delivery prime exports GAFFER_RECALL_TICKET=\$NUM (empty on a DRY_RUN preview)"
 else
   fail "delivery prime does not export GAFFER_RECALL_TICKET=\$NUM"
 fi

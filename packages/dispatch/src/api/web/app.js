@@ -2651,6 +2651,7 @@ function openMoreSheet() {
 // skips the swap entirely when the view's data signature did not change.
 const AUTO_REFRESH_MS = 9000;
 const AUTO_REFRESHABLE = new Set([
+  "ticket",
   "overview",
   "work",
   "review",
@@ -2737,6 +2738,7 @@ async function startLiveStream() {
         const frame = buf.slice(0, idx);
         buf = buf.slice(idx + 2);
         let isEvent = false;
+        let isReset = false;
         let data = "";
         for (const line of frame.split("\n")) {
           // A seq of 0 counts: the server's `reset` frame moves a stale cursor back to it.
@@ -2744,8 +2746,12 @@ async function startLiveStream() {
             const seq = line.slice(4).trim();
             if (/^\d+$/.test(seq)) liveStreamSeq = Number(seq);
           } else if (line.startsWith("event: work_event")) isEvent = true;
+          else if (line.startsWith("event: reset")) isReset = true;
           else if (line.startsWith("data: ")) data += line.slice(6);
         }
+        // A reset says the cursor came from another log (a restore, an import): what the
+        // page shows may be stale, and no event will say so. Re-read it.
+        if (isReset) scheduleLiveRefresh();
         if (isEvent) {
           // The stream carries no agent_display: a rename or a new agent re-reads the squad.
           const type = (parseJsonSafe(data) || {}).event_type;
@@ -2778,11 +2784,17 @@ document.addEventListener("visibilitychange", () => {
  * re-fetches, no DOM swap, nothing moves (review-n-plus-one-refresh).
  */
 const VIEW_SIGNATURES = {
+  // A ticket page follows its own ticket: a landing that completes (status to Done, the
+  // actions gone), a hold, a criterion checked. One read of the ticket says whether.
+  ticket: async (param) => {
+    if (!param) return null;
+    return ticketSignature(await api("GET", `/tickets/${param}`));
+  },
   review: async () => {
-    const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+    const tickets = (await allTickets("status=in_review", { full: true })).tickets;
     if (tickets.length) return reviewSignature(tickets);
     // The clear desk shows what moved on and who is still playing: watch those.
-    const all = (await api("GET", "/tickets")).tickets || [];
+    const all = (await allTickets()).tickets;
     return clearDeskSignature(all);
   },
 };
@@ -2795,11 +2807,48 @@ const CLEAR_DESK_STATUSES = new Set([
   "done",
   "cancelled",
 ]);
+/**
+ * What a ticket page is drawn from, coarsely: the ticket row, where its landing is, its
+ * criteria, decisions and rework trail. Evidence rows and events a delivery writes as it
+ * goes do not count on their own (the status and the criteria carry what they change).
+ */
+function ticketSignature(view) {
+  const t = (view && view.ticket) || {};
+  const ls = t.landing_state || null;
+  return hashText(
+    JSON.stringify([
+      t.id,
+      t.status,
+      t.updated_at,
+      t.attempt_count,
+      ls ? [ls.kind, ls.hold, ls.label, ls.detail] : null,
+      ((view && view.acceptance_criteria) || []).map((a) => [a.id, a.status, a.text]),
+      ((view && view.blocking_decisions) || []).map((d) => [d.id, d.status]),
+      ((view && view.rework_trail) || []).length,
+      // A repo linked in another tab (the ready gate reads it, so Mark ready may switch
+      // on) and a dependency that finished change the page too.
+      ((view && view.repositories) || []).map((r) => [r.id, r.access, r.relation]),
+      ((view && view.dependencies) || []).map((d) => [d.depends_on_ticket_id, d.status]),
+    ]),
+  );
+}
 function clearDeskSignature(all) {
   return `clear:${reviewSignature(all.filter((t) => CLEAR_DESK_STATUSES.has(t.status)))}`;
 }
 function reviewSignature(tickets) {
   return tickets.map((t) => `${t.id}@${t.updated_at || ""}`).join("|");
+}
+
+/** A text field in this view holds something the person typed and has not sent. */
+function viewHasTypedText(root) {
+  if (!root || !root.querySelectorAll) return false;
+  for (const f of root.querySelectorAll("textarea, input")) {
+    const type = (f.getAttribute("type") || "text").toLowerCase();
+    if (!["text", "search", "url", "number", "email"].includes(type) && f.tagName !== "TEXTAREA")
+      continue;
+    if (f.value !== f.defaultValue) return true;
+  }
+  return false;
 }
 
 /** Re-render the current view in place if it is safe to do so (shared by the interval + stream). */
@@ -2820,12 +2869,15 @@ function refreshCurrentView() {
   if (!render || refreshing) return;
   const gen = routeGen;
   const current = app.firstElementChild;
+  // The ticket page has inline forms (a criterion, a repo, a note): text typed there and
+  // left for a moment is not thrown away by a delivery that touched the ticket.
+  if (view === "ticket" && viewHasTypedText(current)) return;
   refreshing = true;
   (async () => {
     try {
       const sigFn = VIEW_SIGNATURES[view];
       if (sigFn && current && current.dataset.sig != null) {
-        const sig = await sigFn();
+        const sig = await sigFn(param);
         if (sig === current.dataset.sig) return;
       }
       const content = await render(param);
@@ -3134,7 +3186,7 @@ async function buildPaletteSources() {
   ];
   let tickets = [];
   try {
-    tickets = (await api("GET", "/tickets")).tickets || [];
+    tickets = (await allTickets()).tickets;
   } catch {
     // Palette still works for navigation if the list call fails.
   }
@@ -3493,28 +3545,161 @@ function shirtGroup(no, x = 0, y = 0, scale = 1, numPx) {
   );
 }
 
-/** Ticket details (scopes, deps, events, evidence) cached by updated_at. */
+/**
+ * Every ticket, page by page: GET /tickets answers a bounded page (500 by default) with
+ * `next_offset`, so a view that needs the whole list follows it. Summary rows (no
+ * description, test contract or review feedback: no list view shows them) unless
+ * `full`. `qs` is the filter (`status=in_review`, `repo=…`), without paging.
+ */
+async function allTickets(qs = "", opts = {}) {
+  const base = new URLSearchParams(qs);
+  if (!opts.full) base.set("fields", "summary");
+  base.set("limit", "1000");
+  const out = [];
+  // A ticket created (or re-prioritised) between two pages shifts the rows after it, so
+  // the next page can repeat one: keep each ticket once.
+  const seen = new Set();
+  let offset = 0;
+  let total = 0;
+  for (let guard = 0; guard < 1000; guard++) {
+    base.set("offset", String(offset));
+    const res = await api(
+      "GET",
+      `/tickets?${base}`,
+      undefined,
+      opts.signal ? { signal: opts.signal } : {},
+    );
+    const rows = (res && res.tickets) || [];
+    for (const r of rows) {
+      if (r && seen.has(r.id)) continue;
+      if (r) seen.add(r.id);
+      out.push(r);
+    }
+    total = res && typeof res.total === "number" ? res.total : out.length;
+    if (!res || res.next_offset == null || !rows.length) break;
+    offset = res.next_offset;
+  }
+  return { tickets: out, total };
+}
+
+/**
+ * The whole board: GET /api/board answers a window of each area (500 cards by default),
+ * so ask for the widest window and page any area whose `counts` says there is more.
+ */
+async function boardAll(qs = "", opts = {}) {
+  const LIMIT = 1000;
+  const q = new URLSearchParams(qs);
+  q.set("limit", String(LIMIT));
+  const get = (extra) => {
+    const u = new URLSearchParams(q);
+    for (const [k, v] of Object.entries(extra || {})) u.set(k, v);
+    return api("GET", `/api/board?${u}`, undefined, opts.signal ? { signal: opts.signal } : {});
+  };
+  const board = await get();
+  if (!board || !board.counts) return board;
+  const areaCards = (b, area) =>
+    area === "closed"
+      ? b.closed || []
+      : area === "wontDo"
+        ? b.wontDo || []
+        : ((b.columns || []).find((c) => c.column === area) || {}).cards || [];
+  const areas = [...Object.keys(board.counts.columns || {}), "closed", "wontDo"];
+  for (const area of areas) {
+    const want =
+      area === "closed" || area === "wontDo" ? board.counts[area] : board.counts.columns[area];
+    const have = areaCards(board, area);
+    // Keep each card once: a ticket that moved between two reads shifts the window.
+    const seen = new Set(have.map((c) => c && c.id));
+    let pos = have.length;
+    while (typeof want === "number" && have.length < want) {
+      const page = areaCards(await get({ area, offset: String(pos) }), area);
+      if (!page.length) break;
+      pos += page.length;
+      const more = page.filter((c) => c && !seen.has(c.id));
+      for (const c of more) seen.add(c.id);
+      have.push(...more);
+      if (area === "ready_for_merge" && Array.isArray(board.readyForMerge))
+        board.readyForMerge.push(...more);
+    }
+  }
+  board.window = null;
+  return board;
+}
+
+/**
+ * Ticket details cached by updated_at. Read in batches through GET /tickets/details
+ * (exploratory finding api-robustness/F9: one GET /tickets/:id per ticket made the Map
+ * at 2000 tickets ~1000 requests), with only the parts the caller needs: the links
+ * (repositories, scopes, dependencies) by default, `DETAIL_FULL` for the views that
+ * also read a ticket's events, evidence and rework trail.
+ */
+const DETAIL_LINKS = ["repositories", "scopes", "dependencies"];
+const DETAIL_FULL = [...DETAIL_LINKS, "rework_trail", "events", "evidence"];
+const DETAIL_IDS_PER_READ = 150;
+const DETAIL_PAGE = 1000;
 const ticketDetailCache = new Map();
 const TICKET_DETAIL_TTL_MS = 120000;
-async function ticketDetails(tickets, signal) {
+async function ticketDetails(tickets, signal, include = DETAIL_LINKS) {
   const now = Date.now();
+  const fresh = (c) =>
+    c && now - c.at <= TICKET_DETAIL_TTL_MS && include.every((k) => c.parts.has(k));
   const need = tickets.filter((t) => {
     const c = ticketDetailCache.get(t.id);
-    return !c || c.stamp !== t.updated_at || now - c.at > TICKET_DETAIL_TTL_MS;
+    return !fresh(c) || c.stamp !== t.updated_at;
   });
-  for (let i = 0; i < need.length; i += EPIC_DETAIL_CONCURRENCY) {
-    const batch = need.slice(i, i + EPIC_DETAIL_CONCURRENCY);
-    const got = await Promise.all(
-      batch.map((t) =>
-        api("GET", `/tickets/${t.id}`, undefined, { signal }).catch((e) => {
-          if (e && e.code === "ABORTED") throw e;
-          return null;
-        }),
-      ),
-    );
-    batch.forEach((t, j) => {
-      if (got[j]) ticketDetailCache.set(t.id, { stamp: t.updated_at, at: now, data: got[j] });
-    });
+  const keep = (rows) => {
+    for (const d of rows || []) {
+      if (!d || !d.ticket) continue;
+      const old = ticketDetailCache.get(d.ticket.id);
+      // A fuller entry for the same revision keeps the parts this read did not ask for.
+      const base = old && old.stamp === d.ticket.updated_at ? old.data : {};
+      ticketDetailCache.set(d.ticket.id, {
+        stamp: d.ticket.updated_at,
+        at: now,
+        parts: new Set([
+          ...(old && old.stamp === d.ticket.updated_at ? old.parts : []),
+          ...include,
+        ]),
+        data: { ...base, ...d },
+      });
+    }
+  };
+  const opts = { signal };
+  const inc = include.join(",");
+  try {
+    if (need.length > DETAIL_PAGE / 2) {
+      // Most of the club: page through every ticket instead of naming each one.
+      let offset = 0;
+      for (let guard = 0; guard < 1000; guard++) {
+        const res = await api(
+          "GET",
+          `/tickets/details?include=${inc}&limit=${DETAIL_PAGE}&offset=${offset}`,
+          undefined,
+          opts,
+        );
+        keep(res && res.details);
+        if (!res || res.next_offset == null) break;
+        offset = res.next_offset;
+      }
+    } else {
+      const chunks = [];
+      for (let i = 0; i < need.length; i += DETAIL_IDS_PER_READ)
+        chunks.push(need.slice(i, i + DETAIL_IDS_PER_READ));
+      const got = await Promise.all(
+        chunks.map((c) =>
+          api(
+            "GET",
+            `/tickets/details?include=${inc}&ids=${c.map((t) => encodeURIComponent(t.id)).join(",")}`,
+            undefined,
+            opts,
+          ),
+        ),
+      );
+      for (const res of got) keep(res && res.details);
+    }
+  } catch (e) {
+    if (e && e.code === "ABORTED") throw e;
+    // A failed batch leaves those tickets without details (as a failed read did before).
   }
   const out = new Map();
   for (const t of tickets) {
@@ -3573,7 +3758,10 @@ async function loadMatchDay() {
   ] = await Promise.all([
     api("GET", "/api/dashboard", undefined, { signal }),
     opt("/api/human-queue", { items: [], counts: { total: 0 } }),
-    opt("/api/board", null),
+    boardAll("", { signal }).catch((e) => {
+      if (e && (e.code === "ABORTED" || e.code === "UNAUTHORIZED")) throw e;
+      return null;
+    }),
     opt("/api/cost", null),
     opt("/api/health", null),
     opt("/api/settings", null),
@@ -3598,7 +3786,14 @@ async function loadMatchDay() {
     for (const c of board.columns || []) tickets.push(...(c.cards || []));
     tickets.push(...(board.closed || []), ...(board.wontDo || []));
   } else {
-    tickets = ((await opt("/tickets", { tickets: [] })).tickets || []).map((t) => ({
+    tickets = (
+      (
+        await allTickets("", { signal }).catch((e) => {
+          if (e && e.code === "ABORTED") throw e;
+          return { tickets: [] };
+        })
+      ).tickets || []
+    ).map((t) => ({
       ...t,
       repos: [],
     }));
@@ -3616,7 +3811,7 @@ async function loadMatchDay() {
         String(b.updated_at).localeCompare(String(a.updated_at)),
     );
   const detailCapped = ranked.length > OVERVIEW_DETAIL_CAP;
-  const details = await ticketDetails(ranked.slice(0, OVERVIEW_DETAIL_CAP), signal);
+  const details = await ticketDetails(ranked.slice(0, OVERVIEW_DETAIL_CAP), signal, DETAIL_FULL);
   const runByTicket = await activeRunDetails((runsRes && runsRes.active) || [], signal);
 
   const repoOf = new Map();
@@ -6943,7 +7138,7 @@ async function fitnessRoomPanels(healthRes) {
   const [{ summary }, ticketsRes, decisionsRes, costRes, bouncingRes, claimsRes, settingsRes] =
     await Promise.all([
       api("GET", "/api/dashboard"),
-      api("GET", "/tickets").catch(() => ({ tickets: [] })),
+      allTickets().catch(() => ({ tickets: [] })),
       api("GET", "/decisions").catch(() => ({ decisions: [] })),
       api("GET", "/api/cost").catch(() => null),
       api("GET", "/api/rework/bouncing").catch(() => ({ bouncing: [] })),
@@ -9090,7 +9285,7 @@ async function renderWork() {
   const list = workState.mode === "list";
   const [board, listRes, ref, claimsRes, queue] = await Promise.all([
     list ? null : get(`/api/board${boardQs}`),
-    list ? get("/tickets" + (listQs.toString() ? `?${listQs}` : "")) : null,
+    list ? allTickets(listQs.toString(), { signal }) : null,
     workReference(),
     get("/claims"),
     get("/api/human-queue").catch((e) => {
@@ -10878,6 +11073,22 @@ function runForAttempt(runs, a) {
   );
   return before.length ? before[before.length - 1] : null;
 }
+/**
+ * When the current set of attempts began: the first run of the latest set, where a run
+ * whose attempt number is not above the run before it starts a new set (an Unblock
+ * resets the count and the runner numbers the next run 1). Null with one set only.
+ */
+function currentRoundStart(runs) {
+  let start = null;
+  let prev = null;
+  for (const r of runs || []) {
+    const n = Number(r.attempt);
+    if (!Number.isInteger(n)) continue;
+    if (prev !== null && n <= prev && r.created_at) start = String(r.created_at);
+    prev = n;
+  }
+  return start;
+}
 /** "model X · CLI 1.2.3" — the model that served the run (else the one it asked for). */
 function runLine(r) {
   const served = Array.isArray(r.models_served) && r.models_served.length ? r.models_served : null;
@@ -10906,7 +11117,13 @@ function renderFailureHistory(trail, runs = []) {
   }
   // Oldest first (runs is sorted): the runs no failure accounts for.
   const unpaired = runs.filter((r) => !paired.has(r));
-  const used = trail.length + unpaired.length;
+  // An Unblock gives a fresh set of attempts, and the runner numbers the next run 1
+  // again: the header and the kicks count the CURRENT set, from the same agent-run rows
+  // the run list labels its attempts by, and the earlier sets stay listed, marked.
+  const since = currentRoundStart(runs);
+  const current = (x) => !since || String(x.created_at || "") >= since;
+  const used = trail.filter(current).length + unpaired.filter(current).length;
+  const earlier = trail.length + unpaired.length - used;
   const goal = (i, taken = true) =>
     svgEl(
       "svg",
@@ -10946,11 +11163,11 @@ function renderFailureHistory(trail, runs = []) {
         el(
           "span",
           { class: "panel-aux" },
-          max
+          (max
             ? `${Math.min(used, Number(max) || used)} of ${max} used`
             : used === 1
               ? "1 attempt"
-              : `${used} attempts`,
+              : `${used} attempts`) + (earlier ? `, ${earlier} before an Unblock` : ""),
         ),
       ]),
     ]),
@@ -10971,11 +11188,12 @@ function renderFailureHistory(trail, runs = []) {
           // Labelled with the attempt that FAILED (the trail files it one higher), so the
           // number matches its run's and the rows below it.
           const n = failedAttempt(a) ?? a.attempt;
-          return el("li", { class: "failure-attempt" }, [
+          return el("li", { class: `failure-attempt${current(a) ? "" : " is-earlier"}` }, [
             goal(i),
             el("div", { class: "failure-attempt-head" }, [
               el("span", { class: "failure-attempt-num" }, `Attempt ${n}${mx}`),
               a.gate ? el("span", { class: "failure-gate" }, `${a.gate} failed`) : null,
+              current(a) ? null : el("span", { class: "failure-round" }, "before the Unblock"),
               el("span", { class: "failure-attempt-time" }, fmtTime(a.created_at)),
             ]),
             (() => {
@@ -11000,7 +11218,7 @@ function renderFailureHistory(trail, runs = []) {
         }),
         // The runs no failure was recorded for, each with its model and CLI.
         ...unpaired.map((r) =>
-          el("li", { class: "failure-run" }, [
+          el("li", { class: `failure-run${current(r) ? "" : " is-earlier"}` }, [
             el("div", { class: "failure-attempt-head" }, [
               el(
                 "span",
@@ -11010,6 +11228,7 @@ function renderFailureHistory(trail, runs = []) {
                   : "Run",
               ),
               r.rc ? el("span", { class: "failure-gate" }, `exit ${r.rc}`) : null,
+              current(r) ? null : el("span", { class: "failure-round" }, "before the Unblock"),
               el("span", { class: "failure-attempt-time" }, fmtTime(r.created_at)),
             ]),
             el("p", { class: "attempt-run mono" }, runLine(r)),
@@ -11070,7 +11289,7 @@ async function ticketEpicCard(t, scopes) {
   if (!epic) return null;
   const all =
     (
-      await api("GET", "/tickets", undefined, { signal: routeSignal() }).catch(() => ({
+      await allTickets("", { signal: routeSignal() }).catch(() => ({
         tickets: [],
       }))
     ).tickets || [];
@@ -11140,6 +11359,36 @@ async function ticketEpicCard(t, scopes) {
         ])
       : null,
   ]);
+}
+
+/** Holds only a fresh review clears: the ticket page offers Back to review for them. */
+const REVIEW_HOLDS = new Set(["moved_since_review", "unpinned_repo"]);
+
+/**
+ * "Your move" on an approved ticket, in its landing state's own words: never "the merge
+ * runner has it" when nothing is landing it, and a hold's advice names an action the
+ * page offers (Back to review, Send back to rework, Merge now, Mark merged).
+ */
+function approvedMoveWords(t, ref) {
+  const ls = t.landing_state;
+  const byHand = " Mark merged only if you merged the branch by hand.";
+  if (!ls) return `Merge now lands it.${byHand}`;
+  if (ls.kind === "held") {
+    if (ls.hold === "moved_since_review")
+      return `Held: the branch moved since the review approved it, so nothing lands it. Back to review sends ${ref} to Review to sign off the new commits; Send back to rework returns it to Refining.${byHand}`;
+    if (ls.hold === "unpinned_repo")
+      return `Held: the approval does not cover every repository, so it can never land as approved. Back to review sends ${ref} to Review to approve every repository together.${byHand}`;
+    if (ls.hold === "merge_gate_red")
+      return `Held: the merge gate failed on the current default branch, so nothing lands it until you look. Merge now runs the merge gate again (after a fix on the default branch); Send back to rework returns it to Refining.${byHand}`;
+    if (ls.hold === "ci_red")
+      return `Held: required CI failed for the commit that would land. Merge now tries again once CI passes; Send back to rework returns it to Refining.${byHand}`;
+    return `${ls.label}. ${ls.detail}${byHand}`;
+  }
+  if (ls.kind === "partly_landed") return `Partly landed. ${ls.detail}`;
+  if (ls.kind === "landing")
+    return "The merge runner is landing it now; this page updates when it lands.";
+  if (ls.kind === "lands_next_tick") return `${ls.detail} Merge now lands it at once.${byHand}`;
+  return `Nothing lands it until you press Merge now.${byHand}`;
 }
 
 async function renderTicket(id) {
@@ -11235,11 +11484,53 @@ async function renderTicket(id) {
                   );
                 if (e.code) box.appendChild(el("div", { class: "toast-code" }, e.code));
                 policyBox.appendChild(box);
+                // The toast says why too: the reason, not only "Policy … denied ready".
+                const why = Array.isArray(failed)
+                  ? failed.map((f) => f && (f.message || f.code)).filter(Boolean)
+                  : [];
+                if (why.length) {
+                  toast(`Not marked ready: ${why.join(" ")}`, { code: e.code });
+                  return;
+                }
                 throw e;
               }
             }),
         },
         "Mark ready",
+      ),
+    // A hold only a fresh review clears (the branch moved since the approval, or the
+    // approval missed a repository): back to Review, through the reopen-for-review route.
+    back_to_review: () =>
+      el(
+        "button",
+        {
+          class: "btn primary",
+          type: "button",
+          title: "Send this approved ticket back to Review to sign off its current commits",
+          onclick: () =>
+            reasonSheet({
+              title: `Back to review: ${ref}`,
+              ticket: t,
+              intro: `${ref} is held: ${(t.landing_state && t.landing_state.detail) || "its approval no longer covers what would land."} This moves it back to In review, the old approval stops counting, and you approve the current commits on the Review page.`,
+              label: "Why back to review?",
+              presets: ["The branch moved since review", "The approval missed a repository"],
+              hint: "Required. It is kept on the ticket.",
+              confirm: "Back to review",
+              onConfirm: async (reason) => {
+                await api("POST", `/tickets/${t.id}/reopen-for-review`, {
+                  reason,
+                  // The hold is the cause: the event says the branch moved (or the
+                  // approval missed a repository), not that a conflict was resolved.
+                  cause: (t.landing_state && t.landing_state.hold) || "other",
+                  resolution:
+                    "Sent back to review from the ticket page: review the current commits and approve again.",
+                });
+                toast(`${ref} is back in review.`, { ok: true });
+                router();
+              },
+            }),
+        },
+        "Back to review",
       ),
     // Send an approved-and-merging ticket back for rework (-> refining); resets ACs.
     rework: () =>
@@ -11342,7 +11633,14 @@ async function renderTicket(id) {
           onclick: () =>
             guard(async () => {
               await api("POST", `/tickets/${t.id}/merge`);
-              toast("Merge started — the board updates when it lands", { ok: true });
+              // A held landing stays held: say so, not "Merge started".
+              const ls = t.landing_state;
+              if (ls && ls.kind === "held") {
+                const why = String(ls.label || "held").replace(/^Held · /, "");
+                toast(
+                  `${ref} is held (${why}): Merge now asked the merge runner to check again, and nothing lands while the hold stands.${REVIEW_HOLDS.has(ls.hold) ? " Back to review is the way on." : ""}`,
+                );
+              } else toast("Merge started — the board updates when it lands", { ok: true });
               router();
             }),
         },
@@ -11447,10 +11745,18 @@ async function renderTicket(id) {
 
   // No "merging…" pill: next to Merge now it read as a disabled button, and the merge
   // runner may be held. The status (its landing_state) and the lede say where it is.
+  let markReadyBtn = null;
+  const actionKeys = ticketActionKeys(t.status);
+  const reviewHold =
+    t.status === "ready_for_merge" && t.landing_state && REVIEW_HOLDS.has(t.landing_state.hold);
+  const keys = reviewHold ? ["back_to_review", ...actionKeys] : actionKeys;
   const headActions = [
-    ...ticketActionKeys(t.status).map((key) =>
-      actionButtons[key] ? roLock(actionButtons[key](), "ticket") : null,
-    ),
+    ...keys.map((key) => {
+      if (!actionButtons[key]) return null;
+      const b = roLock(actionButtons[key](), "ticket");
+      if (key === "mark_ready") markReadyBtn = b;
+      return b;
+    }),
   ].filter(Boolean);
 
   // PAUSE-ON-CAP banner: when a delivery is paused on a turn/budget cap, surface WHY
@@ -11539,6 +11845,25 @@ async function renderTicket(id) {
   // blocked, done or in-flight ticket (the endpoint answers for the dependency gate).
   const claimable = ["ready", "draft", "refining"].includes(t.status);
   const claimBox = el("div", { class: "claim-box", dataset: claimable ? undefined : { off: "1" } });
+  // The claimability read runs the same ready gate Mark ready would: when it will
+  // refuse, Mark ready says so up front (disabled, the reasons in its title) instead
+  // of waiting for the click. A dependency or a decision holds the claim, not the ready.
+  claimBox._onClaim = (data) => {
+    const btn = markReadyBtn;
+    if (!btn || readOnly()) return;
+    const gate = ((data && data.blockers) || []).filter(
+      (b) => b && typeof b === "object" && !CLAIM_ONLY_BLOCKERS.has(b.code),
+    );
+    const refuses = data && data.ready === false && gate.length > 0;
+    btn.disabled = refuses;
+    if (refuses) {
+      btn.setAttribute("aria-disabled", "true");
+      btn.title = `Mark ready would be refused: ${gate.map((b) => b.message || b.code).join(" ")}`;
+    } else {
+      btn.removeAttribute("aria-disabled");
+      btn.removeAttribute("title");
+    }
+  };
   if (claimable) loadClaimability(t.id, claimBox);
 
   // Your move: what the gaffer can do with this ticket now, in words, then the buttons.
@@ -11548,8 +11873,7 @@ async function renderTicket(id) {
     paused:
       "Continue resumes the delivery in its worktree; Stop cancels it, and its worktree is removed on the next tick.",
     in_review: "The sign-off is on the Review page: the diff, the flags and Approve.",
-    ready_for_merge:
-      "The merge runner has it. Merge now runs it again if it is held up; Mark merged if you merged the branch by hand.",
+    ready_for_merge: approvedMoveWords(t, ref),
     in_testing: "The tester owns the verdict. Record it by hand only if you tested it yourself.",
     draft: "Mark it ready when its acceptance criteria say what done means.",
     refining: "Mark it ready when its acceptance criteria say what done means.",
@@ -11833,6 +12157,9 @@ async function renderTicket(id) {
             testingCard,
           ];
 
+  // The live stream re-reads this page when the ticket itself changed (its status, a
+  // landing, a criterion), and leaves it alone otherwise (see VIEW_SIGNATURES.ticket).
+  wrap.dataset.sig = ticketSignature(view);
   wrap.appendChild(head);
   wrap.appendChild(
     el("div", { class: "detail-grid tk-grid" }, [
@@ -12151,6 +12478,9 @@ function ticketMatchReport(events, repos) {
  * and a finished one keeps its record. A ticket marked delivering with no live
  * run says so plainly (the #88 hung-claim case).
  */
+/** A run's own turns / spend (an older server sends only the ticket's totals). */
+const runTurns = (d) => (typeof d.run_num_turns === "number" ? d.run_num_turns : d.num_turns);
+const runCost = (d) => (typeof d.run_cost_usd === "number" ? d.run_cost_usd : d.cost_usd);
 function ticketRunsPanel(t, events) {
   // In testing is not delivering: the tester lane runs outside the delivery runs read here,
   // so "no live run" would wrongly say a ticket under test may be stuck.
@@ -12226,11 +12556,13 @@ function ticketRunsPanel(t, events) {
           const on = run.status === "running";
           const chips = [
             d.phase ? el("span", { class: "run-detail-chip" }, d.phase) : null,
-            d.num_turns > 0
-              ? el("span", { class: "run-detail-chip" }, plural(d.num_turns, "turn"))
+            // This run's own turns and spend (run_*), not the ticket's totals: two
+            // runs of one ticket read the same cumulative figure.
+            runTurns(d) > 0
+              ? el("span", { class: "run-detail-chip" }, plural(runTurns(d), "turn"))
               : null,
-            d.cost_usd > 0
-              ? el("span", { class: "run-detail-chip tabnum" }, money(d.cost_usd))
+            runCost(d) > 0
+              ? el("span", { class: "run-detail-chip tabnum" }, money(runCost(d)))
               : null,
             d.outcome
               ? el(
@@ -13074,6 +13406,8 @@ function renderAddRepoForm(ticketId, reload, { linked = new Set(), hasWrite = fa
   return form;
 }
 
+/** Claimability blockers that hold a claim but not Mark ready (the ready gate passes them). */
+const CLAIM_ONLY_BLOCKERS = new Set(["DEPENDENCY_BLOCKED", "DECISION_BLOCKED"]);
 function loadClaimability(ticketId, box) {
   if (box.dataset.off) return; // only a ticket that can still be claimed asks
   clear(box);
@@ -13094,6 +13428,7 @@ function loadClaimability(ticketId, box) {
       return;
     }
     clear(box);
+    if (typeof box._onClaim === "function") box._onClaim(data);
     const ready = data.ready === true;
     const blockers = data.blockers || [];
     box.appendChild(
@@ -13867,13 +14202,11 @@ async function renderSettings() {
     // A value the server would refuse is shown on its own row, and Save says which
     // field holds it back; nothing is posted until it is fixed (or put back).
     const bad = [];
-    for (const [key, ed] of editors) {
-      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
-      if (ed.input) ed.input.removeAttribute("aria-invalid");
-      const problem = key in payload && ed.check ? ed.check() : null;
-      if (!problem) continue;
-      const label = labelOf.get(key);
+    const markBad = (key, problem) => {
+      const ed = editors.get(key);
+      const label = labelOf.get(key) || key;
       bad.push(`${label} ${problem}`);
+      if (!ed) return;
       if (ed.input) ed.input.setAttribute("aria-invalid", "true");
       if (ed.row) {
         const ctl = ed.row.querySelector(".setting-control") || ed.row;
@@ -13883,19 +14216,40 @@ async function renderSettings() {
         const grp = ed.row.closest("details");
         if (grp) grp.open = true;
       }
-    }
-    if (bad.length) {
-      toast(`Not saved: ${bad.join("; ")}.`, {});
+    };
+    const focusFirstBad = () => {
       const first = [...editors.values()].find(
         (ed) => ed.input && ed.input.getAttribute("aria-invalid") === "true",
       );
       if (first) first.input.focus();
+    };
+    for (const [key, ed] of editors) {
+      if (ed.row) for (const old of ed.row.querySelectorAll(".setting-error")) old.remove();
+      if (ed.input) ed.input.removeAttribute("aria-invalid");
+      const problem = key in payload && ed.check ? ed.check() : null;
+      if (problem) markBad(key, problem);
+    }
+    if (bad.length) {
+      toast(`Not saved: ${bad.join("; ")}.`, {});
+      focusFirstBad();
       return;
     }
     // A submit is the intent (the primary only rests disabled while clean).
     saveBtn.disabled = false;
     runAsyncAction(saveBtn, "Saving…", async () => {
-      const res = await api("POST", "/api/settings", { settings: payload });
+      let res;
+      try {
+        res = await api("POST", "/api/settings", { settings: payload });
+      } catch (err) {
+        // A value only the server can judge (a webhook address, a choice it no longer
+        // lists): the 422 names each field, so mark them on their rows like the rest.
+        const invalid = err && err.details && err.details.invalid;
+        if (Array.isArray(invalid) && invalid.length) {
+          for (const p of invalid) if (p && p.key) markBad(p.key, p.problem || "is not valid");
+          focusFirstBad();
+        }
+        throw err;
+      }
       const written = (res.written || []).length;
       const rejected = (res.rejected || []).length;
       const invalid = (res.invalid || []).length;
@@ -15459,6 +15813,7 @@ function renderSecretSettingInput(s, editors) {
           ? input.value.trim()
           : SECRET_UNCHANGED,
     initial: SECRET_UNCHANGED,
+    input,
   });
   return el("div", { class: "setting-secret-row" }, [masked, replace, remove, input]);
 }
@@ -17173,6 +17528,12 @@ function verdictStrip(p) {
   // Gates: the runner's DoD rows, each with its command; the test count it saw.
   const g = p.gates;
   const gateBody = [];
+  // A multi-repo delivery ran each gate once per repo: name the repo on every row, or
+  // "tests passed" twice says nothing about which repo is which.
+  const gateRepos = g
+    ? new Set(g.rows.map((r) => r.repo).filter((x) => x && x !== "-"))
+    : new Set();
+  const multiRepo = gateRepos.size > 1;
   if (g) {
     gateBody.push(
       el(
@@ -17195,6 +17556,9 @@ function verdictStrip(p) {
               { pass: "✓", fail: "✗", flag: "!", skip: "–" }[st],
             ),
             el("b", {}, r.gate),
+            multiRepo && r.repo && r.repo !== "-"
+              ? el("span", { class: "vd-gate-repo" }, r.repo)
+              : null,
             el("span", { class: `vd-word vd-w-${st}` }, VD_WORD[r.status] || r.status),
             r.command
               ? el("code", { class: "vd-cmd mono" }, r.command)
@@ -17501,7 +17865,7 @@ function isStaleRevision(e) {
 async function renderClearDesk(wrap) {
   const signal = routeSignal();
   const [all, claims, dash] = await Promise.all([
-    api("GET", "/tickets", undefined, { signal }).then((r) => r.tickets || []),
+    allTickets("", { signal }).then((r) => r.tickets || []),
     api("GET", "/claims", undefined, { signal })
       .then((r) => r.claims || [])
       .catch(() => []),
@@ -17671,7 +18035,9 @@ async function renderClearDesk(wrap) {
  * Keys: j / k next / previous change, a arm → a approve, r send back.
  */
 async function renderReview(param) {
-  const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
+  // Every ticket in review (GET /tickets answers 500 rows a page), the same read the
+  // refresh signature makes, so a long queue neither loses its tail nor re-renders.
+  const tickets = (await allTickets("status=in_review", { full: true })).tickets;
   const wrap = el("div", { class: "view view-review" });
   // The refresh compares this before re-reading anything (see VIEW_SIGNATURES).
   wrap.dataset.sig = reviewSignature(tickets);
@@ -18545,10 +18911,17 @@ async function mapOverlay(nodes, repos, signal, { all = false } = {}) {
       if (e && e.code === "ABORTED") throw e;
       return fb;
     });
-  const [board, ...links] = await Promise.all([
-    opt("/api/board", null),
-    ...repos.map((r) => opt(`/scope/repos?repo=${encodeURIComponent(r.id)}`, { scopes: [] })),
+  // The whole board, and every repo's grounds in ONE read (it was one per repo).
+  const [board, scopeLinks] = await Promise.all([
+    boardAll("", { signal }).catch((e) => {
+      if (e && e.code === "ABORTED") throw e;
+      return null;
+    }),
+    opt("/scope/repos?all=1", { by_repo: {} }),
   ]);
+  const links = repos.map((r) => ({
+    scopes: (scopeLinks && scopeLinks.by_repo && scopeLinks.by_repo[r.id]) || [],
+  }));
   const every = boardCards(board);
   const cards = every.filter((c) => mapTone(c.status));
   const book = all ? every.filter((c) => c.status !== "cancelled") : cards;
@@ -20305,7 +20678,7 @@ async function renderRepo(id) {
   let tickets = null;
   let ticketErr = null;
   try {
-    const board = await api("GET", "/api/board");
+    const board = await boardAll();
     tickets = boardCards(board).filter(
       (c) =>
         c.status !== "cancelled" &&
@@ -20752,12 +21125,9 @@ function renderAddAssociationForm(repo, allNodes, existing) {
 // An epic is a scope node of type "epic" that `contains` its tickets. There is
 // no "tickets-for-epic" endpoint, so the view stitches the tree from the
 // existing surfaces: GET /scope/nodes (the epics), GET /tickets (the universe),
-// and GET /tickets/:id (each ticket's `scopes` → epic membership, plus its
+// and GET /tickets/details (each ticket's `scopes` → epic membership, plus its
 // `dependencies` → the "blocked by #N" edges). Tickets are grouped into phases
 // by their dependency depth so the build order reads top-to-bottom.
-
-/** Cap concurrent ticket-detail fetches so a big backlog doesn't flood the API. */
-const EPIC_DETAIL_CONCURRENCY = 6;
 
 /**
  * Assign each ticket a phase = longest dependency chain to a root, computed over
@@ -20865,7 +21235,7 @@ async function renderEpics(param) {
     });
   const [nodesRes, ticketsRes, claimsRes, specsRes] = await Promise.all([
     api("GET", "/scope/nodes", undefined, { signal }),
-    api("GET", "/tickets", undefined, { signal }),
+    allTickets("", { signal }),
     extra("/claims", { claims: [] }),
     extra("/specs", { specs: [] }),
     ensureSquad(),
@@ -20906,6 +21276,13 @@ async function renderEpics(param) {
     tickets.filter((t) => t.status !== "cancelled"),
     signal,
   );
+  // A held member's line says why (its rework trail and events): read those in full.
+  const heldFull = await ticketDetails(
+    tickets.filter((t) => OFF_PITCH.has(t.status)),
+    signal,
+    DETAIL_FULL,
+  );
+  for (const [k, v] of heldFull) detailById.set(k, v);
   const membersByEpic = new Map(epics.map((e) => [e.id, []]));
   const depsById = new Map();
   const depViewById = new Map();
@@ -22884,7 +23261,7 @@ async function confirmPlanBuild(plan, opts = {}) {
       // gate decide per ticket. A refusal (missing AC, unmet precondition) is
       // expected for some tickets — they stay draft, counted, never surfaced as an
       // error. Bootstrap-gated tickets are readied too; the loop honours deps.
-      const all = (await api("GET", "/tickets")).tickets || [];
+      const all = (await allTickets()).tickets;
       const mine = all.filter((t) => numbers.includes(t.number));
       for (const t of mine) {
         try {
@@ -23688,7 +24065,29 @@ function memoryUnavailable(reason) {
  * DISPATCH_ONBOARD_CMD) toasts its message via the shared guard. `presetRepo` (when
  * given) pre-selects the repo so the digest empty-state can offer "onboard THIS repo".
  */
-function openOnboardPicker(repos, presetRepo) {
+/**
+ * Does Memory already hold a digest for this registered repo? true / false, or null when
+ * it cannot say (memory unavailable, the read failed): the caller then asks first.
+ */
+async function repoHasDigest(name) {
+  try {
+    const res = await api("GET", `/api/memory/digest/${encodeURIComponent(name)}`);
+    if (!res || res.available === false) return null;
+    return !!res.digest;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The "Onboard a repo" sheet: a registered repo (the select) OR a typed path. What the
+ * person typed wins: typing a path resets the select, and picking a repo clears the
+ * path. Onboarding a repo Memory already knows (it has a digest, or that cannot be
+ * read) is a deliberate choice: a confirmation names the cost before anything runs.
+ * `opts.onboarded` maps repo name → whether it has a digest, when the caller knows.
+ */
+function openOnboardPicker(repos, presetRepo, opts = {}) {
+  const known = opts.onboarded || {};
   const repoSel = el("select", {}, [
     el("option", { value: "" }, repos.length ? "Pick a registered repo…" : "No registered repos"),
     ...repos.map((r) => el("option", { value: r.name, selected: presetRepo === r.name }, r.name)),
@@ -23701,7 +24100,14 @@ function openOnboardPicker(repos, presetRepo) {
     spellcheck: "false",
   });
   if (presetRepo) repoSel.value = presetRepo;
+  pathInput.addEventListener("input", () => {
+    if (pathInput.value.trim()) repoSel.value = "";
+  });
+  repoSel.addEventListener("change", () => {
+    if (repoSel.value) pathInput.value = "";
+  });
 
+  const bare = (p) => String(p || "").replace(/\/+$/, "");
   const runBtn = el("button", { class: "btn primary", type: "submit" }, "Onboard");
   const form = el(
     "form",
@@ -23709,23 +24115,50 @@ function openOnboardPicker(repos, presetRepo) {
       class: "form-grid",
       onsubmit: (e) => {
         e.preventDefault();
-        // Either a registered repo (selector) OR a typed path; the selector wins when
-        // both are set. The endpoint resolves which kind the target is.
-        const repo = (repoSel.value || pathInput.value).trim();
-        if (!repo) {
+        // A typed path wins over the select; the endpoint resolves which kind it is.
+        const typed = pathInput.value.trim();
+        const target = typed || repoSel.value.trim();
+        if (!target) {
           toast("Pick a registered repo or type a path to onboard.");
           return;
         }
-        runAsyncAction(runBtn, "Onboarding…", async () => {
-          await api("POST", "/repos/onboard", { repo });
-          toast(`Onboarding '${repo}' — its digest + features will appear shortly.`, { ok: true });
-          closeSheet();
+        // A registered repo by name, or a typed path that is its checkout.
+        const registered = repos.find(
+          (r) => r.name === target || (typed && r.local_path && bare(r.local_path) === bare(typed)),
+        );
+        const go = async () => {
+          await api("POST", "/repos/onboard", { repo: target });
+          toast(`Onboarding '${target}' — its digest + features will appear shortly.`, {
+            ok: true,
+          });
+          if (sheetOpen()) closeSheet();
           // Re-read the Memory view focused on the onboarded repo so the digest +
           // feature ledger refresh once the producer lands them.
-          memoryState.repo = repos.some((r) => r.name === repo) ? repo : memoryState.repo;
+          memoryState.repo = registered ? registered.name : memoryState.repo;
           memoryState.node = "";
           writeMemoryStateToUrl();
           router();
+        };
+        if (!registered) {
+          runAsyncAction(runBtn, "Onboarding…", go);
+          return;
+        }
+        runAsyncAction(runBtn, "Checking…", async () => {
+          const name = registered.name;
+          const has = name in known ? known[name] : await repoHasDigest(name);
+          if (has === false) {
+            await go();
+            return;
+          }
+          confirmSheet({
+            title: `Onboard ${name} again?`,
+            intro:
+              `${name} is ${has ? "already onboarded: Memory holds its digest and feature inventory" : "already registered, and Memory may already hold its digest"}, ` +
+              "and refreshes them itself as agents deliver. Onboarding it again cards the whole repo once more: " +
+              "several minutes and model calls for a larger repo, and a fresh onboarding intake decision on the Team Sheet.",
+            confirm: `Re-onboard ${name}`,
+            onConfirm: go,
+          });
         });
       },
     },
@@ -23754,13 +24187,14 @@ function openOnboardPicker(repos, presetRepo) {
 /** The Memory view's "Onboard a repo" trigger (header + empty-state share it). */
 function onboardButton(repos, presetRepo, opts) {
   const o = opts || {};
+  const pickerOpts = o.onboarded ? { onboarded: o.onboarded } : {};
   const btn = el(
     "button",
     {
       class: o.primary ? "btn primary" : "btn",
       type: "button",
       title: "Scan a repo and build its Memory digest + feature inventory",
-      onclick: () => openOnboardPicker(repos, presetRepo),
+      onclick: () => openOnboardPicker(repos, presetRepo, pickerOpts),
     },
     [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
@@ -23951,7 +24385,7 @@ async function renderSpecList() {
     // so the empty page still says something true about this club.
     const [nodesRes, ticketsRes] = await Promise.all([
       api("GET", "/scope/nodes", undefined, { signal }).catch(() => ({ nodes: [] })),
-      api("GET", "/tickets", undefined, { signal }).catch(() => ({ tickets: [] })),
+      allTickets("", { signal }).catch(() => ({ tickets: [] })),
     ]);
     const epics = (nodesRes.nodes || []).filter((n) => n.type === "epic");
     const live = (ticketsRes.tickets || []).filter((t) => !TERMINAL.has(t.status));
@@ -24596,6 +25030,10 @@ async function renderMemory(param) {
     : [null, null];
 
   const clubDrafts = allDrafts ? allDrafts.length : null;
+  // Whether the repo on show already has a digest, so the onboard sheet knows a
+  // re-onboard without asking the server again (unknown when memory is off).
+  const onboarded =
+    repo && digestRes && digestRes.available !== false ? { [repo]: !!digestRes.digest } : null;
   const wrap = el("div", { class: "view view-memory", dataset: { view: "memory" } });
   wrap.appendChild(
     viewHead(
@@ -24610,7 +25048,7 @@ async function renderMemory(param) {
       ]
         .filter(Boolean)
         .join(" · "),
-      onboardButton(repos, repo),
+      onboardButton(repos, repo, { onboarded }),
     ),
   );
 
@@ -24668,7 +25106,7 @@ async function renderMemory(param) {
   );
   // On a phone the header's Onboard folds into this row (one line, not two), so
   // the first draft to sign sits above the fold.
-  const pickOnboard = onboardButton(repos, repo, { label: "Onboard" });
+  const pickOnboard = onboardButton(repos, repo, { label: "Onboard", onboarded });
   pickOnboard.classList.add("mem-pick-onboard");
   wrap.appendChild(
     el("div", { class: `filters mem-pick${repos.length > 1 ? "" : " is-solo"}` }, [
@@ -24955,7 +25393,7 @@ function renderDigestCard(repo, res, repos = []) {
         `No digest for ${repo} yet`,
         "Onboard this repo to scan it and build its Memory digest + feature inventory.",
         null,
-        onboardButton(repos, repo),
+        onboardButton(repos, repo, { onboarded: { [repo]: false } }),
       ),
     );
     return card;

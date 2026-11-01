@@ -24,6 +24,7 @@ import { type Db, inTransaction } from "../db/connection.js";
 import {
   type AcStatus,
   type Actor,
+  type ReopenForReviewCause,
   type ReviewFeedback,
   type Ticket,
   type TicketStatus,
@@ -1875,7 +1876,7 @@ export class ReviewGateService {
    */
   reopenForReview(
     ref: string,
-    input: { reason: string; resolution: string },
+    input: { reason: string; resolution: string; cause?: ReopenForReviewCause },
     actor: Actor,
   ): { ticketId: string; status: string; eventId: string } {
     if (actor.type !== "system" && actor.type !== "admin") {
@@ -1931,7 +1932,11 @@ export class ReviewGateService {
         payload: {
           reason: reason.length > 0 ? reason : null,
           resolution,
-          merge_conflict_resolved: true,
+          // What sent it back (the caller's cause; Dispatch.reopenForReview infers one
+          // from the ticket's hold). Only the resolver's conflict reopen says a merge
+          // conflict was resolved.
+          cause: input.cause ?? "merge_conflict",
+          merge_conflict_resolved: (input.cause ?? "merge_conflict") === "merge_conflict",
           evidence_id: evidenceId,
         },
       });

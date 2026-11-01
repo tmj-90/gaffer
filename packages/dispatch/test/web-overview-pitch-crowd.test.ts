@@ -13,6 +13,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const ago = (min: number) => new Date(Date.now() - min * 60e3).toISOString();
@@ -22,51 +24,53 @@ type T = { id: string; number: number; status: string; repo: string; agent?: str
 function stubFetch(tickets: T[]): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const json = (obj: unknown) =>
-        new Response(JSON.stringify(obj), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
-      if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
-      if (url.includes("/api/runs")) return json({ active: [], recent: [] });
-      if (url.includes("/api/activity")) return json({ events: [], total: 0 });
-      if (url.includes("/api/board")) return json(null);
-      if (url.includes("/claims"))
-        return json({
-          claims: tickets
-            .filter((t) => t.agent)
-            .map((t) => ({
-              ticket_id: t.id,
-              ticket_number: t.number,
-              agent_id: "ag-" + t.agent,
-              agent_display_name: t.agent,
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (obj: unknown) =>
+          new Response(JSON.stringify(obj), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        if (url.includes("/api/dashboard")) return json({ summary: { ticketsByStatus: {} } });
+        if (url.includes("/api/human-queue")) return json({ items: [], counts: { total: 0 } });
+        if (url.includes("/api/runs")) return json({ active: [], recent: [] });
+        if (url.includes("/api/activity")) return json({ events: [], total: 0 });
+        if (url.includes("/api/board")) return json(null);
+        if (url.includes("/claims"))
+          return json({
+            claims: tickets
+              .filter((t) => t.agent)
+              .map((t) => ({
+                ticket_id: t.id,
+                ticket_number: t.number,
+                agent_id: "ag-" + t.agent,
+                agent_display_name: t.agent,
+              })),
+          });
+        const one = url.match(/\/tickets\/(tk-\d+)/);
+        const hit = one && tickets.find((t) => t.id === one[1]);
+        if (hit)
+          return json({
+            ticket: { id: hit.id, number: hit.number, status: hit.status },
+            events: [],
+            repositories: [{ name: hit.repo, access: "write" }],
+            scopes: [],
+          });
+        if (url.includes("/tickets"))
+          return json({
+            tickets: tickets.map((t) => ({
+              id: t.id,
+              number: t.number,
+              title: `Ticket ${t.number}`,
+              status: t.status,
+              updated_at: ago(5),
             })),
-        });
-      const one = url.match(/\/tickets\/(tk-\d+)/);
-      const hit = one && tickets.find((t) => t.id === one[1]);
-      if (hit)
-        return json({
-          ticket: { id: hit.id, number: hit.number, status: hit.status },
-          events: [],
-          repositories: [{ name: hit.repo, access: "write" }],
-          scopes: [],
-        });
-      if (url.includes("/tickets"))
-        return json({
-          tickets: tickets.map((t) => ({
-            id: t.id,
-            number: t.number,
-            title: `Ticket ${t.number}`,
-            status: t.status,
-            updated_at: ago(5),
-          })),
-        });
-      if (url.includes("/decisions")) return json({ decisions: [] });
-      return json({});
-    }),
+          });
+        if (url.includes("/decisions")) return json({ decisions: [] });
+        return json({});
+      }),
+    ),
   );
 }
 

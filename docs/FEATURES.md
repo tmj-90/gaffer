@@ -137,8 +137,15 @@ a visible window of each lane (`GET /api/board?limit=200`; Done, failed and won'
 newest first) and the lane heads show each lane's true size from the server's
 `counts`; the rest of a lane is one link away in the List view, which filters on
 the server. A filter typed on a windowed board applies to the loaded cards and says
-so. Without `limit` the endpoint still returns every card, and it no longer has a
-size ceiling (it used to fail at 32,767 tickets on SQLite's variable limit).
+so. Without `limit` the board answers the first 500 cards of each area (its `counts`
+say how many there are, and `area` with `offset` pages one), and `GET /tickets`
+answers 500 rows with a `next_offset`, so a bare read of a big board stays small (a
+20k-ticket board used to answer 54 MB). The views that need every ticket's links (the
+Map, the Overview, Epics, a ticket's campaign card) read them in batches through
+`GET /tickets/details` (by `ids`, or a page of every ticket, with only the parts they
+use) and every repo's grounds through `GET /scope/repos?all=1`, instead of one
+`GET /tickets/:id` per ticket: the Map at 2,000 tickets settles in about 0.6 s with
+14 requests (it took 2–4 s and over 600).
 
 An acceptance criterion can be **machine-checkable**: give it a check command
 (`npm test`, a script, an HTTP probe) and the runner executes it in the delivery
@@ -387,7 +394,7 @@ structural barrier the whole design hangs on.
   now** (Auto-merge on with a merge command: the landing check and the merge gate
   run at once, through the PR in PR mode), **Approve, lands on next tick**
   (Auto-merge on, or an earned merge grant, with the runner's merge lane doing
-  the landing), **Approve, waits for Merge now** (Auto-merge off), **Approve
+  the landing), **Approve, merge is a separate click** (Auto-merge off: it waits in Ready for merge for Merge now), **Approve
   held: CI not passed** (required CI has no PASS for the commit, so the server
   would refuse), or **Approve held: <repo> unavailable** (a write repository's
   delivery head cannot be read, so the server refuses an approval that could not
@@ -417,7 +424,14 @@ structural barrier the whole design hangs on.
   every repository* (a write repo with no approved commit), *Held · merge gate
   failed*, *Held · CI red*.
   The server stamps it as `landing_state` on the ticket, the board cards, the
-  ticket list and the Team sheet.
+  ticket list and the Team sheet. The ticket page's *Your move* says the same
+  thing in its own words and offers the action that clears it (**Back to review**
+  for a branch that moved since review or an approval that missed a repository;
+  the `ticket.reopened_for_review` event records that cause, and only the conflict
+  resolver's reopen says a merge conflict was resolved), and the page follows the
+  live stream: when a landing completes, every open tab of that ticket turns to
+  Done and drops its merge actions without a reload. Text typed in a field on the
+  page and not yet sent keeps the page as it is until it is sent or cleared.
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
   a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read

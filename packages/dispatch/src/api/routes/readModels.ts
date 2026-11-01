@@ -45,6 +45,9 @@ const loreDraftMemo = new WeakMap<
   MemoryReader,
   { at: number; ttl: number; total: number; titles: string[] }
 >();
+/** Cards per board area a bare GET /api/board returns (see the board route). */
+export const BOARD_DEFAULT_LIMIT = 500;
+
 export function forgetLoreDrafts(reader: MemoryReader): void {
   loreDraftMemo.delete(reader);
 }
@@ -170,7 +173,10 @@ export function routeReadModels(
   // Accepts optional ?repo= to restrict the board to one repository, and a visible
   // WINDOW: ?limit=N (cards per area, 1..1000) [&offset=M] [&area=<column|closed|wontDo>]
   // returns at most N cards per area from M (only that area with ?area=), while
-  // `counts` always carries every area's total. Without ?limit every card is returned.
+  // `counts` always carries every area's total. Without ?limit the window is the first
+  // BOARD_DEFAULT_LIMIT cards per area (exploratory finding api-robustness/F10: a
+  // 20k-ticket board answered 7 MB to a bare GET); a caller that wants a whole area
+  // pages it with ?area=&offset= (`counts` says how many there are).
   if (segments.length === 2 && segments[1] === "board") {
     if (method !== "GET") return methodNotAllowed(res);
     const repoFilter = url.searchParams.get("repo") ?? undefined;
@@ -178,7 +184,7 @@ export function routeReadModels(
     // PRINCIPAL SCOPES: a scoped principal's board holds only its tickets.
     const visible = requestTicketFilter(wg) ?? undefined;
     if (rawLimit === null) {
-      sendJson(res, 200, wg.board(repoFilter, undefined, visible));
+      sendJson(res, 200, wg.board(repoFilter, { limit: BOARD_DEFAULT_LIMIT, offset: 0 }, visible));
       return;
     }
     const limit = Number.parseInt(rawLimit, 10);

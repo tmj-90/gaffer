@@ -984,6 +984,9 @@ export const AUTH_ERROR_PATTERNS = Object.freeze([
  */
 export function detectAuthError(json) {
   if (!json || typeof json !== "object" || !isErrorEnvelope(json)) return null;
+  // A turn-cap stop means the agent ran for its turns: whatever text the envelope
+  // carries is the agent's, never the CLI's login failure (it must not dodge the cap).
+  if (json.subtype === "error_max_turns") return null;
   if (json.error && typeof json.error === "object" && json.error.type === "authentication_error") {
     const m = typeof json.error.message === "string" ? json.error.message : "authentication_error";
     return { id: "api-authentication-error", message: m.slice(0, 300) };

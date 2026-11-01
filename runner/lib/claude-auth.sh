@@ -22,18 +22,33 @@
 
 # gaffer_claude_auth_probe
 #   → 0 a credential is visible (GAFFER_CLAUDE_AUTH_SOURCE says which)
-#   · 1 none visible · 2 unknown (macOS Keychain — not inspectable from a shell).
+#   · 1 none visible · 2 unknown (macOS Keychain, a gateway, no HOME: not inspectable).
+# Looks at: the env vars the CLI reads, its credentials file, a Console key in its
+# global config (~/.claude.json), and an apiKeyHelper or auth `env` entry in the
+# user's or the managed settings.json. Only the presence of a key name is checked.
 gaffer_claude_auth_probe() {
   GAFFER_CLAUDE_AUTH_SOURCE=""
   local k
-  for k in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX; do
+  for k in ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY; do
     if [ -n "${!k:-}" ]; then GAFFER_CLAUDE_AUTH_SOURCE="\$$k"; return 0; fi
   done
-  local cred="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+  # No HOME (a bare service unit) and no CLAUDE_CONFIG_DIR: nowhere to look, so unknown.
+  [ -z "${CLAUDE_CONFIG_DIR:-}" ] && [ -z "${HOME:-}" ] && return 2
+  local cdir="${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}"
+  local cred="$cdir/.credentials.json"
   if [ -s "$cred" ]; then GAFFER_CLAUDE_AUTH_SOURCE="$cred"; return 0; fi
-  # An apiKeyHelper in the CLI's settings produces the key itself.
-  local cset="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json"
-  if [ -s "$cset" ] && grep -q '"apiKeyHelper"' "$cset" 2>/dev/null; then GAFFER_CLAUDE_AUTH_SOURCE="$cset (apiKeyHelper)"; return 0; fi
+  # The CLI's global config keeps a Console login's key as primaryApiKey.
+  local gcfg="${HOME:-}/.claude.json"; [ -n "${CLAUDE_CONFIG_DIR:-}" ] && gcfg="$CLAUDE_CONFIG_DIR/.claude.json"
+  if [ -s "$gcfg" ] && grep -q '"primaryApiKey"' "$gcfg" 2>/dev/null; then GAFFER_CLAUDE_AUTH_SOURCE="$gcfg (primaryApiKey)"; return 0; fi
+  # The user's and the managed settings can supply a login: an apiKeyHelper that
+  # produces the key, or an `env` block that sets a key, a cloud provider or a gateway.
+  local cset
+  for cset in "$cdir/settings.json" /etc/claude-code/managed-settings.json "/Library/Application Support/ClaudeCode/managed-settings.json"; do
+    [ -s "$cset" ] || continue
+    if grep -qE '"(apiKeyHelper|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_CODE_OAUTH_TOKEN|CLAUDE_CODE_USE_BEDROCK|CLAUDE_CODE_USE_VERTEX|CLAUDE_CODE_USE_FOUNDRY|ANTHROPIC_BASE_URL)"' "$cset" 2>/dev/null; then
+      GAFFER_CLAUDE_AUTH_SOURCE="$cset"; return 0
+    fi
+  done
   [ "$(uname -s 2>/dev/null)" = "Darwin" ] && return 2
   # A gateway (ANTHROPIC_BASE_URL) may authenticate on its own: not inspectable.
   [ -n "${ANTHROPIC_BASE_URL:-}" ] && return 2
@@ -48,8 +63,9 @@ gaffer_claude_auth_probe() {
 # FREE (gaffer_claude_auth_probe, no model call) and CACHED for the run: a pass exports
 # GAFFER_CLAUDE_AUTH_CHECKED=ok, so its workers and later checks do not probe again.
 # Never refuses on doubt: a dry run, another worker provider, a custom CLAUDE_BIN (a
-# wrapper may bring its own login), "unknown" (the macOS Keychain, an
-# ANTHROPIC_BASE_URL gateway) and GAFFER_CLAUDE_AUTH_PROBE=0 all go ahead. A credential
+# wrapper may bring its own login), the docker sandbox (the container has its own),
+# "unknown" (the macOS Keychain, an ANTHROPIC_BASE_URL gateway, no HOME) and
+# GAFFER_CLAUDE_AUTH_PROBE=0 all go ahead. A credential
 # that is present but rejected is caught when the call fails (tick.sh auth_error).
 gaffer_claude_auth_gate() {
   [ "${DRY_RUN:-0}" = "1" ] && return 0
@@ -57,6 +73,12 @@ gaffer_claude_auth_gate() {
   [ "${GAFFER_CLAUDE_AUTH_CHECKED:-}" = "ok" ] && return 0
   case "${GAFFER_WORKER_PROVIDER:-claude-code}" in claude-code|claude|"") ;; *) return 0 ;; esac
   [ "${CLAUDE_BIN:-claude}" = "claude" ] || return 0
+  # The docker sandbox runs the agent in a container with ITS credential (forwarded
+  # env or GAFFER_SANDBOX_CLAUDE_CREDENTIALS, which sandbox-docker.sh checks), not the
+  # host's login, so the host having none says nothing.
+  if [ "${SANDBOX_PROVIDER:-}" = "docker" ] && declare -F _worker_sandbox_wanted >/dev/null 2>&1 && _worker_sandbox_wanted; then
+    return 0
+  fi
   local _rc=0
   gaffer_claude_auth_probe || _rc=$?
   [ "$_rc" = 1 ] && return 1

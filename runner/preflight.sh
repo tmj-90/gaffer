@@ -38,8 +38,10 @@ case "${GAFFER_WORKER_PROVIDER:-claude-code}" in
     if _wcmd="$(_gaffer_worker_command_bin 2>&1)"; then ok "worker provider: command ($_wcmd)"; else no "$_wcmd"; fi
     if _gaffer_strict_require_opted_out; then
       wn "worker provider command with GAFFER_STRICT_REQUIRE=0: no OS sandbox requirement and no in-process safety hook — only safe if the runner is contained out-of-band (a VM or container)"
+    elif _wwhy="$(SANDBOX_PROVIDER="${SANDBOX_PROVIDER:-sandbox-exec}" node "$RUNNER_DIR/lib/worker.mjs" command-containment 2>/dev/null)"; then
+      ok "worker provider command: the docker sandbox with the MCP bridge is required at every spawn (docker needs a running daemon)"
     else
-      ok "worker provider command: an OS sandbox is required at every spawn (SANDBOX_PROVIDER=${SANDBOX_PROVIDER:-sandbox-exec}; docker needs a running daemon)"
+      no "${_wwhy:-worker provider command: no usable sandbox for it}"
     fi ;;
   *) no "GAFFER_WORKER_PROVIDER=${GAFFER_WORKER_PROVIDER} is not a known worker provider (claude-code or command) — every agent launch refuses" ;;
 esac

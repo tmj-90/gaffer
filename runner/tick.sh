@@ -177,7 +177,7 @@ gaffer_crash_cleanup() {
   [ -n "${MCP_RUNTIME:-}" ] && rm -f "$MCP_RUNTIME" 2>/dev/null || true
   # B25(a): the docker sandbox's per-call root files are named with THIS tick's PID
   # (lib/sandbox.sh) so they can be swept here without touching a concurrent worker's.
-  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* 2>/dev/null || true
+  rm -f "$GAFFER_DATA"/sandbox-write-roots.$$.* "$GAFFER_DATA"/sandbox-read-roots.$$.* "$GAFFER_DATA"/strict-profile.$$.* "$GAFFER_DATA"/worker-prompt.$$.* 2>/dev/null || true
   # RESUME ABORT: a resumed delivery (paused → Continue → in_progress) that ends here
   # without completing — a signal, the outer timeout, a fail-closed setup exit, a
   # worktree that could not be reused — used to stay in_progress with nothing left to
@@ -2415,6 +2415,20 @@ $PRODUCT_CONTEXT_BLOCK}"
   # (GAFFER_STRICT_REQUIRE — auto-set by every autonomy flag). Gating this on
   # STRICT_MODE alone let `GAFFER_MODE=autonomous` announce "fails closed without an
   # OS sandbox" and then launch uncontained, because nothing here ever asked.
+  # THE COMMAND WORKER'S CONTAINMENT RULE, checked before any wrap is composed: its only
+  # accepted boundary is the docker sandbox with the host-side MCP bridge (lib/worker.mjs
+  # commandContainmentProblem). The seam refuses anything else at the spawn (rc 75);
+  # parking HERE keeps that refusal from being counted as a failed delivery attempt.
+  if [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ] && ! _gaffer_strict_require_opted_out \
+     && ! _CMD_WHY="$(SANDBOX_PROVIDER="${SANDBOX_PROVIDER:-sandbox-exec}" node "$RUNNER_DIR/lib/worker.mjs" command-containment 2>/dev/null)"; then
+    [ -n "$_CMD_WHY" ] || _CMD_WHY="$(_gaffer_worker_command_refusal_msg none)"
+    log "STRICT_REQUIRE: refusing to launch the agent (fail closed, strict_require_unavailable): $_CMD_WHY"
+    wg attach-evidence "$NUM" --type manual_note \
+      --summary "PARKED (strict_require_unavailable): $_CMD_WHY" >/dev/null 2>&1 || true
+    gaffer_release_delivery blocked "GAFFER_WORKER_PROVIDER=command needs the docker sandbox with the MCP bridge — fail closed, agent not launched" strict_require_unavailable
+    gaffer_skip_ticket "$NUM"
+    result error; exit 0
+  fi
   if [ "${STRICT_MODE:-0}" = "1" ] || _sandbox_strict_required; then
     # C4: sandbox_wrap_cmd returns NON-ZERO only when GAFFER_STRICT_REQUIRE=1 and no OS
     # sandbox provider is available — a hard fail-closed: the operator demanded OS
@@ -2435,7 +2449,7 @@ $PRODUCT_CONTEXT_BLOCK}"
       # required (factory.config.sh defaults GAFFER_STRICT_REQUIRE=1 for it): say so.
       _SR_WHY=""
       [ "${GAFFER_WORKER_PROVIDER:-claude-code}" = command ] \
-        && _SR_WHY=" (GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs one: set SANDBOX_PROVIDER=docker, or GAFFER_STRICT_REQUIRE=0 if the runner is contained out-of-band)"
+        && _SR_WHY=" (GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs one: set SANDBOX_PROVIDER=docker with a running daemon, or GAFFER_STRICT_REQUIRE=0 in the environment if the runner is contained out-of-band)"
       log "STRICT_REQUIRE: no OS sandbox provider available on this host — refusing to launch the agent (fail closed)$_SR_WHY"
       wg attach-evidence "$NUM" --type manual_note \
         --summary "PARKED (strict_require_unavailable): GAFFER_STRICT_REQUIRE=1 but no OS sandbox provider is available on this host — the agent was NOT launched (fail closed)$_SR_WHY" >/dev/null 2>&1 || true

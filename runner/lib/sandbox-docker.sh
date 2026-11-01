@@ -366,6 +366,27 @@ _bridge_wanted() {
 }
 _HAS_MCP=0; _prev=""
 for _a in "$@"; do [ "$_prev" = "--mcp-config" ] && _HAS_MCP=1; _prev="$_a"; done
+# THE COMMAND WORKER (GAFFER_WORKER_PROVIDER=command, docs/worker-providers.md) takes no
+# arguments: the worker seam hands it the call through an `env [-i] NAME=VALUE … <program>`
+# prefix instead. Only that leading run of assignments is read (never a word after the
+# program): GAFFER_WORKER_CONTRACT marks a command worker, GAFFER_WORKER_MCP_CONFIG is its
+# MCP config (mounted exactly like a claude `--mcp-config`) and GAFFER_WORKER_PROMPT_FILE
+# its prompt (mounted read-only).
+_CMD_WORKER=0; _CMD_MCP=""; _CMD_PROMPT=""
+if [ "${1:-}" = "env" ]; then
+  for _a in "${@:2}"; do
+    case "$_a" in
+      -i) ;;
+      GAFFER_WORKER_CONTRACT=*) _CMD_WORKER=1 ;;
+      GAFFER_WORKER_MCP_CONFIG=*) _CMD_MCP="${_a#GAFFER_WORKER_MCP_CONFIG=}" ;;
+      GAFFER_WORKER_PROMPT_FILE=*) _CMD_PROMPT="${_a#GAFFER_WORKER_PROMPT_FILE=}" ;;
+      [A-Za-z_]*=*) ;;
+      *) break ;;
+    esac
+  done
+fi
+[ "$_CMD_WORKER" = 1 ] || { _CMD_MCP=""; _CMD_PROMPT=""; }
+[ -n "$_CMD_MCP" ] && _HAS_MCP=1
 if [ "${GAFFER_SANDBOX_PROFILE:-}" = "validation" ]; then _MODE=validation
 elif [ -n "${GAFFER_MCP_BRIDGE_SOCKET:-}" ]; then _MODE=bridge
 elif [ "${GAFFER_SANDBOX_DATA_PLANE:-}" = "none" ] || [ "$_HAS_MCP" = 0 ]; then _MODE=none
@@ -395,6 +416,7 @@ elif [ "$_MODE" = "bridge" ] || [ "$_MODE" = "none" ]; then
     if [ "$_prev" = "--mcp-config" ] && [ -f "$_a" ]; then _covered "$_a" || _add_mount "$_a" ro; fi
     _prev="$_a"
   done
+  [ -n "$_CMD_MCP" ] && [ -f "$_CMD_MCP" ] && ! _covered "$_CMD_MCP" && _add_mount "$_CMD_MCP" ro
   if [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA" ]; then
     for _f in "$GAFFER_DATA/safety-blocks.jsonl" "$GAFFER_DATA/tool-metrics.jsonl"; do
       [ -e "$_f" ] || : > "$_f" 2>/dev/null || true
@@ -427,6 +449,9 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
     fi
     _prev="$_a"
   done
+  for _a in "$_CMD_MCP" "$_CMD_PROMPT"; do
+    case "$_a" in "$GAFFER_DATA"/?*) _keep+=( "${_a#"$GAFFER_DATA"/}" ) ;; esac
+  done
   # The crew events log the MCP servers append to, and the safety hook's own ledgers.
   case "${GAFFER_CREW_EVENTS:-}" in "$GAFFER_DATA"/*) _keep+=( "${GAFFER_CREW_EVENTS#"$GAFFER_DATA"/}" ) ;; esac
   _keep+=( safety-blocks.jsonl tool-metrics.jsonl )
@@ -455,6 +480,13 @@ elif [ "$_MODE" = "legacy" ] && [ -n "${GAFFER_DATA:-}" ] && [ -d "$GAFFER_DATA"
   done
 fi
 
+# The command worker's prompt file (read-only), in every layout but validation (a gate
+# never runs with one). In the legacy layout it is already visible through the $GAFFER_DATA
+# mount (kept above).
+if [ "$_MODE" != "validation" ] && [ -n "$_CMD_PROMPT" ] && [ -f "$_CMD_PROMPT" ] && ! _covered "$_CMD_PROMPT"; then
+  _add_mount "$_CMD_PROMPT" ro
+fi
+
 # Forward ONLY the allowlisted env. The model credential (ONE of ANTHROPIC_API_KEY or
 # CLAUDE_CODE_OAUTH_TOKEN — the latter is a subscription token from `claude setup-token`,
 # the supported headless-Max path) plus the MCP data-plane vars. Nothing else.
@@ -479,15 +511,19 @@ case "$_MODE" in
   *)          _fwd=( ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN GAFFER_DATA GAFFER_FACTORY ) ;;
 esac
 for k in "${_fwd[@]}"; do
+  # A command worker never gets the claude credential: it brings its own, named in
+  # GAFFER_WORKER_COMMAND_ENV, and those ride the seam's `env -i` prefix.
+  case "$_CMD_WORKER:$k" in 1:ANTHROPIC_API_KEY | 1:CLAUDE_CODE_OAUTH_TOKEN) continue ;; esac
   [ -n "${!k:-}" ] && _envs+=( -e "$k" )
 done
 # Fallback: if the operator has placed a Claude credentials file, mount it read-only into
 # the container's home so claude authenticates. The runner never reads its contents.
-# Never under the validation profile.
+# Never under the validation profile, never for a command worker.
 _cred="${GAFFER_SANDBOX_CLAUDE_CREDENTIALS:-}"
 [ "$_MODE" = "validation" ] && _cred=""
+[ "$_CMD_WORKER" = 1 ] && _cred=""
 [ -n "$_cred" ] && [ -f "$_cred" ] && _mounts+=( -v "$_cred:/root/.claude/.credentials.json:ro" )
-if [ "$_MODE" != "validation" ] && [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -f "${_cred:-/nonexistent}" ]; then
+if [ "$_MODE" != "validation" ] && [ "$_CMD_WORKER" = 0 ] && [ -z "${ANTHROPIC_API_KEY:-}${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ ! -f "${_cred:-/nonexistent}" ]; then
   printf 'sandbox-docker: no model credential — set CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`), ANTHROPIC_API_KEY, or GAFFER_SANDBOX_CLAUDE_CREDENTIALS; claude will not authenticate inside the container\n' >&2
 fi
 # The bind-mounted worktree + repo `.git` are owned by the HOST uid while the guest runs

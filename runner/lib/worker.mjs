@@ -51,18 +51,24 @@ import { spawn, spawnSync } from "node:child_process";
 import { BUDGET_REFUSED_STATUS, paidLaunchAdmission } from "./budget-admission.mjs";
 import {
   accessSync,
+  closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
+  mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   realpathSync,
   rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { platform } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const RUNNER_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -123,11 +129,36 @@ function failClosedResult(message) {
 /** Exit codes the runner itself returns for refusals; a worker returning one is remapped to 1. */
 export const RESERVED_WORKER_EXIT_CODES = Object.freeze([70, 75, 76, 77]);
 
+// The forms of a path a containment check must compare: as written (resolved), with its
+// directory's symlinks resolved, and fully resolved. A program named through a symlink
+// that lives in a write root is refused even when the link points somewhere safe: the
+// agent could re-point the link.
+function pathForms(p) {
+  const out = new Set([resolve(p)]);
+  try {
+    out.add(resolve(realpathSync(dirname(resolve(p))), basename(p)));
+  } catch {
+    /* no such dir */
+  }
+  try {
+    out.add(realpathSync(p));
+  } catch {
+    /* no such file */
+  }
+  return [...out];
+}
+const isInside = (p, root) => p === root || p.startsWith(root.endsWith("/") ? root : root + "/");
+
 /**
  * The command provider's program: `{ ok: true, command }` for an absolute path to an
- * executable file, else `{ ok: false, message }` (the launch is refused, status 70).
+ * executable file the agent cannot rewrite, else `{ ok: false, message }` (the launch is
+ * refused, status 70). The program is what runs every agent turn, so it must live
+ * outside every directory the factory lets an agent write: not under $GAFFER_DATA (the
+ * delivery worktrees live there, and settings.json), not under this call's write roots
+ * or its working directory, not reached through a symlink in one of them, and not
+ * writable by its group or others.
  */
-export function commandWorkerConfig(env = process.env) {
+export function commandWorkerConfig(env = process.env, { writeRoots = "", cwd = "" } = {}) {
   const cmd = String(env.GAFFER_WORKER_COMMAND ?? "").trim();
   const fix =
     "set GAFFER_WORKER_COMMAND to the absolute path of an executable worker program (docs/worker-providers.md)";
@@ -141,14 +172,50 @@ export function commandWorkerConfig(env = process.env) {
       ok: false,
       message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} is not an absolute path; ${fix} — no agent spawned`,
     };
+  let st;
   try {
     accessSync(cmd, fsConstants.X_OK);
-    if (!statSync(cmd).isFile()) throw new Error("not a file");
+    st = statSync(cmd);
+    if (!st.isFile()) throw new Error("not a file");
   } catch {
     return {
       ok: false,
       message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} is not an executable file; ${fix} — no agent spawned`,
     };
+  }
+  const where =
+    "keep the worker program outside every directory an agent can write ($GAFFER_DATA, the worktrees, the call's write roots), owned by you and not writable by others";
+  const roots = [
+    { root: env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"), what: "$GAFFER_DATA" },
+    ...String(writeRoots || "")
+      .split("\n")
+      .map((r) => ({ root: r.trim(), what: "a write root of this call" })),
+    { root: String(cwd || "").trim(), what: "the call's working directory" },
+  ].filter((r) => r.root.startsWith("/"));
+  for (const c of pathForms(cmd)) {
+    for (const { root, what } of roots) {
+      if (pathForms(root).some((r) => isInside(c, r)))
+        return {
+          ok: false,
+          message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} lives inside ${what} (${root}), where an agent can replace it; ${where} — no agent spawned`,
+        };
+    }
+  }
+  if (st.mode & 0o022)
+    return {
+      ok: false,
+      message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} is writable by its group or others (mode ${(st.mode & 0o777).toString(8)}); run chmod go-w on it and ${where} — no agent spawned`,
+    };
+  try {
+    const dst = statSync(dirname(realpathSync(cmd)));
+    // A directory others may write lets them swap the program, unless it is sticky (/tmp).
+    if (dst.mode & 0o002 && !(dst.mode & 0o1000))
+      return {
+        ok: false,
+        message: `worker provider command: GAFFER_WORKER_COMMAND=${cmd} sits in a directory anyone can write; ${where} — no agent spawned`,
+      };
+  } catch {
+    /* the stat above already proved the file exists */
   }
   return { ok: true, command: cmd };
 }
@@ -160,13 +227,109 @@ export function strictRequireOptedOut(env = process.env) {
   return v === "0" || v === "false" || v === "no" || v === "off";
 }
 
-/** The refusal when the command provider needs an OS sandbox the host cannot supply. Same words as worker.sh. */
-export function commandSandboxRefusalMessage() {
-  return (
-    "worker: GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs an OS sandbox and none is available on this host — refusing to spawn the worker (fail closed). " +
-    "Fix: set SANDBOX_PROVIDER=docker with a running docker daemon (or SANDBOX_PROVIDER=sandbox-exec on macOS), " +
-    "or set GAFFER_STRICT_REQUIRE=0 if you contain the whole runner out-of-band (a VM or container)"
-  );
+/**
+ * The refusal when the command provider cannot get the containment it needs. Its only
+ * accepted boundary is the docker sandbox WITH the host-side MCP bridge:
+ *   • "none"         no OS sandbox at all on this host (or SANDBOX_PROVIDER=none/unknown);
+ *   • "write-only"   SANDBOX_PROVIDER=sandbox-exec: a write-only boundary whose profile
+ *                    still grants writes under $GAFFER_DATA (settings.json, the dispatch
+ *                    and memory databases, the usage ledger). claude-code's in-process
+ *                    hook refuses those writes; a command worker has none;
+ *   • "not-docker"   a wrap that is not the docker wrapper reached the seam;
+ *   • "legacy"       docker without the MCP bridge (GAFFER_MCP_BRIDGE off, the macOS
+ *                    default): the databases are mounted read-write in the container.
+ * The bash seam prints the same words (`node lib/worker.mjs command-refusal <why>`).
+ */
+export function commandSandboxRefusalMessage(why = "none") {
+  const fix =
+    "Fix: set SANDBOX_PROVIDER=docker with a running docker daemon on a host where the MCP bridge works (GAFFER_MCP_BRIDGE on: the default on Linux), " +
+    "or set GAFFER_STRICT_REQUIRE=0 in the environment if you contain the whole runner out-of-band (a VM or container)";
+  const head = {
+    none: "has no in-process safety hook, so it needs the docker sandbox and no OS sandbox is available on this host",
+    "write-only":
+      "needs the docker sandbox: SANDBOX_PROVIDER=sandbox-exec only restricts writes, and its profile still lets the worker write $GAFFER_DATA (settings.json, the dispatch and memory databases, the usage ledger), which only claude-code's in-process safety hook guards",
+    "not-docker":
+      "needs the docker sandbox, and the wrap handed to the worker seam is not the docker wrapper",
+    legacy:
+      "needs the docker sandbox with the host-side MCP bridge: with GAFFER_MCP_BRIDGE off (the macOS default) the dispatch and memory databases are mounted read-write into the container, where the worker could change ticket state directly",
+  };
+  return `worker: GAFFER_WORKER_PROVIDER=command ${head[why] || head.none} — refusing to spawn the worker (fail closed). ${fix}`;
+}
+
+/**
+ * Why the command worker may NOT launch under this sandbox configuration, or null when
+ * it may (the docker provider, with the MCP bridge on or no MCP data plane at all).
+ * `hasMcpServers` says whether this call's MCP config names any server. The docker
+ * daemon's availability is the wrap's own check (sandbox_wrap_cmd under
+ * GAFFER_STRICT_REQUIRE=1). Not consulted under the explicit opt-out.
+ */
+export function commandContainmentProblem(env = process.env, { hasMcpServers = true } = {}) {
+  const sp = String(env.SANDBOX_PROVIDER || "sandbox-exec").trim();
+  if (sp === "sandbox-exec") return "write-only";
+  if (sp !== "docker") return "none";
+  if (hasMcpServers && !mcpBridgeOn(env)) return "legacy";
+  return null;
+}
+
+/** True when the MCP config file names at least one server (an unreadable one counts as yes: fail closed). */
+export function mcpConfigHasServers(path) {
+  if (!path) return false;
+  try {
+    return Object.keys(JSON.parse(readFileSync(path, "utf8")).mcpServers || {}).length > 0;
+  } catch {
+    return existsSync(path);
+  }
+}
+
+// The largest prompt that also rides GAFFER_WORKER_PROMPT inline. One environment string
+// is capped at 128 KiB on Linux (MAX_ARG_STRLEN) and macOS caps the whole argv plus env
+// near 1 MiB, so a long prompt with big context blocks would fail to spawn at all. The
+// prompt always reaches the worker through GAFFER_WORKER_PROMPT_FILE.
+export const COMMAND_PROMPT_INLINE_MAX = 64 * 1024;
+
+/**
+ * Write this call's prompt to a private per-call file under $GAFFER_DATA (mode 600) and
+ * return its path; the docker wrapper mounts it read-only. The caller removes it.
+ */
+export function writeCommandPromptFile(prompt, gafferData) {
+  const dir = gafferData || resolve(RUNNER_DIR, "..", ".gaffer");
+  mkdirSync(dir, { recursive: true });
+  const file = resolve(dir, `worker-prompt.${process.pid}.${randomBytes(6).toString("hex")}`);
+  writeFileSync(file, String(prompt ?? ""), { mode: 0o600, flag: "wx" });
+  return file;
+}
+
+/** The prompt's inline copy for GAFFER_WORKER_PROMPT: the text when it fits, else "". */
+export function commandInlinePrompt(prompt) {
+  const p = String(prompt ?? "");
+  return Buffer.byteLength(p) <= COMMAND_PROMPT_INLINE_MAX ? p : "";
+}
+
+// The flat floor default when GAFFER_KILL_ESTIMATE_USD is unset (usage-ledger.mjs
+// KILL_ESTIMATE_DEFAULT_USD and factory.config.sh carry the same figure).
+const COMMAND_COST_FLOOR_DEFAULT_USD = 0.05;
+
+/**
+ * The least a command-worker call is booked at. The cost in its envelope is the
+ * operator's program talking, so a figure it leaves out or puts low must not let the
+ * daily and lifetime caps under-count. Precedence: GAFFER_WORKER_COMMAND_COST_USD when
+ * set (0 = trust the worker's own figure), else this call's dollar cap
+ * (GAFFER_WORKER_MAX_BUDGET_USD, when positive), else GAFFER_KILL_ESTIMATE_USD, else $0.05.
+ */
+export function commandCostFloorUsd({ explicit, perCall, killFloor } = {}) {
+  const num = (v) => {
+    const t = String(v ?? "").trim();
+    if (!/^(\d+\.?\d*|\.\d+)$/.test(t)) return null;
+    const n = Number(t);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const e = num(explicit);
+  if (e !== null) return e;
+  const p = num(perCall);
+  if (p !== null && p > 0) return p;
+  const k = num(killFloor);
+  if (k !== null) return k;
+  return COMMAND_COST_FLOOR_DEFAULT_USD;
 }
 
 /** The loud line logged at every command-worker spawn under the opt-out. Same words as worker.sh. */
@@ -239,6 +402,7 @@ export function commandArgvHints(argv) {
 /** The GAFFER_WORKER_* contract variables (all strings; "" = not set for this call). */
 export function commandContractEnv({
   prompt = "",
+  promptFile = "",
   mcpConfig = "",
   model = "",
   maxTurns = "",
@@ -251,7 +415,8 @@ export function commandContractEnv({
 } = {}) {
   return {
     GAFFER_WORKER_CONTRACT: "1",
-    GAFFER_WORKER_PROMPT: String(prompt),
+    GAFFER_WORKER_PROMPT: commandInlinePrompt(prompt),
+    GAFFER_WORKER_PROMPT_FILE: String(promptFile),
     GAFFER_WORKER_MCP_CONFIG: String(mcpConfig),
     GAFFER_WORKER_MODEL: String(model),
     GAFFER_WORKER_MAX_TURNS: String(maxTurns),
@@ -286,7 +451,7 @@ const finiteNonNeg = (v) => (typeof v === "number" && Number.isFinite(v) && v >=
  * release a ticket without counting an attempt, and the program writing this
  * envelope must not be able to buy that.
  */
-export function normalizeCommandEnvelope(text) {
+export function normalizeCommandEnvelope(text, { costFloorUsd = 0 } = {}) {
   const raw = parseClaudeJson(text);
   if (!raw) return "";
   const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
@@ -294,18 +459,24 @@ export function normalizeCommandEnvelope(text) {
   const capHit = raw.cap_hit === true || MAX_TURNS_RE.test(stop);
   const budgetStop = !capHit && MAX_BUDGET_RE.test(stop);
   const cost = finiteNonNeg(raw.cost_usd);
+  // The per-call floor (commandCostFloorUsd): a cost left out or reported below it is
+  // booked AT the floor, labelled basis "floor", with the worker's own figure kept.
+  const floor = finiteNonNeg(costFloorUsd) ?? 0;
+  const floored = floor > 0 && (cost === undefined || cost < floor);
   const out = {
     type: "result",
     subtype: capHit ? "error_max_turns" : budgetStop ? "error_max_budget_usd" : "success",
     is_error: capHit || budgetStop,
     result: typeof raw.result === "string" ? raw.result : "",
     gaffer_worker_provider: COMMAND_WORKER_PROVIDER,
-    gaffer_cost_basis: cost === undefined ? "unreported" : "reported",
+    gaffer_cost_basis: floored ? "floor" : cost === undefined ? "unreported" : "reported",
   };
+  if (floored) out.gaffer_reported_cost_usd = cost === undefined ? UNKNOWN : cost;
   if (stop) out.stop_reason = stop;
   if (finiteNonNeg(raw.num_turns) !== undefined) out.num_turns = raw.num_turns;
   if (finiteNonNeg(raw.duration_ms) !== undefined) out.duration_ms = raw.duration_ms;
-  if (cost !== undefined) out.total_cost_usd = cost;
+  if (floored) out.total_cost_usd = floor;
+  else if (cost !== undefined) out.total_cost_usd = cost;
   const u =
     raw.usage && typeof raw.usage === "object" && !Array.isArray(raw.usage) ? raw.usage : null;
   const tokens = {};
@@ -572,7 +743,10 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   }
   let command = null;
   if (isCommand) {
-    command = commandWorkerConfig(process.env);
+    command = commandWorkerConfig(process.env, {
+      writeRoots: (env && env.GAFFER_WRITE_ROOTS) || cwd,
+      cwd,
+    });
     if (!command.ok) {
       process.stderr.write(`${command.message}\n`);
       return failClosedResult(command.message);
@@ -601,10 +775,55 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
   // The command provider: the same launch, a different program. The claude-shaped argv
   // the launcher built becomes the GAFFER_WORKER_* contract; the program gets no args.
   let contract = null;
+  let hints = null;
+  // THE CONTAINMENT DECISION. claude-code: wrap when the sandbox is ON or REQUIRED.
+  // command: ALWAYS required (no in-process safety hook), unless the operator opted out
+  // with an explicit GAFFER_STRICT_REQUIRE=0 — then logged loudly, and wrapped only when
+  // STRICT_MODE=1 asks for it (degrading like claude-code does). The only boundary that
+  // counts for it is the docker sandbox with the host-side MCP bridge
+  // (commandContainmentProblem); anything else refuses before a file is written.
+  const optedOut = isCommand && strictRequireOptedOut(process.env);
+  const commandNeedsWrap = isCommand && !optedOut;
+  if (optedOut) process.stderr.write(`${commandOptOutWarning()}\n`);
   if (isCommand) {
-    const hints = commandArgvHints(argv);
+    hints = commandArgvHints(argv);
+    if (commandNeedsWrap) {
+      const why = commandContainmentProblem(process.env, {
+        hasMcpServers: mcpConfigHasServers(hints.mcpConfig),
+      });
+      if (why) {
+        const message = commandSandboxRefusalMessage(why);
+        process.stderr.write(`${message}\n`);
+        const r = failClosedResult(message);
+        r.status = SANDBOX_REFUSED_STATUS;
+        return r;
+      }
+    }
+  }
+  let promptFile = "";
+  const dropPromptFile = () => {
+    if (!promptFile) return;
+    try {
+      unlinkSync(promptFile);
+    } catch {
+      /* gone */
+    }
+  };
+  if (isCommand) {
+    try {
+      promptFile = writeCommandPromptFile(
+        hints.prompt,
+        process.env.GAFFER_DATA || resolve(RUNNER_DIR, "..", ".gaffer"),
+      );
+    } catch (e) {
+      const r = failClosedResult(
+        `worker: could not write the command worker's prompt file (${e?.code ?? e}) — no agent spawned`,
+      );
+      return r;
+    }
     contract = commandContractEnv({
       ...hints,
+      promptFile,
       kind,
       timeoutSecs: timeoutMs > 0 ? String(Math.ceil(timeoutMs / 1000)) : "",
     });
@@ -612,13 +831,11 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
     spawnArgv = [];
     spawnEnv = commandWorkerEnv(env, contract, process.env);
   }
-  // THE CONTAINMENT DECISION. claude-code: wrap when the sandbox is ON or REQUIRED.
-  // command: ALWAYS required (no in-process safety hook), unless the operator opted out
-  // with an explicit GAFFER_STRICT_REQUIRE=0 — then logged loudly, and wrapped only when
-  // STRICT_MODE=1 asks for it (degrading like claude-code does).
-  const optedOut = isCommand && strictRequireOptedOut(process.env);
-  const commandNeedsWrap = isCommand && !optedOut;
-  if (optedOut) process.stderr.write(`${commandOptOutWarning()}\n`);
+  // From here on every early return must remove the prompt file.
+  const refuse = (r) => {
+    dropPromptFile();
+    return r;
+  };
   if (commandNeedsWrap || sandboxWanted(process.env)) {
     // Derive the wrap from the per-call boundary vars (the cwd is the write root
     // when none is named), exactly like worker_deliver's WORKER_CALL_ENV scan.
@@ -626,17 +843,23 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
     const readRoots = (env && env.GAFFER_READ_ROOTS) || "";
     const wrapEnv = commandNeedsWrap ? { ...process.env, GAFFER_STRICT_REQUIRE: "1" } : process.env;
     const wrapped = sandboxWrapArgv({ writeRoots, readRoots, env: wrapEnv });
-    if (!wrapped.ok || (commandNeedsWrap && wrapped.wrap.length === 0)) {
+    const notDocker =
+      commandNeedsWrap &&
+      wrapped.ok &&
+      wrapped.wrap.length > 0 &&
+      !wrapped.wrap.some((w) => /(^|\/)sandbox-docker\.sh$/.test(w));
+    if (!wrapped.ok || (commandNeedsWrap && wrapped.wrap.length === 0) || notDocker) {
       // FAIL CLOSED: a required sandbox the host cannot supply means NO spawn —
       // status 75, empty stdout (no fabricated envelope), error set so callers'
       // existing error paths fire. Never a silent bare run.
       const message = commandNeedsWrap
-        ? commandSandboxRefusalMessage() + (wrapped.diag ? ` (${wrapped.diag})` : "")
+        ? commandSandboxRefusalMessage(notDocker ? "not-docker" : "none") +
+          (wrapped.diag ? ` (${wrapped.diag})` : "")
         : wrapped.message;
       if (commandNeedsWrap) process.stderr.write(`${message}\n`);
       const r = failClosedResult(message);
       r.status = SANDBOX_REFUSED_STATUS;
-      return r;
+      return refuse(r);
     }
     if (wrapped.diag) process.stderr.write(wrapped.diag + "\n");
     if (wrapped.wrap.length > 0) {
@@ -673,7 +896,7 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
           if (!b.ok) {
             const r = failClosedResult(b.message);
             r.status = BRIDGE_REFUSED_STATUS;
-            return r;
+            return refuse(r);
           }
           bridgeStop = b.stop;
           if (b.dataPlane === "bridge") {
@@ -690,22 +913,23 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
           `PATH=${process.env.GAFFER_SANDBOX_PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}`,
         ];
         if (isCommand) {
-          // The wrapper forwards only its own allowlist into the container, so the
-          // contract (and the names GAFFER_WORKER_COMMAND_ENV passes) ride the inner
-          // `env` argv, as they do in the bash seam's `env -i …`.
-          const pass = {};
-          for (const n of [
-            "GAFFER_WRITE_ROOTS",
-            "GAFFER_READ_ROOTS",
-            "GAFFER_DATA",
-            "GAFFER_TICKET",
-          ])
-            if (env && env[n] !== undefined) pass[n] = env[n];
-          for (const n of commandEnvPassNames(process.env))
-            if (process.env[n] !== undefined) pass[n] = process.env[n];
+          // The same shape as the bash seam's `env -i <agent env> <call env> HOME= PATH=
+          // <contract> <program>`: `env -i` drops whatever the container's own top level
+          // carries, and the command worker gets exactly the scrubbed caller env, the
+          // names GAFFER_WORKER_COMMAND_ENV passes and the contract (commandWorkerEnv),
+          // with HOME and PATH rebased for the image.
+          const innerEnv = {
+            ...commandWorkerEnv(env, contract, process.env),
+            HOME: process.env.GAFFER_SANDBOX_HOME || "/root",
+            PATH:
+              process.env.GAFFER_SANDBOX_PATH ||
+              "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            ...contract,
+          };
           inner = [
-            ...containerBase,
-            ...Object.entries({ ...pass, ...contract }).map(([k, v]) => `${k}=${v}`),
+            "env",
+            "-i",
+            ...Object.entries(innerEnv).map(([k, v]) => `${k}=${v}`),
             process.env.GAFFER_SANDBOX_WORKER_COMMAND || command.command,
           ];
         } else {
@@ -728,14 +952,34 @@ export function deliver({ bin, argv, cwd, timeoutMs, maxBuffer, env, kind = "wor
       timeout: timeoutMs,
       maxBuffer,
       env: spawnEnv,
-      ...(isCommand ? { stdio: ["ignore", "pipe", "pipe"] } : {}),
+      // The command worker runs in its OWN process group (detached), so the timeout
+      // can take down everything it started, as the bash seam's gaffer_timeout does: the
+      // leader gets SIGKILL (a TERM-ignoring program would otherwise hold spawnSync
+      // forever) and the group is swept below.
+      ...(isCommand
+        ? { stdio: ["ignore", "pipe", "pipe"], detached: true, killSignal: "SIGKILL" }
+        : {}),
     });
   } finally {
     bridgeStop(); // the host-side servers, the socket and the bridged config go with the agent
+    dropPromptFile();
+  }
+  if (isCommand && res && res.pid && (res.signal || res.error)) {
+    try {
+      process.kill(-res.pid, "SIGKILL");
+    } catch {
+      /* the group is already empty */
+    }
   }
   if (isCommand && res) {
     // The parser adapter: callers read the canonical envelope, never the raw stdout.
-    res.stdout = normalizeCommandEnvelope(res.stdout || "");
+    res.stdout = normalizeCommandEnvelope(res.stdout || "", {
+      costFloorUsd: commandCostFloorUsd({
+        explicit: process.env.GAFFER_WORKER_COMMAND_COST_USD,
+        perCall: hints.maxBudgetUsd,
+        killFloor: process.env.GAFFER_KILL_ESTIMATE_USD,
+      }),
+    });
     if (RESERVED_WORKER_EXIT_CODES.includes(res.status)) {
       process.stderr.write(
         `worker: the command worker exited ${res.status}, a code the runner reserves for its own refusals; recording it as a failed call (exit 1)\n`,
@@ -1369,6 +1613,8 @@ export const Worker = {
   workerProvider,
   unsupportedProviderMessage,
   commandWorkerConfig,
+  commandContainmentProblem,
+  commandCostFloorUsd,
   sandboxWanted,
   sandboxRequired,
   sandboxWrapArgv,
@@ -1467,22 +1713,86 @@ function invokedDirectly() {
 // `node lib/worker.mjs normalize-command-envelope --in <raw stdout> --out <envelope>`:
 // the bash seam's call into the command provider's parser adapter. Writes the
 // canonical envelope (or an empty file when the raw stdout held no JSON object).
+// --per-call-usd / --explicit-floor / --kill-floor feed commandCostFloorUsd (the bash
+// seam passes the call's dollar cap and the two knobs; an unset knob is passed as "").
+// Only the LAST 16 MiB of the raw stdout are read (the envelope is the last object, the
+// same bound the Node launchers' maxBuffer puts on it), so a runaway worker's output
+// cannot exhaust the parser.
+const COMMAND_STDOUT_TAIL_BYTES = 16 * 1024 * 1024;
+function readTail(f, max) {
+  let fd;
+  try {
+    fd = openSync(f, "r");
+    const size = fstatSync(fd).size;
+    const len = Math.min(size, max);
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, size - len);
+    return buf.toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 function normalizeCli(argv) {
   let inFile = null;
   let outFile = null;
+  const floor = { explicit: "", perCall: "", killFloor: "" };
   for (let i = 1; i < argv.length; i++) {
     if (argv[i] === "--in") inFile = argv[++i];
     else if (argv[i] === "--out") outFile = argv[++i];
+    else if (argv[i] === "--explicit-floor") floor.explicit = argv[++i];
+    else if (argv[i] === "--per-call-usd") floor.perCall = argv[++i];
+    else if (argv[i] === "--kill-floor") floor.killFloor = argv[++i];
   }
   if (!inFile || !outFile) process.exit(2);
-  const norm = normalizeCommandEnvelope(readFileSafe(inFile));
+  const norm = normalizeCommandEnvelope(readTail(inFile, COMMAND_STDOUT_TAIL_BYTES), {
+    costFloorUsd: commandCostFloorUsd(floor),
+  });
   writeFileSync(outFile, norm ? norm + "\n" : "");
   process.exit(0);
+}
+
+// `node lib/worker.mjs command-worker-check --write-roots <roots> --cwd <dir>`: the bash
+// seam's (and preflight's) call into commandWorkerConfig — prints the program on
+// stdout and exits 0, or prints the refusal on stderr and exits 1.
+function commandCheckCli(argv) {
+  const o = { writeRoots: "", cwd: "" };
+  for (let i = 1; i < argv.length; i++) {
+    if (argv[i] === "--write-roots") o.writeRoots = argv[++i] ?? "";
+    else if (argv[i] === "--cwd") o.cwd = argv[++i] ?? "";
+  }
+  const c = commandWorkerConfig(process.env, o);
+  if (!c.ok) {
+    process.stderr.write(c.message + "\n");
+    process.exit(1);
+  }
+  process.stdout.write(c.command);
+  process.exit(0);
+}
+
+// `node lib/worker.mjs command-containment [--mcp-config <f>]`: prints why the command
+// worker may not launch under this configuration (the refusal sentence) and exits 1,
+// or exits 0 when it may. `command-refusal <why>` prints one refusal sentence.
+function commandContainmentCli(argv) {
+  let mcp = "";
+  for (let i = 1; i < argv.length; i++) if (argv[i] === "--mcp-config") mcp = argv[++i] ?? "";
+  const why = commandContainmentProblem(process.env, {
+    hasMcpServers: mcp ? mcpConfigHasServers(mcp) : true,
+  });
+  if (!why) process.exit(0);
+  process.stdout.write(commandSandboxRefusalMessage(why) + "\n");
+  process.exit(1);
 }
 
 if (invokedDirectly()) {
   const argv = process.argv.slice(2);
   if (argv[0] === "parse-result") parseResultCli(argv);
   else if (argv[0] === "normalize-command-envelope") normalizeCli(argv);
-  else process.exit(2);
+  else if (argv[0] === "command-worker-check") commandCheckCli(argv);
+  else if (argv[0] === "command-containment") commandContainmentCli(argv);
+  else if (argv[0] === "command-refusal") {
+    process.stdout.write(commandSandboxRefusalMessage(argv[1]) + "\n");
+    process.exit(0);
+  } else process.exit(2);
 }

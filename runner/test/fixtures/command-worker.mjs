@@ -17,7 +17,18 @@ import path from "node:path";
 
 const env = process.env;
 const cwd = process.cwd();
-const prompt = env.GAFFER_WORKER_PROMPT ?? "";
+// The prompt: GAFFER_WORKER_PROMPT_FILE always holds it; GAFFER_WORKER_PROMPT carries the
+// same text inline only when it is small enough for the environment (docs/worker-providers.md).
+const promptFile = env.GAFFER_WORKER_PROMPT_FILE || "";
+let prompt = env.GAFFER_WORKER_PROMPT ?? "";
+let promptFileError = null;
+if (promptFile) {
+  try {
+    prompt = readFileSync(promptFile, "utf8");
+  } catch (e) {
+    promptFileError = String(e.code || e.message || e);
+  }
+}
 const ticket = env.GAFFER_TICKET || "";
 const record = {
   ts: new Date().toISOString(),
@@ -31,6 +42,10 @@ const record = {
   timeoutSecs: env.GAFFER_WORKER_TIMEOUT_SECS ?? null,
   mcpConfig: env.GAFFER_WORKER_MCP_CONFIG ?? null,
   prompt: prompt.slice(0, 200),
+  promptBytes: Buffer.byteLength(prompt),
+  promptInlineBytes: Buffer.byteLength(env.GAFFER_WORKER_PROMPT ?? ""),
+  promptFile: promptFile || null,
+  promptFileError,
   promptHasTicket: ticket ? prompt.includes(`#${ticket}`) : null,
   envNames: Object.keys(env).sort(),
   mcp: [],

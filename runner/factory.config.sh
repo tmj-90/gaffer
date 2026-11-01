@@ -113,7 +113,24 @@ if [ -n "$_gs_out" ]; then
     # the dollar-cap requirement (lib/budget.sh gaffer_spend_cap_ok); a hand-edited or
     # otherwise written settings.json must not be able to switch that off. Only the
     # operator's real environment can (SECURITY.md).
-    [ "$_sk" = GAFFER_ALLOW_UNCAPPED ] && continue
+    # The worker provider knobs are environment-only too: settings.json lives in
+    # $GAFFER_DATA, and a file that picks which program runs every agent turn (and which
+    # secrets it gets) must not be one an agent's sandbox might reach. The same list is
+    # packages/dispatch/src/api/settings.ts ENV_ONLY_KEYS.
+    case "$_sk" in
+      GAFFER_ALLOW_UNCAPPED | GAFFER_WORKER_PROVIDER | GAFFER_WORKER_COMMAND | GAFFER_WORKER_COMMAND_ENV | \
+        GAFFER_WORKER_COMMAND_COST_USD | GAFFER_SANDBOX_WORKER_COMMAND) continue ;;
+    esac
+    # Under the command provider, a settings.json GAFFER_STRICT_REQUIRE=0 is NOT the
+    # operator's out-of-band assertion (the opt-out from the sandbox requirement): only
+    # the real environment can make it. Skipped, so the requirement stays on.
+    if [ "$_sk" = GAFFER_STRICT_REQUIRE ] && [ "${GAFFER_WORKER_PROVIDER:-}" = command ]; then
+      case "$(printf '%s' "$_sv" | tr '[:upper:]' '[:lower:]')" in
+        0 | false | no | off)
+          printf 'worker: ignoring GAFFER_STRICT_REQUIRE=%s from settings.json: under GAFFER_WORKER_PROVIDER=command only the environment can opt out of the OS sandbox\n' "$_sv" >&2
+          continue ;;
+      esac
+    fi
     # assign-if-unset, no eval — and EXPORT: a dashboard setting must reach the
     # processes that read it (the dispatch CLI's notifier, the memory server, crew),
     # not only this shell. Unexported, notifications/auto-approve set in the UI
@@ -163,10 +180,11 @@ export SKILLS_DIR
 # --- Worker provider ---
 # Which worker program the runner launches for every agent turn (lib/worker.sh and
 # lib/worker.mjs dispatch on it; docs/worker-providers.md is the contract).
-: "${GAFFER_WORKER_PROVIDER:=claude-code}"   # which worker runs agent turns: claude-code (headless `claude -p`, guarded by the in-process safety hook) or command (your own program at GAFFER_WORKER_COMMAND, under the contract in docs/worker-providers.md; it has no in-process safety hook, so it requires an OS sandbox: SANDBOX_PROVIDER=docker, or sandbox-exec on macOS, unless you set GAFFER_STRICT_REQUIRE=0 to say the runner is contained out-of-band). Any other value refuses to run.
-: "${GAFFER_WORKER_COMMAND:=}"   # absolute path of the worker program GAFFER_WORKER_PROVIDER=command runs, with no arguments, in the call's working directory. It reads GAFFER_WORKER_PROMPT, GAFFER_WORKER_MCP_CONFIG, GAFFER_WORKER_MODEL, GAFFER_WORKER_MAX_TURNS and the other GAFFER_WORKER_* variables, prints one JSON object on stdout (result, stop_reason, cap_hit, num_turns, cost_usd, model, usage; all optional) and exits 0 when it finished (docs/worker-providers.md).
-: "${GAFFER_WORKER_COMMAND_ENV:=}"   # space-separated env var names the command worker also receives (its own model credential, for example); the scrub drops them otherwise. The runner-only secrets (DISPATCH_API_TOKEN, GAFFER_CLAIM_TOKEN, GITHUB_TOKEN, GH_TOKEN, notify and webhook settings) are never passed.
-: "${GAFFER_SANDBOX_WORKER_COMMAND:=}"   # where the command worker's program lives INSIDE the docker sandbox image; empty = the same path as GAFFER_WORKER_COMMAND (the runner dir and the write roots are mounted at their host paths).
+: "${GAFFER_WORKER_PROVIDER:=claude-code}"   # which worker runs agent turns: claude-code (headless `claude -p`, guarded by the in-process safety hook) or command (your own program at GAFFER_WORKER_COMMAND, under the contract in docs/worker-providers.md; it has no in-process safety hook, so it requires the docker sandbox with the host-side MCP bridge, SANDBOX_PROVIDER=docker on a Linux host, unless you set GAFFER_STRICT_REQUIRE=0 in the environment to say the runner is contained out-of-band). Any other value refuses to run. Environment only: settings.json cannot set it.
+: "${GAFFER_WORKER_COMMAND:=}"   # absolute path of the worker program GAFFER_WORKER_PROVIDER=command runs, with no arguments, in the call's working directory; it must live outside $GAFFER_DATA and every write root and not be writable by its group or others. It reads GAFFER_WORKER_PROMPT_FILE, GAFFER_WORKER_MCP_CONFIG, GAFFER_WORKER_MODEL, GAFFER_WORKER_MAX_TURNS and the other GAFFER_WORKER_* variables, prints one JSON object on stdout (result, stop_reason, cap_hit, num_turns, cost_usd, model, usage; all optional) and exits 0 when it finished (docs/worker-providers.md). Environment only.
+: "${GAFFER_WORKER_COMMAND_ENV:=}"   # space-separated env var names the command worker also receives (its own model credential, for example); the scrub drops them otherwise. The runner-only secrets (DISPATCH_API_TOKEN, GAFFER_CLAIM_TOKEN, GITHUB_TOKEN, GH_TOKEN, notify and webhook settings) are never passed. Environment only.
+: "${GAFFER_WORKER_COMMAND_COST_USD:=}"   # the least each command-worker call is booked at in the usage ledger, in USD, because the cost it reports is its own word: a cost it leaves out or reports lower is booked at this floor (cost_basis floor). Empty = this call's dollar cap (GAFFER_MAX_CALL_USD) when set, else GAFFER_KILL_ESTIMATE_USD; 0 = trust the worker's figure. Environment only.
+: "${GAFFER_SANDBOX_WORKER_COMMAND:=}"   # where the command worker's program lives INSIDE the docker sandbox image; empty = the same path as GAFFER_WORKER_COMMAND (the runner dir is mounted read-only at its host path, so a program kept under it works as is). Environment only.
 
 # SINGLE RUNTIME. The runner's text processing — prompt / MCP / context-primer
 # renders, the DoD distill helpers, the worktree key, the hygiene forbidden-path

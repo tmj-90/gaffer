@@ -98,29 +98,29 @@ _gaffer_worker_unsupported_msg() {
 # contract in docs/worker-providers.md (shared word for word with lib/worker.mjs).
 # These messages are the mjs seam's too (commandSandboxRefusalMessage /
 # commandOptOutWarning / commandWorkerConfig), so both runtimes speak with one voice.
+# _gaffer_worker_command_refusal_msg [why] → the refusal sentence (why: none,
+# write-only, not-docker, legacy; lib/worker.mjs commandSandboxRefusalMessage prints it,
+# so both seams speak with one voice).
 _gaffer_worker_command_refusal_msg() {
-  printf '%s\n' "worker: GAFFER_WORKER_PROVIDER=command has no in-process safety hook, so it needs an OS sandbox and none is available on this host — refusing to spawn the worker (fail closed). Fix: set SANDBOX_PROVIDER=docker with a running docker daemon (or SANDBOX_PROVIDER=sandbox-exec on macOS), or set GAFFER_STRICT_REQUIRE=0 if you contain the whole runner out-of-band (a VM or container)"
+  node "$_GAFFER_WORKER_LIB/worker.mjs" command-refusal "${1:-none}" 2>/dev/null \
+    || printf '%s\n' "worker: GAFFER_WORKER_PROVIDER=command needs the docker sandbox and cannot get it here — refusing to spawn the worker (fail closed). Fix: set SANDBOX_PROVIDER=docker, or GAFFER_STRICT_REQUIRE=0 in the environment if you contain the whole runner out-of-band"
 }
 _gaffer_worker_command_optout_msg() {
   printf '%s\n' "WARNING: GAFFER_WORKER_PROVIDER=command with GAFFER_STRICT_REQUIRE=0 — the command worker runs with no OS sandbox requirement and no in-process safety hook. Only safe if you contain the runner out-of-band (a VM or container)."
 }
-# _gaffer_worker_command_bin → prints $GAFFER_WORKER_COMMAND when it is an absolute
-# path to an executable file; else prints the refusal to stderr and returns 1.
+# _gaffer_worker_command_bin [write-roots] [cwd] → prints $GAFFER_WORKER_COMMAND when it is
+# an absolute path to an executable file outside every directory an agent can write
+# ($GAFFER_DATA, the call's write roots and cwd; not through a symlink in one; not
+# group- or world-writable); else prints the refusal to stderr and returns 1. The check
+# is lib/worker.mjs commandWorkerConfig, the same one the Node seam runs.
 _gaffer_worker_command_bin() {
-  local cmd="${GAFFER_WORKER_COMMAND:-}" why=""
-  local fix="set GAFFER_WORKER_COMMAND to the absolute path of an executable worker program (docs/worker-providers.md)"
-  if [ -z "$cmd" ]; then why="GAFFER_WORKER_COMMAND is not set"
-  else
-    case "$cmd" in
-      /*) { [ -f "$cmd" ] && [ -x "$cmd" ]; } || why="GAFFER_WORKER_COMMAND=$cmd is not an executable file" ;;
-      *) why="GAFFER_WORKER_COMMAND=$cmd is not an absolute path" ;;
-    esac
-  fi
-  if [ -n "$why" ]; then
-    printf 'worker provider command: %s; %s — no agent spawned\n' "$why" "$fix" >&2
+  local out
+  if ! command -v node >/dev/null 2>&1; then
+    printf 'worker provider command: node is needed to check GAFFER_WORKER_COMMAND — no agent spawned\n' >&2
     return 1
   fi
-  printf '%s' "$cmd"
+  out="$(node "$_GAFFER_WORKER_LIB/worker.mjs" command-worker-check --write-roots "${1:-}" --cwd "${2:-}")" || return 1
+  printf '%s' "$out"
 }
 # True only for an EXPLICIT GAFFER_STRICT_REQUIRE=0|false|no|off — the operator's
 # assertion that the runner is contained out-of-band. Unset, empty or anything else
@@ -221,14 +221,26 @@ worker_deliver() {
   # this becomes the BRIDGED copy (every server = `mcp-bridge.mjs connect`) while the
   # real servers — and their env, including the claim token — run host-side in `serve`.
   local _mcp_for_agent="$mcp_config" _bridge_pid="" _bridge_sock="" _bridge_dir="" _rc=0
+  # This call's write and read roots (the per-call boundary vars; the cwd is the write
+  # root when none is named): the sandbox wrap is derived from them, and the command
+  # worker's program must live outside them.
+  local _wr="" _rr="" _kv
+  for _kv in ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"}; do
+    case "$_kv" in
+      GAFFER_WRITE_ROOTS=*) _wr="${_kv#GAFFER_WRITE_ROOTS=}" ;;
+      GAFFER_READ_ROOTS=*)  _rr="${_kv#GAFFER_READ_ROOTS=}" ;;
+    esac
+  done
+  [ -n "$_wr" ] || _wr="$cwd"
   # ── PROVIDER DISPATCH: claude-code and command are real; anything else refuses. ──
   local _provider="$WORKER_LAST_PROVIDER" _cmd_bin=""
   case "$_provider" in
     claude-code) ;;
     command)
-      # The operator's worker program. A missing / relative / non-executable path is a
-      # configuration error: refuse (rc 70, no envelope), never guess.
-      if ! _cmd_bin="$(_gaffer_worker_command_bin)"; then
+      # The operator's worker program. A missing / relative / non-executable path, or
+      # one an agent could rewrite, is a configuration error: refuse (rc 70, no
+      # envelope), never guess.
+      if ! _cmd_bin="$(_gaffer_worker_command_bin "$_wr" "$cwd")"; then
         : > "$out_json"
         return 70
       fi
@@ -288,17 +300,29 @@ worker_deliver() {
       _gaffer_worker_command_optout_msg >&2
     else
       _cmd_needs_wrap=1
+      # The only boundary that counts for a command worker is the docker sandbox WITH
+      # the host-side MCP bridge (lib/worker.mjs commandContainmentProblem):
+      # sandbox-exec leaves $GAFFER_DATA writable (settings.json, the databases, the
+      # ledger) and only claude-code's in-process hook guards it; docker without the
+      # bridge mounts the databases read-write. Refuse before anything is spawned.
+      local _why_msg=""
+      if ! _why_msg="$(SANDBOX_PROVIDER="${SANDBOX_PROVIDER:-sandbox-exec}" node "$_GAFFER_WORKER_LIB/worker.mjs" command-containment --mcp-config "$mcp_config" 2>/dev/null)"; then
+        : > "$out_json"
+        [ -n "$_why_msg" ] || _why_msg="$(_gaffer_worker_command_refusal_msg none)"
+        printf '%s\n' "$_why_msg" >&2
+        return 75
+      fi
+      # A wrap the CALLER composed (tick.sh's delivery) must be the docker wrapper too.
+      if [ -n "$wrap" ]; then
+        case "$wrap" in
+          *sandbox-docker.sh*) ;;
+          *) : > "$out_json"; _gaffer_worker_command_refusal_msg not-docker >&2; return 75 ;;
+        esac
+      fi
     fi
   fi
   if [ -z "$wrap" ] && { [ "$_cmd_needs_wrap" = 1 ] || _worker_sandbox_wanted; }; then
-    local _wr="" _rr="" _kv _wrap_ok=1
-    for _kv in ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"}; do
-      case "$_kv" in
-        GAFFER_WRITE_ROOTS=*) _wr="${_kv#GAFFER_WRITE_ROOTS=}" ;;
-        GAFFER_READ_ROOTS=*)  _rr="${_kv#GAFFER_READ_ROOTS=}" ;;
-      esac
-    done
-    [ -n "$_wr" ] || _wr="$cwd"
+    local _wrap_ok=1
     if [ "$_cmd_needs_wrap" = 1 ]; then
       wrap="$(GAFFER_STRICT_REQUIRE=1 sandbox_wrap_cmd "$_wr" "$_rr" 2>>"$GAFFER_LOG")" || _wrap_ok=0
     else
@@ -311,10 +335,12 @@ worker_deliver() {
     fi
     [ "$_wrap_ok" = 1 ] || wrap=""
   fi
-  if [ "$_cmd_needs_wrap" = 1 ] && [ -z "$wrap" ]; then
-    : > "$out_json"
-    _gaffer_worker_command_refusal_msg >&2
-    return 75
+  if [ "$_cmd_needs_wrap" = 1 ]; then
+    case "$wrap" in
+      "") : > "$out_json"; _gaffer_worker_command_refusal_msg none >&2; return 75 ;;
+      *sandbox-docker.sh*) ;;
+      *) : > "$out_json"; _gaffer_worker_command_refusal_msg not-docker >&2; return 75 ;;
+    esac
   fi
   # Inside the `docker` provider the HOST's claude binary path / HOME / PATH do not
   # exist — the image ships `claude` on its own PATH and root's HOME is /root (where
@@ -419,31 +445,56 @@ worker_deliver() {
       esac
       _i=$((_i + 1))
     done
+    # The prompt goes in a private per-call file (always) and inline only when it fits
+    # in one environment string (lib/worker.mjs COMMAND_PROMPT_INLINE_MAX, 64 KiB): a
+    # long prompt in the environment fails the spawn with E2BIG (128 KiB per string on
+    # Linux, about 1 MiB for argv plus env on macOS). The docker wrapper mounts the file.
+    local _c_pfile="" _c_inline="$prompt" _c_bytes
+    _c_bytes="$(printf '%s' "$prompt" | wc -c | tr -d ' ')"
+    [ "${_c_bytes:-0}" -le 65536 ] 2>/dev/null || _c_inline=""
+    mkdir -p "${GAFFER_DATA:-/tmp}" 2>/dev/null || true
+    if ! _c_pfile="$(mktemp "${GAFFER_DATA:-/tmp}/worker-prompt.$$.XXXXXX" 2>/dev/null)"; then
+      : > "$out_json"
+      printf 'worker: could not create the command worker prompt file under %s — no agent spawned\n' "${GAFFER_DATA:-/tmp}" >&2
+    else
+      chmod 600 "$_c_pfile" 2>/dev/null || true
+      printf '%s' "$prompt" > "$_c_pfile"
+    fi
     local _cmd_env=(
-      "GAFFER_WORKER_CONTRACT=1" "GAFFER_WORKER_PROMPT=$prompt" "GAFFER_WORKER_MCP_CONFIG=$_mcp_for_agent"
+      "GAFFER_WORKER_CONTRACT=1" "GAFFER_WORKER_PROMPT=$_c_inline" "GAFFER_WORKER_PROMPT_FILE=$_c_pfile"
+      "GAFFER_WORKER_MCP_CONFIG=$_mcp_for_agent"
       "GAFFER_WORKER_MODEL=$_c_model" "GAFFER_WORKER_MAX_TURNS=$_c_turns" "GAFFER_WORKER_MAX_BUDGET_USD=$_c_budget"
       "GAFFER_WORKER_TOOLS=$_c_tools" "GAFFER_WORKER_ALLOWED_TOOLS=" "GAFFER_WORKER_DISALLOWED_TOOLS="
       "GAFFER_WORKER_KIND=${GAFFER_LAUNCH_KIND:-worker}" "GAFFER_WORKER_TIMEOUT_SECS=${GAFFER_TICK_TIMEOUT:-}"
     )
-    ( cd "$cwd" \
-      && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
-         env -i "${GAFFER_AGENT_ENV[@]}" ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"} ${_sbx_env[@]+"${_sbx_env[@]}"} "${_cmd_env[@]}" \
-           "$_cmd_run" </dev/null \
-    ) >"$out_json.raw" 2>>"$GAFFER_LOG"
-    _rc=$?
-    # The parser adapter (lib/worker.mjs normalizeCommandEnvelope): $out_json gets the
-    # canonical envelope every downstream reader already consumes, or stays empty when
-    # the worker printed no JSON object (the ledger then books a conservative estimate).
-    node "$_GAFFER_WORKER_LIB/worker.mjs" normalize-command-envelope --in "$out_json.raw" --out "$out_json" 2>>"$GAFFER_LOG" \
-      || : > "$out_json"
-    rm -f "$out_json.raw"
-    # The runner's own refusal codes cannot come from the worker: a worker that exits
-    # with one is a failed call, never "the budget refused" or "no sandbox".
-    case "$_rc" in
-      70 | 75 | 76 | 77)
-        printf 'worker: the command worker exited %s, a code the runner reserves for its own refusals; recording it as a failed call (exit 1)\n' "$_rc" >>"$GAFFER_LOG"
-        _rc=1 ;;
-    esac
+    if [ -n "$_c_pfile" ]; then
+      ( cd "$cwd" \
+        && gaffer_timeout "$GAFFER_TICK_TIMEOUT" $wrap \
+           env -i "${GAFFER_AGENT_ENV[@]}" ${WORKER_CALL_ENV[@]+"${WORKER_CALL_ENV[@]}"} ${_sbx_env[@]+"${_sbx_env[@]}"} "${_cmd_env[@]}" \
+             "$_cmd_run" </dev/null \
+      ) >"$out_json.raw" 2>>"$GAFFER_LOG"
+      _rc=$?
+      rm -f "$_c_pfile"
+      # The parser adapter (lib/worker.mjs normalizeCommandEnvelope): $out_json gets the
+      # canonical envelope every downstream reader already consumes, or stays empty when
+      # the worker printed no JSON object (the ledger then books a conservative estimate).
+      # The cost floor: GAFFER_WORKER_COMMAND_COST_USD, else this call's dollar cap, else
+      # the kill-estimate floor (commandCostFloorUsd).
+      node "$_GAFFER_WORKER_LIB/worker.mjs" normalize-command-envelope --in "$out_json.raw" --out "$out_json" \
+        --explicit-floor "${GAFFER_WORKER_COMMAND_COST_USD:-}" --per-call-usd "$_c_budget" \
+        --kill-floor "${GAFFER_KILL_ESTIMATE_USD:-}" 2>>"$GAFFER_LOG" \
+        || : > "$out_json"
+      rm -f "$out_json.raw"
+      # The runner's own refusal codes cannot come from the worker: a worker that exits
+      # with one is a failed call, never "the budget refused" or "no sandbox".
+      case "$_rc" in
+        70 | 75 | 76 | 77)
+          printf 'worker: the command worker exited %s, a code the runner reserves for its own refusals; recording it as a failed call (exit 1)\n' "$_rc" >>"$GAFFER_LOG"
+          _rc=1 ;;
+      esac
+    else
+      _rc=70   # no prompt file, no spawn: the runner's own refusal
+    fi
   fi
   WORKER_LAST_ELAPSED_MS=$(( (SECONDS - _t0) * 1000 ))
   # Tear the bridge down with the agent: the host-side servers exit with their

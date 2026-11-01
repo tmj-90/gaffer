@@ -298,16 +298,22 @@ export function buildUsageRecord({ json, ts, ticket, kind, reason }) {
 }
 
 // A call served by a non-default worker provider names it on its row, with how its
-// cost is known: `reported` (the worker said, relayed verbatim) or `unreported` (the
-// worker said nothing: total_cost_usd stays "unknown" and counts $0 against the caps,
-// never an invented figure). The envelope stamp comes from the command provider's
-// parser adapter (lib/worker.mjs normalizeCommandEnvelope). claude-code rows are unchanged.
+// cost is known: `reported` (the worker said, relayed verbatim), `floor` (the worker
+// reported less than the per-call floor, or nothing: total_cost_usd is the floor and
+// reported_cost_usd keeps the worker's own figure) or `unreported` (no floor applies, the
+// operator set GAFFER_WORKER_COMMAND_COST_USD=0: total_cost_usd stays "unknown" and counts
+// $0). The envelope stamps come from the command provider's parser adapter
+// (lib/worker.mjs normalizeCommandEnvelope). claude-code rows are unchanged.
 function withWorkerProvider(rec, json) {
   const p = json && typeof json === "object" ? json.gaffer_worker_provider : null;
   if (typeof p !== "string" || !p) return rec;
   const out = { ...rec, worker_provider: provLabel(p) };
-  if (json.gaffer_cost_basis === "reported" || json.gaffer_cost_basis === "unreported")
+  if (["reported", "unreported", "floor"].includes(json.gaffer_cost_basis))
     out.cost_basis = json.gaffer_cost_basis;
+  if (json.gaffer_cost_basis === "floor") {
+    const r = json.gaffer_reported_cost_usd;
+    out.reported_cost_usd = typeof r === "number" && Number.isFinite(r) && r >= 0 ? r : UNKNOWN;
+  }
   return out;
 }
 
@@ -648,6 +654,18 @@ function cliMain(argv) {
     // keeps the conservative estimate (the spend caps never under-count) and is
     // labelled usage_limit so the ledger says why the call ended.
     record = withUsageLimit(estimatedRecord({ ticket, kind, reason, estimateUsd, basis }), json);
+    // A command worker that exits non-zero can still hand back an envelope with its cost
+    // (already floored by the parser adapter). Book whichever is MORE, so a failed call
+    // that reported real spend never reads as the cheaper kill estimate.
+    if (
+      json &&
+      typeof json === "object" &&
+      typeof json.gaffer_worker_provider === "string" &&
+      typeof json.total_cost_usd === "number" &&
+      Number.isFinite(json.total_cost_usd) &&
+      json.total_cost_usd > (estimateUsd || 0)
+    )
+      record = { ...buildUsageRecord({ json, ticket, kind }), exit_rc: rcNum, reason };
   } else if (json === null) {
     const reason = "no parseable --output-format json on stdout";
     const { estimateUsd, basis } = deriveKillEstimate({

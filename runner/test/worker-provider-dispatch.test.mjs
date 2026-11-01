@@ -296,17 +296,68 @@ console.log("== a wrapping provider is APPLIED at the mjs seam (docker dry-run) 
 // the bash-side containment rule live in worker-command.test.sh).
 // =====================================================================
 const CMD_DUMP = join(WORK, "command-env.json");
-// A CommonJS script (.cjs) so `require` works whatever package type surrounds it.
-const FAKE_CMD_CJS = join(WORK, "fake-command-worker.cjs");
+// The worker program lives OUTSIDE the call's cwd/write roots and $GAFFER_DATA (the seam
+// refuses one an agent could rewrite), mode 755.
+const TOOLS = gafferMkdtemp(join(tmpdir(), "worker-provider-tools-"));
+// A CommonJS script (.cjs) so `require` works whatever package type surrounds it. It
+// dumps its env, cwd and the prompt file's text; GAFFER_TEST_CMD_SLEEP starts a
+// grandchild (its pid recorded) and then hangs, for the timeout test.
+const FAKE_CMD_CJS = join(TOOLS, "fake-command-worker.cjs");
+const GRANDCHILD_PID = join(WORK, "grandchild.pid");
 writeFileSync(
   FAKE_CMD_CJS,
   `#!/usr/bin/env node
-require("node:fs").writeFileSync(${JSON.stringify(CMD_DUMP)}, JSON.stringify({ env: process.env, cwd: process.cwd() }));
-process.stdout.write("noise\\n" + (process.env.GAFFER_TEST_CMD_STDOUT || JSON.stringify({ result: "cmd ok", cost_usd: 0.5, num_turns: 4, model: "m-cmd", usage: { input_tokens: 7, output_tokens: 2 } })) + "\\n");
-process.exit(Number(process.env.GAFFER_TEST_CMD_EXIT || 0));
+const fs = require("node:fs");
+let promptFromFile = null;
+try { if (process.env.GAFFER_WORKER_PROMPT_FILE) promptFromFile = fs.readFileSync(process.env.GAFFER_WORKER_PROMPT_FILE, "utf8"); } catch (e) { promptFromFile = "ERR " + e.code; }
+fs.writeFileSync(${JSON.stringify(CMD_DUMP)}, JSON.stringify({ env: process.env, cwd: process.cwd(), promptFromFile }));
+if (process.env.GAFFER_TEST_CMD_SLEEP) {
+  const c = require("node:child_process").spawn("sleep", ["30"], { stdio: "ignore" });
+  fs.writeFileSync(${JSON.stringify(GRANDCHILD_PID)}, String(c.pid));
+  process.on("SIGTERM", () => {});
+  setInterval(() => {}, 1000);
+} else {
+  process.stdout.write("noise\\n" + (process.env.GAFFER_TEST_CMD_STDOUT || JSON.stringify({ result: "cmd ok", cost_usd: 0.5, num_turns: 4, model: "m-cmd", usage: { input_tokens: 7, output_tokens: 2 } })) + "\\n");
+  process.exit(Number(process.env.GAFFER_TEST_CMD_EXIT || 0));
+}
 `,
 );
 chmodSync(FAKE_CMD_CJS, 0o755);
+// A fake docker for the command worker: `docker info` and the egress plumbing succeed,
+// `docker run` records its argv and runs the command after the image locally.
+const DOCKER_BIN = join(TOOLS, "dockerbin");
+const DOCKER_LOG = join(WORK, "docker.log");
+mkdirSync(DOCKER_BIN, { recursive: true });
+writeFileSync(
+  join(DOCKER_BIN, "docker"),
+  `#!/usr/bin/env bash
+case "$1" in ps) echo fake-proxy; exit 0 ;; run) ;; *) exit 0 ;; esac
+shift
+for a in "$@"; do [ "$a" = -d ] && exit 0; done
+w=""
+printf 'RUN' >> ${JSON.stringify(DOCKER_LOG)}
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    fake-sbx-image) shift; break ;;
+    -w) w="$2"; shift 2 ;;
+    -v|-e|--tmpfs) printf ' %s %s' "$1" "$2" >> ${JSON.stringify(DOCKER_LOG)}; shift 2 ;;
+    --network|--pids-limit|--memory|--cpus|--name) shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf '\\nCMD %s\\n' "$1 $2" >> ${JSON.stringify(DOCKER_LOG)}
+[ -n "$w" ] && cd "$w"
+exec "$@"
+`,
+);
+chmodSync(join(DOCKER_BIN, "docker"), 0o755);
+const DOCKER_ENV = {
+  SANDBOX_PROVIDER: "docker",
+  GAFFER_SANDBOX_IMAGE: "fake-sbx-image",
+  GAFFER_SANDBOX_PATH: process.env.PATH,
+  GAFFER_MCP_BRIDGE: "1",
+  PATH: `${DOCKER_BIN}:${process.env.PATH}`,
+};
 const CMD_KEYS = [
   "GAFFER_WORKER_PROVIDER",
   "GAFFER_WORKER_COMMAND",
@@ -319,6 +370,13 @@ const CMD_KEYS = [
   "GAFFER_TEST_CMD_STDOUT",
   "GAFFER_TEST_CMD_EXIT",
   "OTHER_MODEL_API_KEY",
+  "GAFFER_MCP_BRIDGE",
+  "GAFFER_SANDBOX_IMAGE",
+  "GAFFER_SANDBOX_PATH",
+  "GAFFER_WORKER_COMMAND_COST_USD",
+  "GAFFER_KILL_ESTIMATE_USD",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
   "PATH",
 ];
 const CMD_ARGV = [
@@ -336,7 +394,7 @@ const CMD_ARGV = [
   "",
 ];
 writeFileSync(join(WORK, "mcp.json"), "{}");
-function callCommand(extra, callerEnv = {}) {
+function callCommand(extra, callerEnv = {}, { argv = CMD_ARGV, timeoutMs = 10_000 } = {}) {
   const saved = Object.fromEntries(CMD_KEYS.map((k) => [k, process.env[k]]));
   for (const k of CMD_KEYS) if (k !== "PATH") delete process.env[k];
   Object.assign(process.env, {
@@ -351,9 +409,9 @@ function callCommand(extra, callerEnv = {}) {
     return deliver({
       kind: "decompose",
       bin: FAKE,
-      argv: CMD_ARGV,
+      argv,
       cwd: WORK,
-      timeoutMs: 10_000,
+      timeoutMs,
       maxBuffer: 1024 * 1024,
       env: {
         PATH: process.env.PATH,
@@ -485,6 +543,199 @@ console.log("== provider=command: a wrapping sandbox is APPLIED (docker dry-run)
     : bad(`docker dry-run status=${res.status} ${res.error?.message || ""}`);
 }
 
+console.log("== provider=command: only docker with the MCP bridge counts as containment ==");
+{
+  // sandbox-exec present (a fake on PATH): a write-only profile that still grants writes
+  // under $GAFFER_DATA, which only claude-code's in-process hook guards.
+  const SBXBIN = join(TOOLS, "sbxbin");
+  mkdirSync(SBXBIN, { recursive: true });
+  writeFileSync(
+    join(SBXBIN, "sandbox-exec"),
+    '#!/usr/bin/env bash\n[ "$1" = -f ] && shift 2\nexec "$@"\n',
+  );
+  chmodSync(join(SBXBIN, "sandbox-exec"), 0o755);
+  const res = callCommand({
+    SANDBOX_PROVIDER: "sandbox-exec",
+    PATH: `${SBXBIN}:${process.env.PATH}`,
+  });
+  res.status === 75 &&
+  !dump() &&
+  /sandbox-exec[\s\S]*GAFFER_DATA[\s\S]*SANDBOX_PROVIDER=docker/.test(res.error?.message || "")
+    ? ok("SANDBOX_PROVIDER=sandbox-exec (available) → status 75, no spawn, the refusal says why")
+    : bad(
+        `sandbox-exec must not contain the command worker (status=${res.status} spawned=${!!dump()} msg=${res.error?.message})`,
+      );
+  const srv = join(WORK, "mcp-servers.json");
+  writeFileSync(
+    srv,
+    JSON.stringify({ mcpServers: { dispatch: { command: process.execPath, args: ["-e", "0"] } } }),
+  );
+  const argv = CMD_ARGV.map((a) => (a === join(WORK, "mcp.json") ? srv : a));
+  const leg = callCommand({ ...DOCKER_ENV, GAFFER_MCP_BRIDGE: "0" }, {}, { argv });
+  leg.status === 75 && !dump() && /GAFFER_MCP_BRIDGE/.test(leg.error?.message || "")
+    ? ok("docker without the MCP bridge (databases in the container) → status 75, no spawn")
+    : bad(`legacy docker layout should refuse (status=${leg.status} msg=${leg.error?.message})`);
+}
+
+console.log("== provider=command: the program must live where no agent can rewrite it ==");
+{
+  const inCwd = join(WORK, "worker-in-cwd.cjs");
+  writeFileSync(inCwd, readFileSync(FAKE_CMD_CJS));
+  chmodSync(inCwd, 0o755);
+  const inData = join(SBX_DATA, "worker-in-data.cjs");
+  writeFileSync(inData, readFileSync(FAKE_CMD_CJS));
+  chmodSync(inData, 0o755);
+  const gw = join(TOOLS, "worker-gw.cjs");
+  writeFileSync(gw, readFileSync(FAKE_CMD_CJS));
+  chmodSync(gw, 0o775);
+  for (const [label, cmd] of [
+    ["in the call's cwd / write root", inCwd],
+    ["in $GAFFER_DATA", inData],
+    ["group-writable", gw],
+  ]) {
+    const res = callCommand({ GAFFER_WORKER_COMMAND: cmd, GAFFER_STRICT_REQUIRE: "0" });
+    res.status === 70 && !dump()
+      ? ok(`a program ${label} → status 70, not spawned`)
+      : bad(
+          `a program ${label} should be refused (status=${res.status} msg=${res.error?.message})`,
+        );
+  }
+}
+
+console.log("== provider=command under docker: env -i inside, mounts, no claude credential ==");
+{
+  writeFileSync(DOCKER_LOG, "");
+  // The launcher's scrubbed env carries the GAFFER_* knobs (agentChildEnv), which is how
+  // the wrapper learns the image name.
+  // $GAFFER_DATA outside the write root here, so the prompt file needs its own mount.
+  const DATA2 = join(TOOLS, "data");
+  mkdirSync(DATA2, { recursive: true });
+  const res = callCommand(
+    { ...DOCKER_ENV, GAFFER_DATA: DATA2 },
+    {
+      ANTHROPIC_API_KEY: "sk-not-real",
+      GAFFER_SANDBOX_IMAGE: "fake-sbx-image",
+    },
+  );
+  const d = dump();
+  const log = readFileSync(DOCKER_LOG, "utf8");
+  res.status === 0 && d && /^CMD env -i$/m.test(log)
+    ? ok("the command worker ran inside the docker wrapper as `env -i … <program>`")
+    : bad(
+        `docker-wrapped command worker (status=${res.status} ran=${!!d} log=${log.slice(0, 300)})`,
+      );
+  const e = (d && d.env) || {};
+  !("RUNNER_DIR" in e) && !("GAFFER_HOME" in e) && !("ANTHROPIC_API_KEY" in e) && e.HOME === "/root"
+    ? ok(
+        "…its env is the scrubbed set only (no wrapper-only vars, no claude credential, HOME rebased)",
+      )
+    : bad(
+        `inner env leaked: ${["RUNNER_DIR", "GAFFER_HOME", "ANTHROPIC_API_KEY"].filter((k) => k in e).join(",")} HOME=${e.HOME}`,
+      );
+  !/-e ANTHROPIC_API_KEY|-e CLAUDE_CODE_OAUTH_TOKEN/.test(log)
+    ? ok("…and the wrapper forwards no claude credential into its container")
+    : bad("the claude credential was forwarded into the command worker's container");
+  const pf = e.GAFFER_WORKER_PROMPT_FILE || "";
+  pf && log.includes(`-v ${pf}:${pf}:ro`) && d.promptFromFile === "the command prompt"
+    ? ok("…the prompt file is mounted read-only and holds the prompt")
+    : bad(`prompt file not mounted / wrong (file=${pf} content=${d && d.promptFromFile})`);
+  pf && !existsSync(pf) ? ok("…and removed after the call") : bad(`prompt file left behind: ${pf}`);
+}
+
+console.log("== provider=command: a prompt too big for the environment still arrives ==");
+{
+  const big = "#big " + "context block line\n".repeat(17000);
+  const argv = CMD_ARGV.map((a) => (a === "the command prompt" ? big : a));
+  const res = callCommand({ SANDBOX_PROVIDER: "none", GAFFER_STRICT_REQUIRE: "0" }, {}, { argv });
+  const d = dump();
+  res.status === 0 && d && d.promptFromFile === big && d.env.GAFFER_WORKER_PROMPT === ""
+    ? ok(
+        `a ${Buffer.byteLength(big)}-byte prompt spawns and arrives whole through GAFFER_WORKER_PROMPT_FILE`,
+      )
+    : bad(
+        `big prompt (status=${res.status} err=${res.error?.code || res.error?.message} got=${d && d.promptFromFile && d.promptFromFile.length})`,
+      );
+}
+
+console.log("== provider=command: the cost floor ==");
+{
+  const unrep = JSON.stringify({ result: "r", num_turns: 2 });
+  let j = JSON.parse(
+    callCommand(
+      { SANDBOX_PROVIDER: "none", GAFFER_STRICT_REQUIRE: "0" },
+      { GAFFER_TEST_CMD_STDOUT: unrep },
+    ).stdout || "{}",
+  );
+  j.total_cost_usd === 0.05 && j.gaffer_cost_basis === "floor"
+    ? ok("an unreported cost is booked at the default floor ($0.05)")
+    : bad(`default floor: ${JSON.stringify(j)}`);
+  const capped = [...CMD_ARGV, "--max-budget-usd", "0.4"];
+  j = JSON.parse(
+    callCommand(
+      { SANDBOX_PROVIDER: "none", GAFFER_STRICT_REQUIRE: "0" },
+      { GAFFER_TEST_CMD_STDOUT: unrep },
+      { argv: capped },
+    ).stdout || "{}",
+  );
+  j.total_cost_usd === 0.4 && j.gaffer_cost_basis === "floor"
+    ? ok("…or at this call's dollar cap when it has one ($0.40)")
+    : bad(`per-call floor: ${JSON.stringify(j)}`);
+  j = JSON.parse(
+    callCommand(
+      { SANDBOX_PROVIDER: "none", GAFFER_STRICT_REQUIRE: "0", GAFFER_WORKER_COMMAND_COST_USD: "0" },
+      { GAFFER_TEST_CMD_STDOUT: unrep },
+    ).stdout || "{}",
+  );
+  !("total_cost_usd" in j) && j.gaffer_cost_basis === "unreported"
+    ? ok("GAFFER_WORKER_COMMAND_COST_USD=0 trusts the worker (unreported stays unknown)")
+    : bad(`explicit 0 floor: ${JSON.stringify(j)}`);
+  const W = await import(WORKER);
+  W.commandCostFloorUsd({ explicit: "", perCall: "", killFloor: "0.2" }) === 0.2 &&
+  W.commandCostFloorUsd({ explicit: "1.5", perCall: "0.4", killFloor: "0.2" }) === 1.5 &&
+  W.commandCostFloorUsd({ explicit: "junk", perCall: "", killFloor: "" }) === 0.05
+    ? ok("commandCostFloorUsd precedence: explicit, per-call cap, kill floor, $0.05")
+    : bad("commandCostFloorUsd precedence wrong");
+}
+
+console.log("== provider=command: the timeout takes down the whole process group ==");
+{
+  rmSync(GRANDCHILD_PID, { force: true });
+  const t0 = Date.now();
+  const res = callCommand(
+    { SANDBOX_PROVIDER: "none", GAFFER_STRICT_REQUIRE: "0" },
+    { GAFFER_TEST_CMD_SLEEP: "1" },
+    { timeoutMs: 1500 },
+  );
+  const took = Date.now() - t0;
+  const gpid = existsSync(GRANDCHILD_PID) ? Number(readFileSync(GRANDCHILD_PID, "utf8")) : 0;
+  let alive = false;
+  if (gpid) {
+    for (let i = 0; i < 20; i++) {
+      try {
+        process.kill(gpid, 0);
+        alive = true;
+      } catch {
+        alive = false;
+        break;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
+    }
+  }
+  took < 8000 && res.status !== 0
+    ? ok(`a TERM-ignoring worker is stopped at the timeout (${took} ms)`)
+    : bad(`the timed-out worker held the launcher (${took} ms, status=${res.status})`);
+  gpid && !alive
+    ? ok("…and the grandchild it started is gone too (the group was swept)")
+    : bad(`the worker's grandchild survived the timeout (pid ${gpid || "<none>"})`);
+  if (gpid && alive) {
+    try {
+      process.kill(gpid, "SIGKILL");
+    } catch {
+      /* gone */
+    }
+  }
+}
+
 console.log("== the parser adapter never lets a worker envelope release a ticket attempt-free ==");
 {
   const n = Worker.normalizeCommandEnvelope(
@@ -519,6 +770,7 @@ typeof Worker.sandboxWrapArgv === "function"
   : bad("Worker should re-export sandboxWanted / sandboxRequired / sandboxWrapArgv");
 
 rmSync(WORK, { recursive: true, force: true });
+rmSync(TOOLS, { recursive: true, force: true });
 
 console.log();
 if (failures.length === 0) {

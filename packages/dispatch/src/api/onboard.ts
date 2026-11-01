@@ -1,3 +1,7 @@
+import { existsSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+
 import { DispatchError } from "../util/errors.js";
 
 import { parseCommand } from "./mergeRunner.js";
@@ -93,4 +97,51 @@ export function createOnboardRunner(
       return { started: result.started, pid: result.pid, runId: result.runId };
     },
   };
+}
+
+/** The on-disk directory `target` names, resolved through symlinks, or null. */
+function existingDir(target: string): string | null {
+  try {
+    const p = realpathSync(resolve(target));
+    return statSync(p).isDirectory() ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+/** True when `dir` or a folder above it holds `.git` (a checkout, a worktree, a submodule). */
+function insideGitCheckout(dir: string): boolean {
+  for (let d = dir; ; d = dirname(d)) {
+    if (existsSync(join(d, ".git"))) return true;
+    if (dirname(d) === d) return false;
+  }
+}
+
+/**
+ * Why `target` must not be onboarded, or null to go ahead. Applies to a target the
+ * onboard runner would take as a PATH (runner/bin/onboard-run.mjs takes an existing
+ * directory as a path before it looks the name up), and to a registered repo's
+ * local path: a filesystem root or the home directory is never a repository, and a
+ * directory outside any git checkout is refused. /etc and a symlink to it used to be
+ * registered (default branch main, a Memory digest written) and then accepted as a
+ * write target, and "/" left a raw ZodError stack in the run log. Anything else (a
+ * name the runner resolves, a path that does not exist) is the runner's to refuse,
+ * as before.
+ */
+export function onboardTargetProblem(
+  target: string,
+  registeredPath: (nameOrId: string) => string | null = () => null,
+): string | null {
+  const dir = existingDir(target) ?? existingDir(registeredPath(target) ?? "");
+  if (dir === null) return null;
+  if (dirname(dir) === dir) {
+    return `Refusing to onboard ${dir}: a filesystem root is not a repository. Pick the repository's own folder.`;
+  }
+  if (dir === existingDir(homedir())) {
+    return `Refusing to onboard ${dir}: your home directory is not a repository. Pick the repository's own folder.`;
+  }
+  if (!insideGitCheckout(dir)) {
+    return `${dir} is not a git repository (no .git in it or above it). Run \`git init\` there first, or pick the repository's own folder.`;
+  }
+  return null;
 }

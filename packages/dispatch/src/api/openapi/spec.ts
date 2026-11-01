@@ -1434,7 +1434,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/repos/onboard",
     tag: T.repos,
     summary: "Onboard a repository",
-    description: "Spawns the configured onboarding command for the path.",
+    description:
+      "Spawns the configured onboarding command for the path or registered repo. A directory that is a filesystem root, the home directory, or outside any git checkout (a symlink is followed) is refused with a 422 that says why, and no run starts.",
     capability: "full",
     body: "onboardRepoBody",
     responses: [

@@ -32,26 +32,36 @@ import { activityQuery, runsQuery } from "../schemas.js";
  * separate store read through its CLI (a child process), and the Overview reads the
  * queue on every refresh, so the count is memoised per reader for 15 s and forgotten
  * when this server approves, rejects or files a draft ({@link forgetLoreDrafts}).
- * Unavailable Memory is no row, never an error.
+ * Unavailable Memory is no row, never an error. The CLI runs synchronously (up to its
+ * 10 s timeout), so a Memory that cannot be read (not configured, failing, hung) is
+ * asked again only after 5 minutes: a hung CLI used to stall the whole server for
+ * 10 s on every queue read past the memo.
  */
 const LORE_DRAFTS_MEMO_MS = 15_000;
-const loreDraftMemo = new WeakMap<MemoryReader, { at: number; total: number; titles: string[] }>();
+const LORE_DRAFTS_RETRY_MS = 5 * 60_000;
+const loreDraftMemo = new WeakMap<
+  MemoryReader,
+  { at: number; ttl: number; total: number; titles: string[] }
+>();
 export function forgetLoreDrafts(reader: MemoryReader): void {
   loreDraftMemo.delete(reader);
 }
 function pendingLoreDrafts(reader: MemoryReader): { total: number; titles: string[] } {
   const now = Date.now();
   const hit = loreDraftMemo.get(reader);
-  if (hit && now - hit.at < LORE_DRAFTS_MEMO_MS) return hit;
+  if (hit && now - hit.at < hit.ttl) return hit;
   let value = { total: 0, titles: [] as string[] };
+  let ttl = LORE_DRAFTS_RETRY_MS;
   try {
     const page = reader.listLore({ status: ["draft"], limit: 3 });
-    if (page.available)
+    if (page.available) {
       value = { total: page.total, titles: page.lore.map((l) => l.title).filter(Boolean) };
+      ttl = LORE_DRAFTS_MEMO_MS;
+    }
   } catch {
     /* Memory is best-effort: no row */
   }
-  loreDraftMemo.set(reader, { at: now, ...value });
+  loreDraftMemo.set(reader, { at: now, ttl, ...value });
   return value;
 }
 

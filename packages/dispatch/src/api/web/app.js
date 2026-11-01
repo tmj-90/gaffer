@@ -6435,9 +6435,10 @@ function matchReport(f) {
         e.ticket_title ? el("span", { class: "mr-t" }, e.ticket_title) : null,
         el("span", { class: "mr-what" }, [" ", say]),
       ]),
-      el("span", { class: "mr-who", title: agent ? agentTitle(agent) : null }, [
+      el("span", { class: "mr-who", title: agent ? agentTitle(agent) : who }, [
         agent ? agentShirt(agent.name, 26, agent.no) : null,
-        who,
+        // A 40-character display name gives way (ellipsis) before the row does.
+        el("span", { class: "mr-who-name" }, who),
       ]),
     ]);
   });
@@ -10020,6 +10021,8 @@ function renderBoardCard(card, laneKey, needs) {
             href,
             draggable: "false",
             "aria-label": `${numText} ${card.title}`,
+            // The card clamps a long title to three lines; hovering reads all of it.
+            title: card.title,
           },
           card.title,
         ),
@@ -10282,7 +10285,20 @@ function renderClaimsPanel(claims, readAt = Date.now()) {
     ),
     el("tbody", {}, rows),
   ]);
-  page.appendChild(table);
+  // The table scrolls inside its own box: seven columns never fit a phone, and the
+  // page itself must never pan sideways (the Revoke column went off-screen).
+  page.appendChild(
+    el(
+      "div",
+      {
+        class: "claims-scroll",
+        role: "region",
+        "aria-label": "On the pitch: claims (scrolls sideways)",
+        tabindex: "0",
+      },
+      table,
+    ),
+  );
   return page;
 }
 

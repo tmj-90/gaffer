@@ -1139,6 +1139,14 @@
     font: 600 var(--t13) / 1.3 var(--f-detail);
     color: var(--ink-2);
     white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* A long display name (up to 40 characters) ends in an ellipsis; the title has it all. */
+  .mr-who-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .mr-who .shirt {
     flex: none;

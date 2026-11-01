@@ -96,7 +96,7 @@ const cli = (L, ...args) =>
   );
 
 /** Seed one ticket in every state a write control hangs off. Answers the ids. */
-export async function seedWorld(t, L, tagPrefix) {
+export async function seedWorld(t, L, tagPrefix, { approved = false } = {}) {
   const tag = L.tag(tagPrefix);
   // delivered → in_review (Review's Approve / Send back / Won't do)
   const review = await L.seedTicket(t, {
@@ -111,6 +111,15 @@ export async function seedWorld(t, L, tagPrefix) {
     ready: true,
   });
   L.setStubMode(paused.number, "pause_first");
+  // optionally one more delivery, approved below (a card waiting for Merge now); all
+  // are delivered before the claim below takes the factory's slot
+  const toMerge = approved
+    ? await L.seedTicket(t, {
+        title: `RO approved ${tag}`,
+        acs: ["covered by a test"],
+        ready: true,
+      })
+    : null;
   await t.poll();
   await L.waitStatus(review.id, L.SETTLED, 240000);
   await L.maybe(
@@ -119,10 +128,13 @@ export async function seedWorld(t, L, tagPrefix) {
     240000,
     2000,
   );
-  if ((await L.ticketOf(paused.id)).status !== "paused") {
+  for (const x of [paused, toMerge].filter(Boolean)) {
+    if (L.SETTLED.includes((await L.ticketOf(x.id)).status)) continue;
     await t.poll();
-    await L.waitStatus(paused.id, L.SETTLED, 240000);
+    await L.waitStatus(x.id, L.SETTLED, 240000);
   }
+  // Approve it the way a person does (arm, confirm), so it waits for Merge now.
+  if (toMerge) await t.approve(toMerge);
   // won't do → cancelled (the Work board's Reopen)
   const closed = await L.seedTicket(t, { title: `RO closed ${tag}` });
   await L.api("POST", `/tickets/${closed.id}/wont-do`, { reason: "seeded for the read-only walk" });
@@ -170,6 +182,7 @@ export async function seedWorld(t, L, tagPrefix) {
   ).json.node;
   return {
     tag,
+    toMerge: toMerge ? await L.ticketOf(toMerge.id) : null,
     review: await L.ticketOf(review.id),
     paused: await L.ticketOf(paused.id),
     closed,

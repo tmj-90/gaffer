@@ -1350,12 +1350,15 @@ try {
       `ticket/${ticket.id}`,
       `repo/${encodeURIComponent(repo.id)}`,
     ];
+    // 375 and 1920 too: the exploratory sweep's phone and wide desk (ui-explore/F-02).
     const sweep = [
+      { w: 375, h: 812, views },
       { w: 390, h: 844, views, axe: true },
       { w: 768, h: 1000, views },
       { w: 1024, h: 768, views },
       { w: 1280, h: 800, views },
       { w: 1440, h: 900, views },
+      { w: 1920, h: 1080, views },
       { w: 360, h: 780, views: ["overview", "work", "review", "floor"] },
       { w: 320, h: 640, views: ["overview", "work", "review", "floor"] },
     ];

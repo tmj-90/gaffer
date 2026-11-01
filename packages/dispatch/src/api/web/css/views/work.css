@@ -199,6 +199,9 @@
   .board-card {
     position: relative;
     display: grid;
+    /* One track the card's width: a long status ("Approved · waiting for Merge
+       now") wraps inside it instead of widening the track past the card. */
+    grid-template-columns: minmax(0, 1fr);
     gap: 5px;
     padding: 9px 10px 8px;
     background: var(--paper);
@@ -278,9 +281,12 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font: 700 var(--t12) / 1 var(--f-cond);
+    min-width: 0;
+    font: 700 var(--t12) / 1.15 var(--f-cond);
     color: var(--ink);
-    white-space: nowrap;
+  }
+  .card-status .glyph {
+    flex: none;
   }
   .card-status.st-failed {
     color: var(--red);
@@ -290,6 +296,12 @@
     font: 600 var(--t14) / 1.28 var(--f-cond);
     overflow-wrap: anywhere;
     text-wrap: pretty;
+    /* A 200-character title is three lines on the card (its link's title has it all). */
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+    line-clamp: 3;
+    overflow: hidden;
   }
   /* The title is the card's one link, stretched over the card; the buttons sit above it. */
   .card-link {
@@ -528,6 +540,20 @@
   }
 
   /* --- on the pitch: who holds what ------------------------------------------ */
+  /* The claims table scrolls inside its own box, never the page. */
+  .claims-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .claims-scroll:focus-visible {
+    outline: 2px solid var(--focus, currentColor);
+    outline-offset: 2px;
+  }
+  .claims-scroll > .claims-table {
+    min-width: 640px;
+    width: 100%;
+  }
   .claims-table th:first-child,
   .claims-table td:first-child {
     padding-left: var(--s4);

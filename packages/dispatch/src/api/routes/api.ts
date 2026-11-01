@@ -395,6 +395,21 @@ const STREAM_MAX_CLIENTS = 16;
  */
 const STREAM_MAX_LIFETIME_MS = 60 * 60 * 1000;
 let streamClients = 0;
+/** How to end each open stream (see {@link endEventStreams}). */
+const openStreams = new Set<(note: string) => void>();
+
+/**
+ * End every open event stream with a final comment frame. server.close() waits for
+ * every open connection, and a stream lives up to {@link STREAM_MAX_LIFETIME_MS}, so a
+ * SIGTERM used to free the port and leave the process (and its database) running for
+ * up to an hour. The dashboard reconnects with ?since=<last seq> and loses nothing.
+ * Returns how many streams were ended.
+ */
+export function endEventStreams(note = "server shutting down"): number {
+  const stops = [...openStreams];
+  for (const stop of stops) stop(note);
+  return stops.length;
+}
 
 function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerResponse): void {
   if (streamClients >= STREAM_MAX_CLIENTS) {
@@ -417,15 +432,17 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   res.write(`retry: 3000\n: connected seq=${cursor}\n\n`);
 
   let closed = false;
-  const stop = (): void => {
+  const stop = (note?: string): void => {
     if (closed) return;
     closed = true;
     streamClients -= 1;
+    openStreams.delete(stop);
     clearInterval(poll);
     clearInterval(beat);
     clearTimeout(lifetime);
-    if (!res.writableEnded) res.end();
+    if (!res.writableEnded) res.end(note ? `: ${note}\n\n` : undefined);
   };
+  openStreams.add(stop);
   // The bearer gate ran once, when the stream opened. Re-resolve the SAME request's
   // credential before every write, so revoking a principal (or rotating the token)
   // cuts off a live feed at once instead of when the connection happens to drop.
@@ -455,14 +472,14 @@ function streamEvents(wg: Dispatch, url: URL, req: IncomingMessage, res: ServerR
   const beat = setInterval(() => {
     if (!closed && stillAuthorised()) res.write(": ping\n\n");
   }, STREAM_HEARTBEAT_MS);
-  const lifetime = setTimeout(stop, STREAM_MAX_LIFETIME_MS);
+  const lifetime = setTimeout(() => stop(), STREAM_MAX_LIFETIME_MS);
   // Timers must never keep the process alive on their own (tests, shutdown).
   poll.unref?.();
   beat.unref?.();
   lifetime.unref?.();
-  req.on("close", stop);
-  res.on("close", stop);
-  res.on("error", stop);
+  req.on("close", () => stop());
+  res.on("close", () => stop());
+  res.on("error", () => stop());
   tick();
 }
 

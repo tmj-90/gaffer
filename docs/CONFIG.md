@@ -22,7 +22,7 @@ computed from other knobs at runtime.
 | Knobs with a runner default | 143 |
 | Knobs editable in the dashboard | 57 |
 | Dashboard knobs with no runner default (consumed by dispatch/memory/crew) | 9 |
-| Env reads in code with no default and no UI entry | 78 |
+| Env reads in code with no default and no UI entry | 79 |
 
 ## Runner defaults (`runner/factory.config.sh` and `runner/lib/*.sh`)
 
@@ -348,6 +348,7 @@ site (`${X:-…}` / `?? …`); two values means the read sites disagree.
 | `DISPATCH_LARGE_DELETION_LINES` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_OBSERVED_RISK_CEILING` | _(empty)_ | `packages/dispatch/src/services/observedRisk.ts` |
 | `DISPATCH_ONBOARD_NAME` | _(empty)_ | `runner/bin/onboard-run.mjs` |
+| `DISPATCH_PID_FILE` | _(empty)_ | `packages/dispatch/src/api/bin.ts` |
 | `DISPATCH_SENSITIVE_PATH_RE` | _(empty)_ | `packages/dispatch/src/services/riskAnnotations.ts` |
 | `DISPATCH_TESTER_VERDICT_CMD` | _(empty)_ | `runner/bin/tester-run.mjs` |
 | `GAFFER_AGENT_EMAIL` | `gaffer-factory@users.noreply.invalid` | `runner/lib/greenfield.sh` |

@@ -584,10 +584,15 @@ export class TicketService {
           { status: ticket.status, ticket_id: ticket.id },
         );
       }
+      // Where it was blocked from: the LAST transition into `blocked`, whichever path
+      // took it (a person, an agent's token, the runner's park, a board move). Only a
+      // human block writes `from` on ticket.blocked, so an older human block from draft
+      // must not decide where a later in-flight block goes back to.
       const row = this.db
         .prepare(
           `SELECT payload_json FROM work_events
-            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.blocked'
+            WHERE entity_type = 'ticket' AND entity_id = ? AND event_type = 'ticket.transitioned'
+              AND json_extract(payload_json, '$.to') = 'blocked'
             ORDER BY created_at DESC, rowid DESC LIMIT 1`,
         )
         .get(ticket.id) as { payload_json: string | null } | undefined;
@@ -880,11 +885,6 @@ export class TicketService {
     });
     return inTransaction(this.db, () => {
       const ticket = this.resolveTicket(ticketRef);
-      const now = this.clock.now();
-      this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
-      writeEvent(this.db, {
-        entity_type: "ticket",
-        entity_id: ticket.id,
       if (!TEST_CONTRACT_EDITABLE_STATUSES.includes(ticket.status)) {
         throw new DispatchError(
           "CONTRACT_FROZEN",
@@ -899,6 +899,11 @@ export class TicketService {
           },
         );
       }
+      const now = this.clock.now();
+      this.tickets.setTestContract(ticket.id, JSON.stringify(contract), now);
+      writeEvent(this.db, {
+        entity_type: "ticket",
+        entity_id: ticket.id,
         actor,
         event_type: "ticket.test_contract_set",
         payload: {

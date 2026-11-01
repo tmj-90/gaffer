@@ -1612,7 +1612,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     _NWR_NOPATH="$(echo "$SHOW" | jget '(d.repositories || []).filter((r) => r && ["confirmed", "implicit_single_repo"].includes(r.relation) && r.access === "write" && !String(r.local_path || "").trim()).length' 2>/dev/null || echo 0)"
     if [ "${_NWR_NOPATH:-0}" -gt 0 ] 2>/dev/null; then
       log "ticket #$NUM has no local repo path ($_NWR_NOPATH write repo(s) linked with no local checkout); parking → blocked (no_local_repo_path) for a human"
-      gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock it ('gaffer wg unblock $NUM')" no_local_repo_path
+      gaffer_release_delivery blocked "the write repo has no local checkout on this machine — clone it to its registered path, or register its path by onboarding a checkout ('gaffer onboard <dir>') and giving the ticket write access to that repo ('gaffer wg ticket repo-access set $NUM <repo>'), then unblock it ('gaffer wg unblock $NUM')" no_local_repo_path
       gaffer_skip_ticket "$NUM"
       result no_work; exit 0
     fi
@@ -1694,7 +1694,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     # Park VISIBLY as `blocked`, never back to `ready`: the skip file only lasts one
     # loop run, so a `ready` release was re-claimed and re-released on every run
     # forever. Skip it for the rest of this run too.
-    gaffer_release_delivery blocked "the write repo has no local checkout on this machine — register its path (wg repo add / repo update) or clone it, then unblock it ('gaffer wg unblock $NUM')" no_local_repo_path
+    gaffer_release_delivery blocked "the write repo has no local checkout on this machine — clone it to its registered path, or register its path by onboarding a checkout ('gaffer onboard <dir>') and giving the ticket write access to that repo ('gaffer wg ticket repo-access set $NUM <repo>'), then unblock it ('gaffer wg unblock $NUM')" no_local_repo_path
     gaffer_skip_ticket "$NUM"
     result no_work; exit 0
   fi

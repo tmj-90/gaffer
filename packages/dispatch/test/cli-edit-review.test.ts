@@ -1,9 +1,11 @@
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { createApiServer } from "../src/api/server.js";
 import { Dispatch } from "../src/core.js";
 import type { Actor } from "../src/domain/types.js";
 import { listEvents } from "../src/events/eventWriter.js";
@@ -191,6 +193,145 @@ describe("B1 review: contract freeze edges", () => {
   });
 });
 
+describe("B1 review: the human block edges cannot skip a gate", () => {
+  let dir: string;
+  let db: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "wg-b1-block-"));
+    db = join(dir, "d.sqlite");
+    const wg = Dispatch.open(db);
+    wg.registerRepository({ name: "svc", default_branch: "main" }, human);
+    // #1: a draft with no criterion at all.
+    const bare = wg.createTicket({ title: "bare draft" }, human);
+    wg.linkRepository(bare.id, "svc", "primary", human);
+    // #2: a ready ticket.
+    const ok = wg.createTicket({ title: "ready one", description: "d" }, human);
+    wg.linkRepository(ok.id, "svc", "primary", human);
+    wg.addAcceptanceCriterion({ ticket_id: ok.id, text: "works" }, human);
+    wg.markReady(ok.id, human);
+    wg.db.close();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("unblock --to ready on a ticket with no criterion is refused and it stays blocked", () => {
+    expect(runCli(db, ["block", "1", "--reason", "parked"]).error).toBeUndefined();
+    const r = runCli(db, ["unblock", "1", "--to", "ready"]);
+    expect(errorCode(r.error)).toBe("POLICY_DENIED");
+    let wg = Dispatch.open(db);
+    expect(wg.resolveTicket("1").status).toBe("blocked");
+    wg.db.close();
+    // Nor does a board drag of the blocked card get it there.
+    expect(errorCode(runCli(db, ["ticket", "move", "1", "ready"]).error)).toBe("POLICY_DENIED");
+    wg = Dispatch.open(db);
+    expect(wg.resolveTicket("1").status).toBe("blocked");
+    wg.db.close();
+    // Its default target is where it came from.
+    expect(runCli(db, ["unblock", "1"]).error).toBeUndefined();
+    wg = Dispatch.open(db);
+    expect(wg.resolveTicket("1").status).toBe("draft");
+    wg.db.close();
+  });
+
+  it("board moves (CLI, agent, system) cannot take the block-only edges", () => {
+    const wg = Dispatch.open(db);
+    try {
+      for (const actor of [human, agentActor, { type: "system" } as Actor]) {
+        expect(() => wg.moveTicket("2", "blocked", actor), actor.type).toThrow();
+        expect(wg.resolveTicket("2").status).toBe("ready");
+      }
+      wg.humanBlockTicket("1", "parked", human);
+      for (const actor of [human, agentActor, { type: "system" } as Actor]) {
+        let code: string | undefined;
+        try {
+          wg.moveTicket("1", "draft", actor);
+        } catch (e) {
+          code = errorCode(e);
+        }
+        expect(code, actor.type).toBe("ILLEGAL_TRANSITION");
+      }
+      expect(wg.resolveTicket("1").status).toBe("blocked");
+      // An agent and the runner cannot use the human block / unblock paths at all.
+      expect(() => wg.humanUnblockTicket("1", agentActor)).toThrow(/human or admin/);
+      expect(() => wg.humanUnblockTicket("1", { type: "system" })).toThrow(/human or admin/);
+    } finally {
+      wg.db.close();
+    }
+  });
+
+  it("unblock follows the LAST block, not an older human block from draft", () => {
+    // A human blocks #2's twin from draft and returns it; later it is readied, taken by
+    // hand and parked from in_progress by a board move. Unblock must go to ready.
+    let wg = Dispatch.open(db);
+    const t = wg.createTicket({ title: "twin", description: "d" }, human);
+    wg.linkRepository(t.id, "svc", "primary", human);
+    wg.addAcceptanceCriterion({ ticket_id: t.id, text: "works" }, human);
+    wg.humanBlockTicket(t.id, "wait", human);
+    wg.humanUnblockTicket(t.id, human);
+    expect(wg.resolveTicket(t.id).status).toBe("draft");
+    wg.markReady(t.id, human);
+    wg.humanClaimTicket(t.id, human);
+    expect(wg.resolveTicket(t.id).status).toBe("in_progress");
+    wg.moveTicket(t.id, "blocked", human);
+    expect(wg.resolveTicket(t.id).status).toBe("blocked");
+    const res = wg.humanUnblockTicket(t.id, human);
+    expect(res.status).toBe("ready");
+    wg.db.close();
+    wg = Dispatch.open(db);
+    expect(wg.resolveTicket(t.id).status).toBe("ready");
+    expect(wg.resolveTicket(t.id).human_owner).toBeNull();
+    wg.db.close();
+  });
+
+  describe("REST", () => {
+    let close: (() => Promise<void>) | undefined;
+    const savedToken = process.env.DISPATCH_API_TOKEN;
+    afterEach(async () => {
+      await close?.();
+      close = undefined;
+      if (savedToken === undefined) delete process.env.DISPATCH_API_TOKEN;
+      else process.env.DISPATCH_API_TOKEN = savedToken;
+    });
+
+    it("POST /tickets/:id/move (the dashboard card Move) cannot block or un-block to draft", async () => {
+      process.env.DISPATCH_API_TOKEN = "b1-review-test-token-0123456789abcdef";
+      const wg = Dispatch.open(db);
+      const server = createApiServer(wg);
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      close = () =>
+        new Promise<void>((resolve) =>
+          server.close(() => {
+            wg.db.close();
+            resolve();
+          }),
+        );
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const move = async (ref: string, to: string) => {
+        const id = wg.resolveTicket(ref).id;
+        const res = await fetch(`${base}/tickets/${id}/move`, {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${process.env.DISPATCH_API_TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ to }),
+        });
+        return { status: res.status, body: (await res.json()) as { error?: { code: string } } };
+      };
+      const r1 = await move("2", "blocked");
+      expect(r1.status).toBe(409);
+      expect(r1.body.error?.code).toBe("ILLEGAL_TRANSITION");
+      expect(wg.resolveTicket("2").status).toBe("ready");
+      wg.humanBlockTicket("1", "parked", human);
+      const r2 = await move("1", "draft");
+      expect(r2.status).toBe(409);
+      expect(r2.body.error?.code).toBe("ILLEGAL_TRANSITION");
+      const r3 = await move("1", "ready");
+      expect(r3.body.error?.code).toBe("POLICY_DENIED");
+      expect(wg.resolveTicket("1").status).toBe("blocked");
+    });
+  });
+});
+
 describe("B1 review: one-line text on every surface, multi-line descriptions kept", () => {
   it("MCP create_ticket / add_acceptance_criterion refuse a newline; descriptions keep theirs", () => {
     const wg = Dispatch.open(":memory:");
@@ -239,6 +380,22 @@ describe("B1 review: one-line text on every surface, multi-line descriptions kep
       expect(wg.view(t.id).acceptanceCriteria[0]!.text).toBe("it works");
     } finally {
       wg.db.close();
+    }
+  });
+});
+
+describe("B1 review: the runner's park messages name commands that exist", () => {
+  it("the no-local-checkout park names onboard + repo-access set, never a `repo update`", () => {
+    const tick = readFileSync(join(__dirname, "../../../runner/tick.sh"), "utf8");
+    expect(tick).not.toMatch(/repo update/);
+    const parks = tick
+      .split("\n")
+      .filter((l) => /gaffer_release_delivery blocked .*no local checkout/.test(l));
+    expect(parks).toHaveLength(2);
+    for (const line of parks) {
+      expect(line).toMatch(/'gaffer onboard <dir>'/);
+      expect(line).toMatch(/'gaffer wg ticket repo-access set \$NUM <repo>'/);
+      expect(line).toMatch(/then unblock it \('gaffer wg unblock \$NUM'\)/);
     }
   });
 });

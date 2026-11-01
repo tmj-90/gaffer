@@ -355,14 +355,18 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   if [ "$_day_reserved" = 1 ] && ! gaffer_tick_counts_toward_day_cap "$res"; then
     gaffer_refund_day_tick "$_day_rsv_on" || true
   fi
-  # A delivery the gates PARKED (held for a human, worktree cleaned, branch kept) ends
-  # its tick with TICK_RESULT=error, which printed "tick → error" for a clean, intended
-  # outcome. Name it from the tick's own factory.log lines; the result code (and what
-  # the day cap and the daemon make of it) is unchanged.
+  # A PARKED delivery ends its tick with TICK_RESULT=error, which printed "tick → error"
+  # for a clean, intended outcome. Name it from the tick's own factory.log lines, and say
+  # which park it was: the gates park (rework used up → blocked, branch kept) is held for
+  # a human; an EMPTY delivery (no change produced) goes back to refining. The result code
+  # (and what the day cap and the daemon make of it) is unchanged.
   _shown="${res:-unknown}"
   if [ "$res" = error ]; then
-    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE 'delivery PARKED for #[0-9]+' | tail -1)"
-    [ -n "$_parked" ] && _shown="parked ${_parked##* } — held for a human (see gaffer status)"
+    _parked="$(tail -n +"$(( ${_log_mark:-0} + 1 ))" "$GAFFER_LOG" 2>/dev/null | grep -oE 'delivery PARKED for #[0-9]+( — empty)?' | tail -1)"
+    case "$_parked" in
+      *" — empty") _pn="${_parked% — empty}"; _shown="parked ${_pn##* } — empty delivery, back to refining (see gaffer status)" ;;
+      ?*) _shown="parked ${_parked##* } — held for a human (see gaffer status)" ;;
+    esac
   fi
   echo "tick $ticks/$MAX_TICKS → $_shown"
 

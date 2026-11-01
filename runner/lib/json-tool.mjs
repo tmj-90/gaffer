@@ -48,8 +48,16 @@ function tryParse(text) {
 function out(s) {
   process.stdout.write(s);
 }
+// The run-summary reports below colour a few marks; like the shell scripts
+// (runner/lib/colour.sh) they print plain text in a pipe or a file, under NO_COLOR, and
+// for TERM=dumb.
+// eslint-disable-next-line no-control-regex -- the SGR escape is exactly what is stripped
+const ANSI_SGR = /\x1b\[[0-9;]*m/g;
+const COLOUR =
+  !process.env.NO_COLOR && process.env.TERM !== "dumb" && process.stdout.isTTY === true;
 function println(s = "") {
-  process.stdout.write(`${s}\n`);
+  const line = COLOUR ? String(s) : String(s).replace(ANSI_SGR, "");
+  process.stdout.write(`${line}\n`);
 }
 /** python str(): None → "" here (callers normalise), True/False → "True"/"False". */
 function pyStr(v) {

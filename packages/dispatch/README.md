@@ -44,8 +44,16 @@ pnpm cli -- repo link 1 api
 pnpm cli -- ac add 1 -t "GET /health returns 200"
 pnpm cli -- ticket ready 1          # evaluates the policy pack
 pnpm cli -- ticket show 1           # ticket + AC + repos + event log
+pnpm cli -- ticket edit 1 -d "why"  # title / description / policy / priority (until claimed)
+pnpm cli -- ac edit 1 1 --verify "unit test"   # criterion 1 by position, or its id
+pnpm cli -- ac rm 1 2
+pnpm cli -- block 1 --reason "waiting on infra"   # as you ($USER); `unblock 1` returns it
 pnpm cli -- decisions list
 ```
+
+A ticket's contract (title, description, policy, criteria, check commands) is editable
+in draft, refining, ready and blocked; from claimed on every contract edit, `ac add`
+included, is refused with `CONTRACT_FROZEN`.
 
 Agent / claim / evidence flow (the same operations the MCP tools expose):
 
@@ -55,7 +63,7 @@ pnpm cli -- claim -a <agentId>      # atomically claim the next ready ticket →
 pnpm cli -- heartbeat <claimToken>  # extend the lease
 pnpm cli -- evidence 1 --token <claimToken> --type test_output --summary "tests pass" --ac <acId>
 pnpm cli -- submit 1 --token <claimToken>     # → in_review
-pnpm cli -- block 1 --reason "needs a decision"
+pnpm cli -- block 1 --token <claimToken> --reason "needs a decision"   # the agent's own claim
 pnpm cli -- expire-claims            # system recovery: release stale claims
 ```
 

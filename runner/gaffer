@@ -128,6 +128,11 @@ ONBOARD_CMD="${DISPATCH_ONBOARD_CMD:-$(dispatch_cmd node onboard-run.mjs)}"
 EPIC_FEATURE_CMD="${DISPATCH_EPIC_FEATURE_CMD:-$(dispatch_cmd node epic-feature.mjs)}"
 
 cmd="${1:-help}"; shift || true
+# CLI IDENTITY: GAFFER_PRINCIPAL_TOKEN makes `wg`, `approve` and `merge` act as that
+# principal. Every other command runs the factory itself (the loop, onboarding, the
+# dashboard and the runners it spawns), whose own bookkeeping is the operator's and
+# the system's, never a principal's, so the token is dropped for them.
+case "$cmd" in wg|approve|merge) ;; *) unset GAFFER_PRINCIPAL_TOKEN ;; esac
 case "$cmd" in
   onboard|dashboard|status|setup|demo|eval|approve|merge|run|skills)
     if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;

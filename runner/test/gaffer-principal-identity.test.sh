@@ -8,7 +8,9 @@
 #   3  a scope refusal from dispatch passes through, exit != 0;
 #   4  with the token, merge asks dispatch whether the principal may change the ticket
 #      first, and a refusal stops it before the merge lane runs;
-#   5  without the token, approve still records $USER (unchanged).
+#   5  without the token, approve still records $USER (unchanged);
+#   6  every other gaffer command (run here) and the runner's entry points drop the
+#      token, so the factory's own bookkeeping never runs as the principal.
 # Hermetic: a fake dispatch CLI (DISPATCH_DIR) records every call and its token.
 # Run: bash runner/test/gaffer-principal-identity.test.sh   (bash 3.2 safe)
 # =====================================================================
@@ -84,6 +86,20 @@ echo "== 5: without the token, approve records \$USER =="
 run USER=tom bash "$RUNNER_DIR/gaffer" approve 5 --commit "demo=$SHA"
 [ "$RC" -eq 0 ] && ok "exit 0" || fail "rc=$RC: $OUT"
 has "$(grep 'review approve' "$CALLS")" "[-] review approve 5 --reviewer tom" && ok "approve as \$USER, no token" || fail "calls: $(cat "$CALLS")"
+
+echo "== 6: every other gaffer command runs the factory as the operator, never as the principal =="
+# The runner's own bookkeeping (--as system, repo registration) is not the principal's to
+# do, so a token in the operator's shell must not reach `gaffer run`'s loop.
+LOOP="$WORK/loop-stub.sh"
+cat > "$LOOP" <<'SH'
+printf 'principal-token=%s\n' "${GAFFER_PRINCIPAL_TOKEN:-none}"
+SH
+run GAFFER_PRINCIPAL_TOKEN=gfp_test_token GAFFER_LOOP_SH="$LOOP" bash "$RUNNER_DIR/gaffer" run --dry-run
+has "$OUT" "principal-token=none" && ok "gaffer run's loop gets no principal token" || fail "loop saw: $OUT"
+grep -n 'unset GAFFER_PRINCIPAL_TOKEN' "$RUNNER_DIR/loop.sh" "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/bin/poll-once.sh" >/dev/null 2>&1 \
+  && [ "$(grep -c 'unset GAFFER_PRINCIPAL_TOKEN' "$RUNNER_DIR/loop.sh" "$RUNNER_DIR/tick.sh" "$RUNNER_DIR/bin/poll-once.sh" | grep -c ':0$')" = 0 ] \
+  && ok "loop.sh, tick.sh and poll-once.sh drop an inherited principal token" \
+  || fail "a runner entry point keeps GAFFER_PRINCIPAL_TOKEN"
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS)"; exit 0; fi

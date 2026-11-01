@@ -26,7 +26,10 @@ falsifiable.
    hard gates (≤1 fails regardless of the mean). The judged inputs are
    agent-produced and therefore untrusted — they're wrapped in `<untrusted-*>`
    envelopes with closing-tag neutralisation so a delivery cannot prompt-inject
-   its own grade.
+   its own grade. The verdict is computed from the rubric scores, never read from an
+   `overall` field or a "verdict: pass" line, and a reply that carries two different
+   gradings (one could be a rubric the diff planted and the judge quoted) is read as
+   not judged rather than taking either.
 2. **Runner seam** (`runner/lib/eval-judge.sh`, wired post-submit in `tick.sh`)
    — after a successful submit, renders the judge prompt, runs ONE model turn
    through `worker_deliver` (the single env-scrubbed, timeout-bounded `claude -p`

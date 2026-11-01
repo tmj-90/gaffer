@@ -26959,7 +26959,7 @@ function floorTabOrder(svg) {
     if (pointing || !from || (from !== svg && svg.contains(from))) return;
     if (!e.target.closest?.("a.fl-hit")) return;
     const list = ordered();
-    const forward = Boolean(from.compareDocumentPosition(svg) & Node.DOCUMENT_POSITION_FOLLOWING);
+    const forward = Boolean(from.compareDocumentPosition(svg) & from.DOCUMENT_POSITION_FOLLOWING);
     const want = forward ? list[0] : list[list.length - 1];
     if (want && want !== e.target) want.focus();
   });

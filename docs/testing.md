@@ -102,7 +102,10 @@ nightly CI run sets.
   test that sets up several tickets can do it in one process with
   `lib/wg-batch.mjs` (create, criteria, repo access, testable, ready), which makes the
   same service calls the CLI commands make; `wg-batch-parity.test.sh` proves it
-  leaves the database exactly as the CLI sequence does.
+  leaves the database exactly as the CLI sequence does, events and hash chain
+  included. It only writes a dispatch database the test made under `$TMPDIR`, and
+  only as the operator: anything else (another path, a file `wg init` never ran on,
+  a set `GAFFER_PRINCIPAL_TOKEN`) is refused with nothing written.
 - Use the test world's loop pacing (`TICK_SLEEP=0`, a small `EMPTY_POLL_LIMIT`), not
   the 30 s defaults.
 - Never bind a fixed port. Use `GAFFER_TEST_PORT_BASE` (a test takes `+0`, `+1`, ...)

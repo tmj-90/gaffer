@@ -74,12 +74,18 @@ _gaffer_daemon_cap_check() {
 # daemon, which marks the stop and waits for the pass to end. A SECOND stop signal
 # sends TERM to the pass's group: loop.sh's own stop path (the in-flight tick is ended
 # and its claim released). Without perl the pass runs in the daemon's group as before.
+# A group of its own is a BACKGROUND group on the terminal: its first write to the
+# terminal under `stty tostop`, or any read from /dev/tty (a pager, a credential
+# prompt), would STOP the pass and hang the daemon for good. So the pass ignores
+# SIGTTOU (writes and terminal-mode changes go through) and SIGTTIN (a terminal read
+# fails instead of stopping), and the second signal sends CONT along with TERM.
 _GAFFER_DAEMON_PASS_PID=""
 _gaffer_daemon_on_signal() {
   if [ "$_GAFFER_DAEMON_STOP" = "1" ]; then
     if [ -n "$_GAFFER_DAEMON_PASS_PID" ] && kill -0 "$_GAFFER_DAEMON_PASS_PID" 2>/dev/null; then
       printf 'gaffer daemon: second stop signal — stopping the current pass now (its in-flight tick is ended and its claim released)\n' >&2
       kill -TERM -- "-$_GAFFER_DAEMON_PASS_PID" 2>/dev/null || kill -TERM "$_GAFFER_DAEMON_PASS_PID" 2>/dev/null
+      kill -CONT -- "-$_GAFFER_DAEMON_PASS_PID" 2>/dev/null || true
     fi
     return 0
   fi
@@ -92,7 +98,7 @@ _gaffer_daemon_on_signal() {
 _gaffer_daemon_pass() {
   local rc=0
   if command -v perl >/dev/null 2>&1; then
-    perl -e 'setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' bash "$1" &
+    perl -e '$SIG{TTOU} = $SIG{TTIN} = "IGNORE"; setpgrp(0, 0); exec @ARGV or die "exec: $!\n"' bash "$1" &
   else
     bash "$1" &
   fi

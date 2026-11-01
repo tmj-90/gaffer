@@ -13,6 +13,10 @@
 #       pass starts, the daemon exits 0 and says it is finishing the pass
 #   D2. a second SIGINT stops the pass now: the pass gets TERM (its own stop path)
 #   D3. SIGTERM to the daemon's pid still finishes the pass
+#   D4. on a real terminal (a pty) with `stty tostop` and the job-control signals at
+#       their defaults, a pass that writes to the terminal and reads /dev/tty is not
+#       STOPPED (its group is a background group there): every pass finishes and
+#       Ctrl-C ends the daemon (needs python3 for the pty)
 # Run: bash runner/test/daemon-sigint.test.sh   (bash 3.2 safe)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
@@ -84,6 +88,58 @@ DMAIN="$(pgrep -g "$PGID" -f 'gaffer run --daemon' 2>/dev/null | head -1)"
 kill -TERM "$DMAIN" 2>/dev/null
 wait_gone 15 && ok "D3: the daemon exited" || fail "D3: still running after SIGTERM"
 [ "$(events)" = "start end " ] && ok "D3: the pass ran to its end" || fail "D3: pass events: '$(events)'"
+
+echo "== D4. a background pass on a real terminal is never stopped =="
+if command -v python3 >/dev/null 2>&1; then
+  TTYPASS="$WORK/tty-pass.sh"
+  cat > "$TTYPASS" <<TTYSH
+#!/usr/bin/env bash
+echo "pass writes to the terminal"
+read -r _x < /dev/tty
+echo done >> "$WORK/tty-events"
+TTYSH
+  chmod +x "$TTYPASS"; : > "$WORK/tty-events"
+  # A foreground job of a login shell: TTOU/TTIN/TSTP at their defaults, tostop on.
+  cat > "$WORK/fg.sh" <<FGSH
+#!/usr/bin/env bash
+stty tostop
+exec perl -e '\$SIG{TTOU} = \$SIG{TTIN} = \$SIG{TSTP} = "DEFAULT"; exec @ARGV' env GAFFER_DATA="$WORK/data" GAFFER_ALLOW_UNCAPPED=1 \\
+  GAFFER_CLAUDE_AUTH_PROBE=0 GAFFER_LOOP_SH="$TTYPASS" GAFFER_DAEMON_INTERVAL=1 MAX_TICKS_PER_DAY=0 bash "$RUNNER_DIR/gaffer" run --daemon
+FGSH
+  chmod +x "$WORK/fg.sh"
+  cat > "$WORK/pty.py" <<'PYEOF'
+import os, pty, select, signal, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], [sys.argv[1]])
+def drain(secs):
+    end = time.time() + secs
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try:
+                os.read(fd, 4096)
+            except OSError:
+                return
+drain(4)
+os.write(fd, b"\x03")
+end = time.time() + 10
+while time.time() < end:
+    done, _ = os.waitpid(pid, os.WNOHANG)
+    if done:
+        print("exited")
+        sys.exit(0)
+    drain(0.2)
+print("hung")
+os.killpg(pid, signal.SIGKILL)
+PYEOF
+  r="$(python3 -I "$WORK/pty.py" "$WORK/fg.sh" 2>&1)"
+  n="$(wc -l < "$WORK/tty-events" | tr -d ' ')"
+  [ "${n:-0}" -ge 2 ] && ok "D4: $n passes finished despite a terminal write under tostop and a /dev/tty read" || fail "D4: only ${n:-0} pass(es) finished (the pass was stopped by the terminal)"
+  [ "$r" = exited ] && ok "D4: Ctrl-C on the terminal ended the daemon" || fail "D4: the daemon did not exit after Ctrl-C ($r)"
+else
+  echo "SKIP: python3 not found (D4 needs a pty)"
+fi
 
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then echo "PASS ($PASS checks)"; exit 0; fi

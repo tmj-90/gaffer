@@ -149,7 +149,8 @@ export function registerTicket(program: Command): void {
         "the commit in the local default branch's history; pr needs a PR on record for that " +
         "repo and the change in the local default branch (its history, or after a squash or " +
         "rebase merge, merging the commit changes nothing); pr-stale needs the PR and is " +
-        "checked against the default branch's remote-tracking copy when the checkout has one.",
+        "checked the same way against the default branch's remote-tracking copy (or the " +
+        "local default branch when there is none).",
     )
     .requiredOption("--repo <repo>", "repo name or id")
     .requiredOption("--commit <sha>", "the approved commit that landed")

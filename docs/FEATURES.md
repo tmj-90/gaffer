@@ -288,7 +288,7 @@ structural barrier the whole design hangs on.
   needs a pull request on record for that repository and the change in the local default
   branch (its history, or, after a squash or rebase merge, merging the commit into it
   changes nothing); `--via pr-stale` needs the PR and checks the remote-tracking copy of
-  the default branch when the checkout has one. So *done* means landed
+  the default branch (or, without one, the local default branch). So *done* means landed
   (`wg ticket landing <n>` shows the state; once the
   approval is withdrawn by a send-back, a won't-do or a reopen it shows no approved
   commit, the same as the ticket's status). The

@@ -229,7 +229,8 @@ if [ -f "$ROOT_DIR/packages/crew/dist/runtime/context/renderPromptCli.js" ] && c
   grep -q '^npm_config_prefer_offline=true$' "$CLAUDE_ENV_DUMP" 2>/dev/null \
     && ok "the agent's npm is told prefer-offline (installs come from the warm cache)" \
     || fail "npm_config_prefer_offline=true missing from the agent env"
-  grep '"attach-evidence"' "$WG_CALLS" | grep -q 'OFFLINE INSTALL: the npm registry was unreachable (ENOTFOUND)' \
+  _ev="$(grep '"attach-evidence"' "$WG_CALLS")"
+  grep -q 'OFFLINE INSTALL: the npm registry was unreachable (ENOTFOUND)' <<<"$_ev" \
     && ok "the card says the bootstrap installed offline from the cache" || fail "no OFFLINE INSTALL evidence"
 
   echo "== 11b: offline, and the cache lacks a package: the park says why =="
@@ -269,7 +270,8 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/bin/docker"; chmod +x "$WORK/bin
 ( export SANDBOX_PROVIDER=docker STRICT_MODE=0 GAFFER_STRICT_REQUIRE=0; gaffer_registry_probe 5; [ "$?" -eq 3 ] ) \
   && ok "control: docker selected but the sandbox off → the agent runs on the host, rc 3" || fail "docker provider with the sandbox off no longer goes ahead offline"
 OUT="$(SANDBOX_PROVIDER=docker STRICT_MODE=1 bash "$RUNNER_DIR/preflight.sh" 2>&1)"
-grep 'npm registry UNREACHABLE' <<<"$OUT" | grep -q 'docker sandbox' && ok "preflight says why the warm cache does not count" || fail "preflight: $(grep -i registry <<<"$OUT")"
+_ul="$(grep 'npm registry UNREACHABLE' <<<"$OUT")"
+grep -q 'docker sandbox' <<<"$_ul" && ok "preflight says why the warm cache does not count" || fail "preflight: $(grep -i registry <<<"$OUT")"
 rm -f "$WORK/bin/docker"; echo ok > "$MODE"
 
 echo "== 14: preflight notes a CA bundle variable that names no readable file =="

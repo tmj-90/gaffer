@@ -99,6 +99,15 @@ const invalid: ResponseSpec = {
   content: "json",
 };
 
+const tooLarge: ResponseSpec = {
+  status: 413,
+  description: "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+  content: "json",
+};
+/** For a route that takes no body: empty or `{}`, anything else refused. */
+const noBodyNote =
+  " Takes no body: send none or `{}`; broken JSON or any field is a 422, and an over-limit body a 413.";
+
 const T = {
   tickets: "Tickets",
   review: "Review & delivery",
@@ -679,8 +688,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/ready-approval",
     tag: T.tickets,
     summary: "Grant the regulated-pack ready approval",
+    description: noBodyNote.trim(),
     capability: "full",
-    responses: [ok("`{ ticket_id, event_id }`."), notFound, conflict],
+    responses: [ok("`{ ticket_id, event_id }`."), notFound, conflict, invalid, tooLarge],
   },
   {
     method: "GET",
@@ -1003,6 +1013,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/mono-fallback",
     tag: T.scopes,
     summary: "Promote a single unmapped repository to write access",
+    description: noBodyNote.trim(),
     capability: "full",
     responses: [
       ok(
@@ -1011,6 +1022,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       ),
       notFound,
       conflict,
+      invalid,
+      tooLarge,
     ],
   },
   {
@@ -1291,9 +1304,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/plan-sessions",
     tag: T.plan,
     summary: "Start a plan session",
-    description: "Archives the currently active session. No body.",
+    description: `Archives the currently active session.${noBodyNote}`,
     capability: "full",
-    responses: [created("The new `PlanSession`.")],
+    responses: [created("The new `PlanSession`."), invalid, tooLarge],
   },
   {
     method: "GET",
@@ -1711,7 +1724,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
     }
     if (e.body && !responses["413"]) {
       responses["413"] = {
-        description: "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+        description: tooLarge.description,
         content: {
           "application/json": { schema: { $ref: `#/components/schemas/${ERROR_SCHEMA_NAME}` } },
         },

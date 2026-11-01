@@ -103,6 +103,9 @@ export function sendCreated(res: ServerResponse, location: string, payload: unkn
   sendJson(res, 201, payload);
 }
 
+/** A strict decoder: a body that is not valid UTF-8 throws instead of turning into U+FFFD. */
+const UTF8 = new TextDecoder("utf-8", { fatal: true });
+
 /** The largest request body the REST surface reads (bytes). */
 export const MAX_BODY_BYTES = 1_000_000;
 /**
@@ -141,7 +144,13 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     chunks.push(buf);
   }
   if (chunks.length === 0) return {};
-  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  // Fatal decoding: invalid UTF-8 is refused, never stored lossily as U+FFFD.
+  let raw: string;
+  try {
+    raw = UTF8.decode(Buffer.concat(chunks)).trim();
+  } catch {
+    throw new DispatchError("VALIDATION_ERROR", "Request body is not valid UTF-8.");
+  }
   if (raw === "") return {};
   try {
     return JSON.parse(raw);
@@ -149,6 +158,17 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     throw new DispatchError("VALIDATION_ERROR", "Request body is not valid JSON.");
   }
 }
+
+/**
+ * Read the body of a route that takes none (ready-approval, mono-fallback, POST
+ * /plan-sessions): empty or `{}`. It goes through {@link readJsonBody} like every
+ * other body, so broken JSON, invalid UTF-8 or an over-limit upload is refused, and
+ * a field is a 422 instead of being silently ignored.
+ */
+export async function readNoBody(req: IncomingMessage): Promise<void> {
+  NO_BODY.parse(await readJsonBody(req));
+}
+const NO_BODY = z.object({}).strict();
 
 /** Keep reading an over-limit upload into nothing, up to a bound, then cut it off. */
 function discardRest(req: IncomingMessage, seen: number): void {

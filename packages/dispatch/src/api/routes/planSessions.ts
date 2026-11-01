@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch } from "../../core.js";
-import { methodNotAllowed, readJsonBody, sendCreated, sendJson } from "../http.js";
+import { methodNotAllowed, readJsonBody, readNoBody, sendCreated, sendJson } from "../http.js";
 import { planSessionArchiveBody, planSessionListQuery, planSessionTurnBody } from "../schemas.js";
 
 /**
@@ -27,6 +27,7 @@ export async function routePlanSessions(
   // POST /plan-sessions — create a fresh session (current active is archived).
   if (segments.length === 1) {
     if (method === "POST") {
+      await readNoBody(req);
       const session = wg.createPlanSession();
       sendCreated(res, `/plan-sessions/${session.id}`, { session });
       return;

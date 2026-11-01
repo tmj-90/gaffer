@@ -23,6 +23,7 @@
 #                                     (shown and confirmed when --commit is omitted)
 #   gaffer merge <ticket>             land an APPROVED (ready_for_merge) ticket — what the dashboard's
 #                                     Merge button runs; refuses (exit 4) a ticket not yet approved
+#                                     or unknown; a done ticket is "already merged" (exit 0)
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer help | --version
 #
@@ -473,12 +474,12 @@ approve)
   # Records a HUMAN approval (in_review → ready_for_merge). The agent still cannot do this.
   _t="${1:-}"; [ -n "$_t" ] || { usage approve; exit 2; }; shift || true
   case "$_t" in -*) bad_arg approve "the ticket comes first (got option '$_t')" ;; esac
-  _rev="${USER:-human}"
+  _rev="${USER:-human}"; _rev_given=0
   _commits=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --reviewer) shift; [ -n "${1:-}" ] || bad_arg approve "--reviewer needs a name"; _rev="$1" ;;
-      --reviewer=*) _rev="${1#--reviewer=}" ;;
+      --reviewer) shift; [ -n "${1:-}" ] || bad_arg approve "--reviewer needs a name"; _rev="$1"; _rev_given=1 ;;
+      --reviewer=*) _rev="${1#--reviewer=}"; _rev_given=1 ;;
       --commit) shift; [ -n "${1:-}" ] || bad_arg approve "--commit needs <repo>=<sha>"; _commits+=(--commit "$1") ;;
       --commit=*) _commits+=(--commit "${1#--commit=}") ;;
       *) bad_arg approve "unknown option '$1'" ;;
@@ -503,7 +504,10 @@ approve)
 $_heads
 EOF_HEADS
       else
+        # The command to re-run is the one typed, plus the commits: a --reviewer given
+        # is kept (it used to be dropped, so the re-run recorded $USER instead).
         printf 'No terminal to confirm on: re-run with the commits you reviewed, e.g.\n  gaffer approve %s' "$_t"
+        [ "$_rev_given" = 1 ] && printf ' --reviewer %q' "$_rev"
         while IFS= read -r _h; do [ -n "$_h" ] && printf ' --commit %s' "$_h"; done <<EOF_HEADS
 $_heads
 EOF_HEADS
@@ -512,7 +516,20 @@ EOF_HEADS
       fi
     fi
   fi
-  exec node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" review approve "$_t" --reviewer "$_rev" ${_commits[@]+"${_commits[@]}"}
+  # One line for the person (the raw JSON stays one command away: `gaffer wg review
+  # approve …`), and the next command. A refusal passes through as the CLI said it.
+  _aout="$(node "$DISPATCH_DIR/dist/cli/index.js" --db "$DISPATCH_DB" review approve "$_t" --reviewer "$_rev" ${_commits[@]+"${_commits[@]}"})"; _arc=$?
+  if [ "$_arc" -ne 0 ]; then [ -n "$_aout" ] && printf '%s\n' "$_aout"; exit "$_arc"; fi
+  _ast="$(printf '%s' "$_aout" | node "$HERE/lib/json-tool.mjs" expr 'd.status || ""' 2>/dev/null)"
+  _covered=""
+  for _c in ${_commits[@]+"${_commits[@]}"}; do
+    [ "$_c" = --commit ] && continue
+    _covered="${_covered:+$_covered, }$(printf '%s' "$_c" | sed -E 's/([0-9a-f]{12})[0-9a-f]+/\1/')"
+  done
+  ok "approved ticket $_t as $_rev${_covered:+ (covers $_covered)} → ${_ast:-approved}"
+  if [ "$_ast" = ready_for_merge ]; then
+    printf "  next: ${c_cya}gaffer merge %s${c_off}   (lands it, as the dashboard's Merge button does)\n" "$_t"
+  fi
   ;;
 
 merge)

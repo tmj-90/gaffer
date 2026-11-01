@@ -184,7 +184,11 @@ runner/gaffer merge 1                            # the same conflict-safe merge 
 and asks; the approval covers exactly those commits. If a branch moves before you
 confirm, the approval is refused and nothing is approved. Non-interactively, pass the
 commits you reviewed: `runner/gaffer approve 1 --commit <repo>=<sha>` (one per repo;
-`runner/gaffer wg ticket diff 1 --heads` prints them).
+`runner/gaffer wg ticket diff 1 --heads` prints them). A successful approve prints one line
+and the next command (`next: gaffer merge 1`); `runner/gaffer wg review approve` gives the raw
+JSON. `runner/gaffer status` lists every ticket waiting on you with the command for it.
+`merge` on a ticket that is not approved (or does not exist) refuses with exit 4, and on a
+done ticket says it is already merged.
 
 `merge` first builds the merge of the approved commit onto your current default branch in
 a scratch worktree and runs your repo's test/lint gates on **that** merge (the merge gate):

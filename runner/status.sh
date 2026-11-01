@@ -244,6 +244,29 @@ if [ -n "$acc_rows" ]; then
   done <<<"$acc_rows"
 fi
 
+# WAITING ON YOU, by ticket: the counts above said "1 awaiting review" without the
+# number or what to type. One line per ticket (up to 8 per kind) with its command.
+# Env-overridable seam (STATUS_TICKETS_CMD, the status is appended) like the others.
+_tl_seam=0; [ -n "${STATUS_TICKETS_CMD:-}" ] && _tl_seam=1
+: "${STATUS_TICKETS_CMD:=node $DISPATCH_DIR/dist/cli/index.js --db $DISPATCH_DB ticket list -s}"
+read -ra _tl_c <<<"$STATUS_TICKETS_CMD"
+waiting_lines() {  # waiting_lines <status> <command prefix> [suffix]
+  # The default reads the factory db; never let a `--db` on a missing file create one.
+  [ "$_tl_seam" = 1 ] || [ -f "$DISPATCH_DB" ] || return 0
+  "${_tl_c[@]}" "$1" 2>/dev/null | CMD="$2" SUF="${3:-}" node "$HERE/lib/json-tool.mjs" expr \
+    '(Array.isArray(d) ? d : []).slice(0, 8).map((t) => "    #" + t.number + " " + String(t.title || "").slice(0, 48) + "  →  " + process.env.CMD + " " + t.number + process.env.SUF).join("\n")' 2>/dev/null
+}
+_wait=""
+[ "$review" -gt 0 ] 2>/dev/null && _wait="$_wait$(waiting_lines in_review "gaffer approve")"$'\n'
+[ "$merge" -gt 0 ] && _wait="$_wait$(waiting_lines ready_for_merge "gaffer merge")"$'\n'
+[ "$blocked" -gt 0 ] 2>/dev/null && _wait="$_wait$(waiting_lines blocked "gaffer wg ticket show" "   (why it stopped; retry: gaffer wg ticket ready <n>)")"$'\n'
+[ "$paused_waiting" -gt 0 ] && _wait="$_wait$(waiting_lines paused "gaffer wg ticket continue")"$'\n'
+_wait="$(printf '%s' "$_wait" | grep -v '^[[:space:]]*$')"
+if [ -n "$_wait" ]; then
+  printf "\n  ${c_dim}waiting on you${c_off}\n"
+  printf '%s\n' "$_wait"
+fi
+
 # What the HUMAN owns: pending decisions the agent delegated, WITH their reasons
 # (why the agent needs a human) — not just a count. Env-overridable seam
 # (HUMAN_QUEUE_CMD) so this stays testable without the real CLI/DB; it degrades
@@ -265,7 +288,19 @@ if [ -n "$replay_lines" ]; then
 fi
 
 printf "\n  ${c_dim}recent ticks${c_off}\n"
-ticks="$(grep -hE 'delivering #|delivery tick for #' "$GAFFER_LOG" 2>/dev/null | tail -n "$STATUS_TICKS")"
+# A delivery's agent call ends with "delivery tick for #N finished (rc=0)", and its
+# outcome comes after the gates: PARKED / PAUSED / FAILED / FLAGGED, or "submitted #N
+# for review". Show the outcome in place of the bare "finished (rc=0)" — a parked
+# delivery used to read as finished, with the PARKED line never shown.
+ticks="$(grep -hE 'delivering #|delivery tick for #|delivery (PARKED|PAUSED|FAILED|FLAGGED)|submitted #[0-9]+ for review' "$GAFFER_LOG" 2>/dev/null \
+  | awk '
+      function num(s,   m) { if (match(s, /#[0-9]+/)) return substr(s, RSTART + 1, RLENGTH - 1); return "" }
+      { line[NR] = $0; n = num($0) }
+      /delivery tick for #[0-9]+ finished/ { fin[n] = NR; next }
+      /delivery (PARKED|PAUSED|FAILED|FLAGGED)|submitted #[0-9]+ for review/ { if (n in fin) { drop[fin[n]] = 1; delete fin[n] } next }
+      /delivering #/ { delete fin[n] }
+      END { for (i = 1; i <= NR; i++) if (!(i in drop)) print line[i] }' \
+  | tail -n "$STATUS_TICKS")"
 if [ -n "$ticks" ]; then printf '%s\n' "$ticks" | sed 's/^/    /'
 else printf "    ${c_dim}(none yet — %s)${c_off}\n" "$GAFFER_LOG"; fi
 

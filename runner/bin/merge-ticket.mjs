@@ -262,6 +262,44 @@ function fail(reason, code = 1) {
  * when the ticket / its repo / its branch can't be resolved. Side-effect-free and
  * import()-able so tests can exercise it.
  */
+/**
+ * The bare status of ticket #number, for the refusal when resolveTicket finds no
+ * landable delivery: `{ exists: false }` for no such ticket (or no readable db),
+ * `{ exists: true, status }` otherwise. Read-only; never throws. Exported for tests.
+ */
+export function ticketStatusOf(dbPath, number) {
+  const num = parseInt(String(number ?? "").trim(), 10);
+  if (!Number.isInteger(num) || num <= 0 || !existsSync(dbPath)) return { exists: false };
+  let db;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    const row = db.prepare("SELECT status FROM tickets WHERE number = ?").get(num);
+    return row ? { exists: true, status: row.status ?? null } : { exists: false };
+  } catch {
+    return { exists: false };
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+}
+
+/**
+ * Why a ticket that is not ready_for_merge cannot be landed, in the operator's words:
+ * a done ticket is already merged (approving it again is not a thing), anything
+ * else needs an approval first. Pure; exported for tests.
+ */
+export function notLandableReason(number, status) {
+  if (status === "done") return `ticket #${number} is already merged (done); nothing to merge`;
+  return (
+    `refusing to merge #${number}: ticket is ${status || "of unknown status"}, ` +
+    `not ready_for_merge — approve it first (gaffer approve ${number}); nothing merged`
+  );
+}
+
 export function resolveTicket(dbPath, number) {
   const num = parseInt(String(number ?? "").trim(), 10);
   if (!Number.isInteger(num) || num <= 0) return null;
@@ -2138,6 +2176,28 @@ function main() {
   }
 
   const resolved = resolveTicket(CONFIG.dispatchDb, opts.ticket);
+  if (!resolved && !opts.applyDigestOnly) {
+    // No landable delivery. An unknown ticket, or one that is not approved yet (ready,
+    // blocked: no delivery branch recorded), is the "not approved" refusal the help
+    // promises (exit 4), not an internal resolution error; a done one is already merged.
+    const st = ticketStatusOf(CONFIG.dispatchDb, opts.ticket);
+    if (!st.exists) {
+      fail(
+        `no ticket #${opts.ticket} in this factory (db: ${CONFIG.dispatchDb}); nothing merged`,
+        4,
+      );
+      return;
+    }
+    if (st.status === "done") {
+      log(notLandableReason(opts.ticket, "done"));
+      emit({ phase: "already_merged", ticket: Number(opts.ticket) }, 0);
+      return;
+    }
+    if (st.status !== "ready_for_merge") {
+      fail(notLandableReason(opts.ticket, st.status), 4);
+      return;
+    }
+  }
   if (!resolved) {
     fail(
       `could not resolve ticket #${opts.ticket} to a repo + delivery branch in dispatch ` +
@@ -2152,9 +2212,12 @@ function main() {
   // merge the unreviewed branch, delete it, and leave the board reading in_review.
   // --dry-run still reports the plan (inspection), with the refusal flagged.
   const landable = canLand(resolved.status, { applyDigestOnly: opts.applyDigestOnly });
-  const notApproved =
-    `refusing to merge #${resolved.number}: ticket is ${resolved.status || "of unknown status"}, ` +
-    `not ready_for_merge — approve it first (gaffer approve ${resolved.number}); nothing merged`;
+  const notApproved = notLandableReason(resolved.number, resolved.status);
+  if (!landable && resolved.status === "done" && !opts.dryRun && !opts.applyDigestOnly) {
+    log(notApproved);
+    emit({ phase: "already_merged", ticket: resolved.number }, 0);
+    return;
+  }
   if (!landable && (!opts.dryRun || opts.applyDigestOnly)) {
     fail(notApproved, 4);
     return;

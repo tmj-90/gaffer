@@ -111,6 +111,7 @@
 6	loop-end-ping.test.sh
 6	parallel-lock.test.sh
 6	status-human-queue.test.sh
+5	next-step-hints.test.sh
 5	autonomy-flag-parsing.test.sh
 70	e2e-multi-repo-delivery.test.sh
 5	epic-feature-live.test.sh
@@ -147,6 +148,7 @@
 3	tester-held.test.sh
 3	ticket-intent-distill.test.sh
 3	worker-mcp-bridge.test.sh
+2	onboard-usage.test.sh
 2	acceptance-lane.test.sh
 2	autonomy-mode.test.sh
 2	card-refresh.test.sh

@@ -2515,6 +2515,7 @@ function openMoreSheet() {
 // skips the swap entirely when the view's data signature did not change.
 const AUTO_REFRESH_MS = 9000;
 const AUTO_REFRESHABLE = new Set([
+  "ticket",
   "overview",
   "work",
   "review",
@@ -2642,6 +2643,12 @@ document.addEventListener("visibilitychange", () => {
  * re-fetches, no DOM swap, nothing moves (review-n-plus-one-refresh).
  */
 const VIEW_SIGNATURES = {
+  // A ticket page follows its own ticket: a landing that completes (status to Done, the
+  // actions gone), a hold, a criterion checked. One read of the ticket says whether.
+  ticket: async (param) => {
+    if (!param) return null;
+    return ticketSignature(await api("GET", `/tickets/${param}`));
+  },
   review: async () => {
     const tickets = (await api("GET", "/tickets?status=in_review")).tickets || [];
     if (tickets.length) return reviewSignature(tickets);
@@ -2659,6 +2666,27 @@ const CLEAR_DESK_STATUSES = new Set([
   "done",
   "cancelled",
 ]);
+/**
+ * What a ticket page is drawn from, coarsely: the ticket row, where its landing is, its
+ * criteria, decisions and rework trail. Evidence rows and events a delivery writes as it
+ * goes do not count on their own (the status and the criteria carry what they change).
+ */
+function ticketSignature(view) {
+  const t = (view && view.ticket) || {};
+  const ls = t.landing_state || null;
+  return hashText(
+    JSON.stringify([
+      t.id,
+      t.status,
+      t.updated_at,
+      t.attempt_count,
+      ls ? [ls.kind, ls.hold, ls.label, ls.detail] : null,
+      ((view && view.acceptance_criteria) || []).map((a) => [a.id, a.status, a.text]),
+      ((view && view.blocking_decisions) || []).map((d) => [d.id, d.status]),
+      ((view && view.rework_trail) || []).length,
+    ]),
+  );
+}
 function clearDeskSignature(all) {
   return `clear:${reviewSignature(all.filter((t) => CLEAR_DESK_STATUSES.has(t.status)))}`;
 }
@@ -2689,7 +2717,7 @@ function refreshCurrentView() {
     try {
       const sigFn = VIEW_SIGNATURES[view];
       if (sigFn && current && current.dataset.sig != null) {
-        const sig = await sigFn();
+        const sig = await sigFn(param);
         if (sig === current.dataset.sig) return;
       }
       const content = await render(param);
@@ -11785,6 +11813,9 @@ async function renderTicket(id) {
             testingCard,
           ];
 
+  // The live stream re-reads this page when the ticket itself changed (its status, a
+  // landing, a criterion), and leaves it alone otherwise (see VIEW_SIGNATURES.ticket).
+  wrap.dataset.sig = ticketSignature(view);
   wrap.appendChild(head);
   wrap.appendChild(
     el("div", { class: "detail-grid tk-grid" }, [

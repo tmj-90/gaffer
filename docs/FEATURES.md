@@ -387,7 +387,11 @@ structural barrier the whole design hangs on.
   every repository* (a write repo with no approved commit), *Held · merge gate
   failed*, *Held · CI red*.
   The server stamps it as `landing_state` on the ticket, the board cards, the
-  ticket list and the Team sheet.
+  ticket list and the Team sheet. The ticket page's *Your move* says the same
+  thing in its own words and offers the action that clears it (**Back to review**
+  for a branch that moved since review or an approval that missed a repository),
+  and the page follows the live stream: when a landing completes, every open tab
+  of that ticket turns to Done and drops its merge actions without a reload.
 - **A request for a human is never "Nothing flagged".** The runner's
   `needs_human_review` notes, a reviewer agent's CHANGES, a tester's FAIL or hold,
   a merge-gate hold, a flagged DoD gate and an observed-risk escalation are read

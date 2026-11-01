@@ -203,9 +203,7 @@ export class TicketRepository {
         .prepare(`SELECT * FROM tickets WHERE status = ? ORDER BY ${TICKET_ORDER}`)
         .all(status) as Ticket[];
     }
-    return this.db
-      .prepare(`SELECT * FROM tickets ORDER BY ${TICKET_ORDER}`)
-      .all() as Ticket[];
+    return this.db.prepare(`SELECT * FROM tickets ORDER BY ${TICKET_ORDER}`).all() as Ticket[];
   }
 
   /**

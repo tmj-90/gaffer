@@ -49,8 +49,44 @@ export const GIT_REF_SAFE_MESSAGE =
   "must be a git-ref-safe name: only letters, digits, '.', '_', '/', '-', " +
   "no leading '-', no '..', no whitespace or control characters";
 
+/**
+ * ONE-LINE TEXT guard (exploratory finding cli-wg/F-08). A ticket title or criterion
+ * text is printed on one line in `factory.log`, `gaffer status` and the dossier
+ * heading, so a newline, tab, NUL or other control byte there could forge or split a
+ * line. The same rule club set and agent rename use (squadService CONTROL_RE); emoji and
+ * other unicode are fine. Descriptions and check commands are multiline by design and
+ * do not use it.
+ */
+// eslint-disable-next-line no-control-regex -- explicit control-byte guard (NUL/newline/etc.).
+export const CONTROL_CHARS_RE = /[\u0000-\u001f\u007f]/;
+export const noControlChars = (v: string): boolean => !CONTROL_CHARS_RE.test(v);
+export const noControlCharsMessage = (field: string): string =>
+  `${field} must not contain control characters (NUL, newline, tab, etc.)`;
+
+/** Collapse control characters to single spaces (machine-made text: plans, chat answers). */
+export function toOneLine(v: string): string {
+  // eslint-disable-next-line no-control-regex -- explicit control-byte guard.
+  return v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+}
+
+/** A ticket title: trimmed, 1–300 chars, one line. */
+export const ticketTitleText = z
+  .string()
+  .trim()
+  .min(1, "title is required")
+  .max(300)
+  .refine(noControlChars, noControlCharsMessage("title"));
+
+/** Acceptance-criterion text: trimmed, 1–2000 chars, one line. */
+export const acText = z
+  .string()
+  .trim()
+  .min(1, "AC text is required")
+  .max(2_000)
+  .refine(noControlChars, noControlCharsMessage("AC text"));
+
 export const createTicketInput = z.object({
-  title: z.string().trim().min(1, "title is required").max(300),
+  title: ticketTitleText,
   description: z.string().max(20_000).default(""),
   priority: z.number().int().min(0).max(1_000).default(0),
   risk_level: z.enum(RISK_LEVELS).default("medium"),
@@ -90,7 +126,7 @@ export const checkCommandText = z
 
 export const addAcInput = z.object({
   ticket_id: z.string().min(1),
-  text: z.string().trim().min(1, "AC text is required").max(2_000),
+  text: acText,
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().default(false),
   /**

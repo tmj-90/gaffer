@@ -3,6 +3,7 @@ import {
   addAcInput,
   addDependencyInput,
   createTicketInput,
+  toOneLine,
   recordDeliveryArtifactInput,
   recordRepoDeliveryInput,
   setRequiredCapabilitiesInput,
@@ -725,7 +726,8 @@ export class TicketService {
     return inTransaction(this.db, () => {
       const ticket = this.createTicket(
         {
-          title: input.title,
+          // Machine-made (idle loops): collapse control characters rather than fail.
+          title: toOneLine(input.title),
           description: input.description ?? "",
           ...(input.policyPack ? { policy_pack: input.policyPack } : {}),
         },

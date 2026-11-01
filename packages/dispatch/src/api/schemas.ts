@@ -4,12 +4,14 @@ import { z } from "zod";
 import "../util/zod3Compat.js";
 
 import {
+  acText,
   agreedRequirementInput,
   checkCommandText,
   GIT_REF_SAFE,
   GIT_REF_SAFE_MESSAGE,
   PR_URL_SAFE,
   PR_URL_SAFE_MESSAGE,
+  ticketTitleText,
 } from "../domain/schemas.js";
 import {
   RISK_LEVELS,
@@ -48,7 +50,7 @@ export const createTicketRepo = z.object({
 export type CreateTicketRepo = z.infer<typeof createTicketRepo>;
 
 export const createTicketBody = z.object({
-  title: z.string().trim().min(1).max(300),
+  title: ticketTitleText,
   description: z.string().max(20_000).optional(),
   priority: z.number().int().min(0).max(1_000).optional(),
   risk_level: z.enum(RISK_LEVELS).optional(),
@@ -130,7 +132,7 @@ export const onboardRepoBody = z.object({
 export type OnboardRepoBody = z.infer<typeof onboardRepoBody>;
 
 export const addAcBody = z.object({
-  text: z.string().trim().min(1).max(2_000),
+  text: acText,
   verification_method: z.string().max(500).optional(),
   evidence_required: z.boolean().optional(),
   /** MACHINE-CHECKABLE AC: shell command the runner executes to verify this AC. */

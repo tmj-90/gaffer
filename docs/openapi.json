@@ -9548,7 +9548,8 @@
           "text": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 2000
+            "maxLength": 2000,
+            "description": "Additional validation rule applies (not expressible in JSON Schema)."
           },
           "verification_method": {
             "type": "string",
@@ -10351,7 +10352,8 @@
           "title": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 300
+            "maxLength": 300,
+            "description": "Additional validation rule applies (not expressible in JSON Schema)."
           },
           "description": {
             "type": "string",

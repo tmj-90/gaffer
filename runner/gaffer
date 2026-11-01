@@ -35,6 +35,19 @@
 #                                     re-approval) · 1 a hard failure
 #   GAFFER_PRINCIPAL_TOKEN=<gfp_…>    makes wg / approve / merge act as that principal (its identity,
 #                                     read-only flag and repo/ticket scope); unset, they act as $USER
+#   gaffer plan "<goal>" [--repo <name>] [--now]   then   gaffer plan --yes
+#                                     plan a build: what the dashboard's Plan a build does. Each
+#                                     planner turn is a paid model call (a dollar cap is needed).
+#                                     The planner may ask questions first (answer with --answer
+#                                     "…", or --now to plan with what it has); the proposed epic
+#                                     and tickets are shown, and only a later `gaffer plan --yes`
+#                                     (or a y typed at the prompt) creates them, as drafts. Also
+#                                     --file <path>, --show, --discard, --list. exit 0 created ·
+#                                     4 nothing created yet (questions, a proposal, or a no) ·
+#                                     75 paused on the usage window
+#   gaffer lore [review [--json] | show <id> | approve <id> | reject <id> [--reason "…"]]
+#                                     the lore drafts waiting for you, as the Memory view lists
+#                                     them, and the approve / reject it does
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer eval agreement [--json]    is the eval judge worth having? each judged delivery paired with
 #                                     its review outcome, and a reading (docs/eval-harness.md)
@@ -93,6 +106,8 @@ usage() {
     merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
+    plan)      echo "usage: gaffer plan \"<goal>\" | --file <path> [--repo <name>] [--now]  ·  gaffer plan --answer \"<text>\" | --now  ·  gaffer plan --yes | --show | --discard | --list   (each turn is a paid planner call; only --yes on its own, or a typed y, creates the proposal you were shown, as draft tickets; exit 4 nothing created yet)" ;;
+    lore)      echo "usage: gaffer lore [review [--repo <name>] [--offset <n>] [--json] | show <id> | approve <id> | reject <id> [--reason \"<why>\"]]" ;;
   esac
 }
 # wants_help "$@" — true when any argument asks for help. Checked before a command
@@ -141,7 +156,7 @@ cmd="${1:-help}"; shift || true
 # the system's, never a principal's, so the token is dropped for them.
 case "$cmd" in wg|approve|merge) ;; *) unset GAFFER_PRINCIPAL_TOKEN ;; esac
 case "$cmd" in
-  onboard|dashboard|status|setup|demo|eval|approve|merge|run|skills)
+  onboard|dashboard|status|setup|demo|eval|approve|merge|run|skills|plan|lore)
     if wants_help "$@"; then usage "$cmd"; exit 0; fi ;;
 esac
 case "$cmd" in
@@ -658,6 +673,74 @@ run)
   # shellcheck source=lib/daemon.sh
   source "$HERE/lib/daemon.sh"
   GAFFER_LOOP_SH="$_loop_sh" GAFFER_DAEMON_CONFIG="$HERE/factory.config.sh" DRY_RUN="$_live_dry" gaffer_run_daemon "$_interval"
+  ;;
+
+plan)
+  # Plan a build from the terminal: the dashboard's Plan a build, turn for turn
+  # (bin/plan-run.mjs runs dispatch's own plan-build runner, so the planner, its prompt,
+  # the budget admission and the dollar cap are the dashboard's), and the panel's
+  # confirm (the same create as POST /epics). It proposes until you say --yes or type y;
+  # the tickets land as draft and nothing is readied.
+  exec env GAFFER_DATA="$GAFFER_DATA" DISPATCH_DB="$DISPATCH_DB" DISPATCH_DIR="$DISPATCH_DIR" MEMORY_DB="$MEMORY_DB" \
+    MEMORY_CLI_BIN="$MEMORY_CLI_BIN" DISPATCH_EPIC_FEATURE_CMD="$EPIC_FEATURE_CMD" \
+    node "$HERE/bin/plan-run.mjs" "$@"
+  ;;
+
+lore)
+  # Lore drafts (onboarding, the distiller, agents) wait for a person. These are the
+  # Memory view's list and its Approve / Reject, through the same memory CLI the
+  # dashboard calls (its write boundary), on THIS factory's memory database. Like the
+  # dashboard, the memory store records the decision, not who made it.
+  _sub="${1:-review}"; [ $# -gt 0 ] && shift || true
+  _mem() { MEMORY_DB="$MEMORY_DB" node "$MEMORY_CLI_BIN" "$@"; }
+  [ -f "$MEMORY_CLI_BIN" ] || { err "the memory CLI is not built ($MEMORY_CLI_BIN): run pnpm -r build"; exit 1; }
+  case "$_sub" in
+    review|list)
+      _repo=""; _off=""; _json=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --repo) shift; [ -n "${1:-}" ] || bad_arg lore "--repo needs a repo name"; _repo="$1" ;;
+          --repo=*) _repo="${1#--repo=}" ;;
+          --offset) shift; [ -n "${1:-}" ] || bad_arg lore "--offset needs a whole number"; _off="$1" ;;
+          --offset=*) _off="${1#--offset=}"; [ -n "$_off" ] || bad_arg lore "--offset needs a whole number" ;;
+          --json) _json=1 ;;
+          *) bad_arg lore "unknown option '$1'" ;;
+        esac
+        shift || true
+      done
+      case "$_off" in *[!0-9]*) bad_arg lore "--offset needs a whole number (got '$_off')" ;; esac
+      _page="$(_mem list --status draft --json --limit 200 ${_repo:+--repo "$_repo"} ${_off:+--offset "$_off"})" \
+        || { err "could not read the lore drafts from $MEMORY_DB"; exit 1; }
+      # --json: the page itself ({ total, limit, offset, items }), what the Memory view reads.
+      if [ "$_json" = 1 ]; then printf '%s\n' "$_page"; exit 0; fi
+      printf '%s' "$_page" | node "$HERE/lib/json-tool.mjs" lore-drafts
+      ;;
+    show|approve|reject)
+      _id="${1:-}"; [ -n "$_id" ] || bad_arg lore "$_sub needs a lore id (gaffer lore review lists them)"
+      case "$_id" in -*) bad_arg lore "the lore id comes first (got option '$_id')" ;; esac
+      # The dashboard's shape check (LORE_ID_RE: 8 of a-z2-9; its routes answer 422).
+      case "$_id" in
+        ????????) case "$_id" in *[!abcdefghijklmnopqrstuvwxyz23456789]*) bad_arg lore "'$_id' is not a lore id (8 characters, a-z and 2-9)" ;; esac ;;
+        *) bad_arg lore "'$_id' is not a lore id (8 characters, a-z and 2-9)" ;;
+      esac
+      shift
+      _why=()
+      while [ $# -gt 0 ]; do
+        case "$_sub:$1" in
+          reject:--reason) shift; [ -n "${1:-}" ] || bad_arg lore "--reason needs the reason"; _why=(--reason "$1") ;;
+          reject:--reason=*) _why=(--reason "${1#--reason=}") ;;
+          *) bad_arg lore "unknown argument '$1' for lore $_sub" ;;
+        esac
+        shift || true
+      done
+      _mem "$_sub" "$_id" ${_why[@]+"${_why[@]}"}; _lrc=$?
+      if [ "$_lrc" -eq 0 ] && [ "$_sub" = approve ]; then
+        printf "  ${c_dim}active for delivery agents from the next tick${c_off}\n"
+      fi
+      exit "$_lrc"
+      ;;
+    *) bad_arg lore "unknown lore subcommand '$_sub'" ;;
+  esac
   ;;
 
 skills)

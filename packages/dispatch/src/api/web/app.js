@@ -25649,7 +25649,7 @@ function renderLoreList(res, repo, opts = {}) {
   const loreNote = el(
     "p",
     { class: "section-note lore-note" },
-    `${repo ? `Lore tagged ${repo}.` : "Lore across every repo, the club's own included."} Approve a draft and delivery agents read it from the next tick; the CLI's \`memory review\` does the same.`,
+    `${repo ? `Lore tagged ${repo}.` : "Lore across every repo, the club's own included."} Approve a draft and delivery agents read it from the next tick; \`gaffer lore review\` does the same from a terminal.`,
   );
 
   // Filter row — each change re-fetches from the first page.
@@ -25861,7 +25861,7 @@ function renderLoreList(res, repo, opts = {}) {
             l.stale ? badge("stale", "lore-stale") : null,
             // Learn-loop signal: this convention was served into a ticket that then
             // reworked/blocked. Badge it so the operator can spot conventions dragging
-            // delivery down and curate them via the CLI review gate.
+            // delivery down and curate them (an active record: the memory CLI's lifecycle verbs).
             l.flagged ? badge("flagged", "lore-flagged") : null,
           ]),
           l.summary ? el("p", { class: "lore-summary" }, l.summary) : null,
@@ -25875,7 +25875,7 @@ function renderLoreList(res, repo, opts = {}) {
             ? el(
                 "p",
                 { class: "lore-flag-hint" },
-                "Served into a ticket that was then reworked or blocked — curate it with `memory review`.",
+                `Served into a ticket that was then reworked or blocked: read it with \`gaffer lore show ${l.id}\`, then deprecate or update it with the memory CLI.`,
               )
             : null,
           l.id ? loreHistory(l) : null,

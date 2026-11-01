@@ -57,6 +57,38 @@ Proposed tickets are numbered T1–T5 until you confirm, and T2 shows `after T1`
 Each carries its repo, priority and acceptance criteria. The guardrail banner is
 explicit: proposes only, confirmed tickets land as draft.*
 
+### From the terminal: `gaffer plan`
+
+`runner/gaffer plan "<goal>"` is the same conversation without the dashboard. It
+runs the same planner through dispatch's own plan-build runner (the
+`runner/bin/decompose.mjs` helper, the same prompt, the same budget admission and
+dollar cap), so a turn costs what a dashboard turn costs and is refused when a
+dashboard turn would be.
+
+- The planner's questions are printed. `gaffer plan --answer "…"` answers them and
+  `gaffer plan --now` is "Build the tickets". At a terminal it asks you in place.
+- The proposal is printed: the epic, each ticket with its repo, bootstrap flag,
+  `after T1` edges and criteria, the Final the factory adds, and every answer you
+  gave, flagged when no proposed criterion covers it.
+- Nothing is created until you type y or run `gaffer plan --yes`, which creates
+  the proposal you were shown (it never plans again). The create is the dashboard's
+  confirm: a repo that doesn't exist yet rides on `source` for the bootstrap, the
+  brief and the agreed answers ride on the epic, and the same `createEpic` makes
+  draft tickets plus the Final. Nothing is readied.
+- `--yes` runs on its own. With a goal, `--answer` or `--now` it is refused before
+  any model call, so a plan is never made and created in one step you didn't see.
+  A new answer drops the proposal it supersedes, so a failed turn after it leaves
+  nothing to create, and the draft names the factory it was planned in (its data
+  dir and dispatch database): a draft copied elsewhere, or `--yes` against another
+  `DISPATCH_DB`, is refused. While the factory is paused on the usage window a
+  turn isn't started (exit 75). It exits 0 when the epic is created and 4 while
+  nothing is created yet (questions asked, a proposal waiting for `--yes`, or a no
+  or Ctrl-D at the prompt).
+- `--repo <name>` extends a registered repo (brownfield), `--file <path>` reads
+  the brief from a file, `--show` prints the pending proposal, `--discard` drops
+  it, and `--list` lists the epics. The conversation between runs is kept in
+  `.gaffer/plan-draft.json`.
+
 ### Greenfield vs brownfield
 
 The decomposer takes one of two shapes depending on whether you point it at an
@@ -710,7 +742,13 @@ human-gated knowledge the factory works from:
   repo as indexed there.
 - **Lore** — the team's recorded conventions, decisions, gotchas, and cross-repo
   boundaries. It's **read-only in the product**: agents *draft* lore through an
-  MCP review gate, and a human approves it via the memory CLI — it is never
+  MCP review gate, and a human approves it in the Memory view or from the
+  terminal (`gaffer lore review` lists the drafts the Memory view lists,
+  `gaffer lore show <id>` prints one, `gaffer lore approve <id>` and
+  `gaffer lore reject <id> --reason "…"` decide; `gaffer lore review --json`
+  prints the page the Memory view reads). An agent shell can't run these, or the
+  memory CLI's `approve` / `reject` / `review` / `add` and the verbs that change
+  ratified lore: the safety hook denies them. It is never
   silently rewritten. Every edit snapshots the previous version
   (`memory history <id>`), so a change is diffable and reversible.
 

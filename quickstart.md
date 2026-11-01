@@ -59,8 +59,10 @@ A different repository with the same directory name (two unrelated `api` checkou
 refused rather than merged into the first one's record; onboard it under its own name with
 `runner/gaffer onboard /path/to/other/api --name other-api`.
 
-> Lore lands as **drafts** (gated). Approve what's worth keeping with the memory CLI;
-> nothing is auto-promoted.
+> Lore lands as **drafts** (gated). `runner/gaffer lore review` lists them (the same list
+> as the dashboard's **Memory** view); approve what's worth keeping with
+> `runner/gaffer lore approve <id>` and drop the rest with `runner/gaffer lore reject <id>
+> --reason "…"`. Nothing is auto-promoted.
 
 Onboarding also files one **decision** for you — *"Onboarding intake for '<repo>'"* — a
 short bundle of questions the scan could not answer from the code (what the product is
@@ -321,7 +323,11 @@ that *creates a new repo* for the app, which the factory then onboards and deliv
    The planner may first ask a few clarifying questions; answer them, or press **Build the
    tickets** (enabled after your first message) to plan with what it has. Review the proposed
    phases → **Create & ready** (or **Create as draft** to inspect the tickets first).
-   Plan a build is a dashboard flow (`POST /plan-build` behind it); there is no CLI for it yet.
+   **From a terminal instead:** `runner/gaffer plan "a full-stack calculator: …"` asks the
+   same planner. Answer its questions with `runner/gaffer plan --answer "…"` (or skip them
+   with `--now`); it prints the proposed tickets and creates them as drafts only when you
+   type y or run `runner/gaffer plan --yes` on its own afterwards. Then ready them as in
+   step 2.
    The plan always ends with one ticket the factory adds itself: **Acceptance: <epic>**.
    It depends on every other ticket, runs last against the integrated build, and carries
    the brief as its contract plus cross-cutting criteria (persistence, concurrent writers,

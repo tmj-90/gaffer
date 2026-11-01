@@ -921,7 +921,7 @@ gaffer_distill_ticket_intent() {
     if [ "$_promote" = "1" ]; then
       log "memory: distilled requirement from #$NUM → ACTIVE (auto-promoted: memory auto-approve is on; GAFFER_MEMORY_AUTO_PROMOTE=0 to gate)"
     else
-      log "memory: distilled requirement DRAFT from #$NUM (human-gated — \`memory review\` to ratify; GAFFER_MEMORY_AUTO_PROMOTE=1 to auto-promote)"
+      log "memory: distilled requirement DRAFT from #$NUM (human-gated — \`gaffer lore review\` to ratify; GAFFER_MEMORY_AUTO_PROMOTE=1 to auto-promote)"
     fi
   else
     log "memory: distill #$NUM skipped/failed — non-fatal, delivery unaffected"

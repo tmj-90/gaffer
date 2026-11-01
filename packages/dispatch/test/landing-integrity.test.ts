@@ -289,6 +289,15 @@ describe("api/F8: a principal cannot take a registered agent's id; nobody approv
     expect(err?.code).toBe("DUPLICATE");
     expect(err?.details).toMatchObject({ reason: "actor_id_is_agent" });
     expect(codeOf(() => wg.createPrincipal({ name: agent.id }, system))).toBe("DUPLICATE");
+    // ...in any case: the same id in capitals reads as that agent too.
+    expect(
+      codeOf(() =>
+        wg.createPrincipal(
+          { name: "loud", actorType: "admin", actorId: agent.id.toUpperCase() },
+          system,
+        ),
+      ),
+    ).toBe("DUPLICATE");
     // Any other id is fine.
     const ok = wg.createPrincipal({ name: "alice", actorType: "human" }, system);
     expect(ok.principal.actor_id).toBe("alice");
@@ -300,6 +309,9 @@ describe("api/F8: a principal cannot take a registered agent's id; nobody approv
     const { id, agentId } = inReview(wg);
     const disguised: Actor = { type: "human", id: agentId };
     expect(codeOf(() => wg.approveReview(id, disguised))).toBe("ACTOR_NOT_PERMITTED");
+    expect(codeOf(() => wg.approveReview(id, { type: "admin", id: agentId.toUpperCase() }))).toBe(
+      "ACTOR_NOT_PERMITTED",
+    );
     expect(wg.view(id).ticket.status).toBe("in_review");
     expect(wg.approveReview(id, human).ticket.status).toBe("ready_for_merge");
     wg.db.close();

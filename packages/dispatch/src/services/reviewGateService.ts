@@ -494,7 +494,11 @@ export class ReviewGateService {
     // speaking under another type, and its approval would read as the agent approving
     // its own work.
     const author = this.deliveringAgentId(ticket.id);
-    if (author !== null && actor.id !== undefined && actor.id === author) {
+    if (
+      author !== null &&
+      actor.id !== undefined &&
+      actor.id.trim().toLowerCase() === author.toLowerCase()
+    ) {
       throw new DispatchError(
         "ACTOR_NOT_PERMITTED",
         actor.type === "agent"

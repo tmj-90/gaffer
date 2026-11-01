@@ -11,6 +11,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const EPIC = {
@@ -46,31 +48,33 @@ const DEPS: Record<string, { depends_on_ticket_id: string; number: number; satis
 function stubFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const json = (body: unknown) =>
-        new Response(JSON.stringify(body), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      const m = url.match(/\/tickets\/(t-\d+)$/);
-      if (m) {
-        const t = TICKETS.find((x) => x.id === m[1])!;
-        return json({
-          ticket: t,
-          scopes: [EPIC],
-          dependencies: DEPS[t.id] || [],
-          repositories: [{ name: "billing-api", access: "write" }],
-          rework_trail: [],
-          events: [],
-        });
-      }
-      if (url.includes("/scope/nodes")) return json({ nodes: [EPIC] });
-      if (url.includes("/tickets")) return json({ tickets: TICKETS });
-      if (url.includes("/repositories")) return json({ repositories: [] });
-      if (url.includes("/plan-sessions")) return json({ session: null });
-      return json({});
-    }),
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (body: unknown) =>
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        const m = url.match(/\/tickets\/(t-\d+)$/);
+        if (m) {
+          const t = TICKETS.find((x) => x.id === m[1])!;
+          return json({
+            ticket: t,
+            scopes: [EPIC],
+            dependencies: DEPS[t.id] || [],
+            repositories: [{ name: "billing-api", access: "write" }],
+            rework_trail: [],
+            events: [],
+          });
+        }
+        if (url.includes("/scope/nodes")) return json({ nodes: [EPIC] });
+        if (url.includes("/tickets")) return json({ tickets: TICKETS });
+        if (url.includes("/repositories")) return json({ repositories: [] });
+        if (url.includes("/plan-sessions")) return json({ session: null });
+        return json({});
+      }),
+    ),
   );
 }
 

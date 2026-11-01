@@ -352,7 +352,7 @@ export function decideApproveOutcome(f: ApproveOutcomeFacts): ApproveOutcome {
     kind: "waits_for_merge",
     approvable: true,
     to_status: "ready_for_merge",
-    label: "Approve, waits for Merge now",
+    label: "Approve, merge is a separate click",
     confirm_label: "Confirm approval",
     done_label: "Waits for Merge now",
     sentence: `It waits in Ready for merge: ${why}, so it lands only when someone presses Merge now.${bothClause(f)}${tests}`,

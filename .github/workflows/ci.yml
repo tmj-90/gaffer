@@ -270,31 +270,34 @@ jobs:
   # runner/test/lib/shard-weights.tsv. The suite is CPU-bound, so more runners is
   # the only real wall-clock cut; the 3-core macOS runners get more shards than the
   # 4-core ubuntu ones:
-  #   ubuntu-latest  node 22: 2 shards   node 24: 2 shards
-  #   macos-latest   node 22: 3 shards   node 24: 2 shards
-  # 5 macOS jobs is exactly GitHub's free/pro concurrent-macOS limit (a sixth would
-  # queue), which is why macOS node 24 gets 2 shards, not 3, and why the macOS
-  # package tests are folded into shard 1 of each macOS node version
+  #   ubuntu-latest  node 22: 2 shards   node 24: 3 shards
+  #   macos-latest   node 22: 3 shards   node 24: 3 shards
+  # 5 macOS jobs is GitHub's free/pro concurrent-macOS limit, so the sixth macOS
+  # shard queues behind the others for a few minutes; that beats the 20-minute
+  # timeout a 2-shard node 24 leg hit once the suite grew (run 41333739591). The
+  # macOS package tests are folded into shard 1 of each macOS node version
   # (`packages: true`) rather than being `packages` jobs of their own. macOS node 22
   # shard 1 also runs the OS-sensitive maintenance-lane e2e and gate replay
   # (`e2e: true`) so they keep macOS coverage; on ubuntu they run in `checks`.
   runner:
     name: runner / ${{ matrix.os }} / node ${{ matrix.node }} / ${{ matrix.shard }} of ${{ matrix.shards }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: ubuntu-latest, node: 22, shard: 1, shards: 2 }
           - { os: ubuntu-latest, node: 22, shard: 2, shards: 2 }
-          - { os: ubuntu-latest, node: 24, shard: 1, shards: 2 }
-          - { os: ubuntu-latest, node: 24, shard: 2, shards: 2 }
+          - { os: ubuntu-latest, node: 24, shard: 1, shards: 3 }
+          - { os: ubuntu-latest, node: 24, shard: 2, shards: 3 }
+          - { os: ubuntu-latest, node: 24, shard: 3, shards: 3 }
           - { os: macos-latest, node: 22, shard: 1, shards: 3, packages: true, e2e: true }
           - { os: macos-latest, node: 22, shard: 2, shards: 3 }
           - { os: macos-latest, node: 22, shard: 3, shards: 3 }
-          - { os: macos-latest, node: 24, shard: 1, shards: 2, packages: true }
-          - { os: macos-latest, node: 24, shard: 2, shards: 2 }
+          - { os: macos-latest, node: 24, shard: 1, shards: 3, packages: true }
+          - { os: macos-latest, node: 24, shard: 2, shards: 3 }
+          - { os: macos-latest, node: 24, shard: 3, shards: 3 }
 
     steps:
       - name: Checkout
@@ -457,7 +460,7 @@ jobs:
           # per suite. Measured locally (suite time, a loaded machine): ~3.7, ~1, ~1 and
           # ~2.8 min, ~10 min for the shard with four world setups.
           - name: own-server
-            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict
+            suites: s4b-pr-mode s12b-idle-lanes s7b-greenfield s17-conflict s20-ticket-landing
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -63,7 +63,8 @@ export class DatabaseOpenError extends Error {
   }
 }
 
-const BUSY_TIMEOUT_MS = 5000;
+/** How long a connection waits for another process's write lock before SQLITE_BUSY. */
+export const BUSY_TIMEOUT_MS = 5000;
 
 /**
  * Open (creating if needed) a Dispatch SQLite database and ensure the schema

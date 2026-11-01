@@ -1,5 +1,3 @@
-import { readFileSync, writeFileSync } from "node:fs";
-
 import type { Command } from "commander";
 
 import {
@@ -9,8 +7,7 @@ import {
   serializeBundle,
   verifyBundleRestores,
 } from "../../io/stateExport.js";
-import { DispatchError } from "../../util/errors.js";
-import { open, printJson, readStdin } from "../shared.js";
+import { open, printJson, readInputFile, readStdin, writeOutputFile } from "../shared.js";
 
 export function registerPortability(program: Command): void {
   // --- Portability: export / import the whole board (H5) ----------------------
@@ -40,7 +37,7 @@ export function registerPortability(program: Command): void {
         if (out === undefined || out === "-") {
           process.stdout.write(json);
         } else {
-          writeFileSync(out, json, { encoding: "utf8" });
+          writeOutputFile(out, json);
           printJson({
             ok: true,
             out,
@@ -65,21 +62,7 @@ export function registerPortability(program: Command): void {
     )
     .option("--force", "replace the contents of a non-empty database", false)
     .action((file: string, opts, cmd) => {
-      let json: string;
-      if (file === "-") {
-        json = readStdin();
-      } else {
-        try {
-          json = readFileSync(file, "utf8");
-        } catch (err) {
-          const isEnoent = (err as NodeJS.ErrnoException).code === "ENOENT";
-          throw new DispatchError(
-            isEnoent ? "FILE_NOT_FOUND" : "IO_ERROR",
-            isEnoent ? `File not found: ${file}` : `Could not read file: ${file}`,
-            { file },
-          );
-        }
-      }
+      const json = file === "-" ? readStdin() : readInputFile(file);
       const wg = open(cmd.optsWithGlobals());
       try {
         const res = importStateFromJson(wg.db, json, { force: opts.force });

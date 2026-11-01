@@ -45,6 +45,10 @@ export const DISPATCH_ERROR_CODES = [
   "MERGE_IN_FLIGHT",
   "FILE_NOT_FOUND",
   "IO_ERROR",
+  // A file the CLI was told to write (export --out) could not be written.
+  "WRITE_FAILED",
+  // Another process held the SQLite write lock for longer than the busy timeout.
+  "DB_BUSY",
   "UNSAFE_BIND",
   "INTERNAL_ERROR",
 ] as const;

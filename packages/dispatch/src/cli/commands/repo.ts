@@ -5,12 +5,14 @@ import { resolve } from "node:path";
 import type { Command } from "commander";
 
 import { GIT_REF_SAFE } from "../../domain/schemas.js";
+import { TICKET_REPO_ROLES } from "../../domain/types.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
   cliActor,
   humanOrSystemActor,
   open,
+  parseOneOf,
   printJson,
 } from "../shared.js";
 
@@ -175,13 +177,19 @@ export function registerRepo(program: Command): void {
   repo
     .command("link <ref> <repoName>")
     .description("Link a repository to a ticket")
-    .option("--role <role>", "role", "primary")
+    .option(
+      "--role <role>",
+      `the repo's role on the ticket: ${TICKET_REPO_ROLES.join(" | ")}`,
+      "primary",
+    )
     .option("--as <type>", AS_HUMAN_OR_SYSTEM_HELP, "human")
     .action((ref, repoName, opts, cmd) => {
       const actor = humanOrSystemActor(opts.as);
+      // cli-wg/F-07: refused here, naming the roles, not by the DB's CHECK constraint.
+      const role = parseOneOf("--role", opts.role, TICKET_REPO_ROLES);
       const wg = open(cmd.optsWithGlobals());
       const t = wg.resolveTicket(ref);
-      wg.linkRepository(t.id, repoName, opts.role, actor);
+      wg.linkRepository(t.id, repoName, role, actor);
       printJson({ ok: true });
       wg.db.close();
     });

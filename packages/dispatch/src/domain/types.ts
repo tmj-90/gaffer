@@ -117,6 +117,16 @@ export const DECISION_SEVERITIES = [
 ] as const;
 export type DecisionSeverity = (typeof DECISION_SEVERITIES)[number];
 
+/** A ticket↔repo link's role (`repo link --role`); the ticket_repos CHECK constraint's list. */
+export const TICKET_REPO_ROLES = [
+  "primary",
+  "secondary",
+  "affected",
+  "read_only_context",
+  "test_only",
+] as const;
+export type TicketRepoRole = (typeof TICKET_REPO_ROLES)[number];
+
 export const CLAIM_STATUSES = ["active", "released", "expired", "revoked", "completed"] as const;
 export type ClaimStatus = (typeof CLAIM_STATUSES)[number];
 

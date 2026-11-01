@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { z } from "zod";
 
+import { dbBusyError, isDbBusyError } from "../util/dbBusy.js";
 import { DispatchError, type DispatchErrorCode } from "../util/errors.js";
 import { toZod3Issues } from "../util/zod3Compat.js";
 
@@ -60,8 +61,12 @@ const STATUS_FOR_CODE: Record<DispatchErrorCode, number> = {
   MERGE_IN_FLIGHT: 409,
   ACTOR_NOT_PERMITTED: 403,
   NOT_CONFIGURED: 503,
+  // The database stayed write-locked by another process past the busy timeout: a
+  // transient condition, so a client retries rather than reading a server crash.
+  DB_BUSY: 503,
   // Genuine server-side failures (UNSAFE_BIND is startup-only).
   IO_ERROR: 500,
+  WRITE_FAILED: 500,
   UNSAFE_BIND: 500,
   INTERNAL_ERROR: 500,
 };
@@ -249,6 +254,14 @@ export function handleError(res: ServerResponse, err: unknown): void {
         issues: toZod3Issues(err.issues),
       }),
     );
+    return;
+  }
+  if (isDbBusyError(err)) {
+    // Another process held the write lock past the busy timeout: retryable, so a 503
+    // with a Retry-After, not the generic 500 a client reads as a crash.
+    const busy = dbBusyError();
+    if (!res.headersSent) res.setHeader("retry-after", "1");
+    sendJson(res, statusForCode(busy.code), errorBody(busy.code, busy.message, busy.details));
     return;
   }
   if (err instanceof DispatchError) {

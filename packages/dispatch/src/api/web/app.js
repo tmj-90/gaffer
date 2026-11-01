@@ -23512,7 +23512,29 @@ function memoryUnavailable(reason) {
  * DISPATCH_ONBOARD_CMD) toasts its message via the shared guard. `presetRepo` (when
  * given) pre-selects the repo so the digest empty-state can offer "onboard THIS repo".
  */
-function openOnboardPicker(repos, presetRepo) {
+/**
+ * Does Memory already hold a digest for this registered repo? true / false, or null when
+ * it cannot say (memory unavailable, the read failed): the caller then asks first.
+ */
+async function repoHasDigest(name) {
+  try {
+    const res = await api("GET", `/api/memory/digest/${encodeURIComponent(name)}`);
+    if (!res || res.available === false) return null;
+    return !!res.digest;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The "Onboard a repo" sheet: a registered repo (the select) OR a typed path. What the
+ * person typed wins: typing a path resets the select, and picking a repo clears the
+ * path. Onboarding a repo Memory already knows (it has a digest, or that cannot be
+ * read) is a deliberate choice: a confirmation names the cost before anything runs.
+ * `opts.onboarded` maps repo name → whether it has a digest, when the caller knows.
+ */
+function openOnboardPicker(repos, presetRepo, opts = {}) {
+  const known = opts.onboarded || {};
   const repoSel = el("select", {}, [
     el("option", { value: "" }, repos.length ? "Pick a registered repo…" : "No registered repos"),
     ...repos.map((r) => el("option", { value: r.name, selected: presetRepo === r.name }, r.name)),
@@ -23525,7 +23547,14 @@ function openOnboardPicker(repos, presetRepo) {
     spellcheck: "false",
   });
   if (presetRepo) repoSel.value = presetRepo;
+  pathInput.addEventListener("input", () => {
+    if (pathInput.value.trim()) repoSel.value = "";
+  });
+  repoSel.addEventListener("change", () => {
+    if (repoSel.value) pathInput.value = "";
+  });
 
+  const bare = (p) => String(p || "").replace(/\/+$/, "");
   const runBtn = el("button", { class: "btn primary", type: "submit" }, "Onboard");
   const form = el(
     "form",
@@ -23533,23 +23562,50 @@ function openOnboardPicker(repos, presetRepo) {
       class: "form-grid",
       onsubmit: (e) => {
         e.preventDefault();
-        // Either a registered repo (selector) OR a typed path; the selector wins when
-        // both are set. The endpoint resolves which kind the target is.
-        const repo = (repoSel.value || pathInput.value).trim();
-        if (!repo) {
+        // A typed path wins over the select; the endpoint resolves which kind it is.
+        const typed = pathInput.value.trim();
+        const target = typed || repoSel.value.trim();
+        if (!target) {
           toast("Pick a registered repo or type a path to onboard.");
           return;
         }
-        runAsyncAction(runBtn, "Onboarding…", async () => {
-          await api("POST", "/repos/onboard", { repo });
-          toast(`Onboarding '${repo}' — its digest + features will appear shortly.`, { ok: true });
-          closeSheet();
+        // A registered repo by name, or a typed path that is its checkout.
+        const registered = repos.find(
+          (r) => r.name === target || (typed && r.local_path && bare(r.local_path) === bare(typed)),
+        );
+        const go = async () => {
+          await api("POST", "/repos/onboard", { repo: target });
+          toast(`Onboarding '${target}' — its digest + features will appear shortly.`, {
+            ok: true,
+          });
+          if (sheetOpen()) closeSheet();
           // Re-read the Memory view focused on the onboarded repo so the digest +
           // feature ledger refresh once the producer lands them.
-          memoryState.repo = repos.some((r) => r.name === repo) ? repo : memoryState.repo;
+          memoryState.repo = registered ? registered.name : memoryState.repo;
           memoryState.node = "";
           writeMemoryStateToUrl();
           router();
+        };
+        if (!registered) {
+          runAsyncAction(runBtn, "Onboarding…", go);
+          return;
+        }
+        runAsyncAction(runBtn, "Checking…", async () => {
+          const name = registered.name;
+          const has = name in known ? known[name] : await repoHasDigest(name);
+          if (has === false) {
+            await go();
+            return;
+          }
+          confirmSheet({
+            title: `Onboard ${name} again?`,
+            intro:
+              `${name} is ${has ? "already onboarded: Memory holds its digest and feature inventory" : "already registered, and Memory may already hold its digest"}, ` +
+              "and refreshes them itself as agents deliver. Onboarding it again cards the whole repo once more: " +
+              "several minutes and model calls for a larger repo, and a fresh onboarding intake decision on the Team Sheet.",
+            confirm: `Re-onboard ${name}`,
+            onConfirm: go,
+          });
         });
       },
     },
@@ -23578,13 +23634,14 @@ function openOnboardPicker(repos, presetRepo) {
 /** The Memory view's "Onboard a repo" trigger (header + empty-state share it). */
 function onboardButton(repos, presetRepo, opts) {
   const o = opts || {};
+  const pickerOpts = o.onboarded ? { onboarded: o.onboarded } : {};
   const btn = el(
     "button",
     {
       class: o.primary ? "btn primary" : "btn",
       type: "button",
       title: "Scan a repo and build its Memory digest + feature inventory",
-      onclick: () => openOnboardPicker(repos, presetRepo),
+      onclick: () => openOnboardPicker(repos, presetRepo, pickerOpts),
     },
     [icon("plus"), el("span", {}, o.label || "Onboard a repo")],
   );
@@ -24420,6 +24477,10 @@ async function renderMemory(param) {
     : [null, null];
 
   const clubDrafts = allDrafts ? allDrafts.length : null;
+  // Whether the repo on show already has a digest, so the onboard sheet knows a
+  // re-onboard without asking the server again (unknown when memory is off).
+  const onboarded =
+    repo && digestRes && digestRes.available !== false ? { [repo]: !!digestRes.digest } : null;
   const wrap = el("div", { class: "view view-memory", dataset: { view: "memory" } });
   wrap.appendChild(
     viewHead(
@@ -24434,7 +24495,7 @@ async function renderMemory(param) {
       ]
         .filter(Boolean)
         .join(" · "),
-      onboardButton(repos, repo),
+      onboardButton(repos, repo, { onboarded }),
     ),
   );
 
@@ -24492,7 +24553,7 @@ async function renderMemory(param) {
   );
   // On a phone the header's Onboard folds into this row (one line, not two), so
   // the first draft to sign sits above the fold.
-  const pickOnboard = onboardButton(repos, repo, { label: "Onboard" });
+  const pickOnboard = onboardButton(repos, repo, { label: "Onboard", onboarded });
   pickOnboard.classList.add("mem-pick-onboard");
   wrap.appendChild(
     el("div", { class: `filters mem-pick${repos.length > 1 ? "" : " is-solo"}` }, [
@@ -24779,7 +24840,7 @@ function renderDigestCard(repo, res, repos = []) {
         `No digest for ${repo} yet`,
         "Onboard this repo to scan it and build its Memory digest + feature inventory.",
         null,
-        onboardButton(repos, repo),
+        onboardButton(repos, repo, { onboarded: { [repo]: false } }),
       ),
     );
     return card;

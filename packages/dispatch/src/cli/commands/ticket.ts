@@ -2,7 +2,11 @@ import type { Command } from "commander";
 import { z } from "zod";
 
 import type { Actor } from "../../domain/types.js";
-import { TICKET_STATUSES } from "../../domain/types.js";
+import {
+  REOPEN_FOR_REVIEW_CAUSES,
+  type ReopenForReviewCause,
+  TICKET_STATUSES,
+} from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
 import { DispatchError } from "../../util/errors.js";
 import {
@@ -16,6 +20,15 @@ import {
   validateTtl,
   warnLandedAlready,
 } from "../shared.js";
+
+/** A --cause value, or a VALIDATION_ERROR naming the ones there are. */
+function parseCause(v: string): ReopenForReviewCause {
+  if ((REOPEN_FOR_REVIEW_CAUSES as readonly string[]).includes(v)) return v as ReopenForReviewCause;
+  throw new DispatchError(
+    "VALIDATION_ERROR",
+    `--cause must be one of ${REOPEN_FOR_REVIEW_CAUSES.join(", ")} (got "${v}").`,
+  );
+}
 
 export function registerTicket(program: Command): void {
   const ticket = program.command("ticket").description("Ticket commands");
@@ -463,15 +476,21 @@ export function registerTicket(program: Command): void {
       "--resolution <summary>",
       'what the re-review is about, e.g. "re-review the new commits on repoB" (the resolver writes its summary here)',
     )
+    .option(
+      "--cause <cause>",
+      `why it goes back: ${REOPEN_FOR_REVIEW_CAUSES.join("|")} (default: the ticket's hold when it is moved_since_review or unpinned_repo, else merge_conflict, the resolver's case)`,
+    )
     .option("--as <actor>", "actor type: system|admin (admin records you, $USER)", "system")
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
+      const cause =
+        opts.cause === undefined ? undefined : parseCause(String(opts.cause).trim().toLowerCase());
       const wg = open(cmd.optsWithGlobals());
       const actor: Actor =
         as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
       const res = wg.reopenForReview(
         ref,
-        { reason: opts.reason, resolution: opts.resolution },
+        { reason: opts.reason, resolution: opts.resolution, ...(cause ? { cause } : {}) },
         actor,
       );
       printJson({ ok: true, ...res });

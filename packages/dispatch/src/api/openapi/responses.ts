@@ -188,8 +188,46 @@ export const TicketList = z
         .describe(TicketRow.description ?? ""),
     ),
     total: int.describe("Every ticket matching the filters, regardless of paging."),
-    limit: int.optional().describe("Echoed when paging."),
-    offset: int.optional().describe("Echoed when paging."),
+    limit: int.describe("The page size applied (500 when the request names none)."),
+    offset: int.describe("Where this page starts."),
+    next_offset: int
+      .nullable()
+      .describe("The `offset` of the next page, or null when this page is the last."),
+  })
+  .strict();
+
+const TicketSummaryRow = TicketRow.partial({
+  description: true,
+  test_contract: true,
+  last_review_feedback: true,
+});
+const looseRows = z.array(z.record(z.string(), z.unknown()));
+
+export const TicketDetailsBatch = z
+  .object({
+    details: z
+      .array(
+        z
+          .object({
+            ticket: TicketSummaryRow.describe("The ticket's summary row (plus `landing_state`)."),
+            repositories: looseRows.optional(),
+            scopes: looseRows.optional(),
+            dependencies: looseRows.optional(),
+            rework_trail: looseRows.optional(),
+            events: looseRows.optional(),
+            evidence: looseRows.optional(),
+          })
+          .strict(),
+      )
+      .describe("One entry per ticket, each carrying the parts `include` asked for."),
+    missing: z.array(str).describe("Requested ids no ticket has."),
+    total: int.describe("With `ids`: the tickets found. Without: every ticket."),
+    limit: int.optional().describe("Without `ids`: the page size applied."),
+    offset: int.optional().describe("Without `ids`: where this page starts."),
+    next_offset: int
+      .nullable()
+      .optional()
+      .describe("Without `ids`: the next page's `offset`, or null on the last page."),
   })
   .strict();
 

@@ -51,6 +51,7 @@ export const ORDER = [
   "s12b-idle-lanes",
   "s7b-greenfield",
   "s17-conflict",
+  "s20-ticket-landing",
 ];
 
 export const available = () =>

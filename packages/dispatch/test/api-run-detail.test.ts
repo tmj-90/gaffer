@@ -458,6 +458,53 @@ describe("buildRunDetail", () => {
     expect(detail.cost_usd).toBeCloseTo(0.25, 6);
     expect(detail.num_turns).toBe(8);
   });
+
+  it("each run carries its own turns and cost beside the ticket's totals (exploratory finding ui-workflows/F9)", () => {
+    // Two delivery runs of #12: 12 turns $0.04, then (after an Unblock) 6 turns $0.02.
+    // Match footage showed the ticket's 18 turns $0.06 on both rows.
+    const tmpDir = mkdtempSync(join(tmpdir(), "wg-detail-run-cost-"));
+    const row = (ts: string, cost: number, turns: number) =>
+      JSON.stringify({
+        ts,
+        ticket: 12,
+        kind: "delivery",
+        measured: true,
+        total_cost_usd: cost,
+        num_turns: turns,
+        duration_ms: 1000,
+      });
+    writeFileSync(
+      join(tmpDir, "usage-ledger.jsonl"),
+      [row("2026-01-01T00:03:00.000Z", 0.04, 12), row("2026-01-01T01:02:00.000Z", 0.02, 6)].join(
+        "\n",
+      ) + "\n",
+    );
+    const log =
+      "2026-01-01T00:01:00 ROUTE #12 phase=implement risk=medium ac=2 attempt=1 budget=unlimited → tier=mid model=m [medium risk]";
+    const first = buildRunDetail(baseRun, log, { GAFFER_DATA: tmpDir });
+    const second = buildRunDetail(
+      {
+        ...baseRun,
+        id: "run-def",
+        started_at: "2026-01-01T01:00:00.000Z",
+        ended_at: "2026-01-01T01:05:00.000Z",
+      },
+      log,
+      { GAFFER_DATA: tmpDir },
+    );
+    const live = buildRunDetail(
+      { ...baseRun, id: "run-live", started_at: "2026-01-01T01:00:00.000Z", ended_at: null },
+      log,
+      { GAFFER_DATA: tmpDir },
+    );
+    expect(first.num_turns).toBe(18);
+    expect(first.cost_usd).toBeCloseTo(0.06, 6);
+    expect(first.run_num_turns).toBe(12);
+    expect(first.run_cost_usd).toBeCloseTo(0.04, 6);
+    expect(second.run_num_turns).toBe(6);
+    expect(second.run_cost_usd).toBeCloseTo(0.02, 6);
+    expect(live.run_num_turns).toBe(6);
+  });
 });
 
 // ── GET /api/runs/:id (REST) ──────────────────────────────────────────────────

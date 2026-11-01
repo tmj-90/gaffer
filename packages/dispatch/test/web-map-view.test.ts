@@ -12,6 +12,8 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { batchedReads } from "./helpers/batchedReads.js";
+
 const APP_JS = path.join(path.resolve(process.cwd(), "src/api/web"), "app.js");
 
 const NODES: Array<Record<string, string>> = [
@@ -48,43 +50,45 @@ const BOARD = {
 function stubFetch(unmapped: unknown[]): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      const json = (obj: unknown) =>
-        new Response(JSON.stringify(obj), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        });
-      const one = url.match(/\/scope\/nodes\/(n-[a-z]+)$/);
-      if (one)
-        return json({
-          node: NODES.find((n) => n.id === one[1]),
-          repos:
-            one[1] === "n-pay"
-              ? [{ id: "r-bill", name: "billing-api", relation: "owns", default_access: "write" }]
-              : [],
-        });
-      if (url.includes("/scope/nodes")) return json({ nodes: NODES });
-      if (url.includes("/scope/edges")) return json({ edges: EDGES });
-      if (url.includes("/scope/unmapped-repos")) return json({ repositories: unmapped });
-      if (url.includes("/scope/repos?repo=r-bill"))
-        return json({
-          scopes: [{ ...NODES[1], relation: "owns", default_access: "write" }],
-        });
-      if (url.includes("/scope/repos")) return json({ scopes: [] });
-      if (url.includes("/repositories")) return json({ repositories: REPOS });
-      if (url.includes("/api/board")) return json(BOARD);
-      // #4 has no repo but belongs to the campaign directly.
-      const m = url.match(/\/tickets\/(t\d)$/);
-      if (m)
-        return json({
-          ticket: { id: m[1] },
-          scopes: m[1] === "t4" ? [{ id: "n-epic", name: "Repeat orders", type: "epic" }] : [],
-          dependencies: [],
-          events: [],
-        });
-      return json({});
-    }),
+    vi.fn(
+      batchedReads(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (obj: unknown) =>
+          new Response(JSON.stringify(obj), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        const one = url.match(/\/scope\/nodes\/(n-[a-z]+)$/);
+        if (one)
+          return json({
+            node: NODES.find((n) => n.id === one[1]),
+            repos:
+              one[1] === "n-pay"
+                ? [{ id: "r-bill", name: "billing-api", relation: "owns", default_access: "write" }]
+                : [],
+          });
+        if (url.includes("/scope/nodes")) return json({ nodes: NODES });
+        if (url.includes("/scope/edges")) return json({ edges: EDGES });
+        if (url.includes("/scope/unmapped-repos")) return json({ repositories: unmapped });
+        if (url.includes("/scope/repos?repo=r-bill"))
+          return json({
+            scopes: [{ ...NODES[1], relation: "owns", default_access: "write" }],
+          });
+        if (url.includes("/scope/repos")) return json({ scopes: [] });
+        if (url.includes("/repositories")) return json({ repositories: REPOS });
+        if (url.includes("/api/board")) return json(BOARD);
+        // #4 has no repo but belongs to the campaign directly.
+        const m = url.match(/\/tickets\/(t\d)$/);
+        if (m)
+          return json({
+            ticket: { id: m[1] },
+            scopes: m[1] === "t4" ? [{ id: "n-epic", name: "Repeat orders", type: "epic" }] : [],
+            dependencies: [],
+            events: [],
+          });
+        return json({});
+      }),
+    ),
   );
 }
 

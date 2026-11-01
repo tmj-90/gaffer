@@ -221,6 +221,13 @@ usage ledger and the ticket transition log, and says only what those can show:
   Each ticket's row says how many send-backs came from review and how many from
   the runner, and whether its spend was placed by attempt or, for rows older than
   attempt ids, by the call's end time minus its duration.
+- **Per accepted change** is what a change that reached done really cost: the
+  spend of every attempt on every ticket (parked, failed and abandoned ones
+  included) divided by the tickets that reached done, with the attempts each took.
+  `gaffer wg stats` adds what the done tickets alone cost, the spend by outcome,
+  the spend with no ticket (left out) and human review time, and `gaffer eval`
+  prints it under the judge's cost per pass, which only sees submitted work
+  (docs/eval-harness.md has the definition and its limits).
 - **Flow efficiency** is the median share of a shipped ticket's lead time with
   an agent working on it (`claimed` or `in_progress`). Everything else is
   waiting, and the form guide lists it on its own: **waiting to merge** (approved,

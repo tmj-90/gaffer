@@ -3,6 +3,8 @@ import { existsSync, statSync } from "node:fs";
 import { DISPATCH_UPGRADE_HINT, type Db } from "../db/connection.js";
 import { SCHEMA_VERSION } from "../db/schema.js";
 import { verifyEventChain } from "../events/eventChain.js";
+import { acceptedChangeCost, type AcceptedChangeReport } from "../health/acceptedChange.js";
+import { readHealthRows, resolveLedgerPath } from "../health/healthAggregator.js";
 import { contractHash } from "../util/contractHash.js";
 import type { HumanQueue } from "../services/humanQueueService.js";
 import { epicImplementationMembers, epicsWithOwnAcceptance } from "../services/epicAcceptance.js";
@@ -330,6 +332,68 @@ export interface StatsReport {
   readonly staleClaims: number;
   /** ACCEPTANCE GATE: "implementation merged" vs "build accepted", per epic. */
   readonly acceptance: AcceptanceSummary;
+  /**
+   * COST PER ACCEPTED CHANGE (external review #9): every attempt's spend from the usage
+   * ledger, whatever the ticket's outcome, over the tickets that reached done. Null when
+   * no usage ledger is configured or readable.
+   */
+  readonly acceptedChange: AcceptedChangeReport | null;
+}
+
+/** The accepted-change report for `wg stats`, or null without a usage ledger. */
+export function computeAcceptedChange(
+  db: Db,
+  env: NodeJS.ProcessEnv = process.env,
+): AcceptedChangeReport | null {
+  const path = resolveLedgerPath(env);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const tickets = db.prepare("SELECT id, number, status FROM tickets").all() as Array<{
+      id: string;
+      number: number | null;
+      status: string;
+    }>;
+    const transitions = (
+      db
+        .prepare(
+          `SELECT entity_id AS ticketId, actor_type AS actorType,
+                  json_extract(payload_json, '$.from') AS fromStatus,
+                  json_extract(payload_json, '$.to')   AS toStatus,
+                  created_at AS at
+             FROM work_events
+            WHERE entity_type = 'ticket' AND event_type = 'ticket.transitioned'`,
+        )
+        .all() as Array<{
+        ticketId: string;
+        actorType: string;
+        fromStatus: string | null;
+        toStatus: string | null;
+        at: string;
+      }>
+    ).map((r) => ({ ...r, atMs: Date.parse(r.at) || 0 }));
+    return acceptedChangeCost(
+      readHealthRows(path),
+      tickets.map((t) => ({ id: t.id, number: t.number ?? -1, status: t.status })),
+      transitions,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** "$1.234567" → "$1.23"; null → "n/a". */
+function usd(n: number | null): string {
+  return n === null ? "n/a" : `$${n.toFixed(2)}`;
+}
+
+/** Milliseconds → "3h 05m" / "12m" / "40s". */
+function span(ms: number | null): string {
+  if (ms === null) return "n/a";
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
 /**
@@ -506,7 +570,11 @@ export function computeAcceptance(db: Db): AcceptanceSummary {
   };
 }
 
-export function computeStats(db: Db, nowIso = new Date().toISOString()): StatsReport {
+export function computeStats(
+  db: Db,
+  nowIso = new Date().toISOString(),
+  env: NodeJS.ProcessEnv = process.env,
+): StatsReport {
   const statusRows = db
     .prepare("SELECT status, COUNT(*) AS n FROM tickets GROUP BY status ORDER BY status")
     .all() as Array<{ status: string; n: number }>;
@@ -530,6 +598,7 @@ export function computeStats(db: Db, nowIso = new Date().toISOString()): StatsRe
     activeClaims,
     staleClaims,
     acceptance: computeAcceptance(db),
+    acceptedChange: computeAcceptedChange(db, env),
   };
 }
 
@@ -547,6 +616,21 @@ export function renderStats(stats: StatsReport): string {
   lines.push(`Open decisions:  ${stats.openDecisions}`);
   lines.push(`Active claims:   ${stats.activeClaims}`);
   lines.push(`Stale claims:    ${stats.staleClaims}`);
+  // COST PER ACCEPTED CHANGE: every attempt counted, failures included.
+  const c = stats.acceptedChange;
+  if (c) {
+    const o = c.by_outcome;
+    lines.push("");
+    lines.push(
+      `Cost per accepted change: ${usd(c.cost_per_accepted_change_usd)} (all attempts, ${usd(c.attributed_spend_usd)} over ${c.accepted_changes} done; the done tickets alone cost ${usd(c.accepted_only_cost_per_change_usd)} each)`,
+    );
+    lines.push(
+      `  attempts per accepted change: ${c.attempts_per_accepted_change ?? "n/a"} · spend not accepted: ${usd(o.parked_or_failed.spend_usd)} parked or failed (${o.parked_or_failed.tickets}), ${usd(o.abandoned.spend_usd)} abandoned (${o.abandoned.tickets}), ${usd(o.in_flight.spend_usd)} in flight (${o.in_flight.tickets}) · ${usd(c.unattributed_usd)} with no ticket (not in the ratio)`,
+    );
+    lines.push(
+      `  reviewer time: ${c.reviewer_time.recorded_reviews} recorded review(s), mean ${span(c.reviewer_time.mean_ms)}, ${span(c.reviewer_time.per_accepted_change_ms)} per accepted change (wall clock in review)`,
+    );
+  }
   // ACCEPTANCE GATE: implementation merged is not build accepted.
   const a = stats.acceptance;
   if (a && a.epics.length > 0) {

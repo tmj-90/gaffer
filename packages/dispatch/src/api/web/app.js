@@ -6167,6 +6167,21 @@ function wageBill(f) {
             el("small", {}, h.shipped_count != null ? `over ${h.shipped_count} shipped` : ""),
           ]),
         ]),
+        // Every attempt counted (parked, failed and abandoned tickets included) over the
+        // tickets that reached done: what an accepted change really cost.
+        el("div", {}, [
+          el("dt", {}, "Per accepted change"),
+          el("dd", {}, [
+            money(h.accepted_change?.cost_per_accepted_change_usd),
+            el(
+              "small",
+              {},
+              h.accepted_change && h.accepted_change.attempts_per_accepted_change != null
+                ? `every attempt counted · ${h.accepted_change.attempts_per_accepted_change} attempts each`
+                : "",
+            ),
+          ]),
+        ]),
         el("div", {}, [
           el("dt", {}, "Spent on rework"),
           el("dd", {}, [

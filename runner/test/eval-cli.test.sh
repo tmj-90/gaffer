@@ -6,6 +6,7 @@
 #   B  empty ledger → friendly enable-hint, exit 0
 #   C  seeded ledger → human view carries pass rate, memory score gap, cost/pass
 #   D  --json emits the raw summary (parses; gap matches)
+#   E  cost per accepted change counts every attempt (parked, failed, abandoned)
 # =====================================================================
 . "$(dirname "${BASH_SOURCE[0]}")/lib/tmpdir.sh"  # mktemp guard + safe temp removal
 set -uo pipefail
@@ -62,6 +63,48 @@ assert s["count"] == 2, s
 assert s["memoryLift"]["lift"] == 2.8, s
 assert s["cost"]["costPerPass"] == 0.57, s
 ' && ok "--json emits the parseable summary (lift 2.8, cost/pass 0.57)" || no "--json output wrong"
+
+echo "== E. every attempt counted: cost per accepted change (external review #9) =="
+# The judge only saw tickets 1 and 2 above. The usage ledger holds every attempt: #1
+# reached done after two delivery attempts and a review; #2 was parked after three
+# attempts; #3 was abandoned after one. None of #2's or #3's spend is in cost/pass.
+D="$ROOT/packages/dispatch/dist/cli/index.js"
+if [ -f "$D" ]; then
+  DB="$GAFFER_DATA/dispatch.sqlite"
+  node "$D" --db "$DB" init >/dev/null 2>&1
+  for t in done-one parked-two abandoned-three; do node "$D" --db "$DB" ticket create -t "$t" -d x >/dev/null 2>&1; done
+  node --no-warnings -e '
+const { DatabaseSync } = require("node:sqlite"); const db = new DatabaseSync(process.argv[1]);
+db.prepare("UPDATE tickets SET status = ? WHERE number = 1").run("done");
+db.prepare("UPDATE tickets SET status = ? WHERE number = 2").run("blocked");
+db.prepare("UPDATE tickets SET status = ? WHERE number = 3").run("cancelled");' "$DB"
+  U="$GAFFER_DATA/usage-ledger.jsonl"
+  {
+    printf '{"ts":"2026-08-24T00:00:00Z","ticket":1,"kind":"delivery","attempt_id":"c1/1","measured":true,"total_cost_usd":1.0}\n'
+    printf '{"ts":"2026-08-24T00:10:00Z","ticket":1,"kind":"delivery","attempt_id":"c1/2","measured":true,"total_cost_usd":1.0}\n'
+    printf '{"ts":"2026-08-24T00:20:00Z","ticket":1,"kind":"review","measured":true,"total_cost_usd":0.5}\n'
+    printf '{"ts":"2026-08-24T01:00:00Z","ticket":2,"kind":"delivery","attempt_id":"c2/1","measured":true,"total_cost_usd":1.0}\n'
+    printf '{"ts":"2026-08-24T01:10:00Z","ticket":2,"kind":"delivery","attempt_id":"c2/2","measured":true,"total_cost_usd":1.0}\n'
+    printf '{"ts":"2026-08-24T01:20:00Z","ticket":2,"kind":"delivery","attempt_id":"c2/3","measured":true,"total_cost_usd":1.0}\n'
+    printf '{"ts":"2026-08-24T02:00:00Z","ticket":3,"kind":"delivery","attempt_id":"c3/1","measured":true,"total_cost_usd":0.5}\n'
+    printf '{"ts":"2026-08-24T02:30:00Z","kind":"onboard","measured":true,"total_cost_usd":2.0}\n'
+  } > "$U"
+  OUT="$(bash "$RUNNER_DIR/gaffer" eval 2>&1)"
+  grep -q 'per accepted change \$6.00 (every attempt counted: \$6.00 over 1 done; \$3.50 of it on parked, failed or abandoned tickets) / 6 attempts each' <<<"$OUT" \
+    && ok "gaffer eval: \$6.00 per accepted change, 6 attempts each, the parked and abandoned spend named" || no "no accepted-change line: $OUT"
+  S="$(node "$D" --db "$DB" stats --json 2>/dev/null)"
+  printf '%s' "$S" | node -e '
+const s = JSON.parse(require("fs").readFileSync(0, "utf8")).acceptedChange;
+const want = { accepted_changes: 1, attributed_spend_usd: 6, unattributed_usd: 2, cost_per_accepted_change_usd: 6, accepted_only_cost_per_change_usd: 2.5, attempts_per_accepted_change: 6 };
+for (const [k, v] of Object.entries(want)) if (s[k] !== v) { console.error(k, s[k]); process.exit(1); }
+if (s.by_outcome.parked_or_failed.spend_usd !== 3 || s.by_outcome.abandoned.spend_usd !== 0.5) process.exit(1);
+if (!Array.isArray(s.limits) || s.limits.length < 3) process.exit(1);' \
+    && ok "wg stats --json: every attempt over accepted changes; parked/abandoned spend and the onboarding spend reported apart" || no "wg stats acceptedChange wrong: $(printf '%s' "$S" | head -c 600)"
+  node "$D" --db "$DB" stats 2>/dev/null | grep -q 'Cost per accepted change: \$6.00 (all attempts' \
+    && ok "wg stats prints the cost per accepted change" || no "wg stats text has no accepted-change line"
+else
+  echo "  ok SKIP E: dispatch not built"
+fi
 
 echo ""
 echo "eval-cli: $pass passed, $fail failed"

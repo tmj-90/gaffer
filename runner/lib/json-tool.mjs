@@ -1100,6 +1100,22 @@ switch (cmd) {
     }
     break;
   }
+  // accepted-change: stdin = `wg stats --json` → the cost-per-accepted-change line for
+  // `gaffer eval` (every attempt counted, failures included; external review #9).
+  case "accepted-change": {
+    const p = tryParse(readStdin());
+    const c = p.ok && p.value ? p.value.acceptedChange : null;
+    if (!c) break;
+    const usd = (n) => (n === null || n === undefined ? "n/a" : `$${Number(n).toFixed(2)}`);
+    const o = c.by_outcome || {};
+    const nf = (k) => (o[k] && typeof o[k].spend_usd === "number" ? o[k].spend_usd : 0);
+    println(
+      `per accepted change ${usd(c.cost_per_accepted_change_usd)} (every attempt counted: ${usd(c.attributed_spend_usd)} over ${c.accepted_changes} done; ` +
+        `${usd(nf("parked_or_failed") + nf("abandoned"))} of it on parked, failed or abandoned tickets) / ` +
+        `${c.attempts_per_accepted_change ?? "n/a"} attempts each`,
+    );
+    break;
+  }
   // status-count <status>: stdin = stats JSON → ticketsByStatus[status] (0 when absent).
   case "status-count": {
     const p = tryParse(readStdin());

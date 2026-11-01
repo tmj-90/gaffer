@@ -15,7 +15,8 @@ import {
   type FlowTicket,
 } from "../../health/deliveryFlow.js";
 import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js";
-import { aggregateHealth, type SendBack } from "../../health/healthAggregator.js";
+import { acceptedChangeCost } from "../../health/acceptedChange.js";
+import { aggregateHealth, readHealthRows, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
@@ -438,6 +439,15 @@ export function routeReadModels(
       resolveSendBacks: (n) => sendBacksByNumber.get(n) ?? [],
     });
     const governance = governanceRoi(govTransitions, reworkById, nowMs, windowDays);
+    // COST PER ACCEPTED CHANGE (external review #9): every attempt's spend, whatever the
+    // ticket's outcome (parked, failed, abandoned, in flight), over the tickets that
+    // reached done; attempts per accepted change; human review time where recorded.
+    const ledgerPath = resolveLedgerPath(process.env);
+    const acceptedChange = acceptedChangeCost(
+      ledgerPath ? readHealthRows(ledgerPath) : [],
+      allTickets.map((t) => ({ id: t.id, number: t.number ?? -1, status: t.status })),
+      govTransitions,
+    );
 
     // Two previously-DEAD data sources, surfaced best-effort (a missing source
     // degrades to a null/available:false cell, NEVER breaks the endpoint):
@@ -461,6 +471,7 @@ export function routeReadModels(
       ticket_count: health.ticket_count,
       shipped_count: health.shipped_count,
       cost_per_shipped_usd: health.cost_per_shipped_usd,
+      accepted_change: acceptedChange,
       coverage: health.coverage,
       by_kind: health.by_kind.slice(0, TOP_N),
       by_model: health.by_model.slice(0, TOP_N),

@@ -18,7 +18,9 @@ import { registerScope } from "./commands/scope.js";
 import { registerSpec } from "./commands/spec.js";
 import { registerTicket } from "./commands/ticket.js";
 import { describeCliFailure } from "./errors.js";
-import { open, printJson } from "./shared.js";
+import { assertPrincipalCommand } from "./principalGate.js";
+import { cliActor, cliPrincipal, open, printJson, setCliPrincipal } from "./shared.js";
+import { DispatchError } from "../util/errors.js";
 
 /**
  * The commands the runner (or an agent through it) calls as part of its own
@@ -109,6 +111,10 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
         ? `SQLite database path (${name} passes this factory's own; you never need it)`
         : "SQLite database path (default: DISPATCH_DB, else ./.dispatch/dispatch.sqlite)",
     )
+    .option(
+      "--as-principal <token>",
+      "act as a named principal (its gfp_ token; or set GAFFER_PRINCIPAL_TOKEN): writes are recorded under its identity and its read-only flag and repo/ticket scope are enforced as on the API",
+    )
     // Root options (-v, --db) are parsed only BEFORE the subcommand, so a value after
     // it that starts with "-" (a claim token, a free-text reason) is never taken for one.
     .enablePositionalOptions()
@@ -125,6 +131,37 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
     // exit codes; set before any subcommand so every one inherits it.
     .exitOverride()
     .addHelpText("after", rootHelpText(name));
+
+  // CLI IDENTITY: resolve the principal (if any) before every command, and refuse a
+  // command outside what it may do. Without a token the operator acts as $USER.
+  program.hook("preAction", (_root, action) => {
+    const globals = action.optsWithGlobals() as { db?: string; asPrincipal?: string };
+    const token = (globals.asPrincipal ?? process.env.GAFFER_PRINCIPAL_TOKEN ?? "").trim();
+    setCliPrincipal(null);
+    if (token === "") return;
+    const path = commandPath(action);
+    // `init` creates a database; a principal lives in one that exists.
+    const wg = open(globals);
+    try {
+      const resolved = wg.resolvePrincipalToken(token);
+      if (!resolved) {
+        throw new DispatchError(
+          "UNAUTHORIZED",
+          "GAFFER_PRINCIPAL_TOKEN / --as-principal is not an active principal token (unknown or revoked). Nothing was done.",
+        );
+      }
+      assertPrincipalCommand(
+        wg,
+        resolved.principal,
+        path,
+        action.processedArgs ?? action.args,
+        action.opts() as Record<string, unknown>,
+      );
+      setCliPrincipal(resolved.principal);
+    } finally {
+      wg.db.close();
+    }
+  });
 
   program
     .command("init")
@@ -155,6 +192,52 @@ export function buildProgram({ name = cliName() }: { name?: string } = {}): Comm
   registerNotify(program);
   registerAutonomy(program);
   registerClub(program);
+
+  // CLI IDENTITY: who this invocation records writes as, and whether that was checked.
+  program
+    .command("whoami")
+    .description(
+      "Who this CLI records writes as: a principal (authenticated by its token) or $USER (asserted, not authenticated)",
+    )
+    .option(
+      "--can-write <ref>",
+      "also check that this identity may change that ticket (exit 1 with SCOPE_DENIED / READ_ONLY_TOKEN if not); writes nothing",
+    )
+    .action((opts: { canWrite?: string }, cmd) => {
+      // Without a principal the operator may change anything; the ticket must exist.
+      if (opts.canWrite !== undefined && !cliPrincipal()) {
+        const wg = open(cmd.optsWithGlobals());
+        try {
+          wg.resolveTicket(opts.canWrite);
+        } finally {
+          wg.db.close();
+        }
+      }
+      const p = cliPrincipal();
+      if (p) {
+        printJson({
+          ok: true,
+          actor: cliActor(),
+          authenticated: true,
+          principal: { id: p.id, name: p.name },
+          capability: p.capability,
+          scope: p.scope,
+          note: `Acting as principal '${p.name}' (its token was checked against the database): every write is recorded as ${p.actor_type}:${p.actor_id}, and its capability and scope are enforced as on the API.`,
+        });
+        return;
+      }
+      printJson({
+        ok: true,
+        actor: cliActor(),
+        authenticated: false,
+        principal: null,
+        capability: "full",
+        scope: null,
+        note:
+          "Asserted, not authenticated: the CLI records writes as $USER and checks nothing, because whoever can open the database file can change anything in it (operator trust). " +
+          "To act with narrower, attributable access, set GAFFER_PRINCIPAL_TOKEN (or pass --as-principal) to a principal's token (`principal create`).",
+      });
+    });
 
   for (const cmd of allCommands(program)) {
     // cli-wg/F-21: one rule for --json. A command that prints JSON anyway accepts it
@@ -204,8 +287,8 @@ function handleHelpRequest(program: Command, args: readonly string[]): number | 
   let i = 0;
   // Root options before the command: --db <path> / --db=<path>.
   while (i < args.length && args[i]!.startsWith("-")) {
-    if (args[i] === "--db") i += 2;
-    else if (args[i]!.startsWith("--db=")) i += 1;
+    if (args[i] === "--db" || args[i] === "--as-principal") i += 2;
+    else if (args[i]!.startsWith("--db=") || args[i]!.startsWith("--as-principal=")) i += 1;
     else return null;
   }
   let cur = program;

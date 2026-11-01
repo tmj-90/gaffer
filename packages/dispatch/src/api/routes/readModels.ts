@@ -18,6 +18,7 @@ import { governanceRoi, type GovTransition } from "../../health/governanceRoi.js
 import { aggregateHealth, type SendBack } from "../../health/healthAggregator.js";
 import { sendBacksByTicket } from "../../health/sendBacks.js";
 import { isBoardArea } from "../../services/boardService.js";
+import type { HumanQueue } from "../../services/humanQueueService.js";
 import { aggregateSkillTelemetry } from "../../health/skillsTelemetryAggregator.js";
 import { readUsagePause } from "../../health/usagePause.js";
 import { DispatchError } from "../../util/errors.js";
@@ -26,6 +27,7 @@ import type { MemoryReader } from "../memoryReader.js";
 import { buildRunDetail } from "../runDetail.js";
 import { RUN_LOG_TAIL_BYTES, readLogTail } from "../static.js";
 import { activityQuery, runsQuery } from "../schemas.js";
+import { requestTicketFilter } from "../scopeGate.js";
 
 /**
  * Lore drafts awaiting approval, for the human queue's one Memory row. Memory is a
@@ -108,6 +110,22 @@ function eventLogIntegrity(wg: Dispatch): EventLogIntegrity {
   return value;
 }
 
+/** Recount a filtered human queue (the same kinds the service counts). */
+function recount(items: HumanQueue["items"]): HumanQueue["counts"] {
+  const n = (kind: string): number => items.filter((i) => i.kind === kind).length;
+  return {
+    total: items.length,
+    decisions: n("decision"),
+    reviews: n("review"),
+    readyApprovals: n("ready_approval"),
+    reviewerAssignments: n("reviewer_assignment"),
+    parked: n("parked"),
+    dependencyCancelled: n("dependency_cancelled"),
+    paused: n("paused"),
+    loreDrafts: 0,
+  };
+}
+
 export function routeReadModels(
   wg: Dispatch,
   memoryReader: MemoryReader,
@@ -163,8 +181,10 @@ export function routeReadModels(
     if (method !== "GET") return methodNotAllowed(res);
     const repoFilter = url.searchParams.get("repo") ?? undefined;
     const rawLimit = url.searchParams.get("limit");
+    // PRINCIPAL SCOPES: a scoped principal's board holds only its tickets.
+    const visible = requestTicketFilter(wg) ?? undefined;
     if (rawLimit === null) {
-      sendJson(res, 200, wg.board(repoFilter, { limit: BOARD_DEFAULT_LIMIT, offset: 0 }));
+      sendJson(res, 200, wg.board(repoFilter, { limit: BOARD_DEFAULT_LIMIT, offset: 0 }, visible));
       return;
     }
     const limit = Number.parseInt(rawLimit, 10);
@@ -186,7 +206,7 @@ export function routeReadModels(
     if (area !== undefined && !isBoardArea(area)) {
       throw new DispatchError("VALIDATION_ERROR", `'${area}' is not a board area.`, { area });
     }
-    sendJson(res, 200, wg.board(repoFilter, { limit, offset, ...(area ? { area } : {}) }));
+    sendJson(res, 200, wg.board(repoFilter, { limit, offset, ...(area ? { area } : {}) }, visible));
     return;
   }
 
@@ -207,6 +227,24 @@ export function routeReadModels(
   if (segments.length === 2 && segments[1] === "human-queue") {
     if (method !== "GET") return methodNotAllowed(res);
     const q = wg.humanQueue();
+    // PRINCIPAL SCOPES: a scoped principal's queue holds only items on its tickets
+    // (a decision with no ticket, and the factory-wide lore drafts, are outside it).
+    const visible = requestTicketFilter(wg);
+    if (visible) {
+      // A decision shows only when every ticket it is linked to is in scope, the rule
+      // GET /decisions applies (its Answer would otherwise be refused).
+      q.items = q.items.filter(
+        (i) =>
+          i.ticket !== null &&
+          visible(i.ticket.id) &&
+          (i.kind !== "decision" ||
+            !i.decisionId ||
+            wg.decisionTicketIds(i.decisionId).every(visible)),
+      );
+      q.counts = recount(q.items);
+      sendJson(res, 200, q);
+      return;
+    }
     const lore = pendingLoreDrafts(memoryReader);
     if (lore.total > 0) {
       const named = lore.titles.map((t) => `“${t}”`).join(", ");

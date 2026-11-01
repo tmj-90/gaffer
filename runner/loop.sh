@@ -19,6 +19,10 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=factory.config.sh
 source "$HERE/factory.config.sh"
+# CLI IDENTITY: the runner's own wg calls are the operator's and the system's; a
+# principal token inherited from the operator's shell must never make them a
+# principal's (whose scope would refuse --as system, repo registration, ...).
+unset GAFFER_PRINCIPAL_TOKEN
 mkdir -p "$GAFFER_DATA"
 
 # ── Loop-end "come back to this" ping ─────────────────────────────────────────

@@ -20,6 +20,10 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../factory.config.sh
 source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
+# CLI IDENTITY: the runner's own wg calls are the operator's and the system's; a
+# principal token inherited from the dashboard's environment never makes them a
+# principal's.
+unset GAFFER_PRINCIPAL_TOKEN
 # The tick script to run — a seam for the runner tests (a stub that emits a
 # TICK_RESULT line); the dashboard never sets it.
 : "${GAFFER_POLL_TICK_SH:=$HERE/tick.sh}"

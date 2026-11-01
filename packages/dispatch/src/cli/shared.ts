@@ -2,12 +2,46 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 import { Dispatch } from "../core.js";
 import type { Actor } from "../domain/types.js";
+import type { PrincipalView } from "../repositories/principalRepository.js";
+import { principalActor } from "../services/principalService.js";
 import { DispatchError } from "../util/errors.js";
 import { assertCliDbExists, resolveDbPath } from "../util/paths.js";
 
-/** The human running the CLI is the actor for events. */
+/**
+ * CLI IDENTITY. The principal this invocation acts as (GAFFER_PRINCIPAL_TOKEN or
+ * `--as-principal`), resolved once before the command runs (cli/index.ts), or null:
+ * the operator, recorded as `$USER` (asserted, not authenticated).
+ */
+let actingPrincipal: PrincipalView | null = null;
+
+export function setCliPrincipal(p: PrincipalView | null): void {
+  actingPrincipal = p;
+}
+
+export function cliPrincipal(): PrincipalView | null {
+  return actingPrincipal;
+}
+
+/** The id a person running the CLI is recorded under: the principal's, else `$USER`. */
+export function cliUserId(): string {
+  return actingPrincipal ? actingPrincipal.actor_id : (process.env.USER ?? "cli");
+}
+
+/**
+ * The actor for events: the principal's identity (human or admin, as it was minted)
+ * when acting as one, else the human running the CLI (`$USER`).
+ */
 export function cliActor(): Actor {
+  if (actingPrincipal) return principalActor(actingPrincipal);
   return { type: "human", id: process.env.USER ?? "cli" };
+}
+
+/**
+ * A scoped principal's ticket filter for list output (null: no filtering), the same
+ * rule the API's list routes apply.
+ */
+export function cliTicketFilter(wg: Dispatch): ((ticketId: string) => boolean) | null {
+  return actingPrincipal ? wg.ticketVisibility(actingPrincipal) : null;
 }
 
 /** Validate that a claim TTL is a positive integer, throwing a structured error otherwise. */
@@ -62,9 +96,9 @@ export function humanOrSystemActor(as: unknown): Actor {
 export function testerActor(as: string): Actor {
   switch (parseAs(as, ["agent", "human", "admin", "system"] as const)) {
     case "human":
-      return { type: "human", id: process.env.USER ?? "cli" };
+      return cliActor();
     case "admin":
-      return { type: "admin", id: process.env.USER ?? "cli" };
+      return { type: "admin", id: cliUserId() };
     case "system":
       return { type: "system" };
     case "agent":

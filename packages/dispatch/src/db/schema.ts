@@ -6,7 +6,7 @@
  * partial unique index (one active claim per ticket) are preserved — SQLite
  * supports both. Enum validation is also enforced in the application layer.
  */
-export const SCHEMA_VERSION = 30;
+export const SCHEMA_VERSION = 31;
 
 // No PRAGMAs here: migrate() runs this inside a transaction, where SQLite ignores
 // them. migrate() and openDatabase() set journal_mode/foreign_keys themselves.
@@ -701,7 +701,11 @@ CREATE TABLE IF NOT EXISTS api_principals (
   created_by    TEXT,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   last_used_at  TEXT,
-  revoked_at    TEXT
+  revoked_at    TEXT,
+  -- PRINCIPAL SCOPES (schema_version 31): JSON arrays of repository ids / ticket ids
+  -- the principal may reach (services/accessScope.ts). NULL on both: unscoped.
+  scope_repos   TEXT,
+  scope_tickets TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_api_principals_active
   ON api_principals(revoked_at, token_hash);

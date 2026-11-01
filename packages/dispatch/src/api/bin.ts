@@ -88,6 +88,10 @@ program
     // API's own gates and the values it reports agree with the tick.
     applySettingsToEnv(process.env);
     const ensured = ensureApiToken(process.env);
+    // CLI IDENTITY: the runners this server spawns (poll, merge, onboarding, planning)
+    // write as the operator and the system. A principal token in the shell that started
+    // the dashboard must not make their wg calls a principal's.
+    delete process.env.GAFFER_PRINCIPAL_TOKEN;
 
     // Refuse to expose the API on a public interface unless it is safe: a bearer
     // token is configured (always true now — see ensureApiToken above), the

@@ -172,7 +172,10 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "The capability tier, the actor this credential's writes are attributed to, and the principal (`null` for the shared token).",
     capability: "read",
     responses: [
-      ok("`{ capability, actor: { type, id }, principal: { id, name } | null }`.", "Whoami"),
+      ok(
+        "`{ capability, actor: { type, id }, principal: { id, name } | null, scope: { repos, tickets } | null }`.",
+        "Whoami",
+      ),
     ],
   },
   {
@@ -191,7 +194,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.config,
     summary: "Mint a named API credential",
     description:
-      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`). The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
+      "Creates a principal bound to an actor identity (`actor_type`, `actor_id`) and a capability (`full` or `read`), optionally scoped: `repos` (names or ids) limits it to tickets whose write repos all sit inside them, `tickets` (numbers or ids) to those tickets; an unknown repo or ticket is a 404 and nothing is created. The response carries the bearer token **once**; only its SHA-256 is stored. Shared operator token only: a principal token is refused.",
     capability: "full",
     body: "createPrincipalBody",
     responses: [
@@ -626,7 +629,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Many tickets' detail in one read",
     description:
-      "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`.",
+      "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`. A scoped principal reads only its tickets: one outside its scope is listed in `missing` too, a page and its `total` hold only its tickets, and a dependency outside its scope comes with `title: null` and `outside_scope: true`.",
     capability: "read",
     query: "ticketDetailsQuery",
     responses: [
@@ -640,7 +643,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Create a ticket",
     description:
-      "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
+      "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind. A scoped principal may name only repos in its scope (read access included) and no scope nodes.",
     capability: "full",
     body: "createTicketBody",
     responses: [
@@ -1066,6 +1069,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/scopes",
     tag: T.scopes,
     summary: "Link a scope node",
+    description:
+      "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
     capability: "full",
     body: "linkTicketScopeBody",
     responses: [created("The new link."), notFound, invalid],
@@ -1075,6 +1080,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/scopes/:nodeId",
     tag: T.scopes,
     summary: "Unlink a scope node",
+    description:
+      "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
     capability: "full",
     responses: [ok("`{ ok: true }`."), notFound],
   },
@@ -1083,6 +1090,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/primary-scope",
     tag: T.scopes,
     summary: "Set the primary scope node",
+    description:
+      "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
     capability: "full",
     body: "setPrimaryScopeBody",
     responses: [ok("The updated links."), notFound, invalid],
@@ -1145,6 +1154,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/dependencies",
     tag: T.tickets,
     summary: "List dependencies",
+    description:
+      "The tickets this one waits on. For a scoped principal, a dependency on a ticket outside its scope carries its number and status with `title: null` and `outside_scope: true`.",
     capability: "read",
     responses: [ok("`TicketDependency[]`."), notFound],
   },
@@ -1153,6 +1164,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/dependencies",
     tag: T.tickets,
     summary: "Add a dependency edge",
+    description:
+      "A scoped principal needs the depended-on ticket in its scope too (403 `SCOPE_DENIED` otherwise).",
     capability: "full",
     body: "addTicketDependencyBody",
     responses: [created("The new edge."), notFound, conflict, invalid],
@@ -1162,6 +1175,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/dependencies/:dependsOn",
     tag: T.tickets,
     summary: "Remove a dependency edge",
+    description:
+      "A scoped principal needs the depended-on ticket in its scope too (403 `SCOPE_DENIED` otherwise).",
     capability: "full",
     responses: [ok("`{ ok: true }`."), notFound],
   },
@@ -1353,7 +1368,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.scope,
     summary: "Repositories of a node, or scopes of a repository",
     description:
-      "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read.",
+      "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read. A scoped principal may read `all=1` only, and gets the repositories it reaches (its repo scope, and the repos linked to its tickets).",
     capability: "read",
     query: {
       node: { description: "Scope node id: list its repositories." },
@@ -1845,10 +1860,14 @@ export function buildOpenApiDocument(): Record<string, unknown> {
       // An operation's own 403 (e.g. PRINCIPAL_ADMIN_REQUIRED) is kept and the
       // auth-gate reasons appended, never overwritten.
       const own403 = (responses["403"] as { description?: string } | undefined)?.description;
+      // PRINCIPAL SCOPES: any data route may refuse a scoped (or non-admin) principal.
+      const scope403 =
+        " A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).";
       const gate403 =
-        e.capability === "full"
+        (e.capability === "full"
           ? "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`)."
-          : "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).";
+          : "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).") +
+        scope403;
       responses["403"] = {
         description: own403 ? `${own403} ${gate403}` : gate403,
         content: {
@@ -1893,7 +1912,7 @@ export function buildOpenApiDocument(): Record<string, unknown> {
         "The control plane's REST surface: tickets and their gates, the Factory Map scope graph, plan sessions, epics and specs, repositories, runner actions, configuration, read models and the live event stream.\n\n" +
         "**Authentication.** Every data route requires `Authorization: Bearer <token>`. Two credentials exist: the **full** token (`DISPATCH_API_TOKEN`, or `$GAFFER_DATA/dashboard-token`) and a **read-scoped** token derived from it one-way (`dispatch-api print-read-token`) that may call GET routes only; a mutating call with the read token is refused with 403 `READ_ONLY_TOKEN`. Each operation's `x-capability` says which it needs (`public`, `read`, `full`). Token-less requests are also subject to a Host/Origin check (403 `FORBIDDEN_HOST`).\n\n" +
         "**Errors** are `{ error: { code, message, details? } }` with a stable `code`; 422 is validation, 409 a state-machine or claim conflict, 404 an unknown resource, and 503 `DB_BUSY` (with `Retry-After`) means another process held the database's write lock past the busy timeout: retry.\n\n" +
-        "**Actors.** A request acts as the principal its token names (`GET /api/whoami`), or as the single `dispatch-api` operator for the shared token; there is no per-repository RBAC. The main ticket, gate, decision and principal operations carry response schemas; the read models are described by the TypeScript view type they serialise (named in each description).",
+        "**Actors.** A request acts as the principal its token names (`GET /api/whoami`), or as the single `dispatch-api` operator for the shared token. A principal may be scoped to repositories and tickets (`repos`, `tickets` on POST /api/principals): it then sees only those tickets and every other read or write is refused with 403 `SCOPE_DENIED`; repository-level writes (repo settings, onboarding, a ticket's repo access, settings) need an `admin` principal. The main ticket, gate, decision and principal operations carry response schemas; the read models are described by the TypeScript view type they serialise (named in each description).",
     },
     servers: [{ url: "http://127.0.0.1:8787", description: "Default local dashboard bind." }],
     tags: [...tagSet].sort().map((name) => ({ name })),

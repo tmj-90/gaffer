@@ -10,6 +10,7 @@ import {
   TICKET_STATUSES,
 } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
+import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
@@ -22,6 +23,8 @@ import {
   testerActor,
   validateTtl,
   warnLandedAlready,
+  cliTicketFilter,
+  cliUserId,
 } from "../shared.js";
 import { RULES } from "../limits.js";
 
@@ -51,9 +54,16 @@ export function registerTicket(program: Command): void {
       `per-ticket cost ceiling for all agent spend on the ticket: ${RULES.budget}`,
       (v) => Number(v),
     )
+    .option(
+      "--repo <name>",
+      "a repository it delivers to (write access, confirmed); repeatable. Created with the ticket in one step, so an unknown repo leaves no ticket behind",
+      (v: string, acc: string[]) => [...acc, v],
+      [] as string[],
+    )
     .action((opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const t = wg.createTicket(
+      const repos = opts.repo as string[];
+      const t = wg.createTicketWithLinks(
         {
           title: opts.title,
           description: opts.description,
@@ -63,6 +73,7 @@ export function registerTicket(program: Command): void {
           bootstrap: opts.bootstrap,
           ...(opts.budget !== undefined ? { delivery_budget_usd: opts.budget } : {}),
         },
+        { repoAccess: repos.map((r) => ({ repo_id: r, access: "write" })) },
         cliActor(),
       );
       // A pack that will refuse this ticket at ready says so now (cli-wg/F-02), on
@@ -184,7 +195,7 @@ export function registerTicket(program: Command): void {
         throw new DispatchError("VALIDATION_ERROR", "--admin and --as conflict: give one of them.");
       }
       const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
+        ? { type: "admin", id: cliUserId() }
         : humanOrSystemActor(opts.as ?? "human");
       const wg = open(cmd.optsWithGlobals());
       const res = wg.moveTicket(ref, to, actor);
@@ -197,7 +208,12 @@ export function registerTicket(program: Command): void {
     .description("Show a ticket with AC, repos and events")
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson(wg.view(ref));
+      // CLI IDENTITY: a scoped principal sees a dependency outside its scope by number only.
+      const view = wg.view(ref);
+      printJson({
+        ...view,
+        dependencies: hideOutOfScopeDependencies(view.dependencies, cliTicketFilter(wg)),
+      });
       wg.db.close();
     });
 
@@ -249,8 +265,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.beginLanding(
         ref,
         {
@@ -289,8 +304,7 @@ export function registerTicket(program: Command): void {
       // cli-wg/F-16: an unknown --via is refused, not treated as local.
       z.enum(["local", "git-verified", "pr", "pr-stale"]).optional().parse(opts.via);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.recordLanding(
         ref,
         { repo: String(opts.repo), commit: String(opts.commit), via: opts.via },
@@ -419,8 +433,11 @@ export function registerTicket(program: Command): void {
       // reaching the low-priority prerequisite that would unblock them all — forever.
       // cli-wg/F-12: --claimable is what a claim could take NOW (ready, not by hand,
       // dependencies done, no open blocking decision), the claimability endpoint's answer.
+      // CLI IDENTITY: a scoped principal lists only its tickets (the API's rule).
+      const visible = cliTicketFilter(wg);
       const rows = wg
         .list(opts.status)
+        .filter((t) => visible === null || visible(t.id))
         .filter((t) => opts.claimable !== true || wg.isClaimableNow(t));
       printJson(
         // `acceptance` rides along so the runner's tester lane can pick an epic's
@@ -442,9 +459,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.grantReadyApproval(ref, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -457,9 +472,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.assignReviewer(ref, opts.reviewer, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -490,8 +503,7 @@ export function registerTicket(program: Command): void {
       const cause =
         opts.cause === undefined ? undefined : parseCause(String(opts.cause).trim().toLowerCase());
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.reopenForReview(
         ref,
         { reason: opts.reason, resolution: opts.resolution, ...(cause ? { cause } : {}) },
@@ -513,8 +525,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.holdForHuman(
         ref,
         { reasonCode: String(opts.reasonCode), reason: String(opts.reason) },
@@ -540,8 +551,7 @@ export function registerTicket(program: Command): void {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const state = z.enum(["pending", "pass", "fail"]).parse(String(opts.state));
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.recordCiResult(
         ref,
         {
@@ -599,8 +609,7 @@ export function registerTicket(program: Command): void {
     .action((ref, opts, cmd) => {
       const as = parseAs(opts.as, ["system", "admin"] as const);
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor =
-        as === "admin" ? { type: "admin", id: process.env.USER ?? "cli" } : { type: "system" };
+      const actor: Actor = as === "admin" ? { type: "admin", id: cliUserId() } : { type: "system" };
       const res = wg.markMerged(ref, actor);
       printJson({ ok: true, ticket: res.ticket, eventId: res.eventId });
       wg.db.close();
@@ -616,9 +625,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.setTestable(ref, !opts.off, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -641,9 +648,7 @@ export function registerTicket(program: Command): void {
     .option("--admin", "act as an admin actor", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.setAllowTestChanges(ref, !opts.off, actor, opts.reason);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -859,7 +864,7 @@ export function registerTicket(program: Command): void {
     .description("List a ticket's dependencies (depended-on number/status + satisfied)")
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson(wg.listDependencies(ref));
+      printJson(hideOutOfScopeDependencies(wg.listDependencies(ref), cliTicketFilter(wg)));
       wg.db.close();
     });
 

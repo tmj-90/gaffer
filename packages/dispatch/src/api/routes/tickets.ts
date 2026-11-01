@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Dispatch, TicketDetailPart } from "../../core.js";
 import type { Actor } from "../../domain/types.js";
+import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
 import { settleApproveOutcome } from "../../services/approveOutcome.js";
 import { AUTO_MERGE_ENV, envFlagOn } from "../../services/autonomyPolicyService.js";
 import { DispatchError } from "../../util/errors.js";
@@ -48,6 +49,7 @@ import {
 } from "../schemas.js";
 import { API_ACTOR, apiActor, isSharedOperator, operatorActor } from "./context.js";
 import { forgetLoreDrafts } from "./readModels.js";
+import { requestTicketFilter } from "../scopeGate.js";
 
 const TICKET_SUB = {
   ACCEPTANCE_CRITERIA: "acceptance-criteria",
@@ -142,10 +144,23 @@ export async function routeTickets(
       // answers the first TICKET_LIST_DEFAULT_LIMIT rows and `next_offset`.
       const limit = q.limit ?? TICKET_LIST_DEFAULT_LIMIT;
       const offset = q.offset ?? 0;
-      const page = wg.listTicketPage(
-        { status: q.status, repo: q.repo, risk: q.risk },
-        { limit, offset, summary: q.fields === "summary" },
-      );
+      // PRINCIPAL SCOPES: a scoped principal lists only its tickets. The whole match
+      // is read and filtered, then windowed, so `total` counts what it may see.
+      const visible = requestTicketFilter(wg);
+      const page = visible
+        ? (() => {
+            const all = wg
+              .listTicketPage(
+                { status: q.status, repo: q.repo, risk: q.risk },
+                { summary: q.fields === "summary" },
+              )
+              .tickets.filter((t) => visible(t.id));
+            return { tickets: all.slice(offset, offset + limit), total: all.length };
+          })()
+        : wg.listTicketPage(
+            { status: q.status, repo: q.repo, risk: q.risk },
+            { limit, offset, summary: q.fields === "summary" },
+          );
       sendJson(res, 200, {
         // Approved and held tickets carry `landing_state` (their truthful status label).
         tickets: page.tickets.map((t) =>
@@ -224,13 +239,26 @@ export async function routeTickets(
     );
     const limit = q.limit ?? TICKET_LIST_DEFAULT_LIMIT;
     const offset = q.offset ?? 0;
-    const read = wg.ticketDetailsBatch(q.ids ? { ids: q.ids } : { limit, offset }, include);
+    // PRINCIPAL SCOPES: a scoped principal reads only its tickets (one outside it is
+    // `missing`), and a dependency outside its scope comes without its title.
+    const visible = requestTicketFilter(wg);
+    const read = wg.ticketDetailsBatch(
+      q.ids ? { ids: q.ids } : { limit, offset },
+      include,
+      visible,
+    );
     sendJson(res, 200, {
-      details: read.details.map((d) =>
-        d.ticket.status === "ready_for_merge" || d.ticket.status === "blocked"
-          ? { ...d, ticket: { ...d.ticket, ...withLanding(wg, d.ticket.id) } }
-          : d,
-      ),
+      details: read.details
+        .map((d) =>
+          d.ticket.status === "ready_for_merge" || d.ticket.status === "blocked"
+            ? { ...d, ticket: { ...d.ticket, ...withLanding(wg, d.ticket.id) } }
+            : d,
+        )
+        .map((d) =>
+          visible && d.dependencies
+            ? { ...d, dependencies: hideOutOfScopeDependencies(d.dependencies, visible) }
+            : d,
+        ),
       missing: read.missing,
       total: read.total,
       ...(q.ids
@@ -260,7 +288,7 @@ export async function routeTickets(
         // new endpoint. The data is already computed by `view()`.
         scopes: view.scopes,
         blocking_decisions: view.blockingDecisions,
-        dependencies: view.dependencies,
+        dependencies: hideOutOfScopeDependencies(view.dependencies, requestTicketFilter(wg)),
         evidence: view.evidence,
         events: view.events,
         // FAILURE-DIAGNOSIS: the full ordered "why did #N fail" trail.
@@ -839,7 +867,9 @@ export async function routeTickets(
   // /tickets/:id/dependencies — GET this ticket's dependencies, POST to add one.
   if (segments.length === 3 && sub === TICKET_SUB.DEPENDENCIES) {
     if (method === "GET") {
-      sendJson(res, 200, { dependencies: wg.listDependencies(id) });
+      sendJson(res, 200, {
+        dependencies: hideOutOfScopeDependencies(wg.listDependencies(id), requestTicketFilter(wg)),
+      });
       return;
     }
     if (method === "POST") {

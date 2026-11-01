@@ -203,6 +203,36 @@ token's write, so nothing comes back as a 403; the `s18-read-only` browser suite
 walks 23 views to keep it so. The login gate sends no data call until a token is
 there: `/healthz` says whether one is wanted, and a stored token is checked once.
 
+**Scoped access.** A principal can be scoped to repositories and tickets
+(Settings → Access's Repo scope and Ticket scope, or `wg principal create <name>
+--repo <name> --ticket <n>`, both repeatable). It then sees only tickets whose
+write repos are all in its repos, plus the tickets named, and the server refuses
+everything else with 403 `SCOPE_DENIED` naming its scope. On the dashboard such a
+token opens on the Work board instead of the Overview, sees one "Scoped access"
+strip naming what it holds, keeps the controls on its own tickets (Move, a
+ticket's actions, Review's Approve and Send back) and finds every factory-wide
+control (Poll for work, Suggest work, Create, Settings' Save, the Map and spec
+editors, Onboard) switched off with the title "Scoped access: this token can
+change only the tickets in its scope (…)". The live feed carries only its tickets'
+events, and the page never sends a call the server would refuse. A dependency on a
+ticket outside the scope shows as its number and "outside this token's scope",
+without the other ticket's title or a link to it. Repository-level
+changes need an admin principal (Acts as: admin): a human principal finds
+Settings' Save, Onboard and the repository editors switched off with the title
+"Admin access: …". The `s13-principals` browser suite mints a ticket-scoped
+token from Settings and walks it.
+
+**Who the CLI is.** `wg whoami` says who writes are recorded as. Without a token
+that is `$USER`, asserted and not checked, because the CLI opens the database
+directly. With `GAFFER_PRINCIPAL_TOKEN=<token>` (or `--as-principal <token>`),
+`wg`, `gaffer approve` and `gaffer merge` act as that principal: its identity on
+every write, its read-only flag and its scope enforced as on the API, and
+`whoami --can-write <n>` answers whether it may change a ticket. The runner's and
+agents' own commands (`attach-evidence`, `claim-ticket`, `submit`, `runner-release`
+and the like) write as the system or an agent, so a principal is refused them.
+`ticket create --repo <name>` gives a new ticket its write repo in the same step,
+which is how a repo-scoped principal creates one.
+
 **The Team sheet** lists everything waiting on you, one action a row: decisions,
 sign-offs, approved changes to merge, blocked tickets, a delivery paused at a cap
 (Continue… offers Continue and Stop) and one row for the lore drafts awaiting

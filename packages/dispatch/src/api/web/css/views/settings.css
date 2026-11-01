@@ -748,6 +748,11 @@
     font-size: var(--t14);
     color: var(--ink-2);
   }
+  .access-scope {
+    font-size: var(--t14);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
   .ar-action {
     display: flex;
     flex-wrap: wrap;

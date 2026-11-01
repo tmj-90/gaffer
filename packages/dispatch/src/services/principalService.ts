@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 import type { Actor } from "../domain/types.js";
 import type { PrincipalView } from "../repositories/principalRepository.js";
+import type { Access, AccessScope } from "./accessScope.js";
 
 /**
  * PER-PRINCIPAL CREDENTIALS — the token discipline.
@@ -32,6 +33,27 @@ export function looksLikePrincipalToken(credential: string): boolean {
 /** The actor a principal's requests act as. */
 export function principalActor(p: PrincipalView): Actor {
   return { type: p.actor_type, id: p.actor_id };
+}
+
+/** A principal's scope as the evaluation takes it (ids only; null: unscoped). */
+export function principalScope(p: PrincipalView): AccessScope | null {
+  if (!p.scope) return null;
+  return {
+    ...(p.scope.repos ? { repos: p.scope.repos.map((r) => r.id) } : {}),
+    ...(p.scope.tickets ? { tickets: p.scope.tickets.map((t) => t.id) } : {}),
+  };
+}
+
+/**
+ * What a principal may do, for {@link import("./accessScope.js").authorizeAccess}:
+ * read-only from its capability, admin from its actor type, and its scope.
+ */
+export function principalAccess(p: PrincipalView): Access {
+  return {
+    readOnly: p.capability === "read",
+    admin: p.actor_type === "admin",
+    scope: principalScope(p),
+  };
 }
 
 /** Principal names: short, URL/CLI-safe identifiers. */

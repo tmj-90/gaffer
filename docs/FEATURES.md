@@ -795,11 +795,16 @@ working directory, and prints a small JSON envelope (the result text, the stop
 reason, a cap-hit flag, turns, cost, model, token counts, all optional). Budget
 admission, the scrubbed environment, the timeout and every gate after the call work
 as they do for `claude-code`, and each usage-ledger row it writes names
-`worker_provider: "command"` with the cost it reported, or `"unknown"` when it
-reported none. It has no in-process safety hook, so it only launches inside an OS
-sandbox (`SANDBOX_PROVIDER=docker`, or `sandbox-exec` on macOS) and refuses where none
-is available, unless you set `GAFFER_STRICT_REQUIRE=0` to say the runner is contained
-out-of-band, which is logged as a warning at every spawn.
+`worker_provider: "command"` with how its cost is known (`reported`, `floor` or
+`unreported`). It has no in-process safety hook, so it only launches inside the docker
+sandbox with the host-side MCP bridge (`SANDBOX_PROVIDER=docker` on a Linux host) and
+refuses anywhere else, `sandbox-exec` included, unless you set `GAFFER_STRICT_REQUIRE=0`
+in the environment to say the runner is contained out-of-band, which is logged as a
+warning at every spawn. The prompt arrives in a file (`GAFFER_WORKER_PROMPT_FILE`), so a
+long one never fails the spawn; each call is booked at no less than a per-call floor
+(`GAFFER_WORKER_COMMAND_COST_USD`), so a worker can't beat the daily cap by reporting
+$0; and every lane, the greenfield repo classifier included, runs it, so a command
+factory makes no `claude` call.
 [`worker-providers.md`](worker-providers.md) has the full contract.
 
 ![The Settings panel](img/settings.png)

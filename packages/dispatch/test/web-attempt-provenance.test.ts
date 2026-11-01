@@ -479,7 +479,7 @@ describe("web: Match footage shows each run's own turns and cost (exploratory fi
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
         const url = String(input).replace(/^https?:\/\/[^/]+/, "");
-        let body: unknown = {};
+        let body: unknown;
         const m = /^\/api\/runs\/(r\d)$/.exec(url);
         if (m)
           body = {

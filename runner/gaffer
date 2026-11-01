@@ -23,7 +23,9 @@
 #                                     approve a ticket in Review — the commits you reviewed
 #                                     (shown and confirmed when --commit is omitted)
 #   gaffer merge <ticket>             land an APPROVED (ready_for_merge) ticket — what the dashboard's
-#                                     Merge button runs; refuses (exit 4) a ticket not yet approved
+#                                     Merge button runs. exit 0 landed · 4 held / not landed, with the
+#                                     reason (not approved, partly merged, a conflict resolved and sent
+#                                     back for re-approval) · 1 a hard failure
 #   gaffer eval replay [--out <dir>]  replay the golden gate fixtures through the real gate pipeline
 #   gaffer help | --version
 #
@@ -59,7 +61,7 @@ usage() {
     demo)      echo "usage: gaffer demo   (the Factory Map showcase; always DRY_RUN, nothing spent)" ;;
     eval)      echo "usage: gaffer eval [--json] | gaffer eval replay [--out <dir>]" ;;
     approve)   echo "usage: gaffer approve <ticket> [--reviewer <you>] [--commit <repo>=<sha>]…" ;;
-    merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>)" ;;
+    merge)     echo "usage: gaffer merge <ticket>   (the ticket must be approved: gaffer approve <ticket>; exit 0 landed, 4 held or not landed with the reason, 1 a hard failure)" ;;
     run)       echo "usage: gaffer run [--dry-run|-n] [--daemon] [--interval <seconds>]   (LIVE by default: claims ready tickets and spends model budget)" ;;
     skills)    echo "usage: gaffer skills [list | install [--user|--project] [--force] | add <path|git-url> [--force]]" ;;
   esac

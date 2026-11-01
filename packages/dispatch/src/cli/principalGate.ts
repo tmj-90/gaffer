@@ -27,6 +27,8 @@ type Rule =
   | { kind: "decision" }
   | { kind: "decision_create" }
   | { kind: "create_ticket" }
+  | { kind: "scope_link" }
+  | { kind: "machine" }
   | { kind: "list_tickets" }
   | { kind: "read_factory" }
   | { kind: "write_factory" }
@@ -66,7 +68,6 @@ const RULES: Record<string, Rule> = {
       "ticket move",
       "ticket landing-begin",
       "ticket record-landing",
-      "ticket record-tester-replay",
       "ticket auto-decision",
       "ticket approve-ready",
       "ticket set-reviewer",
@@ -80,25 +81,15 @@ const RULES: Record<string, Rule> = {
       "ticket tester-pass",
       "ticket tester-fail",
       "ticket require-cap",
-      "ticket scope link",
-      "ticket scope primary",
-      "ticket scope rm",
       "ticket repo-delivery record",
-      "ticket pause",
       "ticket continue",
       "ticket stop",
-      "ticket resume-begin",
       "ticket paused-clear",
       "ac add",
       "ac edit",
       "ac rm",
-      "claim-ticket",
       "human-claim",
       "human-release",
-      "evidence",
-      "submit",
-      "runner-release",
-      "runner-rework",
       "delivery-artifact",
       "block",
       "unblock",
@@ -106,15 +97,39 @@ const RULES: Record<string, Rule> = {
       "review reject",
       "wont-do",
       "reopen",
-      "attach-evidence",
     ].map((c) => [c, WRITE_TICKET]),
   ),
+  // Runner and agent bookkeeping: recorded as the system or as an agent (a claim, its
+  // evidence and submission, the runner's release, rework, pause and resume, the AC
+  // check results, delivery evidence without a claim). A principal acts only as itself,
+  // so no principal runs these; the factory's own calls carry no principal token.
+  ...Object.fromEntries(
+    [
+      "claim",
+      "claim-ticket",
+      "evidence",
+      "submit",
+      "runner-release",
+      "runner-rework",
+      "attach-evidence",
+      "expire-claims",
+      "ticket pause",
+      "ticket resume-begin",
+      "ticket record-tester-replay",
+      "ac check-result",
+      "ticket repo-access inherit",
+    ].map((c) => [c, { kind: "machine" } as Rule]),
+  ),
+  // A ticket's place on the map and in an epic: joining or leaving an epic rewires its
+  // acceptance ticket (another ticket), so a scoped principal may not (the API's rule).
+  "ticket scope link": { kind: "scope_link" },
+  "ticket scope primary": { kind: "scope_link" },
+  "ticket scope rm": { kind: "scope_link" },
   // A dependency is a write to the first ticket that names the second.
   "ticket dep add": { kind: "write_ticket", alsoRead: 1 },
   "ticket dep rm": { kind: "write_ticket", alsoRead: 1 },
   // A ticket's repositories: a write to the ticket AND a repo-level write (admin).
   "ticket repo-access set": { kind: "repo_link", repoArg: 1 },
-  "ticket repo-access inherit": { kind: "repo_link", repoArg: 1 },
   "ticket repo-access mono-fallback": { kind: "repo_link" },
   "repo link": { kind: "repo_link", repoArg: 1 },
   "repo set-commands": { kind: "write_repo", repoArg: 0 },
@@ -179,6 +194,13 @@ export function assertPrincipalCommand(
   const arg = (i: number): string => String(args[i] ?? "");
   const repoId = (ref: string): string =>
     (wg.repos.findById(ref) ?? wg.repos.findByName(ref))?.id ?? ref;
+  if (rule.kind === "machine" || (path === "block" && typeof opts.token === "string")) {
+    throw new DispatchError(
+      "ACTOR_NOT_PERMITTED",
+      `Acting as principal '${principal.name}', every write is recorded as ${principal.actor_type}:${principal.actor_id}; '${path}' records the runner (system) or an agent, so a principal does not run it.`,
+      { principal: principal.name, command: path },
+    );
+  }
   if (rule.kind === "operator_only") {
     throw new DispatchError(
       "ACTOR_NOT_PERMITTED",
@@ -233,6 +255,9 @@ export function assertPrincipalCommand(
       // `ticket create` names no repository: a repo-scoped principal links one through
       // the API's create (`repoIds`), which checks it; here it is refused unless unscoped.
       return check({ kind: "create_ticket", repos: [] });
+    case "scope_link":
+      check({ kind: "write_ticket", ticket: wg.scopeTicket(arg(0)) });
+      return check({ kind: "write_factory" });
     case "read_factory":
       return check({ kind: "read_factory" });
     case "write_factory":

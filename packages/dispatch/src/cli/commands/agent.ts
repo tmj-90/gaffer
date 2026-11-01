@@ -5,6 +5,7 @@ import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
   cliActor,
+  cliUserId,
   humanOrSystemActor,
   open,
   parseAs,
@@ -157,9 +158,7 @@ export function registerAgent(program: Command): void {
     .option("--admin", "act as an admin actor (hand back someone else's ticket)", false)
     .action((ref, opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      const actor: Actor = opts.admin
-        ? { type: "admin", id: process.env.USER ?? "cli" }
-        : cliActor();
+      const actor: Actor = opts.admin ? { type: "admin", id: cliUserId() } : cliActor();
       const res = wg.humanReleaseTicket(ref, actor);
       printJson({ ok: true, ...res });
       wg.db.close();
@@ -312,7 +311,7 @@ export function registerAgent(program: Command): void {
           : as === "system"
             ? { type: "system" }
             : as === "admin"
-              ? { type: "admin", id: process.env.USER ?? "cli" }
+              ? { type: "admin", id: cliUserId() }
               : cliActor();
       const res = wg.recordDeliveryArtifact(
         {

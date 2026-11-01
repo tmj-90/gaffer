@@ -279,3 +279,98 @@ describe("wg acting as a scoped principal", () => {
     wg.db.close();
   });
 });
+
+/**
+ * Adversarial review (exploratory finding rough-scopes-review/cli-*): a principal acts
+ * only as itself, and the ticket commands reach no ticket outside its scope.
+ */
+describe("wg acting as a principal: the runner's and agents' commands", () => {
+  it("refuses every command that records the system or an agent, for any principal", () => {
+    const w = seed();
+    const wg = Dispatch.open(w.db);
+    const agent = wg.registerAgent({ display_name: "bot-1" }, human);
+    wg.markReady(w.onApp.id, human);
+    wg.db.close();
+    const n = String(w.onApp.number);
+    // Every one of these is runner or agent bookkeeping, recorded as system or agent.
+    const machine: string[][] = [
+      ["attach-evidence", n, "--type", "diff_summary", "--summary", "forged"],
+      ["claim-ticket", n, "--agent", agent.id],
+      ["claim", "--agent", agent.id],
+      ["runner-release", n, "--to", "ready"],
+      ["runner-rework", n, "--attempt", "1", "--max", "3"],
+      ["expire-claims"],
+      ["ticket", "pause", n, "--reason", "cap_hit"],
+      ["ticket", "resume-begin", n],
+      ["ac", "check-result", "x", "--ticket", n, "--exit", "0", "--command", "true"],
+      ["block", n, "--reason", "x", "--token", "not-a-claim"],
+      ["evidence", n, "--token", "t", "--type", "diff_summary", "--summary", "s"],
+      ["submit", n, "--token", "t"],
+    ];
+    for (const token of [w.scoped.token, w.admin.token]) {
+      for (const args of machine) {
+        const r = cli(w.db, args, { GAFFER_PRINCIPAL_TOKEN: token });
+        expect(r.status, `${args.join(" ")}: ${r.stderr}`).toBe(1);
+        expect(r.err, args.join(" ")).toMatchObject({ code: "ACTOR_NOT_PERMITTED" });
+      }
+    }
+    const after = Dispatch.open(w.db);
+    const forged = after.db
+      .prepare("SELECT COUNT(*) AS n FROM work_events WHERE event_type = 'evidence.recorded'")
+      .get() as { n: number };
+    expect(forged.n).toBe(0);
+    expect(after.resolveTicket(w.onApp.id).status).toBe("ready");
+    after.db.close();
+    // A person blocking (no --token) is still the principal's own act.
+    const own = cli(w.db, ["block", n, "--reason", "waiting"], {
+      GAFFER_PRINCIPAL_TOKEN: w.scoped.token,
+    });
+    expect(own.status, own.stderr).toBe(0);
+  });
+
+  it("an admin principal's --admin acts are recorded under its own id, not $USER", () => {
+    const w = seed();
+    const wg = Dispatch.open(w.db);
+    wg.markReady(w.onApp.id, human);
+    wg.humanClaimTicket(w.onApp.id, { type: "human", id: "someone" });
+    wg.db.close();
+    const r = cli(w.db, ["human-release", String(w.onApp.number), "--admin"], {
+      GAFFER_PRINCIPAL_TOKEN: w.admin.token,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const after = Dispatch.open(w.db);
+    const ev = listEvents(after.db, "ticket", w.onApp.id).pop();
+    expect(ev).toMatchObject({ actor_type: "admin", actor_id: "ops" });
+    after.db.close();
+  });
+
+  it("a ticket's epic and map links are the operator's for a scoped principal", () => {
+    const w = seed();
+    const wg = Dispatch.open(w.db);
+    const epic = wg.createScopeNode({ name: "Launch", type: "epic" }, human);
+    wg.db.close();
+    const env = { GAFFER_PRINCIPAL_TOKEN: w.scoped.token };
+    const r = cli(w.db, ["ticket", "scope", "link", String(w.onApp.number), epic.id], env);
+    expect(r.err).toMatchObject({ code: "SCOPE_DENIED", details: { reason: "factory_wide" } });
+    // An unscoped admin principal may.
+    const ok = cli(w.db, ["ticket", "scope", "link", String(w.onApp.number), epic.id], {
+      GAFFER_PRINCIPAL_TOKEN: w.admin.token,
+    });
+    expect(ok.status, ok.stderr).toBe(0);
+  });
+
+  it("ticket show names a dependency outside the scope by number only", () => {
+    const w = seed();
+    const wg = Dispatch.open(w.db);
+    wg.addDependency({ ticket: w.onApp.id, depends_on: w.onSvc.id }, human);
+    wg.db.close();
+    const env = { GAFFER_PRINCIPAL_TOKEN: w.scoped.token };
+    const show = cli(w.db, ["ticket", "show", String(w.onApp.number)], env);
+    expect(show.status, show.stderr).toBe(0);
+    expect(show.out?.dependencies).toEqual([
+      expect.objectContaining({ number: w.onSvc.number, title: null, outside_scope: true }),
+    ]);
+    const list = cli(w.db, ["ticket", "dep", "list", String(w.onApp.number)], env);
+    expect(JSON.stringify(list.out)).not.toContain("on svc");
+  });
+});

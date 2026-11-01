@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { Actor } from "../../domain/types.js";
 import { TICKET_STATUSES } from "../../domain/types.js";
 import type { AutonomyPolicyGate } from "../../repositories/autonomyPolicyRepository.js";
+import { hideOutOfScopeDependencies } from "../../services/accessScope.js";
 import { DispatchError } from "../../util/errors.js";
 import {
   AS_HUMAN_OR_SYSTEM_HELP,
@@ -182,7 +183,12 @@ export function registerTicket(program: Command): void {
     .description("Show a ticket with AC, repos and events")
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson(wg.view(ref));
+      // CLI IDENTITY: a scoped principal sees a dependency outside its scope by number only.
+      const view = wg.view(ref);
+      printJson({
+        ...view,
+        dependencies: hideOutOfScopeDependencies(view.dependencies, cliTicketFilter(wg)),
+      });
       wg.db.close();
     });
 
@@ -807,7 +813,7 @@ export function registerTicket(program: Command): void {
     .description("List a ticket's dependencies (depended-on number/status + satisfied)")
     .action((ref, _opts, cmd) => {
       const wg = open(cmd.optsWithGlobals());
-      printJson(wg.listDependencies(ref));
+      printJson(hideOutOfScopeDependencies(wg.listDependencies(ref), cliTicketFilter(wg)));
       wg.db.close();
     });
 

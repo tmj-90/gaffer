@@ -225,7 +225,11 @@ ok(
   /\| `GAFFER_CI_TIMEOUT_POLICY` \| `block` \|/.test(text),
   "GAFFER_CI_TIMEOUT_POLICY defaults to block",
 );
-ok(/\| `DEMO_DIR` \| `\/tmp\/gaffer-showcase` \|/.test(text), "DEMO_DIR shows the demo's path");
+// demo.sh makes a fresh temp dir per run when DEMO_DIR is empty (no fixed shared path).
+ok(
+  /\| `DEMO_DIR` \| _\(empty\)_ \| .*fresh temp dir/.test(text),
+  "DEMO_DIR shows the demo's default (a fresh temp dir)",
+);
 
 console.log("== the read-site table fails when it drifts from the code ==");
 ok(verifyExtraKnobs(ROOT) === undefined, "every EXTRA_KNOBS entry matches its read site today");

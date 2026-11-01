@@ -239,13 +239,26 @@ export async function routeTickets(
     );
     const limit = q.limit ?? TICKET_LIST_DEFAULT_LIMIT;
     const offset = q.offset ?? 0;
-    const read = wg.ticketDetailsBatch(q.ids ? { ids: q.ids } : { limit, offset }, include);
+    // PRINCIPAL SCOPES: a scoped principal reads only its tickets (one outside it is
+    // `missing`), and a dependency outside its scope comes without its title.
+    const visible = requestTicketFilter(wg);
+    const read = wg.ticketDetailsBatch(
+      q.ids ? { ids: q.ids } : { limit, offset },
+      include,
+      visible,
+    );
     sendJson(res, 200, {
-      details: read.details.map((d) =>
-        d.ticket.status === "ready_for_merge" || d.ticket.status === "blocked"
-          ? { ...d, ticket: { ...d.ticket, ...withLanding(wg, d.ticket.id) } }
-          : d,
-      ),
+      details: read.details
+        .map((d) =>
+          d.ticket.status === "ready_for_merge" || d.ticket.status === "blocked"
+            ? { ...d, ticket: { ...d.ticket, ...withLanding(wg, d.ticket.id) } }
+            : d,
+        )
+        .map((d) =>
+          visible && d.dependencies
+            ? { ...d, dependencies: hideOutOfScopeDependencies(d.dependencies, visible) }
+            : d,
+        ),
       missing: read.missing,
       total: read.total,
       ...(q.ids

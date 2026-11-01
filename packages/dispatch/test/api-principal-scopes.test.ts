@@ -562,4 +562,54 @@ describe("principal scopes: a ticket in scope does not open the tickets around i
     expect(out.status).toBe(403);
     expect(out.body.error?.details).toMatchObject({ outside_repos: ["svc"] });
   });
+
+  it("R6: the batched reads (GET /tickets/details, /scope/repos?all=1) hold only what the scope reaches", async () => {
+    const { base, wg } = await start();
+    const w = world(wg);
+    wg.addDependency({ ticket: w.onApp.id, depends_on: w.onSvc.id }, human);
+    const ground = wg.createScopeNode({ name: "Payments", type: "product" }, human);
+    wg.linkScopeRepo({ scope_node_id: ground.id, repo_id: w.svc.id }, human);
+    wg.linkScopeRepo({ scope_node_id: ground.id, repo_id: w.app.id }, human);
+    const repoTok = await mint(base, { name: "app-bot", repos: ["app"] });
+    const tickTok = await mint(base, { name: "one", tickets: [w.onApp.number] });
+    for (const tok of [repoTok, tickTok]) {
+      // A page of every ticket: only its own, and the total counts what it may see.
+      const page = await call(base, "GET", "/tickets/details?include=dependencies", tok);
+      expect(page.status, JSON.stringify(page.body)).toBe(200);
+      expect(
+        (page.body.details as Array<{ ticket: { id: string } }>).map((d) => d.ticket.id),
+      ).toEqual([w.onApp.id]);
+      expect(page.body.total).toBe(1);
+      expect(JSON.stringify(page.body)).not.toContain("on svc");
+      expect((page.body.details as Array<{ dependencies: unknown[] }>)[0]?.dependencies).toEqual([
+        expect.objectContaining({ number: w.onSvc.number, title: null, outside_scope: true }),
+      ]);
+      // By id: one outside the scope is reported missing, like one that does not exist.
+      const byId = await call(
+        base,
+        "GET",
+        `/tickets/details?ids=${w.onApp.id},${w.onSvc.id},${w.onBoth.id}`,
+        tok,
+      );
+      expect(byId.status).toBe(200);
+      expect(
+        (byId.body.details as Array<{ ticket: { id: string } }>).map((d) => d.ticket.id),
+      ).toEqual([w.onApp.id]);
+      expect(byId.body.missing).toEqual([w.onSvc.id, w.onBoth.id]);
+      // Every repo's grounds: the repos it reaches only.
+      const grounds = await call(base, "GET", "/scope/repos?all=1", tok);
+      expect(grounds.status, JSON.stringify(grounds.body)).toBe(200);
+      expect(Object.keys(grounds.body.by_repo as object)).toEqual([w.app.id]);
+      // The rest of /scope stays factory-wide.
+      expect((await call(base, "GET", `/scope/repos?repo=${w.svc.id}`, tok)).status).toBe(403);
+      expect((await call(base, "GET", "/scope/nodes", tok)).status).toBe(403);
+    }
+    // The operator's reads are unchanged.
+    const all = await call(base, "GET", "/tickets/details", FULL);
+    expect(all.body.total).toBe(4);
+    const allGrounds = await call(base, "GET", "/scope/repos?all=1", FULL);
+    expect(Object.keys(allGrounds.body.by_repo as object).sort()).toEqual(
+      [w.app.id, w.svc.id].sort(),
+    );
+  });
 });

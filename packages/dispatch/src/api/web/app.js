@@ -902,6 +902,9 @@ function scopeRefuses(method, path) {
   if (method === "GET" || method === "HEAD") {
     if (head === "tickets" || head === "claims" || head === "decisions") return false;
     if ((head === "repositories" || head === "agents") && seg.length === 1) return false;
+    // Every repo's grounds in one read: the server filters it to the repos in scope.
+    if (head === "scope" && second === "repos" && seg.length === 2 && /[?&]all=1(&|$)/.test(path))
+      return false;
     if (
       head === "api" &&
       seg.length === 2 &&

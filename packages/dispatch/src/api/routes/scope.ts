@@ -10,6 +10,7 @@ import {
   updateScopeNodeBody,
   updateScopeRepoBody,
 } from "../schemas.js";
+import { requestRepoFilter } from "../scopeGate.js";
 import { apiActor } from "./context.js";
 
 /**
@@ -131,7 +132,12 @@ export async function routeScope(
         // Map read them one request per repo: exploratory finding api-robustness/F9).
         if (params.get("all") === "1") {
           const byRepo: Record<string, ReturnType<Dispatch["scopesForRepo"]>> = {};
-          for (const r of wg.listRepositories(true)) byRepo[r.id] = wg.scopesForRepo(r.id);
+          // PRINCIPAL SCOPES: a scoped principal reads the grounds of the repos it reaches.
+          const reach = requestRepoFilter(wg);
+          for (const r of wg.listRepositories(true)) {
+            if (reach && !reach(r.id)) continue;
+            byRepo[r.id] = wg.scopesForRepo(r.id);
+          }
           sendJson(res, 200, { by_repo: byRepo });
           return;
         }

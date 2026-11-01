@@ -3108,6 +3108,11 @@ export class Dispatch {
   ticketDetailsBatch(
     select: { ids: readonly string[] } | { limit: number; offset: number },
     include: ReadonlySet<TicketDetailPart>,
+    /**
+     * PRINCIPAL SCOPES: a scoped principal's ticket filter. A ticket it may not see is
+     * reported in `missing` (asked by id) or left out of the page and the total.
+     */
+    visible?: ((ticketId: string) => boolean) | null,
   ): { details: TicketDetailBatchItem[]; missing: string[]; total: number } {
     let rows: TicketSummary[];
     let total: number;
@@ -3120,11 +3125,18 @@ export class Dispatch {
       );
       for (const id of unique) {
         const row = get.get(id) as TicketSummary | undefined;
-        if (row) byId.set(id, row);
+        if (row && (!visible || visible(row.id))) byId.set(id, row);
         else missing.push(id);
       }
       rows = unique.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
       total = rows.length;
+    } else if (visible) {
+      // The whole list filtered, then windowed, so `total` counts what it may see.
+      const all = (this.tickets.listPage({}, { summary: true }).tickets as TicketSummary[]).filter(
+        (t) => visible(t.id),
+      );
+      rows = all.slice(select.offset, select.offset + select.limit);
+      total = all.length;
     } else {
       const page = this.tickets.listPage(
         {},

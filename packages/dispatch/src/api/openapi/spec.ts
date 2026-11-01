@@ -629,7 +629,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Many tickets' detail in one read",
     description:
-      "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`.",
+      "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`. A scoped principal reads only its tickets: one outside its scope is listed in `missing` too, a page and its `total` hold only its tickets, and a dependency outside its scope comes with `title: null` and `outside_scope: true`.",
     capability: "read",
     query: "ticketDetailsQuery",
     responses: [
@@ -1368,7 +1368,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.scope,
     summary: "Repositories of a node, or scopes of a repository",
     description:
-      "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read.",
+      "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read. A scoped principal may read `all=1` only, and gets the repositories it reaches (its repo scope, and the repos linked to its tickets).",
     capability: "read",
     query: {
       node: { description: "Scope node id: list its repositories." },

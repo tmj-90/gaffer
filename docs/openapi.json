@@ -2778,7 +2778,7 @@
           "Tickets"
         ],
         "summary": "Many tickets' detail in one read",
-        "description": "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`.",
+        "description": "The parts of several tickets' detail (what GET /tickets/{id} carries) in one request, for a view that needs them across the board: `ids` (comma-separated, at most 200) names the tickets, or without it a page of every ticket comes back (`limit`, default 500, at most 1000; `offset`; `next_offset`). `include` (comma-separated) picks the parts: `repositories`, `scopes`, `dependencies` (the default), `rework_trail`, `events`, `evidence`. Each `ticket` is the summary row, with `landing_state` on an approved or held ticket. Unknown ids are listed in `missing`. A scoped principal reads only its tickets: one outside its scope is listed in `missing` too, a page and its `total` hold only its tickets, and a dependency outside its scope comes with `title: null` and `outside_scope: true`.",
         "parameters": [
           {
             "name": "ids",
@@ -2842,7 +2842,7 @@
             }
           },
           "403": {
-            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`).",
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
             "content": {
               "application/json": {
                 "schema": {
@@ -8181,7 +8181,7 @@
           "Factory Map (scope graph)"
         ],
         "summary": "Repositories of a node, or scopes of a repository",
-        "description": "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read.",
+        "description": "Exactly one of `node`, `repo` or `all=1` is required. `all=1` answers `{ by_repo }`: every repository's scope nodes, keyed by repository id, in one read. A scoped principal may read `all=1` only, and gets the repositories it reaches (its repo scope, and the repos linked to its tickets).",
         "parameters": [
           {
             "name": "node",

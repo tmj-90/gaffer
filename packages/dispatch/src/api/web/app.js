@@ -2431,10 +2431,19 @@ function toggleNavMenu(btn) {
   navMenuEl.querySelector("a")?.focus();
   setTimeout(() => document.addEventListener("click", navMenuOutside, true), 0);
   document.addEventListener("focusin", navMenuFocus);
+  // A press inside the menu is not focus leaving it: Safari (macOS and iOS) gives a
+  // clicked link or button no focus, so its mousedown blurs the item focused on open
+  // with no relatedTarget, and closing then would remove the menu before the click.
+  let pressing = false;
+  navMenuEl.addEventListener("pointerdown", () => {
+    pressing = true;
+    setTimeout(() => (pressing = false), 1000);
+  });
   // Tab past the last item leaves the document (the menu is the body's last child):
   // no focusin follows, so the menu's own focusout closes it.
   navMenuEl.addEventListener("focusout", (e) => {
     const to = e.relatedTarget;
+    if (pressing && !to) return;
     if (!to || (!navMenuEl?.contains(to) && !to.closest?.(".nav-more"))) closeNavMenu();
   });
   document.addEventListener("keydown", navMenuKey);

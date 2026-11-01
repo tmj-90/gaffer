@@ -1,4 +1,4 @@
-/* global document, window, getComputedStyle */
+/* global document, window, getComputedStyle, location */
 /* eslint-disable @typescript-eslint/no-unused-expressions -- `cond ? ok(…) : bad(…)` is the assertion idiom of this harness */
 // S19 layout, keyboard and contrast with a busy world (exploratory findings
 // ui-explore/F-02, F-06, F-08 to F-14). The world holds what broke the pages: a live
@@ -10,7 +10,8 @@
 //     card's content runs past its edge, and a long title is clamped with the full
 //     title on its link;
 //   - the Search palette keeps focus inside it and Esc closes it wherever focus is;
-//   - the header's More menu closes when keyboard focus leaves it;
+//   - the header's More menu closes when keyboard focus leaves it, and a mouse click
+//     on an item still lands where the click gives it no focus (Safari);
 //   - Tab on the Floor walks the stations in lifecycle order;
 //   - a `.btn-link` is no native grey button and reads at 4.5:1 in both kits;
 //   - the Health flow strip is a list of links (no role=listitem on a link);
@@ -170,6 +171,35 @@ export default async function s19(t, L) {
       `the More menu closes once Tab takes focus out of it (${items} items, Tab x${items + 3})`,
       "the More menu stayed drawn after keyboard focus left it",
     );
+    // ...and still works with a mouse where a clicked link takes no focus (Safari): its
+    // mousedown blurs the item focused on open, which must not close the menu before the
+    // click lands (review follow-up).
+    await p.evaluate(() =>
+      document.addEventListener(
+        "mousedown",
+        (e) => {
+          if (e.target.closest?.(".nav-menu a, .nav-menu button")) {
+            e.preventDefault();
+            document.activeElement?.blur();
+          }
+        },
+        true,
+      ),
+    );
+    await more.click();
+    await p.waitForSelector(".nav-menu a", { timeout: 3000 }).catch(() => null);
+    const pick = p.locator(".nav-menu a").last();
+    const href = await pick.getAttribute("href").catch(() => null);
+    await pick.click().catch(() => null);
+    await L.sleep(600);
+    const went = await p.evaluate(() => location.hash);
+    t.check(
+      href && went === href,
+      `a mouse click on a More item navigates even when the click gives it no focus (${href})`,
+      `More by mouse, Safari-style focus: wanted ${href}, at ${went}`,
+    );
+    await p.reload({ waitUntil: "load" });
+    await L.sleep(600);
   } else t.skip("More menu: the header is not folded at 1000px in this world");
 
   // ── Floor: Tab follows the stations (F-12) ─────────────────────────────────

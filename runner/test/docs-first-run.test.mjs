@@ -181,19 +181,30 @@ console.log("== F-25: the README's Docker paragraph creates ./repos ==");
 check("README has mkdir -p repos", /mkdir -p repos/.test(readme));
 
 console.log("== Team sheet: the README lists only rows the human queue builds ==");
-// The Team sheet is the human queue (humanQueueService.ts). Paused tickets and lore
-// drafts are not in it yet, so the README must not promise them until it builds them.
+// The Team sheet is the human queue (humanQueueService.ts, plus the one lore-drafts
+// row routes/readModels.ts adds from Memory). The README's sentence lists paused
+// deliveries and lore drafts because the queue builds them; it must keep both, and
+// never promise a row the queue does not build.
 const queueSrc = read("packages/dispatch/src/services/humanQueueService.ts");
+const queueRoute = read("packages/dispatch/src/api/routes/readModels.ts");
 const sheetMatch = readme.match(/Beside it is the Team sheet[^\n]*?\.(?= The Tactics)/);
 const sheetSentence = sheetMatch ? sheetMatch[0] : "";
 check("README has the Team sheet sentence", sheetSentence.length > 0);
 check(
   "README promises paused tickets only if the queue lists them",
-  !/paused/i.test(sheetSentence) || /"paused"/.test(queueSrc),
+  !/paused/i.test(sheetSentence) || /kind: "paused"/.test(queueSrc),
 );
 check(
   "README promises lore drafts only if the queue lists them",
-  !/lore/i.test(sheetSentence) || /lore/i.test(queueSrc),
+  !/lore/i.test(sheetSentence) || /kind: "lore_drafts"/.test(queueRoute),
+);
+check(
+  "the queue builds paused rows, and the README's Team sheet sentence lists them",
+  /kind: "paused"/.test(queueSrc) && /paused/i.test(sheetSentence),
+);
+check(
+  "the queue builds the lore-drafts row, and the README's Team sheet sentence lists it",
+  /kind: "lore_drafts"/.test(queueRoute) && /lore drafts/i.test(sheetSentence),
 );
 
 console.log("== UI F-15: how to get a read-only token ==");

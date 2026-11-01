@@ -311,6 +311,9 @@ describe("humanQueue: runner/human parked tickets (parked kind)", () => {
       reviewerAssignments: 0,
       parked: 0,
       dependencyCancelled: 0,
+      // Added with the paused and lore-drafts rows (ui-explore/F-04): zero here.
+      paused: 0,
+      loreDrafts: 0,
     });
     expect(queue.items.every((i) => i.kind !== "parked")).toBe(true);
     wg.db.close();

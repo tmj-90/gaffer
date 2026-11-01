@@ -689,6 +689,7 @@ export class Dispatch {
       events: this.events,
       dependencies: this.ticketDependencies,
       landingStatus: (ticketId) => computeLandingStatus(this.db, ticketId),
+      pausedDelivery: (ticketId) => this.pausedDeliveries.find(ticketId),
     });
   }
 

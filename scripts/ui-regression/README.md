@@ -43,7 +43,7 @@ govern — the dashboard's real CSP stays in force for everything the page itsel
 
 ## Layout sweep
 
-Every view is loaded at 390, 768, 1024, 1280 and 1440px (and the Overview/Work at
+Every view is loaded at 375, 390, 768, 1024, 1280, 1440 and 1920px (and the Overview/Work at
 360 and 320px). Each must be no wider than the viewport, keep the header's Search,
 New and Logout controls on screen, render no 24-grid icon wider than 48px, keep the
 Overview's development-flow strip a scrolling flex row, and show the first board

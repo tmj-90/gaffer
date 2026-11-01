@@ -21,9 +21,21 @@
     display: flex;
     align-items: stretch;
     min-width: 0;
+    margin: 0;
+    padding: 0;
+    list-style: none;
     border-radius: var(--r);
     overflow: hidden;
     background: var(--pitch);
+  }
+  /* each stage is an <li> holding its link; the link fills it */
+  .pl-stage {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+  }
+  .pl-stage > .pl-node {
+    flex: 1 1 auto;
   }
   .pl-live {
     font: 600 var(--t14) var(--f-cond);
@@ -42,7 +54,7 @@
     color: var(--chalk);
     text-decoration: none;
   }
-  .pl-node:nth-child(even) {
+  .pl-stage:nth-child(even) > .pl-node {
     background: var(--pitch-2);
   }
   .pl-node:focus-visible {

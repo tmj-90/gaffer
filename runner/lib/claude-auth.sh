@@ -49,7 +49,12 @@ gaffer_claude_auth_probe() {
       GAFFER_CLAUDE_AUTH_SOURCE="$cset"; return 0
     fi
   done
-  [ "$(uname -s 2>/dev/null)" = "Darwin" ] && return 2
+  # TEST SEAM: GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN=0 declares the Keychain empty, so a
+  # macOS probe with nothing visible reports "none" (1) as on Linux instead of "unknown".
+  # Read only here, never set by the factory; it can only make the gate stricter. It
+  # lets auth-gate.test.sh / claude-auth.test.sh prove the refusal on a macOS runner,
+  # whose real Keychain a shell cannot inspect.
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "${GAFFER_CLAUDE_AUTH_PROBE_KEYCHAIN:-1}" != "0" ] && return 2
   # A gateway (ANTHROPIC_BASE_URL) may authenticate on its own: not inspectable.
   [ -n "${ANTHROPIC_BASE_URL:-}" ] && return 2
   return 1

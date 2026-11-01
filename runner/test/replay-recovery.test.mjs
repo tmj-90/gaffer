@@ -102,6 +102,10 @@ printf '%s\\n' '{"type":"result","subtype":"success","is_error":false,"result":"
     GAFFER_CONFLICT_RESOLVER: "0",
     CLAUDE_BIN: stub,
     GIT_CONFIG_NOSYSTEM: "1",
+    // A paid tester launch refuses to start without a dollar cap. This env is built
+    // from scratch, so runner/test/run.sh's GAFFER_ALLOW_UNCAPPED=1 never reaches the
+    // tester: set a cap the way an operator would. The stub tester reports $0.
+    GAFFER_DAILY_BUDGET_USD: "5",
   };
   const exec = (cmd, args, extra = {}) =>
     spawnSync(cmd, args.map(String), {

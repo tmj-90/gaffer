@@ -2547,9 +2547,9 @@ fi
 # value (unchanged → derived afresh from settings.json / the mode / the defaults) from
 # one a parent changed on purpose (kept). Keep this block LAST.
 while IFS= read -r _dk; do
-  # GIT_CONFIG_* / GAFFER_GIT_SAFE_* (lib/git-safe.sh) are a numbered list: re-deriving
+  # GIT_CONFIG_* (lib/git-safe.sh) is a numbered list: re-deriving
   # some entries and not others would corrupt it, so they are never recorded.
-  case "$_dk" in '' | _GAFFER_* | GIT_CONFIG_* | GAFFER_GIT_SAFE_*) continue ;; esac
+  case "$_dk" in '' | _GAFFER_* | GIT_CONFIG_*) continue ;; esac
   case "$_GAFFER_EXPORTED_AT_START" in *" $_dk "*) continue ;; esac
   printf -v "_GAFFER_DV_$_dk" '%s' "${!_dk}"
   export "_GAFFER_DV_$_dk"

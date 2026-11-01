@@ -25,17 +25,17 @@ gaffer_git_harden() {
     fi
   fi
   # Static form (also the fallback without node): rebuild Gaffer's two entries.
-  local base="${GAFFER_GIT_SAFE_BASE:-${GIT_CONFIG_COUNT:-0}}" i
+  local base="${_GAFFER_GIT_SAFE_BASE:-${GIT_CONFIG_COUNT:-0}}" i
   case "$base" in '' | *[!0-9]*) base=0 ;; esac
   i="${GIT_CONFIG_COUNT:-0}"; case "$i" in '' | *[!0-9]*) i=0 ;; esac
   # A parent already hardened this environment for its repositories (a child that
   # re-sources factory.config.sh): keep those entries rather than dropping them.
-  if [ "$#" -eq 0 ] && [ -n "${GAFFER_GIT_SAFE_REPOS:-}" ] && [ "$i" -ge $((base + 2)) ] \
+  if [ "$#" -eq 0 ] && [ -n "${_GAFFER_GIT_SAFE_REPOS:-}" ] && [ "$i" -ge $((base + 2)) ] \
      && [ "$(eval "printf '%s' \"\${GIT_CONFIG_KEY_$base:-}\"")" = "core.hooksPath" ]; then
     return 0
   fi
   while [ "$i" -gt "$base" ]; do i=$((i - 1)); unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"; done
   export "GIT_CONFIG_KEY_$base=core.hooksPath" "GIT_CONFIG_VALUE_$base=/dev/null"
   export "GIT_CONFIG_KEY_$((base + 1))=core.fsmonitor" "GIT_CONFIG_VALUE_$((base + 1))=false"
-  export GIT_CONFIG_COUNT="$((base + 2))" GAFFER_GIT_SAFE_BASE="$base"
+  export GIT_CONFIG_COUNT="$((base + 2))" _GAFFER_GIT_SAFE_BASE="$base"
 }

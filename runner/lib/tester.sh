@@ -21,7 +21,7 @@ _gaffer_tester_pass() {
   local _lane_on=0
   case "${GAFFER_TESTING:-0}" in 1|true|yes|on) _lane_on=1 ;; esac
   [ "${DRY_RUN:-0}" = "1" ] && return 0
-  TESTED_FILE="$GAFFER_DATA/.tested-tickets"; touch "$TESTED_FILE"
+  TESTED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.tested-tickets"; touch "$TESTED_FILE"
   local _held_file="$GAFFER_DATA/.tester-held" _list_ok=1
   TJSON="$(wg ticket list -s in_testing 2>/dev/null)" || { TJSON='[]'; _list_ok=0; }
   # Forget holds for tickets no longer in_testing: their key (the entry time) can

@@ -28,7 +28,10 @@
 # file passed run.sh's 600s long cap on ubuntu (CI run 41322221909). ESTIMATES: the old
 # 270 scaled by the ~25% the cleanup-ownership checks and the auth probe added, shared
 # by the split's measured ratio (Linux, both at once under shared load: 875s / 748s).
+# poll-overlap-run-state: ESTIMATE (Linux alone under shared load: 90s, two real Polls
+# and a loop pass; refresh from the next CI run).
 171	merge-lane.test.sh
+90	poll-overlap-run-state.test.sh
 110	landing-revocation.test.sh
 57	landing-revocation-window.test.sh
 110	secondary-pr-landing.test.sh

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # One-shot "poll for work" — the entrypoint the dashboard's Poll-for-work button
-# spawns (via DISPATCH_TICK_CMD). Clears the per-run skip files (so a previously
-# parked/failed ticket gets a fresh attempt) then runs a SINGLE tick. Never loops,
+# spawns (via DISPATCH_TICK_CMD). Starts a fresh run with its own empty skip lists (so a
+# previously parked/failed ticket gets a fresh attempt), waiting first for a live Poll
+# that is still running, then runs a SINGLE tick. Never loops,
 # so it can't run away; the button is an explicit "go deliver the next ready ticket".
 #
 # Runs LIVE by default (the button is a deliberate user action); pass DRY_RUN=1 to
@@ -23,6 +24,36 @@ mkdir -p "$GAFFER_DATA"
 # The tick script to run — a seam for the runner tests (a stub that emits a
 # TICK_RESULT line); the dashboard never sets it.
 : "${GAFFER_POLL_TICK_SH:=$HERE/tick.sh}"
+
+# One cleanup for every exit: this run's state dir, the poll lock, the tee'd output.
+_POLL_OUT=""
+_poll_cleanup() {
+  declare -F gaffer_run_state_end >/dev/null 2>&1 && gaffer_run_state_end
+  declare -F gaffer_poll_lock_release >/dev/null 2>&1 && gaffer_poll_lock_release
+  [ -n "${_POLL_OUT:-}" ] && rm -f "$_POLL_OUT"
+  return 0
+}
+trap '_poll_cleanup' EXIT
+
+# POLL LOCK (lib/run-state.sh): one live Poll at a time per factory. A Poll pressed
+# while the previous one is still finishing (parking an empty delivery, tearing down a
+# worktree) WAITS for it, then runs: two Polls ticking at once could act on the same
+# ticket's worktree and branch, and the second one's caps must see what the first
+# spent. Taken before the caps below; a preview never spends or claims, so it never
+# waits. Held until this script exits.
+if [ "$DRY_RUN" != "1" ] && declare -F gaffer_poll_lock_acquire >/dev/null 2>&1; then
+  if ! gaffer_poll_lock_acquire; then
+    echo "gaffer poll: another poll (pid ${_GAFFER_POLL_LOCK_HOLDER:-unknown}) is still running after ${GAFFER_POLL_WAIT_TIMEOUT}s — not polling." >&2
+    echo "TICK_RESULT=no_work"; exit 0
+  fi
+fi
+# PER-RUN STATE (lib/run-state.sh): this Poll's own skip and marker lists, in a fresh
+# dir no other run reads or writes (exploratory finding poll-race: a Poll used to
+# delete the SHARED lists and a still-running run then wrote into the new Poll's).
+if declare -F gaffer_run_state_begin >/dev/null 2>&1 && ! gaffer_run_state_begin poll; then
+  echo "gaffer poll: ERROR — could not create this run's state dir under $GAFFER_DATA/run-state — not polling." >&2
+  echo "TICK_RESULT=error"; exit 1
+fi
 
 # Same caps as loop.sh, checked BEFORE any paid work. DRY_RUN never spends, so it is
 # never gated (a preview must always be possible).
@@ -78,16 +109,12 @@ fi
 # primitive, and so does the outer bound below.
 gaffer_timeout_preflight || { echo "gaffer poll: aborting — no timeout primitive (setup error)." >&2; echo "TICK_RESULT=error"; exit 1; }
 
-# Fresh poll: nothing skipped from a prior run (mirrors what loop.sh clears). That
-# includes the merge lane's per-run held list: a ticket whose landing was held earlier
-# (one repo landed, another's checkout was dirty or its branch unavailable) is merge work
-# again for this poll — the lane lands its remaining repos (external review #7: Poll for
+# Fresh poll: nothing skipped from a prior run. The run-state dir above starts empty, so
+# no list carries over: not the failed / reviewed / clarified / tested lists, the
+# backpressure report or the warned-once markers, and not the merge lane's held list (a
+# ticket whose landing was held earlier, one repo landed and another's checkout dirty or
+# its branch unavailable, is merge work again for this poll: external review #7, Poll for
 # work reported no_work while `gaffer merge` would finish the second repo).
-rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" \
-      "$GAFFER_DATA/.clarified-tickets" "$GAFFER_DATA/.backpressure-repos" \
-      "$GAFFER_DATA/.merge-held-tickets" \
-      "$GAFFER_DATA/.ci-gate-needs-pr-warned" "$GAFFER_DATA/.autonomy-policy-inert-warned" \
-      "$GAFFER_DATA/.merge-config-half-warned"
 wg expire-claims >/dev/null 2>&1 || true   # reap any stale claim before polling
 # Sweep worktrees no live or paused delivery owns (a Stopped pause, a killed worker),
 # as loop.sh does at the start of every run: a factory driven only by this button
@@ -108,7 +135,6 @@ fi
 # to burn wall-clock forever. Output streams through (the dashboard's run tracker
 # captures it live) and is tee'd so the result line can be read back afterwards.
 _POLL_OUT="$(mktemp "${TMPDIR:-/tmp}/gaffer-poll.XXXXXX")" || _POLL_OUT=""
-trap 'rm -f "${_POLL_OUT:-}"' EXIT
 gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$GAFFER_POLL_TICK_SH" | tee "${_POLL_OUT:-/dev/null}"
 rc="${PIPESTATUS[0]}"
 res="$(sed -n 's/^TICK_RESULT=//p' "${_POLL_OUT:-/dev/null}" 2>/dev/null | tail -1)"

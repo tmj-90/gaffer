@@ -143,9 +143,10 @@ AUTO_MERGE=0 GAFFER_MODE=supervised run_tick >/dev/null
 N2="$(grep -c "MERGE: #$B approved but auto-merge NOT permitted by policy" "$LOGF")"
 [ "$N2" = "1" ] && ok "B: a second tick in the same run stays silent (skip file)" || fail "B: hold logged $N2 times after the second tick"
 grep -qx "$B" "$GAFFER_DATA/.merge-held-tickets" && ok "B: #$B recorded in .merge-held-tickets" || fail "B: skip file lacks #$B"
-grep -q '"\$GAFFER_DATA/.merge-held-tickets"' "$RUNNER_DIR/loop.sh" && ok "B: loop.sh resets .merge-held-tickets each run" || fail "B: loop.sh does not reset the skip file"
-# The hold lasts for the RUN (like .reviewed-tickets): the next run (loop.sh resets the
-# skip file) re-asks the policy, and with the merge floor on the held ticket lands.
+grep -qF '${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.merge-held-tickets' "$RUNNER_DIR/lib/merge-lane.sh" && grep -q 'gaffer_run_state_begin loop' "$RUNNER_DIR/loop.sh" && grep -q 'gaffer_run_state_begin poll' "$RUNNER_DIR/bin/poll-once.sh" \
+  && ok "B: .merge-held-tickets lives in the run's own fresh state dir" || fail "B: the merge-held list is not per run"
+# The hold lasts for the RUN (like .reviewed-tickets): the next run (a fresh run-state
+# dir, empty) re-asks the policy, and with the merge floor on the held ticket lands.
 rm -f "$GAFFER_DATA/.merge-held-tickets"
 GAFFER_PROVENANCE_TRAILERS=0 GAFFER_MODE=autonomous AUTO_MERGE=1 DISPATCH_ALLOW_AGENT_APPROVE=1 MERGE_ON_AGENT_REVIEW=1 run_tick >/dev/null
 [ "$(st "$B")" = "done" ] && ok "B: next run with the merge floor on → the held ticket lands" || fail "B: status=$(st "$B") after floor on"

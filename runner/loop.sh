@@ -126,19 +126,30 @@ if declare -F gaffer_claude_auth_gate >/dev/null 2>&1 && ! gaffer_claude_auth_ga
   exit 3
 fi
 
-# R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. If
-# this rm fails, a prior run's markers could wrongly suppress work this run — so
-# surface it rather than letting the run proceed on a dirty slate.
-rm -f "$GAFFER_DATA/.failed-tickets" "$GAFFER_DATA/.reviewed-tickets" "$GAFFER_DATA/.clarified-tickets" \
-      "$GAFFER_DATA/.merge-held-tickets" "$GAFFER_DATA/.tested-tickets" \
-      "$GAFFER_DATA/.backpressure-repos" "$GAFFER_DATA/.ci-gate-needs-pr-warned" \
-      "$GAFFER_DATA/.autonomy-policy-inert-warned" "$GAFFER_DATA/.merge-config-half-warned" "$GAFFER_DATA/.setup-error" \
-  || echo "gaffer factory: WARNING — could not clear stale run markers in $GAFFER_DATA; this run may wrongly skip work." >&2
+# R-1 (cleanup): start a fresh run with no stale skip/backpressure markers. Every
+# per-run list (failed / reviewed / clarified / merge-held / tested tickets, the
+# backpressure report, the warned-once markers, the dry-run preview list) lives in THIS
+# run's own state dir (lib/run-state.sh), created empty here, shared with this run's
+# ticks and pool workers only and removed when the run ends. Clearing shared paths used
+# to wipe the lists of a Poll running beside this pass (and a Poll's clear wiped this
+# pass's), so nothing is cleared any more. No dir, no run: falling back to a shared
+# path is exactly the overlap this avoids.
+if declare -F gaffer_run_state_begin >/dev/null 2>&1; then
+  gaffer_run_state_begin loop || {
+    echo "gaffer factory: aborting — could not create this run's state dir under $GAFFER_DATA/run-state (setup error)." >&2
+    exit 3
+  }
+  trap 'gaffer_run_state_end' EXIT
+fi
+# The setup-error marker is the daemon's, read between passes (lib/daemon.sh): a new
+# pass starts without the previous pass's.
+rm -f "$GAFFER_DATA/.setup-error" \
+  || echo "gaffer factory: WARNING — could not clear the stale setup-error marker in $GAFFER_DATA; this run may stop on it." >&2
 # DRY RUN: the tickets this run has previewed (tick.sh skips them), so a preview pass
 # shows each ready ticket ONCE and then ends, instead of re-previewing the first ready
 # ticket MAX_TICKS times (exploratory findings cli-runner/F-07, fresh-user/F-15).
 if [ "${DRY_RUN:-0}" = "1" ]; then
-  export GAFFER_DRY_PREVIEWED_FILE="$GAFFER_DATA/.previewed-tickets"
+  export GAFFER_DRY_PREVIEWED_FILE="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.previewed-tickets"
   : > "$GAFFER_DRY_PREVIEWED_FILE" 2>/dev/null || true
 fi
 

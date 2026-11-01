@@ -2098,11 +2098,11 @@ gaffer_auto_decision() {
 # review pass (REVIEW_MODE=agent|both → gaffer_auto_decision). In the default supervised
 # posture (REVIEW_MODE=human) no reviewer runs, so a policy the operator enabled shows
 # "Enabled" in Settings and never acts. Detect that and say so — ONE line per run (the
-# marker is cleared with the other per-run markers by loop.sh / poll-once.sh). Read-only
+# marker lives in the run's own state dir, lib/run-state.sh). Read-only
 # and fail-soft: a missing DB / CLI error simply logs nothing. Echoes the number of inert
 # `auto` rows found (0 when none / not applicable) for the caller's own use.
 gaffer_inert_policy_check() {
-  local _n=0 _marker="${GAFFER_DATA:+$GAFFER_DATA/.autonomy-policy-inert-warned}"
+  local _n=0 _marker="${GAFFER_DATA:+${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.autonomy-policy-inert-warned}"
   [ "${REVIEW_MODE:-human}" = "human" ] || { printf '0\n'; return 0; }
   _n="$(wg autonomy policies --mode auto 2>/dev/null | jget 'd.count ?? 0' 2>/dev/null || echo 0)"
   case "$_n" in ''|*[!0-9]*) _n=0 ;; esac
@@ -2122,10 +2122,10 @@ gaffer_inert_policy_check() {
 # MERGE_ON_AGENT_REVIEW gives approve-and-hold: agent-approved work waits at
 # ready_for_merge. We deliberately do NOT let one flag imply the other (that would turn
 # on more unattended merging than the operator set); say so ONCE per run instead (the
-# marker is cleared with the other per-run markers by loop.sh / poll-once.sh). Echoes
+# marker lives in the run's own state dir, lib/run-state.sh). Echoes
 # 1 when it warned (or would have, marker already present), else 0.
 gaffer_half_merge_config_check() {
-  local _marker="${GAFFER_DATA:+$GAFFER_DATA/.merge-config-half-warned}"
+  local _marker="${GAFFER_DATA:+${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.merge-config-half-warned}"
   if _gaffer_flag_on "${MERGE_ON_AGENT_REVIEW:-0}" && ! _gaffer_flag_on "${AUTO_MERGE:-0}"; then
     if [ -z "$_marker" ] || [ ! -f "$_marker" ]; then
       log "AUTONOMY: WARNING — MERGE_ON_AGENT_REVIEW=1 but AUTO_MERGE is off: 'Auto-merge on agent review' needs 'Auto-merge on approval' too, so agent-approved tickets will WAIT at ready_for_merge for a human merge. Turn AUTO_MERGE on to let them land (or turn MERGE_ON_AGENT_REVIEW off to silence this)."
@@ -2349,6 +2349,11 @@ gaffer_review_reason() {
 # and DAILY_COUNTER_FILE.
 # shellcheck source=lib/budget.sh
 [ -f "$RUNNER_DIR/lib/budget.sh" ] && source "$RUNNER_DIR/lib/budget.sh"
+
+# Per-run state dirs (gaffer_run_state_begin / _end: every run's own skip and marker
+# lists) and the dashboard Poll's lock (gaffer_poll_lock_acquire / _release).
+# shellcheck source=lib/run-state.sh
+[ -f "$RUNNER_DIR/lib/run-state.sh" ] && source "$RUNNER_DIR/lib/run-state.sh"
 
 # Usage-window pause helpers (gaffer_usage_pause_record / _active / _until / _wait):
 # a usage-limit or rate-limit refusal pauses admission until the window resets.

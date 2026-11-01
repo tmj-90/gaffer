@@ -6,7 +6,7 @@
 #      clean replay, no token), never one fixed "no verdict token" line
 #   2. the reason is attached to the ticket as a `tester held: <reason>`
 #      manual_note, so the board says why the ticket sits in in_testing
-#   3. the hold survives loop.sh's per-run reset of .tested-tickets: the next run
+#   3. the hold survives a new run's empty .tested-tickets list: the next run
 #      does NOT re-spawn the (paid) tester for the same stay in_testing
 #   4. once the ticket leaves in_testing and comes back (a new transition into
 #      in_testing), it is tested again
@@ -71,7 +71,7 @@ source "$RUNNER_DIR/lib/tester.sh"
 # shellcheck source=../lib/usage-pause.sh
 source "$RUNNER_DIR/lib/usage-pause.sh"
 run_lane() { ( RUNNER_DIR="$FAKE" GAFFER_TESTING=1 _gaffer_tester_pass ); }
-new_run() { rm -f "$GAFFER_DATA/.tested-tickets"; }   # what loop.sh does at every run start
+new_run() { rm -f "$GAFFER_DATA/.tested-tickets"; }   # a new run starts with an empty list (its own run-state dir)
 held() { # <n> <reason>
   printf '{"phase":"held","ticket":%s,"reason":"%s","testsBranch":"gaffer-tests/ticket-%s"}' "$1" "$2" "$1" > "$WORK/reply-$1.json"
   echo 2 > "$WORK/rc-$1"

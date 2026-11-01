@@ -208,11 +208,13 @@ export class EventRepository {
   }
 
   /**
-   * Tickets that entered a delivered state (in_review or done) on or after the
-   * given ISO instant, counted via the work_events trail. Transitions are logged
-   * as `ticket.transitioned` with the destination status in payload `$.to`; we
-   * read only that status field (an enum value, never free text) and count the
-   * distinct tickets delivered since `sinceIso`.
+   * Tickets that LANDED (entered `done`) on or after the given ISO instant, counted
+   * via the work_events trail: the scoreboard's "Delivered today", which links to
+   * the done work and matches the Floor's "despatched today". A delivery waiting
+   * for review is not delivered yet (it used to count, so the tile read 3 beside a
+   * done list of 2). Transitions are logged as `ticket.transitioned` with the
+   * destination status in payload `$.to`; we read only that status field (an enum
+   * value, never free text) and count the distinct tickets landed since `sinceIso`.
    */
   deliveredSince(sinceIso: string): number {
     const row = this.db
@@ -221,7 +223,7 @@ export class EventRepository {
          FROM work_events
          WHERE entity_type = 'ticket'
            AND event_type = 'ticket.transitioned'
-           AND json_extract(payload_json, '$.to') IN ('in_review', 'done')
+           AND json_extract(payload_json, '$.to') = 'done'
            AND created_at >= @since`,
       )
       .get({ since: sinceIso }) as { n: number };

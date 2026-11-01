@@ -3690,7 +3690,9 @@ function overviewScoreboard(f) {
         el("div", { class: "sb-cells kpi-row", role: "group", "aria-label": "Today" }, [
           statCell({
             label: "Need you",
-            value: String(total).padStart(2, "0"),
+            // Plain figures in every cell: "Need you 03" beside "On the pitch 4" read as
+            // two different kinds of number.
+            value: String(total),
             needs: total > 0,
             href: "#what-i-own",
             flip: "needs",
@@ -3708,9 +3710,12 @@ function overviewScoreboard(f) {
           }),
           statCell({
             label: "Delivered today",
-            value: String(f.summary.deliveredToday ?? 0).padStart(2, "0"),
-            href: "#/work?status=done",
+            value: String(f.summary.deliveredToday ?? 0),
+            // The tickets that landed today are the Floor's lorry ("N despatched
+            // today"); the done list holds every landing ever, so it never matched.
+            href: "#/floor",
             flip: "delivered",
+            title: `${plural(f.summary.deliveredToday ?? 0, "ticket")} landed (done) today: the Floor's lorry shows them`,
           }),
           statCell({
             label: "Wage bill",
@@ -17024,7 +17029,7 @@ async function renderClearDesk(wrap) {
     others.length
       ? el("a", { href: "#/overview" }, `${others.join(" and ")} on your team sheet`)
       : null,
-    delivered != null ? `${plural(delivered, "delivery", "deliveries")} today` : null,
+    delivered != null ? `${plural(delivered, "ticket")} landed today` : null,
     medianReview && medianReview.samples
       ? `a change waits ${fmtDuration(medianReview.medianMs)} for you, on the median`
       : null,
@@ -26083,8 +26088,10 @@ function floorTickStep(budget) {
  */
 function floorModel(f) {
   const now = f.now;
+  // "Today" is the server's day (UTC midnight), the same day the scoreboard's
+  // Delivered today counts, so the lorry and the tile never disagree.
   const dayStart = new Date(now);
-  dayStart.setHours(0, 0, 0, 0);
+  dayStart.setUTCHours(0, 0, 0, 0);
   const needs = new Set(f.items.map((i) => i.ticket && i.ticket.id).filter(Boolean));
   const parkedWhy = new Map();
   for (const i of f.items)

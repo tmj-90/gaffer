@@ -83,6 +83,10 @@ cp "$ROOT/scripts/ui-regression/stub-worker.mjs" "$WORK/bin/stub-worker.mjs"
 # tree: a stale record from an earlier run would otherwise make onboarding refuse the
 # fixture repo's name (NAME_TAKEN).
 export GAFFER_DATA_DIR="$WORK/crew-data"
+# A live run refuses every paid launch without a dollar cap (README "Budget & caps").
+# CI runs this file directly, outside runner/test/run.sh's GAFFER_ALLOW_UNCAPPED=1, so
+# it sets a cap the way an operator would. The stub worker spends nothing against it.
+export GAFFER_DAILY_BUDGET_USD=5
 export GAFFER_DATA="$WORK/data" CLAUDE_BIN="$WORK/bin/claude" CLAUDE_FLAGS="" \
        GAFFER_TICK_TIMEOUT=120 GAFFER_MAX_TURNS=50 GAFFER_CARD_MODEL=stub GAFFER_PLAN_MODEL=stub GAFFER_IMPL_MODEL=stub \
        REVIEW_MODE=human DRY_RUN=0

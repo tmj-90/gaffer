@@ -137,7 +137,8 @@ lists the exact check and the pass bar.
 
 ### 3.1 Real end-to-end delivery on a sample repo (LIVE agent, spends tokens)
 - **Do:** point the factory at a small sample repo, file one low-risk ticket with a
-  clear acceptance criterion, and run one live tick (`DRY_RUN=0`, real `CLAUDE_BIN`).
+  clear acceptance criterion, and run one live tick (`DRY_RUN=0`, real `CLAUDE_BIN`,
+  a dollar cap such as `GAFFER_DAILY_BUDGET_USD=5`: a live run refuses without one).
 - **Pass bar:** the runner claims at selection; the agent delivers on a `gaffer/`
   branch; the DoD gate runs the repo's real test command; the ticket reaches
   `in_review` with the AC satisfied and a non-empty real diff; **no** tokens are

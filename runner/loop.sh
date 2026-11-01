@@ -367,7 +367,10 @@ while [ "$ticks" -lt "$MAX_TICKS" ]; do
   # and each inner claude -p already carries its own GAFFER_TICK_TIMEOUT, so the
   # inner per-call timeouts still fire first (and are logged with context) before
   # this outer backstop reaps the tick.
-  _log_mark="$(wc -l < "$GAFFER_LOG" 2>/dev/null | tr -d ' ')"
+  # The braces put the redirect inside the silenced group: on a fresh data dir
+  # factory.log does not exist yet, and `wc -l < missing 2>/dev/null` still printed
+  # "No such file or directory" (the input redirect fails before 2>/dev/null applies).
+  _log_mark="$( { wc -l < "$GAFFER_LOG"; } 2>/dev/null | tr -d ' ')"
   out="$(gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$HERE/tick.sh")"
   res="$(echo "$out" | sed -n 's/^TICK_RESULT=//p' | tail -1)"
   # R-1 (counting): a tick that may have spent (invoked claude -p) is persisted to the

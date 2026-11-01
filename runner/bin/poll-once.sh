@@ -112,6 +112,13 @@ trap 'rm -f "${_POLL_OUT:-}"' EXIT
 gaffer_timeout "$GAFFER_TICK_OUTER_TIMEOUT" bash "$GAFFER_POLL_TICK_SH" | tee "${_POLL_OUT:-/dev/null}"
 rc="${PIPESTATUS[0]}"
 res="$(sed -n 's/^TICK_RESULT=//p' "${_POLL_OUT:-/dev/null}" 2>/dev/null | tail -1)"
+# CLAUDE AUTH: the delivery call could not authenticate (a key that is visible but
+# rejected gets past the gate above). Say so on the line the dashboard reads as a
+# refused run and toasts (POLL_REFUSAL_RE), or the poll read as a success while the
+# ticket went quietly back to ready (exploratory finding fresh-user/F-06).
+if [ "$res" = auth_error ]; then
+  echo "gaffer poll: aborting — claude could not authenticate: $(gaffer_claude_auth_hint 2>/dev/null || echo 'run `claude /login`'); the ticket went back to ready, no attempt counted" >&2
+fi
 
 # Persist the day count for a tick that may have spent — the same rule as loop.sh
 # (gaffer_tick_counts_toward_day_cap: a no_work poll is exempt). A failed bump is

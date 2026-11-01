@@ -341,6 +341,18 @@ function validatedBinding(
  */
 const UNVERIFIABLE_LANDING_VIAS: ReadonlySet<string> = new Set(["pr", "pr-stale"]);
 
+/**
+ * cli-wg/F-04: the person who approves or rejects a review is its reviewer. A ticket
+ * with no reviewer assigned (the loose packs never need one before ready) records the
+ * human/admin who decided it, so `ticket.reviewer` names who looked; an assigned
+ * reviewer is never overwritten, and an agent or runner decision sets nothing.
+ */
+function reviewerPatch(ticket: Ticket, actor: Actor): { patch?: { reviewer: string } } {
+  if (ticket.reviewer !== null) return {};
+  if (actor.type !== "human" && actor.type !== "admin") return {};
+  return actor.id ? { patch: { reviewer: actor.id } } : {};
+}
+
 export class ReviewGateService {
   private readonly db: Db;
   private readonly clock: Clock;
@@ -511,6 +523,7 @@ export class ReviewGateService {
           expectedFromStatus: "in_review",
           testerVerdict: true,
           approvedUnchanged,
+          ...reviewerPatch(ticket, actor),
         });
         this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
         writeEvent(this.db, {
@@ -536,6 +549,7 @@ export class ReviewGateService {
         approvedUnchanged,
         reviewApprove: true, // reached the merge-ready state through the guarded approve path
         deliveryDiff,
+        ...reviewerPatch(ticket, actor),
       });
       this.assertWriteReposAvailable(ticket, unavailable); // rolls the transition back
       this.recordApprovalPins(ticket, actor, pins);
@@ -1783,7 +1797,12 @@ export class ReviewGateService {
         toStatus: target,
         reason: capReached ? `retry_cap_reached:${resolvedReason}` : resolvedReason,
         expectedFromStatus: ticket.status,
-        ...(isRequeue ? { patch: { attempt_count: nextAttempt }, reviewReject: true } : {}),
+        ...(isRequeue
+          ? {
+              patch: { attempt_count: nextAttempt, ...reviewerPatch(ticket, actor).patch },
+              reviewReject: true,
+            }
+          : reviewerPatch(ticket, actor)),
         ...(to === "cancelled" ? { wontDo: true } : {}),
         ...(capReached ? { park: true } : {}),
       });

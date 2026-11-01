@@ -630,7 +630,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     tag: T.tickets,
     summary: "Create a ticket",
     description:
-      "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
+      "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind. A scoped principal may name only repos in its scope (read access included) and no scope nodes.",
     capability: "full",
     body: "createTicketBody",
     responses: [
@@ -1053,6 +1053,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/scopes",
     tag: T.scopes,
     summary: "Link a scope node",
+    description:
+      "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
     capability: "full",
     body: "linkTicketScopeBody",
     responses: [created("The new link."), notFound, invalid],
@@ -1062,6 +1064,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/scopes/:nodeId",
     tag: T.scopes,
     summary: "Unlink a scope node",
+    description:
+      "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
     capability: "full",
     responses: [ok("`{ ok: true }`."), notFound],
   },
@@ -1070,6 +1074,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/primary-scope",
     tag: T.scopes,
     summary: "Set the primary scope node",
+    description:
+      "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
     capability: "full",
     body: "setPrimaryScopeBody",
     responses: [ok("The updated links."), notFound, invalid],
@@ -1132,6 +1138,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/dependencies",
     tag: T.tickets,
     summary: "List dependencies",
+    description:
+      "The tickets this one waits on. For a scoped principal, a dependency on a ticket outside its scope carries its number and status with `title: null` and `outside_scope: true`.",
     capability: "read",
     responses: [ok("`TicketDependency[]`."), notFound],
   },
@@ -1140,6 +1148,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/dependencies",
     tag: T.tickets,
     summary: "Add a dependency edge",
+    description:
+      "A scoped principal needs the depended-on ticket in its scope too (403 `SCOPE_DENIED` otherwise).",
     capability: "full",
     body: "addTicketDependencyBody",
     responses: [created("The new edge."), notFound, conflict, invalid],
@@ -1149,6 +1159,8 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     path: "/tickets/:id/dependencies/:dependsOn",
     tag: T.tickets,
     summary: "Remove a dependency edge",
+    description:
+      "A scoped principal needs the depended-on ticket in its scope too (403 `SCOPE_DENIED` otherwise).",
     capability: "full",
     responses: [ok("`{ ok: true }`."), notFound],
   },

@@ -193,7 +193,9 @@ ticket's actions, Review's Approve and Send back) and finds every factory-wide
 control (Poll for work, Suggest work, Create, Settings' Save, the Map and spec
 editors, Onboard) switched off with the title "Scoped access: this token can
 change only the tickets in its scope (…)". The live feed carries only its tickets'
-events, and the page never sends a call the server would refuse. Repository-level
+events, and the page never sends a call the server would refuse. A dependency on a
+ticket outside the scope shows as its number and "outside this token's scope",
+without the other ticket's title or a link to it. Repository-level
 changes need an admin principal (Acts as: admin): a human principal finds
 Settings' Save, Onboard and the repository editors switched off with the title
 "Admin access: …". The `s13-principals` browser suite mints a ticket-scoped
@@ -204,7 +206,11 @@ that is `$USER`, asserted and not checked, because the CLI opens the database
 directly. With `GAFFER_PRINCIPAL_TOKEN=<token>` (or `--as-principal <token>`),
 `wg`, `gaffer approve` and `gaffer merge` act as that principal: its identity on
 every write, its read-only flag and its scope enforced as on the API, and
-`whoami --can-write <n>` answers whether it may change a ticket.
+`whoami --can-write <n>` answers whether it may change a ticket. The runner's and
+agents' own commands (`attach-evidence`, `claim-ticket`, `submit`, `runner-release`
+and the like) write as the system or an agent, so a principal is refused them.
+`ticket create --repo <name>` gives a new ticket its write repo in the same step,
+which is how a repo-scoped principal creates one.
 
 **The Team sheet** lists everything waiting on you, one action a row: decisions,
 sign-offs, approved changes to merge, blocked tickets, a delivery paused at a cap

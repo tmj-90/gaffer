@@ -2690,7 +2690,7 @@
           "Tickets"
         ],
         "summary": "Create a ticket",
-        "description": "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind.",
+        "description": "Optionally links a repository, scope nodes and per-repo access. When `repoIds` is given at least one must be a write repo. The create and its links are one transaction: an unknown repo or scope node is a 404 and leaves no ticket behind. A scoped principal may name only repos in its scope (read access included) and no scope nodes.",
         "requestBody": {
           "required": true,
           "content": {
@@ -5806,6 +5806,7 @@
           "Ticket scopes & repos"
         ],
         "summary": "Link a scope node",
+        "description": "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
         "parameters": [
           {
             "name": "id",
@@ -5904,6 +5905,7 @@
           "Ticket scopes & repos"
         ],
         "summary": "Unlink a scope node",
+        "description": "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
         "parameters": [
           {
             "name": "id",
@@ -5981,6 +5983,7 @@
           "Ticket scopes & repos"
         ],
         "summary": "Set the primary scope node",
+        "description": "A scoped principal is refused (403 `SCOPE_DENIED`, `factory_wide`): joining or leaving an epic rewires its acceptance ticket.",
         "parameters": [
           {
             "name": "id",
@@ -6482,6 +6485,7 @@
           "Tickets"
         ],
         "summary": "List dependencies",
+        "description": "The tickets this one waits on. For a scoped principal, a dependency on a ticket outside its scope carries its number and status with `title: null` and `outside_scope: true`.",
         "parameters": [
           {
             "name": "id",
@@ -6548,6 +6552,7 @@
           "Tickets"
         ],
         "summary": "Add a dependency edge",
+        "description": "A scoped principal needs the depended-on ticket in its scope too (403 `SCOPE_DENIED` otherwise).",
         "parameters": [
           {
             "name": "id",
@@ -6656,6 +6661,7 @@
           "Tickets"
         ],
         "summary": "Remove a dependency edge",
+        "description": "A scoped principal needs the depended-on ticket in its scope too (403 `SCOPE_DENIED` otherwise).",
         "parameters": [
           {
             "name": "id",

@@ -673,7 +673,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "A named principal hands back only a ticket it took by hand itself (403 `ACTOR_NOT_PERMITTED` for anyone else's); the shared operator token acts as admin and may hand back any.",
     capability: "full",
     body: "humanClaimBody",
-    responses: [ok("`{ ticket_id, status, event_id }`."), notFound, conflict],
+    responses: [ok("`{ ticket_id, status, event_id }`."), notFound, forbidden, conflict],
   },
   {
     method: "POST",

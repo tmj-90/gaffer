@@ -3155,7 +3155,7 @@
             }
           },
           "403": {
-            "description": "The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`).",
             "content": {
               "application/json": {
                 "schema": {

@@ -10,6 +10,8 @@ export const DISPATCH_ERROR_CODES = [
   "VALIDATION_ERROR",
   "POLICY_DENIED",
   "STATE_CONFLICT",
+  // A cancel of a ticket whose change already landed in some repository.
+  "PARTLY_LANDED",
   "CONCURRENCY_CONFLICT",
   "ILLEGAL_TRANSITION",
   "NO_OP",

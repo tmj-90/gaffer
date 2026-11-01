@@ -875,13 +875,20 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     responses: [
       ok("`{ ticket, event_id }` (cancelled).", "TicketTransition"),
       notFound,
-      conflict,
+      {
+        status: 409,
+        description:
+          "The state machine refused it (`ILLEGAL_TRANSITION`), or the change already landed in a repository (`PARTLY_LANDED`).",
+        content: "json",
+      },
       invalid,
     ],
   },
   {
     method: "POST",
     path: "/tickets/:id/reopen",
+    description:
+      "Cancels the ticket. Refused (409 `PARTLY_LANDED`) while any of its repositories has a recorded landing of its approved commit: land the rest, or revert the landed merge first.",
     tag: T.tickets,
     summary: "Reopen a won't-do ticket",
     capability: "full",

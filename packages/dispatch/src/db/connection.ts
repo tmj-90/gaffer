@@ -108,7 +108,7 @@ export function openDatabase(path: string): Db {
 
   try {
     db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-    db.pragma("journal_mode = WAL");
+    enableWal(db);
     db.pragma("foreign_keys = ON");
     migrate(db);
   } catch (err) {
@@ -138,6 +138,40 @@ export function openDatabase(path: string): Db {
     );
   }
   return db;
+}
+
+/**
+ * Put the connection in WAL mode. `PRAGMA journal_mode = WAL` converts the file under
+ * an exclusive lock, and SQLite does not run the busy handler for that step while
+ * another connection is converting too (each holds a shared lock the other waits
+ * for), so several processes opening a fresh database together see SQLITE_BUSY at
+ * once, `busy_timeout` notwithstanding. A sibling's conversion shows on the next read,
+ * so the switch is retried briefly; a file already in WAL mode is left alone.
+ */
+function enableWal(db: Db): void {
+  const deadline = Date.now() + BUSY_TIMEOUT_MS;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      if (db.pragma("journal_mode", { simple: true }) === "wal") return;
+      db.pragma("journal_mode = WAL");
+      return;
+    } catch (err) {
+      if (!isBusyDbError(err) || Date.now() >= deadline) throw err;
+      sleepSync(Math.min(2 ** attempt, 20) + Math.random() * 5);
+    }
+  }
+}
+
+/** A synchronous pause (better-sqlite3 is synchronous; the open path has no event loop to yield to). */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** SQLITE_BUSY / SQLITE_LOCKED and their extended codes (util/dbBusy.ts imports this module). */
+function isBusyDbError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  if (typeof code !== "string") return false;
+  return ["SQLITE_BUSY", "SQLITE_LOCKED"].some((c) => code === c || code.startsWith(`${c}_`));
 }
 
 /** SQLite result codes (and their extended forms) meaning the file is not a readable database. */
@@ -240,7 +274,7 @@ export function migrate(db: Db): void {
   // Pragmas cannot change inside a transaction, so set them up front (they used to
   // sit at the top of SCHEMA_SQL). openDatabase sets them too; a caller handing a
   // bare connection to migrate() still gets the documented posture.
-  db.pragma("journal_mode = WAL");
+  enableWal(db);
   db.pragma("foreign_keys = ON");
 
   const stamped = readSchemaVersion(db);

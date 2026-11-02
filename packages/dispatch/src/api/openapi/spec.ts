@@ -975,7 +975,7 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
       "A person opened the run log, the evidence in full or the full diff of a ticket in " +
       "review. Recorded as `ticket.review_raw_opened {what, round_entered_at}` once per " +
       "round and kind; same rules as review-opened. Feeds Health's \"approved without " +
-      "opening raw logs\". Human or admin principals only.",
+      'opening raw logs". Human or admin principals only.',
     capability: "full",
     body: "reviewRawOpenedBody",
     responses: [

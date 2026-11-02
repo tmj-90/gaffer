@@ -304,6 +304,7 @@ async function createFromDraft(draft) {
     // routeEpics: the body through the route's schema, createEpic, the brownfield hook.
     const body = createEpicBody.parse({ epic, tickets });
     const result = wg.createEpic(body, shared.cliActor());
+    const sessionId = recordSession(wg, draft);
     const featureRepo = brownfieldEpicRepo(wg, body, result);
     if (featureRepo !== null) {
       createEpicFeatureRunner(process.env, wg).trigger({
@@ -313,9 +314,46 @@ async function createFromDraft(draft) {
         summary: (body.epic.description ?? "").trim().slice(0, 300),
       });
     }
-    return { result, deferred };
+    return { result, deferred, sessionId };
   } finally {
     wg.db.close();
+  }
+}
+
+// PLAN-SESSION HISTORY: the dashboard's panel keeps every conversation as a plan
+// session (GET /plan-sessions lists them). A terminal plan is recorded there too, once
+// it is created, as a confirmed session with the panel's message shape: each user turn
+// as its text, each planner turn as the POST /plan-build reply it was. Recorded straight
+// as confirmed, so a session a dashboard panel has open stays its active one. Fail-soft:
+// the epic is already created, so a failure here is a warning, not a failed create.
+function sessionMessages(draft) {
+  const msgs = [];
+  for (const h of draft.history || []) {
+    if (h.role === "user") msgs.push({ role: "user", content: String(h.brief ?? h.answer ?? "") });
+    else if (Array.isArray(h.questions))
+      msgs.push({
+        role: "assistant",
+        content: JSON.stringify({ phase: "clarify", questions: h.questions }),
+      });
+    else if (h.error)
+      msgs.push({ role: "assistant", content: JSON.stringify({ phase: "error", error: h.error }) });
+  }
+  msgs.push({ role: "assistant", content: JSON.stringify({ phase: "plan", plan: draft.plan }) });
+  return msgs;
+}
+function recordSession(wg, draft) {
+  try {
+    return wg.recordPlanSession({
+      brief: String(draft.brief),
+      messages: sessionMessages(draft),
+      plan: draft.plan,
+      status: "confirmed",
+    }).id;
+  } catch (e) {
+    process.stderr.write(
+      `  ! the epic was created, but the plan was not recorded in the plan-session history: ${describeError(e)}\n`,
+    );
+    return null;
   }
 }
 
@@ -336,7 +374,7 @@ async function create(draft) {
   } catch (e) {
     failWith(`could not create the epic, nothing was created: ${describeError(e)}`);
   }
-  const { result, deferred } = made;
+  const { result, deferred, sessionId } = made;
   dropDraft();
   const nums = result.ticketNumbers || [];
   out(
@@ -347,6 +385,8 @@ async function create(draft) {
     out(`    ${deferred} repo link(s) deferred to the bootstrap, which registers the new repo`);
   if (result.agreedRequirements)
     out(`    ${result.agreedRequirements} agreed requirement(s) are criteria of the Final`);
+  if (sessionId)
+    out(`    the conversation is in the dashboard's plan history (plan session ${sessionId})`);
   out(
     `  next: look them over (gaffer wg ticket show <n>, or the board), then ready each one: gaffer wg ticket ready <n>`,
   );

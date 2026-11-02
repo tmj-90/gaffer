@@ -123,6 +123,29 @@ describe("PlanSessionRepository — createPlanSession archives previous active",
   });
 });
 
+describe("recordPlanSession — a terminal plan in the history", () => {
+  it("records a finished session with its transcript and plan, leaving the active one alone", () => {
+    const wg = freshWg();
+    const open = wg.createPlanSession();
+    const rec = wg.recordPlanSession({
+      brief: "tag tasks",
+      messages: [
+        { role: "user", content: "tag tasks" },
+        { role: "assistant", content: JSON.stringify({ phase: "plan", plan: { epic: { name: "T" } } }) },
+      ],
+      plan: { epic: { name: "T" } },
+      status: "confirmed",
+    });
+    expect(rec.status).toBe("confirmed");
+    expect(rec.brief).toBe("tag tasks");
+    expect(JSON.parse(rec.messages_json)).toHaveLength(2);
+    expect(JSON.parse(rec.plan_json ?? "null")).toEqual({ epic: { name: "T" } });
+    expect(wg.getActivePlanSession()?.id).toBe(open.id);
+    expect(wg.listPlanSessions({ status: "confirmed" }).map((x) => x.id)).toEqual([rec.id]);
+    wg.db.close();
+  });
+});
+
 describe("PlanSessionRepository — appendMessage", () => {
   it("appends a user message, updates brief, and grows messages_json", () => {
     const wg = freshWg();

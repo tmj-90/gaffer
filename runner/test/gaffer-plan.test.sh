@@ -391,6 +391,33 @@ fi
 feat="$(MEMORY_DB="$A/memory.sqlite" node "$MEM" features shop 2>/dev/null; MEMORY_DB="$A/memory.sqlite" node "$MEM" features lib 2>/dev/null)"
 ! has "$feat" "Share tasks" && ok "P11: no feature hook for an epic over several repos" || fail "P11: feature hook fired: $feat"
 
+echo "== P12. a terminal plan lands in the dashboard's plan-session history =="
+# The dashboard's panel keeps each conversation as a plan session (GET /plan-sessions);
+# a plan created with gaffer plan --yes is recorded there too, confirmed, with its
+# transcript and plan, and a session the panel has open stays its active one.
+PLAN3='{"epic":{"name":"Tag tasks","description":"Labels."},"tickets":[{"title":"Tag model","acceptanceCriteria":["a task carries tags"],"repo":"shop","access":"write","dependsOn":[]}]}'
+node -e '
+  const fs=require("fs");const [f,plan,goal,ans,data,db]=process.argv.slice(1);
+  const d={version:2,brief:goal,history:[{role:"user",brief:goal},{role:"assistant",questions:["Free text tags?"]},{role:"user",answer:ans}],plan:JSON.parse(plan),
+    factory:{gaffer_data:fs.realpathSync(data),dispatch_db:fs.realpathSync(db)}};
+  fs.writeFileSync(f,JSON.stringify(d),{mode:0o600});' "$B/plan-draft.json" "$PLAN3" "tag tasks" "free text" "$B" "$B/dispatch.sqlite"
+OPEN="$(api POST /plan-sessions | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{try{process.stdout.write(JSON.parse(s).session.id)}catch{}})')"
+ga "$B" plan --yes
+[ "$RC" -eq 0 ] && has "$OUT" "plan history" && ok "P12: created, and says where the conversation is kept" || fail "P12: rc=$RC out=$OUT"
+SESS="$(api GET '/plan-sessions?status=confirmed')"
+chk="$(printf '%s' "$SESS" | node -e '
+  let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{
+    const ss=(JSON.parse(s).sessions||[]).filter(x=>x.brief==="tag tasks");
+    if(ss.length!==1){console.log("sessions="+ss.length);return;}
+    const m=JSON.parse(ss[0].messages_json), p=JSON.parse(ss[0].plan_json||"null");
+    const a=m.map(x=>x.role+":"+(x.role==="user"?x.content:JSON.parse(x.content).phase)).join(",");
+    console.log([a, p&&p.epic&&p.epic.name].join("|"));
+  })')"
+[ "$chk" = "user:tag tasks,assistant:clarify,user:free text,assistant:plan|Tag tasks" ] \
+  && ok "P12: GET /plan-sessions lists it confirmed, with the transcript and the plan created" || fail "P12: plan-session history: $chk ($(printf '%s' "$SESS" | head -c 400))"
+ACT="$(api GET /plan-sessions/active | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const j=JSON.parse(s);process.stdout.write(j.session?j.session.id:"none")})')"
+[ -n "$OPEN" ] && [ "$ACT" = "$OPEN" ] && ok "P12: the panel's open session is still the active one" || fail "P12: active session '$ACT', the panel had '$OPEN'"
+
 stop_dash
 echo
 if [ "${#FAILURES[@]}" -eq 0 ]; then

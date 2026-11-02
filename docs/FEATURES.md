@@ -88,7 +88,8 @@ dashboard turn would be.
 - `--repo <name>` extends a registered repo (brownfield), `--file <path>` reads
   the brief from a file, `--show` prints the pending proposal, `--discard` drops
   it, and `--list` lists the epics. The conversation between runs is kept in
-  `.gaffer/plan-draft.json`.
+  `.gaffer/plan-draft.json`, and once the epic is created it is recorded in the
+  dashboard's plan-session history (`GET /plan-sessions`) beside the panel's own.
 
 ### Greenfield vs brownfield
 

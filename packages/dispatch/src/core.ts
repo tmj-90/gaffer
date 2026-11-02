@@ -3494,6 +3494,39 @@ export class Dispatch {
   }
 
   /**
+   * Record a plan conversation that happened elsewhere (`gaffer plan` in the terminal)
+   * as a finished session, so it sits in the plan-session history the dashboard reads
+   * (GET /plan-sessions) beside the panel's own. The messages are the panel's shape (a
+   * user turn's text; an assistant turn is the POST /plan-build reply as JSON) and the
+   * stored plan is the one created. Written in one transaction straight into its final
+   * status, so it is never the active session and never archives the one a dashboard
+   * panel has open (createPlanSession would abandon it).
+   */
+  recordPlanSession(input: {
+    brief: string;
+    messages: ReadonlyArray<Omit<PlanMessage, "ts">>;
+    plan: unknown;
+    status: "confirmed" | "abandoned";
+  }): PlanSession {
+    return inTransaction(this.db, () => {
+      const now = this.clock.now();
+      const id = newId();
+      this.planSessions.create({ id, created_at: now, updated_at: now });
+      input.messages.forEach((m, i) => {
+        this.planSessions.appendMessage({
+          id,
+          message: { role: m.role, content: m.content, ts: now },
+          ...(i === 0 ? { brief: input.brief } : {}),
+          ...(i === input.messages.length - 1 ? { plan_json: JSON.stringify(input.plan) } : {}),
+          updated_at: now,
+        });
+      });
+      this.planSessions.archive({ id, status: input.status, updated_at: now });
+      return this.planSessions.getById(id)!;
+    });
+  }
+
+  /**
    * List plan sessions, most-recently-created first. Capped at 20 by default.
    * When `status` is given, only sessions with that status are returned.
    */

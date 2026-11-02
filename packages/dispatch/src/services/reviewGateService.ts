@@ -296,7 +296,13 @@ export interface ReviewGateServiceDeps {
  */
 function validatedBinding(
   input: { tested_commit?: string; contract_hash?: string; replay?: string; tests_commit?: string },
-  opts: { strict: boolean; currentHash: string | null; verdict: "pass" | "fail" },
+  opts: {
+    strict: boolean;
+    currentHash: string | null;
+    verdict: "pass" | "fail";
+    /** A human (or admin) verdict: a waiver, never refused for a missing replay. */
+    human?: boolean;
+  },
 ): VerdictBinding {
   const out: VerdictBinding = {};
   if (input.tested_commit !== undefined) {
@@ -355,6 +361,17 @@ function validatedBinding(
         { missing },
       );
     }
+  }
+  // FALSE GREEN, on every ticket (not only an acceptance ticket): a non-human PASS whose
+  // own binding says the runner's clean replay did not pass (skipped: no registered test
+  // command or the replay switched off; failed) proves nothing about the candidate and is
+  // refused. A PASS with no replay field keeps today's path; a human PASS is a waiver.
+  if (opts.verdict === "pass" && !opts.human && out.replay && out.replay !== "passed") {
+    throw new DispatchError(
+      "BINDING_REQUIRED",
+      `An automated PASS whose clean replay is '${out.replay}' is not a verified PASS: the runner did not show the candidate passes the tester's tests (register the repo's test command and re-test). A human can record the verdict instead (tester-pass --as human), which is reported as a waiver.`,
+      { missing: ["replay=passed"], replay: out.replay },
+    );
   }
   return out;
 }
@@ -1619,6 +1636,7 @@ export class ReviewGateService {
         strict: ticket.acceptance === 1 && testerProvenance(actor) !== "human",
         currentHash: contractHash(this.db, ticket.id),
         verdict: "pass",
+        human: testerProvenance(actor) === "human",
       });
       // REQUIRED CI: the tester's PASS is the other way into ready_for_merge.
       this.assertCiPassed(ticket, ciCandidate);

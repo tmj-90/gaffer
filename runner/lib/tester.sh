@@ -5,7 +5,9 @@
 # tests it from the contract + acceptance criteria only and records PASS
 # (→ ready_for_merge) or FAIL (→ refining) through the dispatch seam. A ticket the
 # tester cannot decide (no verdict token, the tester changed implementation files,
-# a PASS that failed its clean replay, …) is HELD in_testing for a human — never
+# a PASS that failed its clean replay, a PASS with NO clean replay because the repo
+# has no registered test command ("unverified", on every ticket kind), …) is HELD
+# in_testing for a human — never
 # passed, never failed on silence. The hold says WHY: the tester-run reason is
 # logged and attached to the ticket as a `tester held: <reason>` manual_note, and
 # the hold is remembered in $GAFFER_DATA/.tester-held (kept across runs, unlike the
@@ -95,9 +97,10 @@ _gaffer_tester_pass() {
   fi
   _T_VERDICT="$(printf '%s' "$_T_OUT" | jget 'd.verdict || ""' 2>/dev/null || echo '')"
   _T_BRANCH="$(printf '%s' "$_T_OUT" | jget 'd.testsBranch || ""' 2>/dev/null || echo '')"
-  # WHY the tester-run did not record a verdict (held: d.reason; error: d.error).
+  # WHY the tester-run did not record a verdict (held: d.reason; error: d.error). 800
+  # characters: an unverified hold carries how to register a test command and move on.
   local _t_reason
-  _t_reason="$(printf '%s' "$_T_OUT" | jget 'String(d.reason || d.error || "").replace(/\s+/g, " ").slice(0, 600)' 2>/dev/null || echo '')"
+  _t_reason="$(printf '%s' "$_T_OUT" | jget 'String(d.reason || d.error || "").replace(/\s+/g, " ").slice(0, 800)' 2>/dev/null || echo '')"
   case "$_T_PHASE" in
     verdict)
       _T_NOW="$(wg ticket show "$TNUM" 2>/dev/null | jget 'd.ticket.status' 2>/dev/null || echo '?')"

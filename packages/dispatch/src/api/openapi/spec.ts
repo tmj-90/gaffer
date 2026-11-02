@@ -968,7 +968,9 @@ export const ENDPOINTS: readonly EndpointSpec[] = [
     description:
       "pass → ready_for_merge, fail → refining, recorded as the calling principal. On an " +
       "acceptance ticket a human PASS is a waiver; an automated PASS must carry " +
-      "`tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`), and a " +
+      "`tested_commit`, `contract_hash` and `replay: passed` (422 `BINDING_REQUIRED`). On " +
+      "any ticket an automated PASS whose `replay` is `skipped` or `failed` is refused the " +
+      "same way (the runner did not show the candidate passes the tester's tests). A " +
       "`contract_hash` that no longer matches the contract on record is a 409 " +
       "`CONTRACT_MISMATCH`.",
     capability: "full",

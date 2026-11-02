@@ -719,6 +719,65 @@ console.log("== AC17: an ACCEPTANCE ticket's PASS without a replay that ran HOLD
     .run();
   db2.close();
 }
+console.log(
+  "== AC17b: an ORDINARY ticket's PASS without a replay that ran HOLDS (unverified), never records ==",
+);
+{
+  // False green (STRATEGY section 2): with no registered test command the runner cannot
+  // replay the tester's tests on a clean checkout, so the PASS proves nothing about the
+  // candidate. It used to record (--replay skipped) and land as tester-passed.
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(DB_PATH);
+  db.prepare("UPDATE repositories SET test_command = NULL WHERE id = 'r1'").run();
+  db.close();
+  const { code, out, logged } = runLive("PASS");
+  code === 2 && out && out.phase === "held"
+    ? ok(
+        "no test command → an ordinary ticket's PASS is HELD (exit 2), the same outcome as every other hold",
+      )
+    : fail(`ordinary PASS without replay not held (code=${code}, out=${JSON.stringify(out)})`);
+  logged === "" ? ok("no verdict recorded") : fail(`a verdict was recorded: ${logged}`);
+  /^unverified: no test command registered for repo live\b/.test((out && out.reason) || "")
+    ? ok("the reason starts 'unverified: no test command registered for repo live'")
+    : fail(`reason: ${JSON.stringify(out && out.reason)}`);
+  /wg repo set-commands live --test/.test((out && out.reason) || "") &&
+  /Referee's checks/.test((out && out.reason) || "") &&
+  /--as human/.test((out && out.reason) || "")
+    ? ok("the reason says how to register one (CLI and dashboard) and how a human moves it on")
+    : fail(`reason lacks the how-to: ${JSON.stringify(out && out.reason)}`);
+  out && out.unverified === true && out.replay && out.replay.state === "skipped"
+    ? ok("the held output carries unverified:true and the skipped replay")
+    : fail(`held detail: ${JSON.stringify(out)}`);
+  // The replay switched off (GAFFER_TESTER_REPLAY=0) is the same: nothing replayed.
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const db2 = new DatabaseSync(DB_PATH);
+  db2
+    .prepare(
+      "UPDATE repositories SET test_command = 'node build.js && node --test' WHERE id = 'r1'",
+    )
+    .run();
+  db2.close();
+  const off = runLive("PASS", { GAFFER_TESTER_REPLAY: "0" });
+  off.code === 2 &&
+  off.out &&
+  off.out.phase === "held" &&
+  /^unverified: the clean replay is switched off \(GAFFER_TESTER_REPLAY is 0\)/.test(
+    off.out.reason || "",
+  )
+    ? ok("GAFFER_TESTER_REPLAY=0 → an ordinary PASS is held as unverified, not recorded")
+    : fail(`replay-off PASS not held (code=${off.code}, out=${JSON.stringify(off.out)})`);
+  off.logged === ""
+    ? ok("no verdict recorded with the replay off")
+    : fail(`recorded: ${off.logged}`);
+  // A FAIL needs no replay: it is recorded as before (a FAIL is never a false green).
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+  const f = runLive("FAIL", { GAFFER_TESTER_REPLAY: "0" });
+  f.code === 0 && f.out && f.out.phase === "verdict" && f.out.verdict === "fail"
+    ? ok("a FAIL with the replay off is still recorded")
+    : fail(`FAIL with replay off: code=${f.code} out=${JSON.stringify(f.out)}`);
+  LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
+}
 console.log("== ledger: a spawn that never started books no kill estimate; a timeout does ==");
 {
   const ledger = resolve(LIVE.data, "usage-ledger.jsonl");

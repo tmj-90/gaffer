@@ -645,6 +645,52 @@ try {
     }
   }
 
+  // ── 5-rf. REVIEW FACTS: what was asked (the ticket's description) inside the header,
+  //          the Candidate cell (the runner recorded the commit its gates ran on, and it is
+  //          the head the diff shows), and the Behavioural surface above the diff (the
+  //          stub's new export, found from the diff's lines, with a link to its file).
+  {
+    const intent = (await page.textContent(".rv-head .rv-intent").catch(() => "")) || "";
+    /What was asked/.test(intent) && /Users need to drop completed tasks/.test(intent)
+      ? ok("Review facts: 'What was asked' shows the ticket's description above the strip")
+      : bad(`Review facts: intent block '${intent.slice(0, 200)}'`);
+    const cand = await waitFor(
+      async () => (await page.textContent(".vd-cell.vd-candidate .vd-v").catch(() => null)) || null,
+      "the Candidate cell",
+      15000,
+      500,
+    ).catch(() => null);
+    cand === "One commit"
+      ? ok("Review facts: the Candidate cell reads 'One commit' (gated commit = the diff's head)")
+      : bad(`Review facts: Candidate cell '${cand}'`);
+    const surface = await waitFor(
+      async () => {
+        const txt = (await page.textContent(".rv-diff .rv-impact").catch(() => "")) || "";
+        return /Behavioural surface/.test(txt) ? txt : null;
+      },
+      "the Behavioural surface panel",
+      15000,
+      500,
+    ).catch(() => null);
+    surface &&
+    /export function helper\d+ added/.test(surface) &&
+    /from the diff's lines/.test(surface)
+      ? ok("Review facts: the Behavioural surface lists the stub's new export, with its method")
+      : bad(`Review facts: Behavioural surface '${String(surface).slice(0, 300)}'`);
+    surface &&
+    /No migration or DDL, config, environment variable or dependency change found/.test(surface)
+      ? ok("Review facts: the panel says no migration, config, env or dependency change was found")
+      : bad("Review facts: the panel's negative line is missing");
+    (await page.locator(".rv-impact .rv-impact-go").count()) > 0
+      ? ok("Review facts: each impact line links to its file in the diff")
+      : bad("Review facts: no file link on the impact lines");
+    const backing = (await page.textContent(".rv-backing").catch(() => "")) || "";
+    /What backs this/.test(backing) && /What is not backed/.test(backing) && !/%/.test(backing)
+      ? ok("Review facts: 'What backs this / What is not backed' drawn, with no percentage")
+      : bad(`Review facts: backing panel '${backing.slice(0, 200)}'`);
+    await shot(page, "review-facts");
+  }
+
   // ── 5-gi. Gate integrity: the stub's clean delivery carries an integrity row that
   //          PASSED (base vs worktree: no test deleted, no skip marker added) and the
   //          Sign-off shows no "tests changed" banner. A delivery that weakened its

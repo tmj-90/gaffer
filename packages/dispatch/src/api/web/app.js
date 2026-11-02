@@ -17126,7 +17126,6 @@ function reviewedBy(ticket, events) {
     .pop();
   return e ? agentWho(e.actor_id) : null;
 }
-/** When the ticket last moved into its current status (the wait starts there). */
 /**
  * REVIEW TELEMETRY (Release A metrics): tell the server, once per ticket and review
  * round, that a person opened the ticket in Review (`what` empty) or opened a raw view
@@ -17163,6 +17162,7 @@ function noteReviewOpen(ticketId, round, what = "") {
     () => {},
   );
 }
+/** When the ticket last moved into its current status (the wait starts there). */
 function sinceStatus(events, status) {
   for (let i = (events || []).length - 1; i >= 0; i--) {
     const e = events[i];

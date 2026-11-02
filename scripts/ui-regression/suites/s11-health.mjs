@@ -1,8 +1,10 @@
 // S11 health, from what a live factory leaves behind (no tampered log: the BROKEN
 // event-log chain needs a rewritten row and is left to its unit tests). After one
 // delivery and one parked ticket: the Event log card reads intact with the server's
-// event count; the treatment list names the blocked ticket with a link to it; a
-// finished run's log opens in a sheet with the tick's own output.
+// event count; the four measures card shows the server's first-pass and review-time
+// figures and escaped defects as not recorded yet; the treatment list names the
+// blocked ticket with a link to it; a finished run's log opens in a sheet with the
+// tick's own output.
 export default async function s11(t, L) {
   const p = t.page;
   await L.putSettings({ GAFFER_MAX_DELIVERY_ATTEMPTS: "1" });
@@ -27,6 +29,24 @@ export default async function s11(t, L) {
     ev && ev.chain_ok && view.includes("intact") && view.includes(`${ev.events} events chained`),
     `Health's Event log card reads intact with the server's count (${ev && ev.events} events chained)`,
     `event log card: api=${JSON.stringify(ev)} page has intact=${view.includes("intact")}`,
+  );
+  // The four top-level measures, read from the same /api/health payload: first-pass
+  // acceptance and the median review time as the server computed them (a dash when
+  // nothing is accepted yet), escaped defects as not recorded yet with what is missing.
+  const measures = (await p.textContent('[aria-label="The four measures"]').catch(() => "")) || "";
+  const fp = health.first_pass;
+  const fpShown = fp && typeof fp.rate_pct === "number" ? `${fp.rate_pct}%` : "—";
+  t.check(
+    fp &&
+      health.review_time &&
+      measures.includes("First-pass acceptance") &&
+      measures.includes(fpShown) &&
+      measures.includes("Human review time") &&
+      measures.includes("Accepted-change cost") &&
+      /Escaped-defect rate\s*Not recorded yet/.test(measures) &&
+      measures.includes("human-filed link"),
+    `Health shows the four measures (first-pass ${fpShown} over ${fp && fp.done} done, review time basis ${health.review_time && health.review_time.basis}, escaped defects not recorded yet)`,
+    `four measures card: api first_pass=${JSON.stringify(fp)} page='${measures.slice(0, 300)}'`,
   );
   const row = p
     .locator(`.needs-item a[href*="${parked.id}"], .needs-item:has-text("#${parked.number}") a`)

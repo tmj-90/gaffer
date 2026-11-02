@@ -296,6 +296,38 @@ benches are also listed as text under the drawing.
 **Health: what the numbers mean.** `#/health` (and `GET /api/health`) reads the
 usage ledger and the ticket transition log, and says only what those can show:
 
+- **The four measures.** A card under the verdict shows the four figures every
+  feature has to move. **First-pass acceptance** is the share of done tickets that
+  nobody sent back after they first entered review (a person, the reviewer agent
+  or the tester) and that were never reopened, split by who approved them, so an
+  agent approval never reads as a human one (`first_pass` also has a strict figure
+  that counts the runner's own retries). **Human review time** is the median time
+  a person spent on each accepted ticket, with p75 and p90. When you open a ticket
+  in Review the dashboard records it once per review round
+  (`ticket.review_opened`, with the round and the commits on screen; it never marks
+  the ticket changed), so each round splits into the wait in the queue and the
+  time from opening it to your decision. A round with no open recorded (older
+  history, a decision from the CLI, a read-only token, which cannot record one)
+  counts its whole time in review, and the card says which basis it used. Tickets
+  only an agent approved are counted apart, never as zero minutes.
+  **Accepted-change cost** is the figure below. **Escaped-defect rate** reads "Not
+  recorded yet": counting it needs a link, filed by a person, from a defect to the
+  accepted change it escaped from, and Gaffer has none yet. `review_time` also
+  serves the median queue wait and decision time, the time from review-ready to
+  decision, and the share of tickets approved without opening a raw view
+  (`ticket.review_raw_opened`: the run log or the full diff from the ticket page,
+  an evidence row in full from Review) among the approving rounds that recorded
+  an open. `gaffer wg stats` prints the same figures.
+- **Lane verdicts.** The reviewer agent, the security reviewer, the tester and the
+  eval judge each record what they concluded as a `ticket.lane_verdict` event
+  (lane, verdict, the commit and the delivery attempt they judged), recorded by
+  the runner only: dispatch refuses an agent and the safety hook denies
+  `wg ticket lane-verdict` in an agent shell. Health counts them per lane; nothing
+  gates on them. Every review, tester and judge row in the usage ledger carries
+  the attempt it judged, the repo and the ticket's risk at call time, and a
+  delivery or review row carries the router's tier and its reasons
+  (`route_tier`, `route_reasons`).
+
 - **Rework.** A ticket is *sent back* when a reviewer or the tester rejects it,
   or when the runner retries it after a failed gate; both count. Every delivery
   ledger row carries its attempt (a hash of the claim plus the attempt number,

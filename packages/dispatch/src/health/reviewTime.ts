@@ -77,8 +77,11 @@ export interface ReviewTimeReport {
   readonly limits: readonly string[];
 }
 
-/** Statuses a ticket goes back to when a review round sends it back for more work. */
-const BACK_TO_WORK = new Set(["refining", "ready", "in_progress", "claimed", "blocked"]);
+/**
+ * Where an approving exit from in_review goes: the merge queue, the testing lane, or
+ * done. A pause at a cap, a won't-do or a send-back is not an approval.
+ */
+const APPROVED_TO = new Set(["ready_for_merge", "in_testing", "done"]);
 
 const isHuman = (actorType: string): boolean => actorType === "human" || actorType === "admin";
 
@@ -135,9 +138,9 @@ export function reviewRounds(transitions: readonly ReviewTimeTransition[]): Revi
   return out;
 }
 
-/** True when a round ended in an approval (not a send-back). */
+/** True when a round ended in an approval (not a send-back, a pause or a won't-do). */
 export function isApprovingRound(r: ReviewRound): boolean {
-  return r.exitTo !== null && !BACK_TO_WORK.has(r.exitTo);
+  return r.exitTo !== null && APPROVED_TO.has(r.exitTo);
 }
 
 function firstInRound(opens: readonly ReviewOpen[], r: ReviewRound): number | null {

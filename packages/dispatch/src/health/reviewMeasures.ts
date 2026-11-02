@@ -44,6 +44,9 @@ export const ESCAPED_DEFECTS_NOT_RECORDED: EscapedDefects = {
 };
 
 const ms = (iso: string): number => Date.parse(iso) || 0;
+// Every read is in insertion order (rowid): created_at ties at millisecond resolution, and
+// the read models sort stably by time, so an entry into review and the exit that follows
+// it in the same millisecond stay in the order they were written.
 
 /** Every measure above from the database. */
 export function readReviewMeasures(db: Db): ReviewMeasures {
@@ -60,7 +63,8 @@ export function readReviewMeasures(db: Db): ReviewMeasures {
                 json_extract(payload_json, '$.reason') AS reason,
                 created_at AS at
            FROM work_events
-          WHERE entity_type = 'ticket' AND event_type = 'ticket.transitioned'`,
+          WHERE entity_type = 'ticket' AND event_type = 'ticket.transitioned'
+          ORDER BY rowid`,
       )
       .all() as Array<{
       ticketId: string;
@@ -78,7 +82,8 @@ export function readReviewMeasures(db: Db): ReviewMeasures {
           `SELECT entity_id AS ticketId, created_at AS at,
                   json_extract(payload_json, '$.what') AS what
              FROM work_events
-            WHERE entity_type = 'ticket' AND event_type = ?`,
+            WHERE entity_type = 'ticket' AND event_type = ?
+            ORDER BY rowid`,
         )
         .all(type) as Array<{ ticketId: string; at: string; what: string | null }>
     ).map((r) => ({

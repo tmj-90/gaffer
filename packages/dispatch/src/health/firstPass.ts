@@ -6,9 +6,12 @@
  *                review, and never reopened out of done, over tickets that reached done.
  *
  * A send-back is a transition out of in_review, in_testing or ready_for_merge back to
- * refining, ready, in_progress, claimed or blocked, whoever made it: a person, the
- * reviewer agent or the tester. The strict reading also excludes a ticket the runner
- * retried after a failed gate (a `rework_attempts` row), even before it reached review.
+ * work (refining, ready, in_progress, claimed, or the retry cap's park to blocked),
+ * whoever made it: a person, the reviewer agent or the tester. It is the one definition
+ * the rework rate uses (health/sendBacks.ts isReviewSendBack), so a ticket is never
+ * first-pass while Health counts a send-back on it, or the other way round. The strict
+ * reading also excludes a ticket the runner retried after a failed gate (a
+ * `rework_attempts` row), even before it reached review.
  *
  * Split by who made the approving transition (the last move out of in_review that was
  * not a send-back): `human` (human or admin), `agent`, or `system`. Agent approvals under
@@ -16,6 +19,7 @@
  * human one. Null-honest: a rate is null with nothing done. Pure.
  */
 import { isApprovingRound, reviewRounds, type ReviewTimeTransition } from "./reviewTime.js";
+import { isReviewSendBack } from "./sendBacks.js";
 
 /** One `rework_attempts` row, projected. */
 export interface FirstPassRetry {
@@ -39,9 +43,6 @@ export interface FirstPassReport extends FirstPassCount {
   };
   readonly limits: readonly string[];
 }
-
-const REVIEW_STATES = new Set(["in_review", "in_testing", "ready_for_merge"]);
-const BACK_TO_WORK = new Set(["refining", "ready", "in_progress", "claimed", "blocked"]);
 
 const pct = (n: number, d: number): number | null =>
   d > 0 ? Math.round((n / d) * 1000) / 10 : null;
@@ -68,7 +69,13 @@ export function firstPassAcceptance(input: {
     if (t.toStatus === "in_review" && !firstReview.has(t.ticketId))
       firstReview.set(t.ticketId, t.atMs);
     const since = firstReview.get(t.ticketId);
-    const sendBack = REVIEW_STATES.has(t.fromStatus ?? "") && BACK_TO_WORK.has(t.toStatus ?? "");
+    const sendBack = isReviewSendBack({
+      ticketId: t.ticketId,
+      fromStatus: t.fromStatus,
+      toStatus: t.toStatus,
+      reason: t.reason ?? null,
+      at: "",
+    });
     if (since !== undefined && t.atMs >= since && sendBack) reworked.add(t.ticketId);
     // Reopened after it was accepted: the first acceptance did not hold.
     if (t.fromStatus === "done") reworked.add(t.ticketId);

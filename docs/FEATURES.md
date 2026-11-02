@@ -396,6 +396,32 @@ structural barrier the whole design hangs on.
   does not do that yet: one recorded while the page is open shows after the ticket
   next changes or you reload, and an approval made in the meantime is still checked
   against CI on the server, which says so if it refuses.
+- **You can comment on the change, and send it back with your comments.** The +
+  beside a diff line (either side), Comment on this file, Comment on the change, or
+  `c` on a line you clicked opens a comment, marked Must fix or Consider. It is
+  anchored from git at the commit you saw (the lines around it, hashed) and shown under
+  its line; the open ones join the flags list as "Open comments: N (M must-fix)".
+  Resolve, Reopen and Withdraw are yours alone: the server refuses an agent, the
+  agent's MCP only reads them (quarantined), and the safety hook denies the `review`
+  verbs in an agent shell. **Fix these (N)** sends the ticket back to Refining with
+  the open must-fix comments as numbered requirements; the button says what the click
+  does (back to Refining, parked at the attempt cap, or held as partly landed), and the
+  acceptance criteria reset as on any send-back. The next delivery prompt lists each
+  requirement with where it points, the anchored lines and what you asked, and the
+  agent answers each by id with a reply you see as "the agent says" (a claim, never a
+  resolution). From a terminal: `wg review comment <n> --file <path> --line <n> --body
+  "…" --must-fix`, `wg review comments <n>`, `wg review resolve <id>` and `wg review
+  fix <n>`.
+- **The next attempt opens on what changed since your review.** A send-back pins the
+  commit you sent back per repository (`gaffer-rejected-commit:<sha>`, never read as an
+  approval), and the Review view of the next attempt shows **Changes since your
+  review** with **Whole change** one click away. Approve still covers the whole change.
+  When the branch was rewritten since (the commit you sent back is not in the new
+  head's history), it says so instead of guessing. Each earlier comment says "anchor
+  changed in this revision" or "anchor untouched", from git, whatever the agent
+  replied. While the page is open it checks the heads on focus and every 20 seconds,
+  and a branch that moved shows the moved banner and turns Approve off before you
+  click.
 - The **Approve button stays disabled until that diff actually loads.** You
   can't sign off on a change you couldn't see; even the keyboard shortcut
   fails closed.

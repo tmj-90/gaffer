@@ -4197,6 +4197,714 @@
         "x-capability": "full"
       }
     },
+    "/tickets/{id}/review/comments": {
+      "get": {
+        "operationId": "getTicketsByIdReviewComments",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "List review comments",
+        "description": "The reviewer's comments on the ticket, oldest first, with `counts` (open, open must-fix, resolved, withdrawn) and, for an in_review ticket, the `reject_outcome` Fix these would have now. `?open=1` lists only the open ones; `?anchors=1` adds each comment's `anchor_state`, computed from `git diff <anchor_sha> <head> -- <path>` (never from what the agent says). Each comment carries the delivery agent's replies (`agent_replies`): a claim, never a resolution.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "open",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1",
+                "true",
+                "false"
+              ]
+            },
+            "description": "`1`: only the open comments."
+          },
+          {
+            "name": "anchors",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "0",
+                "1",
+                "true",
+                "false"
+              ]
+            },
+            "description": "`1`: add each comment's git-derived `anchor_state` against the head now (runs git)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ comments, counts, reject_outcome? }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      },
+      "post": {
+        "operationId": "postTicketsByIdReviewComments",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Write a review comment",
+        "description": "A comment on a diff line (`path` + `line`, `side` new by default), a file (`path`) or the whole change. `repo` names the write repository (the only one by default); `commit` is the head the reviewer saw, and the anchor (the +-3 lines git holds there, hashed) is read from it. `severity` is `must_fix` or `consider` (the default). Allowed while the ticket is in review or in Refining. A human or admin act: an agent or system principal is refused (403 `ACTOR_NOT_PERMITTED`); a read token never reaches it. Records a `review.comment_created` event.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/createReviewCommentBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "`{ comment }`. The Location header names the created resource.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/review/comments/{cid}/resolve": {
+      "post": {
+        "operationId": "postTicketsByIdReviewCommentsByCidResolve",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Resolve a review comment",
+        "description": "Mark a comment resolved, against the repo head now (`resolved_at_sha`). `:cid` is the comment id or a unique prefix of it (6+ characters). A human or admin act: an agent or system principal is refused (403 `ACTOR_NOT_PERMITTED`). Records a `review.comment_resolved` event; `NO_OP` (409) when it is already in that state.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "cid."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/reviewCommentStateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ comment }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/review/comments/{cid}/reopen": {
+      "post": {
+        "operationId": "postTicketsByIdReviewCommentsByCidReopen",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Reopen a review comment",
+        "description": "Open a resolved or withdrawn comment again. `:cid` is the comment id or a unique prefix of it (6+ characters). A human or admin act: an agent or system principal is refused (403 `ACTOR_NOT_PERMITTED`). Records a `review.comment_reopened` event; `NO_OP` (409) when it is already in that state.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "cid."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/reviewCommentStateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ comment }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/review/comments/{cid}/withdraw": {
+      "post": {
+        "operationId": "postTicketsByIdReviewCommentsByCidWithdraw",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Withdraw a review comment",
+        "description": "Withdraw a comment you wrote (its author or an admin). `:cid` is the comment id or a unique prefix of it (6+ characters). A human or admin act: an agent or system principal is refused (403 `ACTOR_NOT_PERMITTED`). Records a `review.comment_withdrawn` event; `NO_OP` (409) when it is already in that state.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "cid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "cid."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/reviewCommentStateBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ comment }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewCommentEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/review/fix": {
+      "post": {
+        "operationId": "postTicketsByIdReviewFix",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Fix these: send back with the open must-fix comments",
+        "description": "Sends the ticket back with its open must-fix comments (all, or `comment_ids`) as numbered requirements: the transition reason is the deterministic `Fix these: N requirements (ids)`, each comment records the round it was sent into, and the next delivery's prompt lists them (quarantined). Everything a review/reject does applies: the acceptance criteria reset to not met, the retry cap parks it, a partly landed change is held, and a reject pin (`gaffer-rejected-commit:<sha>`, never read as an approval) is recorded per write repository. The destination is Refining unless `to: ready` is asked for. `reject_outcome` says what the click did. A human or admin act (403 `ACTOR_NOT_PERMITTED` otherwise); 422 `VALIDATION_ERROR` (`details.reason` `no_requirements`) when there is no open must-fix comment.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/fixTheseBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "`{ ticket, event_id, requirements, reject_outcome, landed_already? }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FixTheseResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The calling principal may not do this (`ACTOR_NOT_PERMITTED`). The read-scoped token was used on a mutating route (`READ_ONLY_TOKEN`), or the Host/Origin is not permitted (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The state machine or a claim refused the change (`ILLEGAL_TRANSITION`, `STATE_CONFLICT`, `CLAIM_REQUIRED`, …).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is over the 1 MB limit (`PAYLOAD_TOO_LARGE`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "full"
+      }
+    },
+    "/tickets/{id}/heads": {
+      "get": {
+        "operationId": "getTicketsByIdHeads",
+        "tags": [
+          "Review & delivery"
+        ],
+        "summary": "Delivery heads",
+        "description": "Each write repository's delivery branch head now, from `rev-parse` alone (no diff), and the ones that cannot be read. The Review view polls it to tell the reader the change moved before they approve.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "`{ ticketId, heads, unavailable }`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TicketHeads"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or unknown bearer token (`UNAUTHORIZED`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Host/Origin is not permitted for a token-less request (`FORBIDDEN_HOST`). A named principal acted outside its scope (`SCOPE_DENIED`: `details.scope` names its repos and tickets, `details.reason` is `outside_repo_scope`, `outside_ticket_scope`, `no_repos`, `factory_wide` or `admin_required`, with `details.ticket`, `details.outside_repos` or `details.required` saying what put it outside).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "x-capability": "read"
+      }
+    },
     "/tickets/{id}/merge": {
       "post": {
         "operationId": "postTicketsByIdMerge",
@@ -4471,7 +5179,7 @@
           "Review & delivery"
         ],
         "summary": "Delivery diff",
-        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it).",
+        "description": "`git diff <default branch>...<head>` per write repository, where `headSha` is the delivery branch's commit at read time (`repoId` names the repo). Send them back on approve. An in_review ticket also carries `approve_outcome` (the ApproveOutcome schema): the first step a human Approve would certainly take now — `to_tester`, `land_now`, `land_next_tick`, `waits_for_merge`, `held_ci` or `held_repo_unavailable` (a write repository's delivery head cannot be read, so the server refuses the approval) — computed from the settings and ticket state the approve path acts on; when the tests that gate it changed, `agent_hold` names the `held_test_modified` hold an agent or auto approval would hit (a human approval is not held by it). It also carries `reject_outcome`: what Fix these would do now.",
         "parameters": [
           {
             "name": "id",
@@ -4481,11 +5189,23 @@
               "type": "string"
             },
             "description": "Resource id. Ticket routes also accept the ticket number; principal routes also accept the name."
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "rejected"
+              ]
+            },
+            "description": "`rejected`: the interdiff since the commit a reviewer last sent back (the latest reject pin per write repository) when that commit is an ancestor of the head; otherwise the repo's `since` entry says `history_rewritten: true` and no diff is guessed. A reading aid: it carries no `approve_outcome`, and an approval still binds to the whole change's heads."
           }
         ],
         "responses": {
           "200": {
-            "description": "`{ ticketId, repos: RepoDiff[], approve_outcome? }`.",
+            "description": "`{ ticketId, repos: RepoDiff[], approve_outcome?, reject_outcome?, since? }`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4516,6 +5236,16 @@
           },
           "404": {
             "description": "No such resource (`NOT_FOUND`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The body or query failed validation (`VALIDATION_ERROR`).",
             "content": {
               "application/json": {
                 "schema": {
@@ -11290,6 +12020,51 @@
           "name"
         ]
       },
+      "createReviewCommentBody": {
+        "type": "object",
+        "properties": {
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 20000
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "must_fix",
+              "consider"
+            ]
+          },
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "line": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "new",
+              "old"
+            ]
+          },
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$"
+          }
+        },
+        "required": [
+          "body"
+        ]
+      },
       "createScopeEdgeBody": {
         "type": "object",
         "properties": {
@@ -11868,6 +12643,338 @@
             }
           }
         }
+      },
+      "fixTheseBody": {
+        "type": "object",
+        "properties": {
+          "comment_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 6,
+              "maxLength": 64
+            },
+            "maxItems": 200
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "refining",
+              "ready"
+            ]
+          }
+        }
+      },
+      "FixTheseResult": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "number": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "draft",
+                  "refining",
+                  "ready",
+                  "claimed",
+                  "in_progress",
+                  "blocked",
+                  "in_review",
+                  "in_testing",
+                  "ready_for_merge",
+                  "done",
+                  "failed",
+                  "cancelled",
+                  "paused"
+                ]
+              },
+              "priority": {
+                "type": "integer"
+              },
+              "risk_level": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "policy_pack": {
+                "type": "string",
+                "enum": [
+                  "solo_loose",
+                  "team_light",
+                  "factory_strict",
+                  "regulated"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_by": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "reviewer": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "pr_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "attempt_count": {
+                "type": "integer"
+              },
+              "row_version": {
+                "type": "integer"
+              },
+              "scheduled_after": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "due_at": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bootstrap": {
+                "type": "integer"
+              },
+              "last_review_feedback": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded {reason, reviewer, at} or null."
+              },
+              "can_be_tested": {
+                "type": "integer"
+              },
+              "test_contract": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "JSON-encoded test contract or null."
+              },
+              "acceptance": {
+                "type": "integer"
+              },
+              "allow_test_changes": {
+                "type": "integer",
+                "description": "1 ⇒ a human allowed this ticket to change its tests (gate integrity PASS-with-note)."
+              },
+              "human_owner": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "human_delivered": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "delivery_budget_usd": {
+                "anyOf": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "number",
+              "title",
+              "description",
+              "status",
+              "priority",
+              "risk_level",
+              "policy_pack",
+              "source",
+              "created_by",
+              "reviewer",
+              "branch_name",
+              "pr_url",
+              "attempt_count",
+              "row_version",
+              "scheduled_after",
+              "due_at",
+              "bootstrap",
+              "last_review_feedback",
+              "can_be_tested",
+              "test_contract",
+              "acceptance",
+              "allow_test_changes",
+              "human_owner",
+              "human_delivered",
+              "delivery_budget_usd",
+              "created_at",
+              "updated_at"
+            ],
+            "description": "A ticket row."
+          },
+          "event_id": {
+            "type": "string",
+            "description": "The id of the work event the change wrote."
+          },
+          "requirements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewComment"
+            },
+            "description": "The comments sent, as numbered requirements."
+          },
+          "reject_outcome": {
+            "$ref": "#/components/schemas/RejectOutcome"
+          },
+          "landed_already": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "repoId": {
+                  "type": "string"
+                },
+                "commit": {
+                  "type": "string"
+                },
+                "landed": {
+                  "type": "boolean",
+                  "description": "false: the landing had started and may still be moving."
+                },
+                "via": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "repoId",
+                "commit",
+                "landed",
+                "via",
+                "at"
+              ],
+              "additionalProperties": false
+            },
+            "description": "review/reject and wont-do: landings that had already started on the approval this revocation withdrew. It stops every landing not yet started and does not undo these."
+          }
+        },
+        "required": [
+          "ticket",
+          "event_id",
+          "requirements",
+          "reject_outcome"
+        ],
+        "additionalProperties": false
       },
       "humanClaimBody": {
         "type": "object",
@@ -12673,6 +13780,62 @@
           }
         }
       },
+      "RejectOutcome": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "to_refining",
+              "to_ready",
+              "parked_retry_cap",
+              "held_partly_landed"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "description": "The button, e.g. \"Fix these (3)\"."
+          },
+          "sentence": {
+            "type": "string",
+            "description": "Where the ticket goes, what the next delivery gets, the AC reset."
+          },
+          "to_status": {
+            "type": "string",
+            "enum": [
+              "refining",
+              "ready",
+              "blocked"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "description": "attempt_count after the send-back."
+          },
+          "max_attempts": {
+            "type": "integer"
+          },
+          "ac_reset": {
+            "const": true,
+            "description": "A send-back resets the acceptance criteria to not met."
+          },
+          "requirements": {
+            "type": "integer",
+            "description": "The open must-fix comments it carries."
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "sentence",
+          "to_status",
+          "attempt",
+          "max_attempts",
+          "ac_reset",
+          "requirements"
+        ],
+        "additionalProperties": false
+      },
       "rejectReviewBody": {
         "type": "object",
         "properties": {
@@ -13180,6 +14343,334 @@
           "event_id"
         ],
         "additionalProperties": false
+      },
+      "ReviewComment": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ticket_id": {
+            "type": "string"
+          },
+          "repo_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null: a comment on the whole change."
+          },
+          "side": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "new",
+                  "old"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Null: a file (or ticket) comment."
+          },
+          "anchor_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The repo head the comment was written against."
+          },
+          "anchor_excerpt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The +-3 lines git holds at the anchor (line comments)."
+          },
+          "anchor_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "sha256 of anchor_excerpt."
+          },
+          "body": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "must_fix",
+              "consider"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "resolved",
+              "withdrawn"
+            ]
+          },
+          "author_type": {
+            "type": "string",
+            "enum": [
+              "human",
+              "admin"
+            ]
+          },
+          "author_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "round": {
+            "type": "integer",
+            "description": "The ticket's attempt_count when the comment was written."
+          },
+          "sent_round": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The attempt a Fix these send-back carried it into."
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_at_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "short_id": {
+            "type": "string",
+            "description": "The first 8 characters of the id."
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "current",
+                  "untouched",
+                  "changed",
+                  "unknown"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`?anchors=1` only, from `git diff <anchor_sha> <head> -- <path>`: current (the head is the anchor), untouched, changed (a hunk touches the anchored lines, or the file), unknown (git cannot answer); null for a comment on the whole change."
+          },
+          "anchor_head": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The head the anchor state was computed against."
+          },
+          "agent_replies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "evidence_id": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "evidence_id",
+                "summary",
+                "created_at"
+              ],
+              "additionalProperties": false
+            },
+            "description": "The delivery agent's replies: a claim about what it did, never a resolution."
+          }
+        },
+        "required": [
+          "id",
+          "ticket_id",
+          "repo_id",
+          "path",
+          "side",
+          "line",
+          "anchor_sha",
+          "anchor_excerpt",
+          "anchor_hash",
+          "body",
+          "severity",
+          "status",
+          "author_type",
+          "author_id",
+          "round",
+          "sent_round",
+          "created_at",
+          "updated_at",
+          "resolved_at",
+          "resolved_by",
+          "resolved_at_sha",
+          "short_id",
+          "repo"
+        ],
+        "description": "A reviewer's comment on a delivery."
+      },
+      "ReviewCommentEnvelope": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "$ref": "#/components/schemas/ReviewComment"
+          }
+        },
+        "required": [
+          "comment"
+        ],
+        "additionalProperties": false
+      },
+      "ReviewCommentList": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReviewComment"
+            }
+          },
+          "counts": {
+            "type": "object",
+            "properties": {
+              "open": {
+                "type": "integer"
+              },
+              "open_must_fix": {
+                "type": "integer"
+              },
+              "resolved": {
+                "type": "integer"
+              },
+              "withdrawn": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "open",
+              "open_must_fix",
+              "resolved",
+              "withdrawn"
+            ],
+            "additionalProperties": false
+          },
+          "reject_outcome": {
+            "$ref": "#/components/schemas/RejectOutcome",
+            "description": "An in_review ticket only."
+          }
+        },
+        "required": [
+          "comments",
+          "counts"
+        ],
+        "additionalProperties": false
+      },
+      "reviewCommentStateBody": {
+        "type": "object",
+        "properties": {}
       },
       "RiskAnnotation": {
         "type": "object",
@@ -14516,6 +16007,14 @@
               "additionalProperties": {}
             }
           },
+          "review_comments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "description": "The reviewer's comments (the ReviewComment shape, without anchor_state)."
+          },
           "agent_display": {
             "type": "object",
             "additionalProperties": {
@@ -14583,6 +16082,7 @@
           "evidence",
           "events",
           "rework_trail",
+          "review_comments",
           "agent_display"
         ],
         "additionalProperties": false
@@ -14936,6 +16436,91 @@
           "approve_outcome": {
             "$ref": "#/components/schemas/ApproveOutcome",
             "description": "An in_review ticket only: the first step a human Approve would certainly take now."
+          },
+          "reject_outcome": {
+            "$ref": "#/components/schemas/RejectOutcome",
+            "description": "An in_review ticket only: what Fix these (a send-back with the open must-fix comments) does now."
+          },
+          "since": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "repoId": {
+                  "type": "string"
+                },
+                "from_sha": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The commit the reviewer sent back (the latest reject pin)."
+                },
+                "to_sha": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The head now."
+                },
+                "available": {
+                  "type": "boolean"
+                },
+                "history_rewritten": {
+                  "type": "boolean",
+                  "description": "The sent-back commit is no longer an ancestor of the head (or is gone)."
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "no_reject_pin",
+                    "no_head",
+                    "git_error"
+                  ]
+                },
+                "attempt": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sent_back_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "repo",
+                "repoId",
+                "from_sha",
+                "to_sha",
+                "available",
+                "history_rewritten"
+              ],
+              "additionalProperties": false
+            },
+            "description": "`?since=rejected` only: per write repo, the interdiff's endpoints, or `history_rewritten`."
           }
         },
         "required": [
@@ -15204,6 +16789,66 @@
           "ticket",
           "changed",
           "event_id"
+        ],
+        "additionalProperties": false
+      },
+      "TicketHeads": {
+        "type": "object",
+        "properties": {
+          "ticketId": {
+            "type": "string"
+          },
+          "heads": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "repo_id": {
+                  "type": "string"
+                },
+                "sha": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "repo_id",
+                "sha"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "unavailable": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "repo": {
+                  "type": "string"
+                },
+                "repo_id": {
+                  "type": "string"
+                },
+                "why": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "repo",
+                "repo_id",
+                "why"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "ticketId",
+          "heads",
+          "unavailable"
         ],
         "additionalProperties": false
       },

@@ -316,6 +316,44 @@
     color: var(--ink-2);
   }
 
+  /* --- the four top-level measures, under the verdict --------------------------- */
+  .measures-panel {
+    margin-bottom: var(--s5);
+  }
+  .measures-facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+    padding: 12px 16px;
+  }
+  .measures-facts dt {
+    font: 700 var(--t12) var(--f-cond);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-2);
+  }
+  .measures-facts dd {
+    font: 800 var(--t26) / 1.1 var(--f-display);
+    min-width: 0;
+  }
+  .measures-facts small {
+    display: block;
+    margin-top: 4px;
+    font: 500 var(--t13) / var(--lh-detail) var(--f-detail);
+    color: var(--ink-2);
+    overflow-wrap: anywhere;
+  }
+  @media (max-width: 1180px) {
+    .measures-facts {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 760px) {
+    .measures-facts {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
   /* --- what has not measured anything yet: one line, not an empty page -------- */
   .hx-unmeasured {
     max-width: none;

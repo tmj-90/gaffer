@@ -60,7 +60,7 @@ gaffer_run_state_sweep() {
     _name="${_d##*/}"
     case "$_name" in *-*-*) ;; *) continue ;; esac
     _kind="${_name%%-*}"; _rest="${_name#*-}"; _pid="${_rest%%-*}"; _epoch="${_rest#*-}"
-    case "$_kind" in ''|*[!a-z]*) continue ;; esac
+    case "$_kind" in ''|*[!abcdefghijklmnopqrstuvwxyz]*) continue ;; esac
     case "$_pid" in ''|*[!0-9]*) continue ;; esac
     case "$_epoch" in ''|*[!0-9]*) continue ;; esac
     [ "$_pid" = "$$" ] && continue
@@ -76,7 +76,7 @@ gaffer_run_state_sweep() {
 # rather than fall back to a shared path another run may be using.
 gaffer_run_state_begin() {
   local _kind="${1:-run}" _root _dir
-  case "$_kind" in ''|*[!a-z]*) return 1 ;; esac   # the sweep's name shape
+  case "$_kind" in ''|*[!abcdefghijklmnopqrstuvwxyz]*) return 1 ;; esac   # the sweep's name shape
   _root="$(_gaffer_run_state_root)"
   unset GAFFER_RUN_STATE_DIR
   gaffer_run_state_sweep

@@ -40,3 +40,25 @@ export function isVersionRequest(args: readonly string[]): boolean {
   }
   return i === args.length - 1 && (args[i] === "--version" || args[i] === "-v");
 }
+
+/**
+ * The error line for a failure nothing more specific describes: INTERNAL_ERROR, with
+ * the stack under `details` when DISPATCH_DEBUG=1. It lives here, with no imports, so
+ * the entry can still report a program that failed to load (review finding
+ * testspeed-review/R-2), and errors.ts uses the same shape.
+ */
+export function internalErrorBody(err: unknown): {
+  ok: false;
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+} {
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = process.env["DISPATCH_DEBUG"] === "1" && err instanceof Error && err.stack;
+  return {
+    ok: false,
+    code: "INTERNAL_ERROR",
+    message: `Unexpected error: ${message}`,
+    ...(stack ? { details: { stack } } : {}),
+  };
+}

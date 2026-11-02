@@ -7,6 +7,7 @@ import { DispatchError } from "../util/errors.js";
 import { toZod3Issues, type Zod3Issue } from "../util/zod3Compat.js";
 import { type CliErrorBody, type CliFailure, describeCommanderFailure } from "./failure.js";
 import { flagForField, ruleForField } from "./limits.js";
+import { internalErrorBody } from "./stdio.js";
 
 export type { CliErrorBody, CliFailure } from "./failure.js";
 
@@ -67,16 +68,7 @@ export function describeCliFailure(
       ),
     };
   }
-  const message = err instanceof Error ? err.message : String(err);
-  const debug = process.env["DISPATCH_DEBUG"] === "1" && err instanceof Error && err.stack;
-  return {
-    exitCode: 1,
-    body: body(
-      "INTERNAL_ERROR",
-      `Unexpected error: ${message}`,
-      debug ? { stack: err.stack } : undefined,
-    ),
-  };
+  return { exitCode: 1, body: internalErrorBody(err) };
 }
 
 /**

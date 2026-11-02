@@ -18,10 +18,11 @@ import { registerScope } from "./commands/scope.js";
 import { registerSpec } from "./commands/spec.js";
 import { registerTicket } from "./commands/ticket.js";
 import { DispatchError } from "../util/errors.js";
-import { describeCommanderFailure } from "./failure.js";
+import { type CliFailure, describeCommanderFailure } from "./failure.js";
 import { cliActor, cliPrincipal, printJson, setCliPrincipal } from "./helpers.js";
 import { assertPrincipalCommand } from "./principalGate.js";
 import { needs, open } from "./runtime.js";
+import { internalErrorBody } from "./stdio.js";
 
 export { guardStdio } from "./stdio.js";
 
@@ -350,10 +351,26 @@ export async function runProgram(program: Command, argv: readonly string[]): Pro
     const failure =
       err instanceof CommanderError
         ? describeCommanderFailure(err)
-        : (await import("./errors.js")).describeCliFailure(err, {
-            ...(action ? { command: action, commandPath: commandPath(action) } : {}),
-          });
+        : await describeLoaded(err, action);
     if (failure.body) process.stderr.write(`${JSON.stringify(failure.body)}\n`);
     return failure.exitCode;
   }
+}
+
+/**
+ * The heavy half of the boundary (errors.ts), loaded on a failure. It imports the
+ * database layer, so when the failure is that very layer not loading (a broken
+ * install), it cannot load either: the failure is then the plain INTERNAL_ERROR line
+ * (review finding testspeed-review/R-2), never an unhandled rejection with a stack.
+ */
+async function describeLoaded(err: unknown, action: Command | undefined): Promise<CliFailure> {
+  let boundary: typeof import("./errors.js");
+  try {
+    boundary = await import("./errors.js");
+  } catch {
+    return { exitCode: 1, body: internalErrorBody(err) };
+  }
+  return boundary.describeCliFailure(err, {
+    ...(action ? { command: action, commandPath: commandPath(action) } : {}),
+  });
 }

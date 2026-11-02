@@ -48,7 +48,9 @@
 //                       STOP — never spawn a model, never record a verdict (the
 //                       test seam that asserts the diff is absent).
 //   --verdict pass|fail when given (the stubbed-tester path), record this verdict
-//                       through the seam instead of running a live tester.
+//                       through the seam instead of running a live tester. A test
+//                       seam only: it sends no binding, so through the bundled CLI
+//                       dispatch refuses its PASS (BINDING_REQUIRED, no replay).
 //   --summary <text>    the verdict summary (the passing/failing test result).
 //
 // OUTPUT (stdout, exactly ONE JSON object):
@@ -753,7 +755,15 @@ export function replayTesterTests({
  * testing, so the reason never suggests one.
  */
 export function unverifiedPassReason({ replay, repoName, ticket, acceptance = false }) {
-  const name = String(repoName || "").trim() || "this repo";
+  const raw = String(repoName || "").trim();
+  const name = raw || "this repo";
+  // The name goes into a command a person copies: quote one that is not a plain word (a
+  // repo name may hold spaces, quotes or `$`), and name no repo at all as <repo>.
+  const cmdName = !raw
+    ? "<repo>"
+    : /^[A-Za-z0-9._@+-]+$/.test(raw)
+      ? raw
+      : `'${raw.replace(/'/g, "'\\''")}'`;
   const why = !replay
     ? "no clean replay ran"
     : /no test command/.test(replay.reason || "")
@@ -762,7 +772,7 @@ export function unverifiedPassReason({ replay, repoName, ticket, acceptance = fa
         ? "the clean replay is switched off (GAFFER_TESTER_REPLAY is 0)"
         : `the clean replay did not pass (${replay.state}: ${replay.reason || "no reason given"})`;
   const register = /no test command/.test(why)
-    ? ` Register one with \`wg repo set-commands ${name} --test "<command>"\` or Test command under Referee's checks on the repo page.`
+    ? ` Register one with \`wg repo set-commands ${cmdName} --test "<command>"\` or Test command under Referee's checks on the repo page.`
     : /switched off/.test(why)
       ? " Set GAFFER_TESTER_REPLAY back to 1 to replay again."
       : "";

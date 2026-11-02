@@ -778,6 +778,27 @@ console.log(
     : fail(`FAIL with replay off: code=${f.code} out=${JSON.stringify(f.out)}`);
   LIVE.g("branch", "-D", "gaffer-tests/ticket-1");
 }
+console.log(
+  "== AC17c: the unverified hold's register command quotes a repo name a shell would split ==",
+);
+{
+  const { unverifiedPassReason } = await import(HELPER);
+  const cmd = (repoName) =>
+    (unverifiedPassReason({
+      replay: { state: "skipped", reason: "the repo has no test command registered" },
+      repoName,
+      ticket: 3,
+    }).match(/`wg repo set-commands (.*?) --test/) || [])[1];
+  cmd("live") === "live"
+    ? ok("a plain repo name is left as it is")
+    : fail(`plain name: ${cmd("live")}`);
+  cmd("my app") === "'my app'" && cmd("$(id)") === "'$(id)'" && cmd("o'b") === "'o'\\''b'"
+    ? ok("a name with a space, `$` or a quote is single-quoted for the copied command")
+    : fail(`quoted names: ${cmd("my app")} ${cmd("$(id)")} ${cmd("o'b")}`);
+  cmd("") === "<repo>"
+    ? ok("no repo name gives a <repo> placeholder, not a wrong command")
+    : fail(`empty name: ${cmd("")}`);
+}
 console.log("== ledger: a spawn that never started books no kill estimate; a timeout does ==");
 {
   const ledger = resolve(LIVE.data, "usage-ledger.jsonl");

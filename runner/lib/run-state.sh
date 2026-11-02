@@ -26,7 +26,10 @@
 # (mkdir + the holder's pid, the portable form: macOS has no flock) for its whole
 # run. A Poll that finds it held WAITS for the other Poll to finish, up to
 # GAFFER_POLL_WAIT_TIMEOUT seconds, then refuses. A lock whose holder is gone is
-# taken over at once.
+# taken over at once, and atomically: two waiters that both saw the dead holder used to
+# both remove the lock (the second removing the one the first had just taken) and both
+# held it; the removal now re-checks the pid under a guard (_gaffer_lock_reap), so one
+# takes it over and the other waits on it.
 #
 # PID REUSE: "gone" is `kill -0 <pid>` failing, and a pid can be reused: after a
 # container restart (pids are handed out in the same order again) or a long uptime,
@@ -111,6 +114,16 @@ _gaffer_poll_lock_stale_after() {
   case "$_g" in ''|*[!0-9]*|0) _g=30 ;; esac
   printf '%s' "$(( _o + _g + 60 ))"
 }
+# Remove an abandoned poll lock: through the guarded takeover when factory.config.sh
+# is loaded (always, in the runner), else the plain removal this file had before.
+_gaffer_poll_lock_reap() {
+  if declare -F _gaffer_lock_reap >/dev/null 2>&1; then
+    _gaffer_lock_reap "$@"
+    return $?
+  fi
+  rm -rf "$1" 2>/dev/null || true
+  return 0
+}
 gaffer_poll_lock_acquire() {
   local _lock="${GAFFER_DATA:?}/.poll.lock.d" _pid _said=0 _waited=0 _nopid=0 _age _stale
   local _limit="${GAFFER_POLL_WAIT_TIMEOUT:-0}"
@@ -119,7 +132,10 @@ gaffer_poll_lock_acquire() {
   while ! mkdir "$_lock" 2>/dev/null; do
     _pid="$(cat "$_lock/pid" 2>/dev/null)"
     if [ -n "$_pid" ] && ! kill -0 "$_pid" 2>/dev/null; then
-      rm -rf "$_lock" 2>/dev/null || true   # the holder is gone: an abandoned lock
+      # The holder is gone: an abandoned lock. Two waiters can both see that; the
+      # takeover is atomic (factory.config.sh _gaffer_lock_reap re-checks the pid under
+      # a guard), so the one that lost finds the winner's lock and waits on it.
+      _gaffer_poll_lock_reap "$_lock" "$_pid" || sleep 0.2   # another waiter is reaping
       continue
     fi
     # PID REUSE (header): a live pid on a pid file older than any Poll can run is not
@@ -129,7 +145,7 @@ gaffer_poll_lock_acquire() {
       case "$_age" in ''|*[!0-9]*) _age=0 ;; esac
       if [ "$_age" -ge "$_stale" ]; then
         echo "gaffer poll: the poll lock (pid $_pid) is ${_age}s old, older than any Poll runs (${_stale}s): that Poll is gone and the pid is another process now; taking the lock over"
-        rm -rf "$_lock" 2>/dev/null || true
+        _gaffer_poll_lock_reap "$_lock" "$_pid" || sleep 0.2
         continue
       fi
     fi
@@ -137,7 +153,7 @@ gaffer_poll_lock_acquire() {
     # a few seconds, then treat the lock as abandoned.
     if [ -z "$_pid" ]; then
       _nopid=$((_nopid + 1))
-      if [ "$_nopid" -gt 5 ]; then rm -rf "$_lock" 2>/dev/null || true; _nopid=0; continue; fi
+      if [ "$_nopid" -gt 5 ]; then _gaffer_poll_lock_reap "$_lock" "" 5 || sleep 0.2; _nopid=0; continue; fi
     else
       _nopid=0
     fi

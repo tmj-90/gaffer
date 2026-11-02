@@ -21,7 +21,8 @@
 #
 # Usage: worker.sh <worker-id>
 #   Writes "<worked> <reviewed> <clarified> <idle> <nowork> <error> <ticks>" to
-#   $GAFFER_DATA/.workers/<worker-id>.result for loop.sh to aggregate.
+#   <run state dir>/.workers/<worker-id>.result for loop.sh to aggregate (the run's own
+#   dir, GAFFER_RUN_STATE_DIR from loop.sh; $GAFFER_DATA/.workers for a hand-run worker).
 #
 # Stop conditions per worker:
 #   • EMPTY_POLL_LIMIT consecutive no_work ticks (the queue is drained for us), or
@@ -39,7 +40,7 @@ source "$HERE/factory.config.sh"
 mkdir -p "$GAFFER_DATA"
 
 WORKER_ID="${1:-0}"
-WORKERS_DIR="$GAFFER_DATA/.workers"
+WORKERS_DIR="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.workers"
 mkdir -p "$WORKERS_DIR"
 RESULT_FILE="$WORKERS_DIR/$WORKER_ID.result"
 
@@ -206,7 +207,7 @@ while ! _should_stop && _reserve_run_tick; do
   # would too. Stop the pool; loop.sh says how to log in and exits 3.
   if [ "$res" = "auth_error" ]; then
     echo "worker $WORKER_ID: claude could not authenticate — stopping the pool." >&2
-    : > "${GAFFER_DATA}/.workers/auth-error" 2>/dev/null || true
+    : > "$WORKERS_DIR/auth-error" 2>/dev/null || true
     [ -n "${GAFFER_POOL_STOP_FILE:-}" ] && : > "$GAFFER_POOL_STOP_FILE"
     break
   fi

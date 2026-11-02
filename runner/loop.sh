@@ -200,7 +200,12 @@ if [ "${GAFFER_CONCURRENCY:-1}" -gt 1 ] 2>/dev/null; then
   # (rounded up) so the pool's TOTAL ticks still honour MAX_TICKS. Each worker
   # carries the SAME per-tick wall-clock cap as the serial path.
   N="$GAFFER_CONCURRENCY"
-  WORKERS_DIR="$GAFFER_DATA/.workers"
+  # The pool's registry (result files, the shared tick counter, the stop file, each
+  # worker's tick pgid and output) is THIS run's, in its own state dir: two passes at
+  # once (a `gaffer run` beside a daemon pass) used to share $GAFFER_DATA/.workers, and
+  # each pass's `rm -rf` at its start wiped the other's live registry. A hand-run
+  # worker.sh (no run around it) keeps $GAFFER_DATA/.workers.
+  WORKERS_DIR="${GAFFER_RUN_STATE_DIR:-$GAFFER_DATA}/.workers"
   rm -rf "$WORKERS_DIR"; mkdir -p "$WORKERS_DIR"
   # The per-run MAX_TICKS is ONE shared budget, reserved atomically per tick by every
   # worker (gaffer_reserve_run_tick, lib/budget.sh) — so the pool's total can never

@@ -57,6 +57,9 @@ ticks_in() { [ -f "$1/factory.log" ] || { echo 0; return; }; wc -l < "$1/factory
 # it does not depend on how the shell forks the `( ... ) &` around the launcher.
 start_pool() {  # <case> → sets LP (the loop pid == its own process group id), D
   D="$WORK/$1"; mkdir -p "$D/data"
+  # Another pass's live pool registry in the shared place (a `gaffer run` beside a
+  # daemon pass used to share it): this pass must neither wipe nor write it.
+  mkdir -p "$D/data/.workers"; printf '1 0 0 0 0 0 1\n' > "$D/data/.workers/other-pass.result"
   ( export GAFFER_DATA="$D/data"; cd "$RUNNER_DIR" && source ./factory.config.sh >/dev/null 2>&1 && wg init >/dev/null 2>&1 )
   ( cd "$RUNNER_DIR" && GAFFER_DATA="$D/data" DRY_RUN=1 GAFFER_CONCURRENCY=2 EMPTY_POLL_LIMIT=100000 MAX_TICKS=100000 \
       TICK_SLEEP=1 GAFFER_MAINTENANCE=0 GAFFER_REAP_GRACE=2 \
@@ -103,7 +106,7 @@ dump_survivors() {  # <case-label>
     | awk -v g="$LP" '$3 == g && (($6 ~ /(^|\/)bash$/ && $7 ~ /(worker|tick|loop)\.sh$/) || ($6 ~ /(^|\/)perl$/ && index($0, "alarm")))' \
     | sed 's/^/     /'
   echo "  -- loop.out (tail) --"; tail -n 15 "$D/loop.out" 2>/dev/null | sed 's/^/     /'
-  local f; for f in "$D/data/.workers"/*; do [ -f "$f" ] || continue
+  local f; for f in "$D/data/.workers"/* "$D/data/run-state"/*/.workers/*; do [ -f "$f" ] || continue
     echo "  -- $(basename "$f") --"; tail -n 5 "$f" 2>/dev/null | sed 's/^/     /'; done
 }
 assert_stopped() {  # <case-label> <secs>
@@ -117,6 +120,14 @@ assert_stopped() {  # <case-label> <secs>
 echo "== P1. Ctrl-C (INT to the process group) stops the pool =="
 if start_pool int; then
   ok "P1: pool running (2 workers ticking, $(( SECONDS - START_SECS ))s)"
+  # P0 (exploratory finding followups/5 D3): the pool's registry is this run's own.
+  _reg="$(ls -d "$D/data/run-state"/loop-*/.workers 2>/dev/null | head -1)"
+  [ -n "$_reg" ] && [ -n "$(ls -A "$_reg" 2>/dev/null)" ] \
+    && ok "P1: the workers' registry is in the run's own state dir (${_reg#"$D/data/"})" \
+    || fail "P1: no worker registry under run-state/loop-*/.workers ($(ls -A "$D/data" | tr '\n' ' '))"
+  [ "$(ls -A "$D/data/.workers" 2>/dev/null)" = "other-pass.result" ] \
+    && ok "P1: another pass's registry in \$GAFFER_DATA/.workers is left alone" \
+    || fail "P1: \$GAFFER_DATA/.workers was wiped or written: $(ls -A "$D/data/.workers" 2>/dev/null | tr '\n' ' ')"
   kill -INT -- "-$LP" 2>/dev/null
   assert_stopped P1 15
 else start_failed P1; fi
